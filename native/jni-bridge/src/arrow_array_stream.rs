@@ -25,7 +25,7 @@ use jni::{
 
 /// A struct that holds all the JNI methods and fields for JVM `org.apache.arrow.c.ArrowArrayStream`
 /// class. `memoryAddress()` is read once per partition so native can take ownership of the
-/// underlying C struct via `ArrowArrayStreamReader::from_raw`.
+/// underlying C struct via `AlignedArrowStreamReader::from_raw`.
 #[allow(dead_code)] // we need to keep references to Java items to prevent GC
 pub struct ArrowArrayStream<'a> {
     pub class: JClass<'a>,

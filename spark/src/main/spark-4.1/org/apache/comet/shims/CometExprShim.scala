@@ -21,7 +21,7 @@ package org.apache.comet.shims
 
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.expressions.aggregate.Sum
-import org.apache.spark.sql.catalyst.expressions.json.StructsToJsonEvaluator
+import org.apache.spark.sql.catalyst.expressions.json.{JsonExpressionUtils, StructsToJsonEvaluator}
 import org.apache.spark.sql.catalyst.expressions.objects.{Invoke, StaticInvoke}
 import org.apache.spark.sql.catalyst.expressions.url.ParseUrlEvaluator
 import org.apache.spark.sql.catalyst.util.DateTimeUtils
@@ -59,6 +59,13 @@ trait CometExprShim extends CommonStringExprs with CometExprShim4x {
       inputs: Seq[Attribute],
       binding: Boolean): Option[Expr] = {
     expr match {
+      // RuntimeReplaceable structured-text functions (schema_of_csv/json, json_object_keys,
+      // xpath_*, schema_of_xml) and from_xml/to_xml route through the codegen dispatcher; see
+      // CometExprShim4x.convertStructuredText. Guarded so non-structured-text Invoke/StaticInvoke
+      // nodes still reach their existing handlers below.
+      case e if isStructuredTextDispatch(e) =>
+        convertStructuredText(e, inputs, binding)
+
       case knc: KnownNotContainsNull =>
         // On Spark 4.0, array_compact rewrites to KnownNotContainsNull(ArrayFilter(IsNotNull)).
         // Strip the wrapper and serialize the inner ArrayFilter as spark_array_compact.
@@ -188,6 +195,20 @@ trait CometExprShim extends CommonStringExprs with CometExprShim4x {
               false,
               childExprs: _*)
             optExprWithFallbackReason(optExpr, expr, args: _*)
+          case _ => None
+        }
+
+      case s: StaticInvoke =>
+        (s.staticObject, s.functionName, s.arguments) match {
+          case (cls, "lengthOfJsonArray", Seq(child)) if cls == classOf[JsonExpressionUtils] =>
+            val lengthOfJsonArray = LengthOfJsonArray(child)
+            val exprProto = exprToProtoInternal(lengthOfJsonArray, inputs, binding)
+            if (exprProto.isEmpty) {
+              lengthOfJsonArray
+                .getTagValue(CometExplainInfo.FALLBACK_REASONS)
+                .foreach(reasons => s.setTagValue(CometExplainInfo.FALLBACK_REASONS, reasons))
+            }
+            exprProto
           case _ => None
         }
 

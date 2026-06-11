@@ -60,13 +60,8 @@ object CometExecUtils {
     val serializedPlan = CometExec.serializeNativePlan(limitOp)
     val inputSchema = Utils.fromAttributes(outputAttribute)
     childPlan.mapPartitionsWithIndexInternal { case (idx, iter) =>
-      val stream = CometArrowStream.fromColumnarBatchIter(
-        iter,
-        inputSchema,
-        CometArrowStream.NATIVE_TIMEZONE,
-        "CometExecUtils-getNativeLimit")
       CometExec.getCometIterator(
-        Array(stream.asInstanceOf[Object]),
+        CometArrowStream.inputObjects(iter, inputSchema, "CometExecUtils-getNativeLimit"),
         outputAttribute.length,
         serializedPlan,
         numParts,

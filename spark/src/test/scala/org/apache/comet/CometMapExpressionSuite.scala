@@ -28,7 +28,6 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.BinaryType
 
 import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
-import org.apache.comet.serde.CometMapFromEntries
 import org.apache.comet.testing.{DataGenOptions, ParquetGenerator, SchemaGenOptions}
 
 class CometMapExpressionSuite extends CometTestBase {
@@ -234,18 +233,17 @@ class CometMapExpressionSuite extends CometTestBase {
     }
   }
 
-  test("map_from_entries - fallback for binary type") {
-    def fallbackReason(reason: String) = reason
+  test("map_from_entries - binary type") {
     val table = "t2"
     withTable(table) {
       sql(
         s"create table $table using parquet as select cast(array() as array<binary>) as c1 from range(10)")
-      checkSparkAnswerAndFallbackReason(
-        sql(s"select map_from_entries(array(struct(c1, 0))) from $table"),
-        fallbackReason(CometMapFromEntries.keyUnsupportedReason))
-      checkSparkAnswerAndFallbackReason(
-        sql(s"select map_from_entries(array(struct(0, c1))) from $table"),
-        fallbackReason(CometMapFromEntries.valueUnsupportedReason))
+      // The native path is Incompatible for binary keys/values, so Comet routes these through
+      // the codegen dispatcher and still executes natively.
+      checkSparkAnswerAndOperator(
+        sql(s"select map_from_entries(array(struct(c1, 0))) from $table"))
+      checkSparkAnswerAndOperator(
+        sql(s"select map_from_entries(array(struct(0, c1))) from $table"))
     }
   }
 

@@ -20,6 +20,7 @@
 package org.apache.spark.sql.comet.execution.arrow
 
 import scala.jdk.CollectionConverters._
+import scala.reflect.ClassTag
 
 import org.apache.arrow.c.{ArrowArrayStream, Data}
 import org.apache.arrow.memory.BufferAllocator
@@ -37,11 +38,30 @@ import org.apache.comet.CometArrowAllocator
 import org.apache.comet.vector.{CometDictionaryVector, CometVector, NativeUtil}
 
 /**
- * Marker for Comet operators that can produce Arrow data destined for a Comet native executor
- * directly as the C Stream Interface, skipping the intermediate `RDD[ColumnarBatch]` layer.
+ * A Comet operator that produces its output as Arrow data, consumable either as JVM
+ * `ColumnarBatch`es (`doExecuteColumnar`) or, when the consumer is a Comet native executor,
+ * directly as the Arrow C Stream Interface (`doExecuteAsArrowStream`), skipping the intermediate
+ * `RDD[ColumnarBatch]` layer.
+ *
+ * Implementors supply only [[mapToReaders]] (their source RDD + per-partition `ArrowReader`); the
+ * two execution paths here differ solely in whether each partition's reader is drained into
+ * `ColumnarBatch`es or exported as a stream.
  */
 trait CometNativeArrowSource extends SparkPlan {
-  def doExecuteAsArrowStream(): RDD[ArrowArrayStream]
+
+  /**
+   * Build this operator's per-partition `ArrowReader` and hand it to `consume`, returning the
+   * output RDD. `consume` is provided by this trait: `CometArrowStream.readerBatchIter` for the
+   * JVM columnar path, `CometArrowStream.stream` for the native C Stream path.
+   */
+  protected def mapToReaders[T: ClassTag](
+      consume: (String, BufferAllocator => ArrowReader) => Iterator[T]): RDD[T]
+
+  override protected def doExecuteColumnar(): RDD[ColumnarBatch] =
+    mapToReaders(CometArrowStream.readerBatchIter)
+
+  def doExecuteAsArrowStream(): RDD[ArrowArrayStream] =
+    mapToReaders(CometArrowStream.stream)
 }
 
 object CometArrowStream extends Logging {
@@ -53,6 +73,20 @@ object CometArrowStream extends Logging {
    * validation. See COMET-2720.
    */
   val NATIVE_TIMEZONE: String = "UTC"
+
+  /**
+   * Wrap `iter`, invoking `onNext` with each element before yielding it. Used to drive SQL
+   * metrics off the reader input without a bespoke iterator class per operator.
+   */
+  def countingIterator[T](iter: Iterator[T], onNext: T => Unit): Iterator[T] =
+    new Iterator[T] {
+      override def hasNext: Boolean = iter.hasNext
+      override def next(): T = {
+        val elem = iter.next()
+        onNext(elem)
+        elem
+      }
+    }
 
   /**
    * Wrap an `RDD[ColumnarBatch]` whose batches are Arrow-backed into an `RDD[ArrowArrayStream]`.
@@ -88,12 +122,24 @@ object CometArrowStream extends Logging {
   }
 
   /**
+   * Build the `inputObjects` array that `CometExecIterator` / `CometExec.getCometIterator` pass
+   * to native `createPlan`, for the common case of a single scan input fed by one per-partition
+   * `Iterator[ColumnarBatch]`. The iterator is exported to one `ArrowArrayStream` (Arrow C
+   * Stream) and boxed as the lone element, using the native timezone.
+   */
+  def inputObjects(
+      iter: Iterator[ColumnarBatch],
+      sparkSchema: StructType,
+      name: String): Array[Object] =
+    Array[Object](fromColumnarBatchIter(iter, sparkSchema, NATIVE_TIMEZONE, name))
+
+  /**
    * Build the stream's advertised Arrow schema from the actual `CometVector` types in the first
    * batch, not from `expected` (which derives from the consumer's Spark-declared types). Native
    * operators like `ScanExec` already cast their input to the declared scan-input schema in
    * `build_record_batch`, so the truthful schema lets that cast actually fire. Advertising
    * `expected` instead silently mislabels Int32 buffers as Int64 (and similar) and corrupts on
-   * import. See PR #4393 width_bucket investigation.
+   * import.
    *
    * If the first batch's column types differ from `expected` in their `DataType` (timezone-only
    * differences on `Timestamp` are ignored), log one warning naming the operator, column, and
@@ -182,16 +228,9 @@ object CometArrowStream extends Logging {
       case t: Throwable =>
         // Roll back partial setup before rethrowing -- nothing has been registered with
         // TaskContext yet, so without this the allocator (and possibly the reader/stream) leaks.
-        if (arrowStream != null) {
-          try arrowStream.close()
-          catch { case _: Throwable => () }
-        }
-        if (reader != null) {
-          try reader.close()
-          catch { case _: Throwable => () }
-        }
-        try allocator.close()
-        catch { case _: Throwable => () }
+        closeQuietly(arrowStream)
+        closeQuietly(reader)
+        closeQuietly(allocator)
         throw t
     }
     if (context != null) {
@@ -202,6 +241,14 @@ object CometArrowStream extends Logging {
       }
     }
     Iterator.single(arrowStream)
+  }
+
+  /** Close a resource, swallowing any error, for use in rollback paths. Null-safe. */
+  private def closeQuietly(c: AutoCloseable): Unit = {
+    if (c != null) {
+      try c.close()
+      catch { case _: Throwable => () }
+    }
   }
 
   /**
@@ -219,8 +266,7 @@ object CometArrowStream extends Logging {
       try readerFactory(allocator)
       catch {
         case t: Throwable =>
-          try allocator.close()
-          catch { case _: Throwable => () }
+          closeQuietly(allocator)
           throw t
       }
     if (context != null) {

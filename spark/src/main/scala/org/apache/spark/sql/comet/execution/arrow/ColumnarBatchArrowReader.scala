@@ -21,6 +21,8 @@ package org.apache.spark.sql.comet.execution.arrow
 
 import java.util.{ArrayList => JArrayList}
 
+import scala.collection.mutable.ListBuffer
+
 import org.apache.arrow.memory.BufferAllocator
 import org.apache.arrow.vector.{FieldVector, VectorSchemaRoot, VectorUnloader}
 import org.apache.arrow.vector.dictionary.DictionaryEncoder
@@ -31,11 +33,10 @@ import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.comet.vector.{CometDictionaryVector, CometVector}
 
 /**
- * `ArrowReader` over an iterator of Arrow-backed `ColumnarBatch`es. Each `loadNextBatch` unloads
- * the source's `FieldVector`s into a transient `ArrowRecordBatch` (retains buffers), loads it
- * into this reader's stable VSR via `loadFieldBuffers` (release-and-replace), then closes the
- * source batch. The unload/load step decouples this reader's VSR ownership from whatever the
- * upstream does with its own buffers.
+ * `ArrowReader` over an iterator of Arrow-backed `ColumnarBatch`es. The unload/load step
+ * decouples this reader's stable VSR from the source's buffers: `loadRecordBatch` takes its own
+ * retained references, so each source batch can be closed right after loading while a batch
+ * already exported to native stays valid via the export's independent ref.
  */
 private[comet] class ColumnarBatchArrowReader(
     allocator: BufferAllocator,
@@ -57,7 +58,8 @@ private[comet] class ColumnarBatchArrowReader(
     }
 
     val src = source.next()
-    var materialized: JArrayList[FieldVector] = null
+    // Plain vectors we decode from dictionary-encoded columns; we own these and close them below.
+    val materialized = ListBuffer.empty[FieldVector]
     try {
       val sourceVectors = new JArrayList[FieldVector](src.numCols())
       var i = 0
@@ -73,8 +75,7 @@ private[comet] class ColumnarBatchArrowReader(
             val plain = DictionaryEncoder
               .decode(indices, dictionary, allocator)
               .asInstanceOf[FieldVector]
-            if (materialized == null) materialized = new JArrayList[FieldVector]()
-            materialized.add(plain)
+            materialized += plain
             plain
           case _ =>
             col.getValueVector.asInstanceOf[FieldVector]
@@ -86,22 +87,14 @@ private[comet] class ColumnarBatchArrowReader(
       transient.setRowCount(src.numRows())
 
       val unloader = new VectorUnloader(transient)
-      val rb = unloader.getRecordBatch
-      try {
-        loadRecordBatch(rb)
-      } finally {
-        rb.close()
-      }
+      // loadRecordBatch closes the record batch after loading it into the stable VSR.
+      loadRecordBatch(unloader.getRecordBatch)
       // Do not close `transient`. It shares FieldVectors with `src`; closing `src` below
       // releases the producer-side refs. Closing `transient` would double-release.
     } finally {
-      if (materialized != null) {
-        var j = 0
-        while (j < materialized.size()) {
-          try materialized.get(j).close()
-          catch { case _: Throwable => () }
-          j += 1
-        }
+      materialized.foreach { v =>
+        try v.close()
+        catch { case _: Throwable => () }
       }
       src.close()
     }

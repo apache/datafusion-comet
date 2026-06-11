@@ -47,8 +47,11 @@ import org.apache.comet.vector.NativeUtil
  * `hasNext` can be used to check if it is the end of this iterator (i.e. the native query is
  * done).
  *
- * @param inputs
- *   The input iterators producing sequence of batches of Arrow Arrays.
+ * @param inputObjects
+ *   Already-built native input slots, in scan-input order. Each slot is either an
+ *   org.apache.arrow.c.ArrowArrayStream (consumed natively via from_raw against its
+ *   memoryAddress) or a CometShuffleBlockIterator (consumed via the JNI block-iteration
+ *   protocol).
  * @param protobufQueryPlan
  *   The serialized bytes of Spark execution plan.
  * @param numParts
@@ -79,11 +82,6 @@ class CometExecIterator(
   private val taskAttemptId = TaskContext.get().taskAttemptId
   private val taskCPUs = TaskContext.get().cpus()
   private val cometTaskMemoryManager = new CometTaskMemoryManager(id, taskAttemptId)
-  // Each input slot is either an org.apache.arrow.c.ArrowArrayStream (consumed natively via
-  // ArrowArrayStreamReader::from_raw against its memoryAddress) or a CometShuffleBlockIterator
-  // (consumed via the existing JNI block-iteration protocol). The slot index matches the scan
-  // input index in the serialized native plan.
-  private val inputIterators: Array[Object] = inputObjects
 
   private val plan = {
     val conf = SparkEnv.get.conf
@@ -109,7 +107,7 @@ class CometExecIterator(
 
     nativeLib.createPlan(
       id,
-      inputIterators,
+      inputObjects,
       protobufQueryPlan,
       protobufSparkConfigs,
       numParts,

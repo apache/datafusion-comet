@@ -212,15 +212,12 @@ case class CometNativeWriteExec(
       modifiedNativeOp.writeTo(codedOutput)
       codedOutput.checkNoSpaceLeft()
 
-      val arrowStream = CometArrowStream.fromColumnarBatchIter(
-        iter,
-        CometUtils.fromAttributes(child.output),
-        CometArrowStream.NATIVE_TIMEZONE,
-        "CometNativeWriteExec")
-
       val execIterator = new CometExecIterator(
         CometExec.newIterId,
-        Array(arrowStream.asInstanceOf[Object]),
+        CometArrowStream.inputObjects(
+          iter,
+          CometUtils.fromAttributes(child.output),
+          "CometNativeWriteExec"),
         numOutputCols,
         planBytes,
         nativeMetrics,

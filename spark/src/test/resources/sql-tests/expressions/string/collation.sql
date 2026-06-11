@@ -31,3 +31,21 @@ SELECT collation('hello' COLLATE UTF8_BINARY)
 -- collation of a NULL string
 query
 SELECT collation(CAST(NULL AS STRING))
+
+-- concat preserves a non-default collation in its result type, but Comet's native concat produces
+-- UTF8_BINARY, so it is Incompatible and falls back to Spark by default.
+query expect_fallback(concat does not support non-UTF8_BINARY collations)
+SELECT concat('Hello' COLLATE UTF8_LCASE, 'World' COLLATE UTF8_LCASE)
+
+-- reverse is enrolled in the JVM codegen dispatcher, which runs Spark's own doGenCode inside the
+-- Comet pipeline, so a collated string is evaluated natively and matches Spark.
+query
+SELECT reverse('Hello' COLLATE UTF8_LCASE)
+
+-- A standard ICU collation (UNICODE_CI) still falls back for concat, confirming the gate covers
+-- any non-UTF8_BINARY collation rather than just UTF8_LCASE.
+query expect_fallback(concat does not support non-UTF8_BINARY collations)
+SELECT concat('Hello' COLLATE UNICODE_CI, 'World' COLLATE UNICODE_CI)
+
+query
+SELECT reverse('Hello' COLLATE UNICODE_CI)
