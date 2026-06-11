@@ -103,10 +103,14 @@ object CometOctetLength extends CometScalarFunction[OctetLength]("octet_length")
 }
 
 object CometStringTranslate extends CometScalarFunction[StringTranslate]("translate") {
+  private val incompatReason =
+    "DataFusion's translate iterates over Unicode graphemes (Spark uses code points) and" +
+      " substitutes U+0000 instead of treating it as a deletion sentinel"
+
+  override def getIncompatibleReasons(): Seq[String] = Seq(incompatReason)
+
   override def getSupportLevel(expr: StringTranslate): SupportLevel = Incompatible(
-    Some(
-      "DataFusion's translate iterates over Unicode graphemes (Spark uses code points) and" +
-        " substitutes U+0000 instead of treating it as a deletion sentinel"))
+    Some(incompatReason))
 }
 
 object CometInitCap extends CometScalarFunction[InitCap]("initcap") {
