@@ -21,7 +21,6 @@ pub mod expression_registry;
 pub mod macros;
 pub mod operator_registry;
 
-use crate::errors::CometError;
 use crate::execution::operators::init_csv_datasource_exec;
 use crate::execution::operators::AlignedArrowStreamReader;
 use crate::execution::operators::IcebergScanExec;
@@ -37,6 +36,7 @@ use crate::execution::{
 use crate::jvm_bridge::{jni_call, JVMClasses};
 use arrow::compute::CastOptions;
 use arrow::datatypes::{DataType, Field, FieldRef, Schema, TimeUnit, DECIMAL128_MAX_PRECISION};
+use arrow::ffi_stream::FFI_ArrowArrayStream;
 use datafusion::functions_aggregate::bit_and_or_xor::{bit_and_udaf, bit_or_udaf, bit_xor_udaf};
 use datafusion::functions_aggregate::count::count_udaf;
 use datafusion::functions_aggregate::min_max::max_udaf;
@@ -1427,16 +1427,11 @@ impl PhysicalPlanner {
                     None
                 } else {
                     let java_stream = inputs.remove(0);
-                    let address: i64 = JVMClasses::with_env(|env| -> Result<i64, CometError> {
-                        let addr = unsafe {
-                            jni_call!(env, arrow_array_stream(java_stream.as_obj()).memory_address() -> i64)?
-                        };
-                        Ok(addr)
+                    let address: i64 = JVMClasses::with_env(|env| unsafe {
+                        jni_call!(env, arrow_array_stream(java_stream.as_obj()).memory_address() -> i64)
                     })?;
                     let reader = unsafe {
-                        AlignedArrowStreamReader::from_raw(
-                            address as *mut arrow::ffi_stream::FFI_ArrowArrayStream,
-                        )
+                        AlignedArrowStreamReader::from_raw(address as *mut FFI_ArrowArrayStream)
                     }
                     .map_err(|e| {
                         GeneralError(format!("Failed to import ArrowArrayStream from JVM: {e}"))

@@ -26,8 +26,10 @@ use std::sync::Arc;
 /// C Stream Interface reader that calls [`arrow::array::ArrayData::align_buffers`] on every
 /// imported batch before constructing typed arrays. Stock `ArrowArrayStreamReader` panics
 /// when a JVM producer hands us a `Decimal128` buffer at an offset that is 8-byte but not
-/// 16-byte aligned, which Java's allocator does not guarantee. Track upstream:
-/// <https://github.com/apache/arrow-rs/issues/10028>.
+/// 16-byte aligned, which Java's allocator does not guarantee (apache/arrow-rs#10028).
+/// The fix (apache/arrow-rs#10030) makes `from_ffi_and_data_type` align internally and ships
+/// in arrow 59.0.0; once Comet is on arrow >= 59 this reader can be dropped for the stock
+/// `ArrowArrayStreamReader`.
 #[derive(Debug)]
 pub struct AlignedArrowStreamReader {
     stream: FFI_ArrowArrayStream,
@@ -47,10 +49,6 @@ impl AlignedArrowStreamReader {
         }
         let schema = read_schema(&mut stream)?;
         Ok(Self { stream, schema })
-    }
-
-    pub fn schema(&self) -> SchemaRef {
-        Arc::clone(&self.schema)
     }
 
     fn last_error(&mut self) -> Option<String> {

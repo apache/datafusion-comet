@@ -279,3 +279,131 @@ impl RecordBatchStream for SchemaAlignStream {
         Arc::clone(&self.target_schema)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    //! Tests anchored to the concrete drifts tracked in
+    //! <https://github.com/apache/datafusion-comet/issues/4515>. This operator exists only to
+    //! reshape those drifts before the shuffle writer; once a function's upstream return type is
+    //! corrected, its drift pair becomes identical, `try_new_or_passthrough` returns the child
+    //! unwrapped, and the corresponding test below flips to the passthrough assertion. That is the
+    //! signal the workaround for that function can be removed.
+
+    use super::*;
+    use arrow::array::{Array, Int32Array, Int64Array, ListArray, TimestampMicrosecondArray};
+    use arrow::datatypes::{DataType, Int32Type, TimeUnit};
+    use datafusion::datasource::memory::MemorySourceConfig;
+    use datafusion::datasource::source::DataSourceExec;
+    use datafusion::prelude::SessionContext;
+
+    fn memory_child(batch: RecordBatch) -> Arc<dyn ExecutionPlan> {
+        let schema = batch.schema();
+        let config = MemorySourceConfig::try_new(&[vec![batch]], schema, None).unwrap();
+        Arc::new(DataSourceExec::new(Arc::new(config)))
+    }
+
+    async fn collect_one_partition(plan: Arc<dyn ExecutionPlan>) -> Vec<RecordBatch> {
+        let ctx = SessionContext::new().task_ctx();
+        let mut stream = plan.execute(0, ctx).unwrap();
+        let mut batches = Vec::new();
+        while let Some(batch) = stream.next().await {
+            batches.push(batch.unwrap());
+        }
+        batches
+    }
+
+    /// `width_bucket`: catalyst declares `Int64`, DataFusion produces `Int32`. A top-level cast.
+    #[tokio::test]
+    async fn aligns_width_bucket_int32_to_int64() {
+        let child_schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
+        let batch = RecordBatch::try_new(
+            child_schema,
+            vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
+        )
+        .unwrap();
+        let expected = Arc::new(Schema::new(vec![Field::new("a", DataType::Int64, false)]));
+
+        let aligned =
+            SchemaAlignExec::try_new_or_passthrough(memory_child(batch), &expected).unwrap();
+        assert_eq!(aligned.schema().field(0).data_type(), &DataType::Int64);
+
+        let out = collect_one_partition(aligned).await;
+        let col = out[0]
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        assert_eq!(col.values(), &[1, 2, 3]);
+    }
+
+    /// `date_trunc`: catalyst declares `Timestamp(us, "UTC")`, DataFusion produces `Timestamp(us)`
+    /// with no timezone. The same i64 instants are reinterpreted as UTC; no value should change.
+    #[tokio::test]
+    async fn aligns_date_trunc_timestamp_timezone() {
+        let no_tz = DataType::Timestamp(TimeUnit::Microsecond, None);
+        let utc = DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into()));
+        let child_schema = Arc::new(Schema::new(vec![Field::new("ts", no_tz, false)]));
+        let batch = RecordBatch::try_new(
+            child_schema,
+            vec![Arc::new(TimestampMicrosecondArray::from(vec![
+                0, 1_000_000,
+            ]))],
+        )
+        .unwrap();
+        let expected = Arc::new(Schema::new(vec![Field::new("ts", utc.clone(), false)]));
+
+        let aligned =
+            SchemaAlignExec::try_new_or_passthrough(memory_child(batch), &expected).unwrap();
+        assert_eq!(aligned.schema().field(0).data_type(), &utc);
+
+        let out = collect_one_partition(aligned).await;
+        let col = out[0]
+            .column(0)
+            .as_any()
+            .downcast_ref::<TimestampMicrosecondArray>()
+            .unwrap();
+        assert_eq!(col.values(), &[0, 1_000_000]);
+    }
+
+    /// `collect_set`: catalyst declares `List(non-null Int32)`, DataFusion produces
+    /// `List(nullable Int32)`. This narrows the *inner* element nullability, which arrow's list
+    /// cast may or may not perform. If it does not, the re-stamp fails on DataType inequality and
+    /// this test surfaces that the operator does not actually fix the `collect_set` drift.
+    #[tokio::test]
+    async fn aligns_collect_set_list_element_nullability() {
+        let list_array = ListArray::from_iter_primitive::<Int32Type, _, _>([
+            Some(vec![Some(1), Some(2)]),
+            Some(vec![Some(3)]),
+        ]);
+        let actual_list = list_array.data_type().clone();
+        let child_schema = Arc::new(Schema::new(vec![Field::new("s", actual_list, true)]));
+        let batch = RecordBatch::try_new(child_schema, vec![Arc::new(list_array)]).unwrap();
+
+        let expected_list = DataType::List(Arc::new(Field::new_list_field(DataType::Int32, false)));
+        let expected = Arc::new(Schema::new(vec![Field::new(
+            "s",
+            expected_list.clone(),
+            true,
+        )]));
+
+        let aligned =
+            SchemaAlignExec::try_new_or_passthrough(memory_child(batch), &expected).unwrap();
+        assert_eq!(aligned.schema().field(0).data_type(), &expected_list);
+
+        let out = collect_one_partition(aligned).await;
+        let col = out[0]
+            .column(0)
+            .as_any()
+            .downcast_ref::<ListArray>()
+            .unwrap();
+        assert_eq!(col.len(), 2);
+        let first = col
+            .value(0)
+            .as_any()
+            .downcast_ref::<Int32Array>()
+            .unwrap()
+            .values()
+            .to_vec();
+        assert_eq!(first, vec![1, 2]);
+    }
+}

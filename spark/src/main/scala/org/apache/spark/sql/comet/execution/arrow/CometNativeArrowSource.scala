@@ -75,6 +75,20 @@ object CometArrowStream extends Logging {
   val NATIVE_TIMEZONE: String = "UTC"
 
   /**
+   * Wrap `iter`, invoking `onNext` with each element before yielding it. Used to drive SQL
+   * metrics off the reader input without a bespoke iterator class per operator.
+   */
+  def countingIterator[T](iter: Iterator[T], onNext: T => Unit): Iterator[T] =
+    new Iterator[T] {
+      override def hasNext: Boolean = iter.hasNext
+      override def next(): T = {
+        val elem = iter.next()
+        onNext(elem)
+        elem
+      }
+    }
+
+  /**
    * Wrap an `RDD[ColumnarBatch]` whose batches are Arrow-backed into an `RDD[ArrowArrayStream]`.
    */
   def wrapColumnarBatchRDD(
@@ -125,7 +139,7 @@ object CometArrowStream extends Logging {
    * operators like `ScanExec` already cast their input to the declared scan-input schema in
    * `build_record_batch`, so the truthful schema lets that cast actually fire. Advertising
    * `expected` instead silently mislabels Int32 buffers as Int64 (and similar) and corrupts on
-   * import. See PR #4393 width_bucket investigation.
+   * import.
    *
    * If the first batch's column types differ from `expected` in their `DataType` (timezone-only
    * differences on `Timestamp` are ignored), log one warning naming the operator, column, and
@@ -214,16 +228,9 @@ object CometArrowStream extends Logging {
       case t: Throwable =>
         // Roll back partial setup before rethrowing -- nothing has been registered with
         // TaskContext yet, so without this the allocator (and possibly the reader/stream) leaks.
-        if (arrowStream != null) {
-          try arrowStream.close()
-          catch { case _: Throwable => () }
-        }
-        if (reader != null) {
-          try reader.close()
-          catch { case _: Throwable => () }
-        }
-        try allocator.close()
-        catch { case _: Throwable => () }
+        closeQuietly(arrowStream)
+        closeQuietly(reader)
+        closeQuietly(allocator)
         throw t
     }
     if (context != null) {
@@ -234,6 +241,14 @@ object CometArrowStream extends Logging {
       }
     }
     Iterator.single(arrowStream)
+  }
+
+  /** Close a resource, swallowing any error, for use in rollback paths. Null-safe. */
+  private def closeQuietly(c: AutoCloseable): Unit = {
+    if (c != null) {
+      try c.close()
+      catch { case _: Throwable => () }
+    }
   }
 
   /**
@@ -251,8 +266,7 @@ object CometArrowStream extends Logging {
       try readerFactory(allocator)
       catch {
         case t: Throwable =>
-          try allocator.close()
-          catch { case _: Throwable => () }
+          closeQuietly(allocator)
           throw t
       }
     if (context != null) {

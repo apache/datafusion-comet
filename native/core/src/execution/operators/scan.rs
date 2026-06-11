@@ -142,6 +142,9 @@ impl ScanExec {
             return Ok(InputBatch::EOF);
         }
 
+        // The `Mutex` is for interior mutability (`next` needs `&mut`, but the exec holds the
+        // reader behind an `Arc`); access is already serialized by the `self.batch` lock held in
+        // `get_next_batch`, so a contended `try_lock` here would signal a caller bug, not races.
         let mut reader = reader
             .try_lock()
             .map_err(|_| CometError::Internal("AlignedArrowStreamReader contended".to_string()))?;

@@ -595,23 +595,25 @@ abstract class CometNativeExec extends CometExec {
       plan match {
         case s: CometNativeArrowSource =>
           s.doExecuteAsArrowStream()
-        case _ if asBroadcastExchange(plan).isDefined =>
-          val c = asBroadcastExchange(plan).get
-          CometArrowStream.wrapColumnarBatchRDD(
-            c.executeColumnar(partitionCount),
-            c.schema,
-            CometArrowStream.NATIVE_TIMEZONE,
-            c.nodeName)
-        case _ if isShuffleScanInput(plan) && shuffleScanIndices.contains(scanSlot) =>
-          // Direct-read shuffle: `CometShuffledBatchRDD` reaches native via
-          // CometShuffleBlockIterator. Other shuffle slots fall through and get wrapped.
-          plan.executeColumnar()
         case _ =>
-          CometArrowStream.wrapColumnarBatchRDD(
-            plan.executeColumnar(),
-            plan.schema,
-            CometArrowStream.NATIVE_TIMEZONE,
-            plan.nodeName)
+          asBroadcastExchange(plan) match {
+            case Some(c) =>
+              CometArrowStream.wrapColumnarBatchRDD(
+                c.executeColumnar(partitionCount),
+                c.schema,
+                CometArrowStream.NATIVE_TIMEZONE,
+                c.nodeName)
+            case None if isShuffleScanInput(plan) && shuffleScanIndices.contains(scanSlot) =>
+              // Direct-read shuffle: `CometShuffledBatchRDD` reaches native via
+              // CometShuffleBlockIterator. Other shuffle slots fall through and get wrapped.
+              plan.executeColumnar()
+            case None =>
+              CometArrowStream.wrapColumnarBatchRDD(
+                plan.executeColumnar(),
+                plan.schema,
+                CometArrowStream.NATIVE_TIMEZONE,
+                plan.nodeName)
+          }
       }
 
     // Walk-order: count how many non-CometNativeExec plans come before the firstNonBroadcast

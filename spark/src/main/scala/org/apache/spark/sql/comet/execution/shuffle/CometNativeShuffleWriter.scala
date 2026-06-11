@@ -273,10 +273,10 @@ class CometNativeShuffleWriter[K, V](
 
         rangePartitioning.ordering.zipWithIndex.foreach { case (sortOrder, idx) =>
           if (seenExprs.contains(sortOrder.child)) {
-            deduplicationMap += (idx -> false) // Will be deduplicated by DataFusion
+            deduplicationMap += (idx -> false)
           } else {
             seenExprs += sortOrder.child
-            deduplicationMap += (idx -> true) // Will be kept by DataFusion
+            deduplicationMap += (idx -> true)
           }
         }
 

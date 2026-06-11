@@ -73,28 +73,6 @@ case class CometSparkToColumnarExec(child: SparkPlan)
       sparkContext,
       "time converting Spark batches to Arrow batches"))
 
-  private def countingBatches(
-      iter: Iterator[ColumnarBatch],
-      numInputRows: SQLMetric): Iterator[ColumnarBatch] = new Iterator[ColumnarBatch] {
-    override def hasNext: Boolean = iter.hasNext
-    override def next(): ColumnarBatch = {
-      val batch = iter.next()
-      numInputRows += batch.numRows()
-      batch
-    }
-  }
-
-  private def countingRows(
-      iter: Iterator[InternalRow],
-      numInputRows: SQLMetric): Iterator[InternalRow] = new Iterator[InternalRow] {
-    override def hasNext: Boolean = iter.hasNext
-    override def next(): InternalRow = {
-      val row = iter.next()
-      numInputRows += 1
-      row
-    }
-  }
-
   /**
    * Build the per-partition `ArrowReader` (columnar or row, depending on the child); the trait
    * routes it to the JVM or native consumer.
@@ -124,7 +102,10 @@ case class CometSparkToColumnarExec(child: SparkPlan)
           new SparkColumnarArrowReader(
             _,
             arrowSchema,
-            countingBatches(sparkBatches, numInputRows),
+            CometArrowStream
+              .countingIterator(
+                sparkBatches,
+                (b: ColumnarBatch) => numInputRows.add(b.numRows())),
             maxBatchInt,
             onConversionNs))
       }
@@ -136,7 +117,7 @@ case class CometSparkToColumnarExec(child: SparkPlan)
           new RowArrowReader(
             _,
             arrowSchema,
-            countingRows(rowIter, numInputRows),
+            CometArrowStream.countingIterator(rowIter, (_: InternalRow) => numInputRows.add(1)),
             maxRecordsPerBatch,
             onConversionNs))
       }

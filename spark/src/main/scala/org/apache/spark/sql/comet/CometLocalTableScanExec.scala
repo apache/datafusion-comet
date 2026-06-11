@@ -69,17 +69,6 @@ case class CometLocalTableScanExec(
     }
   }
 
-  private def countingRows(
-      iter: Iterator[InternalRow],
-      numOutputRows: SQLMetric): Iterator[InternalRow] = new Iterator[InternalRow] {
-    override def hasNext: Boolean = iter.hasNext
-    override def next(): InternalRow = {
-      val row = iter.next()
-      numOutputRows.add(1)
-      row
-    }
-  }
-
   /**
    * Build the per-partition `RowArrowReader`; the trait routes it to the JVM or native consumer.
    */
@@ -95,7 +84,7 @@ case class CometLocalTableScanExec(
         new RowArrowReader(
           _,
           arrowSchema,
-          countingRows(rowIter, numOutputRows),
+          CometArrowStream.countingIterator(rowIter, (_: InternalRow) => numOutputRows.add(1)),
           maxRecordsPerBatch))
     }
   }

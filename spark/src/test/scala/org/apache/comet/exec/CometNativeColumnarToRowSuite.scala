@@ -493,8 +493,7 @@ class CometNativeColumnarToRowSuite extends CometTestBase with AdaptiveSparkPlan
     }
 
     // Each emitted batch needs independent Arrow buffers so the test can hold rows from
-    // earlier batches while later batches are consumed. CometArrowConverters allocates a
-    // fresh VSR per batch from the supplied allocator.
+    // earlier batches while later batches are consumed.
     val allocator =
       org.apache.comet.CometArrowAllocator.newChildAllocator("c2r-test", 0, Long.MaxValue)
     val batchIter = CometArrowConverters
