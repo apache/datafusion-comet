@@ -152,15 +152,11 @@ object CometSortArray extends CometExpressionSerde[SortArray] {
 
     if (!supportedSortArrayElementType(elementType)) {
       Unsupported(Some(s"Sort on array element type $elementType is not supported"))
-    } else if (CometConf.COMET_EXEC_STRICT_FLOATING_POINT.get() &&
-      SupportLevel.containsFloatingPoint(elementType)) {
-      Incompatible(
-        Some(
-          "Sorting on floating-point is not 100% compatible with Spark, and Comet is running " +
-            s"with ${CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key}=true. " +
-            s"${CometConf.COMPAT_GUIDE}"))
     } else {
-      Compatible()
+      SupportLevel
+        .strictFloatingPointReason(elementType, "Sorting on floating-point")
+        .map(reason => Incompatible(Some(reason)))
+        .getOrElse(Compatible())
     }
   }
 
@@ -553,17 +549,8 @@ object CometArrayReverse extends CometExpressionSerde[Reverse] with ArraysBase {
 
   override def getIncompatibleReasons(): Seq[String] = Seq(unsupportedReason)
 
-  @tailrec
-  private def containsBinary(dt: DataType): Boolean = {
-    dt match {
-      case BinaryType => true
-      case ArrayType(elementType, _) => containsBinary(elementType)
-      case _ => false
-    }
-  }
-
   override def getSupportLevel(expr: Reverse): SupportLevel = {
-    if (containsBinary(expr.child.dataType)) {
+    if (SupportLevel.containsType(expr.child.dataType, classOf[BinaryType])) {
       Incompatible(Some(unsupportedReason))
     } else {
       Compatible(None)
