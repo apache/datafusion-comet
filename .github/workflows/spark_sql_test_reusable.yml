@@ -52,20 +52,28 @@ env:
 
 jobs:
 
-  # Build native library once and share with all test jobs
-  build-native:
-    name: Build Native Library
+  # Build the native library AND pre-compile Spark sources + Test classes in a
+  # single runner, then publish two artifacts the matrix consumes:
+  #   - native-lib-linux:                    libcomet.so (~50 MB)
+  #   - jvm-compiled-spark-<full>-jdk<N>:    apache-spark.tar.gz (sources +
+  #                                          target/ + Zinc state, ~500 MB-1 GB)
+  # Combining them avoids a second runner cold-start and an extra inter-job
+  # artifact round-trip for the native lib, since the JVM build already
+  # depends on it (the Comet Maven install bundles libcomet.so into the
+  # Comet JAR before SBT resolves Spark's classpath).
+  build:
+    name: Build Native + JVM Test Classes
     runs-on: ubuntu-24.04
     container:
       image: amd64/rust
     steps:
       - uses: actions/checkout@v6
 
-      - name: Setup Rust toolchain
+      - name: Setup Rust & Java toolchain
         uses: ./.github/actions/setup-builder
         with:
           rust-version: ${{ env.RUST_VERSION }}
-          jdk-version: 17
+          jdk-version: ${{ inputs.java }}
 
       - name: Restore Cargo cache
         uses: actions/cache/restore@v5
@@ -85,13 +93,6 @@ jobs:
         env:
           RUSTFLAGS: "-Ctarget-cpu=x86-64-v3 -Clink-arg=-fuse-ld=bfd"
 
-      - name: Upload native library
-        uses: actions/upload-artifact@v7
-        with:
-          name: native-lib-linux
-          path: native/target/ci/libcomet.so
-          retention-days: 1
-
       - name: Save Cargo cache
         uses: actions/cache/save@v5
         if: github.ref == 'refs/heads/main'
@@ -102,32 +103,21 @@ jobs:
             native/target
           key: ${{ runner.os }}-cargo-ci-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}-${{ hashFiles('native/**/*.rs') }}
 
-  # Compile Spark sources + test classes once; share the populated apache-spark/
-  # tree (sources, target/, project/target/, Zinc state) with all matrix test
-  # jobs so they can run sbt testOnly with a much smaller SBT heap. Without
-  # this, every matrix entry re-runs the full Spark compile in its own runner,
-  # which inflates SBT_MEM and squeezes the forked test JVM against the 7 GB
-  # hosted-runner ceiling (the OOM symptom we hit on sql_core-* rows).
-  build-jvm:
-    needs: build-native
-    name: Build Spark JVM Test Classes
-    runs-on: ubuntu-24.04
-    container:
-      image: amd64/rust
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Setup Rust & Java toolchain
-        uses: ./.github/actions/setup-builder
-        with:
-          rust-version: ${{ env.RUST_VERSION }}
-          jdk-version: ${{ inputs.java }}
-
-      - name: Download native library
-        uses: actions/download-artifact@v8
+      - name: Upload native library
+        uses: actions/upload-artifact@v7
         with:
           name: native-lib-linux
-          path: native/target/release/
+          path: native/target/ci/libcomet.so
+          retention-days: 1
+
+      - name: Stage native library at release path
+        run: |
+          # setup-spark-builder's `mvnw install -DskipTests` (skip-native-build
+          # path) bundles native/target/release/libcomet.so into the Comet JAR.
+          # We built with --profile ci to avoid LTO, so the file lives at
+          # native/target/ci/. Copy it to where the Maven build expects it.
+          mkdir -p native/target/release
+          cp native/target/ci/libcomet.so native/target/release/libcomet.so
 
       - name: Setup Spark
         uses: ./.github/actions/setup-spark-builder
@@ -173,7 +163,7 @@ jobs:
           retention-days: 1
 
   spark-sql-test:
-    needs: [build-native, build-jvm]
+    needs: build
     strategy:
       matrix:
         module:
