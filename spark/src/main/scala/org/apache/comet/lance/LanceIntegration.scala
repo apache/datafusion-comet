@@ -20,6 +20,7 @@
 package org.apache.comet.lance
 
 import java.lang.reflect.InvocationTargetException
+import java.util.{Optional => JOptional}
 
 import scala.util.control.NonFatal
 
@@ -104,6 +105,13 @@ object LanceIntegration extends Logging {
           None
       }
     } catch {
+      case e: InvocationTargetException =>
+        val cause = Option(e.getCause).getOrElse(e)
+        logWarning(
+          "Native Lance scan disabled because contrib-lance threw during reflection: " +
+            s"${cause.getClass.getName}: ${cause.getMessage}",
+          cause)
+        None
       case NonFatal(e) =>
         logWarning(s"Native Lance scan disabled by contrib-lance reflection failure: $e")
         None
@@ -114,7 +122,7 @@ object LanceIntegration extends Logging {
     try {
       findNoArgMethod(scan.getClass, NativeScanPlanMethod)
         .flatMap { method =>
-          Option(method.invoke(scan))
+          optionalResult(method.invoke(scan))
         }
     } catch {
       case e: InvocationTargetException =>
@@ -126,6 +134,14 @@ object LanceIntegration extends Logging {
         logWarning(s"Native Lance scan disabled by reflection failure: $e")
         None
     }
+  }
+
+  private def optionalResult(value: Any): Option[Any] = value match {
+    case null => None
+    case option: Option[_] => option
+    case option: JOptional[_] if option.isPresent => Some(option.get)
+    case _: JOptional[_] => None
+    case other => Some(other)
   }
 
   private def findNoArgMethod(
