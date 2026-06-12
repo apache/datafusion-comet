@@ -701,11 +701,11 @@ case class CometExecRule(session: SparkSession)
       }
 
       val builder = OperatorOuterClass.Operator.newBuilder().setPlanId(op.id)
+      val nativeChildren = op.children.collect { case child: CometNativeExec => child.nativeOp }
       val nativeOpOpt =
-        if (op.children.nonEmpty && op.children.forall(_.isInstanceOf[CometNativeExec])) {
-          val childOp = op.children.map(_.asInstanceOf[CometNativeExec].nativeOp)
-          childOp.foreach(builder.addChildren)
-          serde.convert(op, builder, childOp: _*)
+        if (op.children.nonEmpty && nativeChildren.size == op.children.size) {
+          nativeChildren.foreach(builder.addChildren)
+          serde.convert(op, builder, nativeChildren: _*)
         } else {
           serde.convert(op, builder)
         }
