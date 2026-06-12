@@ -375,7 +375,7 @@ expression-level). The `outer` variants are wired but marked `Incompatible`; the
 | Function | Status | Notes |
 | --- | --- | --- |
 | `element_at` | ✅ | MapType input falls back |
-| `map` | 🔜 | Constructs a map |
+| `map` | ✅ | Routed through the JVM codegen dispatcher |
 | `map_concat` | ✅ |  |
 | `map_contains_key` | ✅ |  |
 | `map_entries` | ✅ |  |
@@ -561,7 +561,7 @@ expression-level). The `outer` variants are wired but marked `Incompatible`; the
 | `lpad` | ✅ |  |
 | `ltrim` | ✅ |  |
 | `luhn_check` | ✅ | Native via `StaticInvoke` (tests: luhn_check.sql) |
-| `mask` | 🔜 | Data masking |
+| `mask` | ✅ | Routed through the JVM codegen dispatcher |
 | `octet_length` | ✅ |  |
 | `overlay` | ✅ |  |
 | `position` | ✅ |  |

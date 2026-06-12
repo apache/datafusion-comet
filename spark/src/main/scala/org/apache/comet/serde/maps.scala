@@ -182,6 +182,8 @@ object CometStrToMap extends CometScalarFunction[StringToMap]("str_to_map") {
   }
 }
 
+object CometCreateMap extends CometCodegenDispatch[CreateMap]
+
 object CometMapFilter extends CometCodegenDispatch[MapFilter]
 
 object CometTransformKeys extends CometCodegenDispatch[TransformKeys]

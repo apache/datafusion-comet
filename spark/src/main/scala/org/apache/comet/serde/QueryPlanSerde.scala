@@ -182,7 +182,8 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       classOf[MapFilter] -> CometMapFilter,
       classOf[TransformKeys] -> CometTransformKeys,
       classOf[TransformValues] -> CometTransformValues,
-      classOf[MapZipWith] -> CometMapZipWith)
+      classOf[MapZipWith] -> CometMapZipWith,
+      classOf[CreateMap] -> CometCreateMap)
     base ++ sparkVersionSpecificMapExpressions
   }
 
@@ -253,7 +254,8 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       classOf[StringLocate] -> CometStringLocate,
       classOf[UnBase64] -> CometUnBase64,
       classOf[ToCharacter] -> CometToCharacter,
-      classOf[ToNumber] -> CometToNumber)
+      classOf[ToNumber] -> CometToNumber,
+      classOf[Mask] -> CometMask)
     base ++ sparkVersionSpecificStringExpressions
   }
 
