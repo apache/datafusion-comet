@@ -247,7 +247,7 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `datediff` | ✅ |  |
 | `datepart` | ✅ |  |
 | `day` | ✅ |  |
-| `dayname` | 🔜 | [#4544](https://github.com/apache/datafusion-comet/issues/4544) |
+| `dayname` | ✅ | Abbreviated day name (Spark 4.0+) |
 | `dayofmonth` | ✅ |  |
 | `dayofweek` | ✅ |  |
 | `dayofyear` | ✅ |  |
@@ -267,7 +267,7 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `make_ym_interval` | 🔜 | [#4541](https://github.com/apache/datafusion-comet/issues/4541) |
 | `minute` | ✅ |  |
 | `month` | ✅ |  |
-| `monthname` | 🔜 | [#4544](https://github.com/apache/datafusion-comet/issues/4544) |
+| `monthname` | ✅ | Abbreviated month name (Spark 4.0+) |
 | `months_between` | ✅ |  |
 | `next_day` | ✅ |  |
 | `now` | ✅ | Constant-folded to a literal (alias of `current_timestamp`) |
@@ -567,9 +567,9 @@ expression-level). The `outer` variants are wired but marked `Incompatible`; the
 | `position` | ✅ |  |
 | `printf` | ✅ |  |
 | `regexp_count` | 🔜 | tracking [#4098](https://github.com/apache/datafusion-comet/issues/4098) |
-| `regexp_extract` | 🔜 | tracking [#4098](https://github.com/apache/datafusion-comet/issues/4098) |
-| `regexp_extract_all` | 🔜 | tracking [#4098](https://github.com/apache/datafusion-comet/issues/4098) |
-| `regexp_instr` | 🔜 | tracking [#4098](https://github.com/apache/datafusion-comet/issues/4098) |
+| `regexp_extract` | ✅ | Routed through the JVM codegen dispatcher |
+| `regexp_extract_all` | ✅ | Routed through the JVM codegen dispatcher |
+| `regexp_instr` | ✅ | Routed through the JVM codegen dispatcher |
 | `regexp_replace` | ✅ |  |
 | `regexp_substr` | 🔜 | tracking [#4098](https://github.com/apache/datafusion-comet/issues/4098) |
 | `repeat` | ✅ |  |
