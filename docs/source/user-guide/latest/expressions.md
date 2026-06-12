@@ -26,10 +26,14 @@ transparently falls back to Spark for that part of the plan; results are unaffec
 
 Expressions marked ✅ Supported are enabled by default and produce Spark-compatible results.
 
-Some ✅ Supported expressions have specific incompatible cases that fall back to Spark by
-default. Those cases must be opted into per expression with
+Some ✅ Supported expressions have specific incompatible cases that are not run by default.
+Those cases must be opted into per expression with
 `spark.comet.expression.EXPRNAME.allowIncompatible=true` (where `EXPRNAME` is the Spark
-expression class name, for example `Cast`). There is no global opt-in.
+expression class name, for example `Cast`). There is no global opt-in. By default such a case
+either falls back to Spark (for example `cast`) or, when the expression has a Spark-compatible
+codegen-dispatch implementation, runs through that instead (for example the regex and JSON
+families). See [Native and codegen-dispatch implementations](compatibility/index.md#native-and-codegen-dispatch-implementations)
+for how Comet chooses.
 
 Most expressions can also be disabled with `spark.comet.expression.EXPRNAME.enabled=false`, where
 `EXPRNAME` is the Spark expression class name (for example `Length` or `StartsWith`). See the
