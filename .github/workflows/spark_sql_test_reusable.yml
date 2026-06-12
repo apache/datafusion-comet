@@ -102,15 +102,79 @@ jobs:
             native/target
           key: ${{ runner.os }}-cargo-ci-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}-${{ hashFiles('native/**/*.rs') }}
 
-  spark-sql-test:
+  # Compile Spark sources + test classes once; share the populated apache-spark/
+  # tree (sources, target/, project/target/, Zinc state) with all matrix test
+  # jobs so they can run sbt testOnly with a much smaller SBT heap. Without
+  # this, every matrix entry re-runs the full Spark compile in its own runner,
+  # which inflates SBT_MEM and squeezes the forked test JVM against the 7 GB
+  # hosted-runner ceiling (the OOM symptom we hit on sql_core-* rows).
+  build-jvm:
     needs: build-native
+    name: Build Spark JVM Test Classes
+    runs-on: ubuntu-24.04
+    container:
+      image: amd64/rust
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Rust & Java toolchain
+        uses: ./.github/actions/setup-builder
+        with:
+          rust-version: ${{ env.RUST_VERSION }}
+          jdk-version: ${{ inputs.java }}
+
+      - name: Download native library
+        uses: actions/download-artifact@v8
+        with:
+          name: native-lib-linux
+          path: native/target/release/
+
+      - name: Setup Spark
+        uses: ./.github/actions/setup-spark-builder
+        with:
+          spark-version: ${{ inputs.spark-full }}
+          spark-short-version: ${{ inputs.spark-short }}
+          skip-native-build: true
+
+      - name: Pre-compile Spark Test classes
+        run: |
+          cd apache-spark
+          # Compile Test sources for the three subprojects the matrix touches.
+          # SBT will transitively compile Compile/compile of their dependencies
+          # plus any Test/compile pulled in by `dependsOn(... % "test->test")`,
+          # which is enough to satisfy `sql/testOnly`, `hive/testOnly`, and
+          # `catalyst/test` in the downstream test jobs.
+          NOLINT_ON_COMPILE=true build/sbt -Dsbt.log.noformat=true -mem 3072 \
+            'catalyst/Test/compile' \
+            'sql/Test/compile' \
+            'hive/Test/compile'
+
+      - name: Pack apache-spark/ (sources + compiled output)
+        run: |
+          # Preserve mtimes so Zinc's incremental analysis still recognises
+          # the compiled output as up-to-date in the test jobs. Exclude .git
+          # because we don't need history downstream and it adds size.
+          tar -czpf apache-spark.tar.gz \
+            --exclude='apache-spark/.git' \
+            apache-spark
+
+      - name: Upload JVM compile artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: jvm-compiled-spark-${{ inputs.spark-full }}-jdk${{ inputs.java }}
+          path: apache-spark.tar.gz
+          retention-days: 1
+
+  spark-sql-test:
+    needs: [build-native, build-jvm]
     strategy:
       matrix:
         module:
           - {name: "catalyst", args1: "catalyst/test", args2: ""}
           # sql_core-* set HEAP_SIZE / METASPACE_SIZE so SparkBuild.scala caps
           # forked test JVMs below the Spark defaults (-Xmx4g, MaxMetaspaceSize=1300m),
-          # leaving headroom for SBT (SBT_MEM=3072) inside the 7 GB runner budget.
+          # leaving headroom for SBT (SBT_MEM=1536, reduced from 3072 since the
+          # build-jvm job pre-compiled everything) inside the 7 GB runner budget.
           - {name: "sql_core-1", args1: "", args2: "sql/testOnly * -- -l org.apache.spark.tags.ExtendedSQLTest -l org.apache.spark.tags.SlowSQLTest", heap: "3g", metaspace: "1g"}
           - {name: "sql_core-2", args1: "", args2: "sql/testOnly * -- -n org.apache.spark.tags.ExtendedSQLTest", heap: "2500m", metaspace: "1g"}
           - {name: "sql_core-3", args1: "", args2: "sql/testOnly * -- -n org.apache.spark.tags.SlowSQLTest", heap: "2g", metaspace: "1g"}
@@ -134,12 +198,22 @@ jobs:
         with:
           name: native-lib-linux
           path: native/target/release/
+      - name: Download JVM compile artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: jvm-compiled-spark-${{ inputs.spark-full }}-jdk${{ inputs.java }}
+      - name: Extract apache-spark/ (sources + compiled output)
+        run: |
+          # Restore mtimes so Zinc skips compilation on the test JVM.
+          tar -xzpf apache-spark.tar.gz
+          rm -f apache-spark.tar.gz
       - name: Setup Spark
         uses: ./.github/actions/setup-spark-builder
         with:
           spark-version: ${{ inputs.spark-full }}
           spark-short-version: ${{ inputs.spark-short }}
           skip-native-build: true
+          skip-spark-clone: true
       - name: Run Spark tests
         run: |
           cd apache-spark
@@ -176,9 +250,13 @@ jobs:
           fi
         env:
           LC_ALL: "C.UTF-8"
-          # Standard GitHub runners have 7 GB RAM; cap SBT heap so forked test
-          # JVMs fit alongside it.
-          SBT_MEM: "3072"
+          # The build-jvm job pre-compiled Spark sources and Test classes, so
+          # SBT here only orchestrates `testOnly` — Zinc verifies "no changes"
+          # against the unpacked apache-spark/ tree and skips compilation. We
+          # cap SBT heap at 1536 MB (down from 3072 MB) so the freed RAM goes
+          # to the forked test JVM and OS/container overhead, fixing the
+          # cgroup-OOM SIGKILLs we saw on sql_core-* under 7 GB runners.
+          SBT_MEM: "1536"
           # Mirror Spark's own JDK 21 / 25 CI workaround. apache/spark's
           # build_java21.yml and build_java25.yml set this same env var to
           # process-isolate the V1/V2 Parquet and Orc source suites because
