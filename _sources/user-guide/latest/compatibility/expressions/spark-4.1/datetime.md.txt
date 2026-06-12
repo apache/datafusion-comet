@@ -56,6 +56,12 @@ The following differences from Spark are always present and do not require any a
 
 - Format strings in a curated allow-list run natively via DataFusion's `to_char` for UTC sessions. Other format strings (including non-literal formats), as well as non-UTC sessions, route through Spark's own `DateFormatClass.doGenCode` via the Arrow-direct codegen dispatcher when `spark.comet.exec.scalaUDF.codegen.enabled=true`. When the codegen dispatcher is disabled (default) the operator falls back to Spark in those cases.
 
+## Days
+
+The following cases are not supported by Comet:
+
+- Only `DateType` and `TimestampType` inputs are supported. `TimestampNTZType` is not supported.
+
 ## FromUTCTimestamp
 
 The following incompatibilities cause `FromUTCTimestamp` to fall back to Spark by default. Set `spark.comet.expression.FromUTCTimestamp.allowIncompatible=true` to enable Comet acceleration despite these differences.
@@ -74,6 +80,12 @@ The following incompatibilities cause `Hour` to fall back to Spark by default. S
 
 - Incorrectly applies timezone conversion to TimestampNTZ inputs (https://github.com/apache/datafusion-comet/issues/3180)
 
+## Hours
+
+The following cases are not supported by Comet:
+
+- Only `TimestampType` and `TimestampNTZType` inputs are supported.
+
 ## Minute
 
 The following incompatibilities cause `Minute` to fall back to Spark by default. Set `spark.comet.expression.Minute.allowIncompatible=true` to enable Comet acceleration despite these differences.
@@ -85,6 +97,12 @@ The following incompatibilities cause `Minute` to fall back to Spark by default.
 The following incompatibilities cause `Second` to fall back to Spark by default. Set `spark.comet.expression.Second.allowIncompatible=true` to enable Comet acceleration despite these differences.
 
 - Incorrectly applies timezone conversion to TimestampNTZ inputs (https://github.com/apache/datafusion-comet/issues/3180)
+
+## SecondsToTimestamp
+
+The following cases are not supported by Comet:
+
+- Only `IntegerType`, `LongType`, `FloatType`, and `DoubleType` inputs are supported. `DecimalType`, `ByteType`, and `ShortType` fall back to Spark.
 
 ## ToUTCTimestamp
 
@@ -107,6 +125,11 @@ The following cases are not supported by Comet:
 The following incompatibilities cause `TruncTimestamp` to fall back to Spark by default. Set `spark.comet.expression.TruncTimestamp.allowIncompatible=true` to enable Comet acceleration despite these differences.
 
 - Produces incorrect results when used with non-UTC timezones. Compatible when timezone is UTC. (https://github.com/apache/datafusion-comet/issues/2649)
+- Non-literal format strings will throw an exception instead of returning NULL
+
+The following cases are not supported by Comet:
+
+- Only the following formats are supported: year, yyyy, yy, quarter, mon, month, mm, week, day, dd, hour, minute, second, millisecond, microsecond
 
 ## UnixTimestamp
 

@@ -575,6 +575,13 @@ under the License.
 <section id="string-expressions">
 <h1>String Expressions<a class="headerlink" href="#string-expressions" title="Link to this heading">#</a></h1>
 <!--BEGIN:EXPR_COMPAT[string]-->
+<section id="bitlength">
+<h2>BitLength<a class="headerlink" href="#bitlength" title="Link to this heading">#</a></h2>
+<p>The following cases are not supported by Comet:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">BinaryType</span></code> input is not supported</p></li>
+</ul>
+</section>
 <section id="concat">
 <h2>Concat<a class="headerlink" href="#concat" title="Link to this heading">#</a></h2>
 <p>The following incompatibilities cause <code class="docutils literal notranslate"><span class="pre">Concat</span></code> to fall back to Spark by default. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Concat.allowIncompatible=true</span></code> to enable Comet acceleration despite these differences.</p>
@@ -596,6 +603,13 @@ under the License.
 </section>
 <section id="length">
 <h2>Length<a class="headerlink" href="#length" title="Link to this heading">#</a></h2>
+<p>The following cases are not supported by Comet:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">BinaryType</span></code> input is not supported</p></li>
+</ul>
+</section>
+<section id="octetlength">
+<h2>OctetLength<a class="headerlink" href="#octetlength" title="Link to this heading">#</a></h2>
 <p>The following cases are not supported by Comet:</p>
 <ul class="simple">
 <li><p><code class="docutils literal notranslate"><span class="pre">BinaryType</span></code> input is not supported</p></li>
@@ -637,6 +651,13 @@ under the License.
 <p>The following differences from Spark are always present and do not require any additional configuration:</p>
 <ul class="simple">
 <li><p>A negative argument for the number of times to repeat throws an exception instead of returning an empty string as Spark does</p></li>
+</ul>
+</section>
+<section id="stringtranslate">
+<h2>StringTranslate<a class="headerlink" href="#stringtranslate" title="Link to this heading">#</a></h2>
+<p>The following incompatibilities cause <code class="docutils literal notranslate"><span class="pre">StringTranslate</span></code> to fall back to Spark by default. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.StringTranslate.allowIncompatible=true</span></code> to enable Comet acceleration despite these differences.</p>
+<ul class="simple">
+<li><p>DataFusion’s translate iterates over Unicode graphemes (Spark uses code points) and substitutes U+0000 instead of treating it as a deletion sentinel</p></li>
 </ul>
 <!--END:EXPR_COMPAT-->
 </section>

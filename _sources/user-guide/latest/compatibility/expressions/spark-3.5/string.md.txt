@@ -21,6 +21,12 @@ under the License.
 
 <!--BEGIN:EXPR_COMPAT[string]-->
 
+## BitLength
+
+The following cases are not supported by Comet:
+
+- `BinaryType` input is not supported
+
 ## Concat
 
 The following incompatibilities cause `Concat` to fall back to Spark by default. Set `spark.comet.expression.Concat.allowIncompatible=true` to enable Comet acceleration despite these differences.
@@ -39,6 +45,12 @@ The following cases are not supported by Comet:
 - The length argument must be a literal value
 
 ## Length
+
+The following cases are not supported by Comet:
+
+- `BinaryType` input is not supported
+
+## OctetLength
 
 The following cases are not supported by Comet:
 
@@ -82,4 +94,10 @@ The following cases are not supported by Comet:
 The following differences from Spark are always present and do not require any additional configuration:
 
 - A negative argument for the number of times to repeat throws an exception instead of returning an empty string as Spark does
+
+## StringTranslate
+
+The following incompatibilities cause `StringTranslate` to fall back to Spark by default. Set `spark.comet.expression.StringTranslate.allowIncompatible=true` to enable Comet acceleration despite these differences.
+
+- DataFusion's translate iterates over Unicode graphemes (Spark uses code points) and substitutes U+0000 instead of treating it as a deletion sentinel
 <!--END:EXPR_COMPAT-->

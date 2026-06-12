@@ -589,7 +589,7 @@ expression-level). The `outer` variants are wired but marked `Incompatible`; the
 | `to_char` | ✅ |  |
 | `to_number` | ✅ |  |
 | `to_varchar` | ✅ |  |
-| `translate` | ✅ |  |
+| `translate` | ✅ | Falls back by default; opt-in via allowIncompatible ([#4463](https://github.com/apache/datafusion-comet/issues/4463)) |
 | `trim` | ✅ |  |
 | `try_to_binary` | 🔜 | Lowers to `TryEval(...)`, which falls back |
 | `try_to_number` | 🔜 | TRY variant of `to_number` |
