@@ -234,7 +234,7 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | Function | Status | Notes |
 | --- | --- | --- |
 | `add_months` | ✅ |  |
-| `convert_timezone` | ✅ |  |
+| `convert_timezone` | ✅ | Routes through the JVM codegen dispatcher by default (handles all timezone forms); the native path is opt-in via allowIncompatible ([details](compatibility/expressions/datetime.md)) |
 | `curdate` | ✅ | Constant-folded to a literal (alias of `current_date`) |
 | `current_date` | ✅ | Constant-folded to a literal before Comet sees the plan |
 | `current_time` | 🔜 | Blocked on Spark 4.1 TIME type support ([#4288](https://github.com/apache/datafusion-comet/issues/4288)) |
@@ -257,7 +257,7 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `dayofyear` | ✅ |  |
 | `extract` | ✅ |  |
 | `from_unixtime` | ✅ |  |
-| `from_utc_timestamp` | ✅ | Legacy zone forms fall back (Incompatible) ([details](compatibility/expressions/datetime.md)) |
+| `from_utc_timestamp` | ✅ | Routes through the JVM codegen dispatcher by default (handles all timezone forms); the native path is opt-in via allowIncompatible ([details](compatibility/expressions/datetime.md)) |
 | `hour` | ✅ |  |
 | `last_day` | ✅ |  |
 | `localtimestamp` | ✅ |  |
@@ -289,7 +289,7 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `to_timestamp_ltz` | ✅ | Rewrites to `to_timestamp` (`TimestampType`) |
 | `to_timestamp_ntz` | ✅ | Rewrites to `to_timestamp` (`TimestampNTZType`) |
 | `to_unix_timestamp` | ✅ |  |
-| `to_utc_timestamp` | ✅ | Legacy zone forms fall back (Incompatible) ([details](compatibility/expressions/datetime.md)) |
+| `to_utc_timestamp` | ✅ | Routes through the JVM codegen dispatcher by default (handles all timezone forms); the native path is opt-in via allowIncompatible ([details](compatibility/expressions/datetime.md)) |
 | `trunc` | ✅ |  |
 | `try_make_interval` | 🔜 | Produces legacy CalendarInterval; tracked by [#4540](https://github.com/apache/datafusion-comet/issues/4540) |
 | `try_make_timestamp` | ✅ |  |
