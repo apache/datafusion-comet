@@ -29,7 +29,7 @@ import org.apache.spark.sql.execution.SparkPlan
 import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
 
 import org.apache.comet.CometConf
-import org.apache.comet.CometSparkSessionExtensions.withInfo
+import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 
 /**
  * Reflection-only bridge for optional Lance Spark integration.
@@ -60,7 +60,7 @@ object LanceIntegration extends Logging {
 
   def tryCreateNativeScan(scanExec: BatchScanExec): Option[SparkPlan] = {
     if (!CometConf.COMET_LANCE_NATIVE_ENABLED.get(scanExec.conf)) {
-      withInfo(
+      withFallbackReason(
         scanExec,
         s"Native Lance scan disabled because ${CometConf.COMET_LANCE_NATIVE_ENABLED.key} " +
           "is not enabled")
@@ -68,7 +68,7 @@ object LanceIntegration extends Logging {
     }
 
     if (!CometConf.COMET_EXEC_ENABLED.get(scanExec.conf)) {
-      withInfo(
+      withFallbackReason(
         scanExec,
         s"Native Lance scan disabled because ${CometConf.COMET_EXEC_ENABLED.key} is not enabled")
       return None
@@ -77,7 +77,7 @@ object LanceIntegration extends Logging {
     val nativePlan = nativeScanPlan(scanExec.scan) match {
       case Some(plan) => plan
       case None =>
-        withInfo(
+        withFallbackReason(
           scanExec,
           s"Native Lance scan disabled because $LanceScanClassName.$NativeScanPlanMethod() " +
             "is not available")
@@ -87,7 +87,7 @@ object LanceIntegration extends Logging {
     val support = loadContribSupport match {
       case Some(module) => module
       case None =>
-        withInfo(
+        withFallbackReason(
           scanExec,
           "Native Lance scan disabled because the contrib-lance build profile is not present")
         return None
