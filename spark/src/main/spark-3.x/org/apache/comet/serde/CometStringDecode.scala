@@ -22,12 +22,7 @@ package org.apache.comet.serde
 import org.apache.spark.sql.catalyst.expressions.StringDecode
 
 /**
- * `decode(bin, charset)` runs Spark's own `doGenCode` through the codegen dispatcher rather than
- * a native lowering. The previous lowering to `Cast(bin, StringType, TRY)` produced wrong results
- * on invalid byte sequences (Spark substitutes the Unicode replacement character on Spark 3.x;
- * Spark 4.0 also does so when `legacyErrorAction = true`, and otherwise raises
- * `MALFORMED_CHARACTER_CODING`). The codegen dispatcher invokes Spark's exact decoder so the
- * result matches Spark for valid inputs, replacement-character substitution, and the strict-mode
- * error.
+ * Spark 3.x `decode(bin, charset)` runs through the codegen dispatcher so Spark's own decoder
+ * handles invalid byte sequences (replacement-character substitution). See #4465.
  */
 object CometStringDecode extends CometCodegenDispatch[StringDecode]

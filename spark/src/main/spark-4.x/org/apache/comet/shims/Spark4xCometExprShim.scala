@@ -23,12 +23,11 @@ import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.expressions.json.{JsonExpressionUtils, StructsToJsonEvaluator}
 import org.apache.spark.sql.catalyst.expressions.objects.{Invoke, StaticInvoke}
 import org.apache.spark.sql.catalyst.expressions.url.ParseUrlEvaluator
-import org.apache.spark.sql.internal.types.StringTypeWithCollation
-import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, StringType}
+import org.apache.spark.sql.types.ArrayType
 
 import org.apache.comet.CometExplainInfo
 import org.apache.comet.expressions.CometEvalMode
-import org.apache.comet.serde.{CometExpressionSerde, CometMapSort, CometScalaUDF, CometToPrettyString, CometWidthBucket}
+import org.apache.comet.serde.{CometExpressionSerde, CometMapSort, CometToPrettyString, CometWidthBucket}
 import org.apache.comet.serde.ExprOuterClass.Expr
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithFallbackReason, scalarFunctionExprToProtoWithReturnType}
 
@@ -84,24 +83,6 @@ trait Spark4xCometExprShim extends CometExprShim4x {
             }
           case _ => exprToProtoInternal(knc.child, inputs, binding)
         }
-
-      case s: StaticInvoke
-          if s.staticObject == classOf[StringDecode] &&
-            s.dataType.isInstanceOf[StringType] &&
-            s.functionName == "decode" &&
-            s.arguments.size == 4 &&
-            s.inputTypes == Seq(
-              BinaryType,
-              StringTypeWithCollation(supportsTrimCollation = true),
-              BooleanType,
-              BooleanType) =>
-        // Spark 4.0 lowers `decode(bin, charset)` to a `StaticInvoke` carrying the
-        // `legacyCharsets` / `legacyErrorAction` flags. Native lowering to a TRY-mode cast would
-        // ignore those flags and produce wrong output on invalid byte sequences, so we route the
-        // entire `StaticInvoke` through the codegen dispatcher: Spark's own `doGenCode` runs
-        // inside the Comet pipeline and honors both flags exactly. Falls back to Spark when the
-        // dispatcher is disabled. See https://github.com/apache/datafusion-comet/issues/4465.
-        CometScalaUDF.emitJvmCodegenDispatch(s, inputs, binding)
 
       // On Spark 4.0+, RuntimeReplaceable expressions (StructsToJson, ParseUrl) become
       // Invoke(Literal(Evaluator), "evaluate", ...). Reconstruct the original expression and

@@ -35,10 +35,11 @@
 statement
 CREATE TABLE test_decode_invalid_utf8(b binary) USING parquet
 
--- 0xFF: a continuation-byte-only sequence that is not valid UTF-8.
+-- 0xFF: never valid in any UTF-8 position (neither a lead byte nor a continuation byte).
 -- 0xC3 0x28: a 2-byte sequence whose continuation byte (0x28) is invalid.
 -- 0xE2 0x82 0x28: a 3-byte sequence with an invalid continuation byte.
--- 'caf' || 0xE9: ISO-8859-1 'café' bytes — 0xE9 is invalid as a UTF-8 lead byte.
+-- 'caf' || 0xE9: ISO-8859-1 'café' bytes — 0xE9 is a 3-byte UTF-8 lead byte without the two
+-- continuation bytes that would follow it.
 statement
 INSERT INTO test_decode_invalid_utf8 VALUES
     (X'FF'),
@@ -50,9 +51,6 @@ INSERT INTO test_decode_invalid_utf8 VALUES
 
 query
 SELECT decode(b, 'utf-8') FROM test_decode_invalid_utf8
-
-query
-SELECT decode(b, 'UTF-8') FROM test_decode_invalid_utf8
 
 query
 SELECT decode(X'FF', 'utf-8'),

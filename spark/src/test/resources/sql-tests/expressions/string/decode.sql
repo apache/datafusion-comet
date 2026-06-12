@@ -28,8 +28,8 @@
 -- The 2-arg charset form runs through the codegen dispatcher (Spark's own doGenCode inside the
 -- Comet pipeline) so behavior matches Spark exactly across all supported charsets and across
 -- the Spark 4.0 `legacyCharsets` / `legacyErrorAction` modes (#4465). Invalid-byte tests live in
--- decode_invalid_utf8.sql / decode_invalid_utf8_legacy.sql / decode_invalid_utf8_strict.sql so
--- each Spark version gets the right expectation.
+-- decode_invalid_utf8.sql and decode_invalid_utf8_strict.sql so each Spark version gets the
+-- right expectation.
 -- Config: spark.comet.exec.scalaUDF.codegen.enabled=true
 
 -- ===========================================================================
