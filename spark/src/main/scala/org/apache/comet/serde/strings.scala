@@ -439,6 +439,82 @@ object CometStringLPad extends CometExpressionSerde[StringLPad] {
 }
 
 /**
+ * `regexp_extract` runs Spark's own implementation through the codegen dispatcher by default, for
+ * byte-exact results. The native (rust) regexp engine is faster but has different semantics from
+ * Java regexp, so it is opt-in via `spark.comet.expression.RegExpExtract.allowIncompatible` and
+ * only when the pattern and idx are integer literals; any other case falls through to the codegen
+ * dispatcher.
+ */
+object CometRegExpExtract extends CometExpressionSerde[RegExpExtract] {
+
+  override def getSupportLevel(expr: RegExpExtract): SupportLevel = Compatible()
+
+  private def nativeSupported(expr: RegExpExtract): Boolean =
+    expr.regexp.isInstanceOf[Literal] && expr.idx.isInstanceOf[Literal]
+
+  override def convert(
+      expr: RegExpExtract,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[Expr] = {
+    if (CometConf.isExprAllowIncompat(getExprConfigName(expr)) && nativeSupported(expr)) {
+      val subjectExpr = exprToProtoInternal(expr.subject, inputs, binding)
+      val patternExpr = exprToProtoInternal(expr.regexp, inputs, binding)
+      val idxExpr = exprToProtoInternal(expr.idx, inputs, binding)
+      val optExpr = scalarFunctionExprToProtoWithReturnType(
+        "regexp_extract",
+        expr.dataType,
+        failOnError = false,
+        subjectExpr,
+        patternExpr,
+        idxExpr)
+      optExprWithFallbackReason(optExpr, expr, expr.subject, expr.regexp, expr.idx)
+    } else {
+      // Default: route through the codegen dispatcher so Spark's own doGenCode runs inside the
+      // Comet pipeline. Falls back to Spark when the dispatcher is disabled.
+      CometScalaUDF.emitJvmCodegenDispatch(expr, inputs, binding)
+    }
+  }
+}
+
+/**
+ * `regexp_extract_all` runs Spark's own implementation through the codegen dispatcher by default,
+ * for byte-exact results. The native (rust) regexp engine is faster but has different semantics
+ * from Java regexp, so it is opt-in via
+ * `spark.comet.expression.RegExpExtractAll.allowIncompatible` and only when the pattern and idx
+ * are integer literals; any other case falls through to the codegen dispatcher.
+ */
+object CometRegExpExtractAll extends CometExpressionSerde[RegExpExtractAll] {
+
+  override def getSupportLevel(expr: RegExpExtractAll): SupportLevel = Compatible()
+
+  private def nativeSupported(expr: RegExpExtractAll): Boolean =
+    expr.regexp.isInstanceOf[Literal] && expr.idx.isInstanceOf[Literal]
+
+  override def convert(
+      expr: RegExpExtractAll,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[Expr] = {
+    if (CometConf.isExprAllowIncompat(getExprConfigName(expr)) && nativeSupported(expr)) {
+      val subjectExpr = exprToProtoInternal(expr.subject, inputs, binding)
+      val patternExpr = exprToProtoInternal(expr.regexp, inputs, binding)
+      val idxExpr = exprToProtoInternal(expr.idx, inputs, binding)
+      val optExpr = scalarFunctionExprToProtoWithReturnType(
+        "regexp_extract_all",
+        expr.dataType,
+        failOnError = false,
+        subjectExpr,
+        patternExpr,
+        idxExpr)
+      optExprWithFallbackReason(optExpr, expr, expr.subject, expr.regexp, expr.idx)
+    } else {
+      // Default: route through the codegen dispatcher so Spark's own doGenCode runs inside the
+      // Comet pipeline. Falls back to Spark when the dispatcher is disabled.
+      CometScalaUDF.emitJvmCodegenDispatch(expr, inputs, binding)
+    }
+  }
+}
+
+/**
  * `regexp_replace` runs Spark's own implementation through the codegen dispatcher by default, for
  * byte-exact results. The native (rust) regexp engine is faster but has different semantics from
  * Java regexp, so it is opt-in via `spark.comet.expression.RegExpReplace.allowIncompatible` and
@@ -517,10 +593,6 @@ object CometStringSplit extends CometExpressionSerde[StringSplit] {
 }
 
 // These have no native (rust) implementation, so they always run through the codegen dispatcher.
-object CometRegExpExtract extends CometCodegenDispatch[RegExpExtract]
-
-object CometRegExpExtractAll extends CometCodegenDispatch[RegExpExtractAll]
-
 object CometRegExpInStr extends CometCodegenDispatch[RegExpInStr]
 
 /**

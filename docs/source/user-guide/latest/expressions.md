@@ -571,8 +571,8 @@ expression-level). The `outer` variants are wired but marked `Incompatible`; the
 | `position` | ✅ |  |
 | `printf` | ✅ |  |
 | `regexp_count` | 🔜 | tracking [#4098](https://github.com/apache/datafusion-comet/issues/4098) |
-| `regexp_extract` | ✅ | Routed through the JVM codegen dispatcher |
-| `regexp_extract_all` | ✅ | Routed through the JVM codegen dispatcher |
+| `regexp_extract` | ✅ |  |
+| `regexp_extract_all` | ✅ |  |
 | `regexp_instr` | ✅ | Routed through the JVM codegen dispatcher |
 | `regexp_replace` | ✅ |  |
 | `regexp_substr` | 🔜 | tracking [#4098](https://github.com/apache/datafusion-comet/issues/4098) |
