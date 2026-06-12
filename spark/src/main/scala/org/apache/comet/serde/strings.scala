@@ -19,15 +19,12 @@
 
 package org.apache.comet.serde
 
-import java.util.Locale
-
 import org.apache.spark.sql.catalyst.expressions.{Attribute, BitLength, Cast, Concat, ConcatWs, Elt, Expression, FindInSet, FormatNumber, FormatString, GetJsonObject, If, InitCap, IsNull, Left, Length, Levenshtein, Like, Literal, Lower, OctetLength, Overlay, RegExpExtract, RegExpExtractAll, RegExpInStr, RegExpReplace, Right, RLike, SoundEx, StringLocate, StringLPad, StringRepeat, StringReplace, StringRPad, StringSplit, StringTranslate, Substring, SubstringIndex, ToCharacter, ToNumber, UnBase64, Upper}
 import org.apache.spark.sql.types.{BinaryType, DataTypes, LongType, StringType}
 import org.apache.spark.unsafe.types.UTF8String
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
-import org.apache.comet.expressions.{CometCast, CometEvalMode}
 import org.apache.comet.serde.ExprOuterClass.Expr
 import org.apache.comet.serde.QueryPlanSerde.{createBinaryExpr, exprToProtoInternal, optExprWithFallbackReason, scalarFunctionExprToProto, scalarFunctionExprToProtoWithReturnType}
 import org.apache.comet.shims.CometTypeShim
@@ -621,34 +618,6 @@ object CometGetJsonObject extends CometCodegenDispatch[GetJsonObject] {
     } else {
       super.convert(expr, inputs, binding)
     }
-}
-
-trait CommonStringExprs {
-
-  def stringDecode(
-      expr: Expression,
-      charset: Expression,
-      bin: Expression,
-      inputs: Seq[Attribute],
-      binding: Boolean): Option[Expr] = {
-    charset match {
-      case Literal(str, DataTypes.StringType)
-          if str.toString.toLowerCase(Locale.ROOT) == "utf-8" =>
-        // decode(col, 'utf-8') can be treated as a cast with "try" eval mode that puts nulls
-        // for invalid strings.
-        // Left child is the binary expression.
-        val binExpr = exprToProtoInternal(bin, inputs, binding)
-        if (binExpr.isDefined) {
-          CometCast.castToProto(expr, None, DataTypes.StringType, binExpr.get, CometEvalMode.TRY)
-        } else {
-          withFallbackReason(expr, bin)
-          None
-        }
-      case _ =>
-        withFallbackReason(expr, "Comet only supports decoding with 'utf-8'.")
-        None
-    }
-  }
 }
 
 // Expressions routed through the JVM codegen dispatcher: no native implementation, so Spark's own
