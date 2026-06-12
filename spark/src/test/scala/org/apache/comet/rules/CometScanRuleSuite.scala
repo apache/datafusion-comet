@@ -19,7 +19,7 @@
 
 package org.apache.comet.rules
 
-import java.util.{Arrays, LinkedHashMap}
+import java.util.{Arrays, LinkedHashMap, Optional => JOptional}
 
 import scala.jdk.CollectionConverters._
 import scala.util.Random
@@ -148,6 +148,15 @@ class CometScanRuleSuite extends CometTestBase {
     class WithNativeScanPlan {
       def nativeScanPlan(): String = "native-plan"
     }
+    class WithJavaOptionalNativeScanPlan {
+      def nativeScanPlan(): JOptional[String] = JOptional.of("native-plan")
+    }
+    class WithEmptyJavaOptionalNativeScanPlan {
+      def nativeScanPlan(): JOptional[String] = JOptional.empty()
+    }
+    class WithScalaOptionNativeScanPlan {
+      def nativeScanPlan(): Option[String] = Some("native-plan")
+    }
     class WithoutNativeScanPlan
     class ThrowingNativeScanPlan {
       def nativeScanPlan(): String = throw new IllegalStateException("boom")
@@ -155,6 +164,9 @@ class CometScanRuleSuite extends CometTestBase {
 
     val cases = Seq(
       ("present method", new WithNativeScanPlan, Some("native-plan")),
+      ("java optional method", new WithJavaOptionalNativeScanPlan, Some("native-plan")),
+      ("empty java optional method", new WithEmptyJavaOptionalNativeScanPlan, None),
+      ("scala option method", new WithScalaOptionNativeScanPlan, Some("native-plan")),
       ("missing method", new WithoutNativeScanPlan, None),
       ("throwing method", new ThrowingNativeScanPlan, None))
 
