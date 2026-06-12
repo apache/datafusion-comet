@@ -96,7 +96,6 @@ object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec
       val scanOp = OperatorOuterClass.Scan
         .newBuilder()
         .setSource(cmd.query.nodeName)
-        .setArrowFfiSafe(false)
 
       // Add fields from the query output schema
       val scanTypes = cmd.query.output.flatMap { attr =>

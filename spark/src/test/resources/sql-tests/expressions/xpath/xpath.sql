@@ -15,24 +15,27 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- Test RLIKE with regexp allowIncompatible enabled (happy path)
--- Config: spark.comet.expression.regexp.allowIncompatible=true
+-- The xpath family has no native (rust) implementation; these extend Spark's CodegenFallback and
+-- stay native via the codegen dispatcher.
 
 statement
-CREATE TABLE test_rlike_enabled(s string) USING parquet
+CREATE TABLE test_xpath(s STRING) USING parquet
 
 statement
-INSERT INTO test_rlike_enabled VALUES ('hello'), ('12345'), (''), (NULL), ('Hello World'), ('abc123')
+INSERT INTO test_xpath VALUES
+  ('<a><b>1</b><b>2</b></a>'), ('<a><b>9</b></a>'), ('<a/>'), (NULL)
 
 query
-SELECT s RLIKE '^[0-9]+$' FROM test_rlike_enabled
+SELECT xpath_boolean(s, 'a/b') FROM test_xpath
 
 query
-SELECT s RLIKE '^[a-z]+$' FROM test_rlike_enabled
+SELECT xpath_short(s, 'sum(a/b)'), xpath_int(s, 'sum(a/b)'), xpath_long(s, 'sum(a/b)') FROM test_xpath
 
 query
-SELECT s RLIKE '' FROM test_rlike_enabled
+SELECT xpath_float(s, 'sum(a/b)'), xpath_double(s, 'sum(a/b)') FROM test_xpath
 
--- literal arguments
 query
-SELECT 'hello' RLIKE '^[a-z]+$', '12345' RLIKE '^[a-z]+$', '' RLIKE '', NULL RLIKE 'a'
+SELECT xpath_string(s, 'a/b[1]') FROM test_xpath
+
+query
+SELECT xpath(s, 'a/b/text()') FROM test_xpath

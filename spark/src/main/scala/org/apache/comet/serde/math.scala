@@ -19,7 +19,7 @@
 
 package org.apache.comet.serde
 
-import org.apache.spark.sql.catalyst.expressions.{Abs, Add, Atan2, Attribute, Ceil, CheckOverflow, Expression, Floor, Hex, If, LessThanOrEqual, Literal, Log, Log10, Log2, Logarithm, Unhex}
+import org.apache.spark.sql.catalyst.expressions.{Abs, Add, Atan2, Attribute, BRound, Ceil, CheckOverflow, Conv, Expression, Floor, Hex, Hypot, If, LessThanOrEqual, Literal, Log, Log10, Log1p, Log2, Logarithm, NaNvl, Pmod, UnaryPositive, Unhex, WidthBucket}
 import org.apache.spark.sql.types.{DecimalType, DoubleType, NumericType}
 
 import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
@@ -242,3 +242,19 @@ object CometCheckOverflow extends CometExpressionSerde[CheckOverflow] {
     }
   }
 }
+
+object CometHypot extends CometCodegenDispatch[Hypot]
+
+object CometNaNvl extends CometCodegenDispatch[NaNvl]
+
+object CometBRound extends CometCodegenDispatch[BRound]
+
+object CometConv extends CometCodegenDispatch[Conv]
+
+object CometLog1p extends CometCodegenDispatch[Log1p]
+
+object CometPmod extends CometCodegenDispatch[Pmod]
+
+object CometWidthBucket extends CometCodegenDispatch[WidthBucket]
+
+object CometUnaryPositive extends CometCodegenDispatch[UnaryPositive]

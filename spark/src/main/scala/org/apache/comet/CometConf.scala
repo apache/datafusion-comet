@@ -254,6 +254,8 @@ object CometConf extends ShimCometConf {
     createExecEnabledConfig("broadcastExchange", defaultValue = true)
   val COMET_EXEC_HASH_JOIN_ENABLED: ConfigEntry[Boolean] =
     createExecEnabledConfig("hashJoin", defaultValue = true)
+  val COMET_EXEC_BROADCAST_NESTED_LOOP_JOIN_ENABLED: ConfigEntry[Boolean] =
+    createExecEnabledConfig("broadcastNestedLoopJoin", defaultValue = true)
   val COMET_EXEC_SORT_MERGE_JOIN_ENABLED: ConfigEntry[Boolean] =
     createExecEnabledConfig("sortMergeJoin", defaultValue = true)
   val COMET_EXEC_AGGREGATE_ENABLED: ConfigEntry[Boolean] =
@@ -369,7 +371,9 @@ object CometConf extends ShimCometConf {
         "Arrow-direct codegen dispatcher. When enabled, a supported ScalaUDF is compiled into " +
         "a per-batch kernel that reads and writes Arrow vectors directly from native " +
         "execution. When disabled, plans containing a ScalaUDF fall back to Spark for the " +
-        "enclosing operator.")
+        "enclosing operator. The same dispatcher backs the regex family (`rlike`, " +
+        "`regexp_replace`, `split`, `regexp_extract`, `regexp_extract_all`, `regexp_instr`) so " +
+        "those route through it by default as well.")
       .booleanConf
       .createWithDefault(true)
 

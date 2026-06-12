@@ -15,21 +15,17 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- Test regexp_replace() with regexp allowIncompatible enabled (happy path)
--- Config: spark.comet.expression.regexp.allowIncompatible=true
+-- Routes sequence through the codegen dispatcher so behavior matches Spark exactly.
 
 statement
-CREATE TABLE test_regexp_replace_enabled(s string) USING parquet
+CREATE TABLE test_sequence(a int, b int) USING parquet
 
 statement
-INSERT INTO test_regexp_replace_enabled VALUES ('100-200'), ('abc'), (''), (NULL), ('phone 123-456-7890')
+INSERT INTO test_sequence VALUES (1, 5), (5, 1), (3, 3), (NULL, 5)
 
 query
-SELECT regexp_replace(s, '(\d+)', 'X') FROM test_regexp_replace_enabled
+SELECT a, b, sequence(a, b) FROM test_sequence
 
+-- literal arguments with step
 query
-SELECT regexp_replace(s, '(\d+)', 'X', 1) FROM test_regexp_replace_enabled
-
--- literal + literal + literal
-query
-SELECT regexp_replace('100-200', '(\d+)', 'X'), regexp_replace('abc', '(\d+)', 'X'), regexp_replace(NULL, '(\d+)', 'X')
+SELECT sequence(1, 5), sequence(5, 1, -1), sequence(1, 10, 2)

@@ -2109,4 +2109,45 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  // Regression: Catalyst prunes `HashAggregateExec.resultExpressions` to
+  // empty for EXISTS / row-existence-only subqueries. The native HashAggregate's natural
+  // output (the grouping keys) then disagrees with the pruned JVM `output`, leaking through
+  // any boundary that derived its schema from `output`. The fix wraps the aggregate in an
+  // explicit Projection op when natural != declared.
+  //
+  // Surfaced upstream in `subquery/exists-subquery/exists-orderby-limit.sql` (query #19,
+  // an EXISTS over `max(...) GROUP BY state LIMIT 1 OFFSET 2`). The exact `EXISTS-in-WHERE`
+  // shape doesn't reproduce under CometTestBase's optimizer state, but `count(*)` over the
+  // same derived aggregate triggers the equivalent ColumnPruning path locally - we assert
+  // the inner HashAgg's resultExpressions actually got pruned, so a future Spark version
+  // that breaks the trigger fails the test loudly rather than passing silently.
+  test("HashAggregate with catalyst-pruned resultExpressions returns 0-col output") {
+    withTempDir { dir =>
+      val deptPath = new Path(dir.toURI.toString, "dept")
+      spark
+        .sql("""SELECT * FROM VALUES
+               |  (10, 'CA'), (20, 'NY'), (30, 'TX'),
+               |  (40, 'OR'), (50, 'NJ'), (70, 'FL')
+               |AS t(dept_id, state)""".stripMargin)
+        .write
+        .parquet(deptPath.toUri.toString)
+      withParquetTable(deptPath.toUri.toString, "dept") {
+        val sql =
+          """SELECT count(*) FROM (
+            |  SELECT max(dept_id) AS m FROM dept GROUP BY state LIMIT 1 OFFSET 2) sub""".stripMargin
+        val plan = spark.sql(sql).queryExecution.executedPlan
+        val pruned = collectWithSubqueries(plan) {
+          case a: org.apache.spark.sql.execution.aggregate.HashAggregateExec
+              if a.resultExpressions.isEmpty =>
+            a
+          case a: CometHashAggregateExec if a.resultExpressions.isEmpty => a
+        }
+        assert(
+          pruned.nonEmpty,
+          s"Expected a HashAggregateExec with empty resultExpressions in:\n$plan")
+        checkSparkAnswerAndOperator(sql)
+      }
+    }
+  }
+
 }
