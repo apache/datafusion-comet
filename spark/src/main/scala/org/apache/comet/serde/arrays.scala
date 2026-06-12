@@ -119,7 +119,7 @@ object CometArrayContains extends CometExpressionSerde[ArrayContains] {
   }
 }
 
-object CometSortArray extends CometExpressionSerde[SortArray] {
+object CometSortArray extends CometExpressionSerde[SortArray] with CodegenDispatchFallback {
 
   override def getIncompatibleReasons(): Seq[String] = Seq(
     "When `" + CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key + "=true`, sorting on" +
