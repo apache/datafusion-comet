@@ -579,6 +579,31 @@ under the License.
 <li><p><strong>JSON</strong>: choosing between the native and Spark-compatible engines for JSON expressions.</p></li>
 <li><p><strong>Spark versions</strong>: version-specific known issues and limitations.</p></li>
 </ul>
+<section id="native-and-codegen-dispatch-implementations">
+<h2>Native and codegen-dispatch implementations<a class="headerlink" href="#native-and-codegen-dispatch-implementations" title="Link to this heading">#</a></h2>
+<p>Some Spark expressions have two implementations in Comet:</p>
+<ul class="simple">
+<li><p>A <strong>codegen-dispatch</strong> implementation that runs Spark’s own generated code for the
+expression inside Comet’s native pipeline (via the Arrow-direct codegen dispatcher). This
+produces byte-exact Spark results at the cost of one JNI round-trip per batch. It is gated
+globally by <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.scalaUDF.codegen.enabled</span></code> (enabled by default); when the
+dispatcher is disabled, these expressions fall back to Spark.</p></li>
+<li><p>A <strong>native</strong> (Rust / DataFusion) implementation that is faster, with no JNI overhead, but
+has known semantic differences from Spark for some inputs or patterns.</p></li>
+</ul>
+<p>Because the codegen-dispatch path matches Spark exactly, Comet uses it by <strong>default</strong>. The
+faster native path is <strong>opt-in per expression</strong> via that expression’s
+<code class="docutils literal notranslate"><span class="pre">spark.comet.expression.&lt;ExprClassName&gt;.allowIncompatible=true</span></code> flag, which declares that you
+accept its differences from Spark. There is no global opt-in. When the native path is enabled
+but a specific input or pattern has no native implementation, Comet routes that case back
+through the codegen dispatcher rather than running something incompatible.</p>
+<p>This is the model behind the <a class="reference internal" href="regex.html"><span class="std std-doc">regular expression</span></a> and <a class="reference internal" href="json.html"><span class="std std-doc">JSON</span></a> families,
+which document their per-expression configs and the specific differences to expect.</p>
+<p>This is distinct from expressions that have <strong>no</strong> codegen-dispatch path: there, the
+incompatible cases fall back to Spark by default, and <code class="docutils literal notranslate"><span class="pre">allowIncompatible=true</span></code> runs the native
+(incompatible) path instead. <code class="docutils literal notranslate"><span class="pre">cast</span></code> is the main example; see the
+<a class="reference internal" href="../expressions.html"><span class="std std-doc">expression reference</span></a> for which expressions have incompatible cases.</p>
+</section>
 </section>
 
 

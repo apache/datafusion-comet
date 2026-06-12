@@ -573,10 +573,14 @@ expression. Comet accelerates expressions either with a native (Rust) implementa
 dispatching to a Spark-compatible codegen path. When an expression is not supported, Comet
 transparently falls back to Spark for that part of the plan; results are unaffected.</p>
 <p>Expressions marked ✅ Supported are enabled by default and produce Spark-compatible results.</p>
-<p>Some ✅ Supported expressions have specific incompatible cases that fall back to Spark by
-default. Those cases must be opted into per expression with
+<p>Some ✅ Supported expressions have specific incompatible cases that are not run by default.
+Those cases must be opted into per expression with
 <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.EXPRNAME.allowIncompatible=true</span></code> (where <code class="docutils literal notranslate"><span class="pre">EXPRNAME</span></code> is the Spark
-expression class name, for example <code class="docutils literal notranslate"><span class="pre">Cast</span></code>). There is no global opt-in.</p>
+expression class name, for example <code class="docutils literal notranslate"><span class="pre">Cast</span></code>). There is no global opt-in. By default such a case
+either falls back to Spark (for example <code class="docutils literal notranslate"><span class="pre">cast</span></code>) or, when the expression has a Spark-compatible
+codegen-dispatch implementation, runs through that instead (for example the regex and JSON
+families). See <a class="reference internal" href="compatibility/index.html#native-and-codegen-dispatch-implementations"><span class="std std-ref">Native and codegen-dispatch implementations</span></a>
+for how Comet chooses.</p>
 <p>Most expressions can also be disabled with <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.EXPRNAME.enabled=false</span></code>, where
 <code class="docutils literal notranslate"><span class="pre">EXPRNAME</span></code> is the Spark expression class name (for example <code class="docutils literal notranslate"><span class="pre">Length</span></code> or <code class="docutils literal notranslate"><span class="pre">StartsWith</span></code>). See the
 <a class="reference internal" href="configs.html"><span class="std std-doc">Comet Configuration Guide</span></a> for the full list.</p>
