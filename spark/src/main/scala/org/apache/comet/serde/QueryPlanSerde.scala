@@ -75,6 +75,12 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
     classOf[GetArrayItem] -> CometGetArrayItem,
     classOf[Size] -> CometSize,
     classOf[ArraysZip] -> CometArraysZip,
+    classOf[ArrayTransform] -> CometArrayTransform,
+    classOf[ArrayExists] -> CometArrayExists,
+    classOf[ArrayForAll] -> CometArrayForAll,
+    classOf[ArrayAggregate] -> CometArrayAggregate,
+    classOf[ArraySort] -> CometArraySort,
+    classOf[ZipWith] -> CometZipWith,
     classOf[Sequence] -> CometSequence)
 
   private val conditionalExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] =
@@ -172,7 +178,11 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       classOf[MapContainsKey] -> CometMapContainsKey,
       classOf[MapFromEntries] -> CometMapFromEntries,
       classOf[MapConcat] -> CometMapConcat,
-      classOf[StringToMap] -> CometStrToMap)
+      classOf[StringToMap] -> CometStrToMap,
+      classOf[MapFilter] -> CometMapFilter,
+      classOf[TransformKeys] -> CometTransformKeys,
+      classOf[TransformValues] -> CometTransformValues,
+      classOf[MapZipWith] -> CometMapZipWith)
     base ++ sparkVersionSpecificMapExpressions
   }
 
@@ -198,7 +208,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
     // when `++` is applied directly to a `Map(...)` literal.
     val base: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
       classOf[Ascii] -> CometScalarFunction("ascii"),
-      classOf[BitLength] -> CometScalarFunction("bit_length"),
+      classOf[BitLength] -> CometBitLength,
       classOf[Chr] -> CometScalarFunction("char"),
       classOf[ConcatWs] -> CometConcatWs,
       classOf[Concat] -> CometConcat,
@@ -210,7 +220,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       classOf[Levenshtein] -> CometLevenshtein,
       classOf[Like] -> CometLike,
       classOf[Lower] -> CometLower,
-      classOf[OctetLength] -> CometScalarFunction("octet_length"),
+      classOf[OctetLength] -> CometOctetLength,
       classOf[RegExpExtract] -> CometRegExpExtract,
       classOf[RegExpExtractAll] -> CometRegExpExtractAll,
       classOf[RegExpInStr] -> CometRegExpInStr,
@@ -225,9 +235,8 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       classOf[StringLPad] -> CometStringLPad,
       classOf[StringSpace] -> CometScalarFunction("space"),
       classOf[StringSplit] -> CometStringSplit,
-      classOf[StringTranslate] -> CometScalarFunction("translate"),
+      classOf[StringTranslate] -> CometStringTranslate,
       classOf[StringTrim] -> CometScalarFunction("trim"),
-      classOf[StringTrimBoth] -> CometScalarFunction("btrim"),
       classOf[StringTrimLeft] -> CometScalarFunction("ltrim"),
       classOf[StringTrimRight] -> CometScalarFunction("rtrim"),
       classOf[Left] -> CometLeft,

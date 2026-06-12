@@ -121,8 +121,17 @@ impl PhysicalExpr for ListExtract {
     }
 
     fn nullable(&self, input_schema: &Schema) -> DataFusionResult<bool> {
-        // Only non-nullable if fail_on_error is enabled and the element is non-nullable
-        Ok(!self.fail_on_error || self.child_field(input_schema)?.is_nullable())
+        // The result is null if any of the following holds:
+        //  - fail_on_error is disabled (an out-of-bounds index yields null), or
+        //  - the array itself is null (a null array row yields null), or
+        //  - the ordinal is null (a null index yields null), or
+        //  - the extracted element is itself nullable.
+        // It is only non-nullable when fail_on_error is enabled and none of the inputs
+        // nor the element can be null.
+        Ok(!self.fail_on_error
+            || self.child.nullable(input_schema)?
+            || self.ordinal.nullable(input_schema)?
+            || self.child_field(input_schema)?.is_nullable())
     }
 
     fn evaluate(&self, batch: &RecordBatch) -> DataFusionResult<ColumnarValue> {
@@ -325,9 +334,39 @@ impl Display for ListExtract {
 mod test {
     use super::*;
     use arrow::array::{Array, Int32Array, ListArray};
-    use arrow::datatypes::Int32Type;
+    use arrow::datatypes::{Field, Int32Type};
     use datafusion::common::{Result, ScalarValue};
+    use datafusion::physical_expr::expressions::Column;
     use datafusion::physical_plan::ColumnarValue;
+
+    #[test]
+    fn test_nullable_when_array_is_nullable() -> Result<()> {
+        // Regression test for SPARK-55747: GetArrayItem over a nullable array (e.g. the
+        // result of split() on a null input) must report nullable=true even with
+        // fail_on_error enabled (ANSI), because a null array row yields a null result.
+        // The list element field is non-nullable here, mirroring split()'s output.
+        let element_field = Arc::new(Field::new("item", DataType::Int32, false));
+        let schema = Schema::new(vec![
+            Field::new("arr", DataType::List(element_field), true),
+            Field::new("idx", DataType::Int32, false),
+        ]);
+
+        let list_extract = ListExtract::new(
+            Arc::new(Column::new("arr", 0)),
+            Arc::new(Column::new("idx", 1)),
+            None,
+            false, // one_based (GetArrayItem)
+            true,  // fail_on_error (ANSI enabled)
+            None,
+            crate::create_query_context_map(),
+        );
+
+        assert!(
+            list_extract.nullable(&schema)?,
+            "ListExtract over a nullable array must be nullable even with fail_on_error"
+        );
+        Ok(())
+    }
 
     #[test]
     fn test_list_extract_default_value() -> Result<()> {

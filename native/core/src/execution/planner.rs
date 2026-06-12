@@ -109,6 +109,7 @@ use arrow::row::{OwnedRow, RowConverter, SortField};
 use datafusion::common::utils::SingleRowListArrayBuilder;
 use datafusion::common::UnnestOptions;
 use datafusion::physical_plan::filter::FilterExec;
+use datafusion::physical_plan::joins::NestedLoopJoinExec;
 use datafusion::physical_plan::limit::GlobalLimitExec;
 use datafusion::physical_plan::unnest::{ListUnnest, UnnestExec};
 use datafusion_comet_proto::spark_expression::ListLiteral;
@@ -972,6 +973,63 @@ impl PhysicalPlanner {
         }
     }
 
+    /// DataFusion's nested comparison kernel (`apply_cmp_for_nested`) requires both operands to
+    /// have identical data types, including nested field nullability, whereas Spark comparisons
+    /// ignore nullability. When a comparison's operands are nested types that differ only in
+    /// nullability (e.g. a higher-order `transform` produces `List(non-null Struct)` while the
+    /// other side is `List(nullable Struct)`), cast both to their nullability-union type so the
+    /// kernel accepts them. Non-comparison ops and non-nested or already-matching types are left
+    /// untouched.
+    pub fn reconcile_nested_comparison_types(
+        left: Arc<dyn PhysicalExpr>,
+        right: Arc<dyn PhysicalExpr>,
+        op: &DataFusionOperator,
+        input_schema: &SchemaRef,
+    ) -> (Arc<dyn PhysicalExpr>, Arc<dyn PhysicalExpr>) {
+        use DataFusionOperator::*;
+        let is_cmp = matches!(
+            op,
+            Eq | NotEq | Lt | LtEq | Gt | GtEq | IsDistinctFrom | IsNotDistinctFrom
+        );
+        if !is_cmp {
+            return (left, right);
+        }
+        let (lt, rt) = match (left.data_type(input_schema), right.data_type(input_schema)) {
+            (Ok(lt), Ok(rt)) => (lt, rt),
+            _ => return (left, right),
+        };
+        // Only nested types route through `apply_cmp_for_nested`; primitives coerce fine.
+        let nested = matches!(
+            lt,
+            DataType::List(_)
+                | DataType::LargeList(_)
+                | DataType::FixedSizeList(_, _)
+                | DataType::Struct(_)
+                | DataType::Map(_, _)
+        );
+        if !nested || lt.equals_datatype(&rt) {
+            return (left, right);
+        }
+        // `Field::try_merge` unions nullability recursively while preserving structure (and the
+        // Map/list invariants). Bail out unchanged if the structures are genuinely incompatible.
+        let mut merged = Field::new("c", lt.clone(), true);
+        if merged
+            .try_merge(&Field::new("c", rt.clone(), true))
+            .is_err()
+        {
+            return (left, right);
+        }
+        let target = merged.data_type().clone();
+        let cast_to_target = |e: Arc<dyn PhysicalExpr>, dt: &DataType| -> Arc<dyn PhysicalExpr> {
+            if dt.equals_datatype(&target) {
+                e
+            } else {
+                Arc::new(CastExpr::new(e, target.clone(), None))
+            }
+        };
+        (cast_to_target(left, &lt), cast_to_target(right, &rt))
+    }
+
     /// Create a DataFusion physical plan from Spark physical plan. There is a level of
     /// abstraction where a tree of SparkPlan nodes is returned. There is a 1:1 mapping from a
     /// protobuf Operator (that represents a Spark operator) to a native SparkPlan struct. We
@@ -1165,6 +1223,57 @@ impl PhysicalPlanner {
                     shuffle_scans,
                     Arc::new(SparkPlan::new(spark_plan.plan_id, aggregate, vec![child])),
                 ))
+            }
+
+            OpStruct::BroadcastNestedLoopJoin(bnlj) => {
+                let (join_params, scans, shuffle_scans) = self.parse_join_parameters(
+                    inputs,
+                    children,
+                    &[],
+                    &[],
+                    bnlj.join_type,
+                    &bnlj.condition,
+                    partition_count,
+                )?;
+
+                let left = Arc::clone(&join_params.left.native_plan);
+                let right = Arc::clone(&join_params.right.native_plan);
+
+                let nested_loop_join = Arc::new(NestedLoopJoinExec::try_new(
+                    left,
+                    right,
+                    join_params.join_filter,
+                    &join_params.join_type,
+                    None,
+                )?);
+
+                if bnlj.build_side == BuildSide::BuildRight as i32 {
+                    let swapped_join = nested_loop_join.as_ref().swap_inputs()?;
+                    let mut additional_native_plans = vec![];
+                    if swapped_join.as_any().is::<ProjectionExec>() {
+                        additional_native_plans.push(Arc::clone(swapped_join.children()[0]));
+                    }
+                    Ok((
+                        scans,
+                        shuffle_scans,
+                        Arc::new(SparkPlan::new_with_additional(
+                            spark_plan.plan_id,
+                            swapped_join,
+                            vec![join_params.left, join_params.right],
+                            additional_native_plans,
+                        )),
+                    ))
+                } else {
+                    Ok((
+                        scans,
+                        shuffle_scans,
+                        Arc::new(SparkPlan::new(
+                            spark_plan.plan_id,
+                            nested_loop_join,
+                            vec![join_params.left, join_params.right],
+                        )),
+                    ))
+                }
             }
             OpStruct::Limit(limit) => {
                 assert_eq!(children.len(), 1);
