@@ -20,6 +20,7 @@
 package org.apache.comet.serde
 
 import org.apache.spark.sql.catalyst.expressions._
+import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
 import org.apache.comet.serde.QueryPlanSerde.{createBinaryExpr, exprToProtoInternal, optExprWithFallbackReason, scalarFunctionExprToProto}
@@ -164,7 +165,22 @@ object CometMapFromEntries
   }
 }
 
-object CometStrToMap extends CometScalarFunction[StringToMap]("str_to_map")
+object CometStrToMap extends CometScalarFunction[StringToMap]("str_to_map") {
+
+  // Spark 4.1.1+ honours spark.sql.legacy.truncateForEmptyRegexSplit by truncating trailing
+  // empty entries from the split result. Comet's native str_to_map always behaves as if the flag
+  // were false, so it is incompatible when legacy truncation is enabled. Read by string key so it
+  // resolves on older Spark versions where the config is not registered.
+  private val legacyTruncateConfig = "spark.sql.legacy.truncateForEmptyRegexSplit"
+
+  override def getSupportLevel(expr: StringToMap): SupportLevel = {
+    if (SQLConf.get.getConfString(legacyTruncateConfig, "false").toBoolean) {
+      Incompatible(Some(s"$legacyTruncateConfig is enabled"))
+    } else {
+      Compatible(None)
+    }
+  }
+}
 
 object CometMapFilter extends CometCodegenDispatch[MapFilter]
 
