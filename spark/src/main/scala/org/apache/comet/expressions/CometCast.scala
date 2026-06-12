@@ -36,10 +36,11 @@ object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
   private[comet] val negativeScaleDecimalToStringReason: String =
     "Negative-scale decimal requires spark.sql.legacy.allowNegativeScaleOfDecimal=true"
 
-  // Spark's legacy formatter wraps maps/structs with `[]` and omits NULL elements, while the
-  // default (Spark 3.1+) wraps with `{}` and renders NULL as "null". Comet only implements the
-  // default. The flag is internal in Spark 4.0 and defaults to false; fall back to Spark when
-  // it is enabled.
+  // When `spark.sql.legacy.castComplexTypesToString.enabled` is true, Spark wraps maps and
+  // structs with `[]` (instead of `{}`) when casting to string, and omits NULL elements of
+  // structs/maps/arrays (instead of rendering them as the literal "null"). Comet only
+  // implements the default formatting, so fall back to Spark for any array/map/struct to-string
+  // cast when the flag is enabled. The flag is internal in Spark 4.0 and defaults to false.
   private[comet] val legacyCastComplexTypesToStringReason: String =
     "spark.sql.legacy.castComplexTypesToString.enabled=true is not supported"
 

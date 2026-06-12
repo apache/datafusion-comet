@@ -15,12 +15,26 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- When spark.sql.legacy.castComplexTypesToString.enabled is true Spark uses the legacy
--- formatter (`[...]` with NULL elements omitted). Comet only implements the default
--- (`{...}` with NULL elements rendered as "null"), so the cast must fall back to Spark.
+-- When `spark.sql.legacy.castComplexTypesToString.enabled` is true Spark wraps maps and
+-- structs with `[...]` (instead of `{...}`) and omits NULL elements of structs/maps/arrays
+-- (instead of rendering them as the literal "null"). Comet only implements the default
+-- formatting, so any array/map/struct → string cast must fall back to Spark.
 -- The flag is internal in Spark 4.0 and defaults to false.
 
 -- Config: spark.sql.legacy.castComplexTypesToString.enabled=true
 
+-- Struct → string falls back.
 query expect_fallback(spark.sql.legacy.castComplexTypesToString.enabled=true is not supported)
 SELECT CAST(struct(1, 2, null) AS STRING)
+
+-- Array → string falls back (NULL elements rendered differently between modes).
+query expect_fallback(spark.sql.legacy.castComplexTypesToString.enabled=true is not supported)
+SELECT CAST(array(1, 2, null) AS STRING)
+
+-- Map → string falls back (`[]` vs `{}` wrapping differs between modes).
+query expect_fallback(spark.sql.legacy.castComplexTypesToString.enabled=true is not supported)
+SELECT CAST(map('a', 1, 'b', null) AS STRING)
+
+-- Nested complex types still fall back through the outer type.
+query expect_fallback(spark.sql.legacy.castComplexTypesToString.enabled=true is not supported)
+SELECT CAST(struct(array(1, null), map('k', null)) AS STRING)
