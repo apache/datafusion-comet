@@ -25,7 +25,7 @@ import org.apache.spark.sql.comet.CometBatchScanExec
 import org.apache.spark.sql.execution.SparkPlan
 import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
 
-import org.apache.comet.CometSparkSessionExtensions.withInfos
+import org.apache.comet.CometSparkSessionExtensions.withFallbackReasons
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.operator.CometLanceNativeScan
 
@@ -38,7 +38,7 @@ object CometLanceSupport {
 
     if (!schemaSupported) {
       fallbackReasons += s"Schema ${scanExec.scan.readSchema()} is not supported"
-      withInfos(scanExec, fallbackReasons.toSet)
+      withFallbackReasons(scanExec, fallbackReasons.toSet)
       None
     } else {
       val builder = Operator.newBuilder().setPlanId(scanExec.id)
