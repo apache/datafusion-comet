@@ -19,17 +19,15 @@
 
 package org.apache.comet.serde
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, StringDecode}
+import org.apache.spark.sql.catalyst.expressions.StringDecode
 
-object CometStringDecode extends CometExpressionSerde[StringDecode] with CommonStringExprs {
-
-  override def getUnsupportedReasons(): Seq[String] =
-    Seq("Only the `'utf-8'` charset is supported. Other charsets fall back to Spark.")
-
-  override def convert(
-      expr: StringDecode,
-      inputs: Seq[Attribute],
-      binding: Boolean): Option[ExprOuterClass.Expr] = {
-    stringDecode(expr, expr.charset, expr.bin, inputs, binding)
-  }
-}
+/**
+ * `decode(bin, charset)` runs Spark's own `doGenCode` through the codegen dispatcher rather than
+ * a native lowering. The previous lowering to `Cast(bin, StringType, TRY)` produced wrong results
+ * on invalid byte sequences (Spark substitutes the Unicode replacement character on Spark 3.x;
+ * Spark 4.0 also does so when `legacyErrorAction = true`, and otherwise raises
+ * `MALFORMED_CHARACTER_CODING`). The codegen dispatcher invokes Spark's exact decoder so the
+ * result matches Spark for valid inputs, replacement-character substitution, and the strict-mode
+ * error.
+ */
+object CometStringDecode extends CometCodegenDispatch[StringDecode]

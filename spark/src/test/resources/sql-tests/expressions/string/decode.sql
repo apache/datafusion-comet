@@ -25,12 +25,15 @@
 -- time Comet sees the plan the wrapper has already been replaced with CaseWhen and Comet
 -- handles it through its existing CaseWhen + EqualNullSafe serde.
 --
--- The 2-arg charset form lowers to a cast(binary, string) inside Comet's stringDecode
--- handler, but only when the charset is 'utf-8' (case-insensitive). Other charsets fall
--- back to Spark JVM execution.
+-- The 2-arg charset form runs through the codegen dispatcher (Spark's own doGenCode inside the
+-- Comet pipeline) so behavior matches Spark exactly across all supported charsets and across
+-- the Spark 4.0 `legacyCharsets` / `legacyErrorAction` modes (#4465). Invalid-byte tests live in
+-- decode_invalid_utf8.sql / decode_invalid_utf8_legacy.sql / decode_invalid_utf8_strict.sql so
+-- each Spark version gets the right expectation.
+-- Config: spark.comet.exec.scalaUDF.codegen.enabled=true
 
 -- ===========================================================================
--- Charset form: decode(bin, charset) for UTF-8 (the supported native path)
+-- Charset form: decode(bin, charset) over valid input, multiple charsets
 -- ===========================================================================
 
 statement
@@ -57,13 +60,13 @@ CREATE TABLE test_decode_charset_safe(b binary) USING parquet
 statement
 INSERT INTO test_decode_charset_safe VALUES (CAST('ab' AS BINARY)), (CAST('abcd' AS BINARY)), (CAST('' AS BINARY)), (NULL)
 
-query expect_fallback(Comet only supports decoding with 'utf-8'.)
+query
 SELECT decode(b, 'UTF-16BE') FROM test_decode_charset_safe
 
-query expect_fallback(Comet only supports decoding with 'utf-8'.)
+query
 SELECT decode(b, 'US-ASCII') FROM test_decode_charset_safe
 
-query expect_fallback(Comet only supports decoding with 'utf-8'.)
+query
 SELECT decode(b, 'ISO-8859-1') FROM test_decode_utf8
 
 
