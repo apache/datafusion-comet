@@ -96,3 +96,15 @@ trait CometExpressionSerde[T <: Expression] {
    */
   def convert(expr: T, inputs: Seq[Attribute], binding: Boolean): Option[ExprOuterClass.Expr]
 }
+
+/**
+ * Opt-in marker for expression serdes that have a native implementation which is `Incompatible`
+ * with Spark for some inputs. When such an expression reports `Incompatible` and the user has not
+ * enabled `allowIncompatible` for it, mixing in this trait routes it through the JVM codegen
+ * dispatcher (running Spark's own `doGenCode` inside the Comet pipeline) instead of falling the
+ * projection back to Spark, so it stays native while still matching Spark exactly.
+ *
+ * Enrollment is opt-in: only serdes that explicitly mix this in are routed through the
+ * dispatcher. Every other `Incompatible` expression falls back to Spark.
+ */
+trait CodegenDispatchFallback { self: CometExpressionSerde[_] => }

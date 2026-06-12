@@ -20,6 +20,7 @@
 package org.apache.comet.serde
 
 import org.apache.spark.sql.catalyst.expressions._
+import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
 import org.apache.comet.serde.QueryPlanSerde.{createBinaryExpr, exprToProtoInternal, optExprWithFallbackReason, scalarFunctionExprToProto}
@@ -133,7 +134,9 @@ object CometMapContainsKey extends CometExpressionSerde[MapContainsKey] {
   }
 }
 
-object CometMapFromEntries extends CometScalarFunction[MapFromEntries]("map_from_entries") {
+object CometMapFromEntries
+    extends CometScalarFunction[MapFromEntries]("map_from_entries")
+    with CodegenDispatchFallback {
   val keyUnsupportedReason =
     "`BinaryType` is not supported as a map key in `map_from_entries`"
   val valueUnsupportedReason =
@@ -142,24 +145,40 @@ object CometMapFromEntries extends CometScalarFunction[MapFromEntries]("map_from
   override def getIncompatibleReasons(): Seq[String] =
     Seq(keyUnsupportedReason, valueUnsupportedReason)
 
-  private def containsBinary(dataType: DataType): Boolean = {
-    dataType match {
-      case BinaryType => true
-      case StructType(fields) => fields.exists(field => containsBinary(field.dataType))
-      case ArrayType(elementType, _) => containsBinary(elementType)
-      case _ => false
-    }
-  }
-
   override def getSupportLevel(expr: MapFromEntries): SupportLevel = {
-    if (containsBinary(expr.dataType.keyType)) {
+    if (SupportLevel.containsType(expr.dataType.keyType, classOf[BinaryType])) {
       return Incompatible(Some(keyUnsupportedReason))
     }
-    if (containsBinary(expr.dataType.valueType)) {
+    if (SupportLevel.containsType(expr.dataType.valueType, classOf[BinaryType])) {
       return Incompatible(Some(valueUnsupportedReason))
     }
     Compatible(None)
   }
 }
 
-object CometStrToMap extends CometScalarFunction[StringToMap]("str_to_map")
+object CometStrToMap extends CometScalarFunction[StringToMap]("str_to_map") {
+
+  // Spark 4.1.1+ honours spark.sql.legacy.truncateForEmptyRegexSplit by truncating trailing
+  // empty entries from the split result. Comet's native str_to_map always behaves as if the flag
+  // were false, so it is incompatible when legacy truncation is enabled. Read by string key so it
+  // resolves on older Spark versions where the config is not registered.
+  private val legacyTruncateConfig = "spark.sql.legacy.truncateForEmptyRegexSplit"
+
+  override def getSupportLevel(expr: StringToMap): SupportLevel = {
+    if (SQLConf.get.getConfString(legacyTruncateConfig, "false").toBoolean) {
+      Incompatible(Some(s"$legacyTruncateConfig is enabled"))
+    } else {
+      Compatible(None)
+    }
+  }
+}
+
+object CometMapFilter extends CometCodegenDispatch[MapFilter]
+
+object CometTransformKeys extends CometCodegenDispatch[TransformKeys]
+
+object CometTransformValues extends CometCodegenDispatch[TransformValues]
+
+object CometMapZipWith extends CometCodegenDispatch[MapZipWith]
+
+object CometMapConcat extends CometCodegenDispatch[MapConcat]
