@@ -139,6 +139,13 @@ jobs:
       - name: Pre-compile Spark Test classes
         run: |
           cd apache-spark
+          # Mirror the workaround from `Run Spark tests` below: Comet's mvn
+          # install populates partial Parquet entries (main JAR + POM but no
+          # `*-tests.jar` classifier). Coursier then sees the POM in
+          # mavenLocal, declares the artifact "found locally", and refuses
+          # to fall back to Maven Central for the missing test classifier.
+          # Wiping the parquet cache forces a clean remote fetch.
+          rm -rf /root/.m2/repository/org/apache/parquet
           # Compile Test sources for the three subprojects the matrix touches.
           # SBT will transitively compile Compile/compile of their dependencies
           # plus any Test/compile pulled in by `dependsOn(... % "test->test")`,
