@@ -578,9 +578,9 @@ default (<code class="docutils literal notranslate"><span class="pre">spark.come
 expressions fall back to Spark.</p></li>
 <li><p><strong>Native (rust) engine</strong> — the Rust <a class="reference external" href="https://docs.rs/regex/latest/regex/"><code class="docutils literal notranslate"><span class="pre">regex</span></code></a> crate, run natively with no JNI overhead. It is
 faster but has different semantics from Java regex (see below), so it is <strong>opt-in per expression</strong>
-via that expression’s <code class="docutils literal notranslate"><span class="pre">allowIncompatible</span></code> flag. <code class="docutils literal notranslate"><span class="pre">rlike</span></code>, <code class="docutils literal notranslate"><span class="pre">regexp_replace</span></code>, and <code class="docutils literal notranslate"><span class="pre">split</span></code> have a
-native implementation; <code class="docutils literal notranslate"><span class="pre">regexp_extract</span></code>, <code class="docutils literal notranslate"><span class="pre">regexp_extract_all</span></code>, and <code class="docutils literal notranslate"><span class="pre">regexp_instr</span></code> do not and
-always run through the codegen dispatcher.</p></li>
+via that expression’s <code class="docutils literal notranslate"><span class="pre">allowIncompatible</span></code> flag. <code class="docutils literal notranslate"><span class="pre">rlike</span></code>, <code class="docutils literal notranslate"><span class="pre">regexp_replace</span></code>, <code class="docutils literal notranslate"><span class="pre">split</span></code>,
+<code class="docutils literal notranslate"><span class="pre">regexp_extract</span></code>, and <code class="docutils literal notranslate"><span class="pre">regexp_extract_all</span></code> have a native implementation; <code class="docutils literal notranslate"><span class="pre">regexp_instr</span></code> does not
+and always runs through the codegen dispatcher.</p></li>
 </ul>
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
@@ -595,6 +595,12 @@ always run through the codegen dispatcher.</p></li>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">regexp_replace</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.RegExpReplace.allowIncompatible</span></code></p></td>
 </tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">regexp_extract</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.RegExpExtract.allowIncompatible</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">regexp_extract_all</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.RegExpExtractAll.allowIncompatible</span></code></p></td>
+</tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">split</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.expression.StringSplit.allowIncompatible</span></code></p></td>
 </tr>
@@ -602,8 +608,8 @@ always run through the codegen dispatcher.</p></li>
 </table>
 </div>
 <p>When the native path is opted in but a case has no native implementation (for example a non-scalar
-<code class="docutils literal notranslate"><span class="pre">rlike</span></code> pattern, or <code class="docutils literal notranslate"><span class="pre">regexp_replace</span></code> with a non-1 offset), Comet routes that case through the
-codegen dispatcher.</p>
+<code class="docutils literal notranslate"><span class="pre">rlike</span></code> pattern, <code class="docutils literal notranslate"><span class="pre">regexp_replace</span></code> with a non-1 offset, or <code class="docutils literal notranslate"><span class="pre">regexp_extract</span></code> with a non-literal
+pattern or idx), Comet routes that case through the codegen dispatcher.</p>
 <section id="disabling-comet-for-individual-regex-expressions">
 <h2>Disabling Comet for individual regex expressions<a class="headerlink" href="#disabling-comet-for-individual-regex-expressions" title="Link to this heading">#</a></h2>
 <p>Each regex expression has a per-class <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.&lt;ClassName&gt;.enabled</span></code> flag (default
@@ -654,7 +660,7 @@ the engine selector:</p>
 <td><p>100% compatible with Spark</p></td>
 </tr>
 <tr class="row-odd"><td><p><strong>Feature coverage</strong></p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">rlike</span></code>, <code class="docutils literal notranslate"><span class="pre">regexp_replace</span></code>, <code class="docutils literal notranslate"><span class="pre">split</span></code> natively; <code class="docutils literal notranslate"><span class="pre">regexp_extract</span></code>, <code class="docutils literal notranslate"><span class="pre">regexp_extract_all</span></code>, <code class="docutils literal notranslate"><span class="pre">regexp_instr</span></code> via fallthrough</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">rlike</span></code>, <code class="docutils literal notranslate"><span class="pre">regexp_replace</span></code>, <code class="docutils literal notranslate"><span class="pre">split</span></code>, <code class="docutils literal notranslate"><span class="pre">regexp_extract</span></code>, <code class="docutils literal notranslate"><span class="pre">regexp_extract_all</span></code> natively; <code class="docutils literal notranslate"><span class="pre">regexp_instr</span></code> via fallthrough</p></td>
 <td><p>All regexp expressions (<code class="docutils literal notranslate"><span class="pre">rlike</span></code>, <code class="docutils literal notranslate"><span class="pre">regexp_extract</span></code>, <code class="docutils literal notranslate"><span class="pre">regexp_extract_all</span></code>, <code class="docutils literal notranslate"><span class="pre">regexp_instr</span></code>, <code class="docutils literal notranslate"><span class="pre">regexp_replace</span></code>, <code class="docutils literal notranslate"><span class="pre">split</span></code>)</p></td>
 </tr>
 <tr class="row-even"><td><p><strong>Performance</strong></p></td>

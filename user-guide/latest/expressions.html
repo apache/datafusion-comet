@@ -898,7 +898,7 @@ expressions. The following function families are <strong>not currently planned</
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">array_except</span></code></p></td>
 <td><p>✅</p></td>
-<td><p>Incompatible; falls back by default (<a class="reference internal" href="#compatibility/expressions/array.md"><span class="xref myst">details</span></a>)</p></td>
+<td><p>Routes through the JVM codegen dispatcher by default; the incompatible native path is opt-in via allowIncompatible (<a class="reference internal" href="#compatibility/expressions/array.md"><span class="xref myst">details</span></a>)</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">array_insert</span></code></p></td>
 <td><p>✅</p></td>
@@ -906,11 +906,11 @@ expressions. The following function families are <strong>not currently planned</
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">array_intersect</span></code></p></td>
 <td><p>✅</p></td>
-<td><p>Incompatible; falls back by default (<a class="reference internal" href="#compatibility/expressions/array.md"><span class="xref myst">details</span></a>)</p></td>
+<td><p>Routes through the JVM codegen dispatcher by default; the incompatible native path is opt-in via allowIncompatible (<a class="reference internal" href="#compatibility/expressions/array.md"><span class="xref myst">details</span></a>)</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">array_join</span></code></p></td>
 <td><p>✅</p></td>
-<td><p>Incompatible; falls back by default (<a class="reference internal" href="#compatibility/expressions/array.md"><span class="xref myst">details</span></a>)</p></td>
+<td><p>Routes through the JVM codegen dispatcher by default; the incompatible native path is opt-in via allowIncompatible (<a class="reference internal" href="#compatibility/expressions/array.md"><span class="xref myst">details</span></a>)</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">array_max</span></code></p></td>
 <td><p>✅</p></td>
@@ -2415,11 +2415,11 @@ expression-level). The <code class="docutils literal notranslate"><span class="p
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">regexp_extract</span></code></p></td>
 <td><p>✅</p></td>
-<td><p>Routed through the JVM codegen dispatcher</p></td>
+<td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">regexp_extract_all</span></code></p></td>
 <td><p>✅</p></td>
-<td><p>Routed through the JVM codegen dispatcher</p></td>
+<td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">regexp_instr</span></code></p></td>
 <td><p>✅</p></td>

@@ -138,10 +138,10 @@ The tables below list every Spark built-in expression with its current status.
 | `array_compact` | ✅ |  |
 | `array_contains` | ✅ | NaN/signed-zero handling may differ ([details](compatibility/floating-point.md)) |
 | `array_distinct` | ✅ | NaN/signed-zero handling may differ ([details](compatibility/floating-point.md)) |
-| `array_except` | ✅ | Incompatible; falls back by default ([details](compatibility/expressions/array.md)) |
+| `array_except` | ✅ | Routes through the JVM codegen dispatcher by default; the incompatible native path is opt-in via allowIncompatible ([details](compatibility/expressions/array.md)) |
 | `array_insert` | ✅ |  |
-| `array_intersect` | ✅ | Incompatible; falls back by default ([details](compatibility/expressions/array.md)) |
-| `array_join` | ✅ | Incompatible; falls back by default ([details](compatibility/expressions/array.md)) |
+| `array_intersect` | ✅ | Routes through the JVM codegen dispatcher by default; the incompatible native path is opt-in via allowIncompatible ([details](compatibility/expressions/array.md)) |
+| `array_join` | ✅ | Routes through the JVM codegen dispatcher by default; the incompatible native path is opt-in via allowIncompatible ([details](compatibility/expressions/array.md)) |
 | `array_max` | ✅ | NaN ordering may differ ([details](compatibility/floating-point.md)) |
 | `array_min` | ✅ | NaN ordering may differ ([details](compatibility/floating-point.md)) |
 | `array_position` | ✅ | Binary/struct/map/null elements fall back |
@@ -571,8 +571,8 @@ expression-level). The `outer` variants are wired but marked `Incompatible`; the
 | `position` | ✅ |  |
 | `printf` | ✅ |  |
 | `regexp_count` | 🔜 | tracking [#4098](https://github.com/apache/datafusion-comet/issues/4098) |
-| `regexp_extract` | ✅ | Routed through the JVM codegen dispatcher |
-| `regexp_extract_all` | ✅ | Routed through the JVM codegen dispatcher |
+| `regexp_extract` | ✅ |  |
+| `regexp_extract_all` | ✅ |  |
 | `regexp_instr` | ✅ | Routed through the JVM codegen dispatcher |
 | `regexp_replace` | ✅ |  |
 | `regexp_substr` | 🔜 | tracking [#4098](https://github.com/apache/datafusion-comet/issues/4098) |
