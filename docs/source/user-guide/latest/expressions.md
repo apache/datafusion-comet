@@ -138,10 +138,10 @@ The tables below list every Spark built-in expression with its current status.
 | `array_compact` | ✅ |  |
 | `array_contains` | ✅ | NaN/signed-zero handling may differ ([details](compatibility/floating-point.md)) |
 | `array_distinct` | ✅ | NaN/signed-zero handling may differ ([details](compatibility/floating-point.md)) |
-| `array_except` | ✅ | Incompatible; falls back by default ([details](compatibility/expressions/array.md)) |
+| `array_except` | ✅ | Routes through the JVM codegen dispatcher by default; the incompatible native path is opt-in via allowIncompatible ([details](compatibility/expressions/array.md)) |
 | `array_insert` | ✅ |  |
-| `array_intersect` | ✅ | Incompatible; falls back by default ([details](compatibility/expressions/array.md)) |
-| `array_join` | ✅ | Incompatible; falls back by default ([details](compatibility/expressions/array.md)) |
+| `array_intersect` | ✅ | Routes through the JVM codegen dispatcher by default; the incompatible native path is opt-in via allowIncompatible ([details](compatibility/expressions/array.md)) |
+| `array_join` | ✅ | Routes through the JVM codegen dispatcher by default; the incompatible native path is opt-in via allowIncompatible ([details](compatibility/expressions/array.md)) |
 | `array_max` | ✅ | NaN ordering may differ ([details](compatibility/floating-point.md)) |
 | `array_min` | ✅ | NaN ordering may differ ([details](compatibility/floating-point.md)) |
 | `array_position` | ✅ | Binary/struct/map/null elements fall back |
