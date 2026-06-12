@@ -191,7 +191,10 @@ object CometSortArray extends CometExpressionSerde[SortArray] {
   }
 }
 
-object CometArrayIntersect extends CometExpressionSerde[ArrayIntersect] with CometTypeShim {
+object CometArrayIntersect
+    extends CometExpressionSerde[ArrayIntersect]
+    with CometTypeShim
+    with CodegenDispatchFallback {
 
   private val incompatReason: String =
     "Result array element order may differ from Spark when the right array is longer " +
@@ -332,7 +335,10 @@ object CometArrayCompact extends CometExpressionSerde[Expression] {
   }
 }
 
-object CometArrayExcept extends CometExpressionSerde[ArrayExcept] with CometExprShim {
+object CometArrayExcept
+    extends CometExpressionSerde[ArrayExcept]
+    with CometExprShim
+    with CodegenDispatchFallback {
 
   private val incompatReason = "Null handling and ordering may differ from Spark"
 
@@ -376,7 +382,7 @@ object CometArrayExcept extends CometExpressionSerde[ArrayExcept] with CometExpr
   }
 }
 
-object CometArrayJoin extends CometExpressionSerde[ArrayJoin] {
+object CometArrayJoin extends CometExpressionSerde[ArrayJoin] with CodegenDispatchFallback {
 
   private val incompatReason = "Null handling may differ from Spark"
 
