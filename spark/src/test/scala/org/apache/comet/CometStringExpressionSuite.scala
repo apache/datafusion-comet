@@ -373,12 +373,15 @@ class CometStringExpressionSuite extends CometTestBase {
 
   test("length, reverse, instr, replace, translate") {
     val table = "test"
-    withTable(table) {
-      sql(s"create table $table(col string) using parquet")
-      sql(
-        s"insert into $table values('Spark SQL  '), (NULL), (''), ('苹果手机'), ('Spark SQL  '), (NULL), (''), ('苹果手机')")
-      checkSparkAnswerAndOperator("select length(col), reverse(col), instr(col, 'SQL'), instr(col, '手机'), replace(col, 'SQL', '123')," +
-        s" replace(col, 'SQL'), replace(col, '手机', '平板'), translate(col, 'SL苹', '123') from $table")
+    withSQLConf("spark.comet.expression.StringTranslate.allowIncompatible" -> "true") {
+      withTable(table) {
+        sql(s"create table $table(col string) using parquet")
+        sql(
+          s"insert into $table values('Spark SQL  '), (NULL), (''), ('苹果手机'), ('Spark SQL  '), (NULL), (''), ('苹果手机')")
+        checkSparkAnswerAndOperator(
+          "select length(col), reverse(col), instr(col, 'SQL'), instr(col, '手机'), replace(col, 'SQL', '123')," +
+            s" replace(col, 'SQL'), replace(col, '手机', '平板'), translate(col, 'SL苹', '123') from $table")
+      }
     }
   }
 

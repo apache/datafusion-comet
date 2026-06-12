@@ -208,7 +208,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
     // when `++` is applied directly to a `Map(...)` literal.
     val base: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
       classOf[Ascii] -> CometScalarFunction("ascii"),
-      classOf[BitLength] -> CometScalarFunction("bit_length"),
+      classOf[BitLength] -> CometBitLength,
       classOf[Chr] -> CometScalarFunction("char"),
       classOf[ConcatWs] -> CometConcatWs,
       classOf[Concat] -> CometConcat,
@@ -220,7 +220,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       classOf[Levenshtein] -> CometLevenshtein,
       classOf[Like] -> CometLike,
       classOf[Lower] -> CometLower,
-      classOf[OctetLength] -> CometScalarFunction("octet_length"),
+      classOf[OctetLength] -> CometOctetLength,
       classOf[RegExpExtract] -> CometRegExpExtract,
       classOf[RegExpExtractAll] -> CometRegExpExtractAll,
       classOf[RegExpInStr] -> CometRegExpInStr,
@@ -235,7 +235,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       classOf[StringLPad] -> CometStringLPad,
       classOf[StringSpace] -> CometScalarFunction("space"),
       classOf[StringSplit] -> CometStringSplit,
-      classOf[StringTranslate] -> CometScalarFunction("translate"),
+      classOf[StringTranslate] -> CometStringTranslate,
       classOf[StringTrim] -> CometScalarFunction("trim"),
       classOf[StringTrimLeft] -> CometScalarFunction("ltrim"),
       classOf[StringTrimRight] -> CometScalarFunction("rtrim"),
