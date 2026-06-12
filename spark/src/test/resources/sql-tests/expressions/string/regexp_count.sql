@@ -15,17 +15,19 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
-statement
-CREATE TABLE test_array_filter(arr array<int>) USING parquet
+-- regexp_count is RuntimeReplaceable (Size(RegExpExtractAll(...))). Verify Comet runs it natively
+-- and matches Spark.
+
+-- MinSparkVersion: 3.5
 
 statement
-INSERT INTO test_array_filter VALUES (array(1, 2, 3, 4, 5)), (array(-1, 0, 1)), (array(10)), (NULL)
+CREATE TABLE test_regexp_count(s string) USING parquet
+
+statement
+INSERT INTO test_regexp_count VALUES ('Steven Jones and Stephen Smith'), ('abcabcabc'), (''), (NULL)
 
 query
-SELECT filter(arr, x -> x > 2) FROM test_array_filter
+SELECT s, regexp_count(s, 'Ste(v|ph)en') FROM test_regexp_count
 
 query
-SELECT filter(arr, x -> x >= 0) FROM test_array_filter
-
-query
-SELECT filter(arr, (x, i) -> i > 0) FROM test_array_filter
+SELECT regexp_count('abcabc', 'abc'), regexp_count('hello', 'z')

@@ -15,17 +15,19 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
-statement
-CREATE TABLE test_array_filter(arr array<int>) USING parquet
+-- regexp_substr is RuntimeReplaceable (NullIf(RegExpExtract(..., 0), "")). Verify Comet runs it
+-- natively and matches Spark, including the no-match case which returns NULL.
+
+-- MinSparkVersion: 3.5
 
 statement
-INSERT INTO test_array_filter VALUES (array(1, 2, 3, 4, 5)), (array(-1, 0, 1)), (array(10)), (NULL)
+CREATE TABLE test_regexp_substr(s string) USING parquet
+
+statement
+INSERT INTO test_regexp_substr VALUES ('Steven Jones and Stephen Smith'), ('no match here'), (''), (NULL)
 
 query
-SELECT filter(arr, x -> x > 2) FROM test_array_filter
+SELECT s, regexp_substr(s, 'Ste(v|ph)en') FROM test_regexp_substr
 
 query
-SELECT filter(arr, x -> x >= 0) FROM test_array_filter
-
-query
-SELECT filter(arr, (x, i) -> i > 0) FROM test_array_filter
+SELECT regexp_substr('user@spark.apache.org', '@[^.]*'), regexp_substr('hello', 'zzz')

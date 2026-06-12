@@ -647,21 +647,23 @@ object CometFlatten extends CometExpressionSerde[Flatten] with ArraysBase {
 
 object CometArrayFilter extends CometExpressionSerde[ArrayFilter] {
 
-  override def getUnsupportedReasons(): Seq[String] = Seq(
-    "Only supports `array_filter` when the function is `IsNotNull` (used by `array_compact`)")
-
-  override def getSupportLevel(expr: ArrayFilter): SupportLevel = {
-    expr.function.children.headOption match {
-      case Some(_: IsNotNull) => Compatible()
-      case _ => Unsupported()
-    }
-  }
+  override def getSupportLevel(expr: ArrayFilter): SupportLevel = Compatible()
 
   override def convert(
       expr: ArrayFilter,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    CometArrayCompact.convert(expr, inputs, binding)
+    expr.function.children.headOption match {
+      case Some(_: IsNotNull) =>
+        // Fast path: `array_compact` lowers to `filter(arr, x -> x is not null)`. Use the native
+        // array_compact serde to avoid the per-batch JNI cost of the codegen dispatcher.
+        CometArrayCompact.convert(expr, inputs, binding)
+      case _ =>
+        // General lambda: run Spark's own evaluation through the codegen dispatcher so the result
+        // matches Spark exactly, like the other higher-order functions (`transform`, `exists`).
+        // Falls back to Spark when the dispatcher is disabled.
+        CometScalaUDF.emitJvmCodegenDispatch(expr, inputs, binding)
+    }
   }
 }
 
