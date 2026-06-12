@@ -824,7 +824,7 @@ index 53e47f428c3..a55d8f0c161 100644
      assert(shuffleMergeJoins.size == 1)
    }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/JoinSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/JoinSuite.scala
-index aaac0ebc9aa..276c592ec88 100644
+index aaac0ebc9aa..fbef0774d46 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/JoinSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/JoinSuite.scala
 @@ -29,7 +29,8 @@ import org.apache.spark.sql.catalyst.analysis.UnresolvedRelation
@@ -972,19 +972,7 @@ index aaac0ebc9aa..276c592ec88 100644
            checkAnswer(shjNonCodegenDF, Seq.empty)
          }
        }
-@@ -1473,7 +1494,10 @@ class JoinSuite extends QueryTest with SharedSparkSession with AdaptiveSparkPlan
-             "/*+ BROADCAST(t2) */ t1.k as k"
-           }
-           val plan = sql(getAggQuery(selectExpr, joinType)).queryExecution.executedPlan
--          assert(collect(plan) { case _: BroadcastNestedLoopJoinExec => true }.size === 1)
-+          assert(collect(plan) {
-+            case _: BroadcastNestedLoopJoinExec | _: CometBroadcastNestedLoopJoinExec =>
-+              true
-+          }.size === 1)
-           // No extra shuffle before aggregation
-           assert(collect(plan) { case _: ShuffleExchangeExec => true }.size === 0)
-       }
-@@ -1489,7 +1513,8 @@ class JoinSuite extends QueryTest with SharedSparkSession with AdaptiveSparkPlan
+@@ -1489,7 +1510,8 @@ class JoinSuite extends QueryTest with SharedSparkSession with AdaptiveSparkPlan
            val plan = sql(getAggQuery(selectExpr, joinType)).queryExecution.executedPlan
            assert(collect(plan) { case _: BroadcastNestedLoopJoinExec => true }.size === 1)
            // Have shuffle before aggregation
@@ -994,16 +982,11 @@ index aaac0ebc9aa..276c592ec88 100644
        }
  
        def getJoinQuery(selectExpr: String, joinType: String): String = {
-@@ -1517,10 +1542,16 @@ class JoinSuite extends QueryTest with SharedSparkSession with AdaptiveSparkPlan
-             "/*+ BROADCAST(right_t) */ k1 as k0"
+@@ -1518,9 +1540,12 @@ class JoinSuite extends QueryTest with SharedSparkSession with AdaptiveSparkPlan
            }
            val plan = sql(getJoinQuery(selectExpr, joinType)).queryExecution.executedPlan
--          assert(collect(plan) { case _: BroadcastNestedLoopJoinExec => true }.size === 1)
+           assert(collect(plan) { case _: BroadcastNestedLoopJoinExec => true }.size === 1)
 -          assert(collect(plan) { case _: SortMergeJoinExec => true }.size === 3)
-+          assert(collect(plan) {
-+            case _: BroadcastNestedLoopJoinExec | _: CometBroadcastNestedLoopJoinExec =>
-+              true
-+          }.size === 1)
 +          assert(collect(plan) {
 +            case _: SortMergeJoinExec => true
 +            case _: CometSortMergeJoinExec => true
@@ -1014,7 +997,7 @@ index aaac0ebc9aa..276c592ec88 100644
        }
  
        // Test output ordering is not preserved
-@@ -1529,9 +1560,12 @@ class JoinSuite extends QueryTest with SharedSparkSession with AdaptiveSparkPlan
+@@ -1529,9 +1554,12 @@ class JoinSuite extends QueryTest with SharedSparkSession with AdaptiveSparkPlan
            val selectExpr = "/*+ BROADCAST(left_t) */ k1 as k0"
            val plan = sql(getJoinQuery(selectExpr, joinType)).queryExecution.executedPlan
            assert(collect(plan) { case _: BroadcastNestedLoopJoinExec => true }.size === 1)
@@ -1029,7 +1012,7 @@ index aaac0ebc9aa..276c592ec88 100644
        }
  
        // Test singe partition
-@@ -1541,7 +1575,8 @@ class JoinSuite extends QueryTest with SharedSparkSession with AdaptiveSparkPlan
+@@ -1541,7 +1569,8 @@ class JoinSuite extends QueryTest with SharedSparkSession with AdaptiveSparkPlan
             |FROM range(0, 10, 1, 1) t1 FULL OUTER JOIN range(0, 10, 1, 1) t2
             |""".stripMargin)
        val plan = fullJoinDF.queryExecution.executedPlan
@@ -1039,7 +1022,7 @@ index aaac0ebc9aa..276c592ec88 100644
        checkAnswer(fullJoinDF, Row(100))
      }
    }
-@@ -1614,6 +1649,9 @@ class JoinSuite extends QueryTest with SharedSparkSession with AdaptiveSparkPlan
+@@ -1614,6 +1643,9 @@ class JoinSuite extends QueryTest with SharedSparkSession with AdaptiveSparkPlan
            Seq(semiJoinDF, antiJoinDF).foreach { df =>
              assert(collect(df.queryExecution.executedPlan) {
                case j: ShuffledHashJoinExec if j.ignoreDuplicatedKey == ignoreDuplicatedKey => true
@@ -1049,7 +1032,7 @@ index aaac0ebc9aa..276c592ec88 100644
              }.size == 1)
            }
        }
-@@ -1658,14 +1696,20 @@ class JoinSuite extends QueryTest with SharedSparkSession with AdaptiveSparkPlan
+@@ -1658,14 +1690,20 @@ class JoinSuite extends QueryTest with SharedSparkSession with AdaptiveSparkPlan
  
    test("SPARK-43113: Full outer join with duplicate stream-side references in condition (SMJ)") {
      def check(plan: SparkPlan): Unit = {
@@ -1072,7 +1055,7 @@ index aaac0ebc9aa..276c592ec88 100644
      }
      dupStreamSideColTest("SHUFFLE_HASH", check)
    }
-@@ -1801,7 +1845,8 @@ class ThreadLeakInSortMergeJoinSuite
+@@ -1801,7 +1839,8 @@ class ThreadLeakInSortMergeJoinSuite
        sparkConf.set(SHUFFLE_SPILL_NUM_ELEMENTS_FORCE_SPILL_THRESHOLD, 20))
    }
  

@@ -268,10 +268,9 @@ object CometMetricNode {
   }
 
   /**
-   * SQL Metrics for DataFusion joins that use the BuildProbeJoinMetrics shape (HashJoinExec and
-   * NestedLoopJoinExec).
+   * SQL Metrics for DataFusion HashJoin
    */
-  def joinMetrics(sc: SparkContext): Map[String, SQLMetric] = {
+  def hashJoinMetrics(sc: SparkContext): Map[String, SQLMetric] = {
     Map(
       "build_time" ->
         SQLMetrics.createNanoTimingMetric(sc, "Total time for collecting build-side of join"),
