@@ -250,6 +250,7 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.expression.Cot.enabled` | Enable Comet acceleration for `Cot` | true |
 | `spark.comet.expression.Crc32.enabled` | Enable Comet acceleration for `Crc32` | true |
 | `spark.comet.expression.CreateArray.enabled` | Enable Comet acceleration for `CreateArray` | true |
+| `spark.comet.expression.CreateMap.enabled` | Enable Comet acceleration for `CreateMap` | true |
 | `spark.comet.expression.CreateNamedStruct.enabled` | Enable Comet acceleration for `CreateNamedStruct` | true |
 | `spark.comet.expression.Csc.enabled` | Enable Comet acceleration for `Csc` | true |
 | `spark.comet.expression.CsvToStructs.enabled` | Enable Comet acceleration for `CsvToStructs` | true |
@@ -331,6 +332,7 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.expression.MapSort.enabled` | Enable Comet acceleration for `MapSort` | true |
 | `spark.comet.expression.MapValues.enabled` | Enable Comet acceleration for `MapValues` | true |
 | `spark.comet.expression.MapZipWith.enabled` | Enable Comet acceleration for `MapZipWith` | true |
+| `spark.comet.expression.Mask.enabled` | Enable Comet acceleration for `Mask` | true |
 | `spark.comet.expression.Md5.enabled` | Enable Comet acceleration for `Md5` | true |
 | `spark.comet.expression.MicrosToTimestamp.enabled` | Enable Comet acceleration for `MicrosToTimestamp` | true |
 | `spark.comet.expression.MillisToTimestamp.enabled` | Enable Comet acceleration for `MillisToTimestamp` | true |
