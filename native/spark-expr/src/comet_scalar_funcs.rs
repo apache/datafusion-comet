@@ -16,6 +16,7 @@
 // under the License.
 
 use crate::hash_funcs::*;
+use crate::json_funcs::JsonArrayLength;
 use crate::map_funcs::spark_map_sort;
 use crate::math_funcs::abs::abs;
 use crate::math_funcs::checked_arithmetic::{checked_add, checked_div, checked_mul, checked_sub};
@@ -197,6 +198,14 @@ pub fn create_comet_physical_fun_with_eval_mode(
             let func = Arc::new(crate::string_funcs::spark_split);
             make_comet_scalar_udf!("split", func, without data_type)
         }
+        "regexp_extract" => {
+            let func = Arc::new(crate::string_funcs::spark_regexp_extract);
+            make_comet_scalar_udf!("regexp_extract", func, without data_type)
+        }
+        "regexp_extract_all" => {
+            let func = Arc::new(crate::string_funcs::spark_regexp_extract_all);
+            make_comet_scalar_udf!("regexp_extract_all", func, without data_type)
+        }
         "get_json_object" => {
             let func = Arc::new(crate::string_funcs::spark_get_json_object);
             make_comet_scalar_udf!("get_json_object", func, without data_type)
@@ -239,6 +248,7 @@ fn all_scalar_functions() -> Vec<Arc<ScalarUDF>> {
         Arc::new(ScalarUDF::new_from_impl(SparkNextDay::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkSecondsToTimestamp::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkSizeFunc::default())),
+        Arc::new(ScalarUDF::new_from_impl(JsonArrayLength::default())),
     ]
 }
 
