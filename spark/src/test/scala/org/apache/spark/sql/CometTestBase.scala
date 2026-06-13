@@ -74,7 +74,7 @@ abstract class CometTestBase
     conf.set(SQLConf.SHUFFLE_PARTITIONS, 10) // reduce parallelism in tests
     conf.set(SHUFFLE_MANAGER, shuffleManager)
     conf.set(MEMORY_OFFHEAP_ENABLED.key, "true")
-    conf.set(MEMORY_OFFHEAP_SIZE.key, "1g")
+    conf.set(MEMORY_OFFHEAP_SIZE.key, "2g")
     conf.set(SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key, "1g")
     conf.set(SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key, "1g")
     conf.set(CometConf.COMET_ENABLED.key, "true")
