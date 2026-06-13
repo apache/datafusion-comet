@@ -23,12 +23,11 @@ import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.expressions.json.{JsonExpressionUtils, StructsToJsonEvaluator}
 import org.apache.spark.sql.catalyst.expressions.objects.{Invoke, StaticInvoke}
 import org.apache.spark.sql.catalyst.expressions.url.ParseUrlEvaluator
-import org.apache.spark.sql.internal.types.StringTypeWithCollation
-import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, StringType}
+import org.apache.spark.sql.types.ArrayType
 
 import org.apache.comet.CometExplainInfo
 import org.apache.comet.expressions.CometEvalMode
-import org.apache.comet.serde.{CometExpressionSerde, CometMapSort, CometToPrettyString, CometWidthBucket, CommonStringExprs}
+import org.apache.comet.serde.{CometExpressionSerde, CometMapSort, CometToPrettyString, CometWidthBucket}
 import org.apache.comet.serde.ExprOuterClass.Expr
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithFallbackReason, scalarFunctionExprToProtoWithReturnType}
 
@@ -37,7 +36,7 @@ import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithFa
  * are identical across minor versions; per-version traits override only `binaryOutputStyle` and
  * supply the matching `CometEvalModeUtil.sumEvalMode`.
  */
-trait Spark4xCometExprShim extends CommonStringExprs with CometExprShim4x {
+trait Spark4xCometExprShim extends CometExprShim4x {
   protected def evalMode(c: Cast): CometEvalMode.Value =
     CometEvalModeUtil.fromSparkEvalMode(c.evalMode)
 
@@ -84,19 +83,6 @@ trait Spark4xCometExprShim extends CommonStringExprs with CometExprShim4x {
             }
           case _ => exprToProtoInternal(knc.child, inputs, binding)
         }
-
-      case s: StaticInvoke
-          if s.staticObject == classOf[StringDecode] &&
-            s.dataType.isInstanceOf[StringType] &&
-            s.functionName == "decode" &&
-            s.arguments.size == 4 &&
-            s.inputTypes == Seq(
-              BinaryType,
-              StringTypeWithCollation(supportsTrimCollation = true),
-              BooleanType,
-              BooleanType) =>
-        val Seq(bin, charset, _, _) = s.arguments
-        stringDecode(expr, charset, bin, inputs, binding)
 
       // On Spark 4.0+, RuntimeReplaceable expressions (StructsToJson, ParseUrl) become
       // Invoke(Literal(Evaluator), "evaluate", ...). Reconstruct the original expression and

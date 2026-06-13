@@ -19,17 +19,10 @@
 
 package org.apache.comet.serde
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, StringDecode}
+import org.apache.spark.sql.catalyst.expressions.StringDecode
 
-object CometStringDecode extends CometExpressionSerde[StringDecode] with CommonStringExprs {
-
-  override def getUnsupportedReasons(): Seq[String] =
-    Seq("Only the `'utf-8'` charset is supported. Other charsets fall back to Spark.")
-
-  override def convert(
-      expr: StringDecode,
-      inputs: Seq[Attribute],
-      binding: Boolean): Option[ExprOuterClass.Expr] = {
-    stringDecode(expr, expr.charset, expr.bin, inputs, binding)
-  }
-}
+/**
+ * Spark 3.x `decode(bin, charset)` runs through the codegen dispatcher so Spark's own decoder
+ * handles invalid byte sequences (replacement-character substitution). See #4465.
+ */
+object CometStringDecode extends CometCodegenDispatch[StringDecode]

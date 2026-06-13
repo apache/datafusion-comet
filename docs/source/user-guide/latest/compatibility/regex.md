@@ -29,19 +29,21 @@ Comet evaluates Spark regular-expression expressions (`rlike`, `regexp_replace`,
   expressions fall back to Spark.
 - **Native (rust) engine** — the Rust [`regex`] crate, run natively with no JNI overhead. It is
   faster but has different semantics from Java regex (see below), so it is **opt-in per expression**
-  via that expression's `allowIncompatible` flag. `rlike`, `regexp_replace`, and `split` have a
-  native implementation; `regexp_extract`, `regexp_extract_all`, and `regexp_instr` do not and
-  always run through the codegen dispatcher.
+  via that expression's `allowIncompatible` flag. `rlike`, `regexp_replace`, `split`,
+  `regexp_extract`, and `regexp_extract_all` have a native implementation; `regexp_instr` does not
+  and always runs through the codegen dispatcher.
 
-| SQL              | Native (rust) opt-in config                              |
-| ---------------- | -------------------------------------------------------- |
-| `rlike`          | `spark.comet.expression.RLike.allowIncompatible`         |
-| `regexp_replace` | `spark.comet.expression.RegExpReplace.allowIncompatible` |
-| `split`          | `spark.comet.expression.StringSplit.allowIncompatible`   |
+| SQL                  | Native (rust) opt-in config                                 |
+| -------------------- | ----------------------------------------------------------- |
+| `rlike`              | `spark.comet.expression.RLike.allowIncompatible`            |
+| `regexp_replace`     | `spark.comet.expression.RegExpReplace.allowIncompatible`    |
+| `regexp_extract`     | `spark.comet.expression.RegExpExtract.allowIncompatible`    |
+| `regexp_extract_all` | `spark.comet.expression.RegExpExtractAll.allowIncompatible` |
+| `split`              | `spark.comet.expression.StringSplit.allowIncompatible`      |
 
 When the native path is opted in but a case has no native implementation (for example a non-scalar
-`rlike` pattern, or `regexp_replace` with a non-1 offset), Comet routes that case through the
-codegen dispatcher.
+`rlike` pattern, `regexp_replace` with a non-1 offset, or `regexp_extract` with a non-literal
+pattern or idx), Comet routes that case through the codegen dispatcher.
 
 ## Disabling Comet for individual regex expressions
 
@@ -64,7 +66,7 @@ the engine selector:
 |                      | Rust engine                                                                                                         | Codegen dispatcher (default)                                                                                        |
 | -------------------- | ------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
 | **Compatibility**    | Differs from Java regex (see below)                                                                                 | 100% compatible with Spark                                                                                          |
-| **Feature coverage** | `rlike`, `regexp_replace`, `split` natively; `regexp_extract`, `regexp_extract_all`, `regexp_instr` via fallthrough | All regexp expressions (`rlike`, `regexp_extract`, `regexp_extract_all`, `regexp_instr`, `regexp_replace`, `split`) |
+| **Feature coverage** | `rlike`, `regexp_replace`, `split`, `regexp_extract`, `regexp_extract_all` natively; `regexp_instr` via fallthrough | All regexp expressions (`rlike`, `regexp_extract`, `regexp_extract_all`, `regexp_instr`, `regexp_replace`, `split`) |
 | **Performance**      | Fully native, no JNI overhead                                                                                       | One JNI round-trip per batch (Arrow vectors stay columnar)                                                          |
 | **Pattern support**  | Linear-time subset only                                                                                             | All Java regex features (backreferences, lookaround, etc.)                                                          |
 

@@ -571,8 +571,8 @@ expression-level). The `outer` variants are wired but marked `Incompatible`; the
 | `position` | ✅ |  |
 | `printf` | ✅ |  |
 | `regexp_count` | ✅ | Runs natively (rewrites to `size(regexp_extract_all(...))`) |
-| `regexp_extract` | ✅ | Routed through the JVM codegen dispatcher |
-| `regexp_extract_all` | ✅ | Routed through the JVM codegen dispatcher |
+| `regexp_extract` | ✅ |  |
+| `regexp_extract_all` | ✅ |  |
 | `regexp_instr` | ✅ | Routed through the JVM codegen dispatcher |
 | `regexp_replace` | ✅ |  |
 | `regexp_substr` | ✅ | Runs natively (rewrites to `nullif(regexp_extract(...), '')`) |
