@@ -15,14 +15,18 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
-statement
-CREATE TABLE test_array_join(arr array<string>) USING parquet
+-- ArrayExcept mixes in CodegenDispatchFallback, so with allowIncompatible unset its Incompatible
+-- null-handling/ordering case routes through the JVM codegen dispatcher and matches Spark exactly,
+-- including the literal/literal case the native path could not handle.
 
 statement
-INSERT INTO test_array_join VALUES (array('a', 'b', 'c')), (array('hello', 'world')), (array()), (NULL), (array('a', NULL, 'c'))
+CREATE TABLE test_ae_dispatch(a array<int>, b array<int>) USING parquet
+
+statement
+INSERT INTO test_ae_dispatch VALUES (array(1, 2, 3), array(2, 3, 4)), (array(1, 2), array()), (array(), array(1)), (NULL, array(1)), (array(1, NULL), array(NULL))
 
 query
-SELECT array_join(arr, ',') FROM test_array_join
+SELECT array_except(a, b) FROM test_ae_dispatch
 
 query
-SELECT array_join(arr, ',', 'NULL') FROM test_array_join
+SELECT array_except(array(1, 2, 3), array(2, 3, 4)), array_except(array(1, 2), array()), array_except(array(), array(1)), array_except(cast(NULL as array<int>), array(1))

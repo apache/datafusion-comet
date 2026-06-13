@@ -145,20 +145,11 @@ object CometMapFromEntries
   override def getIncompatibleReasons(): Seq[String] =
     Seq(keyUnsupportedReason, valueUnsupportedReason)
 
-  private def containsBinary(dataType: DataType): Boolean = {
-    dataType match {
-      case BinaryType => true
-      case StructType(fields) => fields.exists(field => containsBinary(field.dataType))
-      case ArrayType(elementType, _) => containsBinary(elementType)
-      case _ => false
-    }
-  }
-
   override def getSupportLevel(expr: MapFromEntries): SupportLevel = {
-    if (containsBinary(expr.dataType.keyType)) {
+    if (SupportLevel.containsType(expr.dataType.keyType, classOf[BinaryType])) {
       return Incompatible(Some(keyUnsupportedReason))
     }
-    if (containsBinary(expr.dataType.valueType)) {
+    if (SupportLevel.containsType(expr.dataType.valueType, classOf[BinaryType])) {
       return Incompatible(Some(valueUnsupportedReason))
     }
     Compatible(None)
