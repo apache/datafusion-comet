@@ -27,6 +27,7 @@ import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.api.java.UDF1
 import org.apache.spark.sql.catalyst.expressions.{CreateArray, CreateMap, CreateNamedStruct, Expression, Literal, MapConcat}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
+import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 import org.apache.spark.unsafe.types.UTF8String
 
@@ -1396,6 +1397,41 @@ class CometCodegenSuite
       }
     }
   }
+
+  test("divide-by-zero through dispatched ScalaUDF surfaces SparkArithmeticException (#4517)") {
+    // When a ScalaUDF is dispatched into the native plan and the outer expression divides
+    // by the UDF result, the error must surface as SparkArithmeticException(DIVIDE_BY_ZERO),
+    // not as CometNativeException.  Verifies the JNI bridge correctly unwraps the
+    // DataFusion error chain even when DataFusion 53+ wraps it in Context/External layers.
+    spark.udf.register("identity_int", (i: java.lang.Integer) => i)
+    withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
+      withTable("t") {
+        sql("CREATE TABLE t (a INT) USING parquet")
+        sql("INSERT INTO t VALUES (0), (1)")
+        CometScalaUDFCodegen.resetStats()
+        val e = intercept[Throwable](sql("SELECT 1 / identity_int(a) FROM t").collect())
+        val after = CometScalaUDFCodegen.stats()
+        assert(
+          after.compileCount + after.cacheHitCount >= 1,
+          s"expected codegen dispatcher activity, got $after")
+        val chain = Iterator.iterate(e)(_.getCause).takeWhile(_ != null).toList
+        val names = chain.map(_.getClass.getName)
+        assert(
+          names.exists(_.contains("SparkArithmeticException")),
+          s"expected SparkArithmeticException in cause chain, got: $names\n${e.getMessage}")
+        assert(
+          !names.exists(_.contains("CometNativeException")),
+          s"CometNativeException leaked across the JNI boundary: $names\n${e.getMessage}")
+        // Verify the DIVIDE_BY_ZERO error class is preserved end-to-end through the
+        // SparkErrorWithContext → CometQueryExecutionException → SparkErrorConverter pipeline.
+        val sparkEx = chain.find(_.getClass.getName.contains("SparkArithmeticException")).get
+        assert(
+          sparkEx.getMessage.contains("DIVIDE_BY_ZERO"),
+          s"expected DIVIDE_BY_ZERO error class in exception message, got: ${sparkEx.getMessage}")
+      }
+    }
+  }
+
 }
 
 /**

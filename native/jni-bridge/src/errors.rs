@@ -470,6 +470,47 @@ pub fn unwrap_or_throw_default<T: JNIDefault>(
     }
 }
 
+/// Payload recovered from a DataFusionError chain.
+enum SparkPayload<'a> {
+    JavaException(&'a Global<JThrowable<'static>>),
+    WithContext(&'a SparkErrorWithContext),
+    Bare(&'a SparkError),
+}
+
+/// Recursively unwrap `DataFusionError::Context` and `DataFusionError::External` layers
+/// until a Spark-typed payload is found, or return `None`.
+///
+/// DataFusion 53+ wraps errors with `.context(...)` which produces
+/// `DataFusionError::Context(description, Box<inner>)`. The JNI bridge must look
+/// through this extra layer — and through any doubly-nested `External` — to reach
+/// the `SparkError` / `SparkErrorWithContext` that carries the structured exception.
+fn extract_spark_payload(err: &DataFusionError) -> Option<SparkPayload<'_>> {
+    match err {
+        DataFusionError::External(e) => {
+            if let Some(comet_err) = e.downcast_ref::<CometError>() {
+                if let CometError::JavaException { throwable, .. } = comet_err {
+                    return Some(SparkPayload::JavaException(throwable));
+                }
+            }
+            if let Some(ctx) = e.downcast_ref::<SparkErrorWithContext>() {
+                return Some(SparkPayload::WithContext(ctx));
+            }
+            if let Some(spark) = e.downcast_ref::<SparkError>() {
+                return Some(SparkPayload::Bare(spark));
+            }
+            // Recurse: External may wrap another DataFusionError (double-wrapping).
+            if let Some(inner_df) = e.downcast_ref::<DataFusionError>() {
+                return extract_spark_payload(inner_df);
+            }
+            None
+        }
+        // DataFusion 53 adds context via `.context(description)` which wraps the error in
+        // Context(description, Box<inner>). Strip the context wrapper and recurse.
+        DataFusionError::Context(_, inner) => extract_spark_payload(inner),
+        _ => None,
+    }
+}
+
 fn throw_exception(env: &mut Env, error: &CometError, backtrace: Option<String>) {
     // If there isn't already an exception?
     if !env.exception_check() {
@@ -492,53 +533,57 @@ fn throw_exception(env: &mut Env, error: &CometError, backtrace: Option<String>)
                         throwable,
                     },
             } => env.throw(throwable),
-            // Handle DataFusion errors containing SparkError or SparkErrorWithContext
-            CometError::DataFusion {
-                msg: _,
-                source: DataFusionError::External(e),
-            } => {
-                if let Some(CometError::JavaException { throwable, .. }) =
-                    e.downcast_ref::<CometError>()
-                {
-                    // A Java exception captured inside a JVM UDF kernel (e.g. Spark codegen
-                    // raising INVALID_REGEXP_REPLACE). Re-throw the original throwable so callers
-                    // see the exact Spark exception type rather than a wrapped CometNativeException.
-                    env.throw(throwable)
-                } else if let Some(spark_error_with_ctx) = e.downcast_ref::<SparkErrorWithContext>()
-                {
-                    let json_message = spark_error_with_ctx.to_json();
-                    env.throw_new(
-                        jni::jni_str!("org/apache/comet/exceptions/CometQueryExecutionException"),
-                        JNIString::new(json_message),
-                    )
-                } else if let Some(spark_error) = e.downcast_ref::<SparkError>() {
-                    let json_message = spark_error.to_json();
-                    env.throw_new(
-                        jni::jni_str!("org/apache/comet/exceptions/CometQueryExecutionException"),
-                        JNIString::new(json_message),
-                    )
-                } else {
-                    // Check for file-not-found errors from object store
-                    let error_msg = e.to_string();
-                    if error_msg.contains("not found")
-                        && error_msg.contains("No such file or directory")
-                    {
-                        let spark_error = SparkError::FileNotFound { message: error_msg };
-                        throw_spark_error_as_json(env, &spark_error)
-                    } else {
-                        // Not a SparkError, use generic exception
-                        let exception = error.to_exception();
-                        match backtrace {
-                            Some(backtrace_string) => env.throw_new(
-                                JNIString::new(exception.class),
-                                JNIString::new(
-                                    to_stacktrace_string(exception.msg, backtrace_string).unwrap(),
+            // Handle all DataFusion errors, including Context-wrapped chains.
+            // `extract_spark_payload` recurses through Context / nested External layers to
+            // find the Spark-typed payload, so this arm covers:
+            //   - DataFusionError::External(SparkErrorWithContext)      (normal path)
+            //   - DataFusionError::External(SparkError)                 (no query context)
+            //   - DataFusionError::Context(_, External(SparkError))     (DF53 context wrapping)
+            //   - DataFusionError::External(External(SparkError))       (double wrapping)
+            CometError::DataFusion { msg: _, source } => {
+                match extract_spark_payload(source) {
+                    Some(SparkPayload::JavaException(throwable)) => {
+                        // A Java exception captured inside a JVM UDF kernel (e.g. Spark codegen
+                        // raising INVALID_REGEXP_REPLACE). Re-throw the original throwable so
+                        // callers see the exact Spark exception type.
+                        env.throw(throwable)
+                    }
+                    Some(SparkPayload::WithContext(ctx)) => {
+                        let json_message = ctx.to_json();
+                        env.throw_new(
+                            jni::jni_str!(
+                                "org/apache/comet/exceptions/CometQueryExecutionException"
+                            ),
+                            JNIString::new(json_message),
+                        )
+                    }
+                    Some(SparkPayload::Bare(spark_error)) => {
+                        throw_spark_error_as_json(env, spark_error)
+                    }
+                    None => {
+                        // Check for file-not-found errors from object store
+                        let error_msg = source.to_string();
+                        if error_msg.contains("not found")
+                            && error_msg.contains("No such file or directory")
+                        {
+                            let spark_error = SparkError::FileNotFound { message: error_msg };
+                            throw_spark_error_as_json(env, &spark_error)
+                        } else {
+                            // Not a SparkError, use generic exception
+                            let exception = error.to_exception();
+                            match backtrace {
+                                Some(backtrace_string) => env.throw_new(
+                                    JNIString::new(exception.class),
+                                    JNIString::new(
+                                        to_stacktrace_string(exception.msg, backtrace_string)
+                                            .unwrap(),
+                                    ),
                                 ),
-                            ),
-                            _ => env.throw_new(
-                                JNIString::new(exception.class),
-                                JNIString::new(exception.msg),
-                            ),
+                                _ => env.throw_new(
+                                    JNIString::new(exception.class),
+                                    JNIString::new(exception.msg),
+                                ),
+                            }
                         }
                     }
                 }

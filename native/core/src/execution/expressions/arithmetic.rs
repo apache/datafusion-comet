@@ -94,19 +94,16 @@ impl PhysicalExpr for CheckedBinaryExpr {
     }
 
     fn evaluate(&self, batch: &RecordBatch) -> datafusion::common::Result<ColumnarValue> {
-        let result = self.child.evaluate(batch);
-
-        // If there's an error and we have query_context, wrap it
-        match result {
-            Err(DataFusionError::External(e)) if self.query_context.is_some() => {
-                if let Some(spark_err) = e.downcast_ref::<SparkError>() {
+        match self.child.evaluate(batch) {
+            Err(e) if self.query_context.is_some() => {
+                if let Some(spark_err) = extract_spark_error(&e) {
                     let wrapped = SparkErrorWithContext::with_context(
                         spark_err.clone(),
                         Arc::clone(self.query_context.as_ref().unwrap()),
                     );
                     Err(DataFusionError::External(Box::new(wrapped)))
                 } else {
-                    Err(DataFusionError::External(e))
+                    Err(e)
                 }
             }
             other => other,
@@ -172,6 +169,24 @@ use arrow::datatypes::SchemaRef;
 use datafusion::logical_expr::Operator as DataFusionOperator;
 use datafusion_comet_proto::spark_expression::Expr;
 use datafusion_comet_spark_expr::{create_modulo_expr, create_negate_expr, EvalMode};
+
+/// Recursively unwrap `DataFusionError::Context` / nested `External` layers to find
+/// a bare `SparkError`.  Mirrors `extract_spark_payload` in `jni-bridge/src/errors.rs`.
+fn extract_spark_error(err: &DataFusionError) -> Option<&SparkError> {
+    match err {
+        DataFusionError::External(e) => {
+            if let Some(spark) = e.downcast_ref::<SparkError>() {
+                return Some(spark);
+            }
+            if let Some(inner_df) = e.downcast_ref::<DataFusionError>() {
+                return extract_spark_error(inner_df);
+            }
+            None
+        }
+        DataFusionError::Context(_, inner) => extract_spark_error(inner),
+        _ => None,
+    }
+}
 
 use crate::execution::{
     expressions::extract_expr,
