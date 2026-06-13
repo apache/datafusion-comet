@@ -149,8 +149,8 @@ SELECT cast(named_struct('a', named_struct('b', named_struct('c', 1, 'd', 'leaf'
 query
 SELECT cast(named_struct('s1', '', 's2', ' ', 's3', cast(null as string)) as string)
 
--- Map-valued field: not supported, falls back to Spark.
-query expect_fallback(to StringType is not supported)
+-- Map-valued field: supported via recursive map -> string casting.
+query
 SELECT cast(named_struct('m', map('k', 1)) as string)
 
 -- ----------------------------------------------------------------------------
@@ -270,69 +270,70 @@ SELECT cast(array(cast(1.5 as double), cast('NaN' as double), cast('-Infinity' a
 query
 SELECT cast(array(array(array(1, 2), array(3)), array(array(cast(null as int)))) as string)
 
--- Array of map: not supported, falls back to Spark.
-query expect_fallback(to StringType is not supported)
+-- Array of map: supported via recursive map -> string casting.
+query
 SELECT cast(array(map('k', 1)) as string)
 
 -- ----------------------------------------------------------------------------
 -- Map → string
 -- ----------------------------------------------------------------------------
--- Comet does not implement map-to-string casts, so every map → string falls back to Spark.
+-- Comet now implements map-to-string casts, including nested maps.
 -- Note: maps materialized through parquet have nondeterministic entry order, so map column
 -- tests use literal maps directly rather than reading from a parquet table.
 
 -- Map with string keys, int values.
-query expect_fallback(Cast from MapType)
+query
 SELECT cast(map('a', 1, 'b', 2, 'c', 3) as string)
 
 -- Map with NULL values rendered as "null".
-query expect_fallback(Cast from MapType)
+query
 SELECT cast(map('a', 1, 'b', cast(null as int), 'c', 3) as string)
 
 -- Map with int keys, string values.
-query expect_fallback(Cast from MapType)
+query
 SELECT cast(map(1, 'one', 2, 'two', 3, 'three') as string)
 
 -- Map with boolean values.
-query expect_fallback(Cast from MapType)
+query
 SELECT cast(map('t', true, 'f', false, 'n', cast(null as boolean)) as string)
 
 -- Map with bigint values at min/max.
-query expect_fallback(Cast from MapType)
+query
 SELECT cast(map('max', 9223372036854775807, 'min', -9223372036854775808, 'zero', cast(0 as bigint)) as string)
 
 -- Map with decimal values.
-query expect_fallback(Cast from MapType)
+query
 SELECT cast(map('pos', cast('1.234567890123456789' as decimal(38, 18)), 'neg', cast('-1.234567890123456789' as decimal(38, 18)), 'null', cast(null as decimal(38, 18))) as string)
 
 -- Map with date and timestamp values.
-query expect_fallback(Cast from MapType)
+query
 SELECT cast(map('a', date '2024-01-15', 'b', date '1970-01-01', 'c', cast(null as date)) as string)
 
-query expect_fallback(Cast from MapType)
+query
 SELECT cast(map('a', timestamp '2024-01-15 10:30:45', 'b', cast(null as timestamp)) as string)
 
 -- Map with binary values.
-query expect_fallback(Cast from MapType)
+query
 SELECT cast(map('a', X'616263', 'b', X'', 'c', cast(null as binary)) as string)
 
 -- Map with float / double values: NaN / ±0 / ±Infinity / NULL.
-query expect_fallback(Cast from MapType)
+query
 SELECT cast(map('nan', cast('NaN' as float), 'neg0', cast(-0.0 as float), 'null', cast(null as float)) as string)
 
-query expect_fallback(Cast from MapType)
+query
 SELECT cast(map('nan', cast('NaN' as double), 'inf', cast('Infinity' as double), 'ninf', cast('-Infinity' as double), 'null', cast(null as double)) as string)
 
 -- Map with struct values: each value rendered as `{f1, f2, ...}`.
-query expect_fallback(Cast from MapType)
+query
 SELECT cast(map('a', named_struct('x', 1, 'y', 'first'), 'b', cast(null as struct<x: int, y: string>)) as string)
 
 -- Map with array values.
-query expect_fallback(Cast from MapType)
+query
 SELECT cast(map('a', array(1, 2, 3), 'b', array(cast(null as int)), 'c', cast(null as array<int>)) as string)
 
--- Empty map.
-query expect_fallback(Cast from MapType)
+-- Empty map: still falls back because planning sees `map()` as `Map<NullType, NullType>`,
+-- which reaches the existing NullType -> StringType cast fallback.
+query expect_fallback(Cast from NullType to StringType is not supported)
 SELECT cast(map() as string)
 
 -- NULL map: Spark constant-folds this to a literal NULL, so the cast never reaches Comet
@@ -341,5 +342,5 @@ query
 SELECT cast(cast(null as map<string, int>) as string)
 
 -- Map of map.
-query expect_fallback(Cast from MapType)
+query
 SELECT cast(map('outer', map('inner', 1)) as string)

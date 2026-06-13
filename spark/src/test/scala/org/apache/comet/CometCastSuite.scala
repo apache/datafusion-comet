@@ -1672,19 +1672,24 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         Incompatible(Some("There can be rounding differences")))
   }
 
-  test("cast MapType propagates Unsupported from nested value cast") {
+  test("cast MapType to StringType is Compatible") {
+    val fromType = MapType(IntegerType, IntegerType)
+    assert(
+      CometCast.isSupported(fromType, DataTypes.StringType, None, CometEvalMode.LEGACY) ==
+        Compatible())
+  }
+
+  test("cast MapType propagates supported nested value cast") {
     // Map<Int, Map<Int, Int>> → Map<Int, String>: the inner Map → String
-    // cast is Unsupported, and that must propagate through the outer Map
-    // arm rather than being silently swallowed.
+    // cast is now supported and must propagate through the outer Map arm.
     val innerFrom = MapType(IntegerType, IntegerType)
-    val expectedMessage = s"Cast from $innerFrom to ${DataTypes.StringType} is not supported"
     assert(
       CometCast.isSupported(
         MapType(IntegerType, innerFrom),
         MapType(IntegerType, StringType),
         None,
         CometEvalMode.LEGACY) ==
-        Unsupported(Some(expectedMessage)))
+        Compatible())
   }
 
   test("cast ArrayType(DateType) to unsupported ArrayType falls back") {

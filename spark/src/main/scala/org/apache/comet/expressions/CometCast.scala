@@ -305,6 +305,13 @@ object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
           }
         }
         Compatible()
+      case MapType(keyType, valueType, _) =>
+        isSupported(keyType, DataTypes.StringType, timeZoneId, evalMode) match {
+          case Compatible(_) =>
+            isSupported(valueType, DataTypes.StringType, timeZoneId, evalMode)
+          case other =>
+            other
+        }
       case _ => unsupported(fromType, DataTypes.StringType)
     }
   }
