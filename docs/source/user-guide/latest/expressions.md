@@ -362,7 +362,7 @@ expression-level). The `outer` variants are wired but marked `Incompatible`; the
 | `aggregate` | ✅ |  |
 | `array_sort` | ✅ |  |
 | `exists` | ✅ |  |
-| `filter` | 🔜 | General lambda not yet wired; the `array_compact` form is supported ([#4224](https://github.com/apache/datafusion-comet/issues/4224)) |
+| `filter` | ✅ | General lambda routed through the JVM codegen dispatcher; the `array_compact` form runs natively |
 | `forall` | ✅ |  |
 | `map_filter` | ✅ |  |
 | `map_zip_with` | ✅ |  |
@@ -379,7 +379,7 @@ expression-level). The `outer` variants are wired but marked `Incompatible`; the
 | Function | Status | Notes |
 | --- | --- | --- |
 | `element_at` | ✅ | MapType input falls back |
-| `map` | 🔜 | Constructs a map |
+| `map` | ✅ | Routed through the JVM codegen dispatcher |
 | `map_concat` | ✅ |  |
 | `map_contains_key` | ✅ |  |
 | `map_entries` | ✅ |  |
@@ -565,17 +565,17 @@ expression-level). The `outer` variants are wired but marked `Incompatible`; the
 | `lpad` | ✅ |  |
 | `ltrim` | ✅ |  |
 | `luhn_check` | ✅ | Native via `StaticInvoke` (tests: luhn_check.sql) |
-| `mask` | 🔜 | Data masking |
+| `mask` | ✅ | Routed through the JVM codegen dispatcher |
 | `octet_length` | ✅ |  |
 | `overlay` | ✅ |  |
 | `position` | ✅ |  |
 | `printf` | ✅ |  |
-| `regexp_count` | 🔜 | tracking [#4098](https://github.com/apache/datafusion-comet/issues/4098) |
+| `regexp_count` | ✅ | Runs natively (rewrites to `size(regexp_extract_all(...))`) |
 | `regexp_extract` | ✅ |  |
 | `regexp_extract_all` | ✅ |  |
 | `regexp_instr` | ✅ | Routed through the JVM codegen dispatcher |
 | `regexp_replace` | ✅ |  |
-| `regexp_substr` | 🔜 | tracking [#4098](https://github.com/apache/datafusion-comet/issues/4098) |
+| `regexp_substr` | ✅ | Runs natively (rewrites to `nullif(regexp_extract(...), '')`) |
 | `repeat` | ✅ |  |
 | `replace` | ✅ |  |
 | `right` | ✅ |  |
@@ -595,8 +595,8 @@ expression-level). The `outer` variants are wired but marked `Incompatible`; the
 | `to_varchar` | ✅ |  |
 | `translate` | ✅ | Falls back by default; opt-in via allowIncompatible ([#4463](https://github.com/apache/datafusion-comet/issues/4463)) |
 | `trim` | ✅ |  |
-| `try_to_binary` | 🔜 | Lowers to `TryEval(...)`, which falls back |
-| `try_to_number` | 🔜 | TRY variant of `to_number` |
+| `try_to_binary` | ✅ | Runs natively (rewrites to `try_eval(to_binary(...))`) |
+| `try_to_number` | ✅ | Routed through the JVM codegen dispatcher |
 | `ucase` | ✅ |  |
 | `unbase64` | ✅ |  |
 | `upper` | ✅ |  |
