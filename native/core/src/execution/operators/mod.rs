@@ -19,10 +19,12 @@
 
 pub use crate::errors::ExecutionError;
 
+pub use aligned_stream_reader::*;
 pub use copy::*;
 pub use iceberg_scan::*;
 pub use scan::*;
 
+mod aligned_stream_reader;
 mod copy;
 mod expand;
 pub use expand::ExpandExec;
@@ -32,8 +34,6 @@ pub use parquet_writer::ParquetWriterExec;
 mod csv_scan;
 pub mod projection;
 mod scan;
-mod schema_align;
 mod shuffle_scan;
 pub use csv_scan::init_csv_datasource_exec;
-pub use schema_align::SchemaAlignExec;
 pub use shuffle_scan::ShuffleScanExec;

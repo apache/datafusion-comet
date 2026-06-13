@@ -361,6 +361,7 @@ jobs:
               org.apache.spark.sql.CometToPrettyStringSuite
               org.apache.spark.sql.CometCollationSuite
               org.apache.comet.CometFuzzAggregateSuite
+              org.apache.spark.sql.comet.execution.arrow.CometArrowStreamSuite
           - name: "expressions"
             value: |
               org.apache.comet.CometExpressionSuite
@@ -388,6 +389,8 @@ jobs:
               org.apache.comet.CometCodegenHOFSuite
               org.apache.comet.CometFuzzMathSuite
               org.apache.comet.CometCodegenFuzzSuite
+              org.apache.comet.CometStringDecodeSuite
+              org.apache.comet.CometWidthBucketSuite
       fail-fast: false
     name: ${{ matrix.profile.name }} [${{ matrix.suite.name }}]
     runs-on: ubuntu-24.04

@@ -35,12 +35,13 @@ import org.apache.spark.sql.catalyst.expressions.codegen.LazilyGeneratedOrdering
 import org.apache.spark.sql.catalyst.plans.logical.Statistics
 import org.apache.spark.sql.catalyst.plans.physical._
 import org.apache.spark.sql.comet.{CometMetricNode, CometNativeExec, CometPlan, CometSinkPlaceHolder, NativeExecContext}
+import org.apache.spark.sql.comet.execution.arrow.CometArrowStream
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.ShuffleQueryStageExec
 import org.apache.spark.sql.execution.exchange.{ENSURE_REQUIREMENTS, ShuffleExchangeExec, ShuffleExchangeLike, ShuffleOrigin}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics, SQLShuffleReadMetricsReporter, SQLShuffleWriteMetricsReporter}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType, DataType, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, MapType, NullType, ShortType, StringType, StructType, TimestampNTZType, TimestampType}
+import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType, DataType, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, MapType, NullType, ShortType, StringType, StructField, StructType, TimestampNTZType, TimestampType}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.util.MutablePair
 import org.apache.spark.util.collection.unsafe.sort.{PrefixComparators, RecordComparator}
@@ -698,14 +699,24 @@ object CometShuffleExchangeExec
     scanBuilder.addAllFields(scanTypes.asJava)
     val scanOp = OperatorOuterClass.Operator.newBuilder().setScan(scanBuilder).build()
 
+    // Wrap the raw batches as an RDD[ArrowArrayStream] so the leaf reaches native via the Arrow C
+    // Stream Interface, matching how CometNativeExec.buildNativeContext feeds the native-child
+    // path. The synthetic Scan("ShuffleWriterInput") above is the native consumer.
+    val streamRDD = CometArrowStream.wrapColumnarBatchRDD(
+      rdd,
+      StructType(
+        outputAttributes.map(a => StructField(a.name, a.dataType, a.nullable, a.metadata))),
+      CometArrowStream.NATIVE_TIMEZONE,
+      "ShuffleWriterInput")
+
     val thinRDD = new CometNativeShuffleInputRDD(
       rdd.sparkContext,
-      Seq(rdd),
+      Seq(streamRDD),
       rdd.getNumPartitions,
       shuffleScanIndices = Set.empty)
 
     val ctx = NativeExecContext(
-      inputs = Seq(rdd),
+      inputs = Seq(streamRDD),
       numPartitions = rdd.getNumPartitions,
       subqueries = Seq.empty,
       broadcastedHadoopConfForEncryption = None,

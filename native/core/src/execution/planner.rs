@@ -22,20 +22,21 @@ pub mod macros;
 pub mod operator_registry;
 
 use crate::execution::operators::init_csv_datasource_exec;
+use crate::execution::operators::AlignedArrowStreamReader;
 use crate::execution::operators::IcebergScanExec;
 use crate::execution::{
     expressions::list_positions::ListPositionsExpr,
     expressions::subquery::Subquery,
-    operators::{
-        ExecutionError, ExpandExec, ParquetWriterExec, ScanExec, SchemaAlignExec, ShuffleScanExec,
-    },
+    operators::{ExecutionError, ExpandExec, ParquetWriterExec, ScanExec, ShuffleScanExec},
     planner::expression_registry::ExpressionRegistry,
     planner::operator_registry::OperatorRegistry,
     serde::to_arrow_datatype,
-    shuffle::ShuffleWriterExec,
+    shuffle::{SchemaAlignExec, ShuffleWriterExec},
 };
+use crate::jvm_bridge::{jni_call, JVMClasses};
 use arrow::compute::CastOptions;
 use arrow::datatypes::{DataType, Field, FieldRef, Schema, TimeUnit, DECIMAL128_MAX_PRECISION};
+use arrow::ffi_stream::FFI_ArrowArrayStream;
 use datafusion::functions_aggregate::bit_and_or_xor::{bit_and_udaf, bit_or_udaf, bit_xor_udaf};
 use datafusion::functions_aggregate::count::count_udaf;
 use datafusion::functions_aggregate::min_max::max_udaf;
@@ -108,6 +109,7 @@ use arrow::row::{OwnedRow, RowConverter, SortField};
 use datafusion::common::utils::SingleRowListArrayBuilder;
 use datafusion::common::UnnestOptions;
 use datafusion::physical_plan::filter::FilterExec;
+use datafusion::physical_plan::joins::NestedLoopJoinExec;
 use datafusion::physical_plan::limit::GlobalLimitExec;
 use datafusion::physical_plan::unnest::{ListUnnest, UnnestExec};
 use datafusion_comet_proto::spark_expression::ListLiteral;
@@ -976,6 +978,63 @@ impl PhysicalPlanner {
         }
     }
 
+    /// DataFusion's nested comparison kernel (`apply_cmp_for_nested`) requires both operands to
+    /// have identical data types, including nested field nullability, whereas Spark comparisons
+    /// ignore nullability. When a comparison's operands are nested types that differ only in
+    /// nullability (e.g. a higher-order `transform` produces `List(non-null Struct)` while the
+    /// other side is `List(nullable Struct)`), cast both to their nullability-union type so the
+    /// kernel accepts them. Non-comparison ops and non-nested or already-matching types are left
+    /// untouched.
+    pub fn reconcile_nested_comparison_types(
+        left: Arc<dyn PhysicalExpr>,
+        right: Arc<dyn PhysicalExpr>,
+        op: &DataFusionOperator,
+        input_schema: &SchemaRef,
+    ) -> (Arc<dyn PhysicalExpr>, Arc<dyn PhysicalExpr>) {
+        use DataFusionOperator::*;
+        let is_cmp = matches!(
+            op,
+            Eq | NotEq | Lt | LtEq | Gt | GtEq | IsDistinctFrom | IsNotDistinctFrom
+        );
+        if !is_cmp {
+            return (left, right);
+        }
+        let (lt, rt) = match (left.data_type(input_schema), right.data_type(input_schema)) {
+            (Ok(lt), Ok(rt)) => (lt, rt),
+            _ => return (left, right),
+        };
+        // Only nested types route through `apply_cmp_for_nested`; primitives coerce fine.
+        let nested = matches!(
+            lt,
+            DataType::List(_)
+                | DataType::LargeList(_)
+                | DataType::FixedSizeList(_, _)
+                | DataType::Struct(_)
+                | DataType::Map(_, _)
+        );
+        if !nested || lt.equals_datatype(&rt) {
+            return (left, right);
+        }
+        // `Field::try_merge` unions nullability recursively while preserving structure (and the
+        // Map/list invariants). Bail out unchanged if the structures are genuinely incompatible.
+        let mut merged = Field::new("c", lt.clone(), true);
+        if merged
+            .try_merge(&Field::new("c", rt.clone(), true))
+            .is_err()
+        {
+            return (left, right);
+        }
+        let target = merged.data_type().clone();
+        let cast_to_target = |e: Arc<dyn PhysicalExpr>, dt: &DataType| -> Arc<dyn PhysicalExpr> {
+            if dt.equals_datatype(&target) {
+                e
+            } else {
+                Arc::new(CastExpr::new(e, target.clone(), None))
+            }
+        };
+        (cast_to_target(left, &lt), cast_to_target(right, &rt))
+    }
+
     /// Create a DataFusion physical plan from Spark physical plan. There is a level of
     /// abstraction where a tree of SparkPlan nodes is returned. There is a 1:1 mapping from a
     /// protobuf Operator (that represents a Spark operator) to a native SparkPlan struct. We
@@ -1169,6 +1228,57 @@ impl PhysicalPlanner {
                     shuffle_scans,
                     Arc::new(SparkPlan::new(spark_plan.plan_id, aggregate, vec![child])),
                 ))
+            }
+
+            OpStruct::BroadcastNestedLoopJoin(bnlj) => {
+                let (join_params, scans, shuffle_scans) = self.parse_join_parameters(
+                    inputs,
+                    children,
+                    &[],
+                    &[],
+                    bnlj.join_type,
+                    &bnlj.condition,
+                    partition_count,
+                )?;
+
+                let left = Arc::clone(&join_params.left.native_plan);
+                let right = Arc::clone(&join_params.right.native_plan);
+
+                let nested_loop_join = Arc::new(NestedLoopJoinExec::try_new(
+                    left,
+                    right,
+                    join_params.join_filter,
+                    &join_params.join_type,
+                    None,
+                )?);
+
+                if bnlj.build_side == BuildSide::BuildRight as i32 {
+                    let swapped_join = nested_loop_join.as_ref().swap_inputs()?;
+                    let mut additional_native_plans = vec![];
+                    if swapped_join.as_any().is::<ProjectionExec>() {
+                        additional_native_plans.push(Arc::clone(swapped_join.children()[0]));
+                    }
+                    Ok((
+                        scans,
+                        shuffle_scans,
+                        Arc::new(SparkPlan::new_with_additional(
+                            spark_plan.plan_id,
+                            swapped_join,
+                            vec![join_params.left, join_params.right],
+                            additional_native_plans,
+                        )),
+                    ))
+                } else {
+                    Ok((
+                        scans,
+                        shuffle_scans,
+                        Arc::new(SparkPlan::new(
+                            spark_plan.plan_id,
+                            nested_loop_join,
+                            vec![join_params.left, join_params.right],
+                        )),
+                    ))
+                }
             }
             OpStruct::Limit(limit) => {
                 assert_eq!(children.len(), 1);
@@ -1416,23 +1526,31 @@ impl PhysicalPlanner {
                     return Err(GeneralError("No input for scan".to_string()));
                 }
 
-                // Consumes the first input source for the scan
-                let input_source =
-                    if self.exec_context_id == TEST_EXEC_CONTEXT_ID && inputs.is_empty() {
-                        // For unit test, we will set input batch to scan directly by `set_input_batch`.
-                        None
-                    } else {
-                        Some(inputs.remove(0))
-                    };
+                // Consumes the first input source for the scan. The Java side passes an
+                // `org.apache.arrow.c.ArrowArrayStream` whose `memoryAddress` points at the C
+                // struct; native takes ownership via `AlignedArrowStreamReader::from_raw`.
+                let input_source = if self.exec_context_id == TEST_EXEC_CONTEXT_ID
+                    && inputs.is_empty()
+                {
+                    // For unit test, we will set input batch to scan directly by `set_input_batch`.
+                    None
+                } else {
+                    let java_stream = inputs.remove(0);
+                    let address: i64 = JVMClasses::with_env(|env| unsafe {
+                        jni_call!(env, arrow_array_stream(java_stream.as_obj()).memory_address() -> i64)
+                    })?;
+                    let reader = unsafe {
+                        AlignedArrowStreamReader::from_raw(address as *mut FFI_ArrowArrayStream)
+                    }
+                    .map_err(|e| {
+                        GeneralError(format!("Failed to import ArrowArrayStream from JVM: {e}"))
+                    })?;
+                    Some(Arc::new(std::sync::Mutex::new(reader)))
+                };
 
                 // The `ScanExec` operator will take actual arrays from Spark during execution
-                let scan = ScanExec::new(
-                    self.exec_context_id,
-                    input_source,
-                    &scan.source,
-                    data_types,
-                    scan.arrow_ffi_safe,
-                )?;
+                let scan =
+                    ScanExec::new(self.exec_context_id, input_source, &scan.source, data_types)?;
 
                 Ok((
                     vec![scan.clone()],
@@ -3970,7 +4088,6 @@ mod tests {
                     type_info: None,
                 }],
                 source: "".to_string(),
-                arrow_ffi_safe: false,
             })),
         };
 
@@ -4036,7 +4153,6 @@ mod tests {
                     type_info: None,
                 }],
                 source: "".to_string(),
-                arrow_ffi_safe: false,
             })),
         };
 
@@ -4246,7 +4362,6 @@ mod tests {
             op_struct: Some(OpStruct::Scan(spark_operator::Scan {
                 fields: vec![create_proto_datatype()],
                 source: "".to_string(),
-                arrow_ffi_safe: false,
             })),
         }
     }
@@ -4289,7 +4404,6 @@ mod tests {
                     },
                 ],
                 source: "".to_string(),
-                arrow_ffi_safe: false,
             })),
         };
 
@@ -4412,7 +4526,6 @@ mod tests {
                     },
                 ],
                 source: "".to_string(),
-                arrow_ffi_safe: false,
             })),
         };
 
@@ -4895,7 +5008,6 @@ mod tests {
                     },
                 ],
                 source: "".to_string(),
-                arrow_ffi_safe: false,
             })),
         };
 

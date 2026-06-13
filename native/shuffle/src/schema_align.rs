@@ -15,10 +15,23 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! `SchemaAlignExec` reshapes its child's output so the per-column Arrow type and field-level
-//! nullability match what Spark catalyst declared, casting where necessary. Sits between a native
-//! subtree and `ShuffleWriterExec` so DataFusion / `datafusion-spark` return-type drift is caught
-//! before it reaches shuffle blocks. See
+//! `SchemaAlignExec` reshapes a shuffle writer's input so each column's Arrow type and field-level
+//! nullability match what Spark catalyst declared, casting where necessary.
+//!
+//! This concern is enclosed by shuffle on purpose: everywhere else in the native runtime,
+//! return-type drift from DataFusion / `datafusion-spark` is self-healing. When a native plan's
+//! output crosses back to the JVM and feeds another native plan, the consuming `ScanExec` casts
+//! every imported column to the catalyst-declared type, so a wrong Arrow type never survives the
+//! boundary. Shuffle is the lone exception, on two counts:
+//!
+//!   1. The writer hash-partitions on these columns, and Spark's hash differs by type (e.g. `Int32`
+//!      vs `Int64`), so a drifted type would route rows to the wrong partition. A read-side cast
+//!      cannot undo a wrong partition assignment, so the type must be corrected before partitioning.
+//!   2. The shuffle read path (`ShuffleScanExec`) does not cast; it stamps the catalyst schema onto
+//!      the decoded block and errors on any mismatch. The schema is serialized into the block on
+//!      write and trusted on read.
+//!
+//! Both force the alignment to happen on the writer input. See
 //! <https://github.com/apache/datafusion-comet/issues/4515> for the running list of mismatched
 //! functions.
 
