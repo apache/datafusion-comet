@@ -70,14 +70,14 @@ aws-credential-types = { workspace = true }
 parking_lot = "0.12.5"
 datafusion-comet-objectstore-hdfs = { path = "../hdfs", optional = true, default-features = false, features = ["hdfs"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots", "http2"] }
-object_store_opendal = { version = "0.56.0", optional = true }
+object_store_opendal = { version = "0.57.0", optional = true }
 hdfs-sys = {version = "0.3", optional = true, features = ["hdfs_3_3"]}
-opendal = { version = "0.56.0", optional = true, features = ["services-hdfs"] }
+opendal = { version = "0.57.0", optional = true, features = ["services-hdfs"] }
 iceberg = { workspace = true }
 iceberg-storage-opendal = { workspace = true }
 reqsign-core = { workspace = true }
 serde_json = "1.0"
-uuid = "1.23.0"
+uuid = "1.23.3"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 procfs = "0.18.0"
@@ -90,7 +90,7 @@ pprof = { version = "0.15", features = ["flamegraph"] }
 criterion = { version = "0.7", features = ["async", "async_tokio", "async_std"] }
 jni = { version = "0.22.4", features = ["invocation"] }
 lazy_static = "1.4"
-assertables = "9"
+assertables = "10"
 hex = "0.4.3"
 datafusion-functions-nested = { version = "53.1.0" }
 
