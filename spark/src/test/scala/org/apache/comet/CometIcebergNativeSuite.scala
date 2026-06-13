@@ -3951,4 +3951,62 @@ class CometIcebergNativeSuite
       }
     }
   }
+
+  test("native Iceberg scan does not duplicate a row group split by byte range") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.split_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.split_cat.type" -> "hadoop",
+        "spark.sql.catalog.split_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+        val dataPath = s"${warehouseDir.getAbsolutePath}/single_row_group_parquet"
+        spark
+          .sql("SELECT CAST(0 AS INT) AS id, repeat('x', 1024) AS payload")
+          .coalesce(1)
+          .write
+          .mode("overwrite")
+          .parquet(dataPath)
+        spark.sql("""
+        CREATE TABLE split_cat.db.single_row_group_split (
+          id INT,
+          payload STRING
+        ) USING iceberg
+      """)
+        val parquetFiles = new File(dataPath)
+          .listFiles()
+          .filter(file => file.getName.startsWith("part-") && file.getName.endsWith(".parquet"))
+        assert(parquetFiles.length == 1)
+        val sourceParquetFile = parquetFiles.head
+        val catalog = spark.sessionState.catalogManager.catalog("split_cat")
+        val ident =
+          org.apache.spark.sql.connector.catalog.Identifier
+            .of(Array("db"), "single_row_group_split")
+        val table = catalog
+          .asInstanceOf[org.apache.iceberg.spark.SparkCatalog]
+          .loadTable(ident)
+          .asInstanceOf[org.apache.iceberg.spark.source.SparkTable]
+          .table()
+        val dataFile = org.apache.iceberg.DataFiles
+          .builder(table.spec())
+          .withPath(sourceParquetFile.getAbsolutePath)
+          .withFormat(org.apache.iceberg.FileFormat.PARQUET)
+          .withFileSizeInBytes(sourceParquetFile.length())
+          .withRecordCount(1)
+          .build()
+        table.newAppend().appendFile(dataFile).commit()
+        val df = spark.read
+          .format("iceberg")
+          .option("split-size", "64")
+          .option("file-open-cost", "64")
+          .load("split_cat.db.single_row_group_split")
+          .where("id = 0")
+          .select("id")
+        val rows = df.collect()
+        assert(rows.length == 1, s"Expected 1 row, got ${rows.length}: ${rows.mkString(", ")}")
+      }
+    }
+  }
 }

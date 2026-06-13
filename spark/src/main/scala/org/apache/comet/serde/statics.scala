@@ -19,12 +19,12 @@
 
 package org.apache.comet.serde
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, ExpressionImplUtils, Literal, UrlCodec}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, ExpressionImplUtils, Literal, StringDecode, TryEval, UrlCodec}
 import org.apache.spark.sql.catalyst.expressions.objects.StaticInvoke
 import org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils
 
-import org.apache.comet.CometSparkSessionExtensions.withInfo
-import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto}
+import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
+import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithFallbackReason, scalarFunctionExprToProto}
 
 object CometStaticInvoke extends CometExpressionSerde[StaticInvoke] {
 
@@ -38,7 +38,13 @@ object CometStaticInvoke extends CometExpressionSerde[StaticInvoke] {
         "read_side_padding"),
       ("isLuhnNumber", classOf[ExpressionImplUtils]) -> CometScalarFunction("luhn_check"),
       ("encode", UrlCodec.getClass) -> CometUrlEncodeStaticInvoke,
-      ("decode", UrlCodec.getClass) -> CometUrlDecodeStaticInvoke)
+      ("decode", UrlCodec.getClass) -> CometUrlDecodeStaticInvoke,
+      ("aesEncrypt", classOf[ExpressionImplUtils]) -> CometStaticInvokeCodegenDispatch,
+      ("aesDecrypt", classOf[ExpressionImplUtils]) -> CometStaticInvokeCodegenDispatch,
+      // Spark 4.0 lowers `decode(bin, charset)` to `StaticInvoke(StringDecode.decode, ...)`
+      // carrying the `legacyCharsets` / `legacyErrorAction` flags. Routing through the codegen
+      // dispatcher runs Spark's own decoder so both flags are honored. See #4465.
+      ("decode", classOf[StringDecode]) -> CometStaticInvokeCodegenDispatch)
 
   override def convert(
       expr: StaticInvoke,
@@ -48,7 +54,7 @@ object CometStaticInvoke extends CometExpressionSerde[StaticInvoke] {
       case Some(handler) =>
         handler.convert(expr, inputs, binding)
       case None =>
-        withInfo(
+        withFallbackReason(
           expr,
           s"Static invoke expression: ${expr.functionName} is not supported",
           expr.children: _*)
@@ -64,7 +70,7 @@ object CometUrlEncodeStaticInvoke extends CometExpressionSerde[StaticInvoke] {
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     val childExpr = exprToProtoInternal(expr.children.head, inputs, binding)
     val optExpr = scalarFunctionExprToProto("url_encode", childExpr)
-    optExprWithInfo(optExpr, expr, expr.children: _*)
+    optExprWithFallbackReason(optExpr, expr, expr.children: _*)
   }
 }
 
@@ -80,6 +86,12 @@ object CometUrlDecodeStaticInvoke extends CometExpressionSerde[StaticInvoke] {
     val funcName = if (failOnError) "url_decode" else "try_url_decode"
     val childExpr = exprToProtoInternal(expr.children.head, inputs, binding)
     val optExpr = scalarFunctionExprToProto(funcName, childExpr)
-    optExprWithInfo(optExpr, expr, expr.children: _*)
+    optExprWithFallbackReason(optExpr, expr, expr.children: _*)
   }
 }
+
+/** Routes a [[StaticInvoke]] through the JVM codegen dispatcher; used for AES. */
+object CometStaticInvokeCodegenDispatch extends CometCodegenDispatch[StaticInvoke]
+
+/** Routes [[TryEval]] through the JVM codegen dispatcher; used for `try_aes_decrypt`. */
+object CometTryEval extends CometCodegenDispatch[TryEval]

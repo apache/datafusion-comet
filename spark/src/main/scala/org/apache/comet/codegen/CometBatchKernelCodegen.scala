@@ -23,7 +23,7 @@ import org.apache.arrow.vector._
 import org.apache.arrow.vector.complex.{ListVector, MapVector, StructVector}
 import org.apache.arrow.vector.types.pojo.Field
 import org.apache.spark.internal.Logging
-import org.apache.spark.sql.catalyst.expressions.{BoundReference, Expression, HigherOrderFunction, LambdaFunction, Literal, NamedLambdaVariable, Unevaluable}
+import org.apache.spark.sql.catalyst.expressions.{BoundReference, Expression, Literal, Unevaluable}
 import org.apache.spark.sql.catalyst.expressions.codegen._
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
@@ -103,13 +103,12 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
 
   /**
    * Plan-time predicate. `None` greenlights the serde to emit the codegen proto; `Some(reason)`
-   * forces a Spark fallback (typically `withInfo(...) + None`) so the operator falls back cleanly
-   * rather than crashing the Janino compile at execute time.
+   * forces a Spark fallback (typically `withFallbackReason(...) + None`) so the operator falls
+   * back cleanly rather than crashing the Janino compile at execute time.
    *
    * Checks every `BoundReference`'s data type and the root `expr.dataType` against
-   * [[isSupportedDataType]], rejects aggregates / generators / `CodegenFallback` (other than
-   * HOFs, which are admitted), and gates total nested-field count on
-   * `spark.sql.codegen.maxFields`.
+   * [[isSupportedDataType]], rejects aggregates / generators / `Unevaluable`, and gates total
+   * nested-field count on `spark.sql.codegen.maxFields`.
    */
   def canHandle(boundExpr: Expression): Option[String] = {
     if (!isSupportedDataType(boundExpr.dataType)) {
@@ -127,12 +126,15 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
         s"codegen dispatch: too many nested fields ($totalFields > " +
           s"spark.sql.codegen.maxFields=$maxFields)")
     }
-    // HOFs are `CodegenFallback` but admitted: `CodegenFallback.doGenCode` emits one
-    // `((Expression) references[N]).eval(row)` call site per HOF. The kernel dispatches to the
-    // HOF's interpreted `eval`, which mutates `NamedLambdaVariable.value` per element and reads
-    // the input array through the kernel's typed Arrow getters. Per-task `boundExpr` isolation
-    // in `CometScalaUDFCodegen.kernelCache` prevents concurrent partitions from racing on the
-    // lambda variable's `AtomicReference`. See `CometCodegenHOFSuite`.
+    // `CodegenFallback` expressions are admitted. `CodegenFallback.doGenCode` emits one
+    // `((Expression) references[N]).eval(row)` call site per expression. The kernel dispatches
+    // to the expression's interpreted `eval` against `row` aliased to `this`, so the eval reads
+    // through the kernel's typed Arrow getters. This covers `HigherOrderFunction` (which mutates
+    // `NamedLambdaVariable.value` per element; see `CometCodegenHOFSuite`) as well as other
+    // CodegenFallback expressions like `JsonToStructs` / `StructsToJson` whose `eval(row)`
+    // simply calls `row.get(0, dataType)`. Per-task `boundExpr` isolation in
+    // `CometScalaUDFCodegen.kernelCache` prevents concurrent partitions from racing on shared
+    // state inside the expression.
     //
     // Nondeterministic / stateful expressions are accepted: each cache entry holds one kernel
     // instance with a single `init(partitionIndex)` call, so `Rand` / `MonotonicallyIncreasingID`
@@ -150,10 +152,6 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
     boundExpr.find {
       case _: org.apache.spark.sql.catalyst.expressions.aggregate.AggregateFunction => true
       case _: org.apache.spark.sql.catalyst.expressions.Generator => true
-      case _: HigherOrderFunction => false
-      case _: LambdaFunction => false
-      case _: NamedLambdaVariable => false
-      case _: CodegenFallback => true
       case u: Unevaluable if isCodegenInertUnevaluable(u) => false
       case _: Unevaluable => true
       case _ => false
@@ -161,7 +159,7 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
       case Some(bad) =>
         return Some(
           s"codegen dispatch: expression ${bad.getClass.getSimpleName} not supported " +
-            "(aggregate, generator, codegen-fallback, or unevaluable)")
+            "(aggregate, generator, or unevaluable)")
       case None =>
     }
     val badRef = boundExpr.collectFirst {
@@ -199,7 +197,7 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
             t)
           throw t
       }
-    logInfo(
+    logDebug(
       s"CometBatchKernelCodegen: compiled ${boundExpr.getClass.getSimpleName} " +
         s"-> ${boundExpr.dataType}  inputs=" +
         inputSchema
@@ -261,7 +259,7 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
       val subExprsCode = ctx.subexprFunctionsCode
       val (cls, setup, snippet) =
         CometBatchKernelCodegenOutput.emitOutputWriter(boundExpr.dataType, ev.value, ctx)
-      (cls, setup, defaultBody(boundExpr, ev, snippet, subExprsCode))
+      (cls, setup, defaultBody(boundExpr, inputSchema, ev, snippet, subExprsCode))
     }
 
     val typedFieldDecls = CometBatchKernelCodegenInput.emitInputFieldDecls(inputSchema)
@@ -343,6 +341,7 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
    */
   private def defaultBody(
       boundExpr: Expression,
+      inputSchema: Seq[ArrowColumnSpec],
       ev: ExprCode,
       writeSnippet: String,
       subExprsCode: String): String = {
@@ -353,18 +352,48 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
         // make this incorrect (`coalesce(null, x)` is `x`); `allNullIntolerant` rejects those.
         val inputOrdinals =
           boundExpr.collect { case b: BoundReference => b.ordinal }.distinct
+        // Primitive Arrow vectors are wrapped in `CometPlainVector` at input-cast time, which
+        // exposes `isNullAt(int)` rather than the raw Arrow `isNull(int)`. Pick the right method
+        // per ordinal so the short-circuit compiles for timestamp / int / float columns too,
+        // not just VarChar / Decimal vectors that stay as raw Arrow types.
+        def nullCheckCall(ord: Int): String = {
+          val method = CometBatchKernelCodegenInput.nullCheckMethod(inputSchema(ord))
+          s"this.col$ord.$method(i)"
+        }
         val nullCheck =
           if (inputOrdinals.isEmpty) "false"
-          else inputOrdinals.map(ord => s"this.col$ord.isNull(i)").mkString(" || ")
-        s"""
-           |if ($nullCheck) {
-           |  output.setNull(i);
-           |} else {
-           |  $subExprsCode
-           |  ${ev.code}
-           |  $writeSnippet
-           |}
-         """.stripMargin
+          else inputOrdinals.map(nullCheckCall).mkString(" || ")
+        // `NullIntolerant` only constrains "any input null -> output null"; it does NOT promise
+        // that non-null inputs always produce non-null output. `MakeTimestamp(failOnError=false)`
+        // is `NullIntolerant=true` but its `doGenCode` catches `DateTimeException` for invalid
+        // year/month/day/hour/min/sec components and sets `ev.isNull = true`. Honor `ev.isNull`
+        // post-eval whenever the expression is nullable; skip the guard only when the root is
+        // statically non-nullable (`ev.isNull` is then a literal `false`).
+        if (boundExpr.nullable) {
+          s"""
+             |if ($nullCheck) {
+             |  output.setNull(i);
+             |} else {
+             |  $subExprsCode
+             |  ${ev.code}
+             |  if (${ev.isNull}) {
+             |    output.setNull(i);
+             |  } else {
+             |    $writeSnippet
+             |  }
+             |}
+           """.stripMargin
+        } else {
+          s"""
+             |if ($nullCheck) {
+             |  output.setNull(i);
+             |} else {
+             |  $subExprsCode
+             |  ${ev.code}
+             |  $writeSnippet
+             |}
+           """.stripMargin
+        }
       case _ =>
         // NonNullableOutputShortCircuit: when `nullable = false`, drop the `if (ev.isNull)`
         // guard at source level rather than relying on JIT folding.
