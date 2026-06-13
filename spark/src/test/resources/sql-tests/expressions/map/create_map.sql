@@ -15,17 +15,16 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
-statement
-CREATE TABLE test_array_filter(arr array<int>) USING parquet
+-- map(...) constructor routed through the codegen dispatcher. Map keys may not be null in Spark.
 
 statement
-INSERT INTO test_array_filter VALUES (array(1, 2, 3, 4, 5)), (array(-1, 0, 1)), (array(10)), (NULL)
+CREATE TABLE test_create_map(k string, v int) USING parquet
+
+statement
+INSERT INTO test_create_map VALUES ('a', 1), ('b', 2), ('c', NULL)
 
 query
-SELECT filter(arr, x -> x > 2) FROM test_array_filter
+SELECT map(k, v) FROM test_create_map
 
 query
-SELECT filter(arr, x -> x >= 0) FROM test_array_filter
-
-query
-SELECT filter(arr, (x, i) -> i > 0) FROM test_array_filter
+SELECT map(1, 'a', 2, 'b'), map('x', array(1, 2), 'y', array(3))

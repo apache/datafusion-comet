@@ -15,17 +15,19 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
-statement
-CREATE TABLE test_array_filter(arr array<int>) USING parquet
+-- ArrayIntersect mixes in CodegenDispatchFallback, so with allowIncompatible unset its
+-- Incompatible element-order case routes through the JVM codegen dispatcher and matches Spark
+-- exactly, including the right-longer-than-left case the native path orders differently (no
+-- sort_array workaround needed here).
 
 statement
-INSERT INTO test_array_filter VALUES (array(1, 2, 3, 4, 5)), (array(-1, 0, 1)), (array(10)), (NULL)
+CREATE TABLE test_ai_dispatch(a array<int>, b array<int>) USING parquet
+
+statement
+INSERT INTO test_ai_dispatch VALUES (array(2, 1), array(3, 1, 2)), (array(3, 1), array(1, 2, 3, 4)), (array(1, NULL), array(NULL, 2)), (NULL, array(1))
 
 query
-SELECT filter(arr, x -> x > 2) FROM test_array_filter
+SELECT array_intersect(a, b) FROM test_ai_dispatch
 
 query
-SELECT filter(arr, x -> x >= 0) FROM test_array_filter
-
-query
-SELECT filter(arr, (x, i) -> i > 0) FROM test_array_filter
+SELECT array_intersect(array(2, 1), array(3, 1, 2)), array_intersect(array(3, 1), array(1, 2, 3, 4))

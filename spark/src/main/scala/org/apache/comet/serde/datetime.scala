@@ -357,7 +357,9 @@ private object UTCTimestampSerde {
       " execution time. See https://github.com/apache/datafusion-comet/issues/2013."
 }
 
-object CometFromUTCTimestamp extends CometExpressionSerde[FromUTCTimestamp] {
+object CometFromUTCTimestamp
+    extends CometExpressionSerde[FromUTCTimestamp]
+    with CodegenDispatchFallback {
 
   override def getSupportLevel(expr: FromUTCTimestamp): SupportLevel =
     Incompatible(Some(UTCTimestampSerde.tzParseIncompatReason))
@@ -375,7 +377,9 @@ object CometFromUTCTimestamp extends CometExpressionSerde[FromUTCTimestamp] {
   }
 }
 
-object CometToUTCTimestamp extends CometExpressionSerde[ToUTCTimestamp] {
+object CometToUTCTimestamp
+    extends CometExpressionSerde[ToUTCTimestamp]
+    with CodegenDispatchFallback {
 
   override def getSupportLevel(expr: ToUTCTimestamp): SupportLevel =
     Incompatible(Some(UTCTimestampSerde.tzParseIncompatReason))
@@ -393,7 +397,9 @@ object CometToUTCTimestamp extends CometExpressionSerde[ToUTCTimestamp] {
   }
 }
 
-object CometConvertTimezone extends CometExpressionSerde[ConvertTimezone] {
+object CometConvertTimezone
+    extends CometExpressionSerde[ConvertTimezone]
+    with CodegenDispatchFallback {
 
   override def getSupportLevel(expr: ConvertTimezone): SupportLevel =
     Incompatible(Some(UTCTimestampSerde.tzParseIncompatReason))
