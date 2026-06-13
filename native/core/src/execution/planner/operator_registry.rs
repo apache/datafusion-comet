@@ -151,6 +151,7 @@ fn get_operator_type(spark_operator: &Operator) -> Option<OperatorType> {
         OpStruct::Explode(_) => None, // Not yet in OperatorType enum
         OpStruct::CsvScan(_) => Some(OperatorType::CsvScan),
         OpStruct::ShuffleScan(_) => None, // Not yet in OperatorType enum
+        OpStruct::BroadcastNestedLoopJoin(_) => None,
         // Optional contrib; not in OperatorType enum. The arm stays unconditional
         // even in non-`contrib-delta` builds because the proto enum is generated
         // regardless of cargo features and Rust requires an exhaustive match. No

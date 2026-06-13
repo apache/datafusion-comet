@@ -899,25 +899,18 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
   }
 
   // https://github.com/apache/datafusion-comet/issues/2612
-  test("array_reverse - fallback for binary array") {
-    val fallbackReason = CometArrayReverse.unsupportedReason
+  test("array_reverse - binary array") {
     withTable("t1") {
       sql("""create table t1 using parquet as
           select cast(null as array<binary>) c1, cast(array() as array<binary>) c2
           from range(10)
         """)
 
-      checkSparkAnswerAndFallbackReason(
-        "select reverse(array(c1, c2)) AS x FROM t1",
-        fallbackReason)
-
-      checkSparkAnswerAndFallbackReason(
-        "select reverse(array(c1, c1)) AS x FROM t1",
-        fallbackReason)
-
-      checkSparkAnswerAndFallbackReason(
-        "select reverse(array(array(c1), array(c2))) AS x FROM t1",
-        fallbackReason)
+      // The native path is Incompatible for arrays containing binary, so Comet routes these
+      // through the codegen dispatcher and still executes natively.
+      checkSparkAnswerAndOperator("select reverse(array(c1, c2)) AS x FROM t1")
+      checkSparkAnswerAndOperator("select reverse(array(c1, c1)) AS x FROM t1")
+      checkSparkAnswerAndOperator("select reverse(array(array(c1), array(c2))) AS x FROM t1")
     }
   }
 
@@ -1130,6 +1123,22 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
             // ct is NULLABLE (when without otherwise) -- same type, different nullability
             struct(col("_1").as("id"), when(col("_1") === 0, lit("b")).as("ct"))).as("arr"))
       checkSparkAnswer(df)
+    }
+  }
+
+  // https://issues.apache.org/jira/browse/SPARK-55747
+  test("(ansi) GetArrayItem on null array from split()") {
+    withSQLConf(
+      SQLConf.ANSI_ENABLED.key -> "true",
+      CometConf.COMET_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_ENABLED.key -> "true") {
+      withTable("test_split_null") {
+        sql("CREATE TABLE test_split_null(s STRING) USING parquet")
+        sql("INSERT INTO test_split_null VALUES ('a,b,c'), (NULL)")
+        // split(NULL, ...) yields a null array; arr[0] on a null array must return NULL
+        // rather than failing the non-nullable schema validation in native execution.
+        checkSparkAnswerAndOperator(sql("SELECT split(s, ',')[0] FROM test_split_null"))
+      }
     }
   }
 }

@@ -212,10 +212,10 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
                 .sortWithinPartitions($"_2")
 
               // Spark 4.0 normalizes shuffle keys containing array<map> via
-              // transform(arr, x -> mapsort(x)), which Comet doesn't yet
-              // support, so the shuffle falls back to Spark.
-              val expectedShuffles = if (isSpark40Plus) 0 else 1
-              checkShuffleAnswer(df, expectedShuffles)
+              // transform(arr, x -> mapsort(x)). Comet routes the higher-order
+              // transform through the codegen dispatcher, so the partitioning
+              // expression stays native and the shuffle runs as Comet shuffle.
+              checkShuffleAnswer(df, 1)
             }
           }
         }

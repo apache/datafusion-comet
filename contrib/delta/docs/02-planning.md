@@ -155,7 +155,7 @@ The split:
   `defaultRowCommitVersion`
 
 The common block goes into the `OpStruct::DeltaScan` variant of the operator
-proto (`delta_scan = 117`). The per-partition task arrays ride alongside via
+proto (`delta_scan = 118`). The per-partition task arrays ride alongside via
 `DeltaPlanDataInjector` (built on core's `PlanDataInjector` machinery): at task
 scheduling time, the executor receives its partition index and looks up the
 matching byte array, keyed by the scan's `sourceKey`. This is the same shape

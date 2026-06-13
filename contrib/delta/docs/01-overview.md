@@ -144,7 +144,7 @@ feature) ship with zero Delta surface area:
   the JVM lifetime
 - The `delta_scan` arm in `native/core/src/execution/planner/delta_scan.rs` is
   `#[cfg(feature = "contrib-delta")]`-gated and compiles out of the dylib
-- The proto variant `delta_scan = 117` is present in the schema but never
+- The proto variant `delta_scan = 118` is present in the schema but never
   emitted
 
 Delta-enabled builds (`-Pcontrib-delta` + `contrib-delta` Cargo feature):
