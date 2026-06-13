@@ -582,13 +582,6 @@ under the License.
 <li><p>Null handling and ordering may differ from Spark</p></li>
 </ul>
 </section>
-<section id="arrayfilter">
-<h2>ArrayFilter<a class="headerlink" href="#arrayfilter" title="Link to this heading">#</a></h2>
-<p>The following cases are not supported by Comet:</p>
-<ul class="simple">
-<li><p>Only supports <code class="docutils literal notranslate"><span class="pre">array_filter</span></code> when the function is <code class="docutils literal notranslate"><span class="pre">IsNotNull</span></code> (used by <code class="docutils literal notranslate"><span class="pre">array_compact</span></code>)</p></li>
-</ul>
-</section>
 <section id="arrayintersect">
 <h2>ArrayIntersect<a class="headerlink" href="#arrayintersect" title="Link to this heading">#</a></h2>
 <p>The following incompatibilities cause <code class="docutils literal notranslate"><span class="pre">ArrayIntersect</span></code> to fall back to Spark by default. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.ArrayIntersect.allowIncompatible=true</span></code> to enable Comet acceleration despite these differences.</p>

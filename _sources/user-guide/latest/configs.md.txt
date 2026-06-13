@@ -420,6 +420,7 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.expression.TruncDate.enabled` | Enable Comet acceleration for `TruncDate` | true |
 | `spark.comet.expression.TruncTimestamp.enabled` | Enable Comet acceleration for `TruncTimestamp` | true |
 | `spark.comet.expression.TryEval.enabled` | Enable Comet acceleration for `TryEval` | true |
+| `spark.comet.expression.TryToNumber.enabled` | Enable Comet acceleration for `TryToNumber` | true |
 | `spark.comet.expression.UnBase64.enabled` | Enable Comet acceleration for `UnBase64` | true |
 | `spark.comet.expression.UnaryMinus.enabled` | Enable Comet acceleration for `UnaryMinus` | true |
 | `spark.comet.expression.UnaryPositive.enabled` | Enable Comet acceleration for `UnaryPositive` | true |

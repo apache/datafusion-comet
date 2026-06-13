@@ -1643,8 +1643,8 @@ expression-level). The <code class="docutils literal notranslate"><span class="p
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">filter</span></code></p></td>
-<td><p>🔜</p></td>
-<td><p>General lambda not yet wired; the <code class="docutils literal notranslate"><span class="pre">array_compact</span></code> form is supported (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4224">#4224</a>)</p></td>
+<td><p>✅</p></td>
+<td><p>General lambda routed through the JVM codegen dispatcher; the <code class="docutils literal notranslate"><span class="pre">array_compact</span></code> form runs natively</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">forall</span></code></p></td>
 <td><p>✅</p></td>
@@ -2410,8 +2410,8 @@ expression-level). The <code class="docutils literal notranslate"><span class="p
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">regexp_count</span></code></p></td>
-<td><p>🔜</p></td>
-<td><p>tracking <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4098">#4098</a></p></td>
+<td><p>✅</p></td>
+<td><p>Runs natively (rewrites to <code class="docutils literal notranslate"><span class="pre">size(regexp_extract_all(...))</span></code>)</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">regexp_extract</span></code></p></td>
 <td><p>✅</p></td>
@@ -2430,8 +2430,8 @@ expression-level). The <code class="docutils literal notranslate"><span class="p
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">regexp_substr</span></code></p></td>
-<td><p>🔜</p></td>
-<td><p>tracking <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4098">#4098</a></p></td>
+<td><p>✅</p></td>
+<td><p>Runs natively (rewrites to <code class="docutils literal notranslate"><span class="pre">nullif(regexp_extract(...),</span> <span class="pre">'')</span></code>)</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">repeat</span></code></p></td>
 <td><p>✅</p></td>
@@ -2510,12 +2510,12 @@ expression-level). The <code class="docutils literal notranslate"><span class="p
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">try_to_binary</span></code></p></td>
-<td><p>🔜</p></td>
-<td><p>Lowers to <code class="docutils literal notranslate"><span class="pre">TryEval(...)</span></code>, which falls back</p></td>
+<td><p>✅</p></td>
+<td><p>Runs natively (rewrites to <code class="docutils literal notranslate"><span class="pre">try_eval(to_binary(...))</span></code>)</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">try_to_number</span></code></p></td>
-<td><p>🔜</p></td>
-<td><p>TRY variant of <code class="docutils literal notranslate"><span class="pre">to_number</span></code></p></td>
+<td><p>✅</p></td>
+<td><p>Routed through the JVM codegen dispatcher</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ucase</span></code></p></td>
 <td><p>✅</p></td>

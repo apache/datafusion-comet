@@ -27,12 +27,6 @@ The following incompatibilities cause `ArrayExcept` to fall back to Spark by def
 
 - Null handling and ordering may differ from Spark
 
-## ArrayFilter
-
-The following cases are not supported by Comet:
-
-- Only supports `array_filter` when the function is `IsNotNull` (used by `array_compact`)
-
 ## ArrayIntersect
 
 The following incompatibilities cause `ArrayIntersect` to fall back to Spark by default. Set `spark.comet.expression.ArrayIntersect.allowIncompatible=true` to enable Comet acceleration despite these differences.

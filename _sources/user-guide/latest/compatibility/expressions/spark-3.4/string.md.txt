@@ -69,12 +69,6 @@ The following cases are not supported by Comet:
 
 - Only supports `StringType` input
 
-## StringDecode
-
-The following cases are not supported by Comet:
-
-- Only the `'utf-8'` charset is supported. Other charsets fall back to Spark.
-
 ## StringLPad
 
 The following cases are not supported by Comet:
