@@ -21,29 +21,21 @@ package org.apache.comet.shims
 
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.expressions.aggregate.Sum
-import org.apache.spark.sql.catalyst.expressions.json.{JsonExpressionUtils, StructsToJsonEvaluator}
 import org.apache.spark.sql.catalyst.expressions.objects.{Invoke, StaticInvoke}
-import org.apache.spark.sql.catalyst.expressions.url.ParseUrlEvaluator
 import org.apache.spark.sql.catalyst.util.DateTimeUtils
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.internal.types.StringTypeWithCollation
-import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, DataTypes, MapType, StringType, TimeType}
+import org.apache.spark.sql.types.TimeType
 
-import org.apache.comet.{CometConf, CometExplainInfo}
-import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
-import org.apache.comet.expressions.{CometCast, CometEvalMode}
-import org.apache.comet.serde.{CommonStringExprs, Compatible, ExprOuterClass, Incompatible, SupportLevel}
+import org.apache.comet.expressions.CometEvalMode
 import org.apache.comet.serde.ExprOuterClass.{BinaryOutputStyle, Expr}
-import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithFallbackReason, scalarFunctionExprToProto, scalarFunctionExprToProtoWithReturnType, supportedScalarSortElementType}
+import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithFallbackReason, scalarFunctionExprToProtoWithReturnType}
 
 /**
  * `CometExprShim` acts as a shim for parsing expressions from different Spark versions.
  */
-trait CometExprShim extends CommonStringExprs with CometExprShim4x {
-  protected def evalMode(c: Cast): CometEvalMode.Value =
-    CometEvalModeUtil.fromSparkEvalMode(c.evalMode)
+trait CometExprShim extends Spark4xCometExprShim {
 
-  protected def binaryOutputStyle: BinaryOutputStyle = {
+  def binaryOutputStyle: BinaryOutputStyle = {
     // In Spark 4.1, BINARY_OUTPUT_STYLE is an enumConf so getConf already returns the enum value.
     SQLConf.get.getConf(SQLConf.BINARY_OUTPUT_STYLE) match {
       case Some(SQLConf.BinaryOutputStyle.UTF8) => BinaryOutputStyle.UTF8
@@ -54,46 +46,15 @@ trait CometExprShim extends CommonStringExprs with CometExprShim4x {
     }
   }
 
-  def versionSpecificExprToProtoInternal(
+  // Spark 4.1 introduces TimeType and the make_time / to_time / try_to_time functions.
+  // Their planner forms differ from the shared 4.x patterns (DateTimeUtils.makeTime
+  // StaticInvoke and ToTimeParser Invoke / TryEval(Invoke)), so they live here rather
+  // than in the shared Spark4xCometExprShim parent trait.
+  override def sparkVersionSpecificExprToProtoInternal(
       expr: Expression,
       inputs: Seq[Attribute],
       binding: Boolean): Option[Expr] = {
     expr match {
-      case knc: KnownNotContainsNull =>
-        // On Spark 4.0, array_compact rewrites to KnownNotContainsNull(ArrayFilter(IsNotNull)).
-        // Strip the wrapper and serialize the inner ArrayFilter as spark_array_compact.
-        knc.child match {
-          case filter: ArrayFilter =>
-            filter.function.children.headOption match {
-              case Some(_: IsNotNull) =>
-                val arrayChild = filter.left
-                val elementType = arrayChild.dataType.asInstanceOf[ArrayType].elementType
-                val arrayExprProto = exprToProtoInternal(arrayChild, inputs, binding)
-                val returnType = ArrayType(elementType)
-                val scalarExpr = scalarFunctionExprToProtoWithReturnType(
-                  "spark_array_compact",
-                  returnType,
-                  false,
-                  arrayExprProto)
-                optExprWithFallbackReason(scalarExpr, knc, arrayChild)
-              case _ => exprToProtoInternal(knc.child, inputs, binding)
-            }
-          case _ => exprToProtoInternal(knc.child, inputs, binding)
-        }
-
-      case s: StaticInvoke
-          if s.staticObject == classOf[StringDecode] &&
-            s.dataType.isInstanceOf[StringType] &&
-            s.functionName == "decode" &&
-            s.arguments.size == 4 &&
-            s.inputTypes == Seq(
-              BinaryType,
-              StringTypeWithCollation(supportsTrimCollation = true),
-              BooleanType,
-              BooleanType) =>
-        val Seq(bin, charset, _, _) = s.arguments
-        stringDecode(expr, charset, bin, inputs, binding)
-
       case s: StaticInvoke
           if s.staticObject == classOf[DateTimeUtils.type] &&
             s.functionName == "makeTime" &&
@@ -104,76 +65,16 @@ trait CometExprShim extends CommonStringExprs with CometExprShim4x {
           scalarFunctionExprToProtoWithReturnType("make_time", s.dataType, true, childExprs: _*)
         optExprWithFallbackReason(optExpr, expr, s.arguments: _*)
 
-      case expr @ ToPrettyString(child, timeZoneId) =>
-        val castSupported = CometCast.isSupported(
-          child.dataType,
-          DataTypes.StringType,
-          timeZoneId,
-          CometEvalMode.TRY)
-
-        val isCastSupported = castSupported match {
-          case Compatible(_) => true
-          case Incompatible(_) => true
-          case _ => false
-        }
-
-        if (isCastSupported) {
-          exprToProtoInternal(child, inputs, binding) match {
-            case Some(p) =>
-              val toPrettyString = ExprOuterClass.ToPrettyString
-                .newBuilder()
-                .setChild(p)
-                .setTimezone(timeZoneId.getOrElse("UTC"))
-                .setBinaryOutputStyle(binaryOutputStyle)
-                .build()
-              Some(
-                ExprOuterClass.Expr
-                  .newBuilder()
-                  .setToPrettyString(toPrettyString)
-                  .build())
-            case _ =>
-              withFallbackReason(expr, child)
-              None
-          }
-        } else {
-          None
-        }
-
-      case wb: WidthBucket =>
-        val childExprs = wb.children.map(exprToProtoInternal(_, inputs, binding))
-        val optExpr = scalarFunctionExprToProto("width_bucket", childExprs: _*)
-        optExprWithFallbackReason(optExpr, wb, wb.children: _*)
-
-      // In Spark 4.x, RuntimeReplaceable expressions (StructsToJson, ParseUrl) become
-      // Invoke(Literal(Evaluator), "evaluate", ...). Reconstruct the original expression
-      // and recurse so support-level checks apply.
       case i: Invoke =>
         (i.targetObject, i.functionName, i.arguments) match {
-          case (Literal(evaluator: StructsToJsonEvaluator, _), "evaluate", Seq(child)) =>
-            val toJson = StructsToJson(evaluator.options, child, evaluator.timeZoneId)
-            val exprProto = exprToProtoInternal(toJson, inputs, binding)
-            if (exprProto.isEmpty) {
-              toJson
-                .getTagValue(CometExplainInfo.FALLBACK_REASONS)
-                .foreach(reasons => i.setTagValue(CometExplainInfo.FALLBACK_REASONS, reasons))
-            }
-            exprProto
-          case (Literal(evaluator: ParseUrlEvaluator, _), "evaluate", args) =>
-            val parseUrl = ParseUrl(args, evaluator.failOnError)
-            val result = exprToProtoInternal(parseUrl, inputs, binding)
-            if (result.isEmpty) {
-              parseUrl
-                .getTagValue(CometExplainInfo.FALLBACK_REASONS)
-                .foreach(reasons => i.setTagValue(CometExplainInfo.FALLBACK_REASONS, reasons))
-            }
-            result
           case (Literal(parser: ToTimeParser, _), "parse", args)
               if i.dataType.isInstanceOf[TimeType] && parser.fmt.isEmpty && args.size == 1 =>
             val childExprs = args.map(exprToProtoInternal(_, inputs, binding))
             val optExpr =
               scalarFunctionExprToProtoWithReturnType("to_time", i.dataType, true, childExprs: _*)
             optExprWithFallbackReason(optExpr, i, args: _*)
-          case _ => None
+          case _ =>
+            super.sparkVersionSpecificExprToProtoInternal(expr, inputs, binding)
         }
 
       // try_to_time resolves to TryEval(Invoke(Literal(ToTimeParser), "parse", ...))
@@ -188,52 +89,11 @@ trait CometExprShim extends CommonStringExprs with CometExprShim4x {
               false,
               childExprs: _*)
             optExprWithFallbackReason(optExpr, expr, args: _*)
-          case _ => None
+          case _ =>
+            super.sparkVersionSpecificExprToProtoInternal(expr, inputs, binding)
         }
 
-      case s: StaticInvoke =>
-        (s.staticObject, s.functionName, s.arguments) match {
-          case (cls, "lengthOfJsonArray", Seq(child)) if cls == classOf[JsonExpressionUtils] =>
-            val lengthOfJsonArray = LengthOfJsonArray(child)
-            val exprProto = exprToProtoInternal(lengthOfJsonArray, inputs, binding)
-            if (exprProto.isEmpty) {
-              lengthOfJsonArray
-                .getTagValue(CometExplainInfo.FALLBACK_REASONS)
-                .foreach(reasons => s.setTagValue(CometExplainInfo.FALLBACK_REASONS, reasons))
-            }
-            exprProto
-          case _ => None
-        }
-
-      case ms: MapSort =>
-        val keyType = ms.dataType.asInstanceOf[MapType].keyType
-        if (!supportedScalarSortElementType(keyType)) {
-          withFallbackReason(ms, s"MapSort on map with key type $keyType is not supported")
-          None
-        } else if (CometConf.COMET_EXEC_STRICT_FLOATING_POINT.get() &&
-          SupportLevel.containsFloatingPoint(keyType)) {
-          withFallbackReason(
-            ms,
-            "MapSort on floating-point key is not 100% compatible with Spark, and Comet is " +
-              s"running with ${CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key}=true. " +
-              s"${CometConf.COMPAT_GUIDE}")
-          None
-        } else {
-          val childExpr = exprToProtoInternal(ms.child, inputs, binding)
-          val mapSortExpr = scalarFunctionExprToProtoWithReturnType(
-            "map_sort",
-            ms.dataType,
-            failOnError = false,
-            childExpr)
-          optExprWithFallbackReason(mapSortExpr, ms, ms.child)
-        }
-
-      // dayname / monthname (Spark 4.0+) are shared across all 4.x minor versions; see
-      // CometExprShim4x.convertDayMonthName.
-      case _: DayName | _: MonthName =>
-        convertDayMonthName(expr, inputs, binding)
-
-      case _ => None
+      case _ => super.sparkVersionSpecificExprToProtoInternal(expr, inputs, binding)
     }
   }
 }
