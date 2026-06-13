@@ -15,8 +15,8 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- Test upper() with case conversion enabled (happy path)
--- Config: spark.comet.caseConversion.enabled=true
+-- Test upper() with the standard allowIncompatible opt-in (happy path)
+-- Config: spark.comet.expression.Upper.allowIncompatible=true
 
 statement
 CREATE TABLE test_upper_enabled(s string) USING parquet

@@ -22,7 +22,7 @@ package org.apache.comet.serde
 import scala.annotation.tailrec
 import scala.jdk.CollectionConverters._
 
-import org.apache.spark.sql.catalyst.expressions.{And, ArrayAppend, ArrayContains, ArrayExcept, ArrayFilter, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayMin, ArrayPosition, ArrayRemove, ArrayRepeat, ArraysOverlap, ArraysZip, ArrayUnion, Attribute, Cast, CreateArray, ElementAt, EmptyRow, Expression, Flatten, GetArrayItem, IsNotNull, Literal, Reverse, Size, Slice, SortArray}
+import org.apache.spark.sql.catalyst.expressions.{And, ArrayAggregate, ArrayAppend, ArrayContains, ArrayExcept, ArrayExists, ArrayFilter, ArrayForAll, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayMin, ArrayPosition, ArrayRemove, ArrayRepeat, ArraySort, ArraysOverlap, ArraysZip, ArrayTransform, ArrayUnion, Attribute, Cast, CreateArray, ElementAt, EmptyRow, Expression, Flatten, GetArrayItem, IsNotNull, Literal, Reverse, Sequence, Size, Slice, SortArray, ZipWith}
 import org.apache.spark.sql.catalyst.util.GenericArrayData
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
@@ -152,15 +152,11 @@ object CometSortArray extends CometExpressionSerde[SortArray] {
 
     if (!supportedSortArrayElementType(elementType)) {
       Unsupported(Some(s"Sort on array element type $elementType is not supported"))
-    } else if (CometConf.COMET_EXEC_STRICT_FLOATING_POINT.get() &&
-      SupportLevel.containsFloatingPoint(elementType)) {
-      Incompatible(
-        Some(
-          "Sorting on floating-point is not 100% compatible with Spark, and Comet is running " +
-            s"with ${CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key}=true. " +
-            s"${CometConf.COMPAT_GUIDE}"))
     } else {
-      Compatible()
+      SupportLevel
+        .strictFloatingPointReason(elementType, "Sorting on floating-point")
+        .map(reason => Incompatible(Some(reason)))
+        .getOrElse(Compatible())
     }
   }
 
@@ -191,7 +187,10 @@ object CometSortArray extends CometExpressionSerde[SortArray] {
   }
 }
 
-object CometArrayIntersect extends CometExpressionSerde[ArrayIntersect] with CometTypeShim {
+object CometArrayIntersect
+    extends CometExpressionSerde[ArrayIntersect]
+    with CometTypeShim
+    with CodegenDispatchFallback {
 
   private val incompatReason: String =
     "Result array element order may differ from Spark when the right array is longer " +
@@ -332,7 +331,10 @@ object CometArrayCompact extends CometExpressionSerde[Expression] {
   }
 }
 
-object CometArrayExcept extends CometExpressionSerde[ArrayExcept] with CometExprShim {
+object CometArrayExcept
+    extends CometExpressionSerde[ArrayExcept]
+    with CometExprShim
+    with CodegenDispatchFallback {
 
   private val incompatReason = "Null handling and ordering may differ from Spark"
 
@@ -376,7 +378,7 @@ object CometArrayExcept extends CometExpressionSerde[ArrayExcept] with CometExpr
   }
 }
 
-object CometArrayJoin extends CometExpressionSerde[ArrayJoin] {
+object CometArrayJoin extends CometExpressionSerde[ArrayJoin] with CodegenDispatchFallback {
 
   private val incompatReason = "Null handling may differ from Spark"
 
@@ -553,17 +555,8 @@ object CometArrayReverse extends CometExpressionSerde[Reverse] with ArraysBase {
 
   override def getIncompatibleReasons(): Seq[String] = Seq(unsupportedReason)
 
-  @tailrec
-  private def containsBinary(dt: DataType): Boolean = {
-    dt match {
-      case BinaryType => true
-      case ArrayType(elementType, _) => containsBinary(elementType)
-      case _ => false
-    }
-  }
-
   override def getSupportLevel(expr: Reverse): SupportLevel = {
-    if (containsBinary(expr.child.dataType)) {
+    if (SupportLevel.containsType(expr.child.dataType, classOf[BinaryType])) {
       Incompatible(Some(unsupportedReason))
     } else {
       Compatible(None)
@@ -647,21 +640,23 @@ object CometFlatten extends CometExpressionSerde[Flatten] with ArraysBase {
 
 object CometArrayFilter extends CometExpressionSerde[ArrayFilter] {
 
-  override def getUnsupportedReasons(): Seq[String] = Seq(
-    "Only supports `array_filter` when the function is `IsNotNull` (used by `array_compact`)")
-
-  override def getSupportLevel(expr: ArrayFilter): SupportLevel = {
-    expr.function.children.headOption match {
-      case Some(_: IsNotNull) => Compatible()
-      case _ => Unsupported()
-    }
-  }
+  override def getSupportLevel(expr: ArrayFilter): SupportLevel = Compatible()
 
   override def convert(
       expr: ArrayFilter,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    CometArrayCompact.convert(expr, inputs, binding)
+    expr.function.children.headOption match {
+      case Some(_: IsNotNull) =>
+        // Fast path: `array_compact` lowers to `filter(arr, x -> x is not null)`. Use the native
+        // array_compact serde to avoid the per-batch JNI cost of the codegen dispatcher.
+        CometArrayCompact.convert(expr, inputs, binding)
+      case _ =>
+        // General lambda: run Spark's own evaluation through the codegen dispatcher so the result
+        // matches Spark exactly, like the other higher-order functions (`transform`, `exists`).
+        // Falls back to Spark when the dispatcher is disabled.
+        CometScalaUDF.emitJvmCodegenDispatch(expr, inputs, binding)
+    }
   }
 }
 
@@ -688,7 +683,7 @@ object CometSize extends CometExpressionSerde[Size] {
     for {
       isNotNullExprProto <- createIsNotNullExprProto(expr, inputs, binding)
       sizeScalarExprProto <- scalarFunctionExprToProto("size", arrayExprProto)
-      emptyLiteralExprProto <- createLiteralExprProto(SQLConf.get.legacySizeOfNull)
+      emptyLiteralExprProto <- createLiteralExprProto(expr.legacySizeOfNull)
     } yield {
       val caseWhenExpr = ExprOuterClass.CaseWhen
         .newBuilder()
@@ -843,3 +838,17 @@ trait ArraysBase {
     }
   }
 }
+
+object CometArrayTransform extends CometCodegenDispatch[ArrayTransform]
+
+object CometArrayExists extends CometCodegenDispatch[ArrayExists]
+
+object CometArrayForAll extends CometCodegenDispatch[ArrayForAll]
+
+object CometArrayAggregate extends CometCodegenDispatch[ArrayAggregate]
+
+object CometArraySort extends CometCodegenDispatch[ArraySort]
+
+object CometZipWith extends CometCodegenDispatch[ZipWith]
+
+object CometSequence extends CometCodegenDispatch[Sequence]

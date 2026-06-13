@@ -1,6 +1,6 @@
 ---
 name: audit-comet-expression
-description: Audit an existing Comet expression for correctness and test coverage. Studies the Spark implementation across versions 3.4.3, 3.5.8, and 4.0.1, reviews the Comet and DataFusion implementations, identifies missing test coverage, and offers to implement additional tests.
+description: Audit an existing Comet expression for correctness and test coverage. Studies the Spark implementation across versions 3.4.3, 3.5.8, 4.0.1, and 4.1.1, reviews the Comet and DataFusion implementations, identifies missing test coverage, and offers to implement additional tests.
 argument-hint: <expression-name>
 ---
 
@@ -10,7 +10,7 @@ Audit the Comet implementation of the `$ARGUMENTS` expression for correctness an
 
 This audit covers:
 
-1. Spark implementation across versions 3.4.3, 3.5.8, and 4.0.1
+1. Spark implementation across versions 3.4.3, 3.5.8, 4.0.1, and 4.1.1
 2. Comet Scala serde implementation
 3. Comet Rust / DataFusion implementation
 4. Existing test coverage (Comet SQL Tests and Comet Scala Tests)
@@ -24,7 +24,7 @@ Clone specific Spark version tags (use shallow clones to avoid polluting the wor
 
 ```bash
 set -eu -o pipefail
-for tag in v3.4.3 v3.5.8 v4.0.1; do
+for tag in v3.4.3 v3.5.8 v4.0.1 v4.1.1; do
   dir="/tmp/spark-${tag}"
   if [ ! -d "$dir" ]; then
     git clone --depth 1 --branch "$tag" https://github.com/apache/spark.git "$dir"
@@ -37,7 +37,7 @@ done
 Search the Catalyst SQL expressions source:
 
 ```bash
-for tag in v3.4.3 v3.5.8 v4.0.1; do
+for tag in v3.4.3 v3.5.8 v4.0.1 v4.1.1; do
   dir="/tmp/spark-${tag}"
   echo "=== $tag ==="
   find "$dir/sql/catalyst/src/main/scala" -name "*.scala" | \
@@ -48,7 +48,7 @@ done
 If the expression is not found in catalyst, also check core:
 
 ```bash
-for tag in v3.4.3 v3.5.8 v4.0.1; do
+for tag in v3.4.3 v3.5.8 v4.0.1 v4.1.1; do
   dir="/tmp/spark-${tag}"
   echo "=== $tag ==="
   find "$dir/sql" -name "*.scala" | \
@@ -73,6 +73,7 @@ Produce a concise diff summary of what changed between:
 
 - 3.4.3 → 3.5.8
 - 3.5.8 → 4.0.1
+- 4.0.1 → 4.1.1
 
 Pay attention to:
 
@@ -87,7 +88,7 @@ Pay attention to:
 ## Step 2: Locate the Spark Tests
 
 ```bash
-for tag in v3.4.3 v3.5.8 v4.0.1; do
+for tag in v3.4.3 v3.5.8 v4.0.1 v4.1.1; do
   dir="/tmp/spark-${tag}"
   echo "=== $tag ==="
   find "$dir/sql" -name "*.scala" -path "*/test/*" | \
@@ -208,6 +209,11 @@ and in EXPLAIN output, so they are user-facing.
 - Use backticks around config keys, type names, and SQL identifiers.
 - Link to a tracking GitHub issue for known incompatibilities so users can
   follow progress: `(https://github.com/apache/datafusion-comet/issues/NNNN)`.
+  **Verify the issue exists and is open** before citing it
+  (`gh issue view <N> --repo apache/datafusion-comet`). Issue numbers
+  invented from context or recalled from memory are a recurring failure
+  mode: a stale link is worse than no link because the reader follows it
+  and finds nothing.
 - Keep it concise. Single sentence is best.
 - Do not write "Incompatible reason: ..." or "Unsupported because ...".
   The doc generator adds the framing.
@@ -389,6 +395,49 @@ finding for Step 6.
    read like internal implementation notes ("DataFusion probes the longer
    side") or that mismatch their support level (an "Incompatible" reason
    that says "X is not supported").
+10. **Expression-shape restrictions live in `getSupportLevel`.** Any
+    restriction that is knowable from the expression alone (literal-only
+    arguments, unsupported child data type, foldable-only options, a
+    specific operator shape) must be declared as an
+    `Unsupported(Some(reason))` branch in `getSupportLevel`, not gated
+    inside `convert` with a `withInfo` + `return None`. Putting the
+    check in `convert` means EXPLAIN surfaces the reason only at
+    conversion time, the doc generator never sees it, and the
+    dispatcher cannot route around it. The literal-only `len`
+    restrictions on `CometLeft`, `CometRight`, and `CometSubstring`
+    are the canonical example of the in-`convert` pattern that this
+    skill forbids: lift them into `getSupportLevel`.
+11. **Spark 4.0 collation divergences are flagged, not glossed over.**
+    If the Spark 4.0/4.1 implementation routes through
+    `CollationSupport.X.exec(..., collationId)` (or uses
+    `StringTypeWithCollation` / `StringTypeNonCSAICollation` for input
+    types) and the Comet path does not propagate collation, the
+    expression is `Incompatible` for non-default collations. Mark the
+    branch `Incompatible(Some(reason))` linking to the collation
+    umbrella issue
+    (https://github.com/apache/datafusion-comet/issues/4496) so the
+    follow-up sweep can find every site. "Behaviour unchanged for
+    `UTF8_BINARY`" alone is not a justification for leaving the
+    support level at `Compatible`: users running with non-default
+    collations get silently wrong answers.
+12. **Known divergences flip the support level.** If you find yourself
+    writing the words "Known divergence" or "Known limitation" in the
+    support-doc sub-bullet while leaving `getSupportLevel` returning
+    `Compatible`, the audit has skipped its job. A documented
+    divergence is by definition not `Compatible`. Promote the branch
+    to `Incompatible(Some(reason))` (or `Unsupported` if the native
+    path errors rather than producing a wrong answer) and link the
+    tracking issue. The `replace` empty-search-string divergence with
+    DataFusion is the canonical example of this anti-pattern.
+13. **Unreachable serde mappings are removed.** Expressions registered
+    as `RuntimeReplaceable` (or otherwise rewritten by an analyzer
+    rule before serde) never reach `QueryPlanSerde.exprToProtoInternal`
+    with their original class. If the audit finds that a registered
+    `CometScalarFunction("name")` or `CometExpressionSerde` entry can
+    never be hit (e.g. the `btrim` mapping for `StringTrimBoth`, which
+    is rewritten to `StringTrim` before serde runs), delete the
+    registration in the same audit PR. Documenting the dead code in
+    the support doc is not enough.
 
 ---
 
@@ -411,6 +460,11 @@ For an untested case, run it manually first to determine the current
 behaviour, then commit either a regression test (passes) or a
 `query ignore(<issue-url>)` test (fails).
 
+Every item in this bucket either becomes an inline fix + test, or a
+filed GitHub issue + ignored regression test, in the audit PR. Step 7
+spells out the workflow: never leave a high-priority finding as PR-body
+prose only.
+
 ### Medium priority: missing test coverage
 
 Low-risk coverage gaps: additional input permutations on already-tested
@@ -429,9 +483,13 @@ etc. These come from the Step 5 consistency audit.
 
 High-priority findings (correctness divergences and high-risk coverage
 gaps) and consistency issues from Step 5 / Step 6 must not be left as
-prose. Apply them in the same PR as the audit. Only low-risk missing
-coverage requires the user's go-ahead, because adding tests for cases
-that already work on well-exercised paths is incremental polish.
+prose. Apply them in the same PR as the audit. Anything you cannot fix
+inline (because it needs a semantics decision, native code change, or
+larger design work) must still be captured as a GitHub issue per the
+"Findings that need follow-up" section below: prose recommendations in
+the PR body alone are insufficient. Only low-risk missing coverage
+requires the user's go-ahead, because adding tests for cases that
+already work on well-exercised paths is incremental polish.
 
 ### High-priority findings: capture as tests
 
@@ -499,15 +557,79 @@ need user approval. The classes of fix are:
 - Hoist a reason shared by multiple serdes (e.g. a recurring
   TimestampNTZ caveat) into a small `private object` companion in the
   same file, mirroring `UTCTimestampSerde`.
+- Lift expression-shape restrictions (literal-only argument, foldable
+  child, unsupported child data type) out of `convert`'s `withInfo` +
+  `return None` and into an `Unsupported(Some(reason))` branch in
+  `getSupportLevel`. The `convert` body should then assume the
+  precondition holds and stop calling `withInfo` for that case.
+- Promote a documented "Known divergence" or "Known limitation" sub-
+  bullet from a `Compatible` branch to `Incompatible(Some(reason))`
+  (or `Unsupported` if the native path errors) and link the tracking
+  issue. The sub-bullet stays as user-facing documentation. The
+  support level catches up to match.
+- Mark expressions whose Spark 4.0+ path routes through
+  `CollationSupport.X.exec` (or accepts `StringTypeWithCollation` /
+  `StringTypeNonCSAICollation`) as `Incompatible(Some(reason))` for
+  non-default collations, linking
+  https://github.com/apache/datafusion-comet/issues/4496.
+- Delete unreachable serde registrations (`RuntimeReplaceable` rewrites
+  the expression before serde runs, an analyzer rule strips the case,
+  etc.) rather than documenting them as a curiosity.
 
 Each fix is one of these patterns. If a finding requires a semantics
 decision (e.g. is a specific branch really `Unsupported`, or is it
-`Incompatible`?), do not guess: leave it as a prose recommendation in
-the PR description and call it out for the reviewer.
+`Incompatible`?), do not guess: **file a GitHub issue per the
+"Findings that need follow-up" section below** and link it from the PR
+description. Do not leave the recommendation as prose only: prose in a
+PR description gets buried as soon as the PR merges.
 
 After every fix, build the affected module to make sure the edit
 compiles. Do not run the full suite; targeted tests suffice if the
 fix could plausibly affect behaviour.
+
+### Findings that need follow-up: always file a tracking issue
+
+Any high-priority finding (correctness divergence, robustness gap,
+behavioural difference from Spark, missing-collation guard, etc.) that
+this PR does not fix inline **must** be filed as a GitHub issue before
+the PR is opened. This includes:
+
+- Semantics decisions the audit surfaces but should not unilaterally
+  resolve (e.g. promote `Compatible` to `Incompatible`, change a
+  default).
+- Architectural concerns that span multiple expressions (e.g. Spark 4.0
+  collation propagation across an entire family).
+- Bugs that are fixable in principle but need more design or native
+  changes than fit in the audit PR.
+- Documentation gaps surfaced by the audit (e.g. an expression that
+  doesn't appear in the auto-generated compatibility doc).
+
+For each follow-up:
+
+1. Search for an existing issue first
+   (`gh issue list --search "<expression> <symptom> in:title,body" --state all --limit 5`).
+   If a candidate match comes back, **open it
+   (`gh issue view <N> --repo apache/datafusion-comet`) and confirm the
+   title and body actually describe the divergence you found, and that
+   the issue is still `OPEN`**. A closed-but-fixed issue cited as
+   "known divergence" is worse than no citation, because the reader
+   follows the link and finds a fix that was already shipped. If it
+   matches, link it from the PR description and the support-doc
+   sub-bullet, and stop.
+2. If no issue exists, file one with `gh issue create` using the
+   `correctness` label (or `documentation` for doc-only gaps) plus any
+   relevant area labels (e.g. `spark 4.0`). Title format:
+   `[Bug] <expression> <one-line symptom>`. Body includes: Spark version
+   range affected, a minimal repro, the divergent result, the relevant
+   Comet file/line, and a one-line note that the issue was surfaced by
+   this audit PR.
+3. Reference the issue number from both the support-doc sub-bullet and
+   the PR description "What changes are included" section so reviewers
+   can see what work the audit intentionally deferred.
+
+Prose-only "future work" notes in the PR description are not enough.
+The whole point of the audit is to leave behind durable artefacts; an
+unfiled finding evaporates after the PR merges.
 
 ### Low-risk missing test coverage: ask the user
 
@@ -579,16 +701,23 @@ After implementing tests, tell the user how to run them:
 
 ---
 
-## Step 8: Update the Expression Support Doc
+## Step 8: Record the Audit
 
-After completing the audit (whether or not tests were added), add sub-bullets under the expression's
-entry in `docs/source/contributor-guide/spark_expressions_support.md`.
+After completing the audit (whether or not tests were added), record the findings on the
+expression's category page under `docs/source/contributor-guide/expression-audits/`.
+The page is named after the Spark function-registry category (e.g. `agg_funcs.md`,
+`string_funcs.md`, `datetime_funcs.md`). If you are unsure of the category, match the one
+used for the expression in `docs/source/user-guide/latest/expressions.md`.
 
-Add one sub-bullet per Spark version checked, each including:
-
-- Spark version (e.g. 3.4.3, 3.5.8, 4.0.1)
-- Today's date
-- A brief note for any version-specific finding (behavioral difference, known incompatibility); omit if nothing notable
+- If the category page does not exist yet, create it with the ASF license header, a
+  `# <category> Expression Audits` title, and the standard intro blockquote used by the
+  other pages.
+- Add (or update) a `## <function_name>` section, keeping sections alphabetically ordered.
+- Under that heading, add one bullet per Spark version checked, each including:
+  - Spark version (e.g. 3.4.3, 3.5.8, 4.0.1, 4.1.1)
+  - Today's date
+  - A brief note for any version-specific finding (behavioral difference, known
+    incompatibility); omit the note if nothing notable.
 
 ---
 
@@ -597,7 +726,7 @@ Add one sub-bullet per Spark version checked, each including:
 Present the audit as:
 
 1. **Expression Summary** - Brief description of what `$ARGUMENTS` does, its input/output types, and null behavior
-2. **Spark Version Differences** - Summary of any behavioral or API differences across Spark 3.4.3, 3.5.8, and 4.0.1
+2. **Spark Version Differences** - Summary of any behavioral or API differences across Spark 3.4.3, 3.5.8, 4.0.1, and 4.1.1
 3. **Comet Implementation Notes** - Summary of how Comet implements this expression and any concerns
 4. **Coverage Gap Analysis** - The gap table from Step 5, plus implementation gaps
 5. **Recommendations** - Prioritized list from Step 6
