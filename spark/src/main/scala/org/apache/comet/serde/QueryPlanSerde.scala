@@ -255,6 +255,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       classOf[UnBase64] -> CometUnBase64,
       classOf[ToCharacter] -> CometToCharacter,
       classOf[ToNumber] -> CometToNumber,
+      classOf[TryToNumber] -> CometTryToNumber,
       classOf[Mask] -> CometMask)
     base ++ sparkVersionSpecificStringExpressions
   }
