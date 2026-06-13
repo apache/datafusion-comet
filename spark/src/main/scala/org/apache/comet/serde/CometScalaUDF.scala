@@ -20,7 +20,7 @@
 package org.apache.comet.serde
 
 import org.apache.spark.SparkEnv
-import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference, AttributeSeq, BindReferences, Expression, Literal, ScalaUDF}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference, AttributeSeq, BindReferences, Expression, Literal, RuntimeReplaceable, ScalaUDF}
 import org.apache.spark.sql.types.BinaryType
 
 import org.apache.comet.CometConf
@@ -78,10 +78,20 @@ object CometScalaUDF extends CometExpressionSerde[ScalaUDF] {
       return None
     }
 
+    // `RuntimeReplaceable` expressions (e.g. Spark 4's `StructsToJson`) have a `doGenCode` that
+    // always throws "Cannot generate code for expression". Catalyst's `ReplaceExpressions` rule
+    // normally rewrites them to their `replacement` form before codegen runs. Comet's serde
+    // sometimes works with the pre-rewrite form (via shim reconstruction) for matching purposes,
+    // so unwrap to the replacement here before binding so the kernel compiles.
+    val target = expr match {
+      case rr: RuntimeReplaceable => rr.replacement
+      case other => other
+    }
+
     // Bind against only the AttributeReferences the tree actually reads, so ordinals align with
     // the data args we ship.
-    val attrs = expr.collect { case a: AttributeReference => a }.distinct
-    val boundExpr = BindReferences.bindReference(expr, AttributeSeq(attrs))
+    val attrs = target.collect { case a: AttributeReference => a }.distinct
+    val boundExpr = BindReferences.bindReference(target, AttributeSeq(attrs))
 
     // Gate at plan time. Surface the reason via withFallbackReason rather than crashing Janino
     // at execute.
