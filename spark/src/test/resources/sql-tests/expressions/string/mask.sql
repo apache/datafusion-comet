@@ -15,17 +15,18 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
-statement
-CREATE TABLE test_array_filter(arr array<int>) USING parquet
+-- mask routed through the codegen dispatcher.
+
+-- MinSparkVersion: 3.5
 
 statement
-INSERT INTO test_array_filter VALUES (array(1, 2, 3, 4, 5)), (array(-1, 0, 1)), (array(10)), (NULL)
+CREATE TABLE test_mask(s string) USING parquet
+
+statement
+INSERT INTO test_mask VALUES ('AbCD123-$#'), ('Spark'), (''), (NULL)
 
 query
-SELECT filter(arr, x -> x > 2) FROM test_array_filter
+SELECT mask(s), s FROM test_mask
 
 query
-SELECT filter(arr, x -> x >= 0) FROM test_array_filter
-
-query
-SELECT filter(arr, (x, i) -> i > 0) FROM test_array_filter
+SELECT mask('AbCD123-$#', 'Q', 'q', 'd', 'o'), mask('Spark', 'X')

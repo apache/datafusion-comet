@@ -15,17 +15,19 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
-statement
-CREATE TABLE test_array_filter(arr array<int>) USING parquet
+-- try_to_binary is RuntimeReplaceable (TryEval(ToBinary(...))). Verify Comet runs it natively and
+-- matches Spark, including the invalid-hex case which returns NULL.
+
+-- MinSparkVersion: 3.5
 
 statement
-INSERT INTO test_array_filter VALUES (array(1, 2, 3, 4, 5)), (array(-1, 0, 1)), (array(10)), (NULL)
+CREATE TABLE test_try_to_binary(s string) USING parquet
+
+statement
+INSERT INTO test_try_to_binary VALUES ('616263'), ('48656c6c6f'), ('zz'), (''), (NULL)
 
 query
-SELECT filter(arr, x -> x > 2) FROM test_array_filter
+SELECT s, try_to_binary(s, 'hex') FROM test_try_to_binary
 
 query
-SELECT filter(arr, x -> x >= 0) FROM test_array_filter
-
-query
-SELECT filter(arr, (x, i) -> i > 0) FROM test_array_filter
+SELECT try_to_binary('616263', 'hex'), try_to_binary('not-hex', 'hex')
