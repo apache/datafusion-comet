@@ -15,17 +15,20 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
-statement
-CREATE TABLE test_array_filter(arr array<int>) USING parquet
+-- Routes try_to_number through the codegen dispatcher so behavior matches Spark exactly.
+-- try_to_number returns NULL (instead of throwing) when the value does not match the format.
+
+-- MinSparkVersion: 3.5
 
 statement
-INSERT INTO test_array_filter VALUES (array(1, 2, 3, 4, 5)), (array(-1, 0, 1)), (array(10)), (NULL)
+CREATE TABLE test_try_to_number(s string) USING parquet
+
+statement
+INSERT INTO test_try_to_number VALUES ('454.00'), ('78.12'), ('0.00'), ('not-a-number'), ('$78.00'), (NULL)
 
 query
-SELECT filter(arr, x -> x > 2) FROM test_array_filter
+SELECT s, try_to_number(s, '99999.99') FROM test_try_to_number
 
+-- literal arguments: valid, and invalid (returns NULL rather than throwing)
 query
-SELECT filter(arr, x -> x >= 0) FROM test_array_filter
-
-query
-SELECT filter(arr, (x, i) -> i > 0) FROM test_array_filter
+SELECT try_to_number('454', '999'), try_to_number('abc', '999'), try_to_number('$12.00', '$99.99')
