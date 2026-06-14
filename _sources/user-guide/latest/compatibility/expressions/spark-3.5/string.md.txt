@@ -58,7 +58,7 @@ The following cases are not supported by Comet:
 
 ## Reverse
 
-The following incompatibilities cause `Reverse` to fall back to Spark by default. Set `spark.comet.expression.Reverse.allowIncompatible=true` to enable Comet acceleration despite these differences.
+By default, Comet accelerates `Reverse` using JVM codegen dispatch, which runs Spark's generated code inside Comet's native pipeline and matches Spark exactly. Set `spark.comet.expression.Reverse.allowIncompatible=true` to use Comet's faster native implementation instead, which has the following differences from Spark:
 
 - reverse on array containing binary is not supported
 - reverse does not support non-UTF8_BINARY collations (https://github.com/apache/datafusion-comet/issues/2190)

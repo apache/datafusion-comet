@@ -572,9 +572,11 @@ under the License.
 <section id="expression-compatibility-spark-4-0">
 <h1>Expression Compatibility (Spark 4.0)<a class="headerlink" href="#expression-compatibility-spark-4-0" title="Link to this heading">#</a></h1>
 <p>Compatibility notes for Comet running on Apache Spark 4.0. Expressions that are not 100%
-Spark-compatible fall back to Spark by default and can be enabled by setting
+Spark-compatible fall back to Spark by default, except those with a JVM codegen-dispatch
+path, which stay in Comet’s native pipeline and match Spark exactly. Set
 <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.EXPRNAME.allowIncompatible=true</span></code>, where <code class="docutils literal notranslate"><span class="pre">EXPRNAME</span></code> is the Spark
-expression class name. See the <a class="reference internal" href="../../../expressions.html"><span class="std std-doc">Comet Supported Expressions Guide</span></a>
+expression class name, to run Comet’s faster native implementation despite its differences
+from Spark. See the <a class="reference internal" href="../../../expressions.html"><span class="std std-doc">Comet Supported Expressions Guide</span></a>
 for more information on this configuration setting.</p>
 <div class="toctree-wrapper compound">
 <ul>

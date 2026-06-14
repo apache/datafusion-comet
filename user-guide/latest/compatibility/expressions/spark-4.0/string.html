@@ -617,7 +617,7 @@ under the License.
 </section>
 <section id="reverse">
 <h2>Reverse<a class="headerlink" href="#reverse" title="Link to this heading">#</a></h2>
-<p>The following incompatibilities cause <code class="docutils literal notranslate"><span class="pre">Reverse</span></code> to fall back to Spark by default. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Reverse.allowIncompatible=true</span></code> to enable Comet acceleration despite these differences.</p>
+<p>By default, Comet accelerates <code class="docutils literal notranslate"><span class="pre">Reverse</span></code> using JVM codegen dispatch, which runs Spark’s generated code inside Comet’s native pipeline and matches Spark exactly. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Reverse.allowIncompatible=true</span></code> to use Comet’s faster native implementation instead, which has the following differences from Spark:</p>
 <ul class="simple">
 <li><p>reverse on array containing binary is not supported</p></li>
 <li><p>reverse does not support non-UTF8_BINARY collations (https://github.com/apache/datafusion-comet/issues/2190)</p></li>

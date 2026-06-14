@@ -587,7 +587,7 @@ IEEE total ordering for floating-point, which differs from Spark’s <code class
 </section>
 <section id="mapfromentries">
 <h2>MapFromEntries<a class="headerlink" href="#mapfromentries" title="Link to this heading">#</a></h2>
-<p>The following incompatibilities cause <code class="docutils literal notranslate"><span class="pre">MapFromEntries</span></code> to fall back to Spark by default. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.MapFromEntries.allowIncompatible=true</span></code> to enable Comet acceleration despite these differences.</p>
+<p>By default, Comet accelerates <code class="docutils literal notranslate"><span class="pre">MapFromEntries</span></code> using JVM codegen dispatch, which runs Spark’s generated code inside Comet’s native pipeline and matches Spark exactly. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.MapFromEntries.allowIncompatible=true</span></code> to use Comet’s faster native implementation instead, which has the following differences from Spark:</p>
 <ul class="simple">
 <li><p><code class="docutils literal notranslate"><span class="pre">BinaryType</span></code> is not supported as a map key in <code class="docutils literal notranslate"><span class="pre">map_from_entries</span></code></p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">BinaryType</span></code> is not supported as a map value in <code class="docutils literal notranslate"><span class="pre">map_from_entries</span></code></p></li>
