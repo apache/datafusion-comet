@@ -487,10 +487,10 @@ enum SparkPayload<'a> {
 fn extract_spark_payload(err: &DataFusionError) -> Option<SparkPayload<'_>> {
     match err {
         DataFusionError::External(e) => {
-            if let Some(comet_err) = e.downcast_ref::<CometError>() {
-                if let CometError::JavaException { throwable, .. } = comet_err {
-                    return Some(SparkPayload::JavaException(throwable));
-                }
+            if let Some(CometError::JavaException { throwable, .. }) =
+                e.downcast_ref::<CometError>()
+            {
+                return Some(SparkPayload::JavaException(throwable));
             }
             if let Some(ctx) = e.downcast_ref::<SparkErrorWithContext>() {
                 return Some(SparkPayload::WithContext(ctx));
