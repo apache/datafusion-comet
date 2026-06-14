@@ -28,7 +28,7 @@ import org.apache.spark.sql.catalyst.expressions.Cast
 
 import org.apache.comet.CometConf.COMET_ONHEAP_MEMORY_OVERHEAD
 import org.apache.comet.expressions.{CometCast, CometEvalMode}
-import org.apache.comet.serde.{Compatible, Incompatible, QueryPlanSerde, Unsupported}
+import org.apache.comet.serde.{CodegenDispatchFallback, CometAggregateExpressionSerde, CometExpressionSerde, Compatible, Incompatible, QueryPlanSerde, Unsupported}
 
 /**
  * Utility for generating markdown documentation from the configs.
@@ -40,9 +40,48 @@ object GenerateDocs {
   private val publicConfigs: Set[ConfigEntry[_]] = CometConf.allConfs.filter(_.isPublic).toSet
 
   /**
-   * (expression class simple name, compatible notes, incompatible reasons, unsupported reasons)
+   * Documentation notes for a single expression.
+   *
+   * @param name
+   *   expression class simple name
+   * @param compatibleNotes
+   *   differences from Spark that are always present
+   * @param incompatibleReasons
+   *   reasons the native implementation is incompatible with Spark
+   * @param unsupportedReasons
+   *   cases that Comet does not support
+   * @param codegenDispatch
+   *   whether the serde opts into codegen-dispatch fallback for its incompatible cases, so that
+   *   the expression stays native and Spark-compatible by default instead of falling back to
+   *   Spark
    */
-  private type CategoryNotes = Seq[(String, Seq[String], Seq[String], Seq[String])]
+  private case class ExprNotes(
+      name: String,
+      compatibleNotes: Seq[String],
+      incompatibleReasons: Seq[String],
+      unsupportedReasons: Seq[String],
+      codegenDispatch: Boolean)
+
+  private type CategoryNotes = Seq[ExprNotes]
+
+  /** Build the documentation notes for a single expression serde. */
+  private def exprNotes(cls: Class[_], serde: CometExpressionSerde[_]): ExprNotes =
+    ExprNotes(
+      cls.getSimpleName,
+      serde.getCompatibleNotes(),
+      serde.getIncompatibleReasons(),
+      serde.getUnsupportedReasons(),
+      serde.isInstanceOf[CodegenDispatchFallback])
+
+  /** Build the documentation notes for a single aggregate expression serde. */
+  private def aggExprNotes(cls: Class[_], serde: CometAggregateExpressionSerde[_]): ExprNotes =
+    ExprNotes(
+      cls.getSimpleName,
+      serde.getCompatibleNotes(),
+      serde.getIncompatibleReasons(),
+      serde.getUnsupportedReasons(),
+      // Aggregate serdes do not participate in codegen-dispatch fallback.
+      codegenDispatch = false)
 
   /**
    * Mapping from expression category to the compatibility guide filename where that category's
@@ -54,83 +93,47 @@ object GenerateDocs {
     "array" -> ("array.md",
     () =>
       QueryPlanSerde.arrayExpressions.toSeq.map { case (cls, serde) =>
-        (
-          cls.getSimpleName,
-          serde.getCompatibleNotes(),
-          serde.getIncompatibleReasons(),
-          serde.getUnsupportedReasons())
+        exprNotes(cls, serde)
       }),
     "datetime" -> ("datetime.md",
     () =>
       QueryPlanSerde.temporalExpressions.toSeq.map { case (cls, serde) =>
-        (
-          cls.getSimpleName,
-          serde.getCompatibleNotes(),
-          serde.getIncompatibleReasons(),
-          serde.getUnsupportedReasons())
+        exprNotes(cls, serde)
       }),
     "math" -> ("math.md",
     () =>
       QueryPlanSerde.mathExpressions.toSeq.map { case (cls, serde) =>
-        (
-          cls.getSimpleName,
-          serde.getCompatibleNotes(),
-          serde.getIncompatibleReasons(),
-          serde.getUnsupportedReasons())
+        exprNotes(cls, serde)
       }),
     "struct" -> ("struct.md",
     () =>
       QueryPlanSerde.structExpressions.toSeq.map { case (cls, serde) =>
-        (
-          cls.getSimpleName,
-          serde.getCompatibleNotes(),
-          serde.getIncompatibleReasons(),
-          serde.getUnsupportedReasons())
+        exprNotes(cls, serde)
       }),
     "aggregate" -> ("aggregate.md",
     () =>
       QueryPlanSerde.aggrSerdeMap.toSeq.map { case (cls, serde) =>
-        (
-          cls.getSimpleName,
-          serde.getCompatibleNotes(),
-          serde.getIncompatibleReasons(),
-          serde.getUnsupportedReasons())
+        aggExprNotes(cls, serde)
       }),
     "string" -> ("string.md",
     () =>
       QueryPlanSerde.stringExpressions.toSeq.map { case (cls, serde) =>
-        (
-          cls.getSimpleName,
-          serde.getCompatibleNotes(),
-          serde.getIncompatibleReasons(),
-          serde.getUnsupportedReasons())
+        exprNotes(cls, serde)
       }),
     "map" -> ("map.md",
     () =>
       QueryPlanSerde.mapExpressions.toSeq.map { case (cls, serde) =>
-        (
-          cls.getSimpleName,
-          serde.getCompatibleNotes(),
-          serde.getIncompatibleReasons(),
-          serde.getUnsupportedReasons())
+        exprNotes(cls, serde)
       }),
     "misc" -> ("misc.md",
     () =>
       QueryPlanSerde.miscExpressions.toSeq.map { case (cls, serde) =>
-        (
-          cls.getSimpleName,
-          serde.getCompatibleNotes(),
-          serde.getIncompatibleReasons(),
-          serde.getUnsupportedReasons())
+        exprNotes(cls, serde)
       }),
     "url" -> ("url.md",
     () =>
       QueryPlanSerde.urlExpressions.toSeq.map { case (cls, serde) =>
-        (
-          cls.getSimpleName,
-          serde.getCompatibleNotes(),
-          serde.getIncompatibleReasons(),
-          serde.getUnsupportedReasons())
+        exprNotes(cls, serde)
       }))
 
   /**
@@ -247,31 +250,39 @@ object GenerateDocs {
   }
 
   private def writeExpressionCompatNotes(w: BufferedOutputStream, notes: CategoryNotes): Unit = {
-    val sorted = notes.sortBy(_._1).filter { case (_, compat, incompat, unsupported) =>
-      compat.nonEmpty || incompat.nonEmpty || unsupported.nonEmpty
+    val sorted = notes.sortBy(_.name).filter { n =>
+      n.compatibleNotes.nonEmpty || n.incompatibleReasons.nonEmpty || n.unsupportedReasons.nonEmpty
     }
-    for ((name, compat, incompat, unsupported) <- sorted) {
+    for (n <- sorted) {
+      val name = n.name
       w.write(s"\n## $name\n".getBytes)
-      if (compat.nonEmpty) {
+      if (n.compatibleNotes.nonEmpty) {
         w.write(
           ("\nThe following differences from Spark are always present and do not require" +
             " any additional configuration:\n\n").getBytes)
-        for (note <- compat) {
+        for (note <- n.compatibleNotes) {
           w.write(s"- $note\n".getBytes)
         }
       }
-      if (incompat.nonEmpty) {
-        w.write(
-          (s"\nThe following incompatibilities cause `$name` to fall back to Spark by default." +
+      if (n.incompatibleReasons.nonEmpty) {
+        val header = if (n.codegenDispatch) {
+          s"\nBy default, Comet accelerates `$name` using JVM codegen dispatch, which runs" +
+            " Spark's generated code inside Comet's native pipeline and matches Spark exactly." +
+            s" Set `spark.comet.expression.$name.allowIncompatible=true` to use Comet's faster" +
+            " native implementation instead, which has the following differences from Spark:\n\n"
+        } else {
+          s"\nThe following incompatibilities cause `$name` to fall back to Spark by default." +
             s" Set `spark.comet.expression.$name.allowIncompatible=true` to enable Comet" +
-            " acceleration despite these differences.\n\n").getBytes)
-        for (reason <- incompat) {
+            " acceleration despite these differences.\n\n"
+        }
+        w.write(header.getBytes)
+        for (reason <- n.incompatibleReasons) {
           w.write(s"- $reason\n".getBytes)
         }
       }
-      if (unsupported.nonEmpty) {
+      if (n.unsupportedReasons.nonEmpty) {
         w.write("\nThe following cases are not supported by Comet:\n\n".getBytes)
-        for (reason <- unsupported) {
+        for (reason <- n.unsupportedReasons) {
           w.write(s"- $reason\n".getBytes)
         }
       }
