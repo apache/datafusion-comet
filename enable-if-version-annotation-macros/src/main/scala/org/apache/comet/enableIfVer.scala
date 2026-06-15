@@ -45,9 +45,19 @@ import org.semver4j.{RangesListFactory, Semver}
  */
 object EnableIfVerSupport {
 
-  /** Does the configured `version` satisfy the semver `range`? */
-  def satisfies(range: String, version: String): Boolean =
-    new Semver(version).satisfies(RangesListFactory.create(range.trim))
+  /**
+   * Does the configured `version` satisfy the semver `range`?
+   *
+   * Pre-release / build metadata is dropped before matching: a build targeting a pre-release
+   * Spark (e.g. `4.2.0-preview4`) should still select the code gated for that major.minor.patch
+   * line (`>=3.5.0`, `4`, ...). semver4j, like node-semver, otherwise refuses to match a
+   * pre-release version against a range whose comparators carry no pre-release of the same tuple.
+   */
+  def satisfies(range: String, version: String): Boolean = {
+    val v = new Semver(version)
+    val core = new Semver(s"${v.getMajor}.${v.getMinor}.${v.getPatch}")
+    core.satisfies(RangesListFactory.create(range.trim))
+  }
 
   /** Prefix of the `-Xmacro-settings` keys this macro understands. */
   private val SettingPrefix = "enableIfVer."

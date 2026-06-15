@@ -89,8 +89,8 @@ under the License.
     <semver4j.version>5.8.0</semver4j.version>
     <!-- @enableIfVer macro-annotation expansion flag. Scala 2.13 folds macro-annotation support
          into the compiler under -Ymacro-annotations; Scala 2.12 has no such flag and uses the
-         macro-paradise compiler plugin instead (added in the scala-2.12 / spark-3.x profiles),
-         where this is overridden to a harmless duplicate flag. -->
+         macro-paradise compiler plugin instead (added in the scala-2.12 profile), where this is
+         overridden to a harmless duplicate flag. -->
     <scala.macros.annotations.arg>-Ymacro-annotations</scala.macros.annotations.arg>
     <jni.dir>${project.basedir}/../native/target/debug</jni.dir>
     <platform>darwin</platform>
@@ -677,30 +677,7 @@ under the License.
         <java.version>11</java.version>
         <maven.compiler.source>${java.version}</maven.compiler.source>
         <maven.compiler.target>${java.version}</maven.compiler.target>
-        <!-- Scala 2.12 has no -Ymacro-annotations; macro annotations expand via the paradise
-             compiler plugin (below). Override to a harmless duplicate flag. -->
-        <scala.macros.annotations.arg>-feature</scala.macros.annotations.arg>
       </properties>
-      <build>
-        <pluginManagement>
-          <plugins>
-            <plugin>
-              <groupId>net.alchim31.maven</groupId>
-              <artifactId>scala-maven-plugin</artifactId>
-              <configuration>
-                <compilerPlugins combine.children="append">
-                  <!-- Expands the @enableIfVer macro annotations on Scala 2.12. -->
-                  <compilerPlugin>
-                    <groupId>org.scalamacros</groupId>
-                    <artifactId>paradise_${scala.version}</artifactId>
-                    <version>2.1.1</version>
-                  </compilerPlugin>
-                </compilerPlugins>
-              </configuration>
-            </plugin>
-          </plugins>
-        </pluginManagement>
-      </build>
     </profile>
 
     <profile>
@@ -718,30 +695,7 @@ under the License.
         <java.version>11</java.version>
         <maven.compiler.source>${java.version}</maven.compiler.source>
         <maven.compiler.target>${java.version}</maven.compiler.target>
-        <!-- Scala 2.12 has no -Ymacro-annotations; macro annotations expand via the paradise
-             compiler plugin (below). Override to a harmless duplicate flag. -->
-        <scala.macros.annotations.arg>-feature</scala.macros.annotations.arg>
       </properties>
-      <build>
-        <pluginManagement>
-          <plugins>
-            <plugin>
-              <groupId>net.alchim31.maven</groupId>
-              <artifactId>scala-maven-plugin</artifactId>
-              <configuration>
-                <compilerPlugins combine.children="append">
-                  <!-- Expands the @enableIfVer macro annotations on Scala 2.12. -->
-                  <compilerPlugin>
-                    <groupId>org.scalamacros</groupId>
-                    <artifactId>paradise_${scala.version}</artifactId>
-                    <version>2.1.1</version>
-                  </compilerPlugin>
-                </compilerPlugins>
-              </configuration>
-            </plugin>
-          </plugins>
-        </pluginManagement>
-      </build>
     </profile>
 
     <profile>
