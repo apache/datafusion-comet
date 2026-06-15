@@ -1,0 +1,81 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<!--
+Licensed to the Apache Software Foundation (ASF) under one
+or more contributor license agreements.  See the NOTICE file
+distributed with this work for additional information
+regarding copyright ownership.  The ASF licenses this file
+to you under the Apache License, Version 2.0 (the
+"License"); you may not use this file except in compliance
+with the License.  You may obtain a copy of the License at
+
+  http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing,
+software distributed under the License is distributed on an
+"AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+KIND, either express or implied.  See the License for the
+specific language governing permissions and limitations
+under the License.
+-->
+
+
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <parent>
+    <groupId>org.apache.datafusion</groupId>
+    <artifactId>comet-parent-spark${spark.version.short}_${scala.binary.version}</artifactId>
+    <version>0.17.0-SNAPSHOT</version>
+    <relativePath>../pom.xml</relativePath>
+  </parent>
+
+  <artifactId>comet-enable-if-version-annotation-macros-spark${spark.version.short}_${scala.binary.version}</artifactId>
+  <name>comet-enable-if-version-annotation-macros</name>
+
+  <!--
+    Defines the @enableIfVer (and @enableIfAllVer / @enableIfAnyVer / @implementIfVer /
+    @enableOverrideIfVer) macro annotations used for conditional, version-specific compilation
+    in a single source file (instead of parallel spark-3.x / spark-4.x source folders).
+
+    The targeted versions are fed to the macro at expansion time via the compiler flag
+    -Xmacro-settings:enableIfVer.<dimension>=<version> (configured in the parent pom's
+    scala-maven-plugin). Expanding the annotations requires macro-paradise on Scala 2.12 and the
+    -Ymacro-annotations flag on Scala 2.13 — both wired up in the parent pom.
+
+    This module is compile-time-only: expanded annotations leave no runtime reference to it, so
+    consumers depend on it with "provided" scope and it is not published.
+  -->
+
+  <dependencies>
+    <dependency>
+      <groupId>org.scala-lang</groupId>
+      <artifactId>scala-library</artifactId>
+    </dependency>
+    <!-- Needed to define the macro implementations (scala.reflect.macros.whitebox). -->
+    <dependency>
+      <groupId>org.scala-lang</groupId>
+      <artifactId>scala-reflect</artifactId>
+      <scope>provided</scope>
+    </dependency>
+    <!-- Backs the macro's semver range matching; runs at the *consumer's* compile time, so it is
+         "provided" (expanded annotations leave no runtime reference to it). -->
+    <dependency>
+      <groupId>org.semver4j</groupId>
+      <artifactId>semver4j</artifactId>
+      <scope>provided</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <plugins>
+      <!-- scala-maven-plugin compiles the macro definitions; macro-annotation enablement
+           (paradise / -Ymacro-annotations) is inherited from the parent pom. -->
+      <plugin>
+        <groupId>net.alchim31.maven</groupId>
+        <artifactId>scala-maven-plugin</artifactId>
+      </plugin>
+    </plugins>
+  </build>
+
+</project>

@@ -44,6 +44,22 @@ under the License.
       <artifactId>comet-common-spark${spark.version.short}_${scala.binary.version}</artifactId>
       <version>${project.version}</version>
     </dependency>
+    <!-- @enableIfVer macro annotations. Compile-time only: the annotations are @compileTimeOnly
+         and expand away, so this is "provided" (no runtime reference). -->
+    <dependency>
+      <groupId>org.apache.datafusion</groupId>
+      <artifactId>comet-enable-if-version-annotation-macros-spark${spark.version.short}_${scala.binary.version}</artifactId>
+      <version>${project.version}</version>
+      <scope>provided</scope>
+    </dependency>
+    <!-- Backs the @enableIfVer macro's range matching; the macro runs at this module's compile
+         time, so semver4j must be on the compile classpath. "provided" since expanded annotations
+         leave no runtime reference to it. -->
+    <dependency>
+      <groupId>org.semver4j</groupId>
+      <artifactId>semver4j</artifactId>
+      <scope>provided</scope>
+    </dependency>
     <dependency>
       <groupId>org.apache.spark</groupId>
       <artifactId>spark-sql_${scala.binary.version}</artifactId>

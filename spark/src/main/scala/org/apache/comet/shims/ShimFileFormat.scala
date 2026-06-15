@@ -19,15 +19,36 @@
 
 package org.apache.comet.shims
 
-import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
-import org.apache.spark.sql.execution.datasources.parquet.ParquetRowIndexUtil
 import org.apache.spark.sql.types.StructType
+
+import org.apache.comet.enableIfVer
 
 object ShimFileFormat {
   // A name for a temporary column that holds row indexes computed by the file format reader
   // until they can be placed in the _metadata struct.
-  val ROW_INDEX_TEMPORARY_COLUMN_NAME = ParquetFileFormat.ROW_INDEX_TEMPORARY_COLUMN_NAME
+  val ROW_INDEX_TEMPORARY_COLUMN_NAME: String = getRowIndexTemporaryColumnName
 
-  def findRowIndexColumnIndexInSchema(sparkSchema: StructType): Int =
+  @enableIfVer(spark = "<3.5.0")
+  private def getRowIndexTemporaryColumnName: String = {
+    import org.apache.spark.sql.execution.datasources.FileFormat
+    FileFormat.ROW_INDEX_TEMPORARY_COLUMN_NAME
+  }
+
+  @enableIfVer(spark = ">=3.5.0")
+  private def getRowIndexTemporaryColumnName: String = {
+    import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
+    ParquetFileFormat.ROW_INDEX_TEMPORARY_COLUMN_NAME
+  }
+
+  @enableIfVer(spark = "<3.5.0")
+  def findRowIndexColumnIndexInSchema(sparkSchema: StructType): Int = {
+    import org.apache.spark.sql.execution.datasources.RowIndexUtil
+    RowIndexUtil.findRowIndexColumnIndexInSchema(sparkSchema)
+  }
+
+  @enableIfVer(spark = ">=3.5.0")
+  def findRowIndexColumnIndexInSchema(sparkSchema: StructType): Int = {
+    import org.apache.spark.sql.execution.datasources.parquet.ParquetRowIndexUtil
     ParquetRowIndexUtil.findRowIndexColumnIndexInSchema(sparkSchema)
+  }
 }

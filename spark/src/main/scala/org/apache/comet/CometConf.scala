@@ -29,7 +29,7 @@ import org.apache.spark.network.util.JavaUtils
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.internal.SQLConf
 
-import org.apache.comet.shims.ShimCometConf
+import org.apache.comet.enableIfVer
 
 /**
  * Configurations for a Comet application. Mostly inspired by [[SQLConf]] in Spark.
@@ -43,7 +43,7 @@ import org.apache.comet.shims.ShimCometConf
  * which retrieves the config value from the thread-local [[SQLConf]] object. Alternatively, you
  * can also explicitly pass a [[SQLConf]] object to the `get` method.
  */
-object CometConf extends ShimCometConf {
+object CometConf {
 
   val COMPAT_GUIDE: String = "For more information, refer to the Comet Compatibility " +
     "Guide (https://datafusion.apache.org/comet/user-guide/compatibility.html)"
@@ -851,6 +851,26 @@ object CometConf extends ShimCometConf {
 
   val COMET_OPERATOR_DATA_WRITING_COMMAND_ALLOW_INCOMPAT: ConfigEntry[Boolean] =
     createOperatorIncompatConfig("DataWritingCommandExec")
+
+  /**
+   * Whether Comet's Parquet scan paths allow widening type promotions (e.g. INT32 -> INT64, FLOAT
+   * -> DOUBLE, INT32 -> DOUBLE). Reads from the deprecated `spark.comet.schemaEvolution.enabled`
+   * SQL conf were removed in favor of this per-version constant; see #4298.
+   */
+  val COMET_SCHEMA_EVOLUTION_ENABLED: Boolean = isCometSchemaEvolutionEnabled
+
+  /**
+   * Spark 3.x's vectorized reader rejects these on read, so Comet matches by defaulting to false
+   * on 3.x
+   */
+  @enableIfVer(spark = "3")
+  private def isCometSchemaEvolutionEnabled: Boolean = false
+
+  /**
+   * Spark 4.x's reader accepts them, so it defaults to true
+   */
+  @enableIfVer(spark = "4")
+  private def isCometSchemaEvolutionEnabled: Boolean = true
 
   /** Create a config to enable a specific operator */
   private def createExecEnabledConfig(
