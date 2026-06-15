@@ -29,8 +29,6 @@ import org.apache.spark.network.util.JavaUtils
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.internal.SQLConf
 
-import org.apache.comet.enableIfVer
-
 /**
  * Configurations for a Comet application. Mostly inspired by [[SQLConf]] in Spark.
  *

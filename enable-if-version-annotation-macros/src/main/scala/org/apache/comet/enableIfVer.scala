@@ -97,7 +97,7 @@ object EnableIfVerSupport {
         c.enclosingPosition,
         s"@enableIfVer: no version configured for dimension '$dimension'" +
           s" (configured: ${versions.keys.toList.sorted.mkString(", ")}). " +
-          s"""Pass it via the compiler flag """ +
+          "Pass it via the compiler flag " +
           s""""-Xmacro-settings:$SettingPrefix$dimension=<version>"."""))
   }
 

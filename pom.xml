@@ -895,6 +895,11 @@ under the License.
               <configuration>
                 <args>
                   <arg>-Ywarn-unused</arg> <!-- if you need exactly RemoveUnused -->
+                  <!-- This profile replaces (does not append to) the base scalac args, so the
+                       @enableIfVer macro settings must be repeated here or the annotations fail to
+                       expand during the lint compile. See the base scala-maven-plugin args. -->
+                  <arg>-Xmacro-settings:enableIfVer.spark=${spark.version}</arg>
+                  <arg>${scala.macros.annotations.arg}</arg>
                 </args>
                 <javacArgs>
                   <javacArg>-source</javacArg>
