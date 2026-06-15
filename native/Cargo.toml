@@ -62,6 +62,9 @@ iceberg = { git = "https://github.com/apache/iceberg-rust", rev = "e8460ee" }
 iceberg-storage-opendal = { git = "https://github.com/apache/iceberg-rust", rev = "e8460ee", features = ["opendal-memory", "opendal-fs", "opendal-s3", "opendal-gcs", "opendal-oss", "opendal-azdls"] }
 reqsign-core = "3"
 
+[patch."https://github.com/apache/iceberg-rust"]
+iceberg = { git = "https://github.com/parthchandra/iceberg-rust", branch = "metadata-columns" }
+
 [profile.release]
 debug = true
 overflow-checks = false

@@ -125,7 +125,7 @@ case class CometScanRule(session: SparkSession)
       case scan if !CometConf.COMET_NATIVE_SCAN_ENABLED.get(conf) =>
         withFallbackReason(scan, "Comet Scan is not enabled")
 
-      case scan if metadataCols(scan).nonEmpty =>
+      case scan: FileSourceScanExec if metadataCols(scan).nonEmpty =>
         withFallbackReason(
           scan,
           s"Metadata column(s) ${metadataCols(scan).mkString(", ")} is not supported")
@@ -297,6 +297,11 @@ case class CometScanRule(session: SparkSession)
 
     scanExec.scan match {
       case scan: CSVScan if COMET_CSV_V2_NATIVE_ENABLED.get() =>
+        if (scanExec.output.exists(_.isMetadataCol)) {
+          return withFallbackReason(
+            scanExec,
+            "Metadata columns are not supported for CSV V2 scans")
+        }
         val fallbackReasons = new ListBuffer[String]()
         val schemaSupported =
           CometBatchScanExec.isSchemaSupported(scan.readDataSchema, fallbackReasons)
@@ -356,9 +361,30 @@ case class CometScanRule(session: SparkSession)
           return withFallbackReasons(scanExec, fallbackReasons.toSet)
         }
 
+        // Check for unsupported metadata columns in Iceberg scans
+        val unsupportedMetadataCols = scanExec.output.filter(_.isMetadataCol).filterNot { attr =>
+          CometIcebergNativeScan.MetadataFieldIds.keySet.contains(attr.name)
+        }
+        if (unsupportedMetadataCols.nonEmpty) {
+          fallbackReasons += "Unsupported Iceberg metadata columns: " +
+            unsupportedMetadataCols.map(_.name).mkString(", ")
+          return withFallbackReasons(scanExec, fallbackReasons.toSet)
+        }
+
         val typeChecker = CometScanTypeChecker()
+        // Filter out metadata columns from schema check -- their types are handled
+        // by iceberg-rust directly (e.g., _partition can be an empty struct for
+        // unpartitioned tables which the general type checker rejects).
+        val metadataColNames = scanExec.output.filter(_.isMetadataCol).map(_.name).toSet
+        val dataSchema = if (metadataColNames.nonEmpty) {
+          val filtered =
+            scanExec.scan.readSchema().filter(f => !metadataColNames.contains(f.name))
+          new org.apache.spark.sql.types.StructType(filtered.toArray)
+        } else {
+          scanExec.scan.readSchema()
+        }
         val schemaSupported =
-          typeChecker.isSchemaSupported(scanExec.scan.readSchema(), fallbackReasons)
+          typeChecker.isSchemaSupported(dataSchema, fallbackReasons)
 
         if (!schemaSupported) {
           fallbackReasons += "Comet extension is not enabled for " +
@@ -446,15 +472,18 @@ case class CometScanRule(session: SparkSession)
         }
 
         // Now perform all validation using the pre-extracted metadata
-        // Check if table uses a FileIO implementation compatible with iceberg-rust
-
+        // Check if table uses a FileIO implementation compatible with iceberg-rust.
+        // Comet's native reader uses object_store (Rust) for I/O, bypassing Iceberg Java's
+        // FileIO entirely. Only allow known-compatible implementations whose underlying
+        // storage object_store can reach via standard URL schemes.
         val fileIOCompatible = IcebergReflection.getFileIO(metadata.table) match {
           case Some(fileIO)
-              if fileIO.getClass.getName == "org.apache.iceberg.inmemory.InMemoryFileIO" =>
-            fallbackReasons += "InMemoryFileIO is not supported by Comet's native reader"
-            false
-          case Some(_) =>
+              if CometScanRule.CompatibleFileIOClasses.contains(fileIO.getClass.getName) =>
             true
+          case Some(fileIO) =>
+            fallbackReasons += s"FileIO ${fileIO.getClass.getName} is not supported by " +
+              "Comet's native reader (object_store bypasses Iceberg Java FileIO)"
+            false
           case None =>
             fallbackReasons += "Could not check FileIO compatibility"
             false
@@ -807,6 +836,18 @@ case class CometScanTypeChecker() extends DataTypeSupport with CometTypeShim {
 }
 
 object CometScanRule extends Logging {
+
+  // Iceberg FileIO implementations whose underlying storage object_store can reach.
+  // Custom/test FileIO classes (e.g. CustomFileIO in TestSparkExecutorCache) are not compatible
+  // because Comet's native reader bypasses Java FileIO entirely.
+  private val CompatibleFileIOClasses: Set[String] = Set(
+    "org.apache.iceberg.hadoop.HadoopFileIO",
+    "org.apache.iceberg.aws.s3.S3FileIO",
+    "org.apache.iceberg.gcp.gcs.GCSFileIO",
+    "org.apache.iceberg.io.ResolvingFileIO",
+    "org.apache.iceberg.spark.SparkFileIO",
+    "org.apache.iceberg.azure.adlsv2.ADLSFileIO",
+    "org.apache.iceberg.CachingFileIO")
 
   // Per-scheme memo of `NativeBase.isObjectStoreSchemeSupported`. The answer depends only on the
   // URL scheme, so we cache by scheme and never re-cross the JNI boundary for a repeated scheme.
