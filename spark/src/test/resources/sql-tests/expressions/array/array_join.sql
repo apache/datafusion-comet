@@ -21,8 +21,8 @@ CREATE TABLE test_array_join(arr array<string>) USING parquet
 statement
 INSERT INTO test_array_join VALUES (array('a', 'b', 'c')), (array('hello', 'world')), (array()), (NULL), (array('a', NULL, 'c'))
 
-query spark_answer_only
+query
 SELECT array_join(arr, ',') FROM test_array_join
 
-query spark_answer_only
+query
 SELECT array_join(arr, ',', 'NULL') FROM test_array_join

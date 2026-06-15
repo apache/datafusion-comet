@@ -16,6 +16,7 @@
 // under the License.
 
 use crate::hash_funcs::*;
+use crate::json_funcs::JsonArrayLength;
 use crate::map_funcs::spark_map_sort;
 use crate::math_funcs::abs::abs;
 use crate::math_funcs::checked_arithmetic::{checked_add, checked_div, checked_mul, checked_sub};
@@ -27,7 +28,7 @@ use crate::{
     spark_round, spark_rpad, spark_to_time, spark_unhex, spark_unscaled_value, EvalMode,
     SparkArrayCompact, SparkArrayPositionFunc, SparkArraySlice, SparkArraysOverlap, SparkContains,
     SparkDateDiff, SparkDateFromUnixDate, SparkDateTrunc, SparkMakeDate, SparkMakeTime,
-    SparkSecondsToTimestamp, SparkSizeFunc,
+    SparkNextDay, SparkSecondsToTimestamp, SparkSizeFunc,
 };
 use arrow::datatypes::DataType;
 use datafusion::common::{DataFusionError, Result as DataFusionResult};
@@ -201,6 +202,14 @@ pub fn create_comet_physical_fun_with_eval_mode(
             let func = Arc::new(crate::string_funcs::spark_split_sql);
             make_comet_scalar_udf!("split_sql", func, without data_type)
         }
+        "regexp_extract" => {
+            let func = Arc::new(crate::string_funcs::spark_regexp_extract);
+            make_comet_scalar_udf!("regexp_extract", func, without data_type)
+        }
+        "regexp_extract_all" => {
+            let func = Arc::new(crate::string_funcs::spark_regexp_extract_all);
+            make_comet_scalar_udf!("regexp_extract_all", func, without data_type)
+        }
         "get_json_object" => {
             let func = Arc::new(crate::string_funcs::spark_get_json_object);
             make_comet_scalar_udf!("get_json_object", func, without data_type)
@@ -212,6 +221,14 @@ pub fn create_comet_physical_fun_with_eval_mode(
         "to_time" => {
             make_comet_scalar_udf!("to_time", spark_to_time, without data_type, fail_on_error)
         }
+        // make_date and next_day must be constructed with the ANSI flag (fail_on_error) so they
+        // throw on invalid input under ANSI rather than returning NULL.
+        "make_date" => Ok(Arc::new(ScalarUDF::new_from_impl(SparkMakeDate::new(
+            fail_on_error,
+        )))),
+        "next_day" => Ok(Arc::new(ScalarUDF::new_from_impl(SparkNextDay::new(
+            fail_on_error,
+        )))),
         _ => registry.udf(fun_name).map_err(|e| {
             DataFusionError::Execution(format!(
                 "Function {fun_name} not found in the registry: {e}",
@@ -232,8 +249,10 @@ fn all_scalar_functions() -> Vec<Arc<ScalarUDF>> {
         Arc::new(ScalarUDF::new_from_impl(SparkDateTrunc::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkMakeDate::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkMakeTime::default())),
+        Arc::new(ScalarUDF::new_from_impl(SparkNextDay::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkSecondsToTimestamp::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkSizeFunc::default())),
+        Arc::new(ScalarUDF::new_from_impl(JsonArrayLength::default())),
     ]
 }
 
