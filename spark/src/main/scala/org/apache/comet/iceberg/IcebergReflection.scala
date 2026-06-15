@@ -52,6 +52,8 @@ object IcebergReflection extends Logging {
     val SPARK_BATCH_QUERY_SCAN = "org.apache.iceberg.spark.source.SparkBatchQueryScan"
     val SPARK_STAGED_SCAN = "org.apache.iceberg.spark.source.SparkStagedScan"
     val SPARK_SCHEMA_UTIL = "org.apache.iceberg.spark.SparkSchemaUtil"
+    val TABLE = "org.apache.iceberg.Table"
+    val PARTITIONING = "org.apache.iceberg.Partitioning"
   }
 
   /**
@@ -458,6 +460,40 @@ object IcebergReflection extends Logging {
         logError(
           s"Iceberg reflection failure: Failed to get partition spec from table: ${e.getMessage}")
         None
+    }
+  }
+
+  /**
+   * Validates that the table's unified partition type can be computed -- the merge of every
+   * historical partition spec, which is what the `_partition` metadata column projects.
+   *
+   * Iceberg Java's `Partitioning.partitionType(table)` runs the same cross-spec compatibility
+   * check that iceberg-rust does natively: a V1 table does not guarantee partition field ids are
+   * unique across specs, so two specs can bind the same id to incompatible source/transform
+   * pairs, which cannot be merged into one struct field. iceberg-rust returns a DataInvalid error
+   * in that case, but only at scan time -- too late for Comet to fall back. Calling the Java
+   * check here, at plan time, lets `CometScanRule` fall back to Spark instead of failing inside
+   * the native reader.
+   *
+   * Returns None when the unified type is computable, or Some(reason) when it is not -- either
+   * the specs conflict or the reflection call itself failed. Both mean Comet cannot safely serve
+   * `_partition`, so both map to a fallback.
+   */
+  def validateUnifiedPartitionType(table: Any): Option[String] = {
+    try {
+      val tableClass = loadClass(ClassNames.TABLE)
+      val partitioningClass = loadClass(ClassNames.PARTITIONING)
+      partitioningClass
+        .getMethod("partitionType", tableClass)
+        .invoke(null, table.asInstanceOf[AnyRef])
+      None
+    } catch {
+      // A conflict surfaces as the ValidationException thrown by partitionType(), wrapped by
+      // reflection in InvocationTargetException; unwrap it for a meaningful reason.
+      case e: java.lang.reflect.InvocationTargetException =>
+        Some(Option(e.getCause).getOrElse(e).getMessage)
+      case e: Exception =>
+        Some(e.getMessage)
     }
   }
 
