@@ -27,7 +27,7 @@ import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithFa
 
 // TODO: DataFusion supports only -8334601211038 <= sec <= 8210266876799
 // https://github.com/apache/datafusion/issues/16594
-object CometFromUnixTime extends CometExpressionSerde[FromUnixTime] {
+object CometFromUnixTime extends CometExpressionSerde[FromUnixTime] with CodegenDispatchFallback {
 
   override def getIncompatibleReasons(): Seq[String] = Seq(
     "Only supports the default datetime format pattern `yyyy-MM-dd HH:mm:ss`." +
