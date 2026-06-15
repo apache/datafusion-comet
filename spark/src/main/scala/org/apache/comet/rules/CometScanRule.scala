@@ -744,12 +744,14 @@ object CometScanRule extends Logging {
    * one iteration for better performance with large tables.
    */
   def validateIcebergFileScanTasks(tasks: java.util.List[_]): IcebergTaskValidationResult = {
-    // scalastyle:off classforname
-    val contentScanTaskClass = Class.forName(IcebergReflection.ClassNames.CONTENT_SCAN_TASK)
-    val contentFileClass = Class.forName(IcebergReflection.ClassNames.CONTENT_FILE)
-    val fileScanTaskClass = Class.forName(IcebergReflection.ClassNames.FILE_SCAN_TASK)
-    val unboundPredicateClass = Class.forName(IcebergReflection.ClassNames.UNBOUND_PREDICATE)
-    // scalastyle:on classforname
+    val contentScanTaskClass =
+      IcebergReflection.loadClass(IcebergReflection.ClassNames.CONTENT_SCAN_TASK)
+    val contentFileClass =
+      IcebergReflection.loadClass(IcebergReflection.ClassNames.CONTENT_FILE)
+    val fileScanTaskClass =
+      IcebergReflection.loadClass(IcebergReflection.ClassNames.FILE_SCAN_TASK)
+    val unboundPredicateClass =
+      IcebergReflection.loadClass(IcebergReflection.ClassNames.UNBOUND_PREDICATE)
 
     // Cache all method lookups outside the loop
     val fileMethod = contentScanTaskClass.getMethod("file")

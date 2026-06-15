@@ -23,30 +23,32 @@ import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.expressions.aggregate.Sum
 
 import org.apache.comet.expressions.CometEvalMode
-import org.apache.comet.serde.CommonStringExprs
+import org.apache.comet.serde.{CometExpressionSerde, CometStringDecode}
 import org.apache.comet.serde.ExprOuterClass.{BinaryOutputStyle, Expr}
 
 /**
  * `CometExprShim` acts as a shim for parsing expressions from different Spark versions.
  */
-trait CometExprShim extends CommonStringExprs {
+trait CometExprShim {
   protected def evalMode(c: Cast): CometEvalMode.Value =
     CometEvalModeUtil.fromSparkEvalMode(c.evalMode)
 
-  protected def binaryOutputStyle: BinaryOutputStyle = BinaryOutputStyle.HEX_DISCRETE
+  def binaryOutputStyle: BinaryOutputStyle = BinaryOutputStyle.HEX_DISCRETE
 
-  def versionSpecificExprToProtoInternal(
+  def sparkVersionSpecificStringExpressions
+      : Map[Class[_ <: Expression], CometExpressionSerde[_]] =
+    Map(classOf[StringDecode] -> CometStringDecode)
+  def sparkVersionSpecificMathExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] =
+    Map.empty
+  def sparkVersionSpecificMiscExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] =
+    Map.empty
+  def sparkVersionSpecificMapExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] =
+    Map.empty
+
+  def sparkVersionSpecificExprToProtoInternal(
       expr: Expression,
       inputs: Seq[Attribute],
-      binding: Boolean): Option[Expr] = {
-    expr match {
-      case s: StringDecode =>
-        // Right child is the encoding expression.
-        stringDecode(expr, s.charset, s.bin, inputs, binding)
-
-      case _ => None
-    }
-  }
+      binding: Boolean): Option[Expr] = None
 }
 
 object CometEvalModeUtil {

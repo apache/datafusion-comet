@@ -799,6 +799,34 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
     try recordWriters.foreach(writer.write)
     finally writer.close()
   }
+
+  test("native scan does not duplicate a row group split by byte range") {
+    // Mirrors the native Iceberg scan duplication bug (#4590): a single-row-group Parquet
+    // file split into many sub-row-group byte ranges must still return each row once.
+    withTempPath { path =>
+      // One row group, one matching row. payload pads the file so it spans many splits.
+      spark
+        .sql("SELECT CAST(0 AS INT) AS id, repeat('x', 4096) AS payload")
+        .coalesce(1)
+        .write
+        .mode("overwrite")
+        .parquet(path.toString)
+
+      withSQLConf(
+        // Force Spark to split the single file into many sub-row-group byte ranges.
+        SQLConf.FILES_MAX_PARTITION_BYTES.key -> "64",
+        SQLConf.FILES_OPEN_COST_IN_BYTES.key -> "64") {
+        // Guard the scenario: without multiple splits the test proves nothing about
+        // midpoint-vs-overlap row group assignment.
+        val numParts = spark.read.parquet(path.toString).select("id").rdd.getNumPartitions
+        assert(numParts > 1, s"expected the file to be split into >1 partition, got $numParts")
+
+        val df = spark.read.parquet(path.toString).where("id = 0").select("id")
+        val rows = df.collect()
+        assert(rows.length == 1, s"Expected 1 row, got ${rows.length}: ${rows.mkString(", ")}")
+      }
+    }
+  }
 }
 
 private class DirectWriteSupport(schema: org.apache.parquet.schema.MessageType)
