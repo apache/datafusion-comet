@@ -608,9 +608,10 @@ plan and invoke it.</p>
 <p>In the native code there is a <code class="docutils literal notranslate"><span class="pre">PhysicalPlanner</span></code> struct (in <code class="docutils literal notranslate"><span class="pre">planner.rs</span></code>) which converts the deserialized plan into an
 Apache DataFusion <code class="docutils literal notranslate"><span class="pre">ExecutionPlan</span></code>. In some cases, Comet provides specialized physical operators and expressions to
 override the DataFusion versions to ensure compatibility with Apache Spark.</p>
-<p>The leaf nodes in the physical plan are always <code class="docutils literal notranslate"><span class="pre">ScanExec</span></code> and each of these operators will make a JNI call to
-<code class="docutils literal notranslate"><span class="pre">CometBatchIterator.next()</span></code> to fetch the next input batch. The input could be a Comet native Parquet scan,
-a Spark exchange, or another native plan.</p>
+<p>The leaf nodes in the physical plan are always <code class="docutils literal notranslate"><span class="pre">ScanExec</span></code>. Each JVM-sourced input is exported once as an
+<a class="reference external" href="https://arrow.apache.org/docs/format/CStreamInterface.html">Arrow C Stream</a> (<code class="docutils literal notranslate"><span class="pre">org.apache.arrow.c.ArrowArrayStream</span></code>),
+and <code class="docutils literal notranslate"><span class="pre">ScanExec</span></code> pulls each input batch through a single C callback rather than making a JNI call per batch. The
+input could be a Comet native Parquet scan, a Spark exchange, or another native plan.</p>
 <p><code class="docutils literal notranslate"><span class="pre">CometNativeExec</span></code> creates a <code class="docutils literal notranslate"><span class="pre">CometExecIterator</span></code> and applies this iterator to the input RDD
 partitions. Each call to <code class="docutils literal notranslate"><span class="pre">CometExecIterator.next()</span></code> will invoke <code class="docutils literal notranslate"><span class="pre">Native.executePlan</span></code>. Once the plan finishes
 executing, the resulting Arrow batches are imported into the JVM using Arrow FFI.</p>

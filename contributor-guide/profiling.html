@@ -851,8 +851,8 @@ objects are created during data transfer between JVM and native code:</p>
 <div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="nv">$ASYNC_PROFILER_HOME</span>/bin/asprof<span class="w"> </span>-e<span class="w"> </span>alloc<span class="w"> </span>-d<span class="w"> </span><span class="m">60</span><span class="w"> </span>-f<span class="w"> </span>alloc-profile.html<span class="w"> </span>&lt;pid&gt;
 </pre></div>
 </div>
-<p>Look for allocations in <code class="docutils literal notranslate"><span class="pre">CometExecIterator</span></code>, <code class="docutils literal notranslate"><span class="pre">CometBatchIterator</span></code>, and Arrow vector
-classes.</p>
+<p>Look for allocations in <code class="docutils literal notranslate"><span class="pre">CometExecIterator</span></code> (native to JVM output), <code class="docutils literal notranslate"><span class="pre">CometArrowStream</span></code> (JVM to native
+input export), and Arrow vector classes.</p>
 </section>
 <section id="isolate-rust-only-performance-issues">
 <h3>Isolate Rust-only performance issues<a class="headerlink" href="#isolate-rust-only-performance-issues" title="Link to this heading">#</a></h3>
