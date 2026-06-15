@@ -677,7 +677,31 @@ under the License.
         <java.version>11</java.version>
         <maven.compiler.source>${java.version}</maven.compiler.source>
         <maven.compiler.target>${java.version}</maven.compiler.target>
+        <!-- This profile selects Scala 2.12 on its own (no scala-2.12 needed), and 2.12 has no
+             -Ymacro-annotations; @enableIfVer expands via the paradise plugin (below) instead.
+             Override the flag to a harmless duplicate. -->
+        <scala.macros.annotations.arg>-feature</scala.macros.annotations.arg>
       </properties>
+      <build>
+        <pluginManagement>
+          <plugins>
+            <plugin>
+              <groupId>net.alchim31.maven</groupId>
+              <artifactId>scala-maven-plugin</artifactId>
+              <configuration>
+                <compilerPlugins combine.children="append">
+                  <!-- Expands the @enableIfVer macro annotations on Scala 2.12. -->
+                  <compilerPlugin>
+                    <groupId>org.scalamacros</groupId>
+                    <artifactId>paradise_${scala.version}</artifactId>
+                    <version>2.1.1</version>
+                  </compilerPlugin>
+                </compilerPlugins>
+              </configuration>
+            </plugin>
+          </plugins>
+        </pluginManagement>
+      </build>
     </profile>
 
     <profile>
@@ -695,7 +719,30 @@ under the License.
         <java.version>11</java.version>
         <maven.compiler.source>${java.version}</maven.compiler.source>
         <maven.compiler.target>${java.version}</maven.compiler.target>
+        <!-- Selects Scala 2.12 on its own (unless -Pscala-2.13 is layered on); see spark-3.4. -->
+        <scala.macros.annotations.arg>-feature</scala.macros.annotations.arg>
       </properties>
+      <build>
+        <pluginManagement>
+          <plugins>
+            <plugin>
+              <groupId>net.alchim31.maven</groupId>
+              <artifactId>scala-maven-plugin</artifactId>
+              <configuration>
+                <compilerPlugins combine.children="append">
+                  <!-- Expands the @enableIfVer macro annotations on Scala 2.12. Removed again by
+                       the scala-2.13 profile when that is layered on (Spark 3.5 + Scala 2.13). -->
+                  <compilerPlugin>
+                    <groupId>org.scalamacros</groupId>
+                    <artifactId>paradise_${scala.version}</artifactId>
+                    <version>2.1.1</version>
+                  </compilerPlugin>
+                </compilerPlugins>
+              </configuration>
+            </plugin>
+          </plugins>
+        </pluginManagement>
+      </build>
     </profile>
 
     <profile>
@@ -765,30 +812,10 @@ under the License.
         <scala.version>2.12.18</scala.version>
         <scala.binary.version>2.12</scala.binary.version>
         <semanticdb.version>4.8.8</semanticdb.version>
-        <!-- Scala 2.12 has no -Ymacro-annotations; macro annotations expand via the paradise
-             compiler plugin (below). Override to a harmless duplicate flag. -->
-        <scala.macros.annotations.arg>-feature</scala.macros.annotations.arg>
+        <!-- The @enableIfVer paradise plugin / -feature flag come from the spark-3.x profile this
+             is layered on (Scala 2.12 is only ever used together with a spark-3.x build), so there
+             is nothing macro-related to configure here. -->
       </properties>
-      <build>
-        <pluginManagement>
-          <plugins>
-            <plugin>
-              <groupId>net.alchim31.maven</groupId>
-              <artifactId>scala-maven-plugin</artifactId>
-              <configuration>
-                <compilerPlugins combine.children="append">
-                  <!-- Expands the @enableIfVer macro annotations on Scala 2.12. -->
-                  <compilerPlugin>
-                    <groupId>org.scalamacros</groupId>
-                    <artifactId>paradise_${scala.version}</artifactId>
-                    <version>2.1.1</version>
-                  </compilerPlugin>
-                </compilerPlugins>
-              </configuration>
-            </plugin>
-          </plugins>
-        </pluginManagement>
-      </build>
     </profile>
 
     <profile>
@@ -797,7 +824,26 @@ under the License.
         <scala.version>2.13.16</scala.version>
         <scala.binary.version>2.13</scala.binary.version>
         <semanticdb.version>4.13.6</semanticdb.version>
+        <!-- When layered on a spark-3.x profile (e.g. Spark 3.5 + Scala 2.13), undo its 2.12
+             macro setup: restore -Ymacro-annotations and drop the paradise plugin (which has no
+             2.13 build) below. -->
+        <scala.macros.annotations.arg>-Ymacro-annotations</scala.macros.annotations.arg>
       </properties>
+      <build>
+        <pluginManagement>
+          <plugins>
+            <plugin>
+              <groupId>net.alchim31.maven</groupId>
+              <artifactId>scala-maven-plugin</artifactId>
+              <configuration>
+                <!-- Drop the macro-paradise plugin a spark-3.x profile may have added; on Scala
+                     2.13 macro annotations expand via -Ymacro-annotations instead. -->
+                <compilerPlugins combine.self="override" />
+              </configuration>
+            </plugin>
+          </plugins>
+        </pluginManagement>
+      </build>
     </profile>
 
     <profile>
