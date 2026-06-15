@@ -23,7 +23,7 @@ import scala.annotation.{compileTimeOnly, nowarn, StaticAnnotation}
 import scala.language.experimental._
 import scala.reflect.macros.whitebox
 
-import org.semver4j.{RangesListFactory, Semver}
+import org.semver4j.Semver
 
 /**
  * Shared machinery behind the version annotations [[enableIfVer]], [[implementIfVer]] and
@@ -48,15 +48,25 @@ object EnableIfVerSupport {
   /**
    * Does the configured `version` satisfy the semver `range`?
    *
-   * Pre-release / build metadata is dropped before matching: a build targeting a pre-release
-   * Spark (e.g. `4.2.0-preview4`) should still select the code gated for that major.minor.patch
-   * line (`>=3.5.0`, `4`, ...). semver4j, like node-semver, otherwise refuses to match a
-   * pre-release version against a range whose comparators carry no pre-release of the same tuple.
+   * Matching enables `includePrerelease` so a pre-release Spark (e.g. `4.2.0-preview4`) is
+   * matched by ordinary ranges like `>=4.0.0` / `4` / `>=3.5.0`, and can also be targeted
+   * explicitly (e.g. `3.5 || 4.2.0-preview4`). Without it semver4j (like node-semver) refuses to
+   * match a pre-release against a range whose comparators carry no pre-release of the same
+   * major.minor.patch tuple.
+   *
+   * Matching a pre-release at a *lower bound* needs care, because a pre-release sorts BELOW its
+   * release (`4.0.0-preview4 < 4.0.0`). So to gate "Spark 4.x including the 4.0.0 previews",
+   * anchor the bound at `-0` (the lowest possible pre-release): write `spark = ">=4.0.0-0"` (or
+   * the x-range `spark = "4"`), not `">=4.0.0"`. For example:
+   *   - `>=4.0.0` does NOT match `4.0.0-preview4` (but matches `4.2.0-preview4`, `4.0.0`, ...)
+   *   - `>=4.0.0-0` matches `4.0.0-preview4` and everything `>=4.0.0`
+   *   - `4` (x-range) already covers `4.0.0-preview*` (its lower bound is treated inclusively)
    */
   def satisfies(range: String, version: String): Boolean = {
-    val v = new Semver(version)
-    val core = new Semver(s"${v.getMajor}.${v.getMinor}.${v.getPatch}")
-    core.satisfies(RangesListFactory.create(range.trim))
+    // positional arg: semver4j is a Java API, so the `includePrerelease` parameter cannot be
+    // passed by name
+    val includePrerelease = true
+    new Semver(version).satisfies(range.trim, includePrerelease)
   }
 
   /** Prefix of the `-Xmacro-settings` keys this macro understands. */
@@ -232,6 +242,18 @@ object enableIfVer {
  * @enableIfVer(spark = ">=3.4.0 <4.0.0")      // keep on the 3.4 / 3.5 line, drop on 4.0
  * override protected def withNewChildInternal(c: SparkPlan): SparkPlan = copy(child = c)
  * }}}
+ *
+ * Pre-release versions (e.g. `4.2.0-preview4`): ordinary ranges already match them (`>=4.0.0` and
+ * `4` both match `4.2.0-preview4`), and you can target one explicitly (`spark = "3.5 ||
+ * 4.2.0-preview4"`). The one gotcha is a lower bound on the pre-release's OWN release, since a
+ * pre-release sorts below its release (`4.0.0-preview4 < 4.0.0`):
+ * {{{
+ * @enableIfVer(spark = ">=4.0.0")     // matches 4.2.0-preview4 & 4.0.0, but NOT 4.0.0-preview4
+ * @enableIfVer(spark = ">=4.0.0-0")   // also matches 4.0.0-preview4 ("-0" = lowest pre-release)
+ * @enableIfVer(spark = "4")           // x-range: also matches 4.0.0-preview4
+ * }}}
+ * So to gate "Spark 4.x including the 4.0.0 previews", use `">=4.0.0-0"` or `"4"`, not
+ * `">=4.0.0"`.
  */
 @nowarn("cat=unused") // params are used by the macro
 @compileTimeOnly("enable macro paradise to expand macro annotations")
