@@ -982,36 +982,6 @@ index 525d97e4998..aded8906d75 100644
      val sc = spark.sparkContext
      val hiveVersion = "2.3.9"
      // transitive=false, only download specified jar
-diff --git a/sql/core/src/test/scala/org/apache/spark/sql/SQLQueryTestSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/SQLQueryTestSuite.scala
-index 2dabcf01be7..8fcec0d1ce4 100644
---- a/sql/core/src/test/scala/org/apache/spark/sql/SQLQueryTestSuite.scala
-+++ b/sql/core/src/test/scala/org/apache/spark/sql/SQLQueryTestSuite.scala
-@@ -491,8 +491,23 @@ class SQLQueryTestSuite extends QueryTest with SharedSparkSession with SQLHelper
-           s"Schema did not match for query #$i\n${expected.sql}: $output") {
-           output.schema
-         }
--        assertResult(expected.output, s"Result did not match" +
--          s" for query #$i\n${expected.sql}") { output.output }
-+        // Comet may surface errors as `CometNativeException` instead of the matching Spark
-+        // exception class when a `ScalaUDF` dispatched into the native plan evaluates a
-+        // divide-by-zero (DataFusion wraps the typed error so the JNI bridge cannot downcast it).
-+        // Same category, different surface. Collapse both sides to a placeholder when this happens
-+        // so the literal compare passes.
-+        // Tracking issue: https://github.com/apache/datafusion-comet/issues/4517
-+        val (expectedOut, actualOut) = if (isCometEnabled &&
-+            expected.output.startsWith("org.apache.spark.SparkArithmeticException") &&
-+            expected.output.contains("\"DIVIDE_BY_ZERO\"") &&
-+            output.output.startsWith("org.apache.comet.CometNativeException") &&
-+            output.output.contains("DivideByZero")) {
-+          ("[DIVIDE_BY_ZERO]", "[DIVIDE_BY_ZERO]")
-+        } else {
-+          (expected.output, output.output)
-+        }
-+        assertResult(expectedOut, s"Result did not match" +
-+          s" for query #$i\n${expected.sql}") { actualOut }
-       }
-     }
-   }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/SparkSessionExtensionSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/SparkSessionExtensionSuite.scala
 index 48ad10992c5..51d1ee65422 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/SparkSessionExtensionSuite.scala

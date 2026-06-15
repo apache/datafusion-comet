@@ -1218,33 +1218,6 @@ index 23f0144dcec..2586d93d630 100644
    ) ++ otherIgnoreList
    /** List of test cases that require TPCDS table schemas to be loaded. */
    private def requireTPCDSCases: Seq[String] = Seq("pipe-operators.sql")
-@@ -682,9 +691,24 @@ class SQLQueryTestSuite extends QueryTest with SharedSparkSession with SQLHelper
-         s"Schema did not match for query #$i\n${expected.sql}: $output") {
-         output.schema
-       }
--      assertResult(expected.output, s"Result did not match" +
-+      // Comet may surface errors as `CometNativeException` instead of the matching Spark
-+      // exception class when a `ScalaUDF` dispatched into the native plan evaluates a
-+      // divide-by-zero (DataFusion wraps the typed error so the JNI bridge cannot downcast it).
-+      // Same category, different surface. Collapse both sides to a placeholder when this happens
-+      // so the literal compare passes.
-+      // Tracking issue: https://github.com/apache/datafusion-comet/issues/4517
-+      val (expectedOut, actualOut) = if (isCometEnabled &&
-+          expected.output.startsWith("org.apache.spark.SparkArithmeticException") &&
-+          expected.output.contains("\"DIVIDE_BY_ZERO\"") &&
-+          output.output.startsWith("org.apache.comet.CometNativeException") &&
-+          output.output.contains("DivideByZero")) {
-+        ("[DIVIDE_BY_ZERO]", "[DIVIDE_BY_ZERO]")
-+      } else {
-+        (expected.output, output.output)
-+      }
-+      assertResult(expectedOut, s"Result did not match" +
-         s" for query #$i\n${expected.sql}") {
--        output.output
-+        actualOut
-       }
-     }
-   }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/SparkSessionExtensionSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/SparkSessionExtensionSuite.scala
 index 66826a9ca76..ab4265a5fb9 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/SparkSessionExtensionSuite.scala
