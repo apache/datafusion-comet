@@ -34,8 +34,7 @@ instructions on each step.
 - [ ] Generate release documentation
 - [ ] Update Maven version in release branch
 - [ ] Update version in main for next development cycle
-- [ ] Generate the change log and create PR against main
-- [ ] Cherry-pick the change log commit into the release branch
+- [ ] Generate the change log and PR it against the release branch
 - [ ] Build the jars
 - [ ] Tag the release candidate
 - [ ] Update documentation for the new release
@@ -47,6 +46,7 @@ instructions on each step.
   - [ ] Create GitHub release
   - [ ] Promote Maven artifacts to production
   - [ ] Push the release tag
+  - [ ] Bring the finalized change log into main
   - [ ] Close the vote and announce the release
 - [ ] Post release:
   - [ ] Register the release with Apache Reporter
@@ -177,8 +177,10 @@ export GITHUB_TOKEN=<your-token-here>
 python3 generate-changelog.py 0.12.0 HEAD 0.13.0 > ../../docs/source/changelog/0.13.0.md
 ```
 
-Create a PR against the _main_ branch to add this change log and once this is approved and merged, cherry-pick the
-commit into the release branch.
+Open a PR adding this change log targeting the release branch. Generate it late, once backports to the release
+branch are complete; if more changes land on the release branch before the release candidate is tagged,
+regenerate it and update the PR. After the release is approved and tagged, open a separate PR to bring the same
+change log file into `main`.
 
 ### Build the jars
 
@@ -246,7 +248,7 @@ repository
 
 ### Tag the Release Candidate
 
-Ensure that the Maven version update and changelog cherry-pick have been pushed to the release branch before tagging.
+Ensure that the Maven version update and change log have been merged to the release branch before tagging.
 
 Tag the release branch with `0.13.0-rc1` and push to the `apache` repo
 
