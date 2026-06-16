@@ -66,6 +66,18 @@ for profile in "${SPARK_PROFILES[@]}"; do
     -Dexec.arguments="${LATEST_USER_GUIDE},${profile}"
 done
 
+# Format the generated Markdown. CI runs `prettier --check "**/*.md"`, and unlike
+# docs/build.sh (whose output is a throwaway temp build) this output is committed, so it
+# must pass the check. GenerateDocs wraps the config/cast tables in prettier-ignore, but
+# the surrounding generated Markdown is not guaranteed prettier-clean. prettier honors
+# .prettierignore, so excluded pages (e.g. expressions.md) are left untouched.
+if ! command -v npx >/dev/null 2>&1; then
+  echo "ERROR: npx not found. Install Node/prettier (see docs/source/contributor-guide/development.md)" >&2
+  exit 1
+fi
+echo "Formatting generated Markdown with prettier..."
+npx prettier "${LATEST_USER_GUIDE}/**/*.md" --write
+
 echo ""
 echo "Done! Generated documentation content in docs/source/user-guide/latest/"
 echo "  - configs.md (config reference)"
