@@ -554,6 +554,7 @@ instructions on each step.</p>
 <ul class="contains-task-list simple">
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> Release preparation: review expression support status and user guide</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> Create release branch</p></li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> Protect the release branch in <code class="docutils literal notranslate"><span class="pre">.asf.yaml</span></code></p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> Generate release documentation</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> Update Maven version in release branch</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> Update version in main for next development cycle</p></li>
@@ -626,22 +627,41 @@ git<span class="w"> </span>checkout<span class="w"> </span>-b<span class="w"> </
 git<span class="w"> </span>push<span class="w"> </span>apache<span class="w"> </span>branch-0.13
 </pre></div>
 </div>
+<p>Creating the branch is the only direct push to it. After protecting the branch (next step), all later changes
+to the release branch (documentation, version bump, changelog) go through pull requests targeting it.</p>
+</section>
+<section id="protect-the-release-branch">
+<h3>Protect the Release Branch<a class="headerlink" href="#protect-the-release-branch" title="Link to this heading">#</a></h3>
+<p>Add the new branch to <code class="docutils literal notranslate"><span class="pre">protected_branches</span></code> in <code class="docutils literal notranslate"><span class="pre">.asf.yaml</span></code> so it requires a pull request and review, the same as
+<code class="docutils literal notranslate"><span class="pre">main</span></code>. ASF applies <code class="docutils literal notranslate"><span class="pre">.asf.yaml</span></code> from the default branch, so this is a PR against <code class="docutils literal notranslate"><span class="pre">main</span></code>:</p>
+<div class="highlight-yaml notranslate"><div class="highlight"><pre><span></span><span class="nt">protected_branches</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">main</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">required_pull_request_reviews</span><span class="p">:</span>
+<span class="w">      </span><span class="nt">required_approving_review_count</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1</span>
+<span class="w">  </span><span class="nt">branch-0.13</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">required_pull_request_reviews</span><span class="p">:</span>
+<span class="w">      </span><span class="nt">required_approving_review_count</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1</span>
+</pre></div>
+</div>
+<p>All release branches stay protected, including older ones, so released code cannot be pushed to directly.</p>
 </section>
 <section id="generate-release-documentation">
 <h3>Generate Release Documentation<a class="headerlink" href="#generate-release-documentation" title="Link to this heading">#</a></h3>
-<p>Generate the documentation content for this release. The docs on <code class="docutils literal notranslate"><span class="pre">main</span></code> contain only template markers,
-so we need to generate the actual content (config tables, compatibility matrices) for the release branch:</p>
+<p>The docs on <code class="docutils literal notranslate"><span class="pre">main</span></code> contain only template markers; CI fills them at publish time. A release branch instead
+commits the generated content so the archived docs for the release render real tables. Run the script to
+generate the config reference and the per-Spark-version compatibility pages and freeze them onto the branch:</p>
 <div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>./dev/generate-release-docs.sh
 git<span class="w"> </span>add<span class="w"> </span>docs/source/user-guide/latest/
 git<span class="w"> </span>commit<span class="w"> </span>-m<span class="w"> </span><span class="s2">&quot;Generate docs for 0.13.0 release&quot;</span>
-git<span class="w"> </span>push<span class="w"> </span>apache<span class="w"> </span>branch-0.13
 </pre></div>
 </div>
-<p>This freezes the documentation to reflect the configs and expressions available in this release.</p>
+<p>The script runs one Maven build per supported Spark version, so it takes a while. Open a PR with this commit
+targeting the release branch.</p>
 </section>
 <section id="update-maven-version">
 <h3>Update Maven Version<a class="headerlink" href="#update-maven-version" title="Link to this heading">#</a></h3>
-<p>Update the <code class="docutils literal notranslate"><span class="pre">pom.xml</span></code> files in the release branch to update the Maven version from <code class="docutils literal notranslate"><span class="pre">0.13.0-SNAPSHOT</span></code> to <code class="docutils literal notranslate"><span class="pre">0.13.0</span></code>.</p>
+<p>Open a PR targeting the release branch that changes the Maven version from <code class="docutils literal notranslate"><span class="pre">0.13.0-SNAPSHOT</span></code> to <code class="docutils literal notranslate"><span class="pre">0.13.0</span></code> in
+the <code class="docutils literal notranslate"><span class="pre">pom.xml</span></code> files and in the diff files under <code class="docutils literal notranslate"><span class="pre">dev/diffs</span></code>.</p>
 <p>There is no need to update the Rust crate versions because they will already be <code class="docutils literal notranslate"><span class="pre">0.13.0</span></code>.</p>
 </section>
 <section id="update-version-in-main">
