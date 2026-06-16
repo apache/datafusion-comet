@@ -19,15 +19,12 @@
 
 package org.apache.comet.serde
 
-import java.util.Locale
-
-import org.apache.spark.sql.catalyst.expressions.{Attribute, BitLength, Cast, Concat, ConcatWs, Elt, Expression, FindInSet, FormatNumber, FormatString, GetJsonObject, If, InitCap, IsNull, Left, Length, Levenshtein, Like, Literal, Lower, OctetLength, Overlay, RegExpExtract, RegExpExtractAll, RegExpInStr, RegExpReplace, Right, RLike, SoundEx, StringLocate, StringLPad, StringRepeat, StringReplace, StringRPad, StringSplit, StringTranslate, Substring, SubstringIndex, ToCharacter, ToNumber, UnBase64, Upper}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, BitLength, Cast, Concat, ConcatWs, Elt, Expression, FindInSet, FormatNumber, FormatString, GetJsonObject, If, InitCap, IsNull, Left, Length, Levenshtein, Like, Literal, Lower, Mask, OctetLength, Overlay, RegExpExtract, RegExpExtractAll, RegExpInStr, RegExpReplace, Right, RLike, SoundEx, StringLocate, StringLPad, StringRepeat, StringReplace, StringRPad, StringSplit, StringTranslate, Substring, SubstringIndex, ToCharacter, ToNumber, TryToNumber, UnBase64, Upper}
 import org.apache.spark.sql.types.{BinaryType, DataTypes, LongType, StringType}
 import org.apache.spark.unsafe.types.UTF8String
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
-import org.apache.comet.expressions.{CometCast, CometEvalMode}
 import org.apache.comet.serde.ExprOuterClass.Expr
 import org.apache.comet.serde.QueryPlanSerde.{createBinaryExpr, exprToProtoInternal, optExprWithFallbackReason, scalarFunctionExprToProto, scalarFunctionExprToProtoWithReturnType}
 import org.apache.comet.shims.CometTypeShim
@@ -439,6 +436,82 @@ object CometStringLPad extends CometExpressionSerde[StringLPad] {
 }
 
 /**
+ * `regexp_extract` runs Spark's own implementation through the codegen dispatcher by default, for
+ * byte-exact results. The native (rust) regexp engine is faster but has different semantics from
+ * Java regexp, so it is opt-in via `spark.comet.expression.RegExpExtract.allowIncompatible` and
+ * only when the pattern and idx are integer literals; any other case falls through to the codegen
+ * dispatcher.
+ */
+object CometRegExpExtract extends CometExpressionSerde[RegExpExtract] {
+
+  override def getSupportLevel(expr: RegExpExtract): SupportLevel = Compatible()
+
+  private def nativeSupported(expr: RegExpExtract): Boolean =
+    expr.regexp.isInstanceOf[Literal] && expr.idx.isInstanceOf[Literal]
+
+  override def convert(
+      expr: RegExpExtract,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[Expr] = {
+    if (CometConf.isExprAllowIncompat(getExprConfigName(expr)) && nativeSupported(expr)) {
+      val subjectExpr = exprToProtoInternal(expr.subject, inputs, binding)
+      val patternExpr = exprToProtoInternal(expr.regexp, inputs, binding)
+      val idxExpr = exprToProtoInternal(expr.idx, inputs, binding)
+      val optExpr = scalarFunctionExprToProtoWithReturnType(
+        "regexp_extract",
+        expr.dataType,
+        failOnError = false,
+        subjectExpr,
+        patternExpr,
+        idxExpr)
+      optExprWithFallbackReason(optExpr, expr, expr.subject, expr.regexp, expr.idx)
+    } else {
+      // Default: route through the codegen dispatcher so Spark's own doGenCode runs inside the
+      // Comet pipeline. Falls back to Spark when the dispatcher is disabled.
+      CometScalaUDF.emitJvmCodegenDispatch(expr, inputs, binding)
+    }
+  }
+}
+
+/**
+ * `regexp_extract_all` runs Spark's own implementation through the codegen dispatcher by default,
+ * for byte-exact results. The native (rust) regexp engine is faster but has different semantics
+ * from Java regexp, so it is opt-in via
+ * `spark.comet.expression.RegExpExtractAll.allowIncompatible` and only when the pattern and idx
+ * are integer literals; any other case falls through to the codegen dispatcher.
+ */
+object CometRegExpExtractAll extends CometExpressionSerde[RegExpExtractAll] {
+
+  override def getSupportLevel(expr: RegExpExtractAll): SupportLevel = Compatible()
+
+  private def nativeSupported(expr: RegExpExtractAll): Boolean =
+    expr.regexp.isInstanceOf[Literal] && expr.idx.isInstanceOf[Literal]
+
+  override def convert(
+      expr: RegExpExtractAll,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[Expr] = {
+    if (CometConf.isExprAllowIncompat(getExprConfigName(expr)) && nativeSupported(expr)) {
+      val subjectExpr = exprToProtoInternal(expr.subject, inputs, binding)
+      val patternExpr = exprToProtoInternal(expr.regexp, inputs, binding)
+      val idxExpr = exprToProtoInternal(expr.idx, inputs, binding)
+      val optExpr = scalarFunctionExprToProtoWithReturnType(
+        "regexp_extract_all",
+        expr.dataType,
+        failOnError = false,
+        subjectExpr,
+        patternExpr,
+        idxExpr)
+      optExprWithFallbackReason(optExpr, expr, expr.subject, expr.regexp, expr.idx)
+    } else {
+      // Default: route through the codegen dispatcher so Spark's own doGenCode runs inside the
+      // Comet pipeline. Falls back to Spark when the dispatcher is disabled.
+      CometScalaUDF.emitJvmCodegenDispatch(expr, inputs, binding)
+    }
+  }
+}
+
+/**
  * `regexp_replace` runs Spark's own implementation through the codegen dispatcher by default, for
  * byte-exact results. The native (rust) regexp engine is faster but has different semantics from
  * Java regexp, so it is opt-in via `spark.comet.expression.RegExpReplace.allowIncompatible` and
@@ -517,10 +590,6 @@ object CometStringSplit extends CometExpressionSerde[StringSplit] {
 }
 
 // These have no native (rust) implementation, so they always run through the codegen dispatcher.
-object CometRegExpExtract extends CometCodegenDispatch[RegExpExtract]
-
-object CometRegExpExtractAll extends CometCodegenDispatch[RegExpExtractAll]
-
 object CometRegExpInStr extends CometCodegenDispatch[RegExpInStr]
 
 /**
@@ -551,34 +620,6 @@ object CometGetJsonObject extends CometCodegenDispatch[GetJsonObject] {
     }
 }
 
-trait CommonStringExprs {
-
-  def stringDecode(
-      expr: Expression,
-      charset: Expression,
-      bin: Expression,
-      inputs: Seq[Attribute],
-      binding: Boolean): Option[Expr] = {
-    charset match {
-      case Literal(str, DataTypes.StringType)
-          if str.toString.toLowerCase(Locale.ROOT) == "utf-8" =>
-        // decode(col, 'utf-8') can be treated as a cast with "try" eval mode that puts nulls
-        // for invalid strings.
-        // Left child is the binary expression.
-        val binExpr = exprToProtoInternal(bin, inputs, binding)
-        if (binExpr.isDefined) {
-          CometCast.castToProto(expr, None, DataTypes.StringType, binExpr.get, CometEvalMode.TRY)
-        } else {
-          withFallbackReason(expr, bin)
-          None
-        }
-      case _ =>
-        withFallbackReason(expr, "Comet only supports decoding with 'utf-8'.")
-        None
-    }
-  }
-}
-
 // Expressions routed through the JVM codegen dispatcher: no native implementation, so Spark's own
 // doGenCode runs inside the Comet pipeline, matching Spark exactly.
 object CometLevenshtein extends CometCodegenDispatch[Levenshtein]
@@ -602,3 +643,7 @@ object CometUnBase64 extends CometCodegenDispatch[UnBase64]
 object CometToCharacter extends CometCodegenDispatch[ToCharacter]
 
 object CometToNumber extends CometCodegenDispatch[ToNumber]
+
+object CometTryToNumber extends CometCodegenDispatch[TryToNumber]
+
+object CometMask extends CometCodegenDispatch[Mask]

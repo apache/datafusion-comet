@@ -1065,7 +1065,7 @@ index 885512d4d19..113ae17ad9f 100644
        }
  
        def getJoinQuery(selectExpr: String, joinType: String): String = {
-@@ -1530,10 +1556,16 @@ class JoinSuite extends QueryTest with SharedSparkSession with AdaptiveSparkPlan
+@@ -1530,9 +1556,15 @@ class JoinSuite extends QueryTest with SharedSparkSession with AdaptiveSparkPlan
            }
            val plan = sql(getJoinQuery(selectExpr, joinType)).queryExecution.executedPlan
 -          assert(collect(plan) { case _: BroadcastNestedLoopJoinExec => true }.size === 1)
