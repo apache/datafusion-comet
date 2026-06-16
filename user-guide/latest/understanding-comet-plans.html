@@ -575,12 +575,13 @@ inspect that behavior.</p>
 <h2>Overview<a class="headerlink" href="#overview" title="Link to this heading">#</a></h2>
 <p>When Comet is enabled, the <code class="docutils literal notranslate"><span class="pre">CometSparkSessionExtensions</span></code> rules walk the
 physical plan bottom-up and replace Spark operators with Comet equivalents
-where possible. Consecutive native operators are combined into a single block
-that is serialized as protobuf and executed by DataFusion on the executor.
+where possible. Consecutive Rust-implemented operators are combined into a
+single block that is serialized as protobuf and executed by DataFusion on the
+executor.
 Operators that Comet does not support remain as their original Spark form.</p>
 <p>As a result, a plan can mix three kinds of nodes:</p>
 <ul class="simple">
-<li><p><strong><code class="docutils literal notranslate"><span class="pre">Comet*</span></code> nodes</strong> that run natively in Rust (for example <code class="docutils literal notranslate"><span class="pre">CometProject</span></code>,
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">Comet*</span></code> nodes</strong> that are implemented in Rust (for example <code class="docutils literal notranslate"><span class="pre">CometProject</span></code>,
 <code class="docutils literal notranslate"><span class="pre">CometHashAggregate</span></code>).</p></li>
 <li><p><strong><code class="docutils literal notranslate"><span class="pre">Comet*</span></code> nodes that run on the JVM</strong> but are still part of the Comet
 pipeline (for example <code class="docutils literal notranslate"><span class="pre">CometBroadcastExchange</span></code>, <code class="docutils literal notranslate"><span class="pre">CometColumnarExchange</span></code>).</p></li>
@@ -610,9 +611,9 @@ below.</p></li>
 </section>
 <section id="fallback">
 <h2>Fallback<a class="headerlink" href="#fallback" title="Link to this heading">#</a></h2>
-<p>A “fallback” happens when Comet cannot translate part of a plan into native
-execution. Fallback can be partial (a subtree falls back while the rest stays
-native) or full (no Comet nodes appear).</p>
+<p>A “fallback” happens when Comet cannot run part of a plan in the Comet
+pipeline. Fallback can be partial (a subtree falls back to Spark while the rest
+stays in the Comet pipeline) or full (no Comet nodes appear).</p>
 <p>Common reasons:</p>
 <ul class="simple">
 <li><p>The Spark operator is not supported by Comet.</p></li>
@@ -642,7 +643,7 @@ They serve different purposes and produce output in different places.</p>
 <tbody>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.explainFallback.enabled</span></code></p></td>
 <td><p>Driver log (only when fallback)</p></td>
-<td><p>A WARN with the list of reasons each query stage could not run natively.</p></td>
+<td><p>A WARN with the list of reasons each query stage could not run in Comet.</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.logFallbackReasons.enabled</span></code></p></td>
 <td><p>Driver log</p></td>
@@ -654,7 +655,7 @@ They serve different purposes and produce output in different places.</p>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.explain.native.enabled</span></code></p></td>
 <td><p>Executor logs, per task</p></td>
-<td><p>The DataFusion native plan with metrics, useful for inspecting native execution.</p></td>
+<td><p>The DataFusion plan with metrics, useful for inspecting Rust execution.</p></td>
 </tr>
 </tbody>
 </table>
@@ -662,7 +663,7 @@ They serve different purposes and produce output in different places.</p>
 <section id="spark-comet-explainfallback-enabled">
 <h3><code class="docutils literal notranslate"><span class="pre">spark.comet.explainFallback.enabled</span></code><a class="headerlink" href="#spark-comet-explainfallback-enabled" title="Link to this heading">#</a></h3>
 <p>Logs a single WARN listing the reasons each query stage could not be executed
-natively. Nothing is logged when the entire stage runs in Comet. Useful as a
+in Comet. Nothing is logged when the entire stage runs in Comet. Useful as a
 low-noise check that fallback is or is not happening.</p>
 </section>
 <section id="spark-comet-logfallbackreasons-enabled">
@@ -695,12 +696,12 @@ the config has no effect there.</p>
 </section>
 <section id="spark-comet-explain-native-enabled">
 <h3><code class="docutils literal notranslate"><span class="pre">spark.comet.explain.native.enabled</span></code><a class="headerlink" href="#spark-comet-explain-native-enabled" title="Link to this heading">#</a></h3>
-<p>When enabled, each executor task logs the DataFusion native plan it executes,
+<p>When enabled, each executor task logs the DataFusion plan it executes,
 along with metrics. This is verbose because there is one plan per task, but it
-is the only way to see the native plan as DataFusion sees it (including how
+is the only way to see the plan as DataFusion sees it (including how
 operators were arranged after Comet’s serialization). See the
-<a class="reference internal" href="metrics.html"><span class="std std-doc">Metrics Guide</span></a> for details on the native metrics that appear in
-this output.</p>
+<a class="reference internal" href="metrics.html"><span class="std std-doc">Metrics Guide</span></a> for details on the DataFusion metrics that appear
+in this output.</p>
 </section>
 </section>
 <section id="programmatic-access-to-fallback-reasons">
@@ -760,22 +761,22 @@ by role. Names match what is shown in the plan output.</p>
 <td><p>DataSource V2 scan, including Iceberg Parquet, that produces Arrow batches consumed by Comet.</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">CometNativeScan</span></code></p></td>
-<td><p>Fully native Parquet scan that runs entirely in DataFusion.</p></td>
+<td><p>Parquet scan that runs entirely in Rust via DataFusion.</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">CometIcebergNativeScan</span></code></p></td>
-<td><p>Fully native Iceberg Parquet scan.</p></td>
+<td><p>Iceberg Parquet scan that runs entirely in Rust via DataFusion.</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">CometCsvNativeScan</span></code></p></td>
-<td><p>Fully native CSV scan (experimental).</p></td>
+<td><p>CSV scan that runs entirely in Rust via DataFusion (experimental).</p></td>
 </tr>
 </tbody>
 </table>
 </div>
 </section>
-<section id="native-execution-operators">
-<h3>Native Execution Operators<a class="headerlink" href="#native-execution-operators" title="Link to this heading">#</a></h3>
-<p>These run natively in DataFusion. When several appear consecutively in a plan,
-they execute as a single fused native block.</p>
+<section id="native-rust-operators">
+<h3>Native Rust Operators<a class="headerlink" href="#native-rust-operators" title="Link to this heading">#</a></h3>
+<p>These are implemented in Rust and run in DataFusion. When several appear
+consecutively in a plan, they execute as a single fused block.</p>
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
 <tr class="row-odd"><th class="head"><p>Node</p></th>
@@ -840,7 +841,7 @@ they execute as a single fused native block.</p>
 </thead>
 <tbody>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">CometUnion</span></code></p></td>
-<td><p>JVM-side union of Comet inputs. The native side reads each branch as a separate scan.</p></td>
+<td><p>JVM-side union of Comet inputs. The Rust side reads each branch as a separate scan.</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">CometCoalesce</span></code></p></td>
 <td><p>JVM-side partition coalesce.</p></td>
@@ -866,8 +867,8 @@ use:</p>
 <li><p><strong><code class="docutils literal notranslate"><span class="pre">CometExchange</span></code></strong> is the <strong>native shuffle</strong> path. The child must already
 be a Comet operator producing columnar Arrow batches; the node calls
 <code class="docutils literal notranslate"><span class="pre">executeColumnar()</span></code> on its child and the partition, encode, and compress
-steps run in native code. Hash and range partitioning <strong>keys</strong> must be
-primitive types because native hashing and ordering do not support complex
+steps run in Rust. Hash and range partitioning <strong>keys</strong> must be
+primitive types because the Rust hashing and ordering do not support complex
 types, but the data columns themselves can include <code class="docutils literal notranslate"><span class="pre">StructType</span></code>,
 <code class="docutils literal notranslate"><span class="pre">ArrayType</span></code>, and <code class="docutils literal notranslate"><span class="pre">MapType</span></code> since batches are serialized via the Arrow IPC
 writer.</p></li>
@@ -904,7 +905,7 @@ produced the columnar data.</p>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">CometNativeColumnarToRow</span></code></p></td>
 <td><p>columnar → row</p></td>
-<td><p>Native row conversion that decodes broadcast Arrow batches via <code class="docutils literal notranslate"><span class="pre">NativeColumnarToRowConverter</span></code>. Used downstream of <code class="docutils literal notranslate"><span class="pre">CometBroadcastExchange</span></code>. Zero-copy for variable-length types and avoids an extra JVM materialization step.</p></td>
+<td><p>Rust-based row conversion that decodes broadcast Arrow batches via <code class="docutils literal notranslate"><span class="pre">NativeColumnarToRowConverter</span></code>. Used downstream of <code class="docutils literal notranslate"><span class="pre">CometBroadcastExchange</span></code>. Zero-copy for variable-length types and avoids an extra JVM materialization step.</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">CometSparkColumnarToColumnar</span></code></p></td>
 <td><p>columnar → columnar</p></td>
