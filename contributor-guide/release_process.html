@@ -558,8 +558,7 @@ instructions on each step.</p>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> Generate release documentation</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> Update Maven version in release branch</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> Update version in main for next development cycle</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> Generate the change log and create PR against main</p></li>
-<li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> Cherry-pick the change log commit into the release branch</p></li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> Generate the change log and PR it against the release branch</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> Build the jars</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> Tag the release candidate</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> Update documentation for the new release</p></li>
@@ -572,6 +571,7 @@ instructions on each step.</p>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> Create GitHub release</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> Promote Maven artifacts to production</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> Push the release tag</p></li>
+<li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> Bring the finalized change log into main</p></li>
 <li class="task-list-item"><p><input class="task-list-item-checkbox" disabled="disabled" type="checkbox"> Close the vote and announce the release</p></li>
 </ul>
 </li>
@@ -691,8 +691,10 @@ example generates a change log of all changes between the previous version and t
 python3<span class="w"> </span>generate-changelog.py<span class="w"> </span><span class="m">0</span>.12.0<span class="w"> </span>HEAD<span class="w"> </span><span class="m">0</span>.13.0<span class="w"> </span>&gt;<span class="w"> </span>../../docs/source/changelog/0.13.0.md
 </pre></div>
 </div>
-<p>Create a PR against the <em>main</em> branch to add this change log and once this is approved and merged, cherry-pick the
-commit into the release branch.</p>
+<p>Open a PR adding this change log targeting the release branch. Generate it late, once backports to the release
+branch are complete; if more changes land on the release branch before the release candidate is tagged,
+regenerate it and update the PR. After the release is approved and tagged, open a separate PR to bring the same
+change log file into <code class="docutils literal notranslate"><span class="pre">main</span></code>.</p>
 </section>
 <section id="build-the-jars">
 <h3>Build the jars<a class="headerlink" href="#build-the-jars" title="Link to this heading">#</a></h3>
@@ -756,7 +758,7 @@ repository</p>
 </section>
 <section id="tag-the-release-candidate">
 <h3>Tag the Release Candidate<a class="headerlink" href="#tag-the-release-candidate" title="Link to this heading">#</a></h3>
-<p>Ensure that the Maven version update and changelog cherry-pick have been pushed to the release branch before tagging.</p>
+<p>Ensure that the Maven version update and change log have been merged to the release branch before tagging.</p>
 <p>Tag the release branch with <code class="docutils literal notranslate"><span class="pre">0.13.0-rc1</span></code> and push to the <code class="docutils literal notranslate"><span class="pre">apache</span></code> repo</p>
 <div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>git<span class="w"> </span>fetch<span class="w"> </span>apache
 git<span class="w"> </span>checkout<span class="w"> </span>branch-0.13
