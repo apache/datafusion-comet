@@ -318,6 +318,7 @@ jobs:
               org.apache.comet.CometFuzzTestSuite
               org.apache.comet.CometFuzzIcebergSuite
               org.apache.comet.DataGeneratorSuite
+              org.apache.comet.CometDeltaReadSuite
           - name: "shuffle"
             value: |
               org.apache.comet.exec.CometShuffleSuite
