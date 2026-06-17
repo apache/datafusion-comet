@@ -355,6 +355,7 @@ message ParquetWriter {
   // configuration value "spark.hadoop.fs.s3a.access.key" will be stored as "fs.s3a.access.key" in
   // the map.
   map<string, string> object_store_options = 8;
+  repeated string partition_columns = 9;
 }
 
 enum AggregateMode {

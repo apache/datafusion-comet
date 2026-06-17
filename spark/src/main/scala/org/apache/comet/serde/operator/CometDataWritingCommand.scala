@@ -68,8 +68,8 @@ object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec
               return Unsupported(Some("Bucketed writes are not supported"))
             }
 
-            if (cmd.partitionColumns.nonEmpty || cmd.staticPartitions.nonEmpty) {
-              return Unsupported(Some("Partitioned writes are not supported"))
+            if (cmd.staticPartitions.nonEmpty) {
+              return Unsupported(Some("Static partitions writes are not supported"))
             }
 
             val codec = parseCompressionCodec(cmd)
@@ -144,6 +144,8 @@ object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec
       objectStoreOptions.foreach { case (key, value) =>
         writerOpBuilder.putObjectStoreOptions(key, value)
       }
+
+      writerOpBuilder.addAllPartitionColumns(cmd.partitionColumns.map(_.name).asJava)
 
       val writerOp = writerOpBuilder.build()
 

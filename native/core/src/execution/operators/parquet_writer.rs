@@ -17,11 +17,12 @@
 
 //! Parquet writer operator for writing RecordBatches to Parquet files
 
+use crate::execution::operators::partition_writer::PartitionedWriter;
 use crate::execution::shuffle::CompressionCodec;
 #[cfg(feature = "hdfs-opendal")]
 use crate::parquet::parquet_support::create_hdfs_operator;
 use crate::parquet::parquet_support::{is_hdfs_scheme, prepare_object_store_with_configs};
-use arrow::datatypes::{Schema, SchemaRef};
+use arrow::datatypes::{FieldRef, Schema, SchemaRef};
 use arrow::record_batch::RecordBatch;
 use async_trait::async_trait;
 use datafusion::execution::runtime_env::RuntimeEnv;
@@ -46,6 +47,7 @@ use parquet::{
     basic::{Compression, ZstdLevel},
     file::properties::WriterProperties,
 };
+use std::collections::HashSet;
 use std::fs::create_dir_all;
 #[cfg(any(feature = "hdfs-opendal", feature = "s3-opendal"))]
 use std::io::Cursor;
@@ -62,7 +64,7 @@ use url::Url;
 
 // A trait abstracting over different Parquet write targets (local filesystem, HDFS, S3, etc.)
 #[async_trait]
-trait ParquetWriter: Send {
+pub(crate) trait ParquetWriter: Send {
     async fn write_batch(&mut self, batch: &RecordBatch) -> Result<(), ParquetError>;
     async fn close(self: Box<Self>) -> Result<(), ParquetError>;
 }
@@ -218,7 +220,7 @@ impl ParquetWriter for OpendalWriter {
 
 // A factory that inspects the destination URL and produces the appropriate
 // `ParquetWriter` implementation for the target storage backend.
-struct StorageWriterFactory;
+pub(crate) struct StorageWriterFactory;
 
 impl StorageWriterFactory {
     // Selects and constructs a `ParquetWriter` based on the URL scheme of `output_path`.
@@ -226,7 +228,7 @@ impl StorageWriterFactory {
     // - **HDFS** – detected via `is_hdfs_scheme`; backed by `OpendalWriter`.
     // - **S3A** – detected by scheme; backed by `OpendalWriter`.
     // - **Local filesystem** – `file://`, `file:`, or a bare path; backed by `LocalFileWriter`.
-    fn create(
+    pub(crate) fn create(
         output_path: &str,
         schema: SchemaRef,
         props: WriterProperties,
@@ -409,6 +411,7 @@ pub struct ParquetWriterExec {
     metrics: ExecutionPlanMetricsSet,
     /// Cache for plan properties
     cache: Arc<PlanProperties>,
+    partition_columns: Vec<String>,
 }
 
 impl ParquetWriterExec {
@@ -424,6 +427,7 @@ impl ParquetWriterExec {
         partition_id: i32,
         column_names: Vec<String>,
         object_store_options: HashMap<String, String>,
+        partition_columns: Vec<String>,
     ) -> Result<Self> {
         // Preserve the input's partitioning so each partition writes its own file
         let input_partitioning = input.output_partitioning().clone();
@@ -447,6 +451,7 @@ impl ParquetWriterExec {
             object_store_options,
             metrics: ExecutionPlanMetricsSet::new(),
             cache,
+            partition_columns,
         })
     }
 
@@ -516,6 +521,7 @@ impl ExecutionPlan for ParquetWriterExec {
                 self.partition_id,
                 self.column_names.clone(),
                 self.object_store_options.clone(),
+                self.partition_columns.clone(),
             )?)),
             _ => Err(DataFusionError::Internal(
                 "ParquetWriterExec requires exactly one child".to_string(),
@@ -543,7 +549,13 @@ impl ExecutionPlan for ParquetWriterExec {
         let compression = self.compression_to_parquet()?;
         let column_names = self.column_names.clone();
 
-        assert_eq!(input_schema.fields().len(), column_names.len());
+        if input_schema.fields().len() != column_names.len() {
+            return Err(DataFusionError::Internal(format!(
+                "ParquetWriterExec: column_names length ({}) does not match input schema fields ({})",
+                column_names.len(),
+                input_schema.fields().len()
+            )));
+        }
 
         // Replace the generic column names (col_0, col_1, etc.) with the actual names
         let fields: Vec<_> = input_schema
@@ -552,32 +564,43 @@ impl ExecutionPlan for ParquetWriterExec {
             .enumerate()
             .map(|(i, field)| Arc::new(field.as_ref().clone().with_name(&column_names[i])))
             .collect();
-        let output_schema = Arc::new(arrow::datatypes::Schema::new(fields));
 
-        // Generate part file name for this partition
-        // If using FileCommitProtocol (work_dir is set), include task_attempt_id in the filename
-        let part_file = if let Some(attempt_id) = task_attempt_id {
-            format!(
-                "{}/part-{:05}-{:05}.parquet",
-                work_dir, self.partition_id, attempt_id
-            )
-        } else {
-            format!("{}/part-{:05}.parquet", work_dir, self.partition_id)
-        };
-
-        // Configure writer properties
-        let props = WriterProperties::builder()
-            .set_compression(compression)
-            .build();
+        let output_schema = Arc::new(Schema::new(fields));
 
         let object_store_options = self.object_store_options.clone();
 
-        let mut writer = StorageWriterFactory::create(
-            &part_file,
-            Arc::clone(&output_schema),
-            props,
+        // Resolve partition column indices, preserving the declared order.
+        let mut partition_col_indices = Vec::with_capacity(self.partition_columns.len());
+        for name in &self.partition_columns {
+            let idx = column_names.iter().position(|c| c == name).ok_or_else(|| {
+                DataFusionError::Execution(format!(
+                    "Partition column '{name}' not found among output columns {column_names:?}"
+                ))
+            })?;
+            partition_col_indices.push(idx);
+        }
+        let part_set: HashSet<usize> = partition_col_indices.iter().copied().collect();
+        let data_col_indices: Vec<usize> = (0..output_schema.fields().len())
+            .filter(|i| !part_set.contains(i))
+            .collect();
+        let data_fields: Vec<FieldRef> = data_col_indices
+            .iter()
+            .map(|&i| Arc::clone(&output_schema.fields()[i]))
+            .collect();
+
+        let data_schema = Arc::new(Schema::new(data_fields));
+
+        let mut writer = PartitionedWriter::new(
+            work_dir,
+            self.partition_id,
+            task_attempt_id,
+            Arc::clone(&data_schema),
+            partition_col_indices,
+            self.partition_columns.clone(),
+            data_col_indices,
+            compression,
             runtime_env,
-            &object_store_options,
+            object_store_options,
         )?;
 
         // Clone schema for use in async closure
@@ -612,28 +635,31 @@ impl ExecutionPlan for ParquetWriterExec {
                 })?;
             }
 
-            writer.close().await.map_err(|e| {
+            let written_paths = writer.close().await.map_err(|e| {
                 DataFusionError::Execution(format!("Failed to close writer: {}", e))
             })?;
 
             // Get file size - strip file:// prefix if present for local filesystem access
-            let local_path = part_file
-                .strip_prefix("file://")
-                .or_else(|| part_file.strip_prefix("file:"))
-                .unwrap_or(&part_file);
-            let file_size = std::fs::metadata(local_path)
-                .map(|m| m.len() as i64)
-                .unwrap_or(0);
+            let mut total_bytes = 0i64;
+            for path in &written_paths {
+                let local = strip_file_scheme(path);
+                total_bytes += std::fs::metadata(local)
+                    .map(|m| m.len() as i64)
+                    .unwrap_or(0);
+            }
 
             // Update metrics with write statistics
-            files_written.add(1);
-            bytes_written.add(file_size as usize);
+            files_written.add(written_paths.len());
+            bytes_written.add(total_bytes as usize);
             rows_written.add(total_rows as usize);
 
             // Log metadata for debugging
             eprintln!(
-                "Wrote Parquet file: path={}, size={}, rows={}",
-                part_file, file_size, total_rows
+                "ParquetWriterExec wrote {} file(s), {} bytes, {} rows; paths={:?}",
+                written_paths.len(),
+                total_bytes,
+                total_rows,
+                written_paths
             );
 
             // Return empty stream to indicate completion
@@ -646,6 +672,12 @@ impl ExecutionPlan for ParquetWriterExec {
             futures::stream::once(write_task).try_flatten(),
         )))
     }
+}
+
+fn strip_file_scheme(path: &str) -> &str {
+    path.strip_prefix("file://")
+        .or_else(|| path.strip_prefix("file:"))
+        .unwrap_or(path)
 }
 
 #[cfg(test)]
@@ -902,6 +934,7 @@ mod tests {
             0, // partition_id
             column_names,
             HashMap::new(), // object_store_options
+            Vec::new(),
         )?;
 
         // Create a session context and execute the plan

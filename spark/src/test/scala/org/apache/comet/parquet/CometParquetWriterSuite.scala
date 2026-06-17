@@ -23,7 +23,7 @@ import java.io.File
 
 import scala.util.Random
 
-import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
+import org.apache.spark.sql.{CometTestBase, DataFrame, Row, SaveMode}
 import org.apache.spark.sql.comet.{CometBatchScanExec, CometNativeScanExec, CometNativeWriteExec, CometScanExec}
 import org.apache.spark.sql.execution.{FileSourceScanExec, QueryExecution, SparkPlan}
 import org.apache.spark.sql.execution.command.DataWritingCommandExec
@@ -35,7 +35,71 @@ import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator, SchemaGenOpt
 
 class CometParquetWriterSuite extends CometTestBase {
 
+  private val DEFAULT_PARTITION_NAME = "__HIVE_DEFAULT_PARTITION__"
+
   import testImplicits._
+
+  test("simple partition parquet write") {
+    withSQLConf(
+      CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED.key -> "true",
+      CometConf.COMET_OPERATOR_DATA_WRITING_COMMAND_ALLOW_INCOMPAT.key -> "true") {
+      withTempPath { dir =>
+        val table = "test_write_partitions"
+        val outputPath = new File(dir, "output.parquet").getAbsolutePath
+        withTable(table) {
+          sql(s"CREATE TABLE $table(col1 INT, col2 STRING) USING parquet")
+          sql(s"INSERT INTO $table VALUES(1, 'a')")
+          sql(s"INSERT INTO $table VALUES(2, 'b')")
+          sql(s"INSERT INTO $table VALUES(3, 'c')")
+          val plan = captureWritePlan(
+            path =>
+              sql(s"SELECT * FROM $table").write
+                .partitionBy("col1")
+                .mode(SaveMode.Overwrite)
+                .parquet(path),
+            outputPath)
+          assertHasCometNativeWriteExec(plan)
+          Seq((1, "a"), (2, "b"), (3, "c")).foreach { case (col1, col2) =>
+            val rows = spark.read
+              .parquet(s"$outputPath/col1=$col1")
+              .collect()
+            assert(rows.length == 1)
+            assert(rows.head.getAs[String]("col2") == col2)
+          }
+        }
+      }
+    }
+  }
+
+  test("default hive partition parquet write") {
+    withSQLConf(
+      CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED.key -> "true",
+      CometConf.COMET_OPERATOR_DATA_WRITING_COMMAND_ALLOW_INCOMPAT.key -> "true") {
+      withTempPath { dir =>
+        val table = "test_write_partitions"
+        val outputPath = new File(dir, "output.parquet").getAbsolutePath
+        withTable(table) {
+          sql(s"CREATE TABLE $table(col1 INT, col2 STRING) USING parquet")
+          sql(s"INSERT INTO $table VALUES(null, 'a')")
+          sql(s"INSERT INTO $table VALUES(null, 'b')")
+          sql(s"INSERT INTO $table VALUES(null, 'c')")
+          val plan = captureWritePlan(
+            path =>
+              sql(s"SELECT * FROM $table").write
+                .partitionBy("col1")
+                .mode(SaveMode.Overwrite)
+                .parquet(path),
+            outputPath)
+          assertHasCometNativeWriteExec(plan)
+          val rows = spark.read
+            .parquet(s"$outputPath/col1=$DEFAULT_PARTITION_NAME")
+            .collect()
+          assert(rows.length == 3)
+          assert(rows.map(_.getAs[String]("col2")).toSeq.sorted == Seq("a", "b", "c").sorted)
+        }
+      }
+    }
+  }
 
   test("basic parquet write") {
     withTempPath { dir =>

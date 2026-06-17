@@ -32,8 +32,10 @@ mod iceberg_scan;
 mod parquet_writer;
 pub use parquet_writer::ParquetWriterExec;
 mod csv_scan;
+mod partition_writer;
 pub mod projection;
 mod scan;
 mod shuffle_scan;
+
 pub use csv_scan::init_csv_datasource_exec;
 pub use shuffle_scan::ShuffleScanExec;
