@@ -72,6 +72,10 @@ under the License.
     <spark.version>4.1.2</spark.version>
     <spark.version.short>4.1</spark.version.short>
     <spark.maven.scope>provided</spark.maven.scope>
+    <!-- Delta Lake version used only by Comet's Delta scan tests. Overridden per Spark profile.
+         Delta >= 3.0 publishes "delta-spark"; Delta < 3.0 (Spark 3.4) publishes "delta-core". -->
+    <delta.version>4.1.0</delta.version>
+    <delta.artifact.name>delta-spark</delta.artifact.name>
     <protobuf.version>3.25.5</protobuf.version>
     <parquet.version>1.16.0</parquet.version>
     <parquet.maven.scope>provided</parquet.maven.scope>
@@ -654,6 +658,8 @@ under the License.
         <scala.binary.version>2.12</scala.binary.version>
         <spark.version>3.4.3</spark.version>
         <spark.version.short>3.4</spark.version.short>
+        <delta.version>2.4.0</delta.version>
+        <delta.artifact.name>delta-core</delta.artifact.name>
         <parquet.version>1.13.1</parquet.version>
         <semanticdb.version>4.8.8</semanticdb.version>
         <slf4j.version>2.0.6</slf4j.version>
@@ -672,6 +678,7 @@ under the License.
         <scala.binary.version>2.12</scala.binary.version>
         <spark.version>3.5.8</spark.version>
         <spark.version.short>3.5</spark.version.short>
+        <delta.version>3.3.2</delta.version>
         <parquet.version>1.13.1</parquet.version>
         <semanticdb.version>4.8.8</semanticdb.version>
         <slf4j.version>2.0.7</slf4j.version>
@@ -690,6 +697,7 @@ under the License.
         <scala.binary.version>2.13</scala.binary.version>
         <spark.version>4.0.2</spark.version>
         <spark.version.short>4.0</spark.version.short>
+        <delta.version>4.0.0</delta.version>
         <parquet.version>1.15.2</parquet.version>
         <semanticdb.version>4.13.6</semanticdb.version>
         <slf4j.version>2.0.16</slf4j.version>
@@ -732,6 +740,7 @@ under the License.
         <scala.binary.version>2.13</scala.binary.version>
         <spark.version>4.2.0-preview4</spark.version>
         <spark.version.short>4.2</spark.version.short>
+        <delta.version>4.2.0</delta.version>
         <parquet.version>1.17.0</parquet.version>
         <semanticdb.version>4.13.6</semanticdb.version>
         <slf4j.version>2.0.17</slf4j.version>

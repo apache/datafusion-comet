@@ -40,6 +40,8 @@ import org.apache.spark.sql.types._
 import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.util.collection._
 
+import org.apache.comet.CometConf
+
 /**
  * Comet physical scan node for DataSource V1. This node is created by CometScanRule as a planning
  * intermediate and is always replaced before execution: CometExecRule converts it to a
@@ -415,9 +417,18 @@ object CometScanExec {
   }
 
   def isFileFormatSupported(fileFormat: FileFormat): Boolean = {
-    // Only support Spark's built-in Parquet scans, not others such as Delta which use a subclass
-    // of ParquetFileFormat.
-    fileFormat.getClass().equals(classOf[ParquetFileFormat])
+    // Spark's built-in Parquet scan is always supported (exact class match). Delta uses a
+    // subclass of ParquetFileFormat; allow it only when native Delta scan is explicitly enabled.
+    // CometScanRule applies further guards to fall back for deletion vectors / column mapping.
+    fileFormat.getClass().equals(classOf[ParquetFileFormat]) ||
+    (CometConf.COMET_DELTA_NATIVE_SCAN_ENABLED.get() &&
+      fileFormat.getClass.getName == DELTA_PARQUET_FILE_FORMAT)
   }
+
+  /**
+   * Fully qualified class name of Delta's Parquet file format (matched by name to avoid a
+   * compile-time dependency on delta-spark).
+   */
+  val DELTA_PARQUET_FILE_FORMAT: String = "org.apache.spark.sql.delta.DeltaParquetFileFormat"
 
 }

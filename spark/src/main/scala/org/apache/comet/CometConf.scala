@@ -132,6 +132,16 @@ object CometConf extends ShimCometConf {
       .checkValue(v => v > 0, "Data file concurrency limit must be positive")
       .createWithDefault(1)
 
+  val COMET_DELTA_NATIVE_SCAN_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.scan.delta.enabled")
+      .category(CATEGORY_SCAN)
+      .doc(
+        "When enabled, Comet will natively scan Delta Lake tables that store plain Parquet, " +
+          "reusing Comet's native Parquet reader. Delta tables that use deletion vectors or " +
+          "column mapping are not supported and fall back to Spark. Experimental.")
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_CSV_V2_NATIVE_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.scan.csv.v2.enabled")
       .category(CATEGORY_TESTING)

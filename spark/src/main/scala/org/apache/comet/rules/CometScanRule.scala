@@ -165,6 +165,12 @@ case class CometScanRule(session: SparkSession)
         if (!CometScanExec.isFileFormatSupported(r.fileFormat)) {
           return withFallbackReason(scanExec, s"Unsupported file format ${r.fileFormat}")
         }
+        if (isDeltaFileFormat(r)) {
+          val deltaReason = deltaScanUnsupportedReason(r, scanExec)
+          if (deltaReason.isDefined) {
+            return withFallbackReason(scanExec, deltaReason.get)
+          }
+        }
         val hadoopConf = r.sparkSession.sessionState.newHadoopConfWithOptions(r.options)
 
         // TODO is this restriction valid for all native scan types?
@@ -186,6 +192,50 @@ case class CometScanRule(session: SparkSession)
 
       case _ =>
         withFallbackReason(scanExec, s"Unsupported relation ${scanExec.relation}")
+    }
+  }
+
+  private def isDeltaFileFormat(r: HadoopFsRelation): Boolean =
+    r.fileFormat.getClass.getName == CometScanExec.DELTA_PARQUET_FILE_FORMAT
+
+  /**
+   * Returns a fallback reason if a Delta scan uses features that Comet's native Parquet reader
+   * cannot reproduce. Tier 0 native Delta support only covers plain Parquet tables; column
+   * mapping and deletion vectors must fall back to Spark to avoid incorrect results.
+   */
+  private def deltaScanUnsupportedReason(
+      r: HadoopFsRelation,
+      scanExec: FileSourceScanExec): Option[String] = {
+    // Column mapping remaps logical names to physical Parquet names. Delta strips the mapping
+    // from the schema it exposes to Spark and applies it inside DeltaParquetFileFormat, so the
+    // only reliable signal is the file format's columnMappingMode.
+    if (deltaColumnMappingEnabled(r)) {
+      return Some("Comet native Delta scan does not support column mapping")
+    }
+    // With deletion vectors, Delta injects synthetic __delta_internal_* columns plus a row filter.
+    // The native scan would not reproduce that filter, so deleted rows could leak through.
+    val hasInternalCols =
+      (scanExec.requiredSchema.fieldNames ++ scanExec.output.map(_.name))
+        .exists(_.startsWith("__delta_internal"))
+    if (hasInternalCols) {
+      return Some("Comet native Delta scan does not support deletion vectors")
+    }
+    None
+  }
+
+  /**
+   * Reads DeltaParquetFileFormat.columnMappingMode reflectively (no compile-time dependency on
+   * delta-spark). The mode's name is "none", "name", or "id". On any reflection failure we treat
+   * the table as column-mapped so that we conservatively fall back to Spark.
+   */
+  private def deltaColumnMappingEnabled(r: HadoopFsRelation): Boolean = {
+    try {
+      val ff = r.fileFormat
+      val mode = ff.getClass.getMethod("columnMappingMode").invoke(ff)
+      val name = mode.getClass.getMethod("name").invoke(mode).asInstanceOf[String]
+      !name.equalsIgnoreCase("none")
+    } catch {
+      case _: Throwable => true
     }
   }
 
