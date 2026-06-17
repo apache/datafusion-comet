@@ -459,7 +459,7 @@ object CometConf extends ShimCometConf {
           "threshold. This avoids the overhead of repeated format conversions in stages where " +
           "many operators fall back to row-based execution.")
       .booleanConf
-      .createWithDefault(true)
+      .createWithDefault(false)
 
   val COMET_EXEC_TRANSITION_REVERT_MAX_TRANSITIONS: ConfigEntry[Int] =
     conf(s"$COMET_EXEC_CONFIG_PREFIX.transitionRevert.maxTransitions")

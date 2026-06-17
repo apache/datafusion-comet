@@ -71,6 +71,7 @@ class RevertNativeForTransitionHeavyStagesSuite extends CometTestBase {
 
   test("rule does not revert plan below threshold") {
     withSQLConf(
+      CometConf.COMET_EXEC_TRANSITION_REVERT_ENABLED.key -> "true",
       CometConf.COMET_EXEC_TRANSITION_REVERT_MAX_TRANSITIONS.key -> "10",
       "spark.comet.exec.project.enabled" -> "false") {
       withTempView("test_data") {
@@ -82,7 +83,7 @@ class RevertNativeForTransitionHeavyStagesSuite extends CometTestBase {
         val rule = RevertNativeForTransitionHeavyStages(spark)
         val transitions = rule.countTransitions(cometPlan)
         assert(transitions > 0, s"Plan should have transitions, got $transitions")
-        assert(transitions <= 10, s"Transitions should be below threshold")
+        assert(transitions <= 10, "Transitions should be below threshold")
 
         val result = rule.apply(cometPlan)
         assert(result eq cometPlan, "Plan should be unchanged when below threshold")
@@ -130,6 +131,7 @@ class RevertNativeForTransitionHeavyStagesSuite extends CometTestBase {
 
   test("non-AQE path applies rule per-stage via transformUp") {
     withSQLConf(
+      CometConf.COMET_EXEC_TRANSITION_REVERT_ENABLED.key -> "true",
       CometConf.COMET_EXEC_TRANSITION_REVERT_MAX_TRANSITIONS.key -> "10",
       "spark.sql.adaptive.enabled" -> "false") {
 
@@ -145,6 +147,32 @@ class RevertNativeForTransitionHeavyStagesSuite extends CometTestBase {
         val rule = RevertNativeForTransitionHeavyStages(spark)
         val result = rule.apply(cometPlan)
         assert(result eq cometPlan, "Non-AQE path should not revert when below threshold")
+      }
+    }
+  }
+
+  test("revert fires with unsupported UDF producing transitions") {
+    withParquetTable((0 until 100).map(i => (i, i % 10, s"val_$i")), "tbl") {
+      spark.udf.register("identity_udf", (x: Int) => x)
+      val query = "SELECT _2, identity_udf(_1), count(*) FROM tbl GROUP BY _2, identity_udf(_1)"
+
+      // Without revert, plan should have transitions due from UDF
+      withSQLConf(CometConf.COMET_EXEC_TRANSITION_REVERT_ENABLED.key -> "false") {
+        val df = sql(query)
+        df.collect()
+        val plan = stripAQEPlan(df.queryExecution.executedPlan)
+        assert(countC2RNodes(plan) > 0, "UDF should cause C2R transitions")
+      }
+
+      // With threshold 0, stage should be reverted
+      withSQLConf(
+        CometConf.COMET_EXEC_TRANSITION_REVERT_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_TRANSITION_REVERT_MAX_TRANSITIONS.key -> "0") {
+        val (_, cometPlan) = checkSparkAnswer(query)
+        val executedPlan = stripAQEPlan(cometPlan)
+        assert(
+          countCometExecs(executedPlan) == 0,
+          s"Revert should have removed all CometExec nodes:\n${executedPlan.treeString}")
       }
     }
   }
@@ -166,6 +194,7 @@ class RevertNativeForTransitionHeavyStagesSuite extends CometTestBase {
 
       // With revert enabled at threshold 0, all CometExec should be removed
       withSQLConf(
+        CometConf.COMET_EXEC_TRANSITION_REVERT_ENABLED.key -> "true",
         CometConf.COMET_EXEC_TRANSITION_REVERT_MAX_TRANSITIONS.key -> "0",
         "spark.comet.exec.project.enabled" -> "false") {
         val (_, cometPlan) = checkSparkAnswer(query)

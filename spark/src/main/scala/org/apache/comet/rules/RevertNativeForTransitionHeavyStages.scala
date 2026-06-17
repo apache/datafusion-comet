@@ -28,6 +28,7 @@ import org.apache.spark.sql.execution.adaptive.QueryStageExec
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeLike, ShuffleExchangeLike}
 
 import org.apache.comet.CometConf
+import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 
 /**
  * Reverts a query stage to Spark row-based execution when it has too many columnar-to-row (C2R)
@@ -82,15 +83,14 @@ case class RevertNativeForTransitionHeavyStages(session: SparkSession)
     val transitionCount = countTransitions(stagePlan)
     if (transitionCount <= maxTransitions) return None
 
-    logInfo(
-      s"Reverting Comet native execution for stage with $transitionCount C2R transitions " +
-        s"(threshold: $maxTransitions).")
+    val reason =
+      s"Stage reverted: $transitionCount C2R transitions exceed threshold $maxTransitions"
 
     val reverted = revertToSpark(stagePlan)
     val result = if (outputColumnar && !reverted.supportsColumnar) {
-      RowToColumnarExec(reverted)
+      RowToColumnarExec(withFallbackReason(reverted, reason))
     } else {
-      reverted
+      withFallbackReason(reverted, reason)
     }
     Some(result)
   }
@@ -123,7 +123,7 @@ case class RevertNativeForTransitionHeavyStages(session: SparkSession)
         cometExec.originalPlan.withNewChildren(cometExec.children)
       } else {
         logWarning(
-          s"Comet plan and original have different child count for " +
+          "Comet plan and original have different child count for " +
             s"${cometExec.getClass.getSimpleName}, using originalPlan as-is.")
         cometExec.originalPlan
       }
