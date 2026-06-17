@@ -20,15 +20,18 @@ use crate::spark_unsafe::{
     row::{append_field, downcast_builder_ref, SparkUnsafeRow},
     unsafe_object::{impl_primitive_accessors, SparkUnsafeObject},
 };
-use arrow::array::{
-    builder::{
-        ArrayBuilder, BinaryBuilder, BooleanBuilder, Date32Builder, Decimal128Builder,
-        Float32Builder, Float64Builder, Int16Builder, Int32Builder, Int64Builder, Int8Builder,
-        ListBuilder, NullBuilder, StringBuilder, StructBuilder, TimestampMicrosecondBuilder,
-    },
-    MapBuilder,
-};
 use arrow::datatypes::{DataType, TimeUnit};
+use arrow::{
+    array::{
+        builder::{
+            ArrayBuilder, BinaryBuilder, BooleanBuilder, Date32Builder, Decimal128Builder,
+            Float32Builder, Float64Builder, Int16Builder, Int32Builder, Int64Builder, Int8Builder,
+            ListBuilder, NullBuilder, StringBuilder, StructBuilder, TimestampMicrosecondBuilder,
+        },
+        MapBuilder,
+    },
+    buffer::Buffer,
+};
 use datafusion_comet_jni_bridge::errors::CometError;
 
 /// Generates bulk append methods for primitive types in SparkUnsafeArray.
@@ -45,31 +48,68 @@ macro_rules! impl_append_to_builder {
                 return;
             }
 
-            if NULLABLE {
-                let mut ptr = self.element_offset as *const $element_type;
-                let null_words = self.null_bitset_ptr();
-                debug_assert!(!null_words.is_null(), "null_bitset_ptr is null");
-                debug_assert!(!ptr.is_null(), "element_offset pointer is null");
-                for idx in 0..num_elements {
-                    // SAFETY: null_words has ceil(num_elements/64) words, idx < num_elements
-                    let is_null = unsafe { Self::is_null_in_bitset(null_words, idx) };
+            let ptr = self.element_offset as *const $element_type;
+            let aligned = (ptr as usize).is_multiple_of(std::mem::align_of::<$element_type>());
 
-                    if is_null {
-                        builder.append_null();
+            if NULLABLE {
+                let null_words = self.null_bitset_ptr();
+                let num_validity_bytes = num_elements.div_ceil(8);
+
+                if aligned {
+                    let values = unsafe { std::slice::from_raw_parts(ptr, num_elements) };
+
+                    // Reserve space for values
+                    let current_len = builder.len();
+                    builder.append_nulls(num_elements);
+
+                    let (values_slice, validity) = builder.slices_mut();
+                    values_slice[current_len..current_len + num_elements].copy_from_slice(values);
+
+                    // SAFETY: after append_nulls, validity is guaranteed Some.
+                    let validity = validity.expect("validity must exist after append_nulls");
+                    let current_byte = current_len / 8;
+                    let bit_offset = current_len % 8;
+
+                    let spark_bytes = unsafe {
+                        std::slice::from_raw_parts(null_words as *const u8, num_validity_bytes)
+                    };
+
+                    if bit_offset == 0 {
+                        // Fast path: byte-aligned — invert whole bytes directly
+                        for (dst, &src) in validity[current_byte..current_byte + num_validity_bytes]
+                            .iter_mut()
+                            .zip(spark_bytes)
+                        {
+                            *dst = !src;
+                        }
                     } else {
-                        // SAFETY: ptr is within element data bounds
-                        builder.append_value(unsafe { ptr.read_unaligned() });
+                        for i in 0..num_elements {
+                            let spark_word_idx = i >> 6;
+                            let spark_bit_idx = i & 0x3f;
+                            let is_null = unsafe {
+                                (null_words.add(spark_word_idx).read_unaligned()
+                                    & (1i64 << spark_bit_idx))
+                                    != 0
+                            };
+                            if !is_null {
+                                let abs_idx = current_len + i;
+                                validity[abs_idx / 8] |= 1 << (abs_idx % 8);
+                            }
+                        }
                     }
-                    // SAFETY: ptr stays within bounds, iterating num_elements times
-                    ptr = unsafe { ptr.add(1) };
+                } else {
+                    let mut ptr = ptr;
+                    for idx in 0..num_elements {
+                        if unsafe { Self::is_null_in_bitset(null_words, idx) } {
+                            builder.append_null();
+                        } else {
+                            builder.append_value(unsafe { ptr.read_unaligned() });
+                        }
+                        ptr = unsafe { ptr.add(1) };
+                    }
                 }
             } else {
-                // SAFETY: element_offset points to contiguous data of length num_elements
-                debug_assert!(self.element_offset != 0, "element_offset is null");
-                let ptr = self.element_offset as *const $element_type;
-                // Use bulk copy when data is properly aligned, fall back to
-                // per-element unaligned reads otherwise
-                if (ptr as usize).is_multiple_of(std::mem::align_of::<$element_type>()) {
+                if aligned {
                     let slice = unsafe { std::slice::from_raw_parts(ptr, num_elements) };
                     builder.append_slice(slice);
                 } else {
@@ -194,37 +234,31 @@ impl SparkUnsafeArray {
         if num_elements == 0 {
             return;
         }
-
-        let mut ptr = self.element_offset as *const u8;
+        // bools have alignment == 1
+        // we dont have to worry about the fallback
         debug_assert!(
-            !ptr.is_null(),
+            self.element_offset != 0,
             "append_booleans: element_offset pointer is null"
         );
 
         if NULLABLE {
             let null_words = self.null_bitset_ptr();
-            debug_assert!(
-                !null_words.is_null(),
-                "append_booleans: null_bitset_ptr is null"
-            );
-            for idx in 0..num_elements {
-                // SAFETY: null_words has ceil(num_elements/64) words, idx < num_elements
-                let is_null = unsafe { Self::is_null_in_bitset(null_words, idx) };
-
-                if is_null {
+            let slice = unsafe {
+                std::slice::from_raw_parts(self.element_offset as *const bool, num_elements)
+            };
+            for (idx, &value) in slice.iter().enumerate() {
+                if unsafe { Self::is_null_in_bitset(null_words, idx) } {
                     builder.append_null();
                 } else {
-                    // SAFETY: ptr is within element data bounds
-                    builder.append_value(unsafe { *ptr != 0 });
+                    builder.append_value(value);
                 }
-                // SAFETY: ptr stays within bounds, iterating num_elements times
-                ptr = unsafe { ptr.add(1) };
             }
         } else {
-            for _ in 0..num_elements {
-                // SAFETY: ptr is within element data bounds
-                builder.append_value(unsafe { *ptr != 0 });
-                ptr = unsafe { ptr.add(1) };
+            let values = unsafe {
+                std::slice::from_raw_parts(self.element_offset as *const u8, num_elements)
+            };
+            for &value in values {
+                builder.append_value(value != 0);
             }
         }
     }
@@ -239,29 +273,51 @@ impl SparkUnsafeArray {
             return;
         }
 
-        if NULLABLE {
-            let mut ptr = self.element_offset as *const i64;
-            let null_words = self.null_bitset_ptr();
-            debug_assert!(
-                !null_words.is_null(),
-                "append_timestamps: null_bitset_ptr is null"
-            );
-            debug_assert!(
-                !ptr.is_null(),
-                "append_timestamps: element_offset pointer is null"
-            );
-            for idx in 0..num_elements {
-                // SAFETY: null_words has ceil(num_elements/64) words, idx < num_elements
-                let is_null = unsafe { Self::is_null_in_bitset(null_words, idx) };
+        let ptr = self.element_offset as *const i64;
+        let aligned = (ptr as usize).is_multiple_of(std::mem::align_of::<i64>());
 
-                if is_null {
-                    builder.append_null();
+        if NULLABLE {
+            let null_words = self.null_bitset_ptr();
+            debug_assert!(!null_words.is_null(), "null_bitset_ptr is null");
+            if aligned {
+                let values = unsafe { std::slice::from_raw_parts(ptr, num_elements) };
+                let current_len = builder.len();
+                builder.append_nulls(num_elements);
+                let (values_slice, validity) = builder.slices_mut();
+                values_slice[current_len..current_len + num_elements].copy_from_slice(values);
+                let validity = validity.expect("validity must exist after append_nulls");
+                let num_validity_bytes = num_elements.div_ceil(8);
+                let spark_bytes = unsafe {
+                    std::slice::from_raw_parts(null_words as *const u8, num_validity_bytes)
+                };
+                let current_byte = current_len / 8;
+                let bit_offset = current_len % 8;
+                if bit_offset == 0 {
+                    for (dst, &src) in validity[current_byte..current_byte + num_validity_bytes]
+                        .iter_mut()
+                        .zip(spark_bytes)
+                    {
+                        *dst = !src;
+                    }
                 } else {
-                    // SAFETY: ptr is within element data bounds
-                    builder.append_value(unsafe { ptr.read_unaligned() });
+                    for i in 0..num_elements {
+                        let is_null = unsafe { Self::is_null_in_bitset(null_words, i) };
+                        if !is_null {
+                            let abs_idx = current_len + i;
+                            validity[abs_idx / 8] |= 1 << (abs_idx % 8);
+                        }
+                    }
                 }
-                // SAFETY: ptr stays within bounds, iterating num_elements times
-                ptr = unsafe { ptr.add(1) };
+            } else {
+                let mut ptr = ptr;
+                for idx in 0..num_elements {
+                    if unsafe { Self::is_null_in_bitset(null_words, idx) } {
+                        builder.append_null();
+                    } else {
+                        builder.append_value(unsafe { ptr.read_unaligned() });
+                    }
+                    ptr = unsafe { ptr.add(1) }
+                }
             }
         } else {
             // SAFETY: element_offset points to contiguous i64 data of length num_elements
@@ -269,10 +325,9 @@ impl SparkUnsafeArray {
                 self.element_offset != 0,
                 "append_timestamps: element_offset is null"
             );
-            let ptr = self.element_offset as *const i64;
-            if (ptr as usize).is_multiple_of(std::mem::align_of::<i64>()) {
-                let slice = unsafe { std::slice::from_raw_parts(ptr, num_elements) };
-                builder.append_slice(slice);
+            if aligned {
+                let values = unsafe { std::slice::from_raw_parts(ptr, num_elements) };
+                builder.append_slice(values);
             } else {
                 let mut ptr = ptr;
                 for _ in 0..num_elements {
@@ -292,41 +347,61 @@ impl SparkUnsafeArray {
         if num_elements == 0 {
             return;
         }
+        let ptr = self.element_offset as *const i32;
+        let aligned = (ptr as usize).is_multiple_of(std::mem::align_of::<i32>());
 
         if NULLABLE {
-            let mut ptr = self.element_offset as *const i32;
             let null_words = self.null_bitset_ptr();
-            debug_assert!(
-                !null_words.is_null(),
-                "append_dates: null_bitset_ptr is null"
-            );
-            debug_assert!(
-                !ptr.is_null(),
-                "append_dates: element_offset pointer is null"
-            );
-            for idx in 0..num_elements {
-                // SAFETY: null_words has ceil(num_elements/64) words, idx < num_elements
-                let is_null = unsafe { Self::is_null_in_bitset(null_words, idx) };
-
-                if is_null {
-                    builder.append_null();
+            debug_assert!(!null_words.is_null(), "null_bitset_ptr is null");
+            if aligned {
+                let values = unsafe { std::slice::from_raw_parts(ptr, num_elements) };
+                let current_len = builder.len();
+                builder.append_nulls(num_elements);
+                let (values_slice, validity) = builder.slices_mut();
+                values_slice[current_len..current_len + num_elements].copy_from_slice(values);
+                let validity = validity.expect("validity must exist after append_nulls");
+                let num_validity_bytes = num_elements.div_ceil(8);
+                let spark_bytes = unsafe {
+                    std::slice::from_raw_parts(null_words as *const u8, num_validity_bytes)
+                };
+                let current_byte = current_len / 8;
+                let bit_offset = current_len % 8;
+                if bit_offset == 0 {
+                    for (dst, &src) in validity[current_byte..current_byte + num_validity_bytes]
+                        .iter_mut()
+                        .zip(spark_bytes)
+                    {
+                        *dst = !src;
+                    }
                 } else {
-                    // SAFETY: ptr is within element data bounds
-                    builder.append_value(unsafe { ptr.read_unaligned() });
+                    for i in 0..num_elements {
+                        let is_null = unsafe { Self::is_null_in_bitset(null_words, i) };
+                        if !is_null {
+                            let abs_idx = current_len + i;
+                            validity[abs_idx / 8] |= 1 << (abs_idx % 8);
+                        }
+                    }
                 }
-                // SAFETY: ptr stays within bounds, iterating num_elements times
-                ptr = unsafe { ptr.add(1) };
+            } else {
+                let mut ptr = ptr;
+                for idx in 0..num_elements {
+                    if unsafe { Self::is_null_in_bitset(null_words, idx) } {
+                        builder.append_null();
+                    } else {
+                        builder.append_value(unsafe { ptr.read_unaligned() });
+                    }
+                    ptr = unsafe { ptr.add(1) };
+                }
             }
         } else {
-            // SAFETY: element_offset points to contiguous i32 data of length num_elements
+            // SAFETY: element_offset points to contiguous i64 data of length num_elements
             debug_assert!(
                 self.element_offset != 0,
-                "append_dates: element_offset is null"
+                "append_timestamps: element_offset is null"
             );
-            let ptr = self.element_offset as *const i32;
-            if (ptr as usize).is_multiple_of(std::mem::align_of::<i32>()) {
-                let slice = unsafe { std::slice::from_raw_parts(ptr, num_elements) };
-                builder.append_slice(slice);
+            if aligned {
+                let values = unsafe { std::slice::from_raw_parts(ptr, num_elements) };
+                builder.append_slice(values);
             } else {
                 let mut ptr = ptr;
                 for _ in 0..num_elements {
