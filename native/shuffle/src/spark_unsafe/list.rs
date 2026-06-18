@@ -50,53 +50,15 @@ macro_rules! impl_append_to_builder {
 
             if NULLABLE {
                 let null_words = self.null_bitset_ptr();
-                // Note that Spark uses 64-bit word operations. Hence num.div_ceil(64) * 8
-                // Arrow allocates the exact number of bytes needed. Hence num.div_ceil(8). We just skip reading unnecessary data
-                let num_validity_bytes = num_elements.div_ceil(8);
 
-                if aligned {
-                    // Reading whole slice from base ptr (because we confirmed alignment)
+            if aligned {
                     let values = unsafe { std::slice::from_raw_parts(ptr, num_elements) };
-
-                    // Reserve space for values
-                    let current_len = builder.len();
-                    builder.append_nulls(num_elements);
-                    // Getting mutable slices to modify them in-place
-                    let (values_slice, validity) = builder.slices_mut();
-                    // Copying whole `values` into `values_slice` buffer
-                    values_slice[current_len..(current_len + num_elements)].copy_from_slice(values);
-
-                    // SAFETY: after append_nulls, validity is guaranteed Some.
-                    let validity = validity.expect("validity must exist after append_nulls");
-                    let spark_bytes = unsafe {
-                        std::slice::from_raw_parts(null_words as *const u8, num_validity_bytes)
-                    };
-                    let current_byte = current_len / 8;
-                    let bit_offset = current_len % 8;
-                    // Check if we land exactly on the byte boundary. Otherwise - skip
-                    if bit_offset == 0 {
-                        // Flipping bit values, due to Spark <-> Arrow difference. From their respective docs:
-                        // `Arrow``: A 1 (set bit) for index j indicates that the value is not null, while a 0 (bit not set) indicates that it is null.
-                        // `Spark``: `void setNullAt(int i)` sets the 1 (set bit) for index i indicating that the value IS null.
-                        for (dst, &src) in validity
-                            [current_byte..(current_byte + num_validity_bytes)]
-                            .iter_mut()
-                            .zip(spark_bytes)
-                        {
-                            *dst = !src;
-                        }
-                    } else {
-                        let mut ptr = ptr;
-                        for idx in 0..num_elements {
-                            if unsafe { Self::is_null_in_bitset(null_words, idx) } {
-                                builder.append_null();
-                            } else {
-                                builder.append_value(unsafe { ptr.read_unaligned() });
-                            }
-                            ptr = unsafe { ptr.add(1) };
-                        }
-                    }
-                } else {
+                    let is_valid: Vec<bool> = (0..num_elements)
+                        .map(|i| unsafe { !Self::is_null_in_bitset(null_words, i) })
+                        .collect();
+                    builder.append_values(values, &is_valid);
+                
+            } else {
                     let mut ptr = ptr;
                     for idx in 0..num_elements {
                         if unsafe { Self::is_null_in_bitset(null_words, idx) } {
@@ -285,50 +247,13 @@ impl SparkUnsafeArray {
         if NULLABLE {
             let null_words = self.null_bitset_ptr();
             debug_assert!(!null_words.is_null(), "null_bitset_ptr is null");
-            if aligned {
-                // Reading whole slice from base ptr (because we confirmed alignment)
-                let values = unsafe { std::slice::from_raw_parts(ptr, num_elements) };
-                let current_len = builder.len();
-
-                builder.append_nulls(num_elements);
-                // Getting mutable slices to modify them in-place
-                let (values_slice, validity) = builder.slices_mut();
-                // Copying whole `values` into `values_slice` buffer
-                values_slice[current_len..(current_len + num_elements)].copy_from_slice(values);
-
-                let validity = validity.expect("validity must exist after append_nulls");
-                // Note that Spark uses 64-bit word operations. Hence num.div_ceil(64) * 8
-                // Arrow allocates the exact number of bytes needed. Hence num.div_ceil(8). We just skip reading unnecessary data
-                let num_validity_bytes = num_elements.div_ceil(8);
-                // Validity bitmap
-                let spark_bytes = unsafe {
-                    std::slice::from_raw_parts(null_words as *const u8, num_validity_bytes)
-                };
-                let current_byte = current_len / 8;
-                let bit_offset = current_len % 8;
-                // Check if we land exactly on the byte boundary. Otherwise - skip
-                if bit_offset == 0 {
-                    // Flipping bit values, due to Spark <-> Arrow difference. From their respective docs:
-                    // `Arrow``: A 1 (set bit) for index j indicates that the value is not null, while a 0 (bit not set) indicates that it is null.
-                    // `Spark``: `void setNullAt(int i)` sets the 1 (set bit) for index i indicating that the value IS null.
-                    for (dst, &src) in validity[current_byte..current_byte + num_validity_bytes]
-                        .iter_mut()
-                        .zip(spark_bytes)
-                    {
-                        *dst = !src;
-                    }
-                } else {
-                    let mut ptr = ptr;
-                    for idx in 0..num_elements {
-                        if unsafe { Self::is_null_in_bitset(null_words, idx) } {
-                            builder.append_null();
-                        } else {
-                            builder.append_value(unsafe { ptr.read_unaligned() });
-                        }
-                        ptr = unsafe { ptr.add(1) };
-                    }
-                }
-            } else {
+if aligned {
+    let values = unsafe { std::slice::from_raw_parts(ptr, num_elements) };
+    let is_valid: Vec<bool> = (0..num_elements)
+        .map(|i| unsafe { !Self::is_null_in_bitset(null_words, i) })
+        .collect();
+    builder.append_values(values, &is_valid);
+} else {
                 let mut ptr = ptr;
                 for idx in 0..num_elements {
                     if unsafe { Self::is_null_in_bitset(null_words, idx) } {
@@ -377,46 +302,12 @@ impl SparkUnsafeArray {
             let null_words = self.null_bitset_ptr();
             debug_assert!(!null_words.is_null(), "null_bitset_ptr is null");
             if aligned {
-                // Reading whole slice from base ptr (because we confirmed alignment)
-                let values = unsafe { std::slice::from_raw_parts(ptr, num_elements) };
-                let current_len = builder.len();
-
-                builder.append_nulls(num_elements);
-                let (values_slice, validity) = builder.slices_mut();
-                values_slice[current_len..(current_len + num_elements)].copy_from_slice(values);
-
-                let validity = validity.expect("validity must exist after append_nulls");
-                // Note that Spark uses 64-bit word operations. Hence num.div_ceil(64) * 8
-                // Arrow allocates the exact number of bytes needed. Hence num.div_ceil(8)
-                let num_validity_bytes = num_elements.div_ceil(8);
-                // Validity bitmap
-                let spark_bytes = unsafe {
-                    std::slice::from_raw_parts(null_words as *const u8, num_validity_bytes)
-                };
-                let current_byte = current_len / 8;
-                let bit_offset = current_len % 8;
-                // Check if we land exactly on the byte boundary. Otherwise - skip
-                if bit_offset == 0 {
-                    // Flipping bit values, due to Spark <-> Arrow difference
-                    // Arrow: A 1 (set bit) for index j indicates that the value is not null, while a 0 (bit not set) indicates that it is null.
-                    // Spark: `void setNullAt(int i)` sets the 1 (set bit) for index i indicating that the value IS null.
-                    for (dst, &src) in validity[current_byte..current_byte + num_validity_bytes]
-                        .iter_mut()
-                        .zip(spark_bytes)
-                    {
-                        *dst = !src;
-                    }
-                } else {
-                    let mut ptr = ptr;
-                    for idx in 0..num_elements {
-                        if unsafe { Self::is_null_in_bitset(null_words, idx) } {
-                            builder.append_null();
-                        } else {
-                            builder.append_value(unsafe { ptr.read_unaligned() });
-                        }
-                        ptr = unsafe { ptr.add(1) };
-                    }
-                }
+                    let values = unsafe { std::slice::from_raw_parts(ptr, num_elements) };
+                    let is_valid: Vec<bool> = (0..num_elements)
+                        .map(|i| unsafe { !Self::is_null_in_bitset(null_words, i) })
+                        .collect();
+                    builder.append_values(values, &is_valid);
+                
             } else {
                 let mut ptr = ptr;
                 for idx in 0..num_elements {
