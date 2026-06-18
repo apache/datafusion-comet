@@ -51,14 +51,13 @@ macro_rules! impl_append_to_builder {
             if NULLABLE {
                 let null_words = self.null_bitset_ptr();
 
-            if aligned {
+                if aligned {
                     let values = unsafe { std::slice::from_raw_parts(ptr, num_elements) };
                     let is_valid: Vec<bool> = (0..num_elements)
                         .map(|i| unsafe { !Self::is_null_in_bitset(null_words, i) })
                         .collect();
                     builder.append_values(values, &is_valid);
-                
-            } else {
+                } else {
                     let mut ptr = ptr;
                     for idx in 0..num_elements {
                         if unsafe { Self::is_null_in_bitset(null_words, idx) } {
@@ -247,13 +246,13 @@ impl SparkUnsafeArray {
         if NULLABLE {
             let null_words = self.null_bitset_ptr();
             debug_assert!(!null_words.is_null(), "null_bitset_ptr is null");
-if aligned {
-    let values = unsafe { std::slice::from_raw_parts(ptr, num_elements) };
-    let is_valid: Vec<bool> = (0..num_elements)
-        .map(|i| unsafe { !Self::is_null_in_bitset(null_words, i) })
-        .collect();
-    builder.append_values(values, &is_valid);
-} else {
+            if aligned {
+                let values = unsafe { std::slice::from_raw_parts(ptr, num_elements) };
+                let is_valid: Vec<bool> = (0..num_elements)
+                    .map(|i| unsafe { !Self::is_null_in_bitset(null_words, i) })
+                    .collect();
+                builder.append_values(values, &is_valid);
+            } else {
                 let mut ptr = ptr;
                 for idx in 0..num_elements {
                     if unsafe { Self::is_null_in_bitset(null_words, idx) } {
@@ -302,12 +301,11 @@ if aligned {
             let null_words = self.null_bitset_ptr();
             debug_assert!(!null_words.is_null(), "null_bitset_ptr is null");
             if aligned {
-                    let values = unsafe { std::slice::from_raw_parts(ptr, num_elements) };
-                    let is_valid: Vec<bool> = (0..num_elements)
-                        .map(|i| unsafe { !Self::is_null_in_bitset(null_words, i) })
-                        .collect();
-                    builder.append_values(values, &is_valid);
-                
+                let values = unsafe { std::slice::from_raw_parts(ptr, num_elements) };
+                let is_valid: Vec<bool> = (0..num_elements)
+                    .map(|i| unsafe { !Self::is_null_in_bitset(null_words, i) })
+                    .collect();
+                builder.append_values(values, &is_valid);
             } else {
                 let mut ptr = ptr;
                 for idx in 0..num_elements {
