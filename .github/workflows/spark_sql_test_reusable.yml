@@ -248,7 +248,20 @@ jobs:
           # cap SBT heap so the freed RAM goes
           # to the forked test JVM and OS/container overhead, fixing the
           # cgroup-OOM SIGKILLs we saw on sql_core-* under 7 GB runners.
-          SBT_MEM: "1536"
+          SBT_MEM: "1024"
+          # G1GC + tuning for the SBT orchestrator JVM. -Xss4m replaces the
+          # launcher's -Xss64m default (no compile here, deep recursion not
+          # needed). UseStringDeduplication and MaxMetaspaceSize cap real
+          # and ceiling footprint. ExitOnOutOfMemoryError fails fast.
+          SBT_OPTS: >-
+            -Xss4m
+            -XX:+UseG1GC
+            -XX:+UseStringDeduplication
+            -XX:MaxMetaspaceSize=384m
+            -XX:G1HeapRegionSize=2m
+            -XX:InitiatingHeapOccupancyPercent=35
+            -XX:+ParallelRefProcEnabled
+            -XX:+ExitOnOutOfMemoryError
           # Mirror Spark's own JDK 21 / 25 CI workaround. apache/spark's
           # build_java21.yml and build_java25.yml set this same env var to
           # process-isolate the V1/V2 Parquet and Orc source suites because
