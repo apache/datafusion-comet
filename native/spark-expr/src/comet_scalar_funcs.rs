@@ -27,8 +27,8 @@ use crate::{
     spark_isnan, spark_lpad, spark_make_decimal, spark_month_name, spark_read_side_padding,
     spark_round, spark_rpad, spark_to_time, spark_unhex, spark_unscaled_value, EvalMode,
     SparkArrayCompact, SparkArrayPositionFunc, SparkArraySlice, SparkArraysOverlap, SparkContains,
-    SparkDateDiff, SparkDateFromUnixDate, SparkDateTrunc, SparkMakeDate, SparkMakeTime,
-    SparkNextDay, SparkSecondsToTimestamp, SparkSizeFunc,
+    SparkDateDiff, SparkDateFromUnixDate, SparkDateTrunc, SparkEmpty2Null, SparkMakeDate,
+    SparkMakeTime, SparkNextDay, SparkSecondsToTimestamp, SparkSizeFunc,
 };
 use arrow::datatypes::DataType;
 use datafusion::common::{DataFusionError, Result as DataFusionResult};
@@ -249,6 +249,7 @@ fn all_scalar_functions() -> Vec<Arc<ScalarUDF>> {
         Arc::new(ScalarUDF::new_from_impl(SparkSecondsToTimestamp::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkSizeFunc::default())),
         Arc::new(ScalarUDF::new_from_impl(JsonArrayLength::default())),
+        Arc::new(ScalarUDF::new_from_impl(SparkEmpty2Null::default())),
     ]
 }
 

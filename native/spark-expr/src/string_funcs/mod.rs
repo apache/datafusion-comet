@@ -16,6 +16,7 @@
 // under the License.
 
 mod contains;
+mod empty_to_null;
 mod get_json_object;
 mod regexp_extract;
 mod regexp_extract_all;
@@ -24,6 +25,7 @@ mod split;
 mod substring;
 
 pub use contains::SparkContains;
+pub use empty_to_null::SparkEmpty2Null;
 pub use get_json_object::spark_get_json_object;
 pub use regexp_extract::spark_regexp_extract;
 pub use regexp_extract_all::spark_regexp_extract_all;
