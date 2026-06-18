@@ -20,18 +20,15 @@ use crate::spark_unsafe::{
     row::{append_field, downcast_builder_ref, SparkUnsafeRow},
     unsafe_object::{impl_primitive_accessors, SparkUnsafeObject},
 };
-use arrow::datatypes::{DataType, TimeUnit};
-use arrow::{
-    array::{
-        builder::{
-            ArrayBuilder, BinaryBuilder, BooleanBuilder, Date32Builder, Decimal128Builder,
-            Float32Builder, Float64Builder, Int16Builder, Int32Builder, Int64Builder, Int8Builder,
-            ListBuilder, NullBuilder, StringBuilder, StructBuilder, TimestampMicrosecondBuilder,
-        },
-        MapBuilder,
+use arrow::array::{
+    builder::{
+        ArrayBuilder, BinaryBuilder, BooleanBuilder, Date32Builder, Decimal128Builder,
+        Float32Builder, Float64Builder, Int16Builder, Int32Builder, Int64Builder, Int8Builder,
+        ListBuilder, NullBuilder, StringBuilder, StructBuilder, TimestampMicrosecondBuilder,
     },
-    buffer::Buffer,
+    MapBuilder,
 };
+use arrow::datatypes::{DataType, TimeUnit};
 use datafusion_comet_jni_bridge::errors::CometError;
 
 /// Generates bulk append methods for primitive types in SparkUnsafeArray.
@@ -53,29 +50,34 @@ macro_rules! impl_append_to_builder {
 
             if NULLABLE {
                 let null_words = self.null_bitset_ptr();
+                // Note that Spark uses 64-bit word operations. Hence num.div_ceil(64) * 8
+                // Arrow allocates the exact number of bytes needed. Hence num.div_ceil(8). We just skip reading unnecessary data
                 let num_validity_bytes = num_elements.div_ceil(8);
 
                 if aligned {
+                    // Reading whole slice from base ptr (because we confirmed alignment)
                     let values = unsafe { std::slice::from_raw_parts(ptr, num_elements) };
 
                     // Reserve space for values
                     let current_len = builder.len();
                     builder.append_nulls(num_elements);
-
+                    // Getting mutable slices to modify them in-place
                     let (values_slice, validity) = builder.slices_mut();
-                    values_slice[current_len..current_len + num_elements].copy_from_slice(values);
+                    // Copying whole `values` into `values_slice` buffer
+                    values_slice[current_len..(current_len + num_elements)].copy_from_slice(values);
 
                     // SAFETY: after append_nulls, validity is guaranteed Some.
                     let validity = validity.expect("validity must exist after append_nulls");
-                    let current_byte = current_len / 8;
-                    let bit_offset = current_len % 8;
-
                     let spark_bytes = unsafe {
                         std::slice::from_raw_parts(null_words as *const u8, num_validity_bytes)
                     };
-
+                    let current_byte = current_len / 8;
+                    let bit_offset = current_len % 8;
+                    // Check if we land exactly on the byte boundary. Otherwise - skip
                     if bit_offset == 0 {
-                        // Fast path: byte-aligned — invert whole bytes directly
+                        // Flipping bit values, due to Spark <-> Arrow difference. From their respective docs:
+                        // `Arrow``: A 1 (set bit) for index j indicates that the value is not null, while a 0 (bit not set) indicates that it is null.
+                        // `Spark``: `void setNullAt(int i)` sets the 1 (set bit) for index i indicating that the value IS null.
                         for (dst, &src) in validity[current_byte..current_byte + num_validity_bytes]
                             .iter_mut()
                             .zip(spark_bytes)
@@ -84,13 +86,8 @@ macro_rules! impl_append_to_builder {
                         }
                     } else {
                         for i in 0..num_elements {
-                            let spark_word_idx = i >> 6;
-                            let spark_bit_idx = i & 0x3f;
-                            let is_null = unsafe {
-                                (null_words.add(spark_word_idx).read_unaligned()
-                                    & (1i64 << spark_bit_idx))
-                                    != 0
-                            };
+                            let is_null = unsafe { Self::is_null_in_bitset(null_words, i) };
+                            // We have appended nulls at the beginning. Hence, we can skip this branch if it is null
                             if !is_null {
                                 let abs_idx = current_len + i;
                                 validity[abs_idx / 8] |= 1 << (abs_idx % 8);
@@ -234,8 +231,8 @@ impl SparkUnsafeArray {
         if num_elements == 0 {
             return;
         }
-        // bools have alignment == 1
-        // we dont have to worry about the fallback
+        // Bools have alignment == 1
+        // We dont have to worry about the fallback. Hence, we do not care about it
         debug_assert!(
             self.element_offset != 0,
             "append_booleans: element_offset pointer is null"
@@ -273,26 +270,45 @@ impl SparkUnsafeArray {
             return;
         }
 
+        // SAFETY: element_offset points to contiguous i64 data of length num_elements
+        debug_assert!(
+            self.element_offset != 0,
+            "append_timestamps: element_offset is null"
+        );
+
         let ptr = self.element_offset as *const i64;
+        // Note: alignment is not guaranteed - that is why do this
         let aligned = (ptr as usize).is_multiple_of(std::mem::align_of::<i64>());
 
         if NULLABLE {
             let null_words = self.null_bitset_ptr();
             debug_assert!(!null_words.is_null(), "null_bitset_ptr is null");
             if aligned {
+                // Reading whole slice from base ptr (because we confirmed alignment)
                 let values = unsafe { std::slice::from_raw_parts(ptr, num_elements) };
                 let current_len = builder.len();
+
                 builder.append_nulls(num_elements);
+                // Getting mutable slices to modify them in-place
                 let (values_slice, validity) = builder.slices_mut();
-                values_slice[current_len..current_len + num_elements].copy_from_slice(values);
+                // Copying whole `values` into `values_slice` buffer
+                values_slice[current_len..(current_len + num_elements)].copy_from_slice(values);
+
                 let validity = validity.expect("validity must exist after append_nulls");
+                // Note that Spark uses 64-bit word operations. Hence num.div_ceil(64) * 8
+                // Arrow allocates the exact number of bytes needed. Hence num.div_ceil(8). We just skip reading unnecessary data
                 let num_validity_bytes = num_elements.div_ceil(8);
+                // Validity bitmap
                 let spark_bytes = unsafe {
                     std::slice::from_raw_parts(null_words as *const u8, num_validity_bytes)
                 };
                 let current_byte = current_len / 8;
                 let bit_offset = current_len % 8;
+                // Check if we land exactly on the byte boundary. Otherwise - skip
                 if bit_offset == 0 {
+                    // Flipping bit values, due to Spark <-> Arrow difference. From their respective docs:
+                    // `Arrow``: A 1 (set bit) for index j indicates that the value is not null, while a 0 (bit not set) indicates that it is null.
+                    // `Spark``: `void setNullAt(int i)` sets the 1 (set bit) for index i indicating that the value IS null.
                     for (dst, &src) in validity[current_byte..current_byte + num_validity_bytes]
                         .iter_mut()
                         .zip(spark_bytes)
@@ -302,6 +318,7 @@ impl SparkUnsafeArray {
                 } else {
                     for i in 0..num_elements {
                         let is_null = unsafe { Self::is_null_in_bitset(null_words, i) };
+                        // We have appended nulls at the beginning. Hence, we can skip this branch if it is null
                         if !is_null {
                             let abs_idx = current_len + i;
                             validity[abs_idx / 8] |= 1 << (abs_idx % 8);
@@ -320,11 +337,6 @@ impl SparkUnsafeArray {
                 }
             }
         } else {
-            // SAFETY: element_offset points to contiguous i64 data of length num_elements
-            debug_assert!(
-                self.element_offset != 0,
-                "append_timestamps: element_offset is null"
-            );
             if aligned {
                 let values = unsafe { std::slice::from_raw_parts(ptr, num_elements) };
                 builder.append_slice(values);
@@ -347,26 +359,44 @@ impl SparkUnsafeArray {
         if num_elements == 0 {
             return;
         }
+
+        // SAFETY: element_offset points to contiguous i64 data of length num_elements
+        debug_assert!(
+            self.element_offset != 0,
+            "append_timestamps: element_offset is null"
+        );
+
         let ptr = self.element_offset as *const i32;
+        // Note: alignment is not guaranteed - that is why do this
         let aligned = (ptr as usize).is_multiple_of(std::mem::align_of::<i32>());
 
         if NULLABLE {
             let null_words = self.null_bitset_ptr();
             debug_assert!(!null_words.is_null(), "null_bitset_ptr is null");
             if aligned {
+                // Reading whole slice from base ptr (because we confirmed alignment)
                 let values = unsafe { std::slice::from_raw_parts(ptr, num_elements) };
                 let current_len = builder.len();
+
                 builder.append_nulls(num_elements);
                 let (values_slice, validity) = builder.slices_mut();
-                values_slice[current_len..current_len + num_elements].copy_from_slice(values);
+                values_slice[current_len..(current_len + num_elements)].copy_from_slice(values);
+
                 let validity = validity.expect("validity must exist after append_nulls");
+                // Note that Spark uses 64-bit word operations. Hence num.div_ceil(64) * 8
+                // Arrow allocates the exact number of bytes needed. Hence num.div_ceil(8)
                 let num_validity_bytes = num_elements.div_ceil(8);
+                // Validity bitmap
                 let spark_bytes = unsafe {
                     std::slice::from_raw_parts(null_words as *const u8, num_validity_bytes)
                 };
                 let current_byte = current_len / 8;
                 let bit_offset = current_len % 8;
+                // Check if we land exactly on the byte boundary. Otherwise - skip
                 if bit_offset == 0 {
+                    // Flipping bit values, due to Spark <-> Arrow difference
+                    // Arrow: A 1 (set bit) for index j indicates that the value is not null, while a 0 (bit not set) indicates that it is null.
+                    // Spark: `void setNullAt(int i)` sets the 1 (set bit) for index i indicating that the value IS null.
                     for (dst, &src) in validity[current_byte..current_byte + num_validity_bytes]
                         .iter_mut()
                         .zip(spark_bytes)
@@ -376,6 +406,7 @@ impl SparkUnsafeArray {
                 } else {
                     for i in 0..num_elements {
                         let is_null = unsafe { Self::is_null_in_bitset(null_words, i) };
+                        // We have appended nulls at the beginning. Hence, we can skip this branch if it is null
                         if !is_null {
                             let abs_idx = current_len + i;
                             validity[abs_idx / 8] |= 1 << (abs_idx % 8);
@@ -394,11 +425,6 @@ impl SparkUnsafeArray {
                 }
             }
         } else {
-            // SAFETY: element_offset points to contiguous i64 data of length num_elements
-            debug_assert!(
-                self.element_offset != 0,
-                "append_timestamps: element_offset is null"
-            );
             if aligned {
                 let values = unsafe { std::slice::from_raw_parts(ptr, num_elements) };
                 builder.append_slice(values);
