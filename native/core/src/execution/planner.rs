@@ -1250,7 +1250,7 @@ impl PhysicalPlanner {
                 if bnlj.build_side == BuildSide::BuildRight as i32 {
                     let swapped_join = nested_loop_join.as_ref().swap_inputs()?;
                     let mut additional_native_plans = vec![];
-                    if swapped_join.as_any().is::<ProjectionExec>() {
+                    if swapped_join.is::<ProjectionExec>() {
                         additional_native_plans.push(Arc::clone(swapped_join.children()[0]));
                     }
                     Ok((
