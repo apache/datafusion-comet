@@ -44,7 +44,7 @@ macro_rules! impl_append_to_builder {
             if num_elements == 0 {
                 return;
             }
-
+            // Note: alignment is not guaranteed - that is why do this
             let ptr = self.element_offset as *const $element_type;
             let aligned = (ptr as usize).is_multiple_of(std::mem::align_of::<$element_type>());
 
