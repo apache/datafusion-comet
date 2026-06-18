@@ -27,3 +27,44 @@ SELECT array_min(arr) FROM test_array_min
 -- literal arguments
 query
 SELECT array_min(array(1, 2, 3)), array_min(array()), array_min(cast(NULL as array<int>))
+
+-- ===== DOUBLE arrays with NaN/Infinity/-0.0 =====
+
+statement
+CREATE TABLE test_array_min_double(arr array<double>) USING parquet
+
+statement
+INSERT INTO test_array_min_double VALUES
+  (array(CAST('NaN' AS DOUBLE), 1.0, 2.0)),
+  (array(1.0, CAST('NaN' AS DOUBLE), 2.0)),
+  (array(1.0, 2.0, CAST('NaN' AS DOUBLE))),
+  (array(CAST('NaN' AS DOUBLE), CAST('NaN' AS DOUBLE))),
+  (array(CAST('NaN' AS DOUBLE), NULL, 1.0)),
+  (array(CAST('Infinity' AS DOUBLE), 1.0, 2.0)),
+  (array(CAST('-Infinity' AS DOUBLE), 1.0, 2.0)),
+  (array(CAST('NaN' AS DOUBLE), CAST('Infinity' AS DOUBLE), CAST('-Infinity' AS DOUBLE))),
+  (array(0.0, -0.0, 1.0)),
+  (NULL),
+  (array())
+
+query
+SELECT array_min(arr) FROM test_array_min_double
+
+-- ===== FLOAT arrays with NaN/Infinity/-0.0 =====
+
+statement
+CREATE TABLE test_array_min_float(arr array<float>) USING parquet
+
+statement
+INSERT INTO test_array_min_float VALUES
+  (array(CAST('NaN' AS FLOAT), CAST(1.0 AS FLOAT), CAST(2.0 AS FLOAT))),
+  (array(CAST('NaN' AS FLOAT), CAST('NaN' AS FLOAT))),
+  (array(CAST('NaN' AS FLOAT), NULL, CAST(1.0 AS FLOAT))),
+  (array(CAST('Infinity' AS FLOAT), CAST(1.0 AS FLOAT))),
+  (array(CAST('-Infinity' AS FLOAT), CAST(1.0 AS FLOAT))),
+  (array(CAST(0.0 AS FLOAT), CAST(-0.0 AS FLOAT))),
+  (NULL),
+  (array())
+
+query
+SELECT array_min(arr) FROM test_array_min_float
