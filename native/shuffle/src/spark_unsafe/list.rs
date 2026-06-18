@@ -78,20 +78,22 @@ macro_rules! impl_append_to_builder {
                         // Flipping bit values, due to Spark <-> Arrow difference. From their respective docs:
                         // `Arrow``: A 1 (set bit) for index j indicates that the value is not null, while a 0 (bit not set) indicates that it is null.
                         // `Spark``: `void setNullAt(int i)` sets the 1 (set bit) for index i indicating that the value IS null.
-                        for (dst, &src) in validity[current_byte..current_byte + num_validity_bytes]
+                        for (dst, &src) in validity
+                            [current_byte..(current_byte + num_validity_bytes)]
                             .iter_mut()
                             .zip(spark_bytes)
                         {
                             *dst = !src;
                         }
                     } else {
-                        for i in 0..num_elements {
-                            let is_null = unsafe { Self::is_null_in_bitset(null_words, i) };
-                            // We have appended nulls at the beginning. Hence, we can skip this branch if it is null
-                            if !is_null {
-                                let abs_idx = current_len + i;
-                                validity[abs_idx / 8] |= 1 << (abs_idx % 8);
+                        let mut ptr = ptr;
+                        for idx in 0..num_elements {
+                            if unsafe { Self::is_null_in_bitset(null_words, idx) } {
+                                builder.append_null();
+                            } else {
+                                builder.append_value(unsafe { ptr.read_unaligned() });
                             }
+                            ptr = unsafe { ptr.add(1) };
                         }
                     }
                 } else {
@@ -316,13 +318,14 @@ impl SparkUnsafeArray {
                         *dst = !src;
                     }
                 } else {
-                    for i in 0..num_elements {
-                        let is_null = unsafe { Self::is_null_in_bitset(null_words, i) };
-                        // We have appended nulls at the beginning. Hence, we can skip this branch if it is null
-                        if !is_null {
-                            let abs_idx = current_len + i;
-                            validity[abs_idx / 8] |= 1 << (abs_idx % 8);
+                    let mut ptr = ptr;
+                    for idx in 0..num_elements {
+                        if unsafe { Self::is_null_in_bitset(null_words, idx) } {
+                            builder.append_null();
+                        } else {
+                            builder.append_value(unsafe { ptr.read_unaligned() });
                         }
+                        ptr = unsafe { ptr.add(1) };
                     }
                 }
             } else {
@@ -404,13 +407,14 @@ impl SparkUnsafeArray {
                         *dst = !src;
                     }
                 } else {
-                    for i in 0..num_elements {
-                        let is_null = unsafe { Self::is_null_in_bitset(null_words, i) };
-                        // We have appended nulls at the beginning. Hence, we can skip this branch if it is null
-                        if !is_null {
-                            let abs_idx = current_len + i;
-                            validity[abs_idx / 8] |= 1 << (abs_idx % 8);
+                    let mut ptr = ptr;
+                    for idx in 0..num_elements {
+                        if unsafe { Self::is_null_in_bitset(null_words, idx) } {
+                            builder.append_null();
+                        } else {
+                            builder.append_value(unsafe { ptr.read_unaligned() });
                         }
+                        ptr = unsafe { ptr.add(1) };
                     }
                 }
             } else {
