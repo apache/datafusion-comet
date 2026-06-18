@@ -223,9 +223,7 @@ jobs:
           if [ "${{ inputs.spark-short }}" != "4.0" ] || [ "${{ inputs.java }}" != "21" ]; then
             export SERIAL_SBT_TESTS=1
           fi
-          # Per-row forked-test-JVM caps (read by Spark's SparkBuild.scala). Only
-          # exported when the matrix entry sets them; rows without these fields
-          # keep Spark's defaults (-Xmx4g, -XX:MaxMetaspaceSize=1300m).
+          # Per-row forked-test-JVM caps (read by Spark's SparkBuild.scala). 
           if [ -n "${{ matrix.module.heap }}" ]; then
             export HEAP_SIZE="${{ matrix.module.heap }}"
           fi
@@ -250,7 +248,7 @@ jobs:
           # cap SBT heap so the freed RAM goes
           # to the forked test JVM and OS/container overhead, fixing the
           # cgroup-OOM SIGKILLs we saw on sql_core-* under 7 GB runners.
-          SBT_MEM: "1024"
+          SBT_MEM: "1536"
           # Mirror Spark's own JDK 21 / 25 CI workaround. apache/spark's
           # build_java21.yml and build_java25.yml set this same env var to
           # process-isolate the V1/V2 Parquet and Orc source suites because
