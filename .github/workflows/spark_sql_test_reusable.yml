@@ -67,7 +67,7 @@ jobs:
     container:
       image: amd64/rust
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Setup Rust & Java toolchain
         uses: ./.github/actions/setup-builder
@@ -169,9 +169,9 @@ jobs:
         module:
           - {name: "catalyst", args1: "catalyst/test", args2: ""}
           # sql_core-* set HEAP_SIZE / METASPACE_SIZE so SparkBuild.scala caps
-          - {name: "sql_core-1", args1: "", args2: "sql/testOnly * -- -l org.apache.spark.tags.ExtendedSQLTest -l org.apache.spark.tags.SlowSQLTest", heap: "4g", metaspace: "1g"}
-          - {name: "sql_core-2", args1: "", args2: "sql/testOnly * -- -n org.apache.spark.tags.ExtendedSQLTest", heap: "4g", metaspace: "1g"}
-          - {name: "sql_core-3", args1: "", args2: "sql/testOnly * -- -n org.apache.spark.tags.SlowSQLTest", heap: "4g", metaspace: "1g"}
+          - {name: "sql_core-1", args1: "", args2: "sql/testOnly * -- -l org.apache.spark.tags.ExtendedSQLTest -l org.apache.spark.tags.SlowSQLTest", heap: "3g", metaspace: "1g"}
+          - {name: "sql_core-2", args1: "", args2: "sql/testOnly * -- -n org.apache.spark.tags.ExtendedSQLTest", heap: "3g", metaspace: "1g"}
+          - {name: "sql_core-3", args1: "", args2: "sql/testOnly * -- -n org.apache.spark.tags.SlowSQLTest", heap: "3g", metaspace: "1g"}
           - {name: "sql_hive-1", args1: "", args2: "hive/testOnly * -- -l org.apache.spark.tags.ExtendedHiveTest -l org.apache.spark.tags.SlowHiveTest"}
           - {name: "sql_hive-2", args1: "", args2: "hive/testOnly * -- -n org.apache.spark.tags.ExtendedHiveTest"}
           - {name: "sql_hive-3", args1: "", args2: "hive/testOnly * -- -n org.apache.spark.tags.SlowHiveTest"}
@@ -181,7 +181,7 @@ jobs:
     container:
       image: amd64/rust
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Setup Rust & Java toolchain
         uses: ./.github/actions/setup-builder
         with:
@@ -223,9 +223,7 @@ jobs:
           if [ "${{ inputs.spark-short }}" != "4.0" ] || [ "${{ inputs.java }}" != "21" ]; then
             export SERIAL_SBT_TESTS=1
           fi
-          # Per-row forked-test-JVM caps (read by Spark's SparkBuild.scala). Only
-          # exported when the matrix entry sets them; rows without these fields
-          # keep Spark's defaults (-Xmx4g, -XX:MaxMetaspaceSize=1300m).
+          # Per-row forked-test-JVM caps (read by Spark's SparkBuild.scala). 
           if [ -n "${{ matrix.module.heap }}" ]; then
             export HEAP_SIZE="${{ matrix.module.heap }}"
           fi
@@ -247,10 +245,23 @@ jobs:
           # The build-jvm job pre-compiled Spark sources and Test classes, so
           # SBT here only orchestrates `testOnly` — Zinc verifies "no changes"
           # against the unpacked apache-spark/ tree and skips compilation. We
-          # cap SBT heap at 1536 MB (down from 3072 MB) so the freed RAM goes
+          # cap SBT heap so the freed RAM goes
           # to the forked test JVM and OS/container overhead, fixing the
           # cgroup-OOM SIGKILLs we saw on sql_core-* under 7 GB runners.
-          SBT_MEM: "1536"
+          SBT_MEM: "1024"
+          # G1GC + tuning for the SBT orchestrator JVM. -Xss4m replaces the
+          # launcher's -Xss64m default (no compile here, deep recursion not
+          # needed). UseStringDeduplication and MaxMetaspaceSize cap real
+          # and ceiling footprint. ExitOnOutOfMemoryError fails fast.
+          SBT_OPTS: >-
+            -Xss4m
+            -XX:+UseG1GC
+            -XX:+UseStringDeduplication
+            -XX:MaxMetaspaceSize=384m
+            -XX:G1HeapRegionSize=2m
+            -XX:InitiatingHeapOccupancyPercent=35
+            -XX:+ParallelRefProcEnabled
+            -XX:+ExitOnOutOfMemoryError
           # Mirror Spark's own JDK 21 / 25 CI workaround. apache/spark's
           # build_java21.yml and build_java25.yml set this same env var to
           # process-isolate the V1/V2 Parquet and Orc source suites because
