@@ -620,10 +620,6 @@ object CometGetJsonObject extends CometCodegenDispatch[GetJsonObject] {
     }
 }
 
-// A internal function that converts the empty string to null for partition values.
-// This function should be only used in V1Writes.
-object CometEmpty2Null extends CometScalarFunction[Empty2Null]("empty2Null")
-
 // Expressions routed through the JVM codegen dispatcher: no native implementation, so Spark's own
 // doGenCode runs inside the Comet pipeline, matching Spark exactly.
 object CometLevenshtein extends CometCodegenDispatch[Levenshtein]
@@ -651,3 +647,7 @@ object CometToNumber extends CometCodegenDispatch[ToNumber]
 object CometTryToNumber extends CometCodegenDispatch[TryToNumber]
 
 object CometMask extends CometCodegenDispatch[Mask]
+
+// A internal function that converts the empty string to null for partition values.
+// This function should be only used in V1Writes.
+object CometEmpty2Null extends CometCodegenDispatch[Empty2Null]
