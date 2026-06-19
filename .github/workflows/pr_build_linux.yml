@@ -59,7 +59,7 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: Setup coursier
-        uses: coursier/setup-action@v1
+        uses: coursier/setup-action@v3
         with:
           jvm: temurin:21
 
@@ -346,6 +346,7 @@ jobs:
               org.apache.spark.CometPluginsNonOverrideSuite
               org.apache.spark.CometPluginsUnifiedModeOverrideSuite
               org.apache.comet.rules.CometScanRuleSuite
+              org.apache.comet.rules.CometScanSchemeFallbackSuite
               org.apache.comet.rules.CometExecRuleSuite
               org.apache.spark.sql.CometTPCDSQuerySuite
               org.apache.spark.sql.CometTPCDSQueryTestSuite
@@ -361,6 +362,7 @@ jobs:
               org.apache.spark.sql.CometToPrettyStringSuite
               org.apache.spark.sql.CometCollationSuite
               org.apache.comet.CometFuzzAggregateSuite
+              org.apache.spark.sql.comet.execution.arrow.CometArrowStreamSuite
           - name: "expressions"
             value: |
               org.apache.comet.CometExpressionSuite
@@ -377,15 +379,19 @@ jobs:
               org.apache.comet.CometMapExpressionSuite
               org.apache.comet.CometCsvExpressionSuite
               org.apache.comet.CometJsonExpressionSuite
+              org.apache.comet.CometJsonJvmSuite
               org.apache.comet.SparkErrorConverterSuite
               org.apache.comet.expressions.conditional.CometIfSuite
               org.apache.comet.expressions.conditional.CometCoalesceSuite
               org.apache.comet.expressions.conditional.CometCaseWhenSuite
+              org.apache.comet.CometRegExpJvmSuite
               org.apache.comet.CometCodegenSuite
               org.apache.comet.CometCodegenSourceSuite
               org.apache.comet.CometCodegenHOFSuite
               org.apache.comet.CometFuzzMathSuite
               org.apache.comet.CometCodegenFuzzSuite
+              org.apache.comet.CometStringDecodeSuite
+              org.apache.comet.CometWidthBucketSuite
       fail-fast: false
     name: ${{ matrix.profile.name }} [${{ matrix.suite.name }}]
     runs-on: ubuntu-24.04

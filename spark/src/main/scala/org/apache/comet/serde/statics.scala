@@ -19,7 +19,7 @@
 
 package org.apache.comet.serde
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, ExpressionImplUtils, Literal, TryEval, UrlCodec}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, ExpressionImplUtils, Literal, StringDecode, TryEval, UrlCodec}
 import org.apache.spark.sql.catalyst.expressions.objects.StaticInvoke
 import org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils
 
@@ -40,7 +40,11 @@ object CometStaticInvoke extends CometExpressionSerde[StaticInvoke] {
       ("encode", UrlCodec.getClass) -> CometUrlEncodeStaticInvoke,
       ("decode", UrlCodec.getClass) -> CometUrlDecodeStaticInvoke,
       ("aesEncrypt", classOf[ExpressionImplUtils]) -> CometStaticInvokeCodegenDispatch,
-      ("aesDecrypt", classOf[ExpressionImplUtils]) -> CometStaticInvokeCodegenDispatch)
+      ("aesDecrypt", classOf[ExpressionImplUtils]) -> CometStaticInvokeCodegenDispatch,
+      // Spark 4.0 lowers `decode(bin, charset)` to `StaticInvoke(StringDecode.decode, ...)`
+      // carrying the `legacyCharsets` / `legacyErrorAction` flags. Routing through the codegen
+      // dispatcher runs Spark's own decoder so both flags are honored. See #4465.
+      ("decode", classOf[StringDecode]) -> CometStaticInvokeCodegenDispatch)
 
   override def convert(
       expr: StaticInvoke,

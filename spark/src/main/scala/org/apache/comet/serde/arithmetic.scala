@@ -83,6 +83,13 @@ trait MathBase {
       false
   }
 
+  def mathDataTypeSupportLevel(dt: DataType): SupportLevel =
+    if (supportedDataType(dt)) {
+      Compatible()
+    } else {
+      Unsupported(Some(s"Unsupported datatype $dt"))
+    }
+
   /**
    * True when an `Add` / `Multiply` chain of `dataType` in `evalMode` can be rebalanced without
    * changing results. Only integral types in LEGACY (wrapping, modular) eval mode are exactly
@@ -101,12 +108,12 @@ trait MathBase {
   /**
    * Like [[QueryPlanSerde.createBalancedBinaryExpr]] but for `MathExpr`-shaped associative
    * operators (`Add`, `Multiply`): each combined inner node carries the chain's `evalMode` and
-   * `returnType`. Rebalances a flattened chain into an `O(log n)`-depth tree so deep
-   * `a + b + ...` chains serialize to a shallow proto instead of a left-deep one that overflows
-   * protobuf's recursion limit when the plan is re-parsed. Only safe for exactly-associative
-   * chains -- callers gate via [[isAssociativeAndRebalanceable]]. The flattened leaves all share
-   * the chain's type (Spark coerces operands to it, with casts acting as flatten boundaries), so
-   * a single `returnType` / `evalMode` is correct for every inner node.
+   * `returnType`. Rebalances a flattened chain into an `O(log n)`-depth tree so deep `a + b +
+   * ...` chains serialize to a shallow proto instead of a left-deep one that overflows protobuf's
+   * recursion limit when the plan is re-parsed. Only safe for exactly-associative chains --
+   * callers gate via [[isAssociativeAndRebalanceable]]. The flattened leaves all share the
+   * chain's type (Spark coerces operands to it, with casts acting as flatten boundaries), so a
+   * single `returnType` / `evalMode` is correct for every inner node.
    */
   def createBalancedMathExpr(
       expr: Expression,
@@ -146,14 +153,13 @@ trait MathBase {
 
 object CometAdd extends CometExpressionSerde[Add] with MathBase {
 
+  override def getSupportLevel(expr: Add): SupportLevel =
+    mathDataTypeSupportLevel(expr.left.dataType)
+
   override def convert(
       expr: Add,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    if (!supportedDataType(expr.left.dataType)) {
-      withFallbackReason(expr, s"Unsupported datatype ${expr.left.dataType}")
-      return None
-    }
     if (isAssociativeAndRebalanceable(expr.dataType, expr.evalMode)) {
       // Rebalance deep `a + b + ...` chains (integral + LEGACY = exactly associative) so the
       // proto stays shallow and doesn't overflow protobuf's recursion limit when re-parsed.
@@ -185,14 +191,13 @@ object CometAdd extends CometExpressionSerde[Add] with MathBase {
 
 object CometSubtract extends CometExpressionSerde[Subtract] with MathBase {
 
+  override def getSupportLevel(expr: Subtract): SupportLevel =
+    mathDataTypeSupportLevel(expr.left.dataType)
+
   override def convert(
       expr: Subtract,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    if (!supportedDataType(expr.left.dataType)) {
-      withFallbackReason(expr, s"Unsupported datatype ${expr.left.dataType}")
-      return None
-    }
     createMathExpression(
       expr,
       expr.left,
@@ -207,14 +212,13 @@ object CometSubtract extends CometExpressionSerde[Subtract] with MathBase {
 
 object CometMultiply extends CometExpressionSerde[Multiply] with MathBase {
 
+  override def getSupportLevel(expr: Multiply): SupportLevel =
+    mathDataTypeSupportLevel(expr.left.dataType)
+
   override def convert(
       expr: Multiply,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    if (!supportedDataType(expr.left.dataType)) {
-      withFallbackReason(expr, s"Unsupported datatype ${expr.left.dataType}")
-      return None
-    }
     if (isAssociativeAndRebalanceable(expr.dataType, expr.evalMode)) {
       // Rebalance deep `a * b * ...` chains (integral + LEGACY = exactly associative) so the
       // proto stays shallow and doesn't overflow protobuf's recursion limit when re-parsed.
@@ -246,6 +250,9 @@ object CometMultiply extends CometExpressionSerde[Multiply] with MathBase {
 
 object CometDivide extends CometExpressionSerde[Divide] with MathBase {
 
+  override def getSupportLevel(expr: Divide): SupportLevel =
+    mathDataTypeSupportLevel(expr.left.dataType)
+
   override def convert(
       expr: Divide,
       inputs: Seq[Attribute],
@@ -255,10 +262,6 @@ object CometDivide extends CometExpressionSerde[Divide] with MathBase {
     // For now, use NullIf to swap zeros with nulls.
     val rightExpr =
       if (expr.evalMode != EvalMode.ANSI) nullIfWhenPrimitive(expr.right) else expr.right
-    if (!supportedDataType(expr.left.dataType)) {
-      withFallbackReason(expr, s"Unsupported datatype ${expr.left.dataType}")
-      return None
-    }
     val divideExpr = createMathExpression(
       expr,
       expr.left,
@@ -288,14 +291,13 @@ object CometDivide extends CometExpressionSerde[Divide] with MathBase {
 
 object CometIntegralDivide extends CometExpressionSerde[IntegralDivide] with MathBase {
 
+  override def getSupportLevel(expr: IntegralDivide): SupportLevel =
+    mathDataTypeSupportLevel(expr.left.dataType)
+
   override def convert(
       expr: IntegralDivide,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    if (!supportedDataType(expr.left.dataType)) {
-      withFallbackReason(expr, s"Unsupported datatype ${expr.left.dataType}")
-      return None
-    }
 
 //    Precision is set to 19 (max precision for a numerical data type except DecimalType)
 
@@ -352,19 +354,13 @@ object CometIntegralDivide extends CometExpressionSerde[IntegralDivide] with Mat
 
 object CometRemainder extends CometExpressionSerde[Remainder] with MathBase {
 
+  override def getSupportLevel(expr: Remainder): SupportLevel =
+    mathDataTypeSupportLevel(expr.left.dataType)
+
   override def convert(
       expr: Remainder,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    if (!supportedDataType(expr.left.dataType)) {
-      withFallbackReason(expr, s"Unsupported datatype ${expr.left.dataType}")
-      return None
-    }
-    if (expr.evalMode == EvalMode.TRY) {
-      withFallbackReason(expr, s"Eval mode ${expr.evalMode} is not supported")
-      return None
-    }
-
     createMathExpression(
       expr,
       expr.left,
@@ -379,6 +375,29 @@ object CometRemainder extends CometExpressionSerde[Remainder] with MathBase {
 
 object CometRound extends CometExpressionSerde[Round] {
 
+  override def getSupportLevel(expr: Round): SupportLevel = expr.child.dataType match {
+    case t: DecimalType if t.scale < 0 => // Spark disallows negative scale SPARK-30252
+      Unsupported(Some("Decimal type has negative scale"))
+    case _: FloatType | DoubleType =>
+      // We cannot properly match with the Spark behavior for floating-point numbers.
+      // Spark uses BigDecimal for rounding float/double, and BigDecimal fist converts a
+      // double to string internally in order to create its own internal representation.
+      // The problem is BigDecimal uses java.lang.Double.toString() and it has complicated
+      // rounding algorithm. E.g. -5.81855622136895E8 is actually
+      // -581855622.13689494132995605468750. Note the 5th fractional digit is 4 instead of
+      // 5. Java(Scala)'s toString() rounds it up to -581855622.136895. This makes a
+      // difference when rounding at 5th digit, I.e. round(-5.81855622136895E8, 5) should be
+      // -5.818556221369E8, instead of -5.8185562213689E8. There is also an example that
+      // toString() does NOT round up. 6.1317116247283497E18 is 6131711624728349696. It can
+      // be rounded up to 6.13171162472835E18 that still represents the same double number.
+      // I.e. 6.13171162472835E18 == 6.1317116247283497E18. However, toString() does not.
+      // That results in round(6.1317116247283497E18, -5) == 6.1317116247282995E18 instead
+      // of 6.1317116247283999E18.
+      Unsupported(Some("Comet does not support Spark's BigDecimal rounding"))
+    case _ =>
+      Compatible()
+  }
+
   override def convert(
       r: Round,
       inputs: Seq[Attribute],
@@ -389,30 +408,10 @@ object CometRound extends CometExpressionSerde[Round] {
 
     lazy val childExpr = exprToProtoInternal(r.child, inputs, binding)
     r.child.dataType match {
-      case t: DecimalType if t.scale < 0 => // Spark disallows negative scale SPARK-30252
-        withFallbackReason(r, "Decimal type has negative scale")
-        None
       case _ if scaleV == null =>
         exprToProtoInternal(Literal(null), inputs, binding)
       case _: ByteType | ShortType | IntegerType | LongType if _scale >= 0 =>
         childExpr // _scale(I.e. decimal place) >= 0 is a no-op for integer types in Spark
-      case _: FloatType | DoubleType =>
-        // We cannot properly match with the Spark behavior for floating-point numbers.
-        // Spark uses BigDecimal for rounding float/double, and BigDecimal fist converts a
-        // double to string internally in order to create its own internal representation.
-        // The problem is BigDecimal uses java.lang.Double.toString() and it has complicated
-        // rounding algorithm. E.g. -5.81855622136895E8 is actually
-        // -581855622.13689494132995605468750. Note the 5th fractional digit is 4 instead of
-        // 5. Java(Scala)'s toString() rounds it up to -581855622.136895. This makes a
-        // difference when rounding at 5th digit, I.e. round(-5.81855622136895E8, 5) should be
-        // -5.818556221369E8, instead of -5.8185562213689E8. There is also an example that
-        // toString() does NOT round up. 6.1317116247283497E18 is 6131711624728349696. It can
-        // be rounded up to 6.13171162472835E18 that still represents the same double number.
-        // I.e. 6.13171162472835E18 == 6.1317116247283497E18. However, toString() does not.
-        // That results in round(6.1317116247283497E18, -5) == 6.1317116247282995E18 instead
-        // of 6.1317116247283999E18.
-        withFallbackReason(r, "Comet does not support Spark's BigDecimal rounding")
-        None
       case _ =>
         // `scale` must be Int64 type in DataFusion
         val scaleExpr = exprToProtoInternal(Literal(_scale.toLong, LongType), inputs, binding)
