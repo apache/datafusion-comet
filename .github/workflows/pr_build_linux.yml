@@ -197,7 +197,6 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            native/target
           key: ${{ runner.os }}-cargo-ci-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}-${{ hashFiles('native/**/*.rs') }}
           restore-keys: |
             ${{ runner.os }}-cargo-ci-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}-
@@ -225,7 +224,6 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            native/target
           key: ${{ runner.os }}-cargo-ci-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}-${{ hashFiles('native/**/*.rs') }}
 
   # Run Rust tests (runs in parallel with build-native, uses debug builds)
@@ -250,8 +248,6 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            native/target
-          # Note: Java version intentionally excluded - Rust target is JDK-independent
           key: ${{ runner.os }}-cargo-debug-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}-${{ hashFiles('native/**/*.rs') }}
           restore-keys: |
             ${{ runner.os }}-cargo-debug-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}-
@@ -266,7 +262,6 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            native/target
           key: ${{ runner.os }}-cargo-debug-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}-${{ hashFiles('native/**/*.rs') }}
 
   linux-test:
