@@ -52,20 +52,28 @@ env:
 
 jobs:
 
-  # Build native library once and share with all test jobs
-  build-native:
-    name: Build Native Library
+  # Build the native library AND pre-compile Spark sources + Test classes in a
+  # single runner, then publish two artifacts the matrix consumes:
+  #   - native-lib-linux:                    libcomet.so (~50 MB)
+  #   - jvm-compiled-spark-<full>-jdk<N>:    apache-spark.tar.gz (sources +
+  #                                          target/ + Zinc state, ~500 MB-1 GB)
+  # Combining them avoids a second runner cold-start and an extra inter-job
+  # artifact round-trip for the native lib, since the JVM build already
+  # depends on it (the Comet Maven install bundles libcomet.so into the
+  # Comet JAR before SBT resolves Spark's classpath).
+  build:
+    name: Build Native + JVM Test Classes
     runs-on: ubuntu-24.04
     container:
       image: amd64/rust
     steps:
       - uses: actions/checkout@v6
 
-      - name: Setup Rust toolchain
+      - name: Setup Rust & Java toolchain
         uses: ./.github/actions/setup-builder
         with:
           rust-version: ${{ env.RUST_VERSION }}
-          jdk-version: 17
+          jdk-version: ${{ inputs.java }}
 
       - name: Restore Cargo cache
         uses: actions/cache/restore@v5
@@ -85,13 +93,6 @@ jobs:
         env:
           RUSTFLAGS: "-Ctarget-cpu=x86-64-v3 -Clink-arg=-fuse-ld=bfd"
 
-      - name: Upload native library
-        uses: actions/upload-artifact@v7
-        with:
-          name: native-lib-linux
-          path: native/target/ci/libcomet.so
-          retention-days: 1
-
       - name: Save Cargo cache
         uses: actions/cache/save@v5
         if: github.ref == 'refs/heads/main'
@@ -102,15 +103,72 @@ jobs:
             native/target
           key: ${{ runner.os }}-cargo-ci-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}-${{ hashFiles('native/**/*.rs') }}
 
+      - name: Upload native library
+        uses: actions/upload-artifact@v7
+        with:
+          name: native-lib-linux
+          path: native/target/ci/libcomet.so
+          retention-days: 1
+
+      - name: Stage native library at release path
+        run: |
+          # setup-spark-builder's `mvnw install -DskipTests` (skip-native-build
+          # path) bundles native/target/release/libcomet.so into the Comet JAR.
+          # We built with --profile ci to avoid LTO, so the file lives at
+          # native/target/ci/. Copy it to where the Maven build expects it.
+          mkdir -p native/target/release
+          cp native/target/ci/libcomet.so native/target/release/libcomet.so
+
+      - name: Setup Spark
+        uses: ./.github/actions/setup-spark-builder
+        with:
+          spark-version: ${{ inputs.spark-full }}
+          spark-short-version: ${{ inputs.spark-short }}
+          skip-native-build: true
+
+      - name: Pre-compile Spark Test classes
+        run: |
+          cd apache-spark
+          # Mirror the workaround from `Run Spark tests` below: Comet's mvn
+          # install populates partial Parquet entries (main JAR + POM but no
+          # `*-tests.jar` classifier). Coursier then sees the POM in
+          # mavenLocal, declares the artifact "found locally", and refuses
+          # to fall back to Maven Central for the missing test classifier.
+          # Wiping the parquet cache forces a clean remote fetch.
+          rm -rf /root/.m2/repository/org/apache/parquet
+          # Compile Test sources for the three subprojects the matrix touches.
+          # SBT will transitively compile Compile/compile of their dependencies
+          # plus any Test/compile pulled in by `dependsOn(... % "test->test")`,
+          # which is enough to satisfy `sql/testOnly`, `hive/testOnly`, and
+          # `catalyst/test` in the downstream test jobs.
+          NOLINT_ON_COMPILE=true build/sbt -Dsbt.log.noformat=true -mem 3072 \
+            'catalyst/Test/compile' \
+            'sql/Test/compile' \
+            'hive/Test/compile'
+
+      - name: Pack apache-spark/ (sources + compiled output)
+        run: |
+          # Preserve mtimes so Zinc's incremental analysis still recognises
+          # the compiled output as up-to-date in the test jobs. Exclude .git
+          # because we don't need history downstream and it adds size.
+          tar -czpf apache-spark.tar.gz \
+            --exclude='apache-spark/.git' \
+            apache-spark
+
+      - name: Upload JVM compile artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: jvm-compiled-spark-${{ inputs.spark-full }}-jdk${{ inputs.java }}
+          path: apache-spark.tar.gz
+          retention-days: 1
+
   spark-sql-test:
-    needs: build-native
+    needs: build
     strategy:
       matrix:
         module:
           - {name: "catalyst", args1: "catalyst/test", args2: ""}
           # sql_core-* set HEAP_SIZE / METASPACE_SIZE so SparkBuild.scala caps
-          # forked test JVMs below the Spark defaults (-Xmx4g, MaxMetaspaceSize=1300m),
-          # leaving headroom for SBT (SBT_MEM=3072) inside the 7 GB runner budget.
           - {name: "sql_core-1", args1: "", args2: "sql/testOnly * -- -l org.apache.spark.tags.ExtendedSQLTest -l org.apache.spark.tags.SlowSQLTest", heap: "3g", metaspace: "1g"}
           - {name: "sql_core-2", args1: "", args2: "sql/testOnly * -- -n org.apache.spark.tags.ExtendedSQLTest", heap: "3g", metaspace: "1g"}
           - {name: "sql_core-3", args1: "", args2: "sql/testOnly * -- -n org.apache.spark.tags.SlowSQLTest", heap: "3g", metaspace: "1g"}
@@ -134,12 +192,22 @@ jobs:
         with:
           name: native-lib-linux
           path: native/target/release/
+      - name: Download JVM compile artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: jvm-compiled-spark-${{ inputs.spark-full }}-jdk${{ inputs.java }}
+      - name: Extract apache-spark/ (sources + compiled output)
+        run: |
+          # Restore mtimes so Zinc skips compilation on the test JVM.
+          tar -xzpf apache-spark.tar.gz
+          rm -f apache-spark.tar.gz
       - name: Setup Spark
         uses: ./.github/actions/setup-spark-builder
         with:
           spark-version: ${{ inputs.spark-full }}
           spark-short-version: ${{ inputs.spark-short }}
           skip-native-build: true
+          skip-spark-clone: true
       - name: Run Spark tests
         run: |
           cd apache-spark
@@ -155,9 +223,7 @@ jobs:
           if [ "${{ inputs.spark-short }}" != "4.0" ] || [ "${{ inputs.java }}" != "21" ]; then
             export SERIAL_SBT_TESTS=1
           fi
-          # Per-row forked-test-JVM caps (read by Spark's SparkBuild.scala). Only
-          # exported when the matrix entry sets them; rows without these fields
-          # keep Spark's defaults (-Xmx4g, -XX:MaxMetaspaceSize=1300m).
+          # Per-row forked-test-JVM caps (read by Spark's SparkBuild.scala). 
           if [ -n "${{ matrix.module.heap }}" ]; then
             export HEAP_SIZE="${{ matrix.module.heap }}"
           fi
@@ -176,9 +242,26 @@ jobs:
           fi
         env:
           LC_ALL: "C.UTF-8"
-          # Standard GitHub runners have 7 GB RAM; cap SBT heap so forked test
-          # JVMs fit alongside it.
-          SBT_MEM: "3072"
+          # The build-jvm job pre-compiled Spark sources and Test classes, so
+          # SBT here only orchestrates `testOnly` — Zinc verifies "no changes"
+          # against the unpacked apache-spark/ tree and skips compilation. We
+          # cap SBT heap so the freed RAM goes
+          # to the forked test JVM and OS/container overhead, fixing the
+          # cgroup-OOM SIGKILLs we saw on sql_core-* under 7 GB runners.
+          SBT_MEM: "1024"
+          # G1GC + tuning for the SBT orchestrator JVM. -Xss4m replaces the
+          # launcher's -Xss64m default (no compile here, deep recursion not
+          # needed). UseStringDeduplication and MaxMetaspaceSize cap real
+          # and ceiling footprint. ExitOnOutOfMemoryError fails fast.
+          SBT_OPTS: >-
+            -Xss4m
+            -XX:+UseG1GC
+            -XX:+UseStringDeduplication
+            -XX:MaxMetaspaceSize=384m
+            -XX:G1HeapRegionSize=2m
+            -XX:InitiatingHeapOccupancyPercent=35
+            -XX:+ParallelRefProcEnabled
+            -XX:+ExitOnOutOfMemoryError
           # Mirror Spark's own JDK 21 / 25 CI workaround. apache/spark's
           # build_java21.yml and build_java25.yml set this same env var to
           # process-isolate the V1/V2 Parquet and Orc source suites because
