@@ -36,7 +36,7 @@ users must [build from source](source.md).
 
 ### Supported Spark Versions
 
-Comet 0.17.0-SNAPSHOT supports the following versions of Apache Spark. Refer to the [Spark Version Compatibility] page
+Comet 0.18.0-SNAPSHOT supports the following versions of Apache Spark. Refer to the [Spark Version Compatibility] page
 in the [Compatibility Guide] for more information, such as known limitations per Spark version.
 
 [Spark Version Compatibility]: compatibility/spark-versions.md
@@ -88,7 +88,7 @@ See the [Comet Kubernetes Guide](kubernetes.md) guide.
 Make sure `SPARK_HOME` points to the same Spark version as Comet was built for.
 
 ```shell
-export COMET_JAR=spark/target/comet-spark-spark4.1_2.13-0.17.0-SNAPSHOT.jar
+export COMET_JAR=spark/target/comet-spark-spark4.1_2.13-0.18.0-SNAPSHOT.jar
 
 $SPARK_HOME/bin/spark-shell \
     --jars $COMET_JAR \
@@ -112,7 +112,7 @@ scala> (0 until 10).toDF("a").write.mode("overwrite").parquet("/tmp/test")
 Comet will log output similar to:
 
 ```shell
-INFO core/src/lib.rs: Comet native library version 0.17.0-SNAPSHOT initialized
+INFO core/src/lib.rs: Comet native library version 0.18.0-SNAPSHOT initialized
 WARN CometExecRule: Comet cannot execute some parts of this plan natively (set spark.comet.explainFallback.enabled=false to disable this logging):
   Execute InsertIntoHadoopFsRelationCommand [COMET: Native support for operator DataWritingCommandExec is disabled. Set spark.comet.parquet.write.enabled=true to enable it.]
 +- WriteFiles
@@ -145,7 +145,7 @@ explicitly contain Comet otherwise Spark may use a different class-loader for th
 components which will then fail at runtime. For example:
 
 ```shell
---driver-class-path spark/target/comet-spark-spark4.1_2.13-0.17.0-SNAPSHOT.jar
+--driver-class-path spark/target/comet-spark-spark4.1_2.13-0.18.0-SNAPSHOT.jar
 ```
 
 Some cluster managers may require additional configuration, see <https://spark.apache.org/docs/latest/cluster-overview.html>

@@ -19,10 +19,10 @@
   :alt: DataFusion Comet Logo
 
 ================================
-Comet 0.17.0-SNAPSHOT User Guide
+Comet 0.18.0-SNAPSHOT User Guide
 ================================
 
-This guide covers Comet 0.17.0-SNAPSHOT: how to install it, build it from source, configure it for
+This guide covers Comet 0.18.0-SNAPSHOT: how to install it, build it from source, configure it for
 your Spark deployment, and get the best results from it. It also documents the data sources, data
 types, operators, and expressions that Comet supports, along with a compatibility guide describing
 known differences from Apache Spark.
@@ -31,7 +31,7 @@ Operational topics include reading and understanding Comet query plans, tuning, 
 and integration guides for Apache Iceberg and Kubernetes. Select a topic from the navigation menu
 to read more.
 
-.. _toc.user-guide-links-0.17.0-SNAPSHOT:
+.. _toc.user-guide-links-0.18.0-SNAPSHOT:
 .. toctree::
    :maxdepth: 1
    :caption: Getting Started

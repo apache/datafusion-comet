@@ -66,7 +66,7 @@ under the License.
     <link rel="index" title="Index" href="../../genindex.html" />
     <link rel="search" title="Search" href="../../search.html" />
     <link rel="next" title="Comet Configuration Settings" href="configs.html" />
-    <link rel="prev" title="Comet 0.17.0-SNAPSHOT User Guide" href="index.html" />
+    <link rel="prev" title="Comet 0.18.0-SNAPSHOT User Guide" href="index.html" />
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
   <meta name="docsearch:version" content="" />
@@ -529,7 +529,7 @@ under the License.
     <li class="breadcrumb-item"><a href="../index.html" class="nav-link">Comet User Guide</a></li>
     
     
-    <li class="breadcrumb-item"><a href="index.html" class="nav-link">Comet 0.17.0-SNAPSHOT User Guide</a></li>
+    <li class="breadcrumb-item"><a href="index.html" class="nav-link">Comet 0.18.0-SNAPSHOT User Guide</a></li>
     
     <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">Installing DataFusion Comet</span></li>
   </ul>
@@ -601,7 +601,7 @@ users must <a class="reference internal" href="source.html"><span class="std std
 </section>
 <section id="supported-spark-versions">
 <h3>Supported Spark Versions<a class="headerlink" href="#supported-spark-versions" title="Link to this heading">#</a></h3>
-<p>Comet 0.17.0-SNAPSHOT supports the following versions of Apache Spark. Refer to the <a class="reference internal" href="compatibility/spark-versions.html"><span class="std std-doc">Spark Version Compatibility</span></a> page
+<p>Comet 0.18.0-SNAPSHOT supports the following versions of Apache Spark. Refer to the <a class="reference internal" href="compatibility/spark-versions.html"><span class="std std-doc">Spark Version Compatibility</span></a> page
 in the <a class="reference internal" href="compatibility/index.html"><span class="std std-doc">Compatibility Guide</span></a> for more information, such as known limitations per Spark version.</p>
 <p>We recommend only using Comet with Spark versions where we currently have both Comet and Spark tests enabled in CI.
 Other versions may work well enough for development and evaluation purposes.</p>
@@ -685,7 +685,7 @@ source releases, or from the latest code in the GitHub repository.</p>
 <section id="run-spark-shell-with-comet-enabled">
 <h2>Run Spark Shell with Comet enabled<a class="headerlink" href="#run-spark-shell-with-comet-enabled" title="Link to this heading">#</a></h2>
 <p>Make sure <code class="docutils literal notranslate"><span class="pre">SPARK_HOME</span></code> points to the same Spark version as Comet was built for.</p>
-<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="nb">export</span><span class="w"> </span><span class="nv">COMET_JAR</span><span class="o">=</span>spark/target/comet-spark-spark4.1_2.13-0.17.0-SNAPSHOT.jar
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="nb">export</span><span class="w"> </span><span class="nv">COMET_JAR</span><span class="o">=</span>spark/target/comet-spark-spark4.1_2.13-0.18.0-SNAPSHOT.jar
 
 <span class="nv">$SPARK_HOME</span>/bin/spark-shell<span class="w"> </span><span class="se">\</span>
 <span class="w">    </span>--jars<span class="w"> </span><span class="nv">$COMET_JAR</span><span class="w"> </span><span class="se">\</span>
@@ -705,7 +705,7 @@ source releases, or from the latest code in the GitHub repository.</p>
 </pre></div>
 </div>
 <p>Comet will log output similar to:</p>
-<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>INFO<span class="w"> </span>core/src/lib.rs:<span class="w"> </span>Comet<span class="w"> </span>native<span class="w"> </span>library<span class="w"> </span>version<span class="w"> </span><span class="m">0</span>.17.0-SNAPSHOT<span class="w"> </span>initialized
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>INFO<span class="w"> </span>core/src/lib.rs:<span class="w"> </span>Comet<span class="w"> </span>native<span class="w"> </span>library<span class="w"> </span>version<span class="w"> </span><span class="m">0</span>.18.0-SNAPSHOT<span class="w"> </span>initialized
 WARN<span class="w"> </span>CometExecRule:<span class="w"> </span>Comet<span class="w"> </span>cannot<span class="w"> </span>execute<span class="w"> </span>some<span class="w"> </span>parts<span class="w"> </span>of<span class="w"> </span>this<span class="w"> </span>plan<span class="w"> </span>natively<span class="w"> </span><span class="o">(</span><span class="nb">set</span><span class="w"> </span>spark.comet.explainFallback.enabled<span class="o">=</span><span class="nb">false</span><span class="w"> </span>to<span class="w"> </span>disable<span class="w"> </span>this<span class="w"> </span>logging<span class="o">)</span>:
 <span class="w">  </span>Execute<span class="w"> </span>InsertIntoHadoopFsRelationCommand<span class="w"> </span><span class="o">[</span>COMET:<span class="w"> </span>Native<span class="w"> </span>support<span class="w"> </span><span class="k">for</span><span class="w"> </span>operator<span class="w"> </span>DataWritingCommandExec<span class="w"> </span>is<span class="w"> </span>disabled.<span class="w"> </span>Set<span class="w"> </span>spark.comet.parquet.write.enabled<span class="o">=</span><span class="nb">true</span><span class="w"> </span>to<span class="w"> </span><span class="nb">enable</span><span class="w"> </span>it.<span class="o">]</span>
 +-<span class="w"> </span>WriteFiles
@@ -735,7 +735,7 @@ CometNativeColumnarToRow
 <p>Depending on your deployment mode you may also need to set the driver &amp; executor class path(s) to
 explicitly contain Comet otherwise Spark may use a different class-loader for the Comet components than its internal
 components which will then fail at runtime. For example:</p>
-<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>--driver-class-path<span class="w"> </span>spark/target/comet-spark-spark4.1_2.13-0.17.0-SNAPSHOT.jar
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>--driver-class-path<span class="w"> </span>spark/target/comet-spark-spark4.1_2.13-0.18.0-SNAPSHOT.jar
 </pre></div>
 </div>
 <p>Some cluster managers may require additional configuration, see <a class="reference external" href="https://spark.apache.org/docs/latest/cluster-overview.html">https://spark.apache.org/docs/latest/cluster-overview.html</a></p>
@@ -763,7 +763,7 @@ allocation for native execution. See <a class="reference internal" href="tuning.
       <i class="fa-solid fa-angle-left"></i>
       <div class="prev-next-info">
         <p class="prev-next-subtitle">previous</p>
-        <p class="prev-next-title">Comet 0.17.0-SNAPSHOT User Guide</p>
+        <p class="prev-next-title">Comet 0.18.0-SNAPSHOT User Guide</p>
       </div>
     </a>
     <a class="right-next"
