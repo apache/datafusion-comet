@@ -32,8 +32,10 @@ Spark 4.0 <spark-4.0/index>
 Spark 4.1 <spark-4.1/index>
 ```
 
-Expressions that are not 100% Spark-compatible fall back to Spark by default and can be
-enabled by setting `spark.comet.expression.EXPRNAME.allowIncompatible=true`, where
-`EXPRNAME` is the Spark expression class name. See the
+Expressions that are not 100% Spark-compatible fall back to Spark by default, except those
+with a JVM codegen-dispatch path, which stay in Comet's native pipeline and match Spark
+exactly. Set `spark.comet.expression.EXPRNAME.allowIncompatible=true`, where `EXPRNAME` is
+the Spark expression class name, to run Comet's faster native implementation despite its
+differences from Spark. See the
 [Comet Supported Expressions Guide](../../expressions.md) for more information on this
 configuration setting.
