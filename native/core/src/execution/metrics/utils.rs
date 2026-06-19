@@ -79,10 +79,11 @@ pub(crate) fn to_native_metric_node(
         .unwrap_or_default()
         .aggregate_by_name()
         .iter()
-        .map(|m| m.value())
-        .map(|m| (m.name(), m.as_usize() as i64))
-        .for_each(|(name, value)| {
-            native_metric_node.metrics.insert(name.to_string(), value);
+        .for_each(|m| {
+            let value = m.value();
+            native_metric_node
+                .metrics
+                .insert(value.name().to_string(), value.as_usize() as i64);
         });
 
     for child_plan in children {
