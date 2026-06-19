@@ -22,7 +22,7 @@ package org.apache.comet.serde
 import scala.annotation.tailrec
 import scala.jdk.CollectionConverters._
 
-import org.apache.spark.sql.catalyst.expressions.{And, ArrayAppend, ArrayContains, ArrayExcept, ArrayFilter, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayMin, ArrayPosition, ArrayRemove, ArrayRepeat, ArraysOverlap, ArraysZip, ArrayUnion, Attribute, Cast, CreateArray, ElementAt, EmptyRow, Expression, Flatten, GetArrayItem, IsNotNull, Literal, Reverse, Size, Slice, SortArray}
+import org.apache.spark.sql.catalyst.expressions.{And, ArrayAggregate, ArrayAppend, ArrayContains, ArrayExcept, ArrayExists, ArrayFilter, ArrayForAll, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayMin, ArrayPosition, ArrayRemove, ArrayRepeat, ArraySort, ArraysOverlap, ArraysZip, ArrayTransform, ArrayUnion, Attribute, Cast, CreateArray, ElementAt, EmptyRow, Expression, Flatten, GetArrayItem, IsNotNull, Literal, Reverse, Sequence, Size, Slice, SortArray, ZipWith}
 import org.apache.spark.sql.catalyst.util.GenericArrayData
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
@@ -37,17 +37,12 @@ object CometArrayRemove
     with CometExprShim
     with ArraysBase {
 
+  override def getSupportLevel(expr: ArrayRemove): SupportLevel = childTypesSupportLevel(expr)
+
   override def convert(
       expr: ArrayRemove,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val inputTypes: Set[DataType] = expr.children.map(_.dataType).toSet
-    for (dt <- inputTypes) {
-      if (!isTypeSupported(dt)) {
-        withFallbackReason(expr, s"data type not supported: $dt")
-        return None
-      }
-    }
     val arrayExprProto = exprToProto(expr.left, inputs, binding)
     val keyExprProto = exprToProto(expr.right, inputs, binding)
 
@@ -152,15 +147,15 @@ object CometSortArray extends CometExpressionSerde[SortArray] {
 
     if (!supportedSortArrayElementType(elementType)) {
       Unsupported(Some(s"Sort on array element type $elementType is not supported"))
-    } else if (CometConf.COMET_EXEC_STRICT_FLOATING_POINT.get() &&
-      SupportLevel.containsFloatingPoint(elementType)) {
-      Incompatible(
-        Some(
-          "Sorting on floating-point is not 100% compatible with Spark, and Comet is running " +
-            s"with ${CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key}=true. " +
-            s"${CometConf.COMPAT_GUIDE}"))
     } else {
-      Compatible()
+      SupportLevel
+        .strictFloatingPointReason(elementType, "Sorting on floating-point")
+        .map(reason => Incompatible(Some(reason)))
+        .getOrElse(expr.ascendingOrder match {
+          case Literal(_: Boolean, BooleanType) => Compatible()
+          case other =>
+            Unsupported(Some(s"ascendingOrder must be a boolean literal: $other"))
+        })
     }
   }
 
@@ -176,8 +171,8 @@ object CometSortArray extends CometExpressionSerde[SortArray] {
         (
           exprToProtoInternal(Literal(direction), inputs, binding),
           exprToProtoInternal(Literal(nullOrdering), inputs, binding))
-      case other =>
-        withFallbackReason(expr, s"ascendingOrder must be a boolean literal: $other")
+      case _ =>
+        // Unreachable: getSupportLevel gates a non-boolean-literal ascendingOrder.
         (None, None)
     }
 
@@ -191,7 +186,10 @@ object CometSortArray extends CometExpressionSerde[SortArray] {
   }
 }
 
-object CometArrayIntersect extends CometExpressionSerde[ArrayIntersect] with CometTypeShim {
+object CometArrayIntersect
+    extends CometExpressionSerde[ArrayIntersect]
+    with CometTypeShim
+    with CodegenDispatchFallback {
 
   private val incompatReason: String =
     "Result array element order may differ from Spark when the right array is longer " +
@@ -332,7 +330,10 @@ object CometArrayCompact extends CometExpressionSerde[Expression] {
   }
 }
 
-object CometArrayExcept extends CometExpressionSerde[ArrayExcept] with CometExprShim {
+object CometArrayExcept
+    extends CometExpressionSerde[ArrayExcept]
+    with CometExprShim
+    with CodegenDispatchFallback {
 
   private val incompatReason = "Null handling and ordering may differ from Spark"
 
@@ -376,7 +377,7 @@ object CometArrayExcept extends CometExpressionSerde[ArrayExcept] with CometExpr
   }
 }
 
-object CometArrayJoin extends CometExpressionSerde[ArrayJoin] {
+object CometArrayJoin extends CometExpressionSerde[ArrayJoin] with CodegenDispatchFallback {
 
   private val incompatReason = "Null handling may differ from Spark"
 
@@ -595,17 +596,8 @@ object CometArrayReverse extends CometExpressionSerde[Reverse] with ArraysBase {
 
   override def getIncompatibleReasons(): Seq[String] = Seq(unsupportedReason)
 
-  @tailrec
-  private def containsBinary(dt: DataType): Boolean = {
-    dt match {
-      case BinaryType => true
-      case ArrayType(elementType, _) => containsBinary(elementType)
-      case _ => false
-    }
-  }
-
   override def getSupportLevel(expr: Reverse): SupportLevel = {
-    if (containsBinary(expr.child.dataType)) {
+    if (SupportLevel.containsType(expr.child.dataType, classOf[BinaryType])) {
       Incompatible(Some(unsupportedReason))
     } else {
       Compatible(None)
@@ -632,6 +624,14 @@ object CometElementAt extends CometExpressionSerde[ElementAt] {
   override def getUnsupportedReasons(): Seq[String] = Seq(
     "Input must be an array. `Map` inputs are not supported.")
 
+  override def getSupportLevel(expr: ElementAt): SupportLevel = {
+    if (expr.left.dataType.isInstanceOf[ArrayType]) {
+      Compatible()
+    } else {
+      Unsupported(Some("Input is not an array"))
+    }
+  }
+
   override def convert(
       expr: ElementAt,
       inputs: Seq[Attribute],
@@ -639,11 +639,6 @@ object CometElementAt extends CometExpressionSerde[ElementAt] {
     val childExpr = exprToProtoInternal(expr.left, inputs, binding)
     val ordinalExpr = exprToProtoInternal(expr.right, inputs, binding)
     val defaultExpr = expr.defaultValueOutOfBound.flatMap(exprToProtoInternal(_, inputs, binding))
-
-    if (!expr.left.dataType.isInstanceOf[ArrayType]) {
-      withFallbackReason(expr, "Input is not an array")
-      return None
-    }
 
     if (childExpr.isDefined && ordinalExpr.isDefined &&
       defaultExpr.isDefined == expr.defaultValueOutOfBound.isDefined) {
@@ -670,17 +665,12 @@ object CometElementAt extends CometExpressionSerde[ElementAt] {
 
 object CometFlatten extends CometExpressionSerde[Flatten] with ArraysBase {
 
+  override def getSupportLevel(expr: Flatten): SupportLevel = childTypesSupportLevel(expr)
+
   override def convert(
       expr: Flatten,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val inputTypes = expr.children.map(_.dataType).toSet
-    for (dt <- inputTypes) {
-      if (!isTypeSupported(dt)) {
-        withFallbackReason(expr, s"data type not supported: $dt")
-        return None
-      }
-    }
     val flattenExprProto = exprToProto(expr.child, inputs, binding)
     val flattenScalarExpr = scalarFunctionExprToProto("flatten", flattenExprProto)
     optExprWithFallbackReason(flattenScalarExpr, expr, expr.children: _*)
@@ -689,21 +679,23 @@ object CometFlatten extends CometExpressionSerde[Flatten] with ArraysBase {
 
 object CometArrayFilter extends CometExpressionSerde[ArrayFilter] {
 
-  override def getUnsupportedReasons(): Seq[String] = Seq(
-    "Only supports `array_filter` when the function is `IsNotNull` (used by `array_compact`)")
-
-  override def getSupportLevel(expr: ArrayFilter): SupportLevel = {
-    expr.function.children.headOption match {
-      case Some(_: IsNotNull) => Compatible()
-      case _ => Unsupported()
-    }
-  }
+  override def getSupportLevel(expr: ArrayFilter): SupportLevel = Compatible()
 
   override def convert(
       expr: ArrayFilter,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    CometArrayCompact.convert(expr, inputs, binding)
+    expr.function.children.headOption match {
+      case Some(_: IsNotNull) =>
+        // Fast path: `array_compact` lowers to `filter(arr, x -> x is not null)`. Use the native
+        // array_compact serde to avoid the per-batch JNI cost of the codegen dispatcher.
+        CometArrayCompact.convert(expr, inputs, binding)
+      case _ =>
+        // General lambda: run Spark's own evaluation through the codegen dispatcher so the result
+        // matches Spark exactly, like the other higher-order functions (`transform`, `exists`).
+        // Falls back to Spark when the dispatcher is disabled.
+        CometScalaUDF.emitJvmCodegenDispatch(expr, inputs, binding)
+    }
   }
 }
 
@@ -766,25 +758,19 @@ object CometSize extends CometExpressionSerde[Size] {
 
 object CometArrayPosition extends CometExpressionSerde[ArrayPosition] with ArraysBase {
 
-  override def getSupportLevel(expr: ArrayPosition): SupportLevel = Compatible()
+  override def getSupportLevel(expr: ArrayPosition): SupportLevel = {
+    if (expr.children.forall(_.foldable)) {
+      // Fall back to Spark for all-literal args so ConstantFolding can handle it.
+      Unsupported(Some("all arguments are literals, falling back to Spark"))
+    } else {
+      childTypesSupportLevel(expr)
+    }
+  }
 
   override def convert(
       expr: ArrayPosition,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    if (expr.children.forall(_.foldable)) {
-      withFallbackReason(expr, "all arguments are literals, falling back to Spark")
-      return None
-    }
-    // Check if input types are supported
-    val inputTypes: Set[DataType] = expr.children.map(_.dataType).toSet
-    for (dt <- inputTypes) {
-      if (!isTypeSupported(dt)) {
-        withFallbackReason(expr, s"data type not supported: $dt")
-        return None
-      }
-    }
-
     val arrayExprProto = exprToProto(expr.left, inputs, binding)
     val elementExprProto = exprToProto(expr.right, inputs, binding)
 
@@ -884,4 +870,29 @@ trait ArraysBase {
       case _ => false
     }
   }
+
+  /**
+   * Support level based on whether every input data type is supported. Returns `Unsupported` for
+   * the first unsupported input type, otherwise `Compatible`.
+   */
+  def childTypesSupportLevel(expr: Expression): SupportLevel =
+    expr.children
+      .map(_.dataType)
+      .collectFirst { case dt if !isTypeSupported(dt) => dt }
+      .map(dt => Unsupported(Some(s"data type not supported: $dt")))
+      .getOrElse(Compatible())
 }
+
+object CometArrayTransform extends CometCodegenDispatch[ArrayTransform]
+
+object CometArrayExists extends CometCodegenDispatch[ArrayExists]
+
+object CometArrayForAll extends CometCodegenDispatch[ArrayForAll]
+
+object CometArrayAggregate extends CometCodegenDispatch[ArrayAggregate]
+
+object CometArraySort extends CometCodegenDispatch[ArraySort]
+
+object CometZipWith extends CometCodegenDispatch[ZipWith]
+
+object CometSequence extends CometCodegenDispatch[Sequence]

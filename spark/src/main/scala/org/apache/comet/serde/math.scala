@@ -19,7 +19,7 @@
 
 package org.apache.comet.serde
 
-import org.apache.spark.sql.catalyst.expressions.{Abs, Add, Atan2, Attribute, Ceil, CheckOverflow, Expression, Floor, Hex, If, LessThanOrEqual, Literal, Log, Log10, Log2, Logarithm, Unhex}
+import org.apache.spark.sql.catalyst.expressions.{Abs, Add, Atan2, Attribute, BRound, Ceil, CheckOverflow, Conv, Expression, Floor, Hex, Hypot, If, LessThanOrEqual, Literal, Log, Log10, Log1p, Log2, Logarithm, NaNvl, Pmod, UnaryPositive, Unhex, WidthBucket}
 import org.apache.spark.sql.types.{DecimalType, DoubleType, NumericType}
 
 import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
@@ -41,6 +41,13 @@ object CometAtan2 extends CometExpressionSerde[Atan2] {
 }
 
 object CometCeil extends CometExpressionSerde[Ceil] {
+  override def getSupportLevel(expr: Ceil): SupportLevel = expr.child.dataType match {
+    case t: DecimalType if t.scale < 0 => // Spark disallows negative scale SPARK-30252
+      Unsupported(Some(s"Decimal type $t has negative scale"))
+    case _ =>
+      Compatible()
+  }
+
   override def convert(
       expr: Ceil,
       inputs: Seq[Attribute],
@@ -49,9 +56,6 @@ object CometCeil extends CometExpressionSerde[Ceil] {
     expr.child.dataType match {
       case t: DecimalType if t.scale == 0 => // zero scale is no-op
         childExpr
-      case t: DecimalType if t.scale < 0 => // Spark disallows negative scale SPARK-30252
-        withFallbackReason(expr, s"Decimal type $t has negative scale")
-        None
       case _ =>
         val optExpr =
           scalarFunctionExprToProtoWithReturnType("ceil", expr.dataType, false, childExpr)
@@ -61,6 +65,13 @@ object CometCeil extends CometExpressionSerde[Ceil] {
 }
 
 object CometFloor extends CometExpressionSerde[Floor] {
+  override def getSupportLevel(expr: Floor): SupportLevel = expr.child.dataType match {
+    case t: DecimalType if t.scale < 0 => // Spark disallows negative scale SPARK-30252
+      Unsupported(Some(s"Decimal type $t has negative scale"))
+    case _ =>
+      Compatible()
+  }
+
   override def convert(
       expr: Floor,
       inputs: Seq[Attribute],
@@ -69,9 +80,6 @@ object CometFloor extends CometExpressionSerde[Floor] {
     expr.child.dataType match {
       case t: DecimalType if t.scale == 0 => // zero scale is no-op
         childExpr
-      case t: DecimalType if t.scale < 0 => // Spark disallows negative scale SPARK-30252
-        withFallbackReason(expr, s"Decimal type $t has negative scale")
-        None
       case _ =>
         val optExpr =
           scalarFunctionExprToProtoWithReturnType("floor", expr.dataType, false, childExpr)
@@ -242,3 +250,19 @@ object CometCheckOverflow extends CometExpressionSerde[CheckOverflow] {
     }
   }
 }
+
+object CometHypot extends CometCodegenDispatch[Hypot]
+
+object CometNaNvl extends CometCodegenDispatch[NaNvl]
+
+object CometBRound extends CometCodegenDispatch[BRound]
+
+object CometConv extends CometCodegenDispatch[Conv]
+
+object CometLog1p extends CometCodegenDispatch[Log1p]
+
+object CometPmod extends CometCodegenDispatch[Pmod]
+
+object CometWidthBucket extends CometCodegenDispatch[WidthBucket]
+
+object CometUnaryPositive extends CometCodegenDispatch[UnaryPositive]

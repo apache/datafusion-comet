@@ -26,7 +26,7 @@ under the License.
   <parent>
     <groupId>org.apache.datafusion</groupId>
     <artifactId>comet-parent-spark${spark.version.short}_${scala.binary.version}</artifactId>
-    <version>0.17.0-SNAPSHOT</version>
+    <version>0.18.0-SNAPSHOT</version>
     <relativePath>../pom.xml</relativePath>
   </parent>
 
@@ -469,14 +469,13 @@ under the License.
                   <pattern>org.apache.arrow</pattern>
                   <shadedPattern>${comet.shade.packageName}.arrow</shadedPattern>
                   <excludes>
-                    <!-- These classes are referenced from Arrow JNI native code and must stay
-                       at their original package paths. They have no extra dependencies so the
-                       exclusion is safe. -->
-                    <exclude>org/apache/arrow/c/jni/JniWrapper</exclude>
-                    <exclude>org/apache/arrow/c/jni/PrivateData</exclude>
-                    <exclude>org/apache/arrow/c/jni/CDataJniException</exclude>
-                    <!-- Also required by JNI per upstream Arrow C++ jni_wrapper.cc -->
-                    <exclude>org/apache/arrow/c/ArrayStreamExporter$ExportedArrayStreamPrivateData</exclude>
+                    <!-- Keep the entire C Data Interface unshaded. Spark does not ship
+                       arrow-c-data, so no classpath clash is possible. Shading a subset
+                       splits package-private access between the shaded and original
+                       packages (e.g. Data -> ArrayStreamExporter constructor) and breaks
+                       JNI lookups in jni_wrapper.cc that reference these classes by literal
+                       name. -->
+                    <exclude>org/apache/arrow/c/**</exclude>
                   </excludes>
                 </relocation>
                 <relocation>
