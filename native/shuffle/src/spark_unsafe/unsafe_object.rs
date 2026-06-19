@@ -370,7 +370,10 @@ mod utf8_lossy_tests {
             (&[0xC0, 0xAF], "\u{FFFD}\u{FFFD}"),
             // The parity case: Rust's from_utf8_lossy would give three U+FFFD here.
             (&[0xED, 0xA0, 0x80], "\u{FFFD}"),
-            (&[0xF4, 0x90, 0x80, 0x80], "\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}"),
+            (
+                &[0xF4, 0x90, 0x80, 0x80],
+                "\u{FFFD}\u{FFFD}\u{FFFD}\u{FFFD}",
+            ),
         ];
         for (bytes, expected) in cases {
             assert_eq!(
