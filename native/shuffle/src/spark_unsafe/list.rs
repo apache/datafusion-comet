@@ -15,20 +15,29 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use std::sync::Arc;
+
 use crate::spark_unsafe::{
     map::append_map_elements,
     row::{append_field, downcast_builder_ref, SparkUnsafeRow},
     unsafe_object::{impl_primitive_accessors, SparkUnsafeObject},
 };
-use arrow::array::{
-    builder::{
-        ArrayBuilder, BinaryBuilder, BooleanBuilder, Date32Builder, Decimal128Builder,
-        Float32Builder, Float64Builder, Int16Builder, Int32Builder, Int64Builder, Int8Builder,
-        ListBuilder, NullBuilder, StringBuilder, StructBuilder, TimestampMicrosecondBuilder,
-    },
-    MapBuilder,
-};
 use arrow::datatypes::{DataType, TimeUnit};
+use arrow::{
+    array::{
+        builder::{
+            ArrayBuilder, BinaryBuilder, BooleanBuilder, Date32Builder, Decimal128Builder,
+            Float32Builder, Float64Builder, Int16Builder, Int32Builder, Int64Builder, Int8Builder,
+            ListBuilder, NullBuilder, StringBuilder, StructBuilder, TimestampMicrosecondBuilder,
+        },
+        MapBuilder, PrimitiveArray,
+    },
+    buffer::{BooleanBuffer, Buffer, NullBuffer, ScalarBuffer},
+    datatypes::{
+        Date32Type, Float32Type, Float64Type, Int16Type, Int32Type, Int64Type, Int8Type,
+        TimestampMicrosecondType,
+    },
+};
 use datafusion_comet_jni_bridge::errors::CometError;
 
 /// Generates bulk append methods for primitive types in SparkUnsafeArray.
@@ -38,7 +47,7 @@ use datafusion_comet_jni_bridge::errors::CometError;
 /// - `null_bitset_ptr()` returns a pointer to `ceil(num_elements/64)` i64 words
 /// - These invariants are guaranteed by the SparkUnsafeArray layout from the JVM
 macro_rules! impl_append_to_builder {
-    ($method_name:ident, $builder_type:ty, $element_type:ty) => {
+    ($method_name:ident, $builder_type:ty, $element_type:ty, $arrow_type:ty) => {
         pub(crate) fn $method_name<const NULLABLE: bool>(&self, builder: &mut $builder_type) {
             let num_elements = self.num_elements;
             if num_elements == 0 {
@@ -52,11 +61,28 @@ macro_rules! impl_append_to_builder {
                 let null_words = self.null_bitset_ptr();
 
                 if aligned {
+                    // Raw values
                     let values = unsafe { std::slice::from_raw_parts(ptr, num_elements) };
-                    let is_valid: Vec<bool> = (0..num_elements)
-                        .map(|i| unsafe { !Self::is_null_in_bitset(null_words, i) })
-                        .collect();
-                    builder.append_values(values, &is_valid);
+
+                    // Note: in Spark bitmap is padded to 8 byte word-boundaries
+                    // In Arrow we just use the needed number of whole bytes without padding
+                    let null_mask_len = num_elements.div_ceil(8);
+                    let null_mask = unsafe {
+                        std::slice::from_raw_parts::<u8>(null_words as *const u8, null_mask_len)
+                    };
+                    // We need to perform this flip due to the null bitmap Spark vs Arrow incompatibility
+                    // In `Spark` we have 1 set in bitmap meaning that element IS NULL
+                    // In `Arrow` we have 1 set in bitmap meaning that element IS VALID (non-null)
+                    let flipped: Vec<u8> = null_mask.iter().map(|n| !n).collect();
+                    // Constructing null-buffer 
+                    let validity =
+                        NullBuffer::new(BooleanBuffer::new(Buffer::from(flipped), 0, num_elements));
+
+                    let arr = PrimitiveArray::<$arrow_type>::new(
+                        ScalarBuffer::from(Buffer::from_slice_ref(values)),
+                        Some(validity),
+                    );
+                    builder.append_array(&arr);
                 } else {
                     let mut ptr = ptr;
                     for idx in 0..num_elements {
@@ -177,12 +203,12 @@ impl SparkUnsafeArray {
         (null_words.add(word_idx).read_unaligned() & (1i64 << bit_idx)) != 0
     }
 
-    impl_append_to_builder!(append_ints_to_builder, Int32Builder, i32);
-    impl_append_to_builder!(append_longs_to_builder, Int64Builder, i64);
-    impl_append_to_builder!(append_shorts_to_builder, Int16Builder, i16);
-    impl_append_to_builder!(append_bytes_to_builder, Int8Builder, i8);
-    impl_append_to_builder!(append_floats_to_builder, Float32Builder, f32);
-    impl_append_to_builder!(append_doubles_to_builder, Float64Builder, f64);
+    impl_append_to_builder!(append_ints_to_builder, Int32Builder, i32, Int32Type);
+    impl_append_to_builder!(append_longs_to_builder, Int64Builder, i64, Int64Type);
+    impl_append_to_builder!(append_shorts_to_builder, Int16Builder, i16, Int16Type);
+    impl_append_to_builder!(append_bytes_to_builder, Int8Builder, i8, Int8Type);
+    impl_append_to_builder!(append_floats_to_builder, Float32Builder, f32, Float32Type);
+    impl_append_to_builder!(append_doubles_to_builder, Float64Builder, f64, Float64Type);
 
     /// Bulk append boolean values to builder.
     /// Booleans are stored as 1 byte each in SparkUnsafeArray, requiring special handling.
@@ -227,6 +253,7 @@ impl SparkUnsafeArray {
     pub(crate) fn append_timestamps_to_builder<const NULLABLE: bool>(
         &self,
         builder: &mut TimestampMicrosecondBuilder,
+        timezone: Option<Arc<str>>,
     ) {
         let num_elements = self.num_elements;
         if num_elements == 0 {
@@ -247,11 +274,31 @@ impl SparkUnsafeArray {
             let null_words = self.null_bitset_ptr();
             debug_assert!(!null_words.is_null(), "null_bitset_ptr is null");
             if aligned {
+                // Raw values
                 let values = unsafe { std::slice::from_raw_parts(ptr, num_elements) };
-                let is_valid: Vec<bool> = (0..num_elements)
-                    .map(|i| unsafe { !Self::is_null_in_bitset(null_words, i) })
-                    .collect();
-                builder.append_values(values, &is_valid);
+
+                // Note: in Spark bitmap is padded to 8 byte word-boundaries
+                // In Arrow we just use the needed number of whole bytes without padding
+                let null_mask_len = num_elements.div_ceil(8);
+                let null_mask = unsafe {
+                    std::slice::from_raw_parts::<u8>(null_words as *const u8, null_mask_len)
+                };
+                
+                // We need to perform this flip due to the null bitmap Spark vs Arrow incompatibility
+                // In `Spark` we have 1 set in bitmap meaning that element IS NULL
+                // In `Arrow` we have 1 set in bitmap meaning that element IS VALID (non-null)
+                let flipped: Vec<u8> = null_mask.iter().map(|n| !n).collect();
+                // Constructing null-buffer
+                let validity =
+                    NullBuffer::new(BooleanBuffer::new(Buffer::from(flipped), 0, num_elements));
+
+                // Constructing Arrow array with timezone set
+                let arr = PrimitiveArray::<TimestampMicrosecondType>::new(
+                    ScalarBuffer::from(Buffer::from_slice_ref(values)),
+                    Some(validity),
+                )
+                .with_timezone_opt(timezone);
+                builder.append_array(&arr);
             } else {
                 let mut ptr = ptr;
                 for idx in 0..num_elements {
@@ -301,11 +348,30 @@ impl SparkUnsafeArray {
             let null_words = self.null_bitset_ptr();
             debug_assert!(!null_words.is_null(), "null_bitset_ptr is null");
             if aligned {
+                // Raw values
                 let values = unsafe { std::slice::from_raw_parts(ptr, num_elements) };
-                let is_valid: Vec<bool> = (0..num_elements)
-                    .map(|i| unsafe { !Self::is_null_in_bitset(null_words, i) })
-                    .collect();
-                builder.append_values(values, &is_valid);
+
+                // Note: in Spark bitmap is padded to 8 byte word-boundaries
+                // In Arrow we just use the needed number of whole bytes without padding
+                let null_mask_len = num_elements.div_ceil(8);
+                let null_mask = unsafe {
+                    std::slice::from_raw_parts::<u8>(null_words as *const u8, null_mask_len)
+                };
+
+                // We need to perform this flip due to the null bitmap `Spark` vs `Arrow` incompatibility
+                // In `Spark` we have 1 set in bitmap meaning that element IS NULL
+                // In `Arrow` we have 1 set in bitmap meaning that element IS VALID (non-null)
+                let flipped: Vec<u8> = null_mask.iter().map(|n| !n).collect();
+                // Constructing null-buffer
+                let validity =
+                    NullBuffer::new(BooleanBuffer::new(Buffer::from(flipped), 0, num_elements));
+
+                // Constructing Arrow array with timezone set
+                let arr = PrimitiveArray::<Date32Type>::new(
+                    ScalarBuffer::from(Buffer::from_slice_ref(values)),
+                    Some(validity),
+                );
+                builder.append_array(&arr);
             } else {
                 let mut ptr = ptr;
                 for idx in 0..num_elements {
@@ -379,9 +445,9 @@ pub fn append_to_builder<const NULLABLE: bool>(
             let builder = downcast_builder_ref!(Float64Builder, builder);
             array.append_doubles_to_builder::<NULLABLE>(builder);
         }
-        DataType::Timestamp(TimeUnit::Microsecond, _) => {
+        DataType::Timestamp(TimeUnit::Microsecond, tz) => {
             let builder = downcast_builder_ref!(TimestampMicrosecondBuilder, builder);
-            array.append_timestamps_to_builder::<NULLABLE>(builder);
+            array.append_timestamps_to_builder::<NULLABLE>(builder, tz.clone());
         }
         DataType::Date32 => {
             let builder = downcast_builder_ref!(Date32Builder, builder);
