@@ -54,6 +54,7 @@ macro_rules! impl_append_to_builder {
                 return;
             }
             // Note: alignment is not guaranteed - that is why do this
+            // This runtime check is needed. Look at `unsafe_object.rs:49` for more info
             let ptr = self.element_offset as *const $element_type;
             let aligned = (ptr as usize).is_multiple_of(std::mem::align_of::<$element_type>());
 
@@ -268,6 +269,7 @@ impl SparkUnsafeArray {
 
         let ptr = self.element_offset as *const i64;
         // Note: alignment is not guaranteed - that is why do this
+        // This runtime check is needed. Look at `unsafe_object.rs:49` for more info
         let aligned = (ptr as usize).is_multiple_of(std::mem::align_of::<i64>());
 
         if NULLABLE {
@@ -342,6 +344,7 @@ impl SparkUnsafeArray {
 
         let ptr = self.element_offset as *const i32;
         // Note: alignment is not guaranteed - that is why do this
+        // This runtime check is needed. Look at `unsafe_object.rs:49` for more info
         let aligned = (ptr as usize).is_multiple_of(std::mem::align_of::<i32>());
 
         if NULLABLE {
