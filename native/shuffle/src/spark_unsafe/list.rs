@@ -74,7 +74,7 @@ macro_rules! impl_append_to_builder {
                     // In `Spark` we have 1 set in bitmap meaning that element IS NULL
                     // In `Arrow` we have 1 set in bitmap meaning that element IS VALID (non-null)
                     let flipped: Vec<u8> = null_mask.iter().map(|n| !n).collect();
-                    // Constructing null-buffer 
+                    // Constructing null-buffer
                     let validity =
                         NullBuffer::new(BooleanBuffer::new(Buffer::from(flipped), 0, num_elements));
 
@@ -283,7 +283,7 @@ impl SparkUnsafeArray {
                 let null_mask = unsafe {
                     std::slice::from_raw_parts::<u8>(null_words as *const u8, null_mask_len)
                 };
-                
+
                 // We need to perform this flip due to the null bitmap Spark vs Arrow incompatibility
                 // In `Spark` we have 1 set in bitmap meaning that element IS NULL
                 // In `Arrow` we have 1 set in bitmap meaning that element IS VALID (non-null)
