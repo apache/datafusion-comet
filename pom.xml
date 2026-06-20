@@ -1176,6 +1176,12 @@ under the License.
             <exclude>docs/source/contributor-guide/*.svg</exclude>
             <exclude>dev/release/rat_exclude_files.txt</exclude>
             <exclude>dev/release/requirements.txt</exclude>
+            <exclude>dev/release/venv/**</exclude>
+            <exclude>dev/release/comet-rm/workdir/**</exclude>
+            <exclude>dev/dist/**</exclude>
+            <exclude>dev/release/rat.txt</exclude>
+            <exclude>dev/release/filtered_rat.txt</exclude>
+            <exclude>dev/release/*.jar</exclude>
             <exclude>native/proto/src/generated/**</exclude>
             <exclude>benchmarks/tpc/queries/**</exclude>
             <exclude>.claude/**</exclude>
