@@ -19,11 +19,27 @@ use crate::execution::memory_pools::MemoryPoolType;
 use datafusion::execution::memory_pool::MemoryPool;
 use once_cell::sync::Lazy;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 /// The per-task memory pools keyed by task attempt id.
 pub(crate) static TASK_SHARED_MEMORY_POOLS: Lazy<Mutex<HashMap<i64, PerTaskMemoryPool>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
+
+/// Number of distinct task-attempt ids with a live task-shared memory pool.
+/// The real-usage fair-share guard uses this as the divisor for each task's
+/// share of the budget. Maintained by `create_memory_pool` (increment on a new
+/// task entry) and `handle_task_shared_pool_release` (decrement on removal).
+#[cfg_attr(not(feature = "oom-guard"), allow(dead_code))]
+static ACTIVE_TASK_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+/// Current number of concurrently active task-shared tasks. Returns 0 when none
+/// are active or the pool type keeps no task registry, in which case the guard
+/// falls back to a fixed divisor.
+#[cfg_attr(not(feature = "oom-guard"), allow(dead_code))]
+pub(crate) fn active_task_count() -> usize {
+    ACTIVE_TASK_COUNT.load(Ordering::Relaxed)
+}
 
 pub(crate) struct PerTaskMemoryPool {
     pub(crate) memory_pool: Arc<dyn MemoryPool>,

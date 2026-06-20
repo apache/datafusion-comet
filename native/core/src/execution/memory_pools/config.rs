@@ -40,6 +40,19 @@ impl MemoryPoolType {
                 | MemoryPoolType::GreedyUnified
         )
     }
+
+    /// True when this pool's `reserved()` reflects a single task's usage, so a
+    /// per-task fair-share comparison is meaningful. False for process-wide pools
+    /// whose `reserved()` is the aggregate across tasks.
+    #[cfg_attr(not(feature = "oom-guard"), allow(dead_code))]
+    pub(crate) fn has_per_task_budget(&self) -> bool {
+        !matches!(
+            self,
+            MemoryPoolType::GreedyGlobal
+                | MemoryPoolType::FairSpillGlobal
+                | MemoryPoolType::Unbounded
+        )
+    }
 }
 
 pub(crate) struct MemoryPoolConfig {

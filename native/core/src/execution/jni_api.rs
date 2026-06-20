@@ -444,9 +444,16 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
             #[cfg(feature = "oom-guard")]
             let memory_pool = if spark_config.get_bool(COMET_MEMORY_GUARD_ENABLED) {
                 let ceiling = memory_limit.max(0) as usize;
+                // Enable the fair-share guard for pools whose `reserved()` is per-task;
+                // `executor_cores` is the fallback divisor when no task count is known.
+                let fair_share = memory_pool_config
+                    .pool_type
+                    .has_per_task_budget()
+                    .then_some(executor_cores);
                 Arc::new(crate::execution::memory_pools::RealUsagePool::new(
                     memory_pool,
                     ceiling,
+                    fair_share,
                 )) as Arc<dyn datafusion::execution::memory_pool::MemoryPool>
             } else {
                 memory_pool
