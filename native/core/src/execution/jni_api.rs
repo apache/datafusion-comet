@@ -378,8 +378,15 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
         #[cfg(feature = "oom-guard")]
         {
             if spark_config.get_bool(COMET_MEMORY_GUARD_ENABLED) {
-                // Default to the executor off-heap memory limit (`memory_limit`);
-                // allow an explicit override.
+                // This is the hard, last-resort breaker: a panic on any over-budget
+                // allocation. It defaults to the same off-heap budget as the cooperative
+                // real-usage gate below, but the two layers still order correctly because
+                // the cooperative gate trips on *projected* usage (`balance + additional`)
+                // while this breaker trips on *actual* usage (`balance`), so cooperative
+                // spilling is attempted before the breaker fires. Set
+                // `spark.comet.exec.memoryGuard.size` explicitly above the off-heap budget
+                // to give the breaker additional headroom (e.g. up to the container RSS
+                // limit) for a wider spill-before-fail margin.
                 let default_limit = memory_limit.max(0) as u64;
                 let limit = spark_config.get_u64(COMET_MEMORY_GUARD_SIZE, default_limit);
                 if limit == 0 {
@@ -430,7 +437,10 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
 
             // Cooperative real-usage gate: when the memory guard is enabled, wrap the
             // pool so growth is rejected (triggering a spill) once real allocator usage
-            // plus the request would exceed the process-wide off-heap budget.
+            // plus the request would exceed the process-wide off-heap budget. This is the
+            // first line of defense and fires before the hard OomGuard breaker armed above
+            // (projected vs. actual usage; see that comment), so over-budget work spills
+            // and retries rather than failing the task.
             #[cfg(feature = "oom-guard")]
             let memory_pool = if spark_config.get_bool(COMET_MEMORY_GUARD_ENABLED) {
                 let ceiling = memory_limit.max(0) as usize;
