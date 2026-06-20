@@ -46,6 +46,7 @@ impl std::fmt::Debug for RealUsagePool {
         f.debug_struct("RealUsagePool")
             .field("inner", &self.inner)
             .field("ceiling", &self.ceiling)
+            .field("fair_share", &self.fair_share)
             .finish_non_exhaustive()
     }
 }

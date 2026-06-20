@@ -43,7 +43,10 @@ impl MemoryPoolType {
 
     /// True when this pool's `reserved()` reflects a single task's usage, so a
     /// per-task fair-share comparison is meaningful. False for process-wide pools
-    /// whose `reserved()` is the aggregate across tasks.
+    /// whose `reserved()` is the aggregate across tasks. Note the non-shared
+    /// per-task pools (`Greedy`/`FairSpill`) return true but keep no task registry,
+    /// so the fair-share divisor falls back to `executor_cores` for them rather
+    /// than the dynamic active-task count.
     #[cfg_attr(not(feature = "oom-guard"), allow(dead_code))]
     pub(crate) fn has_per_task_budget(&self) -> bool {
         !matches!(
