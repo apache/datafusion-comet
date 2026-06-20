@@ -19,7 +19,10 @@
 
 package org.apache.comet.rules
 
+import java.lang.{Boolean => JBoolean}
 import java.net.URI
+import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
 
 import scala.collection.mutable
 import scala.collection.mutable.ListBuffer
@@ -40,7 +43,7 @@ import org.apache.spark.sql.execution.datasources.v2.csv.CSVScan
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
-import org.apache.comet.{CometConf, DataTypeSupport}
+import org.apache.comet.{CometConf, DataTypeSupport, NativeBase}
 import org.apache.comet.CometConf._
 import org.apache.comet.CometSparkSessionExtensions.{isCometLoaded, isSpark35Plus, withFallbackReason, withFallbackReasons}
 import org.apache.comet.DataTypeSupport.isComplexType
@@ -199,6 +202,47 @@ case class CometScanRule(session: SparkSession)
       withFallbackReason(
         scanExec,
         s"Native Parquet scan requires ${COMET_EXEC_ENABLED.key} to be enabled")
+      return None
+    }
+    // Comet's native readers go through object_store, which only understands a fixed set of URL
+    // schemes. A custom Hadoop FileSystem (e.g. registered via spark.hadoop.fs.<scheme>.impl) would
+    // surface at execution time as `Generic URL error: Unable to recognise URL "..."`. Decline here
+    // so Spark's reader -- which goes through the Hadoop FS API and can resolve custom schemes --
+    // handles the scan. Whether object_store recognizes a scheme is answered by the native layer
+    // itself (`NativeBase.isObjectStoreSchemeSupported`) rather than a hardcoded list, so the
+    // planner can't drift from object_store's actual support.
+    //
+    // EXCEPT schemes the user routes through libhdfs via `spark.hadoop.fs.comet.libhdfs.schemes`
+    // (e.g. `hdfs`, or a test `fake`): those ARE natively readable through the libhdfs object_store
+    // bridge, so they must NOT be declined here (regression guarded by
+    // ParquetReadFromFakeHadoopFsSuite).
+    //
+    // The default mirrors the native side: when the config is unset, `is_hdfs_scheme`
+    // (native/core/src/parquet/parquet_support.rs) treats `hdfs` as natively readable, and
+    // `create_hdfs_object_store` is in the default build (`default = ["hdfs-opendal"]`). If we
+    // defaulted to an empty set here, a plain `hdfs://` V1 scan would be declined and fall back to
+    // Spark even though native can read it -- a silent regression for HDFS users in the default
+    // configuration. So default to `Set("hdfs")` to stay in lockstep with the native default.
+    val libhdfsSchemes: Set[String] = COMET_LIBHDFS_SCHEMES.get() match {
+      case Some(s) =>
+        s.split(",").map(_.trim.toLowerCase(Locale.ROOT)).filter(_.nonEmpty).toSet
+      case None => Set("hdfs")
+    }
+    val unsupportedFsSchemes = r.location.rootPaths
+      .map(_.toUri)
+      .filter { uri =>
+        val sch = uri.getScheme
+        sch != null && {
+          val sl = sch.toLowerCase(Locale.ROOT)
+          !libhdfsSchemes.contains(sl) && !CometScanRule.isNativelyReadableScheme(uri)
+        }
+      }
+      .map(_.getScheme.toLowerCase(Locale.ROOT))
+      .toSet
+    if (unsupportedFsSchemes.nonEmpty) {
+      withFallbackReason(
+        scanExec,
+        s"Unsupported filesystem schemes: ${unsupportedFsSchemes.mkString(", ")}")
       return None
     }
     // Disabling the vectorized reader opts into parquet-mr's permissive behavior
@@ -727,6 +771,33 @@ case class CometScanTypeChecker() extends DataTypeSupport with CometTypeShim {
 }
 
 object CometScanRule extends Logging {
+
+  // Per-scheme memo of `NativeBase.isObjectStoreSchemeSupported`. The answer depends only on the
+  // URL scheme, so we cache by scheme and never re-cross the JNI boundary for a repeated scheme.
+  private val schemeSupportCache =
+    new ConcurrentHashMap[String, JBoolean]()
+
+  /**
+   * True when Comet's native object_store layer recognizes this URI's scheme (so the scan is
+   * natively readable). Delegates to the native layer -- the source of truth -- instead of a
+   * hardcoded scheme list. On any failure to consult native (e.g. the library isn't loaded on
+   * this JVM, or predates this method) we assume the scheme IS supported: the scheme gate is an
+   * early-fallback optimization, and a build without a working native library can't run Comet's
+   * native scan anyway, so declining here would only over-restrict.
+   */
+  private[rules] def isNativelyReadableScheme(uri: URI): Boolean = {
+    val scheme = uri.getScheme
+    if (scheme == null) return true
+    schemeSupportCache
+      .computeIfAbsent(
+        scheme.toLowerCase(Locale.ROOT),
+        _ =>
+          try JBoolean.valueOf(NativeBase.isObjectStoreSchemeSupported(uri.toString))
+          catch {
+            case _: Throwable => JBoolean.TRUE
+          })
+      .booleanValue()
+  }
 
   /**
    * Tag set on a scan (`FileSourceScanExec` or `BatchScanExec`) that should be left as a plain
