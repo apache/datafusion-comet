@@ -81,6 +81,7 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
+            native/target
           key: ${{ runner.os }}-cargo-ci-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}-${{ hashFiles('native/**/*.rs') }}
           restore-keys: |
             ${{ runner.os }}-cargo-ci-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}-
@@ -99,6 +100,7 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
+            native/target
           key: ${{ runner.os }}-cargo-ci-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}-${{ hashFiles('native/**/*.rs') }}
 
       - name: Upload native library

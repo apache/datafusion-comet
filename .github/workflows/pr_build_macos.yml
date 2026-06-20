@@ -64,6 +64,7 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
+            native/target
           key: ${{ runner.os }}-cargo-ci-v2-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}-${{ hashFiles('native/**/*.rs') }}
           restore-keys: |
             ${{ runner.os }}-cargo-ci-v2-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}-
@@ -91,6 +92,7 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
+            native/target
           key: ${{ runner.os }}-cargo-ci-v2-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}-${{ hashFiles('native/**/*.rs') }}
 
   macos-aarch64-test:
