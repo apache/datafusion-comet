@@ -197,7 +197,7 @@ fn parse_usize_env_var(name: &str) -> Option<usize> {
 fn build_runtime(default_worker_threads: Option<usize>) -> Runtime {
     let mut builder = tokio::runtime::Builder::new_multi_thread();
     #[cfg(feature = "oom-guard")]
-    builder.on_thread_start(|| crate::execution::memory_pools::oom_guard::stamp_current_thread());
+    builder.on_thread_start(crate::execution::memory_pools::oom_guard::stamp_current_thread);
     if let Some(n) = parse_usize_env_var("COMET_WORKER_THREADS") {
         info!("Comet tokio runtime: using COMET_WORKER_THREADS={n}");
         builder.worker_threads(n);

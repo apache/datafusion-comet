@@ -36,9 +36,9 @@ use std::sync::Arc;
 use unified_pool::CometUnifiedMemoryPool;
 
 pub(crate) use config::*;
-pub(crate) use task_shared::*;
 #[cfg(feature = "oom-guard")]
 pub(crate) use real_usage_pool::RealUsagePool;
+pub(crate) use task_shared::*;
 
 pub(crate) fn create_memory_pool(
     memory_pool_config: &MemoryPoolConfig,

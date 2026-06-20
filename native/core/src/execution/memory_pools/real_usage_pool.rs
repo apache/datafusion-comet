@@ -183,4 +183,34 @@ mod tests {
         pool.shrink(&reservation, 200);
         assert_eq!(pool.reserved(), 300);
     }
+
+    // Drives a real heap allocation through the installed AccountingAllocator (only
+    // wrapped under the `oom-guard` feature) and confirms the real-usage gate rejects.
+    // Robust to parallel test noise: other allocations only raise the balance further,
+    // which can only make the over-ceiling assertion more true.
+    #[test]
+    fn real_allocation_trips_real_usage_gate() {
+        let inner: Arc<dyn MemoryPool> = Arc::new(UnboundedMemoryPool::default());
+        let base = oom_guard::current_balance();
+        // 4 MiB headroom over the (noisy) baseline.
+        let ceiling = base + 4 * 1024 * 1024;
+        let pool: Arc<dyn MemoryPool> = Arc::new(RealUsagePool::new(Arc::clone(&inner), ceiling));
+        let reservation = MemoryConsumer::new("test").register(&pool);
+
+        // Push real usage ~8 MiB above the baseline, held alive across the check so the
+        // balance stays elevated. 8 MiB > 64 KiB settle threshold, so it flushes to BALANCE.
+        let held: Vec<u8> = vec![0u8; 8 * 1024 * 1024];
+        assert!(
+            oom_guard::current_balance() > ceiling,
+            "allocation should push balance over ceiling"
+        );
+
+        let result = pool.try_grow(&reservation, 1);
+        assert!(
+            result.is_err(),
+            "real usage over the ceiling should reject the grow"
+        );
+        // Keep `held` alive until after the assertion above.
+        drop(held);
+    }
 }
