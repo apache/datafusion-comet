@@ -42,9 +42,7 @@ on:
         required: true
         default: '3.5'
         options:
-          - '3.4'
           - '3.5'
-          - '4.0'
           - '4.1'
 
 env:
@@ -69,11 +67,10 @@ jobs:
         shell: bash
         run: |
           # Map each supported Spark minor version to its full version + JDK.
-          # Mirrors ci.yml's per-version reusable invocations.
+          # Mirrors ci.yml's per-version reusable invocations (default-on PR
+          # versions only; 3.4 and 4.0 are label-gated and not offered here).
           case "${{ inputs.spark-version }}" in
-            3.4) spark_full=3.4.3; java=11 ;;
             3.5) spark_full=3.5.8; java=17 ;;
-            4.0) spark_full=4.0.2; java=17 ;;
             4.1) spark_full=4.1.2; java=17 ;;
             *) echo "Unsupported spark-version: ${{ inputs.spark-version }}" >&2; exit 1 ;;
           esac
@@ -125,10 +122,9 @@ jobs:
           cd apache-spark
           rm -rf /root/.m2/repository/org/apache/parquet # somehow parquet cache requires cleanups
           # SERIAL_SBT_TESTS gates SparkParallelTestGrouping in
-          # project/SparkBuild.scala. None of the (version, JDK) combinations
-          # offered here are 4.0 + JDK 21 (the file-stream-leak case the
-          # reusable workflow handles via DEDICATED_JVM_SBT_TESTS), so we
-          # always set it to reduce peak memory on standard 7 GB runners.
+          # project/SparkBuild.scala. We always set it to reduce peak memory
+          # on standard 7 GB runners (3.5 and 4.1 are unaffected by the
+          # 4.0+JDK 21 file-stream-leak case the reusable workflow handles).
           export SERIAL_SBT_TESTS=1
           # Same forked-test-JVM caps as sql_core-* in spark_sql_test_reusable.yml.
           export HEAP_SIZE=3g
@@ -156,8 +152,3 @@ jobs:
             -XX:InitiatingHeapOccupancyPercent=35
             -XX:+ParallelRefProcEnabled
             -XX:+ExitOnOutOfMemoryError
-          # On Spark 4.0, process-isolate the V1/V2 Parquet and Orc source
-          # suites because they leak file streams across suites under newer
-          # JDKs. project/SparkBuild.scala reads DEDICATED_JVM_SBT_TESTS and
-          # forks a separate JVM per listed suite. Empty value is a safe no-op.
-          DEDICATED_JVM_SBT_TESTS: ${{ inputs.spark-version == '4.0' && 'org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormatV1Suite,org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormatV2Suite,org.apache.spark.sql.execution.datasources.orc.OrcSourceV1Suite,org.apache.spark.sql.execution.datasources.orc.OrcSourceV2Suite' || '' }}
