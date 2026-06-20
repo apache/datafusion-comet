@@ -20,6 +20,8 @@ mod fair_pool;
 pub mod logging_pool;
 #[cfg(feature = "oom-guard")]
 pub mod oom_guard;
+#[cfg(feature = "oom-guard")]
+mod real_usage_pool;
 mod task_shared;
 mod unified_pool;
 
@@ -35,6 +37,8 @@ use unified_pool::CometUnifiedMemoryPool;
 
 pub(crate) use config::*;
 pub(crate) use task_shared::*;
+#[cfg(feature = "oom-guard")]
+pub(crate) use real_usage_pool::RealUsagePool;
 
 pub(crate) fn create_memory_pool(
     memory_pool_config: &MemoryPoolConfig,
