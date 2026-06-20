@@ -295,6 +295,9 @@ private[serde] object DatetimeCollation extends CometTypeShim {
     s"$functionName does not support non-UTF8_BINARY collations " +
       "(https://github.com/apache/datafusion-comet/issues/4646)"
 
+  def incompatibleReasons(functionName: String): Seq[String] =
+    if (hasCollationSupport) Seq(reason(functionName)) else Seq.empty
+
   def hasNonDefaultCollation(expr: Expression): Boolean =
     expr.children.exists(c => hasNonDefaultStringCollation(c.dataType))
 }
@@ -308,7 +311,8 @@ object CometUnixTimestamp extends CometExpressionSerde[UnixTimestamp] {
       " `TimestampNTZType` is not supported because Comet incorrectly applies timezone" +
       " conversion to TimestampNTZ values.")
 
-  override def getIncompatibleReasons(): Seq[String] = Seq(collationReason)
+  override def getIncompatibleReasons(): Seq[String] =
+    DatetimeCollation.incompatibleReasons("unix_timestamp")
 
   private def isSupportedInputType(expr: UnixTimestamp): Boolean = {
     expr.children.head.dataType match {
@@ -428,7 +432,8 @@ object CometConvertTimezone
   }
 
   override def getIncompatibleReasons(): Seq[String] =
-    Seq(UTCTimestampSerde.tzParseIncompatReason, collationReason)
+    Seq(UTCTimestampSerde.tzParseIncompatReason) ++
+      DatetimeCollation.incompatibleReasons("convert_timezone")
 
   override def convert(
       expr: ConvertTimezone,
@@ -452,7 +457,8 @@ object CometNextDay extends CometExpressionSerde[NextDay] {
    */
   private val collationReason = DatetimeCollation.reason("next_day")
 
-  override def getIncompatibleReasons(): Seq[String] = Seq(collationReason)
+  override def getIncompatibleReasons(): Seq[String] =
+    DatetimeCollation.incompatibleReasons("next_day")
 
   override def getSupportLevel(expr: NextDay): SupportLevel = {
     if (DatetimeCollation.hasNonDefaultCollation(expr)) {
@@ -552,7 +558,7 @@ object CometTruncDate extends CometExpressionSerde[TruncDate] with CodegenDispat
       supportedFormats.mkString(", ")
 
   override def getIncompatibleReasons(): Seq[String] =
-    Seq(nonLiteralFormatIncompatReason, collationReason)
+    Seq(nonLiteralFormatIncompatReason) ++ DatetimeCollation.incompatibleReasons("trunc")
 
   override def getUnsupportedReasons(): Seq[String] = Seq(
     "Only the following formats are supported: " + supportedFormats.mkString(", "))
@@ -627,7 +633,8 @@ object CometTruncTimestamp
       supportedFormats.mkString(", ")
 
   override def getIncompatibleReasons(): Seq[String] =
-    Seq(nonUtcIncompatReason, nonLiteralFormatIncompatReason, collationReason)
+    Seq(nonUtcIncompatReason, nonLiteralFormatIncompatReason) ++
+      DatetimeCollation.incompatibleReasons("date_trunc")
 
   override def getUnsupportedReasons(): Seq[String] = Seq(
     "Only the following formats are supported: " + supportedFormats.mkString(", "))
@@ -738,7 +745,8 @@ object CometDateFormat
 
   private val collationReason = DatetimeCollation.reason("date_format")
 
-  override def getIncompatibleReasons(): Seq[String] = Seq(collationReason)
+  override def getIncompatibleReasons(): Seq[String] =
+    DatetimeCollation.incompatibleReasons("date_format")
 
   // Non-default collations return Incompatible; all other inputs are Compatible. In both cases
   // convert() decides between the native to_char path and the codegen dispatcher.
@@ -894,7 +902,8 @@ object CometMakeTimestamp
 
   private val collationReason = DatetimeCollation.reason("make_timestamp")
 
-  override def getIncompatibleReasons(): Seq[String] = Seq(collationReason)
+  override def getIncompatibleReasons(): Seq[String] =
+    DatetimeCollation.incompatibleReasons("make_timestamp")
 
   override def getSupportLevel(expr: MakeTimestamp): SupportLevel = {
     if (DatetimeCollation.hasNonDefaultCollation(expr)) {
@@ -921,7 +930,8 @@ object CometToUnixTimestamp
 
   private val collationReason = DatetimeCollation.reason("to_unix_timestamp")
 
-  override def getIncompatibleReasons(): Seq[String] = Seq(collationReason)
+  override def getIncompatibleReasons(): Seq[String] =
+    DatetimeCollation.incompatibleReasons("to_unix_timestamp")
 
   override def getSupportLevel(expr: ToUnixTimestamp): SupportLevel = {
     if (DatetimeCollation.hasNonDefaultCollation(expr)) {
