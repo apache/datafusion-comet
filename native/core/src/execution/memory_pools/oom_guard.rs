@@ -84,7 +84,6 @@ pub fn map_panic_to_error(panic: &(dyn std::any::Any + Send)) -> Option<DataFusi
 }
 
 /// Current process-wide balance in bytes (never reported negative).
-#[allow(dead_code)] // used only by tests
 pub fn current_balance() -> usize {
     BALANCE.load(Ordering::Relaxed).max(0) as usize
 }

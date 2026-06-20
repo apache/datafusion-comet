@@ -428,6 +428,20 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
             let memory_pool =
                 create_memory_pool(&memory_pool_config, task_memory_manager, task_attempt_id);
 
+            // Cooperative real-usage gate: when the memory guard is enabled, wrap the
+            // pool so growth is rejected (triggering a spill) once real allocator usage
+            // plus the request would exceed the process-wide off-heap budget.
+            #[cfg(feature = "oom-guard")]
+            let memory_pool = if spark_config.get_bool(COMET_MEMORY_GUARD_ENABLED) {
+                let ceiling = memory_limit.max(0) as usize;
+                Arc::new(crate::execution::memory_pools::RealUsagePool::new(
+                    memory_pool,
+                    ceiling,
+                )) as Arc<dyn datafusion::execution::memory_pool::MemoryPool>
+            } else {
+                memory_pool
+            };
+
             let memory_pool = if logging_memory_pool {
                 Arc::new(LoggingMemoryPool::new(task_attempt_id as u64, memory_pool))
             } else {
