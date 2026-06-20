@@ -43,7 +43,6 @@ pub(crate) fn active_task_count() -> usize {
 
 /// Record that a new task-shared task became active. Called from
 /// `create_memory_pool` when a new per-task pool entry is created.
-#[cfg_attr(not(feature = "oom-guard"), allow(dead_code))]
 pub(crate) fn record_task_started() {
     ACTIVE_TASK_COUNT.fetch_add(1, Ordering::Relaxed);
 }
