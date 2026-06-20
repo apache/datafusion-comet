@@ -41,6 +41,13 @@ pub(crate) fn active_task_count() -> usize {
     ACTIVE_TASK_COUNT.load(Ordering::Relaxed)
 }
 
+/// Record that a new task-shared task became active. Called from
+/// `create_memory_pool` when a new per-task pool entry is created.
+#[cfg_attr(not(feature = "oom-guard"), allow(dead_code))]
+pub(crate) fn record_task_started() {
+    ACTIVE_TASK_COUNT.fetch_add(1, Ordering::Relaxed);
+}
+
 pub(crate) struct PerTaskMemoryPool {
     pub(crate) memory_pool: Arc<dyn MemoryPool>,
     pub(crate) num_plans: usize,
@@ -71,6 +78,7 @@ pub(crate) fn handle_task_shared_pool_release(pool_type: MemoryPoolType, task_at
             // Drop the memory pool from the per-task memory pool map if there are no
             // more native plans using it.
             memory_pool_map.remove(&task_attempt_id);
+            ACTIVE_TASK_COUNT.fetch_sub(1, Ordering::Relaxed);
         }
     }
 }
