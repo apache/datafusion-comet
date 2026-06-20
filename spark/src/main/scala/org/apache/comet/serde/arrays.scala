@@ -579,14 +579,11 @@ object CometArrayReverse extends CometExpressionSerde[Reverse] with ArraysBase {
 
 object CometElementAt extends CometExpressionSerde[ElementAt] {
 
-  override def getUnsupportedReasons(): Seq[String] = Seq(
-    "Input must be an array. `Map` inputs are not supported.")
-
   override def getSupportLevel(expr: ElementAt): SupportLevel = {
-    if (expr.left.dataType.isInstanceOf[ArrayType]) {
-      Compatible()
-    } else {
-      Unsupported(Some("Input is not an array"))
+    expr.left.dataType match {
+      case _: ArrayType => Compatible()
+      case _: MapType => Compatible()
+      case _ => Unsupported(Some("Input must be an array or map"))
     }
   }
 
@@ -596,27 +593,35 @@ object CometElementAt extends CometExpressionSerde[ElementAt] {
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     val childExpr = exprToProtoInternal(expr.left, inputs, binding)
     val ordinalExpr = exprToProtoInternal(expr.right, inputs, binding)
-    val defaultExpr = expr.defaultValueOutOfBound.flatMap(exprToProtoInternal(_, inputs, binding))
 
-    if (childExpr.isDefined && ordinalExpr.isDefined &&
-      defaultExpr.isDefined == expr.defaultValueOutOfBound.isDefined) {
-      val arrayExtractBuilder = ExprOuterClass.ListExtract
-        .newBuilder()
-        .setChild(childExpr.get)
-        .setOrdinal(ordinalExpr.get)
-        .setOneBased(true)
-        .setFailOnError(expr.failOnError)
+    expr.left.dataType match {
+      case _: MapType =>
+        val mapExtractExpr = scalarFunctionExprToProto("map_extract", childExpr, ordinalExpr)
+        optExprWithFallbackReason(mapExtractExpr, expr, expr.left, expr.right)
+      case _ =>
+        val defaultExpr =
+          expr.defaultValueOutOfBound.flatMap(exprToProtoInternal(_, inputs, binding))
 
-      defaultExpr.foreach(arrayExtractBuilder.setDefaultValue)
+        if (childExpr.isDefined && ordinalExpr.isDefined &&
+          defaultExpr.isDefined == expr.defaultValueOutOfBound.isDefined) {
+          val arrayExtractBuilder = ExprOuterClass.ListExtract
+            .newBuilder()
+            .setChild(childExpr.get)
+            .setOrdinal(ordinalExpr.get)
+            .setOneBased(true)
+            .setFailOnError(expr.failOnError)
 
-      Some(
-        ExprOuterClass.Expr
-          .newBuilder()
-          .setListExtract(arrayExtractBuilder)
-          .build())
-    } else {
-      withFallbackReason(expr, "unsupported arguments for ElementAt", expr.left, expr.right)
-      None
+          defaultExpr.foreach(arrayExtractBuilder.setDefaultValue)
+
+          Some(
+            ExprOuterClass.Expr
+              .newBuilder()
+              .setListExtract(arrayExtractBuilder)
+              .build())
+        } else {
+          withFallbackReason(expr, "unsupported arguments for ElementAt", expr.left, expr.right)
+          None
+        }
     }
   }
 }
