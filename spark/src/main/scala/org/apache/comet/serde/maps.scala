@@ -24,6 +24,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
 import org.apache.comet.serde.QueryPlanSerde.{createBinaryExpr, exprToProtoInternal, optExprWithFallbackReason, scalarFunctionExprToProto}
+import org.apache.comet.shims.CometTypeShim
 
 object CometMapKeys extends CometExpressionSerde[MapKeys] {
 
@@ -156,7 +157,7 @@ object CometMapFromEntries
   }
 }
 
-object CometStrToMap extends CometScalarFunction[StringToMap]("str_to_map") {
+object CometStrToMap extends CometScalarFunction[StringToMap]("str_to_map") with CometTypeShim {
 
   // Spark 4.1.1+ honours spark.sql.legacy.truncateForEmptyRegexSplit by truncating trailing
   // empty entries from the split result. Comet's native str_to_map always behaves as if the flag
@@ -164,9 +165,20 @@ object CometStrToMap extends CometScalarFunction[StringToMap]("str_to_map") {
   // resolves on older Spark versions where the config is not registered.
   private val legacyTruncateConfig = "spark.sql.legacy.truncateForEmptyRegexSplit"
 
+  private val legacyTruncateReason =
+    s"`$legacyTruncateConfig` is enabled, so trailing empty split entries may differ from Spark."
+
+  private val collationReason =
+    "`str_to_map` does not support non-UTF8_BINARY collations on the input string or delimiters."
+
+  override def getIncompatibleReasons(): Seq[String] =
+    Seq(legacyTruncateReason, collationReason)
+
   override def getSupportLevel(expr: StringToMap): SupportLevel = {
     if (SQLConf.get.getConfString(legacyTruncateConfig, "false").toBoolean) {
-      Incompatible(Some(s"$legacyTruncateConfig is enabled"))
+      Incompatible(Some(legacyTruncateReason))
+    } else if (expr.children.exists(child => hasNonDefaultStringCollation(child.dataType))) {
+      Incompatible(Some(collationReason))
     } else {
       Compatible(None)
     }
