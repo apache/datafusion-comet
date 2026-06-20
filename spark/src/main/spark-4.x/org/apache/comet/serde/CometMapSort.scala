@@ -39,15 +39,11 @@ object CometMapSort extends CometExpressionSerde[MapSort] {
     val keyType = expr.dataType.asInstanceOf[MapType].keyType
     if (!supportedScalarSortElementType(keyType)) {
       Unsupported(Some(s"MapSort on map with key type $keyType is not supported"))
-    } else if (CometConf.COMET_EXEC_STRICT_FLOATING_POINT.get() &&
-      SupportLevel.containsFloatingPoint(keyType)) {
-      Incompatible(
-        Some(
-          "MapSort on floating-point key is not 100% compatible with Spark, and Comet is " +
-            s"running with ${CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key}=true. " +
-            s"${CometConf.COMPAT_GUIDE}"))
     } else {
-      Compatible(None)
+      SupportLevel
+        .strictFloatingPointReason(keyType, "MapSort on floating-point key")
+        .map(reason => Incompatible(Some(reason)))
+        .getOrElse(Compatible(None))
     }
   }
 

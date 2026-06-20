@@ -870,7 +870,10 @@ case class CometExecRule(session: SparkSession)
 
     if (groupingExpressions.isEmpty && aggregateExpressions.isEmpty) return false
 
-    if (groupingExpressions.exists(e => QueryPlanSerde.containsMapType(e.dataType))) return false
+    if (groupingExpressions.exists(e =>
+        SupportLevel.containsType(e.dataType, classOf[MapType]))) {
+      return false
+    }
 
     if (!groupingExpressions.forall(e =>
         QueryPlanSerde.exprToProto(e, agg.child.output).isDefined)) {

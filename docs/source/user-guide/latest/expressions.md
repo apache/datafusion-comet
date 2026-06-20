@@ -26,10 +26,14 @@ transparently falls back to Spark for that part of the plan; results are unaffec
 
 Expressions marked ✅ Supported are enabled by default and produce Spark-compatible results.
 
-Some ✅ Supported expressions have specific incompatible cases that fall back to Spark by
-default. Those cases must be opted into per expression with
+Some ✅ Supported expressions have specific incompatible cases that are not run by default.
+Those cases must be opted into per expression with
 `spark.comet.expression.EXPRNAME.allowIncompatible=true` (where `EXPRNAME` is the Spark
-expression class name, for example `Cast`). There is no global opt-in.
+expression class name, for example `Cast`). There is no global opt-in. By default such a case
+either falls back to Spark (for example `cast`) or, when the expression has a Spark-compatible
+codegen-dispatch implementation, runs through that instead (for example the regex and JSON
+families). See [Native and codegen-dispatch implementations](compatibility/index.md#native-and-codegen-dispatch-implementations)
+for how Comet chooses.
 
 Most expressions can also be disabled with `spark.comet.expression.EXPRNAME.enabled=false`, where
 `EXPRNAME` is the Spark expression class name (for example `Length` or `StartsWith`). See the
@@ -134,10 +138,10 @@ The tables below list every Spark built-in expression with its current status.
 | `array_compact` | ✅ |  |
 | `array_contains` | ✅ | NaN/signed-zero handling may differ ([details](compatibility/floating-point.md)) |
 | `array_distinct` | ✅ | NaN/signed-zero handling may differ ([details](compatibility/floating-point.md)) |
-| `array_except` | ✅ | Incompatible; falls back by default ([details](compatibility/expressions/array.md)) |
+| `array_except` | ✅ | Routes through the JVM codegen dispatcher by default; the incompatible native path is opt-in via allowIncompatible ([details](compatibility/expressions/array.md)) |
 | `array_insert` | ✅ |  |
-| `array_intersect` | ✅ | Incompatible; falls back by default ([details](compatibility/expressions/array.md)) |
-| `array_join` | ✅ | Incompatible; falls back by default ([details](compatibility/expressions/array.md)) |
+| `array_intersect` | ✅ | Routes through the JVM codegen dispatcher by default; the incompatible native path is opt-in via allowIncompatible ([details](compatibility/expressions/array.md)) |
+| `array_join` | ✅ | Routes through the JVM codegen dispatcher by default; the incompatible native path is opt-in via allowIncompatible ([details](compatibility/expressions/array.md)) |
 | `array_max` | ✅ | NaN ordering may differ ([details](compatibility/floating-point.md)) |
 | `array_min` | ✅ | NaN ordering may differ ([details](compatibility/floating-point.md)) |
 | `array_position` | ✅ | Binary/struct/map/null elements fall back |
@@ -230,7 +234,7 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | Function | Status | Notes |
 | --- | --- | --- |
 | `add_months` | ✅ |  |
-| `convert_timezone` | ✅ |  |
+| `convert_timezone` | ✅ | Routes through the JVM codegen dispatcher by default (handles all timezone forms); the native path is opt-in via allowIncompatible ([details](compatibility/expressions/datetime.md)) |
 | `curdate` | ✅ | Constant-folded to a literal (alias of `current_date`) |
 | `current_date` | ✅ | Constant-folded to a literal before Comet sees the plan |
 | `current_time` | 🔜 | Blocked on Spark 4.1 TIME type support ([#4288](https://github.com/apache/datafusion-comet/issues/4288)) |
@@ -253,7 +257,7 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `dayofyear` | ✅ |  |
 | `extract` | ✅ |  |
 | `from_unixtime` | ✅ |  |
-| `from_utc_timestamp` | ✅ | Legacy zone forms fall back (Incompatible) ([details](compatibility/expressions/datetime.md)) |
+| `from_utc_timestamp` | ✅ | Routes through the JVM codegen dispatcher by default (handles all timezone forms); the native path is opt-in via allowIncompatible ([details](compatibility/expressions/datetime.md)) |
 | `hour` | ✅ |  |
 | `last_day` | ✅ |  |
 | `localtimestamp` | ✅ |  |
@@ -285,7 +289,7 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `to_timestamp_ltz` | ✅ | Rewrites to `to_timestamp` (`TimestampType`) |
 | `to_timestamp_ntz` | ✅ | Rewrites to `to_timestamp` (`TimestampNTZType`) |
 | `to_unix_timestamp` | ✅ |  |
-| `to_utc_timestamp` | ✅ | Legacy zone forms fall back (Incompatible) ([details](compatibility/expressions/datetime.md)) |
+| `to_utc_timestamp` | ✅ | Routes through the JVM codegen dispatcher by default (handles all timezone forms); the native path is opt-in via allowIncompatible ([details](compatibility/expressions/datetime.md)) |
 | `trunc` | ✅ |  |
 | `try_make_interval` | 🔜 | Produces legacy CalendarInterval; tracked by [#4540](https://github.com/apache/datafusion-comet/issues/4540) |
 | `try_make_timestamp` | ✅ |  |
@@ -358,7 +362,7 @@ expression-level). The `outer` variants are wired but marked `Incompatible`; the
 | `aggregate` | ✅ |  |
 | `array_sort` | ✅ |  |
 | `exists` | ✅ |  |
-| `filter` | 🔜 | General lambda not yet wired; the `array_compact` form is supported ([#4224](https://github.com/apache/datafusion-comet/issues/4224)) |
+| `filter` | ✅ | General lambda routed through the JVM codegen dispatcher; the `array_compact` form runs natively |
 | `forall` | ✅ |  |
 | `map_filter` | ✅ |  |
 | `map_zip_with` | ✅ |  |
@@ -375,7 +379,7 @@ expression-level). The `outer` variants are wired but marked `Incompatible`; the
 | Function | Status | Notes |
 | --- | --- | --- |
 | `element_at` | ✅ | MapType input falls back |
-| `map` | 🔜 | Constructs a map |
+| `map` | ✅ | Routed through the JVM codegen dispatcher |
 | `map_concat` | ✅ |  |
 | `map_contains_key` | ✅ |  |
 | `map_entries` | ✅ |  |
@@ -561,17 +565,17 @@ expression-level). The `outer` variants are wired but marked `Incompatible`; the
 | `lpad` | ✅ |  |
 | `ltrim` | ✅ |  |
 | `luhn_check` | ✅ | Native via `StaticInvoke` (tests: luhn_check.sql) |
-| `mask` | 🔜 | Data masking |
+| `mask` | ✅ | Routed through the JVM codegen dispatcher |
 | `octet_length` | ✅ |  |
 | `overlay` | ✅ |  |
 | `position` | ✅ |  |
 | `printf` | ✅ |  |
-| `regexp_count` | 🔜 | tracking [#4098](https://github.com/apache/datafusion-comet/issues/4098) |
-| `regexp_extract` | ✅ | Routed through the JVM codegen dispatcher |
-| `regexp_extract_all` | ✅ | Routed through the JVM codegen dispatcher |
+| `regexp_count` | ✅ | Runs natively (rewrites to `size(regexp_extract_all(...))`) |
+| `regexp_extract` | ✅ |  |
+| `regexp_extract_all` | ✅ |  |
 | `regexp_instr` | ✅ | Routed through the JVM codegen dispatcher |
 | `regexp_replace` | ✅ |  |
-| `regexp_substr` | 🔜 | tracking [#4098](https://github.com/apache/datafusion-comet/issues/4098) |
+| `regexp_substr` | ✅ | Runs natively (rewrites to `nullif(regexp_extract(...), '')`) |
 | `repeat` | ✅ |  |
 | `replace` | ✅ |  |
 | `right` | ✅ |  |
@@ -591,8 +595,8 @@ expression-level). The `outer` variants are wired but marked `Incompatible`; the
 | `to_varchar` | ✅ |  |
 | `translate` | ✅ | Falls back by default; opt-in via allowIncompatible ([#4463](https://github.com/apache/datafusion-comet/issues/4463)) |
 | `trim` | ✅ |  |
-| `try_to_binary` | 🔜 | Lowers to `TryEval(...)`, which falls back |
-| `try_to_number` | 🔜 | TRY variant of `to_number` |
+| `try_to_binary` | ✅ | Runs natively (rewrites to `try_eval(to_binary(...))`) |
+| `try_to_number` | ✅ | Routed through the JVM codegen dispatcher |
 | `ucase` | ✅ |  |
 | `unbase64` | ✅ |  |
 | `upper` | ✅ |  |

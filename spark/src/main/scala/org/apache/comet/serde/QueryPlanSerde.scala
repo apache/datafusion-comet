@@ -182,7 +182,8 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       classOf[MapFilter] -> CometMapFilter,
       classOf[TransformKeys] -> CometTransformKeys,
       classOf[TransformValues] -> CometTransformValues,
-      classOf[MapZipWith] -> CometMapZipWith)
+      classOf[MapZipWith] -> CometMapZipWith,
+      classOf[CreateMap] -> CometCreateMap)
     base ++ sparkVersionSpecificMapExpressions
   }
 
@@ -253,7 +254,9 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       classOf[StringLocate] -> CometStringLocate,
       classOf[UnBase64] -> CometUnBase64,
       classOf[ToCharacter] -> CometToCharacter,
-      classOf[ToNumber] -> CometToNumber)
+      classOf[ToNumber] -> CometToNumber,
+      classOf[TryToNumber] -> CometTryToNumber,
+      classOf[Mask] -> CometMask)
     base ++ sparkVersionSpecificStringExpressions
   }
 
@@ -488,19 +491,6 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       supportedDataType(m.keyType, allowComplex) && supportedDataType(m.valueType, allowComplex)
     case _ =>
       false
-  }
-
-  /**
-   * Returns true if the given data type is or contains a `MapType` at any nesting level. Arrow's
-   * row format (used by DataFusion's grouped hash aggregate for composite group keys) does not
-   * support `Map`, so grouping on any type that transitively contains a map would crash in native
-   * execution.
-   */
-  def containsMapType(dt: DataType): Boolean = dt match {
-    case _: MapType => true
-    case a: ArrayType => containsMapType(a.elementType)
-    case s: StructType => s.fields.exists(f => containsMapType(f.dataType))
-    case _ => false
   }
 
   /**
