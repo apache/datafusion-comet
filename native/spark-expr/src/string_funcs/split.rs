@@ -135,6 +135,14 @@ pub fn spark_split_sql(args: &[ColumnarValue]) -> DataFusionResult<ColumnarValue
         (ColumnarValue::Array(string_array), ColumnarValue::Array(delimiter_array)) => {
             split_sql_array_array(string_array.as_ref(), delimiter_array.as_ref())
         }
+        (
+            ColumnarValue::Scalar(ScalarValue::Utf8(string)),
+            ColumnarValue::Array(delimiter_array),
+        ) => split_sql_scalar_array::<i32>(string.as_deref(), delimiter_array.as_ref()),
+        (
+            ColumnarValue::Scalar(ScalarValue::LargeUtf8(string)),
+            ColumnarValue::Array(delimiter_array),
+        ) => split_sql_scalar_array::<i64>(string.as_deref(), delimiter_array.as_ref()),
         (ColumnarValue::Scalar(ScalarValue::Utf8(string)), ColumnarValue::Scalar(delimiter))
         | (
             ColumnarValue::Scalar(ScalarValue::LargeUtf8(string)),
@@ -245,6 +253,32 @@ fn split_sql_array_array(
     }
 }
 
+fn split_sql_scalar_array<O: OffsetSizeTrait>(
+    string: Option<&str>,
+    delimiter_array: &dyn arrow::array::Array,
+) -> DataFusionResult<ColumnarValue> {
+    let Some(string) = string else {
+        return Ok(ColumnarValue::Array(new_null_list_array_with_offset::<O>(
+            delimiter_array.len(),
+        )));
+    };
+
+    match delimiter_array.data_type() {
+        DataType::Utf8 => split_sql_generic_scalar_array::<O, i32>(
+            string,
+            as_generic_string_array::<i32>(delimiter_array)?,
+        ),
+        DataType::LargeUtf8 => split_sql_generic_scalar_array::<O, i64>(
+            string,
+            as_generic_string_array::<i64>(delimiter_array)?,
+        ),
+        _ => exec_err!(
+            "split_sql expects Utf8 or LargeUtf8 delimiter array, got {:?}",
+            delimiter_array.data_type()
+        ),
+    }
+}
+
 fn split_generic<O: OffsetSizeTrait>(
     string_array: &GenericStringArray<O>,
     regex: &Regex,
@@ -311,6 +345,43 @@ fn split_sql_generic_scalar<O: OffsetSizeTrait>(
         OffsetBuffer::new(offsets.into()),
         values_array,
         string_array.nulls().cloned(),
+    );
+
+    Ok(ColumnarValue::Array(Arc::new(list_array)))
+}
+
+fn split_sql_generic_scalar_array<O: OffsetSizeTrait, D: OffsetSizeTrait>(
+    string: &str,
+    delimiter_array: &GenericStringArray<D>,
+) -> DataFusionResult<ColumnarValue> {
+    let len = delimiter_array.len();
+    let mut offsets: Vec<O> = Vec::with_capacity(len + 1);
+    let mut values_builder = GenericStringBuilder::<O>::new();
+    let mut nulls = NullBufferBuilder::new(len);
+    offsets.push(O::usize_as(0));
+
+    for i in 0..len {
+        if delimiter_array.is_null(i) {
+            nulls.append_null();
+        } else {
+            push_split_sql_parts(string, delimiter_array.value(i), &mut values_builder);
+            nulls.append_non_null();
+        }
+        offsets.push(O::usize_as(values_builder.len()));
+    }
+
+    let values_array = Arc::new(values_builder.finish()) as ArrayRef;
+    let item_type = if O::IS_LARGE {
+        DataType::LargeUtf8
+    } else {
+        DataType::Utf8
+    };
+    let field = Arc::new(Field::new("item", item_type, false));
+    let list_array = GenericListArray::<O>::new(
+        field,
+        OffsetBuffer::new(offsets.into()),
+        values_array,
+        nulls.finish(),
     );
 
     Ok(ColumnarValue::Array(Arc::new(list_array)))
@@ -483,6 +554,25 @@ fn new_null_list_scalar() -> ScalarValue {
     ScalarValue::List(Arc::new(new_null_list_array_value(1)))
 }
 
+fn new_null_list_array_with_offset<O: OffsetSizeTrait>(len: usize) -> ArrayRef {
+    let item_type = if O::IS_LARGE {
+        DataType::LargeUtf8
+    } else {
+        DataType::Utf8
+    };
+    let field = Arc::new(Field::new("item", item_type, false));
+    let values = Arc::new(GenericStringArray::<O>::from(Vec::<String>::new())) as ArrayRef;
+    let offsets = vec![O::usize_as(0); len + 1];
+    let nulls = arrow::buffer::NullBuffer::new_null(len);
+
+    Arc::new(GenericListArray::<O>::new(
+        field,
+        arrow::buffer::OffsetBuffer::new(offsets.into()),
+        values,
+        Some(nulls),
+    ))
+}
+
 fn new_null_list_array_value(len: usize) -> ListArray {
     let field = Arc::new(Field::new("item", DataType::Utf8, false));
     let values = Arc::new(GenericStringArray::<i32>::from(Vec::<String>::new())) as ArrayRef;
@@ -620,6 +710,56 @@ mod tests {
         ])
         .unwrap();
         assert_null_list_scalar(result);
+    }
+
+    #[test]
+    fn test_split_sql_scalar_string_array_delimiter() {
+        let delimiter_array =
+            Arc::new(StringArray::from(vec![Some("||"), Some("."), None])) as ArrayRef;
+        let result = spark_split_sql(&[
+            ColumnarValue::Scalar(ScalarValue::Utf8(Some("a||b||".to_string()))),
+            ColumnarValue::Array(delimiter_array),
+        ])
+        .unwrap();
+
+        match result {
+            ColumnarValue::Array(arr) => {
+                let list_array = arr.as_any().downcast_ref::<ListArray>().unwrap();
+                assert_eq!(list_array.len(), 3);
+                assert_list_value(list_array, 0, &["a", "b", ""]);
+                assert_list_value(list_array, 1, &["a||b||"]);
+                assert!(list_array.is_null(2));
+            }
+            _ => panic!("Expected Array result"),
+        }
+    }
+
+    #[test]
+    fn test_split_sql_null_scalar_string_array_delimiter() {
+        let delimiter_array = Arc::new(StringArray::from(vec![Some(","), Some(".")])) as ArrayRef;
+        let result = spark_split_sql(&[
+            ColumnarValue::Scalar(ScalarValue::Utf8(None)),
+            ColumnarValue::Array(delimiter_array),
+        ])
+        .unwrap();
+
+        match result {
+            ColumnarValue::Array(arr) => {
+                let list_array = arr.as_any().downcast_ref::<ListArray>().unwrap();
+                assert_eq!(list_array.len(), 2);
+                assert!(list_array.is_null(0));
+                assert!(list_array.is_null(1));
+            }
+            _ => panic!("Expected Array result"),
+        }
+    }
+
+    fn assert_list_value(list_array: &ListArray, row: usize, expected: &[&str]) {
+        let value = list_array.value(row);
+        let strings = value.as_any().downcast_ref::<StringArray>().unwrap();
+        let actual = strings.iter().collect::<Vec<_>>();
+        let expected = expected.iter().map(|s| Some(*s)).collect::<Vec<_>>();
+        assert_eq!(actual, expected);
     }
 
     fn assert_null_list_scalar(result: ColumnarValue) {

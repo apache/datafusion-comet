@@ -24,6 +24,8 @@ statement
 INSERT INTO test_split_part VALUES
   ('one.two.three', '.', 2),
   ('a||b||', '||', 3),
+  ('left::middle::right', '::', 2),
+  ('a*b*c', '*', 2),
   ('abc', '', 1),
   (NULL, '.', 1),
   ('abc', NULL, 1)
@@ -33,7 +35,11 @@ SELECT split_part(s, d, p) FROM test_split_part
 
 -- literal delimiter: delimiter is literal, not regex
 query
-SELECT split_part('a.b.c', '.', 2), split_part('a|b|c', '|', 3)
+SELECT split_part('a.b.c', '.', 2), split_part('a|b|c', '|', 3), split_part('a.*.b.*.c', '.*.', 2)
+
+-- literal string with column delimiter
+query
+SELECT split_part('left::middle::right', d, 2) FROM test_split_part WHERE d = '::'
 
 -- negative part numbers select from the end
 query
