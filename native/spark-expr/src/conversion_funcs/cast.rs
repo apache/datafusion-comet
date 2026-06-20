@@ -530,11 +530,10 @@ fn cast_struct_to_struct(
                         ColumnarValue::from(from_field),
                         to.data_type(),
                         cast_options,
-                    )
-                    .unwrap();
-                    cast_result.to_array(array_length).unwrap()
+                    )?;
+                    cast_result.to_array(array_length)
                 })
-                .collect();
+                .collect::<DataFusionResult<Vec<_>>>()?;
 
             Ok(Arc::new(StructArray::new(
                 to_fields.clone(),
@@ -959,6 +958,38 @@ mod tests {
         } else {
             unreachable!()
         }
+    }
+
+    #[test]
+    fn test_cast_nested_struct_to_struct_ansi_overflow_returns_error() {
+        let inner_values: ArrayRef = Arc::new(Int64Array::from(vec![Some(1), Some(128), None]));
+        let from_nested_fields =
+            Fields::from(vec![Field::new("long_value", DataType::Int64, true)]);
+        let nested: ArrayRef = Arc::new(StructArray::new(
+            from_nested_fields.clone(),
+            vec![inner_values],
+            None,
+        ));
+        let from_fields = Fields::from(vec![Field::new(
+            "nested",
+            DataType::Struct(from_nested_fields),
+            true,
+        )]);
+        let outer: ArrayRef = Arc::new(StructArray::new(from_fields, vec![nested], None));
+
+        let to_nested_fields = Fields::from(vec![Field::new("byte_value", DataType::Int8, true)]);
+        let to_fields = Fields::from(vec![Field::new(
+            "renamed_nested",
+            DataType::Struct(to_nested_fields),
+            true,
+        )]);
+        let result = spark_cast(
+            ColumnarValue::Array(outer),
+            &DataType::Struct(to_fields),
+            &SparkCastOptions::new(EvalMode::Ansi, "UTC", false),
+        );
+
+        assert!(result.is_err());
     }
 
     #[test]
