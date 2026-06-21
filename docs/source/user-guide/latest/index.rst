@@ -83,6 +83,7 @@ to read more.
 
    Iceberg Guide <iceberg>
    Iceberg Writes <iceberg-writes>
+   Delta Lake Guide <delta>
    S3 Credential Providers <s3-credential-providers>
    Kubernetes Guide <kubernetes>
 
