@@ -21,8 +21,9 @@ package org.apache.comet.parquet
 
 import java.io.File
 
-import scala.util.Random
+import scala.util.{Random, Using}
 
+import org.apache.hadoop.fs.{FileSystem, Path}
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.comet.{CometBatchScanExec, CometNativeScanExec, CometNativeWriteExec, CometScanExec}
 import org.apache.spark.sql.execution.{FileSourceScanExec, QueryExecution, SparkPlan}
@@ -36,6 +37,27 @@ import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator, SchemaGenOpt
 class CometParquetWriterSuite extends CometTestBase {
 
   import testImplicits._
+
+  test("partitioned write with empty string partition value") {
+    withTempPath { path =>
+      Seq(("", 1), ("a", 2))
+        .toDF("part", "value")
+        .write
+        .partitionBy("part")
+        .parquet(path.toString)
+      Using(FileSystem.get(spark.sparkContext.hadoopConfiguration)) { fs =>
+        val partitions = fs
+          .listStatus(new Path(path.toString))
+          .filter(_.isDirectory)
+          .map(_.getPath.getName)
+          .sorted
+        assert(partitions.contains("part=a"))
+        assert(!partitions.contains("part="))
+        assert(partitions.count(_.startsWith("part=__HIVE_DEFAULT_PARTITION__")) == 1)
+      }
+      checkAnswer(spark.read.parquet(path.toString), Row(1, null) :: Row(2, "a") :: Nil)
+    }
+  }
 
   test("basic parquet write") {
     withTempPath { dir =>
