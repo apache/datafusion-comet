@@ -39,7 +39,7 @@ jobs:
     container:
       image: amd64/rust
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Check Rust formatting
         run: |
@@ -56,7 +56,7 @@ jobs:
     name: Lint Scala (syntactic)
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Setup coursier
         uses: coursier/setup-action@v3
@@ -101,7 +101,7 @@ jobs:
           # spark-4.2 profiles.
       fail-fast: false
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Setup Rust & Java toolchain
         uses: ./.github/actions/setup-builder
@@ -155,7 +155,7 @@ jobs:
     container:
       image: amd64/rust
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Setup Rust & Java toolchain
         uses: ./.github/actions/setup-builder
@@ -184,7 +184,7 @@ jobs:
     container:
       image: amd64/rust
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Setup Rust toolchain
         uses: ./.github/actions/setup-builder
         with:
@@ -236,7 +236,7 @@ jobs:
     container:
       image: amd64/rust
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Setup Rust & Java toolchain
         uses: ./.github/actions/setup-builder
@@ -346,6 +346,7 @@ jobs:
               org.apache.spark.CometPluginsNonOverrideSuite
               org.apache.spark.CometPluginsUnifiedModeOverrideSuite
               org.apache.comet.rules.CometScanRuleSuite
+              org.apache.comet.rules.CometScanSchemeFallbackSuite
               org.apache.comet.rules.CometExecRuleSuite
               org.apache.spark.sql.CometTPCDSQuerySuite
               org.apache.spark.sql.CometTPCDSQueryTestSuite
@@ -355,6 +356,7 @@ jobs:
               org.apache.spark.sql.comet.CometTaskMetricsSuite
               org.apache.spark.sql.comet.CometDppFallbackRepro3949Suite
               org.apache.spark.sql.comet.CometShuffleFallbackStickinessSuite
+              org.apache.spark.sql.comet.PlanDataInjectorSuite
               org.apache.spark.sql.comet.CometDecimalArithmeticViewSuite
               org.apache.spark.sql.comet.util.UtilsSuite
               org.apache.comet.objectstore.NativeConfigSuite
@@ -400,7 +402,7 @@ jobs:
         JAVA_TOOL_OPTIONS: ${{ (matrix.profile.java_version == '17' || matrix.profile.java_version == '21') && '--add-exports=java.base/sun.nio.ch=ALL-UNNAMED --add-exports=java.base/sun.util.calendar=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.lang=ALL-UNNAMED' || '' }}
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Setup Rust & Java toolchain
         uses: ./.github/actions/setup-builder
@@ -445,7 +447,7 @@ jobs:
     env:
       JAVA_TOOL_OPTIONS: --add-exports=java.base/sun.nio.ch=ALL-UNNAMED --add-exports=java.base/sun.util.calendar=ALL-UNNAMED --add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.lang.invoke=ALL-UNNAMED --add-opens=java.base/java.lang.reflect=ALL-UNNAMED --add-opens=java.base/java.io=ALL-UNNAMED --add-opens=java.base/java.net=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.util=ALL-UNNAMED --add-opens=java.base/java.util.concurrent=ALL-UNNAMED --add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED --add-opens=java.base/jdk.internal.ref=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED --add-opens=java.base/sun.nio.cs=ALL-UNNAMED --add-opens=java.base/sun.security.action=ALL-UNNAMED --add-opens=java.base/sun.util.calendar=ALL-UNNAMED
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Setup Rust & Java toolchain
         uses: ./.github/actions/setup-builder
@@ -500,7 +502,7 @@ jobs:
     env:
       JAVA_TOOL_OPTIONS: --add-exports=java.base/sun.nio.ch=ALL-UNNAMED --add-exports=java.base/sun.util.calendar=ALL-UNNAMED --add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.lang.invoke=ALL-UNNAMED --add-opens=java.base/java.lang.reflect=ALL-UNNAMED --add-opens=java.base/java.io=ALL-UNNAMED --add-opens=java.base/java.net=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.util=ALL-UNNAMED --add-opens=java.base/java.util.concurrent=ALL-UNNAMED --add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED --add-opens=java.base/jdk.internal.ref=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED --add-opens=java.base/sun.nio.cs=ALL-UNNAMED --add-opens=java.base/sun.security.action=ALL-UNNAMED --add-opens=java.base/sun.util.calendar=ALL-UNNAMED
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Setup Rust & Java toolchain
         uses: ./.github/actions/setup-builder
@@ -537,7 +539,7 @@ jobs:
 
       - name: Checkout tpcds-kit
         if: steps.cache-tpcds.outputs.cache-hit != 'true'
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           repository: databricks/tpcds-kit
           path: ./tpcds-kit

@@ -157,6 +157,31 @@ pub extern "system" fn Java_org_apache_comet_NativeBase_isFeatureEnabled(
     })
 }
 
+/// JNI method: does object_store recognize this URL's scheme?
+///
+/// This is the source of truth for the JVM planner's "can Comet's native reader handle this
+/// filesystem?" check. Comet's `prepare_object_store_with_configs` dispatches non-hdfs/non-s3
+/// schemes to object_store's `parse_url`, which is driven by `ObjectStoreScheme::parse`; an
+/// unrecognized scheme (e.g. a custom Hadoop FileSystem) fails there at execution time. By
+/// answering from `ObjectStoreScheme::parse` here, the planner can decline early without
+/// hardcoding -- and drifting from -- the object_store-supported scheme set. (hdfs / libhdfs
+/// schemes are handled separately on the JVM side via the user's libhdfs scheme config.)
+#[no_mangle]
+pub extern "system" fn Java_org_apache_comet_NativeBase_isObjectStoreSchemeSupported(
+    env: EnvUnowned,
+    _: JClass,
+    url: JString,
+) -> jni::sys::jboolean {
+    try_unwrap_or_throw(&env, |env| {
+        let url_str: String = url.try_to_string(env)?;
+        let supported = url::Url::parse(&url_str)
+            .ok()
+            .map(|u| object_store::ObjectStoreScheme::parse(&u).is_ok())
+            .unwrap_or(false);
+        Ok(supported)
+    })
+}
+
 // Creates a default log4rs config, which logs to console with log level.
 fn default_logger_config(log_level: &str) -> CometResult<Config> {
     let console_append = ConsoleAppender::builder()

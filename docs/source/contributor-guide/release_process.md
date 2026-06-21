@@ -30,11 +30,11 @@ instructions on each step.
 
 - [ ] Release preparation: review expression support status and user guide
 - [ ] Create release branch
+- [ ] Protect the release branch in `.asf.yaml`
 - [ ] Generate release documentation
 - [ ] Update Maven version in release branch
 - [ ] Update version in main for next development cycle
-- [ ] Generate the change log and create PR against main
-- [ ] Cherry-pick the change log commit into the release branch
+- [ ] Generate the change log and PR it against the release branch
 - [ ] Build the jars
 - [ ] Tag the release candidate
 - [ ] Update documentation for the new release
@@ -46,6 +46,7 @@ instructions on each step.
   - [ ] Create GitHub release
   - [ ] Promote Maven artifacts to production
   - [ ] Push the release tag
+  - [ ] Bring the finalized change log into main
   - [ ] Close the vote and announce the release
 - [ ] Post release:
   - [ ] Register the release with Apache Reporter
@@ -103,23 +104,45 @@ git checkout -b branch-0.13
 git push apache branch-0.13
 ```
 
+Creating the branch is the only direct push to it. After protecting the branch (next step), all later changes
+to the release branch (documentation, version bump, changelog) go through pull requests targeting it.
+
+### Protect the Release Branch
+
+Add the new branch to `protected_branches` in `.asf.yaml` so it requires a pull request and review, the same as
+`main`. ASF applies `.asf.yaml` from the default branch, so this is a PR against `main`:
+
+```yaml
+protected_branches:
+  main:
+    required_pull_request_reviews:
+      required_approving_review_count: 1
+  branch-0.13:
+    required_pull_request_reviews:
+      required_approving_review_count: 1
+```
+
+All release branches stay protected, including older ones, so released code cannot be pushed to directly.
+
 ### Generate Release Documentation
 
-Generate the documentation content for this release. The docs on `main` contain only template markers,
-so we need to generate the actual content (config tables, compatibility matrices) for the release branch:
+The docs on `main` contain only template markers; CI fills them at publish time. A release branch instead
+commits the generated content so the archived docs for the release render real tables. Run the script to
+generate the config reference and the per-Spark-version compatibility pages and freeze them onto the branch:
 
 ```shell
 ./dev/generate-release-docs.sh
 git add docs/source/user-guide/latest/
 git commit -m "Generate docs for 0.13.0 release"
-git push apache branch-0.13
 ```
 
-This freezes the documentation to reflect the configs and expressions available in this release.
+The script runs one Maven build per supported Spark version, so it takes a while. Open a PR with this commit
+targeting the release branch.
 
 ### Update Maven Version
 
-Update the `pom.xml` files in the release branch to update the Maven version from `0.13.0-SNAPSHOT` to `0.13.0`.
+Open a PR targeting the release branch that changes the Maven version from `0.13.0-SNAPSHOT` to `0.13.0` in
+the `pom.xml` files and in the diff files under `dev/diffs`.
 
 There is no need to update the Rust crate versions because they will already be `0.13.0`.
 
@@ -154,8 +177,10 @@ export GITHUB_TOKEN=<your-token-here>
 python3 generate-changelog.py 0.12.0 HEAD 0.13.0 > ../../docs/source/changelog/0.13.0.md
 ```
 
-Create a PR against the _main_ branch to add this change log and once this is approved and merged, cherry-pick the
-commit into the release branch.
+Open a PR adding this change log targeting the release branch. Generate it late, once backports to the release
+branch are complete; if more changes land on the release branch before the release candidate is tagged,
+regenerate it and update the PR. After the release is approved and tagged, open a separate PR to bring the same
+change log file into `main`.
 
 ### Build the jars
 
@@ -223,7 +248,7 @@ repository
 
 ### Tag the Release Candidate
 
-Ensure that the Maven version update and changelog cherry-pick have been pushed to the release branch before tagging.
+Ensure that the Maven version update and change log have been merged to the release branch before tagging.
 
 Tag the release branch with `0.13.0-rc1` and push to the `apache` repo
 
