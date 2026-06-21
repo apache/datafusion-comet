@@ -44,6 +44,14 @@ under the License.
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
     <java.version>11</java.version>
+    <!--
+      Default Delta dep version (only consumed when `-Pcontrib-delta` is also
+      active). Spark profiles override this: spark-3.5 -> 3.3.2, spark-4.1 ->
+      4.1.0. The top-level default lets Maven invocations that don't activate a
+      Spark profile (e.g. `mvn -Pcontrib-delta spotless:apply`) resolve the
+      property without an error.
+    -->
+    <delta.version>4.1.0</delta.version>
     <maven.compiler.source>${java.version}</maven.compiler.source>
     <maven.compiler.target>${java.version}</maven.compiler.target>
     <maven-compiler-plugin.version>3.11.0</maven-compiler-plugin.version>
