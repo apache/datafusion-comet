@@ -294,6 +294,8 @@ object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
         Compatible()
       case DataTypes.BinaryType =>
         Compatible()
+      case DataTypes.NullType =>
+        Compatible()
       case StructType(fields) =>
         for (field <- fields) {
           isSupported(field.dataType, DataTypes.StringType, timeZoneId, evalMode) match {

@@ -158,6 +158,7 @@ private[codegen] object CometBatchKernelCodegenOutput {
 
   /** Concrete Arrow vector class name for the output type, used to cast `outRaw` once. */
   private def outputVectorClass(dataType: DataType): String = dataType match {
+    case NullType => classOf[NullVector].getName
     case BooleanType => classOf[BitVector].getName
     case ByteType => classOf[TinyIntVector].getName
     case ShortType => classOf[SmallIntVector].getName
@@ -204,6 +205,8 @@ private[codegen] object CometBatchKernelCodegenOutput {
       dataType: DataType,
       ctx: CodegenContext,
       nested: Boolean = false): OutputEmit = dataType match {
+    case NullType =>
+      OutputEmit("", "")
     case BooleanType =>
       val set = if (nested) "setSafe" else "set"
       OutputEmit("", s"$targetVec.$set($idx, $source ? 1 : 0);")
@@ -389,6 +392,7 @@ private[codegen] object CometBatchKernelCodegenOutput {
    */
   private def emitSpecializedGetterExpr(target: String, idx: String, elemType: DataType): String =
     elemType match {
+      case NullType => "null"
       case BooleanType => s"$target.getBoolean($idx)"
       case ByteType => s"$target.getByte($idx)"
       case ShortType => s"$target.getShort($idx)"

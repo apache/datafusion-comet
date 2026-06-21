@@ -79,6 +79,7 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
    * supported when their children are.
    */
   def isSupportedDataType(dt: DataType): Boolean = dt match {
+    case NullType => true
     case BooleanType | ByteType | ShortType | IntegerType | LongType => true
     case FloatType | DoubleType => true
     case _: DecimalType => true

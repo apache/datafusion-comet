@@ -331,9 +331,8 @@ SELECT cast(map('a', named_struct('x', 1, 'y', 'first'), 'b', cast(null as struc
 query
 SELECT cast(map('a', array(1, 2, 3), 'b', array(cast(null as int)), 'c', cast(null as array<int>)) as string)
 
--- Empty map: still falls back because planning sees `map()` as `Map<NullType, NullType>`,
--- which reaches the existing NullType -> StringType cast fallback.
-query expect_fallback(Cast from NullType to StringType is not supported)
+-- Empty map.
+query
 SELECT cast(map() as string)
 
 -- NULL map: Spark constant-folds this to a literal NULL, so the cast never reaches Comet
