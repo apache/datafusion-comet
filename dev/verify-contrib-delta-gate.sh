@@ -94,16 +94,15 @@ fi
 green "OK: cargo tree default is clean of contrib + kernel"
 
 TREE_CONTRIB="$(cargo tree -p datafusion-comet --features contrib-delta 2>/dev/null)"
-# The build-gate unit ships a STUB contrib crate, so the gated tree pulls in
-# `comet-contrib-delta` but not yet the heavy `delta_kernel` (that arrives with the
-# native read-path unit). Require the contrib crate to be present; the symbol check
-# below guards against grep-pattern drift either way.
-CONTRIB_HITS="$(printf '%s\n' "$TREE_CONTRIB" | grep -cE 'comet-contrib-delta' || true)"
-if [[ "$CONTRIB_HITS" -lt 1 ]]; then
-  red "FAIL: --features contrib-delta tree missing the comet-contrib-delta crate (hits=$CONTRIB_HITS)"
+# The gated tree must pull in both the contrib crate AND the heavy `delta_kernel` it
+# depends on (driver-side log replay). Require >=2 hits; the symbol check below guards
+# against grep-pattern drift either way.
+CONTRIB_HITS="$(printf '%s\n' "$TREE_CONTRIB" | grep -cE 'comet-contrib-delta|delta_kernel|delta-kernel' || true)"
+if [[ "$CONTRIB_HITS" -lt 2 ]]; then
+  red "FAIL: --features contrib-delta tree missing expected Delta-related entries (hits=$CONTRIB_HITS)"
   exit 1
 fi
-green "OK: cargo tree with contrib-delta correctly pulls comet-contrib-delta"
+green "OK: cargo tree with contrib-delta correctly pulls comet-contrib-delta + delta_kernel"
 
 # ---- Maven gate -----------------------------------------------------------
 
