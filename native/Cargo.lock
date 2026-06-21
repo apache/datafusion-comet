@@ -1284,9 +1284,9 @@ checksum = "1fd0f2584146f6f2ef48085050886acf353beff7305ebd1ae69500e27c67f64b"
 
 [[package]]
 name = "bytes"
-version = "1.11.1"
+version = "1.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1e748733b7cbc798e1434b6ac524f0c1ff2ab456fe201501e6497c8417a4fc33"
+checksum = "8ae3f5d315924270530207e2a68396c3cc547f6dca3fbdca317cfb1a51edb593"
 
 [[package]]
 name = "bytes-utils"
@@ -1324,9 +1324,9 @@ dependencies = [
 
 [[package]]
 name = "cc"
-version = "1.2.63"
+version = "1.2.64"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "556e016178bb5662a08681bbe0f00f8e17631781a4dfc8c45e466e4b185ec27f"
+checksum = "dad887fd958be91b5098c0248def011f4523ab786cd411be668777e55063501f"
 dependencies = [
  "find-msvc-tools",
  "jobserver",
@@ -1982,7 +1982,7 @@ dependencies = [
 
 [[package]]
 name = "datafusion-comet"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "arrow",
  "assertables",
@@ -2008,7 +2008,7 @@ dependencies = [
  "hex",
  "iceberg",
  "iceberg-storage-opendal",
- "itertools 0.14.0",
+ "itertools 0.15.0",
  "jni 0.22.4",
  "lazy_static",
  "log",
@@ -2039,7 +2039,7 @@ dependencies = [
 
 [[package]]
 name = "datafusion-comet-common"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "arrow",
  "datafusion",
@@ -2065,7 +2065,7 @@ dependencies = [
 
 [[package]]
 name = "datafusion-comet-jni-bridge"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "arrow",
  "assertables",
@@ -2083,7 +2083,7 @@ dependencies = [
 
 [[package]]
 name = "datafusion-comet-objectstore-hdfs"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "async-trait",
  "bytes",
@@ -2097,7 +2097,7 @@ dependencies = [
 
 [[package]]
 name = "datafusion-comet-proto"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "prost",
  "prost-build",
@@ -2105,7 +2105,7 @@ dependencies = [
 
 [[package]]
 name = "datafusion-comet-shuffle"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "arrow",
  "async-trait",
@@ -2119,7 +2119,7 @@ dependencies = [
  "datafusion-comet-jni-bridge",
  "datafusion-comet-spark-expr",
  "futures",
- "itertools 0.14.0",
+ "itertools 0.15.0",
  "jni 0.21.1",
  "log",
  "lz4_flex",
@@ -2133,7 +2133,7 @@ dependencies = [
 
 [[package]]
 name = "datafusion-comet-spark-expr"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "arrow",
  "base64",
@@ -3872,6 +3872,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "itertools"
+version = "0.15.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8b4baf93f58d4425749ca49a51c50ebab072c5df6994d08fed93541c331481dc"
+dependencies = [
+ "either",
+]
+
+[[package]]
 name = "itoa"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5309,7 +5318,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "03da047801ff44bb6a4d407d4860c05fd70bb81714e6b2f3812603d5b145b042"
 dependencies = [
  "heck",
- "itertools 0.14.0",
+ "itertools 0.13.0",
  "log",
  "multimap",
  "petgraph",
@@ -5328,7 +5337,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b570b25f7617e43d59005d0990ccb79e950a423952cea19671b7a876da390adf"
 dependencies = [
  "anyhow",
- "itertools 0.14.0",
+ "itertools 0.13.0",
  "proc-macro2",
  "quote",
  "syn 2.0.117",

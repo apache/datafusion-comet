@@ -341,6 +341,16 @@ trait ShimSparkErrorConverter {
           QueryExecutionErrors.readCurrentFileNotFoundError(
             new FileNotFoundException(s"File $path does not exist")))
 
+      case "CannotReadFile" =>
+        // A per-file read failure of a readable-but-broken file (corrupt/truncated parquet,
+        // object_store, IO) classified by typed DataFusionError variant on the native side. Wrap
+        // in the FAILED_READ_FILE SparkException Spark itself produces when its own parquet reader
+        // fails. (A genuinely-missing file is "FileNotFound" above.) `filePath` is filled by
+        // SparkErrorConverter from the per-task file list when the native error carried none.
+        val message = params.get("message").map(_.toString).getOrElse("")
+        val filePath = params.get("filePath").map(_.toString).getOrElse("")
+        Some(QueryExecutionErrors.cannotReadFilesError(new SparkException(message), filePath))
+
       case _ =>
         None
     }
