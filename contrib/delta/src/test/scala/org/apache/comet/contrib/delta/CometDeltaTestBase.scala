@@ -24,6 +24,7 @@ import java.nio.file.Files
 import org.apache.spark.SparkConf
 import org.apache.spark.sql.{DataFrame, Row, SparkSession}
 import org.apache.spark.sql.CometTestBase
+import org.apache.spark.sql.comet.CometDeltaNativeScanExec
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 
 import org.apache.comet.CometSparkSessionExtensions
@@ -32,12 +33,11 @@ import org.apache.comet.CometSparkSessionExtensions
  * Base trait for unit-testing the contrib-delta JVM layer.
  *
  * Wires up Spark+Delta in local mode with the contrib enabled (Comet + Delta session
- * extensions, AQE forced on so Comet's query-stage-prep rules fire) and provides the
- * claim/decline assertions this unit needs: `assertMarkerPlanted` / `assertNoMarker`
- * (did `DeltaScanRule` claim the scan?) and `assertResultsMatchVanilla` (does the
- * marker's fallback / a decline stay result-correct?). The native-read assertions
- * (`assertDeltaNativeMatches` etc.) land with the serde/exec unit, since they need
- * `CometDeltaNativeScanExec`.
+ * extensions, AQE forced on so Comet's query-stage-prep rules fire) and provides both the
+ * native-read assertions (`assertDeltaNativeMatches` / `assertKernelReadEngaged` /
+ * `assertDeltaFallback` / `assertNativePlanContains` -- a claimed scan engages
+ * `CometDeltaNativeScanExec`) and the decline assertion (`assertNoMarker` -- a declined scan plants
+ * no `CometDeltaScanMarker` and runs on vanilla Spark).
  */
 trait CometDeltaTestBase extends CometTestBase with AdaptiveSparkPlanHelper {
 
@@ -139,21 +139,6 @@ trait CometDeltaTestBase extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   /**
-   * Assert that `DeltaScanRule` CLAIMED the scan: the executed plan contains a `CometDeltaScanMarker`.
-   * On a build without the serde (this unit) the marker does not yet mix in `CometContribScanMarker`,
-   * so `CometExecRule` matches nothing, leaves it in the plan, and it executes as a vanilla Delta
-   * fallback -- which is exactly the claim signal we assert here. (On the A.2 build, where no
-   * `CometScanContrib` service is registered at all, no marker is planted, so this is red there /
-   * green here.)
-   */
-  protected def assertMarkerPlanted(df: DataFrame): Unit = {
-    val markers = markersIn(df)
-    assert(
-      markers.nonEmpty,
-      s"expected a CometDeltaScanMarker in the plan, got:\n${df.queryExecution.executedPlan}")
-  }
-
-  /**
    * Assert the rule DECLINED the scan (no `CometDeltaScanMarker` planted) -- the read runs as a
    * vanilla Spark Delta scan. Used for the decline-path cases (unsupported projection, encryption,
    * etc.).
@@ -166,26 +151,75 @@ trait CometDeltaTestBase extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   /**
-   * Assert the Delta read at `tablePath` returns the same rows whether the native claim path is on
-   * or off -- i.e. the marker's vanilla fallback (and any decline) is result-correct. Order-independent.
+   * Assert that `df`'s executed plan (after a forced `.collect()` so AQE materialises Comet's rules)
+   * contains an operator whose simple class name matches each name in `expectedExecs`. Uses the
+   * AQE-aware `collect` (from `AdaptiveSparkPlanHelper`) so it descends into the
+   * `AdaptiveSparkPlanExec` wrapper that every real exec lives inside under the AQE-forced-on config.
    */
-  protected def assertResultsMatchVanilla(
+  protected def assertNativePlanContains(df: DataFrame, expectedExecs: String*): Unit = {
+    df.collect()
+    val plan = df.queryExecution.executedPlan
+    val present = collect(plan) { case p => p.getClass.getSimpleName }.toSet
+    val missing = expectedExecs.filterNot(present.contains)
+    assert(
+      missing.isEmpty,
+      s"expected execs missing from plan: ${missing.mkString(", ")}\n" +
+        s"present execs: ${present.mkString(", ")}\nfull plan:\n$plan")
+  }
+
+  /**
+   * Run `query` against the Delta table at `tablePath` with the native scan engaged, assert the
+   * executed plan contains a `CometDeltaNativeScanExec` (the read went native), and that the rows
+   * match vanilla Spark's (order-independent).
+   */
+  protected def assertDeltaNativeMatches(
       tablePath: String,
       query: DataFrame => DataFrame): Unit = {
-    val withClaim = query(spark.read.format("delta").load(tablePath))
-      .collect()
-      .toSeq
-      .map(normalizeRow)
+    val native = query(spark.read.format("delta").load(tablePath))
+    // Materialise first so AQE runs its query-stage prep rules (Comet's CometScanRule fires lazily
+    // when AQE materialises a stage); after collect, executedPlan reflects the finalized plan.
+    val nativeRows = native.collect().toSeq.map(normalizeRow)
+    val plan = native.queryExecution.executedPlan
+    val deltaScans = collect(plan) { case s: CometDeltaNativeScanExec => s }
+    assert(deltaScans.nonEmpty, s"expected CometDeltaNativeScanExec in plan, got:\n$plan")
+
     withSQLConf("spark.comet.scan.deltaNative.enabled" -> "false") {
-      val vanilla = query(spark.read.format("delta").load(tablePath))
+      val vanillaRows = query(spark.read.format("delta").load(tablePath))
         .collect()
         .toSeq
         .map(normalizeRow)
       assert(
-        withClaim.sortBy(_.mkString("|")) == vanilla.sortBy(_.mkString("|")),
-        s"claim-path result did not match vanilla Spark result\n" +
-          s"withClaim=$withClaim\nvanilla=$vanilla")
+        nativeRows.sortBy(_.mkString("|")) == vanillaRows.sortBy(_.mkString("|")),
+        s"native result did not match vanilla Spark result\nnative=$nativeRows\nvanilla=$vanillaRows")
     }
+  }
+
+  /**
+   * Like `assertDeltaNativeMatches` but asserts the native plan SHOULD fall back: no
+   * `CometDeltaNativeScanExec` appears (the read ran on vanilla Spark).
+   */
+  protected def assertDeltaFallback(
+      tablePath: String,
+      query: DataFrame => DataFrame): Unit = {
+    val attempt = query(spark.read.format("delta").load(tablePath))
+    attempt.collect()
+    val plan = attempt.queryExecution.executedPlan
+    val deltaScans = collect(plan) { case s: CometDeltaNativeScanExec => s }
+    assert(
+      deltaScans.isEmpty,
+      s"expected fallback (no CometDeltaNativeScanExec) but plan was:\n$plan")
+  }
+
+  /**
+   * Assert the native kernel-read path engaged: the plan carries a `CometDeltaNativeScanExec` rather
+   * than falling back to vanilla Spark.
+   */
+  protected def assertKernelReadEngaged(tablePath: String): Unit = {
+    val df = spark.read.format("delta").load(tablePath)
+    df.collect() // materialize so AQE / Comet rules finalize the plan
+    val plan = df.queryExecution.executedPlan
+    val scans = collect(plan) { case s: CometDeltaNativeScanExec => s }
+    assert(scans.nonEmpty, s"expected CometDeltaNativeScanExec in plan, got:\n$plan")
   }
 
   protected def normalizeRow(row: Row): Seq[Any] =

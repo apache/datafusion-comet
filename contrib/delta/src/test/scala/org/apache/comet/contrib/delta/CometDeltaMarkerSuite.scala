@@ -23,50 +23,47 @@ import org.apache.spark.sql.DataFrame
 import org.apache.spark.sql.functions.{col, input_file_name}
 
 /**
- * Coverage for the contrib-delta CLAIM/DECLINE layer (`DeltaScanRule` + `CometDeltaScanMarker`)
- * that this unit introduces, independent of the native read path (the serde/exec land later).
- *
- * On this build there is no `CometDeltaNativeScan` serde, so `CometExecRule`'s `scanHandler`
- * lookup returns `None` and a planted `CometDeltaScanMarker` is left in the plan executing as a
- * vanilla Delta fallback. That makes the marker's PRESENCE the observable signal that the rule
- * claimed the scan, and its absence the signal that the rule declined -- exactly what these tests
- * assert. The native-read assertions live with the serde/exec unit.
+ * Coverage for the contrib-delta CLAIM/DECLINE path: `DeltaScanRule` plants a `CometDeltaScanMarker`,
+ * which -- now that the serde (`CometDeltaNativeScan`) is present in this unit -- `CometExecRule`
+ * CONVERTS into a `CometDeltaNativeScanExec` (a real native read). So a CLAIMED scan is observable as
+ * a `CometDeltaNativeScanExec` in the plan, and a DECLINED scan falls back to vanilla Spark (no native
+ * scan). (Before the serde landed, a claimed scan left the marker in the plan executing as a vanilla
+ * fallback; that earlier-unit behaviour is what changed here.)
  */
 class CometDeltaMarkerSuite extends CometDeltaTestBase {
 
-  test("DeltaScanRule plants the marker on a plain Delta read (claim path active)") {
+  test("DeltaScanRule claims a plain Delta read and it engages the native scan") {
     assume(deltaSparkAvailable, "io.delta.spark not on the test classpath")
-    withDeltaTable("marker-planted") { tablePath =>
+    withDeltaTable("claim-native") { tablePath =>
       spark.range(0, 100).toDF("id").write.format("delta").save(tablePath)
-      val df = spark.read.format("delta").load(tablePath)
-      // Red-green vs the A.2 build: with `DeltaScanRule$` absent (A.2 bridge only) no marker is
-      // planted; this unit supplies the rule, so the marker appears (then falls back to vanilla).
-      assertMarkerPlanted(df)
+      // The rule claims the scan (plants the marker); with the serde present, CometExecRule converts
+      // the marker to a CometDeltaNativeScanExec -- so the engaged-native check is the claim signal.
+      assertKernelReadEngaged(tablePath)
     }
   }
 
-  test("marker is planted on a filtered/projected read and the fallback stays result-correct") {
+  test("a filtered/projected claimed read goes native and matches vanilla Spark") {
     assume(deltaSparkAvailable, "io.delta.spark not on the test classpath")
-    withDeltaTable("marker-fallback-correct") { tablePath =>
+    withDeltaTable("claim-native-filtered") { tablePath =>
       spark.range(0, 100).selectExpr("id", "id * 2 as v").write.format("delta").save(tablePath)
-      val query = (df: DataFrame) => df.filter("id > 10").select("id", "v")
-      // Assert the rule actually CLAIMS this query shape (catches a claim-path regression, not just
-      // a result mismatch -- a disengaged claim path would still match rows since both sides run
-      // vanilla), AND that the marker's vanilla fallback returns identical rows.
-      assertMarkerPlanted(query(spark.read.format("delta").load(tablePath)))
-      assertResultsMatchVanilla(tablePath, query)
+      // Asserts the read engages `CometDeltaNativeScanExec` AND results match vanilla -- catches a
+      // claim-path regression (no native scan) and a correctness regression in one shot.
+      assertDeltaNativeMatches(tablePath, (df: DataFrame) => df.filter("id > 10").select("id", "v"))
     }
   }
 
-  test("DeltaScanRule declines an input_file_name() projection (no marker, vanilla read)") {
+  test("DeltaScanRule declines an input_file_name() projection (falls back to vanilla, no native scan)") {
     assume(deltaSparkAvailable, "io.delta.spark not on the test classpath")
     withDeltaTable("decline-input-file-name") { tablePath =>
       spark.range(0, 50).toDF("id").write.format("delta").save(tablePath)
-      // `input_file_name()` forces a fall back to vanilla (per-file provenance the native scan
-      // can't surface), so the rule declines and plants no marker.
-      val df = spark.read.format("delta").load(tablePath).select(col("id"), input_file_name())
-      assertNoMarker(df)
-      assert(df.count() == 50L, "declined read must still return all rows via vanilla Spark")
+      // `input_file_name()` forces a fall back to vanilla (per-file provenance the native scan can't
+      // surface), so the rule declines, plants no marker, and no CometDeltaNativeScanExec appears.
+      val query = (df: DataFrame) => df.select(col("id"), input_file_name())
+      assertDeltaFallback(tablePath, query)
+      assertNoMarker(query(spark.read.format("delta").load(tablePath)))
+      assert(
+        query(spark.read.format("delta").load(tablePath)).count() == 50L,
+        "declined read must still return all rows via vanilla Spark")
     }
   }
 }

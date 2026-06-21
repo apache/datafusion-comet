@@ -22,12 +22,14 @@ package org.apache.spark.sql.comet
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression}
-import org.apache.spark.sql.execution.{FileSourceScanExec, LeafExecNode}
+import org.apache.spark.sql.execution.{FileSourceScanExec, LeafExecNode, SparkPlan}
 import org.apache.spark.sql.execution.datasources.HadoopFsRelation
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
-import org.apache.comet.contrib.delta.DeltaScanMetadata
+import org.apache.comet.contrib.delta.{CometDeltaNativeScan, DeltaScanMetadata}
+import org.apache.comet.rules.CometContribScanMarker
+import org.apache.comet.serde.CometOperatorSerde
 
 /**
  * Planning-time marker the Delta contrib's `DeltaScanRule` produces for a Delta scan it can
@@ -39,18 +41,26 @@ import org.apache.comet.contrib.delta.DeltaScanMetadata
  *     node copies/AQE re-planning, unlike a `TreeNodeTag`), instead of mutating the scan's schema
  *     or smuggling it through `relation.options`.
  *
- * Conversion to a `CometDeltaNativeScanExec` happens once the serde unit lands: the marker then also
- * mixes in core's `CometContribScanMarker` (supplying `scanHandler`), and `CometExecRule` routes it
- * through the contrib serde by a plain type test. On this unit there is no serde yet, so the marker
- * matches nothing in `CometExecRule` and is left in the plan -- where it executes by delegating to
- * the wrapped scan (i.e. a vanilla Spark Delta read), so leaving it in the plan is always safe.
+ * It mixes in core's [[org.apache.comet.rules.CometContribScanMarker]] and carries its own
+ * [[scanHandler]], so `CometExecRule` converts it to a `CometDeltaNativeScanExec` through a plain
+ * type test -- core needs no class-name match and no reflective handler lookup, and holds no
+ * compile-time reference to the contrib. If the serde declines the conversion, the marker is left
+ * in the plan and executes by delegating to the wrapped scan (i.e. a vanilla Spark Delta read), so
+ * leaving it in the plan is always safe.
  *
  * The accessors mirror the `FileSourceScanExec`/`CometScanExec` surface the serde reads
  * (`relation`, `requiredSchema`, `partitionFilters`, `output`, `wrapped`) so the serde body is
  * unchanged apart from reading metadata from [[deltaMetadata]].
  */
 case class CometDeltaScanMarker(originalScan: FileSourceScanExec, deltaMetadata: DeltaScanMetadata)
-    extends LeafExecNode {
+    extends LeafExecNode
+    with CometContribScanMarker {
+
+  /**
+   * The Delta serde that turns this marker into a native exec. Supplied as a field on the node
+   * itself (core's `CometContribScanMarker` contract) rather than resolved by core.
+   */
+  override def scanHandler: CometOperatorSerde[_ <: SparkPlan] = CometDeltaNativeScan
 
   override def output: Seq[Attribute] = originalScan.output
 
