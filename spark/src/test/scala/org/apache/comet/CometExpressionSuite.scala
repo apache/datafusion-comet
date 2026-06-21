@@ -3159,4 +3159,45 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("pushed-down predicate divide-by-zero is not surfaced as FAILED_READ_FILE") {
+    // A throwing expression in a WHERE clause can be pushed into the parquet row filter (reachable
+    // by default once Scala UDF codegen dispatch routes the UDF natively). DataFusion's row filter
+    // returns the failure as an ArrowError wrapped by the parquet reader as ParquetError::External,
+    // which must NOT be misclassified as a corrupt-file read (FAILED_READ_FILE / cannotReadFiles).
+    // The divide-by-zero must surface as a divide-by-zero. Regression for the FAILED_READ_FILE
+    // classifier over-matching (see jni-bridge errors.rs parquet_external_wraps_arrow_error).
+    withSQLConf(
+      "spark.sql.ansi.enabled" -> "true",
+      CometConf.COMET_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_ENABLED.key -> "true",
+      CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "true") {
+      val ident = org.apache.spark.sql.functions.udf((x: Int) => x)
+      spark.udf.register("comet_test_identity", ident)
+      withParquetTable(Seq(Tuple1(0), Tuple1(1)), "t") {
+        val ex = intercept[Exception] {
+          sql("SELECT 1 AS one FROM t WHERE 1 / comet_test_identity(_1) = 1").collect()
+        }
+        val chain = {
+          val sb = new StringBuilder
+          var c: Throwable = ex
+          var depth = 0
+          while (c != null && depth < 12) {
+            sb.append(c.getClass.getName).append(": ").append(String.valueOf(c.getMessage))
+            c = c.getCause
+            depth += 1
+          }
+          sb.toString
+        }
+        assert(
+          !chain.contains("Encountered error while reading file") &&
+            !chain.contains("FAILED_READ_FILE") &&
+            !chain.contains("cannotReadFiles"),
+          s"divide-by-zero must not surface as a file-read error, but got:\n$chain")
+        assert(
+          chain.contains("DivideByZero") || chain.contains("DIVIDE_BY_ZERO"),
+          s"expected a divide-by-zero error, but got:\n$chain")
+      }
+    }
+  }
+
 }

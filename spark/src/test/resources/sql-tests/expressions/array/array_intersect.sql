@@ -125,7 +125,15 @@ statement
 CREATE TABLE test_intersect_float(a array<float>, b array<float>) USING parquet
 
 statement
-INSERT INTO test_intersect_float VALUES (array(1.5, 2.5, float('NaN')), array(2.5, float('NaN'))), (array(float('Infinity'), 1.0, float('-Infinity')), array(float('Infinity'), float('-Infinity'))), (array(cast(0.0 as float), cast(-0.0 as float)), array(cast(0.0 as float)))
+INSERT INTO test_intersect_float VALUES
+  (array(1.5, 2.5, float('NaN')), array(2.5, float('NaN'))),
+  (array(float('NaN'), float('NaN'), 1.0), array(float('NaN'))),
+  (array(float('NaN'), 1.0, 2.0), array(float('NaN'), 2.0)),
+  (array(float('NaN'), 1.0), array(2.0, 3.0)),
+  (array(1.0, 2.0), array(float('NaN'))),
+  (array(float('NaN'), NULL), array(float('NaN'), NULL)),
+  (array(float('Infinity'), 1.0, float('-Infinity')), array(float('Infinity'), float('-Infinity'))),
+  (array(cast(0.0 as float), cast(-0.0 as float)), array(cast(0.0 as float)))
 
 query
 SELECT a, b, array_intersect(a, b) FROM test_intersect_float
@@ -135,7 +143,16 @@ statement
 CREATE TABLE test_intersect_dbl(a array<double>, b array<double>) USING parquet
 
 statement
-INSERT INTO test_intersect_dbl VALUES (array(1.0, 2.0, double('NaN')), array(2.0, double('NaN'))), (array(double('Infinity'), 1.0, double('-Infinity')), array(double('Infinity'), double('-Infinity'))), (array(0.0, -0.0), array(0.0)), (array(1.0, 2.0, NULL), array(1.0, NULL))
+INSERT INTO test_intersect_dbl VALUES
+  (array(1.0, 2.0, double('NaN')), array(2.0, double('NaN'))),
+  (array(double('NaN'), double('NaN'), 1.0), array(double('NaN'))),
+  (array(double('NaN'), 1.0, 2.0), array(double('NaN'), 2.0)),
+  (array(double('NaN'), 1.0), array(2.0, 3.0)),
+  (array(1.0, 2.0), array(double('NaN'))),
+  (array(double('NaN'), NULL), array(double('NaN'), NULL)),
+  (array(double('Infinity'), 1.0, double('-Infinity')), array(double('Infinity'), double('-Infinity'))),
+  (array(0.0, -0.0), array(0.0)),
+  (array(1.0, 2.0, NULL), array(1.0, NULL))
 
 query
 SELECT a, b, array_intersect(a, b) FROM test_intersect_dbl

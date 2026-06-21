@@ -27,3 +27,44 @@ SELECT array_max(arr) FROM test_array_max
 -- literal arguments
 query
 SELECT array_max(array(1, 2, 3)), array_max(array()), array_max(cast(NULL as array<int>))
+
+-- ===== DOUBLE arrays with NaN/Infinity/-0.0 =====
+
+statement
+CREATE TABLE test_array_max_double(arr array<double>) USING parquet
+
+statement
+INSERT INTO test_array_max_double VALUES
+  (array(CAST('NaN' AS DOUBLE), 1.0, 2.0)),
+  (array(1.0, CAST('NaN' AS DOUBLE), 2.0)),
+  (array(1.0, 2.0, CAST('NaN' AS DOUBLE))),
+  (array(CAST('NaN' AS DOUBLE), CAST('NaN' AS DOUBLE))),
+  (array(CAST('NaN' AS DOUBLE), NULL, 1.0)),
+  (array(CAST('Infinity' AS DOUBLE), 1.0, 2.0)),
+  (array(CAST('-Infinity' AS DOUBLE), 1.0, 2.0)),
+  (array(CAST('NaN' AS DOUBLE), CAST('Infinity' AS DOUBLE), CAST('-Infinity' AS DOUBLE))),
+  (array(0.0, -0.0, 1.0)),
+  (NULL),
+  (array())
+
+query
+SELECT array_max(arr) FROM test_array_max_double
+
+-- ===== FLOAT arrays with NaN/Infinity/-0.0 =====
+
+statement
+CREATE TABLE test_array_max_float(arr array<float>) USING parquet
+
+statement
+INSERT INTO test_array_max_float VALUES
+  (array(CAST('NaN' AS FLOAT), CAST(1.0 AS FLOAT), CAST(2.0 AS FLOAT))),
+  (array(CAST('NaN' AS FLOAT), CAST('NaN' AS FLOAT))),
+  (array(CAST('NaN' AS FLOAT), NULL, CAST(1.0 AS FLOAT))),
+  (array(CAST('Infinity' AS FLOAT), CAST(1.0 AS FLOAT))),
+  (array(CAST('-Infinity' AS FLOAT), CAST(1.0 AS FLOAT))),
+  (array(CAST(0.0 AS FLOAT), CAST(-0.0 AS FLOAT))),
+  (NULL),
+  (array())
+
+query
+SELECT array_max(arr) FROM test_array_max_float
