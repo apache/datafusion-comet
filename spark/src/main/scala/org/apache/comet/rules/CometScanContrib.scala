@@ -23,7 +23,7 @@ import scala.util.control.NonFatal
 
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.SparkSession
-import org.apache.spark.sql.execution.{FileSourceScanExec, SparkPlan}
+import org.apache.spark.sql.execution.{FileSourceScanExec, RowDataSourceScanExec, SparkPlan}
 import org.apache.spark.sql.execution.datasources.HadoopFsRelation
 import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
 
@@ -42,7 +42,7 @@ import org.apache.comet.serde.CometOperatorSerde
  *   - an implementation of this trait (e.g. `contrib/delta/.../DeltaScanRuleContrib`), and
  *   - a `META-INF/services/org.apache.comet.rules.CometScanContrib` resource naming it.
  *
- * Both hooks default to `None` so a contrib overrides only the scan kind(s) it handles.
+ * Every hook defaults to `None` so a contrib overrides only the scan kind(s) it handles.
  *
  * ==Ownership contract==
  *
@@ -79,6 +79,19 @@ trait CometScanContrib {
    * ownership contract above.
    */
   def tryTransformV2(scanExec: BatchScanExec): Option[SparkPlan] = None
+
+  /**
+   * Row-based V1 (`RowDataSourceScanExec`) hook -- the third of Spark's scan-node shapes, used by
+   * data sources that expose a `BaseRelation` rather than a file index (Delta's Change Data Feed
+   * `readChangeFeed` relation, for example). Return `Some(plan)` to claim the scan, `None` to
+   * pass.
+   *
+   * Unlike the two hooks above (which [[CometScanRule]] drives), this one is driven by
+   * [[CometExecRule]]: a row-based scan has no `CometScanRule` entry point, and `CometExecRule`
+   * runs in both `preColumnarTransitions` and query-stage prep, so a claim fires on non-AQE plans
+   * too.
+   */
+  def tryTransformRowScan(scanExec: RowDataSourceScanExec): Option[SparkPlan] = None
 }
 
 object CometScanContrib extends Logging {
@@ -186,6 +199,10 @@ object CometScanContrib extends Logging {
   /** First contrib to claim the V2 scan, or `None` if none does (including the default build). */
   def tryTransformV2(scanExec: BatchScanExec): Option[SparkPlan] =
     firstClaim(_.tryTransformV2(scanExec))
+
+  /** First contrib to claim the row-based scan, or `None` if none does. */
+  def tryTransformRowScan(scanExec: RowDataSourceScanExec): Option[SparkPlan] =
+    firstClaim(_.tryTransformRowScan(scanExec))
 }
 
 /**

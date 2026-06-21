@@ -27,7 +27,8 @@ import scala.jdk.CollectionConverters._
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{And, BoundReference, Expression, InterpretedPredicate}
-import org.apache.spark.sql.comet.{CometDeltaNativeScanExec, CometDeltaScanMarker, CometNativeExec, SerializedPlan}
+import org.apache.spark.sql.comet.{CometDeltaCdfScanExec, CometDeltaNativeScanExec, CometDeltaScanMarker, CometNativeExec, SerializedPlan}
+import org.apache.spark.sql.execution.RowDataSourceScanExec
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
@@ -593,6 +594,87 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometDeltaScanMarker] wit
     DeltaConf.COMET_DELTA_NATIVE_ENABLED)
 
   override def getSupportLevel(operator: CometDeltaScanMarker): SupportLevel = Compatible()
+
+  /**
+   * Convert a Change Data Feed read -- a `RowDataSourceScanExec` over Delta's `DeltaCDFRelation`
+   * (`readChangeFeed`) -- into a native [[CometDeltaCdfScanExec]]. The native `DeltaKernelScanExec`
+   * reconstructs delta-kernel's `TableChanges(start, end)` from the `cdf_read` + version fields in
+   * the `DeltaScanCommon` and calls `execute()`, emitting the data columns plus `_change_type` /
+   * `_commit_version` / `_commit_timestamp`. There are no per-file tasks (kernel reads the whole
+   * range). Returns `None` (decline -> vanilla Spark) if the relation's table root or version range
+   * can't be extracted. Reached from core's `CometExecRule` through
+   * `DeltaScanRuleContrib.tryTransformRowScan` (the `CometScanContrib` row-scan hook).
+   */
+  def convertCdf(scan: RowDataSourceScanExec): Option[CometNativeExec] = {
+    if (!DeltaConf.COMET_DELTA_NATIVE_ENABLED.get()) return None
+    val relation = scan.relation
+    val tableRoot = DeltaReflection.extractCdfTableRoot(relation).getOrElse {
+      logWarning("CometDeltaNativeScan: unable to extract CDF table root; falling back to Spark.")
+      return None
+    }
+    val (startVersion, endVersion) = DeltaReflection.extractCdfVersions(relation).getOrElse {
+      logWarning("CometDeltaNativeScan: unable to extract CDF version range; falling back to Spark.")
+      return None
+    }
+
+    // required_schema is the FULL CDF output: data columns + _change_type / _commit_version /
+    // _commit_timestamp, in `scan.output` order. The native side assembles by name, so no stripping.
+    val outputFields = scan.output.map(a => StructField(a.name, a.dataType, a.nullable)).toArray
+
+    val commonBuilder = DeltaScanCommon.newBuilder()
+    commonBuilder.setSource(scan.simpleStringWithNodeId())
+    commonBuilder.setTableRoot(tableRoot)
+    // snapshot_version is only used for the per-scan source key; the start version keys it uniquely.
+    commonBuilder.setSnapshotVersion(startVersion)
+    commonBuilder.setSessionTimezone(scan.conf.sessionLocalTimeZone)
+    commonBuilder.setCaseSensitive(scan.conf.getConf[Boolean](SQLConf.CASE_SENSITIVE))
+    commonBuilder.addAllRequiredSchema(schema2Proto(outputFields).toIterable.asJava)
+    // CDF is a kernel read (via TableChanges); the cdf branch bypasses the per-file kernel-schema
+    // requirement and reads the whole range via read_all_cdf.
+    commonBuilder.setCdfRead(true)
+    commonBuilder.setCdfStartVersion(startVersion)
+    // Clamp a requested endingVersion that exceeds the table's latest committed version: kernel's
+    // TableChanges errors (`LogSegment end version N not the same as the specified end version M`)
+    // whereas Delta clamps to latest. Leave unset ("read to latest") if no end was requested.
+    val clampedEnd = endVersion.map { e =>
+      DeltaReflection.extractCdfLatestVersion(relation) match {
+        case Some(latest) if e > latest => latest
+        case _ => e
+      }
+    }
+    clampedEnd.foreach(commonBuilder.setCdfEndVersion)
+
+    val deltaScanBuilder = DeltaScan.newBuilder()
+    deltaScanBuilder.setCommon(commonBuilder.build())
+    deltaScanBuilder.setTableRoot(tableRoot)
+    val op =
+      DeltaContribScan.set(Operator.newBuilder(), deltaScanBuilder.build()).build()
+
+    // Version-range split: partition the inclusive [start, end] range across up to
+    // COMET_DELTA_CDF_MAX_PARTITIONS Spark partitions so a multi-version CDF read parallelizes
+    // (each partition runs an independent native TableChanges read of its slice). Chunking needs a
+    // concrete end; when none is resolvable (read-to-latest and the latest version is unknown) we
+    // keep a single partition with the end unset (native reads to latest).
+    val resolvedEndOpt: Option[Long] =
+      clampedEnd.orElse(DeltaReflection.extractCdfLatestVersion(relation))
+    val subRanges: Seq[(Long, Option[Long])] = resolvedEndOpt match {
+      case Some(end) if end >= startVersion =>
+        val maxParts = math.max(1, DeltaConf.COMET_DELTA_CDF_MAX_PARTITIONS.get(scan.conf))
+        val numCommits = end - startVersion + 1
+        val n = math.max(1, math.min(numCommits, maxParts.toLong)).toInt
+        val chunk = (numCommits + n - 1) / n
+        (0 until n).flatMap { i =>
+          val s = startVersion + i * chunk
+          if (s > end) None else Some((s, Some(math.min(s + chunk - 1, end))))
+        }
+      case _ =>
+        Seq((startVersion, clampedEnd))
+    }
+
+    val exec = CometDeltaCdfScanExec(op, scan.output, SerializedPlan(None), scan, tableRoot, subRanges)
+    scan.logicalLink.foreach(exec.setLogicalLink)
+    Some(exec)
+  }
 
   override def convert(
       scan: CometDeltaScanMarker,

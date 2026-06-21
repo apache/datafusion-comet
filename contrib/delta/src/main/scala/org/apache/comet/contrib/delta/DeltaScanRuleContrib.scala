@@ -20,7 +20,7 @@
 package org.apache.comet.contrib.delta
 
 import org.apache.spark.sql.SparkSession
-import org.apache.spark.sql.execution.{FileSourceScanExec, SparkPlan}
+import org.apache.spark.sql.execution.{FileSourceScanExec, RowDataSourceScanExec, SparkPlan}
 import org.apache.spark.sql.execution.datasources.HadoopFsRelation
 
 import org.apache.comet.rules.CometScanContrib
@@ -38,12 +38,14 @@ import org.apache.comet.rules.CometScanContrib
  * public no-arg constructor, which a Scala `object` does not expose. Same shape as the Delta
  * contrib's `PlanDataInjector` provider.
  *
- * Only [[tryTransformV1]] is overridden -- Delta reads reach Comet as V1 `FileSourceScanExec`
- * nodes. The trait's `tryTransformV2` default (`None`) leaves V2 scans to Comet's generic
- * handling (and to any other registered contrib, e.g. Lance).
+ * Two of the trait's three hooks are overridden: [[tryTransformV1]] for ordinary Delta reads
+ * (which reach Comet as V1 `FileSourceScanExec` nodes) and [[tryTransformRowScan]] for Change
+ * Data Feed reads (`readChangeFeed`, a `RowDataSourceScanExec` over `DeltaCDFRelation`). The
+ * trait's `tryTransformV2` default (`None`) leaves V2 scans to Comet's generic handling and to
+ * any other registered contrib (e.g. Lance).
  *
- * All the real claim/decline logic lives in [[DeltaScanRule]]; this is a thin adapter so that
- * logic stays independently testable and free of any SPI plumbing.
+ * All the real claim/decline logic lives in [[DeltaScanRule]] and [[CometDeltaNativeScan]]; this
+ * is a thin adapter so that logic stays independently testable and free of any SPI plumbing.
  */
 class DeltaScanRuleContrib extends CometScanContrib {
 
@@ -53,4 +55,16 @@ class DeltaScanRuleContrib extends CometScanContrib {
       scanExec: FileSourceScanExec,
       relation: HadoopFsRelation): Option[SparkPlan] =
     DeltaScanRule.transformV1IfDelta(plan, session, scanExec, relation)
+
+  /**
+   * Claim a Delta Change Data Feed read. The relation is identified by class name (`DeltaCDFRelation`)
+   * so this stays a cheap check on the far more common non-Delta row scans -- core hands us every
+   * `RowDataSourceScanExec` in the plan, whatever its source.
+   */
+  override def tryTransformRowScan(scanExec: RowDataSourceScanExec): Option[SparkPlan] =
+    if (isCdfRelation(scanExec.relation)) CometDeltaNativeScan.convertCdf(scanExec) else None
+
+  /** True for Delta's Change Data Feed relation, produced by a `readChangeFeed` read. */
+  private def isCdfRelation(relation: Any): Boolean =
+    relation != null && relation.getClass.getName.contains("DeltaCDFRelation")
 }
