@@ -50,6 +50,12 @@ if __name__ == "__main__":
             if class_name:
                 if "Shim" in class_name:
                     continue
+                # Contrib feature suites (e.g. contrib/delta) compile only under their
+                # opt-in Maven profile (-Pcontrib-delta) and therefore cannot run in the
+                # default pr_build workflows; they have their own dedicated workflow, so
+                # they are exempt from this check.
+                if "contrib" in path.parts and "test" in path.parts:
+                    continue
                 if class_name in ignore_list:
                     continue
                 if class_name not in workflow:

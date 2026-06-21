@@ -453,6 +453,28 @@ under the License.
                 </configuration>
               </execution>
               <execution>
+                <!--
+                  Packages `META-INF/services/org.apache.comet.rules.CometScanContrib` (and any
+                  future contrib service files) into comet-spark.jar. This is what makes core's
+                  ServiceLoader registry discover the Delta contrib; without it the contrib
+                  classes are on the classpath but never registered, and every Delta scan
+                  silently takes the vanilla path. Only under `-Pcontrib-delta`, so default
+                  builds ship no service file and the registry stays empty.
+                -->
+                <id>add-contrib-delta-resource</id>
+                <phase>generate-resources</phase>
+                <goals>
+                  <goal>add-resource</goal>
+                </goals>
+                <configuration>
+                  <resources>
+                    <resource>
+                      <directory>${project.parent.basedir}/contrib/delta/src/main/resources</directory>
+                    </resource>
+                  </resources>
+                </configuration>
+              </execution>
+              <execution>
                 <id>add-contrib-delta-test-source</id>
                 <phase>generate-test-sources</phase>
                 <goals>
