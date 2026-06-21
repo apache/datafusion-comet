@@ -29,7 +29,7 @@ import org.apache.spark.sql.functions._
 
 import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 
-class SparkInternalFunctionsSuite extends CometTestBase {
+class CometSparkInternalFunctionsSuite extends CometTestBase {
   import testImplicits._
 
   test("empty2null is offloaded to Comet") {
