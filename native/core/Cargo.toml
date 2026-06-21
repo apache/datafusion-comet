@@ -98,7 +98,8 @@ datafusion-functions-nested = { version = "53.1.0" }
 backtrace = ["datafusion/backtrace"]
 default = ["hdfs-opendal"]
 hdfs = ["datafusion-comet-objectstore-hdfs"]
-hdfs-opendal = ["opendal", "object_store_opendal", "hdfs-sys"]
+hdfs-opendal = ["dep:opendal", "dep:object_store_opendal", "dep:hdfs-sys", "opendal/services-hdfs"]
+s3-opendal = ["dep:opendal", "dep:object_store_opendal", "opendal/services-s3"]
 jemalloc = ["tikv-jemallocator", "tikv-jemalloc-ctl"]
 
 # exclude optional packages from cargo machete verifications

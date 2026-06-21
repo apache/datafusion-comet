@@ -1682,6 +1682,7 @@ impl PhysicalPlanner {
                     self.partition,
                     writer.column_names.clone(),
                     object_store_options,
+                    writer.partition_columns.clone(),
                 )?);
 
                 Ok((
