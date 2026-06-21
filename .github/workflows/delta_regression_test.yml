@@ -1,0 +1,242 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+# Runs Delta Lake's OWN test suite against Comet (contrib-delta variant).
+# Mirrors the PR #3932 workflow but uses the contrib-delta build path:
+# Comet is installed with `-Pcontrib-delta`, the native library is built
+# with `--features contrib-delta`, and diffs live under
+# `contrib/delta/dev/diffs/`.
+#
+# The smoke job runs first as a cheap fail-fast (3 tests asserting Comet
+# is wired into Delta's test SparkSession). The full job runs Delta's
+# entire test suite for the matching Delta version with Comet enabled,
+# and only fires after the matching smoke cell passes.
+
+name: Delta Lake Regression Tests (contrib-delta)
+
+concurrency:
+  group: ${{ github.repository }}-${{ github.head_ref || github.sha }}-${{ github.workflow }}
+  cancel-in-progress: true
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - "benchmarks/**"
+      - "doc/**"
+      - "docs/**"
+      - "**.md"
+      - "dev/changelog/*.md"
+      - "native/core/benches/**"
+      - "native/spark-expr/benches/**"
+      - "spark/src/test/scala/org/apache/spark/sql/benchmark/**"
+  pull_request:
+    # This workflow is expensive (full contrib native build + a Delta clone + smoke run per
+    # cell), so on PRs scope it to paths that can actually affect Comet-on-Delta behaviour:
+    # the contrib itself, the native engine, the core SPI / rule wiring the contrib hooks
+    # into, the serde, and the build poms / harness. PRs that touch only an unrelated
+    # expression, shuffle, docs, etc. skip it. (push-to-main keeps the broader paths-ignore
+    # above so the post-merge full sweep is not under-triggered. Final CI cadence is a
+    # maintainer decision -- see the split plan's CI-cost section.)
+    paths:
+      - "contrib/delta/**"
+      - "native/**"
+      - "spark/src/main/scala/org/apache/comet/rules/**"
+      - "spark/src/main/scala/org/apache/comet/serde/**"
+      - "spark/src/main/scala/org/apache/spark/sql/comet/operators.scala"
+      - ".github/workflows/delta_regression_test.yml"
+      - "pom.xml"
+      - "spark/pom.xml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  RUST_VERSION: stable
+  RUST_BACKTRACE: 1
+  RUSTFLAGS: "-Clink-arg=-fuse-ld=bfd"
+
+jobs:
+  # Build libcomet ONCE with --features contrib-delta and share via artifact.
+  # Identical to the build-native job in delta_contrib_test.yml; kept
+  # separate to let this workflow run independently on workflow_dispatch.
+  build-native:
+    name: Build Native Library (contrib-delta)
+    runs-on: ubuntu-24.04
+    container:
+      image: amd64/rust
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Rust & Java toolchain
+        uses: ./.github/actions/setup-builder
+        with:
+          rust-version: ${{ env.RUST_VERSION }}
+          jdk-version: 17
+
+      - name: Restore Cargo cache
+        uses: actions/cache/restore@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            native/target
+          key: ${{ runner.os }}-cargo-ci-contrib-delta-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml', 'contrib/delta/native/**/Cargo.toml') }}-${{ hashFiles('native/**/*.rs', 'contrib/delta/native/**/*.rs') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-ci-contrib-delta-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml', 'contrib/delta/native/**/Cargo.toml') }}-
+
+      - name: Build native library with contrib-delta
+        run: |
+          cd native && cargo build --profile ci --features contrib-delta
+        env:
+          RUSTFLAGS: "-Ctarget-cpu=x86-64-v3 -Clink-arg=-fuse-ld=bfd"
+
+      - name: Save Cargo cache
+        uses: actions/cache/save@v5
+        if: github.ref == 'refs/heads/main'
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            native/target
+          key: ${{ runner.os }}-cargo-ci-contrib-delta-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml', 'contrib/delta/native/**/Cargo.toml') }}-${{ hashFiles('native/**/*.rs', 'contrib/delta/native/**/*.rs') }}
+
+      - name: Upload native library
+        uses: actions/upload-artifact@v7
+        with:
+          name: native-lib-delta-regression
+          path: native/target/ci/libcomet.so
+          retention-days: 1
+
+  # Smoke: 3 tests proving Comet is registered and active in Delta's
+  # SparkSession. Fails the workflow before spending time on the full
+  # suite if config-wiring has drifted.
+  delta-smoke:
+    needs: build-native
+    strategy:
+      matrix:
+        include:
+          - delta-version: '3.3.2'
+            spark-short: '3.5'
+          - delta-version: '4.0.0'
+            spark-short: '4.0'
+          - delta-version: '4.1.0'
+            spark-short: '4.1'
+      fail-fast: false
+    name: smoke/delta-${{ matrix.delta-version }}
+    runs-on: ubuntu-24.04
+    container:
+      image: amd64/rust
+    env:
+      SPARK_LOCAL_IP: localhost
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Rust & Java toolchain
+        uses: ./.github/actions/setup-builder
+        with:
+          rust-version: ${{ env.RUST_VERSION }}
+          jdk-version: 17
+
+      - name: Download native library
+        uses: actions/download-artifact@v8
+        with:
+          name: native-lib-delta-regression
+          # run-regression.sh's FAST=1 path expects native/target/release/
+          path: native/target/release/
+
+      - name: Run Delta smoke test with Comet
+        run: |
+          FAST=1 bash contrib/delta/dev/run-regression.sh ${{ matrix.delta-version }} smoke
+
+      - name: Upload regression log on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: smoke-log-delta-${{ matrix.delta-version }}
+          path: target/delta-regression-logs/
+          retention-days: 5
+
+  # Full Delta suite under Comet. `needs: delta-smoke` gates on the WHOLE smoke job (all
+  # cells must pass) -- GitHub Actions `needs` is job-level, not per matrix cell. Only runs
+  # on push-to-main and manual dispatch, never on pull_request: the full/lite sweeps take
+  # hours (3.3.2 `full` would be ~29h), so PRs get the fast smoke job as the blocking signal
+  # and the full sweep runs post-merge. (CI cadence -- per-PR vs schedule vs merge -- is a
+  # maintainer decision flagged in the split plan's CI-cost section.)
+  delta-full:
+    needs: delta-smoke
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'push'
+    strategy:
+      matrix:
+        include:
+          # Delta 3.3.2 runs in `lite` mode -- `full` would be ~29h single-fork because it
+          # clones nearly every base suite into per-feature variants (~70 Id/Name column-
+          # mapping, ~20 WithCoordinatedCommits, ~45 RowTracking, ~6 WithDeletionVectors)
+          # that 4.1 dropped upstream. Lite skips those clone families and runs only base
+          # suites -- ~few hours, matching 4.0/4.1's shape. Column-mapping clones are
+          # always excluded (build.sbt patch in 3.3.2.diff); DELTA_LITE=1 (set by
+          # run-regression.sh when TEST_FILTER=lite) drops the other three clone families.
+          # Lost coverage is *only* the feature-flag × base interaction; the same code
+          # paths are covered by base suites here AND by 4.0/4.1 (smaller clone matrices
+          # still present). Switch to `full` (and re-add the sharding env vars below) if
+          # comprehensive 3.3.2 coverage is ever needed before a release.
+          - delta-version: '3.3.2'
+            spark-short: '3.5'
+            test-filter: 'lite'
+          # 4.0.0 / 4.1.0 run in a few hours single-fork; full sweep.
+          - delta-version: '4.0.0'
+            spark-short: '4.0'
+            test-filter: 'full'
+          - delta-version: '4.1.0'
+            spark-short: '4.1'
+            test-filter: 'full'
+      fail-fast: false
+    name: ${{ matrix.test-filter }}/delta-${{ matrix.delta-version }}
+    runs-on: ubuntu-24.04
+    container:
+      image: amd64/rust
+    env:
+      SPARK_LOCAL_IP: localhost
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Rust & Java toolchain
+        uses: ./.github/actions/setup-builder
+        with:
+          rust-version: ${{ env.RUST_VERSION }}
+          jdk-version: 17
+
+      - name: Download native library
+        uses: actions/download-artifact@v8
+        with:
+          name: native-lib-delta-regression
+          path: native/target/release/
+
+      - name: Run Delta ${{ matrix.test-filter }} suite with Comet
+        timeout-minutes: 240
+        run: |
+          FAST=1 bash contrib/delta/dev/run-regression.sh ${{ matrix.delta-version }} ${{ matrix.test-filter }}
+
+      - name: Upload regression log on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.test-filter }}-log-delta-${{ matrix.delta-version }}
+          path: target/delta-regression-logs/
+          retention-days: 5
