@@ -23,34 +23,32 @@
 //! Surfaces:
 //!   - JNI: `Java_org_apache_comet_contrib_delta_Native_planDeltaScan` (driver-side
 //!     log replay via delta-kernel-rs; returns a `DeltaScanTaskList` proto)
-//!   - [`scan::plan_delta_scan`] / `scan::plan_delta_scan_with_predicate`: driver-side
-//!     helpers that replay the log and assemble the scan-task list. (Core's planner
-//!     dispatcher calls `planner::plan_delta_scan`, which is still a build-gate stub in
-//!     this unit and becomes the real entry point in the executor unit.)
+//!   - [`planner::plan_delta_scan`]: the entry point core's dispatcher invokes to assemble
+//!     a Delta scan's `DataSourceExec` (kernel-rs is JVM-side, so the per-scan planning the
+//!     JVM doesn't pre-resolve happens here). The similarly-named `scan::plan_delta_scan` is a
+//!     distinct driver-side helper that just replays the log and lists files.
 //!
 //! No `#[ctor]` registration, no contrib-private operator-planner registry; this
 //! crate exposes plain Rust functions that core calls directly under
 //! `#[cfg(feature = "contrib-delta")]`.
-//!
-//! This unit ships the driver side (log replay, predicate pushdown, scan-task
-//! assembly, JNI). The executor-side read path (`kernel_scan`, `dv_reader`) and the
-//! real `planner` land in the next unit; until then `planner` is a build-gate stub.
 
+pub mod dv_reader;
 pub mod engine;
 pub mod error;
 pub mod jni;
+pub mod kernel_scan;
 pub mod planner;
 pub mod predicate;
 pub mod scan;
 
-/// Re-export of the Delta proto messages the driver modules reference via
-/// `crate::proto::Delta...`. The messages themselves live in core's proto crate. (The
-/// `DeltaScan` / `DeltaScanCommon` envelopes are consumed only by the planner, which names
-/// them directly from `datafusion_comet_proto`, so they're added to this re-export by the
-/// executor unit rather than here.)
+/// Re-export of the Delta proto messages, named so module paths inside this crate
+/// can keep their original `use crate::proto::Delta...` form. The messages
+/// themselves live in core's proto crate (so the dispatcher arm in core has direct
+/// access to the typed variants).
 pub mod proto {
     pub use datafusion_comet_proto::spark_operator::{
-        DeltaDvDescriptor, DeltaPartitionValue, DeltaScanTask, DeltaScanTaskList,
+        DeltaDvDescriptor, DeltaPartitionValue, DeltaScan, DeltaScanCommon, DeltaScanTask,
+        DeltaScanTaskList,
     };
 }
 

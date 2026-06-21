@@ -15,20 +15,13 @@
 # specific language governing permissions and limitations
 # under the License.
 
-# Standalone Cargo.toml -- this crate is outside the `native/` workspace root
-# (`native/Cargo.toml` lists `exclude = ["../contrib"]`), so it cannot use
-# `{ workspace = true }` inheritance. Versions are kept in sync with the rest of the
-# repo by convention; the path deps anchor against the same on-disk crates.
-#
-# This unit ships the DRIVER side (log replay, predicate pushdown, scan-task assembly,
-# JNI). It declares only the deps the driver modules (error/engine/predicate/scan/jni)
-# actually use; the executor-side read path lands in the next unit and brings its own
-# deps (parquet, roaring, datafusion-datasource, futures, chrono*, comet-common, ...).
-# `planner` is still the build-gate stub until then.
+# Standalone Cargo.toml -- this crate is outside the `native/` workspace root, so it
+# cannot use `{ workspace = true }` inheritance. Versions are kept in sync with the
+# rest of the repo by convention; the path deps anchor against the same on-disk crates.
 
 [package]
 name = "comet-contrib-delta"
-description = "delta-kernel-rs integration for Comet. Reads Delta tables via kernel-rs's log replay and DataFusion's parquet scan. Linked into libcomet via core's `contrib-delta` Cargo feature flag."
+description = "delta-kernel-rs integration for Comet. Reads Delta tables via kernel-rs's log replay and DataFusion's parquet scan, with DV / column-mapping / row-tracking support. Linked into libcomet via core's `contrib-delta` Cargo feature flag."
 version = "0.18.0"
 edition = "2021"
 rust-version = "1.86.0"
@@ -37,39 +30,53 @@ license = "Apache-2.0"
 
 [lib]
 # rlib: linked INTO `libcomet` when `contrib-delta` is enabled on core. Never a cdylib
-# on its own -- there's no separate Delta library to ship.
+# on its own — there's no separate Delta library to ship.
 crate-type = ["rlib"]
 
 [dependencies]
-# Typed Delta proto messages live in core's proto crate (alongside IcebergScan, ...) so the
-# dispatcher arm has direct access. Re-exported as `crate::proto::*`.
+# Typed Delta proto messages live in core's proto crate (alongside IcebergScan, ...)
+# so the dispatcher arm has direct access. We re-export them as `crate::proto::*`.
 datafusion-comet-proto = { path = "../../../native/proto" }
-# JNI helpers (CometError, CometResult, try_unwrap_or_throw) for the driver-side JNI entry
-# points. jni-bridge is a leaf crate -- depending on it drags no Comet logic into the contrib.
+# `SparkError` enum (JSON-serialised, mapped to specific Throwables by
+# `ShimSparkErrorConverter` on the JVM side -- including `FileNotFound` -> Java's
+# `FileNotFoundException`, which `dv_reader::map_dv_error_to_datafusion` emits when
+# a DV file is missing so `DeletionVectorsSuite "Check no resource leak"` can find
+# the right cause via `findIfResponsible[FileNotFoundException]`).
+datafusion-comet-common = { path = "../../../native/common" }
+# JNI helpers (CometError, CometResult, try_unwrap_or_throw). jni-bridge is a leaf
+# crate -- depending on it doesn't drag any Comet logic into the contrib.
 datafusion-comet-jni-bridge = { path = "../../../native/jni-bridge" }
-# Heavy Delta dep -- intentionally lives ONLY in this contrib, never in core. delta_kernel
-# 0.24 pins the SAME arrow (58) as Comet via the `arrow-58` feature, so kernel RecordBatches
-# flow straight into Comet plans with no arrow-version bridge.
+# Heavy Delta deps -- intentionally live ONLY in this contrib, never in core. delta_kernel
+# 0.24 pins the SAME arrow (58) and object_store (0.13) as Comet via the `arrow-58` feature,
+# so kernel RecordBatches flow straight into Comet plans with no arrow-version bridge.
 delta_kernel = { version = "0.24", default-features = false, features = ["default-engine-rustls", "arrow-58"] }
 # DataFusion / Arrow versions chosen to match core's pinned values (native/Cargo.toml). The
-# driver only needs `ExecutionPlan` / `SchemaRef` / `DataFusionError` (the planner stub) -- no
-# `parquet` feature here; the executor unit, which actually scans parquet, adds it back.
+# contrib uses only core DataFusion types (DataFusionError, SendableRecordBatchStream,
+# TaskContext, ...); all parquet I/O goes through delta_kernel's own engine, so no `parquet`
+# feature or direct parquet dep is needed.
 datafusion = { version = "54.0.0", default-features = false }
 arrow = { version = "58.3.0", features = ["prettyprint", "ffi", "chrono-tz"] }
-# Match core Comet's object_store features (native/Cargo.toml) so the Azure/GCS builders
-# reachable via `object_store::parse_url` mirror core's non-S3 read path.
+# Match core Comet's object_store features (native/Cargo.toml) so the Azure/GCS
+# builders reachable via `object_store::parse_url` mirror core's non-S3 read path.
 object_store = { version = "0.13.2", features = ["aws", "azure", "gcp", "http"] }
 url = "2.5.4"
+futures = "0.3"
 thiserror = "2"
 prost = "0.14.3"
-# Parse the analysis-time Delta schema JSON (shipped from the JVM) into a kernel `StructType`
-# for `ScanBuilder::with_schema`, so kernel resolves column-mapping physical names against the
-# schema the query was PLANNED with (correct for schema-change-since-analysis).
+# Parse the analysis-time Delta schema JSON (shipped from the JVM) into a kernel `StructType` for
+# `ScanBuilder::with_schema`, so kernel resolves column-mapping physical names against the schema the
+# query was PLANNED with (correct for schema-change-since-analysis). Same format kernel itself uses
+# for the snapshot schema in the log.
 serde_json = "1"
 jni = "0.22.4"
+# Used by parse_delta_partition_scalar for timestamp parsing across the JVM's TZ shapes
+# (IANA names, GMT+/-HH:MM, etc).
+chrono = "0.4"
+chrono-tz = "0.10"
 log = "0.4"
 
 [dev-dependencies]
-# Used by unit tests under #[cfg(test)] in scan.rs to materialise a Delta `_delta_log`
+# Used by unit tests under #[cfg(test)] in scan.rs to materialise a Delta table
 # in a tempdir without polluting the real filesystem.
 tempfile = "3"
+tokio = { version = "1.39.0", features = ["macros", "rt-multi-thread"] }

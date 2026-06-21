@@ -1475,10 +1475,14 @@ name = "comet-contrib-delta"
 version = "0.18.0"
 dependencies = [
  "arrow",
+ "chrono",
+ "chrono-tz",
  "datafusion",
+ "datafusion-comet-common",
  "datafusion-comet-jni-bridge",
  "datafusion-comet-proto",
  "delta_kernel",
+ "futures",
  "jni 0.22.4",
  "log",
  "object_store",
