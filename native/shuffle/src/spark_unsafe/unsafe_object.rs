@@ -33,8 +33,10 @@ const MAX_LONG_DIGITS: u8 = 18;
 /// ill-formed multi-byte units: `from_utf8_lossy` follows the Unicode "maximal subpart" rule and
 /// can emit one `U+FFFD` per byte, whereas the JDK collapses certain ill-formed units into a single
 /// `U+FFFD`. Matching the JDK byte-for-byte means a Comet columnar shuffle of arbitrary bytes
-/// renders identically to a Spark JVM shuffle. The per-class malformed lengths below mirror
-/// `sun.nio.cs.UTF_8.Decoder` (E0/ED overlong & surrogate handling, F0/F4 range checks).
+/// renders identically to a Spark JVM shuffle. The per-class malformed lengths below
+/// (E0/ED overlong & surrogate handling, F0/F4 range checks) match the observable replacement
+/// behavior of the JDK UTF-8 decoder; they were determined from observed
+/// `new String(bytes, UTF_8)` output, not by reviewing the OpenJDK source.
 pub(crate) fn decode_utf8_spark_lossy(bytes: &[u8]) -> Cow<'_, str> {
     // Fast path: well-formed UTF-8 borrows with zero copy (the overwhelmingly common case).
     if let Ok(s) = std::str::from_utf8(bytes) {

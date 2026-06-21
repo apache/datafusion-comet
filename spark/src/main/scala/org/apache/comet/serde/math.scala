@@ -41,6 +41,13 @@ object CometAtan2 extends CometExpressionSerde[Atan2] {
 }
 
 object CometCeil extends CometExpressionSerde[Ceil] {
+  override def getSupportLevel(expr: Ceil): SupportLevel = expr.child.dataType match {
+    case t: DecimalType if t.scale < 0 => // Spark disallows negative scale SPARK-30252
+      Unsupported(Some(s"Decimal type $t has negative scale"))
+    case _ =>
+      Compatible()
+  }
+
   override def convert(
       expr: Ceil,
       inputs: Seq[Attribute],
@@ -49,9 +56,6 @@ object CometCeil extends CometExpressionSerde[Ceil] {
     expr.child.dataType match {
       case t: DecimalType if t.scale == 0 => // zero scale is no-op
         childExpr
-      case t: DecimalType if t.scale < 0 => // Spark disallows negative scale SPARK-30252
-        withFallbackReason(expr, s"Decimal type $t has negative scale")
-        None
       case _ =>
         val optExpr =
           scalarFunctionExprToProtoWithReturnType("ceil", expr.dataType, false, childExpr)
@@ -61,6 +65,13 @@ object CometCeil extends CometExpressionSerde[Ceil] {
 }
 
 object CometFloor extends CometExpressionSerde[Floor] {
+  override def getSupportLevel(expr: Floor): SupportLevel = expr.child.dataType match {
+    case t: DecimalType if t.scale < 0 => // Spark disallows negative scale SPARK-30252
+      Unsupported(Some(s"Decimal type $t has negative scale"))
+    case _ =>
+      Compatible()
+  }
+
   override def convert(
       expr: Floor,
       inputs: Seq[Attribute],
@@ -69,9 +80,6 @@ object CometFloor extends CometExpressionSerde[Floor] {
     expr.child.dataType match {
       case t: DecimalType if t.scale == 0 => // zero scale is no-op
         childExpr
-      case t: DecimalType if t.scale < 0 => // Spark disallows negative scale SPARK-30252
-        withFallbackReason(expr, s"Decimal type $t has negative scale")
-        None
       case _ =>
         val optExpr =
           scalarFunctionExprToProtoWithReturnType("floor", expr.dataType, false, childExpr)
