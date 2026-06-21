@@ -300,4 +300,15 @@ public abstract class NativeBase {
    * @return true if the feature is enabled, false otherwise
    */
   public static native boolean isFeatureEnabled(String featureName);
+
+  /**
+   * Check whether Comet's native object_store layer recognizes the given URL's scheme (i.e. the
+   * scan would be natively readable rather than failing at execution with "Unable to recognise
+   * URL"). This is the authoritative answer from object_store's own scheme parser, so the JVM
+   * planner never has to hardcode (and drift from) the set of supported schemes.
+   *
+   * @param url a fully-qualified URL whose scheme should be checked (e.g. "s3://bucket/path")
+   * @return true if object_store can construct a store for this scheme, false otherwise
+   */
+  public static native boolean isObjectStoreSchemeSupported(String url);
 }
