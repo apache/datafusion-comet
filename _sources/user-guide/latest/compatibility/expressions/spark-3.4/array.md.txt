@@ -49,12 +49,6 @@ The following cases are not supported by Comet:
 
 - Not all input data types are supported; falls back to Spark for unsupported types
 
-## ElementAt
-
-The following cases are not supported by Comet:
-
-- Input must be an array. `Map` inputs are not supported.
-
 ## Size
 
 The following cases are not supported by Comet:
