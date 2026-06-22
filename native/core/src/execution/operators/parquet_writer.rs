@@ -18,7 +18,6 @@
 //! Parquet writer operator for writing RecordBatches to Parquet files
 
 use std::{
-    any::Any,
     collections::HashMap,
     fmt,
     fmt::{Debug, Formatter},
@@ -404,10 +403,6 @@ impl DisplayAs for ParquetWriterExec {
 
 #[async_trait]
 impl ExecutionPlan for ParquetWriterExec {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn name(&self) -> &str {
         "ParquetWriterExec"
     }

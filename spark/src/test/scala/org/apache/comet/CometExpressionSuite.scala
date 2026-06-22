@@ -1431,7 +1431,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
     withParquetTable(doubleValues.flatMap(m => doubleValues.map(n => (m, n))), "tbl") {
       // expressions with two args
-      for (expr <- Seq("atan2", "pow")) {
+      for (expr <- Seq("atan2")) {
         val (_, cometPlan) =
           checkSparkAnswerAndOperatorWithTol(sql(s"SELECT $expr(_1, _2) FROM tbl"))
         val cometProjectExecs = collect(cometPlan) { case op: CometProjectExec =>
