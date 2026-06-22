@@ -151,7 +151,7 @@ The tables below list every Spark built-in expression with its current status.
 | `array_union` | ✅ | NaN/signed-zero handling may differ ([details](compatibility/floating-point.md)) |
 | `arrays_overlap` | ✅ |  |
 | `arrays_zip` | ✅ |  |
-| `element_at` | ✅ | ArrayType and MapType inputs |
+| `element_at` | ✅ |  |
 | `flatten` | ✅ | Binary/struct/map elements fall back |
 | `get` | ✅ |  |
 | `sequence` | ✅ |  |
