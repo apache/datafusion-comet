@@ -122,18 +122,14 @@ class CometMapInBatchSuite extends CometTestBase {
         ColumnarToRowExec(cometLeaf),
         isBarrier = false,
         profile = None)
-      val outer = MapInArrowExec(
-        stubPythonUDF,
-        cometLeaf.output,
-        inner,
-        isBarrier = false,
-        profile = None)
+      val outer =
+        MapInArrowExec(stubPythonUDF, cometLeaf.output, inner, isBarrier = false, profile = None)
 
       val rewritten = EliminateRedundantTransitions(spark).apply(outer)
       val cometOps = rewritten.collect { case op: CometMapInBatchExec => op }
       assert(
         cometOps.size == 1,
-        s"expected the inner MapInArrowExec to be rewritten, but the chain produced " +
+        "expected the inner MapInArrowExec to be rewritten, but the chain produced " +
           s"${cometOps.size} CometMapInBatchExec(s):\n$rewritten")
     }
   }

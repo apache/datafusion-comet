@@ -30,14 +30,14 @@ import org.apache.spark.sql.vectorized.ColumnarBatch
 /**
  * Spark 3.x stub for the PyArrow UDF acceleration support.
  *
- * The columnar runner introduced in #4234 only targets Spark 4.0+. On Spark 3.4 / 3.5 the matchers
- * return `None`, the rewrite does not fire, and vanilla Spark handles `mapInArrow` /
+ * The columnar runner introduced in #4234 only targets Spark 4.0+. On Spark 3.4 / 3.5 the
+ * matchers return `None`, the rewrite does not fire, and vanilla Spark handles `mapInArrow` /
  * `mapInPandas` unchanged. The runner factory throws; it is never called because the matchers
  * always return `None`. 3.x support can be added later if there is user demand.
  *
  * Shared across spark-3.4 and spark-3.5 because both are identical: 3.4 lacks the modern
- * `ArrowPythonRunner` constructor and `arrowUseLargeVarTypes`, and 3.5's `PythonArrowInput`
- * trait has a different contract (`writeIteratorToArrowStream` one-shot vs 4.x's
+ * `ArrowPythonRunner` constructor and `arrowUseLargeVarTypes`, and 3.5's `PythonArrowInput` trait
+ * has a different contract (`writeIteratorToArrowStream` one-shot vs 4.x's
  * `writeNextBatchToArrowStream` batch-at-a-time), so neither version can host the columnar input
  * implementation without a separate rewrite.
  */

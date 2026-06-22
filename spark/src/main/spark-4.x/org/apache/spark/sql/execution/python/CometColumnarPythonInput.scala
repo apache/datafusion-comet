@@ -43,17 +43,17 @@ import org.apache.comet.vector.CometDecodedVector
  *
  * Per batch: walk the destination struct's children, allocate each child sized to match the
  * corresponding Comet column, and copy each buffer with `ArrowBuf.setBytes`. The current path
- * does two copies per batch: this one (Comet vector buffers → destination IPC root), and a
- * second one inside `VectorUnloader` / `MessageSerializer.serialize` (root → pipe). The pipe
- * write is structural — Spark's transport to Python is fork + pipe + Arrow IPC, so the buffer
- * bytes must reach the pipe at least once. Dropping the first copy by serialising directly
- * from Comet's vectors is tracked in #4294; once done, the path is at the single-copy floor.
+ * does two copies per batch: this one (Comet vector buffers → destination IPC root), and a second
+ * one inside `VectorUnloader` / `MessageSerializer.serialize` (root → pipe). The pipe write is
+ * structural — Spark's transport to Python is fork + pipe + Arrow IPC, so the buffer bytes must
+ * reach the pipe at least once. Dropping the first copy by serialising directly from Comet's
+ * vectors is tracked in #4294; once done, the path is at the single-copy floor.
  *
  * The cross-allocator constraint on `TransferPair` is independent of the copy count: even after
- * #4294, true zero-copy at the JVM boundary is blocked because Comet's source `FieldVector`s
- * are imported from native via Arrow C Data Interface (their buffers route `release` through
- * FFI), while Spark's destination IPC root is a child of `ArrowUtils.rootAllocator`. The two
- * reference managers cannot share buffers.
+ * #4294, true zero-copy at the JVM boundary is blocked because Comet's source `FieldVector`s are
+ * imported from native via Arrow C Data Interface (their buffers route `release` through FFI),
+ * while Spark's destination IPC root is a child of `ArrowUtils.rootAllocator`. The two reference
+ * managers cannot share buffers.
  */
 private[python] trait CometColumnarPythonInput extends PythonArrowInput[Iterator[ColumnarBatch]] {
   self: BasePythonRunner[Iterator[ColumnarBatch], _] =>

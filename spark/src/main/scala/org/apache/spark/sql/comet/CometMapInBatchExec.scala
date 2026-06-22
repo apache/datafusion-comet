@@ -115,7 +115,6 @@ case class CometMapInBatchExec(
           val childArrow = structVector.getChild(i)
           CometVector.getVector(
             childArrow.getValueVector,
-            /* useDecimal128 */ true,
             /* dictionaryProvider */ null)
         }.toArray
         val flattenedBatch = new ColumnarBatch(outputVectors)

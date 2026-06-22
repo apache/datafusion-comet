@@ -28,8 +28,8 @@ trait ShimSQLConf {
 
   /**
    * Reads `spark.sql.execution.arrow.useLargeVarTypes`. Spark 3.4 has no typed accessor for this
-   * conf, so read by raw key. The conf only governs the destination Arrow IPC root width on
-   * Spark 4.x, so the value returned here matters only to callers that look it up explicitly.
+   * conf, so read by raw key. The conf only governs the destination Arrow IPC root width on Spark
+   * 4.x, so the value returned here matters only to callers that look it up explicitly.
    */
   protected def arrowUseLargeVarTypes(conf: SQLConf): Boolean =
     conf.getConfString("spark.sql.execution.arrow.useLargeVarTypes", "false").toBoolean

@@ -26,8 +26,8 @@ trait ShimSQLConf {
   protected val CORRECTED = LegacyBehaviorPolicy.CORRECTED
 
   /**
-   * Reads `spark.sql.execution.arrow.useLargeVarTypes`. Spark 3.5 has the typed accessor;
-   * forward to it.
+   * Reads `spark.sql.execution.arrow.useLargeVarTypes`. Spark 3.5 has the typed accessor; forward
+   * to it.
    */
   protected def arrowUseLargeVarTypes(conf: SQLConf): Boolean = conf.arrowUseLargeVarTypes
 }

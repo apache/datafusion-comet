@@ -178,12 +178,15 @@ case class EliminateRedundantTransitions(session: SparkSession)
    */
   private object EligibleMapInBatch {
     def unapply(plan: SparkPlan): Option[(MapInBatchInfo, SparkPlan)] = {
-      if (!CometConf.COMET_PYARROW_UDF_ENABLED.get()) None
-      else if (arrowUseLargeVarTypes(plan.conf)) None
-      else
+      if (!CometConf.COMET_PYARROW_UDF_ENABLED.get()) {
+        None
+      } else if (arrowUseLargeVarTypes(plan.conf)) {
+        None
+      } else {
         matchMapInArrow(plan)
           .orElse(matchMapInPandas(plan))
           .flatMap(info => extractColumnarChild(info.child).map(child => (info, child)))
+      }
     }
   }
 
