@@ -63,7 +63,7 @@ The following cases are not supported by Comet:
 
 ## SortArray
 
-The following incompatibilities cause `SortArray` to fall back to Spark by default. Set `spark.comet.expression.SortArray.allowIncompatible=true` to enable Comet acceleration despite these differences.
+By default, Comet accelerates `SortArray` using JVM codegen dispatch, which runs Spark's generated code inside Comet's native pipeline and matches Spark exactly. Set `spark.comet.expression.SortArray.allowIncompatible=true` to use Comet's faster native implementation instead, which has the following differences from Spark:
 
 - When `spark.comet.exec.strictFloatingPoint=true`, sorting on floating-point types is not 100% compatible with Spark
 

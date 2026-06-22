@@ -29,7 +29,7 @@ The following cases are not supported by Comet:
 
 ## Concat
 
-The following incompatibilities cause `Concat` to fall back to Spark by default. Set `spark.comet.expression.Concat.allowIncompatible=true` to enable Comet acceleration despite these differences.
+By default, Comet accelerates `Concat` using JVM codegen dispatch, which runs Spark's generated code inside Comet's native pipeline and matches Spark exactly. Set `spark.comet.expression.Concat.allowIncompatible=true` to use Comet's faster native implementation instead, which has the following differences from Spark:
 
 - concat does not support non-UTF8_BINARY collations (https://github.com/apache/datafusion-comet/issues/2190)
 

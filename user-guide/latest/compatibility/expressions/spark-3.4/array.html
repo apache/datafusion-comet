@@ -623,7 +623,7 @@ under the License.
 </section>
 <section id="sortarray">
 <h2>SortArray<a class="headerlink" href="#sortarray" title="Link to this heading">#</a></h2>
-<p>The following incompatibilities cause <code class="docutils literal notranslate"><span class="pre">SortArray</span></code> to fall back to Spark by default. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.SortArray.allowIncompatible=true</span></code> to enable Comet acceleration despite these differences.</p>
+<p>By default, Comet accelerates <code class="docutils literal notranslate"><span class="pre">SortArray</span></code> using JVM codegen dispatch, which runs Spark’s generated code inside Comet’s native pipeline and matches Spark exactly. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.SortArray.allowIncompatible=true</span></code> to use Comet’s faster native implementation instead, which has the following differences from Spark:</p>
 <ul class="simple">
 <li><p>When <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.strictFloatingPoint=true</span></code>, sorting on floating-point types is not 100% compatible with Spark</p></li>
 </ul>

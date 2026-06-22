@@ -584,7 +584,7 @@ under the License.
 </section>
 <section id="concat">
 <h2>Concat<a class="headerlink" href="#concat" title="Link to this heading">#</a></h2>
-<p>The following incompatibilities cause <code class="docutils literal notranslate"><span class="pre">Concat</span></code> to fall back to Spark by default. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Concat.allowIncompatible=true</span></code> to enable Comet acceleration despite these differences.</p>
+<p>By default, Comet accelerates <code class="docutils literal notranslate"><span class="pre">Concat</span></code> using JVM codegen dispatch, which runs Spark’s generated code inside Comet’s native pipeline and matches Spark exactly. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Concat.allowIncompatible=true</span></code> to use Comet’s faster native implementation instead, which has the following differences from Spark:</p>
 <ul class="simple">
 <li><p>concat does not support non-UTF8_BINARY collations (https://github.com/apache/datafusion-comet/issues/2190)</p></li>
 </ul>

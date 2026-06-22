@@ -174,7 +174,7 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.exec.project.enabled` | Whether to enable project by default. | true |
 | `spark.comet.exec.sort.enabled` | Whether to enable sort by default. | true |
 | `spark.comet.exec.sortMergeJoin.enabled` | Whether to enable sortMergeJoin by default. | true |
-| `spark.comet.exec.sortMergeJoinWithJoinFilter.enabled` | Experimental support for Sort Merge Join with filter | false |
+| `spark.comet.exec.sortMergeJoinWithJoinFilter.enabled` | Support for Sort Merge Join with filter. Deprecated: this config will be removed in a future release. | true |
 | `spark.comet.exec.takeOrderedAndProject.enabled` | Whether to enable takeOrderedAndProject by default. | true |
 | `spark.comet.exec.union.enabled` | Whether to enable union by default. | true |
 | `spark.comet.exec.window.enabled` | Whether to enable window by default. | true |
