@@ -1,0 +1,86 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+# Standalone Cargo.toml -- this crate is outside the `native/` workspace root, so it
+# cannot use `{ workspace = true }` inheritance. Versions are kept in sync with the
+# rest of the repo by convention; the path deps anchor against the same on-disk crates.
+
+[package]
+name = "comet-contrib-delta"
+description = "delta-kernel-rs integration for Comet. Reads Delta tables via kernel-rs's log replay and DataFusion's parquet scan, with DV / column-mapping / row-tracking support. Linked into libcomet via core's `contrib-delta` Cargo feature flag."
+version = "0.17.0"
+edition = "2021"
+rust-version = "1.86.0"
+publish = false
+license = "Apache-2.0"
+
+[lib]
+# rlib: linked INTO `libcomet` when `contrib-delta` is enabled on core. Never a cdylib
+# on its own — there's no separate Delta library to ship.
+crate-type = ["rlib"]
+
+[dependencies]
+# Typed Delta proto messages live in core's proto crate (alongside IcebergScan, ...)
+# so the dispatcher arm has direct access. We re-export them as `crate::proto::*`.
+datafusion-comet-proto = { path = "../../../native/proto" }
+# `SparkError` enum (JSON-serialised, mapped to specific Throwables by
+# `ShimSparkErrorConverter` on the JVM side -- including `FileNotFound` -> Java's
+# `FileNotFoundException`, which `dv_filter::map_dv_error_to_datafusion` emits when
+# a DV file is missing so `DeletionVectorsSuite "Check no resource leak"` can find
+# the right cause via `findIfResponsible[FileNotFoundException]`).
+datafusion-comet-common = { path = "../../../native/common" }
+# JNI helpers (CometError, CometResult, try_unwrap_or_throw). jni-bridge is a leaf
+# crate -- depending on it doesn't drag any Comet logic into the contrib.
+datafusion-comet-jni-bridge = { path = "../../../native/jni-bridge" }
+# Heavy Delta deps -- intentionally live ONLY in this contrib, never in core. delta_kernel
+# 0.24 pins the SAME arrow (58) and object_store (0.13) as Comet via the `arrow-58` feature,
+# so kernel RecordBatches flow straight into Comet plans with no arrow-version bridge.
+delta_kernel = { version = "0.24", default-features = false, features = ["default-engine-rustls", "arrow-58"] }
+# Roaring bitmap decoder for Delta deletion vectors (inline + on-disk).
+roaring = "0.10"
+
+# DataFusion / Arrow / parquet versions chosen to match core's pinned values.
+datafusion = { version = "53.1.0", default-features = false, features = ["parquet"] }
+# Direct dep for the `ignore_missing_files` FileSource decorator: `TableSchema` is
+# not re-exported under `datafusion::datasource`, so it must be named via this crate.
+datafusion-datasource = { version = "53.1.0" }
+arrow = { version = "58.1.0", features = ["prettyprint", "ffi", "chrono-tz"] }
+# Match core Comet's object_store features (native/Cargo.toml) so the Azure/GCS
+# builders reachable via `object_store::parse_url` mirror core's non-S3 read path.
+object_store = { version = "0.13.1", features = ["aws", "azure", "gcp", "http"] }
+url = "2.5.4"
+parquet = { version = "58.1.0", default-features = false, features = ["experimental"] }
+futures = "0.3"
+thiserror = "2"
+prost = "0.14.3"
+# Parse the analysis-time Delta schema JSON (shipped from the JVM) into a kernel `StructType` for
+# `ScanBuilder::with_schema`, so kernel resolves column-mapping physical names against the schema the
+# query was PLANNED with (correct for schema-change-since-analysis). Same format kernel itself uses
+# for the snapshot schema in the log.
+serde_json = "1"
+jni = "0.22.4"
+# Used by parse_delta_partition_scalar for timestamp parsing across the JVM's TZ shapes
+# (IANA names, GMT+/-HH:MM, etc).
+chrono = "0.4"
+chrono-tz = "0.10"
+log = "0.4"
+
+[dev-dependencies]
+# Used by unit tests under #[cfg(test)] in scan.rs to materialise a Delta table
+# in a tempdir without polluting the real filesystem.
+tempfile = "3"
+tokio = { version = "1.39.0", features = ["macros", "rt-multi-thread"] }

@@ -137,6 +137,19 @@ class NativeUtil {
             provider,
             arrowArray,
             arrowSchema)
+        case cv: org.apache.spark.sql.execution.vectorized.ConstantColumnVector =>
+          // Spark uses ConstantColumnVector for partition columns / per-batch constants (e.g.
+          // partition values, synthetic columns). Materialise to a fresh Arrow vector so Comet's
+          // native side -- which expects Arrow Arrays only -- can ingest the batch. Without this,
+          // queries that pull constants through a Comet operator fail with "Comet execution only
+          // takes Arrow Arrays".
+          val rows = batch.numRows()
+          numRows += rows
+          val materialised = org.apache.spark.sql.comet.util.Utils
+            .materializeConstantColumnVector(cv, cv.dataType(), rows, s"_const_$index", allocator)
+          val arrowSchema = ArrowSchema.wrap(schemaAddrs(index))
+          val arrowArray = ArrowArray.wrap(arrayAddrs(index))
+          Data.exportVector(allocator, materialised, null, arrowArray, arrowSchema)
         case c =>
           throw new SparkException(
             "Comet execution only takes Arrow Arrays, but got " +

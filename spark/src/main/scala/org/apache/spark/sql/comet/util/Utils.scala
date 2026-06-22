@@ -26,6 +26,7 @@ import java.nio.channels.Channels
 import scala.jdk.CollectionConverters._
 
 import org.apache.arrow.c.CDataDictionaryProvider
+import org.apache.arrow.memory.BufferAllocator
 import org.apache.arrow.vector._
 import org.apache.arrow.vector.complex.{ListVector, MapVector, StructVector}
 import org.apache.arrow.vector.dictionary.DictionaryProvider
@@ -38,6 +39,7 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.io.CompressionCodec
 import org.apache.spark.sql.catalyst.expressions.Attribute
 import org.apache.spark.sql.comet.execution.arrow.ArrowReaderIterator
+import org.apache.spark.sql.execution.vectorized.ConstantColumnVector
 import org.apache.spark.sql.types._
 import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.util.io.{ChunkedByteBuffer, ChunkedByteBufferOutputStream}
@@ -387,6 +389,7 @@ object Utils extends CometTypeShim with Logging {
   def getBatchFieldVectors(
       batch: ColumnarBatch): (Seq[FieldVector], Option[DictionaryProvider]) = {
     var provider: Option[DictionaryProvider] = None
+    val rows = batch.numRows()
     val fieldVectors = (0 until batch.numCols()).map { index =>
       batch.column(index) match {
         case a: CometVector =>
@@ -398,6 +401,17 @@ object Utils extends CometTypeShim with Logging {
           }
 
           getFieldVector(valueVector, "serialize")
+
+        case cv: ConstantColumnVector =>
+          // Spark wraps file-source partition columns and other per-batch constants in
+          // `ConstantColumnVector`. Materialise to an Arrow vector so the serialisation path
+          // doesn't reject the batch.
+          materializeConstantColumnVector(
+            cv,
+            cv.dataType(),
+            rows,
+            s"_const_$index",
+            org.apache.comet.CometArrowAllocator)
 
         case c =>
           throw new SparkException(
@@ -425,5 +439,33 @@ object Utils extends CometTypeShim with Logging {
       case _ =>
         throw new SparkException(s"Unsupported Arrow Vector for $reason: ${valueVector.getClass}")
     }
+  }
+
+  /**
+   * Materialize a Spark `ConstantColumnVector` into a fresh Arrow `FieldVector` whose value is
+   * the same constant repeated `numRows` times.
+   *
+   * Spark wraps file-source partition columns and other per-batch constants in
+   * `ConstantColumnVector`; downstream Comet operators feeding `NativeUtil.exportBatch` or
+   * `getBatchFieldVectors` trip on it because those paths only handle `CometVector`. This helper
+   * materializes the constant into an Arrow vector inline.
+   *
+   * The caller owns the returned vector and must close it (or hand it to Arrow's exporter, which
+   * transfers ownership). The vector is allocated against `allocator`, sized to exactly
+   * `numRows`, and pre-filled with the constant value (or null when `cv.isNullAt(0)`).
+   *
+   * All Spark types are supported (delegates to the per-type ArrowFieldWriters, which include
+   * struct/array/map); throws only for a type Arrow itself can't represent.
+   */
+  def materializeConstantColumnVector(
+      cv: ConstantColumnVector,
+      dt: DataType,
+      numRows: Int,
+      name: String,
+      allocator: BufferAllocator): FieldVector = {
+    // TimestampType is materialised with a "UTC" zone (Spark stores it as micros in UTC);
+    // TimestampNTZ carries no zone regardless of this argument.
+    org.apache.spark.sql.comet.execution.arrow.ConstantColumnVectors
+      .materialize(cv, dt, numRows, name, allocator, "UTC")
   }
 }

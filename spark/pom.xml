@@ -122,6 +122,18 @@ under the License.
         </exclusion>
       </exclusions>
     </dependency>
+    <!-- failureaccess: Guava's companion artifact (split out at Guava 27).
+         Guava's transitive deps are wildcard-excluded above to keep the
+         shaded production JAR small, which strips failureaccess too. At
+         test runtime any Guava call into futures (e.g. via Hadoop or
+         Spark internals) needs InternalFutureFailureAccess on the
+         classpath — explicitly pull it in here at test scope. -->
+    <dependency>
+      <groupId>com.google.guava</groupId>
+      <artifactId>failureaccess</artifactId>
+      <version>1.0.2</version>
+      <scope>test</scope>
+    </dependency>
     <dependency>
       <groupId>org.codehaus.jackson</groupId>
       <artifactId>jackson-mapper-asl</artifactId>
@@ -231,6 +243,13 @@ under the License.
 
     <profile>
       <id>spark-3.5</id>
+      <!--
+        When `contrib-delta` is also active, pin Delta to 3.3.x (the latest
+        Delta line that targets Spark 3.5). Delta 4.x requires Spark 4.x.
+      -->
+      <properties>
+        <delta.version>3.3.2</delta.version>
+      </properties>
       <dependencies>
         <dependency>
           <groupId>org.apache.iceberg</groupId>
@@ -256,6 +275,15 @@ under the License.
 
     <profile>
       <id>spark-4.0</id>
+      <properties>
+        <!--
+          Delta dep version (only used when `-Pcontrib-delta` is also active).
+          Delta 4.1 requires Spark 4.1 internals (NoSuchMethodError on
+          ParserInterface.$init$ if used against Spark 4.0), so spark-4.0 pins
+          the 4.0.x line.
+        -->
+        <delta.version>4.0.0</delta.version>
+      </properties>
       <dependencies>
         <dependency>
           <groupId>org.apache.iceberg</groupId>
@@ -283,6 +311,10 @@ under the License.
       <activation>
         <activeByDefault>true</activeByDefault>
       </activation>
+      <properties>
+        <!-- Delta dep version (only used when `-Pcontrib-delta` is also active). -->
+        <delta.version>4.1.0</delta.version>
+      </properties>
       <dependencies>
         <!-- iceberg-spark-runtime-4.1 is not yet published; reuse the 4.0 runtime -->
         <dependency>
@@ -331,6 +363,69 @@ under the License.
         </dependency>
       </dependencies>
     </profile>
+    <!--
+      Delta Lake integration. Activates the contrib/delta/ subtree:
+        compiles contrib/delta/src/main/scala/ into comet-spark.jar
+        pulls in io.delta:delta-spark at compile/test scope so the contrib's
+          reflective helpers and tests have the types they need
+      Default builds (no -P) carry zero Delta surface. Pair with the matching
+      'features contrib-delta' Cargo flag when building the native library.
+    -->
+    <profile>
+      <id>contrib-delta</id>
+      <!--
+        Delta dep version is selected by the active Spark profile (each Spark
+        profile sets its matching `delta.version`): delta-spark 4.x for Spark
+        4.x, 3.3.x for Spark 3.5. A top-level `<delta.version>4.1.0</delta.version>`
+        default lives in the parent POM as a floor so Maven invocations that
+        don't activate any Spark profile (e.g. `mvn -Pcontrib-delta
+        spotless:apply`) still have a resolvable property; any active Spark
+        profile overrides that top-level default.
+      -->
+      <dependencies>
+        <dependency>
+          <groupId>io.delta</groupId>
+          <artifactId>delta-spark_${scala.binary.version}</artifactId>
+          <version>${delta.version}</version>
+          <scope>provided</scope>
+        </dependency>
+      </dependencies>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.codehaus.mojo</groupId>
+            <artifactId>build-helper-maven-plugin</artifactId>
+            <executions>
+              <execution>
+                <id>add-contrib-delta-source</id>
+                <phase>generate-sources</phase>
+                <goals>
+                  <goal>add-source</goal>
+                </goals>
+                <configuration>
+                  <sources>
+                    <source>${project.parent.basedir}/contrib/delta/src/main/scala</source>
+                  </sources>
+                </configuration>
+              </execution>
+              <execution>
+                <id>add-contrib-delta-test-source</id>
+                <phase>generate-test-sources</phase>
+                <goals>
+                  <goal>add-test-source</goal>
+                </goals>
+                <configuration>
+                  <sources>
+                    <source>${project.parent.basedir}/contrib/delta/src/test/scala</source>
+                  </sources>
+                </configuration>
+              </execution>
+            </executions>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+
     <profile>
       <id>generate-docs</id>
       <build>

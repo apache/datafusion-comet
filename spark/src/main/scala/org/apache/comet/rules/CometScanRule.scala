@@ -88,14 +88,6 @@ case class CometScanRule(session: SparkSession)
       case _ => false
     }
 
-    def hasMetadataCol(plan: SparkPlan): Boolean = {
-      plan.expressions.exists(_.exists {
-        case a: Attribute =>
-          a.isMetadataCol
-        case _ => false
-      })
-    }
-
     def isIcebergMetadataTable(scanExec: BatchScanExec): Boolean = {
       // List of Iceberg metadata tables:
       // https://iceberg.apache.org/docs/latest/spark-queries/#inspecting-tables
@@ -127,12 +119,15 @@ case class CometScanRule(session: SparkSession)
       case scan if !CometConf.COMET_NATIVE_SCAN_ENABLED.get(conf) =>
         withFallbackReason(scan, "Comet Scan is not enabled")
 
-      case scan if hasMetadataCol(scan) =>
-        withFallbackReason(scan, "Metadata column is not supported")
-
-      // data source V1
+      // V1 scans go through `transformV1Scan` which itself first delegates to any
+      // available V1 contrib (today: Delta) and only then applies generic Comet
+      // bailouts like the metadata-column rejection. This keeps the metadata-col
+      // guard in place for V2 and non-contrib V1 paths without referencing any
+      // specific contrib class from this outer match.
       case scanExec: FileSourceScanExec =>
         transformV1Scan(fullPlan, scanExec)
+      case scan if hasMetadataCol(scan) =>
+        withFallbackReason(scan, "Metadata column is not supported")
 
       // data source V2
       case scanExec: BatchScanExec =>
@@ -146,6 +141,14 @@ case class CometScanRule(session: SparkSession)
     plan.transform {
       case scan if isSupportedScanNode(scan) => transformScan(scan)
     }
+  }
+
+  /** True when any expression in `plan` references a metadata column. */
+  private def hasMetadataCol(plan: SparkPlan): Boolean = {
+    plan.expressions.exists(_.exists {
+      case a: Attribute => a.isMetadataCol
+      case _ => false
+    })
   }
 
   private def transformV1Scan(plan: SparkPlan, scanExec: FileSourceScanExec): SparkPlan = {
@@ -165,9 +168,27 @@ case class CometScanRule(session: SparkSession)
 
     scanExec.relation match {
       case r: HadoopFsRelation =>
+        // Try the optional Delta contrib first. When this build wasn't compiled with
+        // `-Pcontrib-delta`, the bridge returns None and we fall through to the
+        // vanilla scan path. When the Delta classes are on the classpath, the contrib
+        // either claims the scan (returning a CometScanExec marker) or declines via
+        // its own `withFallbackReason` fallback message.
+        DeltaIntegration.transformV1IfDelta(plan, session, scanExec, r) match {
+          case Some(handled) => return handled
+          case None => // proceed with vanilla logic
+        }
+        // Metadata-col bailout moved here so V1 contribs (Delta) get first crack
+        // at scans with synthetic metadata columns before generic Comet rejects
+        // them. For non-contrib V1 scans this is equivalent to the outer check.
+        if (hasMetadataCol(scanExec)) {
+          return withFallbackReason(scanExec, "Metadata column is not supported")
+        }
         if (!CometScanExec.isFileFormatSupported(r.fileFormat)) {
           return withFallbackReason(scanExec, s"Unsupported file format ${r.fileFormat}")
         }
+        // NOTE: the object_store scheme gate lives in `nativeScan` (below), shared with the
+        // non-contrib path. The Delta delegation above runs before it, so contrib scans are
+        // unaffected; vanilla V1 scans hit the gate when this method calls `nativeScan`.
         val hadoopConf = r.sparkSession.sessionState.newHadoopConfWithOptions(r.options)
 
         // TODO is this restriction valid for all native scan types?

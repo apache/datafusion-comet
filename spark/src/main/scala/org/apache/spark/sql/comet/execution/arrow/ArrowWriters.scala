@@ -21,12 +21,14 @@ package org.apache.spark.sql.comet.execution.arrow
 
 import scala.jdk.CollectionConverters._
 
+import org.apache.arrow.memory.BufferAllocator
 import org.apache.arrow.vector._
 import org.apache.arrow.vector.complex._
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.SpecializedGetters
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.errors.QueryExecutionErrors
+import org.apache.spark.sql.execution.vectorized.ConstantColumnVector
 import org.apache.spark.sql.types._
 import org.apache.spark.sql.vectorized.ColumnarArray
 
@@ -88,6 +90,36 @@ private[arrow] object ArrowWriter {
       case (dt, _) =>
         throw QueryExecutionErrors.notSupportTypeError(dt)
     }
+  }
+}
+
+/**
+ * Materialises a Spark `ConstantColumnVector` (partition values / per-batch constants) into a
+ * fresh Arrow `FieldVector` holding the constant repeated `numRows` times.
+ *
+ * Reuses the per-type `ArrowFieldWriter`s above -- so EVERY type is covered (scalars, decimal,
+ * timestamps, and complex struct/array/map) and the logic stays in sync with Spark -- rather than
+ * a hand-rolled per-type switch. `ConstantColumnVector` returns its constant for any rowId, so a
+ * `ColumnarArray` view over rows `[0, numRows)` writes the constant (or null) `numRows` times.
+ *
+ * Lives in this package because `ArrowWriter` is `private[arrow]`. The caller owns the returned
+ * vector and must close it (or hand it to Arrow's exporter, which takes ownership).
+ */
+object ConstantColumnVectors {
+  def materialize(
+      cv: ConstantColumnVector,
+      dt: DataType,
+      numRows: Int,
+      name: String,
+      allocator: BufferAllocator,
+      timeZoneId: String): FieldVector = {
+    val field = Utils.toArrowField(name, dt, nullable = true, timeZoneId)
+    val vector = field.createVector(allocator)
+    vector.allocateNew()
+    val writer = ArrowWriter.createFieldWriter(vector)
+    writer.writeCol(new ColumnarArray(cv, 0, numRows))
+    writer.finish()
+    vector
   }
 }
 

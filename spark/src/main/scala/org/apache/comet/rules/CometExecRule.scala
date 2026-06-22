@@ -265,6 +265,25 @@ case class CometExecRule(session: SparkSession)
   // spotless:on
   private def transform(plan: SparkPlan): SparkPlan = {
     def convertNode(op: SparkPlan): SparkPlan = op match {
+      // Delta scan marker produced by the optional contrib/delta integration. Matched by type
+      // (no compile-time dependency on the contrib) -- present only when -Pcontrib-delta was
+      // activated. The marker wraps the original, link-bearing scan, so the produced exec's
+      // originalPlan keeps its logicalLink with no workaround. If conversion declines, the marker
+      // itself falls back to the vanilla Spark Delta scan, so leaving it in the plan is safe.
+      case scan if DeltaIntegration.isDeltaScanMarker(scan) =>
+        DeltaIntegration.scanHandler
+          .flatMap(handler => convertToComet(scan, handler))
+          .getOrElse(scan)
+
+      // Change Data Feed read: a `RowDataSourceScanExec` over Delta's `DeltaCDFRelation`
+      // (`readChangeFeed`). The optional contrib/delta integration reads it natively via
+      // delta-kernel's `TableChanges`. Matched by relation class name (no compile-time contrib
+      // dependency). If the contrib isn't bundled or declines, the vanilla Spark CDF read is left
+      // in place. This runs in CometExecRule (preColumnarTransitions + query-stage prep), so it
+      // fires on simple non-AQE CDF plans too.
+      case scan: RowDataSourceScanExec if DeltaIntegration.isCdfRelation(scan.relation) =>
+        DeltaIntegration.transformCdf(scan).getOrElse(scan)
+
       // Fully native scan for V1. CometScanExec must always convert to a native scan; the JVM
       // fallback path has been removed. If conversion fails, fall back to the original Spark scan.
       case scan: CometScanExec =>

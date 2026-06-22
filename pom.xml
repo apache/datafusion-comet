@@ -44,6 +44,14 @@ under the License.
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
     <java.version>11</java.version>
+    <!--
+      Default Delta dep version (only consumed when `-Pcontrib-delta` is also
+      active). Spark profiles override this: spark-3.5 -> 3.3.2, spark-4.1 ->
+      4.1.0. The top-level default lets Maven invocations that don't activate a
+      Spark profile (e.g. `mvn -Pcontrib-delta spotless:apply`) resolve the
+      property without an error.
+    -->
+    <delta.version>4.1.0</delta.version>
     <maven.compiler.source>${java.version}</maven.compiler.source>
     <maven.compiler.target>${java.version}</maven.compiler.target>
     <maven-compiler-plugin.version>3.11.0</maven-compiler-plugin.version>
@@ -69,7 +77,11 @@ under the License.
     <scala.plugin.version>4.9.6</scala.plugin.version>
     <scalatest.version>3.2.16</scalatest.version>
     <scalatest-maven-plugin.version>2.2.0</scalatest-maven-plugin.version>
-    <spark.version>4.1.2</spark.version>
+    <!-- Spark 4.1 is pinned to 4.1.1 (not 4.1.2): delta-spark 4.1.0 (delta.version above) references
+         org.apache.spark.sql.catalyst.plans.logical.IgnoreCachedData, which Spark removed in 4.1.2,
+         so 4.1.2 + delta-spark 4.1.0 fails at runtime (NoClassDefFoundError). Comet itself works on
+         either patch; the constraint is delta-spark. Bump together with delta.version. -->
+    <spark.version>4.1.1</spark.version>
     <spark.version.short>4.1</spark.version.short>
     <spark.maven.scope>provided</spark.maven.scope>
     <protobuf.version>3.25.5</protobuf.version>
@@ -710,7 +722,9 @@ under the License.
              yet published, so the -Psemanticdb / scalafix lint job is skipped for spark-4.1. -->
         <scala.version>2.13.17</scala.version>
         <scala.binary.version>2.13</scala.binary.version>
-        <spark.version>4.1.2</spark.version>
+        <!-- 4.1.1, not 4.1.2: delta-spark 4.1.0 needs IgnoreCachedData, which 4.1.2 removed.
+             See the top-level spark.version comment. -->
+        <spark.version>4.1.1</spark.version>
         <spark.version.short>4.1</spark.version.short>
         <parquet.version>1.16.0</parquet.version>
         <semanticdb.version>4.13.6</semanticdb.version>
