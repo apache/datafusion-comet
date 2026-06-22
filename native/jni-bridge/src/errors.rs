@@ -495,7 +495,7 @@ fn throw_exception(env: &mut Env, error: &CometError, backtrace: Option<String>)
             // Handle DataFusion errors containing SparkError or SparkErrorWithContext
             CometError::DataFusion {
                 msg: _,
-                source: DataFusionError::External(e),
+                source: df_error @ DataFusionError::External(e),
             } => {
                 if let Some(CometError::JavaException { throwable, .. }) =
                     e.downcast_ref::<CometError>()
@@ -517,45 +517,10 @@ fn throw_exception(env: &mut Env, error: &CometError, backtrace: Option<String>)
                         jni::jni_str!("org/apache/comet/exceptions/CometQueryExecutionException"),
                         JNIString::new(json_message),
                     )
-                } else {
-                    // Check for file-not-found errors from object store
-                    let error_msg = e.to_string();
-                    if error_msg.contains("not found")
-                        && error_msg.contains("No such file or directory")
-                    {
-                        let spark_error = SparkError::FileNotFound { message: error_msg };
-                        throw_spark_error_as_json(env, &spark_error)
-                    } else {
-                        // Not a SparkError, use generic exception
-                        let exception = error.to_exception();
-                        match backtrace {
-                            Some(backtrace_string) => env.throw_new(
-                                JNIString::new(exception.class),
-                                JNIString::new(
-                                    to_stacktrace_string(exception.msg, backtrace_string).unwrap(),
-                                ),
-                            ),
-                            _ => env.throw_new(
-                                JNIString::new(exception.class),
-                                JNIString::new(exception.msg),
-                            ),
-                        }
-                    }
-                }
-            }
-            // Handle direct SparkError - serialize to JSON
-            CometError::Spark(spark_error) => throw_spark_error_as_json(env, spark_error),
-            _ => {
-                let error_msg = error.to_string();
-                // Check for file-not-found errors that may arrive through other wrapping paths
-                if error_msg.contains("not found")
-                    && error_msg.contains("No such file or directory")
-                {
-                    let spark_error = SparkError::FileNotFound { message: error_msg };
-                    throw_spark_error_as_json(env, &spark_error)
-                } else if let Some(spark_error) = try_convert_duplicate_field_error(&error_msg) {
+                } else if let Some(spark_error) = try_classify_file_read_error(df_error) {
                     throw_spark_error_as_json(env, &spark_error)
                 } else {
+                    // Not a SparkError, use generic exception
                     let exception = error.to_exception();
                     match backtrace {
                         Some(backtrace_string) => env.throw_new(
@@ -571,7 +536,52 @@ fn throw_exception(env: &mut Env, error: &CometError, backtrace: Option<String>)
                     }
                 }
             }
+            // Typed file-read errors (corrupt/truncated parquet, object_store) raised by the native
+            // scan -- classified by DataFusionError variant, not message text -- surfaced as
+            // FAILED_READ_FILE / FileNotFound via the structured SparkError channel. Anything else
+            // falls back to generic handling.
+            CometError::DataFusion { msg: _, source } => {
+                if let Some(spark_error) = try_classify_file_read_error(source) {
+                    throw_spark_error_as_json(env, &spark_error)
+                } else {
+                    throw_generic_exception(env, error, backtrace)
+                }
+            }
+            // Handle direct SparkError - serialize to JSON
+            CometError::Spark(spark_error) => throw_spark_error_as_json(env, spark_error),
+            _ => throw_generic_exception(env, error, backtrace),
         };
+    }
+}
+
+/// Generic fallback throw for an error that isn't a structured `SparkError`. Recognises a
+/// file-not-found arriving through non-typed wrapping paths and duplicate-field errors; otherwise
+/// throws the error's natural JVM exception (with the captured backtrace when available).
+fn throw_generic_exception(
+    env: &mut Env,
+    error: &CometError,
+    backtrace: Option<String>,
+) -> jni::errors::Result<()> {
+    let error_msg = error.to_string();
+    // A file-not-found that arrived through a non-typed wrapping path (the typed classification
+    // is handled by `try_classify_file_read_error`).
+    if error_msg.contains("not found") && error_msg.contains("No such file or directory") {
+        let spark_error = SparkError::FileNotFound { message: error_msg };
+        throw_spark_error_as_json(env, &spark_error)
+    } else if let Some(spark_error) = try_convert_duplicate_field_error(&error_msg) {
+        throw_spark_error_as_json(env, &spark_error)
+    } else {
+        let exception = error.to_exception();
+        match backtrace {
+            Some(backtrace_string) => env.throw_new(
+                JNIString::new(exception.class),
+                JNIString::new(to_stacktrace_string(exception.msg, backtrace_string).unwrap()),
+            ),
+            _ => env.throw_new(
+                JNIString::new(exception.class),
+                JNIString::new(exception.msg),
+            ),
+        }
     }
 }
 
@@ -585,6 +595,128 @@ fn throw_spark_error_as_json(env: &mut Env, spark_error: &SparkError) -> jni::er
         jni::jni_str!("org/apache/comet/exceptions/CometQueryExecutionException"),
         JNIString::new(json_message),
     )
+}
+
+/// Classify a `DataFusionError` as a per-file read failure by TYPED variant (not message text),
+/// returning `SparkError::CannotReadFile` if so. This is the structured replacement for the
+/// previous JVM-side substring matching on error prose.
+///
+/// A file-read failure is any of:
+///   - `ParquetError` (corrupt footer/page, EOF, "failed to fill whole buffer", etc.)
+///   - `ObjectStore` (truncated/empty/deleted file, range errors) -- `NotFound` carries the path
+///   - `ArrowError`, when it wraps a `ParquetError` (the parquet reader surfaces some failures as
+///     `ArrowError::ParquetError`)
+///   - `IoError` (filesystem read failures)
+///
+/// `Context`/`Shared` wrappers are unwrapped recursively. Note we do NOT match `Execution`/
+/// `Internal`/`External`-string or `object_store::Error::Generic`: those also carry non-file
+/// errors (e.g. "Hdfs support is not enabled in this build") that must surface as-is.
+///
+/// `file_path` is populated from `object_store::Error::NotFound { path, .. }` when available;
+/// otherwise it is left empty and the JVM side fills it from the per-task file list.
+fn try_classify_file_read_error(error: &DataFusionError) -> Option<SparkError> {
+    use datafusion::common::DataFusionError as DFE;
+    match error {
+        // A pushed-down filter predicate that throws while the scan is reading (e.g. an ANSI
+        // divide-by-zero in a `WHERE`, now reachable by default since Scala UDF codegen dispatch
+        // landed) is an EXPRESSION failure, not a file-read failure, and must not be relabelled
+        // FAILED_READ_FILE. DataFusion's row filter returns such a failure as `ArrowError`
+        // (`ComputeError`), which the parquet reader then wraps as `ParquetError::External(<arrow>)`.
+        // Genuine corrupt/truncated/missing-file errors are `ParquetError::General`/`EOF`/
+        // `External(io|object_store)` and never wrap an `ArrowError`, so this TYPED check (not the
+        // error-message text, which DataFusion produces via `{:?}`) tells the two apart. Bail so the
+        // underlying error surfaces through the normal native-exception path.
+        DFE::ParquetError(pe) if parquet_external_wraps_arrow_error(pe) => None,
+        // A genuinely-missing file (object_store NotFound) is distinct from a corrupt/truncated
+        // one: Spark surfaces it as `readCurrentFileNotFoundError` ("It is possible the underlying
+        // files have been updated."), not `cannotReadFilesError`. The NotFound may arrive directly
+        // (`DFE::ObjectStore`) or wrapped by the parquet reader as `ParquetError::External(..)`, so
+        // inspect the source chain. Delta's CDC-after-VACUUM read depends on this distinction.
+        DFE::ParquetError(pe) if source_chain_has_object_store_not_found(pe.as_ref()) => {
+            Some(SparkError::FileNotFound {
+                message: error.to_string(),
+            })
+        }
+        // NB: only ParquetError / ObjectStore / ArrowError(ParquetError) are treated as file reads.
+        // A bare `IoError` is intentionally NOT classified here: a scan surfaces read failures as a
+        // typed ParquetError or ObjectStore error, whereas an `IoError` can also originate from
+        // non-scan paths (spill, shuffle), which must not be relabelled FAILED_READ_FILE.
+        DFE::ParquetError(_) => Some(SparkError::CannotReadFile {
+            file_path: String::new(),
+            message: cannot_read_file_message(error),
+        }),
+        DFE::ObjectStore(e) => match e.as_ref() {
+            datafusion::object_store::Error::NotFound { .. } => Some(SparkError::FileNotFound {
+                message: error.to_string(),
+            }),
+            _ => Some(SparkError::CannotReadFile {
+                file_path: String::new(),
+                message: cannot_read_file_message(error),
+            }),
+        },
+        // The parquet reader sometimes surfaces a failure as ArrowError::ParquetError.
+        DFE::ArrowError(e, _) => match e.as_ref() {
+            ArrowError::ParquetError(_) if source_chain_has_object_store_not_found(e.as_ref()) => {
+                Some(SparkError::FileNotFound {
+                    message: error.to_string(),
+                })
+            }
+            ArrowError::ParquetError(_) => Some(SparkError::CannotReadFile {
+                file_path: String::new(),
+                message: cannot_read_file_message(error),
+            }),
+            _ => None,
+        },
+        // Unwrap context/shared wrappers and re-classify the inner error.
+        DFE::Context(_, inner) => try_classify_file_read_error(inner),
+        DFE::Shared(inner) => try_classify_file_read_error(inner),
+        _ => None,
+    }
+}
+
+/// True if `pe` is a `ParquetError::External` wrapping an `ArrowError`. DataFusion's parquet row
+/// filter returns a pushed-down predicate's evaluation failure as an `ArrowError` (e.g.
+/// `ComputeError` for an ANSI divide-by-zero), which the parquet reader then surfaces as
+/// `ParquetError::External(<arrow error>)`. That is an expression failure that merely happened
+/// during the scan, not a corrupt/truncated/missing file -- genuine read failures are
+/// `ParquetError::General`/`EOF`/`External(io|object_store)` and never wrap an `ArrowError`. Matching
+/// on the wrapped type (rather than the message text DataFusion builds with `{:?}`) keeps the
+/// distinction robust to upstream message changes.
+fn parquet_external_wraps_arrow_error(pe: &ParquetError) -> bool {
+    matches!(pe, ParquetError::External(inner) if inner.downcast_ref::<ArrowError>().is_some())
+}
+
+/// True if `err` or any error in its `source()` chain is an `object_store` `NotFound` -- i.e. a
+/// genuinely-missing file. Used to tell a missing file apart from a corrupt/truncated one: the
+/// parquet reader wraps the object_store error as `ParquetError::External(..)`, so the typed
+/// `NotFound` is only reachable by walking the source chain (we match the typed variant, never the
+/// message text).
+fn source_chain_has_object_store_not_found(err: &(dyn std::error::Error + 'static)) -> bool {
+    let mut current: Option<&(dyn std::error::Error + 'static)> = Some(err);
+    while let Some(e) = current {
+        if let Some(os) = e.downcast_ref::<datafusion::object_store::Error>() {
+            if matches!(os, datafusion::object_store::Error::NotFound { .. }) {
+                return true;
+            }
+        }
+        current = e.source();
+    }
+    false
+}
+
+/// Build the message for a `CannotReadFile` error. parquet-rs reports a bad magic / unreadable
+/// footer as `"Invalid Parquet file. Corrupt footer"`, whereas Spark's own reader (and Spark's
+/// `ParquetQuerySuite`) phrase it as `"<file> is not a Parquet file"`. Append Spark's phrasing so
+/// the cause carries it; the outer `cannotReadFilesError` wrapper ("Encountered error while reading
+/// file …") is unchanged, so this composes with Spark's tests without changing the FAILED_READ_FILE
+/// wrapping. Other read failures (corrupt pages, EOF, IO) keep their native message verbatim.
+fn cannot_read_file_message(error: &DataFusionError) -> String {
+    let msg = error.to_string();
+    if msg.contains("Invalid Parquet file") && !msg.contains("is not a Parquet file") {
+        format!("{msg} (file is not a Parquet file)")
+    } else {
+        msg
+    }
 }
 
 /// Try to convert a DataFusion "Unable to get field named" error into a SparkError.
@@ -1113,5 +1245,213 @@ mod tests {
         // Since panics result in multi-line messages which include the backtrace, just use the
         // first line.
         assert_starts_with!(msg_rust, expected_message);
+    }
+
+    // --- try_classify_file_read_error: typed classification of file-read DataFusionErrors ---
+    // These guard the variant matching that replaced JVM-side error-message string matching. They
+    // need no JVM (pure DataFusionError -> Option<SparkError>), so they also run under miri.
+
+    use datafusion::common::DataFusionError;
+
+    fn file_path_of(err: &SparkError) -> &str {
+        match err {
+            SparkError::CannotReadFile { file_path, .. } => file_path,
+            other => panic!("expected CannotReadFile, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn classify_parquet_error_is_file_read() {
+        let e = DataFusionError::ParquetError(Box::new(parquet::errors::ParquetError::General(
+            "corrupt footer".to_string(),
+        )));
+        let classified = try_classify_file_read_error(&e);
+        assert!(
+            classified.is_some(),
+            "ParquetError should classify as file-read"
+        );
+        // No path available from a bare ParquetError; JVM fills it from the per-task list.
+        assert_eq!(file_path_of(&classified.unwrap()), "");
+    }
+
+    #[test]
+    fn classify_arrow_parquet_error_is_file_read() {
+        // arrow-rs surfaces some parquet read failures as ArrowError::ParquetError.
+        let e = DataFusionError::ArrowError(
+            Box::new(ArrowError::ParquetError(
+                "failed to fill whole buffer".to_string(),
+            )),
+            None,
+        );
+        assert!(
+            try_classify_file_read_error(&e).is_some(),
+            "ArrowError(ParquetError) should classify as file-read"
+        );
+    }
+
+    #[test]
+    fn classify_object_store_not_found_is_file_not_found() {
+        // A genuinely-missing file must classify as FileNotFound (-> readCurrentFileNotFoundError
+        // on the JVM side), NOT CannotReadFile (-> cannotReadFilesError). The path is carried in
+        // the message; the JVM shim extracts it.
+        let e = DataFusionError::ObjectStore(Box::new(datafusion::object_store::Error::NotFound {
+            path: "file:/tmp/data/part-3.parquet".to_string(),
+            source: "missing".into(),
+        }));
+        match try_classify_file_read_error(&e) {
+            Some(SparkError::FileNotFound { message }) => {
+                assert!(message.contains("part-3.parquet"), "message was: {message}")
+            }
+            other => panic!("expected FileNotFound, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn classify_parquet_error_wrapping_not_found_is_file_not_found() {
+        // The parquet reader surfaces a missing data file as ParquetError::External wrapping an
+        // object_store NotFound (e.g. a Delta CDC file removed by VACUUM). The NotFound is only
+        // reachable through the source chain, but it must still classify as FileNotFound.
+        let os = datafusion::object_store::Error::NotFound {
+            path: "file:/tmp/t/_change_data/cdc.parquet".to_string(),
+            source: "missing".into(),
+        };
+        let e = DataFusionError::ParquetError(Box::new(parquet::errors::ParquetError::External(
+            Box::new(os),
+        )));
+        match try_classify_file_read_error(&e) {
+            Some(SparkError::FileNotFound { .. }) => {}
+            other => {
+                panic!("expected FileNotFound for a NotFound-wrapping ParquetError, got {other:?}")
+            }
+        }
+    }
+
+    #[test]
+    fn classify_corrupt_parquet_error_stays_cannot_read_file() {
+        // A corrupt/truncated file (no NotFound in the chain) must remain CannotReadFile
+        // (-> FAILED_READ_FILE), unchanged by the FileNotFound carve-out.
+        let e = DataFusionError::ParquetError(Box::new(parquet::errors::ParquetError::General(
+            "corrupt footer".to_string(),
+        )));
+        match try_classify_file_read_error(&e) {
+            Some(SparkError::CannotReadFile { .. }) => {}
+            other => panic!("expected CannotReadFile for a corrupt parquet error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn classify_pushed_filter_predicate_error_is_not_file_read() {
+        // A pushed-down WHERE predicate that hits an ANSI divide-by-zero while the parquet scan is
+        // reading is surfaced by DataFusion's row filter as an ArrowError (ComputeError), which the
+        // parquet reader wraps as ParquetError::External(<arrow>). That is an expression failure,
+        // NOT a file read, so it must NOT classify as CannotReadFile/FAILED_READ_FILE -- it must
+        // fall through (None) so the underlying error surfaces verbatim.
+        let predicate_err = ArrowError::ComputeError(
+            "Error evaluating filter predicate: External(SparkErrorWithContext { \
+             error: DivideByZero, context: Some(..) })"
+                .to_string(),
+        );
+        let e = DataFusionError::ParquetError(Box::new(parquet::errors::ParquetError::External(
+            Box::new(predicate_err),
+        )));
+        assert!(
+            try_classify_file_read_error(&e).is_none(),
+            "a pushed-down filter-predicate eval error must not be classified as a file read; got {:?}",
+            try_classify_file_read_error(&e)
+        );
+    }
+
+    #[test]
+    fn classify_external_io_parquet_error_stays_cannot_read_file() {
+        // The structural carve-out above must be narrow: a ParquetError::External wrapping a genuine
+        // IO error (a real read failure, not an ArrowError) must STILL classify as CannotReadFile.
+        let e = DataFusionError::ParquetError(Box::new(parquet::errors::ParquetError::External(
+            Box::new(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "early eof reading footer",
+            )),
+        )));
+        match try_classify_file_read_error(&e) {
+            Some(SparkError::CannotReadFile { .. }) => {}
+            other => {
+                panic!("expected CannotReadFile for an External(io) parquet error, got {other:?}")
+            }
+        }
+    }
+
+    #[test]
+    fn classify_invalid_parquet_file_carries_spark_wording() {
+        // parquet-rs reports a bad magic / unreadable footer as "Invalid Parquet file. Corrupt
+        // footer"; Spark's ParquetQuerySuite asserts the cause says "is not a Parquet file". The
+        // CannotReadFile message must carry that phrasing.
+        let e = DataFusionError::ParquetError(Box::new(parquet::errors::ParquetError::General(
+            "Invalid Parquet file. Corrupt footer".to_string(),
+        )));
+        match try_classify_file_read_error(&e) {
+            Some(SparkError::CannotReadFile { message, .. }) => assert!(
+                message.contains("is not a Parquet file"),
+                "message was: {message}"
+            ),
+            other => panic!("expected CannotReadFile, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn classify_other_parquet_error_keeps_native_message() {
+        // A non-magic parquet failure (e.g. corrupt page data) keeps its native message verbatim
+        // -- the "is not a Parquet file" phrasing is only added for the magic/footer case.
+        let e = DataFusionError::ParquetError(Box::new(parquet::errors::ParquetError::General(
+            "could not decode page header".to_string(),
+        )));
+        match try_classify_file_read_error(&e) {
+            Some(SparkError::CannotReadFile { message, .. }) => assert!(
+                !message.contains("is not a Parquet file"),
+                "message should not be augmented: {message}"
+            ),
+            other => panic!("expected CannotReadFile, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn classify_bare_io_error_is_not_file_read() {
+        // A bare IoError is not a scan read failure (scans surface ParquetError/ObjectStore); it
+        // can come from spill/shuffle, so it must NOT be classified as FAILED_READ_FILE.
+        let e = DataFusionError::IoError(io::Error::new(io::ErrorKind::UnexpectedEof, "eof"));
+        assert!(try_classify_file_read_error(&e).is_none());
+    }
+
+    #[test]
+    fn classify_unwraps_context_and_shared() {
+        let inner = DataFusionError::ParquetError(Box::new(
+            parquet::errors::ParquetError::General("corrupt".to_string()),
+        ));
+        let ctx = DataFusionError::Context("reading file".to_string(), Box::new(inner));
+        assert!(
+            try_classify_file_read_error(&ctx).is_some(),
+            "Context-wrapped ParquetError should classify"
+        );
+        let shared = DataFusionError::Shared(Arc::new(DataFusionError::ObjectStore(Box::new(
+            datafusion::object_store::Error::NotFound {
+                path: "p".to_string(),
+                source: "x".into(),
+            },
+        ))));
+        assert!(
+            try_classify_file_read_error(&shared).is_some(),
+            "Shared-wrapped ObjectStore error should classify"
+        );
+    }
+
+    #[test]
+    fn classify_non_file_errors_are_not_file_read() {
+        // Execution / Internal errors (and object_store Generic config errors, which arrive as
+        // Execution strings) must NOT be masked as file-read failures.
+        assert!(try_classify_file_read_error(&DataFusionError::Execution(
+            "Hdfs support is not enabled in this build".to_string()
+        ))
+        .is_none());
+        assert!(
+            try_classify_file_read_error(&DataFusionError::Internal("bug".to_string())).is_none()
+        );
     }
 }
