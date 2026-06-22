@@ -22,7 +22,6 @@ use datafusion::common::{utils::take_function_args, DataFusionError, Result};
 use datafusion::logical_expr::{
     ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility,
 };
-use std::any::Any;
 use std::sync::Arc;
 
 /// Spark-compatible date_diff function.
@@ -52,10 +51,6 @@ impl Default for SparkDateDiff {
 }
 
 impl ScalarUDFImpl for SparkDateDiff {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn name(&self) -> &str {
         "date_diff"
     }

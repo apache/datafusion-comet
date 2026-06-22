@@ -23,8 +23,6 @@ use datafusion::logical_expr::{
     ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility,
 };
 
-use std::any::Any;
-
 use serde::de::{IgnoredAny, SeqAccess, Visitor};
 use serde::Deserializer;
 use std::fmt;
@@ -53,10 +51,6 @@ impl JsonArrayLength {
 }
 
 impl ScalarUDFImpl for JsonArrayLength {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn name(&self) -> &str {
         "json_array_length"
     }
