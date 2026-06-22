@@ -28,4 +28,5 @@ These user guides are kept for reference. They are not maintained: use the
 0.16.x <0.16/index>
 0.15.x <0.15/index>
 0.14.x <0.14/index>
+0.13.x <0.13/index>
 ```
