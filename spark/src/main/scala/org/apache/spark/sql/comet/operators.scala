@@ -541,7 +541,12 @@ private[comet] case class NativeExecContext(
     commonByKey: Map[String, Array[Byte]],
     perPartitionByKey: Map[String, Array[Array[Byte]]],
     shuffleScanIndices: Set[Int],
-    hasScanInput: Boolean) {
+    hasScanInput: Boolean,
+    // Per-partition file paths from any scan exposing file-level provenance via the
+    // `CometScanWithPlanData` trait (`CometNativeScanExec` + contrib leaves like
+    // `CometDeltaNativeScanExec`), so `CometExecIterator` can report a per-file read failure as
+    // `FAILED_READ_FILE.NO_HINT` with the offending path. Empty when no such scan is present.
+    perPartitionFilePaths: Array[Seq[String]] = Array.empty) {
   // Catch shape divergence (e.g. broadcast scans with different partition counts after DPP
   // filtering) at construction so consumers don't trip ArrayIndexOutOfBoundsException at
   // partition idx access time.
@@ -615,7 +620,8 @@ abstract class CometNativeExec extends CometExec {
       ctx.subqueries,
       ctx.broadcastedHadoopConfForEncryption,
       ctx.encryptedFilePaths,
-      ctx.shuffleScanIndices) {
+      ctx.shuffleScanIndices,
+      perPartitionFilePaths = ctx.perPartitionFilePaths) {
       override def compute(split: Partition, context: TaskContext): Iterator[ColumnarBatch] = {
         val res = super.compute(split, context)
         if (ctx.hasScanInput) {
@@ -807,6 +813,24 @@ abstract class CometNativeExec extends CometExec {
       throw new CometRuntimeException(s"No input for CometNativeExec:\n $this")
     }
 
+    // Collect per-partition file paths from any scan that exposes file-level provenance via the
+    // `CometScanWithPlanData` trait (covers `CometNativeScanExec` and contrib leaves like
+    // `CometDeltaNativeScanExec`) so `CometExecIterator` can report a per-file read failure as
+    // `FAILED_READ_FILE.NO_HINT` with the offending path. Done here (not in the leaf's own
+    // `inputRDD`) so it also fires when the scan is embedded inside a larger parent native tree.
+    // Multiple scans (joins) get concatenated per partition.
+    val perPartitionFilePaths: Array[Seq[String]] = {
+      val scans = sparkPlans.collect { case s: CometScanWithPlanData => s }
+      if (scans.isEmpty) Array.empty[Seq[String]]
+      else {
+        val perScan = scans.map(_.perPartitionFilePaths)
+        val n = firstNonBroadcastPlanNumPartitions
+        (0 until n).map { idx =>
+          perScan.flatMap { arr => if (arr.length > idx) arr(idx) else Seq.empty }.toSeq
+        }.toArray
+      }
+    }
+
     NativeExecContext(
       inputs = inputs.toSeq,
       numPartitions = firstNonBroadcastPlanNumPartitions,
@@ -816,7 +840,8 @@ abstract class CometNativeExec extends CometExec {
       commonByKey = commonByKey,
       perPartitionByKey = perPartitionByKey,
       shuffleScanIndices = shuffleScanIndices,
-      hasScanInput = sparkPlans.exists(_.isInstanceOf[CometNativeScanExec]))
+      hasScanInput = sparkPlans.exists(_.isInstanceOf[CometNativeScanExec]),
+      perPartitionFilePaths = perPartitionFilePaths)
   }
 
   /**
@@ -994,6 +1019,11 @@ trait CometScanWithPlanData { self: CometLeafExec =>
   def sourceKey: String
   def commonData: Array[Byte]
   def perPartitionData: Array[Array[Byte]]
+  // Per-partition list of file paths produced by this scan. Used by `CometExecRDD` to
+  // report a per-file read failure as `FAILED_READ_FILE.NO_HINT` with the offending path
+  // (see `SparkErrorConverter.convertToSparkException`). Empty when the scan doesn't track
+  // file-level provenance.
+  def perPartitionFilePaths: Array[Seq[String]] = Array.empty
 
   // DPP / partition filters that may carry AQE SubqueryAdaptiveBroadcast
   // subqueries needing rewrite by CometPlanAdaptiveDynamicPruningFilters.

@@ -244,7 +244,7 @@ case class CometNativeScanExec(
 
   def perPartitionData: Array[Array[Byte]] = serializedPartitionData._2
 
-  def perPartitionFilePaths: Array[Seq[String]] = serializedPartitionData._3
+  override def perPartitionFilePaths: Array[Seq[String]] = serializedPartitionData._3
 
   override def doExecuteColumnar(): RDD[ColumnarBatch] = {
     val nativeMetrics = CometMetricNode.fromCometPlan(this)

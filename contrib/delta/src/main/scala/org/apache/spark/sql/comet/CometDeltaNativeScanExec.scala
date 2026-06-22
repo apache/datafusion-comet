@@ -361,6 +361,20 @@ case class CometDeltaNativeScanExec(
   // by `taskGroups`; only the tasks within each group are pruned.
   def perPartitionData: Array[Array[Byte]] = buildPerPartitionBytes()
 
+  // Surface per-partition file paths to the unified `CometExecRDD` path so a per-file read
+  // failure can be reported as `FAILED_READ_FILE.NO_HINT` with the offending path (see
+  // `SparkErrorConverter.convertToSparkException`), matching Spark's own error for that file.
+  override def perPartitionFilePaths: Array[Seq[String]] = {
+    perPartitionData.map { bytes =>
+      OperatorOuterClass.DeltaScan
+        .parseFrom(bytes)
+        .getTasksList
+        .asScala
+        .map(_.getFilePath)
+        .toSeq
+    }
+  }
+
   /**
    * Unique key for matching this scan's common/per-partition data to its operator in the native
    * plan. Must be distinct across multiple Delta scans in the same plan tree -- e.g. a self-join
@@ -451,6 +465,17 @@ case class CometDeltaNativeScanExec(
       } else {
         (None, Seq.empty[String])
       }
+    // Per-partition file paths so `CometExecRDD` can report a per-file read failure as
+    // `FAILED_READ_FILE.NO_HINT` with the offending path (see
+    // `SparkErrorConverter.convertToSparkException`).
+    val perPartitionFilePaths: Array[Seq[String]] = execPerPartitionBytes.map { bytes =>
+      OperatorOuterClass.DeltaScan
+        .parseFrom(bytes)
+        .getTasksList
+        .asScala
+        .map(_.getFilePath)
+        .toSeq
+    }
     val baseRDD = CometExecRDD(
       sparkContext,
       inputRDDs = Seq.empty,
@@ -462,7 +487,8 @@ case class CometDeltaNativeScanExec(
       nativeMetrics = nativeMetrics,
       subqueries = Seq.empty,
       broadcastedHadoopConfForEncryption = broadcastedHadoopConfForEncryption,
-      encryptedFilePaths = encryptedFilePaths)
+      encryptedFilePaths = encryptedFilePaths,
+      perPartitionFilePaths = perPartitionFilePaths)
 
     baseRDD
   }
