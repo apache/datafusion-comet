@@ -284,7 +284,10 @@ object CometRight extends CometExpressionSerde[Right] {
   }
 }
 
-object CometConcat extends CometScalarFunction[Concat]("concat") with CometTypeShim {
+object CometConcat
+    extends CometScalarFunction[Concat]("concat")
+    with CometTypeShim
+    with CodegenDispatchFallback {
   private val unsupportedReason = "CONCAT supports only string input parameters"
 
   // Spark 4.0 widens Concat to accept collated strings and preserves the collation in the merged

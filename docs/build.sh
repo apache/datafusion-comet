@@ -25,9 +25,9 @@ mkdir temp
 cp -rf source/* temp/
 
 # Add user guide from published releases
-rm -rf comet-0.13
 rm -rf comet-0.14
 rm -rf comet-0.15
+rm -rf comet-0.16
 python3 generate-versions.py
 
 # Generate dynamic content (configs, compatibility matrices) for latest docs
