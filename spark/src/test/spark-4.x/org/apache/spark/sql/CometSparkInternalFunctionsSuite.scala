@@ -17,19 +17,15 @@
  * under the License.
  */
 
-package org.apache.spark.sql.comet
+package org.apache.spark.sql
 
-import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.catalyst.expressions.Empty2Null
 import org.apache.spark.sql.classic.ExpressionUtils
 import org.apache.spark.sql.functions._
 
-import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
-
 class CometSparkInternalFunctionsSuite extends CometTestBase {
 
   test("empty2null is offloaded to Comet") {
-    assume(isSpark40Plus)
     withParquetTable(Seq("", "a", null, "b").map(Tuple1(_)), "tbl") {
       val df = sql("select _1 from tbl")
         .select(ExpressionUtils.column(Empty2Null(ExpressionUtils.expression(col("_1")))).as("p"))
