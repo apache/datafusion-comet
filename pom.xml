@@ -117,6 +117,10 @@ under the License.
     <argLine>-ea -Xmx4g -Xss4m ${extraJavaTestArgs}</argLine>
     <shims.majorVerSrc>spark-4.x</shims.majorVerSrc>
     <shims.minorVerSrc>spark-4.1</shims.minorVerSrc>
+    <!-- Source root shared by Spark 4.1 and later. Defaults to an empty placeholder so that
+         Spark 4.0 and the 3.x profiles do not compile these 4.1+ shims; the 4.1 and 4.2
+         profiles override it to spark-4.1+. -->
+    <shims.minorPlusVerSrc>spark-none</shims.minorPlusVerSrc>
   </properties>
 
   <dependencyManagement>
@@ -716,6 +720,7 @@ under the License.
         <semanticdb.version>4.13.6</semanticdb.version>
         <slf4j.version>2.0.17</slf4j.version>
         <shims.majorVerSrc>spark-4.x</shims.majorVerSrc>
+        <shims.minorPlusVerSrc>spark-4.1+</shims.minorPlusVerSrc>
         <shims.minorVerSrc>spark-4.1</shims.minorVerSrc>
         <java.version>17</java.version>
         <maven.compiler.source>${java.version}</maven.compiler.source>
@@ -736,6 +741,7 @@ under the License.
         <semanticdb.version>4.13.6</semanticdb.version>
         <slf4j.version>2.0.17</slf4j.version>
         <shims.majorVerSrc>spark-4.x</shims.majorVerSrc>
+        <shims.minorPlusVerSrc>spark-4.1+</shims.minorPlusVerSrc>
         <shims.minorVerSrc>spark-4.2</shims.minorVerSrc>
         <!-- Use jdk17 by default -->
         <java.version>17</java.version>
