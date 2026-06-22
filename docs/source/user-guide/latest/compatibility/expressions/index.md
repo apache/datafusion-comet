@@ -19,22 +19,23 @@ under the License.
 
 # Expression Compatibility
 
-Expressions that are not 100% Spark-compatible will fall back to Spark by default and can be enabled by setting
-`spark.comet.expression.EXPRNAME.allowIncompatible=true`, where `EXPRNAME` is the Spark expression class name. See
-the [Comet Supported Expressions Guide](../../expressions.md) for more information on this configuration setting.
-
-Compatibility notes are grouped by expression category:
+Comet supports multiple Apache Spark versions, and the set of accelerated expressions and
+their compatibility notes can differ between them. Pick the page that matches the Spark
+version you are running:
 
 ```{toctree}
 :maxdepth: 2
 
-aggregate
-array
-datetime
-map
-math
-misc
-string
-struct
-cast
+Spark 3.4 <spark-3.4/index>
+Spark 3.5 <spark-3.5/index>
+Spark 4.0 <spark-4.0/index>
+Spark 4.1 <spark-4.1/index>
 ```
+
+Expressions that are not 100% Spark-compatible fall back to Spark by default, except those
+with a JVM codegen-dispatch path, which stay in Comet's native pipeline and match Spark
+exactly. Set `spark.comet.expression.EXPRNAME.allowIncompatible=true`, where `EXPRNAME` is
+the Spark expression class name, to run Comet's faster native implementation despite its
+differences from Spark. See the
+[Comet Supported Expressions Guide](../../expressions.md) for more information on this
+configuration setting.

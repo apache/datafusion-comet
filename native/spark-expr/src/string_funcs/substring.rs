@@ -18,13 +18,14 @@
 #![allow(deprecated)]
 
 use crate::kernels::strings::substring;
-use arrow::array::{as_dictionary_array, as_largestring_array, as_string_array, Array, ArrayRef};
+use arrow::array::{
+    as_dictionary_array, as_largestring_array, as_string_array, Array, ArrayRef, GenericStringArray,
+};
 use arrow::datatypes::{DataType, Int32Type, Schema};
 use arrow::record_batch::RecordBatch;
 use datafusion::logical_expr::ColumnarValue;
 use datafusion::physical_expr::PhysicalExpr;
 use std::{
-    any::Any,
     fmt::{Display, Formatter},
     hash::Hash,
     sync::Arc,
@@ -68,10 +69,6 @@ impl Display for SubstringExpr {
 }
 
 impl PhysicalExpr for SubstringExpr {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn fmt_sql(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         Display::fmt(self, f)
     }
@@ -128,67 +125,69 @@ fn spark_substring_negative_start(
     start: i64,
     len: u64,
 ) -> datafusion::common::Result<ArrayRef> {
-    use arrow::array::{
-        BinaryArray, DictionaryArray, GenericBinaryBuilder, GenericStringBuilder, LargeBinaryArray,
-    };
+    use arrow::array::{DictionaryArray, GenericBinaryArray, OffsetSizeTrait};
+
+    fn substr_str<O: OffsetSizeTrait>(
+        str_array: &GenericStringArray<O>,
+        start: i64,
+        len: u64,
+    ) -> ArrayRef {
+        use arrow::array::GenericStringBuilder;
+        let mut builder = GenericStringBuilder::<O>::with_capacity(str_array.len(), 0);
+        for i in 0..str_array.len() {
+            // Always append; nulls are reattached in bulk below. This avoids
+            // per-row NullBufferBuilder maintenance.
+            let s = if str_array.is_null(i) {
+                ""
+            } else {
+                spark_substr_negative(str_array.value(i), start, len)
+            };
+            builder.append_value(s);
+        }
+        let (offsets, values, _) = builder.finish().into_parts();
+        Arc::new(GenericStringArray::<O>::new(
+            offsets,
+            values,
+            str_array.nulls().cloned(),
+        ))
+    }
+
+    fn substr_bin<O: OffsetSizeTrait>(
+        bin_array: &GenericBinaryArray<O>,
+        start: i64,
+        len: u64,
+    ) -> ArrayRef {
+        use arrow::array::GenericBinaryBuilder;
+        let mut builder = GenericBinaryBuilder::<O>::with_capacity(bin_array.len(), 0);
+        for i in 0..bin_array.len() {
+            let b: &[u8] = if bin_array.is_null(i) {
+                &[]
+            } else {
+                spark_binary_substr_negative(bin_array.value(i), start, len)
+            };
+            builder.append_value(b);
+        }
+        let (offsets, values, _) = builder.finish().into_parts();
+        Arc::new(GenericBinaryArray::<O>::new(
+            offsets,
+            values,
+            bin_array.nulls().cloned(),
+        ))
+    }
 
     match array.data_type() {
-        DataType::Utf8 => {
-            let str_array = as_string_array(array);
-            let mut builder = GenericStringBuilder::<i32>::new();
-            for i in 0..str_array.len() {
-                if str_array.is_null(i) {
-                    builder.append_null();
-                } else {
-                    builder.append_value(spark_substr_negative(str_array.value(i), start, len));
-                }
-            }
-            Ok(Arc::new(builder.finish()) as ArrayRef)
-        }
-        DataType::LargeUtf8 => {
-            let str_array = as_largestring_array(array);
-            let mut builder = GenericStringBuilder::<i64>::new();
-            for i in 0..str_array.len() {
-                if str_array.is_null(i) {
-                    builder.append_null();
-                } else {
-                    builder.append_value(spark_substr_negative(str_array.value(i), start, len));
-                }
-            }
-            Ok(Arc::new(builder.finish()) as ArrayRef)
-        }
-        DataType::Binary => {
-            let bin_array = array.as_any().downcast_ref::<BinaryArray>().unwrap();
-            let mut builder = GenericBinaryBuilder::<i32>::new();
-            for i in 0..bin_array.len() {
-                if bin_array.is_null(i) {
-                    builder.append_null();
-                } else {
-                    builder.append_value(spark_binary_substr_negative(
-                        bin_array.value(i),
-                        start,
-                        len,
-                    ));
-                }
-            }
-            Ok(Arc::new(builder.finish()) as ArrayRef)
-        }
-        DataType::LargeBinary => {
-            let bin_array = array.as_any().downcast_ref::<LargeBinaryArray>().unwrap();
-            let mut builder = GenericBinaryBuilder::<i64>::new();
-            for i in 0..bin_array.len() {
-                if bin_array.is_null(i) {
-                    builder.append_null();
-                } else {
-                    builder.append_value(spark_binary_substr_negative(
-                        bin_array.value(i),
-                        start,
-                        len,
-                    ));
-                }
-            }
-            Ok(Arc::new(builder.finish()) as ArrayRef)
-        }
+        DataType::Utf8 => Ok(substr_str::<i32>(as_string_array(array), start, len)),
+        DataType::LargeUtf8 => Ok(substr_str::<i64>(as_largestring_array(array), start, len)),
+        DataType::Binary => Ok(substr_bin::<i32>(
+            array.as_any().downcast_ref().unwrap(),
+            start,
+            len,
+        )),
+        DataType::LargeBinary => Ok(substr_bin::<i64>(
+            array.as_any().downcast_ref().unwrap(),
+            start,
+            len,
+        )),
         DataType::Dictionary(_, _) => {
             let dict = as_dictionary_array::<Int32Type>(array);
             let values = spark_substring_negative_start(dict.values(), start, len)?;

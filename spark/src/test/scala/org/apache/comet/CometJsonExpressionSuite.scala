@@ -39,6 +39,8 @@ class CometJsonExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelpe
       pos: Position): Unit = {
     super.test(testName, testTags: _*) {
       withSQLConf(
+        // This suite exercises the native (rust) JSON path, which is opt-in per expression via
+        // `allowIncompatible`. By default these expressions run through the codegen dispatcher.
         CometConf.getExprAllowIncompatConfigKey(classOf[JsonToStructs]) -> "true",
         CometConf.getExprAllowIncompatConfigKey(classOf[StructsToJson]) -> "true") {
         testFun
@@ -58,7 +60,7 @@ class CometJsonExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelpe
           filename,
           100,
           SchemaGenOptions(generateArray = false, generateStruct = false, generateMap = false),
-          DataGenOptions(generateNaN = false, generateInfinity = false))
+          DataGenOptions(generateNaN = true, generateInfinity = true))
       }
       val table = spark.read.parquet(filename)
       val fieldsNames = table.schema.fields
@@ -67,6 +69,19 @@ class CometJsonExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelpe
         .toSeq
       val df = table.select(to_json(struct(fieldsNames: _*)))
       checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  test("to_json - options and unsupported native types route to the codegen engine") {
+    withTable("t") {
+      sql("CREATE TABLE t(a INT, b STRING) USING parquet")
+      sql("INSERT INTO t VALUES (1, 'hello')")
+      // The native (rust) path does not support to_json with options or array/map types. Even with
+      // allowIncompatible enabled, these cases fall back to the codegen dispatcher, which runs
+      // Spark's own implementation inside the Comet pipeline rather than falling back to Spark.
+      checkSparkAnswerAndOperator(
+        "SELECT to_json(named_struct('a', a, 'b', b), map('timestampFormat', 'dd/MM/yyyy')) FROM t")
+      checkSparkAnswerAndOperator("SELECT to_json(named_struct('b', array(b))) FROM t")
     }
   }
 

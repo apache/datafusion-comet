@@ -21,6 +21,9 @@ package org.apache.comet.serde
 
 import org.apache.spark.sql.types._
 
+import org.apache.comet.CometConf
+import org.apache.comet.CometConf.COMET_EXEC_STRICT_FLOATING_POINT
+
 sealed trait SupportLevel
 
 /**
@@ -46,14 +49,41 @@ case class Unsupported(notes: Option[String] = None) extends SupportLevel
 object SupportLevel {
 
   /**
-   * Returns true if the given data type contains FloatType or DoubleType at any nesting level.
+   * Returns true if `dt` is, or transitively contains, an instance of any of the given `DataType`
+   * classes. Walks `ArrayType` element, `StructType` fields, and `MapType` key/value at every
+   * nesting level.
    */
-  def containsFloatingPoint(dt: DataType): Boolean = dt match {
-    case FloatType | DoubleType => true
-    case ArrayType(elementType, _) => containsFloatingPoint(elementType)
-    case StructType(fields) => fields.exists(f => containsFloatingPoint(f.dataType))
-    case MapType(keyType, valueType, _) =>
-      containsFloatingPoint(keyType) || containsFloatingPoint(valueType)
-    case _ => false
+  def containsType(dt: DataType, classes: Class[_ <: DataType]*): Boolean = {
+    if (classes.exists(_.isInstance(dt))) {
+      true
+    } else {
+      dt match {
+        case ArrayType(elementType, _) => containsType(elementType, classes: _*)
+        case StructType(fields) => fields.exists(f => containsType(f.dataType, classes: _*))
+        case MapType(keyType, valueType, _) =>
+          containsType(keyType, classes: _*) || containsType(valueType, classes: _*)
+        case _ => false
+      }
+    }
+  }
+
+  /**
+   * Gate for [[CometConf.COMET_EXEC_STRICT_FLOATING_POINT]]: returns the standard incompatibility
+   * reason when strict mode is enabled and `dt` contains a float or double (at any nesting
+   * level), and `None` otherwise. Callers wrap the reason with `Incompatible` or pass it to
+   * `withFallbackReason` as appropriate.
+   *
+   * `what` describes the operation being gated, e.g. "Sorting on floating-point" or "MapSort on
+   * floating-point key", and is interpolated into the returned message.
+   */
+  def strictFloatingPointReason(dt: DataType, what: String): Option[String] = {
+    if (COMET_EXEC_STRICT_FLOATING_POINT.get() &&
+      containsType(dt, classOf[FloatType], classOf[DoubleType])) {
+      Some(
+        s"$what is not 100% compatible with Spark, and Comet is running with " +
+          s"${COMET_EXEC_STRICT_FLOATING_POINT.key}=true. ${CometConf.COMPAT_GUIDE}")
+    } else {
+      None
+    }
   }
 }

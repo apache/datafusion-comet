@@ -21,18 +21,22 @@ package org.apache.comet.serde
 
 import scala.jdk.CollectionConverters._
 
-import org.apache.spark.sql.catalyst.expressions.Attribute
+import org.apache.spark.sql.catalyst.expressions.{Attribute, Literal}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, Average, BitAndAgg, BitOrAgg, BitXorAgg, BloomFilterAggregate, CentralMomentAgg, CollectSet, Corr, Count, Covariance, CovPopulation, CovSample, First, Last, Max, Min, StddevPop, StddevSamp, Sum, VariancePop, VarianceSamp}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{ByteType, DataTypes, DecimalType, IntegerType, LongType, ShortType, StringType}
+import org.apache.spark.sql.types.{ByteType, DecimalType, IntegerType, LongType, ShortType, StringType}
 
-import org.apache.comet.CometConf
 import org.apache.comet.CometConf.COMET_EXEC_STRICT_FLOATING_POINT
-import org.apache.comet.CometSparkSessionExtensions.{isSpark41Plus, withInfo}
+import org.apache.comet.CometSparkSessionExtensions.{isSpark41Plus, withFallbackReason}
 import org.apache.comet.serde.QueryPlanSerde.{evalModeToProto, exprToProto, serializeDataType}
 import org.apache.comet.shims.CometEvalModeUtil
 
 object CometMin extends CometAggregateExpressionSerde[Min] {
+
+  override def supportsMixedPartialFinal: Boolean = true
+
+  override def getSupportLevel(expr: Min): SupportLevel =
+    AggSerde.minMaxSupportLevel(expr.dataType)
 
   override def convert(
       aggExpr: AggregateExpression,
@@ -40,21 +44,6 @@ object CometMin extends CometAggregateExpressionSerde[Min] {
       inputs: Seq[Attribute],
       binding: Boolean,
       conf: SQLConf): Option[ExprOuterClass.AggExpr] = {
-    if (!AggSerde.minMaxDataTypeSupported(expr.dataType)) {
-      withInfo(aggExpr, s"Unsupported data type: ${expr.dataType}")
-      return None
-    }
-
-    if (expr.dataType == DataTypes.FloatType || expr.dataType == DataTypes.DoubleType) {
-      if (CometConf.COMET_EXEC_STRICT_FLOATING_POINT.get()) {
-        // https://github.com/apache/datafusion-comet/issues/2448
-        withInfo(
-          aggExpr,
-          s"floating-point not supported when ${COMET_EXEC_STRICT_FLOATING_POINT.key}=true")
-        return None
-      }
-    }
-
     val child = expr.children.head
     val childExpr = exprToProto(child, inputs, binding)
     val dataType = serializeDataType(expr.dataType)
@@ -70,10 +59,10 @@ object CometMin extends CometAggregateExpressionSerde[Min] {
           .setMin(builder)
           .build())
     } else if (dataType.isEmpty) {
-      withInfo(aggExpr, s"datatype ${expr.dataType} is not supported", child)
+      withFallbackReason(aggExpr, s"datatype ${expr.dataType} is not supported", child)
       None
     } else {
-      withInfo(aggExpr, child)
+      withFallbackReason(aggExpr, child)
       None
     }
   }
@@ -81,27 +70,17 @@ object CometMin extends CometAggregateExpressionSerde[Min] {
 
 object CometMax extends CometAggregateExpressionSerde[Max] {
 
+  override def supportsMixedPartialFinal: Boolean = true
+
+  override def getSupportLevel(expr: Max): SupportLevel =
+    AggSerde.minMaxSupportLevel(expr.dataType)
+
   override def convert(
       aggExpr: AggregateExpression,
       expr: Max,
       inputs: Seq[Attribute],
       binding: Boolean,
       conf: SQLConf): Option[ExprOuterClass.AggExpr] = {
-    if (!AggSerde.minMaxDataTypeSupported(expr.dataType)) {
-      withInfo(aggExpr, s"Unsupported data type: ${expr.dataType}")
-      return None
-    }
-
-    if (expr.dataType == DataTypes.FloatType || expr.dataType == DataTypes.DoubleType) {
-      if (CometConf.COMET_EXEC_STRICT_FLOATING_POINT.get()) {
-        // https://github.com/apache/datafusion-comet/issues/2448
-        withInfo(
-          aggExpr,
-          s"floating-point not supported when ${COMET_EXEC_STRICT_FLOATING_POINT.key}=true")
-        return None
-      }
-    }
-
     val child = expr.children.head
     val childExpr = exprToProto(child, inputs, binding)
     val dataType = serializeDataType(expr.dataType)
@@ -117,10 +96,10 @@ object CometMax extends CometAggregateExpressionSerde[Max] {
           .setMax(builder)
           .build())
     } else if (dataType.isEmpty) {
-      withInfo(aggExpr, s"datatype ${expr.dataType} is not supported", child)
+      withFallbackReason(aggExpr, s"datatype ${expr.dataType} is not supported", child)
       None
     } else {
-      withInfo(aggExpr, child)
+      withFallbackReason(aggExpr, child)
       None
     }
   }
@@ -143,7 +122,7 @@ object CometCount extends CometAggregateExpressionSerde[Count] {
           .setCount(builder)
           .build())
     } else {
-      withInfo(aggExpr, expr.children: _*)
+      withFallbackReason(aggExpr, expr.children: _*)
       None
     }
   }
@@ -151,8 +130,15 @@ object CometCount extends CometAggregateExpressionSerde[Count] {
 
 object CometAverage extends CometAggregateExpressionSerde[Average] {
 
-  override def getIncompatibleReasons(): Seq[String] = Seq(
-    "Falls back to Spark in ANSI mode. Supports all numeric inputs except decimal types.")
+  override def getUnsupportedReasons(): Seq[String] = Seq(
+    "YearMonthIntervalType and DayTimeIntervalType inputs are not supported")
+
+  override def getSupportLevel(expr: Average): SupportLevel =
+    if (AggSerde.avgDataTypeSupported(expr.dataType)) {
+      Compatible()
+    } else {
+      Unsupported(Some(s"Unsupported data type: ${expr.dataType}"))
+    }
 
   override def convert(
       aggExpr: AggregateExpression,
@@ -160,11 +146,6 @@ object CometAverage extends CometAggregateExpressionSerde[Average] {
       inputs: Seq[Attribute],
       binding: Boolean,
       conf: SQLConf): Option[ExprOuterClass.AggExpr] = {
-
-    if (!AggSerde.avgDataTypeSupported(avg.dataType)) {
-      withInfo(aggExpr, s"Unsupported data type: ${avg.dataType}")
-      return None
-    }
 
     val child = avg.child
     val childExpr = exprToProto(child, inputs, binding)
@@ -194,10 +175,10 @@ object CometAverage extends CometAggregateExpressionSerde[Average] {
           .setAvg(builder)
           .build())
     } else if (dataType.isEmpty) {
-      withInfo(aggExpr, s"datatype ${avg.dataType} is not supported", child)
+      withFallbackReason(aggExpr, s"datatype ${avg.dataType} is not supported", child)
       None
     } else {
-      withInfo(aggExpr, child)
+      withFallbackReason(aggExpr, child)
       None
     }
   }
@@ -205,7 +186,12 @@ object CometAverage extends CometAggregateExpressionSerde[Average] {
 
 object CometSum extends CometAggregateExpressionSerde[Sum] {
 
-  override def getIncompatibleReasons(): Seq[String] = Seq("Falls back to Spark in ANSI mode.")
+  override def getSupportLevel(expr: Sum): SupportLevel =
+    if (AggSerde.sumDataTypeSupported(expr.dataType)) {
+      Compatible()
+    } else {
+      Unsupported(Some(s"Unsupported data type: ${expr.dataType}"))
+    }
 
   override def convert(
       aggExpr: AggregateExpression,
@@ -213,11 +199,6 @@ object CometSum extends CometAggregateExpressionSerde[Sum] {
       inputs: Seq[Attribute],
       binding: Boolean,
       conf: SQLConf): Option[ExprOuterClass.AggExpr] = {
-
-    if (!AggSerde.sumDataTypeSupported(sum.dataType)) {
-      withInfo(aggExpr, s"Unsupported data type: ${sum.dataType}")
-      return None
-    }
 
     val evalMode = CometEvalModeUtil.sumEvalMode(sum)
 
@@ -237,9 +218,9 @@ object CometSum extends CometAggregateExpressionSerde[Sum] {
           .build())
     } else {
       if (dataType.isEmpty) {
-        withInfo(aggExpr, s"datatype ${sum.dataType} is not supported", sum.child)
+        withFallbackReason(aggExpr, s"datatype ${sum.dataType} is not supported", sum.child)
       } else {
-        withInfo(aggExpr, sum.child)
+        withFallbackReason(aggExpr, sum.child)
       }
       None
     }
@@ -273,10 +254,10 @@ object CometFirst extends CometAggregateExpressionSerde[First] {
           .setFirst(builder)
           .build())
     } else if (dataType.isEmpty) {
-      withInfo(aggExpr, s"datatype ${first.dataType} is not supported", child)
+      withFallbackReason(aggExpr, s"datatype ${first.dataType} is not supported", child)
       None
     } else {
-      withInfo(aggExpr, child)
+      withFallbackReason(aggExpr, child)
       None
     }
   }
@@ -309,26 +290,31 @@ object CometLast extends CometAggregateExpressionSerde[Last] {
           .setLast(builder)
           .build())
     } else if (dataType.isEmpty) {
-      withInfo(aggExpr, s"datatype ${last.dataType} is not supported", child)
+      withFallbackReason(aggExpr, s"datatype ${last.dataType} is not supported", child)
       None
     } else {
-      withInfo(aggExpr, child)
+      withFallbackReason(aggExpr, child)
       None
     }
   }
 }
 
 object CometBitAndAgg extends CometAggregateExpressionSerde[BitAndAgg] {
+  override def supportsMixedPartialFinal: Boolean = true
+
+  override def getSupportLevel(expr: BitAndAgg): SupportLevel =
+    if (AggSerde.bitwiseAggTypeSupported(expr.dataType)) {
+      Compatible()
+    } else {
+      Unsupported(Some(s"Unsupported data type: ${expr.dataType}"))
+    }
+
   override def convert(
       aggExpr: AggregateExpression,
       bitAnd: BitAndAgg,
       inputs: Seq[Attribute],
       binding: Boolean,
       conf: SQLConf): Option[ExprOuterClass.AggExpr] = {
-    if (!AggSerde.bitwiseAggTypeSupported(bitAnd.dataType)) {
-      withInfo(aggExpr, s"Unsupported data type: ${bitAnd.dataType}")
-      return None
-    }
     val child = bitAnd.child
     val childExpr = exprToProto(child, inputs, binding)
     val dataType = serializeDataType(bitAnd.dataType)
@@ -343,26 +329,31 @@ object CometBitAndAgg extends CometAggregateExpressionSerde[BitAndAgg] {
           .setBitAndAgg(builder)
           .build())
     } else if (dataType.isEmpty) {
-      withInfo(aggExpr, s"datatype ${bitAnd.dataType} is not supported", child)
+      withFallbackReason(aggExpr, s"datatype ${bitAnd.dataType} is not supported", child)
       None
     } else {
-      withInfo(aggExpr, child)
+      withFallbackReason(aggExpr, child)
       None
     }
   }
 }
 
 object CometBitOrAgg extends CometAggregateExpressionSerde[BitOrAgg] {
+  override def supportsMixedPartialFinal: Boolean = true
+
+  override def getSupportLevel(expr: BitOrAgg): SupportLevel =
+    if (AggSerde.bitwiseAggTypeSupported(expr.dataType)) {
+      Compatible()
+    } else {
+      Unsupported(Some(s"Unsupported data type: ${expr.dataType}"))
+    }
+
   override def convert(
       aggExpr: AggregateExpression,
       bitOr: BitOrAgg,
       inputs: Seq[Attribute],
       binding: Boolean,
       conf: SQLConf): Option[ExprOuterClass.AggExpr] = {
-    if (!AggSerde.bitwiseAggTypeSupported(bitOr.dataType)) {
-      withInfo(aggExpr, s"Unsupported data type: ${bitOr.dataType}")
-      return None
-    }
     val child = bitOr.child
     val childExpr = exprToProto(child, inputs, binding)
     val dataType = serializeDataType(bitOr.dataType)
@@ -377,26 +368,31 @@ object CometBitOrAgg extends CometAggregateExpressionSerde[BitOrAgg] {
           .setBitOrAgg(builder)
           .build())
     } else if (dataType.isEmpty) {
-      withInfo(aggExpr, s"datatype ${bitOr.dataType} is not supported", child)
+      withFallbackReason(aggExpr, s"datatype ${bitOr.dataType} is not supported", child)
       None
     } else {
-      withInfo(aggExpr, child)
+      withFallbackReason(aggExpr, child)
       None
     }
   }
 }
 
 object CometBitXOrAgg extends CometAggregateExpressionSerde[BitXorAgg] {
+  override def supportsMixedPartialFinal: Boolean = true
+
+  override def getSupportLevel(expr: BitXorAgg): SupportLevel =
+    if (AggSerde.bitwiseAggTypeSupported(expr.dataType)) {
+      Compatible()
+    } else {
+      Unsupported(Some(s"Unsupported data type: ${expr.dataType}"))
+    }
+
   override def convert(
       aggExpr: AggregateExpression,
       bitXor: BitXorAgg,
       inputs: Seq[Attribute],
       binding: Boolean,
       conf: SQLConf): Option[ExprOuterClass.AggExpr] = {
-    if (!AggSerde.bitwiseAggTypeSupported(bitXor.dataType)) {
-      withInfo(aggExpr, s"Unsupported data type: ${bitXor.dataType}")
-      return None
-    }
     val child = bitXor.child
     val childExpr = exprToProto(child, inputs, binding)
     val dataType = serializeDataType(bitXor.dataType)
@@ -411,10 +407,10 @@ object CometBitXOrAgg extends CometAggregateExpressionSerde[BitXorAgg] {
           .setBitXorAgg(builder)
           .build())
     } else if (dataType.isEmpty) {
-      withInfo(aggExpr, s"datatype ${bitXor.dataType} is not supported", child)
+      withFallbackReason(aggExpr, s"datatype ${bitXor.dataType} is not supported", child)
       None
     } else {
-      withInfo(aggExpr, child)
+      withFallbackReason(aggExpr, child)
       None
     }
   }
@@ -447,7 +443,7 @@ trait CometCovBase {
           .setCovariance(builder)
           .build())
     } else {
-      withInfo(aggExpr, "Child expression or data type not supported")
+      withFallbackReason(aggExpr, "Child expression or data type not supported")
       None
     }
   }
@@ -513,7 +509,7 @@ trait CometVariance {
           .setVariance(builder)
           .build())
     } else {
-      withInfo(aggExpr, expr.child)
+      withFallbackReason(aggExpr, expr.child)
       None
     }
   }
@@ -568,7 +564,7 @@ trait CometStddev {
           .setStddev(builder)
           .build())
     } else {
-      withInfo(aggExpr, child)
+      withFallbackReason(aggExpr, child)
       None
     }
   }
@@ -620,13 +616,23 @@ object CometCorr extends CometAggregateExpressionSerde[Corr] {
           .setCorrelation(builder)
           .build())
     } else {
-      withInfo(aggExpr, corr.x, corr.y)
+      withFallbackReason(aggExpr, corr.x, corr.y)
       None
     }
   }
 }
 
 object CometBloomFilterAggregate extends CometAggregateExpressionSerde[BloomFilterAggregate] {
+
+  override def supportsMixedPartialFinal: Boolean = true
+
+  override def getSupportLevel(expr: BloomFilterAggregate): SupportLevel =
+    expr.child.dataType match {
+      case _: ByteType | _: ShortType | _: IntegerType | _: LongType | _: StringType =>
+        Compatible()
+      case other =>
+        Unsupported(Some(s"Unsupported data type for bloom_filter_agg child: $other"))
+    }
 
   override def convert(
       aggExpr: AggregateExpression,
@@ -637,21 +643,23 @@ object CometBloomFilterAggregate extends CometAggregateExpressionSerde[BloomFilt
     // We ignore mutableAggBufferOffset and inputAggBufferOffset because they are
     // implementation details for Spark's ObjectHashAggregate.
     val childExpr = exprToProto(bloomFilter.child, inputs, binding)
-    val numItemsExpr = exprToProto(bloomFilter.estimatedNumItemsExpression, inputs, binding)
-    val numBitsExpr = exprToProto(bloomFilter.numBitsExpression, inputs, binding)
+    // Spark's BloomFilterAggregate caps numItems / numBits at the configured maxima
+    // (its `estimatedNumItems` / `numBits` lazy vals). Comet's native aggregate stores
+    // these as i32, so an uncapped Long literal (e.g. the Long.MaxValue cases in
+    // BloomFilterAggregateQuerySuite) would wrap to a bogus negative size and abort the
+    // executor with a multi-exabyte allocation. Apply the same cap here so the native
+    // side always receives a sane, Spark-equivalent value.
+    val numItems = math.min(
+      bloomFilter.estimatedNumItemsExpression.eval().asInstanceOf[Number].longValue,
+      conf.getConf(SQLConf.RUNTIME_BLOOM_FILTER_MAX_NUM_ITEMS))
+    val numBits = math.min(
+      bloomFilter.numBitsExpression.eval().asInstanceOf[Number].longValue,
+      conf.getConf(SQLConf.RUNTIME_BLOOM_FILTER_MAX_NUM_BITS))
+    val numItemsExpr = exprToProto(Literal(numItems, LongType), inputs, binding)
+    val numBitsExpr = exprToProto(Literal(numBits, LongType), inputs, binding)
     val dataType = serializeDataType(bloomFilter.dataType)
 
     if (childExpr.isDefined &&
-      (bloomFilter.child.dataType
-        .isInstanceOf[ByteType] ||
-        bloomFilter.child.dataType
-          .isInstanceOf[ShortType] ||
-        bloomFilter.child.dataType
-          .isInstanceOf[IntegerType] ||
-        bloomFilter.child.dataType
-          .isInstanceOf[LongType] ||
-        bloomFilter.child.dataType
-          .isInstanceOf[StringType]) &&
       numItemsExpr.isDefined &&
       numBitsExpr.isDefined &&
       dataType.isDefined) {
@@ -674,7 +682,7 @@ object CometBloomFilterAggregate extends CometAggregateExpressionSerde[BloomFilt
           .setBloomFilterAgg(builder)
           .build())
     } else {
-      withInfo(
+      withFallbackReason(
         aggExpr,
         bloomFilter.child,
         bloomFilter.estimatedNumItemsExpression,
@@ -693,17 +701,13 @@ object CometCollectSet extends CometAggregateExpressionSerde[CollectSet] {
       " `spark.comet.expression.CollectSet.allowIncompatible=true` is set.")
 
   override def getSupportLevel(expr: CollectSet): SupportLevel = {
-    if (COMET_EXEC_STRICT_FLOATING_POINT.get() &&
-      SupportLevel.containsFloatingPoint(expr.children.head.dataType)) {
-      Incompatible(
-        Some(
-          "collect_set on floating-point types is not 100% compatible with Spark " +
-            "(Comet deduplicates NaN values while Spark treats each NaN as distinct), " +
-            s"and Comet is running with ${COMET_EXEC_STRICT_FLOATING_POINT.key}=true. " +
-            s"${CometConf.COMPAT_GUIDE}"))
-    } else {
-      Compatible()
-    }
+    SupportLevel
+      .strictFloatingPointReason(
+        expr.children.head.dataType,
+        "collect_set on floating-point types " +
+          "(Comet deduplicates NaN values while Spark treats each NaN as distinct)")
+      .map(reason => Incompatible(Some(reason)))
+      .getOrElse(Compatible())
   }
 
   override def convert(
@@ -727,10 +731,10 @@ object CometCollectSet extends CometAggregateExpressionSerde[CollectSet] {
           .setCollectSet(builder)
           .build())
     } else if (dataType.isEmpty) {
-      withInfo(aggExpr, s"datatype ${expr.dataType} is not supported", child)
+      withFallbackReason(aggExpr, s"datatype ${expr.dataType} is not supported", child)
       None
     } else {
-      withInfo(aggExpr, child)
+      withFallbackReason(aggExpr, child)
       None
     }
   }
@@ -772,6 +776,20 @@ object AggSerde {
     dt match {
       case ByteType | ShortType | IntegerType | LongType => true
       case _ => false
+    }
+  }
+
+  /** Shared support level for `Min` / `Max` based on the result data type. */
+  def minMaxSupportLevel(dt: DataType): SupportLevel = {
+    if (!minMaxDataTypeSupported(dt)) {
+      Unsupported(Some(s"Unsupported data type: $dt"))
+    } else if ((dt == FloatType || dt == DoubleType) &&
+      COMET_EXEC_STRICT_FLOATING_POINT.get()) {
+      // https://github.com/apache/datafusion-comet/issues/2448
+      Unsupported(
+        Some(s"floating-point not supported when ${COMET_EXEC_STRICT_FLOATING_POINT.key}=true"))
+    } else {
+      Compatible()
     }
   }
 

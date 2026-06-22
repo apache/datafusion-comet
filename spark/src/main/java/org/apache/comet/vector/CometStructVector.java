@@ -28,14 +28,17 @@ import org.apache.arrow.vector.dictionary.DictionaryProvider;
 import org.apache.arrow.vector.util.TransferPair;
 import org.apache.spark.sql.vectorized.ColumnVector;
 
-/** A Comet column vector for struct type. */
+/**
+ * A {@link CometDecodedVector} for Spark struct columns, wrapping an Arrow {@link StructVector} and
+ * recursively wrapping each child as a {@link CometVector} so {@link #getChild(int)} returns the
+ * right concrete subtype.
+ */
 public class CometStructVector extends CometDecodedVector {
   final List<ColumnVector> children;
   final DictionaryProvider dictionaryProvider;
 
-  public CometStructVector(
-      ValueVector vector, boolean useDecimal128, DictionaryProvider dictionaryProvider) {
-    super(vector, vector.getField(), useDecimal128);
+  public CometStructVector(ValueVector vector, DictionaryProvider dictionaryProvider) {
+    super(vector, vector.getField());
 
     StructVector structVector = ((StructVector) vector);
 
@@ -44,7 +47,7 @@ public class CometStructVector extends CometDecodedVector {
 
     for (int i = 0; i < size; ++i) {
       ValueVector value = structVector.getVectorById(i);
-      children.add(getVector(value, useDecimal128, dictionaryProvider));
+      children.add(getVector(value, dictionaryProvider));
     }
     this.children = children;
     this.dictionaryProvider = dictionaryProvider;
@@ -60,6 +63,6 @@ public class CometStructVector extends CometDecodedVector {
     TransferPair tp = this.valueVector.getTransferPair(this.valueVector.getAllocator());
     tp.splitAndTransfer(offset, length);
 
-    return new CometStructVector(tp.getTo(), useDecimal128, dictionaryProvider);
+    return new CometStructVector(tp.getTo(), dictionaryProvider);
   }
 }

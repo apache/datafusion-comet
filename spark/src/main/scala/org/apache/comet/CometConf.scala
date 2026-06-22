@@ -254,6 +254,8 @@ object CometConf extends ShimCometConf {
     createExecEnabledConfig("broadcastExchange", defaultValue = true)
   val COMET_EXEC_HASH_JOIN_ENABLED: ConfigEntry[Boolean] =
     createExecEnabledConfig("hashJoin", defaultValue = true)
+  val COMET_EXEC_BROADCAST_NESTED_LOOP_JOIN_ENABLED: ConfigEntry[Boolean] =
+    createExecEnabledConfig("broadcastNestedLoopJoin", defaultValue = true)
   val COMET_EXEC_SORT_MERGE_JOIN_ENABLED: ConfigEntry[Boolean] =
     createExecEnabledConfig("sortMergeJoin", defaultValue = true)
   val COMET_EXEC_AGGREGATE_ENABLED: ConfigEntry[Boolean] =
@@ -289,9 +291,10 @@ object CometConf extends ShimCometConf {
   val COMET_EXEC_SORT_MERGE_JOIN_WITH_JOIN_FILTER_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.exec.sortMergeJoinWithJoinFilter.enabled")
       .category(CATEGORY_ENABLE_EXEC)
-      .doc("Experimental support for Sort Merge Join with filter")
+      .doc("Support for Sort Merge Join with filter. " +
+        "Deprecated: this config will be removed in a future release.")
       .booleanConf
-      .createWithDefault(false)
+      .createWithDefault(true)
 
   val COMET_PYARROW_UDF_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.exec.pyarrowUdf.enabled")
@@ -373,6 +376,19 @@ object CometConf extends ShimCometConf {
         s"for improved performance. This feature is not stable yet. $TUNING_GUIDE.")
       .booleanConf
       .createWithDefault(false)
+
+  val COMET_SCALA_UDF_CODEGEN_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.exec.scalaUDF.codegen.enabled")
+      .category(CATEGORY_EXEC)
+      .doc("Whether to route Spark `ScalaUDF` expressions through Comet's " +
+        "Arrow-direct codegen dispatcher. When enabled, a supported ScalaUDF is compiled into " +
+        "a per-batch kernel that reads and writes Arrow vectors directly from native " +
+        "execution. When disabled, plans containing a ScalaUDF fall back to Spark for the " +
+        "enclosing operator. The same dispatcher backs the regex family (`rlike`, " +
+        "`regexp_replace`, `split`, `regexp_extract`, `regexp_extract_all`, `regexp_instr`) so " +
+        "those route through it by default as well.")
+      .booleanConf
+      .createWithDefault(true)
 
   val COMET_EXEC_SHUFFLE_WITH_HASH_PARTITIONING_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.native.shuffle.partitioning.hash.enabled")
@@ -699,16 +715,6 @@ object CometConf extends ShimCometConf {
         "written to the Proleptic Gregorian calendar and will not be rebased.")
       .booleanConf
       .createWithDefault(false)
-
-  val COMET_USE_DECIMAL_128: ConfigEntry[Boolean] = conf("spark.comet.use.decimal128")
-    .internal()
-    .category(CATEGORY_EXEC)
-    .doc("If true, Comet will always use 128 bits to represent a decimal value, regardless of " +
-      "its precision. If false, Comet will use 32, 64 and 128 bits respectively depending on " +
-      "the precision. N.B. this is NOT a user-facing config but should be inferred and set by " +
-      "Comet itself.")
-    .booleanConf
-    .createWithDefault(false)
 
   val COMET_USE_LAZY_MATERIALIZATION: ConfigEntry[Boolean] = conf(
     "spark.comet.use.lazyMaterialization")
