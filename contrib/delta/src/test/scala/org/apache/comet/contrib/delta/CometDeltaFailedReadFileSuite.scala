@@ -73,7 +73,12 @@ class CometDeltaFailedReadFileSuite extends CometDeltaTestBase {
         .filter(f => !f.getName.startsWith("_") && f.getName.endsWith(".parquet"))
         .map(_.getName)
         .toSet
-      val namedFiles = allPaths.map(_.split("/").last).toSet
+      // `perPartitionFilePaths` carries URL-form paths (the proto `DeltaScan` task `file_path`s),
+      // so a literal `%` in a data-file name is percent-encoded (`%25`); `File.listFiles().getName`
+      // returns the decoded on-disk name. Decode the basenames before comparing -- otherwise the
+      // coverage check spuriously fails on Delta versions whose test harness puts `%` in data-file
+      // names (e.g. Delta 3.3.2's `test%file%prefix-...`), while staying a no-op for plain names.
+      val namedFiles = allPaths.map(p => java.net.URLDecoder.decode(p.split("/").last, "UTF-8")).toSet
       assert(
         onDiskDataFiles.subsetOf(namedFiles),
         s"perPartitionFilePaths is missing data files; on-disk=$onDiskDataFiles named=$namedFiles")
