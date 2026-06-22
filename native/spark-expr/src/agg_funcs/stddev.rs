@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::{any::Any, sync::Arc};
+use std::sync::Arc;
 
 use crate::agg_funcs::variance::{VarianceAccumulator, VarianceGroupsAccumulator};
 use arrow::array::{ArrayRef, AsArray, BooleanArray, Float64Array};
@@ -78,11 +78,6 @@ impl Stddev {
 }
 
 impl AggregateUDFImpl for Stddev {
-    /// Return a reference to Any that can be used for downcasting
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn name(&self) -> &str {
         &self.name
     }

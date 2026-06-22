@@ -33,7 +33,6 @@ use datafusion::{
 use futures::Stream;
 use itertools::Itertools;
 use std::{
-    any::Any,
     pin::Pin,
     sync::{Arc, Mutex},
     task::{Context, Poll},
@@ -181,10 +180,6 @@ fn schema_from_data_types(data_types: &[DataType]) -> SchemaRef {
 }
 
 impl ExecutionPlan for ScanExec {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn schema(&self) -> SchemaRef {
         Arc::clone(&self.schema)
     }

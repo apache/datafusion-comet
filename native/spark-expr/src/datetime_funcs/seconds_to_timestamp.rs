@@ -24,7 +24,6 @@ use datafusion::common::{utils::take_function_args, DataFusionError, Result, Sca
 use datafusion::logical_expr::{
     ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, TypeSignature, Volatility,
 };
-use std::any::Any;
 use std::sync::Arc;
 
 const MICROS_PER_SECOND: i64 = 1_000_000;
@@ -61,10 +60,6 @@ impl Default for SparkSecondsToTimestamp {
 }
 
 impl ScalarUDFImpl for SparkSecondsToTimestamp {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn name(&self) -> &str {
         "seconds_to_timestamp"
     }
