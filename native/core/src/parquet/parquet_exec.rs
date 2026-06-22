@@ -139,17 +139,13 @@ pub(crate) fn init_datasource_exec(
         );
     }
 
-    // Use DataFusion's metadata-caching reader factory so each file's footer and
-    // page index are loaded once and reused across that file's row-group splits
-    // within this task. The cache lives on the per-task RuntimeEnv (bounded LRU,
-    // `metadata_cache_limit`), and loads the full metadata including the page
-    // index, so the opener does not re-fetch the page index on every open.
+    // DataFusion's metadata-caching reader factory: loads each file's full metadata (including the
+    // page index) once into the per-task RuntimeEnv cache (bounded LRU, `metadata_cache_limit`) and
+    // reuses it across that file's row-group splits, so the opener does not re-fetch the page index.
     //
-    // TODO: metadata I/O is invisible in metrics. `fetch_metadata` reads the
-    // footer and page index via `ObjectStore::get_ranges` directly, bypassing the
-    // reader's `get_bytes` where `bytes_scanned` is counted, and DataFusion has no
-    // metadata-bytes metric. Wrap `store` in a byte-counting ObjectStore to surface
-    // metadata I/O alongside `bytes_scanned`.
+    // TODO: metadata I/O is invisible in metrics. `fetch_metadata` reads via `ObjectStore::get_ranges`,
+    // bypassing the `get_bytes` path where `bytes_scanned` is counted. A byte-counting ObjectStore
+    // wrapper would surface it.
     let runtime_env = session_ctx.runtime_env();
     let store = runtime_env.object_store(&object_store_url)?;
     let metadata_cache = runtime_env.cache_manager.get_file_metadata_cache();

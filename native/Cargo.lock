@@ -1988,7 +1988,6 @@ dependencies = [
  "async-trait",
  "aws-config",
  "aws-credential-types",
- "bytes",
  "criterion",
  "datafusion",
  "datafusion-comet-common",
