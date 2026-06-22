@@ -258,7 +258,7 @@ mod tests {
     // metadata cache. The previous hand-rolled factory cached only the footer,
     // so DataFusion re-fetched the page index on every open of the same file.
     #[tokio::test]
-    async fn caches_full_metadata_with_page_index() -> Result<(), ExecutionError> {
+    async fn caches_full_metadata_with_page_index() {
         // Write a file with a page index: page-level statistics and a small data
         // page row limit so the column and offset indexes span multiple pages.
         let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
@@ -266,7 +266,7 @@ mod tests {
             Arc::clone(&schema),
             vec![Arc::new(Int32Array::from((0..1000).collect::<Vec<i32>>()))],
         )
-        .map_err(|e| ExecutionError::GeneralError(e.to_string()))?;
+        .unwrap();
 
         let filename = get_temp_filename()
             .as_path()
@@ -278,18 +278,12 @@ mod tests {
             .set_statistics_enabled(EnabledStatistics::Page)
             .set_data_page_row_count_limit(100)
             .build();
-        let file =
-            File::create(&filename).map_err(|e| ExecutionError::GeneralError(e.to_string()))?;
-        let mut writer = ArrowWriter::try_new(file, Arc::clone(&schema), Some(props))
-            .map_err(|e| ExecutionError::GeneralError(e.to_string()))?;
-        writer
-            .write(&batch)
-            .map_err(|e| ExecutionError::GeneralError(e.to_string()))?;
-        writer
-            .close()
-            .map_err(|e| ExecutionError::GeneralError(e.to_string()))?;
+        let file = File::create(&filename).unwrap();
+        let mut writer = ArrowWriter::try_new(file, Arc::clone(&schema), Some(props)).unwrap();
+        writer.write(&batch).unwrap();
+        writer.close().unwrap();
 
-        let partitioned_file = PartitionedFile::from_path(filename)?;
+        let partitioned_file = PartitionedFile::from_path(filename).unwrap();
         let location = partitioned_file.object_meta.location.clone();
 
         let session_ctx = Arc::new(SessionContext::new());
@@ -310,12 +304,13 @@ mod tests {
             false,
             false,
             false,
-        )?;
+        )
+        .unwrap();
 
         // Drain the scan so the reader opens the file and populates the cache.
-        let mut stream = scan.execute(0, session_ctx.task_ctx())?;
+        let mut stream = scan.execute(0, session_ctx.task_ctx()).unwrap();
         while let Some(batch) = stream.next().await {
-            batch?;
+            batch.unwrap();
         }
 
         // The per-task RuntimeEnv metadata cache must now hold this file's
@@ -337,6 +332,5 @@ mod tests {
             parquet_meta.column_index().is_some() && parquet_meta.offset_index().is_some(),
             "cached metadata must include the page index"
         );
-        Ok(())
     }
 }
