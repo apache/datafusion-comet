@@ -18,7 +18,6 @@
 pub mod encryption_support;
 
 pub mod parquet_exec;
-pub mod parquet_read_cached_factory;
 pub mod parquet_support;
 pub mod schema_adapter;
 pub mod util;
