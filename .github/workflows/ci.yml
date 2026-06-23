@@ -203,13 +203,12 @@ jobs:
   spark_3_4:
     name: Spark SQL Tests (Spark 3.4)
     needs: changes
-    # Main-only by default; PRs need the `run-spark-3.4-tests` label.
+    # TEMP: run on every PR (normally main-only / `run-spark-3.4-tests` label).
     if: |
       needs.changes.outputs.spark_3_4 == 'true' &&
       (github.event_name == 'push' ||
        github.event_name == 'workflow_dispatch' ||
-       (github.event_name == 'pull_request' &&
-        contains(github.event.pull_request.labels.*.name, 'run-spark-3.4-tests')))
+       github.event_name == 'pull_request')
     uses: ./.github/workflows/spark_sql_test_reusable.yml
     with:
       spark-short: '3.4'
@@ -233,15 +232,12 @@ jobs:
   spark_4_0:
     name: Spark SQL Tests (Spark 4.0)
     needs: changes
-    # Main-only by default; PRs need the `run-spark-4.0-tests` label. Swapped
-    # with spark_4_1 on the `oom` branch to validate the memory caps against
-    # Spark 4.1 by default.
+    # TEMP: run on every PR (normally main-only / `run-spark-4.0-tests` label).
     if: |
       needs.changes.outputs.spark_4_0 == 'true' &&
       (github.event_name == 'push' ||
        github.event_name == 'workflow_dispatch' ||
-       (github.event_name == 'pull_request' &&
-        contains(github.event.pull_request.labels.*.name, 'run-spark-4.0-tests')))
+       github.event_name == 'pull_request')
     uses: ./.github/workflows/spark_sql_test_reusable.yml
     with:
       spark-short: '4.0'
