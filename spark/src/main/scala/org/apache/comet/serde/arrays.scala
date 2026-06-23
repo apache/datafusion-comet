@@ -342,12 +342,11 @@ object CometArrayExcept
     // Unsupported) for these types so the JVM codegen dispatcher still evaluates them natively
     // under the default config; the convert-time guard below is only reached under
     // allowIncompatible=true, where the native array_except cannot handle them.
-    expr.children.map(_.dataType).find(dt => !isTypeSupported(dt)) match {
-      case Some(dt) =>
-        Incompatible(
-          Some(s"native array_except does not support element type $dt: $incompatReason"))
-      case None => Incompatible(Some(incompatReason))
+    val reason = expr.children.map(_.dataType).find(dt => !isTypeSupported(dt)) match {
+      case Some(dt) => s"native array_except does not support element type $dt: $incompatReason"
+      case None => incompatReason
     }
+    Incompatible(Some(reason))
   }
 
   @tailrec
@@ -372,12 +371,11 @@ object CometArrayExcept
     // Defensive: only reached under allowIncompatible=true (the default-config Incompatible path
     // routes through the codegen dispatcher before convert). Native array_except cannot handle
     // these element types, so decline and let Spark evaluate.
-    val inputTypes = expr.children.map(_.dataType).toSet
-    for (dt <- inputTypes) {
-      if (!isTypeSupported(dt)) {
+    expr.children.map(_.dataType).find(dt => !isTypeSupported(dt)) match {
+      case Some(dt) =>
         withFallbackReason(expr, s"data type not supported: $dt")
         return None
-      }
+      case None =>
     }
     val leftArrayExprProto = exprToProto(expr.left, inputs, binding)
     val rightArrayExprProto = exprToProto(expr.right, inputs, binding)
