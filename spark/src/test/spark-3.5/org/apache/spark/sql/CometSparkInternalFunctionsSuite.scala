@@ -19,7 +19,6 @@
 
 package org.apache.spark.sql
 
-import org.apache.spark.sql.Column
 import org.apache.spark.sql.catalyst.expressions.Empty2Null
 import org.apache.spark.sql.functions.col
 
