@@ -212,14 +212,12 @@ jobs:
         run: |
           cd apache-spark
           rm -rf /root/.m2/repository/org/apache/parquet # somehow parquet cache requires cleanups
-          # Spark 4.1 ships a .sbtopts that bumps the SBT JVM heap to 8g via
-          # -J-Xmx8g/-J-Xms8g/-J-XX:MaxMetaspaceSize=1g. Spark 4.0 does not,
-          # so without this override the SBT JVM stays capped at the 1024 MB
-          # our `-mem $SBT_MEM` enforces and OOMs partway through the suite.
-          # Mirror 4.1's file for 4.0 to keep the two profiles equivalent.
-          if [ "${{ inputs.spark-short }}" = "4.0" ] && [ ! -f .sbtopts ]; then
-            printf -- '-J-Xmx8g\n-J-Xms8g\n-J-XX:MaxMetaspaceSize=1g\n' > .sbtopts
-          fi
+          # set SBTOPTS 
+          case "${{ inputs.spark-short }}" in
+            4.0|4.1)
+              printf -- '-J-Xms1g\n-J-Xmx4g\n-J-XX:MaxMetaspaceSize=1g\n' > .sbtopts
+              ;;
+          esac
           export SERIAL_SBT_TESTS=1
 
           # Per-row forked-test-JVM caps (read by Spark's SparkBuild.scala). 
