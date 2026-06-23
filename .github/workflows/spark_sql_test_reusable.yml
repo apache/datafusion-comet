@@ -212,17 +212,8 @@ jobs:
         run: |
           cd apache-spark
           rm -rf /root/.m2/repository/org/apache/parquet # somehow parquet cache requires cleanups
-          # SERIAL_SBT_TESTS gates SparkParallelTestGrouping in
-          # project/SparkBuild.scala. For Spark 4.0.2 on JDK 21 we
-          # leave it unset so the grouping is installed and
-          # DEDICATED_JVM_SBT_TESTS below actually forks a dedicated
-          # JVM per listed suite, working around the V1/V2 Parquet and
-          # Orc source-suite cross-suite file-stream leak under JDK 21
-          # (issue #4327). For other rows we keep it set to reduce
-          # peak memory on standard 7 GB runners.
-          if [ "${{ inputs.spark-short }}" != "4.0" ] || [ "${{ inputs.java }}" != "21" ]; then
-            export SERIAL_SBT_TESTS=1
-          fi
+          export SERIAL_SBT_TESTS=1
+
           # Per-row forked-test-JVM caps (read by Spark's SparkBuild.scala). 
           if [ -n "${{ matrix.module.heap }}" ]; then
             export HEAP_SIZE="${{ matrix.module.heap }}"
@@ -262,14 +253,6 @@ jobs:
             -XX:InitiatingHeapOccupancyPercent=35
             -XX:+ParallelRefProcEnabled
             -XX:+ExitOnOutOfMemoryError
-          # Mirror Spark's own JDK 21 / 25 CI workaround. apache/spark's
-          # build_java21.yml and build_java25.yml set this same env var to
-          # process-isolate the V1/V2 Parquet and Orc source suites because
-          # they exhibit cross-suite resource interactions (file-stream and
-          # thread leaks) under the newer JDKs. project/SparkBuild.scala
-          # reads DEDICATED_JVM_SBT_TESTS and forks a separate JVM per
-          # listed suite. Empty value is a safe no-op.
-          DEDICATED_JVM_SBT_TESTS: ${{ inputs.spark-short == '4.0' && 'org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormatV1Suite,org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormatV2Suite,org.apache.spark.sql.execution.datasources.orc.OrcSourceV1Suite,org.apache.spark.sql.execution.datasources.orc.OrcSourceV2Suite' || '' }}
       - name: Upload fallback log
         if: ${{ inputs.collect-fallback-logs }}
         uses: actions/upload-artifact@v7

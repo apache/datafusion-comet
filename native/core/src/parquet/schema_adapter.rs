@@ -814,6 +814,36 @@ impl SparkPhysicalExprAdapter {
                 return Ok(Transformed::yes(rejection));
             }
 
+            // Spark 3.x refuses to read a Parquet TimestampLTZ column as
+            // TimestampNTZ (SPARK-36182); Spark 4.0 (SPARK-47447) lifted that.
+            // The flag tracks Comet's per-Spark-version constant in
+            // ShimCometConf. Deferred to runtime so empty files (SPARK-26709)
+            // still pass. See #4219.
+            //
+            // This catches all LTZ physical encodings: TIMESTAMP_MICROS /
+            // TIMESTAMP_MILLIS arrive as `Timestamp(_, Some(_))` directly, and
+            // INT96 arrives as `Timestamp(_, Some("UTC"))` because `coerce_int96_tz`
+            // attaches the UTC timezone (see `get_options`) instead of letting
+            // `coerce_int96` strip it to a timezone-free `Timestamp(_, None)`.
+            if !self.parquet_options.allow_timestamp_ltz_to_ntz
+                && matches!(
+                    (physical_type, target_type),
+                    (
+                        DataType::Timestamp(_, Some(_)),
+                        DataType::Timestamp(_, None)
+                    )
+                )
+            {
+                let rejection = reject_on_non_empty_expr(
+                    Arc::clone(&child),
+                    cast.target_field(),
+                    input_field.name(),
+                    physical_type,
+                    target_type,
+                );
+                return Ok(Transformed::yes(rejection));
+            }
+
             // Scalar/complex mismatch (e.g. TIMESTAMP read as ARRAY<TIMESTAMP>):
             // Spark's vectorized reader rejects with
             // SchemaColumnConvertNotSupportedException (SPARK-45604). Same-shape
