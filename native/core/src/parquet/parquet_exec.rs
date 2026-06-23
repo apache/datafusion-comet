@@ -305,6 +305,7 @@ mod tests {
             true,
             false,
             false,
+            false,
             &session_ctx,
             false,
             false,
