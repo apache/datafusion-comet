@@ -35,3 +35,16 @@ SELECT datediff(date('2024-01-20'), d2) FROM test_datediff
 -- literal + literal
 query
 SELECT datediff(date('2024-01-15'), date('2024-01-10')), datediff(date('2024-01-10'), date('2024-01-15')), datediff(NULL, date('2024-01-15'))
+
+-- Dates whose day difference overflows a 32-bit int. Spark's DateDiff does plain JVM int
+-- subtraction, which wraps; the native path must wrap to match rather than panic in debug builds.
+-- date_add materializes day values near +/- 2e9 (2000000000 - (-2000000000) = 4000000000, which
+-- wraps to -294967296).
+statement
+CREATE TABLE test_datediff_overflow(d1 date, d2 date) USING parquet
+
+statement
+INSERT INTO test_datediff_overflow VALUES (date_add(date('1970-01-01'), 2000000000), date_add(date('1970-01-01'), -2000000000)), (date_add(date('1970-01-01'), -2000000000), date_add(date('1970-01-01'), 2000000000))
+
+query
+SELECT datediff(d1, d2) FROM test_datediff_overflow
