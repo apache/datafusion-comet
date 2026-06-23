@@ -175,7 +175,6 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       classOf[MapEntries] -> CometMapEntries,
       classOf[MapValues] -> CometMapValues,
       classOf[MapFromArrays] -> CometMapFromArrays,
-      classOf[MapContainsKey] -> CometMapContainsKey,
       classOf[MapFromEntries] -> CometMapFromEntries,
       classOf[MapConcat] -> CometMapConcat,
       classOf[StringToMap] -> CometStrToMap,
