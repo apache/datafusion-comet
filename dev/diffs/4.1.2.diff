@@ -555,7 +555,7 @@ index 5b88eeefeca..d4f07bc182a 100644
      assert(exchanges.size == 2)
    }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/DataFrameWindowFunctionsSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/DataFrameWindowFunctionsSuite.scala
-index 6e9f3385571..72331b0870c 100644
+index 6e9f3385571..5784eac302f 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/DataFrameWindowFunctionsSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/DataFrameWindowFunctionsSuite.scala
 @@ -24,8 +24,9 @@ import org.apache.spark.sql.catalyst.expressions.{AttributeReference, Expression
@@ -569,7 +569,17 @@ index 6e9f3385571..72331b0870c 100644
  import org.apache.spark.sql.execution.window.WindowExec
  import org.apache.spark.sql.expressions.{Aggregator, MutableAggregationBuffer, UserDefinedAggregateFunction, Window}
  import org.apache.spark.sql.functions._
-@@ -963,7 +964,7 @@ class DataFrameWindowFunctionsSuite extends QueryTest
+@@ -951,7 +952,8 @@ class DataFrameWindowFunctionsSuite extends QueryTest
+     }
+   }
+ 
+-  test("Window spill with more than the inMemoryThreshold and spillThreshold") {
++  test("Window spill with more than the inMemoryThreshold and spillThreshold",
++      IgnoreComet("Comet does not support spilling")) {
+     val df = Seq((1, "1"), (2, "2"), (1, "3"), (2, "4")).toDF("key", "value")
+     val window = Window.partitionBy($"key").orderBy($"value")
+ 
+@@ -963,7 +965,7 @@ class DataFrameWindowFunctionsSuite extends QueryTest
      }
    }
  
@@ -578,7 +588,7 @@ index 6e9f3385571..72331b0870c 100644
      // Make sure we trigger the spilling path.
      withSQLConf(SQLConf.WINDOW_EXEC_BUFFER_IN_MEMORY_THRESHOLD.key -> "1",
        SQLConf.WINDOW_EXEC_BUFFER_SPILL_THRESHOLD.key -> "17") {
-@@ -1142,10 +1143,12 @@ class DataFrameWindowFunctionsSuite extends QueryTest
+@@ -1142,10 +1144,12 @@ class DataFrameWindowFunctionsSuite extends QueryTest
      }
  
      def isShuffleExecByRequirement(
@@ -592,7 +602,7 @@ index 6e9f3385571..72331b0870c 100644
        case _ => false
      }
  
-@@ -1168,7 +1171,7 @@ class DataFrameWindowFunctionsSuite extends QueryTest
+@@ -1168,7 +1172,7 @@ class DataFrameWindowFunctionsSuite extends QueryTest
        val shuffleByRequirement = windowed.queryExecution.executedPlan.exists {
          case w: WindowExec =>
            w.child.exists {
@@ -601,6 +611,16 @@ index 6e9f3385571..72331b0870c 100644
              case _ => false
            }
          case _ => false
+@@ -1620,7 +1624,8 @@ class DataFrameWindowFunctionsSuite extends QueryTest
+     }
+   }
+ 
+-  test("SPARK-49386: Window spill with more than the inMemoryThreshold and spillSizeThreshold") {
++  test("SPARK-49386: Window spill with more than the inMemoryThreshold and spillSizeThreshold",
++      IgnoreComet("Comet does not support spilling")) {
+     val df = Seq((1, "1"), (2, "2"), (1, "3"), (2, "4")).toDF("key", "value")
+     val window = Window.partitionBy($"key").orderBy($"value")
+ 
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/DatasetSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/DatasetSuite.scala
 index 6df8d66ee7f..35e270c7241 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/DatasetSuite.scala
@@ -2246,7 +2266,7 @@ index a3cfdc5a240..3793b6191bf 100644
        })
        checkAnswer(distinctWithId, Seq(Row(1, 0), Row(1, 0)))
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala
-index 3e7d26f74bd..04cfdf075ab 100644
+index 3e7d26f74bd..7e70e72fa3e 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala
 @@ -27,12 +27,14 @@ import org.apache.spark.SparkException
@@ -2663,6 +2683,16 @@ index 3e7d26f74bd..04cfdf075ab 100644
          }.isEmpty)
          assert(collect(initialExecutedPlan) {
            case i: InMemoryTableScanLike => i
+@@ -3310,7 +3354,8 @@ class AdaptiveQueryExecSuite
+ 
+       val plan = df.queryExecution.executedPlan.asInstanceOf[AdaptiveSparkPlanExec]
+       assert(plan.inputPlan.isInstanceOf[TakeOrderedAndProjectExec])
+-      assert(plan.finalPhysicalPlan.isInstanceOf[WindowExec])
++      assert(plan.finalPhysicalPlan.isInstanceOf[WindowExec] ||
++        plan.finalPhysicalPlan.exists(_.isInstanceOf[CometWindowExec]))
+       plan.inputPlan.output.zip(plan.finalPhysicalPlan.output).foreach { case (o1, o2) =>
+         assert(o1.semanticEquals(o2), "Different output column order after AQE optimization")
+       }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/columnar/CachedBatchSerializerSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/columnar/CachedBatchSerializerSuite.scala
 index 47b935a2880..3e9b87f5c32 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/columnar/CachedBatchSerializerSuite.scala

@@ -338,7 +338,7 @@ index 7ee18df3756..d09f70e5d99 100644
      assert(exchanges.size == 2)
    }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/DataFrameWindowFunctionsSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/DataFrameWindowFunctionsSuite.scala
-index a1d5d579338..7e0acccd124 100644
+index a1d5d579338..689c7fee3b5 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/DataFrameWindowFunctionsSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/DataFrameWindowFunctionsSuite.scala
 @@ -24,8 +24,9 @@ import org.apache.spark.sql.catalyst.expressions.{AttributeReference, Expression
@@ -352,7 +352,17 @@ index a1d5d579338..7e0acccd124 100644
  import org.apache.spark.sql.execution.window.WindowExec
  import org.apache.spark.sql.expressions.{Aggregator, MutableAggregationBuffer, UserDefinedAggregateFunction, Window}
  import org.apache.spark.sql.functions._
-@@ -982,7 +983,7 @@ class DataFrameWindowFunctionsSuite extends QueryTest
+@@ -970,7 +971,8 @@ class DataFrameWindowFunctionsSuite extends QueryTest
+     }
+   }
+ 
+-  test("Window spill with more than the inMemoryThreshold and spillThreshold") {
++  test("Window spill with more than the inMemoryThreshold and spillThreshold",
++      IgnoreComet("Comet does not support spilling")) {
+     val df = Seq((1, "1"), (2, "2"), (1, "3"), (2, "4")).toDF("key", "value")
+     val window = Window.partitionBy($"key").orderBy($"value")
+ 
+@@ -982,7 +984,7 @@ class DataFrameWindowFunctionsSuite extends QueryTest
      }
    }
  
@@ -361,7 +371,7 @@ index a1d5d579338..7e0acccd124 100644
      // Make sure we trigger the spilling path.
      withSQLConf(SQLConf.WINDOW_EXEC_BUFFER_IN_MEMORY_THRESHOLD.key -> "1",
        SQLConf.WINDOW_EXEC_BUFFER_SPILL_THRESHOLD.key -> "17") {
-@@ -1187,10 +1188,12 @@ class DataFrameWindowFunctionsSuite extends QueryTest
+@@ -1187,10 +1189,12 @@ class DataFrameWindowFunctionsSuite extends QueryTest
      }
  
      def isShuffleExecByRequirement(
@@ -375,7 +385,7 @@ index a1d5d579338..7e0acccd124 100644
        case _ => false
      }
  
-@@ -1213,7 +1216,7 @@ class DataFrameWindowFunctionsSuite extends QueryTest
+@@ -1213,7 +1217,7 @@ class DataFrameWindowFunctionsSuite extends QueryTest
        val shuffleByRequirement = windowed.queryExecution.executedPlan.exists {
          case w: WindowExec =>
            w.child.exists {
