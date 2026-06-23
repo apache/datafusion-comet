@@ -97,7 +97,7 @@ jobs:
           apt-get install -y --no-install-recommends python3 python3-venv python3-pip
           python3 -m venv /tmp/venv
           /tmp/venv/bin/pip install --upgrade pip
-          /tmp/venv/bin/pip install "pyspark==4.0.1" "pyarrow>=14" pandas pytest
+          /tmp/venv/bin/pip install "pyspark==4.0.2" "pyarrow>=14" pandas pytest
 
       - name: Run PyArrow UDF pytest
         env:
