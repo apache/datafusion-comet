@@ -151,7 +151,7 @@ The tables below list every Spark built-in expression with its current status.
 | `array_union` | ✅ | NaN/signed-zero handling may differ ([details](compatibility/floating-point.md)) |
 | `arrays_overlap` | ✅ |  |
 | `arrays_zip` | ✅ |  |
-| `element_at` | ✅ | MapType input falls back |
+| `element_at` | ✅ |  |
 | `flatten` | ✅ | Binary/struct/map elements fall back |
 | `get` | ✅ |  |
 | `sequence` | ✅ |  |
@@ -378,7 +378,7 @@ expression-level). The `outer` variants are wired but marked `Incompatible`; the
 
 | Function | Status | Notes |
 | --- | --- | --- |
-| `element_at` | ✅ | MapType input falls back |
+| `element_at` | ✅ |  |
 | `map` | ✅ | Routed through the JVM codegen dispatcher |
 | `map_concat` | ✅ |  |
 | `map_contains_key` | ✅ |  |
@@ -388,7 +388,7 @@ expression-level). The `outer` variants are wired but marked `Incompatible`; the
 | `map_keys` | ✅ |  |
 | `map_values` | ✅ |  |
 | `str_to_map` | ✅ |  |
-| `try_element_at` | ✅ | Lowers to `element_at`; array input (MapType falls back) |
+| `try_element_at` | ✅ | Lowers to `element_at` |
 
 ---
 
