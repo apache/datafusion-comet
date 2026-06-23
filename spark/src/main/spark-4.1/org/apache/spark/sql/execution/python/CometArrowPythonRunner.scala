@@ -21,18 +21,16 @@ package org.apache.spark.sql.execution.python
 
 import java.io.DataOutputStream
 
-import org.apache.spark.api.python.ChainedPythonFunctions
+import org.apache.spark.api.python.{BasePythonRunner, ChainedPythonFunctions}
 import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
 /**
- * Comet's Arrow Python runner for Spark 4.1. Extends `BaseArrowPythonRunner` parameterized over
- * `Iterator[ColumnarBatch]` input, and supplies the columnar input via `CometColumnarPythonInput`
- * instead of `BasicPythonArrowInput`.
- *
- * Spark 4.1's `PythonUDFRunner.writeUDFs` takes a `profiler: Option[String]` fourth argument; we
- * pass `None` since Comet does not support Python profiling.
+ * Comet's Arrow Python runner for Spark 4.1. The Arrow IPC exchange lives in
+ * [[CometArrowPythonRunnerBase]]; this subclass only supplies the Spark 4.1 constructor shape and
+ * UDF command serialization (`PythonUDFRunner.writeUDFs` takes a `profiler: Option[String]`
+ * fourth argument, which Comet does not use).
  */
 class CometArrowPythonRunner(
     funcs: Seq[(ChainedPythonFunctions, Long)],
@@ -41,23 +39,17 @@ class CometArrowPythonRunner(
     schema: StructType,
     timeZoneId: String,
     largeVarTypes: Boolean,
-    workerConf: Map[String, String],
-    pythonMetrics: Map[String, SQLMetric],
+    override val workerConf: Map[String, String],
+    override val pythonMetrics: Map[String, SQLMetric],
     jobArtifactUUID: Option[String],
     sessionUUID: Option[String])
-    extends BaseArrowPythonRunner[Iterator[ColumnarBatch], ColumnarBatch](
-      funcs,
+    extends BasePythonRunner[Iterator[ColumnarBatch], ColumnarBatch](
+      funcs.map(_._1),
       evalType,
       argOffsets,
-      schema,
-      timeZoneId,
-      largeVarTypes,
-      workerConf,
-      pythonMetrics,
       jobArtifactUUID,
-      sessionUUID)
-    with CometColumnarPythonInput
-    with BasicPythonArrowOutput {
+      pythonMetrics)
+    with CometArrowPythonRunnerBase {
 
   override protected def writeUDF(dataOut: DataOutputStream): Unit =
     PythonUDFRunner.writeUDFs(dataOut, funcs, argOffsets, None)

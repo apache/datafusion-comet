@@ -21,15 +21,15 @@ package org.apache.spark.sql.execution.python
 
 import java.io.DataOutputStream
 
-import org.apache.spark.api.python.ChainedPythonFunctions
+import org.apache.spark.api.python.{BasePythonRunner, ChainedPythonFunctions}
 import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
 /**
- * Comet's Arrow Python runner for Spark 4.2. Spark 4.2's `BaseArrowPythonRunner` no longer
- * accepts `workerConf` in its constructor; the subclass overrides `runnerConf` instead.
- * `PythonUDFRunner.writeUDFs` drops the `profiler` argument compared to 4.1.
+ * Comet's Arrow Python runner for Spark 4.2. The Arrow IPC exchange lives in
+ * [[CometArrowPythonRunnerBase]]; this subclass only supplies the Spark 4.2 constructor shape and
+ * UDF command serialization (`PythonUDFRunner.writeUDFs` drops the `profiler` argument).
  */
 class CometArrowPythonRunner(
     funcs: Seq[(ChainedPythonFunctions, Long)],
@@ -39,24 +39,18 @@ class CometArrowPythonRunner(
     timeZoneId: String,
     largeVarTypes: Boolean,
     pythonRunnerConf: Map[String, String],
-    pythonMetrics: Map[String, SQLMetric],
+    override val pythonMetrics: Map[String, SQLMetric],
     jobArtifactUUID: Option[String],
     sessionUUID: Option[String])
-    extends BaseArrowPythonRunner[Iterator[ColumnarBatch], ColumnarBatch](
-      funcs,
+    extends BasePythonRunner[Iterator[ColumnarBatch], ColumnarBatch](
+      funcs.map(_._1),
       evalType,
       argOffsets,
-      schema,
-      timeZoneId,
-      largeVarTypes,
-      pythonMetrics,
       jobArtifactUUID,
-      sessionUUID)
-    with CometColumnarPythonInput
-    with BasicPythonArrowOutput {
+      pythonMetrics)
+    with CometArrowPythonRunnerBase {
 
-  override protected def runnerConf: Map[String, String] =
-    super.runnerConf ++ pythonRunnerConf
+  override protected def workerConf: Map[String, String] = pythonRunnerConf
 
   override protected def writeUDF(dataOut: DataOutputStream): Unit =
     PythonUDFRunner.writeUDFs(dataOut, funcs, argOffsets)

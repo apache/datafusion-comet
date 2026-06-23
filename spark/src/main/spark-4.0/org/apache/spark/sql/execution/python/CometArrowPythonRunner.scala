@@ -23,23 +23,21 @@ import java.io.DataOutputStream
 
 import org.apache.spark.api.python.{BasePythonRunner, ChainedPythonFunctions}
 import org.apache.spark.sql.execution.metric.SQLMetric
-import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
 /**
- * Comet's Arrow Python runner for Spark 4.0. Extends `BasePythonRunner` directly because Spark
- * 4.0's `BaseArrowPythonRunner` is bound to `Iterator[InternalRow]` and mixes in
- * `BasicPythonArrowInput`, so we cannot inherit from it. Wires the SQLConf-driven fields that
- * `BaseArrowPythonRunner` provides.
+ * Comet's Arrow Python runner for Spark 4.0. The Arrow IPC exchange lives in
+ * [[CometArrowPythonRunnerBase]]; this subclass only supplies the Spark 4.0 constructor shape and
+ * UDF command serialization.
  */
 class CometArrowPythonRunner(
     funcs: Seq[(ChainedPythonFunctions, Long)],
     evalType: Int,
     argOffsets: Array[Array[Int]],
-    protected override val schema: StructType,
-    protected override val timeZoneId: String,
-    protected override val largeVarTypes: Boolean,
+    schema: StructType,
+    timeZoneId: String,
+    largeVarTypes: Boolean,
     override val workerConf: Map[String, String],
     override val pythonMetrics: Map[String, SQLMetric],
     jobArtifactUUID: Option[String])
@@ -49,23 +47,7 @@ class CometArrowPythonRunner(
       argOffsets,
       jobArtifactUUID,
       pythonMetrics)
-    with CometColumnarPythonInput
-    with BasicPythonArrowOutput {
-
-  override val pythonExec: String =
-    SQLConf.get.pysparkWorkerPythonExecutable.getOrElse(funcs.head._1.funcs.head.pythonExec)
-
-  override val faultHandlerEnabled: Boolean = SQLConf.get.pythonUDFWorkerFaulthandlerEnabled
-  override val idleTimeoutSeconds: Long = SQLConf.get.pythonUDFWorkerIdleTimeoutSeconds
-  override val errorOnDuplicatedFieldNames: Boolean = true
-  override val hideTraceback: Boolean = SQLConf.get.pysparkHideTraceback
-  override val simplifiedTraceback: Boolean = SQLConf.get.pysparkSimplifiedTraceback
-
-  override val bufferSize: Int = SQLConf.get.pandasUDFBufferSize
-  require(
-    bufferSize >= 4,
-    "Pandas execution requires more than 4 bytes. Please set higher buffer. " +
-      s"Please change '${SQLConf.PANDAS_UDF_BUFFER_SIZE.key}'.")
+    with CometArrowPythonRunnerBase {
 
   override protected def writeUDF(dataOut: DataOutputStream): Unit =
     PythonUDFRunner.writeUDFs(dataOut, funcs, argOffsets, jobArtifactUUID)

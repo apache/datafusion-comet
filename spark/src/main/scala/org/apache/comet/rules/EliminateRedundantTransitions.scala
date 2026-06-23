@@ -110,7 +110,7 @@ case class EliminateRedundantTransitions(session: SparkSession)
       // 4.1+ matches the renamed `MapInArrowExec`.
       //
       // Falls back to vanilla Spark when `spark.sql.execution.arrow.useLargeVarTypes` is enabled:
-      // CometColumnarPythonInput.copyVector does raw `setBytes` on each Arrow buffer, but Comet's
+      // CometArrowPythonRunnerBase.copyVector does raw `setBytes` on each Arrow buffer, but Comet's
       // source string/binary vectors always use 4-byte offsets while the destination root is
       // allocated with 8-byte offsets when this conf is on. The buffer counts match but the
       // offset width does not, so a direct memcpy would corrupt the offsets.
