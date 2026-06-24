@@ -38,4 +38,11 @@ By default, Comet accelerates `MapFromEntries` using JVM codegen dispatch, which
 
 - `BinaryType` is not supported as a map key in `map_from_entries`
 - `BinaryType` is not supported as a map value in `map_from_entries`
+
+## StringToMap
+
+The following incompatibilities cause `StringToMap` to fall back to Spark by default. Set `spark.comet.expression.StringToMap.allowIncompatible=true` to enable Comet acceleration despite these differences.
+
+- `spark.sql.legacy.truncateForEmptyRegexSplit` is enabled, so trailing empty split entries may differ from Spark.
+- `str_to_map` does not support non-UTF8_BINARY collations on the input string or delimiters.
 <!--END:EXPR_COMPAT-->

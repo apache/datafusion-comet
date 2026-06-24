@@ -603,6 +603,14 @@ IEEE total ordering for floating-point, which differs from Spark’s <code class
 <ul class="simple">
 <li><p>MapSort is unsupported for non-scalar key types (struct, array, map, etc.).</p></li>
 </ul>
+</section>
+<section id="stringtomap">
+<h2>StringToMap<a class="headerlink" href="#stringtomap" title="Link to this heading">#</a></h2>
+<p>The following incompatibilities cause <code class="docutils literal notranslate"><span class="pre">StringToMap</span></code> to fall back to Spark by default. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.StringToMap.allowIncompatible=true</span></code> to enable Comet acceleration despite these differences.</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">spark.sql.legacy.truncateForEmptyRegexSplit</span></code> is enabled, so trailing empty split entries may differ from Spark.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">str_to_map</span></code> does not support non-UTF8_BINARY collations on the input string or delimiters.</p></li>
+</ul>
 <!--END:EXPR_COMPAT-->
 </section>
 </section>

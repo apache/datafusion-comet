@@ -323,7 +323,6 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.expression.MakeDecimal.enabled` | Enable Comet acceleration for `MakeDecimal` | true |
 | `spark.comet.expression.MakeTimestamp.enabled` | Enable Comet acceleration for `MakeTimestamp` | true |
 | `spark.comet.expression.MapConcat.enabled` | Enable Comet acceleration for `MapConcat` | true |
-| `spark.comet.expression.MapContainsKey.enabled` | Enable Comet acceleration for `MapContainsKey` | true |
 | `spark.comet.expression.MapEntries.enabled` | Enable Comet acceleration for `MapEntries` | true |
 | `spark.comet.expression.MapFilter.enabled` | Enable Comet acceleration for `MapFilter` | true |
 | `spark.comet.expression.MapFromArrays.enabled` | Enable Comet acceleration for `MapFromArrays` | true |
