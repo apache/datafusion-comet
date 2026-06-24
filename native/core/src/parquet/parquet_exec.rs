@@ -130,8 +130,9 @@ pub(crate) fn init_datasource_exec(
     let table_schema =
         TableSchema::from_file_schema(base_schema).with_table_partition_cols(partition_fields);
 
-    let mut parquet_source =
-        ParquetSource::new(table_schema).with_table_parquet_options(table_parquet_options);
+    let mut parquet_source = ParquetSource::new(table_schema)
+        .with_table_parquet_options(table_parquet_options)
+        .with_metadata_size_hint(512 * 1024); // Same as DataFusion's default
 
     if encryption_enabled {
         parquet_source = parquet_source.with_encryption_factory(
