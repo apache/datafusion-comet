@@ -126,15 +126,17 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with Logging {
       // Sink operators don't have children
       builder.clearChildren()
 
-      val dataFilters = new ListBuffer[Expr]()
-      for (filter <- scan.supportedDataFilters) {
-        exprToProto(filter, scan.output) match {
-          case Some(proto) => dataFilters += proto
-          case _ =>
-            logWarning(s"Unsupported data filter $filter")
+      if (scan.conf.getConf(SQLConf.PARQUET_FILTER_PUSHDOWN_ENABLED)) {
+        val dataFilters = new ListBuffer[Expr]()
+        for (filter <- scan.supportedDataFilters) {
+          exprToProto(filter, scan.output) match {
+            case Some(proto) => dataFilters += proto
+            case _ =>
+              logWarning(s"Unsupported data filter $filter")
+          }
         }
+        commonBuilder.addAllDataFilters(dataFilters.asJava)
       }
-      commonBuilder.addAllDataFilters(dataFilters.asJava)
 
       val possibleDefaultValues = getExistenceDefaultValues(scan.requiredSchema)
       if (possibleDefaultValues.exists(_ != null)) {

@@ -142,6 +142,20 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
+  val COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.parquet.rowFilterPushdown.enabled")
+      .category(CATEGORY_PARQUET)
+      .doc(
+        "When enabled, the native Parquet reader evaluates pushed filters during decode " +
+          "and lazily materializes projected columns for surviving rows (DataFusion's " +
+          "pushdown_filters / late-materialization). Format-level pruning (row-group " +
+          "statistics, page index, bloom filters) is independent of this flag and runs " +
+          "whenever Spark's spark.sql.parquet.filterPushdown is enabled. Disabling this " +
+          "flag still lets format-level pruning work; the per-row eval falls back to " +
+          "the CometFilter operator above the scan.")
+      .booleanConf
+      .createWithDefault(true)
+
   val COMET_PARQUET_PARALLEL_IO_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.parquet.read.parallel.io.enabled")
       .category(CATEGORY_PARQUET)
