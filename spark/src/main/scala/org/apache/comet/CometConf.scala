@@ -142,17 +142,6 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
-  val COMET_RESPECT_PARQUET_FILTER_PUSHDOWN: ConfigEntry[Boolean] =
-    conf("spark.comet.parquet.respectFilterPushdown")
-      .category(CATEGORY_PARQUET)
-      .doc(
-        "Whether to respect Spark's PARQUET_FILTER_PUSHDOWN_ENABLED config. This needs to be " +
-          "respected when running the Spark SQL test suite but the default setting " +
-          "results in poor performance in Comet when using the new native scans, " +
-          "disabled by default")
-      .booleanConf
-      .createWithDefault(false)
-
   val COMET_PARQUET_PARALLEL_IO_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.parquet.read.parallel.io.enabled")
       .category(CATEGORY_PARQUET)
