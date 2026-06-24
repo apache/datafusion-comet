@@ -122,11 +122,14 @@ class ExtendedExplainInfo extends ExtendedExplainGenerator {
       outString.append(if (lastChildren.last) "+- " else ":- ")
     }
 
+    // Preserve the existing fallback-segment rendering exactly (a defined tag renders
+    // `[COMET: ...]`, even when the reason set is empty) and only add the new info segment, so
+    // this change does not perturb plans that carry no info message.
     val fallback = node.getTagValue(CometExplainInfo.FALLBACK_REASONS)
     val info = node.getTagValue(CometExplainInfo.EXTENSION_INFO)
-    val str = if (fallback.exists(_.nonEmpty) || info.exists(_.nonEmpty)) {
+    val str = if (fallback.nonEmpty || info.exists(_.nonEmpty)) {
       val sb = new StringBuilder(" ").append(node.nodeName)
-      fallback.filter(_.nonEmpty).foreach(v => sb.append(s" [COMET: ${v.mkString(", ")}]"))
+      fallback.foreach(v => sb.append(s" [COMET: ${v.mkString(", ")}]"))
       info.filter(_.nonEmpty).foreach(v => sb.append(s" [COMET-INFO: ${v.mkString(", ")}]"))
       sb.toString()
     } else {
