@@ -117,6 +117,10 @@ under the License.
     <argLine>-ea -Xmx4g -Xss4m ${extraJavaTestArgs}</argLine>
     <shims.majorVerSrc>spark-4.x</shims.majorVerSrc>
     <shims.minorVerSrc>spark-4.1</shims.minorVerSrc>
+    <!-- Source root shared by Spark 4.1 and later. The default build targets Spark 4.1, so this
+         defaults to spark-4.1+; the spark-4.0 and 3.x profiles override it to an empty
+         placeholder (spark-none) so they do not compile these 4.1+ shims. -->
+    <shims.minorPlusVerSrc>spark-4.1+</shims.minorPlusVerSrc>
   </properties>
 
   <dependencyManagement>
@@ -659,6 +663,7 @@ under the License.
         <slf4j.version>2.0.6</slf4j.version>
         <shims.majorVerSrc>spark-3.x</shims.majorVerSrc>
         <shims.minorVerSrc>spark-3.4</shims.minorVerSrc>
+        <shims.minorPlusVerSrc>spark-none</shims.minorPlusVerSrc>
         <java.version>11</java.version>
         <maven.compiler.source>${java.version}</maven.compiler.source>
         <maven.compiler.target>${java.version}</maven.compiler.target>
@@ -677,6 +682,7 @@ under the License.
         <slf4j.version>2.0.7</slf4j.version>
         <shims.majorVerSrc>spark-3.x</shims.majorVerSrc>
         <shims.minorVerSrc>spark-3.5</shims.minorVerSrc>
+        <shims.minorPlusVerSrc>spark-none</shims.minorPlusVerSrc>
         <java.version>11</java.version>
         <maven.compiler.source>${java.version}</maven.compiler.source>
         <maven.compiler.target>${java.version}</maven.compiler.target>
@@ -695,6 +701,7 @@ under the License.
         <slf4j.version>2.0.16</slf4j.version>
         <shims.majorVerSrc>spark-4.x</shims.majorVerSrc>
         <shims.minorVerSrc>spark-4.0</shims.minorVerSrc>
+        <shims.minorPlusVerSrc>spark-none</shims.minorPlusVerSrc>
         <java.version>17</java.version>
         <maven.compiler.source>${java.version}</maven.compiler.source>
         <maven.compiler.target>${java.version}</maven.compiler.target>
@@ -716,6 +723,7 @@ under the License.
         <semanticdb.version>4.13.6</semanticdb.version>
         <slf4j.version>2.0.17</slf4j.version>
         <shims.majorVerSrc>spark-4.x</shims.majorVerSrc>
+        <shims.minorPlusVerSrc>spark-4.1+</shims.minorPlusVerSrc>
         <shims.minorVerSrc>spark-4.1</shims.minorVerSrc>
         <java.version>17</java.version>
         <maven.compiler.source>${java.version}</maven.compiler.source>
@@ -736,6 +744,7 @@ under the License.
         <semanticdb.version>4.13.6</semanticdb.version>
         <slf4j.version>2.0.17</slf4j.version>
         <shims.majorVerSrc>spark-4.x</shims.majorVerSrc>
+        <shims.minorPlusVerSrc>spark-4.1+</shims.minorPlusVerSrc>
         <shims.minorVerSrc>spark-4.2</shims.minorVerSrc>
         <!-- Use jdk17 by default -->
         <java.version>17</java.version>
