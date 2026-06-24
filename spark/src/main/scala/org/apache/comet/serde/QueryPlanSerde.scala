@@ -380,6 +380,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
     classOf[BitOrAgg] -> CometBitOrAgg,
     classOf[BitXorAgg] -> CometBitXOrAgg,
     classOf[BloomFilterAggregate] -> CometBloomFilterAggregate,
+    classOf[CollectList] -> CometCollectList,
     classOf[CollectSet] -> CometCollectSet,
     classOf[Corr] -> CometCorr,
     classOf[Count] -> CometCount,

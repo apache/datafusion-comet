@@ -75,7 +75,7 @@ use datafusion_comet_spark_expr::{
     BloomFilterAgg, BloomFilterMightContain, CsvWriteOptions, EvalMode, SparkArraysZipFunc,
     SparkBloomFilterVersion, SumInteger, ToCsv,
 };
-use datafusion_spark::function::aggregate::collect::SparkCollectSet;
+use datafusion_spark::function::aggregate::collect::{SparkCollectList, SparkCollectSet};
 use iceberg::expr::Bind;
 
 use crate::execution::operators::ExecutionError::GeneralError;
@@ -2557,6 +2557,11 @@ impl PhysicalPlanner {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
                 let func = AggregateUDF::new_from_impl(SparkCollectSet::new());
                 Self::create_aggr_func_expr("collect_set", schema, vec![child], func)
+            }
+            AggExprStruct::CollectList(expr) => {
+                let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
+                let func = AggregateUDF::new_from_impl(SparkCollectList::new());
+                Self::create_aggr_func_expr("collect_list", schema, vec![child], func)
             }
         }
     }

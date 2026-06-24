@@ -39,4 +39,12 @@
 - Spark 3.5.8 (2026-05-26)
 - Spark 4.0.1 (2026-05-26)
 
+## collect_list
+
+- Spark 3.4.3 (audited 2026-06-24): `CollectList` extends `Collect[ArrayBuffer[Any]]`, returns `ArrayType(child.dataType, containsNull = false)`, ignores NULL inputs in `update()` (Hive-compatible semantics), and yields an empty array as `defaultResult`. `nullable = false`. No `checkInputDataTypes` override, so any input type is accepted (including STRUCT, ARRAY, MAP). Registered as both `collect_list` and `array_agg` aliases in `FunctionRegistry`.
+- Spark 3.5.8 (audited 2026-06-24): identical to 3.4.3.
+- Spark 4.0.1 (audited 2026-06-24): only structural change is adding `with UnaryLike[Expression]` to the case class (no behavior change).
+- Spark 4.1.1 (audited 2026-06-24): identical to 4.0.1.
+- Comet implementation: native side delegates to `datafusion_spark::function::aggregate::collect::SparkCollectList`, which wraps `ArrayAggAccumulator` with `ignore_nulls = true` and converts a final NULL accumulator state to an empty array (matching Spark's `defaultResult`). The native return type is `List(Field, containsNull = true)`, while Spark uses `containsNull = false`. Because nulls are filtered before insertion, no nulls actually appear in the array, so this is a schema-shape difference only and tests using `checkSparkAnswerAndOperator` accept it (same pattern already in use for `collect_set`).
+
 [Spark Expression Support]: ../../user-guide/latest/expressions.md
