@@ -50,9 +50,12 @@ trait CometExpressionSerde[T <: Expression] {
   def getCompatibleNotes(): Seq[String] = Seq.empty
 
   /**
-   * Get documentation for usages where this expression may be incompatible with Spark. This is
-   * called from GenerateDocs when generating the Compatibility Guide. Each reason should be
-   * written in Markdown and may span multiple lines.
+   * Get documentation for ways the native implementation of this expression may differ from
+   * Spark. These differences describe the native path specifically. For expressions that have a
+   * native opt-in (see `NativeOptInAvailable`), the default codegen-dispatch path is always
+   * Spark-compatible, so these differences apply only after the user opts into the native path.
+   * This is called from GenerateDocs when generating the Compatibility Guide. Each reason should
+   * be written in Markdown and may span multiple lines.
    *
    * @return
    *   List of reasons, defaulting to an empty list.

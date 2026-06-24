@@ -28,7 +28,7 @@ import org.apache.spark.sql.catalyst.expressions.Cast
 
 import org.apache.comet.CometConf.COMET_ONHEAP_MEMORY_OVERHEAD
 import org.apache.comet.expressions.{CometCast, CometEvalMode}
-import org.apache.comet.serde.{CodegenDispatchFallback, CometAggregateExpressionSerde, CometExpressionSerde, Compatible, Incompatible, QueryPlanSerde, Unsupported}
+import org.apache.comet.serde.{CometAggregateExpressionSerde, CometExpressionSerde, Compatible, Incompatible, NativeOptInAvailable, QueryPlanSerde, Unsupported}
 
 /**
  * Utility for generating markdown documentation from the configs.
@@ -50,28 +50,38 @@ object GenerateDocs {
    *   reasons the native implementation is incompatible with Spark
    * @param unsupportedReasons
    *   cases that Comet does not support
-   * @param codegenDispatch
-   *   whether the serde opts into codegen-dispatch fallback for its incompatible cases, so that
-   *   the expression stays native and Spark-compatible by default instead of falling back to
-   *   Spark
+   * @param nativeOptIn
+   *   whether the serde implements `NativeOptInAvailable`, meaning the expression runs a
+   *   Spark-compatible path by default and the user can opt into a faster native path
+   * @param nativeOptInConfigKey
+   *   the config key the user sets to opt into the native path
    */
   private case class ExprNotes(
       name: String,
       compatibleNotes: Seq[String],
       incompatibleReasons: Seq[String],
       unsupportedReasons: Seq[String],
-      codegenDispatch: Boolean)
+      nativeOptIn: Boolean,
+      nativeOptInConfigKey: String)
 
   private type CategoryNotes = Seq[ExprNotes]
 
   /** Build the documentation notes for a single expression serde. */
-  private def exprNotes(cls: Class[_], serde: CometExpressionSerde[_]): ExprNotes =
+  private def exprNotes(cls: Class[_], serde: CometExpressionSerde[_]): ExprNotes = {
+    val optIn = serde.isInstanceOf[NativeOptInAvailable]
+    val key = serde match {
+      case n: NativeOptInAvailable =>
+        n.nativeOptInConfigKeyOverride.getOrElse(CometConf.getExprAllowIncompatConfigKey(cls))
+      case _ => CometConf.getExprAllowIncompatConfigKey(cls)
+    }
     ExprNotes(
       cls.getSimpleName,
       serde.getCompatibleNotes(),
       serde.getIncompatibleReasons(),
       serde.getUnsupportedReasons(),
-      serde.isInstanceOf[CodegenDispatchFallback])
+      optIn,
+      key)
+  }
 
   /** Build the documentation notes for a single aggregate expression serde. */
   private def aggExprNotes(cls: Class[_], serde: CometAggregateExpressionSerde[_]): ExprNotes =
@@ -80,8 +90,9 @@ object GenerateDocs {
       serde.getCompatibleNotes(),
       serde.getIncompatibleReasons(),
       serde.getUnsupportedReasons(),
-      // Aggregate serdes do not participate in codegen-dispatch fallback.
-      codegenDispatch = false)
+      // Aggregate serdes do not have a native opt-in path.
+      nativeOptIn = false,
+      nativeOptInConfigKey = CometConf.getExprAllowIncompatConfigKey(cls))
 
   /**
    * Mapping from expression category to the compatibility guide filename where that category's
@@ -265,11 +276,10 @@ object GenerateDocs {
         }
       }
       if (n.incompatibleReasons.nonEmpty) {
-        val header = if (n.codegenDispatch) {
-          s"\nBy default, Comet accelerates `$name` using JVM codegen dispatch, which runs" +
-            " Spark's generated code inside Comet's native pipeline and matches Spark exactly." +
-            s" Set `spark.comet.expression.$name.allowIncompatible=true` to use Comet's faster" +
-            " native implementation instead, which has the following differences from Spark:\n\n"
+        val header = if (n.nativeOptIn) {
+          s"\nBy default, Comet runs a Spark-compatible implementation of `$name`. Set" +
+            s" `${n.nativeOptInConfigKey}=true` to use Comet's faster native implementation" +
+            " instead, which has the following differences from Spark:\n\n"
         } else {
           s"\nThe following incompatibilities cause `$name` to fall back to Spark by default." +
             s" Set `spark.comet.expression.$name.allowIncompatible=true` to enable Comet" +

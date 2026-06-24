@@ -1,0 +1,67 @@
+<!---
+Licensed to the Apache Software Foundation (ASF) under one
+or more contributor license agreements.  See the NOTICE file
+distributed with this work for additional information
+regarding copyright ownership.  The ASF licenses this file
+to you under the Apache License, Version 2.0 (the
+"License"); you may not use this file except in compliance
+with the License.  You may obtain a copy of the License at
+
+http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing,
+software distributed under the License is distributed on an
+"AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+KIND, either express or implied.  See the License for the
+specific language governing permissions and limitations
+under the License.
+-->
+
+# Array Expressions
+
+<!--BEGIN:EXPR_COMPAT[array]-->
+
+## ArrayExcept
+
+By default, Comet runs a Spark-compatible implementation of `ArrayExcept`. Set `spark.comet.expression.ArrayExcept.allowIncompatible=true` to use Comet's faster native implementation instead, which has the following differences from Spark:
+
+- Null handling and ordering may differ from Spark
+
+## ArrayIntersect
+
+By default, Comet runs a Spark-compatible implementation of `ArrayIntersect`. Set `spark.comet.expression.ArrayIntersect.allowIncompatible=true` to use Comet's faster native implementation instead, which has the following differences from Spark:
+
+- Result array element order may differ from Spark when the right array is longer than the left (DataFusion probes the longer side).
+
+The following cases are not supported by Comet:
+
+- array_intersect on collated strings is not supported.
+
+## ArrayJoin
+
+By default, Comet runs a Spark-compatible implementation of `ArrayJoin`. Set `spark.comet.expression.ArrayJoin.allowIncompatible=true` to use Comet's faster native implementation instead, which has the following differences from Spark:
+
+- Null handling may differ from Spark
+
+## ArraysZip
+
+The following cases are not supported by Comet:
+
+- Not all input data types are supported; falls back to Spark for unsupported types
+
+## Size
+
+The following cases are not supported by Comet:
+
+- Only supports `ArrayType` input; `MapType` input is not supported
+
+## SortArray
+
+By default, Comet runs a Spark-compatible implementation of `SortArray`. Set `spark.comet.expression.SortArray.allowIncompatible=true` to use Comet's faster native implementation instead, which has the following differences from Spark:
+
+- When `spark.comet.exec.strictFloatingPoint=true`, sorting on floating-point types is not 100% compatible with Spark
+
+The following cases are not supported by Comet:
+
+- Nested arrays with `Struct` or `Null` child values are not supported natively and will fall back to Spark.
+<!--END:EXPR_COMPAT-->
