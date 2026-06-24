@@ -122,10 +122,18 @@ object CometGetArrayStructFields extends CometExpressionSerde[GetArrayStructFiel
  * (unsupported types or options) falls through to the codegen dispatcher via
  * [[CometCodegenDispatch]].
  */
-object CometStructsToJson extends CometCodegenDispatch[StructsToJson] {
+object CometStructsToJson extends CometCodegenDispatch[StructsToJson] with NativeOptInAvailable {
 
   private def nativeSupported(expr: StructsToJson): Boolean =
     expr.options.isEmpty && isSupportedType(expr.child.dataType)
+
+  override def getSupportLevel(expr: StructsToJson): SupportLevel =
+    if (!CometConf.isExprAllowIncompat(getExprConfigName(expr)) && nativeSupported(expr)) {
+      Compatible(nativeOptIn =
+        Some(NativeOptIn(CometConf.getExprAllowIncompatConfigKey(getExprConfigName(expr)))))
+    } else {
+      Compatible()
+    }
 
   override def convert(
       expr: StructsToJson,
@@ -180,10 +188,18 @@ object CometStructsToJson extends CometCodegenDispatch[StructsToJson] {
  * `spark.comet.expression.JsonToStructs.allowIncompatible` and only for schemas it supports; any
  * other case falls through to the codegen dispatcher via [[CometCodegenDispatch]].
  */
-object CometJsonToStructs extends CometCodegenDispatch[JsonToStructs] {
+object CometJsonToStructs extends CometCodegenDispatch[JsonToStructs] with NativeOptInAvailable {
 
   private def nativeSupported(expr: JsonToStructs): Boolean =
     expr.schema != null && isSupportedSchema(expr.schema)
+
+  override def getSupportLevel(expr: JsonToStructs): SupportLevel =
+    if (!CometConf.isExprAllowIncompat(getExprConfigName(expr)) && nativeSupported(expr)) {
+      Compatible(nativeOptIn =
+        Some(NativeOptIn(CometConf.getExprAllowIncompatConfigKey(getExprConfigName(expr)))))
+    } else {
+      Compatible()
+    }
 
   override def convert(
       expr: JsonToStructs,

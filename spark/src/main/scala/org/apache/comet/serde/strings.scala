@@ -661,7 +661,15 @@ object CometRegExpInStr extends CometCodegenDispatch[RegExpInStr]
  * `spark.comet.expression.GetJsonObject.allowIncompatible`; otherwise it rides the codegen
  * dispatcher via [[CometCodegenDispatch]].
  */
-object CometGetJsonObject extends CometCodegenDispatch[GetJsonObject] {
+object CometGetJsonObject extends CometCodegenDispatch[GetJsonObject] with NativeOptInAvailable {
+
+  override def getSupportLevel(expr: GetJsonObject): SupportLevel =
+    if (!CometConf.isExprAllowIncompat(getExprConfigName(expr))) {
+      Compatible(nativeOptIn =
+        Some(NativeOptIn(CometConf.getExprAllowIncompatConfigKey(getExprConfigName(expr)))))
+    } else {
+      Compatible()
+    }
 
   override def convert(
       expr: GetJsonObject,

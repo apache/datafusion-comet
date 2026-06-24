@@ -3290,4 +3290,15 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("date_format shows native opt-in for whitelisted literal format") {
+    withTable("t_datefmt") {
+      spark.sql("create table t_datefmt(ts timestamp) using parquet")
+      spark.sql("insert into t_datefmt values (cast('2024-01-15 10:30:00' as timestamp))")
+      val df = spark.sql("select date_format(ts, 'yyyy') as d from t_datefmt")
+      val explain =
+        new ExtendedExplainInfo().generateExtendedInfo(df.queryExecution.executedPlan)
+      assert(explain.contains("native implementation of DateFormatClass"))
+    }
+  }
+
 }
