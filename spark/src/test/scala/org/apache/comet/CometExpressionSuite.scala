@@ -986,10 +986,11 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     // (the default format). The output must contain [COMET-INFO: ...] with both messages and
     // must NOT contain a [COMET: ...] fallback segment, proving the info channel does not
     // leak into the fallback channel.
-    val rendered = withSQLConf(
+    var rendered = ""
+    withSQLConf(
       CometConf.COMET_EXTENDED_EXPLAIN_FORMAT.key ->
         CometConf.COMET_EXTENDED_EXPLAIN_FORMAT_VERBOSE) {
-      new ExtendedExplainInfo().generateExtendedInfo(node)
+      rendered = new ExtendedExplainInfo().generateExtendedInfo(node)
     }
     assert(
       rendered.contains("[COMET-INFO:"),
