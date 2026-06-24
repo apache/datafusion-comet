@@ -663,6 +663,15 @@ under the License.
 <li><p>Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.</p></li>
 </ul>
 </section>
+<section id="array-prepend">
+<h2>array_prepend<a class="headerlink" href="#array-prepend" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>Spark 3.4.3 (audited 2026-06-24): <code class="docutils literal notranslate"><span class="pre">array_prepend</span></code> does not exist (added in Spark 3.5.0). The SQL file test carries <code class="docutils literal notranslate"><span class="pre">MinSparkVersion:</span> <span class="pre">3.5</span></code> so it is skipped here.</p></li>
+<li><p>Spark 3.5.8 (audited 2026-06-24): <code class="docutils literal notranslate"><span class="pre">ArrayPrepend(left,</span> <span class="pre">right)</span> <span class="pre">extends</span> <span class="pre">RuntimeReplaceable</span></code>; <code class="docutils literal notranslate"><span class="pre">replacement</span> <span class="pre">=</span> <span class="pre">new</span> <span class="pre">ArrayInsert(left,</span> <span class="pre">Literal(1),</span> <span class="pre">right)</span></code>. Comet never sees <code class="docutils literal notranslate"><span class="pre">ArrayPrepend</span></code>; dispatch goes through <code class="docutils literal notranslate"><span class="pre">CometArrayInsert</span></code> (which carries its own notes documented at the <code class="docutils literal notranslate"><span class="pre">array_insert</span></code> entry). NULL array yields NULL, NULL element is prepended. Type coercion casts the array to the tightest common type of element and array element (e.g. <code class="docutils literal notranslate"><span class="pre">array_prepend(array(1,</span> <span class="pre">2),</span> <span class="pre">1.23D)</span></code> -&gt; <code class="docutils literal notranslate"><span class="pre">[1.23,</span> <span class="pre">1.0,</span> <span class="pre">2.0]</span></code>).</p></li>
+<li><p>Spark 4.0.1 (audited 2026-06-24): <code class="docutils literal notranslate"><span class="pre">ArrayPrepend</span></code> now extends <code class="docutils literal notranslate"><span class="pre">ArrayPendBase</span></code> but the <code class="docutils literal notranslate"><span class="pre">replacement</span></code> is unchanged (<code class="docutils literal notranslate"><span class="pre">ArrayInsert(left,</span> <span class="pre">Literal(1),</span> <span class="pre">right)</span></code>).</p></li>
+<li><p>Spark 4.1.1 (audited 2026-06-24): identical to 4.0.1.</p></li>
+</ul>
+</section>
 <section id="array-remove">
 <h2>array_remove<a class="headerlink" href="#array-remove" title="Link to this heading">#</a></h2>
 <ul class="simple">

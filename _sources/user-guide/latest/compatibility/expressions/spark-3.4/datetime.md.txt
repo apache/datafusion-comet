@@ -54,7 +54,7 @@ By default, Comet accelerates `ConvertTimezone` using JVM codegen dispatch, whic
 
 The following differences from Spark are always present and do not require any additional configuration:
 
-- Format strings in a curated allow-list run natively via DataFusion's `to_char` for UTC sessions. Other format strings (including non-literal formats), as well as non-UTC sessions, route through Spark's own `DateFormatClass.doGenCode` via the Arrow-direct codegen dispatcher when `spark.comet.exec.scalaUDF.codegen.enabled=true`. When the codegen dispatcher is disabled (default) the operator falls back to Spark in those cases.
+- Format strings in a curated allow-list run natively via DataFusion's `to_char` for UTC sessions. Other format strings (including non-literal formats), as well as non-UTC sessions, route through Spark's own `DateFormatClass.doGenCode` via the Arrow-direct codegen dispatcher when `spark.comet.exec.scalaUDF.codegen.enabled=true` (the default). When the codegen dispatcher is disabled the operator falls back to Spark in those cases.
 
 ## Days
 
@@ -135,5 +135,5 @@ The following cases are not supported by Comet:
 
 The following cases are not supported by Comet:
 
-- Only `TimestampType` and `DateType` inputs are supported. `TimestampNTZType` is not supported because Comet incorrectly applies timezone conversion to TimestampNTZ values.
+- Only `DateType`, `TimestampType`, and `TimestampNTZType` inputs are supported.
 <!--END:EXPR_COMPAT-->

@@ -110,6 +110,13 @@
 - Spark 4.0.1 (audited 2026-05-27): `NullIntolerant` -> `nullIntolerant` field refactor.
 - Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
 
+## array_prepend
+
+- Spark 3.4.3 (audited 2026-06-24): `array_prepend` does not exist (added in Spark 3.5.0). The SQL file test carries `MinSparkVersion: 3.5` so it is skipped here.
+- Spark 3.5.8 (audited 2026-06-24): `ArrayPrepend(left, right) extends RuntimeReplaceable`; `replacement = new ArrayInsert(left, Literal(1), right)`. Comet never sees `ArrayPrepend`; dispatch goes through `CometArrayInsert` (which carries its own notes documented at the `array_insert` entry). NULL array yields NULL, NULL element is prepended. Type coercion casts the array to the tightest common type of element and array element (e.g. `array_prepend(array(1, 2), 1.23D)` -> `[1.23, 1.0, 2.0]`).
+- Spark 4.0.1 (audited 2026-06-24): `ArrayPrepend` now extends `ArrayPendBase` but the `replacement` is unchanged (`ArrayInsert(left, Literal(1), right)`).
+- Spark 4.1.1 (audited 2026-06-24): identical to 4.0.1.
+
 ## array_remove
 
 - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
