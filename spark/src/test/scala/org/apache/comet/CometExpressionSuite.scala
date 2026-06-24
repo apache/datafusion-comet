@@ -969,6 +969,18 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("withInfo records non-fallback info rendered as COMET-INFO") {
+    import org.apache.comet.CometSparkSessionExtensions.withInfo
+    val df = spark.range(1).toDF("a")
+    val node = df.queryExecution.sparkPlan
+    withInfo(node, "native impl available")
+    withInfo(node, "native impl available") // dedups
+    withInfo(node, "second hint") // accumulates
+    assert(!CometSparkSessionExtensions.hasFallbackReason(node))
+    val info = node.getTagValue(CometExplainInfo.EXTENSION_INFO).get
+    assert(info === Set("native impl available", "second hint"))
+  }
+
   test("withFallbackReason") {
     val table = "with_info"
     withTable(table) {
