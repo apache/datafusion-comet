@@ -149,7 +149,7 @@
 ## element_at
 
 - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
-- Spark 3.5.8 (audited 2026-05-27): baseline. `ElementAt(left, right, defaultValueOutOfBound, failOnError)`; group label `map_funcs`. Comet supports only `ArrayType` input; `MapType` input falls back.
+- Spark 3.5.8 (audited 2026-05-27): baseline. `ElementAt(left, right, defaultValueOutOfBound, failOnError)`; group label `map_funcs`. Comet supports `ArrayType` input through native `ListExtract` and `MapType` input through native `map_extract`.
 - Spark 4.0.1 (audited 2026-05-27): `NullIntolerant` -> `nullIntolerant` field refactor; group label changes to `collection_funcs`; ANSI default flips to `true` so out-of-bound throws by default. Comet wires `failOnError` through to native `ListExtract`.
 - Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
 

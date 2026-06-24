@@ -22,6 +22,7 @@ package org.apache.comet
 import java.io.File
 
 import scala.collection.mutable.ListBuffer
+import scala.jdk.CollectionConverters._
 import scala.util.Random
 
 import org.apache.hadoop.fs.Path
@@ -1465,6 +1466,22 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         }
       }
     }
+
+    val nestedType =
+      StructType(Seq(StructField("long_value", LongType), StructField("bool_value", BooleanType)))
+    val structType = StructType(
+      Seq(
+        StructField("int_value", IntegerType),
+        StructField("string_value", StringType),
+        StructField("nested_value", nestedType)))
+    val schema = StructType(Seq(StructField("a", structType)))
+    val rows = Seq(
+      Row(Row(1, "one", Row(10L, true))),
+      Row(Row(null, "missing-int", Row(-2L, false))),
+      Row(Row(3, null, null)),
+      Row(null))
+
+    castTest(spark.createDataFrame(rows.asJava, schema), StringType)
   }
 
   test("cast StructType to StructType") {
@@ -1479,6 +1496,44 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         }
       }
     }
+
+    val fromNestedType = StructType(Seq(StructField("inner_int", IntegerType)))
+    val fromType = StructType(
+      Seq(
+        StructField("long_value", LongType),
+        StructField("string_value", StringType),
+        StructField("nested_value", fromNestedType)))
+    val toNestedType = StructType(Seq(StructField("renamed_inner_long", LongType)))
+    val toType = StructType(
+      Seq(
+        StructField("renamed_byte", ByteType),
+        StructField("renamed_string", StringType),
+        StructField("renamed_nested", toNestedType)))
+    val schema = StructType(Seq(StructField("a", fromType)))
+    val rows = Seq(
+      Row(Row(1L, "one", Row(10))),
+      Row(Row(127L, null, Row(-20))),
+      Row(Row(null, "missing-long", null)),
+      Row(null))
+
+    castTest(spark.createDataFrame(rows.asJava, schema), toType)
+
+    val overflowFromType = StructType(
+      Seq(StructField("long_value", LongType), StructField("string_value", StringType)))
+    val overflowToType = StructType(
+      Seq(StructField("renamed_byte", ByteType), StructField("renamed_string", StringType)))
+    val overflowSchema = StructType(Seq(StructField("a", overflowFromType)))
+    val overflowRows = Seq(
+      Row(Row(1L, "fits")),
+      Row(Row(128L, "too-large")),
+      Row(Row(-129L, "too-small")),
+      Row(Row(null, "missing-long")),
+      Row(null))
+
+    castTest(
+      spark.createDataFrame(overflowRows.asJava, overflowSchema),
+      overflowToType,
+      expectAnsiFailure = true)
   }
 
   test("cast StructType to StructType with different names") {
@@ -1564,8 +1619,6 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("cast ArrayType to StringType - float double binary edge cases") {
-    import scala.jdk.CollectionConverters._
-
     def bytes(values: Int*): Array[Byte] = values.map(_.toByte).toArray
 
     def arrayInput(elementType: DataType, values: Seq[Any]): DataFrame = {
@@ -1630,6 +1683,19 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       DataTypes.TimestampNTZType,
       BinaryType)
     testArrayCastMatrix(types, ArrayType(_), generateArrays(100, _))
+
+    val schema = StructType(Seq(StructField("a", ArrayType(LongType))))
+    val rows = Seq(
+      Row(Seq[Any](1L, 127L, null)),
+      Row(Seq[Any](128L)),
+      Row(Seq[Any](-129L, 0L)),
+      Row(Seq.empty[Any]),
+      Row(null))
+
+    castTest(
+      spark.createDataFrame(rows.asJava, schema),
+      ArrayType(ByteType),
+      expectAnsiFailure = true)
   }
 
   test("cast MapType to MapType") {
@@ -1639,7 +1705,6 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     // the planner routes Map→Map casts into it. The map column must be read
     // natively for the cast to be exercised by Comet, which only happens
     // under the V1 Parquet scan, so we pin USE_V1_SOURCE_LIST=parquet.
-    import scala.collection.JavaConverters._
     val schema =
       StructType(Seq(StructField("a", MapType(IntegerType, IntegerType), nullable = true)))
     val rows = Range(0, 100).map { i =>
@@ -1837,7 +1902,6 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   private def generateArrays(rowNum: Int, elementType: DataType): DataFrame = {
-    import scala.jdk.CollectionConverters._
     val schema = StructType(Seq(StructField("a", ArrayType(elementType), true)))
     def buildRows(values: Seq[Any]): Seq[Row] = {
       Range(0, rowNum).map { i =>
@@ -1899,7 +1963,6 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   private def generateNestedArrays(rowNum: Int, elementType: DataType): DataFrame = {
-    import scala.jdk.CollectionConverters._
     val schema = StructType(Seq(StructField("a", ArrayType(ArrayType(elementType)), true)))
     val innerArrays = generateArrays(rowNum, elementType)
       .collect()
@@ -2214,6 +2277,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       hasIncompatibleType: Boolean = false,
       testAnsi: Boolean = true,
       testTry: Boolean = true,
+      expectAnsiFailure: Boolean = false,
       useDataFrameDiff: Boolean = false): Unit = {
 
     withTempPath { dir =>
@@ -2261,10 +2325,18 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             .select(col("__row_id"), col("a"), col("a").cast(toType).as("converted"))
             .orderBy(col("__row_id"))
             .drop("__row_id")
+          if (expectAnsiFailure) {
+            assert(!hasIncompatibleType, "Expected ANSI failures must use Comet native execution")
+            checkCometOperators(stripAQEPlan(df.queryExecution.executedPlan))
+          }
           val res = if (useDataFrameDiff) {
             assertDataFrameEqualsWithExceptions(df, assertCometNative = !hasIncompatibleType)
           } else {
             checkSparkAnswerMaybeThrows(df)
+          }
+          if (expectAnsiFailure) {
+            assert(res._1.isDefined, "Expected Spark ANSI cast to fail")
+            assert(res._2.isDefined, "Expected Comet ANSI cast to fail")
           }
           res match {
             case (None, None) =>

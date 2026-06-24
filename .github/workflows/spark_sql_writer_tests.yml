@@ -1,0 +1,154 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+# Manual workflow that exercises Spark's Parquet WRITER test suites with
+# Comet's experimental native Parquet writer enabled (ENABLE_COMET_WRITE=true,
+# spark.comet.parquet.write.enabled). Self-contained — does not call
+# spark_sql_test_reusable.yml — so it can run on feature branches without
+# touching the standard CI matrix.
+#
+# Trigger: workflow_dispatch only. Pick a Spark minor version from the
+# selector and click "Run workflow".
+#
+# Suite list focuses on writer-side coverage: Parquet IO, committer,
+# encoding, compression codec, V1/V2 file format, V1/V2 query, V1/V2
+# partition discovery, field IDs, schema; plus the generic writer
+# infrastructure (FileFormatWriterSuite, PartitionedWriteSuite). Reader-only
+# Parquet suites (ParquetV{1,2}FilterSuite, *SchemaPruningSuite, etc.) are
+# intentionally excluded — they're already covered by the sql_core-* lanes.
+
+name: Spark SQL Writer Tests (manual)
+
+on:
+  workflow_dispatch:
+    inputs:
+      spark-version:
+        description: 'Spark minor version to test against'
+        type: choice
+        required: true
+        default: '3.5'
+        options:
+          - '3.5'
+          - '4.1'
+
+env:
+  RUST_VERSION: stable
+  RUST_BACKTRACE: 1
+  # Force GNU ld on Linux: recent Rust stable defaults to rust-lld on
+  # x86_64-unknown-linux-gnu, and rust-lld cannot resolve -ljvm against the
+  # Zulu JDK layout installed by setup-java. Keep bfd for all cargo invocations.
+  RUSTFLAGS: "-Clink-arg=-fuse-ld=bfd"
+
+jobs:
+  writer-test:
+    name: spark-sql-writer/spark-${{ inputs.spark-version }}
+    runs-on: ubuntu-24.04
+    container:
+      image: amd64/rust
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Resolve Spark full version and JDK
+        id: resolve
+        shell: bash
+        run: |
+          # Map each supported Spark minor version to its full version + JDK.
+          # Mirrors ci.yml's per-version reusable invocations (default-on PR
+          # versions only; 3.4 and 4.0 are label-gated and not offered here).
+          case "${{ inputs.spark-version }}" in
+            3.5) spark_full=3.5.8; java=17 ;;
+            4.1) spark_full=4.1.2; java=17 ;;
+            *) echo "Unsupported spark-version: ${{ inputs.spark-version }}" >&2; exit 1 ;;
+          esac
+          echo "spark-full=$spark_full" >> "$GITHUB_OUTPUT"
+          echo "java=$java" >> "$GITHUB_OUTPUT"
+
+      - name: Setup Rust & Java toolchain
+        uses: ./.github/actions/setup-builder
+        with:
+          rust-version: ${{ env.RUST_VERSION }}
+          jdk-version: ${{ steps.resolve.outputs.java }}
+
+      - name: Restore Cargo cache
+        uses: actions/cache/restore@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            native/target
+          key: ${{ runner.os }}-cargo-ci-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}-${{ hashFiles('native/**/*.rs') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-ci-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml') }}-
+
+      - name: Build native library (CI profile)
+        run: |
+          cd native
+          cargo build --profile ci
+        env:
+          RUSTFLAGS: "-Ctarget-cpu=x86-64-v3 -Clink-arg=-fuse-ld=bfd"
+
+      - name: Stage native library at release path
+        run: |
+          # setup-spark-builder's `mvnw install -DskipTests` (skip-native-build
+          # path) bundles native/target/release/libcomet.so into the Comet JAR.
+          # We built with --profile ci to avoid LTO, so the file lives at
+          # native/target/ci/. Copy it to where the Maven build expects it.
+          mkdir -p native/target/release
+          cp native/target/ci/libcomet.so native/target/release/libcomet.so
+
+      - name: Setup Spark
+        uses: ./.github/actions/setup-spark-builder
+        with:
+          spark-version: ${{ steps.resolve.outputs.spark-full }}
+          spark-short-version: ${{ inputs.spark-version }}
+          skip-native-build: true
+
+      - name: Run Parquet writer tests
+        run: |
+          cd apache-spark
+          rm -rf /root/.m2/repository/org/apache/parquet # somehow parquet cache requires cleanups
+          # SERIAL_SBT_TESTS gates SparkParallelTestGrouping in
+          # project/SparkBuild.scala. We always set it to reduce peak memory
+          # on standard 7 GB runners (3.5 and 4.1 are unaffected by the
+          # 4.0+JDK 21 file-stream-leak case the reusable workflow handles).
+          export SERIAL_SBT_TESTS=1
+          # Same forked-test-JVM caps as sql_core-* in spark_sql_test_reusable.yml.
+          export HEAP_SIZE=3g
+          export METASPACE_SIZE=1g
+          NOLINT_ON_COMPILE=true ENABLE_COMET=true ENABLE_COMET_ONHEAP=true ENABLE_COMET_WRITE=true \
+            build/sbt -Dsbt.log.noformat=true -mem $SBT_MEM \
+              'set Global / concurrentRestrictions := Seq(Tags.limit(Tags.ForkedTestGroup, 1))' \
+              "sql/testOnly org.apache.spark.sql.execution.datasources.parquet.ParquetIOSuite org.apache.spark.sql.execution.datasources.parquet.ParquetCommitterSuite org.apache.spark.sql.execution.datasources.parquet.ParquetEncodingSuite org.apache.spark.sql.execution.datasources.parquet.ParquetCompressionCodecPrecedenceSuite org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormatV1Suite org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormatV2Suite org.apache.spark.sql.execution.datasources.parquet.ParquetV1QuerySuite org.apache.spark.sql.execution.datasources.parquet.ParquetV2QuerySuite org.apache.spark.sql.execution.datasources.parquet.ParquetV1PartitionDiscoverySuite org.apache.spark.sql.execution.datasources.parquet.ParquetV2PartitionDiscoverySuite org.apache.spark.sql.execution.datasources.parquet.ParquetFieldIdIOSuite org.apache.spark.sql.execution.datasources.parquet.ParquetSchemaSuite org.apache.spark.sql.execution.datasources.FileFormatWriterSuite org.apache.spark.sql.sources.PartitionedWriteSuite"
+        env:
+          LC_ALL: "C.UTF-8"
+          # Cap SBT orchestrator heap so the freed RAM goes to the forked test
+          # JVM and OS/container overhead, fixing cgroup-OOM SIGKILLs under
+          # 7 GB runners.
+          SBT_MEM: "1024"
+          # G1GC + tuning for the SBT orchestrator JVM. -Xss4m replaces the
+          # launcher's -Xss64m default (no compile here, deep recursion not
+          # needed). UseStringDeduplication and MaxMetaspaceSize cap real and
+          # ceiling footprint. ExitOnOutOfMemoryError fails fast.
+          SBT_OPTS: >-
+            -Xss4m
+            -XX:+UseG1GC
+            -XX:+UseStringDeduplication
+            -XX:MaxMetaspaceSize=384m
+            -XX:G1HeapRegionSize=2m
+            -XX:InitiatingHeapOccupancyPercent=35
+            -XX:+ParallelRefProcEnabled
+            -XX:+ExitOnOutOfMemoryError
