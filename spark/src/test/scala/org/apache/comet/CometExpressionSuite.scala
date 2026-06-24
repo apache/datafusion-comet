@@ -976,9 +976,33 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     withInfo(node, "native impl available")
     withInfo(node, "native impl available") // dedups
     withInfo(node, "second hint") // accumulates
+
+    // Tag-level assertions: no fallback, correct info set.
     assert(!CometSparkSessionExtensions.hasFallbackReason(node))
     val info = node.getTagValue(CometExplainInfo.EXTENSION_INFO).get
     assert(info === Set("native impl available", "second hint"))
+
+    // Renderer assertions: the SAME node is rendered by ExtendedExplainInfo in verbose mode
+    // (the default format). The output must contain [COMET-INFO: ...] with both messages and
+    // must NOT contain a [COMET: ...] fallback segment, proving the info channel does not
+    // leak into the fallback channel.
+    val rendered = withSQLConf(
+      CometConf.COMET_EXTENDED_EXPLAIN_FORMAT.key ->
+        CometConf.COMET_EXTENDED_EXPLAIN_FORMAT_VERBOSE) {
+      new ExtendedExplainInfo().generateExtendedInfo(node)
+    }
+    assert(
+      rendered.contains("[COMET-INFO:"),
+      s"Expected [COMET-INFO: in rendered output: $rendered")
+    assert(
+      rendered.contains("native impl available"),
+      s"Expected message text in rendered output: $rendered")
+    assert(
+      rendered.contains("second hint"),
+      s"Expected second message in rendered output: $rendered")
+    assert(
+      !rendered.contains("[COMET: "),
+      s"Expected no [COMET: fallback segment in rendered output: $rendered")
   }
 
   test("withFallbackReason") {
