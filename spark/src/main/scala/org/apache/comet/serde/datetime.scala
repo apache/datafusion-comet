@@ -671,6 +671,9 @@ object CometTruncTimestamp
  */
 object CometDateFormat extends CometExpressionSerde[DateFormatClass] with NativeOptInAvailable {
 
+  override def getIncompatibleReasons(): Seq[String] =
+    Seq("Non-UTC timezones may produce different results than Spark")
+
   /**
    * Mapping from Spark SimpleDateFormat patterns to strftime patterns. Only formats in this map
    * are supported by the native path.

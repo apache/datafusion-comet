@@ -53,6 +53,9 @@ class CometCaseConversionBase[T <: Expression](function: String)
     extends CometScalarFunction[T](function)
     with NativeOptInAvailable {
 
+  override def getIncompatibleReasons(): Seq[String] =
+    Seq("Results can vary depending on locale and character set")
+
   override def nativeOptInConfigKeyOverride: Option[String] =
     Some(CometConf.COMET_CASE_CONVERSION_ENABLED.key)
 
@@ -121,6 +124,12 @@ object CometStringTranslate extends CometScalarFunction[StringTranslate]("transl
 
 object CometInitCap extends CometScalarFunction[InitCap]("initcap") with NativeOptInAvailable {
 
+  override def getIncompatibleReasons(): Seq[String] =
+    Seq(
+      "Treats hyphen as a word separator (e.g. `robert rose-smith` produces `Robert Rose-Smith`" +
+        " instead of Spark's `Robert Rose-smith`)" +
+        " (https://github.com/apache/datafusion-comet/issues/1052)")
+
   override def getSupportLevel(expr: InitCap): SupportLevel =
     if (!CometConf.isExprAllowIncompat(getExprConfigName(expr))) {
       Compatible(nativeOptIn =
@@ -147,6 +156,9 @@ object CometInitCap extends CometScalarFunction[InitCap]("initcap") with NativeO
 object CometStringReplace
     extends CometScalarFunction[StringReplace]("replace")
     with NativeOptInAvailable {
+
+  override def getIncompatibleReasons(): Seq[String] =
+    Seq("Native and JVM results may differ for some inputs")
 
   override def getSupportLevel(expr: StringReplace): SupportLevel =
     if (!CometConf.isExprAllowIncompat(getExprConfigName(expr))) {
@@ -395,6 +407,9 @@ object CometLike extends CometExpressionSerde[Like] {
  */
 object CometRLike extends CometExpressionSerde[RLike] with NativeOptInAvailable {
 
+  override def getIncompatibleReasons(): Seq[String] =
+    Seq("Uses Rust regexp engine, which has different behavior to Java regexp engine")
+
   private def nativeApplicable(expr: RLike): Boolean = expr.right match {
     case Literal(_, DataTypes.StringType) => true
     case _ => false
@@ -569,6 +584,9 @@ object CometRegExpExtractAll extends CometExpressionSerde[RegExpExtractAll] {
  */
 object CometRegExpReplace extends CometExpressionSerde[RegExpReplace] with NativeOptInAvailable {
 
+  override def getIncompatibleReasons(): Seq[String] =
+    Seq("Regexp pattern may not be compatible with Spark")
+
   private def nativeSupported(expr: RegExpReplace): Boolean = expr.pos match {
     case Literal(value, DataTypes.IntegerType) if value == 1 => true
     case _ => false
@@ -619,6 +637,9 @@ object CometRegExpReplace extends CometExpressionSerde[RegExpReplace] with Nativ
  */
 object CometStringSplit extends CometExpressionSerde[StringSplit] with NativeOptInAvailable {
 
+  override def getIncompatibleReasons(): Seq[String] =
+    Seq("Regex engine differences between Java and Rust")
+
   override def getSupportLevel(expr: StringSplit): SupportLevel =
     if (!CometConf.isExprAllowIncompat(getExprConfigName(expr))) {
       Compatible(nativeOptIn =
@@ -662,6 +683,11 @@ object CometRegExpInStr extends CometCodegenDispatch[RegExpInStr]
  * dispatcher via [[CometCodegenDispatch]].
  */
 object CometGetJsonObject extends CometCodegenDispatch[GetJsonObject] with NativeOptInAvailable {
+
+  override def getIncompatibleReasons(): Seq[String] =
+    Seq(
+      "Spark allows single-quoted JSON and unescaped control characters" +
+        " which Comet does not support")
 
   override def getSupportLevel(expr: GetJsonObject): SupportLevel =
     if (!CometConf.isExprAllowIncompat(getExprConfigName(expr))) {

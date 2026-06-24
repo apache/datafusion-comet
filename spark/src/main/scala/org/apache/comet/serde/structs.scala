@@ -124,6 +124,11 @@ object CometGetArrayStructFields extends CometExpressionSerde[GetArrayStructFiel
  */
 object CometStructsToJson extends CometCodegenDispatch[StructsToJson] with NativeOptInAvailable {
 
+  override def getIncompatibleReasons(): Seq[String] =
+    Seq(
+      "Does not support `+Infinity` and `-Infinity` for numeric types (float, double)." +
+        " (https://github.com/apache/datafusion-comet/issues/3016)")
+
   private def nativeSupported(expr: StructsToJson): Boolean =
     expr.options.isEmpty && isSupportedType(expr.child.dataType)
 
@@ -189,6 +194,9 @@ object CometStructsToJson extends CometCodegenDispatch[StructsToJson] with Nativ
  * other case falls through to the codegen dispatcher via [[CometCodegenDispatch]].
  */
 object CometJsonToStructs extends CometCodegenDispatch[JsonToStructs] with NativeOptInAvailable {
+
+  override def getIncompatibleReasons(): Seq[String] =
+    Seq("Partially implemented and not comprehensively tested")
 
   private def nativeSupported(expr: JsonToStructs): Boolean =
     expr.schema != null && isSupportedSchema(expr.schema)

@@ -56,6 +56,10 @@ The following differences from Spark are always present and do not require any a
 
 - Format strings in a curated allow-list run natively via DataFusion's `to_char` for UTC sessions. Other format strings (including non-literal formats), as well as non-UTC sessions, route through Spark's own `DateFormatClass.doGenCode` via the Arrow-direct codegen dispatcher when `spark.comet.exec.scalaUDF.codegen.enabled=true`. When the codegen dispatcher is disabled (default) the operator falls back to Spark in those cases.
 
+By default, Comet runs a Spark-compatible implementation of `DateFormatClass`. Set `spark.comet.expression.DateFormatClass.allowIncompatible=true` to use Comet's faster native implementation instead, which has the following differences from Spark:
+
+- Non-UTC timezones may produce different results than Spark
+
 ## Days
 
 The following cases are not supported by Comet:

@@ -36,6 +36,11 @@ object CometLengthOfJsonArray
     extends CometCodegenDispatch[LengthOfJsonArray]
     with NativeOptInAvailable {
 
+  override def getIncompatibleReasons(): Seq[String] =
+    Seq(
+      "The native implementation is incompatible with Spark for single-quoted JSON," +
+        " unescaped control characters, and trailing content")
+
   override def getSupportLevel(expr: LengthOfJsonArray): SupportLevel =
     if (!CometConf.isExprAllowIncompat(getExprConfigName(expr))) {
       Compatible(nativeOptIn =
