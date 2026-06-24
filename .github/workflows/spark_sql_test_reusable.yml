@@ -212,12 +212,8 @@ jobs:
         run: |
           cd apache-spark
           rm -rf /root/.m2/repository/org/apache/parquet # somehow parquet cache requires cleanups
-          # set SBTOPTS 
-          case "${{ inputs.spark-short }}" in
-            4.0|4.1)
-              printf -- '-J-Xms1g\n-J-Xmx4g\n-J-XX:MaxMetaspaceSize=1g\n' > .sbtopts
-              ;;
-          esac
+          # set SBTOPTS
+          printf -- '-J-Xms1g\n-J-Xmx4g\n-J-XX:MaxMetaspaceSize=1g\n' > .sbtopts
           export SERIAL_SBT_TESTS=1
 
           # Per-row forked-test-JVM caps (read by Spark's SparkBuild.scala). 

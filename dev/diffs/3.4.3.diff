@@ -2996,7 +2996,7 @@ index ed2e309fa07..0658bfe9e12 100644
 +        .set("spark.shuffle.manager",
 +          "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
 +        .set("spark.comet.exec.shuffle.enabled", "true")
-+        .set("spark.comet.memoryOverhead", "3g")
++        .set("spark.comet.memoryOverhead", "4g")
 +    }
      conf.set(
        StaticSQLConf.WAREHOUSE_PATH,
