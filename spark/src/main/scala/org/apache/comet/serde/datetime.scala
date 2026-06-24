@@ -313,9 +313,7 @@ object CometSecond extends CometExpressionSerde[Second] with CodegenDispatchFall
 object CometUnixTimestamp extends CometExpressionSerde[UnixTimestamp] {
 
   override def getUnsupportedReasons(): Seq[String] = Seq(
-    "Only `TimestampType` and `DateType` inputs are supported." +
-      " `TimestampNTZType` is not supported because Comet incorrectly applies timezone" +
-      " conversion to TimestampNTZ values.")
+    "Only `DateType`, `TimestampType`, and `TimestampNTZType` inputs are supported.")
 
   private def isSupportedInputType(expr: UnixTimestamp): Boolean = {
     expr.children.head.dataType match {
@@ -716,9 +714,8 @@ object CometDateFormat extends CometExpressionSerde[DateFormatClass] {
     "Format strings in a curated allow-list run natively via DataFusion's `to_char` for UTC " +
       "sessions. Other format strings (including non-literal formats), as well as non-UTC " +
       "sessions, route through Spark's own `DateFormatClass.doGenCode` via the Arrow-direct " +
-      "codegen dispatcher when `spark.comet.exec.scalaUDF.codegen.enabled=true`. When the " +
-      "codegen dispatcher is disabled (default) the operator falls back to Spark in those " +
-      "cases.")
+      "codegen dispatcher when `spark.comet.exec.scalaUDF.codegen.enabled=true` (the default). " +
+      "When the codegen dispatcher is disabled the operator falls back to Spark in those cases.")
 
   override def convert(
       expr: DateFormatClass,
