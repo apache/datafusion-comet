@@ -107,4 +107,14 @@ trait CometExpressionSerde[T <: Expression] {
  * Enrollment is opt-in: only serdes that explicitly mix this in are routed through the
  * dispatcher. Every other `Incompatible` expression falls back to Spark.
  */
-trait CodegenDispatchFallback { self: CometExpressionSerde[_] => }
+trait CodegenDispatchFallback extends NativeOptInAvailable { self: CometExpressionSerde[_] => }
+
+/**
+ * Doc-facing marker for serdes that run a Spark-compatible path by default but have a faster
+ * native implementation the user can opt into. `GenerateDocs` uses this to render the
+ * compatible-by-default header, and the gating config key is the per-expression
+ * `allowIncompatible` key unless `nativeOptInConfigKeyOverride` supplies a different one.
+ */
+trait NativeOptInAvailable { self: CometExpressionSerde[_] =>
+  def nativeOptInConfigKeyOverride: Option[String] = None
+}

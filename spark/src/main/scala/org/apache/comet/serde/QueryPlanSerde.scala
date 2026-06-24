@@ -663,7 +663,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
                   s"${CometConf.COMPAT_GUIDE}.")
               None
             }
-          case Compatible(notes) =>
+          case Compatible(notes, _) =>
             if (notes.isDefined) {
               logWarning(s"Comet supports $fn but has notes: ${notes.get}")
             }
@@ -800,7 +800,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
               None
             }
           }
-        case Compatible(notes) =>
+        case Compatible(notes, _) =>
           if (notes.isDefined) {
             logWarning(s"Comet supports $expr but has notes: ${notes.get}")
           }

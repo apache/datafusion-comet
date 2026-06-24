@@ -767,7 +767,7 @@ case class CometExecRule(session: SparkSession)
                 s"${CometConf.COMPAT_GUIDE}.")
             false
           }
-        case Compatible(notes) =>
+        case Compatible(notes, _) =>
           if (notes.isDefined) {
             logWarning(s"Comet supports $opName but has notes: ${notes.get}")
           }

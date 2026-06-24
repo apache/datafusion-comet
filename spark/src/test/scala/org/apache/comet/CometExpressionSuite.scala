@@ -3236,4 +3236,15 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("NativeOptIn message and Compatible field") {
+    import org.apache.comet.serde.{Compatible, NativeOptIn}
+    val key = "spark.comet.expression.RLike.allowIncompatible"
+    val msg = NativeOptIn.message("RLike", key)
+    assert(msg.contains("native implementation of RLike"))
+    assert(msg.contains(key))
+    val level = Compatible(nativeOptIn = Some(NativeOptIn(key)))
+    assert(level.nativeOptIn.contains(NativeOptIn(key)))
+    assert(Compatible().nativeOptIn.isEmpty)
+  }
+
 }

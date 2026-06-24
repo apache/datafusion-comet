@@ -323,7 +323,7 @@ object GenerateDocs {
         } else {
           val supportLevel = CometCast.isSupported(fromType, toType, None, mode)
           supportLevel match {
-            case Compatible(notes) =>
+            case Compatible(notes, _) =>
               notes.filter(_.trim.nonEmpty).foreach { note =>
                 annotations += ((fromTypeName, toTypeName, note.trim.replace("(10,2)", "")))
               }
