@@ -392,7 +392,7 @@ index 0d807aeae4d..6d7744e771b 100644
  
        withTempView("t0", "t1", "t2") {
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/DataFrameAggregateSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/DataFrameAggregateSuite.scala
-index bfe15b33768..55c23a38ccc 100644
+index bfe15b33768..c391a9e1790 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/DataFrameAggregateSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/DataFrameAggregateSuite.scala
 @@ -31,7 +31,7 @@ import org.apache.spark.sql.errors.DataTypeErrors.toSQLId
@@ -404,7 +404,21 @@ index bfe15b33768..55c23a38ccc 100644
  import org.apache.spark.sql.expressions.Window
  import org.apache.spark.sql.functions._
  import org.apache.spark.sql.internal.SQLConf
-@@ -856,7 +856,7 @@ class DataFrameAggregateSuite extends QueryTest
+@@ -834,7 +834,12 @@ class DataFrameAggregateSuite extends QueryTest
+   }
+ 
+   test("SPARK-22223: ObjectHashAggregate should not introduce unnecessary shuffle") {
+-    withSQLConf(SQLConf.USE_OBJECT_HASH_AGG.key -> "true") {
++    withSQLConf(
++        SQLConf.USE_OBJECT_HASH_AGG.key -> "true",
++        // Comet runs collect_list/collect_set natively (CometHashAggregateExec), so the
++        // ObjectHashAggregateExec this test asserts on is no longer present. Disable Comet
++        // to preserve the original plan-shape assertions.
++        "spark.comet.enabled" -> "false") {
+       val df = Seq(("1", "2", 1), ("1", "2", 2), ("2", "3", 3), ("2", "3", 4)).toDF("a", "b", "c")
+         .repartition(col("a"))
+ 
+@@ -856,7 +861,7 @@ class DataFrameAggregateSuite extends QueryTest
        assert(objHashAggPlans.nonEmpty)
  
        val exchangePlans = collect(aggPlan) {

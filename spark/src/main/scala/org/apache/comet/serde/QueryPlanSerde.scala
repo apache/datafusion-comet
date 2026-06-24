@@ -414,6 +414,22 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
     }
   }
 
+  /**
+   * Returns true if any aggregate function produces a native intermediate buffer whose Arrow type
+   * (e.g. ArrayType for CollectList/CollectSet) differs from the BinaryType that Spark declares
+   * for its serialized TypedImperativeAggregate buffer. Comet cannot interpret Spark's Binary
+   * buffer for these functions, and cannot yet represent the buffer consistently across the
+   * intermediate PartialMerge stages of a multi-stage aggregate (issue #4724). Such aggregates
+   * are therefore only safe to run natively when every stage runs in Comet and there are at most
+   * two stages (Partial + Final).
+   */
+  def hasIncompatibleBufferAgg(aggExprs: Seq[AggregateExpression]): Boolean = {
+    aggExprs.exists(_.aggregateFunction match {
+      case _: CollectList | _: CollectSet => true
+      case _ => false
+    })
+  }
+
   //  A unique id for each expression. ~used to look up QueryContext during error creation.
   private val exprIdCounter = new AtomicLong(0)
 

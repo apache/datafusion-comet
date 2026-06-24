@@ -48,6 +48,33 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   override protected def sparkConf: SparkConf =
     super.sparkConf.set(SQLConf.ANSI_ENABLED.key, "false")
 
+  test("collect_list/collect_set combined with distinct aggregate falls back safely") {
+    // SPARK-17616: a distinct aggregate combined with collect_list/collect_set produces a
+    // multi-stage plan where the buffer-producing Partial may run in Spark (e.g. over a
+    // non-native LocalTableScan). Comet cannot read Spark's serialized Binary buffer, so the
+    // dependent PartialMerge/Final stages must also fall back rather than crash. See issue #4724
+    // for enabling the fully-native distinct path.
+    import org.apache.spark.sql.functions.{collect_list, collect_set, sort_array}
+    // Non-native source (LocalTableScan): the buffer-producing Partial runs in Spark.
+    val df = Seq((1, 3, "a"), (1, 2, "b"), (3, 4, "c"), (3, 4, "c"), (3, 5, "d"))
+      .toDF("x", "y", "z")
+    checkSparkAnswer(
+      df.groupBy(col("x")).agg(count_distinct(col("y")), sort_array(collect_list(col("z")))))
+    checkSparkAnswer(
+      df.groupBy(col("x")).agg(count_distinct(col("y")), sort_array(collect_set(col("z")))))
+
+    // Native source (Parquet): the whole multi-stage distinct chain must still fall back to
+    // Spark consistently (issue #4724), rather than running a fully-native pipeline that crashes.
+    withParquetTable(
+      Seq((1, 3, "a"), (1, 2, "b"), (3, 4, "c"), (3, 4, "c"), (3, 5, "d")),
+      "t17616") {
+      for (fn <- Seq("collect_list", "collect_set")) {
+        checkSparkAnswer(
+          sql(s"SELECT _1, count(distinct _2), sort_array($fn(_3)) FROM t17616 GROUP BY _1"))
+      }
+    }
+  }
+
   test("min/max floating point with negative zero") {
     val r = new Random(42)
     val schema = StructType(

@@ -23,7 +23,7 @@ import scala.collection.mutable.ListBuffer
 
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.expressions.{Divide, DoubleLiteral, EqualNullSafe, EqualTo, Expression, FloatLiteral, GreaterThan, GreaterThanOrEqual, KnownFloatingPointNormalized, LessThan, LessThanOrEqual, NamedExpression, Remainder}
-import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateMode, Final, Partial}
+import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateMode, Final, Partial, PartialMerge}
 import org.apache.spark.sql.catalyst.optimizer.NormalizeNaNAndZero
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.trees.TreeNodeTag
@@ -833,6 +833,24 @@ case class CometExecRule(session: SparkSession)
                 CometExecRule.COMET_UNSAFE_PARTIAL,
                 "Partial aggregate disabled: corresponding final aggregate " +
                   "cannot be converted to Comet and intermediate buffer formats are incompatible")
+            }
+          }
+        }
+
+        // CollectList/CollectSet round-trip an ArrayType buffer that Spark declares as BinaryType.
+        // In a multi-stage aggregate with a PartialMerge stage (e.g. Spark's distinct-aggregate
+        // rewrite), Comet cannot represent that buffer consistently across the intermediate stages
+        // (issue #4724), so a fully-native pipeline crashes. Force the whole chain to fall back to
+        // Spark by tagging the feeding pure-Partial; the PartialMerge/Final stages then fall back
+        // via the buffer-source check in doConvert.
+        if (agg.aggregateExpressions.exists(_.mode == PartialMerge) &&
+          QueryPlanSerde.hasIncompatibleBufferAgg(agg.aggregateExpressions)) {
+          findPartialAggInPlan(agg.child).foreach { partial =>
+            if (canAggregateBeConverted(partial, Partial)) {
+              partial.setTagValue(
+                CometExecRule.COMET_UNSAFE_PARTIAL,
+                "Partial aggregate disabled: part of a multi-stage CollectList/CollectSet " +
+                  "aggregate whose intermediate buffer cannot round-trip in Comet (issue #4724)")
             }
           }
         }

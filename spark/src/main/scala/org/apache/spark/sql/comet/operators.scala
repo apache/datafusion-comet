@@ -1547,6 +1547,21 @@ trait CometBaseAggregate {
       return None
     }
 
+    // CollectList/CollectSet declare their buffer as BinaryType in Spark but produce a native
+    // ArrayType state. A PartialMerge (or multi-mode) stage consuming that buffer can only read it
+    // when an upstream Comet partial produced it; if the buffer came from a Spark partial (no Comet
+    // partial in the child subtree), Comet cannot interpret Spark's serialized Binary buffer and
+    // must fall back. The matching Partial is forced to fall back too (see CometExecRule), so the
+    // whole multi-stage chain runs consistently in one engine. See issue #4724.
+    if (modes.contains(PartialMerge) &&
+      QueryPlanSerde.hasIncompatibleBufferAgg(aggregate.aggregateExpressions) &&
+      findCometPartialAgg(aggregate.child).isEmpty) {
+      withFallbackReason(
+        aggregate,
+        "CollectList/CollectSet PartialMerge cannot read a Spark-produced intermediate buffer")
+      return None
+    }
+
     // Check if this aggregate has been tagged as unsafe for mixed execution
     // (Comet partial + Spark final with incompatible intermediate buffers)
     val unsafeReason = aggregate.getTagValue(CometExecRule.COMET_UNSAFE_PARTIAL)
