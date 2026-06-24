@@ -44,9 +44,49 @@ SELECT percentile(i, 0.5) FROM test_percentile
 query
 SELECT percentile(v, 0.5) FROM test_percentile WHERE v IS NULL
 
--- unsupported forms fall back to Spark cleanly
-query expect_fallback(an array of percentages is not supported)
+-- median is a RuntimeReplaceable that rewrites to percentile(col, 0.5), so it also runs natively
+query
+SELECT median(v) FROM test_percentile
+
+query
+SELECT g, median(i) FROM test_percentile GROUP BY g ORDER BY g
+
+-- ============================================================
+-- Other numeric input types (all cast to double, matching Spark)
+-- ============================================================
+
+statement
+CREATE TABLE test_percentile_types(l bigint, f float, d decimal(10, 2), s smallint, b tinyint) USING parquet
+
+statement
+INSERT INTO test_percentile_types VALUES
+  (1, 1.5, 1.25, 1, 1), (2, 2.5, 2.50, 2, 2), (3, 3.5, 3.75, 3, 3), (4, 4.5, 4.00, 4, 4)
+
+query
+SELECT percentile(l, 0.5), percentile(f, 0.5), percentile(d, 0.5), percentile(s, 0.5), percentile(b, 0.5) FROM test_percentile_types
+
+query
+SELECT percentile(l, 0.25), percentile(f, 0.75) FROM test_percentile_types
+
+-- ============================================================
+-- Negative values and special float values
+-- ============================================================
+
+statement
+CREATE TABLE test_percentile_neg(v double) USING parquet
+
+statement
+INSERT INTO test_percentile_neg VALUES (-10.0), (-5.0), (0.0), (5.0), (10.0)
+
+query
+SELECT percentile(v, 0.5), percentile(v, 0.1), percentile(v, 0.9) FROM test_percentile_neg
+
+-- ============================================================
+-- Unsupported forms fall back to Spark cleanly
+-- ============================================================
+
+query expect_fallback(An array of percentages is not supported.)
 SELECT percentile(v, array(0.25, 0.5, 0.75)) FROM test_percentile
 
-query expect_fallback(a frequency argument is not supported)
+query expect_fallback(A frequency argument is not supported.)
 SELECT percentile(v, 0.5, 2) FROM test_percentile

@@ -24,7 +24,7 @@ import scala.jdk.CollectionConverters._
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Literal}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, Average, BitAndAgg, BitOrAgg, BitXorAgg, BloomFilterAggregate, CentralMomentAgg, CollectSet, Corr, Count, Covariance, CovPopulation, CovSample, First, Last, Max, Min, Percentile, StddevPop, StddevSamp, Sum, VariancePop, VarianceSamp}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{ByteType, DataTypes, DecimalType, DoubleType, IntegerType, LongType, NumericType, ShortType, StringType}
+import org.apache.spark.sql.types.{ByteType, DecimalType, DoubleType, IntegerType, LongType, NumericType, ShortType, StringType}
 
 import org.apache.comet.CometConf.COMET_EXEC_STRICT_FLOATING_POINT
 import org.apache.comet.CometSparkSessionExtensions.{isSpark41Plus, withFallbackReason}
@@ -594,24 +594,44 @@ object CometStddevPop extends CometAggregateExpressionSerde[StddevPop] with Come
 
 object CometPercentile extends CometAggregateExpressionSerde[Percentile] {
 
+  private val arrayOfPercentagesReason = "An array of percentages is not supported."
+  private val nonLiteralPercentageReason = "The percentage argument must be a literal."
+  private val frequencyReason = "A frequency argument is not supported."
+  // `reverse` is set when `percentile_cont`/`percentile_disc` is used with
+  // `WITHIN GROUP (ORDER BY ... DESC)` on Spark 4.0+. The native `percentile_cont` always
+  // interpolates in ascending order, so the descending form would return a wrong answer.
+  private val descendingReason =
+    "Descending order in `WITHIN GROUP (ORDER BY ... DESC)` is not supported."
+  private val inputTypeReason = "Only numeric input types are supported."
+
+  override def getUnsupportedReasons(): Seq[String] = Seq(
+    arrayOfPercentagesReason,
+    nonLiteralPercentageReason,
+    frequencyReason,
+    descendingReason,
+    inputTypeReason)
+
   override def getSupportLevel(expr: Percentile): SupportLevel = {
-    // Only the single-percentage, default-frequency, numeric-input form is wired today. It maps
-    // to DataFusion's percentile_cont, which uses the same `index = p * (n - 1)` linear
-    // interpolation as Spark's exact Percentile. Array-of-percentages, a non-default frequency
-    // argument, and interval inputs fall back to Spark.
+    // Only the single-percentage, default-frequency, numeric-input, ascending form is wired
+    // today. It maps to DataFusion's percentile_cont, which uses the same `index = p * (n - 1)`
+    // linear interpolation as Spark's exact Percentile. Array-of-percentages, a non-default
+    // frequency argument, descending order, and interval inputs fall back to Spark.
     if (expr.percentageExpression.dataType != DoubleType) {
-      return Unsupported(Some("an array of percentages is not supported"))
+      return Unsupported(Some(arrayOfPercentagesReason))
     }
     if (!expr.percentageExpression.foldable) {
-      return Unsupported(Some("the percentage argument must be a literal"))
+      return Unsupported(Some(nonLiteralPercentageReason))
     }
     expr.frequencyExpression match {
       case Literal(1L, _) =>
-      case _ => return Unsupported(Some("a frequency argument is not supported"))
+      case _ => return Unsupported(Some(frequencyReason))
+    }
+    if (expr.reverse) {
+      return Unsupported(Some(descendingReason))
     }
     expr.child.dataType match {
       case _: NumericType => Compatible(None)
-      case other => Unsupported(Some(s"percentile on input type $other is not supported"))
+      case _ => Unsupported(Some(inputTypeReason))
     }
   }
 
