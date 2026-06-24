@@ -145,7 +145,7 @@ The tables below list every Spark built-in expression with its current status.
 | `array_max` | ✅ | NaN ordering may differ ([details](compatibility/floating-point.md)) |
 | `array_min` | ✅ | NaN ordering may differ ([details](compatibility/floating-point.md)) |
 | `array_position` | ✅ | Binary/struct/map/null elements fall back |
-| `array_prepend` | 🔜 | Sibling of `array_append` |
+| `array_prepend` | ✅ |  |
 | `array_remove` | ✅ |  |
 | `array_repeat` | ✅ |  |
 | `array_union` | ✅ | NaN/signed-zero handling may differ ([details](compatibility/floating-point.md)) |
