@@ -158,7 +158,7 @@ object CometStringReplace
     with NativeOptInAvailable {
 
   override def getIncompatibleReasons(): Seq[String] =
-    Seq("Native and JVM results may differ for some inputs")
+    Seq("Produces different results from Spark when the search string is empty")
 
   override def getSupportLevel(expr: StringReplace): SupportLevel =
     if (!CometConf.isExprAllowIncompat(getExprConfigName(expr))) {

@@ -123,7 +123,7 @@ The following differences from Spark are always present and do not require any a
 
 By default, Comet runs a Spark-compatible implementation of `StringReplace`. Set `spark.comet.expression.StringReplace.allowIncompatible=true` to use Comet's faster native implementation instead, which has the following differences from Spark:
 
-- Native and JVM results may differ for some inputs
+- Produces different results from Spark when the search string is empty
 
 ## StringSplit
 
