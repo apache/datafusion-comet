@@ -159,13 +159,19 @@ SELECT dept, id, salary,
 FROM emp
 
 -- ============================================================
--- 1.6: PERCENT_RANK and CUME_DIST
+-- 1.6: PERCENT_RANK / CUME_DIST / NTILE
+-- NTILE divergence tends to surface when partition size is not
+-- evenly divisible by the bucket count. The 'eng' partition (6 rows
+-- with NTILE(4)) is the previously-buggy case from DataFusion #22049
+-- (fixed by #22051 in DataFusion 54.0.0): the old i*n/num_rows
+-- formula yielded bucket sizes 2,1,2,1 instead of 2,2,1,1.
 -- ============================================================
 
 query tolerance=1e-6
 SELECT dept, id, salary,
   PERCENT_RANK() OVER (PARTITION BY dept ORDER BY id) AS pr,
-  CUME_DIST()    OVER (PARTITION BY dept ORDER BY id) AS cd
+  CUME_DIST()    OVER (PARTITION BY dept ORDER BY id) AS cd,
+  NTILE(4)       OVER (PARTITION BY dept ORDER BY id) AS bucket
 FROM emp
 
 -- ============================================================
@@ -439,11 +445,12 @@ FROM emp
 -- Ported from Spark's postgreSQL/window_part4.sql:
 --   SELECT i, AVG(v) OVER (ORDER BY i ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING)
 --   FROM (VALUES (1,1),(2,2),(3,NULL),(4,NULL)) t(i,v);
--- As each row advances the frame shrinks from the front, so the
--- aggregate is updated by its inverse-transition path. The test
--- exercises that the running count correctly excludes NULL values
--- and that AVG returns NULL once only NULL rows remain in the
--- frame (expected 1.5, 2.0, NULL, NULL).
+-- The lower bound (CurrentRow) means the frame is *not* ever-expanding,
+-- so this routes through Comet's sliding-window branch (DataFusion's
+-- retract-capable `avg`). Pre-DataFusion 54.0.0 that path returned NaN
+-- once every contributing value had been retracted (DataFusion #22138);
+-- the fix in DataFusion #22139 short-circuits `count == 0` to NULL.
+-- The expected result 1.5, 2.0, NULL, NULL pins that fix.
 -- ============================================================
 
 statement
@@ -669,25 +676,13 @@ FROM scores
 -- ############################################################
 -- Section 6: Other window / aggregate functions
 -- ############################################################
--- Functions beyond Comet's native window-aggregate support
--- (Count/Min/Max/Sum/Average/First/Last). Everything below either runs natively
--- with a known correctness issue (NTILE) or falls back because Comet's native
--- WindowExec serde does not recognise the aggregate.
+-- Aggregate functions beyond Comet's native window-aggregate support
+-- (Count/Min/Max/Sum/Average/First/Last). Everything below falls back to
+-- Spark because Comet's native WindowExec serde does not recognise the
+-- aggregate.
 
 -- ============================================================
--- 6.1: NTILE (known correctness bug tracked in #4255)
--- Falls back to Spark via the NTile guard in CometWindowExec.
--- When the native bug is fixed and the guard removed, this test will fail
--- because Comet stops falling back — that's the signal to re-enable it.
--- ============================================================
-
-query
-SELECT dept, id, salary,
-  NTILE(4) OVER (PARTITION BY dept ORDER BY id) AS bucket
-FROM emp
-
--- ============================================================
--- 6.2: statistical aggregates over a window (STDDEV / VAR / SKEW / KURT)
+-- 6.1: statistical aggregates over a window (STDDEV / VAR / SKEW / KURT)
 -- ============================================================
 
 query expect_fallback(is not supported for window function)
@@ -701,7 +696,7 @@ SELECT dept, id, salary,
 FROM emp
 
 -- ============================================================
--- 6.3: collection aggregates (COLLECT_LIST)
+-- 6.2: collection aggregates (COLLECT_LIST)
 -- id is unique per partition, so the ORDER BY makes COLLECT_LIST insertion
 -- order deterministic.
 -- ============================================================
@@ -713,7 +708,7 @@ SELECT dept, id, salary,
 FROM emp
 
 -- ============================================================
--- 6.4: bitwise aggregates (BIT_AND / BIT_OR / BIT_XOR)
+-- 6.3: bitwise aggregates (BIT_AND / BIT_OR / BIT_XOR)
 -- ============================================================
 
 query expect_fallback(is not supported for window function)
@@ -724,7 +719,7 @@ SELECT dept, id, salary,
 FROM emp
 
 -- ============================================================
--- 6.5: correlation / covariance (CORR / COVAR_POP / COVAR_SAMP)
+-- 6.4: correlation / covariance (CORR / COVAR_POP / COVAR_SAMP)
 -- ============================================================
 
 query expect_fallback(is not supported for window function)
@@ -735,7 +730,7 @@ SELECT dept, id, salary, hire_yr,
 FROM emp
 
 -- ============================================================
--- 6.6: percentile aggregates (PERCENTILE / MEDIAN / APPROX_PERCENTILE)
+-- 6.5: percentile aggregates (PERCENTILE / MEDIAN / APPROX_PERCENTILE)
 -- ============================================================
 
 query expect_fallback(is not supported for window function)
@@ -746,7 +741,7 @@ SELECT dept, id, salary,
 FROM emp
 
 -- ============================================================
--- 6.7: value-selection aggregates (ANY_VALUE / MAX_BY / MIN_BY / MODE)
+-- 6.6: value-selection aggregates (ANY_VALUE / MAX_BY / MIN_BY / MODE)
 -- ============================================================
 
 query expect_fallback(is not supported for window function)

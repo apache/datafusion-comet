@@ -2922,8 +2922,6 @@ impl PhysicalPlanner {
                 }
             }
             Some(AggExprStruct::Avg(expr)) => {
-                // Same rule as Sum: Comet's Avg/AvgDecimal for ever-expanding frames,
-                // DataFusion's `avg` for sliding (retract-capable).
                 let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
                 let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
                 let input_datatype = to_arrow_datatype(expr.sum_datatype.as_ref().unwrap());
