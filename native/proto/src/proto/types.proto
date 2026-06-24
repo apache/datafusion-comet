@@ -60,6 +60,7 @@ message DataType {
     MAP = 15;
     STRUCT = 16;
     TIME = 17;
+    YEAR_MONTH_INTERVAL = 18;
   }
   DataTypeId type_id = 1;
 

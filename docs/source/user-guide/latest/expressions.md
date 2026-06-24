@@ -268,7 +268,7 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `make_timestamp` | ✅ |  |
 | `make_timestamp_ltz` | ✅ | 2-arg TIME form falls back |
 | `make_timestamp_ntz` | ✅ | 2-arg TIME form falls back |
-| `make_ym_interval` | 🔜 | [#4541](https://github.com/apache/datafusion-comet/issues/4541) |
+| `make_ym_interval` | ✅ | Routes through the JVM codegen dispatcher |
 | `minute` | ✅ |  |
 | `month` | ✅ |  |
 | `monthname` | ✅ | Abbreviated month name (Spark 4.0+) |

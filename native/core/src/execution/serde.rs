@@ -19,7 +19,7 @@
 
 use super::operators::ExecutionError;
 use crate::errors::ExpressionError;
-use arrow::datatypes::{DataType as ArrowDataType, TimeUnit};
+use arrow::datatypes::{DataType as ArrowDataType, IntervalUnit, TimeUnit};
 use arrow::datatypes::{Field, Fields};
 use datafusion_comet_proto::{
     spark_config, spark_expression,
@@ -97,6 +97,7 @@ pub fn to_arrow_datatype(dt_value: &DataType) -> ArrowDataType {
         DataTypeId::TimestampNtz => ArrowDataType::Timestamp(TimeUnit::Microsecond, None),
         DataTypeId::Date => ArrowDataType::Date32,
         DataTypeId::Time => ArrowDataType::Time64(TimeUnit::Nanosecond),
+        DataTypeId::YearMonthInterval => ArrowDataType::Interval(IntervalUnit::YearMonth),
         DataTypeId::Null => ArrowDataType::Null,
         DataTypeId::List => match dt_value
             .type_info

@@ -35,7 +35,9 @@ use crate::execution::{
 };
 use crate::jvm_bridge::{jni_call, JVMClasses};
 use arrow::compute::CastOptions;
-use arrow::datatypes::{DataType, Field, FieldRef, Schema, TimeUnit, DECIMAL128_MAX_PRECISION};
+use arrow::datatypes::{
+    DataType, Field, FieldRef, IntervalUnit, Schema, TimeUnit, DECIMAL128_MAX_PRECISION,
+};
 use arrow::ffi_stream::FFI_ArrowArrayStream;
 use datafusion::functions_aggregate::bit_and_or_xor::{bit_and_udaf, bit_or_udaf, bit_xor_udaf};
 use datafusion::functions_aggregate::count::count_udaf;
@@ -101,8 +103,8 @@ use datafusion::physical_expr::LexOrdering;
 use crate::parquet::parquet_exec::init_datasource_exec;
 use arrow::array::{
     new_empty_array, Array, ArrayRef, BinaryBuilder, BooleanArray, Date32Array, Decimal128Array,
-    Float32Array, Float64Array, Int16Array, Int32Array, Int64Array, Int8Array, ListArray,
-    NullArray, StringBuilder, TimestampMicrosecondArray,
+    Float32Array, Float64Array, Int16Array, Int32Array, Int64Array, Int8Array,
+    IntervalYearMonthArray, ListArray, NullArray, StringBuilder, TimestampMicrosecondArray,
 };
 use arrow::buffer::{BooleanBuffer, NullBuffer, OffsetBuffer};
 use arrow::row::{OwnedRow, RowConverter, SortField};
@@ -362,6 +364,9 @@ impl PhysicalPlanner {
                         DataType::Time64(TimeUnit::Nanosecond) => {
                             ScalarValue::Time64Nanosecond(None)
                         }
+                        DataType::Interval(IntervalUnit::YearMonth) => {
+                            ScalarValue::IntervalYearMonth(None)
+                        }
                         dt => {
                             return Err(GeneralError(format!("{dt:?} is not supported in Comet")))
                         }
@@ -374,9 +379,12 @@ impl PhysicalPlanner {
                         Value::IntVal(value) => match data_type {
                             DataType::Int32 => ScalarValue::Int32(Some(*value)),
                             DataType::Date32 => ScalarValue::Date32(Some(*value)),
+                            DataType::Interval(IntervalUnit::YearMonth) => {
+                                ScalarValue::IntervalYearMonth(Some(*value))
+                            }
                             dt => {
                                 return Err(GeneralError(format!(
-                                    "Expected either 'Int32' or 'Date32' for IntVal, but found {dt:?}"
+                                    "Expected either 'Int32', 'Date32', or 'Interval(YearMonth)' for IntVal, but found {dt:?}"
                                 )))
                             }
                         },
@@ -3632,6 +3640,10 @@ fn literal_to_array_ref(
             Some(nulls.clone().into()),
         ))),
         DataType::Date32 => Ok(Arc::new(Date32Array::new(
+            list_literal.int_values.into(),
+            Some(nulls.clone().into()),
+        ))),
+        DataType::Interval(IntervalUnit::YearMonth) => Ok(Arc::new(IntervalYearMonthArray::new(
             list_literal.int_values.into(),
             Some(nulls.clone().into()),
         ))),

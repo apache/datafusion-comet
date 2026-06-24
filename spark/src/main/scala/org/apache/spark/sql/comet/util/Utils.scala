@@ -152,6 +152,8 @@ object Utils extends CometTypeShim with Logging {
       case NullType => ArrowType.Null.INSTANCE
       case dt if isTimeType(dt) =>
         new ArrowType.Time(TimeUnit.NANOSECOND, 64)
+      case _: YearMonthIntervalType =>
+        new ArrowType.Interval(IntervalUnit.YEAR_MONTH)
       case _ =>
         throw new UnsupportedOperationException(
           s"Unsupported data type: [${dt.getClass.getName}] ${dt.catalogString}")

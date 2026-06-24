@@ -24,7 +24,7 @@ import java.lang
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Literal}
 import org.apache.spark.sql.catalyst.util.ArrayData
-import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType, DateType, Decimal, DecimalType, DoubleType, FloatType, IntegerType, LongType, NullType, ShortType, StringType, TimestampNTZType, TimestampType}
+import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType, DateType, Decimal, DecimalType, DoubleType, FloatType, IntegerType, LongType, NullType, ShortType, StringType, TimestampNTZType, TimestampType, YearMonthIntervalType}
 import org.apache.spark.unsafe.types.UTF8String
 
 import com.google.protobuf.ByteString
@@ -77,7 +77,8 @@ object CometLiteral extends CometExpressionSerde[Literal] with Logging {
         case _: BooleanType => exprBuilder.setBoolVal(value.asInstanceOf[Boolean])
         case _: ByteType => exprBuilder.setByteVal(value.asInstanceOf[Byte])
         case _: ShortType => exprBuilder.setShortVal(value.asInstanceOf[Short])
-        case _: IntegerType | _: DateType => exprBuilder.setIntVal(value.asInstanceOf[Int])
+        case _: IntegerType | _: DateType | _: YearMonthIntervalType =>
+          exprBuilder.setIntVal(value.asInstanceOf[Int])
         case _: LongType | _: TimestampType | _: TimestampNTZType =>
           exprBuilder.setLongVal(value.asInstanceOf[Long])
         case dt if isTimeType(dt) =>
@@ -150,7 +151,7 @@ object CometLiteral extends CometExpressionSerde[Literal] with Logging {
             else null.asInstanceOf[Integer])
           listLiteralBuilder.addNullMask(casted != null)
         })
-      case IntegerType | DateType =>
+      case IntegerType | DateType | _: YearMonthIntervalType =>
         array.foreach(v => {
           val casted = v.asInstanceOf[Integer]
           listLiteralBuilder.addIntValues(casted)
