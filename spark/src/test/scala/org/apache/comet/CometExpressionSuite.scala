@@ -3264,4 +3264,30 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     assert(Compatible().nativeOptIn.isEmpty)
   }
 
+  test("RLike literal pattern shows native opt-in, non-literal does not") {
+    withTable("t") {
+      spark.sql("create table t(s string, p string) using parquet")
+      spark.sql("insert into t values ('abc','a.*'), ('xyz','z')")
+      val lit = spark.sql("select s rlike 'a.*' as r from t")
+      val nonLit = spark.sql("select s rlike p as r from t")
+      val explainLit =
+        new ExtendedExplainInfo().generateExtendedInfo(lit.queryExecution.executedPlan)
+      val explainNonLit =
+        new ExtendedExplainInfo().generateExtendedInfo(nonLit.queryExecution.executedPlan)
+      assert(explainLit.contains("native implementation of RLike"))
+      assert(!explainNonLit.contains("native implementation of RLike"))
+    }
+  }
+
+  test("upper shows native opt-in via caseConversion config key") {
+    withTable("t_upper") {
+      spark.sql("create table t_upper(s string) using parquet")
+      spark.sql("insert into t_upper values ('abc'), ('xyz')")
+      val df = spark.sql("select upper(s) as u from t_upper")
+      val explain = new ExtendedExplainInfo().generateExtendedInfo(df.queryExecution.executedPlan)
+      assert(explain.contains("native implementation of Upper"))
+      assert(explain.contains("spark.comet.caseConversion.enabled"))
+    }
+  }
+
 }

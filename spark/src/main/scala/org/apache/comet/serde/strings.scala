@@ -50,9 +50,18 @@ object CometStringRepeat extends CometExpressionSerde[StringRepeat] {
 }
 
 class CometCaseConversionBase[T <: Expression](function: String)
-    extends CometScalarFunction[T](function) {
+    extends CometScalarFunction[T](function)
+    with NativeOptInAvailable {
 
-  override def getSupportLevel(expr: T): SupportLevel = Compatible()
+  override def nativeOptInConfigKeyOverride: Option[String] =
+    Some(CometConf.COMET_CASE_CONVERSION_ENABLED.key)
+
+  override def getSupportLevel(expr: T): SupportLevel =
+    if (!CometConf.COMET_CASE_CONVERSION_ENABLED.get()) {
+      Compatible(nativeOptIn = Some(NativeOptIn(CometConf.COMET_CASE_CONVERSION_ENABLED.key)))
+    } else {
+      Compatible()
+    }
 
   override def convert(expr: T, inputs: Seq[Attribute], binding: Boolean): Option[Expr] = {
     if (CometConf.COMET_CASE_CONVERSION_ENABLED.get()) {
@@ -110,9 +119,15 @@ object CometStringTranslate extends CometScalarFunction[StringTranslate]("transl
     Some(incompatReason))
 }
 
-object CometInitCap extends CometScalarFunction[InitCap]("initcap") {
+object CometInitCap extends CometScalarFunction[InitCap]("initcap") with NativeOptInAvailable {
 
-  override def getSupportLevel(expr: InitCap): SupportLevel = Compatible()
+  override def getSupportLevel(expr: InitCap): SupportLevel =
+    if (!CometConf.isExprAllowIncompat(getExprConfigName(expr))) {
+      Compatible(nativeOptIn =
+        Some(NativeOptIn(CometConf.getExprAllowIncompatConfigKey(getExprConfigName(expr)))))
+    } else {
+      Compatible()
+    }
 
   override def convert(expr: InitCap, inputs: Seq[Attribute], binding: Boolean): Option[Expr] = {
     if (CometConf.isExprAllowIncompat(getExprConfigName(expr))) {
@@ -129,9 +144,17 @@ object CometInitCap extends CometScalarFunction[InitCap]("initcap") {
   }
 }
 
-object CometStringReplace extends CometScalarFunction[StringReplace]("replace") {
+object CometStringReplace
+    extends CometScalarFunction[StringReplace]("replace")
+    with NativeOptInAvailable {
 
-  override def getSupportLevel(expr: StringReplace): SupportLevel = Compatible()
+  override def getSupportLevel(expr: StringReplace): SupportLevel =
+    if (!CometConf.isExprAllowIncompat(getExprConfigName(expr))) {
+      Compatible(nativeOptIn =
+        Some(NativeOptIn(CometConf.getExprAllowIncompatConfigKey(getExprConfigName(expr)))))
+    } else {
+      Compatible()
+    }
 
   override def convert(
       expr: StringReplace,
@@ -370,25 +393,31 @@ object CometLike extends CometExpressionSerde[Like] {
  * does not cover (a non-scalar pattern) falls through to the codegen dispatcher via
  * [[CometScalaUDF]].
  */
-object CometRLike extends CometExpressionSerde[RLike] {
+object CometRLike extends CometExpressionSerde[RLike] with NativeOptInAvailable {
 
-  override def getSupportLevel(expr: RLike): SupportLevel = Compatible()
+  private def nativeApplicable(expr: RLike): Boolean = expr.right match {
+    case Literal(_, DataTypes.StringType) => true
+    case _ => false
+  }
+
+  override def getSupportLevel(expr: RLike): SupportLevel =
+    if (!CometConf.isExprAllowIncompat(getExprConfigName(expr)) && nativeApplicable(expr)) {
+      Compatible(nativeOptIn =
+        Some(NativeOptIn(CometConf.getExprAllowIncompatConfigKey(getExprConfigName(expr)))))
+    } else {
+      Compatible()
+    }
 
   override def convert(expr: RLike, inputs: Seq[Attribute], binding: Boolean): Option[Expr] = {
-    if (CometConf.isExprAllowIncompat(getExprConfigName(expr))) {
-      expr.right match {
-        case Literal(_, DataTypes.StringType) =>
-          // Native path: the Rust regexp engine has different semantics from Java regexp.
-          return createBinaryExpr(
-            expr,
-            expr.left,
-            expr.right,
-            inputs,
-            binding,
-            (builder, binaryExpr) => builder.setRlike(binaryExpr))
-        case _ =>
-        // Non-scalar pattern: the native path cannot handle it, fall through to the dispatcher.
-      }
+    if (CometConf.isExprAllowIncompat(getExprConfigName(expr)) && nativeApplicable(expr)) {
+      // Native path: the Rust regexp engine has different semantics from Java regexp.
+      return createBinaryExpr(
+        expr,
+        expr.left,
+        expr.right,
+        inputs,
+        binding,
+        (builder, binaryExpr) => builder.setRlike(binaryExpr))
     }
     // Default: route through the codegen dispatcher so Spark's own doGenCode runs inside the Comet
     // pipeline. Falls back to Spark when the dispatcher is disabled.
@@ -538,14 +567,20 @@ object CometRegExpExtractAll extends CometExpressionSerde[RegExpExtractAll] {
  * Java regexp, so it is opt-in via `spark.comet.expression.RegExpReplace.allowIncompatible` and
  * only for an offset of 1; any other case falls through to the codegen dispatcher.
  */
-object CometRegExpReplace extends CometExpressionSerde[RegExpReplace] {
-
-  override def getSupportLevel(expr: RegExpReplace): SupportLevel = Compatible()
+object CometRegExpReplace extends CometExpressionSerde[RegExpReplace] with NativeOptInAvailable {
 
   private def nativeSupported(expr: RegExpReplace): Boolean = expr.pos match {
     case Literal(value, DataTypes.IntegerType) if value == 1 => true
     case _ => false
   }
+
+  override def getSupportLevel(expr: RegExpReplace): SupportLevel =
+    if (!CometConf.isExprAllowIncompat(getExprConfigName(expr)) && nativeSupported(expr)) {
+      Compatible(nativeOptIn =
+        Some(NativeOptIn(CometConf.getExprAllowIncompatConfigKey(getExprConfigName(expr)))))
+    } else {
+      Compatible()
+    }
 
   override def convert(
       expr: RegExpReplace,
@@ -582,9 +617,15 @@ object CometRegExpReplace extends CometExpressionSerde[RegExpReplace] {
  * The native path is a custom Comet function (not a built-in DataFusion function), so the return
  * type is included in the protobuf to avoid DataFusion registry lookup failures.
  */
-object CometStringSplit extends CometExpressionSerde[StringSplit] {
+object CometStringSplit extends CometExpressionSerde[StringSplit] with NativeOptInAvailable {
 
-  override def getSupportLevel(expr: StringSplit): SupportLevel = Compatible()
+  override def getSupportLevel(expr: StringSplit): SupportLevel =
+    if (!CometConf.isExprAllowIncompat(getExprConfigName(expr))) {
+      Compatible(nativeOptIn =
+        Some(NativeOptIn(CometConf.getExprAllowIncompatConfigKey(getExprConfigName(expr)))))
+    } else {
+      Compatible()
+    }
 
   override def convert(
       expr: StringSplit,
