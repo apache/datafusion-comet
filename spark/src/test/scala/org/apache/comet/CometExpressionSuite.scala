@@ -1029,6 +1029,23 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("native opt-in hint shown for codegen-dispatch path") {
+    withTempDir { dir =>
+      // _5 column is TIMESTAMP(MICROS,false) = TimestampNTZ, which triggers Incompatible in CometHour
+      val path = new Path(dir.toURI.toString, "hint_test.parquet")
+      makeRawTimeParquetFile(path, dictionaryEnabled = false, n = 5)
+      withSQLConf("spark.comet.expression.Hour.allowIncompatible" -> "false") {
+        val df = spark.read.parquet(path.toString).selectExpr("hour(_5) as h")
+        val explain =
+          new ExtendedExplainInfo().generateExtendedInfo(df.queryExecution.executedPlan)
+        assert(explain.contains("[COMET-INFO:"), s"Expected [COMET-INFO: in: $explain")
+        assert(
+          explain.contains("native implementation of Hour"),
+          s"Expected 'native implementation of Hour' in: $explain")
+      }
+    }
+  }
+
   test("rlike with non-scalar pattern runs via codegen dispatcher") {
     val table = "rlike_non_scalar"
     withTable(table) {
