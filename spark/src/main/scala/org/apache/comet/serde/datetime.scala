@@ -713,13 +713,23 @@ object CometDateFormat extends CometExpressionSerde[DateFormatClass] with Native
     case _ => false
   }
 
-  override def getSupportLevel(expr: DateFormatClass): SupportLevel =
-    if (!CometConf.isExprAllowIncompat(getExprConfigName(expr)) && nativeApplicable(expr)) {
+  private def isUtc(expr: DateFormatClass): Boolean = {
+    val timezone = expr.timeZoneId.getOrElse("UTC")
+    timezone == "UTC" || timezone == "Etc/UTC"
+  }
+
+  override def getSupportLevel(expr: DateFormatClass): SupportLevel = {
+    // Show the opt-in hint only when: native is applicable, the config is OFF, and native is not
+    // already running due to UTC timezone. When isUtc is true, native already runs regardless of
+    // the config, so the hint would be misleading.
+    val isExprAllowIncompat = CometConf.isExprAllowIncompat(getExprConfigName(expr))
+    if (nativeApplicable(expr) && !isUtc(expr) && !isExprAllowIncompat) {
       Compatible(nativeOptIn =
         Some(NativeOptIn(CometConf.getExprAllowIncompatConfigKey(getExprConfigName(expr)))))
     } else {
       Compatible()
     }
+  }
 
   override def getCompatibleNotes(): Seq[String] = Seq(
     "Format strings in a curated allow-list run natively via DataFusion's `to_char` for UTC " +
@@ -733,8 +743,7 @@ object CometDateFormat extends CometExpressionSerde[DateFormatClass] with Native
       expr: DateFormatClass,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val timezone = expr.timeZoneId.getOrElse("UTC")
-    val isUtc = timezone == "UTC" || timezone == "Etc/UTC"
+    val isUtcVal = isUtc(expr)
 
     val nativeFormat: Option[String] = expr.right match {
       case Literal(fmt: UTF8String, _) => supportedFormats.get(fmt.toString)
@@ -742,7 +751,7 @@ object CometDateFormat extends CometExpressionSerde[DateFormatClass] with Native
     }
 
     val canUseNative = nativeApplicable(expr) && {
-      isUtc || CometConf.isExprAllowIncompat(getExprConfigName(expr))
+      isUtcVal || CometConf.isExprAllowIncompat(getExprConfigName(expr))
     }
 
     if (canUseNative) {

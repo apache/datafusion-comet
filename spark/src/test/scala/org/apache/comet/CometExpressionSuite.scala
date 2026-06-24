@@ -3294,10 +3294,27 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     withTable("t_datefmt") {
       spark.sql("create table t_datefmt(ts timestamp) using parquet")
       spark.sql("insert into t_datefmt values (cast('2024-01-15 10:30:00' as timestamp))")
-      val df = spark.sql("select date_format(ts, 'yyyy') as d from t_datefmt")
-      val explain =
-        new ExtendedExplainInfo().generateExtendedInfo(df.queryExecution.executedPlan)
-      assert(explain.contains("native implementation of DateFormatClass"))
+
+      // Positive case: non-UTC session timezone, config OFF -> hint should appear because
+      // flipping the config would actually switch this instance to native.
+      withSQLConf("spark.sql.session.timeZone" -> "America/Los_Angeles") {
+        val df = spark.sql("select date_format(ts, 'yyyy') as d from t_datefmt")
+        val explain =
+          new ExtendedExplainInfo().generateExtendedInfo(df.queryExecution.executedPlan)
+        assert(
+          explain.contains("native implementation of DateFormatClass"),
+          "Expected opt-in hint for non-UTC session with whitelisted format")
+      }
+
+      // True-negative: UTC session timezone, config OFF -> native already runs, so no hint.
+      withSQLConf("spark.sql.session.timeZone" -> "UTC") {
+        val df = spark.sql("select date_format(ts, 'yyyy') as d from t_datefmt")
+        val explain =
+          new ExtendedExplainInfo().generateExtendedInfo(df.queryExecution.executedPlan)
+        assert(
+          !explain.contains("native implementation of DateFormatClass"),
+          "Expected no opt-in hint for UTC session: native already runs without config change")
+      }
     }
   }
 
