@@ -154,7 +154,7 @@ object CometConf extends ShimCometConf {
           "flag still lets format-level pruning work; the per-row eval falls back to " +
           "the CometFilter operator above the scan.")
       .booleanConf
-      .createWithDefault(true)
+      .createWithDefault(false)
 
   val COMET_PARQUET_PARALLEL_IO_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.parquet.read.parallel.io.enabled")
