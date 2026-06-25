@@ -228,6 +228,40 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
 
     val f = windowExpr.windowSpec.frameSpecification
 
+    // SUM / AVG over a DECIMAL with a sliding frame (lower bound other than
+    // UNBOUNDED PRECEDING) routes to DataFusion's built-in sum / avg, whose
+    // accumulators wrap on overflow instead of returning Spark's NULL. Only
+    // the ever-expanding path uses Comet's overflow-aware SumDecimal /
+    // AvgDecimal UDAFs, so on overflow the sliding case produces a wrapped,
+    // out-of-range value rather than NULL. Whether the running value overflows
+    // can't be known at plan time, so fall back to Spark for the whole sliding
+    // decimal case, mirroring the RANGE-frame fallbacks below.
+    // https://github.com/apache/datafusion-comet/issues/4729
+    val isEverExpanding = f match {
+      case SpecifiedWindowFrame(_, UnboundedPreceding, _) => true
+      case _: SpecifiedWindowFrame => false
+      case _ => true
+    }
+    if (!isEverExpanding) {
+      windowExpr.windowFunction match {
+        case agg: AggregateExpression =>
+          agg.aggregateFunction match {
+            case s: Sum if s.dataType.isInstanceOf[DecimalType] =>
+              withFallbackReason(
+                windowExpr,
+                "SUM on DECIMAL with a sliding window frame is not supported")
+              return None
+            case a: Average if a.dataType.isInstanceOf[DecimalType] =>
+              withFallbackReason(
+                windowExpr,
+                "AVG on DECIMAL with a sliding window frame is not supported")
+              return None
+            case _ =>
+          }
+        case _ =>
+      }
+    }
+
     // Comet's native window planner ships RANGE frame offsets as
     // ScalarValue::Int64, but a couple of ORDER BY types don't tolerate that:
     //   - DATE: arrow-arith requires an Interval RHS for Date32 arithmetic,
