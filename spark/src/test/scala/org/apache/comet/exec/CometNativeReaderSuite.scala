@@ -865,7 +865,6 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
         val nativeScans = cometPlan.collect { case n: CometNativeScanExec => n }
         assert(nativeScans.nonEmpty, "Expected a CometNativeScanExec")
         val metrics = nativeScans.head.metrics
-        metrics.toSeq.sortBy(_._1).foreach { case (k, m) => println(s"$k = ${m.value}") }
         val pruned = metrics("row_groups_pruned_statistics").value
         val matched = metrics("row_groups_matched_statistics").value
         assert(
