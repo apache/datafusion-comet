@@ -45,7 +45,8 @@ private object CometGetDateField extends Enumeration {
   // 2 = Monday, ..., 7 = Saturday).
   val DayOfWeek: Value = Value("dow")
   val DayOfYear: Value = Value("doy")
-  val WeekDay: Value = Value("isodow") // day of the week where Monday is 0
+  // Datafusion `isodow` is 1..=7 with Monday=1; Spark `WeekDay` is 0..=6 with Monday=0.
+  val WeekDay: Value = Value("isodow")
   val WeekOfYear: Value = Value("week")
   val Quarter: Value = Value("quarter")
 }
@@ -145,7 +146,27 @@ object CometWeekDay extends CometExpressionSerde[WeekDay] with CometExprGetDateF
       expr: WeekDay,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    getDateField(expr, CometGetDateField.WeekDay, inputs, binding)
+    // Datafusion `isodow` is 1..=7 with Monday=1, but Spark `WeekDay` is 0..=6 with Monday=0,
+    // so subtract 1 from the result of datepart(isodow, ...).
+    // TODO: fix upstream to avoid substraction
+    // https://github.com/apache/datafusion/issues/22599
+    val optExpr = getDateField(expr, CometGetDateField.WeekDay, inputs, binding)
+      .zip(exprToProtoInternal(Literal(1), inputs, binding))
+      .map { case (left, right) =>
+        Expr
+          .newBuilder()
+          .setSubtract(
+            ExprOuterClass.MathExpr
+              .newBuilder()
+              .setLeft(left)
+              .setRight(right)
+              .setEvalMode(ExprOuterClass.EvalMode.LEGACY)
+              .setReturnType(serializeDataType(IntegerType).get)
+              .build())
+          .build()
+      }
+      .headOption
+    optExprWithFallbackReason(optExpr, expr, expr.child)
   }
 }
 
@@ -307,9 +328,7 @@ object CometUnixTimestamp extends CometExpressionSerde[UnixTimestamp] {
   private val collationReason = DatetimeCollation.reason("unix_timestamp")
 
   override def getUnsupportedReasons(): Seq[String] = Seq(
-    "Only `TimestampType` and `DateType` inputs are supported." +
-      " `TimestampNTZType` is not supported because Comet incorrectly applies timezone" +
-      " conversion to TimestampNTZ values.")
+    "Only `DateType`, `TimestampType`, and `TimestampNTZType` inputs are supported.")
 
   override def getIncompatibleReasons(): Seq[String] =
     DatetimeCollation.incompatibleReasons("unix_timestamp")
@@ -704,8 +723,7 @@ object CometTruncTimestamp
  */
 object CometDateFormat
     extends CometExpressionSerde[DateFormatClass]
-    with CodegenDispatchFallback
-    with CometTypeShim {
+    with CodegenDispatchFallback {
 
   /**
    * Mapping from Spark SimpleDateFormat patterns to strftime patterns. Only formats in this map
@@ -746,41 +764,58 @@ object CometDateFormat
   private val collationReason = DatetimeCollation.reason("date_format")
 
   override def getIncompatibleReasons(): Seq[String] =
-    DatetimeCollation.incompatibleReasons("date_format")
+    Seq("Non-UTC timezones may produce different results than Spark") ++
+      DatetimeCollation.incompatibleReasons("date_format")
 
-  // Non-default collations return Incompatible; all other inputs are Compatible. In both cases
-  // convert() decides between the native to_char path and the codegen dispatcher.
+  // Returns true when the format literal is in the native-format whitelist.
+  private def nativeApplicable(expr: DateFormatClass): Boolean = expr.right match {
+    case Literal(fmt: UTF8String, _) => supportedFormats.contains(fmt.toString)
+    case _ => false
+  }
+
+  private def isUtc(expr: DateFormatClass): Boolean = {
+    val timezone = expr.timeZoneId.getOrElse("UTC")
+    timezone == "UTC" || timezone == "Etc/UTC"
+  }
+
   override def getSupportLevel(expr: DateFormatClass): SupportLevel = {
     if (DatetimeCollation.hasNonDefaultCollation(expr)) {
       Incompatible(Some(collationReason))
     } else {
-      Compatible()
+      // Show the opt-in hint only when: native is applicable, the config is OFF, and native is not
+      // already running due to UTC timezone. When isUtc is true, native already runs regardless of
+      // the config, so the hint would be misleading.
+      val isExprAllowIncompat = CometConf.isExprAllowIncompat(getExprConfigName(expr))
+      if (nativeApplicable(expr) && !isUtc(expr) && !isExprAllowIncompat) {
+        Compatible(nativeOptIn =
+          Some(NativeOptIn(CometConf.getExprAllowIncompatConfigKey(getExprConfigName(expr)))))
+      } else {
+        Compatible()
+      }
     }
   }
 
   override def getCompatibleNotes(): Seq[String] = Seq(
     "Format strings in a curated allow-list run natively via DataFusion's `to_char` for UTC " +
-      "sessions. Other format strings (including non-literal formats) and non-UTC sessions " +
-      "route through Spark's own `DateFormatClass.doGenCode` via the Arrow-direct codegen " +
-      "dispatcher when `spark.comet.exec.scalaUDF.codegen.enabled=true`. When the codegen " +
-      "dispatcher is disabled (default) the operator falls back to Spark in those cases.")
+      "sessions. Other format strings (including non-literal formats), as well as non-UTC " +
+      "sessions, route through Spark's own `DateFormatClass.doGenCode` via the Arrow-direct " +
+      "codegen dispatcher when `spark.comet.exec.scalaUDF.codegen.enabled=true` (the default). " +
+      "When the codegen dispatcher is disabled the operator falls back to Spark in those cases.")
 
   override def convert(
       expr: DateFormatClass,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val timezone = expr.timeZoneId.getOrElse("UTC")
-    val isUtc = timezone == "UTC" || timezone == "Etc/UTC"
+    val isUtcVal = isUtc(expr)
 
     val nativeFormat: Option[String] = expr.right match {
       case Literal(fmt: UTF8String, _) => supportedFormats.get(fmt.toString)
       case _ => None
     }
 
-    val canUseNative = nativeFormat.isDefined &&
-      !expr.children.exists(c => hasNonDefaultStringCollation(c.dataType)) && {
-        isUtc || CometConf.isExprAllowIncompat(getExprConfigName(expr))
-      }
+    val canUseNative = nativeApplicable(expr) && {
+      isUtcVal || CometConf.isExprAllowIncompat(getExprConfigName(expr))
+    }
 
     if (canUseNative) {
       val childExpr = exprToProtoInternal(expr.left, inputs, binding)

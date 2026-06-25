@@ -155,5 +155,5 @@ if __name__ == "__main__":
     print("Generating versioned user guide docs...")
     snapshot_version = get_version_from_pom()
     latest_released_version = "0.17.0"
-    previous_versions = ["0.14.0", "0.15.0", "0.16.0"]
+    previous_versions = ["0.13.0", "0.14.0", "0.15.0", "0.16.0"]
     generate_docs(snapshot_version, latest_released_version, previous_versions)

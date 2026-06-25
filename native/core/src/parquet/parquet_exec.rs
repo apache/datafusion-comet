@@ -17,12 +17,12 @@
 
 use crate::execution::operators::ExecutionError;
 use crate::parquet::encryption_support::{CometEncryptionConfig, ENCRYPTION_FACTORY_ID};
-use crate::parquet::parquet_read_cached_factory::CachingParquetReaderFactory;
 use crate::parquet::parquet_support::SparkParquetOptions;
 use crate::parquet::schema_adapter::SparkPhysicalExprAdapterFactory;
 use arrow::datatypes::{Field, SchemaRef};
 use datafusion::config::TableParquetOptions;
 use datafusion::datasource::listing::PartitionedFile;
+use datafusion::datasource::physical_plan::parquet::CachedParquetFileReaderFactory;
 use datafusion::datasource::physical_plan::{
     FileGroup, FileScanConfigBuilder, FileSource, ParquetSource,
 };
@@ -70,6 +70,7 @@ pub(crate) fn init_datasource_exec(
     case_sensitive: bool,
     return_null_struct_if_all_fields_missing: bool,
     allow_type_promotion: bool,
+    allow_timestamp_ltz_to_ntz: bool,
     session_ctx: &Arc<SessionContext>,
     encryption_enabled: bool,
     use_field_id: bool,
@@ -80,6 +81,7 @@ pub(crate) fn init_datasource_exec(
         case_sensitive,
         return_null_struct_if_all_fields_missing,
         allow_type_promotion,
+        allow_timestamp_ltz_to_ntz,
         &object_store_url,
         encryption_enabled,
     );
@@ -128,8 +130,9 @@ pub(crate) fn init_datasource_exec(
     let table_schema =
         TableSchema::from_file_schema(base_schema).with_table_partition_cols(partition_fields);
 
-    let mut parquet_source =
-        ParquetSource::new(table_schema).with_table_parquet_options(table_parquet_options);
+    let mut parquet_source = ParquetSource::new(table_schema)
+        .with_table_parquet_options(table_parquet_options)
+        .with_metadata_size_hint(512 * 1024); // Same as DataFusion's default
 
     if encryption_enabled {
         parquet_source = parquet_source.with_encryption_factory(
@@ -139,10 +142,19 @@ pub(crate) fn init_datasource_exec(
         );
     }
 
-    // Use caching reader factory to avoid redundant footer reads across partitions
-    let store = session_ctx.runtime_env().object_store(&object_store_url)?;
-    parquet_source = parquet_source
-        .with_parquet_file_reader_factory(Arc::new(CachingParquetReaderFactory::new(store)));
+    // DataFusion's metadata-caching reader factory: loads each file's full metadata (including the
+    // page index) once into the per-task RuntimeEnv cache (bounded LRU, `metadata_cache_limit`) and
+    // reuses it across that file's row-group splits, so the opener does not re-fetch the page index.
+    //
+    // TODO: metadata I/O is invisible in metrics. `fetch_metadata` reads via `ObjectStore::get_ranges`,
+    // bypassing the `get_bytes` path where `bytes_scanned` is counted. A byte-counting ObjectStore
+    // wrapper would surface it.
+    let runtime_env = session_ctx.runtime_env();
+    let store = runtime_env.object_store(&object_store_url)?;
+    let metadata_cache = runtime_env.cache_manager.get_file_metadata_cache();
+    parquet_source = parquet_source.with_parquet_file_reader_factory(Arc::new(
+        CachedParquetFileReaderFactory::new(store, metadata_cache),
+    ));
 
     // Route data filters through `try_pushdown_filters` rather than calling
     // `with_predicate` directly. This is the contract DataFusion's optimizer
@@ -199,6 +211,7 @@ fn get_options(
     case_sensitive: bool,
     return_null_struct_if_all_fields_missing: bool,
     allow_type_promotion: bool,
+    allow_timestamp_ltz_to_ntz: bool,
     object_store_url: &ObjectStoreUrl,
     encryption_enabled: bool,
 ) -> (TableParquetOptions, SparkParquetOptions) {
@@ -206,6 +219,11 @@ fn get_options(
     table_parquet_options.global.pushdown_filters = true;
     table_parquet_options.global.reorder_filters = true;
     table_parquet_options.global.coerce_int96 = Some("us".to_string());
+    // INT96 columns encode UTC-adjusted instants; attaching the UTC timezone
+    // preserves that signal at the Arrow level so the schema adapter can
+    // distinguish INT96-derived TimestampLTZ from a true TimestampNTZ source
+    // and apply the pre-Spark-4 SPARK-36182 rejection (#4219).
+    table_parquet_options.global.coerce_int96_tz = Some("UTC".to_string());
     let mut spark_parquet_options =
         SparkParquetOptions::new(EvalMode::Legacy, session_timezone, false);
     spark_parquet_options.allow_cast_unsigned_ints = true;
@@ -213,6 +231,7 @@ fn get_options(
     spark_parquet_options.return_null_struct_if_all_fields_missing =
         return_null_struct_if_all_fields_missing;
     spark_parquet_options.allow_type_promotion = allow_type_promotion;
+    spark_parquet_options.allow_timestamp_ltz_to_ntz = allow_timestamp_ltz_to_ntz;
 
     if encryption_enabled {
         table_parquet_options.crypto.configure_factory(
@@ -224,4 +243,101 @@ fn get_options(
     }
 
     (table_parquet_options, spark_parquet_options)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arrow::array::Int32Array;
+    use arrow::datatypes::{DataType, Field, Schema};
+    use arrow::record_batch::RecordBatch;
+    use datafusion::datasource::physical_plan::parquet::metadata::CachedParquetMetaData;
+    use datafusion::physical_plan::ExecutionPlan;
+    use datafusion_comet_spark_expr::test_common::file_util::get_temp_filename;
+    use futures::StreamExt;
+    use parquet::arrow::ArrowWriter;
+    use parquet::file::properties::{EnabledStatistics, WriterProperties};
+    use std::fs::File;
+
+    // Regression test for #3978: the scan's reader factory must load the full
+    // Parquet metadata, including the page index, into the per-task RuntimeEnv
+    // metadata cache. The previous hand-rolled factory cached only the footer,
+    // so DataFusion re-fetched the page index on every open of the same file.
+    #[tokio::test]
+    async fn caches_full_metadata_with_page_index() {
+        // Write a file with a page index: page-level statistics and a small data
+        // page row limit so the column and offset indexes span multiple pages.
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![Arc::new(Int32Array::from((0..1000).collect::<Vec<i32>>()))],
+        )
+        .unwrap();
+
+        let filename = get_temp_filename()
+            .as_path()
+            .as_os_str()
+            .to_str()
+            .unwrap()
+            .to_string();
+        let props = WriterProperties::builder()
+            .set_statistics_enabled(EnabledStatistics::Page)
+            .set_data_page_row_count_limit(100)
+            .build();
+        let file = File::create(&filename).unwrap();
+        let mut writer = ArrowWriter::try_new(file, Arc::clone(&schema), Some(props)).unwrap();
+        writer.write(&batch).unwrap();
+        writer.close().unwrap();
+
+        let partitioned_file = PartitionedFile::from_path(filename).unwrap();
+        let location = partitioned_file.object_meta.location.clone();
+
+        let session_ctx = Arc::new(SessionContext::new());
+        let scan = init_datasource_exec(
+            Arc::clone(&schema),
+            None,
+            None,
+            ObjectStoreUrl::local_filesystem(),
+            vec![vec![partitioned_file]],
+            None,
+            None,
+            None,
+            "UTC",
+            true,
+            false,
+            false,
+            false,
+            &session_ctx,
+            false,
+            false,
+            false,
+        )
+        .unwrap();
+
+        // Drain the scan so the reader opens the file and populates the cache.
+        let mut stream = scan.execute(0, session_ctx.task_ctx()).unwrap();
+        while let Some(batch) = stream.next().await {
+            batch.unwrap();
+        }
+
+        // The per-task RuntimeEnv metadata cache must now hold this file's
+        // metadata with the page index (column + offset index) loaded.
+        let cache = session_ctx
+            .runtime_env()
+            .cache_manager
+            .get_file_metadata_cache();
+        let entry = cache
+            .get(&location)
+            .expect("file metadata should be cached");
+        let parquet_meta = entry
+            .file_metadata
+            .as_any()
+            .downcast_ref::<CachedParquetMetaData>()
+            .expect("cached entry should hold Parquet metadata")
+            .parquet_metadata();
+        assert!(
+            parquet_meta.column_index().is_some() && parquet_meta.offset_index().is_some(),
+            "cached metadata must include the page index"
+        );
+    }
 }
