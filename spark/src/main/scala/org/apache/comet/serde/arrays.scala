@@ -120,10 +120,6 @@ object CometSortArray extends CometExpressionSerde[SortArray] with CodegenDispat
     "When `" + CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key + "=true`, sorting on" +
       " floating-point types is not 100% compatible with Spark")
 
-  override def getUnsupportedReasons(): Seq[String] = Seq(
-    "Nested arrays with `Struct` or `Null` child values are not supported natively and will" +
-      " fall back to Spark.")
-
   private def supportedSortArrayElementType(dt: DataType): Boolean = {
     dt match {
       case _: NullType =>
