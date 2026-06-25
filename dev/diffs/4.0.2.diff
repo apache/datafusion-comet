@@ -475,13 +475,14 @@ index 5b88eeefeca..d4f07bc182a 100644
      assert(exchanges.size == 2)
    }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/DataFrameWindowFunctionsSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/DataFrameWindowFunctionsSuite.scala
-index 01e72daead4..0a8d1e8b9b9 100644
+index 01e72daead4..03e37a5bd70 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/DataFrameWindowFunctionsSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/DataFrameWindowFunctionsSuite.scala
-@@ -24,8 +24,9 @@ import org.apache.spark.sql.catalyst.expressions.{AttributeReference, Expression
+@@ -24,8 +24,10 @@ import org.apache.spark.sql.catalyst.expressions.{AttributeReference, Expression
  import org.apache.spark.sql.catalyst.optimizer.TransposeWindow
  import org.apache.spark.sql.catalyst.plans.logical.{Window => LogicalWindow}
  import org.apache.spark.sql.catalyst.plans.physical.HashPartitioning
++import org.apache.spark.sql.comet.CometWindowExec
 +import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
  import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 -import org.apache.spark.sql.execution.exchange.{ENSURE_REQUIREMENTS, Exchange, ShuffleExchangeExec}
@@ -489,7 +490,26 @@ index 01e72daead4..0a8d1e8b9b9 100644
  import org.apache.spark.sql.execution.window.WindowExec
  import org.apache.spark.sql.expressions.{Aggregator, MutableAggregationBuffer, UserDefinedAggregateFunction, Window}
  import org.apache.spark.sql.functions._
-@@ -1142,10 +1143,12 @@ class DataFrameWindowFunctionsSuite extends QueryTest
+@@ -951,7 +953,8 @@ class DataFrameWindowFunctionsSuite extends QueryTest
+     }
+   }
+ 
+-  test("Window spill with more than the inMemoryThreshold and spillThreshold") {
++  test("Window spill with more than the inMemoryThreshold and spillThreshold",
++      IgnoreComet("Comet does not support spilling")) {
+     val df = Seq((1, "1"), (2, "2"), (1, "3"), (2, "4")).toDF("key", "value")
+     val window = Window.partitionBy($"key").orderBy($"value")
+ 
+@@ -963,7 +966,7 @@ class DataFrameWindowFunctionsSuite extends QueryTest
+     }
+   }
+ 
+-  test("SPARK-21258: complex object in combination with spilling") {
++  test("SPARK-21258: complex object in combination with spilling", IgnoreComet("Comet does not support spilling")) {
+     // Make sure we trigger the spilling path.
+     withSQLConf(SQLConf.WINDOW_EXEC_BUFFER_IN_MEMORY_THRESHOLD.key -> "1",
+       SQLConf.WINDOW_EXEC_BUFFER_SPILL_THRESHOLD.key -> "17") {
+@@ -1142,10 +1145,12 @@ class DataFrameWindowFunctionsSuite extends QueryTest
      }
  
      def isShuffleExecByRequirement(
@@ -503,11 +523,16 @@ index 01e72daead4..0a8d1e8b9b9 100644
        case _ => false
      }
  
-@@ -1168,7 +1171,7 @@ class DataFrameWindowFunctionsSuite extends QueryTest
+@@ -1168,7 +1173,12 @@ class DataFrameWindowFunctionsSuite extends QueryTest
        val shuffleByRequirement = windowed.queryExecution.executedPlan.exists {
          case w: WindowExec =>
            w.child.exists {
 -            case s: ShuffleExchangeExec => isShuffleExecByRequirement(s, Seq("key1", "key2"))
++            case s: ShuffleExchangeLike => isShuffleExecByRequirement(s, Seq("key1", "key2"))
++            case _ => false
++          }
++        case w: CometWindowExec =>
++          w.child.exists {
 +            case s: ShuffleExchangeLike => isShuffleExecByRequirement(s, Seq("key1", "key2"))
              case _ => false
            }
@@ -1832,6 +1857,28 @@ index 47679ed7865..9ffbaecb98e 100644
      }.length == hashAggCount)
      assert(collectWithSubqueries(plan) { case s: SortAggregateExec => s }.length == sortAggCount)
    }
+diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/SQLWindowFunctionSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/SQLWindowFunctionSuite.scala
+index aa619c5cde8..4b5a42e683f 100644
+--- a/sql/core/src/test/scala/org/apache/spark/sql/execution/SQLWindowFunctionSuite.scala
++++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/SQLWindowFunctionSuite.scala
+@@ -18,7 +18,7 @@
+ package org.apache.spark.sql.execution
+ 
+ import org.apache.spark.TestUtils.assertSpilled
+-import org.apache.spark.sql.{AnalysisException, QueryTest, Row}
++import org.apache.spark.sql.{AnalysisException, IgnoreComet, QueryTest, Row}
+ import org.apache.spark.sql.internal.SQLConf.{WINDOW_EXEC_BUFFER_IN_MEMORY_THRESHOLD, WINDOW_EXEC_BUFFER_SPILL_THRESHOLD}
+ import org.apache.spark.sql.test.SharedSparkSession
+ 
+@@ -470,7 +470,7 @@ class SQLWindowFunctionSuite extends QueryTest with SharedSparkSession {
+       Row(1, 3, null) :: Row(2, null, 4) :: Nil)
+   }
+ 
+-  test("test with low buffer spill threshold") {
++  test("test with low buffer spill threshold", IgnoreComet("Comet does not support spilling")) {
+     val nums = sparkContext.parallelize(1 to 10).map(x => (x, x % 2)).toDF("x", "y")
+     nums.createOrReplaceTempView("nums")
+ 
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/SparkPlanSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/SparkPlanSuite.scala
 index aed11badb71..1a365b5aacf 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/SparkPlanSuite.scala
