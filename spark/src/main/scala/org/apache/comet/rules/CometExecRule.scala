@@ -707,14 +707,36 @@ case class CometExecRule(session: SparkSession)
         childOp.foreach(builder.addChildren)
         return serde
           .convert(op, builder, childOp: _*)
-          .map(nativeOp => serde.createExec(nativeOp, op))
+          .map { nativeOp =>
+            val exec = serde.createExec(nativeOp, op)
+            rollUpInfoMessages(op, exec)
+            exec
+          }
       } else {
         return serde
           .convert(op, builder)
-          .map(nativeOp => serde.createExec(nativeOp, op))
+          .map { nativeOp =>
+            val exec = serde.createExec(nativeOp, op)
+            rollUpInfoMessages(op, exec)
+            exec
+          }
       }
     }
     None
+  }
+
+  /**
+   * Lift informational (non-fallback) messages tagged on an operator and its expressions onto the
+   * converted Comet plan node so they appear in verbose extended explain output. Expression-level
+   * hints would otherwise be invisible because explain only traverses plan nodes, not
+   * expressions.
+   */
+  private def rollUpInfoMessages(op: SparkPlan, exec: SparkPlan): Unit = {
+    val fromOp = op.getTagValue(CometExplainInfo.EXTENSION_INFO).getOrElse(Set.empty[String])
+    val fromExprs = op.expressions
+      .flatMap(_.collect { case e: Expression => e })
+      .flatMap(_.getTagValue(CometExplainInfo.EXTENSION_INFO).getOrElse(Set.empty[String]))
+    (fromOp ++ fromExprs).foreach(msg => withInfo(exec, msg))
   }
 
   private def isOperatorEnabled(
@@ -745,7 +767,7 @@ case class CometExecRule(session: SparkSession)
                 s"${CometConf.COMPAT_GUIDE}.")
             false
           }
-        case Compatible(notes) =>
+        case Compatible(notes, _) =>
           if (notes.isDefined) {
             logWarning(s"Comet supports $opName but has notes: ${notes.get}")
           }
