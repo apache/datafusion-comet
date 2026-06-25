@@ -143,6 +143,7 @@ message AggExpr {
     Correlation correlation = 15;
     BloomFilterAgg bloomFilterAgg = 16;
     CollectSet collectSet = 17;
+    CollectList collectList = 18;
   }
 
   // Optional filter expression for SQL FILTER (WHERE ...) clause.
@@ -263,6 +264,11 @@ enum BloomFilterVersion {
 }
 
 message CollectSet {
+  Expr child = 1;
+  DataType datatype = 2;
+}
+
+message CollectList {
   Expr child = 1;
   DataType datatype = 2;
 }

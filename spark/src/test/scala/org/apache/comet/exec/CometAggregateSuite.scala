@@ -48,6 +48,29 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   override protected def sparkConf: SparkConf =
     super.sparkConf.set(SQLConf.ANSI_ENABLED.key, "false")
 
+  test("collect_list/collect_set combined with distinct aggregate runs fully native") {
+    // SPARK-17616: combining a distinct aggregate with collect_list/collect_set creates a
+    // multi-stage aggregate plan with a PartialMerge collect stage. These collect functions declare
+    // BinaryType JVM buffers in Spark but produce ArrayType native state in Comet; the intermediate
+    // Comet aggregate outputs must advertise the native ArrayType so that the state can round-trip
+    // through shuffle and downstream native PartialMerge/Final stages. See issue #4724.
+    withParquetTable(
+      Seq((1, 3, "a"), (1, 2, "b"), (3, 4, "c"), (3, 4, "c"), (3, 5, "d")),
+      "t_collect_distinct",
+      withDictionary = false) {
+      for (fn <- Seq("collect_list", "collect_set")) {
+        val query =
+          s"SELECT _1, count(DISTINCT _2), sort_array($fn(_3)) " +
+            "FROM t_collect_distinct GROUP BY _1"
+        val (_, cometPlan) =
+          checkSparkAnswerAndOperator(sql(query), Seq(classOf[CometHashAggregateExec]))
+        assert(
+          cometPlan.toString.contains(s"merge_$fn"),
+          s"Expected $fn PartialMerge stage to run as CometHashAggregateExec; plan:\n$cometPlan")
+      }
+    }
+  }
+
   test("min/max floating point with negative zero") {
     val r = new Random(42)
     val schema = StructType(

@@ -71,14 +71,14 @@ The tables below list every Spark built-in expression with its current status.
 | `any` | ✅ |  |
 | `any_value` | ✅ |  |
 | `approx_count_distinct` | 🔜 | tracking [#4098](https://github.com/apache/datafusion-comet/issues/4098) |
-| `array_agg` | 🔜 | Array aggregate (related to `collect_list`, [#2524](https://github.com/apache/datafusion-comet/issues/2524)) |
+| `array_agg` | ✅ | Alias for `collect_list` |
 | `avg` | ✅ | Interval types fall back |
 | `bit_and` | ✅ |  |
 | `bit_or` | ✅ |  |
 | `bit_xor` | ✅ |  |
 | `bool_and` | ✅ |  |
 | `bool_or` | ✅ |  |
-| `collect_list` | 🔜 | [#2524](https://github.com/apache/datafusion-comet/issues/2524) |
+| `collect_list` | ✅ |  |
 | `collect_set` | ✅ |  |
 | `corr` | ✅ |  |
 | `count` | ✅ |  |

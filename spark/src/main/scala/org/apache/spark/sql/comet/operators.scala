@@ -30,7 +30,7 @@ import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Ascending, Attribute, AttributeSet, Expression, ExpressionSet, Generator, NamedExpression, SortOrder}
-import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, AggregateMode, CollectSet, Final, First, Last, Partial, PartialMerge}
+import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, AggregateMode, CollectList, CollectSet, Final, First, Last, Partial, PartialMerge}
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide}
 import org.apache.spark.sql.catalyst.plans._
 import org.apache.spark.sql.catalyst.plans.physical._
@@ -1892,19 +1892,19 @@ object CometObjectHashAggregateExec
   }
 
   /**
-   * For Partial mode aggregates containing TypedImperativeAggregate functions (like CollectSet),
-   * the Spark-side output declares buffer columns as BinaryType (since Spark serializes state to
-   * binary). However, the native Comet aggregate produces the actual state type (e.g.,
-   * ArrayType(elementType) for CollectSet). This method corrects the output schema to match the
-   * native state types so the shuffle exchange schema is consistent with the actual data.
+   * For intermediate aggregates containing TypedImperativeAggregate functions (like CollectSet or
+   * CollectList), Spark declares buffer columns as BinaryType because it serializes the JVM
+   * state. Native Comet keeps the actual state type instead: ArrayType(elementType) with
+   * containsNull true for CollectSet/CollectList. Rewrite the Spark-side output attributes for
+   * Partial, PartialMerge, and mixed {Partial, PartialMerge} stages so shuffle and downstream
+   * native aggregate stages see the schema that native execution really produces.
    *
-   * NOTE: If a new TypedImperativeAggregate function (e.g., CollectList) is added natively, add a
-   * case branch here mapping it to the native state type.
+   * Final aggregates output user-visible values rather than intermediate state, so their Spark
+   * result schema is left unchanged.
    */
   private def adjustOutputForNativeState(op: ObjectHashAggregateExec): Seq[Attribute] = {
-    // This adjustment only applies to pure-Partial aggregates (checked below).
     val modes = op.aggregateExpressions.map(_.mode).distinct
-    if (modes != Seq(Partial)) {
+    if (modes.exists(mode => mode != Partial && mode != PartialMerge)) {
       return op.output
     }
 
@@ -1916,8 +1916,8 @@ object CometObjectHashAggregateExec
       val aggFunc = aggExpr.aggregateFunction
       val bufferAttrs = aggFunc.aggBufferAttributes
       aggFunc match {
-        case cs: CollectSet =>
-          val elementType = cs.children.head.dataType
+        case _: CollectSet | _: CollectList =>
+          val elementType = aggFunc.children.head.dataType
           val nativeStateType = ArrayType(elementType, containsNull = true)
           output(bufferIdx) = output(bufferIdx).withDataType(nativeStateType)
         case _ =>
