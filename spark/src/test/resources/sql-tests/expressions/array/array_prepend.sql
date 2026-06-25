@@ -25,7 +25,7 @@ statement
 CREATE TABLE test_array_prepend(arr array<int>, val int) USING parquet
 
 statement
-INSERT INTO test_array_prepend VALUES (array(1, 2, 3), 4), (array(), 1), (NULL, 1), (array(1, 2), NULL)
+INSERT INTO test_array_prepend VALUES (array(1, 2, 3), 4), (array(), 1), (NULL, 1), (NULL, 0), (array(1, 2), NULL)
 
 -- column + column
 query
