@@ -234,11 +234,11 @@ object CometMetricNode {
       "files_ranges_pruned_statistics" ->
         SQLMetrics.createMetric(
           sc,
-          "Number of file ranges pruned by partition or file-level statistics"),
+          "Number of file ranges pruned by partition or file level statistics"),
       "files_ranges_matched_statistics" ->
         SQLMetrics.createMetric(
           sc,
-          "Number of file ranges that survived partition or file-level statistics"),
+          "Number of file ranges matched by partition or file level statistics (not pruned)"),
       "row_groups_matched_bloom_filter" ->
         SQLMetrics.createMetric(
           sc,
@@ -252,9 +252,9 @@ object CometMetricNode {
       "row_groups_pruned_statistics" ->
         SQLMetrics.createMetric(sc, "Number of row groups pruned by statistics"),
       "limit_pruned_row_groups" ->
-        SQLMetrics.createMetric(sc, "Number of row groups pruned by limit pushdown"),
+        SQLMetrics.createMetric(sc, "Number of row groups pruned due to limit pruning"),
       "limit_matched_row_groups" ->
-        SQLMetrics.createMetric(sc, "Number of row groups that survived limit pushdown"),
+        SQLMetrics.createMetric(sc, "Number of row groups matched by limit pruning (not pruned)"),
       "bytes_scanned" ->
         SQLMetrics.createSizeMetric(sc, "Number of bytes scanned"),
       "pushdown_rows_pruned" ->
@@ -276,21 +276,25 @@ object CometMetricNode {
       "page_index_pages_pruned" ->
         SQLMetrics.createMetric(sc, "Pages filtered out by parquet page index"),
       "page_index_pages_matched" ->
-        SQLMetrics.createMetric(sc, "Pages that survived parquet page index"),
+        SQLMetrics.createMetric(sc, "Pages passed through the parquet page index"),
       "page_index_eval_time" ->
         SQLMetrics.createNanoTimingMetric(sc, "Time spent evaluating parquet page index filters"),
       "metadata_load_time" ->
         SQLMetrics.createNanoTimingMetric(
           sc,
-          "Time spent reading and parsing metadata from the footer"),
+          "Total time spent reading and parsing metadata from the footer"),
       "predicate_cache_inner_records" ->
         SQLMetrics.createMetric(
           sc,
-          "Predicate cache rows decoded from the parquet file (cache misses)"),
+          "Predicate cache: rows physically read and decoded from the Parquet file (cache misses)"),
       "predicate_cache_records" ->
-        SQLMetrics.createMetric(sc, "Predicate cache rows reused from the cache"),
+        SQLMetrics.createMetric(
+          sc,
+          "Predicate cache: records read from the cache (reused after predicate evaluation)"),
       "scan_efficiency_ratio_total" ->
-        SQLMetrics.createSizeMetric(sc, "Total file size (scan efficiency denominator)"))
+        SQLMetrics.createSizeMetric(
+          sc,
+          "Total file size, denominator of scan_efficiency_ratio = bytes_scanned / total_file_size"))
   }
 
   /**
