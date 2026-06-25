@@ -98,7 +98,10 @@ pub(crate) fn to_native_metric_node(
 /// layer controls what's visible.
 fn insert_metric_value(metrics: &mut HashMap<String, i64>, value: &MetricValue) {
     match value {
-        MetricValue::PruningMetrics { name, pruning_metrics } => {
+        MetricValue::PruningMetrics {
+            name,
+            pruning_metrics,
+        } => {
             let pruned = name.as_ref();
             let matched = pruned.replace("pruned", "matched");
             metrics.insert(pruned.to_string(), pruning_metrics.pruned() as i64);
@@ -106,7 +109,10 @@ fn insert_metric_value(metrics: &mut HashMap<String, i64>, value: &MetricValue) 
                 metrics.insert(matched, pruning_metrics.matched() as i64);
             }
         }
-        MetricValue::Ratio { name, ratio_metrics } => {
+        MetricValue::Ratio {
+            name,
+            ratio_metrics,
+        } => {
             // Spark's SQLMetric has no ratio type, so we expose numerator and
             // denominator separately and let the Scala side pick what to surface.
             let base = name.as_ref();
