@@ -29,7 +29,6 @@ use datafusion::{
 };
 use futures::{Stream, StreamExt};
 use std::{
-    any::Any,
     pin::Pin,
     sync::Arc,
     task::{Context, Poll},
@@ -91,10 +90,6 @@ impl DisplayAs for ExpandExec {
 }
 
 impl ExecutionPlan for ExpandExec {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn schema(&self) -> SchemaRef {
         Arc::clone(&self.schema)
     }

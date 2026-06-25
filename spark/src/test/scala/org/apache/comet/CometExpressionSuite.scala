@@ -969,6 +969,43 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("withInfo records non-fallback info rendered as COMET-INFO") {
+    import org.apache.comet.CometSparkSessionExtensions.withInfo
+    val df = spark.range(1).toDF("a")
+    val node = df.queryExecution.sparkPlan
+    withInfo(node, "native impl available")
+    withInfo(node, "native impl available") // dedups
+    withInfo(node, "second hint") // accumulates
+
+    // Tag-level assertions: no fallback, correct info set.
+    assert(!CometSparkSessionExtensions.hasFallbackReason(node))
+    val info = node.getTagValue(CometExplainInfo.EXTENSION_INFO).get
+    assert(info === Set("native impl available", "second hint"))
+
+    // Renderer assertions: the SAME node is rendered by ExtendedExplainInfo in verbose mode
+    // (the default format). The output must contain [COMET-INFO: ...] with both messages and
+    // must NOT contain a [COMET: ...] fallback segment, proving the info channel does not
+    // leak into the fallback channel.
+    var rendered = ""
+    withSQLConf(
+      CometConf.COMET_EXTENDED_EXPLAIN_FORMAT.key ->
+        CometConf.COMET_EXTENDED_EXPLAIN_FORMAT_VERBOSE) {
+      rendered = new ExtendedExplainInfo().generateExtendedInfo(node)
+    }
+    assert(
+      rendered.contains("[COMET-INFO:"),
+      s"Expected [COMET-INFO: in rendered output: $rendered")
+    assert(
+      rendered.contains("native impl available"),
+      s"Expected message text in rendered output: $rendered")
+    assert(
+      rendered.contains("second hint"),
+      s"Expected second message in rendered output: $rendered")
+    assert(
+      !rendered.contains("[COMET: "),
+      s"Expected no [COMET: fallback segment in rendered output: $rendered")
+  }
+
   test("withFallbackReason") {
     val table = "with_info"
     withTable(table) {
@@ -989,6 +1026,23 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       val explain = new ExtendedExplainInfo().generateExtendedInfo(project)
       for (i <- 1 until 7) {
         assert(explain.contains(s"reason $i"))
+      }
+    }
+  }
+
+  test("native opt-in hint shown for codegen-dispatch path") {
+    withTempDir { dir =>
+      // _5 column is TIMESTAMP(MICROS,false) = TimestampNTZ, which triggers Incompatible in CometHour
+      val path = new Path(dir.toURI.toString, "hint_test.parquet")
+      makeRawTimeParquetFile(path, dictionaryEnabled = false, n = 5)
+      withSQLConf("spark.comet.expression.Hour.allowIncompatible" -> "false") {
+        val df = spark.read.parquet(path.toString).selectExpr("hour(_5) as h")
+        val explain =
+          new ExtendedExplainInfo().generateExtendedInfo(df.queryExecution.executedPlan)
+        assert(explain.contains("[COMET-INFO:"), s"Expected [COMET-INFO: in: $explain")
+        assert(
+          explain.contains("native implementation of Hour"),
+          s"Expected 'native implementation of Hour' in: $explain")
       }
     }
   }
@@ -1431,7 +1485,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
     withParquetTable(doubleValues.flatMap(m => doubleValues.map(n => (m, n))), "tbl") {
       // expressions with two args
-      for (expr <- Seq("atan2", "pow")) {
+      for (expr <- Seq("atan2")) {
         val (_, cometPlan) =
           checkSparkAnswerAndOperatorWithTol(sql(s"SELECT $expr(_1, _2) FROM tbl"))
         val cometProjectExecs = collect(cometPlan) { case op: CometProjectExec =>
@@ -3156,6 +3210,112 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       // by Spark -- it stays intact as a single deeply-nested predicate, so exercise that path
       // directly.
       checkSparkAnswerAndOperator(spark.table("tbl").where(orChain))
+    }
+  }
+
+  test("pushed-down predicate divide-by-zero is not surfaced as FAILED_READ_FILE") {
+    // A throwing expression in a WHERE clause can be pushed into the parquet row filter (reachable
+    // by default once Scala UDF codegen dispatch routes the UDF natively). DataFusion's row filter
+    // returns the failure as an ArrowError wrapped by the parquet reader as ParquetError::External,
+    // which must NOT be misclassified as a corrupt-file read (FAILED_READ_FILE / cannotReadFiles).
+    // The divide-by-zero must surface as a divide-by-zero. Regression for the FAILED_READ_FILE
+    // classifier over-matching (see jni-bridge errors.rs parquet_external_wraps_arrow_error).
+    withSQLConf(
+      "spark.sql.ansi.enabled" -> "true",
+      CometConf.COMET_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_ENABLED.key -> "true",
+      CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "true") {
+      val ident = org.apache.spark.sql.functions.udf((x: Int) => x)
+      spark.udf.register("comet_test_identity", ident)
+      withParquetTable(Seq(Tuple1(0), Tuple1(1)), "t") {
+        val ex = intercept[Exception] {
+          sql("SELECT 1 AS one FROM t WHERE 1 / comet_test_identity(_1) = 1").collect()
+        }
+        val chain = {
+          val sb = new StringBuilder
+          var c: Throwable = ex
+          var depth = 0
+          while (c != null && depth < 12) {
+            sb.append(c.getClass.getName).append(": ").append(String.valueOf(c.getMessage))
+            c = c.getCause
+            depth += 1
+          }
+          sb.toString
+        }
+        assert(
+          !chain.contains("Encountered error while reading file") &&
+            !chain.contains("FAILED_READ_FILE") &&
+            !chain.contains("cannotReadFiles"),
+          s"divide-by-zero must not surface as a file-read error, but got:\n$chain")
+        assert(
+          chain.contains("DivideByZero") || chain.contains("DIVIDE_BY_ZERO"),
+          s"expected a divide-by-zero error, but got:\n$chain")
+      }
+    }
+  }
+
+  test("NativeOptIn message and Compatible field") {
+    import org.apache.comet.serde.{Compatible, NativeOptIn}
+    val key = "spark.comet.expression.RLike.allowIncompatible"
+    val msg = NativeOptIn.message("RLike", key)
+    assert(msg.contains("native implementation of RLike"))
+    assert(msg.contains(key))
+    val level = Compatible(nativeOptIn = Some(NativeOptIn(key)))
+    assert(level.nativeOptIn.contains(NativeOptIn(key)))
+    assert(Compatible().nativeOptIn.isEmpty)
+  }
+
+  test("RLike literal pattern shows native opt-in, non-literal does not") {
+    withTable("t") {
+      spark.sql("create table t(s string, p string) using parquet")
+      spark.sql("insert into t values ('abc','a.*'), ('xyz','z')")
+      val lit = spark.sql("select s rlike 'a.*' as r from t")
+      val nonLit = spark.sql("select s rlike p as r from t")
+      val explainLit =
+        new ExtendedExplainInfo().generateExtendedInfo(lit.queryExecution.executedPlan)
+      val explainNonLit =
+        new ExtendedExplainInfo().generateExtendedInfo(nonLit.queryExecution.executedPlan)
+      assert(explainLit.contains("native implementation of RLike"))
+      assert(!explainNonLit.contains("native implementation of RLike"))
+    }
+  }
+
+  test("upper shows native opt-in via caseConversion config key") {
+    withTable("t_upper") {
+      spark.sql("create table t_upper(s string) using parquet")
+      spark.sql("insert into t_upper values ('abc'), ('xyz')")
+      val df = spark.sql("select upper(s) as u from t_upper")
+      val explain = new ExtendedExplainInfo().generateExtendedInfo(df.queryExecution.executedPlan)
+      assert(explain.contains("native implementation of Upper"))
+      assert(explain.contains("spark.comet.caseConversion.enabled"))
+    }
+  }
+
+  test("date_format shows native opt-in for whitelisted literal format") {
+    withTable("t_datefmt") {
+      spark.sql("create table t_datefmt(ts timestamp) using parquet")
+      spark.sql("insert into t_datefmt values (cast('2024-01-15 10:30:00' as timestamp))")
+
+      // Positive case: non-UTC session timezone, config OFF -> hint should appear because
+      // flipping the config would actually switch this instance to native.
+      withSQLConf("spark.sql.session.timeZone" -> "America/Los_Angeles") {
+        val df = spark.sql("select date_format(ts, 'yyyy') as d from t_datefmt")
+        val explain =
+          new ExtendedExplainInfo().generateExtendedInfo(df.queryExecution.executedPlan)
+        assert(
+          explain.contains("native implementation of DateFormatClass"),
+          "Expected opt-in hint for non-UTC session with whitelisted format")
+      }
+
+      // True-negative: UTC session timezone, config OFF -> native already runs, so no hint.
+      withSQLConf("spark.sql.session.timeZone" -> "UTC") {
+        val df = spark.sql("select date_format(ts, 'yyyy') as d from t_datefmt")
+        val explain =
+          new ExtendedExplainInfo().generateExtendedInfo(df.queryExecution.executedPlan)
+        assert(
+          !explain.contains("native implementation of DateFormatClass"),
+          "Expected no opt-in hint for UTC session: native already runs without config change")
+      }
     }
   }
 

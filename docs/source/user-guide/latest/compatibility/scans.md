@@ -60,7 +60,7 @@ The following limitation may produce incorrect results without falling back to S
   written using the Proleptic Gregorian calendar. This may produce incorrect results for dates before
   October 15, 1582.
 
-The following limitation raises an error at scan time rather than falling back to Spark:
+The following limitations raise an error at scan time rather than falling back to Spark:
 
 - Invalid UTF-8 bytes in `STRING` columns. Spark permits arbitrary byte sequences in a `STRING`
   column (for example from `CAST(X'C1' AS STRING)`), but Comet's native execution path is built on
@@ -68,17 +68,13 @@ The following limitation raises an error at scan time rather than falling back t
   non-UTF-8 bytes fails with `Parquet error: encountered non UTF-8 data`. Disable Comet for the
   query, or cast the column to `BINARY` before persisting, if you need to preserve non-UTF-8 bytes.
   See [#4121](https://github.com/apache/datafusion-comet/issues/4121).
-
-The following limitation may produce incorrect results on Spark versions prior to 4.0
-without falling back to Spark:
-
-- Reading `TimestampLTZ` as `TimestampNTZ`. On Spark 3.x, Spark raises an error per
-  [SPARK-36182](https://issues.apache.org/jira/browse/SPARK-36182) because LTZ encodes UTC-adjusted instants
-  that cannot be safely reinterpreted as timezone-free values. Comet does not raise this error and instead
-  returns the raw UTC instant as a `TimestampNTZ` value. This applies to all LTZ physical encodings (INT96,
-  TIMESTAMP_MICROS, TIMESTAMP_MILLIS). On Spark 4.0+, this read is permitted
-  ([SPARK-47447](https://issues.apache.org/jira/browse/SPARK-47447)) and Comet matches Spark's behavior.
-  See [#4219](https://github.com/apache/datafusion-comet/issues/4219).
+- Reading `TimestampLTZ` as `TimestampNTZ` on Spark 3.x. Spark raises an error per
+  [SPARK-36182](https://issues.apache.org/jira/browse/SPARK-36182) because LTZ encodes UTC-adjusted
+  instants that cannot be safely reinterpreted as timezone-free values, and Comet matches this by
+  rejecting the read. This applies to all LTZ physical encodings (INT96, TIMESTAMP_MICROS,
+  TIMESTAMP_MILLIS). On Spark 4.0+, this read is permitted
+  ([SPARK-47447](https://issues.apache.org/jira/browse/SPARK-47447)) and Comet matches Spark's
+  behavior. See [#4219](https://github.com/apache/datafusion-comet/issues/4219).
 
 ### Schema Mismatch Handling
 

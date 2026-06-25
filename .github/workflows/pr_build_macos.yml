@@ -35,7 +35,7 @@ jobs:
     container:
       image: amd64/rust
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Check Rust formatting
         run: |
@@ -48,7 +48,7 @@ jobs:
     name: Build Native Library (macOS)
     runs-on: macos-14
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Setup Rust & Java toolchain
         uses: ./.github/actions/setup-macos-builder
@@ -162,6 +162,7 @@ jobs:
               org.apache.spark.CometPluginsNonOverrideSuite
               org.apache.spark.CometPluginsUnifiedModeOverrideSuite
               org.apache.comet.rules.CometScanRuleSuite
+              org.apache.comet.rules.CometScanSchemeFallbackSuite
               org.apache.comet.rules.CometExecRuleSuite
               org.apache.spark.sql.CometTPCDSQuerySuite
               org.apache.spark.sql.CometTPCDSQueryTestSuite
@@ -171,6 +172,7 @@ jobs:
               org.apache.spark.sql.comet.CometTaskMetricsSuite
               org.apache.spark.sql.comet.CometDppFallbackRepro3949Suite
               org.apache.spark.sql.comet.CometShuffleFallbackStickinessSuite
+              org.apache.spark.sql.comet.PlanDataInjectorSuite
               org.apache.spark.sql.comet.CometDecimalArithmeticViewSuite
               org.apache.spark.sql.comet.util.UtilsSuite
               org.apache.comet.objectstore.NativeConfigSuite
@@ -212,7 +214,7 @@ jobs:
     name: ${{ matrix.os }}/${{ matrix.profile.name }} [${{ matrix.suite.name }}]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Setup Rust & Java toolchain
         uses: ./.github/actions/setup-macos-builder
