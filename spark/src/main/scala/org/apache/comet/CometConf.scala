@@ -142,14 +142,17 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
-  val COMET_RESPECT_PARQUET_FILTER_PUSHDOWN: ConfigEntry[Boolean] =
-    conf("spark.comet.parquet.respectFilterPushdown")
+  val COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.parquet.rowFilterPushdown.enabled")
       .category(CATEGORY_PARQUET)
       .doc(
-        "Whether to respect Spark's PARQUET_FILTER_PUSHDOWN_ENABLED config. This needs to be " +
-          "respected when running the Spark SQL test suite but the default setting " +
-          "results in poor performance in Comet when using the new native scans, " +
-          "disabled by default")
+        "When enabled, the native Parquet reader evaluates pushed filters during decode " +
+          "and lazily materializes projected columns for surviving rows (DataFusion's " +
+          "pushdown_filters / late-materialization). Format-level pruning (row-group " +
+          "statistics, page index, bloom filters) is independent of this flag and runs " +
+          "whenever Spark's spark.sql.parquet.filterPushdown is enabled. Disabling this " +
+          "flag still lets format-level pruning work; the per-row eval falls back to " +
+          "the CometFilter operator above the scan.")
       .booleanConf
       .createWithDefault(false)
 
@@ -291,9 +294,10 @@ object CometConf extends ShimCometConf {
   val COMET_EXEC_SORT_MERGE_JOIN_WITH_JOIN_FILTER_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.exec.sortMergeJoinWithJoinFilter.enabled")
       .category(CATEGORY_ENABLE_EXEC)
-      .doc("Experimental support for Sort Merge Join with filter")
+      .doc("Support for Sort Merge Join with filter. " +
+        "Deprecated: this config will be removed in a future release.")
       .booleanConf
-      .createWithDefault(false)
+      .createWithDefault(true)
 
   val COMET_TRACING_ENABLED: ConfigEntry[Boolean] = conf("spark.comet.tracing.enabled")
     .category(CATEGORY_TUNING)

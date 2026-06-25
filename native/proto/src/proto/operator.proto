@@ -22,6 +22,7 @@ syntax = "proto3";
 package spark.spark_operator;
 
 import "expr.proto";
+import "literal.proto";
 import "partitioning.proto";
 import "types.proto";
 
@@ -126,6 +127,11 @@ message NativeScanCommon {
   // with a disallowed promoted type throws an error matching Spark's
   // SchemaColumnConvertNotSupportedException behavior.
   bool allow_type_promotion = 17;
+  // When true, reading a Parquet TimestampLTZ column as TimestampNTZ is
+  // permitted (Spark 4.0+, SPARK-47447); when false, it is rejected with
+  // SchemaColumnConvertNotSupportedException (Spark 3.x, SPARK-36182). Set
+  // from Comet's per-Spark-version constant in ShimCometConf.
+  bool allow_timestamp_ltz_to_ntz = 18;
 }
 
 message NativeScan {
@@ -423,6 +429,10 @@ message WindowExpr {
   spark.spark_expression.AggExpr agg_func = 2;
   WindowSpecDefinition spec = 3;
   bool ignore_nulls = 4;
+  // Spark's expected result type. Used to cast the native window function output
+  // when DataFusion's return type differs (e.g. row_number returns UInt64 but
+  // Spark expects Int32).
+  spark.spark_expression.DataType result_type = 5;
 }
 
 enum WindowFrameType {
@@ -453,11 +463,19 @@ message UpperWindowFrameBound {
 }
 
 message Preceding {
+  // Used for ROWS frames. Integer row count.
   int64 offset = 1;
+  // Used for RANGE frames. Carries the typed offset value so the native
+  // side can build a ScalarValue whose type matches the ORDER BY column.
+  spark.spark_expression.Literal range_offset = 2;
 }
 
 message Following {
+  // Used for ROWS frames. Integer row count.
   int64 offset = 1;
+  // Used for RANGE frames. Carries the typed offset value so the native
+  // side can build a ScalarValue whose type matches the ORDER BY column.
+  spark.spark_expression.Literal range_offset = 2;
 }
 
 message UnboundedPreceding {}

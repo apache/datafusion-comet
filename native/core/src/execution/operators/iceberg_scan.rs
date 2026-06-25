@@ -17,7 +17,6 @@
 
 //! Native Iceberg table scan operator using iceberg-rust
 
-use std::any::Any;
 use std::collections::HashMap;
 use std::fmt;
 use std::pin::Pin;
@@ -121,10 +120,6 @@ impl IcebergScanExec {
 impl ExecutionPlan for IcebergScanExec {
     fn name(&self) -> &str {
         "IcebergScanExec"
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        self
     }
 
     fn schema(&self) -> SchemaRef {

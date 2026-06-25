@@ -1708,7 +1708,9 @@ class ParquetReadV1Suite extends ParquetReadSuite with AdaptiveSparkPlanHelper {
           nullEnabled = false)
       }
       Seq(true, false).foreach { pushDown =>
-        withSQLConf(SQLConf.PARQUET_FILTER_PUSHDOWN_ENABLED.key -> pushDown.toString) {
+        withSQLConf(
+          SQLConf.PARQUET_FILTER_PUSHDOWN_ENABLED.key -> pushDown.toString,
+          CometConf.COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED.key -> "true") {
           Seq(
             ("_1 = true", Math.ceil(rows.toDouble / 2)), // Boolean
             ("_2 = 1", Math.ceil(rows.toDouble / 256)), // Byte

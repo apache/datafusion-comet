@@ -26,7 +26,6 @@
 //! outputs state) but redirects `update_batch` calls to `merge_batch`, giving merge
 //! semantics with state output.
 
-use std::any::Any;
 use std::fmt::Debug;
 use std::hash::{Hash, Hasher};
 
@@ -100,10 +99,6 @@ impl MergeAsPartialUDF {
 }
 
 impl AggregateUDFImpl for MergeAsPartialUDF {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn name(&self) -> &str {
         &self.name
     }
