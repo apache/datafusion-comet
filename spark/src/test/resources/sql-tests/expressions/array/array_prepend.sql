@@ -137,5 +137,5 @@ query
 SELECT array_prepend(arr, val) FROM test_array_prepend_bin
 
 query
-SELECT array_prepend(arr, element_at(array(9), idx))
+SELECT array_prepend(arr, element_at(array(9), val))
 FROM test_array_prepend
