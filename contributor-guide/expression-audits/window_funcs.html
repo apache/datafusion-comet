@@ -550,6 +550,12 @@ under the License.
 <blockquote>
 <div><p>Audit notes for expressions in this category that have been audited. Absence of an entry means the expression has not been audited yet, not that it is unsupported. See the user guide <a class="reference internal" href="../../user-guide/latest/expressions.html"><span class="std std-doc">Spark Expression Support</span></a> for current support status.</p>
 </div></blockquote>
+<section id="avg-window">
+<h2>avg (window)<a class="headerlink" href="#avg-window" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>4.1.1, audited 2026-06-25: <code class="docutils literal notranslate"><span class="pre">AVG(&lt;decimal&gt;)</span></code> over a window falls back to Spark on Spark 4.x. Spark wraps the result as <code class="docutils literal notranslate"><span class="pre">Cast(avg(UnscaledValue(v))</span> <span class="pre">/</span> <span class="pre">pow10</span> <span class="pre">as</span> <span class="pre">decimal)</span></code>, a shape <code class="docutils literal notranslate"><span class="pre">CometWindowExec.convert</span></code> does not unwrap (it recognizes only <code class="docutils literal notranslate"><span class="pre">Alias(WindowExpression)</span></code> and <code class="docutils literal notranslate"><span class="pre">Alias(MakeDecimal(WindowExpression))</span></code>), so the <code class="docutils literal notranslate"><span class="pre">AvgDecimal</span></code> native window branch in <code class="docutils literal notranslate"><span class="pre">process_agg_func</span></code> is effectively dead on Spark 4.x. Results stay correct via fallback; this is a coverage gap, not a correctness divergence. Tracked by https://github.com/apache/datafusion-comet/issues/4731. Non-decimal <code class="docutils literal notranslate"><span class="pre">AVG</span></code> runs natively. Sliding-frame decimal <code class="docutils literal notranslate"><span class="pre">AVG</span></code> is additionally guarded by the same fallback as decimal <code class="docutils literal notranslate"><span class="pre">SUM</span></code> (see below) so that it cannot hit the DataFusion built-in overflow divergence once the <code class="docutils literal notranslate"><span class="pre">Cast(Divide(...))</span></code> shape is recognized.</p></li>
+</ul>
+</section>
 <section id="lag">
 <h2>lag<a class="headerlink" href="#lag" title="Link to this heading">#</a></h2>
 <ul class="simple">
@@ -560,6 +566,12 @@ under the License.
 <h2>lead<a class="headerlink" href="#lead" title="Link to this heading">#</a></h2>
 <ul class="simple">
 <li><p>Supported via <code class="docutils literal notranslate"><span class="pre">CometWindowExec</span></code> (operator level), not the expression serde.</p></li>
+</ul>
+</section>
+<section id="sum-window">
+<h2>sum (window)<a class="headerlink" href="#sum-window" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>4.1.1, audited 2026-06-25: <code class="docutils literal notranslate"><span class="pre">SUM(&lt;decimal&gt;)</span></code> over a sliding window frame (lower bound not <code class="docutils literal notranslate"><span class="pre">UNBOUNDED</span> <span class="pre">PRECEDING</span></code>) falls back to Spark. The native sliding path would use DataFusion’s built-in <code class="docutils literal notranslate"><span class="pre">sum</span></code>, which wraps on overflow rather than returning Spark’s NULL, and overflow cannot be detected at plan time, so the whole sliding decimal <code class="docutils literal notranslate"><span class="pre">SUM</span></code> case falls back. Ever-expanding frames use Comet’s overflow-aware <code class="docutils literal notranslate"><span class="pre">SumDecimal</span></code> UDAF and run natively, matching Spark including overflow-to-NULL. Bigint sliding <code class="docutils literal notranslate"><span class="pre">SUM</span></code> overflow matches Spark (both wrap) and stays native.</p></li>
 </ul>
 </section>
 </section>

@@ -46,7 +46,7 @@ Comet provides the following configuration settings.
 | `spark.comet.parquet.read.io.mergeRanges.delta` | The delta in bytes between consecutive read ranges below which the parallel reader will try to merge the ranges. The default is 8MB. | 8388608 |
 | `spark.comet.parquet.read.parallel.io.enabled` | Whether to enable Comet's parallel reader for Parquet files. The parallel reader reads ranges of consecutive data in a  file in parallel. It is faster for large files and row groups but uses more resources. | true |
 | `spark.comet.parquet.read.parallel.io.thread-pool.size` | The maximum number of parallel threads the parallel reader will use in a single executor. For executors configured with a smaller number of cores, use a smaller number. | 16 |
-| `spark.comet.parquet.respectFilterPushdown` | Whether to respect Spark's PARQUET_FILTER_PUSHDOWN_ENABLED config. This needs to be respected when running the Spark SQL test suite but the default setting results in poor performance in Comet when using the new native scans, disabled by default | false |
+| `spark.comet.parquet.rowFilterPushdown.enabled` | When enabled, the native Parquet reader evaluates pushed filters during decode and lazily materializes projected columns for surviving rows (DataFusion's pushdown_filters / late-materialization). Format-level pruning (row-group statistics, page index, bloom filters) is independent of this flag and runs whenever Spark's spark.sql.parquet.filterPushdown is enabled. Disabling this flag still lets format-level pruning work; the per-row eval falls back to the CometFilter operator above the scan. | false |
 <!-- prettier-ignore-end -->
 <!--END:CONFIG_TABLE-->
 
