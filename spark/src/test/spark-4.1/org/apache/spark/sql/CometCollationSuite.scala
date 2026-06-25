@@ -172,6 +172,18 @@ class CometCollationSuite extends CometTestBase {
       "date_format does not support non-UTF8_BINARY collations")
   }
 
+  test("date_format uses native path with collated format when allowIncompatible is enabled") {
+    withDatetimeCollationTable {
+      withSQLConf(
+        CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false",
+        "spark.comet.expression.DateFormatClass.allowIncompatible" -> "true") {
+        checkSparkAnswerAndOperator(
+          "SELECT date_format(CAST(_2 AS TIMESTAMP), 'yyyy-MM-dd' COLLATE utf8_lcase) " +
+            "FROM datetime_collation_tbl")
+      }
+    }
+  }
+
   test("trunc routes collated format through codegen dispatcher (issue #4646)") {
     checkDatetimeDispatcher(
       "SELECT trunc(CAST(_3 AS DATE), _8 COLLATE utf8_lcase) FROM datetime_collation_tbl")
