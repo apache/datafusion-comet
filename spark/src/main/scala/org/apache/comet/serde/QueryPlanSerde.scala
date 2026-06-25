@@ -767,8 +767,19 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       }
       handler.getSupportLevel(expr) match {
         case Unsupported(notes) =>
-          withFallbackReason(expr, notes.getOrElse(""))
-          None
+          // `CodegenDispatchFallback` serdes have no native path for these cases either, but the
+          // dispatcher can still run Spark's own `doGenCode` inside the Comet pipeline. Try that
+          // before falling the projection back to Spark. No `[COMET-INFO]` hint here: unlike
+          // `Incompatible`, there is no native opt-in for the user to flip.
+          val dispatched = handler match {
+            case _: CodegenDispatchFallback =>
+              CometScalaUDF.emitJvmCodegenDispatch(expr, inputs, binding)
+            case _ => None
+          }
+          dispatched.orElse {
+            withFallbackReason(expr, notes.getOrElse(""))
+            None
+          }
         case Incompatible(notes) =>
           val exprAllowIncompat = CometConf.isExprAllowIncompat(exprConfName)
           if (exprAllowIncompat) {

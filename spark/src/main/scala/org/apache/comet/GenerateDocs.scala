@@ -28,7 +28,7 @@ import org.apache.spark.sql.catalyst.expressions.Cast
 
 import org.apache.comet.CometConf.COMET_ONHEAP_MEMORY_OVERHEAD
 import org.apache.comet.expressions.{CometCast, CometEvalMode}
-import org.apache.comet.serde.{CometAggregateExpressionSerde, CometExpressionSerde, Compatible, Incompatible, NativeOptInAvailable, QueryPlanSerde, Unsupported}
+import org.apache.comet.serde.{CodegenDispatchFallback, CometAggregateExpressionSerde, CometExpressionSerde, Compatible, Incompatible, NativeOptInAvailable, QueryPlanSerde, Unsupported}
 
 /**
  * Utility for generating markdown documentation from the configs.
@@ -49,12 +49,15 @@ object GenerateDocs {
    * @param incompatibleReasons
    *   reasons the native implementation is incompatible with Spark
    * @param unsupportedReasons
-   *   cases that Comet does not support
+   *   cases that Comet's native implementation does not handle
    * @param nativeOptIn
    *   whether the serde implements `NativeOptInAvailable`, meaning the expression runs a
-   *   Spark-compatible path by default and the user can opt into a faster native path
+   *   Spark-compatible path by default and the user can opt into a native path
    * @param nativeOptInConfigKey
    *   the config key the user sets to opt into the native path
+   * @param codegenDispatchFallback
+   *   whether the serde mixes in `CodegenDispatchFallback`, meaning `unsupportedReasons` cases
+   *   route through the JVM codegen dispatcher instead of falling back to Spark
    */
   private case class ExprNotes(
       name: String,
@@ -62,7 +65,8 @@ object GenerateDocs {
       incompatibleReasons: Seq[String],
       unsupportedReasons: Seq[String],
       nativeOptIn: Boolean,
-      nativeOptInConfigKey: String)
+      nativeOptInConfigKey: String,
+      codegenDispatchFallback: Boolean)
 
   private type CategoryNotes = Seq[ExprNotes]
 
@@ -80,7 +84,8 @@ object GenerateDocs {
       serde.getIncompatibleReasons(),
       serde.getUnsupportedReasons(),
       optIn,
-      key)
+      key,
+      codegenDispatchFallback = serde.isInstanceOf[CodegenDispatchFallback])
   }
 
   /** Build the documentation notes for a single aggregate expression serde. */
@@ -92,7 +97,8 @@ object GenerateDocs {
       serde.getUnsupportedReasons(),
       // Aggregate serdes do not have a native opt-in path.
       nativeOptIn = false,
-      nativeOptInConfigKey = CometConf.getExprAllowIncompatConfigKey(cls))
+      nativeOptInConfigKey = CometConf.getExprAllowIncompatConfigKey(cls),
+      codegenDispatchFallback = false)
 
   /**
    * Mapping from expression category to the compatibility guide filename where that category's
@@ -277,8 +283,9 @@ object GenerateDocs {
       }
       if (n.incompatibleReasons.nonEmpty) {
         val header = if (n.nativeOptIn) {
-          s"\nBy default, Comet runs a Spark-compatible implementation of `$name`. Set" +
-            s" `${n.nativeOptInConfigKey}=true` to use Comet's faster native implementation" +
+          s"\nBy default, `$name` is evaluated in the JVM using Spark's own code-generated" +
+            " implementation (run inside the Comet pipeline), which matches Spark exactly." +
+            s" Set `${n.nativeOptInConfigKey}=true` to opt into Comet's native implementation" +
             " instead, which has the following differences from Spark:\n\n"
         } else {
           s"\nThe following incompatibilities cause `$name` to fall back to Spark by default." +
@@ -291,7 +298,14 @@ object GenerateDocs {
         }
       }
       if (n.unsupportedReasons.nonEmpty) {
-        w.write("\nThe following cases are not supported by Comet:\n\n".getBytes)
+        val header = if (n.codegenDispatchFallback) {
+          "\nThe following cases have no native implementation and always run in the JVM using" +
+            " Spark's code-generated implementation (inside the Comet pipeline):\n\n"
+        } else {
+          "\nThe following cases are not supported by Comet and always fall back to Spark," +
+            " regardless of any `allowIncompatible` setting:\n\n"
+        }
+        w.write(header.getBytes)
         for (reason <- n.unsupportedReasons) {
           w.write(s"- $reason\n".getBytes)
         }
