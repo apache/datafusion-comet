@@ -579,6 +579,18 @@ under the License.
 <li><p><strong>JSON</strong>: choosing between the native and Spark-compatible engines for JSON expressions.</p></li>
 <li><p><strong>Spark versions</strong>: version-specific known issues and limitations.</p></li>
 </ul>
+<section id="compatible-by-default-opt-in-to-native">
+<h2>Compatible by default, opt in to native<a class="headerlink" href="#compatible-by-default-opt-in-to-native" title="Link to this heading">#</a></h2>
+<p>Comet runs a Spark-compatible implementation of every supported expression by default. Some
+expressions also have a faster native implementation that can differ from Spark for certain
+inputs. These are not used unless you opt in by setting the relevant
+<code class="docutils literal notranslate"><span class="pre">spark.comet.expression.&lt;Name&gt;.allowIncompatible=true</span></code> config (a few use a dedicated config, noted
+per expression below), after which you accept the documented differences.</p>
+<p>You can discover where a native opt-in is available for a specific query in the verbose extended
+explain output. A <code class="docutils literal notranslate"><span class="pre">[COMET-INFO:</span> <span class="pre">...]</span></code> segment points at an available native path and does not mean
+the operator falls back to Spark. This is distinct from <code class="docutils literal notranslate"><span class="pre">[COMET:</span> <span class="pre">...]</span></code>, which records a reason an
+operator did fall back.</p>
+</section>
 <section id="native-and-codegen-dispatch-implementations">
 <h2>Native and codegen-dispatch implementations<a class="headerlink" href="#native-and-codegen-dispatch-implementations" title="Link to this heading">#</a></h2>
 <p>Some Spark expressions have two implementations in Comet:</p>

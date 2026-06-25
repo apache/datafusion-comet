@@ -46,7 +46,7 @@ If you need to process dates far in the future with accurate timezone handling, 
 
 ## ConvertTimezone
 
-By default, Comet accelerates `ConvertTimezone` using JVM codegen dispatch, which runs Spark's generated code inside Comet's native pipeline and matches Spark exactly. Set `spark.comet.expression.ConvertTimezone.allowIncompatible=true` to use Comet's faster native implementation instead, which has the following differences from Spark:
+By default, Comet runs a Spark-compatible implementation of `ConvertTimezone`. Set `spark.comet.expression.ConvertTimezone.allowIncompatible=true` to use Comet's faster native implementation instead, which has the following differences from Spark:
 
 - Comet's native timezone parser only accepts IANA zone IDs (e.g. `America/Los_Angeles`) and fixed offsets in `+HH:MM` form. Spark also accepts forms such as `GMT+1`, `UTC+1`, or three-letter abbreviations like `PST`; queries using those forms will throw a native parse error at execution time. See https://github.com/apache/datafusion-comet/issues/2013.
 
@@ -56,6 +56,10 @@ The following differences from Spark are always present and do not require any a
 
 - Format strings in a curated allow-list run natively via DataFusion's `to_char` for UTC sessions. Other format strings (including non-literal formats), as well as non-UTC sessions, route through Spark's own `DateFormatClass.doGenCode` via the Arrow-direct codegen dispatcher when `spark.comet.exec.scalaUDF.codegen.enabled=true` (the default). When the codegen dispatcher is disabled the operator falls back to Spark in those cases.
 
+By default, Comet runs a Spark-compatible implementation of `DateFormatClass`. Set `spark.comet.expression.DateFormatClass.allowIncompatible=true` to use Comet's faster native implementation instead, which has the following differences from Spark:
+
+- Non-UTC timezones may produce different results than Spark
+
 ## Days
 
 The following cases are not supported by Comet:
@@ -64,19 +68,19 @@ The following cases are not supported by Comet:
 
 ## FromUTCTimestamp
 
-By default, Comet accelerates `FromUTCTimestamp` using JVM codegen dispatch, which runs Spark's generated code inside Comet's native pipeline and matches Spark exactly. Set `spark.comet.expression.FromUTCTimestamp.allowIncompatible=true` to use Comet's faster native implementation instead, which has the following differences from Spark:
+By default, Comet runs a Spark-compatible implementation of `FromUTCTimestamp`. Set `spark.comet.expression.FromUTCTimestamp.allowIncompatible=true` to use Comet's faster native implementation instead, which has the following differences from Spark:
 
 - Comet's native timezone parser only accepts IANA zone IDs (e.g. `America/Los_Angeles`) and fixed offsets in `+HH:MM` form. Spark also accepts forms such as `GMT+1`, `UTC+1`, or three-letter abbreviations like `PST`; queries using those forms will throw a native parse error at execution time. See https://github.com/apache/datafusion-comet/issues/2013.
 
 ## FromUnixTime
 
-By default, Comet accelerates `FromUnixTime` using JVM codegen dispatch, which runs Spark's generated code inside Comet's native pipeline and matches Spark exactly. Set `spark.comet.expression.FromUnixTime.allowIncompatible=true` to use Comet's faster native implementation instead, which has the following differences from Spark:
+By default, Comet runs a Spark-compatible implementation of `FromUnixTime`. Set `spark.comet.expression.FromUnixTime.allowIncompatible=true` to use Comet's faster native implementation instead, which has the following differences from Spark:
 
 - Only supports the default datetime format pattern `yyyy-MM-dd HH:mm:ss`. DataFusion's valid timestamp range differs from Spark (https://github.com/apache/datafusion/issues/16594)
 
 ## Hour
 
-By default, Comet accelerates `Hour` using JVM codegen dispatch, which runs Spark's generated code inside Comet's native pipeline and matches Spark exactly. Set `spark.comet.expression.Hour.allowIncompatible=true` to use Comet's faster native implementation instead, which has the following differences from Spark:
+By default, Comet runs a Spark-compatible implementation of `Hour`. Set `spark.comet.expression.Hour.allowIncompatible=true` to use Comet's faster native implementation instead, which has the following differences from Spark:
 
 - Incorrectly applies timezone conversion to TimestampNTZ inputs (https://github.com/apache/datafusion-comet/issues/3180)
 
@@ -88,13 +92,13 @@ The following cases are not supported by Comet:
 
 ## Minute
 
-By default, Comet accelerates `Minute` using JVM codegen dispatch, which runs Spark's generated code inside Comet's native pipeline and matches Spark exactly. Set `spark.comet.expression.Minute.allowIncompatible=true` to use Comet's faster native implementation instead, which has the following differences from Spark:
+By default, Comet runs a Spark-compatible implementation of `Minute`. Set `spark.comet.expression.Minute.allowIncompatible=true` to use Comet's faster native implementation instead, which has the following differences from Spark:
 
 - Incorrectly applies timezone conversion to TimestampNTZ inputs (https://github.com/apache/datafusion-comet/issues/3180)
 
 ## Second
 
-By default, Comet accelerates `Second` using JVM codegen dispatch, which runs Spark's generated code inside Comet's native pipeline and matches Spark exactly. Set `spark.comet.expression.Second.allowIncompatible=true` to use Comet's faster native implementation instead, which has the following differences from Spark:
+By default, Comet runs a Spark-compatible implementation of `Second`. Set `spark.comet.expression.Second.allowIncompatible=true` to use Comet's faster native implementation instead, which has the following differences from Spark:
 
 - Incorrectly applies timezone conversion to TimestampNTZ inputs (https://github.com/apache/datafusion-comet/issues/3180)
 
@@ -106,13 +110,13 @@ The following cases are not supported by Comet:
 
 ## ToUTCTimestamp
 
-By default, Comet accelerates `ToUTCTimestamp` using JVM codegen dispatch, which runs Spark's generated code inside Comet's native pipeline and matches Spark exactly. Set `spark.comet.expression.ToUTCTimestamp.allowIncompatible=true` to use Comet's faster native implementation instead, which has the following differences from Spark:
+By default, Comet runs a Spark-compatible implementation of `ToUTCTimestamp`. Set `spark.comet.expression.ToUTCTimestamp.allowIncompatible=true` to use Comet's faster native implementation instead, which has the following differences from Spark:
 
 - Comet's native timezone parser only accepts IANA zone IDs (e.g. `America/Los_Angeles`) and fixed offsets in `+HH:MM` form. Spark also accepts forms such as `GMT+1`, `UTC+1`, or three-letter abbreviations like `PST`; queries using those forms will throw a native parse error at execution time. See https://github.com/apache/datafusion-comet/issues/2013.
 
 ## TruncDate
 
-By default, Comet accelerates `TruncDate` using JVM codegen dispatch, which runs Spark's generated code inside Comet's native pipeline and matches Spark exactly. Set `spark.comet.expression.TruncDate.allowIncompatible=true` to use Comet's faster native implementation instead, which has the following differences from Spark:
+By default, Comet runs a Spark-compatible implementation of `TruncDate`. Set `spark.comet.expression.TruncDate.allowIncompatible=true` to use Comet's faster native implementation instead, which has the following differences from Spark:
 
 - Non-literal format strings will throw an exception instead of returning NULL
 
@@ -122,7 +126,7 @@ The following cases are not supported by Comet:
 
 ## TruncTimestamp
 
-By default, Comet accelerates `TruncTimestamp` using JVM codegen dispatch, which runs Spark's generated code inside Comet's native pipeline and matches Spark exactly. Set `spark.comet.expression.TruncTimestamp.allowIncompatible=true` to use Comet's faster native implementation instead, which has the following differences from Spark:
+By default, Comet runs a Spark-compatible implementation of `TruncTimestamp`. Set `spark.comet.expression.TruncTimestamp.allowIncompatible=true` to use Comet's faster native implementation instead, which has the following differences from Spark:
 
 - Produces incorrect results when used with non-UTC timezones. Compatible when timezone is UTC. (https://github.com/apache/datafusion-comet/issues/2649)
 - Non-literal format strings will throw an exception instead of returning NULL

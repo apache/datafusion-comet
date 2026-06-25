@@ -27,6 +27,12 @@ The following cases are not supported by Comet:
 
 - `CreateNamedStruct` with duplicate field names is not supported
 
+## JsonToStructs
+
+By default, Comet runs a Spark-compatible implementation of `JsonToStructs`. Set `spark.comet.expression.JsonToStructs.allowIncompatible=true` to use Comet's faster native implementation instead, which has the following differences from Spark:
+
+- Partially implemented and not comprehensively tested
+
 ## StructsToCsv
 
 The following incompatibilities cause `StructsToCsv` to fall back to Spark by default. Set `spark.comet.expression.StructsToCsv.allowIncompatible=true` to enable Comet acceleration despite these differences.
@@ -36,4 +42,10 @@ The following incompatibilities cause `StructsToCsv` to fall back to Spark by de
 The following cases are not supported by Comet:
 
 - Complex types (arrays, maps, structs) in the schema are not supported
+
+## StructsToJson
+
+By default, Comet runs a Spark-compatible implementation of `StructsToJson`. Set `spark.comet.expression.StructsToJson.allowIncompatible=true` to use Comet's faster native implementation instead, which has the following differences from Spark:
+
+- Does not support `+Infinity` and `-Infinity` for numeric types (float, double). (https://github.com/apache/datafusion-comet/issues/3016)
 <!--END:EXPR_COMPAT-->

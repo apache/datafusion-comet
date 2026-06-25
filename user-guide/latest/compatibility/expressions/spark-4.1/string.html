@@ -584,13 +584,27 @@ under the License.
 </section>
 <section id="concat">
 <h2>Concat<a class="headerlink" href="#concat" title="Link to this heading">#</a></h2>
-<p>By default, Comet accelerates <code class="docutils literal notranslate"><span class="pre">Concat</span></code> using JVM codegen dispatch, which runs Spark’s generated code inside Comet’s native pipeline and matches Spark exactly. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Concat.allowIncompatible=true</span></code> to use Comet’s faster native implementation instead, which has the following differences from Spark:</p>
+<p>By default, Comet runs a Spark-compatible implementation of <code class="docutils literal notranslate"><span class="pre">Concat</span></code>. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Concat.allowIncompatible=true</span></code> to use Comet’s faster native implementation instead, which has the following differences from Spark:</p>
 <ul class="simple">
 <li><p>concat does not support non-UTF8_BINARY collations (https://github.com/apache/datafusion-comet/issues/2190)</p></li>
 </ul>
 <p>The following cases are not supported by Comet:</p>
 <ul class="simple">
 <li><p>CONCAT supports only string input parameters</p></li>
+</ul>
+</section>
+<section id="getjsonobject">
+<h2>GetJsonObject<a class="headerlink" href="#getjsonobject" title="Link to this heading">#</a></h2>
+<p>By default, Comet runs a Spark-compatible implementation of <code class="docutils literal notranslate"><span class="pre">GetJsonObject</span></code>. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.GetJsonObject.allowIncompatible=true</span></code> to use Comet’s faster native implementation instead, which has the following differences from Spark:</p>
+<ul class="simple">
+<li><p>Spark allows single-quoted JSON and unescaped control characters which Comet does not support</p></li>
+</ul>
+</section>
+<section id="initcap">
+<h2>InitCap<a class="headerlink" href="#initcap" title="Link to this heading">#</a></h2>
+<p>By default, Comet runs a Spark-compatible implementation of <code class="docutils literal notranslate"><span class="pre">InitCap</span></code>. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.InitCap.allowIncompatible=true</span></code> to use Comet’s faster native implementation instead, which has the following differences from Spark:</p>
+<ul class="simple">
+<li><p>Treats hyphen as a word separator (e.g. <code class="docutils literal notranslate"><span class="pre">robert</span> <span class="pre">rose-smith</span></code> produces <code class="docutils literal notranslate"><span class="pre">Robert</span> <span class="pre">Rose-Smith</span></code> instead of Spark’s <code class="docutils literal notranslate"><span class="pre">Robert</span> <span class="pre">Rose-smith</span></code>) (https://github.com/apache/datafusion-comet/issues/1052)</p></li>
 </ul>
 </section>
 <section id="left">
@@ -608,6 +622,13 @@ under the License.
 <li><p><code class="docutils literal notranslate"><span class="pre">BinaryType</span></code> input is not supported</p></li>
 </ul>
 </section>
+<section id="lower">
+<h2>Lower<a class="headerlink" href="#lower" title="Link to this heading">#</a></h2>
+<p>By default, Comet runs a Spark-compatible implementation of <code class="docutils literal notranslate"><span class="pre">Lower</span></code>. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.caseConversion.enabled=true</span></code> to use Comet’s faster native implementation instead, which has the following differences from Spark:</p>
+<ul class="simple">
+<li><p>Results can vary depending on locale and character set</p></li>
+</ul>
+</section>
 <section id="octetlength">
 <h2>OctetLength<a class="headerlink" href="#octetlength" title="Link to this heading">#</a></h2>
 <p>The following cases are not supported by Comet:</p>
@@ -615,9 +636,23 @@ under the License.
 <li><p><code class="docutils literal notranslate"><span class="pre">BinaryType</span></code> input is not supported</p></li>
 </ul>
 </section>
+<section id="rlike">
+<h2>RLike<a class="headerlink" href="#rlike" title="Link to this heading">#</a></h2>
+<p>By default, Comet runs a Spark-compatible implementation of <code class="docutils literal notranslate"><span class="pre">RLike</span></code>. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.RLike.allowIncompatible=true</span></code> to use Comet’s faster native implementation instead, which has the following differences from Spark:</p>
+<ul class="simple">
+<li><p>Uses Rust regexp engine, which has different behavior to Java regexp engine</p></li>
+</ul>
+</section>
+<section id="regexpreplace">
+<h2>RegExpReplace<a class="headerlink" href="#regexpreplace" title="Link to this heading">#</a></h2>
+<p>By default, Comet runs a Spark-compatible implementation of <code class="docutils literal notranslate"><span class="pre">RegExpReplace</span></code>. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.RegExpReplace.allowIncompatible=true</span></code> to use Comet’s faster native implementation instead, which has the following differences from Spark:</p>
+<ul class="simple">
+<li><p>Regexp pattern may not be compatible with Spark</p></li>
+</ul>
+</section>
 <section id="reverse">
 <h2>Reverse<a class="headerlink" href="#reverse" title="Link to this heading">#</a></h2>
-<p>By default, Comet accelerates <code class="docutils literal notranslate"><span class="pre">Reverse</span></code> using JVM codegen dispatch, which runs Spark’s generated code inside Comet’s native pipeline and matches Spark exactly. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Reverse.allowIncompatible=true</span></code> to use Comet’s faster native implementation instead, which has the following differences from Spark:</p>
+<p>By default, Comet runs a Spark-compatible implementation of <code class="docutils literal notranslate"><span class="pre">Reverse</span></code>. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Reverse.allowIncompatible=true</span></code> to use Comet’s faster native implementation instead, which has the following differences from Spark:</p>
 <ul class="simple">
 <li><p>reverse on array containing binary is not supported</p></li>
 <li><p>reverse does not support non-UTF8_BINARY collations (https://github.com/apache/datafusion-comet/issues/2190)</p></li>
@@ -653,11 +688,32 @@ under the License.
 <li><p>A negative argument for the number of times to repeat throws an exception instead of returning an empty string as Spark does</p></li>
 </ul>
 </section>
+<section id="stringreplace">
+<h2>StringReplace<a class="headerlink" href="#stringreplace" title="Link to this heading">#</a></h2>
+<p>By default, Comet runs a Spark-compatible implementation of <code class="docutils literal notranslate"><span class="pre">StringReplace</span></code>. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.StringReplace.allowIncompatible=true</span></code> to use Comet’s faster native implementation instead, which has the following differences from Spark:</p>
+<ul class="simple">
+<li><p>Produces different results from Spark when the search string is empty</p></li>
+</ul>
+</section>
+<section id="stringsplit">
+<h2>StringSplit<a class="headerlink" href="#stringsplit" title="Link to this heading">#</a></h2>
+<p>By default, Comet runs a Spark-compatible implementation of <code class="docutils literal notranslate"><span class="pre">StringSplit</span></code>. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.StringSplit.allowIncompatible=true</span></code> to use Comet’s faster native implementation instead, which has the following differences from Spark:</p>
+<ul class="simple">
+<li><p>Regex engine differences between Java and Rust</p></li>
+</ul>
+</section>
 <section id="stringtranslate">
 <h2>StringTranslate<a class="headerlink" href="#stringtranslate" title="Link to this heading">#</a></h2>
 <p>The following incompatibilities cause <code class="docutils literal notranslate"><span class="pre">StringTranslate</span></code> to fall back to Spark by default. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.StringTranslate.allowIncompatible=true</span></code> to enable Comet acceleration despite these differences.</p>
 <ul class="simple">
 <li><p>DataFusion’s translate iterates over Unicode graphemes (Spark uses code points) and substitutes U+0000 instead of treating it as a deletion sentinel</p></li>
+</ul>
+</section>
+<section id="upper">
+<h2>Upper<a class="headerlink" href="#upper" title="Link to this heading">#</a></h2>
+<p>By default, Comet runs a Spark-compatible implementation of <code class="docutils literal notranslate"><span class="pre">Upper</span></code>. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.caseConversion.enabled=true</span></code> to use Comet’s faster native implementation instead, which has the following differences from Spark:</p>
+<ul class="simple">
+<li><p>Results can vary depending on locale and character set</p></li>
 </ul>
 <!--END:EXPR_COMPAT-->
 </section>
