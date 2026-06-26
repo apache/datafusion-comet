@@ -2301,7 +2301,7 @@ index 4f906411345..6cc69f7e915 100644
  
    import testImplicits._
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetRowIndexSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetRowIndexSuite.scala
-index 27c2a2148fd..b3d753b9824 100644
+index 27c2a2148fd..43ead2c81ae 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetRowIndexSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetRowIndexSuite.scala
 @@ -26,6 +26,7 @@ import org.apache.parquet.hadoop.{ParquetFileReader, ParquetOutputFormat}
@@ -2323,7 +2323,7 @@ index 27c2a2148fd..b3d753b9824 100644
 +              numPartitions +=
 +                b.originalPlan.inputRDD.partitions.length
 +              numOutputRows +=
-+                b.metrics("numOutputRows").value
++                b.metrics("output_rows").value
              case _ =>
            }
            assert(numPartitions > 0)
