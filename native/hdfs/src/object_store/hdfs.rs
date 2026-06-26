@@ -191,7 +191,6 @@ impl ObjectStore for HadoopFileSystem {
             meta: object_metadata,
             range,
             attributes: Default::default(),
-            extensions: Default::default(),
         })
     }
 
@@ -332,7 +331,6 @@ impl ObjectStore for HadoopFileSystem {
             Ok(ListResult {
                 common_prefixes: common_prefixes.into_iter().collect(),
                 objects,
-                extensions: Default::default(),
             })
         })
         .await
