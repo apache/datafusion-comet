@@ -33,6 +33,7 @@ import org.apache.spark.{SparkEnv, TaskContext}
 import org.apache.spark.api.python.{BasePythonRunner, PythonRDD, PythonWorker, SpecialLengths}
 import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
 import org.apache.spark.unsafe.Platform
 
@@ -71,6 +72,14 @@ private[python] trait CometArrowPythonRunnerBase
 
   /** Version-specific UDF command serialization. */
   protected def writeUDF(dataOut: DataOutputStream): Unit
+
+  /**
+   * Input schema as Comet hands it to the runner: a single non-nullable struct named "struct"
+   * whose children are the user's input columns. Comet's FFI-imported vectors carry Arrow
+   * `Field`s with null names (Comet uses positional schema), so these names are the source of
+   * truth for the field names written into the IPC stream that the Python worker reads by name.
+   */
+  protected def schema: StructType
 
   override val pythonExec: String =
     SQLConf.get.pysparkWorkerPythonExecutable.getOrElse(funcs.head.funcs.head.pythonExec)
@@ -135,8 +144,15 @@ private[python] trait CometArrowPythonRunnerBase
         if (arrowWriter == null) {
           // Build the destination struct root once, sized to the first batch's child fields.
           // mapInArrow/mapInPandas exchange the columns under a single non-nullable struct.
+          // Comet's FFI-imported vectors leave the Arrow Field name null, so restore the real
+          // column names from the input schema (the worker reads columns by name, and shaded
+          // Arrow rejects a null field name). The field types and child structure are kept as-is
+          // so copyVector still walks the source and destination trees in lockstep.
+          val childNames = schema.head.dataType.asInstanceOf[StructType].fieldNames
           val childFields = (0 until cometBatch.numCols()).map { i =>
-            cometBatch.column(i).asInstanceOf[CometDecodedVector].getValueVector.getField
+            val vecField =
+              cometBatch.column(i).asInstanceOf[CometDecodedVector].getValueVector.getField
+            renamed(vecField, childNames(i))
           }
           val structField =
             new Field(
@@ -243,6 +259,23 @@ private[python] trait CometArrowPythonRunnerBase
         } catch handleException
       }
     }
+  }
+
+  /**
+   * Rebuild `field` with `name`, preserving its Arrow type and child structure. Any nested child
+   * whose name Comet's FFI import left null is given a positional placeholder so shaded Arrow can
+   * materialize the struct. Keeping the type and structure intact means the destination tree
+   * still mirrors the Comet source tree for [[copyVector]].
+   */
+  private def renamed(field: Field, name: String): Field = {
+    val children = field.getChildren
+    val newChildren =
+      if (children.isEmpty) children
+      else
+        children.asScala.zipWithIndex.map { case (child, idx) =>
+          renamed(child, if (child.getName == null) s"_$idx" else child.getName)
+        }.asJava
+    new Field(name, field.getFieldType, newChildren)
   }
 
   /**

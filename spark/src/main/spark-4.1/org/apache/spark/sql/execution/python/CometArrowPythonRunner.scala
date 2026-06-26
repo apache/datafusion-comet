@@ -36,7 +36,7 @@ class CometArrowPythonRunner(
     funcs: Seq[(ChainedPythonFunctions, Long)],
     evalType: Int,
     argOffsets: Array[Array[Int]],
-    schema: StructType,
+    override val schema: StructType,
     timeZoneId: String,
     largeVarTypes: Boolean,
     override val workerConf: Map[String, String],
