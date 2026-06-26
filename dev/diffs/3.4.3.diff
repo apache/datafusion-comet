@@ -3002,7 +3002,7 @@ index dd55fcfe42c..d9a3f2df535 100644
  
      spark.internalCreateDataFrame(withoutFilters.execute(), schema)
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/test/SharedSparkSession.scala b/sql/core/src/test/scala/org/apache/spark/sql/test/SharedSparkSession.scala
-index ed2e309fa07..0658bfe9e12 100644
+index ed2e309fa07..b94db4ff1ab 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/test/SharedSparkSession.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/test/SharedSparkSession.scala
 @@ -74,6 +74,20 @@ trait SharedSparkSessionBase
@@ -3014,7 +3014,7 @@ index ed2e309fa07..0658bfe9e12 100644
 +      conf
 +        .set("spark.sql.extensions", "org.apache.comet.CometSparkSessionExtensions")
 +        .set("spark.comet.enabled", "true")
-+        .set("spark.comet.parquet.respectFilterPushdown", "true")
++        .set("spark.comet.parquet.rowFilterPushdown.enabled", "true")
 +
 +      conf
 +        .set("spark.comet.exec.enabled", "true")

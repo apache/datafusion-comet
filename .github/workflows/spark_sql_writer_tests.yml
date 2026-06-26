@@ -84,7 +84,7 @@ jobs:
           jdk-version: ${{ steps.resolve.outputs.java }}
 
       - name: Restore Cargo cache
-        uses: actions/cache/restore@v5
+        uses: actions/cache/restore@v6
         with:
           path: |
             ~/.cargo/registry
