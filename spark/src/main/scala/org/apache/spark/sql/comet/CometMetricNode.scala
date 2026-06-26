@@ -286,7 +286,8 @@ object CometMetricNode {
       "predicate_cache_inner_records" ->
         SQLMetrics.createMetric(
           sc,
-          "Predicate cache: rows physically read and decoded from the Parquet file (cache misses)"),
+          "Predicate cache: rows physically read and decoded from the Parquet file " +
+            "(cache misses)"),
       "predicate_cache_records" ->
         SQLMetrics.createMetric(
           sc,
@@ -294,7 +295,8 @@ object CometMetricNode {
       "scan_efficiency_ratio_total" ->
         SQLMetrics.createSizeMetric(
           sc,
-          "Total file size, denominator of scan_efficiency_ratio = bytes_scanned / total_file_size"))
+          "Total file size, denominator of scan_efficiency_ratio = bytes_scanned " +
+            "/ total_file_size"))
   }
 
   /**
