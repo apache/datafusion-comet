@@ -566,7 +566,11 @@ def test_map_in_arrow_transforming_array(spark, tmp_path, accelerated):
             pdf["nums"] = pdf["nums"].apply(
                 lambda lst: list(reversed(lst)) if lst is not None else None
             )
-            yield pa.RecordBatch.from_pandas(pdf)
+            # Pin the output to the incoming Arrow schema. Without it,
+            # from_pandas infers list<int64> from the Python-int lists, mismatching
+            # the declared array<int> (list<int32>) output and tripping Spark's
+            # int32 projection over the result.
+            yield pa.RecordBatch.from_pandas(pdf, schema=batch.schema)
 
     result_df = spark.read.parquet(src).mapInArrow(reverse_arrays, schema_in)
     _assert_plan_matches_mode(_executed_plan(result_df), accelerated)
