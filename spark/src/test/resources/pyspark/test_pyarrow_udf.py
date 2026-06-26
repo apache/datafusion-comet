@@ -376,10 +376,13 @@ def test_map_in_arrow_decimal_precision_sweep(
     abs_int = (10**integer_digits - 1) if integer_digits > 0 else 0
     abs_frac = (10**scale - 1) if scale > 0 else 0
     largest = Decimal(f"{abs_int}.{abs_frac:0{scale}d}") if scale else Decimal(abs_int)
+    # copy_negate() flips the sign without applying the decimal context. Plain `-largest` would
+    # round to the context's default 28 significant digits, turning the 38-digit maximum into
+    # 1E38 and overflowing Decimal(38, 0).
     rows = [
         (1, Decimal(0)),
         (2, largest),
-        (3, -largest),
+        (3, largest.copy_negate()),
         (4, None),
     ]
     src = str(tmp_path / "src.parquet")
