@@ -30,7 +30,7 @@ use std::fmt::Debug;
 use std::hash::{Hash, Hasher};
 
 use arrow::array::{ArrayRef, BooleanArray};
-use arrow::datatypes::{DataType, FieldRef};
+use arrow::datatypes::{DataType, Field, FieldRef};
 use datafusion::common::Result;
 use datafusion::logical_expr::function::AccumulatorArgs;
 use datafusion::logical_expr::function::StateFieldsArgs;
@@ -60,6 +60,8 @@ pub struct MergeAsPartialUDF {
     cached_state_fields: Vec<FieldRef>,
     /// Cached signature that accepts state field types.
     signature: Signature,
+    /// Override argument fields used only when constructing the inner accumulator.
+    accumulator_expr_fields: Option<Vec<FieldRef>>,
     /// Name for this wrapper.
     name: String,
 }
@@ -83,6 +85,8 @@ impl MergeAsPartialUDF {
         let name = format!("merge_as_partial_{}", inner_expr.name());
         let return_type = inner_expr.field().data_type().clone();
         let cached_state_fields = inner_expr.state_fields()?;
+        let accumulator_expr_fields =
+            Self::accumulator_expr_fields(inner_expr, &cached_state_fields);
 
         // Use a permissive signature since we accept state field types which
         // vary per aggregate function.
@@ -93,8 +97,42 @@ impl MergeAsPartialUDF {
             return_type,
             cached_state_fields,
             signature,
+            accumulator_expr_fields,
             name,
         })
+    }
+
+    fn accumulator_expr_fields(
+        inner_expr: &AggregateFunctionExpr,
+        state_fields: &[FieldRef],
+    ) -> Option<Vec<FieldRef>> {
+        // Spark collect_list/collect_set use a single list state field but their accumulator
+        // constructors expect the original scalar input type. MergeAsPartial receives state-typed
+        // input columns, so passing those fields through would make the collect accumulator think
+        // it is aggregating arrays and create nested list state (List(List(T))).
+        match (inner_expr.fun().name(), state_fields) {
+            ("collect_list" | "collect_set", [state_field]) => match state_field.data_type() {
+                DataType::List(item_field) => Some(vec![Field::new(
+                    item_field.name(),
+                    item_field.data_type().clone(),
+                    item_field.is_nullable(),
+                )
+                .into()]),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    fn inner_accumulator_args<'a>(&'a self, args: AccumulatorArgs<'a>) -> AccumulatorArgs<'a> {
+        let expr_fields = self
+            .accumulator_expr_fields
+            .as_deref()
+            .unwrap_or(args.expr_fields);
+        AccumulatorArgs {
+            expr_fields,
+            ..args
+        }
     }
 }
 
@@ -120,25 +158,24 @@ impl AggregateUDFImpl for MergeAsPartialUDF {
     }
 
     fn accumulator(&self, args: AccumulatorArgs) -> Result<Box<dyn Accumulator>> {
-        // args.exprs are state-typed (match this wrapper's signature), not the
-        // inner aggregate's original inputs. Safe for built-ins (SUM/COUNT/
-        // MIN/MAX/AVG) which build accumulators from return_type; aggregates
-        // that inspect args.exprs types would need reconsideration.
-        let inner_acc = self.inner_udf.accumulator(args)?;
+        let inner_acc = self
+            .inner_udf
+            .accumulator(self.inner_accumulator_args(args))?;
         Ok(Box::new(MergeAsPartialAccumulator { inner: inner_acc }))
     }
 
     fn groups_accumulator_supported(&self, args: AccumulatorArgs) -> bool {
-        // See `accumulator`: args.exprs are state-typed.
-        self.inner_udf.groups_accumulator_supported(args)
+        self.inner_udf
+            .groups_accumulator_supported(self.inner_accumulator_args(args))
     }
 
     fn create_groups_accumulator(
         &self,
         args: AccumulatorArgs,
     ) -> Result<Box<dyn GroupsAccumulator>> {
-        // See `accumulator`: args.exprs are state-typed.
-        let inner_acc = self.inner_udf.create_groups_accumulator(args)?;
+        let inner_acc = self
+            .inner_udf
+            .create_groups_accumulator(self.inner_accumulator_args(args))?;
         Ok(Box::new(MergeAsPartialGroupsAccumulator {
             inner: inner_acc,
         }))
