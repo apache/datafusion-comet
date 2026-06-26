@@ -91,7 +91,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use std::{sync::Arc, task::Poll};
-use tokio::runtime::Runtime;
+use tokio::runtime::{Handle, Runtime};
 use tokio::sync::mpsc;
 
 use crate::execution::memory_pools::{
@@ -117,7 +117,7 @@ use std::sync::OnceLock;
 #[cfg(feature = "jemalloc")]
 use tikv_jemalloc_ctl::{epoch, stats};
 
-static TOKIO_RUNTIME: OnceLock<Runtime> = OnceLock::new();
+static TOKIO_RUNTIME: Mutex<Option<Runtime>> = Mutex::new(None);
 
 #[cfg(feature = "jemalloc")]
 fn log_jemalloc_usage() {
@@ -211,12 +211,39 @@ fn build_runtime(default_worker_threads: Option<usize>) -> Runtime {
 /// Initialize the global Tokio runtime with the given default worker thread count.
 /// If the runtime is already initialized, this is a no-op.
 pub fn init_runtime(default_worker_threads: usize) {
-    TOKIO_RUNTIME.get_or_init(|| build_runtime(Some(default_worker_threads)));
+    let mut guard = TOKIO_RUNTIME.lock();
+    if guard.is_none() {
+        *guard = Some(build_runtime(Some(default_worker_threads)));
+    }
 }
 
-/// Function to get a handle to the global Tokio runtime
-pub fn get_runtime() -> &'static Runtime {
-    TOKIO_RUNTIME.get_or_init(|| build_runtime(None))
+/// Returns a handle to the global Tokio runtime, lazily initializing it if needed.
+///
+/// A [`Handle`] is returned (rather than a `&'static Runtime`) so that the runtime
+/// can be torn down via [`release_runtime`]. The handle is cheap to clone and can be
+/// used with `spawn` / `block_on` just like a `Runtime`.
+pub fn get_runtime() -> Handle {
+    let mut guard = TOKIO_RUNTIME.lock();
+    guard
+        .get_or_insert_with(|| build_runtime(None))
+        .handle()
+        .clone()
+}
+
+/// Tears down the global Tokio runtime, if it has been initialized.
+///
+/// The runtime is moved out of the global slot and shut down in the background so the
+/// calling (JNI) thread is not blocked waiting for worker threads to finish. Any handles
+/// previously returned by [`get_runtime`] will start failing their spawns once the runtime
+/// is gone, so this must only be called when no native execution is in flight.
+///
+/// Must not be called from within the runtime's own worker threads, otherwise the shutdown
+/// would deadlock/panic.
+pub fn release_runtime() {
+    let runtime = TOKIO_RUNTIME.lock().take();
+    if let Some(runtime) = runtime {
+        runtime.shutdown_background();
+    }
 }
 
 /// Returns a short name for an OpStruct variant.

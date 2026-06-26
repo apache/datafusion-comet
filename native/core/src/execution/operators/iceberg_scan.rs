@@ -176,16 +176,24 @@ impl IcebergScanExec {
 
         let task_stream = futures::stream::iter(tasks.into_iter().map(Ok)).boxed();
 
-        // iceberg-rust's ArrowReader spawns IO/CPU work onto an iceberg::Runtime. execute() runs
-        // on the JVM-called thread outside any tokio context, so Runtime::current() would panic;
-        // build it from Comet's global runtime, which is where the stream is later polled.
-        let reader =
-            iceberg::arrow::ArrowReaderBuilder::new(file_io, IcebergRuntime::new(get_runtime()))
-                .with_batch_size(batch_size)
-                .with_data_file_concurrency_limit(self.data_file_concurrency_limit)
-                .with_row_selection_enabled(true)
-                .with_metadata_size_hint(512 * 1024) // Same as DataFusion's default
-                .build();
+        // iceberg-rust's ArrowReader spawns IO/CPU work onto an iceberg::Runtime, which only needs
+        // a tokio handle. execute() runs on the JVM-called thread outside any tokio context, so we
+        // enter Comet's global runtime to capture its handle (this is where the stream is later
+        // polled). Capturing the handle rather than borrowing the runtime keeps it tear-downable
+        // via release_runtime.
+        let iceberg_runtime = {
+            let handle = get_runtime();
+            let _guard = handle.enter();
+            IcebergRuntime::try_current().map_err(|e| {
+                DataFusionError::Execution(format!("Failed to build Iceberg runtime: {e}"))
+            })?
+        };
+        let reader = iceberg::arrow::ArrowReaderBuilder::new(file_io, iceberg_runtime)
+            .with_batch_size(batch_size)
+            .with_data_file_concurrency_limit(self.data_file_concurrency_limit)
+            .with_row_selection_enabled(true)
+            .with_metadata_size_hint(512 * 1024) // Same as DataFusion's default
+            .build();
 
         // Pass all tasks to iceberg-rust at once to utilize its flatten_unordered
         // parallelization, avoiding overhead of single-task streams

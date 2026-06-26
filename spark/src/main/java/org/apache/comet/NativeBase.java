@@ -293,6 +293,9 @@ public abstract class NativeBase {
    */
   static native void init(String logConfPath, String logLevel);
 
+  /** Release native resources */
+  public static native void release();
+
   /**
    * Check if a specific feature is enabled in the native library.
    *

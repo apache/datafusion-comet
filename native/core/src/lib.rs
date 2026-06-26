@@ -125,6 +125,12 @@ pub extern "system" fn Java_org_apache_comet_NativeBase_init(
     })
 }
 
+#[no_mangle]
+/// Releases the global Tokio runtime used by Comet native execution.
+pub extern "system" fn Java_org_apache_comet_NativeBase_release(_e: EnvUnowned, _class: JClass) {
+    execution::jni_api::release_runtime();
+}
+
 const LOG_PATTERN: &str = "{d(%y/%m/%d %H:%M:%S)} {l} {f}: {m}{n}";
 
 /// JNI method to check if a specific feature is enabled in the native Rust code.
