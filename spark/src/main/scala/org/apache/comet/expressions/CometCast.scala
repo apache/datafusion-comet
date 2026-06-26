@@ -212,7 +212,7 @@ object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
       case (from_struct: StructType, to_struct: StructType) =>
         from_struct.fields.zip(to_struct.fields).foreach { case (a, b) =>
           isSupported(a.dataType, b.dataType, timeZoneId, evalMode) match {
-            case Compatible(_) =>
+            case Compatible(_, _) =>
             // all good
             case other =>
               return other
@@ -223,7 +223,7 @@ object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
         // Native cast_map_to_map recursively casts keys and values, so support is
         // determined by whether both inner casts are individually supported.
         isSupported(from_map.keyType, to_map.keyType, timeZoneId, evalMode) match {
-          case Compatible(_) =>
+          case Compatible(_, _) =>
             isSupported(from_map.valueType, to_map.valueType, timeZoneId, evalMode)
           case other => other
         }
