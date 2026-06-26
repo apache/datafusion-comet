@@ -22,6 +22,7 @@ syntax = "proto3";
 package spark.spark_operator;
 
 import "expr.proto";
+import "literal.proto";
 import "partitioning.proto";
 import "types.proto";
 
@@ -53,6 +54,7 @@ message Operator {
     Explode explode = 114;
     CsvScan csv_scan = 115;
     ShuffleScan shuffle_scan = 116;
+    BroadcastNestedLoopJoin broadcast_nested_loop_join = 117;
   }
 }
 
@@ -85,8 +87,6 @@ message Scan {
   // is purely for informational purposes when viewing native query plans in
   // debug mode.
   string source = 2;
-  // Whether native code can assume ownership of batches that it receives
-  bool arrow_ffi_safe = 3;
 }
 
 message ShuffleScan {
@@ -127,6 +127,11 @@ message NativeScanCommon {
   // with a disallowed promoted type throws an error matching Spark's
   // SchemaColumnConvertNotSupportedException behavior.
   bool allow_type_promotion = 17;
+  // When true, reading a Parquet TimestampLTZ column as TimestampNTZ is
+  // permitted (Spark 4.0+, SPARK-47447); when false, it is rejected with
+  // SchemaColumnConvertNotSupportedException (Spark 3.x, SPARK-36182). Set
+  // from Comet's per-Spark-version constant in ShimCometConf.
+  bool allow_timestamp_ltz_to_ntz = 18;
 }
 
 message NativeScan {
@@ -205,6 +210,12 @@ message IcebergScanCommon {
 
   // Number of data files to read concurrently within a single task
   uint32 data_file_concurrency_limit = 12;
+
+  // Spark V2 catalog name that loaded this table. Forwarded as the dispatchKey to
+  // CometS3CredentialDispatcher.ensureInitialized so two catalogs sharing one provider class get
+  // isolated provider instances. Empty string when the table has no catalog identity (e.g.
+  // HadoopTables loaded by raw path).
+  string catalog_name = 13;
 }
 
 message IcebergScan {
@@ -288,7 +299,10 @@ message Sort {
 message HashAggregate {
   repeated spark.spark_expression.Expr grouping_exprs = 1;
   repeated spark.spark_expression.AggExpr agg_exprs = 2;
-  repeated spark.spark_expression.Expr result_exprs = 3;
+  // Was result_exprs / apply_result_projection; now expressed as an explicit Projection
+  // op above HashAggregate (see CometBaseAggregate.doConvert, comet#4515).
+  reserved 3, 8;
+  reserved "result_exprs", "apply_result_projection";
   AggregateMode mode = 5;
   // Per-expression modes for mixed-mode aggregates (e.g., PartialMerge + Partial).
   // When set, each entry corresponds to agg_exprs at the same index.
@@ -321,6 +335,12 @@ message ShuffleWriter {
   // Size of the write buffer in bytes used when writing shuffle data to disk.
   // Larger values may improve write performance but use more memory.
   int32 write_buffer_size = 8;
+  // Spark-declared output schema of the writer's child. When the child is an inlined native
+  // subtree, the native planner casts the child's actual output to this schema before
+  // serializing to shuffle blocks, since there is no FFI boundary or ScanExec between them
+  // to absorb DataFusion-vs-Spark type drift. Empty when the child is a placeholder Scan;
+  // that path already has a cast point upstream.
+  repeated SparkStructField expected_output_schema = 9;
 }
 
 message ParquetWriter {
@@ -384,6 +404,12 @@ message SortMergeJoin {
   optional spark.spark_expression.Expr condition = 5;
 }
 
+message BroadcastNestedLoopJoin {
+  JoinType join_type = 1;
+  BuildSide build_side = 2;
+  optional spark.spark_expression.Expr condition = 3;
+}
+
 enum JoinType {
   Inner = 0;
   LeftOuter = 1;
@@ -403,6 +429,10 @@ message WindowExpr {
   spark.spark_expression.AggExpr agg_func = 2;
   WindowSpecDefinition spec = 3;
   bool ignore_nulls = 4;
+  // Spark's expected result type. Used to cast the native window function output
+  // when DataFusion's return type differs (e.g. row_number returns UInt64 but
+  // Spark expects Int32).
+  spark.spark_expression.DataType result_type = 5;
 }
 
 enum WindowFrameType {
@@ -433,11 +463,19 @@ message UpperWindowFrameBound {
 }
 
 message Preceding {
+  // Used for ROWS frames. Integer row count.
   int64 offset = 1;
+  // Used for RANGE frames. Carries the typed offset value so the native
+  // side can build a ScalarValue whose type matches the ORDER BY column.
+  spark.spark_expression.Literal range_offset = 2;
 }
 
 message Following {
+  // Used for ROWS frames. Integer row count.
   int64 offset = 1;
+  // Used for RANGE frames. Carries the typed offset value so the native
+  // side can build a ScalarValue whose type matches the ORDER BY column.
+  spark.spark_expression.Literal range_offset = 2;
 }
 
 message UnboundedPreceding {}

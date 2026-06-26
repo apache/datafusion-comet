@@ -47,8 +47,11 @@ import org.apache.comet.vector.NativeUtil
  * `hasNext` can be used to check if it is the end of this iterator (i.e. the native query is
  * done).
  *
- * @param inputs
- *   The input iterators producing sequence of batches of Arrow Arrays.
+ * @param inputObjects
+ *   Already-built native input slots, in scan-input order. Each slot is either an
+ *   org.apache.arrow.c.ArrowArrayStream (consumed natively via from_raw against its
+ *   memoryAddress) or a CometShuffleBlockIterator (consumed via the JNI block-iteration
+ *   protocol).
  * @param protobufQueryPlan
  *   The serialized bytes of Spark execution plan.
  * @param numParts
@@ -60,7 +63,7 @@ import org.apache.comet.vector.NativeUtil
  */
 class CometExecIterator(
     val id: Long,
-    inputs: Seq[Iterator[ColumnarBatch]],
+    inputObjects: Array[Object],
     numOutputCols: Int,
     protobufQueryPlan: Array[Byte],
     nativeMetrics: CometMetricNode,
@@ -68,7 +71,8 @@ class CometExecIterator(
     partitionIndex: Int,
     broadcastedHadoopConfForEncryption: Option[Broadcast[SerializableConfiguration]] = None,
     encryptedFilePaths: Seq[String] = Seq.empty,
-    shuffleBlockIterators: Map[Int, CometShuffleBlockIterator] = Map.empty)
+    shuffleBlockIterators: Map[Int, CometShuffleBlockIterator] = Map.empty,
+    taskFilePaths: Seq[String] = Seq.empty)
     extends Iterator[ColumnarBatch]
     with Logging {
 
@@ -79,14 +83,6 @@ class CometExecIterator(
   private val taskAttemptId = TaskContext.get().taskAttemptId
   private val taskCPUs = TaskContext.get().cpus()
   private val cometTaskMemoryManager = new CometTaskMemoryManager(id, taskAttemptId)
-  // Build a mixed array of iterators: CometShuffleBlockIterator for shuffle
-  // scan indices, CometBatchIterator for regular scan indices.
-  private val inputIterators: Array[Object] = inputs.zipWithIndex.map {
-    case (_, idx) if shuffleBlockIterators.contains(idx) =>
-      shuffleBlockIterators(idx).asInstanceOf[Object]
-    case (iterator, _) =>
-      new CometBatchIterator(iterator, nativeUtil).asInstanceOf[Object]
-  }.toArray
 
   private val plan = {
     val conf = SparkEnv.get.conf
@@ -112,7 +108,7 @@ class CometExecIterator(
 
     nativeLib.createPlan(
       id,
-      inputIterators,
+      inputObjects,
       protobufQueryPlan,
       protobufSparkConfigs,
       numParts,
@@ -169,29 +165,14 @@ class CometExecIterator(
       // Handle CometQueryExecutionException with JSON payload first
       case e: CometQueryExecutionException =>
         logError(s"Native execution for task $taskAttemptId failed", e)
-        throw SparkErrorConverter.convertToSparkException(e)
+        throw SparkErrorConverter.convertToSparkException(e, taskFilePaths)
 
       case e: CometNativeException =>
         // it is generally considered bad practice to log and then rethrow an
         // exception, but it really helps debugging to be able to see which task
         // threw the exception, so we log the exception with taskAttemptId here
         logError(s"Native execution for task $taskAttemptId failed", e)
-
-        val parquetError: scala.util.matching.Regex =
-          """^Parquet error: (?:.*)$""".r
-        e.getMessage match {
-          case parquetError() =>
-            // See org.apache.spark.sql.errors.QueryExecutionErrors.failedToReadDataError
-            // See org.apache.parquet.hadoop.ParquetFileReader for error message.
-            // _LEGACY_ERROR_TEMP_2254 has no message placeholders; Spark 4 strict-checks
-            // parameters and raises INTERNAL_ERROR if any are passed.
-            throw new SparkException(
-              errorClass = "_LEGACY_ERROR_TEMP_2254",
-              messageParameters = Map.empty,
-              cause = new SparkException("File is not a Parquet file.", e))
-          case _ =>
-            throw e
-        }
+        throw e
       case e: Throwable =>
         throw e
     }
@@ -289,6 +270,13 @@ object CometExecIterator extends Logging {
     // for tokio runtime thread count
     val executorCores = numDriverOrExecutorCores(SparkEnv.get.conf)
     builder.putEntries("spark.executor.cores", executorCores.toString)
+
+    // Any Comet config that the native side reads must be added here manually.
+    // `cometSqlConfs` only carries values that were explicitly set, so defaults
+    // from `createWithDefault(...)` would otherwise not cross JNI.
+    builder.putEntries(
+      CometConf.COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED.key,
+      CometConf.COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED.get(SQLConf.get).toString)
 
     builder.build().toByteArray
   }

@@ -15,19 +15,11 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::execution::operators::{copy_array, copy_or_unpack_array, CopyMode};
-use crate::{
-    errors::CometError,
-    execution::{
-        operators::ExecutionError, planner::TEST_EXEC_CONTEXT_ID, utils::SparkArrowConvert,
-    },
-    jvm_bridge::JVMClasses,
-};
-use arrow::array::{make_array, ArrayData, ArrayRef, RecordBatch, RecordBatchOptions};
-use arrow::compute::{cast_with_options, take, CastOptions};
+use crate::execution::operators::{copy_or_unpack_array, AlignedArrowStreamReader, CopyMode};
+use crate::{errors::CometError, execution::planner::TEST_EXEC_CONTEXT_ID};
+use arrow::array::{ArrayRef, RecordBatch, RecordBatchOptions};
+use arrow::compute::{cast_with_options, CastOptions};
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
-use arrow::ffi::FFI_ArrowArray;
-use arrow::ffi::FFI_ArrowSchema;
 use datafusion::common::{arrow_datafusion_err, DataFusionError, Result as DataFusionResult};
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::metrics::{
@@ -40,52 +32,40 @@ use datafusion::{
 };
 use futures::Stream;
 use itertools::Itertools;
-use jni::objects::{Global, JObject, JValue};
-use std::rc::Rc;
 use std::{
-    any::Any,
     pin::Pin,
     sync::{Arc, Mutex},
     task::{Context, Poll},
 };
 
-/// ScanExec reads batches of data from Spark via JNI. The source of the scan could be a file
-/// scan or the result of reading a broadcast or shuffle exchange. ScanExec isn't invoked
-/// until the data is already available in the JVM. When CometExecIterator invokes
-/// Native.executePlan, it passes in the memory addresses of the input batches.
+/// `ScanExec` reads batches of data from Spark over the Arrow C Stream Interface. The
+/// `input_source` is moved out of the JVM-exported `ArrowArrayStream` at plan-construction time;
+/// dropping the reader (when this exec drops) fires the stream's release callback, which closes
+/// the JVM-side `ArrowReader` and its `VectorSchemaRoot`.
 #[derive(Debug, Clone)]
 pub struct ScanExec {
-    /// The ID of the execution context that owns this subquery. We use this ID to retrieve the JVM
-    /// environment `JNIEnv` from the execution context.
+    /// JVM execution-context id used to look up the `JNIEnv` for callbacks.
     pub exec_context_id: i64,
-    /// The input source of scan node. It is a global reference of JVM `CometBatchIterator` object.
-    pub input_source: Option<Arc<Global<JObject<'static>>>>,
-    /// A description of the input source for informational purposes
+    /// The C Stream Interface reader. `None` only in unit tests that seed input via
+    /// `set_input_batch`.
+    pub input_source: Option<Arc<Mutex<AlignedArrowStreamReader>>>,
     pub input_source_description: String,
-    /// The data types of columns of the input batch. Converted from Spark schema.
     pub data_types: Vec<DataType>,
-    /// Schema of first batch
     pub schema: SchemaRef,
-    /// The input batch of input data. Used to determine the schema of the input data.
-    /// It is also used in unit test to mock the input data from JVM.
+    /// Used in unit tests to mock the input batch; otherwise written by `pull_next` on each
+    /// poll.
     pub batch: Arc<Mutex<Option<InputBatch>>>,
-    /// Cache of expensive-to-compute plan properties
     cache: Arc<PlanProperties>,
-    /// Metrics collector
     metrics: ExecutionPlanMetricsSet,
-    /// Baseline metrics
     baseline_metrics: BaselineMetrics,
-    /// Whether native code can assume ownership of batches that it receives
-    arrow_ffi_safe: bool,
 }
 
 impl ScanExec {
     pub fn new(
         exec_context_id: i64,
-        input_source: Option<Arc<Global<JObject<'static>>>>,
+        input_source: Option<Arc<Mutex<AlignedArrowStreamReader>>>,
         input_source_description: &str,
         data_types: Vec<DataType>,
-        arrow_ffi_safe: bool,
     ) -> Result<Self, CometError> {
         let metrics_set = ExecutionPlanMetricsSet::default();
         let baseline_metrics = BaselineMetrics::new(&metrics_set, 0);
@@ -112,7 +92,6 @@ impl ScanExec {
             metrics: metrics_set,
             baseline_metrics,
             schema,
-            arrow_ffi_safe,
         })
     }
 
@@ -131,240 +110,57 @@ impl ScanExec {
         *self.batch.try_lock().unwrap() = Some(input);
     }
 
-    /// Pull next input batch from JVM.
+    /// Pull next input batch from the upstream `ArrowArrayStreamReader`.
     pub fn get_next_batch(&mut self) -> Result<(), CometError> {
         if self.input_source.is_none() {
-            // This is a unit test. We don't need to call JNI.
+            // This is a unit test. Input batches are seeded via `set_input_batch`.
             return Ok(());
         }
-        let mut timer = self.baseline_metrics.elapsed_compute().timer();
 
         let mut current_batch = self.batch.try_lock().unwrap();
         if current_batch.is_none() {
-            let next_batch = ScanExec::get_next(
-                self.exec_context_id,
-                self.input_source.as_ref().unwrap().as_obj(),
-                self.data_types.len(),
-                self.arrow_ffi_safe,
-            )?;
+            let mut timer = self.baseline_metrics.elapsed_compute().timer();
+            let next_batch =
+                ScanExec::pull_next(self.exec_context_id, self.input_source.as_ref().unwrap())?;
             *current_batch = Some(next_batch);
+            timer.stop();
         }
-
-        timer.stop();
 
         Ok(())
     }
 
-    /// Invokes JNI call to get next batch.
-    fn get_next(
+    /// Pull the next `RecordBatch` from the stream and convert it to an `InputBatch`. Dictionary
+    /// columns are unpacked because Comet's downstream operators do not handle them.
+    fn pull_next(
         exec_context_id: i64,
-        iter: &JObject,
-        num_cols: usize,
-        arrow_ffi_safe: bool,
+        reader: &Arc<Mutex<AlignedArrowStreamReader>>,
     ) -> Result<InputBatch, CometError> {
         if exec_context_id == TEST_EXEC_CONTEXT_ID {
-            // This is a unit test. We don't need to call JNI.
+            // Unit test path; input batches are seeded directly.
             return Ok(InputBatch::EOF);
         }
 
-        if iter.is_null() {
-            return Err(CometError::from(ExecutionError::GeneralError(format!(
-                "Null batch iterator object. Plan id: {exec_context_id}"
-            ))));
+        // The `Mutex` is for interior mutability (`next` needs `&mut`, but the exec holds the
+        // reader behind an `Arc`); access is already serialized by the `self.batch` lock held in
+        // `get_next_batch`, so a contended `try_lock` here would signal a caller bug, not races.
+        let mut reader = reader
+            .try_lock()
+            .map_err(|_| CometError::Internal("AlignedArrowStreamReader contended".to_string()))?;
+
+        let next = reader.next();
+        match next {
+            None => Ok(InputBatch::EOF),
+            Some(Err(e)) => Err(CometError::from(e)),
+            Some(Ok(record_batch)) => {
+                let num_rows = record_batch.num_rows();
+                let columns = record_batch.columns();
+                let mut inputs: Vec<ArrayRef> = Vec::with_capacity(columns.len());
+                for col in columns {
+                    inputs.push(copy_or_unpack_array(col, &CopyMode::UnpackOrClone)?);
+                }
+                Ok(InputBatch::new(inputs, Some(num_rows)))
+            }
         }
-
-        JVMClasses::with_env(|env| {
-            let num_rows: i32 = unsafe {
-                jni_call!(env,
-            comet_batch_iterator(iter).has_next() -> i32)?
-            };
-
-            if num_rows == -1 {
-                return Ok(InputBatch::EOF);
-            }
-
-            // Check for selection vectors and get selection indices if needed from
-            // JVM via FFI
-            // Selection vectors can be provided by, for instance, Iceberg to
-            // remove rows that have been deleted.
-            let selection_indices_arrays = Self::get_selection_indices(env, iter, num_cols)?;
-
-            // fetch batch data from JVM via FFI
-            let (num_rows, array_addrs, schema_addrs) =
-                Self::allocate_and_fetch_batch(env, iter, num_cols)?;
-
-            let mut inputs: Vec<ArrayRef> = Vec::with_capacity(num_cols);
-
-            // Process each column
-            for i in 0..num_cols {
-                let array_ptr = array_addrs[i];
-                let schema_ptr = schema_addrs[i];
-                let array_data = ArrayData::from_spark((array_ptr, schema_ptr))?;
-
-                // TODO: validate array input data
-                // array_data.validate_full()?;
-
-                let array = make_array(array_data);
-
-                // Apply selection if selection vectors exist (applies to all columns)
-                let array = if let Some(ref selection_arrays) = selection_indices_arrays {
-                    let indices = &selection_arrays[i];
-                    // Apply the selection using Arrow's take kernel
-                    match take(&*array, &**indices, None) {
-                        Ok(selected_array) => selected_array,
-                        Err(e) => {
-                            return Err(CometError::from(ExecutionError::ArrowError(format!(
-                                "Failed to apply selection for column {i}: {e}",
-                            ))));
-                        }
-                    }
-                } else {
-                    array
-                };
-
-                let array = if arrow_ffi_safe {
-                    // ownership of this array has been transferred to native
-                    // but we still need to unpack dictionary arrays
-                    copy_or_unpack_array(&array, &CopyMode::UnpackOrClone)?
-                } else {
-                    // it is necessary to copy the array because the contents may be
-                    // overwritten on the JVM side in the future
-                    copy_array(&array)
-                };
-
-                inputs.push(array);
-
-                // Drop the Arcs to avoid memory leak
-                unsafe {
-                    Rc::from_raw(array_ptr as *const FFI_ArrowArray);
-                    Rc::from_raw(schema_ptr as *const FFI_ArrowSchema);
-                }
-            }
-
-            // If selection was applied, determine the actual row count from the selected arrays
-            let actual_num_rows = if let Some(ref selection_arrays) = selection_indices_arrays {
-                if !selection_arrays.is_empty() {
-                    // Use the length of the first selection array as the actual row count
-                    selection_arrays[0].len()
-                } else {
-                    num_rows as usize
-                }
-            } else {
-                num_rows as usize
-            };
-
-            Ok(InputBatch::new(inputs, Some(actual_num_rows)))
-        })
-    }
-
-    /// Allocates Arrow FFI structures and calls JNI to get the next batch data.
-    /// Returns the number of rows and the allocated array/schema addresses.
-    fn allocate_and_fetch_batch(
-        env: &mut jni::Env,
-        iter: &JObject,
-        num_cols: usize,
-    ) -> Result<(i32, Vec<i64>, Vec<i64>), CometError> {
-        let mut array_addrs = Vec::with_capacity(num_cols);
-        let mut schema_addrs = Vec::with_capacity(num_cols);
-
-        for _ in 0..num_cols {
-            let arrow_array = Rc::new(FFI_ArrowArray::empty());
-            let arrow_schema = Rc::new(FFI_ArrowSchema::empty());
-            let (array_ptr, schema_ptr) = (
-                Rc::into_raw(arrow_array) as i64,
-                Rc::into_raw(arrow_schema) as i64,
-            );
-
-            array_addrs.push(array_ptr);
-            schema_addrs.push(schema_ptr);
-        }
-
-        // Prepare the java array parameters
-        let long_array_addrs = env.new_long_array(num_cols)?;
-        let long_schema_addrs = env.new_long_array(num_cols)?;
-
-        long_array_addrs.set_region(env, 0, &array_addrs)?;
-        long_schema_addrs.set_region(env, 0, &schema_addrs)?;
-
-        let array_obj = JObject::from(long_array_addrs);
-        let schema_obj = JObject::from(long_schema_addrs);
-
-        let array_obj = JValue::Object(array_obj.as_ref());
-        let schema_obj = JValue::Object(schema_obj.as_ref());
-
-        let num_rows: i32 = unsafe {
-            jni_call!(env,
-        comet_batch_iterator(iter).next(array_obj, schema_obj) -> i32)?
-        };
-
-        // we already checked for end of results on call to has_next() so should always
-        // have a valid row count when calling next()
-        assert!(num_rows != -1);
-
-        Ok((num_rows, array_addrs, schema_addrs))
-    }
-
-    /// Checks for selection vectors and exports selection indices if needed.
-    /// Returns selection arrays if they exist (applies to all columns).
-    fn get_selection_indices(
-        env: &mut jni::Env,
-        iter: &JObject,
-        num_cols: usize,
-    ) -> Result<Option<Vec<ArrayRef>>, CometError> {
-        // Check if all columns have selection vectors
-        let has_selection_vectors_result: jni::sys::jboolean = unsafe {
-            jni_call!(env,
-                comet_batch_iterator(iter).has_selection_vectors() -> jni::sys::jboolean)?
-        };
-        let has_selection_vectors = has_selection_vectors_result;
-
-        let selection_indices_arrays = if has_selection_vectors {
-            // Allocate arrays for selection indices export (one per column)
-            let mut indices_array_addrs = Vec::with_capacity(num_cols);
-            let mut indices_schema_addrs = Vec::with_capacity(num_cols);
-
-            for _ in 0..num_cols {
-                let arrow_array = Rc::new(FFI_ArrowArray::empty());
-                let arrow_schema = Rc::new(FFI_ArrowSchema::empty());
-                indices_array_addrs.push(Rc::into_raw(arrow_array) as i64);
-                indices_schema_addrs.push(Rc::into_raw(arrow_schema) as i64);
-            }
-
-            // Prepare JNI arrays for the export call
-            let indices_array_obj = env.new_long_array(num_cols)?;
-            let indices_schema_obj = env.new_long_array(num_cols)?;
-            indices_array_obj.set_region(env, 0, &indices_array_addrs)?;
-            indices_schema_obj.set_region(env, 0, &indices_schema_addrs)?;
-
-            // Export selection indices from JVM
-            let _exported_count: i32 = unsafe {
-                jni_call!(env,
-                    comet_batch_iterator(iter).export_selection_indices(
-                        JValue::Object(JObject::from(indices_array_obj).as_ref()),
-                        JValue::Object(JObject::from(indices_schema_obj).as_ref())
-                    ) -> i32)?
-            };
-
-            // Convert to ArrayRef for easier handling
-            let mut selection_arrays = Vec::with_capacity(num_cols);
-            for i in 0..num_cols {
-                let array_data =
-                    ArrayData::from_spark((indices_array_addrs[i], indices_schema_addrs[i]))?;
-                selection_arrays.push(make_array(array_data));
-
-                // Drop the references to the FFI arrays
-                unsafe {
-                    Rc::from_raw(indices_array_addrs[i] as *const FFI_ArrowArray);
-                    Rc::from_raw(indices_schema_addrs[i] as *const FFI_ArrowSchema);
-                }
-            }
-
-            Some(selection_arrays)
-        } else {
-            None
-        };
-
-        Ok(selection_indices_arrays)
     }
 }
 
@@ -383,10 +179,6 @@ fn schema_from_data_types(data_types: &[DataType]) -> SchemaRef {
 }
 
 impl ExecutionPlan for ScanExec {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn schema(&self) -> SchemaRef {
         Arc::clone(&self.schema)
     }

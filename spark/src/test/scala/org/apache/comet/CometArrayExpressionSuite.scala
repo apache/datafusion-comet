@@ -236,7 +236,11 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
   test("ArrayInsertUnsupportedArgs") {
     // This test checks that the else branch in ArrayInsert
     // mapping to the comet is valid and fallback to spark is working fine.
-    withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[ArrayInsert]) -> "true") {
+    // Disable UDF codegen dispatch so the UDF-derived position remains
+    // non-convertible and forces the ArrayInsert fallback path.
+    withSQLConf(
+      CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false",
+      CometConf.getExprAllowIncompatConfigKey(classOf[ArrayInsert]) -> "true") {
       withTempDir { dir =>
         val path = new Path(dir.toURI.toString, "test.parquet")
         makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = false, 10000)
@@ -247,7 +251,7 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
           .withColumn("arrUnsupportedArgs", expr("array_insert(arr, idx, 1)"))
         checkSparkAnswerAndFallbackReasons(
           df.select("arrUnsupportedArgs"),
-          Set("ScalaUDF has no native path", "unsupported arguments for ArrayInsert"))
+          Set("expression has no native path", "unsupported arguments for ArrayInsert"))
       }
     }
   }
@@ -895,25 +899,18 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
   }
 
   // https://github.com/apache/datafusion-comet/issues/2612
-  test("array_reverse - fallback for binary array") {
-    val fallbackReason = CometArrayReverse.unsupportedReason
+  test("array_reverse - binary array") {
     withTable("t1") {
       sql("""create table t1 using parquet as
           select cast(null as array<binary>) c1, cast(array() as array<binary>) c2
           from range(10)
         """)
 
-      checkSparkAnswerAndFallbackReason(
-        "select reverse(array(c1, c2)) AS x FROM t1",
-        fallbackReason)
-
-      checkSparkAnswerAndFallbackReason(
-        "select reverse(array(c1, c1)) AS x FROM t1",
-        fallbackReason)
-
-      checkSparkAnswerAndFallbackReason(
-        "select reverse(array(array(c1), array(c2))) AS x FROM t1",
-        fallbackReason)
+      // The native path is Incompatible for arrays containing binary, so Comet routes these
+      // through the codegen dispatcher and still executes natively.
+      checkSparkAnswerAndOperator("select reverse(array(c1, c2)) AS x FROM t1")
+      checkSparkAnswerAndOperator("select reverse(array(c1, c1)) AS x FROM t1")
+      checkSparkAnswerAndOperator("select reverse(array(array(c1), array(c2))) AS x FROM t1")
     }
   }
 
@@ -1004,6 +1001,24 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
     }
   }
 
+  // https://github.com/apache/datafusion-comet/issues/4560
+  test("array_size returns null for null input") {
+    val table = "t1"
+    withTable(table) {
+      sql(s"create table $table(col array<int>) using parquet")
+      sql(s"insert into $table values(array(1, 2, 3)), (array()), (null)")
+      // array_size lowers to Size(child, legacySizeOfNull = false), so it must return null
+      // for a null input regardless of the legacySizeOfNull conf.
+      Seq("false", "true").foreach { legacy =>
+        withSQLConf(
+          SQLConf.LEGACY_SIZE_OF_NULL.key -> legacy,
+          SQLConf.ANSI_ENABLED.key -> "false") {
+          checkSparkAnswerAndOperator(sql(s"select array_size(col) from $table"))
+        }
+      }
+    }
+  }
+
   // https://github.com/apache/datafusion-comet/issues/3375
   test("(ansi) array access out of bounds - GetArrayItem") {
     withSQLConf(
@@ -1088,6 +1103,61 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
         assert(
           errorMessage.contains("select element_at(arr, 0) from test_element_at_zero"),
           s"Error message should contain SQL query text but got: $errorMessage")
+      }
+    }
+  }
+
+  test("array of structs with nullability-divergent children") {
+    // Spark's type coercion compares element types with `sameType`, which ignores nullability,
+    // so two struct children that differ ONLY in a nested field's nullability get no unifying
+    // cast -- CreateArray keeps children of different StructTypes. DataFusion's make_array asserts
+    // strict element-type equality (down to nested nullability) and panics on the mismatch. Comet
+    // must decline this CreateArray so Spark's evaluator handles it.
+    withParquetTable((0 until 5).map(i => (i, i.toLong)), "tbl") {
+      val df = spark
+        .table("tbl")
+        .select(
+          array(
+            // ct is NOT NULL (literal)
+            struct(col("_1").as("id"), lit("a").as("ct")),
+            // ct is NULLABLE (when without otherwise) -- same type, different nullability
+            struct(col("_1").as("id"), when(col("_1") === 0, lit("b")).as("ct"))).as("arr"))
+      checkSparkAnswerAndFallbackReason(df, "CreateArray children have mismatched data types")
+    }
+  }
+
+  test("array of maps with nullability-divergent struct values") {
+    // Same nested-nullability divergence as the struct case, but wrapped in a MapType value so we
+    // exercise normalizeContainerNullability's MapType branch: the two map children share a surface
+    // type and differ only in a nested struct field's nullability, so they survive container
+    // (`MapType.valueContainsNull`) normalization as distinct types and CreateArray must still
+    // decline -- DataFusion's make_array would otherwise panic on the struct-field mismatch.
+    withParquetTable((0 until 5).map(i => (i, i.toLong)), "tbl") {
+      val df = spark
+        .table("tbl")
+        .select(
+          array(
+            // map value struct has ct NOT NULL (literal)
+            map(lit("k"), struct(col("_1").as("id"), lit("a").as("ct"))),
+            // map value struct has ct NULLABLE -- same type, different nested nullability
+            map(lit("k"), struct(col("_1").as("id"), when(col("_1") === 0, lit("b")).as("ct"))))
+            .as("arr"))
+      checkSparkAnswerAndFallbackReason(df, "CreateArray children have mismatched data types")
+    }
+  }
+
+  // https://issues.apache.org/jira/browse/SPARK-55747
+  test("(ansi) GetArrayItem on null array from split()") {
+    withSQLConf(
+      SQLConf.ANSI_ENABLED.key -> "true",
+      CometConf.COMET_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_ENABLED.key -> "true") {
+      withTable("test_split_null") {
+        sql("CREATE TABLE test_split_null(s STRING) USING parquet")
+        sql("INSERT INTO test_split_null VALUES ('a,b,c'), (NULL)")
+        // split(NULL, ...) yields a null array; arr[0] on a null array must return NULL
+        // rather than failing the non-nullable schema validation in native execution.
+        checkSparkAnswerAndOperator(sql("SELECT split(s, ',')[0] FROM test_split_null"))
       }
     }
   }

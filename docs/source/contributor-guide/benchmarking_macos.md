@@ -55,13 +55,13 @@ export DF_BENCH=`pwd`
 
 ## Install Spark
 
-Install Apache Spark. This example refers to 4.1.1 version.
+Install Apache Spark. This example refers to 4.1.2 version.
 
 ```shell
-wget https://archive.apache.org/dist/spark/spark-4.1.1/spark-4.1.1-bin-hadoop3.tgz
-tar xzf spark-4.1.1-bin-hadoop3.tgz
-sudo mv spark-4.1.1-bin-hadoop3 /opt
-export SPARK_HOME=/opt/spark-4.1.1-bin-hadoop3/
+wget https://archive.apache.org/dist/spark/spark-4.1.2/spark-4.1.2-bin-hadoop3.tgz
+tar xzf spark-4.1.2-bin-hadoop3.tgz
+sudo mv spark-4.1.2-bin-hadoop3 /opt
+export SPARK_HOME=/opt/spark-4.1.2-bin-hadoop3/
 ```
 
 Start Spark in standalone mode:

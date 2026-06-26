@@ -21,10 +21,13 @@ package org.apache.comet
 
 import org.scalatest.funsuite.AnyFunSuite
 
+import org.apache.spark.SparkConf
+import org.apache.spark.serializer.JavaSerializer
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.expressions.{Add, BoundReference, Coalesce, Concat, CreateArray, CreateMap, ElementAt, Expression, GetStructField, LeafExpression, Length, Literal, Nondeterministic, Rand, Size, Unevaluable, Upper}
+import org.apache.spark.sql.catalyst.expressions.{Add, AddMonths, BoundReference, Coalesce, Concat, CreateArray, CreateMap, DateFormatClass, ElementAt, Expression, GetStructField, LeafExpression, Length, Literal, MakeTimestamp, MicrosToTimestamp, MillisToTimestamp, MonthsBetween, Nondeterministic, Rand, Size, ToUnixTimestamp, Unevaluable, UnixMicros, UnixMillis, UnixSeconds, Upper}
 import org.apache.spark.sql.catalyst.expressions.codegen.{CodeFormatter, CodegenContext, CodegenFallback, ExprCode}
 import org.apache.spark.sql.types._
+import org.apache.spark.unsafe.types.UTF8String
 
 import org.apache.comet.codegen.CometBatchKernelCodegen
 import org.apache.comet.codegen.CometBatchKernelCodegen.{ArrayColumnSpec, ArrowColumnSpec, MapColumnSpec, ScalarColumnSpec, StructColumnSpec, StructFieldSpec}
@@ -60,6 +63,26 @@ class CometCodegenSourceSuite extends AnyFunSuite {
       expr: org.apache.spark.sql.catalyst.expressions.Expression,
       specs: ArrowColumnSpec*): String =
     CometBatchKernelCodegen.generateSource(expr, specs.toIndexedSeq).body
+
+  test("NullIntolerant short-circuit uses isNullAt for CometPlainVector-wrapped columns") {
+    // Primitive Arrow vectors (timestamp / int / float / ...) are wrapped in `CometPlainVector`
+    // at input-cast time. The short-circuit must call `isNullAt(i)`, not `isNull(i)`, otherwise
+    // Janino fails to compile the kernel with "method isNull not declared". Verified end-to-end
+    // by `CometTemporalExpressionSuite` date_format tests over `TimeStampMicroTZVector` inputs.
+    val tsVec = CometBatchKernelCodegen.vectorClassBySimpleName("TimeStampMicroTZVector")
+    val spec = ArrowColumnSpec(tsVec, nullable = true)
+    val expr = DateFormatClass(
+      BoundReference(0, TimestampType, nullable = true),
+      Literal(UTF8String.fromString("yyyy-MM-dd EEEE"), StringType),
+      Some("UTC"))
+    val src = CometBatchKernelCodegen.generateSource(expr, IndexedSeq(spec)).body
+    assert(
+      src.contains("if (this.col0.isNullAt(i))"),
+      s"expected short-circuit to use isNullAt for CometPlainVector-wrapped col0; got:\n$src")
+    assert(
+      !src.contains("if (this.col0.isNull(i))"),
+      s"expected no raw Arrow isNull on the CometPlainVector-wrapped col0; got:\n$src")
+  }
 
   test("non-nullable column emits literal-false isNullAt case") {
     val expr = Length(BoundReference(0, StringType, nullable = false))
@@ -143,13 +166,16 @@ class CometCodegenSourceSuite extends AnyFunSuite {
         s"got:\n$src")
   }
 
-  test("canHandle rejects CodegenFallback expressions") {
+  test("canHandle accepts CodegenFallback expressions (delegates to eval(row))") {
+    // CodegenFallback.doGenCode emits ((Expression) references[N]).eval(row) which is the same
+    // mechanism that backs HigherOrderFunction support: the eval reads through the kernel's typed
+    // Arrow getters via the row alias. Other CodegenFallback expressions (JsonToStructs,
+    // StructsToJson, ...) ride the same path.
     val expr = FakeCodegenFallback(BoundReference(0, StringType, nullable = true))
     val reason = CometBatchKernelCodegen.canHandle(expr)
-    assert(reason.isDefined, "expected canHandle to reject CodegenFallback")
     assert(
-      reason.get.contains("FakeCodegenFallback"),
-      s"expected reason to name the rejected expression class; got: ${reason.get}")
+      reason.isEmpty,
+      s"expected canHandle to accept CodegenFallback; got rejection: ${reason.getOrElse("")}")
   }
 
   test("canHandle accepts Nondeterministic expressions (per-partition kernel handles state)") {
@@ -370,6 +396,46 @@ class CometCodegenSourceSuite extends AnyFunSuite {
         CodeFormatter.format(result.code))
   }
 
+  test("nullable NullIntolerant root keeps post-eval isNull guard inside short-circuit (#4554)") {
+    // `NullIntolerant` only constrains "null in -> null out". An expression can still set
+    // `ev.isNull = true` from non-null inputs — `MakeTimestamp(failOnError = false)` does this in
+    // its `doGenCode` catch block when year/month/day/hour/min/sec components are out of range
+    // (issue #4554). The dispatcher previously assumed NullIntolerant + non-null inputs implied a
+    // non-null output and dropped the post-eval guard; that wrote stale `ev.value` bytes for
+    // every invalid row. The short-circuit on input nulls must coexist with a post-eval
+    // `if (ev.isNull) setNull` check whenever the expression itself is nullable.
+    val expr = MakeTimestamp(
+      BoundReference(0, IntegerType, nullable = true),
+      BoundReference(1, IntegerType, nullable = true),
+      BoundReference(2, IntegerType, nullable = true),
+      BoundReference(3, IntegerType, nullable = true),
+      BoundReference(4, IntegerType, nullable = true),
+      BoundReference(5, DecimalType(8, 6), nullable = true),
+      timezone = None,
+      timeZoneId = Some("UTC"),
+      failOnError = false)
+    assert(expr.nullable, "MakeTimestamp(failOnError=false) must be nullable for this test")
+    val intCol = ArrowColumnSpec(
+      CometBatchKernelCodegen.vectorClassBySimpleName("IntVector"),
+      nullable = true)
+    val decCol = ArrowColumnSpec(
+      CometBatchKernelCodegen.vectorClassBySimpleName("DecimalVector"),
+      nullable = true)
+    val result = CometBatchKernelCodegen.generateSource(
+      expr,
+      IndexedSeq(intCol, intCol, intCol, intCol, intCol, decCol))
+    val src = result.body
+    val formatted = CodeFormatter.format(result.code)
+    // Two distinct setNull sites must exist: the input-null short-circuit before `ev.code` runs,
+    // and the post-eval guard that propagates `ev.isNull = true` set by MakeTimestamp's catch
+    // block on invalid components. Pre-fix there was only one (the input short-circuit).
+    val setNullOccurrences = "output\\.setNull\\(i\\);".r.findAllIn(src).length
+    assert(
+      setNullOccurrences >= 2,
+      "expected at least two setNull sites (input short-circuit + post-eval ev.isNull guard); " +
+        s"found $setNullOccurrences. Source:\n$formatted")
+  }
+
   test("ArrayType(StringType) output emits ListVector startNewValue/endValue recursion") {
     // CreateArray over a BoundReference(StringType) produces ArrayType(StringType). emitWrite's
     // ArrayType case should emit:
@@ -425,6 +491,46 @@ class CometCodegenSourceSuite extends AnyFunSuite {
       ".valueArray()").foreach { marker =>
       assert(src.contains(marker), s"expected $marker in MapType output emission; got:\n$src")
     }
+  }
+
+  test("nested fixed-width map children grow with setSafe, not set (#4539)") {
+    // Map<Int, Int> output: both key and value are fixed-width children of the entries struct.
+    // Their element count is the data-dependent sum of per-row map sizes, not bounded by numRows,
+    // and is unknown until the write loop has evaluated each row, so the writes must use `setSafe`
+    // to grow on demand. A bare `set` throws once a row's entries exceed the child's initial
+    // capacity (issue #4539: the literal map's third key overflowed the pre-sized IntVector).
+    val expr = CreateMap(
+      Seq(
+        Literal(1, IntegerType),
+        Literal(10, IntegerType),
+        Literal(2, IntegerType),
+        Literal(20, IntegerType)))
+    val src = CometBatchKernelCodegen.generateSource(expr, IndexedSeq.empty).body
+    assert(
+      src.contains(".setSafe("),
+      s"expected setSafe for nested fixed-width writes; got:\n$src")
+    // `.set(` is a bare fixed-width write; `setSafe(` / `setNull(` / `setIndexDefined(` do not
+    // match this literal. There must be none into the nested children.
+    assert(
+      !src.contains(".set("),
+      s"expected no bare fixed-width set into map children; got:\n$src")
+  }
+
+  test("top-level scalar output keeps the pre-sized set fast path") {
+    // The root output vector is pre-sized to numRows and written once per row, so it uses the
+    // bare `set` fast path rather than paying for setSafe's per-write capacity check. This pins
+    // the boundary the #4539 fix draws: setSafe is for nested children only.
+    val expr = Add(BoundReference(0, IntegerType, nullable = false), Literal(1, IntegerType))
+    val intSpec = ArrowColumnSpec(
+      CometBatchKernelCodegen.vectorClassBySimpleName("IntVector"),
+      nullable = false)
+    val src = CometBatchKernelCodegen.generateSource(expr, IndexedSeq(intSpec)).body
+    assert(
+      src.contains("output.set("),
+      s"expected bare set for the pre-sized root output; got:\n$src")
+    assert(
+      !src.contains(".setSafe("),
+      s"expected no setSafe for a scalar root output; got:\n$src")
   }
 
   test("ArrayType output elides isNullAt on the element loop when containsNull is false") {
@@ -592,6 +698,50 @@ class CometCodegenSourceSuite extends AnyFunSuite {
     assert(
       src.contains("public int getInt(int i)"),
       s"expected innermost scalar getter for IntegerType element; got:\n$src")
+  }
+
+  test("nested input classes emit copy() that deep-materializes off the Arrow buffers") {
+    // Higher-order functions (e.g. ArrayTransform) evaluate Spark's interpreted lambda, which
+    // calls InternalRow.copyValue on complex elements. The nested input views read straight off
+    // the per-batch Arrow buffers, so copy() must materialize into on-heap Spark structures:
+    // GenericArrayData for arrays, GenericInternalRow for structs, ArrayBasedMapData for maps.
+    // Strings clone (they alias off-heap memory) and nested complex elements recurse via copy().
+    val stringChild = ScalarColumnSpec(
+      CometBatchKernelCodegen.vectorClassBySimpleName("VarCharVector"),
+      nullable = true)
+    val innerStruct = StructColumnSpec(
+      nullable = true,
+      fields = Seq(StructFieldSpec("s", StringType, nullable = true, stringChild)))
+    // Array<Map<String, Struct<s: String>>>: exercises array, map, and struct copy() together.
+    val mapSpec = MapColumnSpec(
+      nullable = true,
+      keySparkType = StringType,
+      valueSparkType = StructType(Seq(StructField("s", StringType))),
+      key = stringChild,
+      value = innerStruct)
+    val outerArray = ArrayColumnSpec(
+      nullable = true,
+      elementSparkType = MapType(StringType, StructType(Seq(StructField("s", StringType)))),
+      element = mapSpec)
+    val mapType = MapType(StringType, StructType(Seq(StructField("s", StringType))))
+    val expr = Size(BoundReference(0, ArrayType(mapType), nullable = true))
+    val src = generate(expr, IndexedSeq(outerArray))
+
+    assert(
+      src.contains("public org.apache.spark.sql.catalyst.util.ArrayData copy()"),
+      s"expected array copy() override; got:\n$src")
+    assert(
+      src.contains("new org.apache.spark.sql.catalyst.util.GenericArrayData("),
+      s"expected array copy() to materialize a GenericArrayData; got:\n$src")
+    assert(
+      src.contains("new org.apache.spark.sql.catalyst.util.ArrayBasedMapData("),
+      s"expected map copy() to materialize an ArrayBasedMapData; got:\n$src")
+    assert(
+      src.contains("new org.apache.spark.sql.catalyst.expressions.GenericInternalRow("),
+      s"expected struct copy() to materialize a GenericInternalRow; got:\n$src")
+    assert(
+      src.contains(".clone()"),
+      s"expected string elements to clone off the Arrow buffer in copy(); got:\n$src")
   }
 
   test("Array<Struct<a: Int>> emits array class allocating fresh InputStruct_col0_e") {
@@ -1031,6 +1181,181 @@ class CometCodegenSourceSuite extends AnyFunSuite {
     assert(
       !src.contains("if (isNullAt(0)) return null;"),
       s"expected no null guard on non-nullable map field; got:\n$src")
+  }
+
+  // Bucket 4 datetime expressions routed through CometCodegenDispatch. Each entry pairs a
+  // bound Catalyst expression with the Arrow column specs the kernel would see at runtime.
+  // The test asserts `generateSource` returns a non-empty body, which means Spark's own
+  // `doGenCode` succeeded under the codegen context (no NotImplementedError, no rewrite to
+  // a CodegenFallback path).
+  test("Bucket 4 datetime expressions produce non-empty generated kernel source") {
+    val intCol = ArrowColumnSpec(
+      CometBatchKernelCodegen.vectorClassBySimpleName("IntVector"),
+      nullable = true)
+    val longCol = ArrowColumnSpec(
+      CometBatchKernelCodegen.vectorClassBySimpleName("BigIntVector"),
+      nullable = true)
+    val decCol = ArrowColumnSpec(
+      CometBatchKernelCodegen.vectorClassBySimpleName("DecimalVector"),
+      nullable = true)
+    val dateCol = ArrowColumnSpec(
+      CometBatchKernelCodegen.vectorClassBySimpleName("DateDayVector"),
+      nullable = true)
+    val tsCol = ArrowColumnSpec(
+      CometBatchKernelCodegen.vectorClassBySimpleName("TimeStampMicroTZVector"),
+      nullable = true)
+    val strCol = ArrowColumnSpec(
+      CometBatchKernelCodegen.vectorClassBySimpleName("VarCharVector"),
+      nullable = true)
+
+    val cases: Seq[(String, Expression, IndexedSeq[ArrowColumnSpec])] = Seq(
+      (
+        "AddMonths",
+        AddMonths(
+          BoundReference(0, DateType, nullable = true),
+          BoundReference(1, IntegerType, nullable = true)),
+        IndexedSeq(dateCol, intCol)),
+      (
+        "MonthsBetween",
+        MonthsBetween(
+          BoundReference(0, TimestampType, nullable = true),
+          BoundReference(1, TimestampType, nullable = true),
+          Literal(true),
+          Some("UTC")),
+        IndexedSeq(tsCol, tsCol)),
+      (
+        "MakeTimestamp",
+        MakeTimestamp(
+          BoundReference(0, IntegerType, nullable = true),
+          BoundReference(1, IntegerType, nullable = true),
+          BoundReference(2, IntegerType, nullable = true),
+          BoundReference(3, IntegerType, nullable = true),
+          BoundReference(4, IntegerType, nullable = true),
+          BoundReference(5, DecimalType(8, 6), nullable = true),
+          timezone = None,
+          timeZoneId = Some("UTC")),
+        IndexedSeq(intCol, intCol, intCol, intCol, intCol, decCol)),
+      (
+        "MillisToTimestamp",
+        MillisToTimestamp(BoundReference(0, LongType, nullable = true)),
+        IndexedSeq(longCol)),
+      (
+        "MicrosToTimestamp",
+        MicrosToTimestamp(BoundReference(0, LongType, nullable = true)),
+        IndexedSeq(longCol)),
+      (
+        "UnixSeconds",
+        UnixSeconds(BoundReference(0, TimestampType, nullable = true)),
+        IndexedSeq(tsCol)),
+      (
+        "UnixMillis",
+        UnixMillis(BoundReference(0, TimestampType, nullable = true)),
+        IndexedSeq(tsCol)),
+      (
+        "UnixMicros",
+        UnixMicros(BoundReference(0, TimestampType, nullable = true)),
+        IndexedSeq(tsCol)),
+      (
+        "ToUnixTimestamp",
+        ToUnixTimestamp(
+          BoundReference(0, StringType, nullable = true),
+          Literal(UTF8String.fromString("yyyy-MM-dd HH:mm:ss"), StringType),
+          Some("UTC")),
+        IndexedSeq(strCol)))
+    cases.foreach { case (name, expr, specs) =>
+      val src = CometBatchKernelCodegen.generateSource(expr, specs).body
+      assert(src.nonEmpty, s"$name: expected non-empty generated source")
+      assert(
+        src.contains("public java.lang.Object generate(Object[] references)"),
+        s"$name: generated source missing kernel class entry point")
+    }
+  }
+
+  test("closure-serialized bytes diverge for failOnError / roundOff / timeZoneId variants") {
+    // The dispatcher caches kernels by the closure-serialized bytes of the bound expression
+    // (`CacheKey.bytesKey`). For expression classes that carry a runtime-dependent boolean
+    // (failOnError, roundOff) or string (timeZoneId), two plan instances differing only in that
+    // field must serialize to distinct byte sequences so they receive distinct cache entries.
+    // A collision would let a kernel compiled for one variant (e.g. ANSI throw site) silently
+    // service a request from the other (non-ANSI null-on-overflow).
+    //
+    // This test serializes through `JavaSerializer` directly, which is what
+    // `SparkEnv.get.closureSerializer` returns at runtime. We don't need a live SparkEnv here;
+    // `JavaSerializer` only reads `spark.serializer.objectStreamReset` / `spark.serializer.
+    // extraDebugInfo` from the conf and otherwise uses plain `ObjectOutputStream`.
+    val serializer = new JavaSerializer(new SparkConf()).newInstance()
+    def bytesOf(e: Expression): Array[Byte] = {
+      val buffer = serializer.serialize(e)
+      val out = new Array[Byte](buffer.remaining())
+      buffer.get(out)
+      out
+    }
+
+    def assertDiverge(label: String, a: Expression, b: Expression): Unit = {
+      val ab = bytesOf(a)
+      val bb = bytesOf(b)
+      assert(
+        !java.util.Arrays.equals(ab, bb),
+        s"$label: expected serialized bytes to differ for variants that the dispatcher must " +
+          s"cache separately, but both produced ${ab.length} identical bytes")
+    }
+
+    // failOnError on MakeTimestamp (set by the constructor from SQLConf.ansiEnabled at bind time)
+    def makeTs(failOnError: Boolean): Expression =
+      MakeTimestamp(
+        BoundReference(0, IntegerType, nullable = true),
+        BoundReference(1, IntegerType, nullable = true),
+        BoundReference(2, IntegerType, nullable = true),
+        BoundReference(3, IntegerType, nullable = true),
+        BoundReference(4, IntegerType, nullable = true),
+        BoundReference(5, DecimalType(8, 6), nullable = true),
+        timezone = None,
+        timeZoneId = Some("UTC"),
+        failOnError = failOnError)
+    assertDiverge(
+      "MakeTimestamp.failOnError",
+      makeTs(failOnError = true),
+      makeTs(failOnError = false))
+
+    // failOnError on ToUnixTimestamp
+    def toUnix(failOnError: Boolean): Expression =
+      ToUnixTimestamp(
+        BoundReference(0, StringType, nullable = true),
+        Literal(UTF8String.fromString("yyyy-MM-dd HH:mm:ss"), StringType),
+        timeZoneId = Some("UTC"),
+        failOnError = failOnError)
+    assertDiverge(
+      "ToUnixTimestamp.failOnError",
+      toUnix(failOnError = true),
+      toUnix(failOnError = false))
+
+    // roundOff on MonthsBetween (carried as a child Literal node)
+    def monthsBetween(roundOff: Boolean): Expression =
+      MonthsBetween(
+        BoundReference(0, TimestampType, nullable = true),
+        BoundReference(1, TimestampType, nullable = true),
+        Literal(roundOff),
+        Some("UTC"))
+    assertDiverge(
+      "MonthsBetween.roundOff",
+      monthsBetween(roundOff = true),
+      monthsBetween(roundOff = false))
+
+    // Session timezone propagates onto TimeZoneAwareExpression via timeZoneId; the dispatcher
+    // must not share a kernel across timezones because Spark's doGenCode embeds the resolved
+    // ZoneId reference into the generated source.
+    def makeTsTz(tz: String): Expression =
+      MakeTimestamp(
+        BoundReference(0, IntegerType, nullable = true),
+        BoundReference(1, IntegerType, nullable = true),
+        BoundReference(2, IntegerType, nullable = true),
+        BoundReference(3, IntegerType, nullable = true),
+        BoundReference(4, IntegerType, nullable = true),
+        BoundReference(5, DecimalType(8, 6), nullable = true),
+        timezone = None,
+        timeZoneId = Some(tz),
+        failOnError = false)
+    assertDiverge("MakeTimestamp.timeZoneId", makeTsTz("UTC"), makeTsTz("America/New_York"))
   }
 
   test("CacheKey discriminates on ArrowColumnSpec.nullable") {

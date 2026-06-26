@@ -290,21 +290,22 @@ object CometSparkSessionExtensions extends Logging {
    * @return
    *   `node` with fallback reasons attached (as a side effect on its tag map).
    */
-  def withInfo[T <: TreeNode[_]](node: T, info: String, exprs: T*): T = {
+  def withFallbackReason[T <: TreeNode[_]](node: T, info: String, exprs: T*): T = {
     // support existing approach of passing in multiple infos in a newline-delimited string
     val infoSet = if (info == null || info.isEmpty) {
       Set.empty[String]
     } else {
       info.split("\n").toSet
     }
-    withInfos(node, infoSet, exprs: _*)
+    withFallbackReasons(node, infoSet, exprs: _*)
   }
 
   /**
    * Record one or more fallback reasons on a `TreeNode` and roll up reasons from any child nodes.
-   * This is the set-valued form of [[withInfo]]; see that overload for the full contract.
+   * This is the set-valued form of [[withFallbackReason]]; see that overload for the full
+   * contract.
    *
-   * Reasons are accumulated (never overwritten) on the node's `EXTENSION_INFO` tag and are
+   * Reasons are accumulated (never overwritten) on the node's `FALLBACK_REASONS` tag and are
    * surfaced in extended explain output. When `COMET_LOG_FALLBACK_REASONS` is enabled, each new
    * reason is also emitted as a warning.
    *
@@ -320,16 +321,16 @@ object CometSparkSessionExtensions extends Logging {
    * @return
    *   `node` with fallback reasons attached (as a side effect on its tag map).
    */
-  def withInfos[T <: TreeNode[_]](node: T, info: Set[String], exprs: T*): T = {
+  def withFallbackReasons[T <: TreeNode[_]](node: T, info: Set[String], exprs: T*): T = {
     if (CometConf.COMET_LOG_FALLBACK_REASONS.get()) {
       for (reason <- info) {
         logWarning(s"Comet cannot accelerate ${node.getClass.getSimpleName} because: $reason")
       }
     }
-    val existingNodeInfos = node.getTagValue(CometExplainInfo.EXTENSION_INFO)
+    val existingNodeInfos = node.getTagValue(CometExplainInfo.FALLBACK_REASONS)
     val newNodeInfo = (existingNodeInfos ++ exprs
-      .flatMap(_.getTagValue(CometExplainInfo.EXTENSION_INFO))).flatten.toSet
-    node.setTagValue(CometExplainInfo.EXTENSION_INFO, newNodeInfo ++ info)
+      .flatMap(_.getTagValue(CometExplainInfo.FALLBACK_REASONS))).flatten.toSet
+    node.setTagValue(CometExplainInfo.FALLBACK_REASONS, newNodeInfo ++ info)
     node
   }
 
@@ -347,17 +348,34 @@ object CometSparkSessionExtensions extends Logging {
    * @return
    *   `node` with the rolled-up reasons attached (as a side effect on its tag map).
    */
-  def withInfo[T <: TreeNode[_]](node: T, exprs: T*): T = {
-    withInfos(node, Set.empty, exprs: _*)
+  def withFallbackReason[T <: TreeNode[_]](node: T, exprs: T*): T = {
+    withFallbackReasons(node, Set.empty, exprs: _*)
   }
 
   /**
-   * True if any fallback reason has been recorded on `node` (via [[withInfo]] / [[withInfos]]).
-   * Callers that need to short-circuit when a prior rule pass has already decided a node falls
-   * back can use this as the sticky signal.
+   * True if any fallback reason has been recorded on `node` (via [[withFallbackReason]] /
+   * [[withFallbackReasons]]). Callers that need to short-circuit when a prior rule pass has
+   * already decided a node falls back can use this as the sticky signal.
    */
-  def hasExplainInfo(node: TreeNode[_]): Boolean = {
-    node.getTagValue(CometExplainInfo.EXTENSION_INFO).exists(_.nonEmpty)
+  def hasFallbackReason(node: TreeNode[_]): Boolean = {
+    node.getTagValue(CometExplainInfo.FALLBACK_REASONS).exists(_.nonEmpty)
+  }
+
+  /**
+   * Record a purely informational message on a `TreeNode`. Unlike `withFallbackReason`, this does
+   * NOT cause the node to fall back to Spark: the planning rules never read this tag. Messages
+   * accumulate (never overwrite) on the node's `EXTENSION_INFO` tag and are surfaced in verbose
+   * extended explain output under a `[COMET-INFO: ...]` label. Use this to point the user at a
+   * faster or alternative path that is available but not currently selected, such as a native
+   * implementation gated behind a config.
+   */
+  def withInfo[T <: TreeNode[_]](node: T, message: String): T = {
+    if (message != null && message.nonEmpty) {
+      val existing =
+        node.getTagValue(CometExplainInfo.EXTENSION_INFO).getOrElse(Set.empty[String])
+      node.setTagValue(CometExplainInfo.EXTENSION_INFO, existing + message)
+    }
+    node
   }
 
 }

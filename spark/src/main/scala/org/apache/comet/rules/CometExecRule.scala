@@ -44,7 +44,7 @@ import org.apache.spark.sql.execution.datasources.v2.csv.CSVScan
 import org.apache.spark.sql.execution.datasources.v2.json.JsonScan
 import org.apache.spark.sql.execution.datasources.v2.parquet.ParquetScan
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ReusedExchangeExec, ShuffleExchangeExec}
-import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, ShuffledHashJoinExec, SortMergeJoinExec}
+import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, BroadcastNestedLoopJoinExec, ShuffledHashJoinExec, SortMergeJoinExec}
 import org.apache.spark.sql.execution.window.WindowExec
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
@@ -81,6 +81,7 @@ object CometExecRule {
       classOf[HashAggregateExec] -> CometHashAggregateExec,
       classOf[ObjectHashAggregateExec] -> CometObjectHashAggregateExec,
       classOf[BroadcastHashJoinExec] -> CometBroadcastHashJoinExec,
+      classOf[BroadcastNestedLoopJoinExec] -> CometBroadcastNestedLoopJoinExec,
       classOf[ShuffledHashJoinExec] -> CometHashJoinExec,
       classOf[SortMergeJoinExec] -> CometSortMergeJoinExec,
       classOf[SortExec] -> CometSortExec,
@@ -328,8 +329,8 @@ case class CometExecRule(session: SparkSession)
           } else {
             // copy fallback reasons to the original plan
             newPlan
-              .getTagValue(CometExplainInfo.EXTENSION_INFO)
-              .foreach(reasons => withInfos(plan, reasons))
+              .getTagValue(CometExplainInfo.FALLBACK_REASONS)
+              .foreach(reasons => withFallbackReasons(plan, reasons))
             // return the original plan
             plan
           }
@@ -382,8 +383,8 @@ case class CometExecRule(session: SparkSession)
             //    reasons.
             // 3. The operator has children that could not be converted, so execution
             //    has already fallen back to Spark.
-            if (op.children.forall(_.isInstanceOf[CometNativeExec]) && !hasExplainInfo(op)) {
-              withInfo(op, s"${op.nodeName} is not supported")
+            if (op.children.forall(_.isInstanceOf[CometNativeExec]) && !hasFallbackReason(op)) {
+              withFallbackReason(op, s"${op.nodeName} is not supported")
             } else {
               op
             }
@@ -587,7 +588,7 @@ case class CometExecRule(session: SparkSession)
       // config is enabled)
       if (CometConf.COMET_EXPLAIN_FALLBACK_ENABLED.get()) {
         val info = new ExtendedExplainInfo()
-        if (info.extensionInfo(newPlan).nonEmpty) {
+        if (info.fallbackReasons(newPlan).nonEmpty) {
           logWarning(
             "Comet cannot execute some parts of this plan natively " +
               s"(set ${CometConf.COMET_EXPLAIN_FALLBACK_ENABLED.key}=false " +
@@ -693,7 +694,9 @@ case class CometExecRule(session: SparkSession)
           case other => Seq(other)
         }
         if (!dataProducingChildren.forall(_.isInstanceOf[CometNativeExec])) {
-          withInfo(op, "Cannot perform native operation because input is not in Arrow format")
+          withFallbackReason(
+            op,
+            "Cannot perform native operation because input is not in Arrow format")
           return None
         }
       }
@@ -704,14 +707,36 @@ case class CometExecRule(session: SparkSession)
         childOp.foreach(builder.addChildren)
         return serde
           .convert(op, builder, childOp: _*)
-          .map(nativeOp => serde.createExec(nativeOp, op))
+          .map { nativeOp =>
+            val exec = serde.createExec(nativeOp, op)
+            rollUpInfoMessages(op, exec)
+            exec
+          }
       } else {
         return serde
           .convert(op, builder)
-          .map(nativeOp => serde.createExec(nativeOp, op))
+          .map { nativeOp =>
+            val exec = serde.createExec(nativeOp, op)
+            rollUpInfoMessages(op, exec)
+            exec
+          }
       }
     }
     None
+  }
+
+  /**
+   * Lift informational (non-fallback) messages tagged on an operator and its expressions onto the
+   * converted Comet plan node so they appear in verbose extended explain output. Expression-level
+   * hints would otherwise be invisible because explain only traverses plan nodes, not
+   * expressions.
+   */
+  private def rollUpInfoMessages(op: SparkPlan, exec: SparkPlan): Unit = {
+    val fromOp = op.getTagValue(CometExplainInfo.EXTENSION_INFO).getOrElse(Set.empty[String])
+    val fromExprs = op.expressions
+      .flatMap(_.collect { case e: Expression => e })
+      .flatMap(_.getTagValue(CometExplainInfo.EXTENSION_INFO).getOrElse(Set.empty[String]))
+    (fromOp ++ fromExprs).foreach(msg => withInfo(exec, msg))
   }
 
   private def isOperatorEnabled(
@@ -721,7 +746,7 @@ case class CometExecRule(session: SparkSession)
     if (handler.enabledConfig.forall(_.get(op.conf))) {
       handler.getSupportLevel(op) match {
         case Unsupported(notes) =>
-          withInfo(op, notes.getOrElse(""))
+          withFallbackReason(op, notes.getOrElse(""))
           false
         case Incompatible(notes) =>
           val allowIncompat = CometConf.isOperatorAllowIncompat(opName)
@@ -735,21 +760,21 @@ case class CometExecRule(session: SparkSession)
             true
           } else {
             val optionalNotes = notes.map(str => s" ($str)").getOrElse("")
-            withInfo(
+            withFallbackReason(
               op,
               s"$opName is not fully compatible with Spark$optionalNotes. " +
                 s"To enable it anyway, set $incompatConf=true. " +
                 s"${CometConf.COMPAT_GUIDE}.")
             false
           }
-        case Compatible(notes) =>
+        case Compatible(notes, _) =>
           if (notes.isDefined) {
             logWarning(s"Comet supports $opName but has notes: ${notes.get}")
           }
           true
       }
     } else {
-      withInfo(
+      withFallbackReason(
         op,
         s"Native support for operator $opName is disabled. " +
           s"Set ${handler.enabledConfig.get.key}=true to enable it.")
@@ -867,7 +892,10 @@ case class CometExecRule(session: SparkSession)
 
     if (groupingExpressions.isEmpty && aggregateExpressions.isEmpty) return false
 
-    if (groupingExpressions.exists(e => QueryPlanSerde.containsMapType(e.dataType))) return false
+    if (groupingExpressions.exists(e =>
+        SupportLevel.containsType(e.dataType, classOf[MapType]))) {
+      return false
+    }
 
     if (!groupingExpressions.forall(e =>
         QueryPlanSerde.exprToProto(e, agg.child.output).isDefined)) {

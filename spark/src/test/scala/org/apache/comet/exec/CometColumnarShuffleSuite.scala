@@ -22,14 +22,13 @@ package org.apache.comet.exec
 import java.nio.file.{Files, Paths}
 
 import scala.reflect.runtime.universe._
-import scala.util.Random
 
 import org.scalactic.source.Position
 import org.scalatest.Tag
 
 import org.apache.hadoop.fs.Path
 import org.apache.spark.{Partitioner, SparkConf}
-import org.apache.spark.sql.{CometTestBase, DataFrame, RandomDataGenerator, Row}
+import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.comet.execution.shuffle.{CometShuffleDependency, CometShuffleExchangeExec, CometShuffleManager}
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanHelper, AQEShuffleReadExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
@@ -94,22 +93,16 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
         """.stripMargin))
   }
 
-  test("Fallback to Spark for unsupported input besides ordering") {
-    val dataGenerator = RandomDataGenerator
-      .forType(
-        dataType = NullType,
-        nullable = true,
-        new Random(System.nanoTime()),
-        validJulianDatetime = false)
-      .get
+  test("columnar shuffle with NullType passthrough column") {
+    val df = sql("SELECT x, y FROM VALUES ('a', null), ('b', null), ('c', null) AS t(x, y)")
+    val shuffled = df.repartition(2, $"x")
+    checkShuffleAnswer(shuffled, 1)
+  }
 
-    val schema = new StructType()
-      .add("index", IntegerType, nullable = false)
-      .add("col", NullType, nullable = true)
-    val rdd =
-      spark.sparkContext.parallelize((1 to 20).map(i => Row(i, dataGenerator())))
-    val df = spark.createDataFrame(rdd, schema).orderBy("index").coalesce(1)
-    checkSparkAnswer(df)
+  test("columnar shuffle with Map[_, NullType] column") {
+    val df = sql("SELECT id, map(id, null) AS m FROM VALUES (1), (2), (3) AS t(id)")
+    val shuffled = df.repartition(2, $"id")
+    checkShuffleAnswer(shuffled, 1)
   }
 
   test("columnar shuffle on nested struct including nulls") {
@@ -219,10 +212,10 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
                 .sortWithinPartitions($"_2")
 
               // Spark 4.0 normalizes shuffle keys containing array<map> via
-              // transform(arr, x -> mapsort(x)), which Comet doesn't yet
-              // support, so the shuffle falls back to Spark.
-              val expectedShuffles = if (isSpark40Plus) 0 else 1
-              checkShuffleAnswer(df, expectedShuffles)
+              // transform(arr, x -> mapsort(x)). Comet routes the higher-order
+              // transform through the codegen dispatcher, so the partitioning
+              // expression stays native and the shuffle runs as Comet shuffle.
+              checkShuffleAnswer(df, 1)
             }
           }
         }
@@ -765,6 +758,36 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
       assert(df.count() == 1)
       val row = df.collect()(0)
       assert(row.getAs[org.apache.spark.sql.Row]("metaData") == null)
+    }
+  }
+
+  // Regression test for https://github.com/apache/datafusion-comet/issues/4521.
+  //
+  // Spark's `cast(BinaryType -> StringType)` is a zero-copy reinterpret (and `UnsafeRow`'s
+  // string accessor performs no UTF-8 validation), so a `StringType` column can legitimately
+  // hold arbitrary non-UTF-8 bytes that Spark treats as opaque. Comet's columnar (JVM) shuffle
+  // converts those `UnsafeRow`s to Arrow natively (`process_sorted_row_partition` -> `get_string`),
+  // which used to decode with `from_utf8(..).unwrap()` and panic on such rows. It now decodes
+  // lossily (U+FFFD replacements), matching how Spark renders the same bytes.
+  test("columnar shuffle tolerates non-UTF-8 bytes in a StringType column") {
+    withParquetTable(
+      Seq(
+        // 0xFF and 0xFE are never valid UTF-8 lead bytes; each decodes to a single U+FFFD in
+        // both Spark and Comet (so the lossy results match exactly).
+        (1, Array[Byte](0xff.toByte, 0xfe.toByte, 'A'.toByte)),
+        // 0x80 is a stray continuation byte -> one U+FFFD, followed by valid ASCII.
+        (2, Array[Byte](0x80.toByte, 'B'.toByte)),
+        // A fully valid UTF-8 row exercises the zero-cost borrow path.
+        (3, "valid".getBytes("UTF-8"))),
+      "tbl") {
+      // Disable Comet's own Cast so the `cast(binary -> string)` runs in Spark and the raw bytes
+      // reach the shuffle inside a JVM UnsafeRow. (If Comet performed the cast it would produce a
+      // pre-sanitized Arrow string array and never exercise get_string.)
+      withSQLConf(CometConf.getExprEnabledConfigKey("Cast") -> "false") {
+        val df = sql("SELECT _1, CAST(_2 AS STRING) AS s FROM tbl")
+        val shuffled = df.repartition(2, $"_1")
+        checkShuffleAnswer(shuffled, 1)
+      }
     }
   }
 

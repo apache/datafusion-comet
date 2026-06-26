@@ -24,12 +24,13 @@ import org.scalatest.Tag
 
 import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.fs.Path
-import org.apache.parquet.hadoop.ParquetWriter
+import org.apache.parquet.hadoop.{ParquetFileReader, ParquetWriter}
 import org.apache.parquet.hadoop.api.WriteSupport
 import org.apache.parquet.hadoop.api.WriteSupport.WriteContext
 import org.apache.parquet.io.api.RecordConsumer
 import org.apache.parquet.schema.MessageTypeParser
 import org.apache.spark.sql.{CometTestBase, Row}
+import org.apache.spark.sql.comet.CometNativeScanExec
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions.{array, col}
 import org.apache.spark.sql.internal.SQLConf
@@ -798,6 +799,78 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
     val writer = new Builder().build()
     try recordWriters.foreach(writer.write)
     finally writer.close()
+  }
+
+  test("native scan does not duplicate a row group split by byte range") {
+    // Mirrors the native Iceberg scan duplication bug (#4590): a single-row-group Parquet
+    // file split into many sub-row-group byte ranges must still return each row once.
+    withTempPath { path =>
+      // One row group, one matching row. payload pads the file so it spans many splits.
+      spark
+        .sql("SELECT CAST(0 AS INT) AS id, repeat('x', 4096) AS payload")
+        .coalesce(1)
+        .write
+        .mode("overwrite")
+        .parquet(path.toString)
+
+      withSQLConf(
+        // Force Spark to split the single file into many sub-row-group byte ranges.
+        SQLConf.FILES_MAX_PARTITION_BYTES.key -> "64",
+        SQLConf.FILES_OPEN_COST_IN_BYTES.key -> "64") {
+        // Guard the scenario: without multiple splits the test proves nothing about
+        // midpoint-vs-overlap row group assignment.
+        val numParts = spark.read.parquet(path.toString).select("id").rdd.getNumPartitions
+        assert(numParts > 1, s"expected the file to be split into >1 partition, got $numParts")
+
+        val df = spark.read.parquet(path.toString).where("id = 0").select("id")
+        val rows = df.collect()
+        assert(rows.length == 1, s"Expected 1 row, got ${rows.length}: ${rows.mkString(", ")}")
+      }
+    }
+  }
+
+  test("row-group statistics pruning fires for native Parquet scan dataFilters") {
+    // Regression test for the identity-cast pruning gap. DataFusion's default
+    // PhysicalExprAdapter inserts a CastExpr around Column refs whenever the logical
+    // and physical Arrow Fields differ at all, including metadata or nullability with
+    // identical data types. Comet then translates that CastExpr into a Spark Cast,
+    // which DataFusion's pruning-predicate analyzer cannot peel back to a column,
+    // so build_pruning_predicates returns None and no row groups are pruned. The
+    // fix skips the wrap when source and target types are equal.
+    withTempPath { dir =>
+      withSQLConf(SQLConf.LEAF_NODE_DEFAULT_PARALLELISM.key -> "1") {
+        spark
+          .range(0, 1000)
+          .toDF("c1")
+          .repartition(1)
+          .write
+          .option("parquet.block.size", "1024")
+          .format("parquet")
+          .save(dir.toString)
+
+        val parquetFile = dir
+          .listFiles()
+          .find(_.getName.endsWith(".parquet"))
+          .getOrElse(fail("No parquet file was written"))
+        val reader = ParquetFileReader.open(
+          org.apache.parquet.hadoop.util.HadoopInputFile
+            .fromPath(new Path(parquetFile.getAbsolutePath), spark.sessionState.newHadoopConf()))
+        val numRowGroups =
+          try reader.getRowGroups.size()
+          finally reader.close()
+        assert(numRowGroups > 1, s"Test setup needs >1 row groups, got $numRowGroups")
+
+        val df = spark.read.parquet(dir.toString).where("c1 > 500")
+        val (_, cometPlan) = checkSparkAnswerAndOperator(df)
+        val nativeScans = cometPlan.collect { case n: CometNativeScanExec => n }
+        assert(nativeScans.nonEmpty, "Expected a CometNativeScanExec")
+        val scanRows = nativeScans.head.metrics("numOutputRows").value
+        assert(
+          scanRows < 1000,
+          s"Row-group statistics pruning did not fire (scan read $scanRows of 1000 rows " +
+            s"across $numRowGroups row groups)")
+      }
+    }
   }
 }
 
