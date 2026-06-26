@@ -20,16 +20,22 @@
 package org.apache.comet.serde.operator
 
 import java.net.URI
-import java.util.Locale
+import java.util.{Locale, UUID}
 
 import scala.jdk.CollectionConverters._
 
-import org.apache.spark.SparkException
+import org.apache.hadoop.fs.Path
+import org.apache.hadoop.mapreduce.Job
+import org.apache.hadoop.mapreduce.lib.output.FileOutputFormat
+import org.apache.spark.internal.io.FileCommitProtocol
+import org.apache.spark.sql.catalyst.InternalRow
+import org.apache.spark.sql.catalyst.util.CaseInsensitiveMap
 import org.apache.spark.sql.comet.{CometNativeExec, CometNativeWriteExec}
 import org.apache.spark.sql.execution.command.DataWritingCommandExec
 import org.apache.spark.sql.execution.datasources.{InsertIntoHadoopFsRelationCommand, WriteFilesExec}
 import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
 import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.util.SerializableConfiguration
 
 import org.apache.comet.{CometConf, ConfigEntry}
 import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
@@ -132,8 +138,8 @@ object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec
         .setOutputPath(outputPath)
         .setCompression(codec)
         .addAllColumnNames(cmd.query.output.map(_.name).asJava)
-      // Note: work_dir, job_id, and task_attempt_id will be set at execution time
-      // in CometNativeWriteExec, as they depend on the Spark task context
+      // The task_output_path is filled in by CometNativeWriteExec at execution time from
+      // Spark's FileCommitProtocol, because it depends on the Spark task context.
 
       // Collect S3/cloud storage configurations
       val session = op.session
@@ -178,29 +184,35 @@ object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec
         other
     }
 
-    // Create FileCommitProtocol for atomic writes
-    val jobId = java.util.UUID.randomUUID().toString
-    val committer =
-      try {
-        // Use Spark's SQLHadoopMapReduceCommitProtocol
-        val committerClass =
-          classOf[org.apache.spark.sql.execution.datasources.SQLHadoopMapReduceCommitProtocol]
-        val constructor =
-          committerClass.getConstructor(classOf[String], classOf[String], classOf[Boolean])
-        Some(
-          constructor
-            .newInstance(
-              jobId,
-              outputPath,
-              java.lang.Boolean.FALSE // dynamicPartitionOverwrite = false for now
-            )
-            .asInstanceOf[org.apache.spark.internal.io.FileCommitProtocol])
-      } catch {
-        case e: Exception =>
-          throw new SparkException(s"Could not instantiate FileCommitProtocol: ${e.getMessage}")
-      }
+    val session = op.session
+    val hadoopConf = session.sessionState.newHadoopConfWithOptions(cmd.options)
+    val job = Job.getInstance(hadoopConf)
+    job.setOutputKeyClass(classOf[Void])
+    job.setOutputValueClass(classOf[InternalRow])
+    FileOutputFormat.setOutputPath(job, new Path(outputPath))
 
-    CometNativeWriteExec(nativeOp, childPlan, outputPath, committer, jobId)
+    val outputWriterFactory =
+      cmd.fileFormat.prepareWrite(session, job, CaseInsensitiveMap(cmd.options), cmd.query.schema)
+
+    val commitProtocolJobId = UUID.randomUUID().toString
+    val committer = FileCommitProtocol.instantiate(
+      session.sessionState.conf.fileCommitProtocolClass,
+      commitProtocolJobId,
+      outputPath,
+      false)
+
+    // Match Spark's FileFormatWriter behavior: propagate a per-write UUID in the Hadoop
+    // configuration before it is serialized to executors.
+    job.getConfiguration.set("spark.sql.sources.writeJobUUID", UUID.randomUUID().toString)
+
+    val commitProtocol = CometNativeWriteExec.CommitProtocolConfig(
+      committer = committer,
+      serializableHadoopConf = new SerializableConfiguration(job.getConfiguration),
+      outputWriterFactory = outputWriterFactory,
+      commitProtocolJobId = commitProtocolJobId,
+      jobTrackerID = CometNativeWriteExec.newJobTrackerID())
+
+    CometNativeWriteExec(nativeOp, childPlan, outputPath, Some(commitProtocol))
   }
 
   private def parseCompressionCodec(cmd: InsertIntoHadoopFsRelationCommand) = {

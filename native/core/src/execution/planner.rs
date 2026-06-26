@@ -1662,14 +1662,30 @@ impl PhysicalPlanner {
                     .map(|(k, v)| (k.clone(), v.clone()))
                     .collect();
 
+                let task_output_path = writer
+                    .task_output_path
+                    .clone()
+                    .or_else(|| {
+                        // Compatibility with older serialized plans that only provided a work
+                        // directory. New JVM code always sends task_output_path from Spark's
+                        // FileCommitProtocol so native code does not invent filenames.
+                        writer
+                            .work_dir
+                            .as_ref()
+                            .map(|work_dir| match writer.task_attempt_id {
+                                Some(attempt_id) => format!(
+                                    "{}/part-{:05}-{:05}.parquet",
+                                    work_dir, self.partition, attempt_id
+                                ),
+                                None => format!("{}/part-{:05}.parquet", work_dir, self.partition),
+                            })
+                    })
+                    .expect("task_output_path is provided");
+
                 let parquet_writer = Arc::new(ParquetWriterExec::try_new(
                     Arc::clone(&child.native_plan),
                     writer.output_path.clone(),
-                    writer
-                        .work_dir
-                        .as_ref()
-                        .expect("work_dir is provided")
-                        .clone(),
+                    task_output_path,
                     writer.job_id.clone(),
                     writer.task_attempt_id,
                     codec,

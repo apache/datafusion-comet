@@ -54,6 +54,7 @@ class CometParquetWriterSuite extends CometTestBase {
           writeWithCometNativeWriteExec(inputPath, outputPath)
 
           verifyWrittenFile(outputPath)
+          verifyCommitProtocolOutput(outputPath)
         }
       }
     }
@@ -428,6 +429,28 @@ class CometParquetWriterSuite extends CometTestBase {
     assertHasCometNativeWriteExec(plan)
 
     Some(plan)
+  }
+
+  private def verifyCommitProtocolOutput(outputPath: String): Unit = {
+    val outputDir = new File(outputPath)
+    val outputFiles = Option(outputDir.listFiles()).getOrElse(Array.empty)
+    val fileNames = outputFiles.map(_.getName).toSeq
+
+    assert(
+      fileNames.contains("_SUCCESS"),
+      s"Expected Spark commit protocol to create _SUCCESS marker, found: ${fileNames.mkString(", ")}")
+    assert(
+      !fileNames.contains("_temporary"),
+      s"Expected temporary commit directory to be cleaned up, found: ${fileNames.mkString(", ")}")
+    assert(
+      !fileNames.exists(_.startsWith(".spark-staging-")),
+      s"Expected staging commit directory to be cleaned up, found: ${fileNames.mkString(", ")}")
+
+    val partFileNames = fileNames.filter(_.startsWith("part-"))
+    assert(partFileNames.nonEmpty, s"Expected part files, found: ${fileNames.mkString(", ")}")
+    assert(
+      partFileNames.forall(name => name.contains("-c000") && name.endsWith(".parquet")),
+      s"Expected Spark commit protocol part-file names, found: ${partFileNames.mkString(", ")}")
   }
 
   private def verifyWrittenFile(outputPath: String): Unit = {

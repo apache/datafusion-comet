@@ -19,72 +19,77 @@
 
 package org.apache.spark.sql.comet
 
-import scala.jdk.CollectionConverters._
+import java.util.Date
 
-import org.apache.hadoop.fs.Path
+import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.mapreduce.{Job, TaskAttemptContext, TaskAttemptID, TaskID, TaskType}
 import org.apache.hadoop.mapreduce.task.TaskAttemptContextImpl
 import org.apache.spark.TaskContext
-import org.apache.spark.internal.io.{FileCommitProtocol, FileNameSpec}
+import org.apache.spark.internal.io.{FileCommitProtocol, FileNameSpec, SparkHadoopWriterUtils}
+import org.apache.spark.internal.io.FileCommitProtocol.TaskCommitMessage
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
+import org.apache.spark.sql.comet.CometNativeWriteExec.CommitProtocolConfig
 import org.apache.spark.sql.comet.execution.arrow.CometArrowStream
 import org.apache.spark.sql.comet.util.{Utils => CometUtils}
 import org.apache.spark.sql.execution.{SparkPlan, UnaryExecNode}
+import org.apache.spark.sql.execution.datasources.OutputWriterFactory
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.vectorized.ColumnarBatch
-import org.apache.spark.util.Utils
+import org.apache.spark.util.SerializableConfiguration
 
 import com.google.protobuf.CodedOutputStream
 
 import org.apache.comet.CometExecIterator
 import org.apache.comet.serde.OperatorOuterClass.Operator
 
+object CometNativeWriteExec {
+
+  def newJobTrackerID(): String = SparkHadoopWriterUtils.createJobTrackerID(new Date())
+
+  /**
+   * Driver-created objects required to use Spark's FileCommitProtocol from native write tasks.
+   * The committer instance is serializable by contract and is sent to executors, while the same
+   * driver-side instance receives task commit messages and commits or aborts the job.
+   */
+  case class CommitProtocolConfig(
+      committer: FileCommitProtocol,
+      serializableHadoopConf: SerializableConfiguration,
+      outputWriterFactory: OutputWriterFactory,
+      commitProtocolJobId: String,
+      jobTrackerID: String)
+      extends Serializable
+}
+
 /**
- * Comet physical operator for native Parquet write operations with FileCommitProtocol support.
+ * Comet physical operator for native Parquet write operations.
  *
- * This operator writes data to Parquet files using the native Comet engine. It integrates with
- * Spark's FileCommitProtocol to provide atomic writes with proper staging and commit semantics.
- *
- * The implementation includes support for Spark's file commit protocol through work_dir, job_id,
- * and task_attempt_id parameters that can be set in the operator. When work_dir is set, files are
- * written to a temporary location that can be atomically committed later.
+ * When [[commitProtocol]] is present, this operator follows Spark's FileCommitProtocol lifecycle:
+ * driver setupJob, executor setupTask/newTaskTempFile/commitTask or abortTask, and driver
+ * commitJob or abortJob. Native code writes exactly to the task temp file returned by Spark's
+ * commit protocol; it does not generate its own final part-file names.
  *
  * @param nativeOp
- *   The native operator representing the write operation (template, will be modified per task)
+ *   The native operator representing the write operation (template, modified per task)
  * @param child
  *   The child operator providing the data to write
  * @param outputPath
- *   The path where the Parquet file will be written
- * @param committer
- *   FileCommitProtocol for atomic writes. If None, files are written directly.
- * @param jobTrackerID
- *   Unique identifier for this write job
+ *   The final output directory for the write
+ * @param commitProtocol
+ *   Spark file commit protocol state. If absent, files are written directly under outputPath.
  */
 case class CometNativeWriteExec(
     nativeOp: Operator,
     child: SparkPlan,
     outputPath: String,
-    committer: Option[FileCommitProtocol] = None,
-    jobTrackerID: String = Utils.createTempDir().getName)
+    commitProtocol: Option[CommitProtocolConfig] = None)
     extends CometNativeExec
     with UnaryExecNode {
 
   override def originalPlan: SparkPlan = child
 
-  // Accumulator to collect TaskCommitMessages from all tasks
-  // Must be eagerly initialized on driver, not lazy
-  @transient private val taskCommitMessagesAccum =
-    sparkContext.collectionAccumulator[FileCommitProtocol.TaskCommitMessage]("taskCommitMessages")
-
-  override def serializedPlanOpt: SerializedPlan = {
-    val size = nativeOp.getSerializedSize
-    val bytes = new Array[Byte](size)
-    val codedOutput = CodedOutputStream.newInstance(bytes)
-    nativeOp.writeTo(codedOutput)
-    codedOutput.checkNoSpaceLeft()
-    SerializedPlan(Some(bytes))
-  }
+  override def serializedPlanOpt: SerializedPlan = SerializedPlan(
+    Some(serializeNativeOp(nativeOp)))
 
   override def withNewChildInternal(newChild: SparkPlan): SparkPlan =
     copy(child = newChild)
@@ -97,53 +102,72 @@ case class CometNativeWriteExec(
     "rows_written" -> SQLMetrics.createMetric(sparkContext, "number of written rows"))
 
   override def doExecute(): RDD[InternalRow] = {
-    // Setup job if committer is present
-    committer.foreach { c =>
-      val jobContext = createJobContext()
-      c.setupJob(jobContext)
-    }
-
-    // Execute the native write with commit protocol
-    val resultRDD = doExecuteColumnar()
-
-    // Force execution by consuming all batches
-    resultRDD
-      .mapPartitions { iter =>
-        iter.foreach(_.close())
-        Iterator.empty
-      }
-      .count()
-
-    // Extract write statistics from metrics
-    val filesWritten = metrics("files_written").value
-    val bytesWritten = metrics("bytes_written").value
-    val rowsWritten = metrics("rows_written").value
-
-    // Collect TaskCommitMessages from accumulator
-    val commitMessages = taskCommitMessagesAccum.value.asScala.toSeq
-
-    // Commit job with collected TaskCommitMessages
-    committer.foreach { c =>
-      val jobContext = createJobContext()
-      try {
-        c.commitJob(jobContext, commitMessages)
-        logInfo(
-          s"Successfully committed write job to $outputPath: " +
-            s"$filesWritten files, $bytesWritten bytes, $rowsWritten rows")
-      } catch {
-        case e: Exception =>
-          logError("Failed to commit job, aborting", e)
-          c.abortJob(jobContext)
-          throw e
-      }
-    }
-
-    // Return empty RDD as write operations don't return data
+    executeWriteAndCommit()
+    // Write operations do not return rows.
     sparkContext.emptyRDD[InternalRow]
   }
 
   override def doExecuteColumnar(): RDD[ColumnarBatch] = {
-    // Get the input data from the child operator
+    executeWriteAndCommit()
+    // Write operations do not return columnar batches. Spark may still ask for columnar output
+    // while this operator is nested under write planning nodes, so run the terminal write here too.
+    sparkContext.emptyRDD[ColumnarBatch]
+  }
+
+  private def executeWriteAndCommit(): Unit = {
+    commitProtocol match {
+      case Some(protocol) =>
+        val jobContext = createJobContext(protocol)
+
+        // Match Spark's FileFormatWriter lifecycle: setupJob is outside the try block because it
+        // only initializes the job; failures after this point should abort the job.
+        protocol.committer.setupJob(jobContext)
+
+        try {
+          val commitMessages = runNativeWriteJob(protocol)
+          protocol.committer.commitJob(jobContext, commitMessages.toSeq)
+
+          val filesWritten = metrics("files_written").value
+          val bytesWritten = metrics("bytes_written").value
+          val rowsWritten = metrics("rows_written").value
+          logInfo(
+            s"Successfully committed native write job to $outputPath: " +
+              s"$filesWritten files, $bytesWritten bytes, $rowsWritten rows")
+        } catch {
+          case t: Throwable =>
+            abortJob(protocol, jobContext, t)
+            throw t
+        }
+
+      case None =>
+        // Direct-write fallback for tests or callers that do not provide a commit protocol.
+        nativeWriteTasks(None).count()
+    }
+  }
+
+  private def runNativeWriteJob(protocol: CommitProtocolConfig): Array[TaskCommitMessage] = {
+    val writeRDD = nativeWriteTasks(Some(protocol))
+    val ret = new Array[TaskCommitMessage](writeRDD.partitions.length)
+
+    sparkContext.runJob(
+      writeRDD,
+      (_: TaskContext, iter: Iterator[TaskCommitMessage]) => {
+        assert(iter.hasNext, "Native write task did not return a commit message")
+        val commitMessage = iter.next()
+        assert(!iter.hasNext, "Native write task returned more than one commit message")
+        commitMessage
+      },
+      writeRDD.partitions.indices,
+      (index, commitMessage: TaskCommitMessage) => {
+        protocol.committer.onTaskCommit(commitMessage)
+        ret(index) = commitMessage
+      })
+
+    ret
+  }
+
+  private def nativeWriteTasks(
+      capturedCommitProtocol: Option[CommitProtocolConfig]): RDD[TaskCommitMessage] = {
     val childRDD = if (child.supportsColumnar) {
       child.executeColumnar()
     } else {
@@ -156,137 +180,114 @@ case class CometNativeWriteExec(
       }
     }
 
-    // Capture metadata before the transformation
     val numPartitions = childRDD.getNumPartitions
     val numOutputCols = child.output.length
-    val capturedCommitter = committer
-    val capturedJobTrackerID = jobTrackerID
     val capturedNativeOp = nativeOp
-    val capturedAccumulator = taskCommitMessagesAccum // Capture accumulator for use in tasks
+    val writeExec = this
 
-    // Execute native write operation with task-level commit protocol
     childRDD.mapPartitionsInternal { iter =>
-      val partitionId = org.apache.spark.TaskContext.getPartitionId()
-      val taskAttemptId = org.apache.spark.TaskContext.get().taskAttemptId()
+      val sparkTaskContext = TaskContext.get()
+      val partitionId = sparkTaskContext.partitionId()
+      val sparkStageId = sparkTaskContext.stageId()
+      val taskAttemptId = sparkTaskContext.taskAttemptId()
+      val sparkAttemptNumber = taskAttemptId.toInt & Integer.MAX_VALUE
 
-      // Setup task-level commit protocol if provided
-      val (workDir, taskContext, commitMsg) = capturedCommitter
-        .map { committer =>
-          val taskContext =
-            createTaskContext(capturedJobTrackerID, partitionId, taskAttemptId.toInt)
+      new Iterator[TaskCommitMessage] {
+        private var emitted = false
 
-          // Setup task - this creates the temporary working directory
-          committer.setupTask(taskContext)
+        override def hasNext: Boolean = !emitted
 
-          // Get the work directory for temp files
-          // Spark 4.1 made the (taskContext, dir, ext: String) overload throw by default;
-          // the FileNameSpec overload is the supported one and exists in 3.4+.
-          val workPath = committer.newTaskTempFile(taskContext, None, FileNameSpec("", ""))
-          val workDir = new Path(workPath).getParent.toString
+        override def next(): TaskCommitMessage = {
+          if (emitted) {
+            throw new NoSuchElementException("Native write task already completed")
+          }
+          emitted = true
 
-          (Some(workDir), Some((committer, taskContext)), null)
-        }
-        .getOrElse((None, None, null))
+          var taskCommitter: Option[(FileCommitProtocol, TaskAttemptContext)] = None
+          var execIterator: CometExecIterator = null
 
-      // Modify the native operator to include task-specific parameters
-      val modifiedNativeOp = if (workDir.isDefined) {
-        val parquetWriter = capturedNativeOp.getParquetWriter.toBuilder
-          .setWorkDir(workDir.get)
-          .setJobId(capturedJobTrackerID)
-          .setTaskAttemptId(taskAttemptId.toInt)
-          .build()
+          try {
+            val taskOutputPath = capturedCommitProtocol match {
+              case Some(protocol) =>
+                val taskAttemptContext =
+                  createTaskContext(protocol, sparkStageId, partitionId, sparkAttemptNumber)
+                protocol.committer.setupTask(taskAttemptContext)
+                taskCommitter = Some(protocol.committer -> taskAttemptContext)
 
-        capturedNativeOp.toBuilder.setParquetWriter(parquetWriter).build()
-      } else {
-        capturedNativeOp
-      }
+                val fileExtension =
+                  protocol.outputWriterFactory.getFileExtension(taskAttemptContext)
+                protocol.committer.newTaskTempFile(
+                  taskAttemptContext,
+                  None,
+                  FileNameSpec("", "-c000" + fileExtension))
 
-      val nativeMetrics = CometMetricNode.fromCometPlan(this)
-      // Register before CometExecIterator so completion listeners run after iterator close
-      // (Spark runs task completion callbacks in reverse registration order).
-      Option(TaskContext.get()).foreach(nativeMetrics.reportNativeWriteOutputMetrics)
-
-      val size = modifiedNativeOp.getSerializedSize
-      val planBytes = new Array[Byte](size)
-      val codedOutput = CodedOutputStream.newInstance(planBytes)
-      modifiedNativeOp.writeTo(codedOutput)
-      codedOutput.checkNoSpaceLeft()
-
-      val execIterator = new CometExecIterator(
-        CometExec.newIterId,
-        CometArrowStream.inputObjects(
-          iter,
-          CometUtils.fromAttributes(child.output),
-          "CometNativeWriteExec"),
-        numOutputCols,
-        planBytes,
-        nativeMetrics,
-        numPartitions,
-        partitionId,
-        None,
-        Seq.empty)
-
-      // Wrap the iterator to handle task commit/abort and capture TaskCommitMessage
-      new Iterator[ColumnarBatch] {
-        private var completed = false
-        private var thrownException: Option[Throwable] = None
-
-        override def hasNext: Boolean = {
-          val result =
-            try {
-              execIterator.hasNext
-            } catch {
-              case e: Throwable =>
-                thrownException = Some(e)
-                handleTaskEnd()
-                throw e
+              case None =>
+                directTaskOutputPath(partitionId)
             }
 
-          if (!result && !completed) {
-            handleTaskEnd()
-          }
+            val parquetWriter = capturedNativeOp.getParquetWriter.toBuilder
+              .setTaskOutputPath(taskOutputPath)
+              .setTaskAttemptId(sparkAttemptNumber)
 
-          result
-        }
+            capturedCommitProtocol.foreach { protocol =>
+              parquetWriter.setJobId(protocol.commitProtocolJobId)
+            }
 
-        override def next(): ColumnarBatch = {
-          try {
-            execIterator.next()
+            val modifiedNativeOp = capturedNativeOp.toBuilder
+              .setParquetWriter(parquetWriter.build())
+              .build()
+
+            val nativeMetrics = CometMetricNode.fromCometPlan(writeExec)
+            // Register before CometExecIterator so completion listeners run after iterator close
+            // (Spark runs task completion callbacks in reverse registration order).
+            Option(TaskContext.get()).foreach(nativeMetrics.reportNativeWriteOutputMetrics)
+
+            execIterator = new CometExecIterator(
+              CometExec.newIterId,
+              CometArrowStream.inputObjects(
+                iter,
+                CometUtils.fromAttributes(child.output),
+                "CometNativeWriteExec"),
+              numOutputCols,
+              serializeNativeOp(modifiedNativeOp),
+              nativeMetrics,
+              numPartitions,
+              partitionId,
+              None,
+              Seq.empty)
+
+            while (execIterator.hasNext) {
+              execIterator.next().close()
+            }
+
+            taskCommitter match {
+              case Some((committer, taskAttemptContext)) =>
+                val message = committer.commitTask(taskAttemptContext)
+                logInfo(s"Task ${taskAttemptContext.getTaskAttemptID} committed successfully")
+                message
+              case None =>
+                FileCommitProtocol.EmptyTaskCommitMessage
+            }
           } catch {
-            case e: Throwable =>
-              thrownException = Some(e)
-              handleTaskEnd()
-              throw e
-          }
-        }
-
-        private def handleTaskEnd(): Unit = {
-          if (!completed) {
-            completed = true
-
-            // Handle commit or abort based on whether an exception was thrown
-            taskContext.foreach { case (committer, ctx) =>
-              try {
-                if (thrownException.isEmpty) {
-                  // Commit the task and add message to accumulator
-                  val message = committer.commitTask(ctx)
-                  capturedAccumulator.add(message)
-                  logInfo(s"Task ${ctx.getTaskAttemptID} committed successfully")
-                } else {
-                  // Abort the task
-                  committer.abortTask(ctx)
-                  val exMsg = thrownException.get.getMessage
-                  logWarning(s"Task ${ctx.getTaskAttemptID} aborted due to exception: $exMsg")
+            case t: Throwable =>
+              taskCommitter.foreach { case (committer, taskAttemptContext) =>
+                try {
+                  committer.abortTask(taskAttemptContext)
+                  logWarning(
+                    s"Task ${taskAttemptContext.getTaskAttemptID} aborted due to exception: " +
+                      Option(t.getMessage).getOrElse(t.getClass.getName))
+                } catch {
+                  case abortError: Throwable =>
+                    logWarning(
+                      s"Error aborting task ${taskAttemptContext.getTaskAttemptID}",
+                      abortError)
+                    t.addSuppressed(abortError)
                 }
-              } catch {
-                case e: Exception =>
-                  // Log the commit/abort exception but don't mask the original exception
-                  logError(s"Error during task commit/abort: ${e.getMessage}", e)
-                  if (thrownException.isEmpty) {
-                    // If no original exception, propagate the commit/abort exception
-                    throw e
-                  }
               }
+              throw t
+          } finally {
+            if (execIterator != null) {
+              execIterator.close()
             }
           }
         }
@@ -294,22 +295,56 @@ case class CometNativeWriteExec(
     }
   }
 
-  /** Create a JobContext for the write job */
-  private def createJobContext(): Job = {
-    val job = Job.getInstance()
-    job.setJobID(new org.apache.hadoop.mapreduce.JobID(jobTrackerID, 0))
-    job
+  private def serializeNativeOp(op: Operator): Array[Byte] = {
+    val size = op.getSerializedSize
+    val bytes = new Array[Byte](size)
+    val codedOutput = CodedOutputStream.newInstance(bytes)
+    op.writeTo(codedOutput)
+    codedOutput.checkNoSpaceLeft()
+    bytes
   }
 
-  /** Create a TaskAttemptContext for a specific task */
+  private def directTaskOutputPath(partitionId: Int): String = {
+    val separator = if (outputPath.endsWith("/")) "" else "/"
+    f"${outputPath}${separator}part-$partitionId%05d.parquet"
+  }
+
+  private def abortJob(
+      protocol: CommitProtocolConfig,
+      jobContext: Job,
+      cause: Throwable): Unit = {
+    logError("Native write failed, aborting job", cause)
+    try {
+      protocol.committer.abortJob(jobContext)
+    } catch {
+      case abortError: Throwable =>
+        logWarning("Error aborting native write job", abortError)
+        cause.addSuppressed(abortError)
+    }
+  }
+
+  /** Create a JobContext for the write job using the prepared Hadoop write configuration. */
+  private def createJobContext(protocol: CommitProtocolConfig): Job = {
+    Job.getInstance(new Configuration(protocol.serializableHadoopConf.value))
+  }
+
+  /** Create a TaskAttemptContext matching Spark's FileFormatWriter task ID setup. */
   private def createTaskContext(
-      jobId: String,
-      partitionId: Int,
-      attemptNumber: Int): TaskAttemptContext = {
-    val job = Job.getInstance()
-    val taskAttemptID = new TaskAttemptID(
-      new TaskID(new org.apache.hadoop.mapreduce.JobID(jobId, 0), TaskType.REDUCE, partitionId),
-      attemptNumber)
-    new TaskAttemptContextImpl(job.getConfiguration, taskAttemptID)
+      protocol: CommitProtocolConfig,
+      sparkStageId: Int,
+      sparkPartitionId: Int,
+      sparkAttemptNumber: Int): TaskAttemptContext = {
+    val hadoopConf = new Configuration(protocol.serializableHadoopConf.value)
+    val jobId = SparkHadoopWriterUtils.createJobID(protocol.jobTrackerID, sparkStageId)
+    val taskId = new TaskID(jobId, TaskType.MAP, sparkPartitionId)
+    val taskAttemptId = new TaskAttemptID(taskId, sparkAttemptNumber)
+
+    hadoopConf.set("mapreduce.job.id", jobId.toString)
+    hadoopConf.set("mapreduce.task.id", taskAttemptId.getTaskID.toString)
+    hadoopConf.set("mapreduce.task.attempt.id", taskAttemptId.toString)
+    hadoopConf.setBoolean("mapreduce.task.ismap", true)
+    hadoopConf.setInt("mapreduce.task.partition", 0)
+
+    new TaskAttemptContextImpl(hadoopConf, taskAttemptId)
   }
 }
