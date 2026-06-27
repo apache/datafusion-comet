@@ -68,6 +68,8 @@ macro_rules! impl_append_to_builder {
                     // Note: in Spark bitmap is padded to 8 byte word-boundaries
                     // In Arrow we just use the needed number of whole bytes without padding
                     let null_mask_len = num_elements.div_ceil(8);
+                    // Spark and Arrow both use little-endian bit ordering within each byte,
+                    // so casting the i64 null words to *const u8 preserves correct bit indexing.
                     let null_mask = unsafe {
                         std::slice::from_raw_parts::<u8>(null_words as *const u8, null_mask_len)
                     };
