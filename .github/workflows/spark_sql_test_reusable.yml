@@ -76,7 +76,7 @@ jobs:
           jdk-version: ${{ inputs.java }}
 
       - name: Restore Cargo cache
-        uses: actions/cache/restore@v5
+        uses: actions/cache/restore@v6
         with:
           path: |
             ~/.cargo/registry
@@ -94,7 +94,7 @@ jobs:
           RUSTFLAGS: "-Ctarget-cpu=x86-64-v3 -Clink-arg=-fuse-ld=bfd"
 
       - name: Save Cargo cache
-        uses: actions/cache/save@v5
+        uses: actions/cache/save@v6
         if: github.ref == 'refs/heads/main'
         with:
           path: |
@@ -212,6 +212,8 @@ jobs:
         run: |
           cd apache-spark
           rm -rf /root/.m2/repository/org/apache/parquet # somehow parquet cache requires cleanups
+          # set SBTOPTS
+          printf -- '-J-Xms1g\n-J-Xmx4g\n-J-XX:MaxMetaspaceSize=1g\n' > .sbtopts
           export SERIAL_SBT_TESTS=1
 
           # Per-row forked-test-JVM caps (read by Spark's SparkBuild.scala). 
@@ -253,6 +255,14 @@ jobs:
             -XX:InitiatingHeapOccupancyPercent=35
             -XX:+ParallelRefProcEnabled
             -XX:+ExitOnOutOfMemoryError
+          # Mirror Spark's own JDK 21 / 25 CI workaround. apache/spark's
+          # build_java21.yml and build_java25.yml set this same env var to
+          # process-isolate the V1/V2 Parquet and Orc source suites because
+          # they exhibit cross-suite resource interactions (file-stream and
+          # thread leaks) under the newer JDKs. project/SparkBuild.scala
+          # reads DEDICATED_JVM_SBT_TESTS and forks a separate JVM per
+          # listed suite. Empty value is a safe no-op.
+          DEDICATED_JVM_SBT_TESTS: ${{ inputs.spark-short == '4.0' && 'org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormatV1Suite,org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormatV2Suite,org.apache.spark.sql.execution.datasources.orc.OrcSourceV1Suite,org.apache.spark.sql.execution.datasources.orc.OrcSourceV2Suite' || '' }}
       - name: Upload fallback log
         if: ${{ inputs.collect-fallback-logs }}
         uses: actions/upload-artifact@v7
