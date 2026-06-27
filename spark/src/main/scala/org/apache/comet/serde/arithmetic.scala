@@ -303,14 +303,14 @@ object CometRound extends CometExpressionSerde[Round] {
         exprToProtoInternal(Literal(null), inputs, binding)
       case _: ByteType | ShortType | IntegerType | LongType if _scale >= 0 =>
         childExpr // _scale(I.e. decimal place) >= 0 is a no-op for integer types in Spark
-      case _: FloatType =>
-        // Spark rounds floats by widening to double, building a BigDecimal via
-        // java.lang.Double.toString, applying HALF_UP, and narrowing back. The toString
-        // algorithm differs between JDKs (notably 17 vs 21), so a native implementation
-        // can't match every JDK. Delegate to a JVM UDF that runs on the executor's JDK.
-        convertViaJvmUdf(r, "org.apache.comet.udf.RoundFloatUDF", _scale, inputs, binding)
-      case _: DoubleType =>
-        convertViaJvmUdf(r, "org.apache.comet.udf.RoundDoubleUDF", _scale, inputs, binding)
+      case _: FloatType | _: DoubleType =>
+        // Spark rounds floats/doubles by widening to double, building a BigDecimal via
+        // java.lang.Double.toString, applying HALF_UP, and (for floats) narrowing back. The
+        // toString algorithm differs between JDKs (notably 17 vs 21), so a native implementation
+        // can't match every JDK. Route the expression through the JVM codegen dispatcher, which
+        // Janino-compiles Spark's own RoundBase.doGenCode and runs it inside the Comet pipeline
+        // on the executor's JDK, so the result matches Spark exactly.
+        CometScalaUDF.emitJvmCodegenDispatch(r, inputs, binding)
       case _ =>
         // `scale` must be Int64 type in DataFusion
         val scaleExpr = exprToProtoInternal(Literal(_scale.toLong, LongType), inputs, binding)
@@ -324,36 +324,6 @@ object CometRound extends CometExpressionSerde[Round] {
         optExprWithFallbackReason(optExpr, r, r.child)
     }
 
-  }
-
-  private def convertViaJvmUdf(
-      r: Round,
-      className: String,
-      scale: Int,
-      inputs: Seq[Attribute],
-      binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val valueProto = exprToProtoInternal(r.child, inputs, binding)
-    val scaleProto = exprToProtoInternal(Literal(scale, IntegerType), inputs, binding)
-    if (valueProto.isEmpty || scaleProto.isEmpty) {
-      withInfo(r, r.child)
-      return None
-    }
-    val returnType = serializeDataType(r.dataType).getOrElse {
-      withInfo(r, s"Unsupported return type ${r.dataType} for Round JVM UDF")
-      return None
-    }
-    val udfBuilder = ExprOuterClass.JvmScalarUdf
-      .newBuilder()
-      .setClassName(className)
-      .addArgs(valueProto.get)
-      .addArgs(scaleProto.get)
-      .setReturnType(returnType)
-      .setReturnNullable(r.nullable)
-    Some(
-      ExprOuterClass.Expr
-        .newBuilder()
-        .setJvmScalarUdf(udfBuilder.build())
-        .build())
   }
 }
 object CometUnaryMinus extends CometExpressionSerde[UnaryMinus] {
