@@ -552,12 +552,11 @@ pub fn append_list_element(
     Ok(())
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::Array;
     use arrow::array::builder::Int32Builder;
+    use arrow::array::Array;
     use arrow::datatypes::DataType;
 
     fn make_i32_array(num_elements: usize, null_indices: &[usize]) -> Vec<u8> {
