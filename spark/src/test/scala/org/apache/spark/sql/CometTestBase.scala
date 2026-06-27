@@ -795,7 +795,7 @@ abstract class CometTestBase
           record.add(4, i.toLong)
           record.add(5, i.toFloat)
           record.add(6, i.toDouble)
-          record.add(7, i.toString * 48)
+          record.add(7, i.toString + i.abs.toString * 47)
           record.add(8, (-i).toByte)
           record.add(9, (-i).toShort)
           record.add(10, -i)
