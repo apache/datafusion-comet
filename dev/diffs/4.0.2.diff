@@ -1330,7 +1330,7 @@ index 0df7f806272..9cdfe8b8f46 100644
              df.collect()
            }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala
-index 2e33f6505ab..fc1a2c8f964 100644
+index 2e33f6505ab..be967565303 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala
 @@ -23,10 +23,11 @@ import org.apache.spark.SparkRuntimeException
@@ -1374,7 +1374,7 @@ index 2e33f6505ab..fc1a2c8f964 100644
        }
        assert(exchanges.size === 1)
      }
-@@ -2678,18 +2691,25 @@ class SubquerySuite extends QueryTest
+@@ -2678,18 +2691,29 @@ class SubquerySuite extends QueryTest
      def checkFileSourceScan(query: String, answer: Seq[Row]): Unit = {
        val df = sql(query)
        checkAnswer(df, answer)
@@ -1404,7 +1404,11 @@ index 2e33f6505ab..fc1a2c8f964 100644
 -      assert(fileSourceScanExec.head.metrics("numFiles").value === 1)
 -      assert(fileSourceScanExec.head.metrics("numOutputRows").value === answer.size)
 +      assert(dataSourceScanExec.head.metrics("numFiles").value === 1)
-+      assert(dataSourceScanExec.head.metrics("numOutputRows").value === answer.size)
++      val numOutputRows = dataSourceScanExec.head match {
++        case n: CometNativeScanExec => n.metrics("output_rows").value
++        case other => other.metrics("numOutputRows").value
++      }
++      assert(numOutputRows === answer.size)
      }
  
      withTable("t1", "t2") {
@@ -2169,7 +2173,7 @@ index a3cfdc5a240..3793b6191bf 100644
        })
        checkAnswer(distinctWithId, Seq(Row(1, 0), Row(1, 0)))
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala
-index 272be70f9fe..d38a6d41a47 100644
+index 272be70f9fe..12daa1f5932 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala
 @@ -28,12 +28,14 @@ import org.apache.spark.SparkException
@@ -2586,6 +2590,16 @@ index 272be70f9fe..d38a6d41a47 100644
          }.isEmpty)
          assert(collect(initialExecutedPlan) {
            case i: InMemoryTableScanLike => i
+@@ -3129,7 +3173,8 @@ class AdaptiveQueryExecSuite
+ 
+       val plan = df.queryExecution.executedPlan.asInstanceOf[AdaptiveSparkPlanExec]
+       assert(plan.inputPlan.isInstanceOf[TakeOrderedAndProjectExec])
+-      assert(plan.finalPhysicalPlan.isInstanceOf[WindowExec])
++      assert(plan.finalPhysicalPlan.isInstanceOf[WindowExec] ||
++        plan.finalPhysicalPlan.exists(_.isInstanceOf[CometWindowExec]))
+       plan.inputPlan.output.zip(plan.finalPhysicalPlan.output).foreach { case (o1, o2) =>
+         assert(o1.semanticEquals(o2), "Different output column order after AQE optimization")
+       }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/SchemaPruningSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/SchemaPruningSuite.scala
 index 269990d7d14..140ee4112b1 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/SchemaPruningSuite.scala
@@ -2926,7 +2940,7 @@ index 30503af0fab..1491f4bc2d5 100644
  
    import testImplicits._
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetRowIndexSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetRowIndexSuite.scala
-index 08fd8a9ecb5..306958da489 100644
+index 08fd8a9ecb5..06967aec8e1 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetRowIndexSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetRowIndexSuite.scala
 @@ -27,6 +27,7 @@ import org.apache.parquet.hadoop.ParquetWriter.DEFAULT_BLOCK_SIZE
@@ -2948,7 +2962,7 @@ index 08fd8a9ecb5..306958da489 100644
 +              numPartitions +=
 +                b.originalPlan.inputRDD.partitions.length
 +              numOutputRows +=
-+                b.metrics("numOutputRows").value
++                b.metrics("output_rows").value
              case _ =>
            }
            assert(numPartitions > 0)

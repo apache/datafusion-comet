@@ -864,11 +864,16 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
         val (_, cometPlan) = checkSparkAnswerAndOperator(df)
         val nativeScans = cometPlan.collect { case n: CometNativeScanExec => n }
         assert(nativeScans.nonEmpty, "Expected a CometNativeScanExec")
-        val scanRows = nativeScans.head.metrics("numOutputRows").value
+        val metrics = nativeScans.head.metrics
+        val pruned = metrics("row_groups_pruned_statistics").value
+        val matched = metrics("row_groups_matched_statistics").value
         assert(
-          scanRows < 1000,
-          s"Row-group statistics pruning did not fire (scan read $scanRows of 1000 rows " +
-            s"across $numRowGroups row groups)")
+          pruned + matched == numRowGroups,
+          s"pruned ($pruned) + matched ($matched) should equal numRowGroups ($numRowGroups)")
+        assert(
+          pruned > 0,
+          "Row-group statistics pruning did not fire " +
+            s"(pruned=$pruned, matched=$matched of $numRowGroups total)")
       }
     }
   }
