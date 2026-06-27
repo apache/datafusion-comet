@@ -1429,7 +1429,7 @@ index 7bfc8cf4fa6..4bd387801db 100644
              df.collect()
            }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala
-index 3ba48da0e32..a33e65d4420 100644
+index 3ba48da0e32..0313aaa9ec6 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala
 @@ -23,10 +23,11 @@ import org.apache.spark.SparkRuntimeException
@@ -1473,7 +1473,7 @@ index 3ba48da0e32..a33e65d4420 100644
        }
        assert(exchanges.size === 1)
      }
-@@ -2678,18 +2691,25 @@ class SubquerySuite extends QueryTest
+@@ -2678,18 +2691,29 @@ class SubquerySuite extends QueryTest
      def checkFileSourceScan(query: String, answer: Seq[Row]): Unit = {
        val df = sql(query)
        checkAnswer(df, answer)
@@ -1503,7 +1503,11 @@ index 3ba48da0e32..a33e65d4420 100644
 -      assert(fileSourceScanExec.head.metrics("numFiles").value === 1)
 -      assert(fileSourceScanExec.head.metrics("numOutputRows").value === answer.size)
 +      assert(dataSourceScanExec.head.metrics("numFiles").value === 1)
-+      assert(dataSourceScanExec.head.metrics("numOutputRows").value === answer.size)
++      val numOutputRows = dataSourceScanExec.head match {
++        case n: CometNativeScanExec => n.metrics("output_rows").value
++        case other => other.metrics("numOutputRows").value
++      }
++      assert(numOutputRows === answer.size)
      }
  
      withTable("t1", "t2") {
@@ -3101,7 +3105,7 @@ index 30503af0fab..1491f4bc2d5 100644
  
    import testImplicits._
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetRowIndexSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetRowIndexSuite.scala
-index 08fd8a9ecb5..306958da489 100644
+index 08fd8a9ecb5..06967aec8e1 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetRowIndexSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetRowIndexSuite.scala
 @@ -27,6 +27,7 @@ import org.apache.parquet.hadoop.ParquetWriter.DEFAULT_BLOCK_SIZE
@@ -3123,7 +3127,7 @@ index 08fd8a9ecb5..306958da489 100644
 +              numPartitions +=
 +                b.originalPlan.inputRDD.partitions.length
 +              numOutputRows +=
-+                b.metrics("numOutputRows").value
++                b.metrics("output_rows").value
              case _ =>
            }
            assert(numPartitions > 0)
