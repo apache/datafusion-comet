@@ -114,7 +114,7 @@ object CometArrayContains extends CometExpressionSerde[ArrayContains] {
   }
 }
 
-object CometSortArray extends CometExpressionSerde[SortArray] {
+object CometSortArray extends CometExpressionSerde[SortArray] with CodegenDispatchFallback {
 
   override def getIncompatibleReasons(): Seq[String] = Seq(
     "When `" + CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key + "=true`, sorting on" +
@@ -509,6 +509,28 @@ object CometCreateArray extends CometExpressionSerde[CreateArray] {
       return exprToProtoInternal(emptyArrayLiteral, inputs, binding)
     }
 
+    // DataFusion's `make_array` asserts strict element-type equality in
+    // `MutableArrayData::with_capacities` and panics on a mismatch. Spark's CreateArray is more
+    // permissive: its type coercion compares element types with `sameType`, which ignores
+    // nullability, so children that share a surface type but differ only in nested field
+    // nullability get no unifying cast. DataFusion tolerates container nullability differences
+    // (an `ArrayType.containsNull` / `MapType.valueContainsNull` mismatch is coerced), but NOT a
+    // struct field's nullability -- `array(struct(a not null), struct(a nullable))` panics inside
+    // `make_array_inner`. Decline only those cases (i.e. children that still differ after
+    // normalizing container nullability) so Spark's evaluator handles them.
+    //
+    // TODO: remove this decline once apache/datafusion#22366 lands; the upstream fix widens the
+    // element type via nullability-OR-merge and casts each child before MutableArrayData.
+    val normalizedTypes = children.map(c => normalizeContainerNullability(c.dataType))
+    if (normalizedTypes.distinct.size > 1) {
+      withFallbackReason(
+        expr,
+        "CreateArray children have mismatched data types: " +
+          children.map(_.dataType).distinct.mkString(", "),
+        children: _*)
+      return None
+    }
+
     val childExprs = children.map(exprToProtoInternal(_, inputs, binding))
 
     if (childExprs.forall(_.isDefined)) {
@@ -517,6 +539,26 @@ object CometCreateArray extends CometExpressionSerde[CreateArray] {
       withFallbackReason(expr, "unsupported arguments for CreateArray", children: _*)
       None
     }
+  }
+
+  /**
+   * Rewrites a type so that container nullability (`ArrayType.containsNull`,
+   * `MapType.valueContainsNull`) is forced to `true` everywhere, while struct field nullability
+   * is left intact. Two CreateArray children whose types differ ONLY in container nullability are
+   * tolerated by DataFusion's `make_array` (coerced), so they normalize equal here; a difference
+   * in a struct field's nullability survives normalization and triggers the decline above.
+   */
+  private def normalizeContainerNullability(dt: DataType): DataType = dt match {
+    case ArrayType(elementType, _) =>
+      ArrayType(normalizeContainerNullability(elementType), containsNull = true)
+    case MapType(keyType, valueType, _) =>
+      MapType(
+        normalizeContainerNullability(keyType),
+        normalizeContainerNullability(valueType),
+        valueContainsNull = true)
+    case StructType(fields) =>
+      StructType(fields.map(f => f.copy(dataType = normalizeContainerNullability(f.dataType))))
+    case other => other
   }
 }
 
@@ -579,14 +621,11 @@ object CometArrayReverse extends CometExpressionSerde[Reverse] with ArraysBase {
 
 object CometElementAt extends CometExpressionSerde[ElementAt] {
 
-  override def getUnsupportedReasons(): Seq[String] = Seq(
-    "Input must be an array. `Map` inputs are not supported.")
-
   override def getSupportLevel(expr: ElementAt): SupportLevel = {
-    if (expr.left.dataType.isInstanceOf[ArrayType]) {
-      Compatible()
-    } else {
-      Unsupported(Some("Input is not an array"))
+    expr.left.dataType match {
+      case _: ArrayType => Compatible()
+      case _: MapType => Compatible()
+      case _ => Unsupported(Some("Input must be an array or map"))
     }
   }
 
@@ -596,27 +635,35 @@ object CometElementAt extends CometExpressionSerde[ElementAt] {
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     val childExpr = exprToProtoInternal(expr.left, inputs, binding)
     val ordinalExpr = exprToProtoInternal(expr.right, inputs, binding)
-    val defaultExpr = expr.defaultValueOutOfBound.flatMap(exprToProtoInternal(_, inputs, binding))
 
-    if (childExpr.isDefined && ordinalExpr.isDefined &&
-      defaultExpr.isDefined == expr.defaultValueOutOfBound.isDefined) {
-      val arrayExtractBuilder = ExprOuterClass.ListExtract
-        .newBuilder()
-        .setChild(childExpr.get)
-        .setOrdinal(ordinalExpr.get)
-        .setOneBased(true)
-        .setFailOnError(expr.failOnError)
+    expr.left.dataType match {
+      case _: MapType =>
+        val mapExtractExpr = scalarFunctionExprToProto("map_extract", childExpr, ordinalExpr)
+        optExprWithFallbackReason(mapExtractExpr, expr, expr.left, expr.right)
+      case _ =>
+        val defaultExpr =
+          expr.defaultValueOutOfBound.flatMap(exprToProtoInternal(_, inputs, binding))
 
-      defaultExpr.foreach(arrayExtractBuilder.setDefaultValue)
+        if (childExpr.isDefined && ordinalExpr.isDefined &&
+          defaultExpr.isDefined == expr.defaultValueOutOfBound.isDefined) {
+          val arrayExtractBuilder = ExprOuterClass.ListExtract
+            .newBuilder()
+            .setChild(childExpr.get)
+            .setOrdinal(ordinalExpr.get)
+            .setOneBased(true)
+            .setFailOnError(expr.failOnError)
 
-      Some(
-        ExprOuterClass.Expr
-          .newBuilder()
-          .setListExtract(arrayExtractBuilder)
-          .build())
-    } else {
-      withFallbackReason(expr, "unsupported arguments for ElementAt", expr.left, expr.right)
-      None
+          defaultExpr.foreach(arrayExtractBuilder.setDefaultValue)
+
+          Some(
+            ExprOuterClass.Expr
+              .newBuilder()
+              .setListExtract(arrayExtractBuilder)
+              .build())
+        } else {
+          withFallbackReason(expr, "unsupported arguments for ElementAt", expr.left, expr.right)
+          None
+        }
     }
   }
 }

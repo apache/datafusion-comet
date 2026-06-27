@@ -37,7 +37,7 @@ object CometToPrettyString extends CometExpressionSerde[ToPrettyString] {
       DataTypes.StringType,
       expr.timeZoneId,
       CometEvalMode.TRY) match {
-      case Compatible(_) | Incompatible(_) => Compatible(None)
+      case Compatible(_, _) | Incompatible(_) => Compatible(None)
       case Unsupported(reason) =>
         Unsupported(Some(s"Cast to string is unsupported: ${reason.getOrElse("")}"))
     }

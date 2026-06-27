@@ -22,7 +22,6 @@ use datafusion::error::DataFusionError;
 use datafusion::logical_expr::{ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility};
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::ColumnarValue;
-use std::any::Any;
 use std::sync::Arc;
 
 use crate::bloom_filter::spark_bloom_filter::SparkBloomFilter;
@@ -63,10 +62,6 @@ fn evaluate_bloom_filter(
 }
 
 impl ScalarUDFImpl for BloomFilterMightContain {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn name(&self) -> &str {
         "might_contain"
     }

@@ -145,13 +145,13 @@ The tables below list every Spark built-in expression with its current status.
 | `array_max` | ✅ | NaN ordering may differ ([details](compatibility/floating-point.md)) |
 | `array_min` | ✅ | NaN ordering may differ ([details](compatibility/floating-point.md)) |
 | `array_position` | ✅ | Binary/struct/map/null elements fall back |
-| `array_prepend` | 🔜 | Sibling of `array_append` |
+| `array_prepend` | ✅ |  |
 | `array_remove` | ✅ |  |
 | `array_repeat` | ✅ |  |
 | `array_union` | ✅ | NaN/signed-zero handling may differ ([details](compatibility/floating-point.md)) |
 | `arrays_overlap` | ✅ |  |
 | `arrays_zip` | ✅ |  |
-| `element_at` | ✅ | MapType input falls back |
+| `element_at` | ✅ |  |
 | `flatten` | ✅ | Binary/struct/map elements fall back |
 | `get` | ✅ |  |
 | `sequence` | ✅ |  |
@@ -378,7 +378,7 @@ expression-level). The `outer` variants are wired but marked `Incompatible`; the
 
 | Function | Status | Notes |
 | --- | --- | --- |
-| `element_at` | ✅ | MapType input falls back |
+| `element_at` | ✅ |  |
 | `map` | ✅ | Routed through the JVM codegen dispatcher |
 | `map_concat` | ✅ |  |
 | `map_contains_key` | ✅ |  |
@@ -388,7 +388,7 @@ expression-level). The `outer` variants are wired but marked `Incompatible`; the
 | `map_keys` | ✅ |  |
 | `map_values` | ✅ |  |
 | `str_to_map` | ✅ |  |
-| `try_element_at` | ✅ | Lowers to `element_at`; array input (MapType falls back) |
+| `try_element_at` | ✅ | Lowers to `element_at` |
 
 ---
 
@@ -584,7 +584,7 @@ expression-level). The `outer` variants are wired but marked `Incompatible`; the
 | `soundex` | ✅ |  |
 | `space` | ✅ |  |
 | `split` | ✅ |  |
-| `split_part` | 🔜 | Lowers to `element_at(StringSplitSQL(...))`; `StringSplitSQL` falls back ([#4561](https://github.com/apache/datafusion-comet/issues/4561)) |
+| `split_part` | ✅ | Spark 4.0+ |
 | `startswith` | ✅ |  |
 | `substr` | ✅ |  |
 | `substring` | ✅ |  |
@@ -625,24 +625,25 @@ expression-level). The `outer` variants are wired but marked `Incompatible`; the
 
 ## window_funcs
 
-Window functions run via `CometWindowExec`. Window support is disabled by default due to known
-correctness issues (tracking [#2721](https://github.com/apache/datafusion-comet/issues/2721)).
-When enabled, `lag` and `lead` are explicitly wired; aggregate window functions (`count`, `min`,
-`max`, `sum`) are also supported. Ranking functions (`rank`, `dense_rank`, `row_number`,
-`ntile`, `percent_rank`, `cume_dist`, `nth_value`) are not yet wired in the window serde and
-fall back to Spark.
+Window functions run via `CometWindowExec`. Aggregate window functions
+(`count`, `min`, `max`, `sum`, `avg`, `first_value`, `last_value`),
+ranking functions (`row_number`, `rank`, `dense_rank`, `percent_rank`,
+`cume_dist`, `ntile`), and value-shift functions (`lag`, `lead`,
+`nth_value`) are all wired in the window serde and execute natively.
+A handful of frame shapes still fall back — see the per-function notes
+for the exact unsupported cases.
 
 | Function | Status | Notes |
 | --- | --- | --- |
-| `cume_dist` | 🔜 | Window function; tracked by [#2721](https://github.com/apache/datafusion-comet/issues/2721) |
-| `dense_rank` | 🔜 | Window function; tracked by [#2721](https://github.com/apache/datafusion-comet/issues/2721) |
-| `lag` | ✅ | via `CometWindowExec` |
-| `lead` | ✅ | via `CometWindowExec` |
-| `nth_value` | 🔜 | Window function; tracked by [#2721](https://github.com/apache/datafusion-comet/issues/2721) |
-| `ntile` | 🔜 | Window function; tracked by [#2721](https://github.com/apache/datafusion-comet/issues/2721) |
-| `percent_rank` | 🔜 | Window function; tracked by [#2721](https://github.com/apache/datafusion-comet/issues/2721) |
-| `rank` | 🔜 | Window function; tracked by [#2721](https://github.com/apache/datafusion-comet/issues/2721) |
-| `row_number` | 🔜 | Window function; tracked by [#2721](https://github.com/apache/datafusion-comet/issues/2721) |
+| `cume_dist` | ✅ | via `CometWindowExec` |
+| `dense_rank` | ✅ | via `CometWindowExec` |
+| `lag` | ✅ | via `CometWindowExec`; non-literal default falls back ([#4268](https://github.com/apache/datafusion-comet/issues/4268)) |
+| `lead` | ✅ | via `CometWindowExec`; non-literal default falls back ([#4268](https://github.com/apache/datafusion-comet/issues/4268)) |
+| `nth_value` | ✅ | via `CometWindowExec` |
+| `ntile` | ✅ | via `CometWindowExec` |
+| `percent_rank` | ✅ | via `CometWindowExec` |
+| `rank` | ✅ | via `CometWindowExec` |
+| `row_number` | ✅ | via `CometWindowExec` |
 
 ---
 
