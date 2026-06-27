@@ -231,13 +231,13 @@ impl SparkUnsafeArray {
         if NULLABLE {
             let null_words = self.null_bitset_ptr();
             let slice = unsafe {
-                std::slice::from_raw_parts(self.element_offset as *const bool, num_elements)
+                std::slice::from_raw_parts(self.element_offset as *const u8, num_elements)
             };
             for (idx, &value) in slice.iter().enumerate() {
                 if unsafe { Self::is_null_in_bitset(null_words, idx) } {
                     builder.append_null();
                 } else {
-                    builder.append_value(value);
+                    builder.append_value(value != 0);
                 }
             }
         } else {
@@ -339,7 +339,7 @@ impl SparkUnsafeArray {
         // SAFETY: element_offset points to contiguous i64 data of length num_elements
         debug_assert!(
             self.element_offset != 0,
-            "append_timestamps: element_offset is null"
+            "append_dates: element_offset is null"
         );
 
         let ptr = self.element_offset as *const i32;
@@ -550,4 +550,95 @@ pub fn append_list_element(
     list_builder.append(true);
 
     Ok(())
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arrow::array::Array;
+    use arrow::array::builder::Int32Builder;
+    use arrow::datatypes::DataType;
+
+    fn make_i32_array(num_elements: usize, null_indices: &[usize]) -> Vec<u8> {
+        let null_bitset_words = num_elements.div_ceil(64);
+        let header_size = 8 + null_bitset_words * 8;
+        let mut buffer = vec![0u8; header_size + num_elements * 4];
+
+        buffer[0..8].copy_from_slice(&(num_elements as i64).to_le_bytes());
+
+        for &i in null_indices {
+            let word_offset = 8 + (i / 64) * 8;
+            let word = i64::from_le_bytes(buffer[word_offset..word_offset + 8].try_into().unwrap());
+            buffer[word_offset..word_offset + 8]
+                .copy_from_slice(&(word | (1i64 << (i % 64))).to_le_bytes());
+        }
+
+        for i in 0..num_elements {
+            let offset = header_size + i * 4;
+            buffer[offset..offset + 4].copy_from_slice(&(i as i32).to_le_bytes());
+        }
+        buffer
+    }
+
+    fn append_i32(buffer: &[u8]) -> arrow::array::Int32Array {
+        let array = SparkUnsafeArray::new(buffer.as_ptr() as i64);
+        let mut builder = Int32Builder::new();
+        append_to_builder::<true>(&DataType::Int32, &mut builder, &array).unwrap();
+        builder.finish()
+    }
+
+    #[test]
+    fn test_nullable_7_elements_null_in_last_byte() {
+        // 7 elements — partial last byte, null at index 6
+        let buf = make_i32_array(7, &[6]);
+        let arr = append_i32(&buf);
+        assert_eq!(arr.len(), 7);
+        assert!(arr.is_null(6));
+        for i in 0..6 {
+            assert!(arr.is_valid(i));
+            assert_eq!(arr.value(i), i as i32);
+        }
+    }
+
+    #[test]
+    fn test_nullable_9_elements_null_in_last_byte() {
+        let buf = make_i32_array(9, &[8]);
+        let arr = append_i32(&buf);
+        assert_eq!(arr.len(), 9);
+        assert!(arr.is_null(8));
+        for i in 0..8 {
+            assert!(arr.is_valid(i));
+            assert_eq!(arr.value(i), i as i32);
+        }
+    }
+
+    #[test]
+    fn test_nullable_17_elements_null_in_last_byte() {
+        let buf = make_i32_array(17, &[16]);
+        let arr = append_i32(&buf);
+        assert_eq!(arr.len(), 17);
+        assert!(arr.is_null(16));
+        for i in 0..16 {
+            assert!(arr.is_valid(i));
+            assert_eq!(arr.value(i), i as i32);
+        }
+    }
+
+    #[test]
+    fn test_all_null() {
+        let indices: Vec<usize> = (0..9).collect();
+        let buf = make_i32_array(9, &indices);
+        let arr = append_i32(&buf);
+        assert_eq!(arr.len(), 9);
+        assert_eq!(arr.null_count(), 9);
+    }
+
+    #[test]
+    fn test_all_valid() {
+        let buf = make_i32_array(9, &[]);
+        let arr = append_i32(&buf);
+        assert_eq!(arr.len(), 9);
+        assert_eq!(arr.null_count(), 0);
+    }
 }
