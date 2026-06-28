@@ -43,7 +43,7 @@ import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, HashAggregat
 import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, BroadcastNestedLoopJoinExec, HashJoin, ShuffledHashJoinExec, SortMergeJoinExec}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
-import org.apache.spark.sql.types.{ArrayType, BooleanType, ByteType, DataType, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, MapType, ShortType, StringType, TimestampNTZType, TimestampType}
+import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType, DataType, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, MapType, ShortType, StringType, TimestampNTZType, TimestampType}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.util.SerializableConfiguration
 import org.apache.spark.util.io.ChunkedByteBuffer
@@ -1523,13 +1523,18 @@ trait CometBaseAggregate {
     val modes = aggregate.aggregateExpressions.map(_.mode).distinct
     val modeSet = modes.toSet
     val hasPartialMerge = modeSet.contains(PartialMerge)
+    val cometPartialAgg = findCometPartialAgg(aggregate.child)
     // In distinct aggregates there can be a combination of modes.
     // We support {Partial, PartialMerge} mix; other combinations are rejected.
     val multiMode = modes.size > 1 && modeSet != Set(Partial, PartialMerge)
     // For a final mode HashAggregate, we only need to transform the HashAggregate
     // if there is Comet partial aggregation, unless all aggregates have compatible
     // intermediate buffer formats (safe for mixed Spark/Comet execution).
-    val sparkFinalMode = modes.contains(Final) && findCometPartialAgg(aggregate.child).isEmpty
+    val sparkFinalMode = modes.contains(Final) && cometPartialAgg.isEmpty
+    // For PartialMerge, the child aggregate may still be Spark/JVM even when this node's direct
+    // child is a Comet shuffle. In that case Spark's intermediate buffers must be compatible with
+    // the native merge accumulator state expected by Comet.
+    val sparkPartialMergeMode = hasPartialMerge && cometPartialAgg.isEmpty
 
     if (multiMode) {
       withFallbackReason(
@@ -1545,6 +1550,24 @@ trait CometBaseAggregate {
         "Spark Final aggregate without Comet Partial requires compatible " +
           "intermediate buffer formats")
       return None
+    }
+
+    if (partialMergeCollectHasNonNativeState(aggregate)) {
+      withFallbackReason(
+        aggregate,
+        "PartialMerge collect aggregate requires native array intermediate state")
+      return None
+    }
+
+    if (sparkPartialMergeMode) {
+      val partialMergeAggs = aggregate.aggregateExpressions.filter(_.mode == PartialMerge)
+      if (!QueryPlanSerde.allAggsSupportMixedExecution(partialMergeAggs)) {
+        withFallbackReason(
+          aggregate,
+          "Spark PartialMerge aggregate without Comet Partial requires compatible " +
+            "intermediate buffer formats")
+        return None
+      }
     }
 
     // Check if this aggregate has been tagged as unsafe for mixed execution
@@ -1773,6 +1796,38 @@ trait CometBaseAggregate {
         .addChildren(hashAggOp)
         .setProjection(projection)
         .build())
+  }
+
+  /**
+   * Comet's collect_list/collect_set partial state is an ArrayType, while Spark's JVM
+   * TypedImperativeAggregate state is BinaryType. For PartialMerge, the native planner binds
+   * state input columns directly from the child schema using initialInputBufferOffset, so do not
+   * convert a collect PartialMerge when the incoming state is still Spark's binary buffer.
+   */
+  private def partialMergeCollectHasNonNativeState(aggregate: BaseAggregateExec): Boolean = {
+    var stateOffset = aggregate.initialInputBufferOffset
+
+    aggregate.aggregateExpressions.exists { aggExpr =>
+      val bufferAttrs = aggExpr.aggregateFunction.aggBufferAttributes
+      val hasNonNativeCollectState = aggExpr.mode == PartialMerge &&
+        (aggExpr.aggregateFunction.isInstanceOf[CollectList] ||
+          aggExpr.aggregateFunction.isInstanceOf[CollectSet]) &&
+        bufferAttrs.indices.exists { i =>
+          val inputIdx = stateOffset + i
+          inputIdx >= aggregate.child.output.length ||
+          (aggregate.child.output(inputIdx).dataType match {
+            case _: ArrayType => false
+            case BinaryType => true
+            case _ => true
+          })
+        }
+
+      if (aggExpr.mode == PartialMerge) {
+        stateOffset += bufferAttrs.length
+      }
+
+      hasNonNativeCollectState
+    }
   }
 
   /**

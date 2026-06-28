@@ -23,12 +23,12 @@ import scala.util.Random
 
 import org.apache.hadoop.fs.Path
 import org.apache.spark.SparkConf
-import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
+import org.apache.spark.sql.{Column, CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.catalyst.expressions.Cast
 import org.apache.spark.sql.catalyst.optimizer.EliminateSorts
 import org.apache.spark.sql.comet.CometHashAggregateExec
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
-import org.apache.spark.sql.functions.{avg, col, count_distinct, sum}
+import org.apache.spark.sql.functions.{avg, col, collect_list, collect_set, count_distinct, sort_array, sum}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DataTypes, StructField, StructType}
 
@@ -67,6 +67,33 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         assert(
           cometPlan.toString.contains(s"merge_$fn"),
           s"Expected $fn PartialMerge stage to run as CometHashAggregateExec; plan:\n$cometPlan")
+      }
+    }
+  }
+
+  test(
+    "collect_list/collect_set with distinct aggregate falls back on Spark PartialMerge state") {
+    // This mirrors Spark's DataFrameAggregateSuite SPARK-17616 test. With LocalTableScan disabled,
+    // the lower collect partial aggregate stays on Spark and produces a BinaryType JVM buffer.
+    // Native PartialMerge must not try to merge that buffer as DataFusion's list-typed state. Run
+    // the same hash-map configurations used by the inherited Spark aggregate suites that failed in
+    // CI.
+    for ((twoLevelAggMap, vectorizedHashMap) <- Seq(
+        (false, false),
+        (true, false),
+        (true, true))) {
+      withSQLConf(
+        CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "false",
+        SQLConf.CODEGEN_FALLBACK.key -> "false",
+        SQLConf.ENABLE_TWOLEVEL_AGG_MAP.key -> twoLevelAggMap.toString,
+        SQLConf.ENABLE_VECTORIZED_HASH_MAP.key -> vectorizedHashMap.toString) {
+        val df = Seq((1, 3, "a"), (1, 2, "b"), (3, 4, "c"), (3, 4, "c"), (3, 5, "d"))
+          .toDF("x", "y", "z")
+        for (collect <- Seq(collect_list(_: Column), collect_set(_: Column))) {
+          checkSparkAnswerAndFallbackReason(
+            df.groupBy($"x").agg(count_distinct($"y"), sort_array(collect($"z"))),
+            "PartialMerge collect aggregate requires native array intermediate state")
+        }
       }
     }
   }
