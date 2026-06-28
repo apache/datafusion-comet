@@ -95,6 +95,10 @@ case object CometPlanAdaptiveDynamicPruningFilters
       case p: SparkPlan
           if !p.isInstanceOf[CometNativeScanExec]
             && !p.isInstanceOf[CometIcebergNativeScanExec]
+            // Contrib trait scans handle their own DPP in the arm above. Exclude them here too so
+            // a trait scan with a wrapped SAB but empty `dynamicPruningFilters` isn't misrouted to
+            // the non-Comet path (which mutates expressions in place via makeCopy).
+            && !p.isInstanceOf[CometScanWithPlanData]
             && hasWrappedSAB(p) =>
         logDebug(s"Converting AQE DPP for non-Comet node: ${p.nodeName}")
         convertNonCometNodeDPP(p, plan)
