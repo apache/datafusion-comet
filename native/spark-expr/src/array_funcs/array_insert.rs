@@ -110,17 +110,19 @@ impl PhysicalExpr for ArrayInsert {
         //   1. src
         //   2. pos only when src is non-null
         //   3. item only when src and pos are non-null
+
+        // Check that src array is actually an array and get it's value type
         let src_value = self
             .src_array_expr
             .evaluate(batch)?
             .into_array(batch.num_rows())?;
 
         let src_element_type = match self.array_type(src_value.data_type())? {
-            DataType::List(field) | DataType::LargeList(field) => field.data_type().clone(),
+            DataType::List(field) => &field.data_type().clone(),
+            DataType::LargeList(field) => &field.data_type().clone(),
             _ => unreachable!(),
         };
 
-        // Do not evaluate pos for rows whose source array is NULL.
         let evaluate_pos = BooleanArray::from(
             (0..batch.num_rows())
                 .map(|row| src_value.is_valid(row))
@@ -132,6 +134,8 @@ impl PhysicalExpr for ArrayInsert {
             .evaluate_selection(batch, &evaluate_pos)?
             .into_array(batch.num_rows())?;
 
+        // Spark supports only IntegerType (Int32):
+        // https://github.com/apache/spark/blob/branch-3.5/sql/catalyst/src/main/scala/org/apache/spark/sql/catalyst/expressions/collectionOperations.scala#L4737
         if !matches!(pos_value.data_type(), DataType::Int32) {
             return Err(DataFusionError::Internal(format!(
                 "Unexpected index data type in ArrayInsert: {:?}, expected type is Int32",
@@ -139,19 +143,18 @@ impl PhysicalExpr for ArrayInsert {
             )));
         }
 
-        // Do not evaluate item for rows whose source array or position is NULL.
         let evaluate_item = BooleanArray::from(
             (0..batch.num_rows())
                 .map(|row| src_value.is_valid(row) && pos_value.is_valid(row))
                 .collect::<Vec<_>>(),
         );
 
+        // Check that inserted value has the same type as an array
         let item_value = self
             .item_expr
             .evaluate_selection(batch, &evaluate_item)?
             .into_array(batch.num_rows())?;
-
-        if item_value.data_type() != &src_element_type {
+        if item_value.data_type() != src_element_type {
             return Err(DataFusionError::Internal(format!(
                 "Type mismatch in ArrayInsert: array type is {:?} but item type is {:?}",
                 src_element_type,
