@@ -88,9 +88,9 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         SQLConf.ENABLE_VECTORIZED_HASH_MAP.key -> vectorizedHashMap.toString) {
         val df = Seq((1, 3, "a"), (1, 2, "b"), (3, 4, "c"), (3, 4, "c"), (3, 5, "d"))
           .toDF("x", "y", "z")
-        for ((name, collect) <- Seq(
-            "collect_list" -> collect_list(_: Column),
-            "collect_set" -> collect_set(_: Column))) {
+        for ((name, collect) <- Seq[(String, Column => Column)](
+            "collect_list" -> (col => collect_list(col)),
+            "collect_set" -> (col => collect_set(col)))) {
           val (_, cometPlan) = checkSparkAnswerAndOperator(
             df.groupBy($"x").agg(count_distinct($"y"), sort_array(collect($"z"))),
             Seq(classOf[CometHashAggregateExec]))
