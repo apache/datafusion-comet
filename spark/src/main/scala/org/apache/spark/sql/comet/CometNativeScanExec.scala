@@ -341,13 +341,8 @@ case class CometNativeScanExec(
       "pruningTime")
 
   override lazy val metrics: Map[String, SQLMetric] = {
-    val nativeMetrics = CometMetricNode.nativeScanMetrics(session.sparkContext)
-    // Map native metric names to Spark metric names
-    val withAlias = nativeMetrics.get("output_rows") match {
-      case Some(metric) => nativeMetrics + ("numOutputRows" -> metric)
-      case None => nativeMetrics
-    }
-    withAlias ++ scan.metrics.filterKeys(driverMetricKeys)
+    CometMetricNode.nativeScanMetrics(session.sparkContext) ++
+      scan.metrics.filter { case (k, _) => driverMetricKeys.contains(k) }
   }
 
   /**

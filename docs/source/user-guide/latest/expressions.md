@@ -584,7 +584,7 @@ expression-level). The `outer` variants are wired but marked `Incompatible`; the
 | `soundex` | ✅ |  |
 | `space` | ✅ |  |
 | `split` | ✅ |  |
-| `split_part` | 🔜 | Lowers to `element_at(StringSplitSQL(...))`; `StringSplitSQL` falls back ([#4561](https://github.com/apache/datafusion-comet/issues/4561)) |
+| `split_part` | ✅ | Spark 4.0+ |
 | `startswith` | ✅ |  |
 | `substr` | ✅ |  |
 | `substring` | ✅ |  |

@@ -271,6 +271,13 @@ object CometExecIterator extends Logging {
     val executorCores = numDriverOrExecutorCores(SparkEnv.get.conf)
     builder.putEntries("spark.executor.cores", executorCores.toString)
 
+    // Any Comet config that the native side reads must be added here manually.
+    // `cometSqlConfs` only carries values that were explicitly set, so defaults
+    // from `createWithDefault(...)` would otherwise not cross JNI.
+    builder.putEntries(
+      CometConf.COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED.key,
+      CometConf.COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED.get(SQLConf.get).toString)
+
     builder.build().toByteArray
   }
 
