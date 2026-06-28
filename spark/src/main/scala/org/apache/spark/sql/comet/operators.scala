@@ -43,7 +43,7 @@ import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, HashAggregat
 import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, BroadcastNestedLoopJoinExec, HashJoin, ShuffledHashJoinExec, SortMergeJoinExec}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
-import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType, DataType, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, MapType, ShortType, StringType, TimestampNTZType, TimestampType}
+import org.apache.spark.sql.types.{ArrayType, BooleanType, ByteType, DataType, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, MapType, ShortType, StringType, TimestampNTZType, TimestampType}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.util.SerializableConfiguration
 import org.apache.spark.util.io.ChunkedByteBuffer
@@ -1552,16 +1552,14 @@ trait CometBaseAggregate {
       return None
     }
 
-    if (partialMergeCollectHasNonNativeState(aggregate)) {
-      withFallbackReason(
-        aggregate,
-        "PartialMerge collect aggregate requires native array intermediate state")
-      return None
-    }
-
     if (sparkPartialMergeMode) {
       val partialMergeAggs = aggregate.aggregateExpressions.filter(_.mode == PartialMerge)
-      if (!QueryPlanSerde.allAggsSupportMixedExecution(partialMergeAggs)) {
+      val unsupportedAggs = partialMergeAggs.filterNot { aggExpr =>
+        QueryPlanSerde.allAggsSupportMixedExecution(Seq(aggExpr)) ||
+        aggExpr.aggregateFunction.isInstanceOf[CollectList] ||
+        aggExpr.aggregateFunction.isInstanceOf[CollectSet]
+      }
+      if (unsupportedAggs.nonEmpty) {
         withFallbackReason(
           aggregate,
           "Spark PartialMerge aggregate without Comet Partial requires compatible " +
@@ -1796,38 +1794,6 @@ trait CometBaseAggregate {
         .addChildren(hashAggOp)
         .setProjection(projection)
         .build())
-  }
-
-  /**
-   * Comet's collect_list/collect_set partial state is an ArrayType, while Spark's JVM
-   * TypedImperativeAggregate state is BinaryType. For PartialMerge, the native planner binds
-   * state input columns directly from the child schema using initialInputBufferOffset, so do not
-   * convert a collect PartialMerge when the incoming state is still Spark's binary buffer.
-   */
-  private def partialMergeCollectHasNonNativeState(aggregate: BaseAggregateExec): Boolean = {
-    var stateOffset = aggregate.initialInputBufferOffset
-
-    aggregate.aggregateExpressions.exists { aggExpr =>
-      val bufferAttrs = aggExpr.aggregateFunction.aggBufferAttributes
-      val hasNonNativeCollectState = aggExpr.mode == PartialMerge &&
-        (aggExpr.aggregateFunction.isInstanceOf[CollectList] ||
-          aggExpr.aggregateFunction.isInstanceOf[CollectSet]) &&
-        bufferAttrs.indices.exists { i =>
-          val inputIdx = stateOffset + i
-          inputIdx >= aggregate.child.output.length ||
-          (aggregate.child.output(inputIdx).dataType match {
-            case _: ArrayType => false
-            case BinaryType => true
-            case _ => true
-          })
-        }
-
-      if (aggExpr.mode == PartialMerge) {
-        stateOffset += bufferAttrs.length
-      }
-
-      hasNonNativeCollectState
-    }
   }
 
   /**

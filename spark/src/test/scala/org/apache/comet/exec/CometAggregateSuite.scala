@@ -71,13 +71,12 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test(
-    "collect_list/collect_set with distinct aggregate falls back on Spark PartialMerge state") {
+  test("collect_list/collect_set with distinct aggregate decodes Spark PartialMerge state") {
     // This mirrors Spark's DataFrameAggregateSuite SPARK-17616 test. With LocalTableScan disabled,
     // the lower collect partial aggregate stays on Spark and produces a BinaryType JVM buffer.
-    // Native PartialMerge must not try to merge that buffer as DataFusion's list-typed state. Run
-    // the same hash-map configurations used by the inherited Spark aggregate suites that failed in
-    // CI.
+    // Native PartialMerge decodes that UnsafeRow/UnsafeArray buffer into DataFusion's list-typed
+    // state before merging. Run the same hash-map configurations used by the inherited Spark
+    // aggregate suites that failed in CI.
     for ((twoLevelAggMap, vectorizedHashMap) <- Seq(
         (false, false),
         (true, false),
@@ -89,10 +88,15 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         SQLConf.ENABLE_VECTORIZED_HASH_MAP.key -> vectorizedHashMap.toString) {
         val df = Seq((1, 3, "a"), (1, 2, "b"), (3, 4, "c"), (3, 4, "c"), (3, 5, "d"))
           .toDF("x", "y", "z")
-        for (collect <- Seq(collect_list(_: Column), collect_set(_: Column))) {
-          checkSparkAnswerAndFallbackReason(
+        for ((name, collect) <- Seq(
+            "collect_list" -> collect_list(_: Column),
+            "collect_set" -> collect_set(_: Column))) {
+          val (_, cometPlan) = checkSparkAnswerAndOperator(
             df.groupBy($"x").agg(count_distinct($"y"), sort_array(collect($"z"))),
-            "PartialMerge collect aggregate requires native array intermediate state")
+            Seq(classOf[CometHashAggregateExec]))
+          assert(
+            cometPlan.toString.contains(s"merge_$name"),
+            s"Expected $name PartialMerge stage to run natively; plan:\n$cometPlan")
         }
       }
     }
