@@ -104,6 +104,16 @@ private[arrow] object ArrowWriter {
  *
  * Lives in this package because `ArrowWriter` is `private[arrow]`. The caller owns the returned
  * vector and must close it (or hand it to Arrow's exporter, which takes ownership).
+ *
+ * Comet's serialize/export callers pass `timeZoneId = "UTC"` -- deliberately, NOT the
+ * session-local timezone that `toArrowSchema` threads through. These constants are materialised
+ * alongside non-constant columns in the same batch/`VectorSchemaRoot`, and Comet's non-constant
+ * `TimestampType` columns are Arrow vectors exported from native execution, where Comet always
+ * tags them `Timestamp(us, "UTC")` (see native `serde.rs`). Spark itself stores `TimestampType`
+ * as micros in UTC, so the constant's value is already a UTC instant. Tagging the materialised
+ * constant "UTC" keeps its Arrow timezone metadata consistent with its sibling timestamp columns;
+ * threading the session-local timezone here would instead introduce the mismatch.
+ * `TimestampNTZType` carries no zone regardless of this argument.
  */
 object ConstantColumnVectors {
   def materialize(

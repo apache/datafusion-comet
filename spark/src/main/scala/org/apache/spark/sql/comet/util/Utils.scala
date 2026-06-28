@@ -26,7 +26,6 @@ import java.nio.channels.Channels
 import scala.jdk.CollectionConverters._
 
 import org.apache.arrow.c.CDataDictionaryProvider
-import org.apache.arrow.memory.BufferAllocator
 import org.apache.arrow.vector._
 import org.apache.arrow.vector.complex.{ListVector, MapVector, StructVector}
 import org.apache.arrow.vector.dictionary.DictionaryProvider
@@ -38,7 +37,7 @@ import org.apache.spark.{SparkEnv, SparkException}
 import org.apache.spark.internal.Logging
 import org.apache.spark.io.CompressionCodec
 import org.apache.spark.sql.catalyst.expressions.Attribute
-import org.apache.spark.sql.comet.execution.arrow.ArrowReaderIterator
+import org.apache.spark.sql.comet.execution.arrow.{ArrowReaderIterator, ConstantColumnVectors}
 import org.apache.spark.sql.execution.vectorized.ConstantColumnVector
 import org.apache.spark.sql.types._
 import org.apache.spark.sql.vectorized.ColumnarBatch
@@ -405,13 +404,14 @@ object Utils extends CometTypeShim with Logging {
         case cv: ConstantColumnVector =>
           // Spark wraps file-source partition columns and other per-batch constants in
           // `ConstantColumnVector`. Materialise to an Arrow vector so the serialisation path
-          // doesn't reject the batch.
-          materializeConstantColumnVector(
+          // doesn't reject the batch. "UTC" is intentional -- see `ConstantColumnVectors`.
+          ConstantColumnVectors.materialize(
             cv,
             cv.dataType(),
             rows,
             s"_const_$index",
-            org.apache.comet.CometArrowAllocator)
+            org.apache.comet.CometArrowAllocator,
+            "UTC")
 
         case c =>
           throw new SparkException(
@@ -439,40 +439,5 @@ object Utils extends CometTypeShim with Logging {
       case _ =>
         throw new SparkException(s"Unsupported Arrow Vector for $reason: ${valueVector.getClass}")
     }
-  }
-
-  /**
-   * Materialize a Spark `ConstantColumnVector` into a fresh Arrow `FieldVector` whose value is
-   * the same constant repeated `numRows` times.
-   *
-   * Spark wraps file-source partition columns and other per-batch constants in
-   * `ConstantColumnVector`; downstream Comet operators feeding `NativeUtil.exportBatch` or
-   * `getBatchFieldVectors` trip on it because those paths only handle `CometVector`. This helper
-   * materializes the constant into an Arrow vector inline.
-   *
-   * The caller owns the returned vector and must close it (or hand it to Arrow's exporter, which
-   * transfers ownership). The vector is allocated against `allocator`, sized to exactly
-   * `numRows`, and pre-filled with the constant value (or null when `cv.isNullAt(0)`).
-   *
-   * All Spark types are supported (delegates to the per-type ArrowFieldWriters, which include
-   * struct/array/map); throws only for a type Arrow itself can't represent.
-   */
-  def materializeConstantColumnVector(
-      cv: ConstantColumnVector,
-      dt: DataType,
-      numRows: Int,
-      name: String,
-      allocator: BufferAllocator): FieldVector = {
-    // "UTC" is deliberate here, NOT the session-local timezone that `toArrowSchema` threads
-    // through. These constants are materialised alongside non-constant columns in the same
-    // batch/`VectorSchemaRoot`, and Comet's non-constant `TimestampType` columns are Arrow
-    // vectors exported from native execution, where Comet always tags them `Timestamp(us, "UTC")`
-    // (see native `serde.rs`). Spark itself stores `TimestampType` as micros in UTC, so the
-    // constant's value is already a UTC instant. Tagging the materialised constant "UTC" keeps its
-    // Arrow timezone metadata consistent with its sibling timestamp columns; threading the
-    // session-local timezone here would instead introduce the mismatch. `TimestampNTZType` carries
-    // no zone regardless of this argument.
-    org.apache.spark.sql.comet.execution.arrow.ConstantColumnVectors
-      .materialize(cv, dt, numRows, name, allocator, "UTC")
   }
 }
