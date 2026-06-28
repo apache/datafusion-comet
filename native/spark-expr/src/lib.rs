@@ -42,6 +42,7 @@ pub use predicate_funcs::{spark_isnan, RLike};
 
 mod agg_funcs;
 mod array_funcs;
+mod comet_high_order_funcs;
 mod comet_scalar_funcs;
 pub mod hash_funcs;
 
@@ -70,6 +71,7 @@ pub use conditional_funcs::*;
 pub use conversion_funcs::*;
 pub use nondetermenistic_funcs::*;
 
+pub use comet_high_order_funcs::create_comet_hof_func;
 pub use comet_scalar_funcs::{
     create_comet_physical_fun, create_comet_physical_fun_with_eval_mode,
     register_all_comet_functions,

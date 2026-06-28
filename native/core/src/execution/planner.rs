@@ -71,9 +71,9 @@ use datafusion::{
     prelude::SessionContext,
 };
 use datafusion_comet_spark_expr::{
-    create_comet_physical_fun, create_comet_physical_fun_with_eval_mode, BinaryOutputStyle,
-    BloomFilterAgg, BloomFilterMightContain, CsvWriteOptions, EvalMode, SparkArraysZipFunc,
-    SparkBloomFilterVersion, SumInteger, ToCsv,
+    create_comet_hof_func, create_comet_physical_fun, create_comet_physical_fun_with_eval_mode,
+    BinaryOutputStyle, BloomFilterAgg, BloomFilterMightContain, CsvWriteOptions, EvalMode,
+    SparkArraysZipFunc, SparkBloomFilterVersion, SumInteger, ToCsv,
 };
 use datafusion_spark::function::aggregate::collect::SparkCollectSet;
 use iceberg::expr::Bind;
@@ -94,9 +94,9 @@ use datafusion::logical_expr::{
     AggregateUDF, ReturnFieldArgs, ScalarUDF, TypeSignature, WindowFrame, WindowFrameBound,
     WindowFrameUnits, WindowFunctionDefinition,
 };
-use datafusion::physical_expr::expressions::{Literal, StatsType};
+use datafusion::physical_expr::expressions::{LambdaExpr, LambdaVariable, Literal, StatsType};
 use datafusion::physical_expr::window::WindowExpr;
-use datafusion::physical_expr::LexOrdering;
+use datafusion::physical_expr::{HigherOrderFunctionExpr, LexOrdering};
 
 use crate::parquet::parquet_exec::init_datasource_exec;
 use arrow::array::{
@@ -112,7 +112,7 @@ use datafusion::physical_plan::filter::FilterExec;
 use datafusion::physical_plan::joins::NestedLoopJoinExec;
 use datafusion::physical_plan::limit::GlobalLimitExec;
 use datafusion::physical_plan::unnest::{ListUnnest, UnnestExec};
-use datafusion_comet_proto::spark_expression::ListLiteral;
+use datafusion_comet_proto::spark_expression::{HigherOrderFunc, LambdaFunction, ListLiteral};
 use datafusion_comet_proto::spark_operator::SparkFilePartition;
 use datafusion_comet_proto::{
     spark_expression::{
@@ -530,6 +530,20 @@ impl PhysicalPlanner {
                     ))),
                     _ => func,
                 }
+            }
+            ExprStruct::HighOrderFunc(hof) => {
+                self.create_high_order_function_expr(hof, input_schema)
+            }
+            ExprStruct::NamedLambdaVariable(nlv) => {
+                let idx = input_schema.index_of(&nlv.name).map_err(|_| {
+                    GeneralError(format!(
+                        "NamedLambdaVariable '{}' not found in enclosing lambda schema",
+                        nlv.name
+                    ))
+                })?;
+                let field = Arc::clone(&input_schema.fields()[idx]);
+                //TODO get valid idx from Spark
+                Ok(Arc::new(LambdaVariable::new(1, field)))
             }
             ExprStruct::CaseWhen(case_when) => {
                 let when_then_pairs = case_when
@@ -2884,6 +2898,76 @@ impl PhysicalPlanner {
                 ))
             }
         }
+    }
+
+    fn create_high_order_function_expr(
+        &self,
+        expr: &HigherOrderFunc,
+        input_schema: SchemaRef,
+    ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
+        let comet_hof_func =
+            create_comet_hof_func(expr.func_name.as_str(), &self.session_ctx.state())?;
+
+        let value_args = expr
+            .value_args
+            .iter()
+            .map(|e| self.create_expr(e, Arc::clone(&input_schema)))
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let lambdas = expr
+            .lambdas
+            .iter()
+            .map(|l| self.create_lambda_expr(l))
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let mut args: Vec<Arc<dyn PhysicalExpr>> =
+            Vec::with_capacity(value_args.len() + lambdas.len());
+        args.extend(value_args);
+        args.extend(lambdas);
+
+        let higher_order_function_expr = HigherOrderFunctionExpr::try_new_with_schema(
+            comet_hof_func,
+            args,
+            &input_schema,
+            Arc::new(ConfigOptions::default()),
+        )?;
+
+        Ok(Arc::new(higher_order_function_expr))
+    }
+
+    fn create_lambda_expr(
+        &self,
+        lambda: &LambdaFunction,
+    ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
+        let lambda_fields = lambda
+            .args
+            .iter()
+            .map(|arg| {
+                let data_type = arg.data_type.as_ref().ok_or_else(|| {
+                    DataFusionError::Internal("lambda variable without data type".to_string())
+                })?;
+                let arrow_data_type = to_arrow_datatype(data_type);
+                let field = Field::new(&arg.name, arrow_data_type, arg.nullable);
+                Ok(Arc::new(field))
+            })
+            .collect::<Result<Vec<Arc<Field>>, ExecutionError>>()?;
+
+        let body_schema = Arc::new(Schema::new(lambda_fields));
+
+        let lambda_body = lambda
+            .body
+            .as_ref()
+            .ok_or_else(|| DataFusionError::Internal("lambda has no body".to_string()))?;
+        let body_expr = self.create_expr(lambda_body, body_schema)?;
+
+        Ok(Arc::new(LambdaExpr::try_new(
+            lambda
+                .args
+                .iter()
+                .map(|a| a.name.clone())
+                .collect::<Vec<_>>(),
+            body_expr,
+        )?))
     }
 
     fn create_scalar_function_expr(
