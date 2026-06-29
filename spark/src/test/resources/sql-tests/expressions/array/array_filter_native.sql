@@ -28,3 +28,7 @@ SELECT filter(arr, x -> x > 2) FROM test_array_filter_native
 
 query
 SELECT filter(arr, x -> x >= 0) FROM test_array_filter_native
+
+query expect_fallback(DataFusion higher-order functions support only 1 argument)
+SELECT filter(arr, (x, i) -> i > 0) FROM test_array_filter_native
+

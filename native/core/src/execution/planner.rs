@@ -542,8 +542,7 @@ impl PhysicalPlanner {
                     ))
                 })?;
                 let field = Arc::clone(&input_schema.fields()[idx]);
-                //TODO get valid idx from Spark
-                Ok(Arc::new(LambdaVariable::new(1, field)))
+                Ok(Arc::new(LambdaVariable::new(idx, field)))
             }
             ExprStruct::CaseWhen(case_when) => {
                 let when_then_pairs = case_when
@@ -2917,7 +2916,7 @@ impl PhysicalPlanner {
         let lambdas = expr
             .lambdas
             .iter()
-            .map(|l| self.create_lambda_expr(l))
+            .map(|l| self.create_lambda_expr(l, &input_schema))
             .collect::<Result<Vec<_>, _>>()?;
 
         let mut args: Vec<Arc<dyn PhysicalExpr>> =
@@ -2938,21 +2937,29 @@ impl PhysicalPlanner {
     fn create_lambda_expr(
         &self,
         lambda: &LambdaFunction,
+        input_schema: &SchemaRef,
     ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
-        let lambda_fields = lambda
-            .args
-            .iter()
-            .map(|arg| {
-                let data_type = arg.data_type.as_ref().ok_or_else(|| {
-                    DataFusionError::Internal("lambda variable without data type".to_string())
-                })?;
-                let arrow_data_type = to_arrow_datatype(data_type);
-                let field = Field::new(&arg.name, arrow_data_type, arg.nullable);
-                Ok(Arc::new(field))
-            })
-            .collect::<Result<Vec<Arc<Field>>, ExecutionError>>()?;
+        let mut body_fields: Vec<Arc<Field>> =
+            input_schema.fields().iter().map(Arc::clone).collect();
 
-        let body_schema = Arc::new(Schema::new(lambda_fields));
+        for arg in &lambda.args {
+            let data_type = arg.data_type.as_ref().ok_or_else(|| {
+                DataFusionError::Internal("lambda variable without data type".to_string())
+            })?;
+            let arrow_data_type = to_arrow_datatype(data_type);
+            body_fields.push(Arc::new(Field::new(
+                &arg.name,
+                arrow_data_type,
+                arg.nullable,
+            )));
+        }
+
+        let body_schema = Arc::new(Schema::new(
+            body_fields
+                .iter()
+                .map(|f| f.as_ref().clone())
+                .collect::<Vec<Field>>(),
+        ));
 
         let lambda_body = lambda
             .body

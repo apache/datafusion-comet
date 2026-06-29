@@ -28,6 +28,18 @@ import org.apache.comet.serde.CometHighOrderFunction.nlv2Proto
 import org.apache.comet.serde.ExprOuterClass.{HigherOrderFunc, LambdaFunction, NamedLambdaVariable}
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, serializeDataType}
 
+/**
+ * Serializer that converts Spark higher-order functions (e.g. `filter`, `transform`, `exists`)
+ * into Comet's protobuf representation so they can be executed by the native DataFusion engine.
+ *
+ * A higher-order function carries two kinds of children:
+ *   - "value" arguments: the regular input expressions, typically the array/map being processed.
+ *   - "function" arguments: one or more lambda expressions describing the per-element
+ *     computation.
+ *
+ * This serde only supports the subset of higher-order functions that the native engine can
+ * currently handle; see [[getSupportLevel]] for the exact constraints.
+ */
 case class CometHighOrderFunction[T <: HigherOrderFunction](name: String)
     extends CometExpressionSerde[T] {
 
