@@ -105,6 +105,16 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-ci-contrib-delta-${{ hashFiles('native/**/Cargo.lock', 'native/**/Cargo.toml', 'contrib/delta/native/**/Cargo.toml') }}-
 
+      - name: Check contrib-delta Rust formatting and lints
+        run: |
+          # The repo-wide lint jobs all run `cd native && cargo fmt --all` / `clippy`, and
+          # `native/Cargo.toml` sets `exclude = ["../contrib"]` -- so the contrib crate is in NO
+          # workspace any of them touch, and its Rust is otherwise never fmt- or lint-checked.
+          # Run both here, where the contrib is the subject of the job.
+          cd contrib/delta/native
+          cargo fmt --all -- --check
+          cargo clippy --all-targets -- -D warnings
+
       - name: Build native library with contrib-delta
         run: |
           cd native && cargo build --profile ci --features contrib-delta

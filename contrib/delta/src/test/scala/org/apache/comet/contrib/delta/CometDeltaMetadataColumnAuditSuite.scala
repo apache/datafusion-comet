@@ -212,4 +212,39 @@ class CometDeltaMetadataColumnAuditSuite extends CometDeltaTestBase {
           .orderBy("id"))
     }
   }
+
+  // ---- Real data column colliding with a `_metadata.*` virtual name ---------
+  // Regression guard: a table may legitimately have a REAL data column literally
+  // named `file_name` / `file_path` / `file_size` (etc.). The kernel read schema
+  // strips Spark file-metadata virtual columns by name, so a name-only strip would
+  // wrongly drop the real column from the parquet read -- yielding a missing-schema
+  // error or a silent null while the proto's required_schema still expects it.
+  // `isStrippableSynthetic` only strips a `file_*` name that actually carries the
+  // Spark file-metadata marker, so the real column survives. Reading it back must
+  // go native and match vanilla. RED without that guard (the real column is dropped
+  // from the kernel read).
+  test("real data column named file_name/file_path is not stripped from the kernel read") {
+    assume(deltaSparkAvailable, "delta-spark not on the test classpath; skipping")
+    withDeltaTable("real_filemeta_collision") { tablePath =>
+      val ss = spark
+      import ss.implicits._
+      // Real, user-owned columns whose names collide with `_metadata.*` virtuals.
+      (0 until 12)
+        .map(i => (i.toLong, s"name_$i", s"/path/$i", i.toLong * 10))
+        .toDF("id", "file_name", "file_path", "file_size")
+        .repartition(3)
+        .write
+        .format("delta")
+        .save(tablePath)
+      // Project the REAL columns (not `_metadata.*`); they must read back intact.
+      assertDeltaNativeMatches(
+        tablePath,
+        _.select(
+          col("id"),
+          col("file_name"),
+          col("file_path"),
+          col("file_size"))
+          .orderBy("id"))
+    }
+  }
 }

@@ -106,22 +106,20 @@ class CometDeltaCredentialAuditSuite extends AnyFunSuite with Matchers {
       "fs.azure.account.oauth2.client.id",
       "fs.azure.account.oauth2.client.secret",
       "fs.azure.account.oauth.provider.type")
-    // NativeConfig's abfs/abfss prefix lists are (`fs.abfs.`) and
-    // (`fs.abfss.`, `fs.abfs.`) -- neither matches `fs.azure.`, so those keys
-    // are not extracted for the bare abfs/abfss schemes. This is moot for the
-    // native scan: Azure is built via `object_store::parse_url` + ambient
-    // credentials (env / managed identity), not from `fs.azure.*` config --
-    // the same as core Comet's non-S3 path. These assertions just pin the
-    // current extractor behavior.
+    // NativeConfig's abfs/abfss prefix lists now lead with `fs.azure.`
+    // (`abfs` -> Seq("fs.azure.", "fs.abfs."), `abfss` -> Seq("fs.azure.",
+    // "fs.abfss.", "fs.abfs.")), so the `fs.azure.*` credential keys ARE
+    // extracted for the bare abfs/abfss schemes -- matching wasb/wasbs below.
+    // This assertion previously pinned the opposite (the keys being dropped)
+    // and carried a "GAP CLOSED -- flip me" message; upstream closed the gap,
+    // so it is now flipped to positive containment as instructed.
     Seq("abfs", "abfss").foreach { scheme =>
       val opts = NativeConfig.extractObjectStoreOptions(
         conf, new URI(s"$scheme://container@acct.dfs.core.windows.net/data"))
       assert(opts.contains(s"fs.$scheme.io.threads") ||
         opts.contains("fs.abfs.io.threads"), s"[$scheme] missing abfs key")
       expectedAzureKeys.foreach { k =>
-        assert(!opts.contains(k),
-          s"[$scheme] GAP CLOSED: NativeConfig now extracts $k -- " +
-            "update this test to assert positive containment instead")
+        assert(opts.contains(k), s"[$scheme] missing $k in extracted opts")
       }
     }
     Seq("wasb", "wasbs").foreach { scheme =>
@@ -204,5 +202,39 @@ class CometDeltaCredentialAuditSuite extends AnyFunSuite with Matchers {
       !augmented.contains("fs.s3a.bucket.bucket-a.access.key"),
       "per-bucket key was unexpectedly bridged; if intentional, " +
         "remove this gap test and add a positive assertion")
+  }
+
+  // === Layer 1+2 composition: the exact method the V1 scan AND the CDF path use
+  // to populate the scan proto's `object_store_options` (P2 driver->proto core) ===
+  //
+  // `resolveStorageOptionsFromConf` is what `convert()` (V1 regular scan) and
+  // `convertCdf` both call to build `object_store_options`. The CDF credential suite
+  // (`CometDeltaCdfCredentialSuite`) proves it reaches the proto end-to-end on the CDF
+  // path; a V1-path e2e is infeasible locally because V1's driver-side kernel
+  // enumeration needs reachable storage (a fake-S3 FS fails the native read, so no
+  // native exec/proto is produced). These guard the shared resolution composing
+  // Layer 1 (extract) + Layer 2 (AWS provider chain) -- which neither isolation test
+  // above exercises together -- and that it stays scheme-gated.
+
+  test("resolveStorageOptionsFromConf bridges S3 creds for an s3a root (V1/CDF proto core)") {
+    val conf = new Configuration()
+    conf.set("fs.s3a.access.key", "AK")
+    conf.set("fs.s3a.secret.key", "SK")
+    conf.set("fs.s3a.session.token", "TOK")
+    conf.set("fs.s3a.endpoint.region", "us-west-2")
+    val opts = CometDeltaNativeScan.resolveStorageOptionsFromConf(conf, "s3a://bucket/tbl")
+    assert(opts.get("fs.s3a.access.key") === "AK")
+    assert(opts.get("fs.s3a.secret.key") === "SK")
+    assert(opts.get("fs.s3a.session.token") === "TOK")
+    assert(opts.get("fs.s3a.endpoint.region") === "us-west-2")
+  }
+
+  test("resolveStorageOptionsFromConf bridges nothing for a file:// root (scheme-gated)") {
+    val conf = new Configuration()
+    conf.set("fs.s3a.access.key", "SHOULD_NOT_LEAK")
+    val opts = CometDeltaNativeScan.resolveStorageOptionsFromConf(conf, "file:///tmp/tbl")
+    assert(
+      !opts.containsKey("fs.s3a.access.key"),
+      s"file:// scan must not bridge s3a creds; got $opts")
   }
 }

@@ -115,4 +115,153 @@ class CometDeltaRowTrackingMergeReproSuite extends CometDeltaTestBase {
         s"native row count ${nativeRows.length} != ${numRows + numNew}")
     }
   }
+
+  // Regression guard: an IntegerType (Int32) PARTITION column on a row-tracking table.
+  // Kernel's per-file transform injects partition values as Int32 literals from the Add action;
+  // this verifies the injected Int32 partition values survive the read intact (each row's
+  // partition equals the written value and matches the vanilla Delta reader). With no row_id
+  // projected there is no RowId metadata column, so the partition is the last emitted column and
+  // its Int32 literal lands in the Int32 partition slot directly -- no swap, no schema widening.
+  test("IntegerType partition column on row-tracking table: native kernel read matches vanilla") {
+    assume(deltaSparkAvailable, "delta-spark not on the test classpath; skipping")
+    withDeltaTable("int_part_rt") { tablePath =>
+      val ss = spark
+      import ss.implicits._
+      val numRows = 4000
+
+      // `p` is a Scala Int -> Spark IntegerType -> the logical-only partition column that
+      // triggers kernel's Int64 literal injection. Several partitions, multiple files.
+      (0 until numRows)
+        .map(i => (i.toLong, i.toLong, (i % 4)))
+        .toDF("key", "stored_id", "p")
+        .write
+        .partitionBy("p")
+        .format("delta")
+        .option("delta.enableRowTracking", "true")
+        .option("delta.minReaderVersion", "3")
+        .option("delta.minWriterVersion", "7")
+        .save(tablePath)
+
+      // Project the Int32 partition column: kernel injects it as an Int64 literal in the
+      // per-file transform, so this read exercises the widen + Int32 cast-back.
+      def readBack() =
+        spark.read
+          .format("delta")
+          .load(tablePath)
+          .select(col("key"), col("p"))
+
+      val nativeDf = readBack()
+      val nativeRows = nativeDf.collect()
+      val plan = nativeDf.queryExecution.executedPlan
+      val scans = collect(plan) { case s: CometDeltaNativeScanExec => s }
+      assert(scans.nonEmpty, s"expected CometDeltaNativeScanExec in plan:\n$plan")
+
+      var vanillaRows: Array[org.apache.spark.sql.Row] = Array.empty
+      withSQLConf("spark.comet.scan.deltaNative.enabled" -> "false") {
+        vanillaRows = readBack().collect()
+      }
+
+      // Access by NAME (Spark moves the partition column to the end of the schema, so
+      // positional access mislabels columns). Compare the (key -> partition) mapping against
+      // the vanilla reader -- exact, every row -- to pin that kernel's injected Int32 partition
+      // literal survives the read intact.
+      def partByKey(rows: Array[org.apache.spark.sql.Row]): Map[Long, Int] =
+        rows.map(r => r.getAs[Long]("key") -> r.getAs[Int]("p")).toMap
+      val nativePart = partByKey(nativeRows)
+      val vanillaPart = partByKey(vanillaRows)
+      val partMismatch =
+        vanillaPart.keys.toSeq.sorted.filter(k => nativePart.get(k) != vanillaPart.get(k))
+      assert(
+        partMismatch.isEmpty,
+        s"native partition != vanilla for ${partMismatch.size} keys; sample: " +
+          partMismatch
+            .take(10)
+            .map(k => s"key=$k native=${nativePart.get(k)} vanilla=${vanillaPart.get(k)}")
+            .mkString(", "))
+      assert(
+        nativeRows.length == numRows,
+        s"native row count ${nativeRows.length} != $numRows")
+      // Partition values must be exactly the written Int32 set, undamaged by widen/cast-back.
+      assert(
+        nativeRows.map(_.getAs[Int]("p")).toSet == Set(0, 1, 2, 3),
+        s"native partition values wrong: ${nativeRows.map(_.getAs[Int]("p")).toSet}")
+      // Each key's partition must equal key % 4 (the value written) -- proves the cast-back
+      // produced the real partition value, not a corrupted/zeroed one.
+      val wrongPart = nativePart.filter { case (k, p) => p != (k % 4).toInt }
+      assert(
+        wrongPart.isEmpty,
+        s"native partition value != key%4 for ${wrongPart.size} keys; sample: ${wrongPart.take(10)}")
+    }
+  }
+
+  // Regression guard for the partitioned row-tracking row_id SWAP (#30). On a PARTITIONED row-tracking
+  // table the read projects `_metadata.row_id`, shipped to kernel as a RowId metadata column. Kernel's
+  // per-file transform injects the partition literal BEFORE that RowId column (it doesn't advance
+  // kernel's `last_physical_field`), and the executor labels output columns POSITIONALLY -- so if the
+  // driver appended the partition column LAST, the Int32 partition value landed in the row_id slot and
+  // the Long row_id in the partition slot: native row_id == key % 4 (the partition), not the stable
+  // row_id. This is the same failure as the Delta own suite
+  // RowTrackingMergeCommonNameBasedCDCOnSuite "Optimized writes [disabled] on partitioned table"
+  // (merge source `0 AS partition` -> every inserted row_id == 0 -> "Row IDs are not unique"). The fix
+  // (`spliceKernelPartitions`) ships the partition column at kernel's injection slot so the labeling
+  // lines up. (The UPDATE creates a materialised/absent file mix; the swap affected BOTH, so it was
+  // never a null-fill issue.)
+  test("partitioned row-tracking table: row_id must not be the partition value (swap)") {
+    assume(deltaSparkAvailable, "delta-spark not on the test classpath; skipping")
+    withDeltaTable("rt_part_rowid") { tablePath =>
+      val ss = spark
+      import ss.implicits._
+      val numRows = 4000
+
+      (0 until numRows)
+        .map(i => (i.toLong, i.toLong, (i % 4)))
+        .toDF("key", "stored_id", "p")
+        .write
+        .partitionBy("p")
+        .format("delta")
+        .option("delta.enableRowTracking", "true")
+        .option("delta.minReaderVersion", "3")
+        .option("delta.minWriterVersion", "7")
+        .save(tablePath)
+
+      // Materialise row-ids in a SUBSET of files (the touched ones); untouched files stay absent.
+      spark.sql(
+        s"UPDATE delta.`$tablePath` SET stored_id = stored_id + 1000000 WHERE key < ${numRows / 2}")
+
+      def readBack() =
+        spark.read
+          .format("delta")
+          .load(tablePath)
+          .select(col("key"), col("_metadata.row_id").as("rid"))
+
+      val nativeDf = readBack()
+      val nativeRows = nativeDf.collect()
+      val plan = nativeDf.queryExecution.executedPlan
+      assert(
+        collect(plan) { case s: CometDeltaNativeScanExec => s }.nonEmpty,
+        s"expected CometDeltaNativeScanExec in plan:\n$plan")
+
+      var vanillaRows: Array[org.apache.spark.sql.Row] = Array.empty
+      withSQLConf("spark.comet.scan.deltaNative.enabled" -> "false") {
+        vanillaRows = readBack().collect()
+      }
+
+      val nativeRid = nativeRows.map(r => r.getAs[Long]("key") -> r.getAs[Long]("rid")).toMap
+      val vanillaRid = vanillaRows.map(r => r.getAs[Long]("key") -> r.getAs[Long]("rid")).toMap
+      val mismatch =
+        vanillaRid.keys.toSeq.sorted.filter(k => nativeRid.get(k) != vanillaRid.get(k))
+      assert(
+        mismatch.isEmpty,
+        s"native row_id != vanilla for ${mismatch.size} keys; sample: " +
+          mismatch
+            .take(10)
+            .map(k => s"key=$k native=${nativeRid.get(k)} vanilla=${vanillaRid.get(k)}")
+            .mkString(", "))
+      val rids = nativeRows.map(_.getAs[Long]("rid"))
+      assert(
+        rids.distinct.length == rids.length,
+        s"native row_id not unique: ${rids.length - rids.distinct.length} duplicates " +
+          s"(row_id=0 count=${rids.count(_ == 0L)})")
+    }
+  }
 }
