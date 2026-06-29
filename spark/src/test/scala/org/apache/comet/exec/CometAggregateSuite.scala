@@ -27,7 +27,9 @@ import org.apache.spark.sql.{Column, CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.catalyst.expressions.Cast
 import org.apache.spark.sql.catalyst.optimizer.EliminateSorts
 import org.apache.spark.sql.comet.CometHashAggregateExec
+import org.apache.spark.sql.execution.LocalTableScanExec
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
+import org.apache.spark.sql.execution.aggregate.ObjectHashAggregateExec
 import org.apache.spark.sql.functions.{avg, col, collect_list, collect_set, count_distinct, sort_array, sum}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DataTypes, StructField, StructType}
@@ -93,7 +95,9 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             "collect_set" -> (col => collect_set(col)))) {
           val (_, cometPlan) = checkSparkAnswerAndOperator(
             df.groupBy($"x").agg(count_distinct($"y"), sort_array(collect($"z"))),
-            Seq(classOf[CometHashAggregateExec]))
+            Seq(classOf[CometHashAggregateExec]),
+            classOf[ObjectHashAggregateExec],
+            classOf[LocalTableScanExec])
           assert(
             cometPlan.toString.contains(s"merge_$name"),
             s"Expected $name PartialMerge stage to run natively; plan:\n$cometPlan")
