@@ -16,6 +16,9 @@
 -- under the License.
 
 -- Native exact percentile via DataFusion percentile_cont (same (n-1)*p interpolation as Spark).
+-- Marked Incompatible because DataFusion quantizes the interpolation weight to 6 decimal places
+-- (#4719); allow it here so the native path is exercised.
+-- Config: spark.comet.expression.Percentile.allowIncompatible=true
 
 statement
 CREATE TABLE test_percentile(g int, v double, i int) USING parquet

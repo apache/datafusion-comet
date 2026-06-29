@@ -19,6 +19,9 @@
 -- RuntimeReplaceable that rewrites to Percentile(col, p, reverse), so the ascending form runs
 -- natively through Comet, while the descending (DESC) form falls back to Spark because the
 -- native percentile_cont always interpolates in ascending order.
+-- Percentile is marked Incompatible because DataFusion quantizes the interpolation weight to 6
+-- decimal places (#4719); allow it here so the ascending native path is exercised.
+-- Config: spark.comet.expression.Percentile.allowIncompatible=true
 -- MinSparkVersion: 4.0
 
 statement
