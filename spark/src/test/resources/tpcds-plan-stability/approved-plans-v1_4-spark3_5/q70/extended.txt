@@ -4,7 +4,7 @@ CometNativeColumnarToRow
       +- CometWindowExec
          +- CometSort
             +- CometColumnarExchange
-               +-  HashAggregate [COMET: Spark Final aggregate without Comet Partial requires compatible intermediate buffer formats]
+               +-  HashAggregate [COMET: Spark Final aggregate without Comet Partial requires compatible intermediate buffer formats, but the following aggregate function(s) have incompatible buffers: sum]
                   +- Exchange
                      +- HashAggregate
                         +- Expand
