@@ -754,8 +754,8 @@ class CometIcebergNativeSuite
   }
 
   // When a delete file cannot be statted natively, the scan must fail loudly rather than read the
-  // data file with deletes silently dropped (the #4723 corruption). Here we delete the positional
-  // delete file from disk after it is committed, so the native fill_delete_file_sizes stat fails.
+  // data file with deletes silently dropped. Here we delete the positional delete file from disk
+  // after it is committed, so the native fill_delete_file_sizes stat fails.
   test("delete file stat failure surfaces as an exception") {
     assume(icebergAvailable, "Iceberg not available in classpath")
 
@@ -800,8 +800,8 @@ class CometIcebergNativeSuite
           assert(local.delete(), s"failed to remove delete file from disk: $p")
         }
 
-        // If deletes were silently dropped (the #4723 bug), COUNT(*) would return a wrong count
-        // with no error and this intercept would fail. The fill must fail the scan instead.
+        // If deletes were silently dropped, COUNT(*) would return a wrong count with no error and
+        // this intercept would fail. The fill must fail the scan instead.
         val e = intercept[Exception] {
           spark.sql("SELECT COUNT(*) FROM test_cat.db.missing_delete_test").collect()
         }
