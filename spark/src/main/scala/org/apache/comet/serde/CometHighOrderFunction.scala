@@ -49,7 +49,7 @@ case class CometHighOrderFunction[T <: HigherOrderFunction](name: String)
     "DataFusion higher-order functions support only 1 argument"
 
   override def getIncompatibleReasons(): Seq[String] =
-    Seq(UNSUPPORTED_LAMBDA_TYPE, UNSUPPORTED_LAMBDA_PARAM_TYPE)
+    Seq(UNSUPPORTED_LAMBDA_TYPE, UNARY_FUNCTION_EXPECTED, UNSUPPORTED_LAMBDA_PARAM_TYPE)
 
   override def getSupportLevel(expr: T): SupportLevel = {
     if (!expr.functions.forall(_.isInstanceOf[SparkLambdaFunction])) {
