@@ -60,6 +60,8 @@ case class RevertNativeForTransitionHeavyStages(session: SparkSession)
           .map(reverted => exchange.withNewChildren(Seq(reverted)))
           .getOrElse(plan)
       case _ =>
+        // Result stage: its output is collected as rows, so no consumer requires columnar input
+        // and the reverted stage needs no trailing R2C.
         revertStageIfNeeded(plan, outputColumnar = false).getOrElse(plan)
     }
   }
@@ -95,11 +97,43 @@ case class RevertNativeForTransitionHeavyStages(session: SparkSession)
     Some(result)
   }
 
+  /**
+   * A node that marks the boundary between this stage and an adjacent one.
+   */
+  private def isStageBoundary(plan: SparkPlan): Boolean = plan match {
+    case _: QueryStageExec | _: ShuffleExchangeLike | _: BroadcastExchangeLike => true
+    case _ => false
+  }
+
+  /**
+   * Like `transformDown`, never descends stage-boundary children.
+   */
+  private def transformStageDown(plan: SparkPlan)(
+      rule: PartialFunction[SparkPlan, SparkPlan]): SparkPlan = {
+    val transformed = rule.applyOrElse(plan, identity[SparkPlan])
+    val newChildren = transformed.children.map { child =>
+      if (isStageBoundary(child)) child else transformStageDown(child)(rule)
+    }
+    if (newChildren == transformed.children) transformed
+    else transformed.withNewChildren(newChildren)
+  }
+
+  /** Like `transformUp`, never descends stage-boundary children. */
+  private def transformStageUp(plan: SparkPlan)(
+      rule: PartialFunction[SparkPlan, SparkPlan]): SparkPlan = {
+    val newChildren = plan.children.map { child =>
+      if (isStageBoundary(child)) child else transformStageUp(child)(rule)
+    }
+    val withNewChildren =
+      if (newChildren == plan.children) plan else plan.withNewChildren(newChildren)
+    rule.applyOrElse(withNewChildren, identity[SparkPlan])
+  }
+
   /** Counts C2R transitions within this stage, stopping at stage boundaries. */
   private[rules] def countTransitions(plan: SparkPlan): Int = {
     var count = 0
     def visit(node: SparkPlan): Unit = node match {
-      case _: QueryStageExec | _: ShuffleExchangeLike | _: BroadcastExchangeLike => ()
+      case _ if isStageBoundary(node) => ()
       case _: ColumnarToRowTransition =>
         count += 1
         node.children.foreach(visit)
@@ -111,14 +145,14 @@ case class RevertNativeForTransitionHeavyStages(session: SparkSession)
   }
 
   private[rules] def revertToSpark(plan: SparkPlan): SparkPlan = {
-    val stripped = plan.transformDown {
+    val stripped = transformStageDown(plan) {
       case CometNativeColumnarToRowExec(child) => child
       case CometColumnarToRowExec(child) => child
       case ColumnarToRowExec(child) => child
       case sparkToColumnar: CometSparkToColumnarExec => sparkToColumnar.child
       case RowToColumnarExec(child) => child
     }
-    val reverted = stripped.transformUp { case cometExec: CometExec =>
+    val reverted = transformStageUp(stripped) { case cometExec: CometExec =>
       if (cometExec.originalPlan.children.size == cometExec.children.size) {
         cometExec.originalPlan.withNewChildren(cometExec.children)
       } else {
@@ -132,7 +166,7 @@ case class RevertNativeForTransitionHeavyStages(session: SparkSession)
   }
 
   private def insertTransitions(plan: SparkPlan): SparkPlan = {
-    plan.transformUp {
+    transformStageUp(plan) {
       case node if !node.isInstanceOf[QueryStageExec] && !node.supportsColumnar =>
         val newChildren = node.children.map { child =>
           if (child.supportsColumnar) ColumnarToRowExec(child) else child

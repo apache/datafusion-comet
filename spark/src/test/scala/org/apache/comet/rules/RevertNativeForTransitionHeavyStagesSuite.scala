@@ -21,6 +21,7 @@ package org.apache.comet.rules
 
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.comet._
+import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution._
 
 import org.apache.comet.CometConf
@@ -52,6 +53,21 @@ class RevertNativeForTransitionHeavyStagesSuite extends CometTestBase {
 
   private def countC2RNodes(plan: SparkPlan): Int = {
     plan.collect { case _: ColumnarToRowTransition => true }.size
+  }
+
+  /**
+   * Returns every node that produces a columnar output but consumes a row-based child without a
+   * RowToColumnar transition. Such a node is an invalid columnar/row boundary: a columnar parent
+   * (e.g. a native CometShuffleExchangeExec) requires columnar input. RowToColumnarExec and
+   * CometSparkToColumnarExec are the legitimate row->columnar bridges and are excluded.
+   */
+  private def invalidColumnarBoundaries(plan: SparkPlan): Seq[SparkPlan] = {
+    plan.collect {
+      case n
+          if n.supportsColumnar && !n.isInstanceOf[RowToColumnarTransition] &&
+            n.children.exists(c => !c.supportsColumnar) =>
+        n
+    }
   }
 
   test("rule is a no-op when disabled") {
@@ -206,4 +222,61 @@ class RevertNativeForTransitionHeavyStagesSuite extends CometTestBase {
     }
   }
 
+  test("revertToSpark must not revert native operators across a shuffle stage boundary") {
+    withSQLConf("spark.sql.adaptive.enabled" -> "false") {
+      withParquetTable((0 until 100).map(i => (i, i % 10)), "tbl") {
+        // A GROUP BY produces partial-agg -> native shuffle -> final-agg, i.e. two stages.
+        val df = sql("SELECT _2, count(*) FROM tbl GROUP BY _2")
+        df.collect()
+        val cometPlan = stripAQEPlan(df.queryExecution.executedPlan)
+
+        val shuffles = cometPlan.collect { case s: CometShuffleExchangeExec => s }
+        assume(shuffles.nonEmpty, "test requires a native CometShuffleExchangeExec")
+        assert(
+          shuffles.map(s => countCometExecs(s.child)).sum > 0,
+          "expected native CometExec operators below the shuffle")
+        assert(
+          invalidColumnarBoundaries(cometPlan).isEmpty,
+          s"precondition: original plan should be valid:\n${cometPlan.treeString}")
+
+        val rule = RevertNativeForTransitionHeavyStages(spark)
+        val reverted = rule.revertToSpark(cometPlan)
+
+        val invalid = invalidColumnarBoundaries(reverted)
+        assert(
+          invalid.isEmpty,
+          s"revertToSpark produced invalid columnar/row boundaries " +
+            s"(${invalid.map(_.nodeName).mkString(", ")}):\n${reverted.treeString}")
+      }
+    }
+  }
+
+  test("non-AQE apply must not produce an invalid plan when the result stage reverts") {
+    withSQLConf(
+      CometConf.COMET_EXEC_TRANSITION_REVERT_ENABLED.key -> "true",
+      // Threshold 0 forces the result stage (above the topmost shuffle) to revert.
+      CometConf.COMET_EXEC_TRANSITION_REVERT_MAX_TRANSITIONS.key -> "0",
+      "spark.sql.adaptive.enabled" -> "false") {
+      withParquetTable((0 until 100).map(i => (i, i % 10)), "tbl") {
+        val cometPlan =
+          withSQLConf(CometConf.COMET_EXEC_TRANSITION_REVERT_ENABLED.key -> "false") {
+            val df = sql("SELECT _2, count(*) FROM tbl GROUP BY _2")
+            df.collect()
+            stripAQEPlan(df.queryExecution.executedPlan)
+          }
+        assume(
+          cometPlan.collect { case s: CometShuffleExchangeExec => s }.nonEmpty,
+          "test requires a native CometShuffleExchangeExec")
+
+        val rule = RevertNativeForTransitionHeavyStages(spark)
+        val result = rule.apply(cometPlan)
+
+        val invalid = invalidColumnarBoundaries(result)
+        assert(
+          invalid.isEmpty,
+          s"rule.apply produced invalid columnar/row boundaries " +
+            s"(${invalid.map(_.nodeName).mkString(", ")}):\n${result.treeString}")
+      }
+    }
+  }
 }
