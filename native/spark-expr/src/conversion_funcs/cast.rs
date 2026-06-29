@@ -36,7 +36,9 @@ use crate::conversion_funcs::temporal::{
     is_df_cast_from_timestamp_spark_compatible,
 };
 use crate::conversion_funcs::utils::spark_cast_postprocess;
-use crate::utils::{array_with_timezone, cast_timestamp_to_ntz, timestamp_ntz_to_timestamp};
+use crate::utils::{
+    array_with_timezone, cast_timestamp_to_ntz, decode_utf8_spark_lossy, timestamp_ntz_to_timestamp,
+};
 use crate::EvalMode::Legacy;
 use crate::{cast_whole_num_to_binary, BinaryOutputStyle};
 use crate::{EvalMode, SparkError};
@@ -854,19 +856,51 @@ fn spark_binary_formatter(value: &[u8], binary_output_style: BinaryOutputStyle) 
 }
 
 fn cast_binary_formatter(value: &[u8]) -> String {
-    match String::from_utf8(value.to_vec()) {
-        Ok(value) => value,
-        Err(_) => unsafe { String::from_utf8_unchecked(value.to_vec()) },
-    }
+    // CAST(binary AS string) reinterprets the bytes as UTF-8, like Spark's UTF8String.fromBytes.
+    // Spark keeps the raw bytes, but Arrow's Utf8 type requires valid UTF-8, and building a String
+    // from non-UTF-8 bytes is undefined behaviour (#4488). Decode JVM-compatibly-lossily instead:
+    // `decode_utf8_spark_lossy` replaces ill-formed sequences with U+FFFD exactly as Spark's
+    // `new String(bytes, UTF_8)` does (the same decoder Comet's native shuffle uses, #4521). The
+    // result is memory-safe valid UTF-8, never feeds invalid bytes into downstream native string
+    // kernels, and matches Spark's rendered output byte-for-byte. It diverges from Spark only under
+    // byte-level round-trips such as CAST(CAST(x AS string) AS binary), where Spark still has the
+    // original bytes and Comet has the U+FFFD replacements.
+    decode_utf8_spark_lossy(value).into_owned()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::{ListArray, NullArray, StringArray};
+    use arrow::array::{BinaryArray, ListArray, NullArray, StringArray};
     use arrow::buffer::OffsetBuffer;
     use arrow::datatypes::TimestampMicrosecondType;
     use arrow::datatypes::{Field, Fields};
+
+    #[test]
+    fn test_cast_binary_to_string_replaces_invalid_utf8_jvm_compatibly() {
+        // Invalid bytes are replaced with U+FFFD instead of reinterpreted as an invalid `str`,
+        // and the granularity matches the JVM: the surrogate-range sequence [ED A0 80] collapses
+        // to a single U+FFFD (Rust's `from_utf8_lossy` would emit three). Valid UTF-8 ("abc") is
+        // preserved exactly and NULL stays NULL.
+        let input = BinaryArray::from_opt_vec(vec![
+            Some(&[0xFFu8, 0xFE][..]),
+            None,
+            Some("abc".as_bytes()),
+            Some(&[0xEDu8, 0xA0, 0x80][..]),
+        ]);
+        // binary_output_style defaults to None, i.e. the plain (non-ToPrettyString) cast path.
+        let cast_options = SparkCastOptions::new(EvalMode::Legacy, "UTC", false);
+
+        let result = cast_binary_to_string::<i32>(&input, &cast_options).unwrap();
+
+        let strings = result.as_string::<i32>();
+        assert_eq!(strings.len(), 4);
+        assert_eq!(strings.value(0), "\u{FFFD}\u{FFFD}");
+        assert!(strings.is_null(1));
+        assert_eq!(strings.value(2), "abc");
+        assert_eq!(strings.value(3), "\u{FFFD}");
+    }
+
     #[test]
     fn test_cast_unsupported_timestamp_to_date() {
         // Since datafusion uses chrono::Datetime internally not all dates representable by TimestampMicrosecondType are supported

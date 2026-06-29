@@ -70,3 +70,23 @@ This is distinct from expressions that have **no** codegen-dispatch path: there,
 incompatible cases fall back to Spark by default, and `allowIncompatible=true` runs the native
 (incompatible) path instead. `cast` is the main example; see the
 [expression reference](../expressions.md) for which expressions have incompatible cases.
+
+## Strings with non-UTF-8 bytes
+
+Spark's `StringType` can hold arbitrary bytes, including sequences that are not valid UTF-8 (for
+example `CAST(X'FF' AS STRING)`). Arrow's string type requires valid UTF-8, so Comet cannot store
+the raw bytes natively. When Comet produces a string from arbitrary bytes (such as
+`CAST(binary AS string)` or a columnar shuffle), it decodes them the same way the JVM does
+(`new String(bytes, UTF_8)`), replacing each ill-formed sequence with the Unicode replacement
+character `U+FFFD`. Spark itself applies the identical replacement whenever such a string is
+materialized (collected, printed, or passed to most string functions), so the rendered result
+matches Spark.
+
+The one observable difference is byte-preserving round-trips: Spark keeps the original bytes, so
+`CAST(CAST(X'FF' AS STRING) AS BINARY)` returns `X'FF'`, whereas Comet returns the UTF-8 encoding of
+`U+FFFD` (`X'EFBFBD'`). Operations that inspect the raw bytes (re-casting to binary, `octet_length`,
+hashing) can therefore differ for non-UTF-8 input.
+
+Separately, Comet's native Parquet scan currently rejects string columns whose stored bytes are not
+valid UTF-8 rather than reading them like Spark
+([#4121](https://github.com/apache/datafusion-comet/issues/4121)).

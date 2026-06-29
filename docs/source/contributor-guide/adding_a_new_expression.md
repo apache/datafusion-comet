@@ -478,6 +478,21 @@ pub fn spark_ceil(
 }
 ```
 
+#### Producing strings from arbitrary bytes
+
+Spark's `StringType` may contain bytes that are not valid UTF-8 (Spark stores them verbatim), but
+Arrow's string arrays must be valid UTF-8. Any native code that turns arbitrary bytes into a string
+must therefore **decode** them, not reinterpret them. Building a Rust `String`/`&str` from non-UTF-8
+bytes is undefined behaviour, and an Arrow string array that holds invalid UTF-8 is unsound for the
+downstream kernels that read it via `StringArray::value` (which assumes the UTF-8 invariant).
+
+Use `crate::utils::decode_utf8_spark_lossy`. It replaces each ill-formed sequence with `U+FFFD`
+exactly as the JVM's `new String(bytes, UTF_8)` does, so Comet's rendered output matches Spark
+(including the surrogate-range cases where `str::from_utf8_lossy` would differ). This is the decoder
+used by both `CAST(binary AS string)` and the native columnar shuffle. See the
+[strings with non-UTF-8 bytes](../user-guide/latest/compatibility/index.md) note in the
+compatibility guide for the user-visible behavior.
+
 ### API Differences Between Spark Versions
 
 If the expression you're adding has different behavior across different Spark versions, you'll need to account for that in your implementation. There are two tools at your disposal to help with this:
