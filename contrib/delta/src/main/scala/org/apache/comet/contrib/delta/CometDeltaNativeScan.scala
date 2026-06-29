@@ -616,6 +616,15 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometDeltaScanMarker] wit
       logWarning("CometDeltaNativeScan: unable to extract CDF version range; falling back to Spark.")
       return None
     }
+    // Decline CDF reads of tables whose features the native kernel `TableChanges` path can't serve
+    // (deletion vectors -> kernel can't resolve the DV `.bin` during a change scan; catalog-managed
+    // -> kernel needs a max_catalog_version we don't supply). Spark's own CDF reader handles them.
+    if (DeltaReflection.cdfHasUnsupportedTableFeatures(relation)) {
+      logWarning(
+        "CometDeltaNativeScan: native CDF read does not support deletion-vector or catalog-managed " +
+          "tables; falling back to Spark's Delta CDF reader.")
+      return None
+    }
 
     // required_schema is the FULL CDF output: data columns + _change_type / _commit_version /
     // _commit_timestamp, in `scan.output` order. The native side assembles by name, so no stripping.
@@ -624,6 +633,12 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometDeltaScanMarker] wit
     val commonBuilder = DeltaScanCommon.newBuilder()
     commonBuilder.setSource(scan.simpleStringWithNodeId())
     commonBuilder.setTableRoot(tableRoot)
+    // Propagate object-store credentials so a CDF read of a private bucket authenticates the same
+    // way the V1 scan does -- without this the common block shipped an empty options map and the
+    // native engine built a credential-less store. The CDF relation isn't a HadoopFsRelation, so
+    // build the Hadoop conf from the session.
+    val cdfHadoopConf = scan.relation.sqlContext.sparkSession.sessionState.newHadoopConf()
+    commonBuilder.putAllObjectStoreOptions(resolveStorageOptionsFromConf(cdfHadoopConf, tableRoot))
     // snapshot_version is only used for the per-scan source key; the start version keys it uniquely.
     commonBuilder.setSnapshotVersion(startVersion)
     commonBuilder.setSessionTimezone(scan.conf.sessionLocalTimeZone)
@@ -1427,6 +1442,18 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometDeltaScanMarker] wit
     val relation = scan.relation
     val hadoopConf =
       relation.sparkSession.sessionState.newHadoopConfWithOptions(relation.options)
+    resolveStorageOptionsFromConf(hadoopConf, tableRoot)
+  }
+
+  /**
+   * The reusable core of [[resolveStorageOptions]]: extract the object-store options for
+   * `tableRoot` from `hadoopConf` (S3/Azure/GCS Hadoop keys) and resolve the AWS credential
+   * provider chain. Shared by the V1 scan and the CDF path ([[convertCdf]]) so a CDF read of a
+   * private bucket authenticates with the SAME credentials the V1 scan would.
+   */
+  private[delta] def resolveStorageOptionsFromConf(
+      hadoopConf: org.apache.hadoop.conf.Configuration,
+      tableRoot: String): java.util.Map[String, String] = {
     val tableRootUri = java.net.URI.create(tableRoot)
     val baseOptions: Map[String, String] =
       NativeConfig.extractObjectStoreOptions(hadoopConf, tableRootUri)

@@ -123,7 +123,7 @@ class CometDeltaCdfReflectionReproSuite extends CometDeltaTestBase {
       // Cap the split at 4 partitions. The single CometDeltaCdfScanExec should carry >= 2 sub-ranges
       // (so it emits multiple Spark partitions) WITHOUT a CometUnionExec wrapper -- it stays a single
       // CometNativeExec so a downstream native shuffle / aggregation remains eligible.
-      withSQLConf("spark.comet.delta.cdf.maxPartitions" -> "4") {
+      withSQLConf("spark.comet.scan.deltaNative.cdf.maxPartitions" -> "4") {
         val df = read()
         df.collect() // finalize plan
         val plan = df.queryExecution.executedPlan

@@ -163,4 +163,50 @@ class CometDeltaCdcSuite extends CometDeltaTestBase {
       assert(rows.head.getString(1) === "user_value")
     }
   }
+
+  test("CDC read of a deletion-vector table declines to Spark (kernel CDF can't resolve the DV .bin)") {
+    assume(deltaSparkAvailable, "delta-spark not on the test classpath; skipping")
+    withDeltaTable("cdc_dv") { tablePath =>
+      spark.sql(
+        s"""CREATE OR REPLACE TABLE delta.`$tablePath`(id INT, v STRING)
+            USING DELTA TBLPROPERTIES (
+              delta.enableChangeDataFeed = true,
+              delta.enableDeletionVectors = true)""")
+      spark.sql(s"INSERT INTO delta.`$tablePath` VALUES (1, 'a'), (2, 'b'), (3, 'c')")
+      // With DVs enabled this DELETE marks the row deleted via a persistent
+      // `deletion_vector_*.bin` rather than rewriting the data file.
+      spark.sql(s"DELETE FROM delta.`$tablePath` WHERE id = 2")
+
+      val cdcRead = () =>
+        spark.read
+          .format("delta")
+          .option("readChangeFeed", "true")
+          .option("startingVersion", "0")
+          .load(tablePath)
+          .drop("_commit_timestamp")
+
+      // RED before the decline gate: the native CDF read threw
+      //   CometNativeException: kernel CDF read ... File not found: deletion_vector_*.bin
+      // GREEN after: convertCdf declines, Spark's CDF reader serves it.
+      val df = cdcRead()
+      val nativeRows = df.collect().toSeq.map(normalizeRow)
+
+      // Declined -> no CometDeltaCdfScanExec in the plan (fell back to vanilla Delta CDF).
+      val cdfScans = df.queryExecution.executedPlan.collect {
+        case s: org.apache.spark.sql.comet.CometDeltaCdfScanExec => s
+      }
+      assert(
+        cdfScans.isEmpty,
+        s"CDF read of a deletion-vector table must decline to Spark, but engaged native:\n" +
+          s"${df.queryExecution.executedPlan}")
+
+      // Correctness: the (declined) result matches vanilla Spark exactly.
+      withSQLConf("spark.comet.scan.deltaNative.enabled" -> "false") {
+        val vanillaRows = cdcRead().collect().toSeq.map(normalizeRow)
+        assert(
+          nativeRows.sortBy(_.mkString("|")) == vanillaRows.sortBy(_.mkString("|")),
+          s"CDC dv declined=$nativeRows vanilla=$vanillaRows")
+      }
+    }
+  }
 }

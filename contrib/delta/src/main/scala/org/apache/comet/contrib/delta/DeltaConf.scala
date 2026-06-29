@@ -43,7 +43,8 @@ object DeltaConf {
   def all: Seq[ConfigEntry[_]] = Seq(
     COMET_DELTA_NATIVE_ENABLED,
     COMET_DELTA_FALLBACK_ON_UNSUPPORTED_FEATURE,
-    COMET_DELTA_DATA_FILE_CONCURRENCY_LIMIT)
+    COMET_DELTA_DATA_FILE_CONCURRENCY_LIMIT,
+    COMET_DELTA_CDF_MAX_PARTITIONS)
 
   // CometConf.register asserts every config has a non-empty category -- used for grouping
   // entries in the generated user-guide docs. Deliberately a contrib-specific category rather
@@ -90,4 +91,21 @@ object DeltaConf {
       .intConf
       .checkValue(v => v > 0, "Data file concurrency limit must be positive")
       .createWithDefault(1)
+
+  // Added here, with the Change Data Feed support it configures, rather than alongside the scan
+  // settings above -- a config should not appear before the code that reads it. Nested under the
+  // shared `spark.comet.scan.deltaNative.*` prefix (see the note on this object) rather than
+  // opening a separate `spark.comet.delta.cdf.*` namespace.
+  val COMET_DELTA_CDF_MAX_PARTITIONS: ConfigEntry[Int] =
+    ConfigBuilder("spark.comet.scan.deltaNative.cdf.maxPartitions")
+      .category(CATEGORY)
+      .doc(
+        "Maximum number of Spark partitions a Change Data Feed (readChangeFeed) read is split " +
+          "into. The inclusive version range is chunked into up to this many contiguous " +
+          "sub-ranges, each read by an independent native delta-kernel TableChanges call, so a " +
+          "multi-version CDF read parallelizes across tasks instead of reading the whole range " +
+          "on one task. Capped by the number of commits in the range.")
+      .intConf
+      .checkValue(v => v > 0, "CDF max partitions must be positive")
+      .createWithDefault(8)
 }
