@@ -242,7 +242,7 @@ pub fn get_runtime() -> Handle {
 pub fn release_runtime() {
     let runtime = TOKIO_RUNTIME.lock().take();
     if let Some(runtime) = runtime {
-        runtime.shutdown_background();
+        runtime.shutdown_timeout(Duration::from_secs(3));
     }
 }
 
