@@ -88,11 +88,9 @@ case class CometScanRule(session: SparkSession)
       case _ => false
     }
 
-    def hasMetadataCol(plan: SparkPlan) = {
-      plan.expressions.flatMap {
-        case a: Attribute =>
-          if (a.isMetadataCol) Option(a.name) else Option.empty
-        case _ => Option.empty
+    def hasMetadataCol(plan: SparkPlan): Seq[String] = {
+      plan.expressions.collect {
+        case a: Attribute if a.isMetadataCol => a.name
       }
     }
 
@@ -130,7 +128,7 @@ case class CometScanRule(session: SparkSession)
       case scan if hasMetadataCol(scan).nonEmpty =>
         withFallbackReason(
           scan,
-          s"Metadata column ${hasMetadataCol(scan).mkString(", ")} is not supported")
+          s"Metadata column(s) ${hasMetadataCol(scan).mkString(", ")} is not supported")
 
       // data source V1
       case scanExec: FileSourceScanExec =>
