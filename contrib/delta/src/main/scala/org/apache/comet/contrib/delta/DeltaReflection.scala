@@ -475,6 +475,67 @@ object DeltaReflection extends Logging {
   }
 
   /**
+   * True when a CDF read (`readChangeFeed`) of this `DeltaCDFRelation` would hit a Delta table
+   * feature the native kernel `TableChanges` path can't serve -- so the contrib should decline and
+   * let Spark's own CDF reader handle it (correctness preserved):
+   *   - Deletion vectors: kernel's change scan reads DV `.bin` files itself and fails to resolve
+   *     them ("File not found: deletion_vector_*.bin"). Observed in
+   *     `DeltaCDCScalaWithDeletionVectorsSuite`.
+   *   - Catalog-managed (`catalogOwned` / coordinated commits): kernel errors "Catalog-managed
+   *     table requires max_catalog_version", which the contrib doesn't supply. Observed in
+   *     `DeltaCDCScalaWithCatalogOwnedBatch{1,2}Suite`.
+   *
+   * NOTE: the regular (non-CDF) native scan DOES support deletion-vector tables (it decodes DVs via
+   * `dv_reader`); this gate is scoped to the CDF path only. Best-effort: returns `false` on
+   * reflection failure (no worse than today -- the read would proceed and may error as before).
+   */
+  def cdfHasUnsupportedTableFeatures(relation: Any): Boolean = {
+    try {
+      val snapshot: Option[AnyRef] =
+        findAccessor(relation, Seq("snapshotWithSchemaMode"))
+          .flatMap(findAccessor(_, Seq("snapshot")))
+          .orElse(findAccessor(relation, Seq("snapshot")))
+          .orElse(
+            findAccessor(relation, Seq("deltaLog")).flatMap(dl => invokeNoArg(dl, "update")))
+      snapshot.exists { snap =>
+        // (a) Table-property configuration. Delta records enabled table features as
+        //     `delta.feature.<featureName> = supported` here, so it catches both deletion vectors
+        //     (also via `delta.enableDeletionVectors`) and catalog-managed / coordinated-commits
+        //     even when they don't surface in the pinned snapshot's protocol feature names.
+        val config: Map[String, String] = findAccessor(snap, Seq("metadata"))
+          .flatMap(m =>
+            findAccessor(m, Seq("configuration")).collect {
+              case sm: Map[_, _] => sm.asInstanceOf[Map[String, String]]
+              case jm: java.util.Map[_, _] =>
+                import scala.jdk.CollectionConverters._
+                jm.asInstanceOf[java.util.Map[String, String]].asScala.toMap
+            })
+          .getOrElse(Map.empty)
+        def isUnsupported(s: String): Boolean = {
+          val l = s.toLowerCase(java.util.Locale.ROOT)
+          l.contains("deletionvector") || l.contains("catalogowned") ||
+          l.contains("coordinatedcommits") || l.contains("commitcoordinator")
+        }
+        val dvEnabled =
+          config.getOrElse("delta.enableDeletionVectors", "false").equalsIgnoreCase("true")
+        val configFlags = config.keys.exists(isUnsupported)
+        // (b) Protocol reader/writer feature names (belt-and-braces with (a)).
+        val featureFlags = findAccessor(snap, Seq("protocol")).toSeq.flatMap { p =>
+          invokeNoArg(p, "readerAndWriterFeatureNames")
+            .collect {
+              case s: Set[_] => s.map(_.toString)
+              case it: Iterable[_] => it.map(_.toString).toSet
+            }
+            .getOrElse(Set.empty[String])
+        }.exists(isUnsupported)
+        dvEnabled || configFlags || featureFlags
+      }
+    } catch {
+      case scala.util.control.NonFatal(_) => false
+    }
+  }
+
+  /**
    * Convert a Delta partition value string to a Catalyst-internal representation. Delta stores
    * partition values as strings in add actions; this converts them to the correct type for
    * predicate evaluation.
