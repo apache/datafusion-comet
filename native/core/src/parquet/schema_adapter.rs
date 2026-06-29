@@ -645,6 +645,21 @@ impl SparkPhysicalExprAdapter {
             };
             let physical_type = input_field.data_type();
 
+            // Identity cast: DataFusion's default adapter inserts a CastExpr
+            // whenever the logical and physical Arrow Fields differ in any
+            // attribute (data type, nullability, or metadata), so with identical
+            // data types but mismatched nullability or metadata, we receive a
+            // no-op cast. Unwrapping is safe because Spark `Cast` with equal
+            // source and target types is value-level identity (it does not
+            // null-strip or enforce non-null), and field nullability/metadata is
+            // informational rather than computational. Leaving the wrapper in
+            // place blocks DataFusion's pruning-predicate analyzer from
+            // recognizing the column reference, defeating row-group / page-index
+            // stats pruning.
+            if physical_type == target_type {
+                return Ok(Transformed::yes(child));
+            }
+
             // Reject reading a string/binary Parquet column as anything else. Spark's
             // `ParquetVectorUpdaterFactory.getUpdater` BINARY case allows StringType /
             // BinaryType, or DecimalType only when the column carries a

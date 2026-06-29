@@ -36,7 +36,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
 import org.apache.comet.CometConf
-import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
+import org.apache.comet.CometSparkSessionExtensions.{withFallbackReason, withInfo}
 import org.apache.comet.expressions._
 import org.apache.comet.parquet.CometParquetUtils
 import org.apache.comet.serde.ExprOuterClass.{AggExpr, Expr, ScalarFunc}
@@ -664,7 +664,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
                   s"${CometConf.COMPAT_GUIDE}.")
               None
             }
-          case Compatible(notes) =>
+          case Compatible(notes, _) =>
             if (notes.isDefined) {
               logWarning(s"Comet supports $fn but has notes: ${notes.get}")
             }
@@ -787,8 +787,13 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
             // falls back to Spark. Falling back is also the result when the dispatcher cannot
             // handle the expression.
             val dispatched = handler match {
-              case _: CodegenDispatchFallback =>
-                CometScalaUDF.emitJvmCodegenDispatch(expr, inputs, binding)
+              case h: CodegenDispatchFallback =>
+                CometScalaUDF.emitJvmCodegenDispatch(expr, inputs, binding).map { proto =>
+                  val key = h.nativeOptInConfigKeyOverride
+                    .getOrElse(CometConf.getExprAllowIncompatConfigKey(exprConfName))
+                  withInfo(expr, NativeOptIn.message(exprConfName, key))
+                  proto
+                }
               case _ => None
             }
             dispatched.orElse {
@@ -801,9 +806,12 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
               None
             }
           }
-        case Compatible(notes) =>
+        case Compatible(notes, nativeOptIn) =>
           if (notes.isDefined) {
             logWarning(s"Comet supports $expr but has notes: ${notes.get}")
+          }
+          nativeOptIn.foreach { optIn =>
+            withInfo(expr, NativeOptIn.message(exprConfName, optIn.configKey))
           }
           handler.convert(expr, inputs, binding)
       }
