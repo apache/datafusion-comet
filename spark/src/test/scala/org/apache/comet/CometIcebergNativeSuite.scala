@@ -4013,9 +4013,9 @@ class CometIcebergNativeSuite
   test("CometScanRule should report unsupported metadata columns") {
     withTempIcebergDir { warehouseDir =>
       withSQLConf(
-        s"spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
-        s"spark.sql.catalog.test_cat.type" -> "hadoop",
-        s"spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
         CometConf.COMET_ENABLED.key -> "true",
         CometConf.COMET_EXEC_ENABLED.key -> "true",
         CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true",
