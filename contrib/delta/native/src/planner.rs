@@ -39,6 +39,10 @@ use crate::jni::delta_storage_config_from_map;
 use crate::kernel_scan::{DeltaKernelScanExec, KernelScanFile};
 use crate::proto::{DeltaScan, DeltaScanCommon};
 
+/// `(expression, output name)` pairs in the shape `ProjectionExec::try_new` expects. Named so the
+/// fallible collect below reads as one type rather than a four-level nested generic.
+type ProjectionExprs = Vec<(Arc<dyn PhysicalExpr>, String)>;
+
 /// Pre-parsed session timezone, computed once per scan and reused across every partition
 /// value parse. Avoids the per-row `chrono_tz::Tz::from_str` lookup
 /// `parse_delta_partition_scalar` would otherwise do for every TIMESTAMP partition value.
@@ -191,6 +195,181 @@ pub fn parse_delta_partition_scalar(
             }
         }
         _ => ScalarValue::try_from_string(s.to_string(), dt).map_err(|e| format!("{e}")),
+    }
+}
+
+/// Plan a Delta `DeltaScan` proto into its native `ExecutionPlan` (the kernel-read path).
+///
+/// All Delta-specific scan planning lives here so core stays Delta-free (#77): core's dispatcher
+/// computes `required_schema` / `partition_schema` (it owns the proto -> arrow schema converter) and
+/// wraps the returned exec in a `SparkPlan`; everything else is below.
+///
+/// Iceberg-style "kernel reads" is the only path: each Delta file is read through
+/// `DeltaKernelScanExec` (delta-kernel 0.24 / arrow-58).
+pub fn plan_delta_scan(
+    scan: &DeltaScan,
+    common: &DeltaScanCommon,
+    required_schema: &SchemaRef,
+    partition_schema: &SchemaRef,
+) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
+    // Split `required_schema` (data ++ partition, in order) by partition-column name: read the data
+    // fields from parquet, inject the partition fields as constants; the exec reassembles them.
+    let partition_names: std::collections::HashSet<&str> = partition_schema
+        .fields()
+        .iter()
+        .map(|f| f.name().as_str())
+        .collect();
+    let data_fields: Vec<_> = required_schema
+        .fields()
+        .iter()
+        .filter(|f| !partition_names.contains(f.name().as_str()))
+        .cloned()
+        .collect();
+    let partition_fields: Vec<_> = required_schema
+        .fields()
+        .iter()
+        .filter(|f| partition_names.contains(f.name().as_str()))
+        .cloned()
+        .collect();
+
+    // CDF read: the executor reconstructs TableChanges + execute()s the whole version range itself
+    // (single partition), so it ships no per-file tasks and uses no kernel data-column schemas.
+    let cdf: Option<(u64, Option<u64>)> = if common.cdf_read {
+        Some((common.cdf_start_version, common.cdf_end_version))
+    } else {
+        None
+    };
+
+    let (physical_schema, read_logical_schema, needs_transform): (SchemaRef, SchemaRef, bool) =
+        if cdf.is_some() || data_fields.is_empty() {
+            let empty: SchemaRef = Arc::new(Schema::empty());
+            (Arc::clone(&empty), empty, false)
+        } else if !common.kernel_physical_schema.is_empty() {
+            let decode = |bytes: &[u8], which: &str| -> Result<SchemaRef, DataFusionError> {
+                arrow::ipc::convert::try_schema_from_ipc_buffer(bytes)
+                    .map(Arc::new)
+                    .map_err(|e| {
+                        DataFusionError::Execution(format!("decode kernel {which} schema IPC: {e}"))
+                    })
+            };
+            let physical = decode(&common.kernel_physical_schema, "physical")?;
+            let logical = decode(&common.kernel_logical_schema, "logical")?;
+            // Column mapping is active iff physical names diverge from logical; only then relabel.
+            let needs_transform = physical
+                .fields()
+                .iter()
+                .zip(logical.fields().iter())
+                .any(|(p, l)| p.name() != l.name());
+            (physical, logical, needs_transform)
+        } else if common.synthesize_in_worker {
+            // kernel_physical_schema is empty but there ARE non-partition required columns, and the
+            // executor synthesises in-worker: every such column is a worker-produced synthetic or
+            // `_metadata.*` virtual column (e.g. `_metadata.file_name`) that the driver deliberately
+            // excluded from the kernel read schema -- NOT a parquet/kernel read. So there is nothing
+            // to read from kernel; the executor produces all output columns itself. (A genuine
+            // dropped-schema bug still errors below when synthesis is OFF.) Guards the
+            // `_metadata`-alias-on-a-table-with-a-colliding-real-column case.
+            let empty: SchemaRef = Arc::new(Schema::empty());
+            (Arc::clone(&empty), empty, false)
+        } else {
+            return Err(DataFusionError::Execution(format!(
+                "Delta kernel-read scan is missing kernel data-column schemas for {} data \
+                 column(s); the driver must ship scan.physical_schema()/logical_schema() \
+                 (planDeltaScan / planDeltaReadSchemas)",
+                data_fields.len()
+            )));
+        };
+
+    let output_schema: SchemaRef = Arc::clone(required_schema);
+    let partition_output_schema: SchemaRef = Arc::new(Schema::new(partition_fields));
+
+    let object_store_options: HashMap<String, String> = common
+        .object_store_options
+        .iter()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+
+    let files: Vec<KernelScanFile> = scan
+        .tasks
+        .iter()
+        .map(|t| KernelScanFile {
+            path: t.file_path.clone(),
+            size: t.file_size as i64,
+            record_count: t.record_count.map(|c| c as i64),
+            dv: t.dv.clone(),
+            partition_values: t
+                .partition_values
+                .iter()
+                .map(|pv| (pv.name.clone(), pv.value.clone()))
+                .collect(),
+            transform_json: t.transform_json.clone(),
+            base_row_id: t.base_row_id,
+            default_row_commit_version: t.default_row_commit_version,
+            modification_time: t.modification_time.unwrap_or(0),
+            byte_range_start: t.byte_range_start.map(|v| v as i64),
+            byte_range_end: t.byte_range_end.map(|v| v as i64),
+        })
+        .collect();
+
+    let table_root = if scan.table_root.is_empty() {
+        common.table_root.clone()
+    } else {
+        scan.table_root.clone()
+    };
+
+    // S3 bucket (URL host) for per-bucket credential resolution; None for non-S3.
+    let s3_bucket = url::Url::parse(&table_root)
+        .ok()
+        .filter(|u| matches!(u.scheme(), "s3" | "s3a"))
+        .and_then(|u| u.host_str().map(|h| h.to_string()));
+    let storage_config = delta_storage_config_from_map(&object_store_options, s3_bucket.as_deref());
+
+    // In-worker synthesis is the only native path (#82): DeltaKernelScanExec produces ALL output
+    // columns by name and applies the DV itself.
+    let synthesize = common.synthesize_in_worker;
+
+    let scan_exec: Arc<dyn ExecutionPlan> = Arc::new(DeltaKernelScanExec::new(
+        output_schema,
+        physical_schema,
+        read_logical_schema,
+        needs_transform,
+        true, // apply_dv: the kernel scan always applies the DV now
+        partition_output_schema,
+        common.session_timezone.clone(),
+        table_root.clone(),
+        storage_config.clone(),
+        common.dv_file_name_prefix.clone(),
+        files,
+        synthesize,
+        cdf,
+    ));
+
+    // Reorder to the user-visible layout when synthetics aren't already a suffix.
+    if common.final_output_indices.is_empty() {
+        Ok(scan_exec)
+    } else {
+        let wrapped_schema = scan_exec.schema();
+        let n = wrapped_schema.fields().len();
+        let projections: Result<ProjectionExprs, DataFusionError> = common
+            .final_output_indices
+            .iter()
+            .map(|idx| {
+                if *idx < 0 || (*idx as usize) >= n {
+                    return Err(DataFusionError::Execution(format!(
+                        "final_output_indices entry {idx} out of range \
+                         (wrapped schema has {n} fields)"
+                    )));
+                }
+                let field = wrapped_schema.field(*idx as usize);
+                let col: Arc<dyn PhysicalExpr> = Arc::new(Column::new(field.name(), *idx as usize));
+                Ok((col, field.name().clone()))
+            })
+            .collect();
+        Ok(Arc::new(
+            ProjectionExec::try_new(projections?, scan_exec).map_err(|e| {
+                DataFusionError::Execution(format!("final_output_indices ProjectionExec: {e}"))
+            })?,
+        ))
     }
 }
 
@@ -392,170 +571,5 @@ mod tests {
             }
             other => panic!("unexpected: {other:?}"),
         }
-    }
-}
-
-/// Plan a Delta `DeltaScan` proto into its native `ExecutionPlan` (the kernel-read path).
-///
-/// All Delta-specific scan planning lives here so core stays Delta-free (#77): core's dispatcher
-/// computes `required_schema` / `partition_schema` (it owns the proto -> arrow schema converter) and
-/// wraps the returned exec in a `SparkPlan`; everything else is below.
-///
-/// Iceberg-style "kernel reads" is the only path: each Delta file is read through
-/// `DeltaKernelScanExec` (delta-kernel 0.24 / arrow-58).
-pub fn plan_delta_scan(
-    scan: &DeltaScan,
-    common: &DeltaScanCommon,
-    required_schema: &SchemaRef,
-    partition_schema: &SchemaRef,
-) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
-    // Split `required_schema` (data ++ partition, in order) by partition-column name: read the data
-    // fields from parquet, inject the partition fields as constants; the exec reassembles them.
-    let partition_names: std::collections::HashSet<&str> = partition_schema
-        .fields()
-        .iter()
-        .map(|f| f.name().as_str())
-        .collect();
-    let data_fields: Vec<_> = required_schema
-        .fields()
-        .iter()
-        .filter(|f| !partition_names.contains(f.name().as_str()))
-        .cloned()
-        .collect();
-    let partition_fields: Vec<_> = required_schema
-        .fields()
-        .iter()
-        .filter(|f| partition_names.contains(f.name().as_str()))
-        .cloned()
-        .collect();
-
-    // CDF read: the executor reconstructs TableChanges + execute()s the whole version range itself
-    // (single partition), so it ships no per-file tasks and uses no kernel data-column schemas.
-    let cdf: Option<(u64, Option<u64>)> = if common.cdf_read {
-        Some((common.cdf_start_version, common.cdf_end_version))
-    } else {
-        None
-    };
-
-    let (physical_schema, read_logical_schema, needs_transform): (SchemaRef, SchemaRef, bool) =
-        if cdf.is_some() || data_fields.is_empty() {
-            let empty: SchemaRef = Arc::new(Schema::empty());
-            (Arc::clone(&empty), empty, false)
-        } else if !common.kernel_physical_schema.is_empty() {
-            let decode = |bytes: &[u8], which: &str| -> Result<SchemaRef, DataFusionError> {
-                arrow::ipc::convert::try_schema_from_ipc_buffer(bytes)
-                    .map(Arc::new)
-                    .map_err(|e| {
-                        DataFusionError::Execution(format!("decode kernel {which} schema IPC: {e}"))
-                    })
-            };
-            let physical = decode(&common.kernel_physical_schema, "physical")?;
-            let logical = decode(&common.kernel_logical_schema, "logical")?;
-            // Column mapping is active iff physical names diverge from logical; only then relabel.
-            let needs_transform = physical
-                .fields()
-                .iter()
-                .zip(logical.fields().iter())
-                .any(|(p, l)| p.name() != l.name());
-            (physical, logical, needs_transform)
-        } else {
-            return Err(DataFusionError::Execution(format!(
-                "Delta kernel-read scan is missing kernel data-column schemas for {} data \
-                 column(s); the driver must ship scan.physical_schema()/logical_schema() \
-                 (planDeltaScan / planDeltaReadSchemas)",
-                data_fields.len()
-            )));
-        };
-
-    let output_schema: SchemaRef = Arc::clone(required_schema);
-    let partition_output_schema: SchemaRef = Arc::new(Schema::new(partition_fields));
-
-    let object_store_options: HashMap<String, String> = common
-        .object_store_options
-        .iter()
-        .map(|(k, v)| (k.clone(), v.clone()))
-        .collect();
-
-    let files: Vec<KernelScanFile> = scan
-        .tasks
-        .iter()
-        .map(|t| KernelScanFile {
-            path: t.file_path.clone(),
-            size: t.file_size as i64,
-            record_count: t.record_count.map(|c| c as i64),
-            dv: t.dv.clone(),
-            partition_values: t
-                .partition_values
-                .iter()
-                .map(|pv| (pv.name.clone(), pv.value.clone()))
-                .collect(),
-            transform_json: t.transform_json.clone(),
-            base_row_id: t.base_row_id,
-            default_row_commit_version: t.default_row_commit_version,
-            modification_time: t.modification_time.unwrap_or(0),
-            byte_range_start: t.byte_range_start.map(|v| v as i64),
-            byte_range_end: t.byte_range_end.map(|v| v as i64),
-        })
-        .collect();
-
-    let table_root = if scan.table_root.is_empty() {
-        common.table_root.clone()
-    } else {
-        scan.table_root.clone()
-    };
-
-    // S3 bucket (URL host) for per-bucket credential resolution; None for non-S3.
-    let s3_bucket = url::Url::parse(&table_root)
-        .ok()
-        .filter(|u| matches!(u.scheme(), "s3" | "s3a"))
-        .and_then(|u| u.host_str().map(|h| h.to_string()));
-    let storage_config = delta_storage_config_from_map(&object_store_options, s3_bucket.as_deref());
-
-    // In-worker synthesis is the only native path (#82): DeltaKernelScanExec produces ALL output
-    // columns by name and applies the DV itself.
-    let synthesize = common.synthesize_in_worker;
-
-    let scan_exec: Arc<dyn ExecutionPlan> = Arc::new(DeltaKernelScanExec::new(
-        output_schema,
-        physical_schema,
-        read_logical_schema,
-        needs_transform,
-        true, // apply_dv: the kernel scan always applies the DV now
-        partition_output_schema,
-        common.session_timezone.clone(),
-        table_root.clone(),
-        storage_config.clone(),
-        common.dv_file_name_prefix.clone(),
-        files,
-        synthesize,
-        cdf,
-    ));
-
-    // Reorder to the user-visible layout when synthetics aren't already a suffix.
-    if common.final_output_indices.is_empty() {
-        Ok(scan_exec)
-    } else {
-        let wrapped_schema = scan_exec.schema();
-        let n = wrapped_schema.fields().len();
-        let projections: Result<Vec<(Arc<dyn PhysicalExpr>, String)>, DataFusionError> = common
-            .final_output_indices
-            .iter()
-            .map(|idx| {
-                if *idx < 0 || (*idx as usize) >= n {
-                    return Err(DataFusionError::Execution(format!(
-                        "final_output_indices entry {idx} out of range \
-                         (wrapped schema has {n} fields)"
-                    )));
-                }
-                let field = wrapped_schema.field(*idx as usize);
-                let col: Arc<dyn PhysicalExpr> = Arc::new(Column::new(field.name(), *idx as usize));
-                Ok((col, field.name().clone()))
-            })
-            .collect();
-        Ok(Arc::new(
-            ProjectionExec::try_new(projections?, scan_exec).map_err(|e| {
-                DataFusionError::Execution(format!("final_output_indices ProjectionExec: {e}"))
-            })?,
-        ))
     }
 }

@@ -149,7 +149,13 @@ pub fn read_file_via_kernel(
         let physical_data = physical_data?;
 
         // Physical -> logical: column mapping (incl. nested), partition injection, row-tracking.
-        // Kernel's expression evaluator does this; no Comet-side physicalisation.
+        // Kernel's expression evaluator does this; no Comet-side physicalisation. Kernel's evaluator
+        // labels its output columns POSITIONALLY against `logical_schema`, so the driver must ship
+        // `logical_schema` in kernel's per-file transform EMISSION order -- partition columns sit
+        // right after the last field that advances kernel's `last_physical_field` (everything except
+        // the RowId metadata column, which kernel resolves via GenerateRowId). The driver's
+        // `spliceKernelPartitions` guarantees that order; otherwise an Int32 partition literal and a
+        // Long row_id would land in each other's slots (#30 column swap).
         let logical = transform_to_logical(
             engine,
             physical_data,
