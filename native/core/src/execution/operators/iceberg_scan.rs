@@ -57,6 +57,14 @@ use iceberg::scan::FileScanTask;
 /// catalog's `s3.*` property bag.
 const ICEBERG_PROVIDER_CLASS_PROPERTY: &str = "s3.comet.credential.provider.class";
 
+/// A valid Parquet file ends with at least an 8-byte footer (4-byte metadata length + "PAR1").
+/// A delete file that stats below this cannot be read, so we reject it in the fill step. opendal
+/// returns size 0 from a successful HEAD whose response carries no Content-Length header (some
+/// S3-compatible endpoints/proxies, or a path-style mismatch), and for a genuinely empty object;
+/// neither errors at the stat layer, so without this floor the 0 would flow into the Parquet
+/// reader and surface as an opaque "file size of 0 is less than footer".
+const MIN_PARQUET_FILE_SIZE: u64 = 8;
+
 /// Iceberg table scan operator that uses iceberg-rust to read Iceberg tables.
 ///
 /// Executes pre-planned FileScanTasks for efficient parallel scanning.
@@ -305,6 +313,17 @@ impl IcebergScanExec {
                         .with_source(e)
                     })?
                     .size;
+                if size < MIN_PARQUET_FILE_SIZE {
+                    return Err(Error::new(
+                        ErrorKind::Unexpected,
+                        format!(
+                            "Delete file '{path}' statted to {size} bytes, below the \
+                             {MIN_PARQUET_FILE_SIZE}-byte Parquet minimum. The object is empty or \
+                             truncated, or the stat returned no Content-Length (check the object \
+                             store endpoint, TLS, and path-style config)."
+                        ),
+                    ));
+                }
                 Ok::<(String, u64), Error>((path, size))
             }
         }))
@@ -680,6 +699,25 @@ mod tests {
             .unwrap();
 
         assert_eq!(tasks[0].deletes[0].file_size_in_bytes, bytes.len() as u64);
+    }
+
+    // A present-but-undersized delete file (0-byte object, truncated write, or a HEAD with no
+    // Content-Length that opendal reports as size 0) must fail loudly rather than passing a
+    // sub-footer size into the Parquet reader.
+    #[tokio::test]
+    async fn fill_delete_file_sizes_errors_on_subfooter_delete_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("empty-delete.parquet");
+        std::fs::File::create(&path).unwrap(); // 0 bytes on disk
+
+        let mut tasks = vec![task_with_deletes(vec![delete_file(path.to_str().unwrap())])];
+        let result = IcebergScanExec::fill_delete_file_sizes(&mut tasks, &fs_file_io(), 4).await;
+
+        assert!(
+            result.is_err(),
+            "expected an error when a delete file is below the Parquet footer minimum"
+        );
+        assert_eq!(tasks[0].deletes[0].file_size_in_bytes, 0);
     }
 
     // No deletes means no stats and no error.
