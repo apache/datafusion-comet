@@ -178,9 +178,10 @@ impl IcebergScanExec {
         // iceberg runtime alongside the reads, not on the calling executor thread (see
         // fill_delete_file_sizes).
         let fill_io = file_io.clone();
+        let concurrency_limit = self.data_file_concurrency_limit;
         let task_stream = futures::stream::once(async move {
             let mut tasks = tasks;
-            Self::fill_delete_file_sizes(&mut tasks, &fill_io).await?;
+            Self::fill_delete_file_sizes(&mut tasks, &fill_io, concurrency_limit).await?;
             Ok::<_, Error>(futures::stream::iter(tasks.into_iter().map(Ok::<_, Error>)))
         })
         .try_flatten()
@@ -261,8 +262,10 @@ impl IcebergScanExec {
     async fn fill_delete_file_sizes(
         tasks: &mut [FileScanTask],
         file_io: &FileIO,
+        concurrency_limit: usize,
     ) -> Result<(), Error> {
         use datafusion::common::{HashMap, HashSet};
+        use futures::TryStreamExt;
 
         // Dedup: the JVM pools delete-file lists, not individual files, so the same delete file
         // recurs across the tasks that share it. Owning the paths also avoids holding a borrow of
@@ -281,7 +284,13 @@ impl IcebergScanExec {
             return Ok(());
         }
 
-        let sizes = futures::future::try_join_all(needed.into_iter().map(|path| {
+        // Bound the in-flight stats to match the downstream read concurrency (iceberg-rust uses
+        // try_buffer_unordered at the same limit for delete-file loads). An unbounded fan-out
+        // would burst N HEAD requests at once for no gain, since the reads are throttled anyway.
+        // Guaranteed > 0 by COMET_ICEBERG_DATA_FILE_CONCURRENCY_LIMIT; buffer_unordered(0) would
+        // never poll.
+        debug_assert!(concurrency_limit > 0);
+        let sizes: Vec<(String, u64)> = futures::stream::iter(needed.into_iter().map(|path| {
             let file_io = file_io.clone();
             async move {
                 let size = file_io
@@ -299,6 +308,8 @@ impl IcebergScanExec {
                 Ok::<(String, u64), Error>((path, size))
             }
         }))
+        .buffer_unordered(concurrency_limit)
+        .try_collect()
         .await?;
 
         let size_map: HashMap<String, u64> = sizes.into_iter().collect();
@@ -644,7 +655,7 @@ mod tests {
             missing.to_str().unwrap(),
         )])];
 
-        let result = IcebergScanExec::fill_delete_file_sizes(&mut tasks, &fs_file_io()).await;
+        let result = IcebergScanExec::fill_delete_file_sizes(&mut tasks, &fs_file_io(), 4).await;
 
         assert!(
             result.is_err(),
@@ -664,7 +675,7 @@ mod tests {
         f.flush().unwrap();
 
         let mut tasks = vec![task_with_deletes(vec![delete_file(path.to_str().unwrap())])];
-        IcebergScanExec::fill_delete_file_sizes(&mut tasks, &fs_file_io())
+        IcebergScanExec::fill_delete_file_sizes(&mut tasks, &fs_file_io(), 4)
             .await
             .unwrap();
 
@@ -675,7 +686,7 @@ mod tests {
     #[tokio::test]
     async fn fill_delete_file_sizes_noop_without_deletes() {
         let mut tasks = vec![task_with_deletes(vec![])];
-        IcebergScanExec::fill_delete_file_sizes(&mut tasks, &fs_file_io())
+        IcebergScanExec::fill_delete_file_sizes(&mut tasks, &fs_file_io(), 4)
             .await
             .unwrap();
     }

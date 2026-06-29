@@ -37,7 +37,7 @@ import org.apache.spark.sql.execution.exchange.{ReusedExchangeExec, ShuffleExcha
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{StringType, TimestampType}
 
-import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark42Plus}
+import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus, isSpark42Plus}
 import org.apache.comet.iceberg.RESTCatalogHelper
 import org.apache.comet.testing.{FuzzDataGenerator, SchemaGenOptions}
 
@@ -701,6 +701,9 @@ class CometIcebergNativeSuite
   // size fill over a multi-snapshot, post-compaction delete layout.
   test("MOR positional deletes after rewrite_data_files compaction") {
     assume(icebergAvailable, "Iceberg not available in classpath")
+    // CALL <proc> is only in Spark's own SQL grammar on 4.0+; on 3.x it needs Iceberg's
+    // session-extension parser, which the Comet test session does not register.
+    assume(isSpark40Plus, "CALL procedure syntax requires Spark 4.0+")
 
     withTempIcebergDir { warehouseDir =>
       withSQLConf(
