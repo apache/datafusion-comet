@@ -168,6 +168,13 @@ impl IcebergScanExec {
             &self.metadata_location,
             &self.catalog_name,
         )?;
+
+        // The JVM serializer leaves delete-file sizes as 0 (it cannot reliably stat them with the
+        // FileIO it reconstructs). iceberg-rust needs the true size to locate each delete file's
+        // Parquet footer, so fill them here with the same FileIO the reader uses, before reading.
+        let mut tasks = tasks;
+        get_runtime().block_on(Self::fill_delete_file_sizes(&mut tasks, &file_io))?;
+
         let batch_size = context.session_config().batch_size();
 
         let metrics = IcebergScanMetrics::new(&self.metrics);
@@ -241,6 +248,77 @@ impl IcebergScanExec {
                 "Unsupported storage scheme: {scheme}"
             ))),
         }
+    }
+
+    /// Populates delete-file sizes that the JVM serializer left as 0.
+    ///
+    /// iceberg-rust uses `file_size_in_bytes` to seek the Parquet footer of each delete file, so a
+    /// 0 (or otherwise wrong) value makes metadata loading fail. We do not size delete files on the
+    /// JVM side because the FileIO reconstructed there may not resolve every delete path (e.g.
+    /// Trino-written tables on S3); see CometIcebergNativeScan.scala. Instead we stat each unique
+    /// delete file here, in parallel, with the same FileIO the reader uses.
+    ///
+    /// A stat failure is fatal: applying only some deletes would silently leak deleted rows, so we
+    /// propagate the error rather than read with missing deletes.
+    async fn fill_delete_file_sizes(
+        tasks: &mut [FileScanTask],
+        file_io: &FileIO,
+    ) -> Result<(), DataFusionError> {
+        use datafusion::common::{HashMap, HashSet};
+
+        // Unique delete-file paths still missing a size. Deduplicate so a delete file shared by
+        // many tasks is statted once. Owns the paths so no borrow of `tasks` is held into the
+        // mutable write-back below.
+        let mut needed: HashSet<String> = HashSet::new();
+        for task in tasks.iter() {
+            for delete in &task.deletes {
+                if delete.file_size_in_bytes == 0 {
+                    needed.insert(delete.file_path.clone());
+                }
+            }
+        }
+        if needed.is_empty() {
+            return Ok(());
+        }
+
+        let sizes = futures::future::try_join_all(needed.into_iter().map(|path| {
+            let file_io = file_io.clone();
+            async move {
+                let size = file_io
+                    .new_input(&path)
+                    .map_err(|e| {
+                        DataFusionError::Execution(format!(
+                            "Failed to open delete file '{path}' to read its size: {e}"
+                        ))
+                    })?
+                    .metadata()
+                    .await
+                    .map_err(|e| {
+                        DataFusionError::Execution(format!(
+                            "Failed to stat delete file '{path}' to read its size: {e}"
+                        ))
+                    })?
+                    .size;
+                Ok::<(String, u64), DataFusionError>((path, size))
+            }
+        }))
+        .await?;
+
+        let size_map: HashMap<String, u64> = sizes.into_iter().collect();
+        for task in tasks.iter_mut() {
+            for delete in task.deletes.iter_mut() {
+                if delete.file_size_in_bytes == 0 {
+                    delete.file_size_in_bytes =
+                        *size_map.get(&delete.file_path).ok_or_else(|| {
+                            DataFusionError::Execution(format!(
+                                "Missing computed size for delete file '{}'",
+                                delete.file_path
+                            ))
+                        })?;
+                }
+            }
+        }
+        Ok(())
     }
 
     fn load_file_io(
@@ -519,4 +597,99 @@ fn adapt_batch_with_expressions(
         .collect::<DFResult<Vec<_>>>()?;
 
     RecordBatch::try_new(Arc::clone(target_schema), columns).map_err(|e| e.into())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Write;
+    use std::sync::Arc;
+
+    use iceberg::io::{FileIO, FileIOBuilder};
+    use iceberg::scan::{FileScanTask, FileScanTaskDeleteFile};
+    use iceberg::spec::{DataContentType, DataFileFormat, Schema};
+    use iceberg_storage_opendal::OpenDalStorageFactory;
+
+    use super::IcebergScanExec;
+
+    fn fs_file_io() -> FileIO {
+        FileIOBuilder::new(Arc::new(OpenDalStorageFactory::Fs)).build()
+    }
+
+    fn task_with_deletes(deletes: Vec<FileScanTaskDeleteFile>) -> FileScanTask {
+        FileScanTask {
+            file_size_in_bytes: 0,
+            start: 0,
+            length: 0,
+            record_count: None,
+            data_file_path: "data.parquet".to_string(),
+            data_file_format: DataFileFormat::Parquet,
+            schema: Arc::new(Schema::builder().build().unwrap()),
+            project_field_ids: vec![],
+            predicate: None,
+            deletes,
+            partition: None,
+            partition_spec: None,
+            name_mapping: None,
+            case_sensitive: false,
+        }
+    }
+
+    fn delete_file(path: &str) -> FileScanTaskDeleteFile {
+        FileScanTaskDeleteFile {
+            file_path: path.to_string(),
+            file_type: DataContentType::PositionDeletes,
+            file_size_in_bytes: 0,
+            partition_spec_id: 0,
+            equality_ids: None,
+        }
+    }
+
+    // A delete file we cannot stat must fail the scan, not be silently read with a missing/0 size.
+    // That silent drop is the #4723 corruption: deleted rows would leak through.
+    #[tokio::test]
+    async fn fill_delete_file_sizes_errors_on_unreadable_delete_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("missing-delete.parquet");
+        let mut tasks = vec![task_with_deletes(vec![delete_file(
+            missing.to_str().unwrap(),
+        )])];
+
+        let result = IcebergScanExec::fill_delete_file_sizes(&mut tasks, &fs_file_io()).await;
+
+        assert!(
+            result.is_err(),
+            "expected an error when a delete file cannot be statted"
+        );
+        assert_eq!(tasks[0].deletes[0].file_size_in_bytes, 0);
+    }
+
+    // The real on-disk size is filled in from the FileIO, replacing the 0 placeholder.
+    #[tokio::test]
+    async fn fill_delete_file_sizes_populates_real_size() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("delete.parquet");
+        let bytes = b"these bytes stand in for a delete file";
+        let mut f = std::fs::File::create(&path).unwrap();
+        f.write_all(bytes).unwrap();
+        f.flush().unwrap();
+
+        let mut tasks = vec![task_with_deletes(vec![delete_file(path.to_str().unwrap())])];
+        IcebergScanExec::fill_delete_file_sizes(&mut tasks, &fs_file_io())
+            .await
+            .unwrap();
+
+        assert_eq!(
+            tasks[0].deletes[0].file_size_in_bytes,
+            bytes.len() as u64
+        );
+    }
+
+    // No deletes means no stats and no error.
+    #[tokio::test]
+    async fn fill_delete_file_sizes_noop_without_deletes() {
+        let mut tasks = vec![task_with_deletes(vec![])];
+        IcebergScanExec::fill_delete_file_sizes(&mut tasks, &fs_file_io())
+            .await
+            .unwrap();
+    }
 }

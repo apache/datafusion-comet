@@ -20,6 +20,7 @@
 package org.apache.comet
 
 import java.io.File
+import java.net.URI
 
 import scala.collection.mutable
 import scala.jdk.CollectionConverters._
@@ -691,6 +692,130 @@ class CometIcebergNativeSuite
         checkIcebergNativeScan("SELECT * FROM test_cat.db.multi_delete_test ORDER BY id")
 
         spark.sql("DROP TABLE test_cat.db.multi_delete_test")
+      }
+    }
+  }
+
+  // MOR positional deletes accumulated across multiple snapshots, then compacted with
+  // rewrite_data_files (the equivalent of Trino's OPTIMIZE). Exercises the native delete-file
+  // size fill over a multi-snapshot, post-compaction delete layout.
+  test("MOR positional deletes after rewrite_data_files compaction") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        spark.sql("""
+          CREATE TABLE test_cat.db.compacted_delete_test (
+            id INT,
+            value DOUBLE
+          ) USING iceberg
+          TBLPROPERTIES (
+            'write.delete.mode' = 'merge-on-read',
+            'write.merge.mode' = 'merge-on-read',
+            'format-version' = '2'
+          )
+        """)
+
+        // Build a multi-snapshot history: several inserts into separate data files,
+        // interleaved with deletes that produce positional delete files.
+        (0 until 5).foreach { batch =>
+          val lo = batch * 100
+          val hi = lo + 100
+          spark.sql(s"""
+            INSERT INTO test_cat.db.compacted_delete_test
+            SELECT id, CAST(id AS DOUBLE) * 1.5 AS value
+            FROM range($lo, $hi)
+          """)
+          spark.sql(
+            s"DELETE FROM test_cat.db.compacted_delete_test WHERE id % 7 = 0 AND id >= $lo AND id < $hi")
+        }
+
+        // Compaction equivalent to Trino's OPTIMIZE. This rewrites data files and can rewrite or
+        // re-reference position delete files, which is where the reporter's serialization fails.
+        spark.sql("CALL test_cat.system.rewrite_data_files(table => 'db.compacted_delete_test')")
+
+        // More deletes after compaction so the live snapshot mixes pre- and post-compaction deletes.
+        spark.sql("DELETE FROM test_cat.db.compacted_delete_test WHERE id % 13 = 0")
+
+        checkIcebergNativeScan("SELECT * FROM test_cat.db.compacted_delete_test ORDER BY id")
+        checkIcebergNativeScan("SELECT COUNT(*) FROM test_cat.db.compacted_delete_test")
+        checkIcebergNativeScan("SELECT SUM(value) FROM test_cat.db.compacted_delete_test")
+
+        spark.sql("DROP TABLE test_cat.db.compacted_delete_test")
+      }
+    }
+  }
+
+  // When a delete file cannot be statted natively, the scan must fail loudly rather than read the
+  // data file with deletes silently dropped (the #4723 corruption). Here we delete the positional
+  // delete file from disk after it is committed, so the native fill_delete_file_sizes stat fails.
+  // The printed exception shows how a delete-file stat failure surfaces through JNI to Spark.
+  test("delete file stat failure surfaces as an exception") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        spark.sql("""
+          CREATE TABLE test_cat.db.missing_delete_test (
+            id INT,
+            value DOUBLE
+          ) USING iceberg
+          TBLPROPERTIES (
+            'write.delete.mode' = 'merge-on-read',
+            'write.merge.mode' = 'merge-on-read',
+            'format-version' = '2'
+          )
+        """)
+
+        spark.sql("""
+          INSERT INTO test_cat.db.missing_delete_test
+          SELECT id, CAST(id AS DOUBLE) FROM range(20)
+        """)
+        spark.sql("DELETE FROM test_cat.db.missing_delete_test WHERE id IN (3, 7, 11)")
+
+        // Authoritative delete file paths from Iceberg's metadata table (Comet falls back to
+        // Spark for metadata tables, so this read does not depend on the native scan).
+        val deletePaths = spark
+          .sql("SELECT file_path FROM test_cat.db.missing_delete_test.delete_files")
+          .collect()
+          .map(_.getString(0))
+        assert(deletePaths.nonEmpty, "expected at least one positional delete file")
+
+        deletePaths.foreach { p =>
+          val local = if (p.contains(":")) new File(new URI(p)) else new File(p)
+          assert(local.delete(), s"failed to remove delete file from disk: $p")
+        }
+
+        // If deletes were silently dropped (the #4723 bug), COUNT(*) would return a wrong count
+        // with no error and this intercept would fail. The fill must fail the scan instead.
+        val e = intercept[Exception] {
+          spark.sql("SELECT COUNT(*) FROM test_cat.db.missing_delete_test").collect()
+        }
+
+        println(e)
+
+        // Surface the full cause chain so we can see how the native error is wrapped.
+        var cause: Throwable = e
+        while (cause != null) {
+          logInfo(s"delete-stat failure [${cause.getClass.getName}]: ${cause.getMessage}")
+          cause = cause.getCause
+        }
+
+        spark.sql("DROP TABLE test_cat.db.missing_delete_test")
       }
     }
   }

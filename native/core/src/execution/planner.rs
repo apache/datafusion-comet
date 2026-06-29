@@ -3635,6 +3635,15 @@ fn parse_file_scan_tasks_from_common(
                         }
                     };
 
+                    // The JVM serializer intentionally leaves delete-file sizes unset; the real
+                    // size is filled in natively (see IcebergScanExec::fill_delete_file_sizes).
+                    // Assert the invariant so a future change that starts sending a size is caught.
+                    debug_assert_eq!(
+                        del.file_size_in_bytes, 0,
+                        "expected JVM to leave delete file size as 0, got {} for {}",
+                        del.file_size_in_bytes, del.file_path
+                    );
+
                     Ok(iceberg::scan::FileScanTaskDeleteFile {
                         file_path: del.file_path.clone(),
                         file_type,
