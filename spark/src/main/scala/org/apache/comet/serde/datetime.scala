@@ -200,24 +200,7 @@ object CometQuarter extends CometExpressionSerde[Quarter] with CometExprGetDateF
   }
 }
 
-private object TimeFieldSerde {
-  val timestampNtzIncompatReason: String =
-    "Incorrectly applies timezone conversion to TimestampNTZ inputs" +
-      " (https://github.com/apache/datafusion-comet/issues/3180)"
-
-  def supportLevelForChild(childType: DataType): SupportLevel = childType match {
-    case TimestampNTZType => Incompatible(Some(timestampNtzIncompatReason))
-    case _ => Compatible()
-  }
-}
-
-object CometHour extends CometExpressionSerde[Hour] with CodegenDispatchFallback {
-
-  override def getIncompatibleReasons(): Seq[String] =
-    Seq(TimeFieldSerde.timestampNtzIncompatReason)
-
-  override def getSupportLevel(expr: Hour): SupportLevel =
-    TimeFieldSerde.supportLevelForChild(expr.child.dataType)
+object CometHour extends CometExpressionSerde[Hour] {
 
   override def convert(
       expr: Hour,
@@ -244,13 +227,7 @@ object CometHour extends CometExpressionSerde[Hour] with CodegenDispatchFallback
   }
 }
 
-object CometMinute extends CometExpressionSerde[Minute] with CodegenDispatchFallback {
-
-  override def getIncompatibleReasons(): Seq[String] =
-    Seq(TimeFieldSerde.timestampNtzIncompatReason)
-
-  override def getSupportLevel(expr: Minute): SupportLevel =
-    TimeFieldSerde.supportLevelForChild(expr.child.dataType)
+object CometMinute extends CometExpressionSerde[Minute] {
 
   override def convert(
       expr: Minute,
@@ -277,13 +254,7 @@ object CometMinute extends CometExpressionSerde[Minute] with CodegenDispatchFall
   }
 }
 
-object CometSecond extends CometExpressionSerde[Second] with CodegenDispatchFallback {
-
-  override def getIncompatibleReasons(): Seq[String] =
-    Seq(TimeFieldSerde.timestampNtzIncompatReason)
-
-  override def getSupportLevel(expr: Second): SupportLevel =
-    TimeFieldSerde.supportLevelForChild(expr.child.dataType)
+object CometSecond extends CometExpressionSerde[Second] {
 
   override def convert(
       expr: Second,
