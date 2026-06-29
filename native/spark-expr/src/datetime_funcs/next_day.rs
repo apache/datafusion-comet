@@ -17,12 +17,13 @@
 
 use arrow::array::{Array, Date32Array, StringArray};
 use arrow::compute::cast;
-use arrow::datatypes::{DataType, Date32Type};
-use chrono::{Datelike, Duration, Weekday};
+use arrow::datatypes::DataType;
 use datafusion::common::{utils::take_function_args, DataFusionError, Result};
 use datafusion::logical_expr::{
     ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility,
 };
+use jiff::civil::{Date, Weekday};
+use jiff::ToSpan;
 use std::sync::Arc;
 
 /// Spark-compatible `next_day(start_date, day_of_week)` function.
@@ -54,17 +55,27 @@ impl Default for SparkNextDay {
     }
 }
 
+/// 1970-01-01, the anchor used to convert Arrow Date32 epoch-day values into jiff civil dates.
+/// jiff deliberately keeps its epoch-day conversion private, so we add a day span to this anchor.
+const UNIX_EPOCH: Date = Date::constant(1970, 1, 1);
+
+/// Convert an Arrow Date32 value (days since the Unix epoch) into a jiff [`Date`]. Returns None if
+/// the value falls outside jiff's supported range (years -9999..=9999).
+fn date_from_epoch_day(days: i32) -> Option<Date> {
+    UNIX_EPOCH.checked_add(days.days()).ok()
+}
+
 /// Match a day-of-week name to a [`Weekday`]. Mirrors Spark's
 /// `DateTimeUtils.getDayOfWeekFromString`: case-insensitive, but with no whitespace trimming.
 fn day_of_week_from_string(day_of_week: &str) -> Option<Weekday> {
     match day_of_week.to_uppercase().as_str() {
-        "SU" | "SUN" | "SUNDAY" => Some(Weekday::Sun),
-        "MO" | "MON" | "MONDAY" => Some(Weekday::Mon),
-        "TU" | "TUE" | "TUESDAY" => Some(Weekday::Tue),
-        "WE" | "WED" | "WEDNESDAY" => Some(Weekday::Wed),
-        "TH" | "THU" | "THURSDAY" => Some(Weekday::Thu),
-        "FR" | "FRI" | "FRIDAY" => Some(Weekday::Fri),
-        "SA" | "SAT" | "SATURDAY" => Some(Weekday::Sat),
+        "SU" | "SUN" | "SUNDAY" => Some(Weekday::Sunday),
+        "MO" | "MON" | "MONDAY" => Some(Weekday::Monday),
+        "TU" | "TUE" | "TUESDAY" => Some(Weekday::Tuesday),
+        "WE" | "WED" | "WEDNESDAY" => Some(Weekday::Wednesday),
+        "TH" | "THU" | "THURSDAY" => Some(Weekday::Thursday),
+        "FR" | "FRI" | "FRIDAY" => Some(Weekday::Friday),
+        "SA" | "SAT" | "SATURDAY" => Some(Weekday::Saturday),
         _ => None,
     }
 }
@@ -72,10 +83,14 @@ fn day_of_week_from_string(day_of_week: &str) -> Option<Weekday> {
 /// The first date strictly after `days` (days since the Unix epoch) that falls on `weekday`.
 /// Equivalent to Spark's `DateTimeUtils.getNextDateForDayOfWeek` (a same-weekday start advances a
 /// full week). Returns None only if `days` is not a representable date.
+///
+/// jiff's `Weekday::since` matches chrono's `Weekday::days_since`, so `advance` lands in 1..=7. The
+/// result is simply `days + advance`: adding N calendar days to epoch-day D yields epoch-day D + N,
+/// so no conversion back from [`Date`] to epoch-day is needed.
 fn next_date_for_day_of_week(days: i32, weekday: Weekday) -> Option<i32> {
-    let date = Date32Type::to_naive_date_opt(days)?;
-    let advance = 7 - date.weekday().days_since(weekday) as i64;
-    Some(Date32Type::from_naive_date(date + Duration::days(advance)))
+    let date = date_from_epoch_day(days)?;
+    let advance = 7 - date.weekday().since(weekday) as i32;
+    days.checked_add(advance)
 }
 
 impl ScalarUDFImpl for SparkNextDay {
@@ -163,12 +178,14 @@ impl ScalarUDFImpl for SparkNextDay {
 mod tests {
     use super::*;
 
+    use jiff::civil::date;
+
     #[test]
     fn test_day_of_week_from_string_no_trim() {
         // Recognised names match case-insensitively.
-        assert_eq!(day_of_week_from_string("mon"), Some(Weekday::Mon));
-        assert_eq!(day_of_week_from_string("MONDAY"), Some(Weekday::Mon));
-        assert_eq!(day_of_week_from_string("Su"), Some(Weekday::Sun));
+        assert_eq!(day_of_week_from_string("mon"), Some(Weekday::Monday));
+        assert_eq!(day_of_week_from_string("MONDAY"), Some(Weekday::Monday));
+        assert_eq!(day_of_week_from_string("Su"), Some(Weekday::Sunday));
         // Surrounding whitespace is NOT trimmed (Spark does not trim).
         assert_eq!(day_of_week_from_string(" MO "), None);
         assert_eq!(day_of_week_from_string("MO "), None);
@@ -177,20 +194,21 @@ mod tests {
     }
 
     #[test]
+    fn test_date_from_epoch_day() {
+        // 2024-01-01 is epoch day 19723.
+        assert_eq!(date_from_epoch_day(19723), Some(date(2024, 1, 1)));
+        assert_eq!(date_from_epoch_day(0), Some(date(1970, 1, 1)));
+        assert_eq!(date_from_epoch_day(-1), Some(date(1969, 12, 31)));
+    }
+
+    #[test]
     fn test_next_date_for_day_of_week() {
-        // 2024-01-01 is a Monday (epoch day 19723). Next Monday is 7 days later.
-        let monday =
-            Date32Type::from_naive_date(chrono::NaiveDate::from_ymd_opt(2024, 1, 1).unwrap());
-        let next_mon = next_date_for_day_of_week(monday, Weekday::Mon).unwrap();
-        assert_eq!(
-            Date32Type::to_naive_date_opt(next_mon).unwrap(),
-            chrono::NaiveDate::from_ymd_opt(2024, 1, 8).unwrap()
-        );
+        // 2024-01-01 is a Monday (epoch day 19723). Next Monday is 7 days later (19730).
+        let monday = 19723;
+        let next_mon = next_date_for_day_of_week(monday, Weekday::Monday).unwrap();
+        assert_eq!(date_from_epoch_day(next_mon).unwrap(), date(2024, 1, 8));
         // Next Tuesday after a Monday is the following day.
-        let next_tue = next_date_for_day_of_week(monday, Weekday::Tue).unwrap();
-        assert_eq!(
-            Date32Type::to_naive_date_opt(next_tue).unwrap(),
-            chrono::NaiveDate::from_ymd_opt(2024, 1, 2).unwrap()
-        );
+        let next_tue = next_date_for_day_of_week(monday, Weekday::Tuesday).unwrap();
+        assert_eq!(date_from_epoch_day(next_tue).unwrap(), date(2024, 1, 2));
     }
 }
