@@ -185,7 +185,7 @@ diff --git a/spark/src/test/scala/org/apache/spark/sql/delta/test/ScanReportHelp
 index e7c4b90..32246a2 100644
 --- a/spark/src/test/scala/org/apache/spark/sql/delta/test/ScanReportHelper.scala
 +++ b/spark/src/test/scala/org/apache/spark/sql/delta/test/ScanReportHelper.scala
-@@ -44,6 +44,11 @@ trait ScanReportHelper extends SharedSparkSession with AdaptiveSparkPlanHelper {
+@@ -44,6 +44,16 @@ trait ScanReportHelper extends SharedSparkSession with AdaptiveSparkPlanHelper {
      collectWithSubqueries(plan)({
        case fs: FileSourceScanExec => Seq(fs)
        case cached: InMemoryTableScanExec => collectScans(cached.relation.cacheBuilder.cachedPlan)
@@ -194,6 +194,11 @@ index e7c4b90..32246a2 100644
 +      // list and fail with `MatchError: ArrayBuffer()`.
 +      case c: org.apache.spark.sql.comet.CometScanExec => Seq(c.wrapped)
 +      case c: org.apache.spark.sql.comet.CometDeltaNativeScanExec => Seq(c.originalPlan)
++      // Comet regression: a declined native Delta scan (e.g. catalog-managed tables) keeps
++      // the `CometDeltaScanMarker` under AQE-off, delegating to the wrapped vanilla
++      // `originalScan`. Unwrap it so the scan report reflects the real Delta scan (its
++      // `PreparedDeltaFileIndex` carries the data-skipping / limit-pushdown info this asserts on).
++      case c: org.apache.spark.sql.comet.CometDeltaScanMarker => Seq(c.originalScan)
      }).flatten
    }
  
@@ -218,7 +223,7 @@ index 93c7da9..755fae9 100644
 diff --git a/spark/src/test/scala/org/apache/spark/sql/delta/DeltaSuite.scala b/spark/src/test/scala/org/apache/spark/sql/delta/DeltaSuite.scala
 --- a/spark/src/test/scala/org/apache/spark/sql/delta/DeltaSuite.scala
 +++ b/spark/src/test/scala/org/apache/spark/sql/delta/DeltaSuite.scala
-@@ -118,6 +118,11 @@
+@@ -118,6 +118,17 @@
        val query = spark.read.format("delta").load(testPath).where("part = 1")
        val fileScans = query.queryExecution.executedPlan.collect {
          case f: FileSourceScanExec => f
@@ -227,6 +232,12 @@ diff --git a/spark/src/test/scala/org/apache/spark/sql/delta/DeltaSuite.scala b/
 +        // post-pruning task count so this assertion exercises the same partition-skip
 +        // semantics from the Comet path.
 +        case c: org.apache.spark.sql.comet.CometDeltaNativeScanExec => c
++        // Comet regression: when the contrib's native scan declines (e.g. catalog-managed
++        // tables, which kernel can't load without max_catalog_version), the AQE-off plan
++        // keeps the `CometDeltaScanMarker`, a LeafExecNode that delegates execution to the
++        // wrapped vanilla `originalScan`. Unwrap it so this partition-skip assertion reads
++        // the real Delta scan's `numFiles` (same as the TestsStatistics helper does).
++        case m: org.apache.spark.sql.comet.CometDeltaScanMarker => m.originalScan
        }
  
        // Force the query to read files and generate metrics
