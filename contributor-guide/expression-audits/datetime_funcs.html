@@ -580,7 +580,7 @@ under the License.
 <li><p>Spark 3.4.3 (audited 2026-05-12): identical to 3.5.8.</p></li>
 <li><p>Spark 3.5.8 (audited 2026-05-12): baseline.</p></li>
 <li><p>Spark 4.0.1 (audited 2026-05-12): <code class="docutils literal notranslate"><span class="pre">inputTypes</span></code> widened to <code class="docutils literal notranslate"><span class="pre">StringTypeWithCollation</span></code>; behaviour unchanged for ASCII timezone strings.</p></li>
-<li><p>Known divergence: Comet’s native timezone parser does not accept Spark’s legacy zone forms (<code class="docutils literal notranslate"><span class="pre">GMT+1</span></code>, <code class="docutils literal notranslate"><span class="pre">UTC+1</span></code>, three-letter abbreviations like <code class="docutils literal notranslate"><span class="pre">PST</span></code>). Such timezones throw a native parse error at execution.</p></li>
+<li><p>Marked <code class="docutils literal notranslate"><span class="pre">Incompatible</span></code>: Comet’s native timezone parser only accepts IANA zone IDs (e.g. <code class="docutils literal notranslate"><span class="pre">America/Los_Angeles</span></code>) and fixed <code class="docutils literal notranslate"><span class="pre">+HH:MM</span></code> offsets, while Spark also accepts legacy forms (<code class="docutils literal notranslate"><span class="pre">GMT+1</span></code>, <code class="docutils literal notranslate"><span class="pre">UTC+1</span></code>, three-letter abbreviations like <code class="docutils literal notranslate"><span class="pre">PST</span></code>). By default it runs through the codegen dispatcher (Spark-correct) and uses the native path only when incompatible expressions are explicitly allowed, where legacy zone forms throw a native parse error at execution (https://github.com/apache/datafusion-comet/issues/2013).</p></li>
 </ul>
 </section>
 <section id="make-timestamp-ltz">
@@ -637,13 +637,13 @@ under the License.
 <li><p>Spark 3.4.3 (audited 2026-05-12): identical to 3.5.8.</p></li>
 <li><p>Spark 3.5.8 (audited 2026-05-12): baseline.</p></li>
 <li><p>Spark 4.0.1 (audited 2026-05-12): <code class="docutils literal notranslate"><span class="pre">inputTypes</span></code> widened to <code class="docutils literal notranslate"><span class="pre">StringTypeWithCollation</span></code>; behaviour unchanged for ASCII timezone strings.</p></li>
-<li><p>Known divergence: Comet’s native timezone parser does not accept Spark’s legacy zone forms (<code class="docutils literal notranslate"><span class="pre">GMT+1</span></code>, <code class="docutils literal notranslate"><span class="pre">UTC+1</span></code>, three-letter abbreviations like <code class="docutils literal notranslate"><span class="pre">PST</span></code>). Such timezones throw a native parse error at execution.</p></li>
+<li><p>Marked <code class="docutils literal notranslate"><span class="pre">Incompatible</span></code>: Comet’s native timezone parser only accepts IANA zone IDs (e.g. <code class="docutils literal notranslate"><span class="pre">America/Los_Angeles</span></code>) and fixed <code class="docutils literal notranslate"><span class="pre">+HH:MM</span></code> offsets, while Spark also accepts legacy forms (<code class="docutils literal notranslate"><span class="pre">GMT+1</span></code>, <code class="docutils literal notranslate"><span class="pre">UTC+1</span></code>, three-letter abbreviations like <code class="docutils literal notranslate"><span class="pre">PST</span></code>). By default it runs through the codegen dispatcher (Spark-correct) and uses the native path only when incompatible expressions are explicitly allowed, where legacy zone forms throw a native parse error at execution (https://github.com/apache/datafusion-comet/issues/2013).</p></li>
 </ul>
 </section>
 <section id="try-make-timestamp">
 <h2>try_make_timestamp<a class="headerlink" href="#try-make-timestamp" title="Link to this heading">#</a></h2>
 <ul class="simple">
-<li><p>Native for valid inputs; returns wrong values for invalid inputs instead of NULL (https://github.com/apache/datafusion-comet/issues/4554).</p></li>
+<li><p>Rewrites to <code class="docutils literal notranslate"><span class="pre">MakeTimestamp(failOnError</span> <span class="pre">=</span> <span class="pre">false)</span></code> and runs through the codegen dispatcher (<code class="docutils literal notranslate"><span class="pre">CometMakeTimestamp</span></code>), so invalid inputs return NULL to match Spark.</p></li>
 </ul>
 </section>
 </section>

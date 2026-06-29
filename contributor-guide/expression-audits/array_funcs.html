@@ -584,7 +584,7 @@ under the License.
 <li><p>Spark 3.5.8 (audited 2026-05-27): baseline. <code class="docutils literal notranslate"><span class="pre">ArrayContains(left,</span> <span class="pre">right)</span> <span class="pre">extends</span> <span class="pre">BinaryExpression</span> <span class="pre">with</span> <span class="pre">NullIntolerant</span> <span class="pre">with</span> <span class="pre">Predicate</span></code>; <code class="docutils literal notranslate"><span class="pre">inputTypes</span></code> uses <code class="docutils literal notranslate"><span class="pre">findWiderTypeWithoutStringPromotionForTwo</span></code>. Wired as <code class="docutils literal notranslate"><span class="pre">CometScalarFunction(&quot;array_contains&quot;)</span></code>.</p></li>
 <li><p>Spark 4.0.1 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">NullIntolerant</span></code> trait replaced by <code class="docutils literal notranslate"><span class="pre">nullIntolerant:</span> <span class="pre">Boolean</span></code>; <code class="docutils literal notranslate"><span class="pre">checkInputDataTypes</span></code> adopts <code class="docutils literal notranslate"><span class="pre">DataTypeUtils.sameType</span></code> (collation-aware in 4.x).</p></li>
 <li><p>Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.</p></li>
-<li><p>Known limitation: no NaN-canonicalization guard in <code class="docutils literal notranslate"><span class="pre">getSupportLevel</span></code>. For <code class="docutils literal notranslate"><span class="pre">Float</span></code>/<code class="docutils literal notranslate"><span class="pre">Double</span></code> arrays containing NaN, Spark’s <code class="docutils literal notranslate"><span class="pre">SQLOrderingUtil</span></code> may produce different results than DataFusion’s IEEE comparison (https://github.com/apache/datafusion-comet/issues/4481).</p></li>
+<li><p>Float/double arrays containing NaN and signed zero match Spark; DataFusion canonicalizes them the same way as Spark’s <code class="docutils literal notranslate"><span class="pre">SQLOrderingUtil</span></code>.</p></li>
 </ul>
 </section>
 <section id="array-distinct">
@@ -594,7 +594,7 @@ under the License.
 <li><p>Spark 3.5.8 (audited 2026-05-27): baseline. <code class="docutils literal notranslate"><span class="pre">ArrayDistinct(child)</span></code> over <code class="docutils literal notranslate"><span class="pre">ArraySetLike</span></code>; uses <code class="docutils literal notranslate"><span class="pre">SQLOpenHashSet</span></code> so NaN and <code class="docutils literal notranslate"><span class="pre">+0.0</span></code>/<code class="docutils literal notranslate"><span class="pre">-0.0</span></code> are canonicalized. Wired as <code class="docutils literal notranslate"><span class="pre">CometScalarFunction(&quot;array_distinct&quot;)</span></code>.</p></li>
 <li><p>Spark 4.0.1 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">NullIntolerant</span></code> -&gt; <code class="docutils literal notranslate"><span class="pre">nullIntolerant</span></code> field refactor.</p></li>
 <li><p>Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.</p></li>
-<li><p>Known divergence: DataFusion <code class="docutils literal notranslate"><span class="pre">array_distinct</span></code> uses hash-based equality without NaN/signed-zero canonicalization, so float/double arrays may produce different results (https://github.com/apache/datafusion-comet/issues/4481).</p></li>
+<li><p>Float/double arrays containing NaN and signed zero match Spark; DataFusion canonicalizes them like Spark’s <code class="docutils literal notranslate"><span class="pre">SQLOpenHashSet</span></code>.</p></li>
 </ul>
 </section>
 <section id="array-except">
@@ -604,7 +604,7 @@ under the License.
 <li><p>Spark 3.5.8 (audited 2026-05-27): baseline. <code class="docutils literal notranslate"><span class="pre">ArrayExcept(left,</span> <span class="pre">right)</span> <span class="pre">extends</span> <span class="pre">ArrayBinaryLike</span> <span class="pre">with</span> <span class="pre">ComplexTypeMergingExpression</span></code>; result preserves left-side first occurrences not present in right. Comet routes via <code class="docutils literal notranslate"><span class="pre">CometArrayExcept</span></code> and unconditionally flags <code class="docutils literal notranslate"><span class="pre">Incompatible</span></code> (“Null handling and ordering may differ from Spark”); also falls back for <code class="docutils literal notranslate"><span class="pre">BinaryType</span></code> / <code class="docutils literal notranslate"><span class="pre">StructType</span></code> element types.</p></li>
 <li><p>Spark 4.0.1 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">nullIntolerant</span> <span class="pre">=</span> <span class="pre">true</span></code> moves into <code class="docutils literal notranslate"><span class="pre">ArrayBinaryLike</span></code>; the overflow path uses <code class="docutils literal notranslate"><span class="pre">arrayFunctionWithElementsExceedLimitError</span></code>.</p></li>
 <li><p>Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.</p></li>
-<li><p>Known divergence: same NaN/signed-zero canonicalization gap as <code class="docutils literal notranslate"><span class="pre">array_distinct</span></code> for float/double arrays (https://github.com/apache/datafusion-comet/issues/4481).</p></li>
+<li><p>Float/double NaN and signed-zero canonicalization matches <code class="docutils literal notranslate"><span class="pre">array_distinct</span></code>. (<code class="docutils literal notranslate"><span class="pre">array_except</span></code> still falls back by default for the null-handling/ordering reasons noted above.)</p></li>
 </ul>
 </section>
 <section id="array-insert">
@@ -623,6 +623,7 @@ under the License.
 <li><p>Spark 3.5.8 audited 2026-04-24 (same ordering incompatibility as 3.4.3)</p></li>
 <li><p>Spark 4.0.1 audited 2026-04-24 (ordering incompatibility as above; collated strings now fall back to Spark)</p></li>
 <li><p>Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.</p></li>
+<li><p>Current status: <code class="docutils literal notranslate"><span class="pre">CometArrayIntersect</span></code> reports <code class="docutils literal notranslate"><span class="pre">Incompatible</span></code> because native element ordering can differ from Spark when the right array is longer than the left (DataFusion probes the longer side). By default it runs through the codegen dispatcher (Spark-correct) and uses the native path only when incompatible expressions are explicitly allowed. Non-default string collations are reported <code class="docutils literal notranslate"><span class="pre">Unsupported</span></code> and fall back to Spark.</p></li>
 </ul>
 </section>
 <section id="array-join">
@@ -641,7 +642,7 @@ under the License.
 <li><p>Spark 3.5.8 (audited 2026-05-27): baseline. <code class="docutils literal notranslate"><span class="pre">ArrayMax(child)</span> <span class="pre">extends</span> <span class="pre">UnaryExpression</span> <span class="pre">with</span> <span class="pre">ImplicitCastInputTypes</span></code>; skips NULL elements; for float/double Spark’s <code class="docutils literal notranslate"><span class="pre">SQLOrderingUtil</span></code> treats NaN as greater than any non-NaN. Wired as <code class="docutils literal notranslate"><span class="pre">CometScalarFunction(&quot;array_max&quot;)</span></code>.</p></li>
 <li><p>Spark 4.0.1 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">NullIntolerant</span></code> -&gt; <code class="docutils literal notranslate"><span class="pre">nullIntolerant</span></code> field refactor.</p></li>
 <li><p>Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.</p></li>
-<li><p>Known divergence: DataFusion’s <code class="docutils literal notranslate"><span class="pre">array_max</span></code> uses Arrow <code class="docutils literal notranslate"><span class="pre">partial_cmp</span></code>-based ordering, so float/double arrays containing NaN may produce different results (https://github.com/apache/datafusion-comet/issues/4482).</p></li>
+<li><p>Float/double arrays containing NaN match Spark: NaN is treated as greater than any non-NaN value.</p></li>
 </ul>
 </section>
 <section id="array-min">
@@ -651,7 +652,7 @@ under the License.
 <li><p>Spark 3.5.8 (audited 2026-05-27): mirror of <code class="docutils literal notranslate"><span class="pre">ArrayMax</span></code> with <code class="docutils literal notranslate"><span class="pre">evalInternal</span></code> returning the minimum. Same NULL-skip and NaN-ordering semantics. Wired as <code class="docutils literal notranslate"><span class="pre">CometScalarFunction(&quot;array_min&quot;)</span></code>.</p></li>
 <li><p>Spark 4.0.1 (audited 2026-05-27): same trait refactor as <code class="docutils literal notranslate"><span class="pre">array_max</span></code>.</p></li>
 <li><p>Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.</p></li>
-<li><p>Known divergence: same NaN-handling gap as <code class="docutils literal notranslate"><span class="pre">array_max</span></code> (https://github.com/apache/datafusion-comet/issues/4482).</p></li>
+<li><p>Float/double arrays containing NaN match Spark, mirroring <code class="docutils literal notranslate"><span class="pre">array_max</span></code>.</p></li>
 </ul>
 </section>
 <section id="array-position">
@@ -697,7 +698,7 @@ under the License.
 <li><p>Spark 3.5.8 (audited 2026-05-27): baseline. <code class="docutils literal notranslate"><span class="pre">ArrayUnion(left,</span> <span class="pre">right)</span> <span class="pre">extends</span> <span class="pre">ArrayBinaryLike</span> <span class="pre">with</span> <span class="pre">ComplexTypeMergingExpression</span></code>; result is left-side distinct elements followed by new right-side elements. Wired as <code class="docutils literal notranslate"><span class="pre">CometScalarFunction(&quot;array_union&quot;)</span></code>.</p></li>
 <li><p>Spark 4.0.1 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">nullIntolerant</span> <span class="pre">=</span> <span class="pre">true</span></code> moves into <code class="docutils literal notranslate"><span class="pre">ArrayBinaryLike</span></code>; overflow path uses <code class="docutils literal notranslate"><span class="pre">arrayFunctionWithElementsExceedLimitError</span></code>.</p></li>
 <li><p>Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.</p></li>
-<li><p>Known divergence: same NaN/signed-zero canonicalization gap as <code class="docutils literal notranslate"><span class="pre">array_distinct</span></code> (https://github.com/apache/datafusion-comet/issues/4481). Result ordering versus DataFusion is also unverified; compare the <code class="docutils literal notranslate"><span class="pre">array_intersect</span></code> ordering caveat.</p></li>
+<li><p>Float/double NaN and signed-zero canonicalization matches <code class="docutils literal notranslate"><span class="pre">array_distinct</span></code>. Result element ordering also matches Spark (left-side distinct elements followed by new right-side elements).</p></li>
 </ul>
 </section>
 <section id="arrays-overlap">
