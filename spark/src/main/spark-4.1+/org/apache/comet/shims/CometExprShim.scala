@@ -36,7 +36,7 @@ import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithFa
 trait CometExprShim extends Spark4xCometExprShim {
 
   def binaryOutputStyle: BinaryOutputStyle = {
-    // In Spark 4.1, BINARY_OUTPUT_STYLE is an enumConf so getConf already returns the enum value.
+    // Since Spark 4.1, BINARY_OUTPUT_STYLE is an enumConf so getConf already returns the enum value.
     SQLConf.get.getConf(SQLConf.BINARY_OUTPUT_STYLE) match {
       case Some(SQLConf.BinaryOutputStyle.UTF8) => BinaryOutputStyle.UTF8
       case Some(SQLConf.BinaryOutputStyle.BASIC) => BinaryOutputStyle.BASIC
@@ -46,10 +46,11 @@ trait CometExprShim extends Spark4xCometExprShim {
     }
   }
 
-  // Spark 4.1 introduces TimeType and the make_time / to_time / try_to_time functions.
+  // Spark 4.1 introduced TimeType and the make_time / to_time / try_to_time functions.
   // Their planner forms differ from the shared 4.x patterns (DateTimeUtils.makeTime
   // StaticInvoke and ToTimeParser Invoke / TryEval(Invoke)), so they live here rather
-  // than in the shared Spark4xCometExprShim parent trait.
+  // than in the shared Spark4xCometExprShim parent trait. Spark 4.0 lacks TimeType, which
+  // is why this shim is shared by 4.1 and later rather than all 4.x.
   override def sparkVersionSpecificExprToProtoInternal(
       expr: Expression,
       inputs: Seq[Attribute],
@@ -105,6 +106,6 @@ object CometEvalModeUtil {
     case EvalMode.ANSI => CometEvalMode.ANSI
   }
 
-  // In Spark 4.1, Sum carries a NumericEvalContext rather than a direct EvalMode.
+  // Since Spark 4.1, Sum carries a NumericEvalContext rather than a direct EvalMode.
   def sumEvalMode(s: Sum): EvalMode.Value = s.evalContext.evalMode
 }

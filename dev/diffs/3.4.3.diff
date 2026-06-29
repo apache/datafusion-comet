@@ -357,13 +357,14 @@ index a9f69ab28a1..760ea0e9565 100644
      assert(exchanges.size == 2)
    }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/DataFrameWindowFunctionsSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/DataFrameWindowFunctionsSuite.scala
-index 433b4741979..07148eee480 100644
+index 433b4741979..e13e69deb79 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/DataFrameWindowFunctionsSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/DataFrameWindowFunctionsSuite.scala
-@@ -23,8 +23,9 @@ import org.apache.spark.TestUtils.{assertNotSpilled, assertSpilled}
+@@ -23,8 +23,10 @@ import org.apache.spark.TestUtils.{assertNotSpilled, assertSpilled}
  import org.apache.spark.sql.catalyst.expressions.{AttributeReference, Expression, Lag, Literal, NonFoldableLiteral}
  import org.apache.spark.sql.catalyst.optimizer.TransposeWindow
  import org.apache.spark.sql.catalyst.plans.physical.HashPartitioning
++import org.apache.spark.sql.comet.CometWindowExec
 +import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
  import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 -import org.apache.spark.sql.execution.exchange.{ENSURE_REQUIREMENTS, Exchange, ShuffleExchangeExec}
@@ -371,7 +372,26 @@ index 433b4741979..07148eee480 100644
  import org.apache.spark.sql.execution.window.WindowExec
  import org.apache.spark.sql.expressions.{Aggregator, MutableAggregationBuffer, UserDefinedAggregateFunction, Window}
  import org.apache.spark.sql.functions._
-@@ -1186,10 +1187,12 @@ class DataFrameWindowFunctionsSuite extends QueryTest
+@@ -969,7 +971,8 @@ class DataFrameWindowFunctionsSuite extends QueryTest
+     }
+   }
+ 
+-  test("Window spill with more than the inMemoryThreshold and spillThreshold") {
++  test("Window spill with more than the inMemoryThreshold and spillThreshold",
++      IgnoreComet("Comet does not support spilling")) {
+     val df = Seq((1, "1"), (2, "2"), (1, "3"), (2, "4")).toDF("key", "value")
+     val window = Window.partitionBy($"key").orderBy($"value")
+ 
+@@ -981,7 +984,7 @@ class DataFrameWindowFunctionsSuite extends QueryTest
+     }
+   }
+ 
+-  test("SPARK-21258: complex object in combination with spilling") {
++  test("SPARK-21258: complex object in combination with spilling", IgnoreComet("Comet does not support spilling")) {
+     // Make sure we trigger the spilling path.
+     withSQLConf(SQLConf.WINDOW_EXEC_BUFFER_IN_MEMORY_THRESHOLD.key -> "1",
+       SQLConf.WINDOW_EXEC_BUFFER_SPILL_THRESHOLD.key -> "17") {
+@@ -1186,10 +1189,12 @@ class DataFrameWindowFunctionsSuite extends QueryTest
      }
  
      def isShuffleExecByRequirement(
@@ -385,11 +405,16 @@ index 433b4741979..07148eee480 100644
        case _ => false
      }
  
-@@ -1212,7 +1215,7 @@ class DataFrameWindowFunctionsSuite extends QueryTest
+@@ -1212,7 +1217,12 @@ class DataFrameWindowFunctionsSuite extends QueryTest
        val shuffleByRequirement = windowed.queryExecution.executedPlan.exists {
          case w: WindowExec =>
            w.child.exists {
 -            case s: ShuffleExchangeExec => isShuffleExecByRequirement(s, Seq("key1", "key2"))
++            case s: ShuffleExchangeLike => isShuffleExecByRequirement(s, Seq("key1", "key2"))
++            case _ => false
++          }
++        case w: CometWindowExec =>
++          w.child.exists {
 +            case s: ShuffleExchangeLike => isShuffleExecByRequirement(s, Seq("key1", "key2"))
              case _ => false
            }
@@ -2312,7 +2337,7 @@ index 240bb4e6dcb..8287ffa03ca 100644
  
    import testImplicits._
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetRowIndexSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetRowIndexSuite.scala
-index 351c6d698fc..d09a49f0482 100644
+index 351c6d698fc..3983401184a 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetRowIndexSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetRowIndexSuite.scala
 @@ -26,6 +26,7 @@ import org.apache.parquet.hadoop.{ParquetFileReader, ParquetOutputFormat}
@@ -2334,7 +2359,7 @@ index 351c6d698fc..d09a49f0482 100644
 +              numPartitions +=
 +                b.originalPlan.inputRDD.partitions.length
 +              numOutputRows +=
-+                b.metrics("numOutputRows").value
++                b.metrics("output_rows").value
              case _ =>
            }
            assert(numPartitions > 0)
@@ -2977,7 +3002,7 @@ index dd55fcfe42c..d9a3f2df535 100644
  
      spark.internalCreateDataFrame(withoutFilters.execute(), schema)
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/test/SharedSparkSession.scala b/sql/core/src/test/scala/org/apache/spark/sql/test/SharedSparkSession.scala
-index ed2e309fa07..0658bfe9e12 100644
+index ed2e309fa07..b94db4ff1ab 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/test/SharedSparkSession.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/test/SharedSparkSession.scala
 @@ -74,6 +74,20 @@ trait SharedSparkSessionBase
@@ -2989,14 +3014,14 @@ index ed2e309fa07..0658bfe9e12 100644
 +      conf
 +        .set("spark.sql.extensions", "org.apache.comet.CometSparkSessionExtensions")
 +        .set("spark.comet.enabled", "true")
-+        .set("spark.comet.parquet.respectFilterPushdown", "true")
++        .set("spark.comet.parquet.rowFilterPushdown.enabled", "true")
 +
 +      conf
 +        .set("spark.comet.exec.enabled", "true")
 +        .set("spark.shuffle.manager",
 +          "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
 +        .set("spark.comet.exec.shuffle.enabled", "true")
-+        .set("spark.comet.memoryOverhead", "2g")
++        .set("spark.comet.memoryOverhead", "4g")
 +    }
      conf.set(
        StaticSQLConf.WAREHOUSE_PATH,

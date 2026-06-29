@@ -40,7 +40,6 @@ use datafusion::{
 };
 use futures::{StreamExt, TryStreamExt};
 use std::{
-    any::Any,
     fmt,
     fmt::{Debug, Formatter},
     sync::Arc,
@@ -119,11 +118,6 @@ impl DisplayAs for ShuffleWriterExec {
 
 #[async_trait]
 impl ExecutionPlan for ShuffleWriterExec {
-    /// Return a reference to Any that can be used for downcasting
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn name(&self) -> &str {
         "ShuffleWriterExec"
     }
@@ -343,6 +337,7 @@ mod test {
     }
 
     #[tokio::test]
+    #[cfg_attr(miri, ignore)] // miri can't call foreign function `ZSTD_createCCtx`
     async fn shuffle_partitioner_memory() {
         let batch = create_batch(900);
         assert_eq!(8316, batch.get_array_memory_size()); // Not stable across Arrow versions
