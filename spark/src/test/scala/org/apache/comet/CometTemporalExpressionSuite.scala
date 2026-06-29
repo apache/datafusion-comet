@@ -157,19 +157,34 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
   }
 
   test("date_trunc - non-UTC timezone takes native path when allowIncompatible is enabled") {
-    createTimestampTestData.createOrReplaceTempView("tbl")
+    // With the schema and DST fixes (#2649), the native path produces Spark-identical results
+    // for any non-UTC timezone whose DST transitions are 1-hour and whose dates fall within
+    // chrono-tz's precomputed DST horizon (currently ~year 2100). We use a base date in 2024 so
+    // the generator stays well inside that window.
+    val r = new Random(42)
+    val schema = StructType(
+      Seq(
+        StructField("c0", DataTypes.TimestampType, true),
+        StructField("fmt", DataTypes.StringType, true)))
+    val baseDate2024 =
+      new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss").parse("2024-06-15 12:00:00").getTime
+    val df = FuzzDataGenerator.generateDataFrame(
+      r,
+      spark,
+      schema,
+      1000,
+      DataGenOptions(baseDate = baseDate2024))
+    df.createOrReplaceTempView("tbl")
 
     val nonUtcTimezones = Seq("America/New_York", "Europe/London", "Asia/Tokyo")
     for (tz <- nonUtcTimezones) {
       withSQLConf(
         SQLConf.SESSION_LOCAL_TIMEZONE.key -> tz,
         "spark.comet.expression.TruncTimestamp.allowIncompatible" -> "true") {
-        // Native date_trunc results may diverge from Spark for non-UTC timezones (#2649, the
-        // reason the codegen dispatcher is the default), so we only check that execution stays
-        // inside Comet. ORDER BY is omitted to keep the plan free of AQEShuffleRead.
-        val df = sql("SELECT c0, date_trunc('HOUR', c0) from tbl")
-        df.collect()
-        checkCometOperators(stripAQEPlan(df.queryExecution.executedPlan))
+        for (format <- CometTruncTimestamp.supportedFormats) {
+          checkSparkAnswerAndOperator(
+            s"SELECT c0, date_trunc('$format', c0) from tbl order by c0")
+        }
       }
     }
   }

@@ -89,12 +89,25 @@ impl PhysicalExpr for TimestampTruncExpr {
     }
 
     fn data_type(&self, input_schema: &Schema) -> datafusion::common::Result<DataType> {
-        match self.child.data_type(input_schema)? {
-            DataType::Dictionary(key_type, _) => Ok(DataType::Dictionary(
-                key_type,
-                Box::new(DataType::Timestamp(Microsecond, None)),
-            )),
-            _ => Ok(DataType::Timestamp(Microsecond, None)),
+        // The kernel preserves the input array's timezone annotation on its output (NTZ stays
+        // NTZ, otherwise the output array is stamped with the expression's session timezone).
+        // The declared `data_type` has to match or shuffle/sort/`RowConverter` will fail with a
+        // schema-mismatch error.
+        let child_type = self.child.data_type(input_schema)?;
+        let output_inner = match &child_type {
+            DataType::Timestamp(_, None) => DataType::Timestamp(Microsecond, None),
+            DataType::Dictionary(_, inner)
+                if matches!(inner.as_ref(), DataType::Timestamp(_, None)) =>
+            {
+                DataType::Timestamp(Microsecond, None)
+            }
+            _ => DataType::Timestamp(Microsecond, Some(Arc::from(self.timezone.as_str()))),
+        };
+        match child_type {
+            DataType::Dictionary(key_type, _) => {
+                Ok(DataType::Dictionary(key_type, Box::new(output_inner)))
+            }
+            _ => Ok(output_inner),
         }
     }
 
