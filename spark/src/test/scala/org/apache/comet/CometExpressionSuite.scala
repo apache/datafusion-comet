@@ -1738,6 +1738,17 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("unary minus across numeric types") {
+    // UnaryMinus gates input types in getSupportLevel: every Spark NumericType (incl. decimal)
+    // must stay native; interval types are unsupported and fall back to Spark.
+    withParquetTable(
+      (1 to 5).map(i =>
+        (i.toByte, i.toShort, i, i.toLong, i.toFloat, i.toDouble, BigDecimal(i * 3, 2))),
+      "umt") {
+      checkSparkAnswerAndOperator("SELECT -_1, -_2, -_3, -_4, -_5, -_6, -_7 FROM umt")
+    }
+  }
+
   test("basic arithmetic") {
     withSQLConf("parquet.enable.dictionary" -> "false") {
       withParquetTable((1 until 10).map(i => (i, i + 1)), "tbl", false) {
