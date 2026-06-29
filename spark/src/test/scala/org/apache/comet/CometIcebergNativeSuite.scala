@@ -4035,7 +4035,7 @@ class CometIcebergNativeSuite
 
           checkSparkAnswerAndFallbackReason(
             s"SELECT id, value, _spec_id, _pos, _file, _partition FROM $table WHERE id >= 2 ORDER BY id",
-            "Metadata column _spec_id, _partition, _file, _pos is not supported")
+            "Metadata column(s) _spec_id, _partition, _file, _pos is not supported")
         } finally {
           spark.sql(s"DROP TABLE IF EXISTS $table PURGE")
         }
