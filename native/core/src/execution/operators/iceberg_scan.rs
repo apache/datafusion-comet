@@ -636,7 +636,6 @@ mod tests {
     }
 
     // A delete file we cannot stat must fail the scan, not be silently read with a missing/0 size.
-    // That silent drop is the #4723 corruption: deleted rows would leak through.
     #[tokio::test]
     async fn fill_delete_file_sizes_errors_on_unreadable_delete_file() {
         let dir = tempfile::tempdir().unwrap();
