@@ -667,7 +667,10 @@ object CometTruncTimestamp
  *     by [[CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED]]. When that flag is disabled the operator
  *     falls back to Spark.
  */
-object CometDateFormat extends CometExpressionSerde[DateFormatClass] {
+object CometDateFormat extends CometExpressionSerde[DateFormatClass] with NativeOptInAvailable {
+
+  override def getIncompatibleReasons(): Seq[String] =
+    Seq("Non-UTC timezones may produce different results than Spark")
 
   /**
    * Mapping from Spark SimpleDateFormat patterns to strftime patterns. Only formats in this map
@@ -705,10 +708,29 @@ object CometDateFormat extends CometExpressionSerde[DateFormatClass] {
     // ISO formats
     "yyyy-MM-dd'T'HH:mm:ss" -> "%Y-%m-%dT%H:%M:%S")
 
-  // Compatibility is decided inside `convert`: the native path covers a subset, and the codegen
-  // dispatcher covers everything else when enabled. Plan-time tagging happens via
-  // `withFallbackReason` on the path that returns None.
-  override def getSupportLevel(expr: DateFormatClass): SupportLevel = Compatible()
+  // Returns true when the format literal is in the native-format whitelist.
+  private def nativeApplicable(expr: DateFormatClass): Boolean = expr.right match {
+    case Literal(fmt: UTF8String, _) => supportedFormats.contains(fmt.toString)
+    case _ => false
+  }
+
+  private def isUtc(expr: DateFormatClass): Boolean = {
+    val timezone = expr.timeZoneId.getOrElse("UTC")
+    timezone == "UTC" || timezone == "Etc/UTC"
+  }
+
+  override def getSupportLevel(expr: DateFormatClass): SupportLevel = {
+    // Show the opt-in hint only when: native is applicable, the config is OFF, and native is not
+    // already running due to UTC timezone. When isUtc is true, native already runs regardless of
+    // the config, so the hint would be misleading.
+    val isExprAllowIncompat = CometConf.isExprAllowIncompat(getExprConfigName(expr))
+    if (nativeApplicable(expr) && !isUtc(expr) && !isExprAllowIncompat) {
+      Compatible(nativeOptIn =
+        Some(NativeOptIn(CometConf.getExprAllowIncompatConfigKey(getExprConfigName(expr)))))
+    } else {
+      Compatible()
+    }
+  }
 
   override def getCompatibleNotes(): Seq[String] = Seq(
     "Format strings in a curated allow-list run natively via DataFusion's `to_char` for UTC " +
@@ -721,16 +743,15 @@ object CometDateFormat extends CometExpressionSerde[DateFormatClass] {
       expr: DateFormatClass,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val timezone = expr.timeZoneId.getOrElse("UTC")
-    val isUtc = timezone == "UTC" || timezone == "Etc/UTC"
+    val isUtcVal = isUtc(expr)
 
     val nativeFormat: Option[String] = expr.right match {
       case Literal(fmt: UTF8String, _) => supportedFormats.get(fmt.toString)
       case _ => None
     }
 
-    val canUseNative = nativeFormat.isDefined && {
-      isUtc || CometConf.isExprAllowIncompat(getExprConfigName(expr))
+    val canUseNative = nativeApplicable(expr) && {
+      isUtcVal || CometConf.isExprAllowIncompat(getExprConfigName(expr))
     }
 
     if (canUseNative) {

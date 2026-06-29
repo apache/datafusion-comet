@@ -108,7 +108,8 @@ use crate::execution::tracing::{
 use crate::execution::memory_pools::logging_pool::LoggingMemoryPool;
 use crate::execution::spark_config::{
     SparkConfig, COMET_DEBUG_ENABLED, COMET_DEBUG_MEMORY, COMET_EXPLAIN_NATIVE_ENABLED,
-    COMET_MAX_TEMP_DIRECTORY_SIZE, COMET_TRACING_ENABLED, SPARK_EXECUTOR_CORES,
+    COMET_MAX_TEMP_DIRECTORY_SIZE, COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED,
+    COMET_TRACING_ENABLED, SPARK_EXECUTOR_CORES,
 };
 use crate::parquet::encryption_support::{CometEncryptionFactory, ENCRYPTION_FACTORY_ID};
 use datafusion_comet_proto::spark_operator::operator::OpStruct;
@@ -581,6 +582,16 @@ fn prepare_datafusion_session_context(
             let df_key = format!("datafusion.{df_key}");
             session_config = session_config.set_str(&df_key, value);
         }
+    }
+
+    // Translate the Comet-namespaced row-level pushdown flag into the equivalent
+    // DataFusion session options. `pushdown_filters` enables the parquet reader's
+    // RowFilter evaluation during decode (late materialization); `reorder_filters`
+    // is only meaningful when pushdown_filters is on, so they move together.
+    if spark_config.get_bool(COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED) {
+        session_config = session_config
+            .set_str("datafusion.execution.parquet.pushdown_filters", "true")
+            .set_str("datafusion.execution.parquet.reorder_filters", "true");
     }
 
     let runtime = rt_config.build()?;
