@@ -51,7 +51,7 @@ import org.apache.comet.serde.operator.CometIcebergNativeScan
  * `expressions` walk picks up the contained `DynamicPruningExpression(InSubqueryExec(...))`, and
  * the standard `prepare -> prepareSubqueries -> waitForSubqueries` lifecycle resolves it. The
  * lifecycle is invoked via `CometLeafExec.ensureSubqueriesResolved`, called from
- * `CometNativeExec.findAllPlanData` before `commonData` is read.
+ * `PlanDataInjector.findAllPlanData` before `commonData` is read.
  */
 case class CometIcebergNativeScanExec(
     override val nativeOp: Operator,
@@ -69,12 +69,12 @@ case class CometIcebergNativeScanExec(
 
   /**
    * Lazy partition serialization, deferred until execution time. Triggered from `commonData` /
-   * `perPartitionData` (via `CometNativeExec.findAllPlanData`) and from `LazyIcebergMetric.value`
-   * (via Iceberg planning metrics). Lazy val semantics ensure single evaluation across entry
-   * points.
+   * `perPartitionData` (via `PlanDataInjector.findAllPlanData`) and from
+   * `LazyIcebergMetric.value` (via Iceberg planning metrics). Lazy val semantics ensure single
+   * evaluation across entry points.
    *
    * DPP InSubqueryExec values must already be resolved by the time this lazy val runs.
-   * `CometNativeExec.findAllPlanData` calls `ensureSubqueriesResolved` (which invokes Spark's
+   * `PlanDataInjector.findAllPlanData` calls `ensureSubqueriesResolved` (which invokes Spark's
    * `prepare -> waitForSubqueries`) before reading `commonData`. The `serializePartitions` call
    * below reads `originalPlan.runtimeFilters` indirectly through `inputRDD -> filteredPartitions`
    * and applies the resolved values to Iceberg's runtime filtering. `originalPlan.runtimeFilters`

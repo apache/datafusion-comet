@@ -160,7 +160,7 @@ case class CometNativeScanExec(
     // Outer partitionFilters (wrapper) DPP is resolved by Spark's standard
     // prepare -> waitForSubqueries lifecycle, triggered explicitly via
     // CometLeafExec.ensureSubqueriesResolved called from
-    // CometNativeExec.findAllPlanData before commonData is read.
+    // PlanDataInjector.findAllPlanData before commonData is read.
     //
     // Inner scan.partitionFilters holds a SEPARATE InSubqueryExec instance that
     // Spark's expressions walk does not see (scan is @transient and not a sibling
