@@ -387,6 +387,39 @@ pub fn delta_storage_config_from_map(
             .cloned()
             .or_else(|| s3_hadoop(m, bucket, suffix))
     };
+    // First map entry whose key starts with `prefix`, returning (key, value). Used for the Hadoop
+    // Azure forms that embed the account/container in the key name
+    // (`fs.azure.account.key.<account>.dfs.core.windows.net`, `fs.azure.sas.<container>.<account>...`).
+    let first_with_prefix = |prefix: &str| -> Option<(&String, &String)> {
+        m.iter().find(|(k, _)| k.starts_with(prefix))
+    };
+    // Azure account key: kernel-style `azure_storage_account_key` wins, else any `fs.azure.account.key*`.
+    let azure_account_key = m
+        .get("azure_storage_account_key")
+        .cloned()
+        .or_else(|| first_with_prefix("fs.azure.account.key").map(|(_, v)| v.clone()));
+    // Azure account name: kernel-style key, else parsed from the `fs.azure.account.key.<account>.*`
+    // key name (object_store otherwise reads it from the abfss/wasb URL authority).
+    let azure_account_name = m.get("azure_storage_account_name").cloned().or_else(|| {
+        first_with_prefix("fs.azure.account.key.").and_then(|(k, _)| {
+            k.strip_prefix("fs.azure.account.key.")
+                .and_then(|rest| rest.split('.').next())
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string())
+        })
+    });
+    // Azure SAS: kernel-style `azure_storage_sas_key`, else any `fs.azure.sas*` (fixed or scoped).
+    let azure_sas_token = m
+        .get("azure_storage_sas_key")
+        .cloned()
+        .or_else(|| first_with_prefix("fs.azure.sas").map(|(_, v)| v.clone()));
+    // GCS service account: kernel-style path, else the Hadoop JSON keyfile path.
+    let gcs_service_account_path = m
+        .get("google_service_account")
+        .cloned()
+        .or_else(|| m.get("fs.gs.auth.service.account.json.keyfile").cloned());
+    let gcs_service_account_key = m.get("google_service_account_key").cloned();
+
     DeltaStorageConfig {
         aws_access_key: kernel_or_s3("aws_access_key_id", "access.key"),
         aws_secret_key: kernel_or_s3("aws_secret_access_key", "secret.key"),
@@ -403,6 +436,11 @@ pub fn delta_storage_config_from_map(
             .or_else(|| s3_hadoop(m, bucket, "path.style.access"))
             .map(|s| s == "true")
             .unwrap_or(false),
+        azure_account_name,
+        azure_account_key,
+        azure_sas_token,
+        gcs_service_account_path,
+        gcs_service_account_key,
     }
 }
 
@@ -588,6 +626,86 @@ mod tests {
         assert!(cfg.aws_access_key.is_none());
         assert!(cfg.aws_secret_key.is_none());
         assert!(cfg.aws_endpoint.is_none());
+    }
+
+    #[test]
+    fn azure_creds_bridged_from_hadoop() {
+        use std::collections::HashMap;
+        let mut m = HashMap::new();
+        m.insert(
+            "fs.azure.account.key.myacct.dfs.core.windows.net".into(),
+            "HADOOP_AZKEY".into(),
+        );
+        let cfg = delta_storage_config_from_map(&m, None);
+        // Before this bridge the executor discarded fs.azure.* and used ambient AZURE_* env.
+        assert_eq!(cfg.azure_account_key.as_deref(), Some("HADOOP_AZKEY"));
+        assert_eq!(cfg.azure_account_name.as_deref(), Some("myacct"));
+        let opts = cfg.azure_object_store_options();
+        assert!(
+            opts.iter()
+                .any(|(k, v)| *k == "azure_storage_account_key" && v == "HADOOP_AZKEY"),
+            "azure account key must reach object_store: {opts:?}"
+        );
+        assert!(
+            opts.iter().any(|(k, _)| *k == "azure_storage_account_name"),
+            "azure account name must reach object_store: {opts:?}"
+        );
+        // S3 fields stay empty (non-leakage the other direction).
+        assert!(cfg.aws_access_key.is_none());
+        assert!(cfg.gcs_service_account_path.is_none());
+    }
+
+    #[test]
+    fn azure_sas_bridged_from_hadoop() {
+        use std::collections::HashMap;
+        let mut m = HashMap::new();
+        m.insert("fs.azure.sas.fixed.token".into(), "SAS_TOKEN_VALUE".into());
+        let cfg = delta_storage_config_from_map(&m, None);
+        assert_eq!(cfg.azure_sas_token.as_deref(), Some("SAS_TOKEN_VALUE"));
+        assert!(cfg
+            .azure_object_store_options()
+            .iter()
+            .any(|(k, v)| *k == "azure_storage_sas_key" && v == "SAS_TOKEN_VALUE"));
+    }
+
+    #[test]
+    fn gcs_creds_bridged_from_hadoop() {
+        use std::collections::HashMap;
+        let mut m = HashMap::new();
+        m.insert(
+            "fs.gs.auth.service.account.json.keyfile".into(),
+            "/etc/gcs/key.json".into(),
+        );
+        let cfg = delta_storage_config_from_map(&m, None);
+        assert_eq!(
+            cfg.gcs_service_account_path.as_deref(),
+            Some("/etc/gcs/key.json")
+        );
+        assert!(cfg
+            .gcs_object_store_options()
+            .iter()
+            .any(|(k, v)| *k == "google_service_account" && v == "/etc/gcs/key.json"));
+        // S3/Azure fields stay empty.
+        assert!(cfg.aws_access_key.is_none());
+        assert!(cfg.azure_account_key.is_none());
+    }
+
+    #[test]
+    fn s3_keys_do_not_leak_into_azure_or_gcs() {
+        use std::collections::HashMap;
+        let mut m = HashMap::new();
+        m.insert("fs.s3a.access.key".into(), "AK".into());
+        m.insert("fs.s3a.secret.key".into(), "SK".into());
+        m.insert("fs.s3a.session.token".into(), "TOK".into());
+        let cfg = delta_storage_config_from_map(&m, Some("my-bucket"));
+        assert_eq!(cfg.aws_access_key.as_deref(), Some("AK")); // sanity: S3 still extracted
+        assert!(cfg.azure_account_key.is_none());
+        assert!(cfg.azure_account_name.is_none());
+        assert!(cfg.azure_sas_token.is_none());
+        assert!(cfg.gcs_service_account_path.is_none());
+        assert!(cfg.gcs_service_account_key.is_none());
+        assert!(cfg.azure_object_store_options().is_empty());
+        assert!(cfg.gcs_object_store_options().is_empty());
     }
 
     #[test]

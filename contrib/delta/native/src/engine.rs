@@ -45,7 +45,7 @@ pub type DeltaEngine = DefaultEngine<TokioBackgroundExecutor>;
 /// through `object_store::parse_url`, which sources credentials from the ambient environment
 /// (`AZURE_*` / `GOOGLE_*` / ADC / instance metadata) -- matching core's non-S3 path -- so they
 /// need no fields here.
-#[derive(Debug, Clone, Default, Hash, PartialEq, Eq)]
+#[derive(Clone, Default, Hash, PartialEq, Eq)]
 pub struct DeltaStorageConfig {
     pub aws_access_key: Option<String>,
     pub aws_secret_key: Option<String>,
@@ -53,6 +53,78 @@ pub struct DeltaStorageConfig {
     pub aws_region: Option<String>,
     pub aws_endpoint: Option<String>,
     pub aws_force_path_style: bool,
+    // Azure (abfs/abfss/wasb/wasbs/az). Bridged from `fs.azure.*` so the native reader uses the
+    // SAME credentials Spark would, instead of falling back to ambient `AZURE_*` env on executors.
+    pub azure_account_name: Option<String>,
+    pub azure_account_key: Option<String>,
+    pub azure_sas_token: Option<String>,
+    // GCS (gs/gcs). Bridged from `fs.gs.*`.
+    pub gcs_service_account_path: Option<String>,
+    pub gcs_service_account_key: Option<String>,
+}
+
+impl DeltaStorageConfig {
+    /// `object_store`-style config key/value pairs for the Azure store, derived from the bridged
+    /// Hadoop creds. Empty when nothing was bridged -- the caller then falls back to ambient creds.
+    /// (`object_store` reads the account/container from the abfss/wasb URL authority; for the
+    /// `az://` scheme the account name is supplied here when known.)
+    pub fn azure_object_store_options(&self) -> Vec<(&'static str, String)> {
+        let mut o = Vec::new();
+        if let Some(v) = &self.azure_account_name {
+            o.push(("azure_storage_account_name", v.clone()));
+        }
+        if let Some(v) = &self.azure_account_key {
+            o.push(("azure_storage_account_key", v.clone()));
+        }
+        if let Some(v) = &self.azure_sas_token {
+            o.push(("azure_storage_sas_key", v.clone()));
+        }
+        o
+    }
+
+    /// `object_store`-style config key/value pairs for the GCS store. Empty = fall back to ambient.
+    pub fn gcs_object_store_options(&self) -> Vec<(&'static str, String)> {
+        let mut o = Vec::new();
+        if let Some(v) = &self.gcs_service_account_path {
+            o.push(("google_service_account", v.clone()));
+        }
+        if let Some(v) = &self.gcs_service_account_key {
+            o.push(("google_service_account_key", v.clone()));
+        }
+        o
+    }
+}
+
+// Hand-written `Debug` (NOT derived) so a stray `{:?}` -- a future debug log, an error wrapper --
+// can never leak credential material. Secret fields render as `<set>` / `None`; non-secret fields
+// (region, endpoint, account name) stay visible for diagnosability. Defense-in-depth: nothing on
+// the read path Debug-prints this today.
+impl std::fmt::Debug for DeltaStorageConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        fn redact(o: &Option<String>) -> &'static str {
+            if o.is_some() {
+                "<set>"
+            } else {
+                "None"
+            }
+        }
+        f.debug_struct("DeltaStorageConfig")
+            .field("aws_access_key", &redact(&self.aws_access_key))
+            .field("aws_secret_key", &redact(&self.aws_secret_key))
+            .field("aws_session_token", &redact(&self.aws_session_token))
+            .field("aws_region", &self.aws_region)
+            .field("aws_endpoint", &self.aws_endpoint)
+            .field("aws_force_path_style", &self.aws_force_path_style)
+            .field("azure_account_name", &self.azure_account_name)
+            .field("azure_account_key", &redact(&self.azure_account_key))
+            .field("azure_sas_token", &redact(&self.azure_sas_token))
+            .field("gcs_service_account_path", &self.gcs_service_account_path)
+            .field(
+                "gcs_service_account_key",
+                &redact(&self.gcs_service_account_key),
+            )
+            .finish()
+    }
 }
 
 /// Build an `ObjectStore` for the given URL and credentials.
@@ -103,12 +175,29 @@ pub fn create_object_store(
 
             Arc::new(builder.build()?)
         }
-        "az" | "azure" | "abfs" | "abfss" | "wasb" | "wasbs" | "gs" | "gcs" => {
-            // Parity with core's non-S3 path: object_store::parse_url builds the Azure / GCS
-            // store from the URL and ambient credentials (AZURE_* / GOOGLE_* env, ADC,
-            // instance metadata). Hadoop `fs.azure.*` / `fs.gs.*` config bridging is
-            // intentionally not done here -- core doesn't bridge them either.
-            let (store, _path) = object_store::parse_url(url)?;
+        "az" | "azure" | "abfs" | "abfss" | "wasb" | "wasbs" => {
+            // Build the Azure store from the credentials Spark bridged from `fs.azure.*`
+            // (account key / SAS) so executors use the SAME identity Spark would, instead of
+            // ambient `AZURE_*` env / managed identity. `object_store` reads the account and
+            // container from the abfss/wasb URL authority. With no bridged creds, fall back to
+            // `parse_url` (ambient), parity with core's non-S3 read path.
+            let opts = config.azure_object_store_options();
+            let (store, _path) = if opts.is_empty() {
+                object_store::parse_url(url)?
+            } else {
+                object_store::parse_url_opts(url, opts)?
+            };
+            Arc::from(store)
+        }
+        "gs" | "gcs" => {
+            // Build the GCS store from the service account Spark bridged from `fs.gs.*`; with no
+            // bridged creds, fall back to `parse_url` (ambient `GOOGLE_*` / ADC), parity with core.
+            let opts = config.gcs_object_store_options();
+            let (store, _path) = if opts.is_empty() {
+                object_store::parse_url(url)?
+            } else {
+                object_store::parse_url_opts(url, opts)?
+            };
             Arc::from(store)
         }
         "file" | "" => Arc::new(LocalFileSystem::new()),
@@ -242,6 +331,32 @@ mod tests {
     }
 
     #[test]
+    fn debug_redacts_credential_material() {
+        // A stray `{:?}` on the storage config (e.g. a future debug log) must NOT leak the
+        // secret key / session token / access key into logs. Non-secret fields stay visible
+        // for diagnosability.
+        let c = DeltaStorageConfig {
+            aws_access_key: Some("AKIDEXAMPLE".to_string()),
+            aws_secret_key: Some("SUPERSECRETKEYVALUE".to_string()),
+            aws_session_token: Some("SESSIONTOKENVALUE".to_string()),
+            aws_region: Some("us-west-2".to_string()),
+            aws_endpoint: Some("https://s3.example".to_string()),
+            aws_force_path_style: true,
+            ..Default::default()
+        };
+        let s = format!("{c:?}");
+        assert!(!s.contains("SUPERSECRETKEYVALUE"), "secret key leaked: {s}");
+        assert!(
+            !s.contains("SESSIONTOKENVALUE"),
+            "session token leaked: {s}"
+        );
+        assert!(!s.contains("AKIDEXAMPLE"), "access key leaked: {s}");
+        // Non-secret fields remain visible.
+        assert!(s.contains("us-west-2"), "region should be visible: {s}");
+        assert!(s.contains("s3.example"), "endpoint should be visible: {s}");
+    }
+
+    #[test]
     fn create_object_store_local_file() {
         let store = create_object_store(&url("file:///tmp/x"), &empty_config()).unwrap();
         // Just verify Arc construction succeeded; LocalFileSystem doesn't expose
@@ -281,6 +396,7 @@ mod tests {
             aws_region: Some("us-west-2".into()),
             aws_endpoint: Some("https://s3.example.com".into()),
             aws_force_path_style: true,
+            ..Default::default()
         };
         let store = create_object_store(&url("s3://my-bucket/path"), &cfg).unwrap();
         assert!(format!("{store:?}").contains("AmazonS3") || format!("{store:?}").contains("S3"));
@@ -318,6 +434,29 @@ mod tests {
         create_object_store(&url("gs://my-bucket/path"), &empty_config())
             .expect("gcs store builds via parse_url");
     }
+
+    #[test]
+    fn create_object_store_azure_with_explicit_key() {
+        // With bridged fs.azure.* creds, the store is built via parse_url_opts using the
+        // explicit account key (not ambient env). Construction is lazy, so no network.
+        let cfg = DeltaStorageConfig {
+            azure_account_name: Some("myacct".to_string()),
+            azure_account_key: Some("dGVzdGtleQ==".to_string()),
+            ..Default::default()
+        };
+        let u = url("abfss://container@myacct.dfs.core.windows.net/path");
+        let store = create_object_store(&u, &cfg).expect("azure store builds with explicit key");
+        let dbg = format!("{store:?}").to_lowercase();
+        assert!(
+            dbg.contains("azure") || dbg.contains("microsoft"),
+            "got: {dbg}"
+        );
+    }
+
+    // Note: an engine-level GCS explicit-creds test is omitted because object_store's
+    // `google_service_account` reads + parses the keyfile at build time, so it can't be
+    // exercised with a fake path. The bridging is covered by jni::tests::gcs_creds_bridged_from_hadoop
+    // (extraction -> gcs_object_store_options) and exercised end-to-end against real GCS.
 
     #[test]
     fn create_object_store_unsupported_scheme() {
