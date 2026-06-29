@@ -159,7 +159,7 @@ impl IcebergScanExec {
     /// deletes via iceberg-rust's ArrowReader.
     fn execute_with_tasks(
         &self,
-        tasks: Vec<FileScanTask>,
+        mut tasks: Vec<FileScanTask>,
         context: Arc<TaskContext>,
     ) -> DFResult<SendableRecordBatchStream> {
         let output_schema = Arc::clone(&self.output_schema);
@@ -169,10 +169,8 @@ impl IcebergScanExec {
             &self.catalog_name,
         )?;
 
-        // The JVM serializer leaves delete-file sizes as 0 (it cannot reliably stat them with the
-        // FileIO it reconstructs). iceberg-rust needs the true size to locate each delete file's
-        // Parquet footer, so fill them here with the same FileIO the reader uses, before reading.
-        let mut tasks = tasks;
+        // Delete-file sizes arrive as 0 (not serialized); fill them before reading (see
+        // fill_delete_file_sizes).
         get_runtime().block_on(Self::fill_delete_file_sizes(&mut tasks, &file_io))?;
 
         let batch_size = context.session_config().batch_size();
@@ -250,25 +248,18 @@ impl IcebergScanExec {
         }
     }
 
-    /// Populates delete-file sizes that the JVM serializer left as 0.
+    /// Stats each unique delete file to fill its `file_size_in_bytes` (0 on arrival, since it is
+    /// not serialized).
     ///
-    /// iceberg-rust uses `file_size_in_bytes` to seek the Parquet footer of each delete file, so a
-    /// 0 (or otherwise wrong) value makes metadata loading fail. We do not size delete files on the
-    /// JVM side because the FileIO reconstructed there may not resolve every delete path (e.g.
-    /// Trino-written tables on S3); see CometIcebergNativeScan.scala. Instead we stat each unique
-    /// delete file here, in parallel, with the same FileIO the reader uses.
-    ///
-    /// A stat failure is fatal: applying only some deletes would silently leak deleted rows, so we
-    /// propagate the error rather than read with missing deletes.
+    /// iceberg-rust seeks the Parquet footer from this size, so it must be correct. A stat failure
+    /// is fatal: reading with missing deletes would silently leak deleted rows.
     async fn fill_delete_file_sizes(
         tasks: &mut [FileScanTask],
         file_io: &FileIO,
     ) -> Result<(), DataFusionError> {
         use datafusion::common::{HashMap, HashSet};
 
-        // Unique delete-file paths still missing a size. Deduplicate so a delete file shared by
-        // many tasks is statted once. Owns the paths so no borrow of `tasks` is held into the
-        // mutable write-back below.
+        // Owns the paths so no borrow of `tasks` is held into the mutable write-back below.
         let mut needed: HashSet<String> = HashSet::new();
         for task in tasks.iter() {
             for delete in &task.deletes {
@@ -307,14 +298,8 @@ impl IcebergScanExec {
         let size_map: HashMap<String, u64> = sizes.into_iter().collect();
         for task in tasks.iter_mut() {
             for delete in task.deletes.iter_mut() {
-                if delete.file_size_in_bytes == 0 {
-                    delete.file_size_in_bytes =
-                        *size_map.get(&delete.file_path).ok_or_else(|| {
-                            DataFusionError::Execution(format!(
-                                "Missing computed size for delete file '{}'",
-                                delete.file_path
-                            ))
-                        })?;
+                if let Some(&size) = size_map.get(&delete.file_path) {
+                    delete.file_size_in_bytes = size;
                 }
             }
         }
@@ -678,10 +663,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(
-            tasks[0].deletes[0].file_size_in_bytes,
-            bytes.len() as u64
-        );
+        assert_eq!(tasks[0].deletes[0].file_size_in_bytes, bytes.len() as u64);
     }
 
     // No deletes means no stats and no error.

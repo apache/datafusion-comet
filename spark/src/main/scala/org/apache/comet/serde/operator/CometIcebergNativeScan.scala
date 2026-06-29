@@ -222,10 +222,9 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
   /**
    * Extracts delete files from an Iceberg FileScanTask as a list (for deduplication).
    *
-   * The delete file's size is intentionally left as 0 here. We do not size delete files on the
-   * JVM side: the file_size_in_bytes is populated natively by the Iceberg scan, which stats each
-   * delete file through the same FileIO it uses to read it. See `execute_with_tasks` in
-   * native/core/src/execution/operators/iceberg_scan.rs.
+   * Delete-file size is not serialized; the native scan stats each file for it (see
+   * IcebergScanExec::fill_delete_file_sizes). The manifest size cannot be trusted as a substitute
+   * (apache/iceberg#12554).
    */
   private def extractDeleteFilesList(
       task: Any,
@@ -241,8 +240,8 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
         // and silently skipping it would leak deleted rows, so treat a missing path as fatal.
         val deletePath = IcebergReflection
           .extractFileLocation(contentFileClass, deleteFile)
-          .getOrElse(throw new RuntimeException(
-            "Failed to extract delete file path from FileScanTask"))
+          .getOrElse(
+            throw new RuntimeException("Failed to extract delete file path from FileScanTask"))
 
         val deleteBuilder = OperatorOuterClass.IcebergDeleteFile.newBuilder()
         deleteBuilder.setFilePath(deletePath)
@@ -272,11 +271,6 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
             case _: Exception => 0
           }
         deleteBuilder.setPartitionSpecId(specId)
-
-        // Placeholder: the native scan stats the file and fills in the real size before reading.
-        // The manifest value cannot be trusted (see apache/iceberg#12554), and the FileIO we could
-        // reconstruct here may not resolve every delete path (e.g. Trino-written tables on S3).
-        deleteBuilder.setFileSizeInBytes(0L)
 
         try {
           val equalityIdsMethod =

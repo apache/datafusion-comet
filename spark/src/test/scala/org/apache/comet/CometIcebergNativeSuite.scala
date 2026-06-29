@@ -737,8 +737,8 @@ class CometIcebergNativeSuite
             s"DELETE FROM test_cat.db.compacted_delete_test WHERE id % 7 = 0 AND id >= $lo AND id < $hi")
         }
 
-        // Compaction equivalent to Trino's OPTIMIZE. This rewrites data files and can rewrite or
-        // re-reference position delete files, which is where the reporter's serialization fails.
+        // Compaction equivalent to Trino's OPTIMIZE; rewrites data files and may rewrite or
+        // re-reference position delete files.
         spark.sql("CALL test_cat.system.rewrite_data_files(table => 'db.compacted_delete_test')")
 
         // More deletes after compaction so the live snapshot mixes pre- and post-compaction deletes.
@@ -756,7 +756,6 @@ class CometIcebergNativeSuite
   // When a delete file cannot be statted natively, the scan must fail loudly rather than read the
   // data file with deletes silently dropped (the #4723 corruption). Here we delete the positional
   // delete file from disk after it is committed, so the native fill_delete_file_sizes stat fails.
-  // The printed exception shows how a delete-file stat failure surfaces through JNI to Spark.
   test("delete file stat failure surfaces as an exception") {
     assume(icebergAvailable, "Iceberg not available in classpath")
 
@@ -796,8 +795,7 @@ class CometIcebergNativeSuite
         assert(deletePaths.nonEmpty, "expected at least one positional delete file")
 
         deletePaths.foreach { p =>
-          val local = if (p.contains(":")) new File(new URI(p)) else new File(p)
-          assert(local.delete(), s"failed to remove delete file from disk: $p")
+          assert(new File(new URI(p)).delete(), s"failed to remove delete file from disk: $p")
         }
 
         // If deletes were silently dropped (the #4723 bug), COUNT(*) would return a wrong count
@@ -805,15 +803,9 @@ class CometIcebergNativeSuite
         val e = intercept[Exception] {
           spark.sql("SELECT COUNT(*) FROM test_cat.db.missing_delete_test").collect()
         }
-
-        println(e)
-
-        // Surface the full cause chain so we can see how the native error is wrapped.
-        var cause: Throwable = e
-        while (cause != null) {
-          logInfo(s"delete-stat failure [${cause.getClass.getName}]: ${cause.getMessage}")
-          cause = cause.getCause
-        }
+        assert(
+          e.getMessage != null && e.getMessage.contains("stat delete file"),
+          s"expected a delete-file stat failure, got: ${e.getMessage}")
 
         spark.sql("DROP TABLE test_cat.db.missing_delete_test")
       }
