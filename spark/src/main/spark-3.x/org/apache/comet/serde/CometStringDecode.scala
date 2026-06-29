@@ -17,16 +17,12 @@
  * under the License.
  */
 
-package org.apache.comet.shims
+package org.apache.comet.serde
 
-import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan
-import org.apache.spark.sql.execution.{QueryExecution, SparkPlan}
-import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanExec
+import org.apache.spark.sql.catalyst.expressions.StringDecode
 
-trait ShimPrepareExecutedPlan {
-  def shimPrepareExecutedPlan(
-      adaptivePlan: AdaptiveSparkPlanExec,
-      plan: LogicalPlan): SparkPlan = {
-    QueryExecution.prepareExecutedPlan(plan, adaptivePlan.context)
-  }
-}
+/**
+ * Spark 3.x `decode(bin, charset)` runs through the codegen dispatcher so Spark's own decoder
+ * handles invalid byte sequences (replacement-character substitution). See #4465.
+ */
+object CometStringDecode extends CometCodegenDispatch[StringDecode]

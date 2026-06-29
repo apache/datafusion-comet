@@ -20,9 +20,11 @@
 package org.apache.comet.serde
 
 import org.apache.spark.sql.catalyst.expressions._
+import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
 import org.apache.comet.serde.QueryPlanSerde.{createBinaryExpr, exprToProtoInternal, optExprWithFallbackReason, scalarFunctionExprToProto}
+import org.apache.comet.shims.CometTypeShim
 
 object CometMapKeys extends CometExpressionSerde[MapKeys] {
 
@@ -116,23 +118,6 @@ object CometMapFromArrays extends CometExpressionSerde[MapFromArrays] {
   }
 }
 
-object CometMapContainsKey extends CometExpressionSerde[MapContainsKey] {
-
-  override def convert(
-      expr: MapContainsKey,
-      inputs: Seq[Attribute],
-      binding: Boolean): Option[ExprOuterClass.Expr] = {
-    // Replace with array_has(map_keys(map), key)
-    val mapExpr = exprToProtoInternal(expr.left, inputs, binding)
-    val keyExpr = exprToProtoInternal(expr.right, inputs, binding)
-
-    val mapKeysExpr = scalarFunctionExprToProto("map_keys", mapExpr)
-
-    val mapContainsKeyExpr = scalarFunctionExprToProto("array_has", mapKeysExpr, keyExpr)
-    optExprWithFallbackReason(mapContainsKeyExpr, expr, expr.children: _*)
-  }
-}
-
 object CometMapFromEntries
     extends CometScalarFunction[MapFromEntries]("map_from_entries")
     with CodegenDispatchFallback {
@@ -144,26 +129,53 @@ object CometMapFromEntries
   override def getIncompatibleReasons(): Seq[String] =
     Seq(keyUnsupportedReason, valueUnsupportedReason)
 
-  private def containsBinary(dataType: DataType): Boolean = {
-    dataType match {
-      case BinaryType => true
-      case StructType(fields) => fields.exists(field => containsBinary(field.dataType))
-      case ArrayType(elementType, _) => containsBinary(elementType)
-      case _ => false
-    }
-  }
-
   override def getSupportLevel(expr: MapFromEntries): SupportLevel = {
-    if (containsBinary(expr.dataType.keyType)) {
+    if (SupportLevel.containsType(expr.dataType.keyType, classOf[BinaryType])) {
       return Incompatible(Some(keyUnsupportedReason))
     }
-    if (containsBinary(expr.dataType.valueType)) {
+    if (SupportLevel.containsType(expr.dataType.valueType, classOf[BinaryType])) {
       return Incompatible(Some(valueUnsupportedReason))
     }
     Compatible(None)
   }
 }
 
-object CometStrToMap extends CometScalarFunction[StringToMap]("str_to_map")
+object CometStrToMap extends CometScalarFunction[StringToMap]("str_to_map") with CometTypeShim {
+
+  // Spark 4.1.1+ honours spark.sql.legacy.truncateForEmptyRegexSplit by truncating trailing
+  // empty entries from the split result. Comet's native str_to_map always behaves as if the flag
+  // were false, so it is incompatible when legacy truncation is enabled. Read by string key so it
+  // resolves on older Spark versions where the config is not registered.
+  private val legacyTruncateConfig = "spark.sql.legacy.truncateForEmptyRegexSplit"
+
+  private val legacyTruncateReason =
+    s"`$legacyTruncateConfig` is enabled, so trailing empty split entries may differ from Spark."
+
+  private val collationReason =
+    "`str_to_map` does not support non-UTF8_BINARY collations on the input string or delimiters."
+
+  override def getIncompatibleReasons(): Seq[String] =
+    Seq(legacyTruncateReason, collationReason)
+
+  override def getSupportLevel(expr: StringToMap): SupportLevel = {
+    if (SQLConf.get.getConfString(legacyTruncateConfig, "false").toBoolean) {
+      Incompatible(Some(legacyTruncateReason))
+    } else if (expr.children.exists(child => hasNonDefaultStringCollation(child.dataType))) {
+      Incompatible(Some(collationReason))
+    } else {
+      Compatible(None)
+    }
+  }
+}
+
+object CometCreateMap extends CometCodegenDispatch[CreateMap]
+
+object CometMapFilter extends CometCodegenDispatch[MapFilter]
+
+object CometTransformKeys extends CometCodegenDispatch[TransformKeys]
+
+object CometTransformValues extends CometCodegenDispatch[TransformValues]
+
+object CometMapZipWith extends CometCodegenDispatch[MapZipWith]
 
 object CometMapConcat extends CometCodegenDispatch[MapConcat]

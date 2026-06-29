@@ -33,7 +33,6 @@ use datafusion_physical_expr_adapter::{
     PhysicalExprAdapterFactory,
 };
 use parquet::arrow::PARQUET_FIELD_ID_META_KEY;
-use std::any::Any;
 use std::collections::HashMap;
 use std::fmt::{self, Display};
 use std::hash::{Hash, Hasher};
@@ -454,7 +453,7 @@ impl PhysicalExprAdapter for SparkPhysicalExprAdapter {
             // Walk the expression tree to find Column references
             let mut duplicate_err: Option<DataFusionError> = None;
             let _ = Arc::<dyn PhysicalExpr>::clone(&expr).transform(|e| {
-                if let Some(col) = e.as_any().downcast_ref::<Column>() {
+                if let Some(col) = e.downcast_ref::<Column>() {
                     if let Some((req, matched)) = check_column_duplicate(col.name(), orig_physical)
                     {
                         duplicate_err = Some(DataFusionError::External(Box::new(
@@ -504,7 +503,7 @@ impl PhysicalExprAdapter for SparkPhysicalExprAdapter {
         // the actual parquet stream schema, which uses the original physical names.
         let expr = if let Some(name_map) = &self.logical_to_physical_names {
             expr.transform(|e| {
-                if let Some(col) = e.as_any().downcast_ref::<Column>() {
+                if let Some(col) = e.downcast_ref::<Column>() {
                     if let Some(physical_name) = name_map.get(col.name()) {
                         return Ok(Transformed::yes(Arc::new(Column::new(
                             physical_name,
@@ -533,7 +532,7 @@ impl SparkPhysicalExprAdapter {
         expr: Arc<dyn PhysicalExpr>,
     ) -> DataFusionResult<Arc<dyn PhysicalExpr>> {
         expr.transform(|e| {
-            if let Some(column) = e.as_any().downcast_ref::<Column>() {
+            if let Some(column) = e.downcast_ref::<Column>() {
                 let col_name = column.name();
 
                 // Resolve fields by name because this is the fallback path
@@ -623,20 +622,43 @@ impl SparkPhysicalExprAdapter {
         .data()
     }
 
-    /// Replace CastColumnExpr (DataFusion's cast) with Spark's Cast expression.
+    /// Replace CastExpr (DataFusion's cast) with Spark's Cast expression.
     fn replace_with_spark_cast(
         &self,
         expr: Arc<dyn PhysicalExpr>,
     ) -> DataFusionResult<Transformed<Arc<dyn PhysicalExpr>>> {
-        // Check for CastColumnExpr and replace with spark_expr::Cast
-        // CastColumnExpr is in datafusion_physical_expr::expressions
-        if let Some(cast) = expr
-            .as_any()
-            .downcast_ref::<datafusion::physical_expr::expressions::CastColumnExpr>()
+        // Check for CastExpr and replace with spark_expr::Cast
+        if let Some(cast) = expr.downcast_ref::<datafusion::physical_expr::expressions::CastExpr>()
         {
             let child = Arc::clone(cast.expr());
-            let physical_type = cast.input_field().data_type();
             let target_type = cast.target_field().data_type();
+
+            // Derive input field from the child Column expression and the physical schema.
+            // DF main removed CastColumnExpr in favor of CastExpr, so we recover the input
+            // field from the child Column rather than calling cast.input_field().
+            let input_field = if let Some(col) = child.downcast_ref::<Column>() {
+                Arc::new(self.physical_file_schema.field(col.index()).clone())
+            } else {
+                // Fallback: synthesize a field from the target field name and child data type
+                let child_type = cast.expr().data_type(&self.physical_file_schema)?;
+                Arc::new(Field::new(cast.target_field().name(), child_type, true))
+            };
+            let physical_type = input_field.data_type();
+
+            // Identity cast: DataFusion's default adapter inserts a CastExpr
+            // whenever the logical and physical Arrow Fields differ in any
+            // attribute (data type, nullability, or metadata), so with identical
+            // data types but mismatched nullability or metadata, we receive a
+            // no-op cast. Unwrapping is safe because Spark `Cast` with equal
+            // source and target types is value-level identity (it does not
+            // null-strip or enforce non-null), and field nullability/metadata is
+            // informational rather than computational. Leaving the wrapper in
+            // place blocks DataFusion's pruning-predicate analyzer from
+            // recognizing the column reference, defeating row-group / page-index
+            // stats pruning.
+            if physical_type == target_type {
+                return Ok(Transformed::yes(child));
+            }
 
             // Reject reading a string/binary Parquet column as anything else. Spark's
             // `ParquetVectorUpdaterFactory.getUpdater` BINARY case allows StringType /
@@ -647,7 +669,7 @@ impl SparkPhysicalExprAdapter {
             // See #4088 and #4351.
             if is_string_or_binary(physical_type) && !is_string_or_binary(target_type) {
                 return Err(parquet_schema_convert_err(
-                    cast.input_field().name(),
+                    input_field.name(),
                     physical_type,
                     target_type,
                 ));
@@ -672,7 +694,7 @@ impl SparkPhysicalExprAdapter {
                 let rejection = reject_on_non_empty_expr(
                     child,
                     cast.target_field(),
-                    cast.input_field().name(),
+                    input_field.name(),
                     physical_type,
                     target_type,
                 );
@@ -692,7 +714,7 @@ impl SparkPhysicalExprAdapter {
                 let dst_int_precision = i32::from(*dst_p) - i32::from(*dst_s);
                 if dst_s < src_s || dst_int_precision < src_int_precision {
                     return Err(parquet_schema_convert_err(
-                        cast.input_field().name(),
+                        input_field.name(),
                         physical_type,
                         target_type,
                     ));
@@ -716,7 +738,7 @@ impl SparkPhysicalExprAdapter {
                     let dst_int_precision = i32::from(dst_p) - i32::from(dst_s);
                     if dst_int_precision < min_int_precision {
                         return Err(parquet_schema_convert_err(
-                            cast.input_field().name(),
+                            input_field.name(),
                             physical_type,
                             target_type,
                         ));
@@ -740,7 +762,7 @@ impl SparkPhysicalExprAdapter {
                     let rejection = reject_on_non_empty_expr(
                         Arc::clone(&child),
                         cast.target_field(),
-                        cast.input_field().name(),
+                        input_field.name(),
                         physical_type,
                         target_type,
                     );
@@ -800,7 +822,37 @@ impl SparkPhysicalExprAdapter {
                 let rejection = reject_on_non_empty_expr(
                     child,
                     cast.target_field(),
-                    cast.input_field().name(),
+                    input_field.name(),
+                    physical_type,
+                    target_type,
+                );
+                return Ok(Transformed::yes(rejection));
+            }
+
+            // Spark 3.x refuses to read a Parquet TimestampLTZ column as
+            // TimestampNTZ (SPARK-36182); Spark 4.0 (SPARK-47447) lifted that.
+            // The flag tracks Comet's per-Spark-version constant in
+            // ShimCometConf. Deferred to runtime so empty files (SPARK-26709)
+            // still pass. See #4219.
+            //
+            // This catches all LTZ physical encodings: TIMESTAMP_MICROS /
+            // TIMESTAMP_MILLIS arrive as `Timestamp(_, Some(_))` directly, and
+            // INT96 arrives as `Timestamp(_, Some("UTC"))` because `coerce_int96_tz`
+            // attaches the UTC timezone (see `get_options`) instead of letting
+            // `coerce_int96` strip it to a timezone-free `Timestamp(_, None)`.
+            if !self.parquet_options.allow_timestamp_ltz_to_ntz
+                && matches!(
+                    (physical_type, target_type),
+                    (
+                        DataType::Timestamp(_, Some(_)),
+                        DataType::Timestamp(_, None)
+                    )
+                )
+            {
+                let rejection = reject_on_non_empty_expr(
+                    Arc::clone(&child),
+                    cast.target_field(),
+                    input_field.name(),
                     physical_type,
                     target_type,
                 );
@@ -820,7 +872,7 @@ impl SparkPhysicalExprAdapter {
             };
             if is_complex(physical_type) != is_complex(target_type) {
                 return Err(parquet_schema_convert_err(
-                    cast.input_field().name(),
+                    input_field.name(),
                     physical_type,
                     target_type,
                 ));
@@ -842,7 +894,7 @@ impl SparkPhysicalExprAdapter {
                 let comet_cast: Arc<dyn PhysicalExpr> = Arc::new(
                     CometCastColumnExpr::new(
                         child,
-                        Arc::clone(cast.input_field()),
+                        input_field,
                         Arc::clone(cast.target_field()),
                         None,
                     )
@@ -996,10 +1048,6 @@ impl Display for RejectOnNonEmpty {
 }
 
 impl PhysicalExpr for RejectOnNonEmpty {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn data_type(&self, _input_schema: &Schema) -> DataFusionResult<DataType> {
         Ok(self.target_field.data_type().clone())
     }

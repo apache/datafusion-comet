@@ -36,6 +36,19 @@ object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
   private[comet] val negativeScaleDecimalToStringReason: String =
     "Negative-scale decimal requires spark.sql.legacy.allowNegativeScaleOfDecimal=true"
 
+  // When `spark.sql.legacy.castComplexTypesToString.enabled` is true, Spark wraps maps and
+  // structs with `[]` (instead of `{}`) when casting to string, and omits NULL elements of
+  // structs/maps/arrays (instead of rendering them as the literal "null"). Comet only
+  // implements the default formatting, so fall back to Spark for any array/map/struct to-string
+  // cast when the flag is enabled. The flag is internal in Spark 4.0 and defaults to false.
+  private[comet] val legacyCastComplexTypesToStringReason: String =
+    "spark.sql.legacy.castComplexTypesToString.enabled=true is not supported"
+
+  private def legacyCastComplexTypesToString: Boolean =
+    SQLConf.get
+      .getConfString("spark.sql.legacy.castComplexTypesToString.enabled", "false")
+      .toBoolean
+
   def supportedTypes: Seq[DataType] =
     Seq(
       DataTypes.BooleanType,
@@ -150,6 +163,12 @@ object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
       return Compatible()
     }
 
+    if (toType == DataTypes.StringType && legacyCastComplexTypesToString && (fromType
+        .isInstanceOf[ArrayType] || fromType.isInstanceOf[StructType] ||
+        fromType.isInstanceOf[MapType])) {
+      return Unsupported(Some(legacyCastComplexTypesToStringReason))
+    }
+
     (fromType, toType) match {
       case (dt: ArrayType, _: ArrayType) if dt.elementType == NullType => Compatible()
       case (ArrayType(DataTypes.DateType, _), ArrayType(toElementType, _))
@@ -193,7 +212,7 @@ object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
       case (from_struct: StructType, to_struct: StructType) =>
         from_struct.fields.zip(to_struct.fields).foreach { case (a, b) =>
           isSupported(a.dataType, b.dataType, timeZoneId, evalMode) match {
-            case Compatible(_) =>
+            case Compatible(_, _) =>
             // all good
             case other =>
               return other
@@ -204,7 +223,7 @@ object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
         // Native cast_map_to_map recursively casts keys and values, so support is
         // determined by whether both inner casts are individually supported.
         isSupported(from_map.keyType, to_map.keyType, timeZoneId, evalMode) match {
-          case Compatible(_) =>
+          case Compatible(_, _) =>
             isSupported(from_map.valueType, to_map.valueType, timeZoneId, evalMode)
           case other => other
         }

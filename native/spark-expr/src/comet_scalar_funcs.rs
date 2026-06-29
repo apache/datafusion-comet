@@ -38,7 +38,6 @@ use datafusion::logical_expr::{
     Volatility,
 };
 use datafusion::physical_plan::ColumnarValue;
-use std::any::Any;
 use std::fmt::Debug;
 use std::sync::Arc;
 
@@ -198,6 +197,18 @@ pub fn create_comet_physical_fun_with_eval_mode(
             let func = Arc::new(crate::string_funcs::spark_split);
             make_comet_scalar_udf!("split", func, without data_type)
         }
+        "split_sql" => {
+            let func = Arc::new(crate::string_funcs::spark_split_sql);
+            make_comet_scalar_udf!("split_sql", func, without data_type)
+        }
+        "regexp_extract" => {
+            let func = Arc::new(crate::string_funcs::spark_regexp_extract);
+            make_comet_scalar_udf!("regexp_extract", func, without data_type)
+        }
+        "regexp_extract_all" => {
+            let func = Arc::new(crate::string_funcs::spark_regexp_extract_all);
+            make_comet_scalar_udf!("regexp_extract_all", func, without data_type)
+        }
         "get_json_object" => {
             let func = Arc::new(crate::string_funcs::spark_get_json_object);
             make_comet_scalar_udf!("get_json_object", func, without data_type)
@@ -308,10 +319,6 @@ impl CometScalarFunction {
 }
 
 impl ScalarUDFImpl for CometScalarFunction {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn name(&self) -> &str {
         self.name.as_str()
     }

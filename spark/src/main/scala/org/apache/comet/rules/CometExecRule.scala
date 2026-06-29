@@ -44,7 +44,7 @@ import org.apache.spark.sql.execution.datasources.v2.csv.CSVScan
 import org.apache.spark.sql.execution.datasources.v2.json.JsonScan
 import org.apache.spark.sql.execution.datasources.v2.parquet.ParquetScan
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ReusedExchangeExec, ShuffleExchangeExec}
-import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, ShuffledHashJoinExec, SortMergeJoinExec}
+import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, BroadcastNestedLoopJoinExec, ShuffledHashJoinExec, SortMergeJoinExec}
 import org.apache.spark.sql.execution.window.WindowExec
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
@@ -81,6 +81,7 @@ object CometExecRule {
       classOf[HashAggregateExec] -> CometHashAggregateExec,
       classOf[ObjectHashAggregateExec] -> CometObjectHashAggregateExec,
       classOf[BroadcastHashJoinExec] -> CometBroadcastHashJoinExec,
+      classOf[BroadcastNestedLoopJoinExec] -> CometBroadcastNestedLoopJoinExec,
       classOf[ShuffledHashJoinExec] -> CometHashJoinExec,
       classOf[SortMergeJoinExec] -> CometSortMergeJoinExec,
       classOf[SortExec] -> CometSortExec,
@@ -706,14 +707,36 @@ case class CometExecRule(session: SparkSession)
         childOp.foreach(builder.addChildren)
         return serde
           .convert(op, builder, childOp: _*)
-          .map(nativeOp => serde.createExec(nativeOp, op))
+          .map { nativeOp =>
+            val exec = serde.createExec(nativeOp, op)
+            rollUpInfoMessages(op, exec)
+            exec
+          }
       } else {
         return serde
           .convert(op, builder)
-          .map(nativeOp => serde.createExec(nativeOp, op))
+          .map { nativeOp =>
+            val exec = serde.createExec(nativeOp, op)
+            rollUpInfoMessages(op, exec)
+            exec
+          }
       }
     }
     None
+  }
+
+  /**
+   * Lift informational (non-fallback) messages tagged on an operator and its expressions onto the
+   * converted Comet plan node so they appear in verbose extended explain output. Expression-level
+   * hints would otherwise be invisible because explain only traverses plan nodes, not
+   * expressions.
+   */
+  private def rollUpInfoMessages(op: SparkPlan, exec: SparkPlan): Unit = {
+    val fromOp = op.getTagValue(CometExplainInfo.EXTENSION_INFO).getOrElse(Set.empty[String])
+    val fromExprs = op.expressions
+      .flatMap(_.collect { case e: Expression => e })
+      .flatMap(_.getTagValue(CometExplainInfo.EXTENSION_INFO).getOrElse(Set.empty[String]))
+    (fromOp ++ fromExprs).foreach(msg => withInfo(exec, msg))
   }
 
   private def isOperatorEnabled(
@@ -744,7 +767,7 @@ case class CometExecRule(session: SparkSession)
                 s"${CometConf.COMPAT_GUIDE}.")
             false
           }
-        case Compatible(notes) =>
+        case Compatible(notes, _) =>
           if (notes.isDefined) {
             logWarning(s"Comet supports $opName but has notes: ${notes.get}")
           }
@@ -869,7 +892,10 @@ case class CometExecRule(session: SparkSession)
 
     if (groupingExpressions.isEmpty && aggregateExpressions.isEmpty) return false
 
-    if (groupingExpressions.exists(e => QueryPlanSerde.containsMapType(e.dataType))) return false
+    if (groupingExpressions.exists(e =>
+        SupportLevel.containsType(e.dataType, classOf[MapType]))) {
+      return false
+    }
 
     if (!groupingExpressions.forall(e =>
         QueryPlanSerde.exprToProto(e, agg.child.output).isDefined)) {

@@ -25,13 +25,15 @@ dispatching to a Spark-compatible codegen path. When an expression is not suppor
 transparently falls back to Spark for that part of the plan; results are unaffected.
 
 Expressions marked ✅ Supported are enabled by default and produce Spark-compatible results.
-Expressions marked ⚠️ Incorrect by default run natively by default but can return results that
-differ from Spark on some inputs; see the linked detail on each affected row.
 
-Some ✅ Supported expressions have specific incompatible cases that fall back to Spark by
-default. Those cases must be opted into per expression with
+Some ✅ Supported expressions have specific incompatible cases that are not run by default.
+Those cases must be opted into per expression with
 `spark.comet.expression.EXPRNAME.allowIncompatible=true` (where `EXPRNAME` is the Spark
-expression class name, for example `Cast`). There is no global opt-in.
+expression class name, for example `Cast`). There is no global opt-in. By default such a case
+either falls back to Spark (for example `cast`) or, when the expression has a Spark-compatible
+codegen-dispatch implementation, runs through that instead (for example the regex and JSON
+families). See [Native and codegen-dispatch implementations](compatibility/index.md#native-and-codegen-dispatch-implementations)
+for how Comet chooses.
 
 Most expressions can also be disabled with `spark.comet.expression.EXPRNAME.enabled=false`, where
 `EXPRNAME` is the Spark expression class name (for example `Length` or `StartsWith`). See the
@@ -42,9 +44,7 @@ Most expressions can also be disabled with `spark.comet.expression.EXPRNAME.enab
 | Status | Meaning |
 | --- | --- |
 | ✅ Supported | Comet produces Spark-compatible results by default. Some inputs or forms may fall back to Spark, and any incompatible behavior is opt-in (off by default). |
-| ⚠️ Incorrect by default | Comet runs natively by default but can return results that differ from Spark (a wrong value, or a native error on valid input). See the linked detail on each row. |
 | 🔜 Planned | Intended; tracked by an open issue or pull request. |
-| 💤 Not currently planned | Not on the current roadmap; falls back to Spark and may be reconsidered later. |
 
 ## Not currently planned
 
@@ -56,8 +56,9 @@ expressions. The following function families are **not currently planned** for n
 - **Avro / Protobuf codecs** (`from_avro`, `to_avro`, `from_protobuf`, `to_protobuf`, `schema_of_avro`): format conversion belongs at the IO layer, not expression evaluation.
 - **JVM reflection** (`java_method`, `reflect`): niche, and they invoke arbitrary JVM methods (a security concern).
 - **UTF-8 validation** (`is_valid_utf8`, `make_valid_utf8`, `validate_utf8`, `try_validate_utf8`): niche Spark 4.x string-validation helpers.
-- **File metadata** (`input_file_name`, `input_file_block_start`, `input_file_block_length`): require scan-internal per-row file information, outside the expression layer.
 - **Miscellaneous niche** (`histogram_numeric`, `version`, `sentences`, `quote`): low-value or specialized functions with little benefit from native acceleration.
+
+The file-metadata functions `input_file_name`, `input_file_block_start`, and `input_file_block_length` depend on scan-internal per-row file information rather than the expression layer; their support status is covered in the [scan compatibility guide](compatibility/scans.md).
 
 Note that `approx_count_distinct`, `median`, and `mode` are planned: they are mainstream (`median` and `mode` are exact aggregates). `approx_percentile` / `percentile_approx` are not currently planned because their approximate results cannot be made bit-identical to Spark.
 
@@ -137,20 +138,20 @@ The tables below list every Spark built-in expression with its current status.
 | `array_compact` | ✅ |  |
 | `array_contains` | ✅ | NaN/signed-zero handling may differ ([details](compatibility/floating-point.md)) |
 | `array_distinct` | ✅ | NaN/signed-zero handling may differ ([details](compatibility/floating-point.md)) |
-| `array_except` | ✅ | Incompatible; falls back by default ([details](compatibility/expressions/array.md)) |
+| `array_except` | ✅ | Routes through the JVM codegen dispatcher by default; the incompatible native path is opt-in via allowIncompatible ([details](compatibility/expressions/array.md)) |
 | `array_insert` | ✅ |  |
-| `array_intersect` | ✅ | Incompatible; falls back by default ([details](compatibility/expressions/array.md)) |
-| `array_join` | ✅ | Incompatible; falls back by default ([details](compatibility/expressions/array.md)) |
+| `array_intersect` | ✅ | Routes through the JVM codegen dispatcher by default; the incompatible native path is opt-in via allowIncompatible ([details](compatibility/expressions/array.md)) |
+| `array_join` | ✅ | Routes through the JVM codegen dispatcher by default; the incompatible native path is opt-in via allowIncompatible ([details](compatibility/expressions/array.md)) |
 | `array_max` | ✅ | NaN ordering may differ ([details](compatibility/floating-point.md)) |
 | `array_min` | ✅ | NaN ordering may differ ([details](compatibility/floating-point.md)) |
 | `array_position` | ✅ | Binary/struct/map/null elements fall back |
-| `array_prepend` | 🔜 | Sibling of `array_append` |
+| `array_prepend` | ✅ |  |
 | `array_remove` | ✅ |  |
 | `array_repeat` | ✅ |  |
 | `array_union` | ✅ | NaN/signed-zero handling may differ ([details](compatibility/floating-point.md)) |
 | `arrays_overlap` | ✅ |  |
 | `arrays_zip` | ✅ |  |
-| `element_at` | ✅ | MapType input falls back |
+| `element_at` | ✅ |  |
 | `flatten` | ✅ | Binary/struct/map elements fall back |
 | `get` | ✅ |  |
 | `sequence` | ✅ |  |
@@ -233,7 +234,7 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | Function | Status | Notes |
 | --- | --- | --- |
 | `add_months` | ✅ |  |
-| `convert_timezone` | ✅ |  |
+| `convert_timezone` | ✅ | Routes through the JVM codegen dispatcher by default (handles all timezone forms); the native path is opt-in via allowIncompatible ([details](compatibility/expressions/datetime.md)) |
 | `curdate` | ✅ | Constant-folded to a literal (alias of `current_date`) |
 | `current_date` | ✅ | Constant-folded to a literal before Comet sees the plan |
 | `current_time` | 🔜 | Blocked on Spark 4.1 TIME type support ([#4288](https://github.com/apache/datafusion-comet/issues/4288)) |
@@ -250,13 +251,13 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `datediff` | ✅ |  |
 | `datepart` | ✅ |  |
 | `day` | ✅ |  |
-| `dayname` | 🔜 | [#4544](https://github.com/apache/datafusion-comet/issues/4544) |
+| `dayname` | ✅ | Abbreviated day name (Spark 4.0+) |
 | `dayofmonth` | ✅ |  |
 | `dayofweek` | ✅ |  |
 | `dayofyear` | ✅ |  |
 | `extract` | ✅ |  |
 | `from_unixtime` | ✅ |  |
-| `from_utc_timestamp` | ✅ | Legacy zone forms fall back (Incompatible) ([details](compatibility/expressions/datetime.md)) |
+| `from_utc_timestamp` | ✅ | Routes through the JVM codegen dispatcher by default (handles all timezone forms); the native path is opt-in via allowIncompatible ([details](compatibility/expressions/datetime.md)) |
 | `hour` | ✅ |  |
 | `last_day` | ✅ |  |
 | `localtimestamp` | ✅ |  |
@@ -270,7 +271,7 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `make_ym_interval` | 🔜 | [#4541](https://github.com/apache/datafusion-comet/issues/4541) |
 | `minute` | ✅ |  |
 | `month` | ✅ |  |
-| `monthname` | 🔜 | [#4544](https://github.com/apache/datafusion-comet/issues/4544) |
+| `monthname` | ✅ | Abbreviated month name (Spark 4.0+) |
 | `months_between` | ✅ |  |
 | `next_day` | ✅ |  |
 | `now` | ✅ | Constant-folded to a literal (alias of `current_timestamp`) |
@@ -288,7 +289,7 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `to_timestamp_ltz` | ✅ | Rewrites to `to_timestamp` (`TimestampType`) |
 | `to_timestamp_ntz` | ✅ | Rewrites to `to_timestamp` (`TimestampNTZType`) |
 | `to_unix_timestamp` | ✅ |  |
-| `to_utc_timestamp` | ✅ | Legacy zone forms fall back (Incompatible) ([details](compatibility/expressions/datetime.md)) |
+| `to_utc_timestamp` | ✅ | Routes through the JVM codegen dispatcher by default (handles all timezone forms); the native path is opt-in via allowIncompatible ([details](compatibility/expressions/datetime.md)) |
 | `trunc` | ✅ |  |
 | `try_make_interval` | 🔜 | Produces legacy CalendarInterval; tracked by [#4540](https://github.com/apache/datafusion-comet/issues/4540) |
 | `try_make_timestamp` | ✅ |  |
@@ -356,22 +357,20 @@ expression-level). The `outer` variants are wired but marked `Incompatible`; the
 
 ## lambda_funcs
 
-All higher-order functions are planned via [#4224](https://github.com/apache/datafusion-comet/issues/4224).
-
 | Function | Status | Notes |
 | --- | --- | --- |
-| `aggregate` | 🔜 | [#4224](https://github.com/apache/datafusion-comet/issues/4224) |
-| `array_sort` | 🔜 | [#4224](https://github.com/apache/datafusion-comet/issues/4224) |
-| `exists` | 🔜 | [#4224](https://github.com/apache/datafusion-comet/issues/4224) |
-| `filter` | 🔜 | [#4224](https://github.com/apache/datafusion-comet/issues/4224) |
-| `forall` | 🔜 | [#4224](https://github.com/apache/datafusion-comet/issues/4224) |
-| `map_filter` | 🔜 | [#4224](https://github.com/apache/datafusion-comet/issues/4224) |
-| `map_zip_with` | 🔜 | [#4224](https://github.com/apache/datafusion-comet/issues/4224) |
-| `reduce` | 🔜 | [#4224](https://github.com/apache/datafusion-comet/issues/4224) |
-| `transform` | 🔜 | [#4224](https://github.com/apache/datafusion-comet/issues/4224) |
-| `transform_keys` | 🔜 | [#4224](https://github.com/apache/datafusion-comet/issues/4224) |
-| `transform_values` | 🔜 | [#4224](https://github.com/apache/datafusion-comet/issues/4224) |
-| `zip_with` | 🔜 | [#4224](https://github.com/apache/datafusion-comet/issues/4224) |
+| `aggregate` | ✅ |  |
+| `array_sort` | ✅ |  |
+| `exists` | ✅ |  |
+| `filter` | ✅ | General lambda routed through the JVM codegen dispatcher; the `array_compact` form runs natively |
+| `forall` | ✅ |  |
+| `map_filter` | ✅ |  |
+| `map_zip_with` | ✅ |  |
+| `reduce` | ✅ |  |
+| `transform` | ✅ |  |
+| `transform_keys` | ✅ |  |
+| `transform_values` | ✅ |  |
+| `zip_with` | ✅ |  |
 
 ---
 
@@ -379,8 +378,8 @@ All higher-order functions are planned via [#4224](https://github.com/apache/dat
 
 | Function | Status | Notes |
 | --- | --- | --- |
-| `element_at` | ✅ | MapType input falls back |
-| `map` | 🔜 | Constructs a map |
+| `element_at` | ✅ |  |
+| `map` | ✅ | Routed through the JVM codegen dispatcher |
 | `map_concat` | ✅ |  |
 | `map_contains_key` | ✅ |  |
 | `map_entries` | ✅ |  |
@@ -389,7 +388,7 @@ All higher-order functions are planned via [#4224](https://github.com/apache/dat
 | `map_keys` | ✅ |  |
 | `map_values` | ✅ |  |
 | `str_to_map` | ✅ |  |
-| `try_element_at` | ✅ | Lowers to `element_at`; array input (MapType falls back) |
+| `try_element_at` | ✅ | Lowers to `element_at` |
 
 ---
 
@@ -566,17 +565,17 @@ All higher-order functions are planned via [#4224](https://github.com/apache/dat
 | `lpad` | ✅ |  |
 | `ltrim` | ✅ |  |
 | `luhn_check` | ✅ | Native via `StaticInvoke` (tests: luhn_check.sql) |
-| `mask` | 🔜 | Data masking |
+| `mask` | ✅ | Routed through the JVM codegen dispatcher |
 | `octet_length` | ✅ |  |
 | `overlay` | ✅ |  |
 | `position` | ✅ |  |
 | `printf` | ✅ |  |
-| `regexp_count` | 🔜 | tracking [#4098](https://github.com/apache/datafusion-comet/issues/4098) |
-| `regexp_extract` | 🔜 | tracking [#4098](https://github.com/apache/datafusion-comet/issues/4098) |
-| `regexp_extract_all` | 🔜 | tracking [#4098](https://github.com/apache/datafusion-comet/issues/4098) |
-| `regexp_instr` | 🔜 | tracking [#4098](https://github.com/apache/datafusion-comet/issues/4098) |
+| `regexp_count` | ✅ | Runs natively (rewrites to `size(regexp_extract_all(...))`) |
+| `regexp_extract` | ✅ |  |
+| `regexp_extract_all` | ✅ |  |
+| `regexp_instr` | ✅ | Routed through the JVM codegen dispatcher |
 | `regexp_replace` | ✅ |  |
-| `regexp_substr` | 🔜 | tracking [#4098](https://github.com/apache/datafusion-comet/issues/4098) |
+| `regexp_substr` | ✅ | Runs natively (rewrites to `nullif(regexp_extract(...), '')`) |
 | `repeat` | ✅ |  |
 | `replace` | ✅ |  |
 | `right` | ✅ |  |
@@ -585,7 +584,7 @@ All higher-order functions are planned via [#4224](https://github.com/apache/dat
 | `soundex` | ✅ |  |
 | `space` | ✅ |  |
 | `split` | ✅ |  |
-| `split_part` | 🔜 | Lowers to `element_at(StringSplitSQL(...))`; `StringSplitSQL` falls back ([#4561](https://github.com/apache/datafusion-comet/issues/4561)) |
+| `split_part` | ✅ | Spark 4.0+ |
 | `startswith` | ✅ |  |
 | `substr` | ✅ |  |
 | `substring` | ✅ |  |
@@ -594,10 +593,10 @@ All higher-order functions are planned via [#4224](https://github.com/apache/dat
 | `to_char` | ✅ |  |
 | `to_number` | ✅ |  |
 | `to_varchar` | ✅ |  |
-| `translate` | ✅ |  |
+| `translate` | ✅ | Falls back by default; opt-in via allowIncompatible ([#4463](https://github.com/apache/datafusion-comet/issues/4463)) |
 | `trim` | ✅ |  |
-| `try_to_binary` | 🔜 | Lowers to `TryEval(...)`, which falls back |
-| `try_to_number` | 🔜 | TRY variant of `to_number` |
+| `try_to_binary` | ✅ | Runs natively (rewrites to `try_eval(to_binary(...))`) |
+| `try_to_number` | ✅ | Routed through the JVM codegen dispatcher |
 | `ucase` | ✅ |  |
 | `unbase64` | ✅ |  |
 | `upper` | ✅ |  |
@@ -626,24 +625,25 @@ All higher-order functions are planned via [#4224](https://github.com/apache/dat
 
 ## window_funcs
 
-Window functions run via `CometWindowExec`. Window support is disabled by default due to known
-correctness issues (tracking [#2721](https://github.com/apache/datafusion-comet/issues/2721)).
-When enabled, `lag` and `lead` are explicitly wired; aggregate window functions (`count`, `min`,
-`max`, `sum`) are also supported. Ranking functions (`rank`, `dense_rank`, `row_number`,
-`ntile`, `percent_rank`, `cume_dist`, `nth_value`) are not yet wired in the window serde and
-fall back to Spark.
+Window functions run via `CometWindowExec`. Aggregate window functions
+(`count`, `min`, `max`, `sum`, `avg`, `first_value`, `last_value`),
+ranking functions (`row_number`, `rank`, `dense_rank`, `percent_rank`,
+`cume_dist`, `ntile`), and value-shift functions (`lag`, `lead`,
+`nth_value`) are all wired in the window serde and execute natively.
+A handful of frame shapes still fall back — see the per-function notes
+for the exact unsupported cases.
 
 | Function | Status | Notes |
 | --- | --- | --- |
-| `cume_dist` | 🔜 | Window function; tracked by [#2721](https://github.com/apache/datafusion-comet/issues/2721) |
-| `dense_rank` | 🔜 | Window function; tracked by [#2721](https://github.com/apache/datafusion-comet/issues/2721) |
-| `lag` | ✅ | via `CometWindowExec` |
-| `lead` | ✅ | via `CometWindowExec` |
-| `nth_value` | 🔜 | Window function; tracked by [#2721](https://github.com/apache/datafusion-comet/issues/2721) |
-| `ntile` | 🔜 | Window function; tracked by [#2721](https://github.com/apache/datafusion-comet/issues/2721) |
-| `percent_rank` | 🔜 | Window function; tracked by [#2721](https://github.com/apache/datafusion-comet/issues/2721) |
-| `rank` | 🔜 | Window function; tracked by [#2721](https://github.com/apache/datafusion-comet/issues/2721) |
-| `row_number` | 🔜 | Window function; tracked by [#2721](https://github.com/apache/datafusion-comet/issues/2721) |
+| `cume_dist` | ✅ | via `CometWindowExec` |
+| `dense_rank` | ✅ | via `CometWindowExec` |
+| `lag` | ✅ | via `CometWindowExec`; non-literal default falls back ([#4268](https://github.com/apache/datafusion-comet/issues/4268)) |
+| `lead` | ✅ | via `CometWindowExec`; non-literal default falls back ([#4268](https://github.com/apache/datafusion-comet/issues/4268)) |
+| `nth_value` | ✅ | via `CometWindowExec` |
+| `ntile` | ✅ | via `CometWindowExec` |
+| `percent_rank` | ✅ | via `CometWindowExec` |
+| `rank` | ✅ | via `CometWindowExec` |
+| `row_number` | ✅ | via `CometWindowExec` |
 
 ---
 
@@ -680,5 +680,5 @@ This list is illustrative, not exhaustive: the per-function tables are not the c
 
 ## See also
 
-- [Comet Compatibility Guide](compatibility/index.md) - known incompatibilities and edge cases for ⚠️ expressions.
+- [Comet Compatibility Guide](compatibility/index.md) - known incompatibilities and edge cases for supported expressions.
 - [Expression Audits (contributor guide)](../../contributor-guide/expression-audits/index.md) - per-version (Spark 3.4 / 3.5 / 4.0 / 4.1) audit notes for audited expressions.
