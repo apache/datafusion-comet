@@ -40,6 +40,7 @@ use futures::{Stream, StreamExt, TryStreamExt};
 use iceberg::arrow::ScanMetrics;
 use iceberg::io::{FileIO, FileIOBuilder, StorageFactory};
 use iceberg::Runtime as IcebergRuntime;
+use iceberg::{Error, ErrorKind};
 use iceberg_storage_opendal::CustomAwsCredentialLoader;
 use iceberg_storage_opendal::OpenDalStorageFactory;
 
@@ -159,7 +160,7 @@ impl IcebergScanExec {
     /// deletes via iceberg-rust's ArrowReader.
     fn execute_with_tasks(
         &self,
-        mut tasks: Vec<FileScanTask>,
+        tasks: Vec<FileScanTask>,
         context: Arc<TaskContext>,
     ) -> DFResult<SendableRecordBatchStream> {
         let output_schema = Arc::clone(&self.output_schema);
@@ -168,18 +169,22 @@ impl IcebergScanExec {
             &self.metadata_location,
             &self.catalog_name,
         )?;
-
-        // Delete-file sizes arrive as 0 (not serialized); fill them before reading (see
-        // fill_delete_file_sizes).
-        get_runtime().block_on(Self::fill_delete_file_sizes(&mut tasks, &file_io))?;
-
         let batch_size = context.session_config().batch_size();
 
         let metrics = IcebergScanMetrics::new(&self.metrics);
-        let num_tasks = tasks.len();
-        metrics.num_splits.add(num_tasks);
+        metrics.num_splits.add(tasks.len());
 
-        let task_stream = futures::stream::iter(tasks.into_iter().map(Ok)).boxed();
+        // Fill delete-file sizes as the first step of the task stream so the stats run on the
+        // iceberg runtime alongside the reads, not on the calling executor thread (see
+        // fill_delete_file_sizes).
+        let fill_io = file_io.clone();
+        let task_stream = futures::stream::once(async move {
+            let mut tasks = tasks;
+            Self::fill_delete_file_sizes(&mut tasks, &fill_io).await?;
+            Ok::<_, Error>(futures::stream::iter(tasks.into_iter().map(Ok::<_, Error>)))
+        })
+        .try_flatten()
+        .boxed();
 
         // iceberg-rust's ArrowReader spawns IO/CPU work onto an iceberg::Runtime. execute() runs
         // on the JVM-called thread outside any tokio context, so Runtime::current() would panic;
@@ -256,16 +261,20 @@ impl IcebergScanExec {
     async fn fill_delete_file_sizes(
         tasks: &mut [FileScanTask],
         file_io: &FileIO,
-    ) -> Result<(), DataFusionError> {
+    ) -> Result<(), Error> {
         use datafusion::common::{HashMap, HashSet};
 
-        // Owns the paths so no borrow of `tasks` is held into the mutable write-back below.
+        // Dedup: the JVM pools delete-file lists, not individual files, so the same delete file
+        // recurs across the tasks that share it. Owning the paths also avoids holding a borrow of
+        // `tasks` into the mutable write-back below.
         let mut needed: HashSet<String> = HashSet::new();
         for task in tasks.iter() {
             for delete in &task.deletes {
-                if delete.file_size_in_bytes == 0 {
-                    needed.insert(delete.file_path.clone());
-                }
+                // Delete-file sizes are never serialized, so they always arrive as 0. If we ever
+                // trust manifest sizes (pending the unreleased apache/iceberg#12554 fix), skip
+                // already-sized files here instead of asserting.
+                debug_assert_eq!(delete.file_size_in_bytes, 0);
+                needed.insert(delete.file_path.clone());
             }
         }
         if needed.is_empty() {
@@ -276,21 +285,18 @@ impl IcebergScanExec {
             let file_io = file_io.clone();
             async move {
                 let size = file_io
-                    .new_input(&path)
-                    .map_err(|e| {
-                        DataFusionError::Execution(format!(
-                            "Failed to open delete file '{path}' to read its size: {e}"
-                        ))
-                    })?
+                    .new_input(&path)?
                     .metadata()
                     .await
                     .map_err(|e| {
-                        DataFusionError::Execution(format!(
-                            "Failed to stat delete file '{path}' to read its size: {e}"
-                        ))
+                        Error::new(
+                            ErrorKind::Unexpected,
+                            format!("Failed to stat delete file '{path}'"),
+                        )
+                        .with_source(e)
                     })?
                     .size;
-                Ok::<(String, u64), DataFusionError>((path, size))
+                Ok::<(String, u64), Error>((path, size))
             }
         }))
         .await?;

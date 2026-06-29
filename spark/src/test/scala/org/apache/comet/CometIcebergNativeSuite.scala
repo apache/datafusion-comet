@@ -795,7 +795,9 @@ class CometIcebergNativeSuite
         assert(deletePaths.nonEmpty, "expected at least one positional delete file")
 
         deletePaths.foreach { p =>
-          assert(new File(new URI(p)).delete(), s"failed to remove delete file from disk: $p")
+          // Iceberg may report the path with or without a file: scheme.
+          val local = if (p.startsWith("file:")) new File(new URI(p)) else new File(p)
+          assert(local.delete(), s"failed to remove delete file from disk: $p")
         }
 
         // If deletes were silently dropped (the #4723 bug), COUNT(*) would return a wrong count
