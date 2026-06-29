@@ -90,6 +90,25 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometDeltaScanMarker] wit
   private[delta] val PerFileMetadataNames: Set[String] =
     SparkFileMetadataNames ++ PerFileRowTrackingNames
 
+  // Spark marks a `_metadata.*` virtual column's StructField with `__file_source_metadata_col` (and
+  // `__metadata_col`). A REAL data column that merely happens to share one of the SparkFileMetadataNames
+  // (e.g. a user table with a `file_name` column) carries NEITHER. So strip a `file_*` name from the
+  // kernel read schema ONLY when the field is actually a Spark file-metadata virtual column -- else a
+  // genuine `file_name`/`file_path`/... data column would be dropped from the read while the proto's
+  // required_schema keeps it ("missing kernel data-column schemas"). Mirrors `Attribute.isMetadataCol`.
+  private[delta] def isSparkFileMetadataField(f: StructField): Boolean =
+    f.metadata.contains("__file_source_metadata_col") || f.metadata.contains("__metadata_col")
+
+  // A field is a synthetic/virtual read column to STRIP from the kernel projection iff its name is in
+  // `stripNames` AND -- for the file-metadata names that can collide with real user columns -- it
+  // actually carries the Spark file-metadata marker.
+  private[delta] def isStrippableSynthetic(f: StructField, stripNames: Set[String]): Boolean = {
+    val lc = f.name.toLowerCase(Locale.ROOT)
+    if (!stripNames.contains(lc)) false
+    else if (SparkFileMetadataNames.contains(lc)) isSparkFileMetadataField(f)
+    else true
+  }
+
   /**
    * `kind` string for the `ContribOp` envelope this serde produces. The native side's
    * `comet-contrib-delta` rlib registers `DeltaScanPlanner` under this same kind via
@@ -146,6 +165,33 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometDeltaScanMarker] wit
       StructField(f.name, org.apache.spark.sql.types.LongType, nullable = true, md)
     } else {
       f
+    }
+  }
+
+  /**
+   * Splice partition columns into a kernel read (logical) schema at the position kernel's per-file
+   * transform INJECTS them: immediately after the last field that advances kernel's
+   * `last_physical_field` -- every read field EXCEPT a RowId metadata column, which kernel resolves
+   * via `GenerateRowId` (coalesce(materialised, baseRowId+row_index)) and deliberately does NOT
+   * advance past. Kernel's expression evaluator (`evaluate_struct_patch_expression`) labels its
+   * output columns POSITIONALLY against this shipped logical schema, so the partition columns must
+   * occupy exactly that emission slot. Appending them last instead lands the Int32 partition literal
+   * in the row_id slot and the Long row_id in the partition slot -- the #30 column swap (visible as
+   * row_id == partition on a partitioned row-tracking table). `RowIndex` / `RowCommitVersion` DO
+   * advance `last_physical_field`, so only RowId metadata columns are special-cased here.
+   */
+  private def spliceKernelPartitions(
+      dataFields: Array[StructField],
+      partitionFields: Array[StructField]): Array[StructField] = {
+    if (partitionFields.isEmpty) {
+      dataFields
+    } else {
+      def isKernelRowId(f: StructField): Boolean =
+        f.metadata.contains(KernelMetadataSpecKey) &&
+          f.metadata.getString(KernelMetadataSpecKey) == KernelRowIdSpec
+      val cut = dataFields.lastIndexWhere(f => !isKernelRowId(f)) + 1
+      val (before, after) = dataFields.splitAt(cut)
+      before ++ partitionFields ++ after
     }
   }
 
@@ -224,8 +270,7 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometDeltaScanMarker] wit
         SyntheticReadFieldNames -
           DeltaReflection.RowIdColumnName.toLowerCase(Locale.ROOT) -
           DeltaReflection.RowCommitVersionColumnName.toLowerCase(Locale.ROOT)
-    val dataFields = requiredSchema.fields.filterNot(f =>
-      stripNames.contains(f.name.toLowerCase(Locale.ROOT)))
+    val dataFields = requiredSchema.fields.filterNot(f => isStrippableSynthetic(f, stripNames))
     if (dataFields.isEmpty) {
       // Zero data columns (partition-only / synthetic-only reads): no kernel read schema; the
       // executor drives the row count without a parquet read and the partition columns are filled
@@ -242,7 +287,8 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometDeltaScanMarker] wit
       // so column-mapping physical names / field-ids ride along. The AddFiles route passes an empty
       // `partitionSchema` (its identity transform can't inject partitions, so partitions stay
       // Comet-appended there until that route also moves to kernel enumeration).
-      val projected0 = dataFields.map(pick) ++ partitionSchema.fields.map(pick)
+      val data0 = dataFields.map(pick)
+      val parts = partitionSchema.fields.map(pick)
       // Materialised row-id columns (`_row-id-col-*`, added by OPTIMIZE/UPDATE/MERGE) are matched by
       // NAME and carry NO column-mapping annotation. Under ACTIVE column mapping kernel's logical
       // with_schema requires both physicalName AND id on every regular field, so shipping the
@@ -257,11 +303,14 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometDeltaScanMarker] wit
       // no kernel metadata-column support (Error::unsupported), so `_row-commit-version-col-*` is left
       // as-is. See state_info.rs RowId handling + CometDeltaRowTrackingMaterializedSuite (M3).
       val columnMappingActive =
-        projected0.exists(_.metadata.contains(DeltaReflection.PhysicalNameMetadataKey))
-      val projected =
-        if (columnMappingActive) projected0.map(asKernelRowIdMetadataColumnIfMaterialized)
-        else projected0
-      StructType(projected).json
+        (data0 ++ parts).exists(_.metadata.contains(DeltaReflection.PhysicalNameMetadataKey))
+      val data =
+        if (columnMappingActive) data0.map(asKernelRowIdMetadataColumnIfMaterialized) else data0
+      // Splice partitions at kernel's injection slot (after the last non-RowId field), NOT appended
+      // last -- otherwise the positional output labeling swaps an Int32 partition with the Long
+      // row_id under active CM (the materialised row-id became a RowId metadata column above). See
+      // `spliceKernelPartitions` / #30.
+      StructType(spliceKernelPartitions(data, parts)).json
     }
   }
 
@@ -299,8 +348,7 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometDeltaScanMarker] wit
       n.equalsIgnoreCase(DeltaReflection.RowIdColumnName) ||
         n.toLowerCase(Locale.ROOT).startsWith("_row-id-col-")
     val kept: Array[StructField] = requiredSchema.fields.flatMap { f =>
-      val lc = f.name.toLowerCase(Locale.ROOT)
-      if (workerOnly.contains(lc)) {
+      if (isStrippableSynthetic(f, workerOnly)) {
         None // worker-side constant; not read from kernel
       } else if (isRowIndex(f.name)) {
         Some(asKernelMetadataColumn(f.name, "row_index"))
@@ -313,7 +361,11 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometDeltaScanMarker] wit
         Some(pick(f))
       }
     }
-    val all = kept ++ partitionSchema.fields.map(pick)
+    // Splice partitions at kernel's injection slot (after the last non-RowId field), NOT appended
+    // last: `_metadata.row_id` is shipped as a kernel RowId metadata column (line above), and kernel
+    // injects the partition literal BEFORE it. Appending partitions last makes the executor's
+    // positional labeling swap the Int32 partition value with the Long row_id -- the #30 column swap.
+    val all = spliceKernelPartitions(kept, partitionSchema.fields.map(pick))
     if (all.isEmpty) "" else StructType(all).json
   }
 

@@ -41,8 +41,14 @@ object DeltaContribScan {
    * `Any`-style type URL for [[DeltaScan]]. The `type.googleapis.com/` prefix is the
    * `google.protobuf.Any` convention; the native side matches on the `package.Message` suffix, so
    * the prefix is informational.
+   *
+   * The suffix is namespaced to this contrib rather than to the message's current proto package
+   * (`spark.spark_operator`, which is core's). The `DeltaScan` definitions still live in core's
+   * `operator.proto` only because a contrib proto build pipeline does not exist yet, and are meant
+   * to move under `contrib/delta/proto` (apache/datafusion-comet#5378). Naming the owner rather
+   * than the file's current home keeps that relocation invisible here and on the wire.
    */
-  val TypeUrl: String = "type.googleapis.com/spark.spark_operator.DeltaScan"
+  val TypeUrl: String = "type.googleapis.com/comet.contrib.delta.DeltaScan"
 
   /** Wrap a `DeltaScan` in the generic contrib envelope. */
   def pack(scan: DeltaScan): ContribScan =
