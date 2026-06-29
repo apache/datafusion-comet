@@ -159,7 +159,7 @@ The split:
 
 The common block is serialized as a `DeltaScan` message and packed into the
 operator proto's generic `OpStruct::ContribScan` envelope (`contrib_scan = 200`)
-with the type URL `type.googleapis.com/spark.spark_operator.DeltaScan`. Core has
+with the type URL `type.googleapis.com/comet.contrib.delta.DeltaScan`. Core has
 exactly one such field, shared by every contrib scan and routed purely by
 `type_url`, so core's oneof never grows per format and contrib PRs cannot
 collide on a field number. `DeltaContribScan` is the single place that type URL

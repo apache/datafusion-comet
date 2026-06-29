@@ -150,6 +150,12 @@ want to accelerate them:
   `spark.databricks.delta.deletionVectors.useMetadataRowIndex=false`.
 - `TahoeLogFileIndexWithCloudFetch` (Databricks-proprietary, no OSS reproducer).
 - Tables/queries that fail the schema/encryption compatibility checks.
+- CDF (`readChangeFeed`) reads of a **deletion-vector** table — kernel's
+  `TableChanges` can't resolve the persistent `deletion_vector_*.bin`, so
+  `convertCdf` declines via `DeltaReflection.cdfHasUnsupportedTableFeatures` and
+  Spark's CDF reader serves it. Guard: `CometDeltaCdcSuite` "CDC read of a
+  deletion-vector table declines to Spark". (Catalog-managed CDF declines for a
+  different reason — see A8.)
 
 ### A6. INT96 timestamps read as nanoseconds (far-future overflow) — kernel gap
 
@@ -217,6 +223,72 @@ but kernel exposes no equivalent.
   `test(...)` and delete this entry.
 - **Guard:** the ignore lives in `contrib/delta/dev/diffs/4.1.0.diff` with the full rationale
   inline; this entry is the tracking record. Internal task #79.
+
+### A8. Catalog-managed (coordinated-commits) tables — kernel snapshot needs `max_catalog_version`
+
+- **Behavior:** a catalog-managed table (Delta `catalogOwned` / coordinated-commits
+  feature) is **not** read through the native delta-kernel path, for either read
+  shape — but the two shapes degrade differently:
+  - **Regular `SELECT` (pre-existing):** `DeltaScanRule` plants a
+    `CometDeltaScanMarker` wrapping the original Delta `FileSourceScanExec`.
+    `CometExecRule` tries to convert it to a native `CometDeltaNativeScanExec`, but
+    the conversion runs `planDeltaScan`, which builds a kernel snapshot on the driver
+    and throws `Catalog-managed table requires max_catalog_version`; the conversion
+    declines (`return None`). The marker is left in the plan and, being a
+    `LeafExecNode`, **delegates execution to its wrapped vanilla `originalScan`** — a
+    plain Spark Delta read. So a catalog-managed regular scan returns **correct
+    results but runs on vanilla Spark with NO Comet scan acceleration**: not the
+    kernel-native path, and not Comet's regular Parquet scan either (the marker hides
+    `originalScan` from `CometScanRule`). Partition pruning / limit pushdown still
+    work, because Delta's planning applies them to the wrapped scan (verified: the
+    `DeltaWithCatalogOwned*` / `DeltaLimitPushDownWithCatalogOwned*` suites read 1
+    file for a one-partition predicate and produce correct `ScanReport`s once the
+    marker is unwrapped). _Possible enhancement:_ on decline, let the marker fall
+    through to `CometScanExec` (Comet's Parquet scan) so catalog-managed users get at
+    least baseline Comet acceleration — correct because catalog-management is a
+    commit-coordination feature, not a data-layout one, so the Parquet files read
+    fine.
+  - **CDF (`readChangeFeed`):** kernel's `TableChanges` raises the same requirement,
+    but at EXECUTION time where the planning-time catch can't see it (it would crash
+    mid-query). `convertCdf` therefore declines up front via
+    `DeltaReflection.cdfHasUnsupportedTableFeatures` (matches `catalogOwned` /
+    coordinated-commits / commit-coordinator config keys or protocol features), and
+    Spark's CDF reader serves it (no Comet for that read).
+- **Why not just supply `max_catalog_version`?** We have the driver-resolved snapshot
+  version, so we _could_ call kernel's `with_max_catalog_version()`. But
+  catalog-managed = coordinated commits, where the commit coordinator can hold
+  _ratified-but-unbackfilled_ commits that aren't in `_delta_log`. Our native engine
+  reads the log through `object_store` only (no commit-coordinator client), so
+  supplying just the version risks clearing the error while **silently reading stale /
+  incomplete change data** — strictly worse than declining. Spark's reader has the
+  coordinator client, so the fallback is guaranteed correct.
+- **Correctness:** preserved — both shapes produce correct results via their fallback;
+  no wrong data.
+- **Guard:** the Delta own-suite regression `*WithCatalogOwned*Suite` family runs green
+  via these fallbacks — `DeltaCDCScalaWithCatalogOwnedBatch{1,2}Suite` (CDF decline),
+  `DeltaTimeTravelWithCatalogOwned*` / `DeltaLimitPushDownWithCatalogOwned*` etc.
+  (regular-scan marker→vanilla fallback). CDF decline detection lives in
+  `DeltaReflection.cdfHasUnsupportedTableFeatures`. The marker-bearing reads are
+  invisible to Delta's scan-finding test helpers (a declined `CometDeltaScanMarker`
+  is neither `FileSourceScanExec` nor `CometDeltaNativeScanExec`), so `4.1.0.diff`
+  unwraps `CometDeltaScanMarker => originalScan` in `DeltaSuite`'s partition-skip
+  `fileScans` collect and in `ScanReportHelper.collectScans` (mirroring the existing
+  `TestsStatistics` unwrap). Without it, `DeltaWithCatalogOwnedBatch1Suite`'s "query
+  with predicates should skip partitions" and the `DeltaLimitPushDownWithCatalogOwned*`
+  `getScanReport` tests fail (`MatchError: List()` / `size 0`) even though the reads
+  are correct. `4.0.0.diff` / `3.3.2.diff` do NOT need the same unwrap: their
+  scan-inspecting suites (`DeltaLimitPushDownSuite`, `DataSkippingDeltaTests`,
+  `MergeIntoSuiteBase`, `DeltaSuite`) have no `WithCoordinatedCommits` variant, and
+  kernel gates the `max_catalog_version` decline on `CatalogManaged` /
+  `CatalogOwnedPreview` (4.1's `catalogOwned`), not the older `coordinatedCommits`
+  feature — so no catalog-managed marker arises there (3.3.2 also runs `lite`, which
+  drops the `WithCoordinatedCommits` families entirely).
+- **Work to close (future enhancement):** thread the driver-resolved
+  `max_catalog_version` through the scan proto into kernel's `Snapshot` /
+  `TableChanges` builder, AND either (a) implement a commit-coordinator read path in
+  the native engine, or (b) prove a version-only read matches vanilla for the
+  unbackfilled-commit case before enabling it. Until then decline is the
+  conservative-correct choice. Internal task #20.
 
 ---
 

@@ -66,8 +66,9 @@ Java 11 or later, and are the only ones offered for Scala 2.12.
 
 ## Usage
 
-With a Delta-enabled Comet build on the classpath, native Delta scans are **enabled by
-default** (`spark.comet.scan.deltaNative.enabled=true`). The example below uses the
+With a Delta-enabled Comet build on the classpath, native Delta scans are **off by default**
+while the feature is experimental -- set `spark.comet.scan.deltaNative.enabled=true` to turn them
+on. The example below uses the
 Spark 4.0 / Scala 2.13 build — note `comet-spark-…jar` must be the jar you built above
 with `-Pcontrib-delta`; the published Maven artifact is built without it and carries no
 Delta support:
@@ -89,17 +90,13 @@ $SPARK_HOME/bin/spark-shell \
 scala> spark.sql("SELECT * FROM delta.`/tmp/my_delta_table` WHERE id > 10").show()
 ```
 
-To disable native Delta scans (fall back to Spark's Delta reader), set
-`spark.comet.scan.deltaNative.enabled=false`.
+To go back to Spark's Delta reader, unset `spark.comet.scan.deltaNative.enabled` (or set it to
+`false`).
 
 ### Tuning
 
-| Config                                                      | Default | Description                                                                                                                                                                                                                                                                 |
-| ----------------------------------------------------------- | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `spark.comet.scan.deltaNative.enabled`                      | `true`  | Enable native Delta table scans.                                                                                                                                                                                                                                            |
-| `spark.comet.scan.deltaNative.dataFileConcurrencyLimit`     | `1`     | Per-task concurrency when reading data files. Raise to 2–8 on tables with many small files to hide I/O latency (uses more memory).                                                                                                                                          |
-| `spark.comet.scan.deltaNative.fallbackOnUnsupportedFeature` | `true`  | When `true`, fall back to Spark's Delta reader on any unsupported Delta protocol feature. Set `false` to error instead (useful in tests asserting the native path is taken).                                                                                                |
-| `spark.comet.delta.cdf.maxPartitions`                       | `8`     | Maximum number of Spark partitions a Change Data Feed (`readChangeFeed`) read is split into. The version range is chunked into up to this many contiguous sub-ranges, each read by an independent native `TableChanges` call. Capped by the number of commits in the range. |
+<!--BEGIN:CONFIG_TABLE[delta]-->
+<!--END:CONFIG_TABLE-->
 
 ## Supported features
 

@@ -35,7 +35,7 @@ When a Spark executor runs its partition, Comet's native exec framework decodes
 the operator proto and hits the generic `OpStruct::ContribScan` arm. That arm
 names no format: it offers the envelope to each compiled-in contrib handler,
 which claims it only if the `type_url` is its own (`try_plan_contrib_scan`
-matches `spark.spark_operator.DeltaScan` and decodes the payload itself). A
+matches `comet.contrib.delta.DeltaScan` and decodes the payload itself). A
 build without a handler for the incoming `type_url` returns a clear
 "not compiled in" error naming that URL. The Delta handler in core is a thin
 shim:
@@ -182,8 +182,15 @@ neither the relation nor the contrib. The inclusive
 (default 8) contiguous sub-ranges, each read by an independent native
 `TableChanges` call as one Spark partition — staying a single `CometNativeExec`
 (not a `CometUnionExec`, which would make a downstream native shuffle
-ineligible). CDF is read kernel-natively; it is NOT declined and was never
-handled via a synthetic-columns exec.
+ineligible). CDF was never handled via a synthetic-columns exec. It is read
+kernel-natively for the common case, but it **does** decline to Spark's CDF
+reader for tables kernel's `TableChanges` cannot serve correctly — deletion-vector
+tables (kernel can't resolve the persistent `deletion_vector_*.bin`) and
+catalog-managed / coordinated-commits tables (kernel requires a
+`max_catalog_version` we don't supply). Both are gated up front in `convertCdf`
+via `DeltaReflection.cdfHasUnsupportedTableFeatures`, so the decline happens at
+planning rather than crashing mid-execution. See
+[08-known-limitations.md](08-known-limitations.md) A5 / A8.
 
 ## The output stream
 
