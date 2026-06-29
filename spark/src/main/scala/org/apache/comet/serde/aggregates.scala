@@ -604,7 +604,8 @@ object CometPercentile extends CometAggregateExpressionSerde[Percentile] {
     "Descending order in `WITHIN GROUP (ORDER BY ... DESC)` is not supported."
   private val inputTypeReason = "Only numeric input types are supported."
   // DataFusion's percentile_cont quantizes the linear interpolation weight to 6 decimal places,
-  // so an interpolated percentile may differ from Spark by up to `(upper - lower) * 1e-6`. See #4719.
+  // so an interpolated percentile may differ from Spark by up to `(upper - lower) * 1e-6`.
+  // See #4719.
   private val precisionReason =
     "Interpolated values may differ from Spark by up to `(upper - lower) * 1e-6` because" +
       " DataFusion quantizes the interpolation weight to 6 decimal places (#4719)."
