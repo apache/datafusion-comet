@@ -1538,16 +1538,18 @@ trait CometBaseAggregate {
       return None
     }
 
-    val incompatibleAggs =
-      QueryPlanSerde.aggsNotSupportingMixedExecution(aggregate.aggregateExpressions)
-    if (sparkFinalMode && incompatibleAggs.nonEmpty) {
-      val names = incompatibleAggs.map(_.prettyName).distinct.mkString(", ")
-      withFallbackReason(
-        aggregate,
-        "Spark Final aggregate without Comet Partial requires compatible " +
-          "intermediate buffer formats, but the following aggregate function(s) " +
-          s"have incompatible buffers: $names")
-      return None
+    if (sparkFinalMode) {
+      val incompatibleAggs =
+        QueryPlanSerde.aggsNotSupportingMixedExecution(aggregate.aggregateExpressions)
+      if (incompatibleAggs.nonEmpty) {
+        val names = incompatibleAggs.map(_.prettyName).distinct.sorted.mkString(", ")
+        withFallbackReason(
+          aggregate,
+          "Spark Final aggregate without Comet Partial requires compatible " +
+            "intermediate buffer formats, but the following aggregate function(s) " +
+            s"have incompatible buffers: $names")
+        return None
+      }
     }
 
     // Check if this aggregate has been tagged as unsafe for mixed execution
