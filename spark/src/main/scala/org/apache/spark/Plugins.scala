@@ -95,9 +95,7 @@ class CometDriverPlugin extends DriverPlugin with Logging with ShimCometDriverPl
   override def shutdown(): Unit = {
     logInfo("CometDriverPlugin shutdown")
 
-    if (NativeBase.isLoaded) {
-      NativeBase.release()
-    }
+    NativeBase.releaseNative()
 
     super.shutdown()
   }
@@ -163,9 +161,7 @@ class CometExecutorPlugin extends ExecutorPlugin with Logging {
   override def shutdown(): Unit = {
     logInfo("CometExecutorPlugin shutdown")
 
-    if (NativeBase.isLoaded) {
-      NativeBase.release()
-    }
+    NativeBase.releaseNative()
 
     super.shutdown()
   }

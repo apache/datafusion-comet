@@ -27,6 +27,7 @@ import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -49,6 +50,7 @@ public abstract class NativeBase {
   private static boolean loaded = false;
   private static volatile Throwable loadErr = null;
   private static final String searchPattern = "libcomet-";
+  private static final AtomicBoolean released = new AtomicBoolean(false);
 
   static {
     try {
@@ -293,8 +295,19 @@ public abstract class NativeBase {
    */
   static native void init(String logConfPath, String logLevel);
 
+  /** Release native resources through JNI */
+  static native void release();
+
   /** Release native resources */
-  public static native void release();
+  public static void releaseNative() throws Throwable {
+    if (!isLoaded()) {
+      return;
+    }
+
+    if (released.compareAndSet(false, true)) {
+      release();
+    }
+  }
 
   /**
    * Check if a specific feature is enabled in the native library.
