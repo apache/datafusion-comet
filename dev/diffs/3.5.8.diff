@@ -1045,37 +1045,6 @@ index 71af1fd69c3..81a04c93c9c 100644
        }
      }
    }
-diff --git a/sql/core/src/test/scala/org/apache/spark/sql/SparkSessionExtensionSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/SparkSessionExtensionSuite.scala
-index 8b4ac474f87..3f79f20822f 100644
---- a/sql/core/src/test/scala/org/apache/spark/sql/SparkSessionExtensionSuite.scala
-+++ b/sql/core/src/test/scala/org/apache/spark/sql/SparkSessionExtensionSuite.scala
-@@ -223,6 +223,8 @@ class SparkSessionExtensionSuite extends SparkFunSuite with SQLHelper with Adapt
-     withSession(extensions) { session =>
-       session.conf.set(SQLConf.ADAPTIVE_EXECUTION_ENABLED, true)
-       session.conf.set(SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key, "-1")
-+      // https://github.com/apache/datafusion-comet/issues/1197
-+      session.conf.set("spark.comet.enabled", false)
-       assert(session.sessionState.columnarRules.contains(
-         MyColumnarRule(PreRuleReplaceAddWithBrokenVersion(), MyPostRule())))
-       import session.sqlContext.implicits._
-@@ -281,6 +283,8 @@ class SparkSessionExtensionSuite extends SparkFunSuite with SQLHelper with Adapt
-     }
-     withSession(extensions) { session =>
-       session.conf.set(SQLConf.ADAPTIVE_EXECUTION_ENABLED, enableAQE)
-+      // https://github.com/apache/datafusion-comet/issues/1197
-+      session.conf.set("spark.comet.enabled", false)
-       assert(session.sessionState.columnarRules.contains(
-         MyColumnarRule(PreRuleReplaceAddWithBrokenVersion(), MyPostRule())))
-       import session.sqlContext.implicits._
-@@ -319,6 +323,8 @@ class SparkSessionExtensionSuite extends SparkFunSuite with SQLHelper with Adapt
-     val session = SparkSession.builder()
-       .master("local[1]")
-       .config(COLUMN_BATCH_SIZE.key, 2)
-+      // https://github.com/apache/datafusion-comet/issues/1197
-+      .config("spark.comet.enabled", false)
-       .withExtensions { extensions =>
-         extensions.injectColumnar(session =>
-           MyColumnarRule(PreRuleReplaceAddWithBrokenVersion(), MyPostRule())) }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala
 index 04702201f82..c5ab5443ff7 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala

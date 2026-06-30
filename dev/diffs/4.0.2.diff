@@ -1182,37 +1182,6 @@ index 575a4ae69d1..129d9f27232 100644
        }
      }
    }
-diff --git a/sql/core/src/test/scala/org/apache/spark/sql/SparkSessionExtensionSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/SparkSessionExtensionSuite.scala
-index c1c041509c3..7d463e4b85e 100644
---- a/sql/core/src/test/scala/org/apache/spark/sql/SparkSessionExtensionSuite.scala
-+++ b/sql/core/src/test/scala/org/apache/spark/sql/SparkSessionExtensionSuite.scala
-@@ -235,6 +235,8 @@ class SparkSessionExtensionSuite extends SparkFunSuite with SQLHelper with Adapt
-     withSession(extensions) { session =>
-       session.conf.set(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key, true)
-       session.conf.set(SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key, "-1")
-+      // https://github.com/apache/datafusion-comet/issues/1197
-+      session.conf.set("spark.comet.enabled", false)
-       assert(session.sessionState.columnarRules.contains(
-         MyColumnarRule(PreRuleReplaceAddWithBrokenVersion(), MyPostRule())))
-       import session.implicits._
-@@ -293,6 +295,8 @@ class SparkSessionExtensionSuite extends SparkFunSuite with SQLHelper with Adapt
-     }
-     withSession(extensions) { session =>
-       session.conf.set(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key, enableAQE)
-+      // https://github.com/apache/datafusion-comet/issues/1197
-+      session.conf.set("spark.comet.enabled", false)
-       assert(session.sessionState.columnarRules.contains(
-         MyColumnarRule(PreRuleReplaceAddWithBrokenVersion(), MyPostRule())))
-       import session.implicits._
-@@ -331,6 +335,8 @@ class SparkSessionExtensionSuite extends SparkFunSuite with SQLHelper with Adapt
-     val session = SparkSession.builder()
-       .master("local[1]")
-       .config(COLUMN_BATCH_SIZE.key, 2)
-+      // https://github.com/apache/datafusion-comet/issues/1197
-+      .config("spark.comet.enabled", false)
-       .withExtensions { extensions =>
-         extensions.injectColumnar(session =>
-           MyColumnarRule(PreRuleReplaceAddWithBrokenVersion(), MyPostRule())) }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/SparkSessionJobTaggingAndCancellationSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/SparkSessionJobTaggingAndCancellationSuite.scala
 index 5ba69c8f9d9..ac1256afe88 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/SparkSessionJobTaggingAndCancellationSuite.scala

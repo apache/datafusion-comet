@@ -1037,37 +1037,6 @@ index 2dabcf01be7..8fcec0d1ce4 100644
        }
      }
    }
-diff --git a/sql/core/src/test/scala/org/apache/spark/sql/SparkSessionExtensionSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/SparkSessionExtensionSuite.scala
-index 48ad10992c5..51d1ee65422 100644
---- a/sql/core/src/test/scala/org/apache/spark/sql/SparkSessionExtensionSuite.scala
-+++ b/sql/core/src/test/scala/org/apache/spark/sql/SparkSessionExtensionSuite.scala
-@@ -221,6 +221,8 @@ class SparkSessionExtensionSuite extends SparkFunSuite with SQLHelper {
-     withSession(extensions) { session =>
-       session.conf.set(SQLConf.ADAPTIVE_EXECUTION_ENABLED, true)
-       session.conf.set(SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key, "-1")
-+      // https://github.com/apache/datafusion-comet/issues/1197
-+      session.conf.set("spark.comet.enabled", false)
-       assert(session.sessionState.columnarRules.contains(
-         MyColumnarRule(PreRuleReplaceAddWithBrokenVersion(), MyPostRule())))
-       import session.sqlContext.implicits._
-@@ -279,6 +281,8 @@ class SparkSessionExtensionSuite extends SparkFunSuite with SQLHelper {
-     }
-     withSession(extensions) { session =>
-       session.conf.set(SQLConf.ADAPTIVE_EXECUTION_ENABLED, enableAQE)
-+      // https://github.com/apache/datafusion-comet/issues/1197
-+      session.conf.set("spark.comet.enabled", false)
-       assert(session.sessionState.columnarRules.contains(
-         MyColumnarRule(PreRuleReplaceAddWithBrokenVersion(), MyPostRule())))
-       import session.sqlContext.implicits._
-@@ -317,6 +321,8 @@ class SparkSessionExtensionSuite extends SparkFunSuite with SQLHelper {
-     val session = SparkSession.builder()
-       .master("local[1]")
-       .config(COLUMN_BATCH_SIZE.key, 2)
-+      // https://github.com/apache/datafusion-comet/issues/1197
-+      .config("spark.comet.enabled", false)
-       .withExtensions { extensions =>
-         extensions.injectColumnar(session =>
-           MyColumnarRule(PreRuleReplaceAddWithBrokenVersion(), MyPostRule())) }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/StringFunctionsSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/StringFunctionsSuite.scala
 index 18123a4d6ec..0fe185baa33 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/StringFunctionsSuite.scala
