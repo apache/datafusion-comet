@@ -121,7 +121,7 @@ extract_date_part!(SparkSecond, "second", Second);
 mod tests {
     use super::*;
     use arrow::array::{ArrayRef, Int32Array, TimestampMicrosecondArray};
-    use arrow::datatypes::{Field, Int8Type, TimeUnit};
+    use arrow::datatypes::{Field, TimeUnit};
     use datafusion::config::ConfigOptions;
     use std::sync::Arc;
 
@@ -214,10 +214,13 @@ mod tests {
 
     #[test]
     fn timestamp_ntz_dictionary_input_extracts_local_time() {
-        use arrow::array::{DictionaryArray, Int8Array};
+        use arrow::array::{DictionaryArray, Int32Array};
+        use arrow::datatypes::Int32Type;
+        // Comet only emits Int32-keyed dictionaries, so the test mirrors that production shape and
+        // the declared Dictionary(Int32, Int32) return type.
         let values = Arc::new(TimestampMicrosecondArray::from(vec![Some(MICROS)])) as ArrayRef;
-        let keys = Int8Array::from(vec![0i8]);
-        let dict = DictionaryArray::<Int8Type>::new(keys, values);
+        let keys = Int32Array::from(vec![0i32]);
+        let dict = DictionaryArray::<Int32Type>::new(keys, values);
         let udf = SparkHour::new("America/Los_Angeles".to_string());
         let return_field = Arc::new(Field::new(
             "hour",
@@ -235,9 +238,22 @@ mod tests {
             ColumnarValue::Array(arr) => arr,
             _ => panic!("Expected array"),
         };
-        // Decode to a plain Int32Array regardless of whether the kernel kept the dictionary.
-        let decoded = arrow::compute::cast(&arr, &DataType::Int32).unwrap();
-        let int_arr = decoded.as_any().downcast_ref::<Int32Array>().unwrap();
-        assert_eq!(int_arr.value(0), 18);
+        // The kernel preserves the Int32 key type, so the result keeps the declared dictionary shape.
+        assert_eq!(
+            arr.data_type(),
+            &DataType::Dictionary(Box::new(DataType::Int32), Box::new(DataType::Int32))
+        );
+        let dict = arr
+            .as_any()
+            .downcast_ref::<DictionaryArray<Int32Type>>()
+            .unwrap();
+        let key = dict.keys().value(0) as usize;
+        let extracted = dict
+            .values()
+            .as_any()
+            .downcast_ref::<Int32Array>()
+            .unwrap()
+            .value(key);
+        assert_eq!(extracted, 18);
     }
 }
