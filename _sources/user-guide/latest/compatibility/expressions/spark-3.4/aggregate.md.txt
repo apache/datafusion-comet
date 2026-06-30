@@ -44,4 +44,18 @@ The following differences from Spark are always present and do not require any a
 The following differences from Spark are always present and do not require any additional configuration:
 
 - This function is not deterministic. Results may not match Spark.
+
+## Percentile
+
+The following incompatibilities cause `Percentile` to fall back to Spark by default. Set `spark.comet.expression.Percentile.allowIncompatible=true` to enable Comet acceleration despite these differences.
+
+- Interpolated values may differ from Spark by up to `(upper - lower) * 1e-6` because DataFusion quantizes the interpolation weight to 6 decimal places (#4719).
+
+The following cases are not supported by Comet:
+
+- An array of percentages is not supported.
+- The percentage argument must be a literal.
+- A frequency argument is not supported.
+- Descending order in `WITHIN GROUP (ORDER BY ... DESC)` is not supported.
+- Only numeric input types are supported.
 <!--END:EXPR_COMPAT-->

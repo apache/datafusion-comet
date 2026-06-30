@@ -470,6 +470,7 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.expression.Last.enabled` | Enable Comet acceleration for `Last` | true |
 | `spark.comet.expression.Max.enabled` | Enable Comet acceleration for `Max` | true |
 | `spark.comet.expression.Min.enabled` | Enable Comet acceleration for `Min` | true |
+| `spark.comet.expression.Percentile.enabled` | Enable Comet acceleration for `Percentile` | true |
 | `spark.comet.expression.StddevPop.enabled` | Enable Comet acceleration for `StddevPop` | true |
 | `spark.comet.expression.StddevSamp.enabled` | Enable Comet acceleration for `StddevSamp` | true |
 | `spark.comet.expression.Sum.enabled` | Enable Comet acceleration for `Sum` | true |
