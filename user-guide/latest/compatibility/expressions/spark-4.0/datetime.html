@@ -607,6 +607,7 @@ with Spark. For dates beyond this range, functions that involve timezone-aware c
 <p>By default, Comet runs a Spark-compatible implementation of <code class="docutils literal notranslate"><span class="pre">ConvertTimezone</span></code>. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.ConvertTimezone.allowIncompatible=true</span></code> to use Comet’s faster native implementation instead, which has the following differences from Spark:</p>
 <ul class="simple">
 <li><p>Comet’s native timezone parser only accepts IANA zone IDs (e.g. <code class="docutils literal notranslate"><span class="pre">America/Los_Angeles</span></code>) and fixed offsets in <code class="docutils literal notranslate"><span class="pre">+HH:MM</span></code> form. Spark also accepts forms such as <code class="docutils literal notranslate"><span class="pre">GMT+1</span></code>, <code class="docutils literal notranslate"><span class="pre">UTC+1</span></code>, or three-letter abbreviations like <code class="docutils literal notranslate"><span class="pre">PST</span></code>; queries using those forms will throw a native parse error at execution time. See https://github.com/apache/datafusion-comet/issues/2013.</p></li>
+<li><p>convert_timezone does not support non-UTF8_BINARY collations (https://github.com/apache/datafusion-comet/issues/4646)</p></li>
 </ul>
 </section>
 <section id="dateformatclass">
@@ -618,6 +619,7 @@ with Spark. For dates beyond this range, functions that involve timezone-aware c
 <p>By default, Comet runs a Spark-compatible implementation of <code class="docutils literal notranslate"><span class="pre">DateFormatClass</span></code>. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.DateFormatClass.allowIncompatible=true</span></code> to use Comet’s faster native implementation instead, which has the following differences from Spark:</p>
 <ul class="simple">
 <li><p>Non-UTC timezones may produce different results than Spark</p></li>
+<li><p>date_format does not support non-UTF8_BINARY collations (https://github.com/apache/datafusion-comet/issues/4646)</p></li>
 </ul>
 </section>
 <section id="days">
@@ -639,6 +641,7 @@ with Spark. For dates beyond this range, functions that involve timezone-aware c
 <p>By default, Comet runs a Spark-compatible implementation of <code class="docutils literal notranslate"><span class="pre">FromUnixTime</span></code>. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.FromUnixTime.allowIncompatible=true</span></code> to use Comet’s faster native implementation instead, which has the following differences from Spark:</p>
 <ul class="simple">
 <li><p>Only supports the default datetime format pattern <code class="docutils literal notranslate"><span class="pre">yyyy-MM-dd</span> <span class="pre">HH:mm:ss</span></code>. DataFusion’s valid timestamp range differs from Spark (https://github.com/apache/datafusion/issues/16594)</p></li>
+<li><p>from_unixtime does not support non-UTF8_BINARY collations (https://github.com/apache/datafusion-comet/issues/4646)</p></li>
 </ul>
 </section>
 <section id="hour">
@@ -655,11 +658,25 @@ with Spark. For dates beyond this range, functions that involve timezone-aware c
 <li><p>Only <code class="docutils literal notranslate"><span class="pre">TimestampType</span></code> and <code class="docutils literal notranslate"><span class="pre">TimestampNTZType</span></code> inputs are supported.</p></li>
 </ul>
 </section>
+<section id="maketimestamp">
+<h2>MakeTimestamp<a class="headerlink" href="#maketimestamp" title="Link to this heading">#</a></h2>
+<p>By default, Comet runs a Spark-compatible implementation of <code class="docutils literal notranslate"><span class="pre">MakeTimestamp</span></code>. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.MakeTimestamp.allowIncompatible=true</span></code> to use Comet’s faster native implementation instead, which has the following differences from Spark:</p>
+<ul class="simple">
+<li><p>make_timestamp does not support non-UTF8_BINARY collations (https://github.com/apache/datafusion-comet/issues/4646)</p></li>
+</ul>
+</section>
 <section id="minute">
 <h2>Minute<a class="headerlink" href="#minute" title="Link to this heading">#</a></h2>
 <p>By default, Comet runs a Spark-compatible implementation of <code class="docutils literal notranslate"><span class="pre">Minute</span></code>. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Minute.allowIncompatible=true</span></code> to use Comet’s faster native implementation instead, which has the following differences from Spark:</p>
 <ul class="simple">
 <li><p>Incorrectly applies timezone conversion to TimestampNTZ inputs (https://github.com/apache/datafusion-comet/issues/3180)</p></li>
+</ul>
+</section>
+<section id="nextday">
+<h2>NextDay<a class="headerlink" href="#nextday" title="Link to this heading">#</a></h2>
+<p>The following incompatibilities cause <code class="docutils literal notranslate"><span class="pre">NextDay</span></code> to fall back to Spark by default. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.NextDay.allowIncompatible=true</span></code> to enable Comet acceleration despite these differences.</p>
+<ul class="simple">
+<li><p>next_day does not support non-UTF8_BINARY collations (https://github.com/apache/datafusion-comet/issues/4646)</p></li>
 </ul>
 </section>
 <section id="second">
@@ -683,11 +700,19 @@ with Spark. For dates beyond this range, functions that involve timezone-aware c
 <li><p>Comet’s native timezone parser only accepts IANA zone IDs (e.g. <code class="docutils literal notranslate"><span class="pre">America/Los_Angeles</span></code>) and fixed offsets in <code class="docutils literal notranslate"><span class="pre">+HH:MM</span></code> form. Spark also accepts forms such as <code class="docutils literal notranslate"><span class="pre">GMT+1</span></code>, <code class="docutils literal notranslate"><span class="pre">UTC+1</span></code>, or three-letter abbreviations like <code class="docutils literal notranslate"><span class="pre">PST</span></code>; queries using those forms will throw a native parse error at execution time. See https://github.com/apache/datafusion-comet/issues/2013.</p></li>
 </ul>
 </section>
+<section id="tounixtimestamp">
+<h2>ToUnixTimestamp<a class="headerlink" href="#tounixtimestamp" title="Link to this heading">#</a></h2>
+<p>By default, Comet runs a Spark-compatible implementation of <code class="docutils literal notranslate"><span class="pre">ToUnixTimestamp</span></code>. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.ToUnixTimestamp.allowIncompatible=true</span></code> to use Comet’s faster native implementation instead, which has the following differences from Spark:</p>
+<ul class="simple">
+<li><p>to_unix_timestamp does not support non-UTF8_BINARY collations (https://github.com/apache/datafusion-comet/issues/4646)</p></li>
+</ul>
+</section>
 <section id="truncdate">
 <h2>TruncDate<a class="headerlink" href="#truncdate" title="Link to this heading">#</a></h2>
 <p>By default, Comet runs a Spark-compatible implementation of <code class="docutils literal notranslate"><span class="pre">TruncDate</span></code>. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.TruncDate.allowIncompatible=true</span></code> to use Comet’s faster native implementation instead, which has the following differences from Spark:</p>
 <ul class="simple">
 <li><p>Non-literal format strings will throw an exception instead of returning NULL</p></li>
+<li><p>trunc does not support non-UTF8_BINARY collations (https://github.com/apache/datafusion-comet/issues/4646)</p></li>
 </ul>
 <p>The following cases are not supported by Comet:</p>
 <ul class="simple">
@@ -700,6 +725,7 @@ with Spark. For dates beyond this range, functions that involve timezone-aware c
 <ul class="simple">
 <li><p>Produces incorrect results when used with non-UTC timezones. Compatible when timezone is UTC. (https://github.com/apache/datafusion-comet/issues/2649)</p></li>
 <li><p>Non-literal format strings will throw an exception instead of returning NULL</p></li>
+<li><p>date_trunc does not support non-UTF8_BINARY collations (https://github.com/apache/datafusion-comet/issues/4646)</p></li>
 </ul>
 <p>The following cases are not supported by Comet:</p>
 <ul class="simple">
@@ -708,6 +734,10 @@ with Spark. For dates beyond this range, functions that involve timezone-aware c
 </section>
 <section id="unixtimestamp">
 <h2>UnixTimestamp<a class="headerlink" href="#unixtimestamp" title="Link to this heading">#</a></h2>
+<p>The following incompatibilities cause <code class="docutils literal notranslate"><span class="pre">UnixTimestamp</span></code> to fall back to Spark by default. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.UnixTimestamp.allowIncompatible=true</span></code> to enable Comet acceleration despite these differences.</p>
+<ul class="simple">
+<li><p>unix_timestamp does not support non-UTF8_BINARY collations (https://github.com/apache/datafusion-comet/issues/4646)</p></li>
+</ul>
 <p>The following cases are not supported by Comet:</p>
 <ul class="simple">
 <li><p>Only <code class="docutils literal notranslate"><span class="pre">DateType</span></code>, <code class="docutils literal notranslate"><span class="pre">TimestampType</span></code>, and <code class="docutils literal notranslate"><span class="pre">TimestampNTZType</span></code> inputs are supported.</p></li>
