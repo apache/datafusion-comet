@@ -23,6 +23,25 @@ This guide describes how we prioritize and triage bugs in the Comet project. The
 that the most impactful bugs — especially correctness issues that produce wrong results — are
 identified and addressed before less critical issues.
 
+## Type Labels
+
+Every new issue is auto-labeled with `requires-triage`, and this applies to **all** issues, not
+just bug reports. The first triage decision for any issue is therefore whether it is a bug or an
+enhancement.
+
+| Label         | Description                                                                                        |
+| ------------- | -------------------------------------------------------------------------------------------------- |
+| `bug`         | Something is broken: wrong results, crashes, panics, regressions, test/CI failures                 |
+| `enhancement` | A request for new functionality or improvement: new expression/operator support, a new config, performance optimization, refactoring, or documentation |
+
+Apply exactly one of these to every triaged issue. An issue must never carry both `bug` and
+`enhancement`. Classify from the actual content of the issue, not from the title wording: an issue
+titled "bug: ..." may really be a feature request, and a genuine defect may not mention "bug" in
+its title at all.
+
+Only bugs receive a priority label (see below). Enhancements are not assigned a priority label
+through this process. Both bugs and enhancements may receive area labels.
+
 ## Priority Labels
 
 Every bug should have exactly one priority label. When filing or triaging a bug, apply the
@@ -83,16 +102,18 @@ been triaged, remove the `requires-triage` label and apply the appropriate prior
 
 ### For New Issues
 
-When a new bug is filed:
+When a new issue is filed:
 
-1. **Reproduce or verify** the issue if possible. If the report lacks reproduction steps, ask
+1. **Decide bug or enhancement.** Apply `bug` or `enhancement` based on the content of the issue.
+   The remaining steps about priority apply only to bugs.
+2. **Reproduce or verify** the issue if possible. If the report lacks reproduction steps, ask
    the reporter for more details.
-2. **Assess correctness impact first.** Ask: "Could this produce wrong results silently?" This
+3. **Assess correctness impact first.** Ask: "Could this produce wrong results silently?" This
    is more important than whether it crashes.
-3. **Apply a priority label** using the decision tree above.
-4. **Apply area labels** to indicate the affected subsystem(s).
-5. **Apply `good first issue`** if the fix is likely straightforward and well-scoped.
-6. **Remove the `requires-triage` label** to indicate triage is complete.
+4. **Apply a priority label** using the decision tree above (bugs only).
+5. **Apply area labels** to indicate the affected subsystem(s).
+6. **Apply `good first issue`** if the fix is likely straightforward and well-scoped.
+7. **Remove the `requires-triage` label** to indicate triage is complete.
 
 ### For Existing Bugs
 

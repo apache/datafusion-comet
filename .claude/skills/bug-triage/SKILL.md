@@ -1,6 +1,6 @@
 ---
 name: bug-triage
-description: Triage open Comet issues marked `requires-triage` per the project bug triage guide. Applies the recommended priority and area labels, removes `requires-triage`, and files a dated summary issue listing what was done. A human reviews the summary issue and closes it when satisfied.
+description: Triage open Comet issues marked `requires-triage` per the project bug triage guide. Classifies each issue as a bug or an enhancement, applies the recommended type (`bug`/`enhancement`), priority, and area labels, removes `requires-triage`, and files a dated summary issue listing what was done. A human reviews the summary issue and closes it when satisfied.
 ---
 
 <!--
@@ -29,10 +29,16 @@ Run a bug triage pass for the `apache/datafusion-comet` repository.
 This skill triages every open issue carrying the `requires-triage` label. For
 each one it:
 
-1. Decides a priority and area labels using the project's triage guide.
-2. Applies those labels via `gh`.
-3. Removes the `requires-triage` label.
-4. Records the decision (with rationale) in a single dated summary issue.
+1. Decides whether the issue is a bug or an enhancement (feature request).
+2. Decides a priority (bugs only) and area labels using the project's triage
+   guide.
+3. Applies those labels via `gh` (`bug` or `enhancement`, plus priority/area),
+   ensuring `bug` and `enhancement` are never both present.
+4. Removes the `requires-triage` label.
+5. Records the decision (with rationale) in a single dated summary issue.
+
+`requires-triage` is auto-applied to **every** new issue, not just bug reports,
+so the first decision for each issue is always bug vs. enhancement.
 
 A human reviewer reads the summary issue, sanity-checks the calls, and closes
 it when satisfied. Any label correction is done by the reviewer directly on the
@@ -74,26 +80,42 @@ file an empty summary issue and do not modify any labels.
 
 For each issue, review the title and body and determine:
 
-1. **Priority label** (exactly one): apply the decision tree from the guide.
+1. **Type label** (exactly one of `bug` / `enhancement`):
+   - `bug`: something is broken. Wrong results, crashes, panics, regressions,
+     test/CI failures, or any behavior that differs from what Comet should do.
+   - `enhancement`: a request for new functionality or improvement that is not
+     yet expected to work. New expression/operator support, a new config, a
+     performance optimization request, a refactor, or a docs addition.
+   - Do not rely on the title wording alone. An issue titled "bug: ..." may
+     actually be a feature request, and an issue with no "bug" in the title may
+     be a genuine defect. Classify from the actual content.
+   - A bug and an enhancement are mutually exclusive: an issue must never carry
+     both `bug` and `enhancement`. If the issue already has the wrong type label,
+     remove it (see Step 5).
+2. **Priority label** (exactly one, **bugs only**): apply the decision tree from
+   the guide.
    - `priority:critical` for correctness issues (silent wrong results, data
      corruption) and security vulnerabilities
    - `priority:high` for crashes, panics, segfaults, NPEs on supported paths
    - `priority:medium` for functional bugs / performance regressions with
      workarounds
    - `priority:low` for test-only, CI flakes, tooling, cosmetic
-2. **Area labels** (zero or more): from the area table in the guide
+3. **Area labels** (zero or more): from the area table in the guide
    (`area:writer`, `area:shuffle`, `area:aggregation`, `area:scan`,
    `area:expressions`, `area:ffi`, `area:ci`) plus the pre-existing area
-   indicators (`spark 4`, `spark sql tests`).
-3. **Escalation note**: if the issue matches an escalation trigger from the
+   indicators (`spark 4`, `spark sql tests`). Area labels apply to both bugs
+   and enhancements.
+4. **Escalation note**: if the issue matches an escalation trigger from the
    guide (e.g., a `priority:high` crash that may also produce wrong results),
    note it in the summary.
 
 ## Step 4: Skip Issues You Cannot Confidently Classify
 
-If an issue lacks reproduction steps or is otherwise too ambiguous to classify
-with confidence:
+If an issue is too ambiguous to classify with confidence (you cannot tell
+whether it is a bug or an enhancement, or a bug lacks reproduction steps and the
+priority is unclear):
 
+- **Do not** apply a type label (`bug`/`enhancement`).
 - **Do not** apply a priority label.
 - **Do not** remove `requires-triage`.
 - **Do not** comment on the issue or ask the reporter for more info from this
@@ -106,17 +128,35 @@ Guessing is worse than skipping.
 ## Step 5: Apply Labels
 
 For each issue you classified in Step 3, apply the labels and remove
-`requires-triage` in a single `gh` call:
+`requires-triage` in a single `gh` call.
+
+For a bug, add the `bug` type label and a priority label:
 
 ```bash
 gh issue edit <NUMBER> \
   --repo apache/datafusion-comet \
-  --add-label "priority:high,area:expressions" \
-  --remove-label "requires-triage"
+  --add-label "bug,priority:high,area:expressions" \
+  --remove-label "requires-triage,enhancement"
+```
+
+For an enhancement, add the `enhancement` type label and no priority label:
+
+```bash
+gh issue edit <NUMBER> \
+  --repo apache/datafusion-comet \
+  --add-label "enhancement,area:expressions" \
+  --remove-label "requires-triage,bug"
 ```
 
 Notes:
 
+- Always set exactly one type label. Add `bug` for bugs, `enhancement` for
+  enhancements.
+- Always remove the opposite type label so an issue never carries both `bug`
+  and `enhancement`. `--remove-label` is a no-op if the label is not present,
+  so it is safe to remove the opposite type unconditionally.
+- Apply a priority label only to bugs. Do not add a priority label to
+  enhancements.
 - Pass the labels as a single comma-separated string (no spaces around commas).
 - Quote labels that contain spaces (e.g., `"spark 4"`).
 - Only add labels that already exist in the repo. If a label from the guide is
@@ -141,11 +181,12 @@ Title: `Bug triage results: ${TRIAGE_DATE}`
 Body: a markdown report with these sections, in this order:
 
 1. **Header**
-   - Date, total issues processed, and counts per priority
+   - Date, total issues processed, count of bugs vs. enhancements, and counts
+     per priority
    - Link to `docs/source/contributor-guide/bug_triage.md`
    - Note that labels have already been applied; the reviewer should spot-check
      and close this issue when satisfied
-2. **Triaged** — one subsection per priority, ordered highest priority first
+2. **Bugs** — one subsection per priority, ordered highest priority first
    (`priority:critical`, then `priority:high`, then `priority:medium`, then
    `priority:low`). Omit any subsection whose count is zero. Do **not** use a
    markdown table anywhere in this section; use nested bullet lists only.
@@ -162,14 +203,17 @@ Body: a markdown report with these sections, in this order:
 
    The issue number (not the title) is the link target. The title is plain
    text. If there are no area labels, write `Area labels: none`.
-
-3. **Escalations to consider** (omit section if empty) — bullet per issue with
+3. **Enhancements** (omit section if empty) — one top-level bullet per issue in
+   the same `<title> ([#N](url))` form, with an `Area labels:` sub-bullet and a
+   one-sentence rationale for classifying it as an enhancement. Enhancements
+   have no priority subsections.
+4. **Escalations to consider** (omit section if empty) — bullet per issue with
    the same `<title> ([#N](url))` form, plus a sub-bullet explaining the
    trigger from the guide.
-4. **Skipped — needs more info** (omit if empty) — bullet per issue with the
+5. **Skipped — needs more info** (omit if empty) — bullet per issue with the
    same `<title> ([#N](url))` form, plus a sub-bullet explaining what is
    missing.
-5. **Failed to label** (omit if empty) — bullet per issue with the same
+6. **Failed to label** (omit if empty) — bullet per issue with the same
    `<title> ([#N](url))` form, plus a sub-bullet quoting the `gh` error.
 
 File the issue with `gh`. Use a temp file for the body to keep quoting sane:
