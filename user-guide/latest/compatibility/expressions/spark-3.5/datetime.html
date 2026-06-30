@@ -578,8 +578,12 @@ under the License.
 <li><p><strong>Hour, Minute, Second</strong>: Incorrectly apply timezone conversion to TimestampNTZ inputs. TimestampNTZ stores local
 time without timezone, so no conversion should be applied. These expressions work correctly with Timestamp inputs.
 <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/3180">#3180</a></p></li>
-<li><p><strong>TruncTimestamp (date_trunc)</strong>: Produces incorrect results when used with non-UTC timezones. Compatible when
-timezone is UTC. TimestampNTZ inputs are handled correctly (timezone-independent truncation).
+<li><p><strong>TruncTimestamp (date_trunc)</strong>: In non-UTC sessions the native path is marked Incompatible and
+routes through the JVM codegen dispatcher by default, producing Spark-identical results. The
+native path is itself correct for dates within chrono-tz’s DST horizon (approximately year 2100;
+see “Date and Time Functions” below) and can be enabled by setting
+<code class="docutils literal notranslate"><span class="pre">spark.comet.expression.TruncTimestamp.allowIncompatible=true</span></code>. TimestampNTZ inputs are handled
+correctly regardless of session timezone (timezone-independent truncation).
 <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/2649">#2649</a></p></li>
 </ul>
 <section id="date-and-time-functions">
