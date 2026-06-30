@@ -41,6 +41,7 @@ use datafusion::functions_aggregate::bit_and_or_xor::{bit_and_udaf, bit_or_udaf,
 use datafusion::functions_aggregate::count::count_udaf;
 use datafusion::functions_aggregate::min_max::max_udaf;
 use datafusion::functions_aggregate::min_max::min_udaf;
+use datafusion::functions_aggregate::percentile_cont::percentile_cont_udaf;
 use datafusion::functions_aggregate::sum::sum_udaf;
 use datafusion::physical_expr::aggregate::{AggregateExprBuilder, AggregateFunctionExpr};
 use datafusion::physical_plan::windows::{BoundedWindowAggExec, WindowAggExec};
@@ -2618,6 +2619,21 @@ impl PhysicalPlanner {
                 };
                 let func = AggregateUDF::new_from_impl(Regr::new(regr_type, name));
                 Self::create_aggr_func_expr(name, schema, vec![child1, child2], func)
+            }
+            AggExprStruct::Percentile(expr) => {
+                let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
+                let percentile =
+                    self.create_expr(expr.percentage.as_ref().unwrap(), Arc::clone(&schema))?;
+                // DataFusion's percentile_cont uses the same `index = p * (n - 1)` linear
+                // interpolation as Spark's exact Percentile, so results match for the single
+                // percentage case wired here.
+                AggregateExprBuilder::new(percentile_cont_udaf(), vec![child, percentile])
+                    .schema(schema)
+                    .alias("percentile_cont")
+                    .with_ignore_nulls(false)
+                    .with_distinct(false)
+                    .build()
+                    .map_err(|e| e.into())
             }
             AggExprStruct::BloomFilterAgg(expr) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;

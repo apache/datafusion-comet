@@ -143,7 +143,8 @@ message AggExpr {
     Correlation correlation = 15;
     BloomFilterAgg bloomFilterAgg = 16;
     CollectSet collectSet = 17;
-    Regr regr = 18;
+    Percentile percentile = 18;
+    Regr regr = 19;
   }
 
   // Optional filter expression for SQL FILTER (WHERE ...) clause.
@@ -261,6 +262,13 @@ message Regr {
   Expr child2 = 2;
   RegrType regr_type = 3;
   DataType datatype = 4;
+}
+
+message Percentile {
+  Expr child = 1;
+  // Single percentile in [0.0, 1.0] as a literal double expression.
+  Expr percentage = 2;
+  DataType datatype = 3;
 }
 
 message BloomFilterAgg {
