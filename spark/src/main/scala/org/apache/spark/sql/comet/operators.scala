@@ -1832,12 +1832,12 @@ trait CometBaseAggregate {
    * (HashAggregate / ObjectHashAggregate / SortAggregate) with partial or partial-merge mode, it
    * will return None.
    */
-  private def findCometPartialAgg(plan: SparkPlan): Option[CometHashAggregateExec] = {
+  private def findCometPartialAgg(plan: SparkPlan): Option[CometBaseAggregateExec] = {
     def isPartialOrMerge(mode: AggregateMode): Boolean =
       mode == Partial || mode == PartialMerge
 
     plan.collectFirst {
-      case agg: CometHashAggregateExec
+      case agg: CometBaseAggregateExec
           if agg.aggregateExpressions.forall(e => isPartialOrMerge(e.mode)) =>
         Some(agg)
       case agg: BaseAggregateExec
@@ -1946,12 +1946,11 @@ object CometSortAggregateExec
   }
 
   override def createExec(nativeOp: Operator, op: SortAggregateExec): CometNativeExec = {
-    // Reuse CometHashAggregateExec as the wrapper. The native AggregateExec auto-detects
-    // Sorted input mode from the child's output ordering and produces output sorted by the
-    // grouping keys; CometExec.outputOrdering defaults to originalPlan.outputOrdering, which
-    // is SortAggregateExec's grouping-key ordering, so downstream operators that elided a
-    // sort against it still see a satisfying ordering without a dedicated wrapper class.
-    CometHashAggregateExec(
+    // The native AggregateExec auto-detects Sorted input mode from the child's output ordering
+    // and produces output sorted by the grouping keys; CometExec.outputOrdering defaults to
+    // originalPlan.outputOrdering, which is SortAggregateExec's grouping-key ordering, so
+    // downstream operators that elided a sort against it still see a satisfying ordering.
+    CometSortAggregateExec(
       nativeOp,
       op,
       adjustOutputForNativeState(op),
@@ -1964,28 +1963,28 @@ object CometSortAggregateExec
   }
 }
 
-case class CometHashAggregateExec(
-    override val nativeOp: Operator,
-    override val originalPlan: SparkPlan,
-    override val output: Seq[Attribute],
-    groupingExpressions: Seq[NamedExpression],
-    aggregateExpressions: Seq[AggregateExpression],
-    resultExpressions: Seq[NamedExpression],
-    input: Seq[Attribute],
-    child: SparkPlan,
-    override val serializedPlanOpt: SerializedPlan)
+/**
+ * Common base for Comet's aggregate wrapper operators. The hash-based and sort-based variants
+ * share the same native AggregateExec serialization and rendering; they are kept as distinct plan
+ * node types only so the executed plan reflects whether Spark planned a HashAggregateExec /
+ * ObjectHashAggregateExec or a SortAggregateExec (the native AggregateExec auto-detects sorted
+ * input mode from the child ordering, so execution is otherwise identical).
+ */
+abstract class CometBaseAggregateExec
     extends CometUnaryExec
     with PartitioningPreservingUnaryExecNode {
+
+  def groupingExpressions: Seq[NamedExpression]
+  def aggregateExpressions: Seq[AggregateExpression]
+  def resultExpressions: Seq[NamedExpression]
+  def input: Seq[Attribute]
 
   // The aggExprs could be empty. For example, if the aggregate functions only have
   // distinct aggregate functions or only have group by, the aggExprs is empty and
   // modes is empty too.
-  val modes: Seq[AggregateMode] = aggregateExpressions.map(_.mode).distinct
+  lazy val modes: Seq[AggregateMode] = aggregateExpressions.map(_.mode).distinct
 
   override def producedAttributes: AttributeSet = outputSet ++ AttributeSet(resultExpressions)
-
-  override protected def withNewChildInternal(newChild: SparkPlan): SparkPlan =
-    this.copy(child = newChild)
 
   override def verboseStringWithOperatorId(): String = {
     s"""
@@ -1998,6 +1997,24 @@ case class CometHashAggregateExec(
 
   override def stringArgs: Iterator[Any] =
     Iterator(input, modes, groupingExpressions, aggregateExpressions, child)
+
+  override protected def outputExpressions: Seq[NamedExpression] = resultExpressions
+}
+
+case class CometHashAggregateExec(
+    override val nativeOp: Operator,
+    override val originalPlan: SparkPlan,
+    override val output: Seq[Attribute],
+    groupingExpressions: Seq[NamedExpression],
+    aggregateExpressions: Seq[AggregateExpression],
+    resultExpressions: Seq[NamedExpression],
+    input: Seq[Attribute],
+    child: SparkPlan,
+    override val serializedPlanOpt: SerializedPlan)
+    extends CometBaseAggregateExec {
+
+  override protected def withNewChildInternal(newChild: SparkPlan): SparkPlan =
+    this.copy(child = newChild)
 
   override def equals(obj: Any): Boolean = {
     obj match {
@@ -2016,8 +2033,40 @@ case class CometHashAggregateExec(
 
   override def hashCode(): Int =
     Objects.hashCode(output, groupingExpressions, aggregateExpressions, input, modes, child)
+}
 
-  override protected def outputExpressions: Seq[NamedExpression] = resultExpressions
+case class CometSortAggregateExec(
+    override val nativeOp: Operator,
+    override val originalPlan: SparkPlan,
+    override val output: Seq[Attribute],
+    groupingExpressions: Seq[NamedExpression],
+    aggregateExpressions: Seq[AggregateExpression],
+    resultExpressions: Seq[NamedExpression],
+    input: Seq[Attribute],
+    child: SparkPlan,
+    override val serializedPlanOpt: SerializedPlan)
+    extends CometBaseAggregateExec {
+
+  override protected def withNewChildInternal(newChild: SparkPlan): SparkPlan =
+    this.copy(child = newChild)
+
+  override def equals(obj: Any): Boolean = {
+    obj match {
+      case other: CometSortAggregateExec =>
+        this.output == other.output &&
+        this.groupingExpressions == other.groupingExpressions &&
+        this.aggregateExpressions == other.aggregateExpressions &&
+        this.input == other.input &&
+        this.modes == other.modes &&
+        this.child == other.child &&
+        this.serializedPlanOpt == other.serializedPlanOpt
+      case _ =>
+        false
+    }
+  }
+
+  override def hashCode(): Int =
+    Objects.hashCode(output, groupingExpressions, aggregateExpressions, input, modes, child)
 }
 
 trait CometHashJoin {
