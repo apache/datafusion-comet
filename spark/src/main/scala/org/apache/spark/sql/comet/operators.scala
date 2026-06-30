@@ -30,7 +30,7 @@ import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Ascending, Attribute, AttributeSet, Expression, ExpressionSet, Generator, NamedExpression, SortOrder}
-import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, AggregateMode, CollectSet, Final, First, Last, Partial, PartialMerge}
+import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, AggregateMode, CollectSet, Final, First, Last, Partial, PartialMerge, Percentile}
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide}
 import org.apache.spark.sql.catalyst.plans._
 import org.apache.spark.sql.catalyst.plans.physical._
@@ -1558,6 +1558,11 @@ trait CometBaseAggregate {
         case cs: CollectSet =>
           val elementType = cs.children.head.dataType
           val nativeStateType = ArrayType(elementType, containsNull = true)
+          output(bufferIdx) = output(bufferIdx).withDataType(nativeStateType)
+        case _: Percentile =>
+          // DataFusion's percentile_cont keeps all values in a List<Float64> partial state.
+          // Comet casts the child to double, so the native state is ArrayType(DoubleType).
+          val nativeStateType = ArrayType(DoubleType, containsNull = true)
           output(bufferIdx) = output(bufferIdx).withDataType(nativeStateType)
         case _ =>
       }
