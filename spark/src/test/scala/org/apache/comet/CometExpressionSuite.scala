@@ -1749,6 +1749,37 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("unary minus on float/double special values and nulls") {
+    // Negation is an IEEE sign flip, so NaN, +/-Infinity, signed zero, the float/double range
+    // limits, and null must all match Spark. (Integer Max/MinValue overflow is covered by the
+    // "unary negative integer overflow test".)
+    val floats: Seq[Option[Float]] = Seq(
+      Some(Float.NaN),
+      Some(Float.PositiveInfinity),
+      Some(Float.NegativeInfinity),
+      Some(0.0f),
+      Some(-0.0f),
+      Some(Float.MinPositiveValue),
+      Some(Float.MaxValue),
+      Some(Float.MinValue),
+      None)
+    val doubles: Seq[Option[Double]] = Seq(
+      Some(Double.NaN),
+      Some(Double.PositiveInfinity),
+      Some(Double.NegativeInfinity),
+      Some(0.0d),
+      Some(-0.0d),
+      Some(Double.MinPositiveValue),
+      Some(Double.MaxValue),
+      Some(Double.MinValue),
+      None)
+    Seq(false, true).foreach { dictionary =>
+      withParquetTable(floats.zip(doubles), "umt_special", withDictionary = dictionary) {
+        checkSparkAnswerAndOperator("SELECT -_1, -_2 FROM umt_special")
+      }
+    }
+  }
+
   test("basic arithmetic") {
     withSQLConf("parquet.enable.dictionary" -> "false") {
       withParquetTable((1 until 10).map(i => (i, i + 1)), "tbl", false) {
