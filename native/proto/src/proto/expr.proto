@@ -143,6 +143,7 @@ message AggExpr {
     Correlation correlation = 15;
     BloomFilterAgg bloomFilterAgg = 16;
     CollectSet collectSet = 17;
+    Regr regr = 18;
   }
 
   // Optional filter expression for SQL FILTER (WHERE ...) clause.
@@ -241,6 +242,24 @@ message Correlation {
   Expr child1 = 1;
   Expr child2 = 2;
   bool null_on_divide_by_zero = 3;
+  DataType datatype = 4;
+}
+
+// Simple linear regression aggregates (regr_slope, regr_intercept, regr_r2,
+// regr_sxx, regr_syy, regr_sxy). child1 is the dependent variable (y) and
+// child2 is the independent variable (x).
+message Regr {
+  enum RegrType {
+    SLOPE = 0;
+    INTERCEPT = 1;
+    R2 = 2;
+    SXX = 3;
+    SYY = 4;
+    SXY = 5;
+  }
+  Expr child1 = 1;
+  Expr child2 = 2;
+  RegrType regr_type = 3;
   DataType datatype = 4;
 }
 

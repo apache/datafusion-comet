@@ -129,8 +129,8 @@ use datafusion_comet_proto::{
 use datafusion_comet_spark_expr::{
     jvm_udf::JvmScalarUdfExpr, ArrayInsert, Avg, AvgDecimal, Cast, CheckOverflow, Correlation,
     Covariance, CreateNamedStruct, DecimalRescaleCheckOverflow, GetArrayStructFields,
-    GetStructField, IfExpr, ListExtract, NormalizeNaNAndZero, SparkCastOptions, Stddev, SumDecimal,
-    ToJson, UnboundColumn, Variance, WideDecimalBinaryExpr, WideDecimalOp,
+    GetStructField, IfExpr, ListExtract, NormalizeNaNAndZero, Regr, RegrType, SparkCastOptions,
+    Stddev, SumDecimal, ToJson, UnboundColumn, Variance, WideDecimalBinaryExpr, WideDecimalOp,
 };
 use itertools::Itertools;
 use jni::objects::{Global, JObject};
@@ -2600,6 +2600,24 @@ impl PhysicalPlanner {
                     expr.null_on_divide_by_zero,
                 ));
                 Self::create_aggr_func_expr("correlation", schema, vec![child1, child2], func)
+            }
+            AggExprStruct::Regr(expr) => {
+                let child1 =
+                    self.create_expr(expr.child1.as_ref().unwrap(), Arc::clone(&schema))?;
+                let child2 =
+                    self.create_expr(expr.child2.as_ref().unwrap(), Arc::clone(&schema))?;
+                let (regr_type, name) = match expr.regr_type() {
+                    spark_expression::regr::RegrType::Slope => (RegrType::Slope, "regr_slope"),
+                    spark_expression::regr::RegrType::Intercept => {
+                        (RegrType::Intercept, "regr_intercept")
+                    }
+                    spark_expression::regr::RegrType::R2 => (RegrType::R2, "regr_r2"),
+                    spark_expression::regr::RegrType::Sxx => (RegrType::SXX, "regr_sxx"),
+                    spark_expression::regr::RegrType::Syy => (RegrType::SYY, "regr_syy"),
+                    spark_expression::regr::RegrType::Sxy => (RegrType::SXY, "regr_sxy"),
+                };
+                let func = AggregateUDF::new_from_impl(Regr::new(regr_type, name));
+                Self::create_aggr_func_expr(name, schema, vec![child1, child2], func)
             }
             AggExprStruct::BloomFilterAgg(expr) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;

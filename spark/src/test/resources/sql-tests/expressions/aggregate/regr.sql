@@ -58,52 +58,54 @@ query tolerance=1e-6
 SELECT grp, regr_avgy(y, x) FROM test_regr GROUP BY grp ORDER BY grp
 
 -- regr_sxx: sum of squares of deviation of x from mean(x)
--- Falls back to Spark: aggregate not yet accelerated by Comet
-query spark_answer_only
+query tolerance=1e-6
 SELECT regr_sxx(y, x) FROM test_regr
 
-query spark_answer_only
+query tolerance=1e-6
 SELECT grp, regr_sxx(y, x) FROM test_regr GROUP BY grp ORDER BY grp
 
 -- regr_syy: sum of squares of deviation of y from mean(y)
--- Falls back to Spark: aggregate not yet accelerated by Comet
-query spark_answer_only
+query tolerance=1e-6
 SELECT regr_syy(y, x) FROM test_regr
 
-query spark_answer_only
+query tolerance=1e-6
 SELECT grp, regr_syy(y, x) FROM test_regr GROUP BY grp ORDER BY grp
 
 -- regr_sxy: sum of products of deviations of x and y from their means
--- Falls back to Spark: aggregate not yet accelerated by Comet
-query spark_answer_only
+query tolerance=1e-6
 SELECT regr_sxy(y, x) FROM test_regr
 
-query spark_answer_only
+query tolerance=1e-6
 SELECT grp, regr_sxy(y, x) FROM test_regr GROUP BY grp ORDER BY grp
 
 -- regr_slope: slope of the least-squares regression line
--- Falls back to Spark: aggregate not yet accelerated by Comet
-query spark_answer_only
+query tolerance=1e-6
 SELECT regr_slope(y, x) FROM test_regr
 
-query spark_answer_only
+query tolerance=1e-6
 SELECT grp, regr_slope(y, x) FROM test_regr GROUP BY grp ORDER BY grp
 
 -- regr_intercept: y-intercept of the least-squares regression line
--- Falls back to Spark: aggregate not yet accelerated by Comet
-query spark_answer_only
+query tolerance=1e-6
 SELECT regr_intercept(y, x) FROM test_regr
 
-query spark_answer_only
+query tolerance=1e-6
 SELECT grp, regr_intercept(y, x) FROM test_regr GROUP BY grp ORDER BY grp
 
 -- regr_r2: square of the correlation coefficient (coefficient of determination)
--- Falls back to Spark: aggregate not yet accelerated by Comet
-query spark_answer_only
+query tolerance=1e-6
 SELECT regr_r2(y, x) FROM test_regr
 
-query spark_answer_only
+query tolerance=1e-6
 SELECT grp, regr_r2(y, x) FROM test_regr GROUP BY grp ORDER BY grp
+
+-- literal dependent variable mixed with a column independent variable
+query tolerance=1e-6
+SELECT regr_slope(2.0, x), regr_intercept(2.0, x), regr_sxy(2.0, x) FROM test_regr
+
+-- literal independent variable mixed with a column dependent variable
+query tolerance=1e-6
+SELECT regr_slope(y, 3.0), regr_sxx(y, 3.0), regr_r2(y, 3.0) FROM test_regr
 
 -- edge case: all-NULL input returns NULL for all functions
 statement
@@ -115,12 +117,12 @@ INSERT INTO test_regr_all_null VALUES (NULL, NULL), (NULL, NULL)
 query
 SELECT regr_count(y, x), regr_avgx(y, x), regr_avgy(y, x) FROM test_regr_all_null
 
--- Falls back to Spark: regr_sxx/syy/sxy not yet accelerated by Comet
-query spark_answer_only
+-- regr_sxx/syy/sxy return NULL when there are no non-null pairs
+query tolerance=1e-6
 SELECT regr_sxx(y, x), regr_syy(y, x), regr_sxy(y, x) FROM test_regr_all_null
 
--- Falls back to Spark: regr_slope/intercept/r2 not yet accelerated by Comet
-query spark_answer_only
+-- regr_slope/intercept/r2 return NULL when there are no non-null pairs
+query tolerance=1e-6
 SELECT regr_slope(y, x), regr_intercept(y, x), regr_r2(y, x) FROM test_regr_all_null
 
 -- edge case: single non-null pair (slope/intercept/r2 require >= 2 rows)
@@ -133,10 +135,38 @@ INSERT INTO test_regr_single VALUES (3.0, 5.0), (NULL, 2.0), (1.0, NULL)
 query
 SELECT regr_count(y, x), regr_avgx(y, x), regr_avgy(y, x) FROM test_regr_single
 
--- Falls back to Spark: regr_sxx/syy/sxy not yet accelerated by Comet
-query spark_answer_only
+-- sxx/syy/sxy are 0 for a single pair; slope/intercept/r2 are NULL
+query tolerance=1e-6
 SELECT regr_sxx(y, x), regr_syy(y, x), regr_sxy(y, x) FROM test_regr_single
 
--- Falls back to Spark: regr_slope/intercept/r2 not yet accelerated by Comet
-query spark_answer_only
+query tolerance=1e-6
 SELECT regr_slope(y, x), regr_intercept(y, x), regr_r2(y, x) FROM test_regr_single
+
+-- edge case: independent variable (x) is constant.
+-- var_pop(x) = 0, so slope/intercept/r2 are all NULL, and regr_sxx = 0.
+statement
+CREATE TABLE test_regr_const_x(y double, x double) USING parquet
+
+statement
+INSERT INTO test_regr_const_x VALUES (1.0, 5.0), (2.0, 5.0), (3.0, 5.0), (4.0, 5.0)
+
+query tolerance=1e-6
+SELECT regr_slope(y, x), regr_intercept(y, x), regr_r2(y, x) FROM test_regr_const_x
+
+query tolerance=1e-6
+SELECT regr_sxx(y, x), regr_syy(y, x), regr_sxy(y, x) FROM test_regr_const_x
+
+-- edge case: dependent variable (y) is constant but x varies.
+-- A horizontal line is a perfect fit, so Spark's regr_r2 returns 1.0 (not NULL).
+-- The slope is 0 and the intercept equals the constant y.
+statement
+CREATE TABLE test_regr_const_y(y double, x double) USING parquet
+
+statement
+INSERT INTO test_regr_const_y VALUES (7.0, 1.0), (7.0, 2.0), (7.0, 3.0), (7.0, 4.0)
+
+query tolerance=1e-6
+SELECT regr_slope(y, x), regr_intercept(y, x), regr_r2(y, x) FROM test_regr_const_y
+
+query tolerance=1e-6
+SELECT regr_sxx(y, x), regr_syy(y, x), regr_sxy(y, x) FROM test_regr_const_y
