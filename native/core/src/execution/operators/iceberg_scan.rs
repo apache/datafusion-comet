@@ -40,6 +40,7 @@ use futures::{Stream, StreamExt, TryStreamExt};
 use iceberg::arrow::ScanMetrics;
 use iceberg::io::{FileIO, FileIOBuilder, StorageFactory};
 use iceberg::Runtime as IcebergRuntime;
+use iceberg::{Error, ErrorKind};
 use iceberg_storage_opendal::CustomAwsCredentialLoader;
 use iceberg_storage_opendal::OpenDalStorageFactory;
 
@@ -55,6 +56,14 @@ use iceberg::scan::FileScanTask;
 /// Activation key for the `CometS3CredentialProvider` SPI on the Iceberg path, read from a Spark
 /// catalog's `s3.*` property bag.
 const ICEBERG_PROVIDER_CLASS_PROPERTY: &str = "s3.comet.credential.provider.class";
+
+/// A valid Parquet file ends with at least an 8-byte footer (4-byte metadata length + "PAR1").
+/// A delete file that stats below this cannot be read, so we reject it in the fill step. opendal
+/// returns size 0 from a successful HEAD whose response carries no Content-Length header (some
+/// S3-compatible endpoints/proxies, or a path-style mismatch), and for a genuinely empty object;
+/// neither errors at the stat layer, so without this floor the 0 would flow into the Parquet
+/// reader and surface as an opaque "file size of 0 is less than footer".
+const MIN_PARQUET_FILE_SIZE: u64 = 8;
 
 /// Iceberg table scan operator that uses iceberg-rust to read Iceberg tables.
 ///
@@ -171,10 +180,20 @@ impl IcebergScanExec {
         let batch_size = context.session_config().batch_size();
 
         let metrics = IcebergScanMetrics::new(&self.metrics);
-        let num_tasks = tasks.len();
-        metrics.num_splits.add(num_tasks);
+        metrics.num_splits.add(tasks.len());
 
-        let task_stream = futures::stream::iter(tasks.into_iter().map(Ok)).boxed();
+        // Fill delete-file sizes as the first step of the task stream so the stats run on the
+        // iceberg runtime alongside the reads, not on the calling executor thread (see
+        // fill_delete_file_sizes).
+        let fill_io = file_io.clone();
+        let concurrency_limit = self.data_file_concurrency_limit;
+        let task_stream = futures::stream::once(async move {
+            let mut tasks = tasks;
+            Self::fill_delete_file_sizes(&mut tasks, &fill_io, concurrency_limit).await?;
+            Ok::<_, Error>(futures::stream::iter(tasks.into_iter().map(Ok::<_, Error>)))
+        })
+        .try_flatten()
+        .boxed();
 
         // iceberg-rust's ArrowReader spawns IO/CPU work onto an iceberg::Runtime. execute() runs
         // on the JVM-called thread outside any tokio context, so Runtime::current() would panic;
@@ -241,6 +260,86 @@ impl IcebergScanExec {
                 "Unsupported storage scheme: {scheme}"
             ))),
         }
+    }
+
+    /// Stats each unique delete file to fill its `file_size_in_bytes` (0 on arrival, since it is
+    /// not serialized).
+    ///
+    /// iceberg-rust seeks the Parquet footer from this size, so it must be correct. A stat failure
+    /// is fatal: reading with missing deletes would silently leak deleted rows.
+    async fn fill_delete_file_sizes(
+        tasks: &mut [FileScanTask],
+        file_io: &FileIO,
+        concurrency_limit: usize,
+    ) -> Result<(), Error> {
+        use datafusion::common::{HashMap, HashSet};
+        use futures::TryStreamExt;
+
+        // Dedup: the JVM pools delete-file lists, not individual files, so the same delete file
+        // recurs across the tasks that share it. Owning the paths also avoids holding a borrow of
+        // `tasks` into the mutable write-back below.
+        let mut needed: HashSet<String> = HashSet::new();
+        for task in tasks.iter() {
+            for delete in &task.deletes {
+                // Delete-file sizes are never serialized, so they always arrive as 0. If we ever
+                // trust manifest sizes (pending the unreleased apache/iceberg#12554 fix), skip
+                // already-sized files here instead of asserting.
+                debug_assert_eq!(delete.file_size_in_bytes, 0);
+                needed.insert(delete.file_path.clone());
+            }
+        }
+        if needed.is_empty() {
+            return Ok(());
+        }
+
+        // Bound the in-flight stats to match the downstream read concurrency (iceberg-rust uses
+        // try_buffer_unordered at the same limit for delete-file loads). An unbounded fan-out
+        // would burst N HEAD requests at once for no gain, since the reads are throttled anyway.
+        // Guaranteed > 0 by COMET_ICEBERG_DATA_FILE_CONCURRENCY_LIMIT; buffer_unordered(0) would
+        // never poll.
+        debug_assert!(concurrency_limit > 0);
+        let sizes: Vec<(String, u64)> = futures::stream::iter(needed.into_iter().map(|path| {
+            let file_io = file_io.clone();
+            async move {
+                let size = file_io
+                    .new_input(&path)?
+                    .metadata()
+                    .await
+                    .map_err(|e| {
+                        Error::new(
+                            ErrorKind::Unexpected,
+                            format!("Failed to stat delete file '{path}'"),
+                        )
+                        .with_source(e)
+                    })?
+                    .size;
+                if size < MIN_PARQUET_FILE_SIZE {
+                    return Err(Error::new(
+                        ErrorKind::Unexpected,
+                        format!(
+                            "Delete file '{path}' statted to {size} bytes, below the \
+                             {MIN_PARQUET_FILE_SIZE}-byte Parquet minimum. The object is empty or \
+                             truncated, or the stat returned no Content-Length (check the object \
+                             store endpoint, TLS, and path-style config)."
+                        ),
+                    ));
+                }
+                Ok::<(String, u64), Error>((path, size))
+            }
+        }))
+        .buffer_unordered(concurrency_limit)
+        .try_collect()
+        .await?;
+
+        let size_map: HashMap<String, u64> = sizes.into_iter().collect();
+        for task in tasks.iter_mut() {
+            for delete in task.deletes.iter_mut() {
+                if let Some(&size) = size_map.get(&delete.file_path) {
+                    delete.file_size_in_bytes = size;
+                }
+            }
+        }
+        Ok(())
     }
 
     fn load_file_io(
@@ -519,4 +618,114 @@ fn adapt_batch_with_expressions(
         .collect::<DFResult<Vec<_>>>()?;
 
     RecordBatch::try_new(Arc::clone(target_schema), columns).map_err(|e| e.into())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Write;
+    use std::sync::Arc;
+
+    use iceberg::io::{FileIO, FileIOBuilder};
+    use iceberg::scan::{FileScanTask, FileScanTaskDeleteFile};
+    use iceberg::spec::{DataContentType, DataFileFormat, Schema};
+    use iceberg_storage_opendal::OpenDalStorageFactory;
+
+    use super::IcebergScanExec;
+
+    fn fs_file_io() -> FileIO {
+        FileIOBuilder::new(Arc::new(OpenDalStorageFactory::Fs)).build()
+    }
+
+    fn task_with_deletes(deletes: Vec<FileScanTaskDeleteFile>) -> FileScanTask {
+        FileScanTask {
+            file_size_in_bytes: 0,
+            start: 0,
+            length: 0,
+            record_count: None,
+            data_file_path: "data.parquet".to_string(),
+            data_file_format: DataFileFormat::Parquet,
+            schema: Arc::new(Schema::builder().build().unwrap()),
+            project_field_ids: vec![],
+            predicate: None,
+            deletes,
+            partition: None,
+            partition_spec: None,
+            name_mapping: None,
+            case_sensitive: false,
+        }
+    }
+
+    fn delete_file(path: &str) -> FileScanTaskDeleteFile {
+        FileScanTaskDeleteFile {
+            file_path: path.to_string(),
+            file_type: DataContentType::PositionDeletes,
+            file_size_in_bytes: 0,
+            partition_spec_id: 0,
+            equality_ids: None,
+        }
+    }
+
+    // A delete file we cannot stat must fail the scan, not be silently read with a missing/0 size.
+    #[tokio::test]
+    async fn fill_delete_file_sizes_errors_on_unreadable_delete_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("missing-delete.parquet");
+        let mut tasks = vec![task_with_deletes(vec![delete_file(
+            missing.to_str().unwrap(),
+        )])];
+
+        let result = IcebergScanExec::fill_delete_file_sizes(&mut tasks, &fs_file_io(), 4).await;
+
+        assert!(
+            result.is_err(),
+            "expected an error when a delete file cannot be statted"
+        );
+        assert_eq!(tasks[0].deletes[0].file_size_in_bytes, 0);
+    }
+
+    // The real on-disk size is filled in from the FileIO, replacing the 0 placeholder.
+    #[tokio::test]
+    async fn fill_delete_file_sizes_populates_real_size() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("delete.parquet");
+        let bytes = b"these bytes stand in for a delete file";
+        let mut f = std::fs::File::create(&path).unwrap();
+        f.write_all(bytes).unwrap();
+        f.flush().unwrap();
+
+        let mut tasks = vec![task_with_deletes(vec![delete_file(path.to_str().unwrap())])];
+        IcebergScanExec::fill_delete_file_sizes(&mut tasks, &fs_file_io(), 4)
+            .await
+            .unwrap();
+
+        assert_eq!(tasks[0].deletes[0].file_size_in_bytes, bytes.len() as u64);
+    }
+
+    // A present-but-undersized delete file (0-byte object, truncated write, or a HEAD with no
+    // Content-Length that opendal reports as size 0) must fail loudly rather than passing a
+    // sub-footer size into the Parquet reader.
+    #[tokio::test]
+    async fn fill_delete_file_sizes_errors_on_subfooter_delete_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("empty-delete.parquet");
+        std::fs::File::create(&path).unwrap(); // 0 bytes on disk
+
+        let mut tasks = vec![task_with_deletes(vec![delete_file(path.to_str().unwrap())])];
+        let result = IcebergScanExec::fill_delete_file_sizes(&mut tasks, &fs_file_io(), 4).await;
+
+        assert!(
+            result.is_err(),
+            "expected an error when a delete file is below the Parquet footer minimum"
+        );
+        assert_eq!(tasks[0].deletes[0].file_size_in_bytes, 0);
+    }
+
+    // No deletes means no stats and no error.
+    #[tokio::test]
+    async fn fill_delete_file_sizes_noop_without_deletes() {
+        let mut tasks = vec![task_with_deletes(vec![])];
+        IcebergScanExec::fill_delete_file_sizes(&mut tasks, &fs_file_io(), 4)
+            .await
+            .unwrap();
+    }
 }
