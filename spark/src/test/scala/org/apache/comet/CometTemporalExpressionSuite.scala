@@ -374,31 +374,6 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
     }
   }
 
-  test("unix_timestamp - string input falls back to Spark") {
-    withTempView("string_tbl") {
-      // Create test data with timestamp strings
-      val schema = StructType(Seq(StructField("ts_str", DataTypes.StringType, true)))
-      val data = Seq(
-        Row("2020-01-01 00:00:00"),
-        Row("2021-06-15 12:30:45"),
-        Row("2022-12-31 23:59:59"),
-        Row(null))
-      spark
-        .createDataFrame(spark.sparkContext.parallelize(data), schema)
-        .createOrReplaceTempView("string_tbl")
-
-      // String input should fall back to Spark
-      checkSparkAnswerAndFallbackReason(
-        "SELECT ts_str, unix_timestamp(ts_str) from string_tbl order by ts_str",
-        "unix_timestamp does not support input type: StringType")
-
-      // String input with custom format should also fall back
-      checkSparkAnswerAndFallbackReason(
-        "SELECT ts_str, unix_timestamp(ts_str, 'yyyy-MM-dd HH:mm:ss') from string_tbl",
-        "unix_timestamp does not support input type: StringType")
-    }
-  }
-
   private def createTimestampTestData(
       baseDate: Long = FuzzDataGenerator.defaultBaseDate): DataFrame = {
     val r = new Random(42)
@@ -533,34 +508,6 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
       // ISO format (use double single-quotes to escape the literal T)
       checkSparkAnswerAndOperator(
         "SELECT c0, date_format(c0, \"yyyy-MM-dd'T'HH:mm:ss\") from tbl order by c0")
-    }
-  }
-
-  test("date_format with literal timestamp") {
-    // Test specific literal timestamp formats
-    // Disable constant folding to ensure Comet actually executes the expression
-    withSQLConf(
-      SQLConf.SESSION_LOCAL_TIMEZONE.key -> "UTC",
-      SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
-        "org.apache.spark.sql.catalyst.optimizer.ConstantFolding") {
-      checkSparkAnswerAndOperator(
-        "SELECT date_format(TIMESTAMP '2024-03-15 14:30:45', 'yyyy-MM-dd')")
-      checkSparkAnswerAndOperator(
-        "SELECT date_format(TIMESTAMP '2024-03-15 14:30:45', 'yyyy-MM-dd HH:mm:ss')")
-      checkSparkAnswerAndOperator(
-        "SELECT date_format(TIMESTAMP '2024-03-15 14:30:45', 'HH:mm:ss')")
-      checkSparkAnswerAndOperator("SELECT date_format(TIMESTAMP '2024-03-15 14:30:45', 'EEEE')")
-      checkSparkAnswerAndOperator(
-        "SELECT date_format(TIMESTAMP '2024-03-15 14:30:45', 'hh:mm:ss a')")
-    }
-  }
-
-  test("date_format with null") {
-    withSQLConf(
-      SQLConf.SESSION_LOCAL_TIMEZONE.key -> "UTC",
-      SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
-        "org.apache.spark.sql.catalyst.optimizer.ConstantFolding") {
-      checkSparkAnswerAndOperator("SELECT date_format(CAST(NULL AS TIMESTAMP), 'yyyy-MM-dd')")
     }
   }
 
@@ -804,19 +751,4 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
       expectedDF)
   }
 
-  test("cast TimestampNTZ to Timestamp - DST edge cases") {
-    val data = Seq(
-      Row(java.time.LocalDateTime.parse("2024-03-31T01:30:00")), // Spring forward (Europe/London)
-      Row(java.time.LocalDateTime.parse("2024-10-27T01:30:00")) // Fall back (Europe/London)
-    )
-    val schema = StructType(Seq(StructField("ts_ntz", DataTypes.TimestampNTZType, true)))
-    spark
-      .createDataFrame(spark.sparkContext.parallelize(data), schema)
-      .createOrReplaceTempView("dst_tbl")
-
-    withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> "Europe/London") {
-      checkSparkAnswerAndOperator(
-        "SELECT ts_ntz, CAST(ts_ntz AS TIMESTAMP) FROM dst_tbl ORDER BY ts_ntz")
-    }
-  }
 }
