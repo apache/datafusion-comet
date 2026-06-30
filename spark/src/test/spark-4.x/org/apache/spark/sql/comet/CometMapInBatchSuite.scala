@@ -105,15 +105,15 @@ class CometMapInBatchSuite extends CometTestBase {
     }
   }
 
-  test("rule handles chained MapInArrowExec without crashing") {
+  test("rule rewrites chained MapInArrowExec into stacked CometMapInBatchExec") {
     // df.mapInArrow(...).mapInArrow(...) produces two MapInArrowExec operators. The outer
     // consumes rows from the inner directly (MapInArrowExec is a row producer), so there is
-    // no ColumnarToRow between them. After the rule's bottom-up rewrite the inner becomes
-    // CometMapInBatchExec; the outer keeps its row contract and is satisfied by
-    // CometMapInBatchExec.doExecute() reintroducing a ColumnarToRow internally. The
-    // assertion exists mainly to pin the structure: regress this if a future change makes
-    // both rewrite (the bulk-copy input path would then need to accept a CometVector input
-    // that did not come from a CometDecodedVector chain).
+    // no ColumnarToRow between them. The rule rewrites bottom-up: the inner becomes
+    // CometMapInBatchExec first, then the outer is matched against a child that is already a
+    // (columnar) CometMapInBatchExec and rewrites too, consuming the inner's columnar output
+    // directly. Both operators end up native and the chain stays columnar end to end. The
+    // inner's flattened output vectors are CometVectors, exactly what the outer's bulk-copy
+    // input path expects.
     withSQLConf(CometConf.COMET_PYARROW_UDF_ENABLED.key -> "true") {
       val cometLeaf = StubCometLeaf(Seq(AttributeReference("id", LongType)(ExprId(0L))))
       val inner = MapInArrowExec(
@@ -128,9 +128,15 @@ class CometMapInBatchSuite extends CometTestBase {
       val rewritten = EliminateRedundantTransitions(spark).apply(outer)
       val cometOps = rewritten.collect { case op: CometMapInBatchExec => op }
       assert(
-        cometOps.size == 1,
-        "expected the inner MapInArrowExec to be rewritten, but the chain produced " +
+        cometOps.size == 2,
+        "expected both MapInArrowExec operators to be rewritten, but the chain produced " +
           s"${cometOps.size} CometMapInBatchExec(s):\n$rewritten")
+      assert(
+        outer.output == cometOps.head.output,
+        s"expected the outer operator to be rewritten:\n$rewritten")
+      assert(
+        cometOps.head.child.isInstanceOf[CometMapInBatchExec],
+        s"expected the outer CometMapInBatchExec to consume the inner one directly:\n$rewritten")
     }
   }
 

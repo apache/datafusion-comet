@@ -688,11 +688,26 @@ def test_map_in_arrow_numeric_scalars(spark, tmp_path, accelerated):
         for batch in iterator:
             yield batch
 
-    result_df = spark.read.parquet(src).mapInArrow(passthrough, schema_in)
-    _assert_plan_matches_mode(_executed_plan(result_df), accelerated)
+    # ShortType (the `small` column) forces the Comet scan to fall back to vanilla Spark by
+    # default: Parquet UINT_8 maps to ShortType and Comet cannot distinguish it from signed
+    # INT16 (spark.comet.scan.unsignedSmallIntSafetyCheck). Without a Comet scan there is no
+    # columnar producer for the UDF to consume, so the rewrite cannot fire. This data is signed,
+    # so allow native execution to exercise the accelerated path.
+    prev_uint_check = spark.conf.get(
+        "spark.comet.scan.unsignedSmallIntSafetyCheck", "true"
+    )
+    spark.conf.set("spark.comet.scan.unsignedSmallIntSafetyCheck", "false")
+    try:
+        result_df = spark.read.parquet(src).mapInArrow(passthrough, schema_in)
+        _assert_plan_matches_mode(_executed_plan(result_df), accelerated)
 
-    out = {(r["id"], r["b"], r["tiny"], r["small"], r["flt"]) for r in result_df.collect()}
-    assert out == set(rows)
+        out = {
+            (r["id"], r["b"], r["tiny"], r["small"], r["flt"])
+            for r in result_df.collect()
+        }
+        assert out == set(rows)
+    finally:
+        spark.conf.set("spark.comet.scan.unsignedSmallIntSafetyCheck", prev_uint_check)
 
 
 def test_map_in_arrow_binary_type(spark, tmp_path, accelerated):

@@ -31,6 +31,7 @@ import org.apache.arrow.vector.ipc.{ArrowStreamReader, ArrowStreamWriter}
 import org.apache.arrow.vector.types.pojo.{ArrowType, Field, FieldType}
 import org.apache.spark.{SparkEnv, TaskContext}
 import org.apache.spark.api.python.{BasePythonRunner, PythonRDD, PythonWorker, SpecialLengths}
+import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.StructType
@@ -127,12 +128,35 @@ private[python] trait CometArrowPythonRunnerBase
         writeUDF(dataOut)
       }
 
+      /** Build the destination struct root and start the writer from the given child fields. */
+      private def startWriter(childFields: Seq[Field], dataOut: DataOutputStream): Unit = {
+        val structField =
+          new Field(
+            "struct",
+            new FieldType(false, ArrowType.Struct.INSTANCE, null),
+            childFields.asJava)
+        structVec = structField.createVector(allocator).asInstanceOf[StructVector]
+        writeRoot = new VectorSchemaRoot(Seq[FieldVector](structVec).asJava)
+        arrowWriter = new ArrowStreamWriter(writeRoot, null, Channels.newChannel(dataOut))
+        arrowWriter.start()
+      }
+
       override def writeNextInputToStream(dataOut: DataOutputStream): Boolean = {
         while (currentGroup == null || !currentGroup.hasNext) {
           if (!inputIterator.hasNext) {
-            if (arrowWriter != null) {
-              arrowWriter.end()
+            if (arrowWriter == null) {
+              // No input batch was ever produced (e.g. an upstream filter removed every row).
+              // Still emit a valid, empty Arrow IPC stream so the Python worker's
+              // ArrowStreamReader reads a schema and then sees zero batches, instead of failing
+              // on an absent stream ("Invalid IPC stream: negative continuation token"). There is
+              // no sample batch, so derive the schema from the Spark input schema. The timezone is
+              // irrelevant here because no rows are exchanged.
+              val inner = schema.head.dataType.asInstanceOf[StructType]
+              val childFields = inner.fields.toSeq.map(f =>
+                Utils.toArrowField(f.name, f.dataType, nullable = true, "UTC"))
+              startWriter(childFields, dataOut)
             }
+            arrowWriter.end()
             return false
           }
           currentGroup = inputIterator.next()
@@ -152,17 +176,9 @@ private[python] trait CometArrowPythonRunnerBase
           val childFields = (0 until cometBatch.numCols()).map { i =>
             val vecField =
               cometBatch.column(i).asInstanceOf[CometDecodedVector].getValueVector.getField
-            renamed(vecField, childNames(i))
+            renamed(vecField, childNames(i), forceNullable = true)
           }
-          val structField =
-            new Field(
-              "struct",
-              new FieldType(false, ArrowType.Struct.INSTANCE, null),
-              childFields.asJava)
-          structVec = structField.createVector(allocator).asInstanceOf[StructVector]
-          writeRoot = new VectorSchemaRoot(Seq[FieldVector](structVec).asJava)
-          arrowWriter = new ArrowStreamWriter(writeRoot, null, Channels.newChannel(dataOut))
-          arrowWriter.start()
+          startWriter(childFields, dataOut)
         }
 
         var i = 0
@@ -267,15 +283,31 @@ private[python] trait CometArrowPythonRunnerBase
    * materialize the struct. Keeping the type and structure intact means the destination tree
    * still mirrors the Comet source tree for [[copyVector]].
    */
-  private def renamed(field: Field, name: String): Field = {
+  private def renamed(field: Field, name: String, forceNullable: Boolean): Field = {
+    // A Map's descendants must keep their original nullability: Arrow requires the entries struct
+    // (and its key) to be non-nullable, and `MapVector.createVector` rejects a nullable entries
+    // struct. Stop forcing nullable once we enter a Map subtree.
+    val childrenForceNullable = forceNullable && !field.getType.isInstanceOf[ArrowType.Map]
     val children = field.getChildren
     val newChildren =
       if (children.isEmpty) children
       else
         children.asScala.zipWithIndex.map { case (child, idx) =>
-          renamed(child, if (child.getName == null) s"_$idx" else child.getName)
+          renamed(
+            child,
+            if (child.getName == null) s"_$idx" else child.getName,
+            childrenForceNullable)
         }.asJava
-    new Field(name, field.getFieldType, newChildren)
+    // Force the field nullable where allowed. Comet's FFI-imported vectors may carry a
+    // non-nullable Arrow `Field` even for columns that contain nulls (Comet uses positional schema
+    // and does not round-trip Spark's nullability), and the worker rejects a null value under a
+    // non-nullable field (`from_pandas(pdf, schema=batch.schema)` raises). Marking the field
+    // nullable is a safe superset; `copyVector` fills an all-valid validity buffer when the source
+    // has no nulls.
+    val ft = field.getFieldType
+    val nullable = forceNullable || ft.isNullable
+    val newFt = new FieldType(nullable, ft.getType, ft.getDictionary, ft.getMetadata)
+    new Field(name, newFt, newChildren)
   }
 
   /**
@@ -332,5 +364,15 @@ private[python] trait CometArrowPythonRunnerBase
       case _ =>
     }
     dst.setValueCount(valueCount)
+
+    // Every destination field is nullable (see `renamed`), so the worker reads the validity
+    // buffer. When the source has no nulls its validity buffer may be empty (Comet omits it),
+    // which would otherwise leave the freshly-allocated destination validity all-zero and make
+    // the worker see every value as null. Set all-valid in that case. Done after setValueCount,
+    // which can rewrite validity, mirroring the struct-level all-valid fill in writeNextInput.
+    if (valueCount > 0 && dst.getField.isNullable && src.getNullCount == 0) {
+      val validityBytes = (valueCount + 7) / 8
+      Platform.setMemory(dst.getValidityBuffer.memoryAddress(), 0xff.toByte, validityBytes)
+    }
   }
 }

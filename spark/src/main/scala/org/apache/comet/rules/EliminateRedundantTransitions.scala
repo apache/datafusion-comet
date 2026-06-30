@@ -164,6 +164,12 @@ case class EliminateRedundantTransitions(session: SparkSession)
   private def extractColumnarChild(plan: SparkPlan): Option[SparkPlan] = plan match {
     case CometColumnarToRowExec(child) => Some(child)
     case CometNativeColumnarToRowExec(child) => Some(child)
+    // Chained `mapInArrow(udf1).mapInArrow(udf2)`: by the time the outer operator is visited
+    // (transformUp is bottom-up) the inner one has already become a `CometMapInBatchExec`, which
+    // is itself columnar. There is no row transition between them to strip, so consume its
+    // columnar output directly. Its flattened output vectors are `CometVector`s, exactly what
+    // `CometMapInBatchExec`'s input path expects.
+    case child: CometMapInBatchExec => Some(child)
     case _ => None
   }
 

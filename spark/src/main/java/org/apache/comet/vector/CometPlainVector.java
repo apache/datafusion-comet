@@ -41,6 +41,9 @@ public class CometPlainVector extends CometDecodedVector {
   private final long valueBufferAddress;
   private final long offsetBufferAddress;
   private final boolean isBaseFixedWidthVector;
+  // True when the variable-width offsets are 64-bit (LargeVarChar / LargeVarBinary) rather than
+  // the usual 32-bit. PyArrow UDFs can hand back large_string / large_binary columns.
+  private final boolean isLargeVarWidth;
 
   private byte booleanByteCache;
   private int booleanByteCacheIndex = -1;
@@ -61,8 +64,14 @@ public class CometPlainVector extends CometDecodedVector {
     if (vector instanceof BaseVariableWidthVector) {
       this.offsetBufferAddress =
           ((BaseVariableWidthVector) vector).getOffsetBuffer().memoryAddress();
+      this.isLargeVarWidth = false;
+    } else if (vector instanceof BaseLargeVariableWidthVector) {
+      this.offsetBufferAddress =
+          ((BaseLargeVariableWidthVector) vector).getOffsetBuffer().memoryAddress();
+      this.isLargeVarWidth = true;
     } else {
       this.offsetBufferAddress = -1;
+      this.isLargeVarWidth = false;
     }
   }
 
@@ -115,8 +124,15 @@ public class CometPlainVector extends CometDecodedVector {
   public UTF8String getUTF8String(int rowId) {
     if (isNullAt(rowId)) return null;
     if (offsetBufferAddress != -1) {
-      int offset = Platform.getInt(null, offsetBufferAddress + rowId * 4L);
-      int length = Platform.getInt(null, offsetBufferAddress + (rowId + 1L) * 4L) - offset;
+      long offset;
+      int length;
+      if (isLargeVarWidth) {
+        offset = Platform.getLong(null, offsetBufferAddress + rowId * 8L);
+        length = (int) (Platform.getLong(null, offsetBufferAddress + (rowId + 1L) * 8L) - offset);
+      } else {
+        offset = Platform.getInt(null, offsetBufferAddress + rowId * 4L);
+        length = Platform.getInt(null, offsetBufferAddress + (rowId + 1L) * 4L) - (int) offset;
+      }
       return UTF8String.fromAddress(null, valueBufferAddress + offset, length);
     } else if (isBaseFixedWidthVector) {
       BaseFixedWidthVector fixedWidthVector = (BaseFixedWidthVector) valueVector;
@@ -139,11 +155,16 @@ public class CometPlainVector extends CometDecodedVector {
   @Override
   public byte[] getBinary(int rowId) {
     if (isNullAt(rowId)) return null;
-    int offset;
+    long offset;
     int length;
     if (offsetBufferAddress != -1) {
-      offset = Platform.getInt(null, offsetBufferAddress + rowId * 4L);
-      length = Platform.getInt(null, offsetBufferAddress + (rowId + 1L) * 4L) - offset;
+      if (isLargeVarWidth) {
+        offset = Platform.getLong(null, offsetBufferAddress + rowId * 8L);
+        length = (int) (Platform.getLong(null, offsetBufferAddress + (rowId + 1L) * 8L) - offset);
+      } else {
+        offset = Platform.getInt(null, offsetBufferAddress + rowId * 4L);
+        length = Platform.getInt(null, offsetBufferAddress + (rowId + 1L) * 4L) - (int) offset;
+      }
     } else if (valueVector instanceof BaseFixedWidthVector) {
       BaseFixedWidthVector fixedWidthVector = (BaseFixedWidthVector) valueVector;
       length = fixedWidthVector.getTypeWidth();
