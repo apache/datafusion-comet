@@ -277,6 +277,9 @@ fn print_shuffle_metrics(metrics: &MetricsSet, total_wall_time_secs: f64) {
     if let Some(nanos) = get_metric("repart_time") {
         println!("  repart time:      {}", fmt_time(nanos));
     }
+    if let Some(nanos) = get_metric("interleave_time") {
+        println!("  interleave time:  {}", fmt_time(nanos));
+    }
     if let Some(nanos) = get_metric("encode_time") {
         println!("  encode time:      {}", fmt_time(nanos));
     }

@@ -28,6 +28,8 @@ import org.apache.spark.TaskContext
 import org.apache.spark.internal.io.{FileCommitProtocol, FileNameSpec}
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
+import org.apache.spark.sql.comet.execution.arrow.CometArrowStream
+import org.apache.spark.sql.comet.util.{Utils => CometUtils}
 import org.apache.spark.sql.execution.{SparkPlan, UnaryExecNode}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.vectorized.ColumnarBatch
@@ -212,7 +214,10 @@ case class CometNativeWriteExec(
 
       val execIterator = new CometExecIterator(
         CometExec.newIterId,
-        Seq(iter),
+        CometArrowStream.inputObjects(
+          iter,
+          CometUtils.fromAttributes(child.output),
+          "CometNativeWriteExec"),
         numOutputCols,
         planBytes,
         nativeMetrics,

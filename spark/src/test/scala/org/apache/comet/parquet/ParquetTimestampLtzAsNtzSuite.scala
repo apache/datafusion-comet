@@ -21,9 +21,11 @@ package org.apache.comet.parquet
 
 import java.sql.Timestamp
 
+import org.apache.spark.SparkException
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.internal.SQLConf
 
+import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 
 /**
@@ -39,6 +41,36 @@ class ParquetTimestampLtzAsNtzSuite extends CometTestBase {
   import testImplicits._
 
   private val tsTypes = Seq("INT96", "TIMESTAMP_MICROS", "TIMESTAMP_MILLIS")
+
+  tsTypes.foreach { tsType =>
+    test(s"read TimestampLTZ ($tsType) as TimestampNTZ throws pre-Spark 4") {
+      assume(!isSpark40Plus, "Spark 4.0+ allows reading TimestampLTZ as TimestampNTZ")
+
+      val sessionTz = "America/Los_Angeles"
+
+      withSQLConf(
+        SQLConf.SESSION_LOCAL_TIMEZONE.key -> sessionTz,
+        SQLConf.PARQUET_OUTPUT_TIMESTAMP_TYPE.key -> tsType,
+        SQLConf.USE_V1_SOURCE_LIST.key -> "parquet") {
+        withTempPath { dir =>
+          val path = dir.getCanonicalPath
+          Seq(Timestamp.valueOf("2020-01-01 12:00:00")).toDF("ts").write.parquet(path)
+
+          // Spark refuses to read TimestampLTZ as TimestampNTZ (SPARK-36182)
+          withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+            intercept[SparkException] {
+              spark.read.schema("ts timestamp_ntz").parquet(path).collect()
+            }
+          }
+
+          // Comet should also refuse
+          intercept[SparkException] {
+            spark.read.schema("ts timestamp_ntz").parquet(path).collect()
+          }
+        }
+      }
+    }
+  }
 
   tsTypes.foreach { tsType =>
     test(s"read TimestampLTZ ($tsType) as TimestampNTZ matches Spark") {

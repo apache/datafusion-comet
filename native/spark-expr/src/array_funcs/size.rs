@@ -21,7 +21,6 @@ use datafusion::common::{exec_err, DataFusionError, Result as DataFusionResult, 
 use datafusion::logical_expr::{
     ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility,
 };
-use std::any::Any;
 use std::sync::Arc;
 
 /// Spark size() function that returns the size of arrays or maps.
@@ -73,10 +72,6 @@ impl SparkSizeFunc {
 }
 
 impl ScalarUDFImpl for SparkSizeFunc {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn name(&self) -> &str {
         "size"
     }

@@ -27,6 +27,9 @@ pub(crate) struct ShufflePartitionerMetrics {
     /// Time to perform repartitioning
     pub(crate) repart_time: Time,
 
+    /// Time spent in `interleave_record_batch` gathering shuffled batches
+    pub(crate) interleave_time: Time,
+
     /// Time encoding batches to IPC format
     pub(crate) encode_time: Time,
 
@@ -51,6 +54,7 @@ impl ShufflePartitionerMetrics {
         Self {
             baseline: BaselineMetrics::new(metrics, partition),
             repart_time: MetricBuilder::new(metrics).subset_time("repart_time", partition),
+            interleave_time: MetricBuilder::new(metrics).subset_time("interleave_time", partition),
             encode_time: MetricBuilder::new(metrics).subset_time("encode_time", partition),
             write_time: MetricBuilder::new(metrics).subset_time("write_time", partition),
             input_batches: MetricBuilder::new(metrics).counter("input_batches", partition),
