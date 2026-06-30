@@ -455,9 +455,9 @@ object CometConf extends ShimCometConf {
       .category(CATEGORY_EXEC)
       .doc(
         "When enabled, Comet reverts a query stage to Spark row-based execution if the number " +
-          "of columnar-to-row and row-to-columnar transition pairs exceeds the configured " +
-          "threshold. This avoids the overhead of repeated format conversions in stages where " +
-          "many operators fall back to row-based execution.")
+          "of columnar-to-row (C2R) transitions in the stage exceeds the configured threshold. " +
+          "This avoids the overhead of repeated format conversions in stages where many " +
+          "operators fall back to row-based execution.")
       .booleanConf
       .createWithDefault(false)
 
@@ -467,9 +467,10 @@ object CometConf extends ShimCometConf {
       .doc(
         "The maximum number of columnar-to-row (C2R) transitions allowed in a single query " +
           "stage before Comet reverts the entire stage to Spark row-based execution. When " +
-          "columnar shuffle is enabled, each C2R has a corresponding row-to-columnar (R2C) " +
-          "conversion to feed back into the columnar shuffle, so the count reflects full " +
-          "round-trips. Set to 0 to revert any stage with transitions. " +
+          "columnar shuffle is enabled, each such C2R typically implies a corresponding " +
+          "row-to-columnar conversion to feed back into the columnar shuffle, so each counted " +
+          "C2R is a useful proxy for the conversion overhead in the stage. Set to 0 to revert " +
+          "any stage with transitions. " +
           "Only effective when spark.comet.exec.transitionRevert.enabled is true.")
       .intConf
       .checkValue(_ >= 0, "Must be >= 0.")

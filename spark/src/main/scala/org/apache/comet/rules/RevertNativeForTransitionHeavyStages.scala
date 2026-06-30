@@ -39,8 +39,8 @@ case class RevertNativeForTransitionHeavyStages(session: SparkSession)
     extends Rule[SparkPlan]
     with Logging {
 
-  private lazy val enabled = CometConf.COMET_EXEC_TRANSITION_REVERT_ENABLED.get()
-  private lazy val maxTransitions = CometConf.COMET_EXEC_TRANSITION_REVERT_MAX_TRANSITIONS.get()
+  private def enabled = CometConf.COMET_EXEC_TRANSITION_REVERT_ENABLED.get()
+  private def maxTransitions = CometConf.COMET_EXEC_TRANSITION_REVERT_MAX_TRANSITIONS.get()
 
   override def apply(plan: SparkPlan): SparkPlan = {
     if (!enabled) return plan
@@ -166,8 +166,10 @@ case class RevertNativeForTransitionHeavyStages(session: SparkSession)
   }
 
   private def insertTransitions(plan: SparkPlan): SparkPlan = {
+    // transformStageUp never descends into stage-boundary nodes (QueryStageExec, exchanges), so
+    // this only needs to bridge row nodes that still have a columnar child within the stage.
     transformStageUp(plan) {
-      case node if !node.isInstanceOf[QueryStageExec] && !node.supportsColumnar =>
+      case node if !node.supportsColumnar =>
         val newChildren = node.children.map { child =>
           if (child.supportsColumnar) ColumnarToRowExec(child) else child
         }
