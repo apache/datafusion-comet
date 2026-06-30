@@ -2111,6 +2111,22 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("sha2 with all-literal arguments and ConstantFolding disabled") {
+    // https://github.com/apache/datafusion-comet/issues/3340
+    // When ConstantFolding is disabled, an all-literal sha2() call reaches the native
+    // engine as scalar arguments. Verify it computes the correct result rather than crashing.
+    withSQLConf(
+      "spark.sql.optimizer.excludedRules" ->
+        "org.apache.spark.sql.catalyst.optimizer.ConstantFolding") {
+      checkSparkAnswerAndOperator("""
+          |select
+          |sha2('test', 0), sha2('test', 256), sha2('test', 224),
+          |sha2('test', 384), sha2('test', 512), sha2('test', 128), sha2('test', -1),
+          |sha2(cast(null as string), 256)
+          |""".stripMargin)
+    }
+  }
+
   test("remainder function") {
     def withAnsiMode(enabled: Boolean)(f: => Unit): Unit = {
       withSQLConf(
