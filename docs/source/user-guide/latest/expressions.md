@@ -121,8 +121,8 @@ The tables below list every Spark built-in expression with its current status.
 | `stddev_samp` | ✅ |  |
 | `string_agg` | 🔜 | String aggregation (alias of `listagg`) |
 | `sum` | ✅ |  |
-| `try_avg` | 🔜 | tracking [#4098](https://github.com/apache/datafusion-comet/issues/4098) |
-| `try_sum` | 🔜 | tracking [#4098](https://github.com/apache/datafusion-comet/issues/4098) |
+| `try_avg` | ✅ | Interval types fall back |
+| `try_sum` | ✅ |  |
 | `var_pop` | ✅ |  |
 | `var_samp` | ✅ |  |
 | `variance` | ✅ |  |
