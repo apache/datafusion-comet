@@ -80,6 +80,14 @@ FILTERS = {
         ".asf.yaml",
         ".github/workflows/docs.yaml",
         "docs/**",
+        # Generated docs (configs.md, per-version expression compatibility pages) are
+        # built from these Scala sources by GenerateDocs, so changes to them must
+        # republish the site even when no docs/ file is touched.
+        "spark/src/main/scala/org/apache/comet/CometConf.scala",
+        "spark/src/main/scala/org/apache/comet/GenerateDocs.scala",
+        "spark/src/main/scala/org/apache/comet/serde/**",
+        "spark/src/main/scala/org/apache/comet/expressions/**",
+        "spark/src/main/spark-*/**",
     ],
     "spark_3_4": [
         "native/**/src/**",
