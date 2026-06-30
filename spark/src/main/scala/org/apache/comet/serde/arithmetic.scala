@@ -334,7 +334,10 @@ object CometRound extends CometExpressionSerde[Round] {
 
   }
 }
-object CometUnaryMinus extends CometExpressionSerde[UnaryMinus] {
+object CometUnaryMinus extends CometExpressionSerde[UnaryMinus] with MathBase {
+
+  override def getSupportLevel(expr: UnaryMinus): SupportLevel =
+    mathDataTypeSupportLevel(expr.child.dataType)
 
   override def convert(
       expr: UnaryMinus,
