@@ -535,7 +535,7 @@ expression-level). The `outer` variants are wired but marked `Incompatible`; the
 | Function | Status | Notes |
 | --- | --- | --- |
 | `ascii` | ✅ |  |
-| `base64` | 🔜 | Lowers to `StaticInvoke(encode)` (not allowlisted); falls back |
+| `base64` | ✅ |  |
 | `bit_length` | ✅ |  |
 | `btrim` | ✅ |  |
 | `char` | ✅ |  |
