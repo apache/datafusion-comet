@@ -91,6 +91,7 @@ message Expr {
     HoursTransform hours_transform = 68;
     ArraysZip arrays_zip = 69;
     JvmScalarUdf jvm_scalar_udf = 70;
+    PreciseTimestampConversion precise_timestamp_conversion = 71;
   }
 
   // Optional QueryContext for error reporting (contains SQL text and position)
@@ -297,6 +298,14 @@ message Cast {
   // True when running against Spark 4.0+. Controls version-specific cast behaviour
   // such as the handling of leading whitespace before T-prefixed time-only strings.
   bool is_spark4_plus = 6;
+}
+
+// Spark's internal PreciseTimestampConversion, used by time-window grouping to convert
+// between TimestampType/TimestampNTZType and LongType without losing microsecond precision.
+// This is a pure reinterpret: the underlying value is unchanged, only the type is changed.
+message PreciseTimestampConversion {
+  Expr child = 1;
+  DataType datatype = 2;
 }
 
 message BinaryExpr {
