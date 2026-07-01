@@ -17,7 +17,7 @@
 
 use std::sync::Arc;
 
-use arrow::array::{Array, GenericBinaryArray, OffsetSizeTrait, StringArray};
+use arrow::array::{Array, AsArray, GenericBinaryArray, OffsetSizeTrait, StringArray};
 use arrow::datatypes::DataType;
 use base64::prelude::BASE64_STANDARD;
 use base64::Engine;
@@ -42,17 +42,11 @@ pub fn spark_base64(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusionE
     match &args[0] {
         ColumnarValue::Array(array) => match array.data_type() {
             DataType::Binary => Ok(ColumnarValue::Array(Arc::new(encode_array(
-                array
-                    .as_any()
-                    .downcast_ref::<GenericBinaryArray<i32>>()
-                    .unwrap(),
+                array.as_binary::<i32>(),
                 chunk,
             )))),
             DataType::LargeBinary => Ok(ColumnarValue::Array(Arc::new(encode_array(
-                array
-                    .as_any()
-                    .downcast_ref::<GenericBinaryArray<i64>>()
-                    .unwrap(),
+                array.as_binary::<i64>(),
                 chunk,
             )))),
             other => exec_err!("base64 expects a binary argument, got {other}"),
@@ -78,7 +72,7 @@ fn encode_array<O: OffsetSizeTrait>(array: &GenericBinaryArray<O>, chunk: bool) 
 fn encode(bytes: &[u8], chunk: bool) -> String {
     let encoded = BASE64_STANDARD.encode(bytes);
     if chunk {
-        chunk_into_lines(&encoded)
+        chunk_into_lines(encoded)
     } else {
         encoded
     }
@@ -86,11 +80,12 @@ fn encode(bytes: &[u8], chunk: bool) -> String {
 
 /// Wrap a base64 string into lines of at most 76 characters joined by CRLF, with no trailing
 /// separator. Matches `java.util.Base64.getMimeEncoder()`. base64 output is pure ASCII, so byte
-/// offsets and character offsets coincide.
-fn chunk_into_lines(encoded: &str) -> String {
+/// offsets and character offsets coincide. Takes the string by value so the common short-input
+/// case (no wrapping needed) returns it without a second allocation.
+fn chunk_into_lines(encoded: String) -> String {
     const LINE_LEN: usize = 76;
     if encoded.len() <= LINE_LEN {
-        return encoded.to_string();
+        return encoded;
     }
     let separators = (encoded.len() - 1) / LINE_LEN;
     let mut out = String::with_capacity(encoded.len() + separators * 2);
