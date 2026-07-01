@@ -153,13 +153,15 @@ impl PartitionWriter for LocalPartitionWriter {
 
         // if we wrote a spill file for this partition then copy the
         // contents into the shuffle file
-        if let Some(spill_path) = self.spill_writers[pid].path() {
-            // Use raw File handle (not BufReader) so that std::io::copy
-            // can use copy_file_range/sendfile for zero-copy on Linux.
-            let mut spill_file = File::open(spill_path)?;
-            let mut write_timer = metrics.write_time.timer();
-            std::io::copy(&mut spill_file, &mut self.output_writer)?;
-            write_timer.stop();
+        if let Some(writer) = self.spill_writers.get(pid) {
+            if let Some(spill_path) = writer.path() {
+                // Use raw File handle (not BufReader) so that std::io::copy
+                // can use copy_file_range/sendfile for zero-copy on Linux.
+                let mut spill_file = File::open(spill_path)?;
+                let mut write_timer = metrics.write_time.timer();
+                std::io::copy(&mut spill_file, &mut self.output_writer)?;
+                write_timer.stop();
+            }
         }
 
         // Write in memory batches to output data file
