@@ -547,6 +547,34 @@ under the License.
 <p>This guide describes how we prioritize and triage bugs in the Comet project. The goal is to ensure
 that the most impactful bugs — especially correctness issues that produce wrong results — are
 identified and addressed before less critical issues.</p>
+<section id="type-labels">
+<h2>Type Labels<a class="headerlink" href="#type-labels" title="Link to this heading">#</a></h2>
+<p>Every new issue is auto-labeled with <code class="docutils literal notranslate"><span class="pre">requires-triage</span></code>, and this applies to <strong>all</strong> issues, not
+just bug reports. The first triage decision for any issue is therefore whether it is a bug or an
+enhancement.</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Label</p></th>
+<th class="head"><p>Description</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">bug</span></code></p></td>
+<td><p>Something is broken: wrong results, crashes, panics, regressions, test/CI failures</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">enhancement</span></code></p></td>
+<td><p>A request for new functionality or improvement: new expression/operator support, a new config, performance optimization, refactoring, or documentation</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>Apply exactly one of these to every triaged issue. An issue must never carry both <code class="docutils literal notranslate"><span class="pre">bug</span></code> and
+<code class="docutils literal notranslate"><span class="pre">enhancement</span></code>. Classify from the actual content of the issue, not from the title wording: an issue
+titled “bug: …” may really be a feature request, and a genuine defect may not mention “bug” in
+its title at all.</p>
+<p>Only bugs receive a priority label (see below). Enhancements are not assigned a priority label
+through this process. Both bugs and enhancements may receive area labels.</p>
+</section>
 <section id="priority-labels">
 <h2>Priority Labels<a class="headerlink" href="#priority-labels" title="Link to this heading">#</a></h2>
 <p>Every bug should have exactly one priority label. When filing or triaging a bug, apply the
@@ -653,13 +681,15 @@ easy to find issues that have not yet been triaged by filtering on that label. O
 been triaged, remove the <code class="docutils literal notranslate"><span class="pre">requires-triage</span></code> label and apply the appropriate priority and area labels.</p>
 <section id="for-new-issues">
 <h3>For New Issues<a class="headerlink" href="#for-new-issues" title="Link to this heading">#</a></h3>
-<p>When a new bug is filed:</p>
+<p>When a new issue is filed:</p>
 <ol class="arabic simple">
+<li><p><strong>Decide bug or enhancement.</strong> Apply <code class="docutils literal notranslate"><span class="pre">bug</span></code> or <code class="docutils literal notranslate"><span class="pre">enhancement</span></code> based on the content of the issue.
+The remaining steps about priority apply only to bugs.</p></li>
 <li><p><strong>Reproduce or verify</strong> the issue if possible. If the report lacks reproduction steps, ask
 the reporter for more details.</p></li>
 <li><p><strong>Assess correctness impact first.</strong> Ask: “Could this produce wrong results silently?” This
 is more important than whether it crashes.</p></li>
-<li><p><strong>Apply a priority label</strong> using the decision tree above.</p></li>
+<li><p><strong>Apply a priority label</strong> using the decision tree above (bugs only).</p></li>
 <li><p><strong>Apply area labels</strong> to indicate the affected subsystem(s).</p></li>
 <li><p><strong>Apply <code class="docutils literal notranslate"><span class="pre">good</span> <span class="pre">first</span> <span class="pre">issue</span></code></strong> if the fix is likely straightforward and well-scoped.</p></li>
 <li><p><strong>Remove the <code class="docutils literal notranslate"><span class="pre">requires-triage</span></code> label</strong> to indicate triage is complete.</p></li>
