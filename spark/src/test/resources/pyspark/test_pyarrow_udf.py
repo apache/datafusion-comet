@@ -361,10 +361,11 @@ def test_map_in_arrow_decimal_precision_sweep(
     spark, tmp_path, accelerated, precision, scale
 ):
     """
-    Spark's `BaseFixedWidthVector` handles short decimals (precision <= 18, long-backed) and long
-    decimals (precision >= 19, 16-byte `FixedSizeBinary`) on different code paths. The 18/19
-    boundary is where buffer-width assumptions in `copyVector` can hide bugs. Sweep over
-    representative precisions and scale extremes (0, half, max).
+    The Arrow `DecimalVector` that `copyVector` touches is always 16 bytes wide regardless of
+    precision, so there is no buffer-width boundary on the Arrow path (the 8-byte long-backed form
+    is Spark's `UnsafeRow` encoding, a layer this Arrow buffer copy never sees). This sweep instead
+    guards the precision/scale extremes and the 18/19 point where Spark's own decimal handling
+    changes representation, keeping the round trip value-exact. Scale extremes: 0, half, max.
     """
     schema_in = T.StructType(
         [
@@ -436,9 +437,11 @@ def test_map_in_arrow_null_density_sweep(
 
 def test_map_in_arrow_multi_batch_per_partition(spark, tmp_path, accelerated):
     """
-    Force many small batches in a single partition so the writer/unloader exercises the
-    persistent destination IPC root over multiple batches. Catches buffer-reuse bugs and
-    variable-width data-buffer growth across batches that single-batch tests miss.
+    Force many small batches in a single partition so the writer runs its per-batch
+    allocate/copy/write loop hundreds of times against a reused struct container (the leaf
+    buffers are reallocated each batch today; see #4383). Catches errors that only appear across
+    the batch boundary: stale value counts, offset/validity sizing on the second and later
+    batches, and variable-width data-buffer sizing as row content changes batch to batch.
     """
     schema_in = T.StructType(
         [

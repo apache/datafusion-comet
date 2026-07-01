@@ -111,6 +111,10 @@ private[python] trait CometArrowPythonRunnerBase
       private var writeRoot: VectorSchemaRoot = _
       private var structVec: StructVector = _
 
+      // The runner's input schema is a single struct column ("struct") whose children are the
+      // user's input columns (see `schema` above). Cast once here rather than at each use site.
+      private lazy val inputStructType = schema.head.dataType.asInstanceOf[StructType]
+
       context.addTaskCompletionListener[Unit] { _ =>
         if (writeRoot != null) {
           writeRoot.close()
@@ -151,8 +155,7 @@ private[python] trait CometArrowPythonRunnerBase
               // on an absent stream ("Invalid IPC stream: negative continuation token"). There is
               // no sample batch, so derive the schema from the Spark input schema. The timezone is
               // irrelevant here because no rows are exchanged.
-              val inner = schema.head.dataType.asInstanceOf[StructType]
-              val childFields = inner.fields.toSeq.map(f =>
+              val childFields = inputStructType.fields.toSeq.map(f =>
                 Utils.toArrowField(f.name, f.dataType, nullable = true, "UTC"))
               startWriter(childFields, dataOut)
             }
@@ -172,7 +175,7 @@ private[python] trait CometArrowPythonRunnerBase
           // column names from the input schema (the worker reads columns by name, and shaded
           // Arrow rejects a null field name). The field types and child structure are kept as-is
           // so copyVector still walks the source and destination trees in lockstep.
-          val childNames = schema.head.dataType.asInstanceOf[StructType].fieldNames
+          val childNames = inputStructType.fieldNames
           val childFields = (0 until cometBatch.numCols()).map { i =>
             val vecField =
               cometBatch.column(i).asInstanceOf[CometDecodedVector].getValueVector.getField
@@ -240,6 +243,7 @@ private[python] trait CometArrowPythonRunnerBase
         }
         try {
           if (reader != null && batchLoaded) {
+            val bytesReadStart = reader.bytesRead()
             batchLoaded = reader.loadNextBatch()
             if (batchLoaded) {
               // Re-wrap the (reloaded) field vectors fresh each batch, mirroring Comet's
@@ -249,6 +253,9 @@ private[python] trait CometArrowPythonRunnerBase
               }.toArray
               val batch = new ColumnarBatch(vectors)
               batch.setNumRows(root.getRowCount)
+              // Track bytes read so `pythonDataReceived` matches the vanilla fallback path
+              // (`BasicPythonArrowOutput`), which meters the same delta around `loadNextBatch`.
+              pythonMetrics("pythonDataReceived") += reader.bytesRead() - bytesReadStart
               pythonMetrics("pythonNumRowsReceived") += root.getRowCount
               batch
             } else {
@@ -293,6 +300,10 @@ private[python] trait CometArrowPythonRunnerBase
       if (children.isEmpty) children
       else
         children.asScala.zipWithIndex.map { case (child, idx) =>
+          // Only null-named FFI children get the positional `_$idx` placeholder. This assumes no
+          // real sibling is literally named `_0`, `_1`, ... (which would collide); struct fields
+          // reaching here carry their real names, so a null name means Comet's FFI import dropped
+          // it and a synthetic positional name is safe.
           renamed(
             child,
             if (child.getName == null) s"_$idx" else child.getName,
@@ -337,11 +348,8 @@ private[python] trait CometArrowPythonRunnerBase
     require(
       srcBufs.size == dstBufs.size,
       s"buffer count mismatch for ${dst.getField}: src=${srcBufs.size}, dst=${dstBufs.size}")
-    var b = 0
-    while (b < srcBufs.size) {
-      val s = srcBufs.get(b)
-      dstBufs.get(b).setBytes(0, s, 0, s.readableBytes)
-      b += 1
+    srcBufs.asScala.zip(dstBufs.asScala).foreach { case (s, d) =>
+      d.setBytes(0, s, 0, s.readableBytes)
     }
 
     val srcChildren = src.getChildrenFromFields
