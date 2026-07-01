@@ -2024,6 +2024,8 @@ trait CometBaseAggregate {
         CometAggregateMode.Partial
       }
       hashAggBuilder.setModeValue(mode.getNumber)
+      hashAggBuilder.setUseLargeDataTypes(
+        CometConf.COMET_AGG_USE_LARGE_DATATYPES.get(aggregate.conf))
       buildAggOp(
         builder,
         hashAggBuilder,
@@ -2079,6 +2081,8 @@ trait CometBaseAggregate {
         hashAggBuilder.addAllGroupingExprs(groupingExprs.map(_.get).asJava)
         hashAggBuilder.addAllAggExprs(aggExprs.map(_.get).asJava)
         hashAggBuilder.setModeValue(mode.getNumber)
+        hashAggBuilder.setUseLargeDataTypes(
+          CometConf.COMET_AGG_USE_LARGE_DATATYPES.get(aggregate.conf))
 
         // Send per-expression modes and buffer offset for PartialMerge handling
         if (hasPartialMerge) {
