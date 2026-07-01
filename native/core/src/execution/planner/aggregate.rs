@@ -20,7 +20,7 @@
 
 use std::sync::Arc;
 
-use arrow::datatypes::{DataType, Field, FieldRef, SchemaRef};
+use arrow::datatypes::{DataType, Field, FieldRef, Schema, SchemaRef};
 use datafusion::{
     arrow::compute::SortOptions,
     common::ScalarValue,
@@ -63,7 +63,10 @@ use super::{
     PlanCreationResult,
 };
 use crate::{
-    execution::{operators::ExecutionError, serde::to_arrow_datatype, spark_plan::SparkPlan},
+    execution::{
+        operators::ExecutionError, serde::to_arrow_datatype, shuffle::SchemaAlignExec,
+        spark_plan::SparkPlan,
+    },
     extract_op,
 };
 
@@ -71,7 +74,32 @@ use ExecutionError::GeneralError;
 
 // For clippy error on type_complexity.
 type PhyAggResult = Result<Vec<AggregateFunctionExpr>, ExecutionError>;
-type PhyExprResult = Result<Vec<(Arc<dyn PhysicalExpr>, String)>, ExecutionError>;
+
+/// Promote a Utf8/Binary group-by expression to its Large* variant.
+///
+/// Gated by `spark.comet.exec.useLargeDataTypes`. The promotion is an
+/// offset-width-only cast (i32 → i64) that makes DataFusion's HashAggregate
+/// dispatch to `ByteGroupValueBuilder::<i64>`, removing the per-task `i32::MAX`
+/// (2 GiB) cap on the group-key byte buffer. Returns the wrapped expression
+/// together with the original DataType, so the caller can build a matching
+/// cast-back projection above the aggregate; returns `None` when the input
+/// is not Utf8/Binary (no promotion needed).
+fn promote_byte_group_key(
+    expr: Arc<dyn PhysicalExpr>,
+    schema: &Schema,
+) -> Result<(Arc<dyn PhysicalExpr>, Option<DataType>), ExecutionError> {
+    match expr.data_type(schema)? {
+        DataType::Utf8 => Ok((
+            Arc::new(CastExpr::new(expr, DataType::LargeUtf8, None)),
+            Some(DataType::Utf8),
+        )),
+        DataType::Binary => Ok((
+            Arc::new(CastExpr::new(expr, DataType::LargeBinary, None)),
+            Some(DataType::Binary),
+        )),
+        _ => Ok((expr, None)),
+    }
+}
 
 /// Builder for `HashAgg`, which plans both Spark's hash and sort aggregates.
 pub struct HashAggBuilder;
@@ -130,7 +158,23 @@ impl OperatorBuilder for HashAggBuilder {
             ));
         }
 
-        let group_exprs: PhyExprResult = agg
+        // When `spark.comet.exec.useLargeDataTypes` is on, wrap Utf8/Binary
+        // group keys in a Cast to LargeUtf8/LargeBinary so DataFusion dispatches
+        // to ByteGroupValueBuilder::<i64> and the per-task group-key byte buffer
+        // is no longer capped at i32::MAX (2 GiB). The promotion is reverted at
+        // the aggregate's output by a Projection below, so LargeUtf8/LargeBinary
+        // never leaves this operator -- keeps the FFI, JVM shuffle, and Spark
+        // consumer paths untouched.
+        let use_large = agg.use_large_data_types;
+        let child_schema_ref = child.schema();
+        let child_schema = child_schema_ref.as_ref();
+        // Per group column: `Some(original_dt)` when the column was promoted to a
+        // Large* variant, `None` when it was passed through as-is. Populated in
+        // lockstep with `group_exprs` and consumed below to build the revert
+        // projection.
+        let mut group_reverts: Vec<Option<DataType>> =
+            Vec::with_capacity(agg.grouping_exprs.len());
+        let group_exprs: Vec<(Arc<dyn PhysicalExpr>, String)> = agg
             .grouping_exprs
             .iter()
             .enumerate()
@@ -139,16 +183,22 @@ impl OperatorBuilder for HashAggBuilder {
                 // the same way for DataFusion to see that the sort below a sort aggregate
                 // orders them. Spark already normalized these values, so this changes
                 // none of them.
-                if agg.ordered_by_grouping_keys {
-                    planner.create_normalized_key_expr(expr, child.schema())
+                let raw = if agg.ordered_by_grouping_keys {
+                    planner.create_normalized_key_expr(expr, Arc::clone(&child_schema_ref))
                 } else {
-                    planner.create_expr(expr, child.schema())
-                }
-                .map(|r| (r, format!("col_{idx}")))
+                    planner.create_expr(expr, Arc::clone(&child_schema_ref))
+                }?;
+                let (wrapped, revert) = if use_large {
+                    promote_byte_group_key(raw, child_schema)?
+                } else {
+                    (raw, None)
+                };
+                group_reverts.push(revert);
+                Ok((wrapped, format!("col_{idx}")))
             })
-            .collect();
-        let group_by = PhysicalGroupBy::new_single(group_exprs?);
-        let schema = child.schema();
+            .collect::<Result<Vec<_>, ExecutionError>>()?;
+        let group_by = PhysicalGroupBy::new_single(group_exprs);
+        let schema = Arc::clone(&child_schema_ref);
 
         let proto_mode = ProtoAggregateMode::try_from(agg.mode).map_err(|_| {
             ExecutionError::GeneralError(format!("Unsupported aggregate mode: {}", agg.mode))
@@ -285,6 +335,36 @@ impl OperatorBuilder for HashAggBuilder {
                 Arc::clone(&schema),
             )?,
         );
+
+        // Cast promoted group columns back to their original Utf8/Binary type
+        // so LargeUtf8/LargeBinary never crosses the FFI boundary, JVM columnar
+        // shuffle, or the Spark consumer path (all of which reject Large*).
+        // Uses `SchemaAlignExec` (not a plain `ProjectionExec` + `CastExpr`)
+        // because arrow's cast kernel rejects any single Large* array whose
+        // value bytes exceed `i32::MAX` -- which is precisely the regime this
+        // flag is used in. `SchemaAlignExec` splits each batch by row ranges
+        // so every emitted small-offset chunk fits under 2 GiB.
+        let aggregate = if use_large && group_reverts.iter().any(Option::is_some) {
+            let agg_schema = aggregate.schema();
+            let target_fields: Vec<Field> = agg_schema
+                .fields()
+                .iter()
+                .enumerate()
+                .map(|(idx, f)| {
+                    let target_dt = group_reverts
+                        .get(idx)
+                        .and_then(|r| r.clone())
+                        .unwrap_or_else(|| f.data_type().clone());
+                    Field::new(f.name(), target_dt, f.is_nullable())
+                        .with_metadata(f.metadata().clone())
+                })
+                .collect();
+            let target_schema: SchemaRef = Arc::new(Schema::new(target_fields));
+            SchemaAlignExec::try_new_or_passthrough(aggregate, &target_schema)
+                .map_err(|e| ExecutionError::DataFusionError(e.to_string()))?
+        } else {
+            aggregate
+        };
 
         let mut output = aggregate;
         let mut additional_native_plans = vec![];

@@ -4512,6 +4512,7 @@ mod tests {
                 expr_modes: vec![],
                 initial_input_buffer_offset: 0,
                 ordered_by_grouping_keys: false,
+                use_large_data_types: false,
             })),
         };
         let projection = Operator {
