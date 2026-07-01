@@ -277,7 +277,7 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `now` | ✅ | Constant-folded to a literal (alias of `current_timestamp`) |
 | `quarter` | ✅ |  |
 | `second` | ✅ |  |
-| `session_window` | 🔜 | Batch session-window grouping falls back (`UpdatingSessionsExec` is not yet native); tracked by [#4553](https://github.com/apache/datafusion-comet/issues/4553) |
+| `session_window` | 🔜 | Batch session-window grouping falls back (`UpdatingSessionsExec` is not yet native); tracked by [#4785](https://github.com/apache/datafusion-comet/issues/4785) |
 | `time_diff` | 🔜 | Spark 4.1 TIME type; tracked by [#4288](https://github.com/apache/datafusion-comet/issues/4288) |
 | `time_trunc` | 🔜 | Spark 4.1 TIME type; tracked by [#4288](https://github.com/apache/datafusion-comet/issues/4288) |
 | `timestamp_micros` | ✅ |  |
