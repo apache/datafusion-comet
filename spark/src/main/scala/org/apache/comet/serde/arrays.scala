@@ -193,16 +193,20 @@ object CometArrayIntersect
     "Result array element order may differ from Spark when the right array is longer " +
       "than the left (DataFusion probes the longer side)."
 
-  private val unsupportedCollationReason: String =
-    "array_intersect on collated strings is not supported."
+  private val collationReason: String =
+    "array_intersect does not propagate non-UTF8_BINARY collations to the output array elements " +
+      "(https://github.com/apache/datafusion-comet/issues/2190)"
 
-  override def getIncompatibleReasons(): Seq[String] = Seq(incompatReason)
-
-  override def getUnsupportedReasons(): Seq[String] = Seq(unsupportedCollationReason)
+  override def getIncompatibleReasons(): Seq[String] = Seq(incompatReason, collationReason)
 
   override def getSupportLevel(expr: ArrayIntersect): SupportLevel = {
+    // The native array_intersect dedups by raw bytes, which is wrong under non-default collations,
+    // so report Incompatible rather than Unsupported: the JVM codegen dispatcher (Spark's own
+    // doGenCode) performs collation-aware set membership and keeps execution native, matching
+    // Spark. Only the output elements' collation metadata is dropped, consistent with CometReverse
+    // and CometArrayJoin.
     if (hasNonDefaultStringCollation(expr.dataType)) {
-      Unsupported(Some(unsupportedCollationReason))
+      Incompatible(Some(collationReason))
     } else {
       Incompatible(Some(incompatReason))
     }
@@ -393,20 +397,20 @@ object CometArrayJoin
 
   private val incompatReason = "Null handling may differ from Spark"
 
-  private val unsupportedCollationReason =
-    "array_join on collated strings is not supported " +
+  private val collationReason =
+    "array_join does not propagate non-UTF8_BINARY collations to the output string " +
       "(https://github.com/apache/datafusion-comet/issues/2190)"
 
-  override def getIncompatibleReasons(): Seq[String] = Seq(incompatReason)
-
-  override def getUnsupportedReasons(): Seq[String] = Seq(unsupportedCollationReason)
+  override def getIncompatibleReasons(): Seq[String] = Seq(incompatReason, collationReason)
 
   override def getSupportLevel(expr: ArrayJoin): SupportLevel = {
-    // Spark 4.0 widens ArrayJoin's input to StringTypeWithCollation; the native array_to_string
-    // produces UTF8_BINARY semantics and does not propagate non-default collations, so surface
-    // that as a fallback reason in EXPLAIN, mirroring CometArrayIntersect.
+    // Spark 4.0 widens ArrayJoin's input to StringTypeWithCollation. Concatenation itself is
+    // collation-independent, so the joined value is always correct; only the output string's
+    // collation metadata is dropped (Comet columns are UTF8_BINARY). Report Incompatible rather
+    // than Unsupported so the JVM codegen dispatcher (Spark's own doGenCode) keeps collated
+    // array_join native and matching Spark, consistent with CometReverse's #2190 handling.
     if (hasNonDefaultStringCollation(expr.array.dataType)) {
-      Unsupported(Some(unsupportedCollationReason))
+      Incompatible(Some(collationReason))
     } else {
       Incompatible(Some(incompatReason))
     }

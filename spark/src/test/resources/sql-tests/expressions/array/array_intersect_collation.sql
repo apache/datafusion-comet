@@ -17,15 +17,16 @@
 
 -- MinSparkVersion: 4.0
 
--- Spark 4.0+ widens ArrayJoin's input to collated strings. Concatenation is collation-independent,
--- so the joined value is always correct; Comet routes collated array_join through the JVM codegen
--- dispatcher (Spark's own doGenCode), keeping it native and matching Spark. Only the output
--- string's collation metadata is dropped (tracked by #2190).
+-- Spark 4.0+ widens ArrayIntersect's input to collated strings. Set membership is collation-aware,
+-- so Comet's native byte-based dedup would be wrong. Comet instead routes collated array_intersect
+-- through the JVM codegen dispatcher (Spark's own doGenCode), which performs collation-aware
+-- membership and matches Spark. Only the output elements' collation metadata is dropped (#2190).
 
--- collated array elements
+-- UTF8_LCASE: 'A' and 'a' are equal, so the intersection is non-empty and case is taken from the
+-- left array.
 query
-SELECT array_join(array('a' COLLATE UTF8_LCASE, 'b' COLLATE UTF8_LCASE), ',')
+SELECT array_intersect(array('A' COLLATE UTF8_LCASE, 'b' COLLATE UTF8_LCASE), array('a' COLLATE UTF8_LCASE))
 
--- collated elements with null replacement
+-- UTF8_LCASE with duplicates and a non-matching element
 query
-SELECT array_join(array('a' COLLATE UTF8_LCASE, NULL, 'c' COLLATE UTF8_LCASE), ',', 'NULL')
+SELECT array_intersect(array('Hello' COLLATE UTF8_LCASE, 'WORLD' COLLATE UTF8_LCASE), array('hello' COLLATE UTF8_LCASE, 'x' COLLATE UTF8_LCASE))
