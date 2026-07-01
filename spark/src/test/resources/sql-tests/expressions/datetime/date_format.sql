@@ -39,3 +39,19 @@ SELECT date_format(ts, 'yyyy-MM-dd HH:mm:ss') FROM test_date_format
 -- literal arguments
 query
 SELECT date_format(timestamp('2024-06-15 10:30:45'), 'yyyy-MM-dd')
+
+query
+SELECT date_format(timestamp('2024-03-15 14:30:45'), 'yyyy-MM-dd HH:mm:ss')
+
+query
+SELECT date_format(timestamp('2024-03-15 14:30:45'), 'HH:mm:ss')
+
+query
+SELECT date_format(timestamp('2024-03-15 14:30:45'), 'EEEE')
+
+query
+SELECT date_format(timestamp('2024-03-15 14:30:45'), 'hh:mm:ss a')
+
+-- null input
+query
+SELECT date_format(cast(NULL as timestamp), 'yyyy-MM-dd')
