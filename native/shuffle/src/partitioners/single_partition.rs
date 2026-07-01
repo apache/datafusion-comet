@@ -17,20 +17,15 @@
 
 use crate::metrics::ShufflePartitionerMetrics;
 use crate::partitioners::ShufflePartitioner;
-use crate::writers::BufBatchWriter;
-use crate::{CompressionCodec, ShuffleBlockWriter};
+use crate::writers::partition_writer::PartitionWriter;
 use arrow::array::RecordBatch;
-use arrow::datatypes::SchemaRef;
 use datafusion::common::DataFusionError;
-use std::fs::{File, OpenOptions};
-use std::io::{BufWriter, Write};
+use std::iter;
 use tokio::time::Instant;
 
 /// A partitioner that writes all shuffle data to a single file and a single index file
-pub(crate) struct SinglePartitionShufflePartitioner {
-    // output_data_file: File,
-    output_data_writer: BufBatchWriter<ShuffleBlockWriter, File>,
-    output_index_path: String,
+pub(crate) struct SinglePartitionShufflePartitioner<T: PartitionWriter> {
+    partition_writer: T,
     /// Batches that are smaller than the batch size and to be concatenated
     buffered_batches: Vec<RecordBatch>,
     /// Number of rows in the concatenating batches
@@ -41,34 +36,14 @@ pub(crate) struct SinglePartitionShufflePartitioner {
     batch_size: usize,
 }
 
-impl SinglePartitionShufflePartitioner {
+impl<T: PartitionWriter> SinglePartitionShufflePartitioner<T> {
     pub(crate) fn try_new(
-        output_data_path: String,
-        output_index_path: String,
-        schema: SchemaRef,
+        partition_writer: T,
         metrics: ShufflePartitionerMetrics,
         batch_size: usize,
-        codec: CompressionCodec,
-        write_buffer_size: usize,
     ) -> datafusion::common::Result<Self> {
-        let shuffle_block_writer = ShuffleBlockWriter::try_new(schema.as_ref(), codec.clone())?;
-
-        let output_data_file = OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(output_data_path)?;
-
-        let output_data_writer = BufBatchWriter::new(
-            shuffle_block_writer,
-            output_data_file,
-            write_buffer_size,
-            batch_size,
-        );
-
         Ok(Self {
-            output_data_writer,
-            output_index_path,
+            partition_writer,
             buffered_batches: vec![],
             num_buffered_rows: 0,
             metrics,
@@ -109,7 +84,7 @@ impl SinglePartitionShufflePartitioner {
 }
 
 #[async_trait::async_trait]
-impl ShufflePartitioner for SinglePartitionShufflePartitioner {
+impl<T: PartitionWriter> ShufflePartitioner for SinglePartitionShufflePartitioner<T> {
     async fn insert_batch(&mut self, batch: RecordBatch) -> datafusion::common::Result<()> {
         let start_time = Instant::now();
         let num_rows = batch.num_rows();
@@ -123,20 +98,14 @@ impl ShufflePartitioner for SinglePartitionShufflePartitioner {
 
                 // Write the concatenated buffered batch
                 if let Some(batch) = concatenated_batch {
-                    self.output_data_writer.write(
-                        &batch,
-                        &self.metrics.encode_time,
-                        &self.metrics.write_time,
-                    )?;
+                    self.partition_writer
+                        .write(0, &mut iter::once(Ok(batch)), &self.metrics)?;
                 }
 
                 if num_rows >= self.batch_size {
                     // Write the new batch
-                    self.output_data_writer.write(
-                        &batch,
-                        &self.metrics.encode_time,
-                        &self.metrics.write_time,
-                    )?;
+                    self.partition_writer
+                        .write(0, &mut iter::once(Ok(batch)), &self.metrics)?;
                 } else {
                     // Add the new batch to the buffer
                     self.add_buffered_batch(batch);
@@ -160,28 +129,10 @@ impl ShufflePartitioner for SinglePartitionShufflePartitioner {
 
         // Write the concatenated buffered batch
         if let Some(batch) = concatenated_batch {
-            self.output_data_writer.write(
-                &batch,
-                &self.metrics.encode_time,
-                &self.metrics.write_time,
-            )?;
+            self.partition_writer
+                .write(0, &mut iter::once(Ok(batch)), &self.metrics)?;
         }
-        self.output_data_writer
-            .flush(&self.metrics.encode_time, &self.metrics.write_time)?;
-
-        // Write index file. It should only contain 2 entries: 0 and the total number of bytes written
-        let index_file = OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(self.output_index_path.clone())
-            .map_err(|e| DataFusionError::Execution(format!("shuffle write error: {e:?}")))?;
-        let mut index_buf_writer = BufWriter::new(index_file);
-        let data_file_length = self.output_data_writer.writer_stream_position()?;
-        for offset in [0, data_file_length] {
-            index_buf_writer.write_all(&(offset as i64).to_le_bytes()[..])?;
-        }
-        index_buf_writer.flush()?;
+        self.partition_writer.finish_all(&self.metrics)?;
 
         self.metrics
             .baseline
