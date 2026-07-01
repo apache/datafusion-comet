@@ -4131,4 +4131,37 @@ class CometIcebergNativeSuite
       }
     }
   }
+
+  test("CometScanRule should report unsupported metadata columns") {
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true",
+        CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "true") {
+
+        val table = "test_cat.db.test_meta_cols"
+        try {
+          spark.sql(s"""
+            CREATE TABLE $table (id INT, value DOUBLE) USING iceberg
+            TBLPROPERTIES ('format-version' = '2')
+          """)
+
+          spark.sql(s"""
+          INSERT INTO $table
+          VALUES (1, 10.5), (2, 20.3), (3, 30.7)
+        """)
+
+          checkSparkAnswerAndFallbackReason(
+            s"SELECT id, value, _spec_id, _pos, _file, _partition FROM $table WHERE id >= 2 ORDER BY id",
+            "Metadata column(s) _spec_id, _partition, _file, _pos is not supported")
+        } finally {
+          spark.sql(s"DROP TABLE IF EXISTS $table PURGE")
+        }
+      }
+    }
+  }
 }

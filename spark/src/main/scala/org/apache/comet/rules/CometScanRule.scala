@@ -88,12 +88,10 @@ case class CometScanRule(session: SparkSession)
       case _ => false
     }
 
-    def hasMetadataCol(plan: SparkPlan): Boolean = {
-      plan.expressions.exists(_.exists {
-        case a: Attribute =>
-          a.isMetadataCol
-        case _ => false
-      })
+    def metadataCols(plan: SparkPlan): Seq[String] = {
+      plan.expressions.collect {
+        case a: Attribute if a.isMetadataCol => a.name
+      }
     }
 
     def isIcebergMetadataTable(scanExec: BatchScanExec): Boolean = {
@@ -127,8 +125,10 @@ case class CometScanRule(session: SparkSession)
       case scan if !CometConf.COMET_NATIVE_SCAN_ENABLED.get(conf) =>
         withFallbackReason(scan, "Comet Scan is not enabled")
 
-      case scan if hasMetadataCol(scan) =>
-        withFallbackReason(scan, "Metadata column is not supported")
+      case scan if metadataCols(scan).nonEmpty =>
+        withFallbackReason(
+          scan,
+          s"Metadata column(s) ${metadataCols(scan).mkString(", ")} is not supported")
 
       // data source V1
       case scanExec: FileSourceScanExec =>
