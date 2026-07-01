@@ -35,7 +35,7 @@ pub(crate) struct LocalPartitionWriter {
     batch_size: usize,
     write_buffer_size: usize,
     num_output_partitions: usize,
-    last_finish_pid: usize,
+    last_finish_pid: i32,
 }
 
 impl LocalPartitionWriter {
@@ -77,7 +77,7 @@ impl LocalPartitionWriter {
             batch_size,
             write_buffer_size,
             num_output_partitions,
-            last_finish_pid: num_output_partitions - 1,
+            last_finish_pid: -1,
         })
     }
 
@@ -143,11 +143,11 @@ impl PartitionWriter for LocalPartitionWriter {
         I: Iterator<Item = datafusion::common::Result<RecordBatch>>,
     {
         assert_eq!(
-            (pid + self.num_output_partitions - self.last_finish_pid) % self.num_output_partitions,
+            pid as i32 - self.last_finish_pid,
             1,
             "LocalPartitionWriter::finish_partition must be called in order."
         );
-        self.last_finish_pid = pid;
+        self.last_finish_pid = pid as i32;
 
         self.offsets[pid] = self.output_writer.stream_position()?;
 
