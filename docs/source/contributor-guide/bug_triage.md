@@ -29,9 +29,9 @@ Every new issue is auto-labeled with `requires-triage`, and this applies to **al
 just bug reports. The first triage decision for any issue is therefore whether it is a bug or an
 enhancement.
 
-| Label         | Description                                                                                        |
-| ------------- | -------------------------------------------------------------------------------------------------- |
-| `bug`         | Something is broken: wrong results, crashes, panics, regressions, test/CI failures                 |
+| Label         | Description                                                                                                                                            |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `bug`         | Something is broken: wrong results, crashes, panics, regressions, test/CI failures                                                                     |
 | `enhancement` | A request for new functionality or improvement: new expression/operator support, a new config, performance optimization, refactoring, or documentation |
 
 Apply exactly one of these to every triaged issue. An issue must never carry both `bug` and

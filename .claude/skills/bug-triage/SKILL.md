@@ -203,6 +203,7 @@ Body: a markdown report with these sections, in this order:
 
    The issue number (not the title) is the link target. The title is plain
    text. If there are no area labels, write `Area labels: none`.
+
 3. **Enhancements** (omit section if empty) — one top-level bullet per issue in
    the same `<title> ([#N](url))` form, with an `Area labels:` sub-bullet and a
    one-sentence rationale for classifying it as an enhancement. Enhancements
