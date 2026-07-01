@@ -17,31 +17,16 @@
 
 //! Decoders for Spark JVM aggregate state consumed by native PartialMerge.
 
-use std::sync::Arc;
+use std::{borrow::Cow, sync::Arc};
 
 use arrow::array::{
-    builder::{make_builder, ListBuilder},
-    Array, ArrayRef, BinaryArray, LargeBinaryArray,
+    builder::{make_builder, ArrayBuilder, ListBuilder},
+    Array, ArrayRef, BinaryArray, GenericByteArray, LargeBinaryArray, OffsetSizeTrait,
 };
-use arrow::datatypes::{DataType, FieldRef};
+use arrow::datatypes::{DataType, FieldRef, GenericBinaryType};
 use datafusion::common::{DataFusionError, Result};
 use datafusion::physical_expr::aggregate::AggregateFunctionExpr;
 use datafusion_comet_shuffle::spark_unsafe::list::{append_to_builder, SparkUnsafeArray};
-
-/// State arrays after optional Spark-JVM-state decoding.
-pub(crate) enum DecodedState<'a> {
-    Borrowed(&'a [ArrayRef]),
-    Owned(Vec<ArrayRef>),
-}
-
-impl DecodedState<'_> {
-    pub(crate) fn arrays(&self) -> &[ArrayRef] {
-        match self {
-            Self::Borrowed(values) => values,
-            Self::Owned(values) => values,
-        }
-    }
-}
 
 /// Decoder used by `MergeAsPartial` before forwarding state to the inner accumulator.
 #[derive(Clone, Debug)]
@@ -57,9 +42,9 @@ impl PartialMergeStateDecoder {
             .unwrap_or(Self::PassThrough)
     }
 
-    pub(crate) fn decode<'a>(&self, values: &'a [ArrayRef]) -> Result<DecodedState<'a>> {
+    pub(crate) fn decode<'a>(&self, values: &'a [ArrayRef]) -> Result<Cow<'a, [ArrayRef]>> {
         match self {
-            Self::PassThrough => Ok(DecodedState::Borrowed(values)),
+            Self::PassThrough => Ok(Cow::Borrowed(values)),
             Self::SparkCollect(decoder) => decoder.decode(values),
         }
     }
@@ -75,24 +60,23 @@ impl PartialMergeStateDecoder {
 /// Arrow `ListArray` before calling the inner accumulator's `merge_batch`.
 #[derive(Clone, Debug)]
 pub(crate) struct SparkCollectStateDecoder {
-    state_field: FieldRef,
+    item_field: FieldRef,
 }
 
 impl SparkCollectStateDecoder {
     fn try_new(inner_expr: &AggregateFunctionExpr, state_fields: &[FieldRef]) -> Option<Self> {
         match (inner_expr.fun().name(), state_fields) {
-            ("collect_list" | "collect_set", [state_field])
-                if matches!(state_field.data_type(), DataType::List(_)) =>
-            {
-                Some(Self {
-                    state_field: Arc::clone(state_field),
-                })
-            }
+            ("collect_list" | "collect_set", [state_field]) => match state_field.data_type() {
+                DataType::List(item_field) => Some(Self {
+                    item_field: Arc::clone(item_field),
+                }),
+                _ => None,
+            },
             _ => None,
         }
     }
 
-    fn decode<'a>(&self, values: &'a [ArrayRef]) -> Result<DecodedState<'a>> {
+    fn decode<'a>(&self, values: &'a [ArrayRef]) -> Result<Cow<'a, [ArrayRef]>> {
         if values.len() != 1 {
             return Err(DataFusionError::Internal(format!(
                 "Spark collect state decoder expected one state column, got {}",
@@ -108,7 +92,7 @@ impl SparkCollectStateDecoder {
                     .ok_or_else(|| {
                         Self::decode_error("expected BinaryArray for Binary collect state")
                     })?;
-                Ok(DecodedState::Owned(vec![self.decode_binary_array(array)?]))
+                Ok(Cow::Owned(vec![self.decode_binary_array(array)?]))
             }
             DataType::LargeBinary => {
                 let array = values[0]
@@ -119,71 +103,42 @@ impl SparkCollectStateDecoder {
                             "expected LargeBinaryArray for LargeBinary collect state",
                         )
                     })?;
-                Ok(DecodedState::Owned(vec![
-                    self.decode_large_binary_array(array)?
-                ]))
+                Ok(Cow::Owned(vec![self.decode_binary_array(array)?]))
             }
-            _ => Ok(DecodedState::Borrowed(values)),
+            _ => Ok(Cow::Borrowed(values)),
         }
     }
 
-    fn decode_binary_array(&self, array: &BinaryArray) -> Result<ArrayRef> {
-        let item_field = self.item_field()?;
-        let mut builder = self.new_list_builder(item_field, array.len());
-
-        for row_idx in 0..array.len() {
-            if array.is_null(row_idx) {
-                builder.append_null();
-            } else {
-                self.append_unsafe_row_array(array.value(row_idx), item_field, &mut builder)?;
-            }
-        }
-
-        Ok(Arc::new(builder.finish()))
-    }
-
-    fn decode_large_binary_array(&self, array: &LargeBinaryArray) -> Result<ArrayRef> {
-        let item_field = self.item_field()?;
-        let mut builder = self.new_list_builder(item_field, array.len());
-
-        for row_idx in 0..array.len() {
-            if array.is_null(row_idx) {
-                builder.append_null();
-            } else {
-                self.append_unsafe_row_array(array.value(row_idx), item_field, &mut builder)?;
-            }
-        }
-
-        Ok(Arc::new(builder.finish()))
-    }
-
-    fn item_field(&self) -> Result<&FieldRef> {
-        match self.state_field.data_type() {
-            DataType::List(item_field) => Ok(item_field),
-            other => Err(Self::decode_error(format!(
-                "collect state field must be List, got {other:?}"
-            ))),
-        }
-    }
-
-    fn new_list_builder(
+    fn decode_binary_array<O: OffsetSizeTrait>(
         &self,
-        item_field: &FieldRef,
-        capacity: usize,
-    ) -> ListBuilder<Box<dyn arrow::array::builder::ArrayBuilder>> {
-        let value_builder = make_builder(item_field.data_type(), capacity);
-        ListBuilder::with_capacity(value_builder, capacity).with_field(Arc::clone(item_field))
+        array: &GenericByteArray<GenericBinaryType<O>>,
+    ) -> Result<ArrayRef> {
+        let mut builder = self.new_list_builder(array.len());
+
+        for row_idx in 0..array.len() {
+            if array.is_null(row_idx) {
+                builder.append_null();
+            } else {
+                self.append_unsafe_row_array(array.value(row_idx), &mut builder)?;
+            }
+        }
+
+        Ok(Arc::new(builder.finish()))
+    }
+
+    fn new_list_builder(&self, capacity: usize) -> ListBuilder<Box<dyn ArrayBuilder>> {
+        let value_builder = make_builder(self.item_field.data_type(), capacity);
+        ListBuilder::with_capacity(value_builder, capacity).with_field(Arc::clone(&self.item_field))
     }
 
     fn append_unsafe_row_array(
         &self,
         row_bytes: &[u8],
-        item_field: &FieldRef,
-        builder: &mut ListBuilder<Box<dyn arrow::array::builder::ArrayBuilder>>,
+        builder: &mut ListBuilder<Box<dyn ArrayBuilder>>,
     ) -> Result<()> {
         match Self::spark_array_from_single_field_unsafe_row(row_bytes)? {
             Some(array) => {
-                append_to_builder::<true>(item_field.data_type(), builder.values(), &array)
+                append_to_builder::<true>(self.item_field.data_type(), builder.values(), &array)
                     .map_err(|e| Self::decode_error(e.to_string()))?;
                 builder.append(true);
             }
@@ -270,11 +225,7 @@ mod tests {
 
     fn collect_state_decoder(element_type: DataType) -> SparkCollectStateDecoder {
         SparkCollectStateDecoder {
-            state_field: Arc::new(Field::new_list(
-                "collect_state",
-                Field::new_list_field(element_type, true),
-                true,
-            )),
+            item_field: Arc::new(Field::new_list_field(element_type, true)),
         }
     }
 
@@ -363,7 +314,7 @@ mod tests {
         let input = [Arc::new(binary) as ArrayRef];
         let decoder = collect_state_decoder(DataType::Int32);
         let decoded = decoder.decode(&input).unwrap();
-        let list = decoded.arrays()[0]
+        let list = decoded.as_ref()[0]
             .as_any()
             .downcast_ref::<ListArray>()
             .unwrap();
@@ -409,7 +360,7 @@ mod tests {
         let input = [Arc::new(binary) as ArrayRef];
         let decoder = collect_state_decoder(DataType::Utf8);
         let decoded = decoder.decode(&input).unwrap();
-        let list = decoded.arrays()[0]
+        let list = decoded.as_ref()[0]
             .as_any()
             .downcast_ref::<ListArray>()
             .unwrap();

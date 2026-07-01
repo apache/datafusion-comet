@@ -220,12 +220,12 @@ impl Accumulator for MergeAsPartialAccumulator {
     fn update_batch(&mut self, values: &[ArrayRef]) -> Result<()> {
         // Redirect update to merge — this is the key trick.
         let decoded = self.state_decoder.decode(values)?;
-        self.inner.merge_batch(decoded.arrays())
+        self.inner.merge_batch(decoded.as_ref())
     }
 
     fn merge_batch(&mut self, states: &[ArrayRef]) -> Result<()> {
         let decoded = self.state_decoder.decode(states)?;
-        self.inner.merge_batch(decoded.arrays())
+        self.inner.merge_batch(decoded.as_ref())
     }
 
     fn evaluate(&mut self) -> Result<ScalarValue> {
@@ -264,7 +264,7 @@ impl GroupsAccumulator for MergeAsPartialGroupsAccumulator {
         // Redirect update to merge — this is the key trick.
         let decoded = self.state_decoder.decode(values)?;
         self.inner.merge_batch(
-            decoded.arrays(),
+            decoded.as_ref(),
             group_indices,
             opt_filter,
             total_num_groups,
@@ -280,7 +280,7 @@ impl GroupsAccumulator for MergeAsPartialGroupsAccumulator {
     ) -> Result<()> {
         let decoded = self.state_decoder.decode(values)?;
         self.inner.merge_batch(
-            decoded.arrays(),
+            decoded.as_ref(),
             group_indices,
             opt_filter,
             total_num_groups,

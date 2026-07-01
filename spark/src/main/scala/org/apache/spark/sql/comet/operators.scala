@@ -1553,13 +1553,13 @@ trait CometBaseAggregate {
     }
 
     if (sparkPartialMergeMode) {
-      val partialMergeAggs = aggregate.aggregateExpressions.filter(_.mode == PartialMerge)
-      val unsupportedAggs = partialMergeAggs.filterNot { aggExpr =>
-        QueryPlanSerde.allAggsSupportMixedExecution(Seq(aggExpr)) ||
-        aggExpr.aggregateFunction.isInstanceOf[CollectList] ||
-        aggExpr.aggregateFunction.isInstanceOf[CollectSet]
+      val hasUnsupportedAgg = aggregate.aggregateExpressions.exists { aggExpr =>
+        aggExpr.mode == PartialMerge &&
+        !QueryPlanSerde.allAggsSupportMixedExecution(Seq(aggExpr)) &&
+        !aggExpr.aggregateFunction.isInstanceOf[CollectList] &&
+        !aggExpr.aggregateFunction.isInstanceOf[CollectSet]
       }
-      if (unsupportedAggs.nonEmpty) {
+      if (hasUnsupportedAgg) {
         withFallbackReason(
           aggregate,
           "Spark PartialMerge aggregate without Comet Partial requires compatible " +
