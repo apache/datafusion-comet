@@ -2617,7 +2617,12 @@ impl PhysicalPlanner {
                     spark_expression::regr::RegrType::Syy => (RegrType::SYY, "regr_syy"),
                     spark_expression::regr::RegrType::Sxy => (RegrType::SXY, "regr_sxy"),
                 };
-                let func = AggregateUDF::new_from_impl(Regr::new(regr_type, name));
+                let func = AggregateUDF::new_from_impl(Regr::new(
+                    regr_type,
+                    name,
+                    expr.filter_var_by_pair_nulls,
+                    expr.r2_constant_dependent_is_perfect_fit,
+                ));
                 Self::create_aggr_func_expr(name, schema, vec![child1, child2], func)
             }
             AggExprStruct::Percentile(expr) => {

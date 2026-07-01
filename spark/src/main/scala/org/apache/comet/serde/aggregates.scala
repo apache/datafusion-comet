@@ -27,7 +27,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{ByteType, DecimalType, DoubleType, IntegerType, LongType, NumericType, ShortType, StringType}
 
 import org.apache.comet.CometConf.COMET_EXEC_STRICT_FLOATING_POINT
-import org.apache.comet.CometSparkSessionExtensions.{isSpark41Plus, withFallbackReason}
+import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark41Plus, withFallbackReason}
 import org.apache.comet.serde.QueryPlanSerde.{evalModeToProto, exprToProto, serializeDataType}
 import org.apache.comet.shims.CometEvalModeUtil
 
@@ -728,6 +728,14 @@ trait CometRegrBase {
       builder.setChild2(child2Expr.get)
       builder.setRegrType(regrType)
       builder.setDatatype(dataType.get)
+      // Spark 3.5 fixed regr_slope/regr_intercept so VariancePop(x) only counts
+      // rows where both y and x are non-null. Spark 3.4 counts every row where x
+      // is non-null. The native accumulator only consults this for slope/intercept.
+      builder.setFilterVarByPairNulls(isSpark35Plus)
+      // Spark 4.1 swapped regr_r2's degenerate-case handling: a constant dependent
+      // variable now yields 1.0 (was null) and a constant independent variable
+      // yields null (was 1.0). The native accumulator only consults this for R2.
+      builder.setR2ConstantDependentIsPerfectFit(isSpark41Plus)
 
       Some(
         ExprOuterClass.AggExpr

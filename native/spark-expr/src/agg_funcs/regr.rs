@@ -72,10 +72,23 @@ pub struct Regr {
     name: String,
     signature: Signature,
     regr_type: RegrType,
+    /// Only consulted for `Slope` / `Intercept`. When `true` (Spark 3.5+),
+    /// `VariancePop(x)` counts only rows where both `y` and `x` are non-null.
+    /// When `false` (Spark 3.4), it counts every row where `x` is non-null.
+    filter_var_by_pair_nulls: bool,
+    /// Only consulted for `R2`. When `true` (Spark 4.1+), a constant dependent
+    /// variable evaluates to `1.0` and a constant independent variable to `null`.
+    /// When `false` (Spark 3.4/3.5/4.0), those two cases are reversed.
+    r2_constant_dependent_is_perfect_fit: bool,
 }
 
 impl Regr {
-    pub fn new(regr_type: RegrType, name: impl Into<String>) -> Self {
+    pub fn new(
+        regr_type: RegrType,
+        name: impl Into<String>,
+        filter_var_by_pair_nulls: bool,
+        r2_constant_dependent_is_perfect_fit: bool,
+    ) -> Self {
         Self {
             name: name.into(),
             signature: Signature::exact(
@@ -83,6 +96,8 @@ impl Regr {
                 Volatility::Immutable,
             ),
             regr_type,
+            filter_var_by_pair_nulls,
+            r2_constant_dependent_is_perfect_fit,
         }
     }
 
@@ -123,9 +138,17 @@ impl AggregateUDFImpl for Regr {
         let acc: Box<dyn Accumulator> = match self.regr_type {
             RegrType::SXX | RegrType::SYY => Box::new(RegrMomentAccumulator::try_new()?),
             RegrType::SXY => Box::new(RegrCovAccumulator::try_new()?),
-            RegrType::R2 => Box::new(RegrR2Accumulator::try_new()?),
-            RegrType::Slope => Box::new(RegrLineAccumulator::try_new(false)?),
-            RegrType::Intercept => Box::new(RegrLineAccumulator::try_new(true)?),
+            RegrType::R2 => Box::new(RegrR2Accumulator::try_new(
+                self.r2_constant_dependent_is_perfect_fit,
+            )?),
+            RegrType::Slope => Box::new(RegrLineAccumulator::try_new(
+                false,
+                self.filter_var_by_pair_nulls,
+            )?),
+            RegrType::Intercept => Box::new(RegrLineAccumulator::try_new(
+                true,
+                self.filter_var_by_pair_nulls,
+            )?),
         };
         Ok(acc)
     }
@@ -258,22 +281,33 @@ impl Accumulator for RegrCovAccumulator {
 /// (a `PearsonCorrelation`). State layout matches `CorrelationAccumulator`:
 /// count, mean1, mean2, algo_const, m2(y), m2(x).
 ///
-/// Spark's evaluate differs from DataFusion in one degenerate case: when the
-/// dependent variable `y` is constant but `x` varies, Spark returns `1.0`
-/// (a horizontal line is a perfect fit) where DataFusion returns `null`.
+/// Spark's degenerate-case handling (see `RegrR2.evaluateExpression`) changed in
+/// Spark 4.1. In both eras one degenerate case returns `null` and the other
+/// returns `1.0` (a perfect fit), but which is which was swapped:
+/// - Spark 3.4/3.5/4.0: constant dependent `y` (`m2(y) == 0`) -> `null`;
+///   constant independent `x` (`m2(x) == 0`) -> `1.0`.
+/// - Spark 4.1+: constant dependent `y` -> `1.0`; constant independent `x` ->
+///   `null`.
+///
+/// `m2(y) == 0` also covers fewer than two rows. DataFusion returns `null` in
+/// both degenerate cases.
 #[derive(Debug)]
 struct RegrR2Accumulator {
     covar: CovarianceAccumulator,
     var_y: VarianceAccumulator,
     var_x: VarianceAccumulator,
+    /// When `true` (Spark 4.1+), a constant dependent variable yields `1.0` and a
+    /// constant independent variable yields `null`; reversed when `false`.
+    constant_dependent_is_perfect_fit: bool,
 }
 
 impl RegrR2Accumulator {
-    fn try_new() -> Result<Self> {
+    fn try_new(constant_dependent_is_perfect_fit: bool) -> Result<Self> {
         Ok(Self {
             covar: CovarianceAccumulator::try_new(StatsType::Population, false)?,
             var_y: VarianceAccumulator::try_new(StatsType::Population, false)?,
             var_x: VarianceAccumulator::try_new(StatsType::Population, false)?,
+            constant_dependent_is_perfect_fit,
         })
     }
 }
@@ -328,18 +362,29 @@ impl Accumulator for RegrR2Accumulator {
     }
 
     fn evaluate(&mut self) -> Result<ScalarValue> {
-        let count = self.covar.get_count();
         let m2_x = self.var_x.get_m2();
         let m2_y = self.var_y.get_m2();
-        if count <= 1.0 || m2_x == 0.0 {
-            // independent variable has no spread -> undefined
+        // The two degenerate cases (constant dependent y, constant independent x)
+        // return null and 1.0 respectively, but Spark 4.1 swapped which is which.
+        let (null_case, perfect_fit_case) = if self.constant_dependent_is_perfect_fit {
+            // Spark 4.1+: constant x -> null, constant y -> 1.0.
+            (m2_x == 0.0, m2_y == 0.0)
+        } else {
+            // Spark 3.4/3.5/4.0: constant y -> null, constant x -> 1.0.
+            (m2_y == 0.0, m2_x == 0.0)
+        };
+        if null_case {
             Ok(ScalarValue::Float64(None))
-        } else if m2_y == 0.0 {
-            // dependent variable is constant -> perfect horizontal fit
+        } else if perfect_fit_case {
             Ok(ScalarValue::Float64(Some(1.0)))
         } else {
+            // Mirror Spark's exact evaluation order (corr = ck / sqrt(m2_y * m2_x);
+            // corr * corr) so the last-ULP rounding matches bit-for-bit. Writing
+            // it as (ck * ck) / (m2_x * m2_y) is mathematically equal but rounds
+            // differently.
             let ck = self.covar.get_algo_const();
-            Ok(ScalarValue::Float64(Some((ck * ck) / (m2_x * m2_y))))
+            let corr = ck / (m2_y * m2_x).sqrt();
+            Ok(ScalarValue::Float64(Some(corr * corr)))
         }
     }
 
@@ -361,14 +406,19 @@ struct RegrLineAccumulator {
     covar: CovarianceAccumulator,
     var_x: VarianceAccumulator,
     intercept: bool,
+    /// When `true` (Spark 3.5+), `var_x` counts only rows where both `y` and `x`
+    /// are non-null. When `false` (Spark 3.4), `var_x` counts every row where `x`
+    /// is non-null, even if `y` is null.
+    filter_var_by_pair_nulls: bool,
 }
 
 impl RegrLineAccumulator {
-    fn try_new(intercept: bool) -> Result<Self> {
+    fn try_new(intercept: bool, filter_var_by_pair_nulls: bool) -> Result<Self> {
         Ok(Self {
             covar: CovarianceAccumulator::try_new(StatsType::Population, false)?,
             var_x: VarianceAccumulator::try_new(StatsType::Population, false)?,
             intercept,
+            filter_var_by_pair_nulls,
         })
     }
 }
@@ -383,13 +433,21 @@ impl Accumulator for RegrLineAccumulator {
     fn update_batch(&mut self, values: &[ArrayRef]) -> Result<()> {
         // values[0] = y (dependent), values[1] = x (independent)
         let pairs = filter_pairs(values)?;
-        if pairs[0].is_empty() {
-            return Ok(());
+        if !pairs[0].is_empty() {
+            // Feed covariance as (x, y) so mean1 = mean(x), mean2 = mean(y).
+            let cov_input = [Arc::clone(&pairs[1]), Arc::clone(&pairs[0])];
+            self.covar.update_batch(&cov_input)?;
         }
-        // Feed covariance as (x, y) so mean1 = mean(x), mean2 = mean(y).
-        let cov_input = [Arc::clone(&pairs[1]), Arc::clone(&pairs[0])];
-        self.covar.update_batch(&cov_input)?;
-        self.var_x.update_batch(&pairs[1..2])?;
+        if self.filter_var_by_pair_nulls {
+            // Spark 3.5+: VariancePop(x) only over rows where both y and x are non-null.
+            if !pairs[0].is_empty() {
+                self.var_x.update_batch(&pairs[1..2])?;
+            }
+        } else {
+            // Spark 3.4: VariancePop(x) over every row where x is non-null (the
+            // VarianceAccumulator itself skips x nulls), regardless of y.
+            self.var_x.update_batch(&values[1..2])?;
+        }
         Ok(())
     }
 
@@ -443,9 +501,11 @@ mod tests {
         match regr_type {
             RegrType::SXX | RegrType::SYY => Box::new(RegrMomentAccumulator::try_new().unwrap()),
             RegrType::SXY => Box::new(RegrCovAccumulator::try_new().unwrap()),
-            RegrType::R2 => Box::new(RegrR2Accumulator::try_new().unwrap()),
-            RegrType::Slope => Box::new(RegrLineAccumulator::try_new(false).unwrap()),
-            RegrType::Intercept => Box::new(RegrLineAccumulator::try_new(true).unwrap()),
+            // Default to pre-Spark-4.1 degenerate-case semantics.
+            RegrType::R2 => Box::new(RegrR2Accumulator::try_new(false).unwrap()),
+            // Existing tests exercise the Spark 3.5+ both-non-null semantics.
+            RegrType::Slope => Box::new(RegrLineAccumulator::try_new(false, true).unwrap()),
+            RegrType::Intercept => Box::new(RegrLineAccumulator::try_new(true, true).unwrap()),
         }
     }
 
@@ -496,21 +556,51 @@ mod tests {
     }
 
     #[test]
-    fn r2_constant_y_is_one() {
-        // Dependent variable constant, independent varies: Spark returns 1.0.
+    fn r2_constant_y_is_null() {
+        // Dependent variable constant: Spark's regr_r2 returns NULL.
         let y = vec![Some(7.0), Some(7.0), Some(7.0), Some(7.0)];
         let x = vec![Some(1.0), Some(2.0), Some(3.0), Some(4.0)];
-        approx(eval(RegrType::R2, y, x), 1.0);
+        assert_eq!(eval(RegrType::R2, y, x), None);
     }
 
     #[test]
-    fn constant_x_yields_null() {
-        // Independent variable constant: slope/intercept/r2 are all NULL.
+    fn r2_degenerate_cases_swapped_in_spark_41() {
+        // Spark 4.1 swapped the two degenerate cases relative to 3.4/3.5/4.0.
+        let const_y = (
+            vec![Some(7.0), Some(7.0), Some(7.0), Some(7.0)],
+            vec![Some(1.0), Some(2.0), Some(3.0), Some(4.0)],
+        );
+        let const_x = (
+            vec![Some(1.0), Some(2.0), Some(3.0), Some(4.0)],
+            vec![Some(5.0), Some(5.0), Some(5.0), Some(5.0)],
+        );
+
+        let r2 = |perfect_dep: bool, y: Vec<Option<f64>>, x: Vec<Option<f64>>| {
+            let mut a = RegrR2Accumulator::try_new(perfect_dep).unwrap();
+            a.update_batch(&cols(y, x)).unwrap();
+            match a.evaluate().unwrap() {
+                ScalarValue::Float64(v) => v,
+                other => panic!("unexpected {other:?}"),
+            }
+        };
+
+        // Spark 4.1+: constant dependent -> 1.0, constant independent -> null.
+        approx(r2(true, const_y.0.clone(), const_y.1.clone()), 1.0);
+        assert_eq!(r2(true, const_x.0.clone(), const_x.1.clone()), None);
+        // Spark 3.4/3.5/4.0: constant dependent -> null, constant independent -> 1.0.
+        assert_eq!(r2(false, const_y.0, const_y.1), None);
+        approx(r2(false, const_x.0, const_x.1), 1.0);
+    }
+
+    #[test]
+    fn constant_x_edges() {
+        // Independent variable constant, dependent varies: slope/intercept are
+        // NULL, but Spark's regr_r2 returns 1.0 (a horizontal line is a perfect fit).
         let y = vec![Some(1.0), Some(2.0), Some(3.0), Some(4.0)];
         let x = vec![Some(5.0), Some(5.0), Some(5.0), Some(5.0)];
         assert_eq!(eval(RegrType::Slope, y.clone(), x.clone()), None);
         assert_eq!(eval(RegrType::Intercept, y.clone(), x.clone()), None);
-        assert_eq!(eval(RegrType::R2, y, x), None);
+        approx(eval(RegrType::R2, y, x), 1.0);
     }
 
     #[test]
@@ -563,6 +653,30 @@ mod tests {
         let x = vec![Some(2.0), Some(99.0), None, Some(10.0)];
         approx(eval(RegrType::Slope, y.clone(), x.clone()), 0.5);
         approx(eval(RegrType::R2, y, x), 1.0);
+    }
+
+    #[test]
+    fn slope_var_x_null_filtering_differs_by_spark_version() {
+        // A row where x is non-null but y is null: (1,2), (2,4), (3,6), (null,10).
+        // The co-moment ck = 4 is the same either way (only paired rows contribute).
+        // Spark 3.5+ excludes x=10 from VariancePop(x) (m2 over {2,4,6} = 8) -> 0.5.
+        // Spark 3.4 includes x=10 (m2 over {2,4,6,10} = 35) -> 4/35.
+        let y = vec![Some(1.0), Some(2.0), Some(3.0), None];
+        let x = vec![Some(2.0), Some(4.0), Some(6.0), Some(10.0)];
+
+        let mut filtered = RegrLineAccumulator::try_new(false, true).unwrap();
+        filtered.update_batch(&cols(y.clone(), x.clone())).unwrap();
+        match filtered.evaluate().unwrap() {
+            ScalarValue::Float64(v) => approx(v, 0.5),
+            other => panic!("unexpected {other:?}"),
+        }
+
+        let mut unfiltered = RegrLineAccumulator::try_new(false, false).unwrap();
+        unfiltered.update_batch(&cols(y, x)).unwrap();
+        match unfiltered.evaluate().unwrap() {
+            ScalarValue::Float64(v) => approx(v, 4.0 / 35.0),
+            other => panic!("unexpected {other:?}"),
+        }
     }
 
     #[test]
