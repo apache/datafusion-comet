@@ -15,7 +15,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow::array::{make_array, Array, ArrayRef, GenericListArray, Int32Array, OffsetSizeTrait};
+use arrow::array::{
+    make_array, Array, ArrayRef, BooleanArray, GenericListArray, Int32Array, OffsetSizeTrait,
+};
 use arrow::datatypes::{DataType, Schema};
 use arrow::{
     array::{as_primitive_array, Capacities, MutableArrayData},
@@ -104,19 +106,10 @@ impl PhysicalExpr for ArrayInsert {
     }
 
     fn evaluate(&self, batch: &RecordBatch) -> DataFusionResult<ColumnarValue> {
-        let pos_value = self
-            .pos_expr
-            .evaluate(batch)?
-            .into_array(batch.num_rows())?;
-
-        // Spark supports only IntegerType (Int32):
-        // https://github.com/apache/spark/blob/branch-3.5/sql/catalyst/src/main/scala/org/apache/spark/sql/catalyst/expressions/collectionOperations.scala#L4737
-        if !matches!(pos_value.data_type(), DataType::Int32) {
-            return Err(DataFusionError::Internal(format!(
-                "Unexpected index data type in ArrayInsert: {:?}, expected type is Int32",
-                pos_value.data_type()
-            )));
-        }
+        // Spark evaluates arguments left-to-right:
+        //   1. src
+        //   2. pos only when src is non-null
+        //   3. item only when src and pos are non-null
 
         // Check that src array is actually an array and get it's value type
         let src_value = self
@@ -130,10 +123,36 @@ impl PhysicalExpr for ArrayInsert {
             _ => unreachable!(),
         };
 
+        let evaluate_pos = BooleanArray::from(
+            (0..batch.num_rows())
+                .map(|row| src_value.is_valid(row))
+                .collect::<Vec<_>>(),
+        );
+
+        let pos_value = self
+            .pos_expr
+            .evaluate_selection(batch, &evaluate_pos)?
+            .into_array(batch.num_rows())?;
+
+        // Spark supports only IntegerType (Int32):
+        // https://github.com/apache/spark/blob/branch-3.5/sql/catalyst/src/main/scala/org/apache/spark/sql/catalyst/expressions/collectionOperations.scala#L4737
+        if !matches!(pos_value.data_type(), DataType::Int32) {
+            return Err(DataFusionError::Internal(format!(
+                "Unexpected index data type in ArrayInsert: {:?}, expected type is Int32",
+                pos_value.data_type()
+            )));
+        }
+
+        let evaluate_item = BooleanArray::from(
+            (0..batch.num_rows())
+                .map(|row| src_value.is_valid(row) && pos_value.is_valid(row))
+                .collect::<Vec<_>>(),
+        );
+
         // Check that inserted value has the same type as an array
         let item_value = self
             .item_expr
-            .evaluate(batch)?
+            .evaluate_selection(batch, &evaluate_item)?
             .into_array(batch.num_rows())?;
         if item_value.data_type() != src_element_type {
             return Err(DataFusionError::Internal(format!(
