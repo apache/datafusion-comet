@@ -33,3 +33,11 @@ SELECT make_dt_interval(1, 2, 3, 4.5), make_dt_interval(0, 0, 0, 0)
 -- default arguments
 query
 SELECT make_dt_interval(1), make_dt_interval(1, 2), make_dt_interval()
+
+-- overflow: days * MICROS_PER_DAY exceeds the int64 microsecond range. makeDayTimeInterval throws
+-- unconditionally (not ANSI-gated); this confirms the dispatched codegen path propagates Spark's
+-- exception. The pattern is the lowercase word so it matches every version: Spark 4.x raises
+-- INTERVAL_ARITHMETIC_OVERFLOW ("Integer overflow while operating with intervals") while Spark 3.x
+-- raises a raw ArithmeticException ("long overflow").
+query expect_error(overflow)
+SELECT make_dt_interval(2147483647)

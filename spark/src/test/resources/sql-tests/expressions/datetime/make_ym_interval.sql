@@ -33,3 +33,11 @@ SELECT make_ym_interval(1, 2), make_ym_interval(0, 0), make_ym_interval(-5, 11)
 -- default arguments
 query
 SELECT make_ym_interval(3), make_ym_interval()
+
+-- overflow: years * 12 exceeds Int range. makeYearMonthInterval throws unconditionally (not
+-- ANSI-gated); this confirms the dispatched codegen path propagates Spark's exception. The
+-- pattern is the lowercase word so it matches every version: Spark 4.x raises
+-- INTERVAL_ARITHMETIC_OVERFLOW ("Integer overflow while operating with intervals") while Spark 3.x
+-- raises a raw ArithmeticException ("integer overflow").
+query expect_error(overflow)
+SELECT make_ym_interval(2147483647)
