@@ -124,7 +124,7 @@ impl PartitionWriter for LocalPartitionWriter {
             self.batch_size,
         );
 
-        while let Some(batch) = iter.next() {
+        for batch in iter.by_ref() {
             let batch = batch?;
             buf_batch_writer.write(&batch, &metrics.encode_time, &metrics.write_time)?;
         }
@@ -169,7 +169,7 @@ impl PartitionWriter for LocalPartitionWriter {
             self.write_buffer_size,
             self.batch_size,
         );
-        while let Some(batch) = iter.next() {
+        for batch in iter.by_ref() {
             let batch = batch?;
             buf_batch_writer.write(&batch, &metrics.encode_time, &metrics.write_time)?;
         }

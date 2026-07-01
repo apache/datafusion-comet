@@ -68,7 +68,7 @@ impl SpillWriter {
                 );
                 let mut bytes_written =
                     buf_batch_writer.write(&batch?, &metrics.encode_time, &metrics.write_time)?;
-                while let Some(batch) = iter.next() {
+                for batch in iter.by_ref() {
                     let batch = batch?;
                     bytes_written += buf_batch_writer.write(
                         &batch,

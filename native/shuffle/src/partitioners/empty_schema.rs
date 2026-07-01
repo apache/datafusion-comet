@@ -18,12 +18,8 @@
 use crate::metrics::ShufflePartitionerMetrics;
 use crate::partitioners::ShufflePartitioner;
 use crate::writers::partition_writer::PartitionWriter;
-use crate::ShuffleBlockWriter;
 use arrow::array::RecordBatch;
 use arrow::datatypes::SchemaRef;
-use datafusion::common::DataFusionError;
-use std::fs::OpenOptions;
-use std::io::{BufWriter, Seek, Write};
 use std::iter;
 use tokio::time::Instant;
 
