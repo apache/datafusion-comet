@@ -3120,6 +3120,11 @@ impl PhysicalPlanner {
             .map(|l| self.create_lambda_expr(l, &input_schema))
             .collect::<Result<Vec<_>, _>>()?;
 
+        // NOTE: assumes all value arguments precede all lambda arguments.
+        // Holds for array_filter and the current single-lambda HOFs, but would
+        // NOT generalize to a future HOF with interleaved value/lambda args
+        // (e.g. f(value, lambda, value, lambda)). Revisit this split if such a
+        // function is added.
         let mut args: Vec<Arc<dyn PhysicalExpr>> =
             Vec::with_capacity(value_args.len() + lambdas.len());
         args.extend(value_args);

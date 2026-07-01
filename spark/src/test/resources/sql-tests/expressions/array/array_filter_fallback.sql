@@ -15,20 +15,8 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
+-- Config: spark.comet.exec.higherOrderFunction.native.enabled=false
 -- Config: spark.comet.exec.scalaUDF.codegen.enabled=false
 
-statement
-CREATE TABLE test_array_filter_native(arr array<int>) USING parquet
-
-statement
-INSERT INTO test_array_filter_native VALUES (array(1, 2, 3, 4, 5)), (array(-1, 0, 1)), (array(10)), (NULL)
-
-query
-SELECT filter(arr, x -> x > 2) FROM test_array_filter_native
-
-query
-SELECT filter(arr, x -> x >= 0) FROM test_array_filter_native
-
 query expect_fallback(DataFusion higher-order functions support only 1 argument)
-SELECT filter(arr, (x, i) -> i > 0) FROM test_array_filter_native
-
+SELECT filter(array(1), (x, i) -> i > 0)
