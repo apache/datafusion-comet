@@ -32,7 +32,7 @@ import org.apache.spark.sql.functions.{avg, col, count_distinct, sum}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DataTypes, StructField, StructType}
 
-import org.apache.comet.CometConf
+import org.apache.comet.{CometConf, CometNativeException}
 import org.apache.comet.CometConf.COMET_EXEC_STRICT_FLOATING_POINT
 import org.apache.comet.CometSparkSessionExtensions.isSpark41Plus
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator, ParquetGenerator, SchemaGenOptions}
@@ -45,8 +45,19 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   // Several aggregate tests exercise overflow behavior expected to wrap around silently;
   // ANSI-mode variants opt in to ANSI explicitly via withSQLConf.
+  //
+  // For the CUBE(9) offset-overflow repro at the bottom of the suite we MUST disable
+  // off-heap (CometTestBase defaults to off-heap + 2 GiB cap, which spills long before
+  // i32::MAX) and force the on-heap memory pool to `unbounded`. Both knobs are read
+  // from SparkConf at SparkContext init (CometExecIterator.scala:295/310), NOT from
+  // per-query SQLConf, so they must live here.
   override protected def sparkConf: SparkConf =
-    super.sparkConf.set(SQLConf.ANSI_ENABLED.key, "false")
+    super.sparkConf
+      .set(SQLConf.ANSI_ENABLED.key, "false")
+      .set("spark.memory.offHeap.enabled", "false")
+      .set(CometConf.COMET_ONHEAP_MEMORY_POOL_TYPE.key, "unbounded")
+      .set("spark.ui.enabled", "true")
+      .set("spark.ui.port", "4040")
 
   test("min/max floating point with negative zero") {
     val r = new Random(42)
@@ -2150,4 +2161,204 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("CUBE(9) + COUNT(DISTINCT) wide Utf8 keys: useLargeDataTypes preserves correctness") {
+    import org.apache.spark.sql.functions.{count_distinct, grouping}
+
+    def writeData(path: String, numRows: Long, wideBytes: Int): Unit = {
+      val userPadLen = wideBytes - "user-".length
+      val measurePadLen = wideBytes - "meas-".length
+      withSQLConf(
+        SQLConf.SHUFFLE_PARTITIONS.key -> "1",
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+        "parquet.enable.dictionary" -> "false",
+        CometConf.COMET_ENABLED.key -> "false") {
+        spark
+          .range(0, numRows, 1, 1)
+          .selectExpr(
+            s"concat('user-', lpad(cast(id as string), $userPadLen, '0')) as userId",
+            s"concat('meas-', lpad(cast(id as string), $measurePadLen, '0')) as distinctMeasure",
+            "cast(id % 4 as string) as dim1",
+            "cast(id % 3 as string) as dim2",
+            "cast(id % 6 as string) as dim3",
+            "cast(id % 5 as string) as dim4",
+            "cast(id % 7 as string) as dim5",
+            "cast(id % 2 as string) as dim6",
+            "cast(id % 8 as string) as dim7",
+            "cast(id % 9 as string) as dim8")
+          .write
+          .mode("overwrite")
+          .parquet(path)
+      }
+    }
+
+    def buildAggDf(path: String): DataFrame = {
+      val events = spark.read.parquet(path).coalesce(1)
+      events.createOrReplaceTempView("events")
+      val dims = Seq("dim1", "dim2", "dim3", "dim4", "dim5", "dim6", "dim7", "dim8")
+      val cubeCols = dims :+ "userId"
+      val groupingFlags = cubeCols.map(c => grouping(col(c)).as(s"__g_$c"))
+      spark
+        .table("events")
+        .cube(cubeCols.map(col): _*)
+        .agg(count_distinct(col("distinctMeasure")).as("uniq_measure"), groupingFlags: _*)
+        .filter("__g_userId = 0")
+    }
+
+    val baseConf: Seq[(String, String)] = Seq(
+      SQLConf.SHUFFLE_PARTITIONS.key -> "1",
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.COALESCE_PARTITIONS_ENABLED.key -> "false",
+      // Spark's whole-stage codegen generates a single doConsume method per Expand
+      // with two parameters per group column; with 10 group cols this exceeds
+      // Janino's per-method limits and the Comet-disabled baseline that
+      // checkSparkAnswerAndOperator runs to produce the reference answer fails to
+      // compile. Disable codegen so the baseline falls back to the interpreted path.
+      SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "false",
+      CometConf.COMET_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_ONHEAP_MEMORY_POOL_TYPE.key -> "unbounded")
+
+    withTempDir { dir =>
+      // ---- Branch 1: useLargeDataTypes=false ----
+      // __g_userId=0 filter pushes the per-task ByteGroupValueBuilder<i32> byte
+      // buffer over i32::MAX (~2.95 GiB cumulative) and the native partial
+      // aggregate trips bytes.rs:202-206
+      // "offset overflow, buffer size > 2147483647"
+      val path = new Path(dir.toURI.toString, "events_heavy").toString
+      writeData(path, numRows = 30000L, wideBytes = 384)
+      withSQLConf((baseConf :+ (CometConf.COMET_AGG_USE_LARGE_DATATYPES.key -> "false")): _*) {
+        withTempView("events") {
+          val df = buildAggDf(path)
+          val plan = df.queryExecution.executedPlan
+          val cometAggs = collectWithSubqueries(plan) { case a: CometHashAggregateExec => a }
+          assert(
+            cometAggs.nonEmpty,
+            s"With useLargeDataTypes=false, expected at least one " +
+              s"CometHashAggregateExec in plan, got:\n$plan")
+          val e = intercept[Throwable] {
+            df.collect()
+          }
+          val chain =
+            Iterator.iterate(e: Throwable)(_.getCause).takeWhile(_ != null).toList ++
+              Iterator
+                .iterate(e: Throwable)(_.getCause)
+                .takeWhile(_ != null)
+                .flatMap(c => Option(c.getSuppressed).toList.flatten)
+          assert(
+            chain.exists(t => Option(t.getMessage).exists(_.contains("offset overflow"))),
+            s"With useLargeDataTypes=false, expected an 'offset overflow' error, got:\n" +
+              chain.map(t => s"  ${t.getClass.getName}: ${t.getMessage}").mkString("\n"))
+        }
+      }
+
+      withSQLConf((baseConf :+ (CometConf.COMET_AGG_USE_LARGE_DATATYPES.key -> "true")): _*) {
+        withTempView("events") {
+          val df = buildAggDf(path)
+          // The full result set is ~15M rows × ~400 bytes ≈ 6 GB (CUBE(9) fan-out
+          // over 30 k rows), which drives `collect()` -> driver OOM at the default
+          // 4 GB heap. Compare via a fixed-size summary that still round-trips
+          // every group through the LargeUtf8 aggregate: row count, sum of the
+          // scalar measure, and a checksum over the 9 grouping flags.
+          val summary = df
+            .agg(
+              org.apache.spark.sql.functions.count("*").as("n"),
+              org.apache.spark.sql.functions.sum("uniq_measure").as("sum_uniq"))
+          checkSparkAnswerAndOperator(summary)
+        }
+      }
+    }
+  }
+
+  test("cube") {
+
+    import org.apache.spark.sql.{Column, DataFrame}
+    import org.apache.spark.sql.functions._
+
+    spark.sparkContext.uiWebUrl.foreach { url =>
+      // scalastyle:off println
+      println(s"[cube test] Spark UI: $url")
+      // scalastyle:on println
+    }
+
+    // The aggregation under test exceeds the per-task ByteGroupValueBuilder<i32> byte
+    // buffer (`i32::MAX` ≈ 2 GiB) for the wide-string group keys produced by CUBE +
+    // COUNT(DISTINCT). Opt into the LargeUtf8/LargeBinary internal promotion so the
+    // group-key accumulator dispatches to the `<i64>` variant. The plan's downstream
+    // shuffle and ColumnarToRow boundaries are already wired to accept the Large variants
+    // (see `native/shuffle/src/schema_align.rs` byte-aware split and the
+    // `maybe_cast_to_schema_type` passthrough in columnar_to_row.rs).
+    withSQLConf(CometConf.COMET_AGG_USE_LARGE_DATATYPES.key -> "true") {
+
+      val df = spark.read
+        .parquet(
+          "/Users/ovoievodin/part-00001-78c29a45-9897-41eb-9d7d-156692586484-c000.snappy.parquet")
+        .limit(10)
+
+      val AllItemsMarker = "ALL_ITEMS"
+
+      val playerEngagementDimensions: Seq[String] = Seq(
+        "storeFrontId",
+        "groupingAdamId",
+        "platform",
+        "regionCd",
+        "subscriptionType",
+        "subscriptionState",
+        "isPurchaser",
+        "subscriptionTenure",
+        "playerState")
+
+      // gamesDimensions = playerEngagementDimensions minus "groupingAdamId"
+      val gamesDimensions: Seq[String] =
+        playerEngagementDimensions.filterNot(_ == "groupingAdamId")
+
+      // =============================================================
+      // FIRST LEVEL — cube on gamesDimensions, force userId into every grouping
+      //   (pure-DataFrame stand-in for `GROUP BY userId, CUBE(gamesDimensions)`)
+      //   first-level agg: countDistinct(groupingAdamId) AS games_played
+      // =============================================================
+      val gamesFirstLevelKeys = gamesDimensions :+ "userId"
+
+      val gamesPerDimGroupingFlags: Seq[Column] =
+        gamesDimensions.map(c => grouping(col(c)).as(s"__g_$c"))
+
+      val gamesFirstLevelAggs: Seq[Column] = Seq(
+        countDistinct(col("groupingAdamId")).as("games_played"),
+        grouping(col("userId")).as("__g_userId")) ++ gamesPerDimGroupingFlags
+
+      val userInput = df.filter(col("trusted")) // filterTrusted
+
+      val gamesFirstLevelRaw = userInput
+        .cube(gamesFirstLevelKeys.head, gamesFirstLevelKeys.tail: _*)
+        .agg(gamesFirstLevelAggs.head, gamesFirstLevelAggs.tail: _*)
+        .filter(col("__g_userId") === 0) // keep groupings where userId is present
+        .drop("__g_userId")
+
+      val gamesFirstLevel = gamesDimensions.foldLeft(gamesFirstLevelRaw) { (acc, c) =>
+        val flag = s"__g_$c"
+        acc
+          .withColumn(
+            c,
+            when(col(flag) === 0, col(c).cast("string"))
+              .otherwise(lit(AllItemsMarker)))
+          .drop(flag)
+      }
+
+      // =============================================================
+      // SECOND LEVEL — collapse per-userId rows into per-cell metrics
+      // =============================================================
+      val userGamesPlayed = gamesFirstLevel
+        .groupBy(gamesDimensions.head, gamesDimensions.tail: _*)
+        .agg(
+          avg(col("games_played")).as("avg_games_played_per_player"),
+          countDistinct(when(col("games_played") > 1, col("userId")))
+            .as("multi_games_players"))
+
+      userGamesPlayed
+        .repartition(50)
+        .write
+        .mode("overwrite")
+        .parquet("/tmp/cube_comet_games")
+    }
+  }
 }

@@ -35,9 +35,12 @@
 //! <https://github.com/apache/datafusion-comet/issues/4515> for the running list of mismatched
 //! functions.
 
-use arrow::array::{ArrayRef, RecordBatch, RecordBatchOptions};
+use arrow::array::{
+    Array, ArrayRef, BinaryBuilder, LargeBinaryArray, LargeStringArray, RecordBatch,
+    RecordBatchOptions, StringBuilder,
+};
 use arrow::compute::{cast_with_options, CastOptions};
-use arrow::datatypes::{Field, Schema, SchemaRef};
+use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion::common::DataFusionError;
 use datafusion::physical_expr::EquivalenceProperties;
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
@@ -50,7 +53,7 @@ use datafusion::{
 };
 use futures::{Stream, StreamExt};
 use std::{
-    collections::HashSet,
+    collections::{HashSet, VecDeque},
     pin::Pin,
     sync::{Arc, Mutex, OnceLock},
     task::{Context, Poll},
@@ -83,6 +86,14 @@ enum ColumnAction {
     Passthrough,
     /// Cast the input column to the target data_type.
     Cast,
+    /// Cast a LargeUtf8 input down to Utf8 (i64 -> i32 offsets). Listed separately because
+    /// the cast kernel rejects any column whose values buffer exceeds `i32::MAX`, so the
+    /// stream must pre-split input batches into row ranges whose per-batch byte total
+    /// stays under that cap.
+    CastLargeStringToString,
+    /// Cast a LargeBinary input down to Binary (i64 -> i32 offsets). Same shrink-split
+    /// constraint as `CastLargeStringToString`.
+    CastLargeBinaryToBinary,
 }
 
 impl SchemaAlignExec {
@@ -130,7 +141,15 @@ impl SchemaAlignExec {
                         expected_field.data_type()
                     );
                 }
-                ColumnAction::Cast
+                match (actual_field.data_type(), expected_field.data_type()) {
+                    (DataType::LargeUtf8, DataType::Utf8) => {
+                        ColumnAction::CastLargeStringToString
+                    }
+                    (DataType::LargeBinary, DataType::Binary) => {
+                        ColumnAction::CastLargeBinaryToBinary
+                    }
+                    _ => ColumnAction::Cast,
+                }
             };
             let target_nullable = actual_field.is_nullable() || expected_field.is_nullable();
             let field_changed = !matches!(action, ColumnAction::Passthrough)
@@ -219,6 +238,7 @@ impl ExecutionPlan for SchemaAlignExec {
             child_stream,
             target_schema: Arc::clone(&self.target_schema),
             column_actions: Arc::clone(&self.column_actions),
+            pending: VecDeque::new(),
         }))
     }
 
@@ -235,10 +255,40 @@ struct SchemaAlignStream {
     child_stream: SendableRecordBatchStream,
     target_schema: SchemaRef,
     column_actions: Arc<Vec<ColumnAction>>,
+    /// Sub-batches produced by the last input batch and not yet yielded. Used when a
+    /// `CastLargeStringToString` / `CastLargeBinaryToBinary` column would overflow the
+    /// destination `i32` offsets, so the input is split into multiple Utf8/Binary outputs.
+    pending: VecDeque<RecordBatch>,
 }
 
+/// `i32::MAX` bytes — the cap on a Utf8/Binary values buffer (its offsets are `i32`).
+const I32_BYTE_CAP: i64 = i32::MAX as i64;
+
 impl SchemaAlignStream {
-    fn align(&self, batch: RecordBatch) -> Result<RecordBatch, DataFusionError> {
+    /// Apply the per-column actions to `batch` and push the resulting (possibly multiple)
+    /// aligned batches into `out`. Splits the input by row ranges when any
+    /// `CastLargeStringToString` / `CastLargeBinaryToBinary` column would otherwise emit a
+    /// values buffer larger than `i32::MAX`.
+    fn align_into(
+        &self,
+        batch: RecordBatch,
+        out: &mut VecDeque<RecordBatch>,
+    ) -> Result<(), DataFusionError> {
+        let ranges = self.compute_row_ranges(&batch)?;
+        for (start, length) in ranges {
+            let slice = if start == 0 && length == batch.num_rows() {
+                batch.clone()
+            } else {
+                batch.slice(start, length)
+            };
+            out.push_back(self.align_slice(slice)?);
+        }
+        Ok(())
+    }
+
+    /// Apply `column_actions` to a single row range that is already known to fit each
+    /// shrinking-cast column's destination offset width.
+    fn align_slice(&self, batch: RecordBatch) -> Result<RecordBatch, DataFusionError> {
         let mut columns: Vec<ArrayRef> = Vec::with_capacity(batch.num_columns());
         for (idx, action) in self.column_actions.iter().enumerate() {
             let column = batch.column(idx);
@@ -249,6 +299,55 @@ impl SchemaAlignStream {
                     self.target_schema.field(idx).data_type(),
                     &CastOptions::default(),
                 )?,
+                // Build a fresh Utf8/Binary array from the slice rather than calling
+                // arrow's cast kernel. `cast_byte_container` reads the underlying
+                // offsets buffer in full and verifies every absolute offset fits the
+                // destination offset type — slicing the source array does not rebase
+                // the offsets, so a slice that is logically small can still trip the
+                // i32::MAX check if its offsets sit far into the values buffer. We
+                // copy values explicitly so the new offsets start at 0.
+                ColumnAction::CastLargeStringToString => {
+                    let arr = column
+                        .as_any()
+                        .downcast_ref::<LargeStringArray>()
+                        .ok_or_else(|| {
+                            DataFusionError::Internal(format!(
+                                "SchemaAlignExec: column[{idx}] expected LargeStringArray, \
+                                 got {:?}",
+                                column.data_type()
+                            ))
+                        })?;
+                    let mut builder = StringBuilder::with_capacity(arr.len(), 0);
+                    for i in 0..arr.len() {
+                        if arr.is_null(i) {
+                            builder.append_null();
+                        } else {
+                            builder.append_value(arr.value(i));
+                        }
+                    }
+                    Arc::new(builder.finish()) as ArrayRef
+                }
+                ColumnAction::CastLargeBinaryToBinary => {
+                    let arr = column
+                        .as_any()
+                        .downcast_ref::<LargeBinaryArray>()
+                        .ok_or_else(|| {
+                            DataFusionError::Internal(format!(
+                                "SchemaAlignExec: column[{idx}] expected LargeBinaryArray, \
+                                 got {:?}",
+                                column.data_type()
+                            ))
+                        })?;
+                    let mut builder = BinaryBuilder::with_capacity(arr.len(), 0);
+                    for i in 0..arr.len() {
+                        if arr.is_null(i) {
+                            builder.append_null();
+                        } else {
+                            builder.append_value(arr.value(i));
+                        }
+                    }
+                    Arc::new(builder.finish()) as ArrayRef
+                }
             };
             columns.push(aligned);
         }
@@ -256,15 +355,134 @@ impl SchemaAlignStream {
         RecordBatch::try_new_with_options(Arc::clone(&self.target_schema), columns, &options)
             .map_err(DataFusionError::from)
     }
+
+    /// Compute `(start_row, length)` ranges that split `batch` so each shrinking-cast
+    /// column's per-slice values buffer stays under `i32::MAX`. Returns a single full-batch
+    /// range when no split is needed (the common case).
+    fn compute_row_ranges(
+        &self,
+        batch: &RecordBatch,
+    ) -> Result<Vec<(usize, usize)>, DataFusionError> {
+        let num_rows = batch.num_rows();
+        if num_rows == 0 {
+            return Ok(vec![(0, 0)]);
+        }
+
+        // Per-column running-byte cursors used to decide each split point. Empty when no
+        // column requires shrink-splitting; in that case we always return a single range.
+        let mut shrinking_cols: Vec<&[i64]> = Vec::new();
+        for (idx, action) in self.column_actions.iter().enumerate() {
+            match action {
+                ColumnAction::CastLargeStringToString => {
+                    let arr = batch
+                        .column(idx)
+                        .as_any()
+                        .downcast_ref::<LargeStringArray>()
+                        .ok_or_else(|| {
+                            DataFusionError::Internal(format!(
+                                "SchemaAlignExec: column[{idx}] expected LargeStringArray for \
+                                 LargeUtf8 -> Utf8 cast, got {:?}",
+                                batch.column(idx).data_type()
+                            ))
+                        })?;
+                    shrinking_cols.push(arr.value_offsets());
+                }
+                ColumnAction::CastLargeBinaryToBinary => {
+                    let arr = batch
+                        .column(idx)
+                        .as_any()
+                        .downcast_ref::<LargeBinaryArray>()
+                        .ok_or_else(|| {
+                            DataFusionError::Internal(format!(
+                                "SchemaAlignExec: column[{idx}] expected LargeBinaryArray for \
+                                 LargeBinary -> Binary cast, got {:?}",
+                                batch.column(idx).data_type()
+                            ))
+                        })?;
+                    shrinking_cols.push(arr.value_offsets());
+                }
+                _ => {}
+            }
+        }
+
+        if shrinking_cols.is_empty() {
+            return Ok(vec![(0, num_rows)]);
+        }
+
+        let mut ranges: Vec<(usize, usize)> = Vec::new();
+        let mut chunk_start = 0usize;
+        // The base offsets at the start of the current chunk, one per shrinking col, used to
+        // measure each row's contribution to the chunk so far.
+        let mut chunk_base: Vec<i64> = shrinking_cols
+            .iter()
+            .map(|offs| offs[chunk_start])
+            .collect();
+
+        for row in 0..num_rows {
+            // First pass: reject the whole batch if any single row already exceeds the
+            // destination cap on ANY shrinking column. Must scan every column even after
+            // a split fires later in this iteration -- otherwise a fat single value in a
+            // column past the one that triggered the split would slip through and later
+            // panic inside StringBuilder/BinaryBuilder when the row lands in a chunk.
+            for (col_idx, offsets) in shrinking_cols.iter().enumerate() {
+                let row_bytes = offsets[row + 1] - offsets[row];
+                if row_bytes > I32_BYTE_CAP {
+                    return Err(DataFusionError::Execution(format!(
+                        "SchemaAlignExec: cannot cast Large variant down to small offsets — \
+                         row {row} of column[{col_idx}] is {row_bytes} bytes which exceeds the \
+                         i32 offset cap ({I32_BYTE_CAP} bytes)"
+                    )));
+                }
+            }
+
+            // Second pass: decide whether to close the current chunk before this row.
+            // The oversized-row guard above already ensures the new chunk's first row fits.
+            for col_idx in 0..shrinking_cols.len() {
+                let projected = shrinking_cols[col_idx][row + 1] - chunk_base[col_idx];
+                if projected > I32_BYTE_CAP {
+                    let length = row - chunk_start;
+                    debug_assert!(length > 0, "split would emit an empty chunk");
+                    ranges.push((chunk_start, length));
+                    chunk_start = row;
+                    for (i, offs) in shrinking_cols.iter().enumerate() {
+                        chunk_base[i] = offs[chunk_start];
+                    }
+                    break;
+                }
+            }
+        }
+
+        // Flush the final chunk (always non-empty: starts at chunk_start <= num_rows-1).
+        ranges.push((chunk_start, num_rows - chunk_start));
+        Ok(ranges)
+    }
 }
 
 impl Stream for SchemaAlignStream {
     type Item = datafusion::common::Result<RecordBatch>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        match self.child_stream.poll_next_unpin(cx) {
-            Poll::Ready(Some(Ok(batch))) => Poll::Ready(Some(self.align(batch))),
-            other => other,
+        loop {
+            // Drain any sub-batches buffered from a prior split before pulling more input.
+            if let Some(ready) = self.pending.pop_front() {
+                return Poll::Ready(Some(Ok(ready)));
+            }
+            match self.child_stream.poll_next_unpin(cx) {
+                Poll::Ready(Some(Ok(batch))) => {
+                    let mut buf = std::mem::take(&mut self.pending);
+                    if let Err(e) = self.align_into(batch, &mut buf) {
+                        self.pending = buf;
+                        return Poll::Ready(Some(Err(e)));
+                    }
+                    self.pending = buf;
+                    // Loop back to pop_front and yield the first sub-batch (or pull again on
+                    // an input batch that produced zero outputs, e.g. zero-row inputs).
+                    continue;
+                }
+                Poll::Ready(Some(Err(e))) => return Poll::Ready(Some(Err(e))),
+                Poll::Ready(None) => return Poll::Ready(None),
+                Poll::Pending => return Poll::Pending,
+            }
         }
     }
 }

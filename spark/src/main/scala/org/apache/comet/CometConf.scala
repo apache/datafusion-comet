@@ -368,6 +368,26 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
+  val COMET_AGG_USE_LARGE_DATATYPES: ConfigEntry[Boolean] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.useLargeDataTypes")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "When true, Comet wraps Utf8/Binary group-by expressions inside a Cast to " +
+          "LargeUtf8/LargeBinary immediately before each native HashAggregate, and wraps the " +
+          "aggregate's output in a Projection that casts those columns back to Utf8/Binary. " +
+          "This promotes DataFusion's per-task group-key byte buffer from `i32` offsets " +
+          "(2 GiB hard cap) to `i64` offsets, removing the `offset overflow, buffer size > " +
+          "2147483647` failure that can hit CUBE / GROUPING SETS / COUNT(DISTINCT) workloads " +
+          "where a single partition accumulates more than 2 GiB of distinct string keys. " +
+          "Scan, shuffle, and the JVM FFI boundary remain Utf8/Binary, so neither downstream " +
+          "Spark nor Comet's shuffle (which does not support LargeUtf8) is affected. The cast " +
+          "is an offset-width promotion and only rebuilds the offset buffer (the value bytes " +
+          "are shared), so per-batch overhead is O(rows) not O(bytes). Defaults to false " +
+          "because the cap is only reachable for very large per-partition group cardinalities; " +
+          "enable it when you see the offset-overflow error.")
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_SCALA_UDF_CODEGEN_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.exec.scalaUDF.codegen.enabled")
       .category(CATEGORY_EXEC)
