@@ -1554,7 +1554,7 @@ trait CometBaseAggregate {
     // must fall back. The matching Partial is forced to fall back too (see CometExecRule), so the
     // whole multi-stage chain runs consistently in one engine. See issue #4724.
     if (modes.contains(PartialMerge) &&
-      QueryPlanSerde.hasIncompatibleBufferAgg(aggregate.aggregateExpressions) &&
+      QueryPlanSerde.hasNativeArrayBufferAgg(aggregate.aggregateExpressions) &&
       findCometPartialAgg(aggregate.child).isEmpty) {
       withFallbackReason(
         aggregate,

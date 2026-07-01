@@ -29,7 +29,7 @@ import org.apache.spark.sql.types.{ByteType, DecimalType, DoubleType, IntegerTyp
 import org.apache.comet.CometConf.COMET_EXEC_STRICT_FLOATING_POINT
 import org.apache.comet.CometSparkSessionExtensions.{isSpark41Plus, withFallbackReason}
 import org.apache.comet.serde.QueryPlanSerde.{evalModeToProto, exprToProto, serializeDataType}
-import org.apache.comet.shims.CometEvalModeUtil
+import org.apache.comet.shims.{CometCollectShim, CometEvalModeUtil}
 
 object CometMin extends CometAggregateExpressionSerde[Min] {
 
@@ -784,13 +784,19 @@ object CometCollectSet extends CometAggregateExpressionSerde[CollectSet] {
       " `spark.comet.expression.CollectSet.allowIncompatible=true` is set.")
 
   override def getSupportLevel(expr: CollectSet): SupportLevel = {
-    SupportLevel
-      .strictFloatingPointReason(
-        expr.children.head.dataType,
-        "collect_set on floating-point types " +
-          "(Comet deduplicates NaN values while Spark treats each NaN as distinct)")
-      .map(reason => Incompatible(Some(reason)))
-      .getOrElse(Compatible())
+    // The native path always drops null inputs. Spark 4.2 adds `RESPECT NULLS`
+    // (`ignoreNulls = false`), which keeps nulls, so fall back there.
+    if (!CometCollectShim.ignoreNulls(expr)) {
+      Unsupported(Some("collect_set with RESPECT NULLS (ignoreNulls = false) is not supported"))
+    } else {
+      SupportLevel
+        .strictFloatingPointReason(
+          expr.children.head.dataType,
+          "collect_set on floating-point types " +
+            "(Comet deduplicates NaN values while Spark treats each NaN as distinct)")
+        .map(reason => Incompatible(Some(reason)))
+        .getOrElse(Compatible())
+    }
   }
 
   override def convert(
@@ -824,6 +830,16 @@ object CometCollectSet extends CometAggregateExpressionSerde[CollectSet] {
 }
 
 object CometCollectList extends CometAggregateExpressionSerde[CollectList] {
+
+  override def getSupportLevel(expr: CollectList): SupportLevel = {
+    // The native path delegates to SparkCollectList, which always drops null inputs. Spark 4.2
+    // adds `RESPECT NULLS` (`ignoreNulls = false`), which keeps nulls, so fall back there.
+    if (!CometCollectShim.ignoreNulls(expr)) {
+      Unsupported(Some("collect_list with RESPECT NULLS (ignoreNulls = false) is not supported"))
+    } else {
+      Compatible()
+    }
+  }
 
   override def convert(
       aggExpr: AggregateExpression,

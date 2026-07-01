@@ -434,7 +434,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
    * are therefore only safe to run natively when every stage runs in Comet and there are at most
    * two stages (Partial + Final).
    */
-  def hasIncompatibleBufferAgg(aggExprs: Seq[AggregateExpression]): Boolean = {
+  def hasNativeArrayBufferAgg(aggExprs: Seq[AggregateExpression]): Boolean = {
     aggExprs.exists(_.aggregateFunction match {
       case _: CollectList | _: CollectSet => true
       case _ => false

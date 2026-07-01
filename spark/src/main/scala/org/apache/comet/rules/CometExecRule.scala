@@ -866,7 +866,7 @@ case class CometExecRule(session: SparkSession)
         // Spark by tagging the feeding pure-Partial; the PartialMerge/Final stages then fall back
         // via the buffer-source check in doConvert.
         if (agg.aggregateExpressions.exists(_.mode == PartialMerge) &&
-          QueryPlanSerde.hasIncompatibleBufferAgg(agg.aggregateExpressions)) {
+          QueryPlanSerde.hasNativeArrayBufferAgg(agg.aggregateExpressions)) {
           findPartialAggInPlan(agg.child).foreach { partial =>
             if (canAggregateBeConverted(partial, Partial)) {
               partial.setTagValue(
