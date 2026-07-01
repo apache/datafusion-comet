@@ -33,11 +33,6 @@ import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, serializeData
  * Serializer that converts Spark higher-order functions (e.g. `filter`, `transform`, `exists`)
  * into Comet's protobuf representation.
  *
- * A higher-order function carries two kinds of children:
- *   - "value" arguments: the regular input expressions, typically the array/map being processed.
- *   - "function" arguments: one or more lambda expressions describing the per-element
- *     computation.
- *
  * Depending on the available configuration and on whether the expression satisfies the native
  * constraints, [[convert]] produces one of two representations:
  *   - a native higher-order function proto (executed by the DataFusion engine), used when
@@ -45,11 +40,6 @@ import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, serializeData
  *     supported (see [[nativeUnsupportedReason]] / [[getSupportLevel]]); or
  *   - a JVM codegen dispatch (Scala UDF fallback via `CometScalaUDF.emitJvmCodegenDispatch`),
  *     used when the native path is unavailable but `COMET_SCALA_UDF_CODEGEN_ENABLED` is enabled.
- *
- * Native execution is limited to the subset of higher-order functions the engine can currently
- * handle: every function child must be a `LambdaFunction` taking exactly one argument, and every
- * lambda argument must be a `NamedLambdaVariable`. See [[getSupportLevel]] for the exact
- * constraints under which the expression is reported as [[Compatible]] vs [[Unsupported]].
  */
 
 case class CometHighOrderFunction[T <: HigherOrderFunction](name: String)
