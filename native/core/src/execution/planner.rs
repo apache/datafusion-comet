@@ -41,7 +41,6 @@ use datafusion::functions_aggregate::bit_and_or_xor::{bit_and_udaf, bit_or_udaf,
 use datafusion::functions_aggregate::count::count_udaf;
 use datafusion::functions_aggregate::min_max::max_udaf;
 use datafusion::functions_aggregate::min_max::min_udaf;
-use datafusion::functions_aggregate::percentile_cont::percentile_cont_udaf;
 use datafusion::functions_aggregate::sum::sum_udaf;
 use datafusion::physical_expr::aggregate::{AggregateExprBuilder, AggregateFunctionExpr};
 use datafusion::physical_plan::windows::{BoundedWindowAggExec, WindowAggExec};
@@ -74,7 +73,7 @@ use datafusion::{
 use datafusion_comet_spark_expr::{
     create_comet_physical_fun, create_comet_physical_fun_with_eval_mode, BinaryOutputStyle,
     BloomFilterAgg, BloomFilterMightContain, CsvWriteOptions, EvalMode, SparkArraysZipFunc,
-    SparkBloomFilterVersion, SumInteger, ToCsv,
+    SparkBloomFilterVersion, SparkPercentile, SumInteger, ToCsv,
 };
 use datafusion_spark::function::aggregate::collect::SparkCollectSet;
 use iceberg::expr::Bind;
@@ -2606,12 +2605,14 @@ impl PhysicalPlanner {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
                 let percentile =
                     self.create_expr(expr.percentage.as_ref().unwrap(), Arc::clone(&schema))?;
-                // DataFusion's percentile_cont uses the same `index = p * (n - 1)` linear
-                // interpolation as Spark's exact Percentile, so results match for the single
-                // percentage case wired here.
-                AggregateExprBuilder::new(percentile_cont_udaf(), vec![child, percentile])
+                // Spark's exact Percentile uses full-precision linear interpolation. Comet uses
+                // its own UDAF rather than DataFusion's percentile_cont because DataFusion
+                // quantizes the interpolation weight.
+                let percentile_value = percentile_value(expr.percentage.as_ref().unwrap())?;
+                let func = AggregateUDF::new_from_impl(SparkPercentile::try_new(percentile_value)?);
+                AggregateExprBuilder::new(func.into(), vec![child, percentile])
                     .schema(schema)
-                    .alias("percentile_cont")
+                    .alias("percentile")
                     .with_ignore_nulls(false)
                     .with_distinct(false)
                     .build()
@@ -3260,6 +3261,21 @@ impl PhysicalPlanner {
             .with_distinct(false)
             .build()
             .map_err(|e| e.into())
+    }
+}
+
+fn percentile_value(expr: &spark_expression::Expr) -> Result<f64, ExecutionError> {
+    match &expr.expr_struct {
+        Some(ExprStruct::Literal(literal)) if !literal.is_null => match &literal.value {
+            Some(Value::DoubleVal(value)) => Ok(*value),
+            Some(Value::FloatVal(value)) => Ok(*value as f64),
+            _ => Err(GeneralError(
+                "Percentile value must be a floating-point literal".to_string(),
+            )),
+        },
+        _ => Err(GeneralError(
+            "Percentile value must be a non-null literal".to_string(),
+        )),
     }
 }
 
