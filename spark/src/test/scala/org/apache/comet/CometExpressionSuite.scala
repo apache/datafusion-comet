@@ -1032,17 +1032,20 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("native opt-in hint shown for codegen-dispatch path") {
     withTempDir { dir =>
-      // _5 column is TIMESTAMP(MICROS,false) = TimestampNTZ, which triggers Incompatible in CometHour
+      // _4 column is TIMESTAMP(MICROS,true) = TimestampType. FromUTCTimestamp is Incompatible
+      // (its native timezone parser is stricter than Spark's), so with allowIncompatible=false it
+      // rides the codegen dispatcher and surfaces the native opt-in hint.
       val path = new Path(dir.toURI.toString, "hint_test.parquet")
       makeRawTimeParquetFile(path, dictionaryEnabled = false, n = 5)
-      withSQLConf("spark.comet.expression.Hour.allowIncompatible" -> "false") {
-        val df = spark.read.parquet(path.toString).selectExpr("hour(_5) as h")
+      withSQLConf("spark.comet.expression.FromUTCTimestamp.allowIncompatible" -> "false") {
+        val df =
+          spark.read.parquet(path.toString).selectExpr("from_utc_timestamp(_4, 'UTC') as t")
         val explain =
           new ExtendedExplainInfo().generateExtendedInfo(df.queryExecution.executedPlan)
         assert(explain.contains("[COMET-INFO:"), s"Expected [COMET-INFO: in: $explain")
         assert(
-          explain.contains("native implementation of Hour"),
-          s"Expected 'native implementation of Hour' in: $explain")
+          explain.contains("native implementation of FromUTCTimestamp"),
+          s"Expected 'native implementation of FromUTCTimestamp' in: $explain")
       }
     }
   }
