@@ -216,8 +216,6 @@ fn get_options(
     encryption_enabled: bool,
 ) -> (TableParquetOptions, SparkParquetOptions) {
     let mut table_parquet_options = TableParquetOptions::new();
-    table_parquet_options.global.pushdown_filters = true;
-    table_parquet_options.global.reorder_filters = true;
     table_parquet_options.global.coerce_int96 = Some("us".to_string());
     // INT96 columns encode UTC-adjusted instants; attaching the UTC timezone
     // preserves that signal at the Arrow level so the schema adapter can

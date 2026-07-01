@@ -21,10 +21,10 @@ package org.apache.comet.serde
 
 import scala.jdk.CollectionConverters._
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Literal}
-import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, Average, BitAndAgg, BitOrAgg, BitXorAgg, BloomFilterAggregate, CentralMomentAgg, CollectSet, Corr, Count, Covariance, CovPopulation, CovSample, First, Last, Max, Min, StddevPop, StddevSamp, Sum, VariancePop, VarianceSamp}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Literal}
+import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, Average, BitAndAgg, BitOrAgg, BitXorAgg, BloomFilterAggregate, CentralMomentAgg, CollectSet, Corr, Count, Covariance, CovPopulation, CovSample, First, Last, Max, Min, Percentile, StddevPop, StddevSamp, Sum, VariancePop, VarianceSamp}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{ByteType, DecimalType, IntegerType, LongType, ShortType, StringType}
+import org.apache.spark.sql.types.{ByteType, DecimalType, DoubleType, IntegerType, LongType, NumericType, ShortType, StringType}
 
 import org.apache.comet.CometConf.COMET_EXEC_STRICT_FLOATING_POINT
 import org.apache.comet.CometSparkSessionExtensions.{isSpark41Plus, withFallbackReason}
@@ -589,6 +589,89 @@ object CometStddevPop extends CometAggregateExpressionSerde[StddevPop] with Come
       binding: Boolean,
       conf: SQLConf): Option[ExprOuterClass.AggExpr] = {
     convertStddev(aggExpr, stddev, stddev.nullOnDivideByZero, 1, inputs, binding, conf: SQLConf)
+  }
+}
+
+object CometPercentile extends CometAggregateExpressionSerde[Percentile] {
+
+  private val arrayOfPercentagesReason = "An array of percentages is not supported."
+  private val nonLiteralPercentageReason = "The percentage argument must be a literal."
+  private val frequencyReason = "A frequency argument is not supported."
+  // `reverse` is set when `percentile_cont`/`percentile_disc` is used with
+  // `WITHIN GROUP (ORDER BY ... DESC)` on Spark 4.0+. The native `percentile_cont` always
+  // interpolates in ascending order, so the descending form would return a wrong answer.
+  private val descendingReason =
+    "Descending order in `WITHIN GROUP (ORDER BY ... DESC)` is not supported."
+  private val inputTypeReason = "Only numeric input types are supported."
+  // DataFusion's percentile_cont quantizes the linear interpolation weight to 6 decimal places,
+  // so an interpolated percentile may differ from Spark by up to `(upper - lower) * 1e-6`.
+  // See #4719.
+  private val precisionReason =
+    "Interpolated values may differ from Spark by up to `(upper - lower) * 1e-6` because" +
+      " DataFusion quantizes the interpolation weight to 6 decimal places (#4719)."
+
+  override def getUnsupportedReasons(): Seq[String] = Seq(
+    arrayOfPercentagesReason,
+    nonLiteralPercentageReason,
+    frequencyReason,
+    descendingReason,
+    inputTypeReason)
+
+  override def getIncompatibleReasons(): Seq[String] = Seq(precisionReason)
+
+  override def getSupportLevel(expr: Percentile): SupportLevel = {
+    // Only the single-percentage, default-frequency, numeric-input, ascending form is wired
+    // today. It maps to DataFusion's percentile_cont, which uses the same `index = p * (n - 1)`
+    // linear interpolation as Spark's exact Percentile, but quantizes the interpolation weight to
+    // 6 decimal places (see precisionReason / #4719), so the supported form is Incompatible rather
+    // than Compatible. Array-of-percentages, a non-default frequency argument, descending order,
+    // and interval inputs fall back to Spark.
+    if (expr.percentageExpression.dataType != DoubleType) {
+      return Unsupported(Some(arrayOfPercentagesReason))
+    }
+    if (!expr.percentageExpression.foldable) {
+      return Unsupported(Some(nonLiteralPercentageReason))
+    }
+    expr.frequencyExpression match {
+      case Literal(1L, _) =>
+      case _ => return Unsupported(Some(frequencyReason))
+    }
+    if (expr.reverse) {
+      return Unsupported(Some(descendingReason))
+    }
+    expr.child.dataType match {
+      case _: NumericType => Incompatible(Some(precisionReason))
+      case _ => Unsupported(Some(inputTypeReason))
+    }
+  }
+
+  override def convert(
+      aggExpr: AggregateExpression,
+      percentile: Percentile,
+      inputs: Seq[Attribute],
+      binding: Boolean,
+      conf: SQLConf): Option[ExprOuterClass.AggExpr] = {
+    // Spark computes the percentile over the values as doubles; cast the child up front so the
+    // native percentile_cont returns Float64 / DoubleType to match Spark.
+    val childExpr = exprToProto(Cast(percentile.child, DoubleType), inputs, binding)
+    val percentageExpr =
+      exprToProto(Literal(percentile.percentageExpression.eval(), DoubleType), inputs, binding)
+
+    if (childExpr.isDefined && percentageExpr.isDefined) {
+      val builder = ExprOuterClass.Percentile.newBuilder()
+      builder.setChild(childExpr.get)
+      builder.setPercentage(percentageExpr.get)
+      // DoubleType always serializes successfully.
+      builder.setDatatype(serializeDataType(DoubleType).get)
+      Some(
+        ExprOuterClass.AggExpr
+          .newBuilder()
+          .setPercentile(builder)
+          .build())
+    } else {
+      withFallbackReason(aggExpr, percentile.child)
+      None
+    }
   }
 }
 
