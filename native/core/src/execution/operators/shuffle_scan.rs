@@ -210,15 +210,20 @@ impl ShuffleScanExec {
 
             let num_rows = batch.num_rows();
 
-            // Extract column arrays, unpacking any dictionary-encoded columns.
-            // Native shuffle may dictionary-encode string/binary columns for efficiency,
-            // but downstream DataFusion operators expect the value types declared in the
-            // schema (e.g. Utf8, not Dictionary<Int32, Utf8>).
+            // Coerce each decoded column to the catalyst-declared type:
+            //   * unpack any dictionary-encoded columns to their value type (native shuffle
+            //     may dictionary-encode string/binary columns for efficiency);
+            //   * downcast LargeUtf8/LargeBinary back to Utf8/Binary when an upstream
+            //     aggregate opted into `spark.comet.exec.useLargeDataTypes` and wrote
+            //     Large* into the shuffle block while catalyst still declares the small
+            //     variant. The mirror of this coercion on the write side lives in
+            //     `SchemaAlignExec` (native/shuffle/src/schema_align.rs).
             let columns: Vec<ArrayRef> = batch
                 .columns()
                 .iter()
-                .map(|col| unpack_dictionary(col))
-                .collect();
+                .zip(data_types.iter())
+                .map(|(col, expected)| coerce_to_declared(col, expected))
+                .collect::<Result<Vec<_>, CometError>>()?;
 
             unsafe {
                 jni_call!(env,
@@ -253,13 +258,33 @@ fn check_column_count(batch: RecordBatch, expected: usize) -> DataFusionResult<R
     Ok(batch)
 }
 
-/// If `array` is dictionary-encoded, cast it to the value type. Otherwise return as-is.
-fn unpack_dictionary(array: &ArrayRef) -> ArrayRef {
-    if let DataType::Dictionary(_, value_type) = array.data_type() {
-        arrow::compute::cast(array, value_type.as_ref()).expect("failed to unpack dictionary array")
+/// Coerce `array` to `expected`: unpack dictionary encoding when present, then downcast
+/// any remaining type drift (e.g. `LargeUtf8`/`LargeBinary` → `Utf8`/`Binary`) so the
+/// column matches what catalyst declared. Returns the input unchanged when no work is
+/// needed. Propagates errors from the arrow cast kernel; the caller is `get_next` which
+/// already returns `Result<InputBatch, CometError>`.
+fn coerce_to_declared(array: &ArrayRef, expected: &DataType) -> Result<ArrayRef, CometError> {
+    // Step 1: unpack any dictionary encoding, then fall through to the type-mismatch check
+    // so a `Dictionary<_, LargeUtf8>` column with an expected `Utf8` type composes both
+    // steps rather than short-circuiting after the unpack.
+    let unpacked: ArrayRef = if let DataType::Dictionary(_, value_type) = array.data_type() {
+        arrow::compute::cast(array, value_type.as_ref()).map_err(|e| {
+            CometError::from(ExecutionError::DataFusionError(format!(
+                "failed to unpack dictionary array: {e}"
+            )))
+        })?
     } else {
         Arc::clone(array)
+    };
+    if unpacked.data_type() == expected {
+        return Ok(unpacked);
     }
+    arrow::compute::cast(&unpacked, expected).map_err(|e| {
+        CometError::from(ExecutionError::DataFusionError(format!(
+            "failed to cast shuffle-scan column from {:?} to {expected:?}: {e}",
+            unpacked.data_type()
+        )))
+    })
 }
 
 fn schema_from_data_types(data_types: &[DataType]) -> SchemaRef {
@@ -644,11 +669,13 @@ mod tests {
         )
         .unwrap();
 
-        // Feed the decoded batch through unpack_dictionary (simulating get_next)
+        // Feed the decoded batch through coerce_to_declared (simulating get_next)
+        let expected_types = [DataType::Int32, DataType::Utf8];
         let columns: Vec<ArrayRef> = decoded
             .columns()
             .iter()
-            .map(|col| super::unpack_dictionary(col))
+            .zip(expected_types.iter())
+            .map(|(col, expected)| super::coerce_to_declared(col, expected).unwrap())
             .collect();
         let input = InputBatch::new(columns, Some(decoded.num_rows()));
         scan.set_input_batch(input);

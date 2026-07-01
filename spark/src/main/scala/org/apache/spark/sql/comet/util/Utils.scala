@@ -578,10 +578,15 @@ object Utils extends CometTypeShim with Logging {
   }
 
   def getFieldVector(valueVector: ValueVector, reason: String): FieldVector = {
-    if (isSupportedFieldVector(valueVector)) {
-      valueVector.asInstanceOf[FieldVector]
-    } else {
-      throw new SparkException(s"Unsupported Arrow Vector for $reason: ${valueVector.getClass}")
+    valueVector match {
+      case v if isSupportedFieldVector(v) =>
+        v.asInstanceOf[FieldVector]
+      // Accepted here but left out of isSupportedFieldVector, which isArrowBacked uses to keep
+      // routing large-offset vectors through conversion.
+      case v @ (_: LargeVarCharVector | _: LargeVarBinaryVector) =>
+        v.asInstanceOf[FieldVector]
+      case _ =>
+        throw new SparkException(s"Unsupported Arrow Vector for $reason: ${valueVector.getClass}")
     }
   }
 }
