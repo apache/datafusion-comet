@@ -144,6 +144,7 @@ message AggExpr {
     BloomFilterAgg bloomFilterAgg = 16;
     CollectSet collectSet = 17;
     Percentile percentile = 18;
+    Mode mode = 19;
   }
 
   // Optional filter expression for SQL FILTER (WHERE ...) clause.
@@ -271,6 +272,11 @@ enum BloomFilterVersion {
 }
 
 message CollectSet {
+  Expr child = 1;
+  DataType datatype = 2;
+}
+
+message Mode {
   Expr child = 1;
   DataType datatype = 2;
 }

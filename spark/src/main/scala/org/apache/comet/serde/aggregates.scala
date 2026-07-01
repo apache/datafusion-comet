@@ -22,14 +22,14 @@ package org.apache.comet.serde
 import scala.jdk.CollectionConverters._
 
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Literal}
-import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, Average, BitAndAgg, BitOrAgg, BitXorAgg, BloomFilterAggregate, CentralMomentAgg, CollectSet, Corr, Count, Covariance, CovPopulation, CovSample, First, Last, Max, Min, Percentile, StddevPop, StddevSamp, Sum, VariancePop, VarianceSamp}
+import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, Average, BitAndAgg, BitOrAgg, BitXorAgg, BloomFilterAggregate, CentralMomentAgg, CollectSet, Corr, Count, Covariance, CovPopulation, CovSample, First, Last, Max, Min, Mode, Percentile, StddevPop, StddevSamp, Sum, VariancePop, VarianceSamp}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{ByteType, DecimalType, DoubleType, IntegerType, LongType, NumericType, ShortType, StringType}
+import org.apache.spark.sql.types.{BooleanType, ByteType, DataType, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, NumericType, ShortType, StringType, TimestampNTZType, TimestampType}
 
 import org.apache.comet.CometConf.COMET_EXEC_STRICT_FLOATING_POINT
 import org.apache.comet.CometSparkSessionExtensions.{isSpark41Plus, withFallbackReason}
 import org.apache.comet.serde.QueryPlanSerde.{evalModeToProto, exprToProto, serializeDataType}
-import org.apache.comet.shims.CometEvalModeUtil
+import org.apache.comet.shims.{CometEvalModeUtil, CometTypeShim}
 
 object CometMin extends CometAggregateExpressionSerde[Min] {
 
@@ -816,6 +816,71 @@ object CometCollectSet extends CometAggregateExpressionSerde[CollectSet] {
     } else if (dataType.isEmpty) {
       withFallbackReason(aggExpr, s"datatype ${expr.dataType} is not supported", child)
       None
+    } else {
+      withFallbackReason(aggExpr, child)
+      None
+    }
+  }
+}
+
+object CometMode extends CometAggregateExpressionSerde[Mode] with CometTypeShim {
+
+  private val tieBreakReason =
+    "mode breaks ties non-deterministically in Spark (the result depends on JVM hash-map" +
+      " iteration order); Comet returns the smallest of the tied values instead" +
+      " (https://github.com/apache/datafusion-comet/issues/3970)"
+
+  override def getIncompatibleReasons(): Seq[String] = Seq(tieBreakReason)
+
+  private def isSupportedType(dt: DataType): Boolean = dt match {
+    case BooleanType => true
+    case ByteType | ShortType | IntegerType | LongType => true
+    case FloatType | DoubleType => true
+    case _: DecimalType => true
+    case DateType | TimestampType | TimestampNTZType => true
+    case StringType => true
+    case _ => false
+  }
+
+  override def getSupportLevel(expr: Mode): SupportLevel = {
+    if (modeHasUnsupportedOrdering(expr)) {
+      // `mode(col, deterministic)` and `mode() WITHIN GROUP (ORDER BY col)` carry deterministic
+      // ordered tie-breaking that Comet does not implement yet (Spark 4.0+ only).
+      Unsupported(
+        Some("mode with a deterministic flag or WITHIN GROUP ordering is not supported"))
+    } else if (hasNonDefaultStringCollation(expr.child.dataType)) {
+      // Native counting is not collation-aware, so non-UTF8_BINARY collations would group keys
+      // differently from Spark.
+      Unsupported(
+        Some(
+          "mode does not support non-UTF8_BINARY collations " +
+            "(https://github.com/apache/datafusion-comet/issues/2190)"))
+    } else if (!isSupportedType(expr.child.dataType)) {
+      Unsupported(Some(s"mode does not support input type ${expr.child.dataType}"))
+    } else {
+      Incompatible(Some(tieBreakReason))
+    }
+  }
+
+  override def convert(
+      aggExpr: AggregateExpression,
+      expr: Mode,
+      inputs: Seq[Attribute],
+      binding: Boolean,
+      conf: SQLConf): Option[ExprOuterClass.AggExpr] = {
+    val child = expr.child
+    val childExpr = exprToProto(child, inputs, binding)
+    val dataType = serializeDataType(child.dataType)
+
+    if (childExpr.isDefined && dataType.isDefined) {
+      val builder = ExprOuterClass.Mode.newBuilder()
+      builder.setChild(childExpr.get)
+      builder.setDatatype(dataType.get)
+      Some(
+        ExprOuterClass.AggExpr
+          .newBuilder()
+          .setMode(builder)
+          .build())
     } else {
       withFallbackReason(aggExpr, child)
       None

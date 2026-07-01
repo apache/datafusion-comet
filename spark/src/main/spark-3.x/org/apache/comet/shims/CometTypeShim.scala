@@ -21,11 +21,17 @@ package org.apache.comet.shims
 
 import scala.annotation.nowarn
 
+import org.apache.spark.sql.catalyst.expressions.aggregate.Mode
 import org.apache.spark.sql.types.{DataType, StructType}
 
 trait CometTypeShim {
   @nowarn // Spark 4 feature; stubbed to false in Spark 3.x for compatibility.
   def isStringCollationType(dt: DataType): Boolean = false
+
+  // `mode() WITHIN GROUP (ORDER BY ...)` and the deterministic-flag form (which set `reverseOpt`)
+  // are Spark 4.0 features; Spark 3.x `Mode` is always the plain `mode(col)` form.
+  @nowarn
+  def modeHasUnsupportedOrdering(expr: Mode): Boolean = false
 
   @nowarn // Spark 4 feature; stubbed to false in Spark 3.x for compatibility.
   def hasNonDefaultStringCollation(dt: DataType): Boolean = false
