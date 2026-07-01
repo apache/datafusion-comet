@@ -593,6 +593,7 @@ matching your Spark and Scala versions (Comet also ships Spark 3.5 / Scala 2.13 
 <span class="w">    </span>--conf<span class="w"> </span>spark.memory.offHeap.size<span class="o">=</span>2g
 </pre></div>
 </div>
+<p>Catalog configuration is standard Iceberg-on-Spark and independent of Comet. The native reader has been tested with Hadoop, Hive, and REST catalogs. The example above uses a Hadoop catalog. For the full catalog configuration reference, see Iceberg’s <a class="reference external" href="https://iceberg.apache.org/docs/latest/spark-configuration/#catalogs">Spark catalog configuration</a>.</p>
 <section id="tuning">
 <h3>Tuning<a class="headerlink" href="#tuning" title="Link to this heading">#</a></h3>
 <p>Comet’s native Iceberg reader supports fetching multiple files in parallel to hide I/O latency with the
@@ -673,6 +674,23 @@ configure Spark to use a REST catalog with Comet’s native Iceberg scan:</p>
 <span class="n">scala</span><span class="o">&gt;</span><span class="w"> </span><span class="n">spark</span><span class="p">.</span><span class="n">sql</span><span class="p">(</span><span class="s">&quot;SELECT * FROM rest_cat.db.test_table&quot;</span><span class="p">).</span><span class="n">show</span><span class="p">()</span>
 </pre></div>
 </div>
+</section>
+<section id="object-store-configuration-s3">
+<h3>Object store configuration (S3)<a class="headerlink" href="#object-store-configuration-s3" title="Link to this heading">#</a></h3>
+<p>The native reader has its own Rust object store client and does not go through Iceberg’s JVM FileIO, neither <code class="docutils literal notranslate"><span class="pre">S3FileIO</span></code> nor the older Hadoop S3A filesystem. It configures that client from the catalog’s <code class="docutils literal notranslate"><span class="pre">s3.*</span></code> properties (the same keys <code class="docutils literal notranslate"><span class="pre">S3FileIO</span></code> reads) or from <code class="docutils literal notranslate"><span class="pre">spark.hadoop.fs.s3a.*</span></code> settings, so S3 configuration only reaches the native reader through one of those two channels.</p>
+<p>For a custom S3-compatible endpoint, configure the catalog with the endpoint, path-style access, region, and credentials (Hive shown):</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="w">    </span>--conf<span class="w"> </span>spark.sql.catalog.s3_cat<span class="o">=</span>org.apache.iceberg.spark.SparkCatalog<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--conf<span class="w"> </span>spark.sql.catalog.s3_cat.type<span class="o">=</span>hive<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--conf<span class="w"> </span>spark.sql.catalog.s3_cat.uri<span class="o">=</span>thrift://metastore:9083<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--conf<span class="w"> </span>spark.sql.catalog.s3_cat.io-impl<span class="o">=</span>org.apache.iceberg.aws.s3.S3FileIO<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--conf<span class="w"> </span>spark.sql.catalog.s3_cat.s3.endpoint<span class="o">=</span>https://s3.example.com:9000<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--conf<span class="w"> </span>spark.sql.catalog.s3_cat.s3.path-style-access<span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--conf<span class="w"> </span>spark.sql.catalog.s3_cat.client.region<span class="o">=</span>us-east-1<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--conf<span class="w"> </span>spark.sql.catalog.s3_cat.s3.access-key-id<span class="o">=</span>...<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--conf<span class="w"> </span>spark.sql.catalog.s3_cat.s3.secret-access-key<span class="o">=</span>...
+</pre></div>
+</div>
+<p>These <code class="docutils literal notranslate"><span class="pre">s3.*</span></code> storage properties are not specific to the Hive catalog shown here. When <code class="docutils literal notranslate"><span class="pre">s3.access-key-id</span></code> / <code class="docutils literal notranslate"><span class="pre">s3.secret-access-key</span></code> are omitted, credentials come from the standard AWS chain (environment variables, instance profiles, and so on). <code class="docutils literal notranslate"><span class="pre">client.region</span></code> is auto-detected for AWS but should be set for non-AWS endpoints. If your REST catalog vends temporary credentials, the native reader does not consume them automatically, and wiring that requires the credential provider bridge. See Iceberg’s <a class="reference external" href="https://iceberg.apache.org/docs/latest/aws/#s3-fileio">S3 FileIO</a> docs for the full property list, and <a class="reference internal" href="s3-credential-providers.html"><span class="std std-doc">S3 Credential Providers</span></a> for vended or per-request credentials.</p>
 </section>
 <section id="current-limitations">
 <h3>Current limitations<a class="headerlink" href="#current-limitations" title="Link to this heading">#</a></h3>
