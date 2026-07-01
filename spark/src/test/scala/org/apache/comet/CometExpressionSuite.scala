@@ -1738,6 +1738,48 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("unary minus across numeric types") {
+    // UnaryMinus gates input types in getSupportLevel: every Spark NumericType (incl. decimal)
+    // must stay native; interval types are unsupported and fall back to Spark.
+    withParquetTable(
+      (1 to 5).map(i =>
+        (i.toByte, i.toShort, i, i.toLong, i.toFloat, i.toDouble, BigDecimal(i * 3, 2))),
+      "umt") {
+      checkSparkAnswerAndOperator("SELECT -_1, -_2, -_3, -_4, -_5, -_6, -_7 FROM umt")
+    }
+  }
+
+  test("unary minus on float/double special values and nulls") {
+    // Negation is an IEEE sign flip, so NaN, +/-Infinity, signed zero, the float/double range
+    // limits, and null must all match Spark. (Integer Max/MinValue overflow is covered by the
+    // "unary negative integer overflow test".)
+    val floats: Seq[Option[Float]] = Seq(
+      Some(Float.NaN),
+      Some(Float.PositiveInfinity),
+      Some(Float.NegativeInfinity),
+      Some(0.0f),
+      Some(-0.0f),
+      Some(Float.MinPositiveValue),
+      Some(Float.MaxValue),
+      Some(Float.MinValue),
+      None)
+    val doubles: Seq[Option[Double]] = Seq(
+      Some(Double.NaN),
+      Some(Double.PositiveInfinity),
+      Some(Double.NegativeInfinity),
+      Some(0.0d),
+      Some(-0.0d),
+      Some(Double.MinPositiveValue),
+      Some(Double.MaxValue),
+      Some(Double.MinValue),
+      None)
+    Seq(false, true).foreach { dictionary =>
+      withParquetTable(floats.zip(doubles), "umt_special", withDictionary = dictionary) {
+        checkSparkAnswerAndOperator("SELECT -_1, -_2 FROM umt_special")
+      }
+    }
+  }
+
   test("basic arithmetic") {
     withSQLConf("parquet.enable.dictionary" -> "false") {
       withParquetTable((1 until 10).map(i => (i, i + 1)), "tbl", false) {
@@ -2066,6 +2108,22 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               |""".stripMargin)
         }
       }
+    }
+  }
+
+  test("sha2 with all-literal arguments and ConstantFolding disabled") {
+    // https://github.com/apache/datafusion-comet/issues/3340
+    // When ConstantFolding is disabled, an all-literal sha2() call reaches the native
+    // engine as scalar arguments. Verify it computes the correct result rather than crashing.
+    withSQLConf(
+      "spark.sql.optimizer.excludedRules" ->
+        "org.apache.spark.sql.catalyst.optimizer.ConstantFolding") {
+      checkSparkAnswerAndOperator("""
+          |select
+          |sha2('test', 0), sha2('test', 256), sha2('test', 224),
+          |sha2('test', 384), sha2('test', 512), sha2('test', 128), sha2('test', -1),
+          |sha2(cast(null as string), 256)
+          |""".stripMargin)
     }
   }
 
