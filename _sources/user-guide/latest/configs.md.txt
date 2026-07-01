@@ -224,6 +224,7 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.expression.Atanh.enabled` | Enable Comet acceleration for `Atanh` | true |
 | `spark.comet.expression.AttributeReference.enabled` | Enable Comet acceleration for `AttributeReference` | true |
 | `spark.comet.expression.BRound.enabled` | Enable Comet acceleration for `BRound` | true |
+| `spark.comet.expression.Base64.enabled` | Enable Comet acceleration for `Base64` | true |
 | `spark.comet.expression.Bin.enabled` | Enable Comet acceleration for `Bin` | true |
 | `spark.comet.expression.BitLength.enabled` | Enable Comet acceleration for `BitLength` | true |
 | `spark.comet.expression.BitwiseAnd.enabled` | Enable Comet acceleration for `BitwiseAnd` | true |
