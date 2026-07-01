@@ -991,21 +991,16 @@ object CometPreciseTimestampConversion extends CometExpressionSerde[PreciseTimes
       expr: PreciseTimestampConversion,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val childExpr = exprToProtoInternal(expr.child, inputs, binding)
-    val dataType = serializeDataType(expr.dataType)
-
-    if (childExpr.isDefined && dataType.isDefined) {
-      val builder = ExprOuterClass.PreciseTimestampConversion.newBuilder()
-      builder.setChild(childExpr.get)
-      builder.setDatatype(dataType.get)
-      Some(
-        ExprOuterClass.Expr
-          .newBuilder()
-          .setPreciseTimestampConversion(builder)
-          .build())
-    } else {
-      withFallbackReason(expr, expr.child)
-      None
+    val optExpr = for {
+      child <- exprToProtoInternal(expr.child, inputs, binding)
+      dataType <- serializeDataType(expr.dataType)
+    } yield {
+      val builder = ExprOuterClass.PreciseTimestampConversion
+        .newBuilder()
+        .setChild(child)
+        .setDatatype(dataType)
+      ExprOuterClass.Expr.newBuilder().setPreciseTimestampConversion(builder).build()
     }
+    optExprWithFallbackReason(optExpr, expr, expr.child)
   }
 }

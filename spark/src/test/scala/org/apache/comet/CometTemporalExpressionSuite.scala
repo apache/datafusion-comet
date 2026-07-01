@@ -362,66 +362,8 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
     }
   }
 
-  test("time-window grouping (PreciseTimestampConversion)") {
-    // The analyzer rewrites window()/session_window() grouping into projections that use
-    // PreciseTimestampConversion to reinterpret between the timestamp and long representations.
-    // With that expression supported, batch tumbling/sliding window aggregations run natively.
-    withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> "UTC") {
-      val r = new Random(42)
-      val schema = StructType(Seq(StructField("ts", DataTypes.TimestampType, true)))
-      FuzzDataGenerator
-        .generateDataFrame(r, spark, schema, 1000, DataGenOptions())
-        .createOrReplaceTempView("tbl")
-
-      // Tumbling window: Project + HashAggregate + Exchange, all native.
-      checkSparkAnswerAndOperator(
-        "SELECT window(ts, '10 minutes').start AS s, window(ts, '10 minutes').end AS e, count(*) " +
-          "FROM tbl GROUP BY window(ts, '10 minutes') ORDER BY s, e")
-
-      // Sliding window: overlapping windows introduce an Expand operator.
-      checkSparkAnswerAndOperator(
-        "SELECT window(ts, '10 minutes', '5 minutes').start AS s, count(*) " +
-          "FROM tbl GROUP BY window(ts, '10 minutes', '5 minutes') ORDER BY s")
-
-      // window_time extracts the event-time from the window struct (applied after aggregation).
-      checkSparkAnswerAndOperator(
-        "SELECT window_time(w) AS wt, cnt FROM (" +
-          "SELECT window(ts, '10 minutes') AS w, count(*) AS cnt " +
-          "FROM tbl GROUP BY window(ts, '10 minutes')) ORDER BY wt")
-
-      // session_window grouping uses UpdatingSessionsExec, which is not yet a Comet operator, so
-      // that stage falls back to Spark. Results must still match.
-      checkSparkAnswer(
-        "SELECT session_window(ts, '10 minutes').start AS s, count(*) " +
-          "FROM tbl GROUP BY session_window(ts, '10 minutes') ORDER BY s")
-    }
-  }
-
-  test("time-window grouping - TimestampNTZ input") {
-    // PreciseTimestampConversion also reinterprets TimestampNTZType, which is timezone-independent.
-    for (tz <- crossTimezones) {
-      withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> tz) {
-        val data = Seq(
-          Row("2024-01-15T08:31:00", 1L),
-          Row("2024-01-15T08:37:00", 2L),
-          Row("2024-01-15T08:42:00", 3L),
-          Row("2024-07-04T23:59:59", 4L),
-          Row(null, 5L))
-        val schema = StructType(
-          Seq(
-            StructField("ts_str", DataTypes.StringType, true),
-            StructField("v", DataTypes.LongType, true)))
-        spark
-          .createDataFrame(spark.sparkContext.parallelize(data), schema)
-          .selectExpr("CAST(ts_str AS TIMESTAMP_NTZ) AS ts", "v")
-          .createOrReplaceTempView("ntz_tbl")
-
-        checkSparkAnswerAndOperator(
-          "SELECT window(ts, '10 minutes').start AS s, sum(v) " +
-            "FROM ntz_tbl GROUP BY window(ts, '10 minutes') ORDER BY s")
-      }
-    }
-  }
+  // Time-window grouping (PreciseTimestampConversion / KnownNullable) is covered by the SQL file
+  // test spark/src/test/resources/sql-tests/expressions/datetime/window.sql.
 
   private def createTimestampTestData(
       baseDate: Long = FuzzDataGenerator.defaultBaseDate): DataFrame = {
