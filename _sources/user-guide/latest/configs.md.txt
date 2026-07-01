@@ -196,7 +196,6 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.expression.And.enabled` | Enable Comet acceleration for `And` | true |
 | `spark.comet.expression.ArrayAggregate.enabled` | Enable Comet acceleration for `ArrayAggregate` | true |
 | `spark.comet.expression.ArrayAppend.enabled` | Enable Comet acceleration for `ArrayAppend` | true |
-| `spark.comet.expression.ArrayCompact.enabled` | Enable Comet acceleration for `ArrayCompact` | true |
 | `spark.comet.expression.ArrayContains.enabled` | Enable Comet acceleration for `ArrayContains` | true |
 | `spark.comet.expression.ArrayDistinct.enabled` | Enable Comet acceleration for `ArrayDistinct` | true |
 | `spark.comet.expression.ArrayExcept.enabled` | Enable Comet acceleration for `ArrayExcept` | true |
@@ -320,9 +319,11 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.expression.Log2.enabled` | Enable Comet acceleration for `Log2` | true |
 | `spark.comet.expression.Logarithm.enabled` | Enable Comet acceleration for `Logarithm` | true |
 | `spark.comet.expression.Lower.enabled` | Enable Comet acceleration for `Lower` | true |
+| `spark.comet.expression.MakeDTInterval.enabled` | Enable Comet acceleration for `MakeDTInterval` | true |
 | `spark.comet.expression.MakeDate.enabled` | Enable Comet acceleration for `MakeDate` | true |
 | `spark.comet.expression.MakeDecimal.enabled` | Enable Comet acceleration for `MakeDecimal` | true |
 | `spark.comet.expression.MakeTimestamp.enabled` | Enable Comet acceleration for `MakeTimestamp` | true |
+| `spark.comet.expression.MakeYMInterval.enabled` | Enable Comet acceleration for `MakeYMInterval` | true |
 | `spark.comet.expression.MapConcat.enabled` | Enable Comet acceleration for `MapConcat` | true |
 | `spark.comet.expression.MapEntries.enabled` | Enable Comet acceleration for `MapEntries` | true |
 | `spark.comet.expression.MapFilter.enabled` | Enable Comet acceleration for `MapFilter` | true |

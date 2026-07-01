@@ -654,7 +654,7 @@ under the License.
 <h2>Reverse<a class="headerlink" href="#reverse" title="Link to this heading">#</a></h2>
 <p>By default, Comet runs a Spark-compatible implementation of <code class="docutils literal notranslate"><span class="pre">Reverse</span></code>. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Reverse.allowIncompatible=true</span></code> to use Comet’s faster native implementation instead, which has the following differences from Spark:</p>
 <ul class="simple">
-<li><p>reverse on array containing binary is not supported</p></li>
+<li><p>native reverse does not support arrays whose element type contains binary, struct, or map</p></li>
 <li><p>reverse does not support non-UTF8_BINARY collations (https://github.com/apache/datafusion-comet/issues/2190)</p></li>
 </ul>
 </section>

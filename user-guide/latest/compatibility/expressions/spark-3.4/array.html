@@ -587,10 +587,7 @@ under the License.
 <p>By default, Comet runs a Spark-compatible implementation of <code class="docutils literal notranslate"><span class="pre">ArrayIntersect</span></code>. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.ArrayIntersect.allowIncompatible=true</span></code> to use Comet’s faster native implementation instead, which has the following differences from Spark:</p>
 <ul class="simple">
 <li><p>Result array element order may differ from Spark when the right array is longer than the left (DataFusion probes the longer side).</p></li>
-</ul>
-<p>The following cases are not supported by Comet:</p>
-<ul class="simple">
-<li><p>array_intersect on collated strings is not supported.</p></li>
+<li><p>array_intersect does not propagate non-UTF8_BINARY collations to the output array elements (https://github.com/apache/datafusion-comet/issues/2190)</p></li>
 </ul>
 </section>
 <section id="arrayjoin">
@@ -598,6 +595,7 @@ under the License.
 <p>By default, Comet runs a Spark-compatible implementation of <code class="docutils literal notranslate"><span class="pre">ArrayJoin</span></code>. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.ArrayJoin.allowIncompatible=true</span></code> to use Comet’s faster native implementation instead, which has the following differences from Spark:</p>
 <ul class="simple">
 <li><p>Null handling may differ from Spark</p></li>
+<li><p>array_join does not propagate non-UTF8_BINARY collations to the output string (https://github.com/apache/datafusion-comet/issues/2190)</p></li>
 </ul>
 </section>
 <section id="arrayszip">

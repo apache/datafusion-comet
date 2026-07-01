@@ -32,16 +32,14 @@ By default, Comet runs a Spark-compatible implementation of `ArrayExcept`. Set `
 By default, Comet runs a Spark-compatible implementation of `ArrayIntersect`. Set `spark.comet.expression.ArrayIntersect.allowIncompatible=true` to use Comet's faster native implementation instead, which has the following differences from Spark:
 
 - Result array element order may differ from Spark when the right array is longer than the left (DataFusion probes the longer side).
-
-The following cases are not supported by Comet:
-
-- array_intersect on collated strings is not supported.
+- array_intersect does not propagate non-UTF8_BINARY collations to the output array elements (https://github.com/apache/datafusion-comet/issues/2190)
 
 ## ArrayJoin
 
 By default, Comet runs a Spark-compatible implementation of `ArrayJoin`. Set `spark.comet.expression.ArrayJoin.allowIncompatible=true` to use Comet's faster native implementation instead, which has the following differences from Spark:
 
 - Null handling may differ from Spark
+- array_join does not propagate non-UTF8_BINARY collations to the output string (https://github.com/apache/datafusion-comet/issues/2190)
 
 ## ArraysZip
 

@@ -90,7 +90,7 @@ By default, Comet runs a Spark-compatible implementation of `RegExpReplace`. Set
 
 By default, Comet runs a Spark-compatible implementation of `Reverse`. Set `spark.comet.expression.Reverse.allowIncompatible=true` to use Comet's faster native implementation instead, which has the following differences from Spark:
 
-- reverse on array containing binary is not supported
+- native reverse does not support arrays whose element type contains binary, struct, or map
 - reverse does not support non-UTF8_BINARY collations (https://github.com/apache/datafusion-comet/issues/2190)
 
 ## Right
