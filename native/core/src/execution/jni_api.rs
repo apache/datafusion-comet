@@ -52,7 +52,6 @@ use datafusion_spark::function::datetime::date_add::SparkDateAdd;
 use datafusion_spark::function::datetime::date_sub::SparkDateSub;
 use datafusion_spark::function::datetime::from_utc_timestamp::SparkFromUtcTimestamp;
 use datafusion_spark::function::datetime::last_day::SparkLastDay;
-use datafusion_spark::function::datetime::next_day::SparkNextDay;
 use datafusion_spark::function::datetime::to_utc_timestamp::SparkToUtcTimestamp;
 use datafusion_spark::function::hash::crc32::SparkCrc32;
 use datafusion_spark::function::hash::sha1::SparkSha1;
@@ -109,7 +108,8 @@ use crate::execution::tracing::{
 use crate::execution::memory_pools::logging_pool::LoggingMemoryPool;
 use crate::execution::spark_config::{
     SparkConfig, COMET_DEBUG_ENABLED, COMET_DEBUG_MEMORY, COMET_EXPLAIN_NATIVE_ENABLED,
-    COMET_MAX_TEMP_DIRECTORY_SIZE, COMET_TRACING_ENABLED, SPARK_EXECUTOR_CORES,
+    COMET_MAX_TEMP_DIRECTORY_SIZE, COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED,
+    COMET_TRACING_ENABLED, SPARK_EXECUTOR_CORES,
 };
 use crate::parquet::encryption_support::{CometEncryptionFactory, ENCRYPTION_FACTORY_ID};
 use datafusion_comet_proto::spark_operator::operator::OpStruct;
@@ -240,6 +240,7 @@ fn op_name(op: &OpStruct) -> &'static str {
         OpStruct::Explode(_) => "Explode",
         OpStruct::CsvScan(_) => "CsvScan",
         OpStruct::ShuffleScan(_) => "ShuffleScan",
+        OpStruct::BroadcastNestedLoopJoin(_) => "BroadcastNestedLoopJoin",
     }
 }
 
@@ -556,6 +557,16 @@ fn prepare_datafusion_session_context(
         }
     }
 
+    // Translate the Comet-namespaced row-level pushdown flag into the equivalent
+    // DataFusion session options. `pushdown_filters` enables the parquet reader's
+    // RowFilter evaluation during decode (late materialization); `reorder_filters`
+    // is only meaningful when pushdown_filters is on, so they move together.
+    if spark_config.get_bool(COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED) {
+        session_config = session_config
+            .set_str("datafusion.execution.parquet.pushdown_filters", "true")
+            .set_str("datafusion.execution.parquet.reorder_filters", "true");
+    }
+
     let runtime = rt_config.build()?;
 
     let mut session_ctx = SessionContext::new_with_config_rt(session_config, Arc::new(runtime));
@@ -583,7 +594,6 @@ fn register_datafusion_spark_function(session_ctx: &SessionContext) {
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkDateSub::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkFromUtcTimestamp::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkLastDay::default()));
-    session_ctx.register_udf(ScalarUDF::new_from_impl(SparkNextDay::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkToUtcTimestamp::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkSha1::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkConcat::default()));

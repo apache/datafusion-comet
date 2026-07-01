@@ -19,10 +19,16 @@
 
 package org.apache.comet.shims
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, DayName, Expression, MonthName}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, DayName, Expression, Literal, MonthName, StringSplitSQL, StructsToXml, XmlToStructs}
+import org.apache.spark.sql.catalyst.expressions.csv.SchemaOfCsvEvaluator
+import org.apache.spark.sql.catalyst.expressions.json.{JsonExpressionUtils, SchemaOfJsonEvaluator}
+import org.apache.spark.sql.catalyst.expressions.objects.{Invoke, StaticInvoke}
+import org.apache.spark.sql.catalyst.expressions.xml.{XmlExpressionEvalUtils, XPathEvaluator}
 
+import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
+import org.apache.comet.serde.CometScalaUDF
 import org.apache.comet.serde.ExprOuterClass.Expr
-import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithFallbackReason, scalarFunctionExprToProtoWithReturnType}
+import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, hasNonDefaultStringCollation, optExprWithFallbackReason, scalarFunctionExprToProtoWithReturnType}
 
 /**
  * Expression conversions shared across all Spark 4.x minor versions, compiled from the
@@ -32,6 +38,10 @@ import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithFa
  * `CometExprShim`.
  */
 trait CometExprShim4x {
+
+  private val stringSplitSQLCollationReason =
+    "StringSplitSQL does not support non-UTF8_BINARY collations " +
+      "(https://github.com/apache/datafusion-comet/issues/2190)"
 
   /**
    * `dayname` / `monthname` (Spark 4.0+) map a `DateType` value to a fixed US-English abbreviated
@@ -56,4 +66,61 @@ trait CometExprShim4x {
       optExprWithFallbackReason(nameExpr, m, m.child)
     case _ => None
   }
+
+  /**
+   * `split_part` lowers to `element_at(StringSplitSQL(...), partNum)`. StringSplitSQL uses a
+   * literal delimiter instead of a regex pattern, unlike `split` / `StringSplit`.
+   */
+  protected def convertStringSplitSQL(
+      expr: StringSplitSQL,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[Expr] = {
+    if (hasNonDefaultStringCollation(expr.dataType) ||
+      hasNonDefaultStringCollation(expr.str.dataType) ||
+      hasNonDefaultStringCollation(expr.delimiter.dataType)) {
+      withFallbackReason(expr, stringSplitSQLCollationReason)
+      return None
+    }
+
+    val strExpr = exprToProtoInternal(expr.str, inputs, binding)
+    val delimiterExpr = exprToProtoInternal(expr.delimiter, inputs, binding)
+    val splitExpr = scalarFunctionExprToProtoWithReturnType(
+      "split_sql",
+      expr.dataType,
+      false,
+      strExpr,
+      delimiterExpr)
+    optExprWithFallbackReason(splitExpr, expr, expr.str, expr.delimiter)
+  }
+
+  // Spark 4.x lowers the RuntimeReplaceable structured-text functions to an evaluator-backed
+  // `Invoke` (`schema_of_csv`, `schema_of_json`, `xpath_*`) or `StaticInvoke`
+  // (`json_object_keys`, `schema_of_xml`) before Comet sees the plan, so the original expression
+  // class never reaches the serde map. `from_xml` / `to_xml` stay as plain expressions. None of
+  // these have a native (rust) implementation, so they route through the codegen dispatcher.
+  //
+  // [[isStructuredTextDispatch]] is a cheap structural predicate used as the shim match guard so
+  // the dispatch (which binds, runs `canHandle`, and closure-serializes) only happens once, in
+  // [[convertStructuredText]]. The single `XPathEvaluator` test covers all eight `xpath_*`
+  // functions, which lower to its subclasses.
+  protected def isStructuredTextDispatch(expr: Expression): Boolean = expr match {
+    case _: XmlToStructs | _: StructsToXml => true
+    case i: Invoke if i.functionName == "evaluate" =>
+      i.targetObject match {
+        case Literal(value, _) =>
+          value.isInstanceOf[SchemaOfCsvEvaluator] || value.isInstanceOf[SchemaOfJsonEvaluator] ||
+          value.isInstanceOf[XPathEvaluator]
+        case _ => false
+      }
+    case s: StaticInvoke =>
+      (s.staticObject == classOf[JsonExpressionUtils] && s.functionName == "jsonObjectKeys") ||
+      (s.staticObject == XmlExpressionEvalUtils.getClass && s.functionName == "schemaOfXml")
+    case _ => false
+  }
+
+  protected def convertStructuredText(
+      expr: Expression,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[Expr] =
+    CometScalaUDF.emitJvmCodegenDispatch(expr, inputs, binding)
 }

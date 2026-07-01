@@ -20,6 +20,7 @@
 package org.apache.comet
 
 import java.io.File
+import java.net.URI
 
 import scala.collection.mutable
 import scala.jdk.CollectionConverters._
@@ -36,7 +37,7 @@ import org.apache.spark.sql.execution.exchange.{ReusedExchangeExec, ShuffleExcha
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{StringType, TimestampType}
 
-import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark42Plus}
+import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus, isSpark42Plus}
 import org.apache.comet.iceberg.RESTCatalogHelper
 import org.apache.comet.testing.{FuzzDataGenerator, SchemaGenOptions}
 
@@ -691,6 +692,127 @@ class CometIcebergNativeSuite
         checkIcebergNativeScan("SELECT * FROM test_cat.db.multi_delete_test ORDER BY id")
 
         spark.sql("DROP TABLE test_cat.db.multi_delete_test")
+      }
+    }
+  }
+
+  // MOR positional deletes accumulated across multiple snapshots, then compacted with
+  // rewrite_data_files (the equivalent of Trino's OPTIMIZE). Exercises the native delete-file
+  // size fill over a multi-snapshot, post-compaction delete layout.
+  test("MOR positional deletes after rewrite_data_files compaction") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    // CALL <proc> is only in Spark's own SQL grammar on 4.0+; on 3.x it needs Iceberg's
+    // session-extension parser, which the Comet test session does not register.
+    assume(isSpark40Plus, "CALL procedure syntax requires Spark 4.0+")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        spark.sql("""
+          CREATE TABLE test_cat.db.compacted_delete_test (
+            id INT,
+            value DOUBLE
+          ) USING iceberg
+          TBLPROPERTIES (
+            'write.delete.mode' = 'merge-on-read',
+            'write.merge.mode' = 'merge-on-read',
+            'format-version' = '2'
+          )
+        """)
+
+        // Build a multi-snapshot history: several inserts into separate data files,
+        // interleaved with deletes that produce positional delete files.
+        (0 until 5).foreach { batch =>
+          val lo = batch * 100
+          val hi = lo + 100
+          spark.sql(s"""
+            INSERT INTO test_cat.db.compacted_delete_test
+            SELECT id, CAST(id AS DOUBLE) * 1.5 AS value
+            FROM range($lo, $hi)
+          """)
+          spark.sql(
+            s"DELETE FROM test_cat.db.compacted_delete_test WHERE id % 7 = 0 AND id >= $lo AND id < $hi")
+        }
+
+        // Compaction equivalent to Trino's OPTIMIZE; rewrites data files and may rewrite or
+        // re-reference position delete files.
+        spark.sql("CALL test_cat.system.rewrite_data_files(table => 'db.compacted_delete_test')")
+
+        // More deletes after compaction so the live snapshot mixes pre- and post-compaction deletes.
+        spark.sql("DELETE FROM test_cat.db.compacted_delete_test WHERE id % 13 = 0")
+
+        checkIcebergNativeScan("SELECT * FROM test_cat.db.compacted_delete_test ORDER BY id")
+        checkIcebergNativeScan("SELECT COUNT(*) FROM test_cat.db.compacted_delete_test")
+        checkIcebergNativeScan("SELECT SUM(value) FROM test_cat.db.compacted_delete_test")
+
+        spark.sql("DROP TABLE test_cat.db.compacted_delete_test")
+      }
+    }
+  }
+
+  // When a delete file cannot be statted natively, the scan must fail loudly rather than read the
+  // data file with deletes silently dropped. Here we delete the positional delete file from disk
+  // after it is committed, so the native fill_delete_file_sizes stat fails.
+  test("delete file stat failure surfaces as an exception") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        spark.sql("""
+          CREATE TABLE test_cat.db.missing_delete_test (
+            id INT,
+            value DOUBLE
+          ) USING iceberg
+          TBLPROPERTIES (
+            'write.delete.mode' = 'merge-on-read',
+            'write.merge.mode' = 'merge-on-read',
+            'format-version' = '2'
+          )
+        """)
+
+        spark.sql("""
+          INSERT INTO test_cat.db.missing_delete_test
+          SELECT id, CAST(id AS DOUBLE) FROM range(20)
+        """)
+        spark.sql("DELETE FROM test_cat.db.missing_delete_test WHERE id IN (3, 7, 11)")
+
+        // Authoritative delete file paths from Iceberg's metadata table (Comet falls back to
+        // Spark for metadata tables, so this read does not depend on the native scan).
+        val deletePaths = spark
+          .sql("SELECT file_path FROM test_cat.db.missing_delete_test.delete_files")
+          .collect()
+          .map(_.getString(0))
+        assert(deletePaths.nonEmpty, "expected at least one positional delete file")
+
+        deletePaths.foreach { p =>
+          // Iceberg may report the path with or without a file: scheme.
+          val local = if (p.startsWith("file:")) new File(new URI(p)) else new File(p)
+          assert(local.delete(), s"failed to remove delete file from disk: $p")
+        }
+
+        // If deletes were silently dropped, COUNT(*) would return a wrong count with no error and
+        // this intercept would fail. The fill must fail the scan instead.
+        val e = intercept[Exception] {
+          spark.sql("SELECT COUNT(*) FROM test_cat.db.missing_delete_test").collect()
+        }
+        assert(
+          e.getMessage != null && e.getMessage.contains("stat delete file"),
+          s"expected a delete-file stat failure, got: ${e.getMessage}")
+
+        spark.sql("DROP TABLE test_cat.db.missing_delete_test")
       }
     }
   }
@@ -3948,6 +4070,97 @@ class CometIcebergNativeSuite
         }
 
         spark.sql("DROP TABLE aqe_cat.db.nonatomic_fact")
+      }
+    }
+  }
+
+  test("native Iceberg scan does not duplicate a row group split by byte range") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.split_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.split_cat.type" -> "hadoop",
+        "spark.sql.catalog.split_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+        val dataPath = s"${warehouseDir.getAbsolutePath}/single_row_group_parquet"
+        spark
+          .sql("SELECT CAST(0 AS INT) AS id, repeat('x', 1024) AS payload")
+          .coalesce(1)
+          .write
+          .mode("overwrite")
+          .parquet(dataPath)
+        spark.sql("""
+        CREATE TABLE split_cat.db.single_row_group_split (
+          id INT,
+          payload STRING
+        ) USING iceberg
+      """)
+        val parquetFiles = new File(dataPath)
+          .listFiles()
+          .filter(file => file.getName.startsWith("part-") && file.getName.endsWith(".parquet"))
+        assert(parquetFiles.length == 1)
+        val sourceParquetFile = parquetFiles.head
+        val catalog = spark.sessionState.catalogManager.catalog("split_cat")
+        val ident =
+          org.apache.spark.sql.connector.catalog.Identifier
+            .of(Array("db"), "single_row_group_split")
+        val table = catalog
+          .asInstanceOf[org.apache.iceberg.spark.SparkCatalog]
+          .loadTable(ident)
+          .asInstanceOf[org.apache.iceberg.spark.source.SparkTable]
+          .table()
+        val dataFile = org.apache.iceberg.DataFiles
+          .builder(table.spec())
+          .withPath(sourceParquetFile.getAbsolutePath)
+          .withFormat(org.apache.iceberg.FileFormat.PARQUET)
+          .withFileSizeInBytes(sourceParquetFile.length())
+          .withRecordCount(1)
+          .build()
+        table.newAppend().appendFile(dataFile).commit()
+        val df = spark.read
+          .format("iceberg")
+          .option("split-size", "64")
+          .option("file-open-cost", "64")
+          .load("split_cat.db.single_row_group_split")
+          .where("id = 0")
+          .select("id")
+        val rows = df.collect()
+        assert(rows.length == 1, s"Expected 1 row, got ${rows.length}: ${rows.mkString(", ")}")
+      }
+    }
+  }
+
+  test("CometScanRule should report unsupported metadata columns") {
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true",
+        CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "true") {
+
+        val table = "test_cat.db.test_meta_cols"
+        try {
+          spark.sql(s"""
+            CREATE TABLE $table (id INT, value DOUBLE) USING iceberg
+            TBLPROPERTIES ('format-version' = '2')
+          """)
+
+          spark.sql(s"""
+          INSERT INTO $table
+          VALUES (1, 10.5), (2, 20.3), (3, 30.7)
+        """)
+
+          checkSparkAnswerAndFallbackReason(
+            s"SELECT id, value, _spec_id, _pos, _file, _partition FROM $table WHERE id >= 2 ORDER BY id",
+            "Metadata column(s) _spec_id, _partition, _file, _pos is not supported")
+        } finally {
+          spark.sql(s"DROP TABLE IF EXISTS $table PURGE")
+        }
       }
     }
   }
