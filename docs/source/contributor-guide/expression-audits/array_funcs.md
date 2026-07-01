@@ -48,7 +48,7 @@
 - Spark 3.5.8 (audited 2026-05-27): baseline. `ArrayContains(left, right) extends BinaryExpression with NullIntolerant with Predicate`; `inputTypes` uses `findWiderTypeWithoutStringPromotionForTwo`. Wired as `CometScalarFunction("array_contains")`.
 - Spark 4.0.1 (audited 2026-05-27): `NullIntolerant` trait replaced by `nullIntolerant: Boolean`; `checkInputDataTypes` adopts `DataTypeUtils.sameType` (collation-aware in 4.x).
 - Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
-- Known limitation: no NaN-canonicalization guard in `getSupportLevel`. For `Float`/`Double` arrays containing NaN, Spark's `SQLOrderingUtil` may produce different results than DataFusion's IEEE comparison (https://github.com/apache/datafusion-comet/issues/4481).
+- Float/double arrays containing NaN and signed zero match Spark; DataFusion canonicalizes them the same way as Spark's `SQLOrderingUtil`.
 
 ## array_distinct
 
@@ -56,7 +56,7 @@
 - Spark 3.5.8 (audited 2026-05-27): baseline. `ArrayDistinct(child)` over `ArraySetLike`; uses `SQLOpenHashSet` so NaN and `+0.0`/`-0.0` are canonicalized. Wired as `CometScalarFunction("array_distinct")`.
 - Spark 4.0.1 (audited 2026-05-27): `NullIntolerant` -> `nullIntolerant` field refactor.
 - Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
-- Known divergence: DataFusion `array_distinct` uses hash-based equality without NaN/signed-zero canonicalization, so float/double arrays may produce different results (https://github.com/apache/datafusion-comet/issues/4481).
+- Float/double arrays containing NaN and signed zero match Spark; DataFusion canonicalizes them like Spark's `SQLOpenHashSet`.
 
 ## array_except
 
@@ -64,7 +64,7 @@
 - Spark 3.5.8 (audited 2026-05-27): baseline. `ArrayExcept(left, right) extends ArrayBinaryLike with ComplexTypeMergingExpression`; result preserves left-side first occurrences not present in right. Comet routes via `CometArrayExcept` and unconditionally flags `Incompatible` ("Null handling and ordering may differ from Spark"); also falls back for `BinaryType` / `StructType` element types.
 - Spark 4.0.1 (audited 2026-05-27): `nullIntolerant = true` moves into `ArrayBinaryLike`; the overflow path uses `arrayFunctionWithElementsExceedLimitError`.
 - Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
-- Known divergence: same NaN/signed-zero canonicalization gap as `array_distinct` for float/double arrays (https://github.com/apache/datafusion-comet/issues/4481).
+- Float/double NaN and signed-zero canonicalization matches `array_distinct`. (`array_except` still falls back by default for the null-handling/ordering reasons noted above.)
 
 ## array_insert
 
@@ -79,6 +79,7 @@
 - Spark 3.5.8 audited 2026-04-24 (same ordering incompatibility as 3.4.3)
 - Spark 4.0.1 audited 2026-04-24 (ordering incompatibility as above; collated strings now fall back to Spark)
 - Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
+- Current status: `CometArrayIntersect` reports `Incompatible` because native element ordering can differ from Spark when the right array is longer than the left (DataFusion probes the longer side). By default it runs through the codegen dispatcher (Spark-correct) and uses the native path only when incompatible expressions are explicitly allowed. Non-default string collations are reported `Unsupported` and fall back to Spark.
 
 ## array_join
 
@@ -93,7 +94,7 @@
 - Spark 3.5.8 (audited 2026-05-27): baseline. `ArrayMax(child) extends UnaryExpression with ImplicitCastInputTypes`; skips NULL elements; for float/double Spark's `SQLOrderingUtil` treats NaN as greater than any non-NaN. Wired as `CometScalarFunction("array_max")`.
 - Spark 4.0.1 (audited 2026-05-27): `NullIntolerant` -> `nullIntolerant` field refactor.
 - Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
-- Known divergence: DataFusion's `array_max` uses Arrow `partial_cmp`-based ordering, so float/double arrays containing NaN may produce different results (https://github.com/apache/datafusion-comet/issues/4482).
+- Float/double arrays containing NaN match Spark: NaN is treated as greater than any non-NaN value.
 
 ## array_min
 
@@ -101,7 +102,7 @@
 - Spark 3.5.8 (audited 2026-05-27): mirror of `ArrayMax` with `evalInternal` returning the minimum. Same NULL-skip and NaN-ordering semantics. Wired as `CometScalarFunction("array_min")`.
 - Spark 4.0.1 (audited 2026-05-27): same trait refactor as `array_max`.
 - Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
-- Known divergence: same NaN-handling gap as `array_max` (https://github.com/apache/datafusion-comet/issues/4482).
+- Float/double arrays containing NaN match Spark, mirroring `array_max`.
 
 ## array_position
 
@@ -109,6 +110,13 @@
 - Spark 3.5.8 (audited 2026-05-27): baseline. `ArrayPosition(left, right)`; returns 1-based `LongType` position, 0 if not found, NULL if either input is NULL. `CometArrayPosition` falls back for all-foldable args (constant folding handles those) and for unsupported element types (binary/struct/map/null).
 - Spark 4.0.1 (audited 2026-05-27): `NullIntolerant` -> `nullIntolerant` field refactor.
 - Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
+
+## array_prepend
+
+- Spark 3.4.3 (audited 2026-06-24): `array_prepend` does not exist (added in Spark 3.5.0). The SQL file test carries `MinSparkVersion: 3.5` so it is skipped here.
+- Spark 3.5.8 (audited 2026-06-24): `ArrayPrepend(left, right) extends RuntimeReplaceable`; `replacement = new ArrayInsert(left, Literal(1), right)`. Comet never sees `ArrayPrepend`; dispatch goes through `CometArrayInsert` (which carries its own notes documented at the `array_insert` entry). NULL array yields NULL, NULL element is prepended. Type coercion casts the array to the tightest common type of element and array element (e.g. `array_prepend(array(1, 2), 1.23D)` -> `[1.23, 1.0, 2.0]`).
+- Spark 4.0.1 (audited 2026-06-24): `ArrayPrepend` now extends `ArrayPendBase` but the `replacement` is unchanged (`ArrayInsert(left, Literal(1), right)`).
+- Spark 4.1.1 (audited 2026-06-24): identical to 4.0.1.
 
 ## array_remove
 
@@ -130,7 +138,7 @@
 - Spark 3.5.8 (audited 2026-05-27): baseline. `ArrayUnion(left, right) extends ArrayBinaryLike with ComplexTypeMergingExpression`; result is left-side distinct elements followed by new right-side elements. Wired as `CometScalarFunction("array_union")`.
 - Spark 4.0.1 (audited 2026-05-27): `nullIntolerant = true` moves into `ArrayBinaryLike`; overflow path uses `arrayFunctionWithElementsExceedLimitError`.
 - Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
-- Known divergence: same NaN/signed-zero canonicalization gap as `array_distinct` (https://github.com/apache/datafusion-comet/issues/4481). Result ordering versus DataFusion is also unverified; compare the `array_intersect` ordering caveat.
+- Float/double NaN and signed-zero canonicalization matches `array_distinct`. Result element ordering also matches Spark (left-side distinct elements followed by new right-side elements).
 
 ## arrays_overlap
 

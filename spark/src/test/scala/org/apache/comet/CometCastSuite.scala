@@ -126,7 +126,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               val testIgnored =
                 tags.get(expectedTestName).exists(s => s.contains("org.scalatest.Ignore"))
               CometCast.isSupported(fromType, toType, None, CometEvalMode.LEGACY) match {
-                case Compatible(_) =>
+                case Compatible(_, _) =>
                   if (testIgnored) {
                     fail(
                       s"Cast from $fromType to $toType is reported as compatible " +
@@ -1857,7 +1857,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       toType: DataType,
       evalMode: CometEvalMode.Value): Boolean =
     CometCast.isSupported(fromType, toType, None, evalMode) match {
-      case Compatible(_) => true
+      case Compatible(_, _) => true
       case _ => false
     }
 

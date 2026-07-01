@@ -19,7 +19,7 @@
 
 package org.apache.comet.serde
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, BitLength, Cast, Concat, ConcatWs, Elt, Expression, FindInSet, FormatNumber, FormatString, GetJsonObject, If, InitCap, IsNull, Left, Length, Levenshtein, Like, Literal, Lower, Mask, OctetLength, Overlay, RegExpExtract, RegExpExtractAll, RegExpInStr, RegExpReplace, Right, RLike, SoundEx, StringLocate, StringLPad, StringRepeat, StringReplace, StringRPad, StringSplit, StringTranslate, Substring, SubstringIndex, ToCharacter, ToNumber, TryToNumber, UnBase64, Upper}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, Base64, BitLength, Cast, Concat, ConcatWs, Elt, Expression, FindInSet, FormatNumber, FormatString, GetJsonObject, If, InitCap, IsNull, Left, Length, Levenshtein, Like, Literal, Lower, Mask, OctetLength, Overlay, RegExpExtract, RegExpExtractAll, RegExpInStr, RegExpReplace, Right, RLike, SoundEx, StringLocate, StringLPad, StringRepeat, StringReplace, StringRPad, StringSplit, StringTranslate, Substring, SubstringIndex, ToCharacter, ToNumber, TryToNumber, UnBase64, Upper}
 import org.apache.spark.sql.types.{BinaryType, DataTypes, LongType, StringType}
 import org.apache.spark.unsafe.types.UTF8String
 
@@ -50,9 +50,21 @@ object CometStringRepeat extends CometExpressionSerde[StringRepeat] {
 }
 
 class CometCaseConversionBase[T <: Expression](function: String)
-    extends CometScalarFunction[T](function) {
+    extends CometScalarFunction[T](function)
+    with NativeOptInAvailable {
 
-  override def getSupportLevel(expr: T): SupportLevel = Compatible()
+  override def getIncompatibleReasons(): Seq[String] =
+    Seq("Results can vary depending on locale and character set")
+
+  override def nativeOptInConfigKeyOverride: Option[String] =
+    Some(CometConf.COMET_CASE_CONVERSION_ENABLED.key)
+
+  override def getSupportLevel(expr: T): SupportLevel =
+    if (!CometConf.COMET_CASE_CONVERSION_ENABLED.get()) {
+      Compatible(nativeOptIn = Some(NativeOptIn(CometConf.COMET_CASE_CONVERSION_ENABLED.key)))
+    } else {
+      Compatible()
+    }
 
   override def convert(expr: T, inputs: Seq[Attribute], binding: Boolean): Option[Expr] = {
     if (CometConf.COMET_CASE_CONVERSION_ENABLED.get()) {
@@ -110,9 +122,21 @@ object CometStringTranslate extends CometScalarFunction[StringTranslate]("transl
     Some(incompatReason))
 }
 
-object CometInitCap extends CometScalarFunction[InitCap]("initcap") {
+object CometInitCap extends CometScalarFunction[InitCap]("initcap") with NativeOptInAvailable {
 
-  override def getSupportLevel(expr: InitCap): SupportLevel = Compatible()
+  override def getIncompatibleReasons(): Seq[String] =
+    Seq(
+      "Treats hyphen as a word separator (e.g. `robert rose-smith` produces `Robert Rose-Smith`" +
+        " instead of Spark's `Robert Rose-smith`)" +
+        " (https://github.com/apache/datafusion-comet/issues/1052)")
+
+  override def getSupportLevel(expr: InitCap): SupportLevel =
+    if (!CometConf.isExprAllowIncompat(getExprConfigName(expr))) {
+      Compatible(nativeOptIn =
+        Some(NativeOptIn(CometConf.getExprAllowIncompatConfigKey(getExprConfigName(expr)))))
+    } else {
+      Compatible()
+    }
 
   override def convert(expr: InitCap, inputs: Seq[Attribute], binding: Boolean): Option[Expr] = {
     if (CometConf.isExprAllowIncompat(getExprConfigName(expr))) {
@@ -129,9 +153,20 @@ object CometInitCap extends CometScalarFunction[InitCap]("initcap") {
   }
 }
 
-object CometStringReplace extends CometScalarFunction[StringReplace]("replace") {
+object CometStringReplace
+    extends CometScalarFunction[StringReplace]("replace")
+    with NativeOptInAvailable {
 
-  override def getSupportLevel(expr: StringReplace): SupportLevel = Compatible()
+  override def getIncompatibleReasons(): Seq[String] =
+    Seq("Produces different results from Spark when the search string is empty")
+
+  override def getSupportLevel(expr: StringReplace): SupportLevel =
+    if (!CometConf.isExprAllowIncompat(getExprConfigName(expr))) {
+      Compatible(nativeOptIn =
+        Some(NativeOptIn(CometConf.getExprAllowIncompatConfigKey(getExprConfigName(expr)))))
+    } else {
+      Compatible()
+    }
 
   override def convert(
       expr: StringReplace,
@@ -370,25 +405,34 @@ object CometLike extends CometExpressionSerde[Like] {
  * does not cover (a non-scalar pattern) falls through to the codegen dispatcher via
  * [[CometScalaUDF]].
  */
-object CometRLike extends CometExpressionSerde[RLike] {
+object CometRLike extends CometExpressionSerde[RLike] with NativeOptInAvailable {
 
-  override def getSupportLevel(expr: RLike): SupportLevel = Compatible()
+  override def getIncompatibleReasons(): Seq[String] =
+    Seq("Uses Rust regexp engine, which has different behavior to Java regexp engine")
+
+  private def nativeApplicable(expr: RLike): Boolean = expr.right match {
+    case Literal(_, DataTypes.StringType) => true
+    case _ => false
+  }
+
+  override def getSupportLevel(expr: RLike): SupportLevel =
+    if (!CometConf.isExprAllowIncompat(getExprConfigName(expr)) && nativeApplicable(expr)) {
+      Compatible(nativeOptIn =
+        Some(NativeOptIn(CometConf.getExprAllowIncompatConfigKey(getExprConfigName(expr)))))
+    } else {
+      Compatible()
+    }
 
   override def convert(expr: RLike, inputs: Seq[Attribute], binding: Boolean): Option[Expr] = {
-    if (CometConf.isExprAllowIncompat(getExprConfigName(expr))) {
-      expr.right match {
-        case Literal(_, DataTypes.StringType) =>
-          // Native path: the Rust regexp engine has different semantics from Java regexp.
-          return createBinaryExpr(
-            expr,
-            expr.left,
-            expr.right,
-            inputs,
-            binding,
-            (builder, binaryExpr) => builder.setRlike(binaryExpr))
-        case _ =>
-        // Non-scalar pattern: the native path cannot handle it, fall through to the dispatcher.
-      }
+    if (CometConf.isExprAllowIncompat(getExprConfigName(expr)) && nativeApplicable(expr)) {
+      // Native path: the Rust regexp engine has different semantics from Java regexp.
+      return createBinaryExpr(
+        expr,
+        expr.left,
+        expr.right,
+        inputs,
+        binding,
+        (builder, binaryExpr) => builder.setRlike(binaryExpr))
     }
     // Default: route through the codegen dispatcher so Spark's own doGenCode runs inside the Comet
     // pipeline. Falls back to Spark when the dispatcher is disabled.
@@ -538,14 +582,23 @@ object CometRegExpExtractAll extends CometExpressionSerde[RegExpExtractAll] {
  * Java regexp, so it is opt-in via `spark.comet.expression.RegExpReplace.allowIncompatible` and
  * only for an offset of 1; any other case falls through to the codegen dispatcher.
  */
-object CometRegExpReplace extends CometExpressionSerde[RegExpReplace] {
+object CometRegExpReplace extends CometExpressionSerde[RegExpReplace] with NativeOptInAvailable {
 
-  override def getSupportLevel(expr: RegExpReplace): SupportLevel = Compatible()
+  override def getIncompatibleReasons(): Seq[String] =
+    Seq("Regexp pattern may not be compatible with Spark")
 
   private def nativeSupported(expr: RegExpReplace): Boolean = expr.pos match {
     case Literal(value, DataTypes.IntegerType) if value == 1 => true
     case _ => false
   }
+
+  override def getSupportLevel(expr: RegExpReplace): SupportLevel =
+    if (!CometConf.isExprAllowIncompat(getExprConfigName(expr)) && nativeSupported(expr)) {
+      Compatible(nativeOptIn =
+        Some(NativeOptIn(CometConf.getExprAllowIncompatConfigKey(getExprConfigName(expr)))))
+    } else {
+      Compatible()
+    }
 
   override def convert(
       expr: RegExpReplace,
@@ -582,9 +635,18 @@ object CometRegExpReplace extends CometExpressionSerde[RegExpReplace] {
  * The native path is a custom Comet function (not a built-in DataFusion function), so the return
  * type is included in the protobuf to avoid DataFusion registry lookup failures.
  */
-object CometStringSplit extends CometExpressionSerde[StringSplit] {
+object CometStringSplit extends CometExpressionSerde[StringSplit] with NativeOptInAvailable {
 
-  override def getSupportLevel(expr: StringSplit): SupportLevel = Compatible()
+  override def getIncompatibleReasons(): Seq[String] =
+    Seq("Regex engine differences between Java and Rust")
+
+  override def getSupportLevel(expr: StringSplit): SupportLevel =
+    if (!CometConf.isExprAllowIncompat(getExprConfigName(expr))) {
+      Compatible(nativeOptIn =
+        Some(NativeOptIn(CometConf.getExprAllowIncompatConfigKey(getExprConfigName(expr)))))
+    } else {
+      Compatible()
+    }
 
   override def convert(
       expr: StringSplit,
@@ -620,7 +682,20 @@ object CometRegExpInStr extends CometCodegenDispatch[RegExpInStr]
  * `spark.comet.expression.GetJsonObject.allowIncompatible`; otherwise it rides the codegen
  * dispatcher via [[CometCodegenDispatch]].
  */
-object CometGetJsonObject extends CometCodegenDispatch[GetJsonObject] {
+object CometGetJsonObject extends CometCodegenDispatch[GetJsonObject] with NativeOptInAvailable {
+
+  override def getIncompatibleReasons(): Seq[String] =
+    Seq(
+      "Spark allows single-quoted JSON and unescaped control characters" +
+        " which Comet does not support")
+
+  override def getSupportLevel(expr: GetJsonObject): SupportLevel =
+    if (!CometConf.isExprAllowIncompat(getExprConfigName(expr))) {
+      Compatible(nativeOptIn =
+        Some(NativeOptIn(CometConf.getExprAllowIncompatConfigKey(getExprConfigName(expr)))))
+    } else {
+      Compatible()
+    }
 
   override def convert(
       expr: GetJsonObject,
@@ -658,6 +733,24 @@ object CometOverlay extends CometCodegenDispatch[Overlay]
 object CometSoundEx extends CometCodegenDispatch[SoundEx]
 
 object CometStringLocate extends CometCodegenDispatch[StringLocate]
+
+// On Spark 3.4 `Base64` is a plain expression node and always chunks the output (it uses
+// `java.util.Base64.getMimeEncoder()` with no arguments). On Spark 3.5+ it is RuntimeReplaceable
+// and lowers to a `StaticInvoke`, handled by CometBase64StaticInvoke instead.
+object CometBase64 extends CometExpressionSerde[Base64] {
+  override def convert(expr: Base64, inputs: Seq[Attribute], binding: Boolean): Option[Expr] = {
+    val childExpr = exprToProtoInternal(expr.child, inputs, binding)
+    val chunkExpr = exprToProtoInternal(Literal(true), inputs, binding)
+    val optExpr =
+      scalarFunctionExprToProtoWithReturnType(
+        "base64",
+        StringType,
+        failOnError = false,
+        childExpr,
+        chunkExpr)
+    optExprWithFallbackReason(optExpr, expr, expr.child)
+  }
+}
 
 object CometUnBase64 extends CometCodegenDispatch[UnBase64]
 
