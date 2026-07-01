@@ -648,6 +648,13 @@ with Spark. For dates beyond this range, functions that involve timezone-aware c
 <li><p>Only <code class="docutils literal notranslate"><span class="pre">TimestampType</span></code> and <code class="docutils literal notranslate"><span class="pre">TimestampNTZType</span></code> inputs are supported.</p></li>
 </ul>
 </section>
+<section id="precisetimestampconversion">
+<h2>PreciseTimestampConversion<a class="headerlink" href="#precisetimestampconversion" title="Link to this heading">#</a></h2>
+<p>The following cases are not supported by Comet:</p>
+<ul class="simple">
+<li><p>Only reinterprets between TimestampType/TimestampNTZType and LongType are supported.</p></li>
+</ul>
+</section>
 <section id="secondstotimestamp">
 <h2>SecondsToTimestamp<a class="headerlink" href="#secondstotimestamp" title="Link to this heading">#</a></h2>
 <p>The following cases are not supported by Comet:</p>

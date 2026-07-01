@@ -1369,7 +1369,7 @@ expressions. The following function families are <strong>not currently planned</
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">session_window</span></code></p></td>
 <td><p>🔜</p></td>
-<td><p>Time-window grouping; tracked by <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4553">#4553</a></p></td>
+<td><p>Batch session-window grouping falls back (<code class="docutils literal notranslate"><span class="pre">UpdatingSessionsExec</span></code> is not yet native); tracked by <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4785">#4785</a></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">time_diff</span></code></p></td>
 <td><p>🔜</p></td>
@@ -1472,12 +1472,12 @@ expressions. The following function families are <strong>not currently planned</
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">window</span></code></p></td>
-<td><p>🔜</p></td>
-<td><p>Time-window grouping; tracked by <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4553">#4553</a></p></td>
+<td><p>✅</p></td>
+<td><p>Batch tumbling and sliding time-window grouping runs natively</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">window_time</span></code></p></td>
-<td><p>🔜</p></td>
-<td><p>Time-window grouping; tracked by <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4553">#4553</a></p></td>
+<td><p>✅</p></td>
+<td><p>Batch time-window grouping runs natively</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">year</span></code></p></td>
 <td><p>✅</p></td>

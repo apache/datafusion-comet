@@ -88,6 +88,12 @@ The following cases are not supported by Comet:
 
 - Only `TimestampType` and `TimestampNTZType` inputs are supported.
 
+## PreciseTimestampConversion
+
+The following cases are not supported by Comet:
+
+- Only reinterprets between TimestampType/TimestampNTZType and LongType are supported.
+
 ## SecondsToTimestamp
 
 The following cases are not supported by Comet:

@@ -103,6 +103,12 @@ The following incompatibilities cause `NextDay` to fall back to Spark by default
 
 - next_day does not support non-UTF8_BINARY collations (https://github.com/apache/datafusion-comet/issues/4646)
 
+## PreciseTimestampConversion
+
+The following cases are not supported by Comet:
+
+- Only reinterprets between TimestampType/TimestampNTZType and LongType are supported.
+
 ## SecondsToTimestamp
 
 The following cases are not supported by Comet:
