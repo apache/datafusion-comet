@@ -126,9 +126,7 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with Logging {
       // Sink operators don't have children
       builder.clearChildren()
 
-      if (scan.conf.getConf(SQLConf.PARQUET_FILTER_PUSHDOWN_ENABLED) &&
-        CometConf.COMET_RESPECT_PARQUET_FILTER_PUSHDOWN.get(scan.conf)) {
-
+      if (scan.conf.getConf(SQLConf.PARQUET_FILTER_PUSHDOWN_ENABLED)) {
         val dataFilters = new ListBuffer[Expr]()
         for (filter <- scan.supportedDataFilters) {
           exprToProto(filter, scan.output) match {

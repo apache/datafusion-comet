@@ -97,12 +97,12 @@ The tables below list every Spark built-in expression with its current status.
 | `max` | ✅ |  |
 | `max_by` | 🔜 | [#3841](https://github.com/apache/datafusion-comet/issues/3841) |
 | `mean` | ✅ |  |
-| `median` | 🔜 | tracking [#4098](https://github.com/apache/datafusion-comet/issues/4098) |
+| `median` | ✅ | Rewrites to `percentile(col, 0.5)`; falls back by default, opt-in via allowIncompatible ([#4719](https://github.com/apache/datafusion-comet/issues/4719)) |
 | `min` | ✅ |  |
 | `min_by` | 🔜 | [#3841](https://github.com/apache/datafusion-comet/issues/3841) |
 | `mode` | 🔜 | [#3970](https://github.com/apache/datafusion-comet/issues/3970) |
-| `percentile` | 🔜 | [#4542](https://github.com/apache/datafusion-comet/issues/4542) |
-| `percentile_cont` | 🔜 | Percentile aggregate |
+| `percentile` | ✅ | Single literal percentage on numeric input; array of percentages and a frequency argument fall back to Spark. Falls back by default, opt-in via allowIncompatible ([#4719](https://github.com/apache/datafusion-comet/issues/4719)) |
+| `percentile_cont` | ✅ | Spark 4.0+ `WITHIN GROUP (ORDER BY ...)`; ascending only, `DESC` falls back to Spark. Falls back by default, opt-in via allowIncompatible ([#4719](https://github.com/apache/datafusion-comet/issues/4719)) |
 | `percentile_disc` | 🔜 | Percentile aggregate |
 | `regr_avgx` | ✅ | Native: Spark rewrites to `Average` (tests in [#4551](https://github.com/apache/datafusion-comet/issues/4551)) |
 | `regr_avgy` | ✅ | Native: Spark rewrites to `Average` (tests in [#4551](https://github.com/apache/datafusion-comet/issues/4551)) |
@@ -121,8 +121,8 @@ The tables below list every Spark built-in expression with its current status.
 | `stddev_samp` | ✅ |  |
 | `string_agg` | 🔜 | String aggregation (alias of `listagg`) |
 | `sum` | ✅ |  |
-| `try_avg` | 🔜 | tracking [#4098](https://github.com/apache/datafusion-comet/issues/4098) |
-| `try_sum` | 🔜 | tracking [#4098](https://github.com/apache/datafusion-comet/issues/4098) |
+| `try_avg` | ✅ | Interval types fall back |
+| `try_sum` | ✅ |  |
 | `var_pop` | ✅ |  |
 | `var_samp` | ✅ |  |
 | `variance` | ✅ |  |
@@ -145,7 +145,7 @@ The tables below list every Spark built-in expression with its current status.
 | `array_max` | ✅ | NaN ordering may differ ([details](compatibility/floating-point.md)) |
 | `array_min` | ✅ | NaN ordering may differ ([details](compatibility/floating-point.md)) |
 | `array_position` | ✅ | Binary/struct/map/null elements fall back |
-| `array_prepend` | 🔜 | Sibling of `array_append` |
+| `array_prepend` | ✅ |  |
 | `array_remove` | ✅ |  |
 | `array_repeat` | ✅ |  |
 | `array_union` | ✅ | NaN/signed-zero handling may differ ([details](compatibility/floating-point.md)) |
@@ -535,7 +535,7 @@ expression-level). The `outer` variants are wired but marked `Incompatible`; the
 | Function | Status | Notes |
 | --- | --- | --- |
 | `ascii` | ✅ |  |
-| `base64` | 🔜 | Lowers to `StaticInvoke(encode)` (not allowlisted); falls back |
+| `base64` | ✅ |  |
 | `bit_length` | ✅ |  |
 | `btrim` | ✅ |  |
 | `char` | ✅ |  |
@@ -584,7 +584,7 @@ expression-level). The `outer` variants are wired but marked `Incompatible`; the
 | `soundex` | ✅ |  |
 | `space` | ✅ |  |
 | `split` | ✅ |  |
-| `split_part` | 🔜 | Lowers to `element_at(StringSplitSQL(...))`; `StringSplitSQL` falls back ([#4561](https://github.com/apache/datafusion-comet/issues/4561)) |
+| `split_part` | ✅ | Spark 4.0+ |
 | `startswith` | ✅ |  |
 | `substr` | ✅ |  |
 | `substring` | ✅ |  |
@@ -625,24 +625,25 @@ expression-level). The `outer` variants are wired but marked `Incompatible`; the
 
 ## window_funcs
 
-Window functions run via `CometWindowExec`. Window support is disabled by default due to known
-correctness issues (tracking [#2721](https://github.com/apache/datafusion-comet/issues/2721)).
-When enabled, `lag` and `lead` are explicitly wired; aggregate window functions (`count`, `min`,
-`max`, `sum`) are also supported. Ranking functions (`rank`, `dense_rank`, `row_number`,
-`ntile`, `percent_rank`, `cume_dist`, `nth_value`) are not yet wired in the window serde and
-fall back to Spark.
+Window functions run via `CometWindowExec`. Aggregate window functions
+(`count`, `min`, `max`, `sum`, `avg`, `first_value`, `last_value`),
+ranking functions (`row_number`, `rank`, `dense_rank`, `percent_rank`,
+`cume_dist`, `ntile`), and value-shift functions (`lag`, `lead`,
+`nth_value`) are all wired in the window serde and execute natively.
+A handful of frame shapes still fall back — see the per-function notes
+for the exact unsupported cases.
 
 | Function | Status | Notes |
 | --- | --- | --- |
-| `cume_dist` | 🔜 | Window function; tracked by [#2721](https://github.com/apache/datafusion-comet/issues/2721) |
-| `dense_rank` | 🔜 | Window function; tracked by [#2721](https://github.com/apache/datafusion-comet/issues/2721) |
-| `lag` | ✅ | via `CometWindowExec` |
-| `lead` | ✅ | via `CometWindowExec` |
-| `nth_value` | 🔜 | Window function; tracked by [#2721](https://github.com/apache/datafusion-comet/issues/2721) |
-| `ntile` | 🔜 | Window function; tracked by [#2721](https://github.com/apache/datafusion-comet/issues/2721) |
-| `percent_rank` | 🔜 | Window function; tracked by [#2721](https://github.com/apache/datafusion-comet/issues/2721) |
-| `rank` | 🔜 | Window function; tracked by [#2721](https://github.com/apache/datafusion-comet/issues/2721) |
-| `row_number` | 🔜 | Window function; tracked by [#2721](https://github.com/apache/datafusion-comet/issues/2721) |
+| `cume_dist` | ✅ | via `CometWindowExec` |
+| `dense_rank` | ✅ | via `CometWindowExec` |
+| `lag` | ✅ | via `CometWindowExec`; non-literal default falls back ([#4268](https://github.com/apache/datafusion-comet/issues/4268)) |
+| `lead` | ✅ | via `CometWindowExec`; non-literal default falls back ([#4268](https://github.com/apache/datafusion-comet/issues/4268)) |
+| `nth_value` | ✅ | via `CometWindowExec` |
+| `ntile` | ✅ | via `CometWindowExec` |
+| `percent_rank` | ✅ | via `CometWindowExec` |
+| `rank` | ✅ | via `CometWindowExec` |
+| `row_number` | ✅ | via `CometWindowExec` |
 
 ---
 

@@ -29,12 +29,23 @@ import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithFa
 // https://github.com/apache/datafusion/issues/16594
 object CometFromUnixTime extends CometExpressionSerde[FromUnixTime] with CodegenDispatchFallback {
 
-  override def getIncompatibleReasons(): Seq[String] = Seq(
+  private val collationReason = DatetimeCollation.reason("from_unixtime")
+
+  private val formatReason =
     "Only supports the default datetime format pattern `yyyy-MM-dd HH:mm:ss`." +
       " DataFusion's valid timestamp range differs from Spark" +
-      " (https://github.com/apache/datafusion/issues/16594)")
+      " (https://github.com/apache/datafusion/issues/16594)"
 
-  override def getSupportLevel(expr: FromUnixTime): SupportLevel = Incompatible(None)
+  override def getIncompatibleReasons(): Seq[String] =
+    Seq(formatReason) ++ DatetimeCollation.incompatibleReasons("from_unixtime")
+
+  override def getSupportLevel(expr: FromUnixTime): SupportLevel = {
+    if (DatetimeCollation.hasNonDefaultCollation(expr)) {
+      Incompatible(Some(collationReason))
+    } else {
+      Incompatible(Some(formatReason))
+    }
+  }
 
   override def convert(
       expr: FromUnixTime,

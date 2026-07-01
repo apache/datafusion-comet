@@ -48,6 +48,8 @@ $SPARK_HOME/bin/spark-shell \
     --conf spark.memory.offHeap.size=2g
 ```
 
+Catalog configuration is standard Iceberg-on-Spark and independent of Comet. The native reader has been tested with Hadoop, Hive, and REST catalogs. The example above uses a Hadoop catalog. For the full catalog configuration reference, see Iceberg's [Spark catalog configuration](https://iceberg.apache.org/docs/latest/spark-configuration/#catalogs).
+
 ### Tuning
 
 Comet’s native Iceberg reader supports fetching multiple files in parallel to hide I/O latency with the
@@ -131,6 +133,26 @@ scala> spark.sql("CREATE TABLE rest_cat.db.test_table (id INT, name STRING) USIN
 scala> spark.sql("INSERT INTO rest_cat.db.test_table VALUES (1, 'Alice'), (2, 'Bob')")
 scala> spark.sql("SELECT * FROM rest_cat.db.test_table").show()
 ```
+
+### Object store configuration (S3)
+
+The native reader has its own Rust object store client and does not go through Iceberg's JVM FileIO, neither `S3FileIO` nor the older Hadoop S3A filesystem. It configures that client from the catalog's `s3.*` properties (the same keys `S3FileIO` reads) or from `spark.hadoop.fs.s3a.*` settings, so S3 configuration only reaches the native reader through one of those two channels.
+
+For a custom S3-compatible endpoint, configure the catalog with the endpoint, path-style access, region, and credentials (Hive shown):
+
+```shell
+    --conf spark.sql.catalog.s3_cat=org.apache.iceberg.spark.SparkCatalog \
+    --conf spark.sql.catalog.s3_cat.type=hive \
+    --conf spark.sql.catalog.s3_cat.uri=thrift://metastore:9083 \
+    --conf spark.sql.catalog.s3_cat.io-impl=org.apache.iceberg.aws.s3.S3FileIO \
+    --conf spark.sql.catalog.s3_cat.s3.endpoint=https://s3.example.com:9000 \
+    --conf spark.sql.catalog.s3_cat.s3.path-style-access=true \
+    --conf spark.sql.catalog.s3_cat.client.region=us-east-1 \
+    --conf spark.sql.catalog.s3_cat.s3.access-key-id=... \
+    --conf spark.sql.catalog.s3_cat.s3.secret-access-key=...
+```
+
+These `s3.*` storage properties are not specific to the Hive catalog shown here. When `s3.access-key-id` / `s3.secret-access-key` are omitted, credentials come from the standard AWS chain (environment variables, instance profiles, and so on). `client.region` is auto-detected for AWS but should be set for non-AWS endpoints. If your REST catalog vends temporary credentials, the native reader does not consume them automatically, and wiring that requires the credential provider bridge. See Iceberg's [S3 FileIO](https://iceberg.apache.org/docs/latest/aws/#s3-fileio) docs for the full property list, and [S3 Credential Providers](s3-credential-providers.md) for vended or per-request credentials.
 
 ### Current limitations
 
