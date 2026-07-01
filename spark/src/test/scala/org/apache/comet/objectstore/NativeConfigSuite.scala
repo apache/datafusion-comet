@@ -70,4 +70,42 @@ class NativeConfigSuite extends AnyFunSuite with Matchers {
       new URI("unsupported://test-bucket/test-object"))
     assert(unsupportedOptions.isEmpty, "Unsupported scheme should return empty options")
   }
+
+  test("extractObjectStoreOptions - ABFS forwards Hadoop fs.azure.* auth keys") {
+    // Hadoop ABFS authentication (account keys, OAuth client credentials, Workload
+    // Identity / MSI token providers, SAS tokens) all live under fs.azure.*, not
+    // fs.abfs.*. Earlier versions of NativeConfig only forwarded fs.abfs.* for abfs[s]
+    // schemes, which silently dropped every real credential. Verify the abfs[s] prefix
+    // list now includes fs.azure.*.
+    val hadoopConf = new Configuration()
+    hadoopConf.set("fs.azure.account.auth.type.myacct.dfs.core.windows.net", "OAuth")
+    hadoopConf.set(
+      "fs.azure.account.oauth.provider.type.myacct.dfs.core.windows.net",
+      "org.apache.hadoop.fs.azurebfs.oauth2.WorkloadIdentityTokenProvider")
+    hadoopConf.set("fs.azure.account.oauth2.client.id.myacct.dfs.core.windows.net", "client-123")
+    hadoopConf.set("fs.azure.account.oauth2.msi.tenant.myacct.dfs.core.windows.net", "tenant-abc")
+    hadoopConf.set(
+      "fs.azure.account.oauth2.token.file.myacct.dfs.core.windows.net",
+      "/var/run/secrets/azure/tokens/azure-identity-token")
+
+    Seq(
+      "abfs://data@myacct.dfs.core.windows.net/path/file.parquet",
+      "abfss://data@myacct.dfs.core.windows.net/path/file.parquet").foreach { path =>
+      val opts = NativeConfig.extractObjectStoreOptions(hadoopConf, new URI(path))
+      assert(
+        opts("fs.azure.account.oauth2.client.id.myacct.dfs.core.windows.net") == "client-123",
+        s"client id should be forwarded for $path")
+      assert(
+        opts("fs.azure.account.oauth2.msi.tenant.myacct.dfs.core.windows.net") == "tenant-abc",
+        s"tenant id should be forwarded for $path")
+      assert(
+        opts("fs.azure.account.oauth2.token.file.myacct.dfs.core.windows.net") ==
+          "/var/run/secrets/azure/tokens/azure-identity-token",
+        s"federated token file should be forwarded for $path")
+      assert(
+        opts("fs.azure.account.oauth.provider.type.myacct.dfs.core.windows.net") ==
+          "org.apache.hadoop.fs.azurebfs.oauth2.WorkloadIdentityTokenProvider",
+        s"oauth provider type should be forwarded for $path")
+    }
+  }
 }

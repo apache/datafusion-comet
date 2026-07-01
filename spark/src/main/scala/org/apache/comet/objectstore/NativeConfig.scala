@@ -38,10 +38,9 @@ object NativeConfig {
     // Azure Blob Storage configurations (can use both prefixes)
     "wasb" -> Seq("fs.azure.", "fs.wasb."),
     "wasbs" -> Seq("fs.azure.", "fs.wasb."),
-    // Azure Data Lake Storage Gen2 configurations
-    "abfs" -> Seq("fs.abfs."),
-    // Azure Data Lake Storage Gen2 secure configurations (can use both prefixes)
-    "abfss" -> Seq("fs.abfss.", "fs.abfs."))
+    // Azure Data Lake Storage Gen2 (ABFS) configurations. Hadoop ABFS authentication keys
+    "abfs" -> Seq("fs.azure.", "fs.abfs."),
+    "abfss" -> Seq("fs.azure.", "fs.abfss.", "fs.abfs."))
 
   /**
    * Extract object store configurations from Hadoop configuration for native DataFusion usage.

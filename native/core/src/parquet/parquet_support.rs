@@ -434,6 +434,14 @@ pub fn is_hdfs_scheme(url: &Url, object_store_configs: &HashMap<String, String>)
     }
 }
 
+/// Check if the scheme is an Azure ABFS / WASB / other legacy schemes.
+fn is_azure_scheme(scheme: &str) -> bool {
+    matches!(
+        scheme,
+        "abfs" | "abfss" | "wasb" | "wasbs" | "az" | "azure" | "adl"
+    )
+}
+
 // Creates an HDFS object store from a URL using the native HDFS implementation
 #[cfg(all(feature = "hdfs", not(feature = "hdfs-opendal")))]
 fn create_hdfs_object_store(
@@ -606,6 +614,8 @@ pub(crate) fn prepare_object_store_with_configs(
                 create_hdfs_object_store(&url)
             } else if scheme == "s3" {
                 objectstore::s3::create_store(&url, object_store_configs, Duration::from_secs(300))
+            } else if is_azure_scheme(scheme) {
+                objectstore::azure::create_store(&url, object_store_configs)
             } else {
                 parse_url(&url)
             }
