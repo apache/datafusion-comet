@@ -641,32 +641,11 @@ with Spark. For dates beyond this range, functions that involve timezone-aware c
 <li><p>Only supports the default datetime format pattern <code class="docutils literal notranslate"><span class="pre">yyyy-MM-dd</span> <span class="pre">HH:mm:ss</span></code>. DataFusion’s valid timestamp range differs from Spark (https://github.com/apache/datafusion/issues/16594)</p></li>
 </ul>
 </section>
-<section id="hour">
-<h2>Hour<a class="headerlink" href="#hour" title="Link to this heading">#</a></h2>
-<p>By default, Comet runs a Spark-compatible implementation of <code class="docutils literal notranslate"><span class="pre">Hour</span></code>. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Hour.allowIncompatible=true</span></code> to use Comet’s faster native implementation instead, which has the following differences from Spark:</p>
-<ul class="simple">
-<li><p>Incorrectly applies timezone conversion to TimestampNTZ inputs (https://github.com/apache/datafusion-comet/issues/3180)</p></li>
-</ul>
-</section>
 <section id="hours">
 <h2>Hours<a class="headerlink" href="#hours" title="Link to this heading">#</a></h2>
 <p>The following cases are not supported by Comet:</p>
 <ul class="simple">
 <li><p>Only <code class="docutils literal notranslate"><span class="pre">TimestampType</span></code> and <code class="docutils literal notranslate"><span class="pre">TimestampNTZType</span></code> inputs are supported.</p></li>
-</ul>
-</section>
-<section id="minute">
-<h2>Minute<a class="headerlink" href="#minute" title="Link to this heading">#</a></h2>
-<p>By default, Comet runs a Spark-compatible implementation of <code class="docutils literal notranslate"><span class="pre">Minute</span></code>. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Minute.allowIncompatible=true</span></code> to use Comet’s faster native implementation instead, which has the following differences from Spark:</p>
-<ul class="simple">
-<li><p>Incorrectly applies timezone conversion to TimestampNTZ inputs (https://github.com/apache/datafusion-comet/issues/3180)</p></li>
-</ul>
-</section>
-<section id="second">
-<h2>Second<a class="headerlink" href="#second" title="Link to this heading">#</a></h2>
-<p>By default, Comet runs a Spark-compatible implementation of <code class="docutils literal notranslate"><span class="pre">Second</span></code>. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Second.allowIncompatible=true</span></code> to use Comet’s faster native implementation instead, which has the following differences from Spark:</p>
-<ul class="simple">
-<li><p>Incorrectly applies timezone conversion to TimestampNTZ inputs (https://github.com/apache/datafusion-comet/issues/3180)</p></li>
 </ul>
 </section>
 <section id="secondstotimestamp">

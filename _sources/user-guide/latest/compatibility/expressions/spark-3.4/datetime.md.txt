@@ -82,29 +82,11 @@ By default, Comet runs a Spark-compatible implementation of `FromUnixTime`. Set 
 
 - Only supports the default datetime format pattern `yyyy-MM-dd HH:mm:ss`. DataFusion's valid timestamp range differs from Spark (https://github.com/apache/datafusion/issues/16594)
 
-## Hour
-
-By default, Comet runs a Spark-compatible implementation of `Hour`. Set `spark.comet.expression.Hour.allowIncompatible=true` to use Comet's faster native implementation instead, which has the following differences from Spark:
-
-- Incorrectly applies timezone conversion to TimestampNTZ inputs (https://github.com/apache/datafusion-comet/issues/3180)
-
 ## Hours
 
 The following cases are not supported by Comet:
 
 - Only `TimestampType` and `TimestampNTZType` inputs are supported.
-
-## Minute
-
-By default, Comet runs a Spark-compatible implementation of `Minute`. Set `spark.comet.expression.Minute.allowIncompatible=true` to use Comet's faster native implementation instead, which has the following differences from Spark:
-
-- Incorrectly applies timezone conversion to TimestampNTZ inputs (https://github.com/apache/datafusion-comet/issues/3180)
-
-## Second
-
-By default, Comet runs a Spark-compatible implementation of `Second`. Set `spark.comet.expression.Second.allowIncompatible=true` to use Comet's faster native implementation instead, which has the following differences from Spark:
-
-- Incorrectly applies timezone conversion to TimestampNTZ inputs (https://github.com/apache/datafusion-comet/issues/3180)
 
 ## SecondsToTimestamp
 

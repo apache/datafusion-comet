@@ -644,13 +644,6 @@ with Spark. For dates beyond this range, functions that involve timezone-aware c
 <li><p>from_unixtime does not support non-UTF8_BINARY collations (https://github.com/apache/datafusion-comet/issues/4646)</p></li>
 </ul>
 </section>
-<section id="hour">
-<h2>Hour<a class="headerlink" href="#hour" title="Link to this heading">#</a></h2>
-<p>By default, Comet runs a Spark-compatible implementation of <code class="docutils literal notranslate"><span class="pre">Hour</span></code>. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Hour.allowIncompatible=true</span></code> to use Comet’s faster native implementation instead, which has the following differences from Spark:</p>
-<ul class="simple">
-<li><p>Incorrectly applies timezone conversion to TimestampNTZ inputs (https://github.com/apache/datafusion-comet/issues/3180)</p></li>
-</ul>
-</section>
 <section id="hours">
 <h2>Hours<a class="headerlink" href="#hours" title="Link to this heading">#</a></h2>
 <p>The following cases are not supported by Comet:</p>
@@ -665,25 +658,11 @@ with Spark. For dates beyond this range, functions that involve timezone-aware c
 <li><p>make_timestamp does not support non-UTF8_BINARY collations (https://github.com/apache/datafusion-comet/issues/4646)</p></li>
 </ul>
 </section>
-<section id="minute">
-<h2>Minute<a class="headerlink" href="#minute" title="Link to this heading">#</a></h2>
-<p>By default, Comet runs a Spark-compatible implementation of <code class="docutils literal notranslate"><span class="pre">Minute</span></code>. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Minute.allowIncompatible=true</span></code> to use Comet’s faster native implementation instead, which has the following differences from Spark:</p>
-<ul class="simple">
-<li><p>Incorrectly applies timezone conversion to TimestampNTZ inputs (https://github.com/apache/datafusion-comet/issues/3180)</p></li>
-</ul>
-</section>
 <section id="nextday">
 <h2>NextDay<a class="headerlink" href="#nextday" title="Link to this heading">#</a></h2>
 <p>The following incompatibilities cause <code class="docutils literal notranslate"><span class="pre">NextDay</span></code> to fall back to Spark by default. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.NextDay.allowIncompatible=true</span></code> to enable Comet acceleration despite these differences.</p>
 <ul class="simple">
 <li><p>next_day does not support non-UTF8_BINARY collations (https://github.com/apache/datafusion-comet/issues/4646)</p></li>
-</ul>
-</section>
-<section id="second">
-<h2>Second<a class="headerlink" href="#second" title="Link to this heading">#</a></h2>
-<p>By default, Comet runs a Spark-compatible implementation of <code class="docutils literal notranslate"><span class="pre">Second</span></code>. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Second.allowIncompatible=true</span></code> to use Comet’s faster native implementation instead, which has the following differences from Spark:</p>
-<ul class="simple">
-<li><p>Incorrectly applies timezone conversion to TimestampNTZ inputs (https://github.com/apache/datafusion-comet/issues/3180)</p></li>
 </ul>
 </section>
 <section id="secondstotimestamp">
