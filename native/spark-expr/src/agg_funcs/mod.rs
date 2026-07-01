@@ -23,6 +23,7 @@ mod stddev;
 mod sum_decimal;
 mod sum_int;
 mod variance;
+mod welford;
 
 pub use avg::Avg;
 pub use avg_decimal::AvgDecimal;

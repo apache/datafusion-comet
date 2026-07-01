@@ -15,18 +15,18 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::{any::Any, sync::Arc};
+use std::sync::Arc;
 
-use crate::agg_funcs::variance::VarianceAccumulator;
+use crate::agg_funcs::variance::{VarianceAccumulator, VarianceGroupsAccumulator};
+use arrow::array::{ArrayRef, AsArray, BooleanArray, Float64Array};
 use arrow::datatypes::FieldRef;
-use arrow::{
-    array::ArrayRef,
-    datatypes::{DataType, Field},
-};
+use arrow::datatypes::{DataType, Field, Float64Type};
 use datafusion::common::types::NativeType;
 use datafusion::common::{internal_err, Result, ScalarValue};
 use datafusion::logical_expr::function::{AccumulatorArgs, StateFieldsArgs};
-use datafusion::logical_expr::{Accumulator, AggregateUDFImpl, Coercion, Signature, Volatility};
+use datafusion::logical_expr::{
+    Accumulator, AggregateUDFImpl, Coercion, EmitTo, GroupsAccumulator, Signature, Volatility,
+};
 use datafusion::logical_expr_common::signature;
 use datafusion::physical_expr::expressions::format_state_name;
 use datafusion::physical_expr::expressions::StatsType;
@@ -78,11 +78,6 @@ impl Stddev {
 }
 
 impl AggregateUDFImpl for Stddev {
-    /// Return a reference to Any that can be used for downcasting
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn name(&self) -> &str {
         &self.name
     }
@@ -134,6 +129,20 @@ impl AggregateUDFImpl for Stddev {
 
     fn default_value(&self, _data_type: &DataType) -> Result<ScalarValue> {
         Ok(ScalarValue::Float64(None))
+    }
+
+    fn groups_accumulator_supported(&self, _args: AccumulatorArgs) -> bool {
+        true
+    }
+
+    fn create_groups_accumulator(
+        &self,
+        _args: AccumulatorArgs,
+    ) -> Result<Box<dyn GroupsAccumulator>> {
+        Ok(Box::new(StddevGroupsAccumulator::new(
+            self.stats_type,
+            self.null_on_divide_by_zero,
+        )))
     }
 }
 
@@ -188,5 +197,128 @@ impl Accumulator for StddevAccumulator {
 
     fn size(&self) -> usize {
         std::mem::align_of_val(self) - std::mem::align_of_val(&self.variance) + self.variance.size()
+    }
+}
+
+/// Stddev grouped accumulator: wraps a `VarianceGroupsAccumulator` and applies
+/// `sqrt` element-wise on `evaluate`. State is identical to variance.
+#[derive(Debug)]
+struct StddevGroupsAccumulator {
+    inner: VarianceGroupsAccumulator,
+}
+
+impl StddevGroupsAccumulator {
+    fn new(stats_type: StatsType, null_on_divide_by_zero: bool) -> Self {
+        Self {
+            inner: VarianceGroupsAccumulator::new(stats_type, null_on_divide_by_zero),
+        }
+    }
+}
+
+impl GroupsAccumulator for StddevGroupsAccumulator {
+    fn update_batch(
+        &mut self,
+        values: &[ArrayRef],
+        group_indices: &[usize],
+        opt_filter: Option<&BooleanArray>,
+        total_num_groups: usize,
+    ) -> Result<()> {
+        self.inner
+            .update_batch(values, group_indices, opt_filter, total_num_groups)
+    }
+
+    fn merge_batch(
+        &mut self,
+        values: &[ArrayRef],
+        group_indices: &[usize],
+        opt_filter: Option<&BooleanArray>,
+        total_num_groups: usize,
+    ) -> Result<()> {
+        self.inner
+            .merge_batch(values, group_indices, opt_filter, total_num_groups)
+    }
+
+    fn evaluate(&mut self, emit_to: EmitTo) -> Result<ArrayRef> {
+        let arr = self.inner.evaluate(emit_to)?;
+        // Run sqrt across the buffer in place via PrimitiveArray::unary
+        // rather than allocating an intermediate Vec<f64>.
+        let sqrted: Float64Array = arr.as_primitive::<Float64Type>().unary(|v| v.sqrt());
+        Ok(Arc::new(sqrted))
+    }
+
+    fn state(&mut self, emit_to: EmitTo) -> Result<Vec<ArrayRef>> {
+        self.inner.state(emit_to)
+    }
+
+    fn size(&self) -> usize {
+        self.inner.size()
+    }
+}
+
+#[cfg(test)]
+mod groups_tests {
+    use super::*;
+    use arrow::array::AsArray;
+    use arrow::datatypes::Float64Type;
+
+    #[test]
+    fn pop_stddev_single_group() {
+        let mut acc = StddevGroupsAccumulator::new(StatsType::Population, false);
+        let values: ArrayRef = Arc::new(Float64Array::from(vec![1.0, 2.0, 3.0, 4.0, 5.0]));
+        acc.update_batch(&[values], &[0, 0, 0, 0, 0], None, 1)
+            .unwrap();
+        // sqrt(2.0)
+        let result: Vec<Option<f64>> = acc
+            .evaluate(EmitTo::All)
+            .unwrap()
+            .as_primitive::<Float64Type>()
+            .iter()
+            .collect();
+        assert!((result[0].unwrap() - 2.0_f64.sqrt()).abs() < 1e-12);
+    }
+
+    #[test]
+    fn empty_group_yields_null() {
+        let mut acc = StddevGroupsAccumulator::new(StatsType::Population, false);
+        let values: ArrayRef = Arc::new(Float64Array::from(vec![1.0, 2.0]));
+        acc.update_batch(&[values], &[0, 0], None, 2).unwrap();
+        let result: Vec<Option<f64>> = acc
+            .evaluate(EmitTo::All)
+            .unwrap()
+            .as_primitive::<Float64Type>()
+            .iter()
+            .collect();
+        assert_eq!(result[1], None);
+    }
+
+    #[test]
+    fn sample_single_row_nan_legacy() {
+        // Stddev wraps variance, but pin the contract here too: legacy mode
+        // (null_on_divide_by_zero = false) emits sqrt(NaN) = NaN for a single
+        // sample-stddev row.
+        let mut acc = StddevGroupsAccumulator::new(StatsType::Sample, false);
+        let values: ArrayRef = Arc::new(Float64Array::from(vec![42.0]));
+        acc.update_batch(&[values], &[0], None, 1).unwrap();
+        let result: Vec<Option<f64>> = acc
+            .evaluate(EmitTo::All)
+            .unwrap()
+            .as_primitive::<Float64Type>()
+            .iter()
+            .collect();
+        assert!(result[0].unwrap().is_nan());
+    }
+
+    #[test]
+    fn sample_single_row_null_when_flag_set() {
+        let mut acc = StddevGroupsAccumulator::new(StatsType::Sample, true);
+        let values: ArrayRef = Arc::new(Float64Array::from(vec![42.0]));
+        acc.update_batch(&[values], &[0], None, 1).unwrap();
+        let result: Vec<Option<f64>> = acc
+            .evaluate(EmitTo::All)
+            .unwrap()
+            .as_primitive::<Float64Type>()
+            .iter()
+            .collect();
+        assert_eq!(result[0], None);
     }
 }

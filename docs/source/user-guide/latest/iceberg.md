@@ -25,13 +25,17 @@ Comet's native Iceberg reader relies on reflection to extract `FileScanTask`s fr
 then serialized to Comet's native execution engine (see
 [PR #2528](https://github.com/apache/datafusion-comet/pull/2528)).
 
-The example below uses Spark's package downloader to retrieve Comet 0.14.0 and Iceberg
+The example below uses Spark's package downloader to retrieve Comet $COMET_VERSION and Iceberg
 1.8.1, but Comet has been tested with Iceberg 1.5, 1.7, 1.8, 1.9, and 1.10. The native Iceberg
 reader is enabled by default. To disable it, set `spark.comet.scan.icebergNative.enabled=false`.
 
+The example uses the Spark 3.5 / Scala 2.12 build of Comet; substitute the Comet artifact
+matching your Spark and Scala versions (Comet also ships Spark 3.5 / Scala 2.13 and Spark
+4.0/4.1 / Scala 2.13 jars; see the [installation guide](installation.md) for the full list).
+
 ```shell
 $SPARK_HOME/bin/spark-shell \
-    --packages org.apache.datafusion:comet-spark-spark3.5_2.12:0.14.0,org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.8.1,org.apache.iceberg:iceberg-core:1.8.1 \
+    --packages org.apache.datafusion:comet-spark-spark3.5_2.12:$COMET_VERSION,org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.8.1,org.apache.iceberg:iceberg-core:1.8.1 \
     --repositories https://repo1.maven.org/maven2/ \
     --conf spark.sql.extensions=org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions \
     --conf spark.sql.catalog.spark_catalog=org.apache.iceberg.spark.SparkCatalog \
@@ -39,11 +43,12 @@ $SPARK_HOME/bin/spark-shell \
     --conf spark.sql.catalog.spark_catalog.warehouse=/tmp/warehouse \
     --conf spark.plugins=org.apache.spark.CometPlugin \
     --conf spark.shuffle.manager=org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager \
-    --conf spark.sql.extensions=org.apache.comet.CometSparkSessionExtensions \
     --conf spark.comet.explainFallback.enabled=true \
     --conf spark.memory.offHeap.enabled=true \
     --conf spark.memory.offHeap.size=2g
 ```
+
+Catalog configuration is standard Iceberg-on-Spark and independent of Comet. The native reader has been tested with Hadoop, Hive, and REST catalogs. The example above uses a Hadoop catalog. For the full catalog configuration reference, see Iceberg's [Spark catalog configuration](https://iceberg.apache.org/docs/latest/spark-configuration/#catalogs).
 
 ### Tuning
 
@@ -106,7 +111,7 @@ configure Spark to use a REST catalog with Comet's native Iceberg scan:
 
 ```shell
 $SPARK_HOME/bin/spark-shell \
-    --packages org.apache.datafusion:comet-spark-spark3.5_2.12:0.14.0,org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.8.1,org.apache.iceberg:iceberg-core:1.8.1 \
+    --packages org.apache.datafusion:comet-spark-spark3.5_2.12:$COMET_VERSION,org.apache.iceberg:iceberg-spark-runtime-3.5_2.12:1.8.1,org.apache.iceberg:iceberg-core:1.8.1 \
     --repositories https://repo1.maven.org/maven2/ \
     --conf spark.sql.extensions=org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions \
     --conf spark.sql.catalog.rest_cat=org.apache.iceberg.spark.SparkCatalog \
@@ -115,7 +120,6 @@ $SPARK_HOME/bin/spark-shell \
     --conf spark.sql.catalog.rest_cat.warehouse=/tmp/warehouse \
     --conf spark.plugins=org.apache.spark.CometPlugin \
     --conf spark.shuffle.manager=org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager \
-    --conf spark.sql.extensions=org.apache.comet.CometSparkSessionExtensions \
     --conf spark.comet.explainFallback.enabled=true \
     --conf spark.memory.offHeap.enabled=true \
     --conf spark.memory.offHeap.size=2g
@@ -130,6 +134,26 @@ scala> spark.sql("INSERT INTO rest_cat.db.test_table VALUES (1, 'Alice'), (2, 'B
 scala> spark.sql("SELECT * FROM rest_cat.db.test_table").show()
 ```
 
+### Object store configuration (S3)
+
+The native reader has its own Rust object store client and does not go through Iceberg's JVM FileIO, neither `S3FileIO` nor the older Hadoop S3A filesystem. It configures that client from the catalog's `s3.*` properties (the same keys `S3FileIO` reads) or from `spark.hadoop.fs.s3a.*` settings, so S3 configuration only reaches the native reader through one of those two channels.
+
+For a custom S3-compatible endpoint, configure the catalog with the endpoint, path-style access, region, and credentials (Hive shown):
+
+```shell
+    --conf spark.sql.catalog.s3_cat=org.apache.iceberg.spark.SparkCatalog \
+    --conf spark.sql.catalog.s3_cat.type=hive \
+    --conf spark.sql.catalog.s3_cat.uri=thrift://metastore:9083 \
+    --conf spark.sql.catalog.s3_cat.io-impl=org.apache.iceberg.aws.s3.S3FileIO \
+    --conf spark.sql.catalog.s3_cat.s3.endpoint=https://s3.example.com:9000 \
+    --conf spark.sql.catalog.s3_cat.s3.path-style-access=true \
+    --conf spark.sql.catalog.s3_cat.client.region=us-east-1 \
+    --conf spark.sql.catalog.s3_cat.s3.access-key-id=... \
+    --conf spark.sql.catalog.s3_cat.s3.secret-access-key=...
+```
+
+These `s3.*` storage properties are not specific to the Hive catalog shown here. When `s3.access-key-id` / `s3.secret-access-key` are omitted, credentials come from the standard AWS chain (environment variables, instance profiles, and so on). `client.region` is auto-detected for AWS but should be set for non-AWS endpoints. If your REST catalog vends temporary credentials, the native reader does not consume them automatically, and wiring that requires the credential provider bridge. See Iceberg's [S3 FileIO](https://iceberg.apache.org/docs/latest/aws/#s3-fileio) docs for the full property list, and [S3 Credential Providers](s3-credential-providers.md) for vended or per-request credentials.
+
 ### Current limitations
 
 The following scenarios will fall back to Spark's native Iceberg reader:
@@ -141,3 +165,29 @@ The following scenarios will fall back to Spark's native Iceberg reader:
 - Scans with residual filters using `truncate`, `bucket`, `year`, `month`, `day`, or `hour`
   transform functions (partition pruning still works, but row-level filtering of these
   transforms falls back)
+- Dynamic Partition Pruning under Adaptive Query Execution (non-AQE DPP is supported);
+  see [#3510](https://github.com/apache/datafusion-comet/issues/3510)
+
+### Iceberg UDFs
+
+Iceberg ships several `ScalaUDF`s that surface in user queries and maintenance actions:
+
+- `IcebergSpark.registerBucketUDF` and `registerTruncateUDF` register `bucket(N, col)` and
+  `truncate(W, col)` for use in `SELECT` / `JOIN` / `WHERE` predicates that align with hidden
+  partitioning.
+- `RewriteDataFiles` with `sort-strategy=zorder` builds a tree of per-type ordered-bytes UDFs
+  (`INT_ORDERED_BYTES`, `LONG_ORDERED_BYTES`, ..., `INTERLEAVE_BYTES`) over the sort key columns
+  during compaction.
+
+[Scala UDF and Java UDF Support](scala_java_udfs.md) is enabled by default
+(`spark.comet.exec.scalaUDF.codegen.enabled=true`), so these UDFs run through native execution and
+the project, exchange, and sort operators around them stay on the Comet path end-to-end. Setting
+`spark.comet.exec.scalaUDF.codegen.enabled=false` causes the enclosing operator to fall back to
+Spark, which forces a columnar-to-row roundtrip and demotes the surrounding shuffle from
+`CometExchange` to `CometColumnarExchange`.
+
+### Task input metrics
+
+The native Iceberg reader populates Spark's task-level `inputMetrics.bytesRead` (visible in the Spark UI Stages tab) using the `bytes_read` counter from iceberg-rust's `ScanMetrics`. This counter includes bytes read from both data files and delete files.
+
+Iceberg Java does not explicitly report `bytesRead` to Spark's task input metrics. On the iceberg Java path, any `bytesRead` value comes from Hadoop's filesystem-level I/O counters, not from Iceberg itself. Because Comet's native reader and the Hadoop filesystem use different counting mechanisms, the exact byte counts will differ between the two paths.

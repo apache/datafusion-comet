@@ -115,7 +115,8 @@ query expect_error(DIVIDE_BY_ZERO)
 SELECT a div b FROM ansi_div_zero
 
 -- column % 0 (remainder) should throw
-query expect_error(DIVIDE_BY_ZERO)
+-- Spark 4.0 raises DIVIDE_BY_ZERO; Spark 4.1 raises REMAINDER_BY_ZERO. Match the common substring.
+query expect_error(BY_ZERO)
 SELECT a % b FROM ansi_div_zero
 
 -- literal / 0 should throw
@@ -127,7 +128,7 @@ query expect_error(DIVIDE_BY_ZERO)
 SELECT 1 div 0
 
 -- literal % 0 should throw
-query expect_error(DIVIDE_BY_ZERO)
+query expect_error(BY_ZERO)
 SELECT 1 % 0
 
 -- ============================================================================
@@ -143,7 +144,7 @@ query expect_error(DIVIDE_BY_ZERO)
 SELECT c div d FROM ansi_div_zero
 
 -- long column % 0 should throw
-query expect_error(DIVIDE_BY_ZERO)
+query expect_error(BY_ZERO)
 SELECT c % d FROM ansi_div_zero
 
 -- ============================================================================

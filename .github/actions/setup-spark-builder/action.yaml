@@ -28,10 +28,15 @@ inputs:
     description: 'Skip native build (when using pre-built artifact)'
     required: false
     default: 'false'
+  skip-spark-clone:
+    description: 'Skip cloning Spark and applying patches (when apache-spark/ is pre-staged from a build-jvm artifact)'
+    required: false
+    default: 'false'
 runs:
   using: "composite"
   steps:
     - name: Clone Spark repo
+      if: ${{ inputs.skip-spark-clone != 'true' }}
       uses: actions/checkout@v6
       with:
         repository: apache/spark
@@ -40,6 +45,7 @@ runs:
         fetch-depth: 1
 
     - name: Setup Spark for Comet
+      if: ${{ inputs.skip-spark-clone != 'true' }}
       shell: bash
       run: |
         cd apache-spark
@@ -51,7 +57,7 @@ runs:
         path: |
           ~/.m2/repository
           /root/.m2/repository
-        key: ${{ runner.os }}-spark-sql-${{ hashFiles('spark/**/pom.xml', 'common/**/pom.xml') }}
+        key: ${{ runner.os }}-spark-sql-${{ hashFiles('common/**/pom.xml', 'spark/**/pom.xml') }}
         restore-keys: |
           ${{ runner.os }}-spark-sql-
 
@@ -67,3 +73,23 @@ runs:
       run: |
         # Native library should already be in native/target/release/
         ./mvnw install -Prelease -DskipTests -Pspark-${{inputs.spark-short-version}}
+
+    - name: Purge partial Maven cache entries
+      shell: bash
+      run: |
+        # Comet's Maven phase resolves the dependency graph and downloads POMs
+        # for transitive artifacts whose JARs it never actually needs. When sbt
+        # then resolves Spark's deps, Coursier sees the POM in mavenLocal,
+        # declares the artifact "found locally", and fails on the missing JAR
+        # without falling back to Maven Central. Delete those partial entries
+        # so sbt re-fetches the full artifact remotely.
+        for repo in "$HOME/.m2/repository" /root/.m2/repository; do
+          [ -d "$repo" ] || continue
+          find "$repo" -name '*.pom' | while read -r pom; do
+            jar="${pom%.pom}.jar"
+            [ -f "$jar" ] && continue
+            grep -q '<packaging>jar</packaging>\|<packaging>bundle</packaging>' "$pom" 2>/dev/null || continue
+            rm -f "$pom" "${pom}.sha1" "${pom%.pom}.pom.lastUpdated" \
+              "$(dirname "$pom")/_remote.repositories"
+          done
+        done

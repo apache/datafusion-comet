@@ -154,6 +154,14 @@ partitioning keys. Columns that are not partitioning keys may contain complex ty
 Comet Columnar shuffle is JVM-based and supports `HashPartitioning`, `RoundRobinPartitioning`, `RangePartitioning`, and
 `SinglePartitioning`. This shuffle implementation supports complex data types as partitioning keys.
 
+By default, Comet will convert a Spark `ShuffleExchangeExec` to columnar shuffle even when the shuffle's child is a
+non-Comet (Spark) plan. The benefit is that the next query stage can start as native Comet execution, since the
+shuffle output is already in Arrow format. The cost is a row to columnar conversion at the shuffle boundary on the
+write side. To restrict columnar shuffle to cases where the child is already a Comet plan, set
+`spark.comet.exec.shuffle.convertFromSparkPlan.enabled=false`. Shuffles whose child is a Spark plan will then be left
+as native Spark shuffles, which avoids the row to columnar conversion but means the downstream stage will also start
+on Spark.
+
 #### Automatic Revert to Spark Shuffle
 
 When a Comet columnar shuffle ends up between two non-Comet operators (for example, a partial/final hash aggregate
@@ -180,14 +188,5 @@ certain environments, such as single-node setups with fast NVMe drives, at the e
 
 ## Explain Plan
 
-### Extended Explain
-
-With Spark 4.0.0 and newer, Comet can provide extended explain plan information in the Spark UI. Currently this lists
-reasons why Comet may not have been enabled for specific operations.
-To enable this, in the Spark configuration, set the following:
-
-```shell
--c spark.sql.extendedExplainProviders=org.apache.comet.ExtendedExplainInfo
-```
-
-This will add a section to the detailed plan displayed in the Spark SQL UI page.
+For an explanation of Comet plan output, the configs that control it, and how
+fallback to Spark works, see [Understanding Comet Plans](understanding-comet-plans.md).

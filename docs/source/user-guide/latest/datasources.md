@@ -23,10 +23,9 @@
 
 ### Parquet
 
-When `spark.comet.scan.enabled` is enabled, Parquet scans will be performed natively by Comet if all data types
-in the schema are supported. When this option is not enabled, the scan will fall back to Spark. In this case,
-enabling `spark.comet.convert.parquet.enabled` will immediately convert the data into Arrow format, allowing native
-execution to happen after that, but the process may not be efficient.
+Parquet scans run in Rust via DataFusion if all data types in the schema are supported. When the scan
+falls back to Spark, enabling `spark.comet.convert.parquet.enabled` will immediately convert the data into
+Arrow format, allowing the Comet pipeline to take over after that, but the process may not be efficient.
 
 ### Apache Iceberg
 
@@ -36,17 +35,17 @@ Comet accelerates Iceberg scans of Parquet files. See the [Iceberg Guide] for mo
 
 ### CSV
 
-Comet provides experimental native CSV scan support. When `spark.comet.scan.csv.v2.enabled` is enabled, CSV files
-are read natively for improved performance. This feature is experimental and performance benefits are
+Comet provides experimental Rust-based CSV scan support. When `spark.comet.scan.csv.v2.enabled` is enabled, CSV files
+are read in Rust for improved performance. This feature is experimental and performance benefits are
 workload-dependent.
 
 Alternatively, when `spark.comet.convert.csv.enabled` is enabled, data from Spark's CSV reader is immediately
-converted into Arrow format, allowing native execution to happen after that.
+converted into Arrow format, allowing the Comet pipeline to take over after that.
 
 ### JSON
 
-Comet does not provide native JSON scan, but when `spark.comet.convert.json.enabled` is enabled, data is immediately
-converted into Arrow format, allowing native execution to happen after that.
+Comet does not provide a Rust-based JSON scan, but when `spark.comet.convert.json.enabled` is enabled, data is immediately
+converted into Arrow format, allowing the Comet pipeline to take over after that.
 
 ## Data Catalogs
 
@@ -60,28 +59,25 @@ Comet supports most standard storage systems, such as local file system and obje
 
 ### HDFS
 
-Apache DataFusion Comet native reader seamlessly scans files from remote HDFS for [supported formats](#supported-spark-data-sources)
+The Apache DataFusion Comet Rust-based reader seamlessly scans files from remote HDFS for [supported formats](#supported-spark-data-sources)
 
-### Using experimental native DataFusion reader
+### Building Comet with HDFS support
 
-Unlike to native Comet reader the Datafusion reader fully supports nested types processing. This reader is currently experimental only
-
-To build Comet with native DataFusion reader and remote HDFS support it is required to have a JDK installed
+To build Comet with remote HDFS support it is required to have a JDK installed.
 
 Example:
-Build a Comet for `spark-3.5` provide a JDK path in `JAVA_HOME`
+Build a Comet for `spark-4.1` provide a JDK path in `JAVA_HOME`
 Provide the JRE linker path in `RUSTFLAGS`, the path can vary depending on the system. Typically JRE linker is a part of installed JDK
 
 ```shell
-export JAVA_HOME="/opt/homebrew/opt/openjdk@11"
-make release PROFILES="-Pspark-3.5" COMET_FEATURES=hdfs RUSTFLAGS="-L $JAVA_HOME/libexec/openjdk.jdk/Contents/Home/lib/server"
+export JAVA_HOME="/opt/homebrew/opt/openjdk@17"
+make release PROFILES="-Pspark-4.1" COMET_FEATURES=hdfs RUSTFLAGS="-L $JAVA_HOME/libexec/openjdk.jdk/Contents/Home/lib/server"
 ```
 
-Start Comet with experimental reader and HDFS support as [described](installation.md/#run-spark-shell-with-comet-enabled)
+Start Comet with HDFS support as [described](installation.md/#run-spark-shell-with-comet-enabled)
 and add additional parameters
 
 ```shell
---conf spark.comet.scan.impl=native_datafusion \
 --conf spark.hadoop.fs.defaultFS="hdfs://namenode:9000" \
 --conf spark.hadoop.dfs.client.use.datanode.hostname = true \
 --conf dfs.client.use.datanode.hostname = true
@@ -126,7 +122,7 @@ Input [3]: [id#0, first_name#1, personal_info#4]
 
 ```
 
-Verify the native scan type should be `CometNativeScan`.
+Verify the scan type should be `CometNativeScan`.
 
 More on [HDFS Reader](https://github.com/apache/datafusion-comet/blob/main/native/hdfs/README.md)
 
@@ -149,7 +145,7 @@ docker compose -f kube/local/hdfs-docker-compose.yml up
 - Build a project with HDFS support
 
 ```shell
-JAVA_HOME="/opt/homebrew/opt/openjdk@11" make release PROFILES="-Pspark-3.5" COMET_FEATURES=hdfs RUSTFLAGS="-L /opt/homebrew/opt/openjdk@11/libexec/openjdk.jdk/Contents/Home/lib/server"
+JAVA_HOME="/opt/homebrew/opt/openjdk@17" make release PROFILES="-Pspark-4.1" COMET_FEATURES=hdfs RUSTFLAGS="-L /opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home/lib/server"
 ```
 
 - Run local test
@@ -159,7 +155,6 @@ JAVA_HOME="/opt/homebrew/opt/openjdk@11" make release PROFILES="-Pspark-3.5" COM
     withSQLConf(
       CometConf.COMET_ENABLED.key -> "true",
       CometConf.COMET_EXEC_ENABLED.key -> "true",
-      CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_DATAFUSION,
       SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
       "fs.defaultFS" -> "hdfs://namenode:9000",
       "dfs.client.use.datanode.hostname" -> "true") {
@@ -170,27 +165,28 @@ JAVA_HOME="/opt/homebrew/opt/openjdk@11" make release PROFILES="-Pspark-3.5" COM
   }
 ```
 
-Or use `spark-shell` with HDFS support as described [above](#using-experimental-native-datafusion-reader)
+Or use `spark-shell` with HDFS support as described [above](#building-comet-with-hdfs-support)
 
 ## S3
 
-The `native_datafusion` and `native_iceberg_compat` Parquet scan implementations completely offload data loading
-to native code. They use the [`object_store` crate](https://crates.io/crates/object_store) to read data from S3 and
-support configuring S3 access using standard [Hadoop S3A configurations](https://hadoop.apache.org/docs/stable/hadoop-aws/tools/hadoop-aws/index.html#General_S3A_Client_configuration) by translating them to
-the `object_store` crate's format.
+Comet's Parquet scan completely offloads data loading to Rust. It uses the
+[`object_store` crate](https://crates.io/crates/object_store) to read data from S3 and supports
+configuring S3 access using standard
+[Hadoop S3A configurations](https://hadoop.apache.org/docs/stable/hadoop-aws/tools/hadoop-aws/index.html#General_S3A_Client_configuration)
+by translating them to the `object_store` crate's format.
 
 This implementation maintains compatibility with existing Hadoop S3A configurations, so existing code will
 continue to work as long as the configurations are supported and can be translated without loss of functionality.
 
-#### Root CA Certificates
+### Root CA Certificates
 
 One major difference between Spark and Comet is the mechanism for discovering Root
-CA Certificates. Spark uses the JVM to read CA Certificates from the Java Trust Store, but native Comet
-scans use system Root CA Certificates (typically stored
+CA Certificates. Spark uses the JVM to read CA Certificates from the Java Trust Store, but Comet's
+Rust-based scans use system Root CA Certificates (typically stored
 in `/etc/ssl/certs` on Linux). These scans will not be able to interact with S3 if the Root CA Certificates are not
 installed.
 
-#### Supported Credential Providers
+### Supported Credential Providers
 
 AWS credential providers can be configured using the `fs.s3a.aws.credentials.provider` configuration. The following table shows the supported credential providers and their configuration options:
 
@@ -205,13 +201,13 @@ AWS credential providers can be configured using the `fs.s3a.aws.credentials.pro
 | `com.amazonaws.auth.InstanceProfileCredentialsProvider`<br/>`software.amazon.awssdk.auth.credentials.InstanceProfileCredentialsProvider`                                                     | Access S3 using EC2 instance metadata service (IMDS)                                                            | None                                                                                                                            |
 | `com.amazonaws.auth.ContainerCredentialsProvider`<br/>`software.amazon.awssdk.auth.credentials.ContainerCredentialsProvider`<br/>`com.amazonaws.auth.EC2ContainerCredentialsProviderWrapper` | Access S3 using ECS task credentials                                                                            | None                                                                                                                            |
 | `com.amazonaws.auth.WebIdentityTokenCredentialsProvider`<br/>`software.amazon.awssdk.auth.credentials.WebIdentityTokenFileCredentialsProvider`                                               | Authenticate using web identity token file                                                                      | None                                                                                                                            |
+| `com.amazonaws.auth.profile.ProfileCredentialsProvider`<br/>`software.amazon.awssdk.auth.credentials.ProfileCredentialsProvider`                                                             | Authenticate using a named profile from the local AWS credentials file                                          | None                                                                                                                            |
 
 Multiple credential providers can be specified in a comma-separated list using the `fs.s3a.aws.credentials.provider` configuration, just as Hadoop AWS supports. If `fs.s3a.aws.credentials.provider` is not configured, Hadoop S3A's default credential provider chain will be used. All configuration options also support bucket-specific overrides using the pattern `fs.s3a.bucket.{bucket-name}.{option}`.
 
-#### Additional S3 Configuration Options
+### Additional S3 Configuration Options
 
-Beyond credential providers, the `native_datafusion` and `native_iceberg_compat` implementations support additional
-S3 configuration options:
+Beyond credential providers, Comet's Parquet scan supports additional S3 configuration options:
 
 | Option                          | Description                                                                                        |
 | ------------------------------- | -------------------------------------------------------------------------------------------------- |
@@ -222,10 +218,9 @@ S3 configuration options:
 
 All configuration options support bucket-specific overrides using the pattern `fs.s3a.bucket.{bucket-name}.{option}`.
 
-#### Examples
+### Examples
 
-The following examples demonstrate how to configure S3 access with the `native_datafusion` and `native_iceberg_compat`
-Parquet scan implementations using different authentication methods.
+The following examples demonstrate how to configure S3 access using different authentication methods.
 
 **Example 1: Simple Credentials**
 
@@ -234,7 +229,6 @@ This example shows how to access a private S3 bucket using an access key and sec
 ```shell
 $SPARK_HOME/bin/spark-shell \
 ...
---conf spark.comet.scan.impl=native_datafusion \
 --conf spark.hadoop.fs.s3a.access.key=my-access-key \
 --conf spark.hadoop.fs.s3a.secret.key=my-secret-key
 ...
@@ -247,7 +241,6 @@ This example demonstrates using an assumed role credential to access a private S
 ```shell
 $SPARK_HOME/bin/spark-shell \
 ...
---conf spark.comet.scan.impl=native_datafusion \
 --conf spark.hadoop.fs.s3a.aws.credentials.provider=org.apache.hadoop.fs.s3a.auth.AssumedRoleCredentialProvider \
 --conf spark.hadoop.fs.s3a.assumed.role.arn=arn:aws:iam::123456789012:role/my-role \
 --conf spark.hadoop.fs.s3a.assumed.role.session.name=my-session \
@@ -255,10 +248,10 @@ $SPARK_HOME/bin/spark-shell \
 ...
 ```
 
-#### Limitations
+### Limitations
 
-The S3 support of `native_datafusion` and `native_iceberg_compat` has the following limitations:
+Comet's S3 support has the following limitations:
 
 1. **Partial Hadoop S3A configuration support**: Not all Hadoop S3A configurations are currently supported. Only the configurations listed in the tables above are translated and applied to the underlying `object_store` crate.
 
-2. **Custom credential providers**: Custom implementations of AWS credential providers are not supported. The implementation only supports the standard credential providers listed in the table above. We are planning to add support for custom credential providers through a JNI-based adapter that will allow calling Java credential providers from native code. See [issue #1829](https://github.com/apache/datafusion-comet/issues/1829) for more details.
+2. **Custom credential providers**: Custom implementations of AWS credential providers are not supported. The implementation only supports the standard credential providers listed in the table above. We are planning to add support for custom credential providers through a JNI-based adapter that will allow calling Java credential providers from Rust code. See [issue #1829](https://github.com/apache/datafusion-comet/issues/1829) for more details.

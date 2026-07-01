@@ -28,6 +28,7 @@ import org.json4s.jackson.JsonMethods._
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.comet.{CometBatchScanExec, CometNativeExec}
+import org.apache.spark.sql.comet.shims.ShimDataSourceRDDPartition
 import org.apache.spark.sql.execution.datasources.v2.{BatchScanExec, DataSourceRDD, DataSourceRDDPartition}
 import org.apache.spark.sql.types._
 
@@ -220,85 +221,69 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
 
   /**
    * Extracts delete files from an Iceberg FileScanTask as a list (for deduplication).
+   *
+   * Delete-file size is not serialized; the native scan stats each file for it (see
+   * IcebergScanExec::fill_delete_file_sizes). The manifest size cannot be trusted as a substitute
+   * (apache/iceberg#12554).
    */
   private def extractDeleteFilesList(
       task: Any,
       contentFileClass: Class[_],
-      fileScanTaskClass: Class[_],
-      fileIO: Option[Any]): Seq[OperatorOuterClass.IcebergDeleteFile] = {
+      fileScanTaskClass: Class[_]): Seq[OperatorOuterClass.IcebergDeleteFile] = {
     try {
       val deleteFileClass = IcebergReflection.loadClass(IcebergReflection.ClassNames.DELETE_FILE)
 
       val deletes = IcebergReflection.getDeleteFilesFromTask(task, fileScanTaskClass)
 
-      deletes.asScala.flatMap { deleteFile =>
-        try {
-          IcebergReflection
-            .extractFileLocation(contentFileClass, deleteFile)
-            .map { deletePath =>
-              val deleteBuilder =
-                OperatorOuterClass.IcebergDeleteFile.newBuilder()
-              deleteBuilder.setFilePath(deletePath)
+      deletes.asScala.map { deleteFile =>
+        // The path is the one essential field. A delete file we cannot locate cannot be applied,
+        // and silently skipping it would leak deleted rows, so treat a missing path as fatal.
+        val deletePath = IcebergReflection
+          .extractFileLocation(contentFileClass, deleteFile)
+          .getOrElse(
+            throw new RuntimeException("Failed to extract delete file path from FileScanTask"))
 
-              val contentType =
-                try {
-                  val contentMethod = deleteFileClass.getMethod("content")
-                  val content = contentMethod.invoke(deleteFile)
-                  content.toString match {
-                    case IcebergReflection.ContentTypes.POSITION_DELETES =>
-                      IcebergReflection.ContentTypes.POSITION_DELETES
-                    case IcebergReflection.ContentTypes.EQUALITY_DELETES =>
-                      IcebergReflection.ContentTypes.EQUALITY_DELETES
-                    case other => other
-                  }
-                } catch {
-                  case _: Exception =>
-                    IcebergReflection.ContentTypes.POSITION_DELETES
-                }
-              deleteBuilder.setContentType(contentType)
+        val deleteBuilder = OperatorOuterClass.IcebergDeleteFile.newBuilder()
+        deleteBuilder.setFilePath(deletePath)
 
-              val specId =
-                try {
-                  val specIdMethod = deleteFileClass.getMethod("specId")
-                  specIdMethod.invoke(deleteFile).asInstanceOf[Int]
-                } catch {
-                  case _: Exception => 0
-                }
-              deleteBuilder.setPartitionSpecId(specId)
-
-              // Workaround for https://github.com/apache/iceberg/issues/12554
-              // RewriteTablePath rewrites path references inside position delete files,
-              // making the copied file possibly differ in size, but does not update
-              // file_size_in_bytes in the manifest. The manifest value cannot be trusted;
-              // always use FileIO to get the actual size.
-              val inputFile = fileIO.get.getClass
-                .getMethod("newInputFile", classOf[String])
-                .invoke(fileIO.get, deletePath)
-              val actualDeleteFileSizeInBytes =
-                inputFile.getClass
-                  .getMethod("getLength")
-                  .invoke(inputFile)
-                  .asInstanceOf[Long]
-              deleteBuilder.setFileSizeInBytes(actualDeleteFileSizeInBytes)
-
-              try {
-                val equalityIdsMethod =
-                  deleteFileClass.getMethod("equalityFieldIds")
-                val equalityIds = equalityIdsMethod
-                  .invoke(deleteFile)
-                  .asInstanceOf[java.util.List[Integer]]
-                equalityIds.forEach(id => deleteBuilder.addEqualityIds(id))
-              } catch {
-                case _: Exception =>
-              }
-
-              deleteBuilder.build()
+        val contentType =
+          try {
+            val contentMethod = deleteFileClass.getMethod("content")
+            val content = contentMethod.invoke(deleteFile)
+            content.toString match {
+              case IcebergReflection.ContentTypes.POSITION_DELETES =>
+                IcebergReflection.ContentTypes.POSITION_DELETES
+              case IcebergReflection.ContentTypes.EQUALITY_DELETES =>
+                IcebergReflection.ContentTypes.EQUALITY_DELETES
+              case other => other
             }
+          } catch {
+            case _: Exception =>
+              IcebergReflection.ContentTypes.POSITION_DELETES
+          }
+        deleteBuilder.setContentType(contentType)
+
+        val specId =
+          try {
+            val specIdMethod = deleteFileClass.getMethod("specId")
+            specIdMethod.invoke(deleteFile).asInstanceOf[Int]
+          } catch {
+            case _: Exception => 0
+          }
+        deleteBuilder.setPartitionSpecId(specId)
+
+        try {
+          val equalityIdsMethod =
+            deleteFileClass.getMethod("equalityFieldIds")
+          val equalityIds = equalityIdsMethod
+            .invoke(deleteFile)
+            .asInstanceOf[java.util.List[Integer]]
+          equalityIds.forEach(id => deleteBuilder.addEqualityIds(id))
         } catch {
-          case e: Exception =>
-            logWarning(s"Failed to serialize delete file: ${e.getMessage}")
-            None
+          case _: Exception =>
         }
+
+        deleteBuilder.build()
       }.toSeq
     } catch {
       case e: Exception =>
@@ -496,21 +481,6 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
             s"${e.getMessage}"
         logError(msg, e)
         throw new RuntimeException(msg, e)
-    }
-  }
-
-  /** Storage-related property prefixes passed through to native FileIO. */
-  private val storagePropertyPrefixes =
-    Seq("s3.", "gcs.", "adls.", "client.")
-
-  /**
-   * Filters a properties map to only include storage-related keys. FileIO.properties() may
-   * contain catalog URIs, bearer tokens, and other non-storage settings that should not be passed
-   * to the native FileIO builder.
-   */
-  def filterStorageProperties(props: Map[String, String]): Map[String, String] = {
-    props.filter { case (key, _) =>
-      storagePropertyPrefixes.exists(prefix => key.startsWith(prefix))
     }
   }
 
@@ -761,8 +731,6 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
       mutable.HashMap[Seq[OperatorOuterClass.IcebergDeleteFile], Int]()
     val residualToPoolIndex = mutable.HashMap[Option[Expr], Int]()
 
-    val fileIO = IcebergReflection.getFileIO(metadata.table)
-
     val perPartitionBuilders = mutable.ArrayBuffer[OperatorOuterClass.IcebergScan]()
 
     var totalTasks = 0
@@ -770,6 +738,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
     commonBuilder.setMetadataLocation(metadata.metadataLocation)
     commonBuilder.setDataFileConcurrencyLimit(
       CometConf.COMET_ICEBERG_DATA_FILE_CONCURRENCY_LIMIT.get())
+    metadata.catalogName.foreach(commonBuilder.setCatalogName)
     metadata.catalogProperties.foreach { case (key, value) =>
       commonBuilder.putCatalogProperties(key, value)
     }
@@ -812,14 +781,13 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
         partitions.foreach { partition =>
           val partitionBuilder = OperatorOuterClass.IcebergScan.newBuilder()
 
-          val inputPartitions = partition
-            .asInstanceOf[DataSourceRDDPartition]
-            .inputPartitions
+          val inputPartitions = ShimDataSourceRDDPartition
+            .inputPartitions(partition.asInstanceOf[DataSourceRDDPartition])
 
           inputPartitions.foreach { inputPartition =>
             val inputPartClass = inputPartition.getClass
 
-            try {
+            {
               val taskGroupMethod = inputPartClass.getDeclaredMethod("taskGroup")
               taskGroupMethod.setAccessible(true)
               val taskGroup = taskGroupMethod.invoke(inputPartition)
@@ -920,7 +888,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
                 taskBuilder.setProjectFieldIdsIdx(projectFieldIdsIdx)
 
                 val deleteFilesList =
-                  extractDeleteFilesList(task, contentFileClass, fileScanTaskClass, fileIO)
+                  extractDeleteFilesList(task, contentFileClass, fileScanTaskClass)
                 if (deleteFilesList.nonEmpty) {
                   val deleteFilesIdx = deleteFilesToPoolIndex.getOrElseUpdate(
                     deleteFilesList, {
@@ -985,8 +953,22 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
 
           perPartitionBuilders += partitionBuilder.build()
         }
-      case _ =>
-        throw new IllegalStateException("Expected DataSourceRDD from BatchScanExec")
+      case other if other.getClass.getName == "org.apache.spark.rdd.ParallelCollectionRDD" =>
+        // Spark's BatchScanExec.inputRDD returns sparkContext.parallelize(empty, 1) when
+        // DPP filtering removes all input partitions. That ParallelCollectionRDD is the only
+        // non-DataSourceRDD shape its inputRDD produces, so reaching this branch means "DPP
+        // pruned everything"; emit no per-partition data and let native execution return empty.
+        // Re-querying scan.toBatch.planInputPartitions() to verify is unreliable because
+        // Iceberg's Scan state after filter() doesn't always reflect post-DPP partitions on
+        // a re-call (V2 scan state is one-shot for the materialized inputRDD). Matched by class
+        // name because ParallelCollectionRDD is private[spark].
+        logDebug(
+          "BatchScanExec.inputRDD is ParallelCollectionRDD (DPP pruned all partitions); " +
+            "skipping per-partition serialization")
+      case other =>
+        throw new IllegalStateException(
+          "Expected DataSourceRDD or ParallelCollectionRDD from BatchScanExec, " +
+            s"got ${other.getClass.getName}")
     }
 
     // Log deduplication summary

@@ -23,7 +23,8 @@ import org.apache.spark.{SparkEnv, SparkException}
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.catalyst.expressions.PrettyAttribute
 import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometExec, CometExecUtils}
-import org.apache.spark.sql.types.LongType
+import org.apache.spark.sql.comet.execution.arrow.CometArrowStream
+import org.apache.spark.sql.types.{LongType, StructField, StructType}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
 class CometNativeSuite extends CometTestBase {
@@ -31,15 +32,16 @@ class CometNativeSuite extends CometTestBase {
     val rdd = spark.range(0, 1).rdd.map { value =>
       val limitOp =
         CometExecUtils.getLimitNativePlan(Seq(PrettyAttribute("test", LongType)), 100).get
-      val cometIter = CometExec.getCometIterator(
-        Seq(new Iterator[ColumnarBatch] {
+      val arrowStream = CometArrowStream.fromColumnarBatchIter(
+        new Iterator[ColumnarBatch] {
           override def hasNext: Boolean = true
           override def next(): ColumnarBatch = throw new NullPointerException()
-        }),
-        1,
-        limitOp,
-        1,
-        0)
+        },
+        StructType(Seq(StructField("test", LongType, nullable = false))),
+        CometArrowStream.NATIVE_TIMEZONE,
+        "test-npe")
+      val cometIter =
+        CometExec.getCometIterator(Array(arrowStream.asInstanceOf[Object]), 1, limitOp, 1, 0)
       try {
         cometIter.next()
       } finally {
@@ -52,19 +54,6 @@ class CometNativeSuite extends CometTestBase {
       rdd.collect()
     }
     assert(exception.getMessage contains "java.lang.NullPointerException")
-  }
-
-  test("handling NPE when closing null handle of parquet reader") {
-    assert(NativeBase.isLoaded)
-    val exception1 = intercept[NullPointerException] {
-      parquet.Native.closeRecordBatchReader(0)
-    }
-    assert(exception1.getMessage contains "null batch context handle")
-
-    val exception2 = intercept[NullPointerException] {
-      parquet.Native.closeColumnReader(0)
-    }
-    assert(exception2.getMessage contains "null context handle")
   }
 
   test("Comet native should use spark local dir as temp dir") {

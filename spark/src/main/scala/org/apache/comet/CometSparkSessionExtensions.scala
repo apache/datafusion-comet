@@ -32,7 +32,7 @@ import org.apache.spark.sql.execution._
 import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.CometConf._
-import org.apache.comet.rules.{CometExecRule, CometReuseSubquery, CometScanRule, EliminateRedundantTransitions}
+import org.apache.comet.rules.{CometExecRule, CometPlanAdaptiveDynamicPruningFilters, CometReuseSubquery, CometScanRule, CometSpark34AqeDppFallbackRule, EliminateRedundantTransitions}
 import org.apache.comet.shims.ShimCometSparkSessionExtensions
 
 /**
@@ -43,34 +43,44 @@ import org.apache.comet.shims.ShimCometSparkSessionExtensions
  *
  * Non-AQE (QueryExecution.preparations):
  * {{{
- *   1. PlanDynamicPruningFilters    -- Spark creates DPP filters
+ *   1. PlanDynamicPruningFilters    -- Spark creates non-AQE DPP (SubqueryBroadcastExec)
  *   2. PlanSubqueries               -- Spark creates SubqueryExec for scalar subqueries
  *   3. EnsureRequirements            -- Spark inserts shuffles/sorts
  *   4. ApplyColumnarRulesAndInsertTransitions:
- *      a. preColumnarTransitions:   CometScanRule, CometExecRule (replace Spark -> Comet nodes)
+ *      a. preColumnarTransitions:   CometScanRule, CometExecRule
+ *         - CometExecRule.convertSubqueryBroadcasts converts SubqueryBroadcastExec to
+ *           CometSubqueryBroadcastExec for exchange reuse with Comet broadcasts
  *      b. insertTransitions:        ColumnarToRow/RowToColumnar added
  *      c. postColumnarTransitions:  EliminateRedundantTransitions
  *   5. ReuseExchangeAndSubquery     -- Spark deduplicates subqueries (sees Comet nodes)
  * }}}
  *
- * AQE (AdaptiveSparkPlanExec):
+ * AQE (AdaptiveSparkPlanExec, Spark 3.5+):
  * {{{
  *   Initial plan:
- *     queryStagePreparationRules:   CometScanRule, CometExecRule (replace Spark -> Comet nodes)
+ *     PlanAdaptiveSubqueries:       creates SubqueryAdaptiveBroadcastExec (SAB) for AQE DPP
+ *     queryStagePreparationRules:   CometScanRule, CometExecRule
+ *       - CometExecRule.convertSubqueryBroadcasts wraps SABs in
+ *         CometSubqueryAdaptiveBroadcastExec to prevent Spark's
+ *         PlanAdaptiveDynamicPruningFilters from replacing DPP with Literal.TrueLiteral
  *
  *   Per stage (optimizeQueryStage + postStageCreationRules):
- *     1. queryStageOptimizerRules:  ReuseAdaptiveSubquery, CometReuseSubquery
+ *     1. queryStageOptimizerRules:
+ *        a. PlanAdaptiveDynamicPruningFilters (Spark) -- skips wrapped SABs
+ *        b. ReuseAdaptiveSubquery (Spark)
+ *        c. CometPlanAdaptiveDynamicPruningFilters   -- converts wrapped SABs to
+ *           CometSubqueryBroadcastExec with BroadcastQueryStageExec for broadcast reuse
+ *        d. CometReuseSubquery                       -- deduplicates converted subqueries
  *     2. postStageCreationRules -> ApplyColumnarRulesAndInsertTransitions:
  *        a. preColumnarTransitions: CometScanRule, CometExecRule (no-ops, already converted)
  *        b. insertTransitions
  *        c. postColumnarTransitions: EliminateRedundantTransitions
  * }}}
  *
- * CometReuseSubquery is needed in AQE because Spark's ReuseAdaptiveSubquery may run before
- * Comet's node replacements in the initial plan construction, and the replacements can disrupt
- * subquery reuse that was already applied. The shim-based registration
- * (injectQueryStageOptimizerRuleShim) handles API availability: Spark 3.5+ has
- * injectQueryStageOptimizerRule, Spark 3.4 does not (no-op).
+ * On Spark 3.4, injectQueryStageOptimizerRule is unavailable. CometExecRule does not wrap SABs,
+ * and CometPlanAdaptiveDynamicPruningFilters/CometReuseSubquery are not registered. AQE DPP scans
+ * fall back to Spark so that Spark's PlanAdaptiveDynamicPruningFilters handles them natively
+ * (with DPP).
  */
 class CometSparkSessionExtensions
     extends (SparkSessionExtensions => Unit)
@@ -79,8 +89,13 @@ class CometSparkSessionExtensions
   override def apply(extensions: SparkSessionExtensions): Unit = {
     extensions.injectColumnar { session => CometScanColumnar(session) }
     extensions.injectColumnar { session => CometExecColumnar(session) }
+    // Pre-3.5 only: tag AQE DPP regions so the conversion rules below leave them Spark-native.
+    // Registered before CometScanRule/CometExecRule so tags are in place when conversion runs.
+    // No-op on Spark 3.5+; see CometSpark34AqeDppFallbackRule's class docstring.
+    injectPreSpark35QueryStagePrepRuleShim(extensions, CometSpark34AqeDppFallbackRule)
     extensions.injectQueryStagePrepRule { session => CometScanRule(session) }
     extensions.injectQueryStagePrepRule { session => CometExecRule(session) }
+    injectQueryStageOptimizerRuleShim(extensions, CometPlanAdaptiveDynamicPruningFilters)
     injectQueryStageOptimizerRuleShim(extensions, CometReuseSubquery)
   }
 
@@ -109,6 +124,16 @@ object CometSparkSessionExtensions extends Logging {
     }
     if (!COMET_ENABLED.get(conf)) {
       logInfo(s"Comet extension is disabled, please turn on ${COMET_ENABLED.key} to enable it")
+      return false
+    }
+
+    if (COMET_EXEC_SHUFFLE_ENABLED.get(conf) && !isCometShuffleManagerEnabled(conf)) {
+      logWarning(
+        "Comet extension is disabled because spark.shuffle.manager is not set to " +
+          "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager. " +
+          "Comet provides limited benefit without its shuffle manager. " +
+          s"Set ${COMET_EXEC_SHUFFLE_ENABLED.key}=false to keep Comet enabled with " +
+          "Spark's default shuffle manager.")
       return false
     }
 
@@ -163,6 +188,14 @@ object CometSparkSessionExtensions extends Logging {
 
   def isSpark40Plus: Boolean = {
     org.apache.spark.SPARK_VERSION >= "4.0"
+  }
+
+  def isSpark41Plus: Boolean = {
+    org.apache.spark.SPARK_VERSION >= "4.1"
+  }
+
+  def isSpark42Plus: Boolean = {
+    org.apache.spark.SPARK_VERSION >= "4.2"
   }
 
   /**
@@ -257,21 +290,22 @@ object CometSparkSessionExtensions extends Logging {
    * @return
    *   `node` with fallback reasons attached (as a side effect on its tag map).
    */
-  def withInfo[T <: TreeNode[_]](node: T, info: String, exprs: T*): T = {
+  def withFallbackReason[T <: TreeNode[_]](node: T, info: String, exprs: T*): T = {
     // support existing approach of passing in multiple infos in a newline-delimited string
     val infoSet = if (info == null || info.isEmpty) {
       Set.empty[String]
     } else {
       info.split("\n").toSet
     }
-    withInfos(node, infoSet, exprs: _*)
+    withFallbackReasons(node, infoSet, exprs: _*)
   }
 
   /**
    * Record one or more fallback reasons on a `TreeNode` and roll up reasons from any child nodes.
-   * This is the set-valued form of [[withInfo]]; see that overload for the full contract.
+   * This is the set-valued form of [[withFallbackReason]]; see that overload for the full
+   * contract.
    *
-   * Reasons are accumulated (never overwritten) on the node's `EXTENSION_INFO` tag and are
+   * Reasons are accumulated (never overwritten) on the node's `FALLBACK_REASONS` tag and are
    * surfaced in extended explain output. When `COMET_LOG_FALLBACK_REASONS` is enabled, each new
    * reason is also emitted as a warning.
    *
@@ -287,16 +321,16 @@ object CometSparkSessionExtensions extends Logging {
    * @return
    *   `node` with fallback reasons attached (as a side effect on its tag map).
    */
-  def withInfos[T <: TreeNode[_]](node: T, info: Set[String], exprs: T*): T = {
+  def withFallbackReasons[T <: TreeNode[_]](node: T, info: Set[String], exprs: T*): T = {
     if (CometConf.COMET_LOG_FALLBACK_REASONS.get()) {
       for (reason <- info) {
         logWarning(s"Comet cannot accelerate ${node.getClass.getSimpleName} because: $reason")
       }
     }
-    val existingNodeInfos = node.getTagValue(CometExplainInfo.EXTENSION_INFO)
+    val existingNodeInfos = node.getTagValue(CometExplainInfo.FALLBACK_REASONS)
     val newNodeInfo = (existingNodeInfos ++ exprs
-      .flatMap(_.getTagValue(CometExplainInfo.EXTENSION_INFO))).flatten.toSet
-    node.setTagValue(CometExplainInfo.EXTENSION_INFO, newNodeInfo ++ info)
+      .flatMap(_.getTagValue(CometExplainInfo.FALLBACK_REASONS))).flatten.toSet
+    node.setTagValue(CometExplainInfo.FALLBACK_REASONS, newNodeInfo ++ info)
     node
   }
 
@@ -314,17 +348,34 @@ object CometSparkSessionExtensions extends Logging {
    * @return
    *   `node` with the rolled-up reasons attached (as a side effect on its tag map).
    */
-  def withInfo[T <: TreeNode[_]](node: T, exprs: T*): T = {
-    withInfos(node, Set.empty, exprs: _*)
+  def withFallbackReason[T <: TreeNode[_]](node: T, exprs: T*): T = {
+    withFallbackReasons(node, Set.empty, exprs: _*)
   }
 
   /**
-   * True if any fallback reason has been recorded on `node` (via [[withInfo]] / [[withInfos]]).
-   * Callers that need to short-circuit when a prior rule pass has already decided a node falls
-   * back can use this as the sticky signal.
+   * True if any fallback reason has been recorded on `node` (via [[withFallbackReason]] /
+   * [[withFallbackReasons]]). Callers that need to short-circuit when a prior rule pass has
+   * already decided a node falls back can use this as the sticky signal.
    */
-  def hasExplainInfo(node: TreeNode[_]): Boolean = {
-    node.getTagValue(CometExplainInfo.EXTENSION_INFO).exists(_.nonEmpty)
+  def hasFallbackReason(node: TreeNode[_]): Boolean = {
+    node.getTagValue(CometExplainInfo.FALLBACK_REASONS).exists(_.nonEmpty)
+  }
+
+  /**
+   * Record a purely informational message on a `TreeNode`. Unlike `withFallbackReason`, this does
+   * NOT cause the node to fall back to Spark: the planning rules never read this tag. Messages
+   * accumulate (never overwrite) on the node's `EXTENSION_INFO` tag and are surfaced in verbose
+   * extended explain output under a `[COMET-INFO: ...]` label. Use this to point the user at a
+   * faster or alternative path that is available but not currently selected, such as a native
+   * implementation gated behind a config.
+   */
+  def withInfo[T <: TreeNode[_]](node: T, message: String): T = {
+    if (message != null && message.nonEmpty) {
+      val existing =
+        node.getTagValue(CometExplainInfo.EXTENSION_INFO).getOrElse(Set.empty[String])
+      node.setTagValue(CometExplainInfo.EXTENSION_INFO, existing + message)
+    }
+    node
   }
 
 }

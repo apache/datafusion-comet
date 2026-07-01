@@ -21,7 +21,7 @@ package org.apache.comet
 
 import java.nio.ByteBuffer
 
-import org.apache.spark.CometTaskMemoryManager
+import org.apache.spark.{CometTaskMemoryManager, TaskContext}
 import org.apache.spark.sql.comet.CometMetricNode
 
 import org.apache.comet.parquet.CometFileKeyUnwrapper
@@ -69,7 +69,8 @@ class Native extends NativeBase {
       memoryLimitPerTask: Long,
       taskAttemptId: Long,
       taskCPUs: Long,
-      keyUnwrapper: CometFileKeyUnwrapper): Long
+      keyUnwrapper: CometFileKeyUnwrapper,
+      taskContext: TaskContext): Long
   // scalastyle:on
 
   /**

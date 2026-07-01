@@ -23,15 +23,16 @@ import scala.collection.mutable.ListBuffer
 import scala.jdk.CollectionConverters._
 
 import org.apache.spark.internal.Logging
-import org.apache.spark.sql.catalyst.expressions.{Expression, Literal, PlanExpression}
+import org.apache.spark.sql.catalyst.expressions.{Expression, Literal}
 import org.apache.spark.sql.catalyst.util.ResolveDefaultColumns.getExistenceDefaultValues
 import org.apache.spark.sql.comet.{CometNativeExec, CometNativeScanExec, CometScanExec}
 import org.apache.spark.sql.execution.{FileSourceScanExec, InSubqueryExec, SubqueryAdaptiveBroadcastExec}
+import org.apache.spark.sql.execution.datasources.parquet.ParquetUtils
 import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.{CometConf, ConfigEntry}
 import org.apache.comet.CometConf.COMET_EXEC_ENABLED
-import org.apache.comet.CometSparkSessionExtensions.{hasExplainInfo, withInfo}
+import org.apache.comet.CometSparkSessionExtensions.{hasFallbackReason, isSpark35Plus, isSpark41Plus, withFallbackReason}
 import org.apache.comet.objectstore.NativeConfig
 import org.apache.comet.parquet.CometParquetUtils
 import org.apache.comet.serde.{CometOperatorSerde, Compatible, OperatorOuterClass, SupportLevel}
@@ -40,34 +41,42 @@ import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.QueryPlanSerde.{exprToProto, serializeDataType}
 
 /**
- * Validation and serde logic for `native_datafusion` scans.
+ * Validation and serde logic for Comet's native Parquet scan.
  */
 object CometNativeScan extends CometOperatorSerde[CometScanExec] with Logging {
 
   /** Determine whether the scan is supported and tag the Spark plan with any fallback reasons */
   def isSupported(scanExec: FileSourceScanExec): Boolean = {
 
-    if (hasExplainInfo(scanExec)) {
+    if (hasFallbackReason(scanExec)) {
       // this node has already been tagged with fallback reasons
       return false
     }
 
     if (!COMET_EXEC_ENABLED.get()) {
-      withInfo(scanExec, s"Full native scan disabled because ${COMET_EXEC_ENABLED.key} disabled")
+      withFallbackReason(
+        scanExec,
+        s"Full native scan disabled because ${COMET_EXEC_ENABLED.key} disabled")
     }
 
-    // Native DataFusion doesn't support AQE DPP (SubqueryAdaptiveBroadcastExec).
-    // Non-AQE DPP (SubqueryBroadcastExec/SubqueryExec) is supported through the lazy
+    // AQE DPP (SubqueryAdaptiveBroadcastExec) is converted to CometSubqueryBroadcastExec
+    // by CometPlanAdaptiveDynamicPruningFilters (queryStageOptimizerRule, Spark 3.5+).
+    // Non-AQE DPP (SubqueryBroadcastExec/SubqueryExec) is converted by
+    // CometExecRule.convertSubqueryBroadcasts. Both are resolved through the lazy
     // partition serialization path in CometNativeScanExec.
-    if (scanExec.partitionFilters.exists(isAqeDynamicPruningFilter)) {
-      withInfo(scanExec, "Native DataFusion scan does not support AQE dynamic pruning")
+    //
+    // On Spark 3.4, injectQueryStageOptimizerRule is unavailable, so the AQE DPP conversion
+    // rule can't run. CometScanRule.transformV1Scan rejects AQE DPP on 3.4, so this check
+    // is a safety net: if the scan somehow reached here with AQE DPP on 3.4, reject it.
+    if (!isSpark35Plus && scanExec.partitionFilters.exists(isAqeDynamicPruningFilter)) {
+      withFallbackReason(scanExec, "Native DataFusion scan does not support AQE DPP on Spark 3.4")
     }
 
     if (SQLConf.get.ignoreCorruptFiles ||
       scanExec.relation.options
         .get("ignorecorruptfiles") // Spark sets this to lowercase.
         .contains("true")) {
-      withInfo(scanExec, "Full native scan disabled because ignoreCorruptFiles enabled")
+      withFallbackReason(scanExec, "Full native scan disabled because ignoreCorruptFiles enabled")
     }
 
     if (SQLConf.get.ignoreMissingFiles ||
@@ -75,15 +84,12 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with Logging {
         .get("ignoremissingfiles") // Spark sets this to lowercase.
         .contains("true")) {
 
-      withInfo(scanExec, "Full native scan disabled because ignoreMissingFiles enabled")
+      withFallbackReason(scanExec, "Full native scan disabled because ignoreMissingFiles enabled")
     }
 
     // the scan is supported if no fallback reasons were added to the node
-    !hasExplainInfo(scanExec)
+    !hasFallbackReason(scanExec)
   }
-
-  private def isDynamicPruningFilter(e: Expression): Boolean =
-    e.exists(_.isInstanceOf[PlanExpression[_]])
 
   /** Detects AQE DPP (SubqueryAdaptiveBroadcastExec), as opposed to non-AQE DPP. */
   private def isAqeDynamicPruningFilter(e: Expression): Boolean =
@@ -120,9 +126,7 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with Logging {
       // Sink operators don't have children
       builder.clearChildren()
 
-      if (scan.conf.getConf(SQLConf.PARQUET_FILTER_PUSHDOWN_ENABLED) &&
-        CometConf.COMET_RESPECT_PARQUET_FILTER_PUSHDOWN.get(scan.conf)) {
-
+      if (scan.conf.getConf(SQLConf.PARQUET_FILTER_PUSHDOWN_ENABLED)) {
         val dataFilters = new ListBuffer[Expr]()
         for (filter <- scan.supportedDataFilters) {
           exprToProto(filter, scan.output) match {
@@ -186,6 +190,30 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with Logging {
       commonBuilder.setSessionTimezone(scan.conf.getConfString("spark.sql.session.timeZone"))
       commonBuilder.setCaseSensitive(scan.conf.getConf[Boolean](SQLConf.CASE_SENSITIVE))
 
+      // SPARK-53535 (Spark 4.1+): when reading a struct whose requested fields are all
+      // missing in the Parquet file, the new default preserves the parent struct's
+      // nullness from the file (so non-null parents materialize as a struct of all-null
+      // fields). Pre-4.1 Spark hardcodes the legacy behavior (whole struct null), which
+      // matches the Comet default we use as fallback.
+      val returnNullStructConfKey =
+        "spark.sql.legacy.parquet.returnNullStructIfAllFieldsMissing"
+      val returnNullStructDefault = if (isSpark41Plus) "false" else "true"
+      commonBuilder.setReturnNullStructIfAllFieldsMissing(
+        scan.conf.getConfString(returnNullStructConfKey, returnNullStructDefault).toBoolean)
+
+      // Field-ID matching: only ask the native side to do extra work when the conf is on AND
+      // the requested schema actually carries IDs. Spark's ParquetReadSupport applies the same
+      // gate before invoking matchIdField.
+      val useFieldId =
+        scan.conf.getConf(SQLConf.PARQUET_FIELD_ID_READ_ENABLED) &&
+          ParquetUtils.hasFieldIds(scan.requiredSchema)
+      commonBuilder.setUseFieldId(useFieldId)
+      commonBuilder.setIgnoreMissingFieldId(
+        scan.conf.getConf(SQLConf.IGNORE_MISSING_PARQUET_FIELD_ID))
+
+      commonBuilder.setAllowTypePromotion(CometConf.COMET_SCHEMA_EVOLUTION_ENABLED)
+      commonBuilder.setAllowTimestampLtzToNtz(CometConf.COMET_ALLOW_TIMESTAMP_LTZ_AS_NTZ)
+
       // Collect S3/cloud storage configurations
       val hadoopConf = scan.relation.sparkSession.sessionState
         .newHadoopConfWithOptions(scan.relation.options)
@@ -207,7 +235,7 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with Logging {
 
     } else {
       // There are unsupported scan type
-      withInfo(
+      withFallbackReason(
         scan,
         s"unsupported Comet operator: ${scan.nodeName}, due to unsupported data types above")
       None

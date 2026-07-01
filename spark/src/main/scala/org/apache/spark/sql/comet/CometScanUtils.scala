@@ -20,6 +20,7 @@
 package org.apache.spark.sql.comet
 
 import org.apache.spark.sql.catalyst.expressions.{DynamicPruningExpression, Expression, Literal}
+import org.apache.spark.sql.execution.{InSubqueryExec, SubqueryAdaptiveBroadcastExec}
 
 object CometScanUtils {
 
@@ -28,6 +29,20 @@ object CometScanUtils {
    * DynamicPruningExpression(Literal.TrueLiteral) during Physical Planning
    */
   def filterUnusedDynamicPruningExpressions(predicates: Seq[Expression]): Seq[Expression] = {
-    predicates.filterNot(_ == DynamicPruningExpression(Literal.TrueLiteral))
+    // Strip DPP expressions for canonicalization. Matches Spark's
+    // FileSourceScanExec.filterUnusedDynamicPruningExpressions (TrueLiteral).
+    // Also strips unconverted SAB wrappers because AQE stageCache canonicalizes
+    // before our queryStageOptimizerRule converts them, so they would prevent
+    // exchange reuse between otherwise-identical scans.
+    predicates.filterNot {
+      case DynamicPruningExpression(Literal.TrueLiteral) => true
+      case DynamicPruningExpression(
+            InSubqueryExec(_, _: CometSubqueryAdaptiveBroadcastExec, _, _, _, _)) =>
+        true
+      case DynamicPruningExpression(
+            InSubqueryExec(_, _: SubqueryAdaptiveBroadcastExec, _, _, _, _)) =>
+        true
+      case _ => false
+    }
   }
 }

@@ -19,9 +19,14 @@ under the License.
 
 # ASF Links
 
+Apache DataFusion Comet is part of the Apache Software Foundation. The links below point to ASF
+resources covering licensing, donations, security reporting, and the Foundation's code of conduct.
+Select a link from the navigation menu.
+
 ```{toctree}
 :maxdepth: 1
 :caption: ASF Links
+:hidden:
 
 Apache Software Foundation <https://apache.org>
 License <https://www.apache.org/licenses/>

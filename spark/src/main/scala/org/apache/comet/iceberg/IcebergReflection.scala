@@ -20,6 +20,9 @@
 package org.apache.comet.iceberg
 
 import org.apache.spark.internal.Logging
+import org.apache.spark.sql.SparkSession
+
+import org.apache.comet.util.ClassLoaders
 
 /**
  * Shared reflection utilities for Iceberg operations.
@@ -46,7 +49,21 @@ object IcebergReflection extends Logging {
     val PARTITION_SPEC = "org.apache.iceberg.PartitionSpec"
     val PARTITION_FIELD = "org.apache.iceberg.PartitionField"
     val UNBOUND_PREDICATE = "org.apache.iceberg.expressions.UnboundPredicate"
+    val SPARK_BATCH_QUERY_SCAN = "org.apache.iceberg.spark.source.SparkBatchQueryScan"
+    val SPARK_STAGED_SCAN = "org.apache.iceberg.spark.source.SparkStagedScan"
   }
+
+  /**
+   * SparkScan implementations that Comet recognises as Iceberg data scans.
+   *
+   * `SparkStagedScan` also backs reads against Iceberg metadata tables (e.g. `POSITION_DELETES`),
+   * but the gate for that lives in `getMetadataLocation`, which returns None for metadata-table
+   * instances.
+   */
+  val ICEBERG_SCAN_CLASSES: Set[String] =
+    Set(ClassNames.SPARK_BATCH_QUERY_SCAN, ClassNames.SPARK_STAGED_SCAN)
+
+  def isIcebergScanClass(name: String): Boolean = ICEBERG_SCAN_CLASSES.contains(name)
 
   /**
    * Iceberg content types.
@@ -86,19 +103,7 @@ object IcebergReflection extends Logging {
    * @return
    *   The loaded Class object
    */
-  def loadClass(className: String): Class[_] = {
-    val classLoader = Thread.currentThread().getContextClassLoader
-    if (classLoader != null) {
-      // scalastyle:off classforname
-      Class.forName(className, true, classLoader)
-      // scalastyle:on classforname
-    } else {
-      // Fallback to default classloader if context classloader is null
-      // scalastyle:off classforname
-      Class.forName(className)
-      // scalastyle:on classforname
-    }
-  }
+  def loadClass(className: String): Class[_] = ClassLoaders.loadClass(className)
 
   /**
    * Searches through class hierarchy to find a method (including protected methods).
@@ -172,44 +177,87 @@ object IcebergReflection extends Logging {
     }
   }
 
+  private lazy val sparkStagedScanClass: Class[_] = loadClass(ClassNames.SPARK_STAGED_SCAN)
+
+  private def isStagedScan(scan: Any): Boolean = sparkStagedScanClass.isInstance(scan)
+
   /**
    * Gets the tasks from a SparkScan.
    *
-   * The tasks() method is protected in SparkScan, requiring reflection to access.
+   * Most Iceberg scans (e.g. SparkBatchQueryScan) inherit a `tasks()` accessor from
+   * SparkPartitioningAwareScan. SparkStagedScan extends SparkScan directly and only declares
+   * `taskGroups()`, so for staged scans we flatten the groups instead. Both methods are protected
+   * and require reflection.
    */
-  def getTasks(scan: Any): Option[java.util.List[_]] = {
-    try {
-      val tasksMethod = scan.getClass.getSuperclass
-        .getDeclaredMethod("tasks")
-      tasksMethod.setAccessible(true)
-      Some(tasksMethod.invoke(scan).asInstanceOf[java.util.List[_]])
-    } catch {
-      case e: Exception =>
+  def getTasks(scan: Any): Option[java.util.List[_]] =
+    if (isStagedScan(scan)) tasksFromTaskGroups(scan) else tasksFromTasksAccessor(scan)
+
+  private def tasksFromTasksAccessor(scan: Any): Option[java.util.List[_]] =
+    findMethodInHierarchy(scan.getClass, "tasks") match {
+      case Some(method) =>
+        Some(method.invoke(scan).asInstanceOf[java.util.List[_]])
+      case None =>
         logError(
-          s"Iceberg reflection failure: Failed to get tasks from SparkScan: ${e.getMessage}")
+          "Iceberg reflection failure: Failed to get tasks from SparkScan: " +
+            s"tasks() not found on ${scan.getClass.getName}")
         None
     }
-  }
+
+  private def tasksFromTaskGroups(scan: Any): Option[java.util.List[_]] =
+    findMethodInHierarchy(scan.getClass, "taskGroups") match {
+      case Some(method) =>
+        try {
+          val groups = method.invoke(scan).asInstanceOf[java.util.List[_]]
+          if (groups.isEmpty) {
+            Some(new java.util.ArrayList[AnyRef]())
+          } else {
+            // All task groups in a stage share the same concrete class, so the per-group
+            // `tasks()` lookup can be cached once instead of done N times.
+            val groupTasksMethod = groups.get(0).getClass.getMethod("tasks")
+            val flat = new java.util.ArrayList[AnyRef]()
+            groups.forEach { group =>
+              val groupTasks =
+                groupTasksMethod.invoke(group).asInstanceOf[java.util.Collection[_ <: AnyRef]]
+              flat.addAll(groupTasks)
+            }
+            Some(flat)
+          }
+        } catch {
+          case e: ReflectiveOperationException =>
+            logError(
+              "Iceberg reflection failure: Failed to flatten tasks from SparkStagedScan: " +
+                s"${e.getMessage}")
+            None
+        }
+      case None =>
+        logError(
+          "Iceberg reflection failure: Failed to flatten tasks from SparkStagedScan: " +
+            s"taskGroups() not found on ${scan.getClass.getName}")
+        None
+    }
 
   /**
    * Gets the filter expressions from a SparkScan.
    *
-   * The filterExpressions() method is protected in SparkScan.
+   * `filterExpressions()` is declared on SparkPartitioningAwareScan but absent from plain
+   * SparkScan. SparkStagedScan (used by RewriteDataFiles) extends SparkScan directly and never
+   * pushes filters, so we short-circuit with an empty list rather than reflectively probing for a
+   * method we know isn't there.
    */
-  def getFilterExpressions(scan: Any): Option[java.util.List[_]] = {
-    try {
-      val filterExpressionsMethod = scan.getClass.getSuperclass.getSuperclass
-        .getDeclaredMethod("filterExpressions")
-      filterExpressionsMethod.setAccessible(true)
-      Some(filterExpressionsMethod.invoke(scan).asInstanceOf[java.util.List[_]])
-    } catch {
-      case e: Exception =>
-        logError(
-          "Iceberg reflection failure: Failed to get filter expressions from SparkScan: " +
-            s"${e.getMessage}")
-        None
+  def getFilterExpressions(scan: Any): Option[java.util.List[_]] =
+    if (isStagedScan(scan)) {
+      Some(java.util.Collections.emptyList[AnyRef]())
+    } else {
+      findMethodInHierarchy(scan.getClass, "filterExpressions") match {
+        case Some(method) =>
+          Some(method.invoke(scan).asInstanceOf[java.util.List[_]])
+        case None =>
+          logError(
+            "Iceberg reflection failure: Failed to get filter expressions from SparkScan: " +
+              s"filterExpressions() not found on ${scan.getClass.getName}")
+          None
+      }
     }
-  }
 
   /**
    * Gets the Iceberg table format version.
@@ -349,6 +397,12 @@ object IcebergReflection extends Logging {
 
   /**
    * Gets the metadata file location from an Iceberg table.
+   *
+   * Returns None for Iceberg metadata-table instances (e.g. POSITION_DELETES, the table that
+   * `RewritePositionDeleteFiles` reads via `SparkStagedScan`). This is the gate that keeps Comet
+   * from accelerating metadata-table reads, which have a different schema from the parent data
+   * table and aren't supported by the iceberg-rust-driven native path. `CometScanRule` falls back
+   * to Spark when this returns None; `CometIcebergRewriteActionSuite` pins the behaviour.
    *
    * @param table
    *   The Iceberg table instance
@@ -609,6 +663,9 @@ object IcebergReflection extends Logging {
  *   Mapping from column names to Iceberg field IDs (built from scanSchema)
  * @param catalogProperties
  *   Catalog properties for FileIO (S3 credentials, regions, etc.)
+ * @param catalogName
+ *   Spark V2 catalog name forwarded as `dispatchKey` to CometS3CredentialBridge. `None` when the
+ *   table has no catalog identity (e.g. HadoopTables loaded by raw path).
  */
 case class CometIcebergNativeScanMetadata(
     table: Any,
@@ -619,6 +676,7 @@ case class CometIcebergNativeScanMetadata(
     tableSchema: Any,
     globalFieldIdMapping: Map[String, Int],
     catalogProperties: Map[String, String],
+    catalogName: Option[String],
     fileFormat: String)
 
 object CometIcebergNativeScanMetadata extends Logging {
@@ -674,7 +732,64 @@ object CometIcebergNativeScanMetadata extends Logging {
         tableSchema = tableSchema,
         globalFieldIdMapping = globalFieldIdMapping,
         catalogProperties = catalogProperties,
+        catalogName = deriveCatalogName(table),
         fileFormat = FileFormats.PARQUET)
     }
   }
+
+  /**
+   * Extracts the Spark V2 catalog name from an Iceberg `Table`. `Table.name()` returns
+   * `catalog.namespace.table` for tables loaded through a catalog; we intersect against the
+   * registered V2 catalogs so a value like `s3.foo` is not mistaken for a catalog `s3`. Returns
+   * `None` for HadoopTables loaded by raw path or when reflection fails.
+   */
+  private[iceberg] def deriveCatalogName(table: Any): Option[String] =
+    deriveCatalogName(table, registeredCatalogNames _)
+
+  /**
+   * Test seam that lets tests inject a fixed catalog set without bootstrapping a SparkSession.
+   */
+  private[iceberg] def deriveCatalogName(
+      table: Any,
+      knownCatalogNames: () => Iterable[String]): Option[String] = {
+    if (table == null) return None
+    invokeTableName(table).flatMap { name =>
+      if (name.isEmpty || name == "null") {
+        None
+      } else {
+        knownCatalogNames()
+          .find(c => name == c || name.startsWith(c + "."))
+          .orElse {
+            val idx = name.indexOf('.')
+            if (idx > 0) Some(name.substring(0, idx)) else None
+          }
+      }
+    }
+  }
+
+  private def invokeTableName(table: Any): Option[String] = {
+    try {
+      table.getClass.getMethod("name").invoke(table) match {
+        case s: String => Some(s)
+        case other if other != null => Some(other.toString)
+        case null => None
+      }
+    } catch {
+      case e: Exception =>
+        logWarning(
+          s"Iceberg reflection: Table.name() not callable on ${table.getClass.getName}. " +
+            "Native S3 credential dispatch will fall back to bucket-keyed isolation: " +
+            s"${e.getMessage}")
+        None
+    }
+  }
+
+  private def registeredCatalogNames(): Iterable[String] =
+    try {
+      SparkSession.active.sessionState.catalogManager.listCatalogs(None)
+    } catch {
+      case e: Exception =>
+        logDebug(s"Could not list V2 catalogs from SparkSession: ${e.getMessage}")
+        Nil
+    }
 }

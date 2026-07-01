@@ -73,21 +73,19 @@ class CometParquetWriterSuite extends CometTestBase {
           CometConf.COMET_OPERATOR_DATA_WRITING_COMMAND_ALLOW_INCOMPAT.key -> "true",
           CometConf.COMET_EXEC_ENABLED.key -> "true") {
 
-          withSQLConf(CometConf.COMET_NATIVE_SCAN_IMPL.key -> "native_datafusion") {
-            val capturedPlan = writeWithCometNativeWriteExec(inputPath, outputPath)
-            capturedPlan.foreach { plan =>
-              val hasNativeScan = plan.exists {
-                case _: CometNativeScanExec => true
-                case _ => false
-              }
-
-              assert(
-                hasNativeScan,
-                s"Expected CometNativeScanExec in the plan, but got:\n${plan.treeString}")
+          val capturedPlan = writeWithCometNativeWriteExec(inputPath, outputPath)
+          capturedPlan.foreach { plan =>
+            val hasNativeScan = plan.exists {
+              case _: CometNativeScanExec => true
+              case _ => false
             }
 
-            verifyWrittenFile(outputPath)
+            assert(
+              hasNativeScan,
+              s"Expected CometNativeScanExec in the plan, but got:\n${plan.treeString}")
           }
+
+          verifyWrittenFile(outputPath)
         }
       }
     }
@@ -470,8 +468,6 @@ class CometParquetWriterSuite extends CometTestBase {
         // enable experimental native writes
         CometConf.COMET_OPERATOR_DATA_WRITING_COMMAND_ALLOW_INCOMPAT.key -> "true",
         CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED.key -> "true",
-        // explicitly set scan impl to override CI defaults
-        CometConf.COMET_NATIVE_SCAN_IMPL.key -> "auto",
         // Disable unsigned small int safety check for ShortType columns
         CometConf.COMET_PARQUET_UNSIGNED_SMALL_INT_CHECK.key -> "false",
         // use a different timezone to make sure that timezone handling works with nested types
@@ -535,10 +531,7 @@ class CometParquetWriterSuite extends CometTestBase {
 
   private def readCometRows(path: String): Array[Row] = {
     var rows: Array[Row] = null
-    withSQLConf(
-      CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "true",
-      // Override CI setting to use a scan impl that supports complex types
-      CometConf.COMET_NATIVE_SCAN_IMPL.key -> "auto") {
+    withSQLConf(CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "true") {
       val df = spark.read.parquet(path)
       val plan = df.queryExecution.executedPlan
       assert(

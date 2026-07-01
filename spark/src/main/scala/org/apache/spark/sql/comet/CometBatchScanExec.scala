@@ -26,6 +26,7 @@ import org.apache.spark.sql.catalyst._
 import org.apache.spark.sql.catalyst.expressions.{Attribute, DynamicPruningExpression, Expression, Literal, SortOrder}
 import org.apache.spark.sql.catalyst.plans.QueryPlan
 import org.apache.spark.sql.catalyst.util.truncatedString
+import org.apache.spark.sql.comet.shims.ShimCometBatchScanExec
 import org.apache.spark.sql.connector.read._
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.datasources.v2._
@@ -43,7 +44,8 @@ case class CometBatchScanExec(
     runtimeFilters: Seq[Expression],
     @transient nativeIcebergScanMetadata: Option[CometIcebergNativeScanMetadata] = None)
     extends DataSourceV2ScanExecBase
-    with CometPlan {
+    with CometPlan
+    with ShimCometBatchScanExec {
   def ordering: Option[Seq[SortOrder]] = wrapped.ordering
 
   wrapped.logicalLink.foreach(setLogicalLink)
@@ -130,7 +132,7 @@ case class CometBatchScanExec(
     redact(result)
   }
 
-  private def wrappedScan: BatchScanExec = {
+  protected def wrappedScan: BatchScanExec = {
     // The runtime filters in this scan could be transformed by optimizer rules such as
     // `PlanAdaptiveDynamicPruningFilters`, while the one in the wrapped scan is not. And
     // since `inputRDD` uses the latter and therefore will be incorrect if we don't set it here.
@@ -153,7 +155,7 @@ case class CometBatchScanExec(
       case _ => Map.empty
     })
 
-  @transient override lazy val partitions: Seq[Seq[InputPartition]] = wrappedScan.partitions
+  @transient override lazy val partitions = shimPartitions
 
   override def supportsColumnar: Boolean = true
 }

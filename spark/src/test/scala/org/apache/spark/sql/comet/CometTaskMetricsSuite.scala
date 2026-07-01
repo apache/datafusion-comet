@@ -38,6 +38,7 @@ import org.apache.spark.sql.execution.command.DataWritingCommandExec
 import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.CometConf
+import org.apache.comet.CometSparkSessionExtensions.isSpark41Plus
 
 class CometTaskMetricsSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
@@ -102,6 +103,57 @@ class CometTaskMetricsSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         assert(metrics.recordsRead > 0)
         assert(metrics.totalBytesRead > 0)
       }
+    }
+  }
+
+  test("native shuffle reports task input metrics for its scan child") {
+    // A native shuffle whose child subtree includes a CometNativeScanExec runs that scan inside
+    // the writer's single plan, so the usual CometExecRDD.compute() input-metric bridge never
+    // runs. CometNativeShuffleWriter must report the scan's bytes/rows itself; otherwise the
+    // ShuffleMapTask reports zero input metrics.
+    withParquetTable((0 until 10000).map(i => (i, (i + 1).toLong)), "tbl") {
+      val shuffled = sql("SELECT * FROM tbl").repartition(4, $"_1")
+
+      val cometShuffle = find(shuffled.queryExecution.executedPlan) {
+        case _: CometShuffleExchangeExec => true
+        case _ => false
+      }
+      assert(cometShuffle.isDefined, "CometShuffleExchangeExec not found in the plan")
+      assert(
+        cometShuffle.get.asInstanceOf[CometShuffleExchangeExec].shuffleType == CometNativeShuffle)
+      assert(
+        find(shuffled.queryExecution.executedPlan) {
+          case _: CometNativeScanExec => true
+          case _ => false
+        }.isDefined,
+        "expected a CometNativeScanExec child so the scan is embedded in the writer plan")
+
+      val mapInputBytes = mutable.ArrayBuffer.empty[Long]
+      val mapInputRecords = mutable.ArrayBuffer.empty[Long]
+      spark.sparkContext.addSparkListener(new SparkListener {
+        override def onTaskEnd(taskEnd: SparkListenerTaskEnd): Unit = {
+          if (taskEnd.taskType.contains("ShuffleMapTask")) {
+            val im = taskEnd.taskMetrics.inputMetrics
+            mapInputBytes.synchronized { mapInputBytes += im.bytesRead }
+            mapInputRecords.synchronized { mapInputRecords += im.recordsRead }
+          }
+        }
+      })
+
+      // Avoid receiving earlier taskEnd events
+      spark.sparkContext.listenerBus.waitUntilEmpty()
+
+      shuffled.collect()
+
+      spark.sparkContext.listenerBus.waitUntilEmpty()
+
+      assert(mapInputRecords.nonEmpty, "no ShuffleMapTask metrics captured")
+      assert(
+        mapInputRecords.sum == 10000,
+        s"recordsRead across map tasks (${mapInputRecords.sum}) should equal the scanned row count")
+      assert(
+        mapInputBytes.sum > 0,
+        s"bytesRead across map tasks (${mapInputBytes.sum}) should be > 0")
     }
   }
 
@@ -190,7 +242,7 @@ class CometTaskMetricsSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("native_datafusion scan reports task-level input metrics matching Spark") {
+  test("native scan reports task-level input metrics matching Spark") {
     val totalRows = 10000
     withTempPath { dir =>
       spark
@@ -205,11 +257,10 @@ class CometTaskMetricsSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           "SELECT * FROM tbl where _1 > 2000",
           CometConf.COMET_ENABLED.key -> "false")
 
-      // Collect input metrics from Comet native_datafusion scan.
+      // Collect input metrics from Comet native scan.
       val (cometBytes, cometRecords, cometPlan) = collectInputMetrics(
         "SELECT * FROM tbl where _1 > 2000",
-        CometConf.COMET_ENABLED.key -> "true",
-        CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_DATAFUSION)
+        CometConf.COMET_ENABLED.key -> "true")
 
       // Verify the plan actually used CometNativeScanExec
       assert(
@@ -228,10 +279,7 @@ class CometTaskMetricsSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       // (e.g. footer reads, page headers, buffering granularity).
       assert(sparkBytes > 0, s"Spark bytesRead should be > 0, got $sparkBytes")
       assert(cometBytes > 0, s"Comet bytesRead should be > 0, got $cometBytes")
-      val ratio = cometBytes.toDouble / sparkBytes.toDouble
-      assert(
-        ratio >= 0.7 && ratio <= 1.3,
-        s"bytesRead ratio out of range: comet=$cometBytes, spark=$sparkBytes, ratio=$ratio")
+      assertCometBytesReadInRange(cometBytes, sparkBytes)
     }
   }
 
@@ -260,10 +308,8 @@ class CometTaskMetricsSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           collectInputMetrics(joinQuery, CometConf.COMET_ENABLED.key -> "false")
 
         // Collect from Comet native scan
-        val (cometBytes, cometRecords, cometPlan) = collectInputMetrics(
-          joinQuery,
-          CometConf.COMET_ENABLED.key -> "true",
-          CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_DATAFUSION)
+        val (cometBytes, cometRecords, cometPlan) =
+          collectInputMetrics(joinQuery, CometConf.COMET_ENABLED.key -> "true")
 
         // Verify the plan has multiple CometNativeScanExec nodes
         val scanCount = collect(cometPlan) { case s: CometNativeScanExec =>
@@ -280,11 +326,30 @@ class CometTaskMetricsSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         assert(cometRecords > 0, s"Comet recordsRead should be > 0, got $cometRecords")
 
         // Both sides should contribute to the total bytes
-        val ratio = cometBytes.toDouble / sparkBytes.toDouble
-        assert(
-          ratio >= 0.7 && ratio <= 1.3,
-          s"bytesRead ratio out of range: comet=$cometBytes, spark=$sparkBytes, ratio=$ratio")
+        assertCometBytesReadInRange(cometBytes, sparkBytes)
       }
+    }
+  }
+
+  /**
+   * Compare Comet's `bytesRead` against Spark's baseline. On Spark <= 4.0 the two readers report
+   * the same Hadoop-FS thread-local byte count, so we keep a tight 0.7-1.3 band. Spark 4.1
+   * pre-opens the parquet `SeekableInputStream` outside the FileScanRDD `compute()` thread, so
+   * its `getFSBytesReadOnThreadCallback` no longer captures most of the parquet IO and
+   * `inputMetrics.bytesRead` is now a small fraction of the actual file IO. Comet (via
+   * DataFusion's `bytes_scanned`) still reports actual bytes, so the only safe cross-version
+   * invariant on 4.1+ is that Comet >= Spark and both are positive.
+   */
+  private def assertCometBytesReadInRange(cometBytes: Long, sparkBytes: Long): Unit = {
+    if (isSpark41Plus) {
+      assert(
+        cometBytes >= sparkBytes,
+        s"Comet bytesRead should be >= Spark bytesRead on 4.1+: comet=$cometBytes, spark=$sparkBytes")
+    } else {
+      val ratio = cometBytes.toDouble / sparkBytes.toDouble
+      assert(
+        ratio >= 0.7 && ratio <= 1.3,
+        s"bytesRead ratio out of range: comet=$cometBytes, spark=$sparkBytes, ratio=$ratio")
     }
   }
 
@@ -312,10 +377,8 @@ class CometTaskMetricsSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           collectInputMetrics(unionQuery, CometConf.COMET_ENABLED.key -> "false")
 
         // Collect from Comet native scan
-        val (cometBytes, cometRecords, cometPlan) = collectInputMetrics(
-          unionQuery,
-          CometConf.COMET_ENABLED.key -> "true",
-          CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_NATIVE_DATAFUSION)
+        val (cometBytes, cometRecords, cometPlan) =
+          collectInputMetrics(unionQuery, CometConf.COMET_ENABLED.key -> "true")
 
         // Verify the plan has multiple CometNativeScanExec nodes
         val scanCount = collect(cometPlan) { case s: CometNativeScanExec =>
@@ -331,10 +394,7 @@ class CometTaskMetricsSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         assert(sparkRecords > 0, s"Spark recordsRead should be > 0, got $sparkRecords")
         assert(cometRecords > 0, s"Comet recordsRead should be > 0, got $cometRecords")
 
-        val ratio = cometBytes.toDouble / sparkBytes.toDouble
-        assert(
-          ratio >= 0.7 && ratio <= 1.3,
-          s"bytesRead ratio out of range: comet=$cometBytes, spark=$sparkBytes, ratio=$ratio")
+        assertCometBytesReadInRange(cometBytes, sparkBytes)
       }
     }
   }

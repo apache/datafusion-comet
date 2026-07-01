@@ -72,7 +72,6 @@ abstract class CometTestBase
     conf.set("spark.hadoop.fs.file.impl", classOf[DebugFilesystem].getName)
     conf.set("spark.ui.enabled", "false")
     conf.set(SQLConf.SHUFFLE_PARTITIONS, 10) // reduce parallelism in tests
-    conf.set(SQLConf.ANSI_ENABLED.key, "false")
     conf.set(SHUFFLE_MANAGER, shuffleManager)
     conf.set(MEMORY_OFFHEAP_ENABLED.key, "true")
     conf.set(MEMORY_OFFHEAP_SIZE.key, "2g")
@@ -82,10 +81,10 @@ abstract class CometTestBase
     conf.set(CometConf.COMET_ONHEAP_ENABLED.key, "true")
     conf.set(CometConf.COMET_EXEC_ENABLED.key, "true")
     conf.set(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key, "true")
-    conf.set(CometConf.COMET_RESPECT_PARQUET_FILTER_PUSHDOWN.key, "true")
     conf.set(CometConf.COMET_SPARK_TO_ARROW_ENABLED.key, "true")
     conf.set(CometConf.COMET_NATIVE_SCAN_ENABLED.key, "true")
     conf.set(CometConf.COMET_PARQUET_UNSIGNED_SMALL_INT_CHECK.key, "false")
+    conf.set(CometConf.COMET_SCAN_ALLOW_DISABLED_PARQUET_VECTORIZED_READER.key, "true")
     conf.set(CometConf.COMET_ONHEAP_MEMORY_OVERHEAD.key, "2g")
     conf.set(CometConf.COMET_EXEC_SORT_MERGE_JOIN_WITH_JOIN_FILTER_ENABLED.key, "true")
     // SortOrder is incompatible for mixed zero and negative zero floating point values, but
@@ -378,9 +377,9 @@ abstract class CometTestBase
              |${org.apache.spark.sql.catalyst.util.stackTraceToString(e)}
            """.stripMargin)
       }
-    if (!QueryTest.compare(
-        QueryTest.prepareAnswer(sparkAnswer, isSorted),
-        QueryTest.prepareAnswer(cometAnswer, isSorted))) {
+    val preparedSpark = prepareCometAnswer(sparkAnswer, isSorted)
+    val preparedComet = prepareCometAnswer(cometAnswer, isSorted)
+    if (!QueryTest.compare(preparedSpark, preparedComet)) {
       val getRowType: Option[Row] => String = row =>
         row
           .map(r => if (r.schema == null) "struct<>" else r.schema.catalogString)
@@ -394,12 +393,45 @@ abstract class CometTestBase
            |${sideBySide(
                s"== Spark Answer - ${sparkAnswer.size} ==" +:
                  getRowType(sparkAnswer.headOption) +:
-                 QueryTest.prepareAnswer(sparkAnswer, isSorted).map(_.toString()),
+                 preparedSpark.map(_.toString()),
                s"== Comet Answer - ${cometAnswer.size} ==" +:
                  getRowType(cometAnswer.headOption) +:
-                 QueryTest.prepareAnswer(cometAnswer, isSorted).map(_.toString())).mkString("\n")}
+                 preparedComet.map(_.toString())).mkString("\n")}
          """.stripMargin)
     }
+  }
+
+  /**
+   * Like `QueryTest.prepareAnswer` but recursively converts nested arrays to seqs. Spark's
+   * version only normalizes top-level `Array[_]`, leaving inner arrays (e.g. `Array[Byte]` from
+   * `array<binary>`) intact. Their default `toString` is the JVM identity (`[B@<hex>`), which
+   * makes the toString-based sort in `prepareAnswer` non-deterministic and causes spurious
+   * mismatches between the two sides.
+   */
+  private def prepareCometAnswer(answer: Seq[Row], isSorted: Boolean): Seq[Row] = {
+    val converted = answer.map(prepareCometRow)
+    if (isSorted) converted else converted.sortBy(_.toString())
+  }
+
+  private def prepareCometRow(row: Row): Row = {
+    Row.fromSeq(row.toSeq.map(normalizeForComparison))
+  }
+
+  private def normalizeForComparison(value: Any): Any = value match {
+    case null => null
+    case bd: java.math.BigDecimal => BigDecimal(bd)
+    case row: Row => prepareCometRow(row)
+    case arr: Array[_] => arr.toSeq.map(normalizeForComparison)
+    case map: scala.collection.Map[_, _] =>
+      map.map { case (k, v) => normalizeForComparison(k) -> normalizeForComparison(v) }
+    case seq: scala.collection.Iterable[_] => seq.map(normalizeForComparison).toSeq
+    case b: java.lang.Byte => b.byteValue
+    case s: java.lang.Short => s.shortValue
+    case i: java.lang.Integer => i.intValue
+    case l: java.lang.Long => l.longValue
+    case f: java.lang.Float => f.floatValue
+    case d: java.lang.Double => d.doubleValue
+    case x => x
   }
 
   /**

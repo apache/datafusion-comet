@@ -136,7 +136,7 @@ macro_rules! cast_float_to_timestamp_impl {
 }
 
 macro_rules! cast_float_to_string {
-    ($from:expr, $eval_mode:expr, $type:ty, $output_type:ty, $offset_type:ty) => {{
+    ($from:expr, $eval_mode:expr, $type:ty, $output_type:ty, $offset_type:ty, $min_value:expr) => {{
 
         fn cast<OffsetSize>(
             from: &dyn Array,
@@ -175,20 +175,27 @@ macro_rules! cast_float_to_string {
                             if value.abs() >= UPPER_SCIENTIFIC_BOUND
                                 || value.abs() < LOWER_SCIENTIFIC_BOUND =>
                         {
-                            let formatted = format!("{value:E}");
-
-                            if formatted.contains(".") {
-                                Ok(Some(formatted))
+                            // Spark uses Java's Float.MIN_VALUE / Double.MIN_VALUE strings for
+                            // the smallest subnormal values; Rust's formatter rounds them more.
+                            if value.abs().to_bits() == 1 {
+                                let sign = if value.is_sign_negative() { "-" } else { "" };
+                                Ok(Some(format!("{sign}{}", $min_value)))
                             } else {
-                                // `formatted` is already in scientific notation and can be split up by E
-                                // in order to add the missing trailing 0 which gets removed for numbers with a fraction of 0.0
-                                let prepare_number: Vec<&str> = formatted.split("E").collect();
+                                let formatted = format!("{value:E}");
 
-                                let coefficient = prepare_number[0];
+                                if formatted.contains(".") {
+                                    Ok(Some(formatted))
+                                } else {
+                                    // `formatted` is already in scientific notation and can be split up by E
+                                    // in order to add the missing trailing 0 which gets removed for numbers with a fraction of 0.0
+                                    let prepare_number: Vec<&str> = formatted.split("E").collect();
 
-                                let exponent = prepare_number[1];
+                                    let coefficient = prepare_number[0];
 
-                                Ok(Some(format!("{coefficient}.0E{exponent}")))
+                                    let exponent = prepare_number[1];
+
+                                    Ok(Some(format!("{coefficient}.0E{exponent}")))
+                                }
                             }
                         }
                         Some(value) => Ok(Some(value.to_string())),
@@ -675,7 +682,7 @@ pub(crate) fn spark_cast_float64_to_utf8<OffsetSize>(
 where
     OffsetSize: OffsetSizeTrait,
 {
-    cast_float_to_string!(from, _eval_mode, f64, Float64Array, OffsetSize)
+    cast_float_to_string!(from, _eval_mode, f64, Float64Array, OffsetSize, "4.9E-324")
 }
 
 pub(crate) fn spark_cast_float32_to_utf8<OffsetSize>(
@@ -685,7 +692,7 @@ pub(crate) fn spark_cast_float32_to_utf8<OffsetSize>(
 where
     OffsetSize: OffsetSizeTrait,
 {
-    cast_float_to_string!(from, _eval_mode, f32, Float32Array, OffsetSize)
+    cast_float_to_string!(from, _eval_mode, f32, Float32Array, OffsetSize, "1.4E-45")
 }
 
 fn spark_format_float<F: num::Float + std::fmt::Display + std::fmt::UpperExp>(
@@ -1221,6 +1228,27 @@ mod tests {
         let result =
             spark_cast_int_to_int(&array, EvalMode::Ansi, &DataType::Int64, &DataType::Int32);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_spark_cast_float_min_value_to_string() {
+        let float_array: ArrayRef = Arc::new(Float32Array::from(vec![
+            Some(f32::from_bits(1)),
+            Some(-f32::from_bits(1)),
+        ]));
+        let result = spark_cast_float32_to_utf8::<i32>(&float_array, EvalMode::Legacy).unwrap();
+        let strings = result.as_string::<i32>();
+        assert_eq!(strings.value(0), "1.4E-45");
+        assert_eq!(strings.value(1), "-1.4E-45");
+
+        let double_array: ArrayRef = Arc::new(Float64Array::from(vec![
+            Some(f64::from_bits(1)),
+            Some(-f64::from_bits(1)),
+        ]));
+        let result = spark_cast_float64_to_utf8::<i32>(&double_array, EvalMode::Legacy).unwrap();
+        let strings = result.as_string::<i32>();
+        assert_eq!(strings.value(0), "4.9E-324");
+        assert_eq!(strings.value(1), "-4.9E-324");
     }
 
     #[test]

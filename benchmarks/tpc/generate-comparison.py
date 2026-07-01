@@ -18,11 +18,15 @@
 import argparse
 import json
 import logging
+import os
 import matplotlib.pyplot as plt
 import numpy as np
+import re
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+QUERY_KEY_RE = re.compile(r'^(\d+)([a-z]*)$')
 
 def geomean(data):
     return np.prod(data) ** (1 / len(data))
@@ -34,19 +38,20 @@ def get_durations(result, query_key):
         return value["durations"]
     return value
 
+def query_sort_key(key):
+    """Sort key for query labels like "14", "14a", "14b" so sub-queries sit between 14 and 15."""
+    m = QUERY_KEY_RE.match(str(key))
+    if m:
+        return (int(m.group(1)), m.group(2))
+    return (float('inf'), str(key))
+
 def get_all_queries(results):
-    """Return the sorted union of all query keys across all result sets."""
+    """Return the sorted union of query keys across all result sets, as strings."""
     all_keys = set()
     for result in results:
         all_keys.update(result.keys())
-    # Filter to numeric query keys and sort numerically
-    numeric_keys = []
-    for k in all_keys:
-        try:
-            numeric_keys.append(int(k))
-        except ValueError:
-            pass
-    return sorted(numeric_keys)
+    query_keys = [str(k) for k in all_keys if QUERY_KEY_RE.match(str(k))]
+    return sorted(query_keys, key=query_sort_key)
 
 def get_common_queries(results, labels):
     """Return queries present in ALL result sets, warning about queries missing from some files."""
@@ -92,7 +97,7 @@ def check_result_consistency(results, labels, benchmark):
                 details = ", ".join(f"{label}={h}" for label, h in hashes)
                 logger.warning(f"Query {query}: result hash mismatch: {details}")
 
-def generate_query_rel_speedup_chart(baseline, comparison, label1: str, label2: str, benchmark: str, title: str, common_queries=None):
+def generate_query_rel_speedup_chart(baseline, comparison, label1: str, label2: str, benchmark: str, title: str, common_queries=None, output_dir: str = '.'):
     if common_queries is None:
         common_queries = range(1, query_count(benchmark)+1)
     results = []
@@ -137,19 +142,15 @@ def generate_query_rel_speedup_chart(baseline, comparison, label1: str, label2: 
     ax.axhline(0, color='black', linewidth=0.8)
     min_value = (min(speedups) // 100) * 100
     max_value = ((max(speedups) // 100) + 1) * 100 + 50
-    if benchmark == "tpch":
-        ax.set_ylim(min_value, max_value)
-    else:
-        # TODO improve this
-        ax.set_ylim(-250, 300)
+    ax.set_ylim(min_value, max_value)
 
     # Show grid for better readability
     ax.yaxis.grid(True)
 
     # Save the plot as an image file
-    plt.savefig(f'{benchmark}_queries_speedup_rel.png', format='png')
+    plt.savefig(os.path.join(output_dir, f'{benchmark}_queries_speedup_rel.png'), format='png')
 
-def generate_query_abs_speedup_chart(baseline, comparison, label1: str, label2: str, benchmark: str, title: str, common_queries=None):
+def generate_query_abs_speedup_chart(baseline, comparison, label1: str, label2: str, benchmark: str, title: str, common_queries=None, output_dir: str = '.'):
     if common_queries is None:
         common_queries = range(1, query_count(benchmark)+1)
     results = []
@@ -197,9 +198,9 @@ def generate_query_abs_speedup_chart(baseline, comparison, label1: str, label2: 
     ax.yaxis.grid(True)
 
     # Save the plot as an image file
-    plt.savefig(f'{benchmark}_queries_speedup_abs.png', format='png')
+    plt.savefig(os.path.join(output_dir, f'{benchmark}_queries_speedup_abs.png'), format='png')
 
-def generate_query_comparison_chart(results, labels, benchmark: str, title: str, common_queries=None):
+def generate_query_comparison_chart(results, labels, benchmark: str, title: str, common_queries=None, output_dir: str = '.'):
     if common_queries is None:
         common_queries = range(1, query_count(benchmark)+1)
     queries = []
@@ -235,9 +236,9 @@ def generate_query_comparison_chart(results, labels, benchmark: str, title: str,
     ax.legend()
 
     # Save the plot as an image file
-    plt.savefig(f'{benchmark}_queries_compare.png', format='png')
+    plt.savefig(os.path.join(output_dir, f'{benchmark}_queries_compare.png'), format='png')
 
-def generate_summary(results, labels, benchmark: str, title: str, common_queries=None):
+def generate_summary(results, labels, benchmark: str, title: str, common_queries=None, output_dir: str = '.'):
     if common_queries is None:
         common_queries = range(1, query_count(benchmark)+1)
     timings = []
@@ -267,7 +268,7 @@ def generate_summary(results, labels, benchmark: str, title: str, common_queries
         yval = bar.get_height()
         ax.text(bar.get_x() + bar.get_width() / 2.0, yval, f'{yval}', va='bottom')  # va: vertical alignment
 
-    plt.savefig(f'{benchmark}_allqueries.png', format='png')
+    plt.savefig(os.path.join(output_dir, f'{benchmark}_allqueries.png'), format='png')
 
 def query_count(benchmark: str):
     if benchmark == "tpch":
@@ -277,7 +278,7 @@ def query_count(benchmark: str):
     else:
         raise "invalid benchmark name"
 
-def main(files, labels, benchmark: str, title: str):
+def main(files, labels, benchmark: str, title: str, output_dir: str = '.'):
     results = []
     for filename in files:
         with open(filename) as f:
@@ -287,11 +288,11 @@ def main(files, labels, benchmark: str, title: str):
     if not common_queries:
         logger.error("No queries found in common across all result files")
         return
-    generate_summary(results, labels, benchmark, title, common_queries)
-    generate_query_comparison_chart(results, labels, benchmark, title, common_queries)
+    generate_summary(results, labels, benchmark, title, common_queries, output_dir=output_dir)
+    generate_query_comparison_chart(results, labels, benchmark, title, common_queries, output_dir=output_dir)
     if len(files) == 2:
-        generate_query_abs_speedup_chart(results[0], results[1], labels[0], labels[1], benchmark, title, common_queries)
-        generate_query_rel_speedup_chart(results[0], results[1], labels[0], labels[1], benchmark, title, common_queries)
+        generate_query_abs_speedup_chart(results[0], results[1], labels[0], labels[1], benchmark, title, common_queries, output_dir=output_dir)
+        generate_query_rel_speedup_chart(results[0], results[1], labels[0], labels[1], benchmark, title, common_queries, output_dir=output_dir)
 
 if __name__ == '__main__':
     argparse = argparse.ArgumentParser(description='Generate comparison')
@@ -299,5 +300,6 @@ if __name__ == '__main__':
     argparse.add_argument('--labels', nargs='+', type=str, help='Labels')
     argparse.add_argument('--benchmark', type=str, help='Benchmark name (tpch or tpcds)')
     argparse.add_argument('--title', type=str, help='Chart title')
+    argparse.add_argument('--output-dir', type=str, default='.', help='Directory to write PNGs to (default: cwd)')
     args = argparse.parse_args()
-    main(args.filenames, args.labels, args.benchmark, args.title)
+    main(args.filenames, args.labels, args.benchmark, args.title, output_dir=args.output_dir)

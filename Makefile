@@ -68,28 +68,28 @@ endif
 core-amd64:
 	rustup target add x86_64-apple-darwin
 	cd native && RUSTFLAGS="-Ctarget-cpu=skylake" CC=o64-clang CXX=o64-clang++ cargo build --target x86_64-apple-darwin --release $(FEATURES_ARG)
-	mkdir -p common/target/classes/org/apache/comet/darwin/x86_64
-	cp native/target/x86_64-apple-darwin/release/libcomet.dylib common/target/classes/org/apache/comet/darwin/x86_64
+	mkdir -p spark/target/classes/org/apache/comet/darwin/x86_64
+	cp native/target/x86_64-apple-darwin/release/libcomet.dylib spark/target/classes/org/apache/comet/darwin/x86_64
 	cd native && RUSTFLAGS="-Ctarget-cpu=x86-64-v3" cargo build --release $(FEATURES_ARG)
-	mkdir -p common/target/classes/org/apache/comet/linux/amd64
-	cp native/target/release/libcomet.so common/target/classes/org/apache/comet/linux/amd64
-	jar -cf common/target/comet-native-x86_64.jar \
-		-C common/target/classes/org/apache/comet darwin \
-		-C common/target/classes/org/apache/comet linux
-	./dev/deploy-file common/target/comet-native-x86_64.jar comet-native-x86_64${COMET_CLASSIFIER} jar
+	mkdir -p spark/target/classes/org/apache/comet/linux/amd64
+	cp native/target/release/libcomet.so spark/target/classes/org/apache/comet/linux/amd64
+	jar -cf spark/target/comet-native-x86_64.jar \
+		-C spark/target/classes/org/apache/comet darwin \
+		-C spark/target/classes/org/apache/comet linux
+	./dev/deploy-file spark/target/comet-native-x86_64.jar comet-native-x86_64${COMET_CLASSIFIER} jar
 
 core-arm64:
 	rustup target add aarch64-apple-darwin
 	cd native && RUSTFLAGS="-Ctarget-cpu=apple-m1" CC=arm64-apple-darwin21.4-clang CXX=arm64-apple-darwin21.4-clang++ CARGO_FEATURE_NEON=1 cargo build --target aarch64-apple-darwin --release $(FEATURES_ARG)
-	mkdir -p common/target/classes/org/apache/comet/darwin/aarch64
-	cp native/target/aarch64-apple-darwin/release/libcomet.dylib common/target/classes/org/apache/comet/darwin/aarch64
+	mkdir -p spark/target/classes/org/apache/comet/darwin/aarch64
+	cp native/target/aarch64-apple-darwin/release/libcomet.dylib spark/target/classes/org/apache/comet/darwin/aarch64
 	cd native && RUSTFLAGS="-Ctarget-cpu=neoverse-n1" cargo build --release $(FEATURES_ARG)
-	mkdir -p common/target/classes/org/apache/comet/linux/aarch64
-	cp native/target/release/libcomet.so common/target/classes/org/apache/comet/linux/aarch64
-	jar -cf common/target/comet-native-aarch64.jar \
-		-C common/target/classes/org/apache/comet darwin \
-		-C common/target/classes/org/apache/comet linux
-	./dev/deploy-file common/target/comet-native-aarch64.jar comet-native-aarch64${COMET_CLASSIFIER} jar
+	mkdir -p spark/target/classes/org/apache/comet/linux/aarch64
+	cp native/target/release/libcomet.so spark/target/classes/org/apache/comet/linux/aarch64
+	jar -cf spark/target/comet-native-aarch64.jar \
+		-C spark/target/classes/org/apache/comet darwin \
+		-C spark/target/classes/org/apache/comet linux
+	./dev/deploy-file spark/target/comet-native-aarch64.jar comet-native-aarch64${COMET_CLASSIFIER} jar
 
 release-linux: clean
 	rustup target add aarch64-apple-darwin x86_64-apple-darwin

@@ -25,7 +25,6 @@ use datafusion::common::{internal_err, Result, ScalarValue};
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::ColumnarValue;
 use regex::Regex;
-use std::any::Any;
 use std::fmt::{Display, Formatter};
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
@@ -102,10 +101,6 @@ impl Display for RLike {
 }
 
 impl PhysicalExpr for RLike {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn data_type(&self, _input_schema: &Schema) -> Result<DataType> {
         Ok(DataType::Boolean)
     }

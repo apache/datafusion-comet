@@ -25,7 +25,10 @@ Before you start, have a look through [these slides](https://docs.google.com/pre
 
 ## Finding an Expression to Add
 
-You may have a specific expression in mind that you'd like to add, but if not, you can review the [expression coverage document](spark_expressions_support.md) to see which expressions are not yet supported.
+You may have a specific expression in mind that you'd like to add, but if not, you can review [Supported Spark Expressions](../user-guide/latest/expressions.md) in the user guide to see which expressions are not yet supported. For deep-dive audit notes on expressions that are already supported, see the [Expression Audits](expression-audits/index.md) section.
+
+When you add or change an expression, update its status in
+[Supported Spark Expressions](../user-guide/latest/expressions.md).
 
 ## Implementing the Expression
 
@@ -83,6 +86,40 @@ For simple scalar functions that map directly to a DataFusion function, you can 
 ```scala
 classOf[Cos] -> CometScalarFunction("cos")
 ```
+
+#### When to set the return type explicitly
+
+`CometScalarFunction(name)` and the lower-level `scalarFunctionExprToProto(name, args)` helper both produce a protobuf `ScalarFunc` message **without** a `return_type` field. That is fine when the function name does not collide with a DataFusion built-in, or when it does collide and the Spark and DataFusion versions take the same arity and types. In that case the native planner consults DataFusion's UDF registry only to resolve the return type, then swaps in Comet's UDF for execution.
+
+It is **not** fine when the Spark function and the DataFusion built-in differ in arity or input types. The native planner calls `coerce_types` and `return_field_from_args` on DataFusion's UDF before Comet's UDF is selected, and a signature mismatch fails the query at execution time with an error like:
+
+```
+org.apache.comet.CometNativeException: Error from DataFusion:
+Function 'levenshtein' expects 2 arguments but received 3.
+```
+
+The classic case is `levenshtein`. Spark accepts an optional 3rd `threshold` argument, DataFusion's built-in is 2-arg only, so the 3-arg form fails native execution unless the serde sets the return type explicitly. Other names that exist in both engines with potentially different signatures include `concat`, `coalesce`, `sha2`, and `regexp_replace`. If you are adding a function whose name is shared with `datafusion-functions`, check the upstream signature before deciding how to serialize.
+
+To avoid the registry lookup, write a custom `CometExpressionSerde` and use `scalarFunctionExprToProtoWithReturnType`, passing the Spark expression's declared `dataType`:
+
+```scala
+object CometLevenshtein extends CometExpressionSerde[Levenshtein] {
+  override def convert(
+      expr: Levenshtein,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val childExprs = expr.children.map(exprToProtoInternal(_, inputs, binding))
+    val optExpr = scalarFunctionExprToProtoWithReturnType(
+      "levenshtein",
+      expr.dataType,
+      false,
+      childExprs: _*)
+    optExprWithInfo(optExpr, expr, expr.children: _*)
+  }
+}
+```
+
+When the return type is set on the proto, the native planner skips the registry lookup entirely and routes straight to the Comet UDF registered in `create_comet_physical_fun_with_eval_mode`.
 
 #### Registering the Expression Handler
 
@@ -219,7 +256,7 @@ In addition to `getSupportLevel`, which governs runtime planning decisions, the 
 - `getIncompatibleReasons(): Seq[String]` - Reasons the expression may produce different results than Spark.
 - `getUnsupportedReasons(): Seq[String]` - Reasons the expression, or certain usages of it, may not be supported by Comet.
 
-These methods do not affect runtime behavior. They are called by `GenerateDocs` (`spark/src/main/scala/org/apache/comet/GenerateDocs.scala`) when building the user-facing Compatibility Guide pages under `docs/source/user-guide/latest/compatibility/expressions/` (for example, `math.md`, `datetime.md`, `array.md`, `aggregate.md`, `struct.md`). Each reason is rendered as a bullet in the corresponding page.
+These methods do not affect runtime behavior. They are called by `GenerateDocs` (`spark/src/main/scala/org/apache/comet/GenerateDocs.scala`) when building the user-facing Compatibility Guide pages. The Markdown templates live in `docs/source/user-guide/latest/compatibility/expressions/_category_template/` (for example, `math.md`, `datetime.md`, `array.md`, `aggregate.md`, `struct.md`); `docs/build.sh` copies them into per-Spark-version subdirectories (`spark-3.4/`, `spark-3.5/`, `spark-4.0/`, `spark-4.1/`) and runs `GenerateDocs` once per profile, so the published page reflects the expressions registered for that Spark version. Each reason is rendered as a bullet in the corresponding page.
 
 Key differences from `getSupportLevel`:
 

@@ -22,14 +22,13 @@ package org.apache.comet.exec
 import java.nio.file.{Files, Paths}
 
 import scala.reflect.runtime.universe._
-import scala.util.Random
 
 import org.scalactic.source.Position
 import org.scalatest.Tag
 
 import org.apache.hadoop.fs.Path
 import org.apache.spark.{Partitioner, SparkConf}
-import org.apache.spark.sql.{CometTestBase, DataFrame, RandomDataGenerator, Row}
+import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.comet.execution.shuffle.{CometShuffleDependency, CometShuffleExchangeExec, CometShuffleManager}
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanHelper, AQEShuffleReadExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
@@ -94,22 +93,16 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
         """.stripMargin))
   }
 
-  test("Fallback to Spark for unsupported input besides ordering") {
-    val dataGenerator = RandomDataGenerator
-      .forType(
-        dataType = NullType,
-        nullable = true,
-        new Random(System.nanoTime()),
-        validJulianDatetime = false)
-      .get
+  test("columnar shuffle with NullType passthrough column") {
+    val df = sql("SELECT x, y FROM VALUES ('a', null), ('b', null), ('c', null) AS t(x, y)")
+    val shuffled = df.repartition(2, $"x")
+    checkShuffleAnswer(shuffled, 1)
+  }
 
-    val schema = new StructType()
-      .add("index", IntegerType, nullable = false)
-      .add("col", NullType, nullable = true)
-    val rdd =
-      spark.sparkContext.parallelize((1 to 20).map(i => Row(i, dataGenerator())))
-    val df = spark.createDataFrame(rdd, schema).orderBy("index").coalesce(1)
-    checkSparkAnswer(df)
+  test("columnar shuffle with Map[_, NullType] column") {
+    val df = sql("SELECT id, map(id, null) AS m FROM VALUES (1), (2), (3) AS t(id)")
+    val shuffled = df.repartition(2, $"id")
+    checkShuffleAnswer(shuffled, 1)
   }
 
   test("columnar shuffle on nested struct including nulls") {
@@ -152,6 +145,10 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
   }
 
   test("columnar shuffle on array/struct map key/value") {
+    // Spark 4.0 normalizes maps used as shuffle keys with mapsort(...). Comet's map_sort
+    // relies on Arrow's sort_to_indices, which only supports scalar key types, so a map
+    // with array or struct keys cannot be sorted natively and the shuffle falls back.
+    val complexKeyShuffles = if (isSpark40Plus) 0 else 1
     Seq("false", "true").foreach { execEnabled =>
       Seq(10, 201).foreach { numPartitions =>
         Seq("1.0", "10.0").foreach { ratio =>
@@ -164,13 +161,7 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
                 .repartition(numPartitions, $"_1", $"_2")
                 .sortWithinPartitions($"_2")
 
-              if (isSpark40Plus) {
-                // https://github.com/apache/datafusion-comet/issues/1941
-                // Spark 4.0 introduces a mapsort which falls back
-                checkShuffleAnswer(df, 0)
-              } else {
-                checkShuffleAnswer(df, 1)
-              }
+              checkShuffleAnswer(df, complexKeyShuffles)
             }
 
             withParquetTable((0 until 50).map(i => (Map(i -> Seq(i, i + 1)), i + 1)), "tbl") {
@@ -179,13 +170,7 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
                 .repartition(numPartitions, $"_1", $"_2")
                 .sortWithinPartitions($"_2")
 
-              if (isSpark40Plus) {
-                // https://github.com/apache/datafusion-comet/issues/1941
-                // Spark 4.0 introduces a mapsort which falls back
-                checkShuffleAnswer(df, 0)
-              } else {
-                checkShuffleAnswer(df, 1)
-              }
+              checkShuffleAnswer(df, 1)
             }
 
             withParquetTable((0 until 50).map(i => (Map((i, i.toString) -> i), i + 1)), "tbl") {
@@ -194,28 +179,16 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
                 .repartition(numPartitions, $"_1", $"_2")
                 .sortWithinPartitions($"_2")
 
-              if (isSpark40Plus) {
-                // https://github.com/apache/datafusion-comet/issues/1941
-                // Spark 4.0 introduces a mapsort which falls back
-                checkShuffleAnswer(df, 0)
-              } else {
-                checkShuffleAnswer(df, 1)
-              }
+              checkShuffleAnswer(df, complexKeyShuffles)
             }
 
-            withParquetTable((0 until 50).map(i => (Map(i -> (i, i.toString)), i + 1)), "tbl") {
+            withParquetTable((0 until 50).map(i => (Map(i -> ((i, i.toString))), i + 1)), "tbl") {
               val df = sql("SELECT * FROM tbl")
                 .filter($"_2" > 10)
                 .repartition(numPartitions, $"_1", $"_2")
                 .sortWithinPartitions($"_2")
 
-              if (isSpark40Plus) {
-                // https://github.com/apache/datafusion-comet/issues/1941
-                // Spark 4.0 introduces a mapsort which falls back
-                checkShuffleAnswer(df, 0)
-              } else {
-                checkShuffleAnswer(df, 1)
-              }
+              checkShuffleAnswer(df, 1)
             }
           }
         }
@@ -238,13 +211,11 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
                 .repartition(numPartitions, $"_1", $"_2")
                 .sortWithinPartitions($"_2")
 
-              if (isSpark40Plus) {
-                // https://github.com/apache/datafusion-comet/issues/1941
-                // Spark 4.0 introduces a mapsort which falls back
-                checkShuffleAnswer(df, 0)
-              } else {
-                checkShuffleAnswer(df, 1)
-              }
+              // Spark 4.0 normalizes shuffle keys containing array<map> via
+              // transform(arr, x -> mapsort(x)). Comet routes the higher-order
+              // transform through the codegen dispatcher, so the partitioning
+              // expression stays native and the shuffle runs as Comet shuffle.
+              checkShuffleAnswer(df, 1)
             }
           }
         }
@@ -344,78 +315,54 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
   }
 
   test("columnar shuffle on map [bool]") {
-    // https://github.com/apache/datafusion-comet/issues/1941
-    assume(!isSpark40Plus)
     columnarShuffleOnMapTest(50, Seq(true, false))
   }
 
   test("columnar shuffle on map [byte]") {
-    // https://github.com/apache/datafusion-comet/issues/1941
-    assume(!isSpark40Plus)
     columnarShuffleOnMapTest(50, Seq(0.toByte, 1.toByte))
   }
 
   test("columnar shuffle on map [short]") {
-    // https://github.com/apache/datafusion-comet/issues/1941
-    assume(!isSpark40Plus)
     columnarShuffleOnMapTest(50, Seq(0.toShort, 1.toShort))
   }
 
   test("columnar shuffle on map [int]") {
-    // https://github.com/apache/datafusion-comet/issues/1941
-    assume(!isSpark40Plus)
     columnarShuffleOnMapTest(50, Seq(0, 1))
   }
 
   test("columnar shuffle on map [long]") {
-    // https://github.com/apache/datafusion-comet/issues/1941
-    assume(!isSpark40Plus)
     columnarShuffleOnMapTest(50, Seq(0.toLong, 1.toLong))
   }
 
   test("columnar shuffle on map [float]") {
-    // https://github.com/apache/datafusion-comet/issues/1941
-    assume(!isSpark40Plus)
     columnarShuffleOnMapTest(50, Seq(0.toFloat, 1.toFloat))
   }
 
   test("columnar shuffle on map [double]") {
-    // https://github.com/apache/datafusion-comet/issues/1941
-    assume(!isSpark40Plus)
     columnarShuffleOnMapTest(50, Seq(0.toDouble, 1.toDouble))
   }
 
   test("columnar shuffle on map [date]") {
-    // https://github.com/apache/datafusion-comet/issues/1941
-    assume(!isSpark40Plus)
     columnarShuffleOnMapTest(50, Seq(new java.sql.Date(0.toLong), new java.sql.Date(1.toLong)))
   }
 
   test("columnar shuffle on map [timestamp]") {
-    // https://github.com/apache/datafusion-comet/issues/1941
-    assume(!isSpark40Plus)
     columnarShuffleOnMapTest(
       50,
       Seq(new java.sql.Timestamp(0.toLong), new java.sql.Timestamp(1.toLong)))
   }
 
   test("columnar shuffle on map [decimal]") {
-    // https://github.com/apache/datafusion-comet/issues/1941
-    assume(!isSpark40Plus)
     columnarShuffleOnMapTest(
       50,
       Seq(new java.math.BigDecimal(0.toLong), new java.math.BigDecimal(1.toLong)))
   }
 
   test("columnar shuffle on map [string]") {
-    // https://github.com/apache/datafusion-comet/issues/1941
-    assume(!isSpark40Plus)
     columnarShuffleOnMapTest(50, Seq(0.toString, 1.toString))
   }
 
   test("columnar shuffle on map [binary]") {
-    // https://github.com/apache/datafusion-comet/issues/1941
-    assume(!isSpark40Plus)
     columnarShuffleOnMapTest(50, Seq(0.toString.getBytes(), 1.toString.getBytes()))
   }
 
@@ -572,7 +519,7 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
     }
   }
 
-  test("fix: StreamReader should always set useDecimal128 as true") {
+  test("fix: StreamReader should read shuffled decimal columns as Decimal128") {
     Seq(10, 201).foreach { numPartitions =>
       withSQLConf(CometConf.COMET_EXEC_ENABLED.key -> "true") {
         withTempPath { dir =>
@@ -767,6 +714,26 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
     }
   }
 
+  test("columnar shuffle encode_time metric should be tracked (issue-1212)") {
+    // Use enough rows so encode time is measurably > 0
+    withParquetTable((0 until 1000).map(i => (i, (i + 1).toLong)), "tbl") {
+      val shuffled = sql("SELECT * FROM tbl").repartition(10, $"_1")
+      shuffled.collect()
+
+      val metrics = find(shuffled.queryExecution.executedPlan) {
+        case _: CometShuffleExchangeExec => true
+        case _ => false
+      }.map(_.metrics).get
+
+      assert(
+        metrics.contains("encode_time"),
+        "encode_time metric must exist in CometColumnarExchange")
+      assert(
+        metrics("encode_time").value > 0,
+        s"encode_time should be > 0 for columnar shuffle, got ${metrics("encode_time").value}")
+    }
+  }
+
   test("columnar shuffle on null struct fields") {
     withTempDir { dir =>
       val testData = "{}\n"
@@ -791,6 +758,36 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
       assert(df.count() == 1)
       val row = df.collect()(0)
       assert(row.getAs[org.apache.spark.sql.Row]("metaData") == null)
+    }
+  }
+
+  // Regression test for https://github.com/apache/datafusion-comet/issues/4521.
+  //
+  // Spark's `cast(BinaryType -> StringType)` is a zero-copy reinterpret (and `UnsafeRow`'s
+  // string accessor performs no UTF-8 validation), so a `StringType` column can legitimately
+  // hold arbitrary non-UTF-8 bytes that Spark treats as opaque. Comet's columnar (JVM) shuffle
+  // converts those `UnsafeRow`s to Arrow natively (`process_sorted_row_partition` -> `get_string`),
+  // which used to decode with `from_utf8(..).unwrap()` and panic on such rows. It now decodes
+  // lossily (U+FFFD replacements), matching how Spark renders the same bytes.
+  test("columnar shuffle tolerates non-UTF-8 bytes in a StringType column") {
+    withParquetTable(
+      Seq(
+        // 0xFF and 0xFE are never valid UTF-8 lead bytes; each decodes to a single U+FFFD in
+        // both Spark and Comet (so the lossy results match exactly).
+        (1, Array[Byte](0xff.toByte, 0xfe.toByte, 'A'.toByte)),
+        // 0x80 is a stray continuation byte -> one U+FFFD, followed by valid ASCII.
+        (2, Array[Byte](0x80.toByte, 'B'.toByte)),
+        // A fully valid UTF-8 row exercises the zero-cost borrow path.
+        (3, "valid".getBytes("UTF-8"))),
+      "tbl") {
+      // Disable Comet's own Cast so the `cast(binary -> string)` runs in Spark and the raw bytes
+      // reach the shuffle inside a JVM UnsafeRow. (If Comet performed the cast it would produce a
+      // pre-sanitized Arrow string array and never exercise get_string.)
+      withSQLConf(CometConf.getExprEnabledConfigKey("Cast") -> "false") {
+        val df = sql("SELECT _1, CAST(_2 AS STRING) AS s FROM tbl")
+        val shuffled = df.repartition(2, $"_1")
+        checkShuffleAnswer(shuffled, 1)
+      }
     }
   }
 

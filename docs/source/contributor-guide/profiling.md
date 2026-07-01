@@ -276,8 +276,8 @@ objects are created during data transfer between JVM and native code:
 $ASYNC_PROFILER_HOME/bin/asprof -e alloc -d 60 -f alloc-profile.html <pid>
 ```
 
-Look for allocations in `CometExecIterator`, `CometBatchIterator`, and Arrow vector
-classes.
+Look for allocations in `CometExecIterator` (native to JVM output), `CometArrowStream` (JVM to native
+input export), and Arrow vector classes.
 
 ### Isolate Rust-only performance issues
 

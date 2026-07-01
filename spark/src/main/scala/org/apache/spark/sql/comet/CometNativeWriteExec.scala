@@ -25,9 +25,11 @@ import org.apache.hadoop.fs.Path
 import org.apache.hadoop.mapreduce.{Job, TaskAttemptContext, TaskAttemptID, TaskID, TaskType}
 import org.apache.hadoop.mapreduce.task.TaskAttemptContextImpl
 import org.apache.spark.TaskContext
-import org.apache.spark.internal.io.FileCommitProtocol
+import org.apache.spark.internal.io.{FileCommitProtocol, FileNameSpec}
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
+import org.apache.spark.sql.comet.execution.arrow.CometArrowStream
+import org.apache.spark.sql.comet.util.{Utils => CometUtils}
 import org.apache.spark.sql.execution.{SparkPlan, UnaryExecNode}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.vectorized.ColumnarBatch
@@ -177,7 +179,9 @@ case class CometNativeWriteExec(
           committer.setupTask(taskContext)
 
           // Get the work directory for temp files
-          val workPath = committer.newTaskTempFile(taskContext, None, "")
+          // Spark 4.1 made the (taskContext, dir, ext: String) overload throw by default;
+          // the FileNameSpec overload is the supported one and exists in 3.4+.
+          val workPath = committer.newTaskTempFile(taskContext, None, FileNameSpec("", ""))
           val workDir = new Path(workPath).getParent.toString
 
           (Some(workDir), Some((committer, taskContext)), null)
@@ -210,7 +214,10 @@ case class CometNativeWriteExec(
 
       val execIterator = new CometExecIterator(
         CometExec.newIterId,
-        Seq(iter),
+        CometArrowStream.inputObjects(
+          iter,
+          CometUtils.fromAttributes(child.output),
+          "CometNativeWriteExec"),
         numOutputCols,
         planBytes,
         nativeMetrics,

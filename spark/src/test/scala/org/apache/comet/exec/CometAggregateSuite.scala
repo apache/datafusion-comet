@@ -22,6 +22,7 @@ package org.apache.comet.exec
 import scala.util.Random
 
 import org.apache.hadoop.fs.Path
+import org.apache.spark.SparkConf
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.catalyst.expressions.Cast
 import org.apache.spark.sql.catalyst.optimizer.EliminateSorts
@@ -33,6 +34,7 @@ import org.apache.spark.sql.types.{DataTypes, StructField, StructType}
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometConf.COMET_EXEC_STRICT_FLOATING_POINT
+import org.apache.comet.CometSparkSessionExtensions.isSpark41Plus
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator, ParquetGenerator, SchemaGenOptions}
 
 /**
@@ -40,6 +42,11 @@ import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator, ParquetGener
  */
 class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   import testImplicits._
+
+  // Several aggregate tests exercise overflow behavior expected to wrap around silently;
+  // ANSI-mode variants opt in to ANSI explicitly via withSQLConf.
+  override protected def sparkConf: SparkConf =
+    super.sparkConf.set(SQLConf.ANSI_ENABLED.key, "false")
 
   test("min/max floating point with negative zero") {
     val r = new Random(42)
@@ -408,6 +415,33 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("grouping on struct containing map should fallback to Spark") {
+    assume(isSpark41Plus, "Spark 4.1+ supports grouping on map-containing types")
+    withSQLConf(
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true") {
+      val query =
+        """SELECT col1.data['key']
+          |FROM VALUES
+          |  (NAMED_STRUCT('data', MAP('key', 'value', 'num', '42'))),
+          |  (NAMED_STRUCT('data', MAP('key', 'other', 'num', '7')))
+          |t (col1)
+          |GROUP BY col1
+          |HAVING col1.data['num'] IS NOT NULL
+          |ORDER BY col1.data['key']
+          |""".stripMargin
+
+      val (_, cometPlan) =
+        checkSparkAnswerAndFallbackReason(
+          query,
+          "Grouping on map-containing types is not supported")
+
+      assert(
+        stripAQEPlan(cometPlan).collect { case s: CometHashAggregateExec => s }.isEmpty,
+        "Expected aggregate to fall back to Spark for grouping on Struct(Map(...))")
+    }
+  }
+
   test("simple SUM, COUNT, MIN, MAX, AVG with non-distinct + null group keys") {
     Seq(true, false).foreach { dictionaryEnabled =>
       withParquetTable(
@@ -638,15 +672,98 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               dictionaryEnabled) {
               withView("v") {
                 sql("CREATE TEMP VIEW v AS SELECT _1, _2 FROM tbl ORDER BY _1")
-                checkSparkAnswerAndFallbackReason(
+                checkSparkAnswerAndOperator(
                   "SELECT _2, SUM(_1), SUM(DISTINCT _1), MIN(_1), MAX(_1), COUNT(_1)," +
-                    " COUNT(DISTINCT _1), AVG(_1), FIRST(_1), LAST(_1) FROM v GROUP BY _2",
-                  "Unsupported aggregation mode PartialMerge")
+                    " COUNT(DISTINCT _1), AVG(_1)" +
+                    " FROM v GROUP BY _2 ORDER BY _2")
               }
             }
           }
         }
       }
+    }
+  }
+
+  // FIRST/LAST are order-dependent aggregates whose merge result depends on hash table
+  // processing order. In PartialMerge mode, DataFusion's hash table may process rows
+  // in a different order than Spark's, so we fall back to Spark for correctness.
+  // https://github.com/apache/datafusion-comet/issues/4131
+  test("partialMerge - FIRST/LAST with distinct aggregates falls back") {
+    val numValues = 10000
+    Seq(100).foreach { numGroups =>
+      Seq(128).foreach { batchSize =>
+        withSQLConf(
+          SQLConf.COALESCE_PARTITIONS_ENABLED.key -> "true",
+          CometConf.COMET_BATCH_SIZE.key -> batchSize.toString) {
+          withParquetTable(
+            (0 until numValues).map(i => (i, Random.nextInt() % numGroups)),
+            "tbl",
+            false) {
+            withView("v") {
+              sql("CREATE TEMP VIEW v AS SELECT _1, _2 FROM tbl ORDER BY _1")
+              checkSparkAnswerAndFallbackReason(
+                "SELECT _2, FIRST(_1), LAST(_1), COUNT(DISTINCT _1)" +
+                  " FROM v GROUP BY _2 ORDER BY _2",
+                "PartialMerge not supported for aggregates: first, last")
+            }
+          }
+        }
+      }
+    }
+  }
+
+  test("partialMerge - cnt distinct + sum") {
+    withTempDir(dir => {
+      withSQLConf("spark.comet.enabled" -> "false") {
+        withView("t") {
+          sql("""
+              CREATE OR REPLACE TEMP VIEW t (v, v1, i) AS
+              VALUES
+                ('c',  'a',  1),
+                ('c1', 'a1', 1),
+                ('c2', 'a2', 2),
+                ('c3', 'a3', 2),
+                ('c4', 'a4', 2),
+                ('c',  'a',  1),
+                ('c1', 'a1', 1),
+                ('c2', 'a2', 2),
+                ('c3', 'a3', 2),
+                ('c4', 'a4', 2),
+                ('c',  'a',  1),
+                ('c1', 'a1', 1),
+                ('c2', 'a2', 2),
+                ('c3', 'a3', 2),
+                ('c4', 'a4', 2)
+              """)
+          sql("select * from t")
+            .repartition(3)
+            .write
+            .mode("overwrite")
+            .parquet(dir.getAbsolutePath)
+        }
+      }
+
+      withSQLConf(
+        CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+        "spark.comet.exec.shuffle.fallbackToColumnar" -> "false",
+        "spark.comet.enabled" -> "true") {
+        spark.read.parquet(dir.getAbsolutePath).createOrReplaceTempView("t2")
+        checkSparkAnswerAndOperator("SELECT i, sum(v1), count(distinct v) FROM t2 group by i")
+      }
+    })
+  }
+
+  test("partialMerge - distinct + non-distinct aggregates (Expand pattern)") {
+    withParquetTable((1 to 100).map(i => (i, i.toString)), "tbl", false) {
+      checkSparkAnswerAndOperator("SELECT avg(_1), sum(_1), count(distinct _1) FROM tbl")
+
+      checkSparkAnswerAndOperator(
+        "SELECT max(_1), count(distinct _1), sum(distinct _1), sum(1) FROM tbl")
+
+      // Exercises the Expand plan for a non-COUNT distinct (AVG(DISTINCT)) mixed with a
+      // non-distinct aggregate, so the PartialMerge stage has to survive for a float-producing
+      // distinct aggregate.
+      checkSparkAnswerAndOperator("SELECT avg(distinct _1), sum(_1) FROM tbl")
     }
   }
 
@@ -1108,54 +1225,40 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  // TODO enable once https://github.com/apache/datafusion-comet/issues/1267 is implemented
-  ignore("distinct") {
+  test("distinct") {
     withSQLConf(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true") {
       Seq("native", "jvm").foreach { cometShuffleMode =>
         withSQLConf(CometConf.COMET_SHUFFLE_MODE.key -> cometShuffleMode) {
           Seq(true, false).foreach { dictionary =>
             withSQLConf("parquet.enable.dictionary" -> dictionary.toString) {
-              val cometColumnShuffleEnabled = cometShuffleMode == "jvm"
               val table = "test"
               withTable(table) {
                 sql(s"create table $table(col1 int, col2 int, col3 int) using parquet")
                 sql(
                   s"insert into $table values(1, 1, 1), (1, 1, 1), (1, 3, 1), (1, 4, 2), (5, 3, 2)")
 
-                var expectedNumOfCometAggregates = 2
+                checkSparkAnswerAndOperator(s"SELECT DISTINCT(col2) FROM $table")
 
-                checkSparkAnswerAndNumOfAggregates(
-                  s"SELECT DISTINCT(col2) FROM $table",
-                  expectedNumOfCometAggregates)
+                // Keep one explicit aggregate-count assertion so a silent regression in the
+                // middle PartialMerge stage (which used to fall back before this PR) is caught:
+                // all four Spark aggregate stages for COUNT(DISTINCT ...) must remain native.
+                checkSparkAnswerAndNumOfAggregates(s"SELECT COUNT(distinct col2) FROM $table", 4)
 
-                expectedNumOfCometAggregates = 4
+                checkSparkAnswerAndOperator(
+                  s"SELECT COUNT(distinct col2), col1 FROM $table group by col1")
 
-                checkSparkAnswerAndNumOfAggregates(
-                  s"SELECT COUNT(distinct col2) FROM $table",
-                  expectedNumOfCometAggregates)
+                checkSparkAnswerAndOperator(s"SELECT SUM(distinct col2) FROM $table")
 
-                checkSparkAnswerAndNumOfAggregates(
-                  s"SELECT COUNT(distinct col2), col1 FROM $table group by col1",
-                  expectedNumOfCometAggregates)
+                checkSparkAnswerAndOperator(
+                  s"SELECT SUM(distinct col2), col1 FROM $table group by col1")
 
-                checkSparkAnswerAndNumOfAggregates(
-                  s"SELECT SUM(distinct col2) FROM $table",
-                  expectedNumOfCometAggregates)
-
-                checkSparkAnswerAndNumOfAggregates(
-                  s"SELECT SUM(distinct col2), col1 FROM $table group by col1",
-                  expectedNumOfCometAggregates)
-
-                checkSparkAnswerAndNumOfAggregates(
+                checkSparkAnswerAndOperator(
                   "SELECT COUNT(distinct col2), SUM(distinct col2), col1, COUNT(distinct col2)," +
-                    s" SUM(distinct col2) FROM $table group by col1",
-                  expectedNumOfCometAggregates)
+                    s" SUM(distinct col2) FROM $table group by col1")
 
-                expectedNumOfCometAggregates = if (cometColumnShuffleEnabled) 2 else 1
-                checkSparkAnswerAndNumOfAggregates(
+                checkSparkAnswerAndOperator(
                   "SELECT COUNT(col2), MIN(col2), COUNT(DISTINCT col2), SUM(col2)," +
-                    s" SUM(DISTINCT col2), COUNT(DISTINCT col2), col1 FROM $table group by col1",
-                  expectedNumOfCometAggregates)
+                    s" SUM(DISTINCT col2), COUNT(DISTINCT col2), col1 FROM $table group by col1")
               }
             }
           }
@@ -1988,6 +2091,63 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   def getNumCometHashAggregate(df: DataFrame): Int = {
     val sparkPlan = stripAQEPlan(df.queryExecution.executedPlan)
     sparkPlan.collect { case s: CometHashAggregateExec => s }.size
+  }
+
+  test("group by array of map falls back to Spark (issue #4123)") {
+    assume(isSpark41Plus, "Spark 4.1+ supports grouping on map-containing types")
+    withSQLConf(CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+      checkSparkAnswerAndFallbackReason(
+        """SELECT a, COUNT(*)
+          |FROM VALUES
+          |  (ARRAY(MAP('x', 10))),
+          |  (ARRAY(MAP('y', 20))),
+          |  (ARRAY(MAP('x', 10)))
+          |t (a)
+          |GROUP BY a
+          |""".stripMargin,
+        "Grouping on map-containing types is not supported")
+    }
+  }
+
+  // Regression: Catalyst prunes `HashAggregateExec.resultExpressions` to
+  // empty for EXISTS / row-existence-only subqueries. The native HashAggregate's natural
+  // output (the grouping keys) then disagrees with the pruned JVM `output`, leaking through
+  // any boundary that derived its schema from `output`. The fix wraps the aggregate in an
+  // explicit Projection op when natural != declared.
+  //
+  // Surfaced upstream in `subquery/exists-subquery/exists-orderby-limit.sql` (query #19,
+  // an EXISTS over `max(...) GROUP BY state LIMIT 1 OFFSET 2`). The exact `EXISTS-in-WHERE`
+  // shape doesn't reproduce under CometTestBase's optimizer state, but `count(*)` over the
+  // same derived aggregate triggers the equivalent ColumnPruning path locally - we assert
+  // the inner HashAgg's resultExpressions actually got pruned, so a future Spark version
+  // that breaks the trigger fails the test loudly rather than passing silently.
+  test("HashAggregate with catalyst-pruned resultExpressions returns 0-col output") {
+    withTempDir { dir =>
+      val deptPath = new Path(dir.toURI.toString, "dept")
+      spark
+        .sql("""SELECT * FROM VALUES
+               |  (10, 'CA'), (20, 'NY'), (30, 'TX'),
+               |  (40, 'OR'), (50, 'NJ'), (70, 'FL')
+               |AS t(dept_id, state)""".stripMargin)
+        .write
+        .parquet(deptPath.toUri.toString)
+      withParquetTable(deptPath.toUri.toString, "dept") {
+        val sql =
+          """SELECT count(*) FROM (
+            |  SELECT max(dept_id) AS m FROM dept GROUP BY state LIMIT 1 OFFSET 2) sub""".stripMargin
+        val plan = spark.sql(sql).queryExecution.executedPlan
+        val pruned = collectWithSubqueries(plan) {
+          case a: org.apache.spark.sql.execution.aggregate.HashAggregateExec
+              if a.resultExpressions.isEmpty =>
+            a
+          case a: CometHashAggregateExec if a.resultExpressions.isEmpty => a
+        }
+        assert(
+          pruned.nonEmpty,
+          s"Expected a HashAggregateExec with empty resultExpressions in:\n$plan")
+        checkSparkAnswerAndOperator(sql)
+      }
+    }
   }
 
 }

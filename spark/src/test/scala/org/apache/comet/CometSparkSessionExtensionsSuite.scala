@@ -29,6 +29,9 @@ class CometSparkSessionExtensionsSuite extends CometTestBase {
 
   test("isCometLoaded") {
     val conf = new SQLConf
+    // Disable Comet shuffle so this test can focus on other checks without needing
+    // spark.shuffle.manager to be set.
+    conf.setConfString(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key, "false")
 
     conf.setConfString(CometConf.COMET_ENABLED.key, "false")
     assert(!isCometLoaded(conf))
@@ -48,6 +51,25 @@ class CometSparkSessionExtensionsSuite extends CometTestBase {
 
     // Restore the original state
     NativeBase.setLoaded(true)
+  }
+
+  test("isCometLoaded requires CometShuffleManager when shuffle.enabled=true") {
+    val conf = new SQLConf
+    conf.setConfString(CometConf.COMET_ENABLED.key, "true")
+
+    // Default: shuffle.enabled=true. Without spark.shuffle.manager set, Comet must be disabled.
+    assert(!isCometLoaded(conf))
+
+    // Opt out: shuffle.enabled=false. Comet should load (assumes native lib is available).
+    conf.setConfString(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key, "false")
+    assert(isCometLoaded(conf))
+
+    // shuffle.enabled=true with the Comet shuffle manager registered: Comet should load.
+    conf.setConfString(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key, "true")
+    conf.setConfString(
+      "spark.shuffle.manager",
+      "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
+    assert(isCometLoaded(conf))
   }
 
   test("Arrow properties") {

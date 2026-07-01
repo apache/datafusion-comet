@@ -19,7 +19,7 @@
 
 use super::operators::ExecutionError;
 use crate::errors::ExpressionError;
-use arrow::datatypes::{DataType as ArrowDataType, TimeUnit};
+use arrow::datatypes::{DataType as ArrowDataType, IntervalUnit, TimeUnit};
 use arrow::datatypes::{Field, Fields};
 use datafusion_comet_proto::{
     spark_config, spark_expression,
@@ -96,6 +96,12 @@ pub fn to_arrow_datatype(dt_value: &DataType) -> ArrowDataType {
         }
         DataTypeId::TimestampNtz => ArrowDataType::Timestamp(TimeUnit::Microsecond, None),
         DataTypeId::Date => ArrowDataType::Date32,
+        DataTypeId::Time => ArrowDataType::Time64(TimeUnit::Nanosecond),
+        // Spark's YearMonthIntervalType maps to Arrow Interval(YearMonth) (int32 months).
+        DataTypeId::YearMonthInterval => ArrowDataType::Interval(IntervalUnit::YearMonth),
+        // Spark's DayTimeIntervalType stores microseconds in an int64, which matches Arrow
+        // Duration(Microsecond) rather than the lossy Interval(DayTime) {days, millis} layout.
+        DataTypeId::DayTimeInterval => ArrowDataType::Duration(TimeUnit::Microsecond),
         DataTypeId::Null => ArrowDataType::Null,
         DataTypeId::List => match dt_value
             .type_info
@@ -157,11 +163,19 @@ pub fn to_arrow_datatype(dt_value: &DataType) -> ArrowDataType {
                     .iter()
                     .enumerate()
                     .map(|(idx, name)| {
-                        Field::new(
+                        let field = Field::new(
                             name,
                             to_arrow_datatype(&info.field_datatypes[idx]),
                             info.field_nullable[idx],
-                        )
+                        );
+                        // Attach Spark field metadata (currently parquet.field.id) when present.
+                        // field_metadata is parallel to field_names; either empty or full length.
+                        if let Some(meta) = info.field_metadata.get(idx) {
+                            if !meta.metadata.is_empty() {
+                                return field.with_metadata(meta.metadata.clone());
+                            }
+                        }
+                        field
                     })
                     .collect();
                 ArrowDataType::Struct(fields)

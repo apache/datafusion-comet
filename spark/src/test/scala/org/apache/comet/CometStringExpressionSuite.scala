@@ -29,6 +29,12 @@ import org.apache.spark.sql.types.{DataTypes, StructField, StructType}
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
 
 class CometStringExpressionSuite extends CometTestBase {
+  // scalastyle:off
+  private val edgeCases = Seq(
+    "é", // unicode 'e\\u{301}'
+    "é", // unicode '\\u{e9}'
+    "తెలుగు")
+  // scalastyle:on
 
   test("lpad string") {
     testStringPadding("lpad")
@@ -53,12 +59,6 @@ class CometStringExpressionSuite extends CometTestBase {
         StructField("str", DataTypes.StringType, nullable = true),
         StructField("len", DataTypes.IntegerType, nullable = true),
         StructField("pad", DataTypes.StringType, nullable = true)))
-    // scalastyle:off
-    val edgeCases = Seq(
-      "é", // unicode 'e\\u{301}'
-      "é", // unicode '\\u{e9}'
-      "తెలుగు")
-    // scalastyle:on
     val df = FuzzDataGenerator.generateDataFrame(
       r,
       spark,
@@ -89,11 +89,11 @@ class CometStringExpressionSuite extends CometTestBase {
           } else if (isLiteralStr) {
             checkSparkAnswerAndFallbackReason(
               sql,
-              "Scalar values are not supported for the str argument")
+              "Scalar values are not supported for the `str` argument")
           } else if (!isLiteralPad) {
             checkSparkAnswerAndFallbackReason(
               sql,
-              "Only scalar values are supported for the pad argument")
+              "Only scalar values are supported for the `pad` argument")
           } else {
             checkSparkAnswerAndOperator(sql)
           }
@@ -149,7 +149,7 @@ class CometStringExpressionSuite extends CometTestBase {
   }
 
   test("split string basic") {
-    withSQLConf("spark.comet.expression.StringSplit.allowIncompatible" -> "true") {
+    withSQLConf(CometConf.getExprAllowIncompatConfigKey("StringSplit") -> "true") {
       withParquetTable((0 until 5).map(i => (s"value$i,test$i", i)), "tbl") {
         checkSparkAnswerAndOperator("SELECT split(_1, ',') FROM tbl")
         checkSparkAnswerAndOperator("SELECT split('one,two,three', ',') FROM tbl")
@@ -159,7 +159,7 @@ class CometStringExpressionSuite extends CometTestBase {
   }
 
   test("split string with limit") {
-    withSQLConf("spark.comet.expression.StringSplit.allowIncompatible" -> "true") {
+    withSQLConf(CometConf.getExprAllowIncompatConfigKey("StringSplit") -> "true") {
       withParquetTable((0 until 5).map(i => ("a,b,c,d,e", i)), "tbl") {
         checkSparkAnswerAndOperator("SELECT split(_1, ',', 2) FROM tbl")
         checkSparkAnswerAndOperator("SELECT split(_1, ',', 3) FROM tbl")
@@ -170,7 +170,7 @@ class CometStringExpressionSuite extends CometTestBase {
   }
 
   test("split string with regex patterns") {
-    withSQLConf("spark.comet.expression.StringSplit.allowIncompatible" -> "true") {
+    withSQLConf(CometConf.getExprAllowIncompatConfigKey("StringSplit") -> "true") {
       withParquetTable((0 until 5).map(i => ("word1 word2  word3", i)), "tbl") {
         checkSparkAnswerAndOperator("SELECT split(_1, ' ') FROM tbl")
         checkSparkAnswerAndOperator("SELECT split(_1, '\\\\s+') FROM tbl")
@@ -183,7 +183,7 @@ class CometStringExpressionSuite extends CometTestBase {
   }
 
   test("split string edge cases") {
-    withSQLConf("spark.comet.expression.StringSplit.allowIncompatible" -> "true") {
+    withSQLConf(CometConf.getExprAllowIncompatConfigKey("StringSplit") -> "true") {
       withParquetTable(Seq(("", 0), ("single", 1), (null, 2), ("a", 3)), "tbl") {
         checkSparkAnswerAndOperator("SELECT split(_1, ',') FROM tbl")
       }
@@ -191,7 +191,7 @@ class CometStringExpressionSuite extends CometTestBase {
   }
 
   test("split string with UTF-8 characters") {
-    withSQLConf("spark.comet.expression.StringSplit.allowIncompatible" -> "true") {
+    withSQLConf(CometConf.getExprAllowIncompatConfigKey("StringSplit") -> "true") {
       // CJK characters
       withParquetTable(Seq(("你好,世界", 0), ("こんにちは,世界", 1)), "tbl_cjk") {
         checkSparkAnswerAndOperator("SELECT split(_1, ',') FROM tbl_cjk")
@@ -261,7 +261,9 @@ class CometStringExpressionSuite extends CometTestBase {
   }
 
   test("Upper and Lower") {
-    withSQLConf(CometConf.COMET_CASE_CONVERSION_ENABLED.key -> "true") {
+    withSQLConf(
+      CometConf.getExprAllowIncompatConfigKey("Upper") -> "true",
+      CometConf.getExprAllowIncompatConfigKey("Lower") -> "true") {
       val table = "names"
       withTable(table) {
         sql(s"create table $table(id int, name varchar(20)) using parquet")
@@ -339,7 +341,7 @@ class CometStringExpressionSuite extends CometTestBase {
   }
 
   test("trim") {
-    withSQLConf(CometConf.COMET_CASE_CONVERSION_ENABLED.key -> "true") {
+    withSQLConf(CometConf.getExprAllowIncompatConfigKey("Upper") -> "true") {
       val table = "test"
       withTable(table) {
         sql(s"create table $table(col varchar(20)) using parquet")
@@ -371,12 +373,15 @@ class CometStringExpressionSuite extends CometTestBase {
 
   test("length, reverse, instr, replace, translate") {
     val table = "test"
-    withTable(table) {
-      sql(s"create table $table(col string) using parquet")
-      sql(
-        s"insert into $table values('Spark SQL  '), (NULL), (''), ('苹果手机'), ('Spark SQL  '), (NULL), (''), ('苹果手机')")
-      checkSparkAnswerAndOperator("select length(col), reverse(col), instr(col, 'SQL'), instr(col, '手机'), replace(col, 'SQL', '123')," +
-        s" replace(col, 'SQL'), replace(col, '手机', '平板'), translate(col, 'SL苹', '123') from $table")
+    withSQLConf("spark.comet.expression.StringTranslate.allowIncompatible" -> "true") {
+      withTable(table) {
+        sql(s"create table $table(col string) using parquet")
+        sql(
+          s"insert into $table values('Spark SQL  '), (NULL), (''), ('苹果手机'), ('Spark SQL  '), (NULL), (''), ('苹果手机')")
+        checkSparkAnswerAndOperator(
+          "select length(col), reverse(col), instr(col, 'SQL'), instr(col, '手机'), replace(col, 'SQL', '123')," +
+            s" replace(col, 'SQL'), replace(col, '手机', '平板'), translate(col, 'SL苹', '123') from $table")
+      }
     }
   }
 
@@ -476,6 +481,235 @@ class CometStringExpressionSuite extends CometTestBase {
         checkSparkAnswerAndOperator("SELECT space(_1) FROM tbl")
       }
     }
+  }
+
+  test("substring") {
+    val data = Seq(("hello world", ""), ("", ""), (null, ""), ("abc", ""))
+    withParquetTable(data, "tbl") {
+      // positive start
+      checkSparkAnswerAndOperator("SELECT substring(_1, 1, 5) FROM tbl")
+      // negative start, no length
+      checkSparkAnswerAndOperator("SELECT substring(_1, -3) FROM tbl")
+      // zero start
+      checkSparkAnswerAndOperator("SELECT substring(_1, 0, 3) FROM tbl")
+      // zero length
+      checkSparkAnswerAndOperator("SELECT substring(_1, 1, 0) FROM tbl")
+      // negative length
+      checkSparkAnswerAndOperator("SELECT substring(_1, 1, -1) FROM tbl")
+      // start beyond string length
+      checkSparkAnswerAndOperator("SELECT substring(_1, 100) FROM tbl")
+      // negative start with length
+      checkSparkAnswerAndOperator("SELECT substring(_1, -2, 3) FROM tbl")
+      // negative start beyond string length with length
+      checkSparkAnswerAndOperator("SELECT substring(_1, -10, 3) FROM tbl")
+      // large negative start with length
+      checkSparkAnswerAndOperator("SELECT substring(_1, -300, 3) FROM tbl")
+    }
+  }
+
+  test("substring - negative start boundary cases") {
+    // "abc" has length 3, so -3 means start at first char, -4 exceeds length
+    val data = Seq(("abc", ""), ("a", ""), ("ab", ""), ("", ""), (null, ""))
+    withParquetTable(data, "tbl") {
+      // abs(start) == string length exactly (boundary: should return from first char)
+      checkSparkAnswerAndOperator("SELECT substring(_1, -3, 2) FROM tbl")
+      checkSparkAnswerAndOperator("SELECT substring(_1, -3) FROM tbl")
+      // abs(start) == length + 1 (one past boundary: should return empty)
+      checkSparkAnswerAndOperator("SELECT substring(_1, -4, 2) FROM tbl")
+      checkSparkAnswerAndOperator("SELECT substring(_1, -4) FROM tbl")
+      // abs(start) == length - 1 (one before boundary)
+      checkSparkAnswerAndOperator("SELECT substring(_1, -2, 5) FROM tbl")
+      checkSparkAnswerAndOperator("SELECT substring(_1, -2) FROM tbl")
+      // -1: last character
+      checkSparkAnswerAndOperator("SELECT substring(_1, -1, 1) FROM tbl")
+      checkSparkAnswerAndOperator("SELECT substring(_1, -1) FROM tbl")
+      // -1 with length exceeding remaining chars
+      checkSparkAnswerAndOperator("SELECT substring(_1, -1, 100) FROM tbl")
+    }
+  }
+
+  test("substring - negative start with zero and negative length") {
+    val data = Seq(("hello", ""), ("ab", ""), ("", ""), (null, ""))
+    withParquetTable(data, "tbl") {
+      // negative start + zero length
+      checkSparkAnswerAndOperator("SELECT substring(_1, -3, 0) FROM tbl")
+      checkSparkAnswerAndOperator("SELECT substring(_1, -100, 0) FROM tbl")
+      // negative start + negative length
+      checkSparkAnswerAndOperator("SELECT substring(_1, -3, -1) FROM tbl")
+      checkSparkAnswerAndOperator("SELECT substring(_1, -1, -5) FROM tbl")
+      // negative start exceeding length + zero length
+      checkSparkAnswerAndOperator("SELECT substring(_1, -10, 0) FROM tbl")
+      // negative start exceeding length + negative length
+      checkSparkAnswerAndOperator("SELECT substring(_1, -10, -1) FROM tbl")
+    }
+  }
+
+  test("substring - single character and empty strings") {
+    val data = Seq(("x", ""), ("", ""), (null, ""))
+    withParquetTable(data, "tbl") {
+      for (start <- Seq(-2, -1, 0, 1, 2)) {
+        for (len <- Seq(0, 1, 5)) {
+          checkSparkAnswerAndOperator(s"SELECT substring(_1, $start, $len) FROM tbl")
+        }
+        // without explicit length
+        checkSparkAnswerAndOperator(s"SELECT substring(_1, $start) FROM tbl")
+      }
+    }
+  }
+
+  test("substring - unicode multi-byte characters") {
+    // scalastyle:off
+    val data = Seq(
+      ("苹果手机", ""), // 4 Chinese characters (3 bytes each in UTF-8)
+      ("café", ""), // combining accent
+      ("😀🎉🔥", ""), // emoji (4 bytes each in UTF-8)
+      ("aé苹😀", ""), // mixed: ASCII + 2-byte + 3-byte + 4-byte
+      ("", ""),
+      (null, ""))
+    // scalastyle:on
+    withParquetTable(data, "tbl") {
+      // positive start into multi-byte
+      checkSparkAnswerAndOperator("SELECT substring(_1, 2, 2) FROM tbl")
+      checkSparkAnswerAndOperator("SELECT substring(_1, 1, 1) FROM tbl")
+      // negative start with multi-byte
+      checkSparkAnswerAndOperator("SELECT substring(_1, -2) FROM tbl")
+      checkSparkAnswerAndOperator("SELECT substring(_1, -2, 1) FROM tbl")
+      // negative start exceeding multi-byte string length
+      checkSparkAnswerAndOperator("SELECT substring(_1, -10, 2) FROM tbl")
+      checkSparkAnswerAndOperator("SELECT substring(_1, -10) FROM tbl")
+      // abs(start) == char length boundary for 4-char string
+      checkSparkAnswerAndOperator("SELECT substring(_1, -4, 2) FROM tbl")
+      checkSparkAnswerAndOperator("SELECT substring(_1, -5, 2) FROM tbl")
+      // extract entire string
+      checkSparkAnswerAndOperator("SELECT substring(_1, 1, 100) FROM tbl")
+      checkSparkAnswerAndOperator("SELECT substring(_1, 1) FROM tbl")
+    }
+  }
+
+  test("substring - decomposed and combining unicode characters") {
+    val data = edgeCases.map(s => (s, "")) :+ (("", "")) :+ ((null, ""))
+    withParquetTable(data, "tbl") {
+      // first code point only — exposes decomposed vs precomposed difference
+      checkSparkAnswerAndOperator("SELECT substring(_1, 1, 1) FROM tbl")
+      // second code point — combining accent for decomposed, nothing for precomposed
+      checkSparkAnswerAndOperator("SELECT substring(_1, 2, 1) FROM tbl")
+      // full string
+      checkSparkAnswerAndOperator("SELECT substring(_1, 1) FROM tbl")
+      checkSparkAnswerAndOperator("SELECT substring(_1, 1, 100) FROM tbl")
+      // negative start — last code point
+      checkSparkAnswerAndOperator("SELECT substring(_1, -1, 1) FROM tbl")
+      checkSparkAnswerAndOperator("SELECT substring(_1, -1) FROM tbl")
+      // negative start — last 2 code points
+      checkSparkAnswerAndOperator("SELECT substring(_1, -2, 2) FROM tbl")
+      checkSparkAnswerAndOperator("SELECT substring(_1, -2) FROM tbl")
+      // middle of Telugu string
+      checkSparkAnswerAndOperator("SELECT substring(_1, 3, 2) FROM tbl")
+      // start beyond string length
+      checkSparkAnswerAndOperator("SELECT substring(_1, 10) FROM tbl")
+      // negative start beyond string length
+      checkSparkAnswerAndOperator("SELECT substring(_1, -10, 3) FROM tbl")
+      checkSparkAnswerAndOperator("SELECT substring(_1, -10) FROM tbl")
+      // zero length
+      checkSparkAnswerAndOperator("SELECT substring(_1, 1, 0) FROM tbl")
+      // negative length
+      checkSparkAnswerAndOperator("SELECT substring(_1, -2, -1) FROM tbl")
+    }
+  }
+
+  test("substring - large start and length values") {
+    val data = Seq(("hello world", ""), ("abc", ""), ("", ""), (null, ""))
+    withParquetTable(data, "tbl") {
+      checkSparkAnswerAndOperator(s"SELECT substring(_1, ${Int.MaxValue}, 5) FROM tbl")
+      checkSparkAnswerAndOperator(s"SELECT substring(_1, 1, ${Int.MaxValue}) FROM tbl")
+      checkSparkAnswerAndOperator(s"SELECT substring(_1, ${Int.MinValue + 1}, 5) FROM tbl")
+      checkSparkAnswerAndOperator(s"SELECT substring(_1, ${Int.MinValue + 1}) FROM tbl")
+      checkSparkAnswerAndOperator(
+        s"SELECT substring(_1, ${Int.MaxValue}, ${Int.MaxValue}) FROM tbl")
+    }
+  }
+
+  test("substring - dictionary encoded strings") {
+    // repeated values to trigger dictionary encoding
+    val data = (0 until 1000).map { i =>
+      val s = i % 5 match {
+        case 0 => "hello"
+        case 1 => "ab"
+        case 2 => ""
+        case 3 => null
+        case 4 => "world!"
+      }
+      Tuple1(s)
+    }
+    withSQLConf("parquet.enable.dictionary" -> "true") {
+      withParquetTable(data, "tbl") {
+        // positive start
+        checkSparkAnswerAndOperator("SELECT substring(_1, 2, 3) FROM tbl")
+        // negative start within bounds
+        checkSparkAnswerAndOperator("SELECT substring(_1, -3, 2) FROM tbl")
+        checkSparkAnswerAndOperator("SELECT substring(_1, -3) FROM tbl")
+        // negative start exceeding length for some values
+        checkSparkAnswerAndOperator("SELECT substring(_1, -4, 2) FROM tbl")
+        checkSparkAnswerAndOperator("SELECT substring(_1, -4) FROM tbl")
+        // negative start exceeding all string lengths
+        checkSparkAnswerAndOperator("SELECT substring(_1, -100, 3) FROM tbl")
+        checkSparkAnswerAndOperator("SELECT substring(_1, -100) FROM tbl")
+        // zero start
+        checkSparkAnswerAndOperator("SELECT substring(_1, 0, 3) FROM tbl")
+        // -1 last char
+        checkSparkAnswerAndOperator("SELECT substring(_1, -1, 1) FROM tbl")
+      }
+    }
+  }
+
+  test("substring - scalar inputs") {
+    val noConstantFolding =
+      "spark.sql.optimizer.excludedRules" ->
+        "org.apache.spark.sql.catalyst.optimizer.ConstantFolding"
+    val data = Seq(("hello world", ""), ("abc", ""), ("", ""), (null, ""))
+    withSQLConf(noConstantFolding) {
+      withParquetTable(data, "tbl") {
+        // all-literal arguments
+        checkSparkAnswerAndOperator("SELECT substring('hello world', 1, 5) FROM tbl")
+        checkSparkAnswerAndOperator("SELECT substring('hello world', -3) FROM tbl")
+        checkSparkAnswerAndOperator("SELECT substring('hello world', 0, 3) FROM tbl")
+        checkSparkAnswerAndOperator("SELECT substring('hello world', 1, 0) FROM tbl")
+        checkSparkAnswerAndOperator("SELECT substring('hello world', 1, -1) FROM tbl")
+        checkSparkAnswerAndOperator("SELECT substring('hello world', 100) FROM tbl")
+        checkSparkAnswerAndOperator("SELECT substring('', 1, 5) FROM tbl")
+        checkSparkAnswerAndOperator("SELECT substring(NULL, 1, 5) FROM tbl")
+        // negative start edge cases
+        checkSparkAnswerAndOperator("SELECT substring('hello world', -2, 3) FROM tbl")
+        checkSparkAnswerAndOperator("SELECT substring('hello world', -10, 3) FROM tbl")
+        checkSparkAnswerAndOperator("SELECT substring('hello world', -300, 3) FROM tbl")
+        // scalar alongside column
+        checkSparkAnswerAndOperator(
+          "SELECT substring(_1, 1, 5), substring('hello', 1, 5) FROM tbl")
+        checkSparkAnswerAndOperator("SELECT substring(_1, -3), substring('world', -3) FROM tbl")
+      }
+    }
+  }
+
+  test("substring - scalar inputs with multi-byte") {
+    val noConstantFolding =
+      "spark.sql.optimizer.excludedRules" ->
+        "org.apache.spark.sql.catalyst.optimizer.ConstantFolding"
+    // scalastyle:off
+    val data = Seq(Tuple1("placeholder"))
+    withSQLConf(noConstantFolding) {
+      withParquetTable(data, "tbl") {
+        checkSparkAnswerAndOperator("SELECT substring('こんにちは世界', 1, 3) FROM tbl")
+        checkSparkAnswerAndOperator("SELECT substring('こんにちは世界', -2) FROM tbl")
+        checkSparkAnswerAndOperator("SELECT substring('🎉🎊🎈🎁', 2, 2) FROM tbl")
+        checkSparkAnswerAndOperator("SELECT substring('ab🎉cd', 3, 1) FROM tbl")
+        // decomposed vs precomposed
+        checkSparkAnswerAndOperator("SELECT substring('é', 1, 1) FROM tbl")
+        checkSparkAnswerAndOperator("SELECT substring('é', 1, 1) FROM tbl")
+        // Telugu
+        checkSparkAnswerAndOperator("SELECT substring('తెలుగు', 1, 2) FROM tbl")
+        checkSparkAnswerAndOperator("SELECT substring('తెలుగు', -2, 2) FROM tbl")
+      }
+    }
+    // scalastyle:on
   }
 
 }

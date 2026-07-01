@@ -19,10 +19,12 @@
 
 pub use crate::errors::ExecutionError;
 
+pub use aligned_stream_reader::*;
 pub use copy::*;
 pub use iceberg_scan::*;
 pub use scan::*;
 
+mod aligned_stream_reader;
 mod copy;
 mod expand;
 pub use expand::ExpandExec;
