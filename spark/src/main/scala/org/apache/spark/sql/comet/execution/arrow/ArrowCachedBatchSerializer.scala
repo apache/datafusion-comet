@@ -25,7 +25,6 @@ import org.apache.spark.TaskContext
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Attribute, GenericInternalRow, UnsafeProjection}
-import org.apache.spark.sql.catalyst.types.DataTypeUtils
 import org.apache.spark.sql.columnar.{CachedBatch, SimpleMetricsCachedBatch, SimpleMetricsCachedBatchSerializer}
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution.columnar.{ColumnAccessor, DefaultCachedBatch, DefaultCachedBatchSerializer}
@@ -37,7 +36,7 @@ import org.apache.spark.storage.StorageLevel
 import org.apache.spark.unsafe.types.{ByteArray, UTF8String}
 import org.apache.spark.util.io.ChunkedByteBuffer
 
-import org.apache.comet.CometConf
+import org.apache.comet.{CometArrowAllocator, CometConf}
 
 /**
  * Cached batch format used when Comet writes Spark in-memory cache data.
@@ -258,7 +257,7 @@ class ArrowCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
       cacheAttributes: Seq[Attribute],
       selectedAttributes: Seq[Attribute],
       conf: SQLConf): ColumnarBatch = {
-    val schema = DataTypeUtils.fromAttributes(selectedAttributes)
+    val schema = toStructType(selectedAttributes)
     val indices = selectedIndices(cacheAttributes, selectedAttributes)
     val numRows = batch.numRows
 
@@ -329,7 +328,7 @@ class ArrowCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
           toStructType(schema),
           batchSize,
           sessionTz,
-          TaskContext.get())
+          CometArrowAllocator)
 
         encodeBatches(iter, schema)
       }

@@ -107,8 +107,6 @@ object CometInMemoryTableScanExec extends CometOperatorSerde[InMemoryTableScanEx
       .newBuilder()
       .setSource(op.getClass.getSimpleName)
       .addAllFields(scanTypes.asJava)
-      // Cached batches are decoded on the JVM side; the native scan only receives Spark batches.
-      .setArrowFfiSafe(false)
 
     Some(builder.setScan(scanBuilder).build())
   }

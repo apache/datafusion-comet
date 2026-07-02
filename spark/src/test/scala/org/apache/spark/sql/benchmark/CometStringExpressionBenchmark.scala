@@ -86,7 +86,10 @@ object CometStringExpressionBenchmark extends CometBenchmarkBase {
             dir,
             spark.sql(s"SELECT REPEAT(CAST(value AS STRING), 10) AS c1 FROM $tbl"))
 
-          val extraConfigs = Map(CometConf.COMET_CASE_CONVERSION_ENABLED.key -> "true")
+          val extraConfigs = Map(
+            CometConf.getExprAllowIncompatConfigKey("Upper") -> "true",
+            CometConf.getExprAllowIncompatConfigKey("Lower") -> "true",
+            CometConf.getExprAllowIncompatConfigKey("InitCap") -> "true")
 
           stringExpressions.foreach { config =>
             val allConfigs = extraConfigs ++ config.extraCometConfigs

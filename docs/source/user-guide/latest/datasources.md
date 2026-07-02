@@ -23,9 +23,9 @@
 
 ### Parquet
 
-Parquet scans are performed natively by Comet if all data types in the schema are supported. When the scan
+Parquet scans run in Rust via DataFusion if all data types in the schema are supported. When the scan
 falls back to Spark, enabling `spark.comet.convert.parquet.enabled` will immediately convert the data into
-Arrow format, allowing native execution to happen after that, but the process may not be efficient.
+Arrow format, allowing the Comet pipeline to take over after that, but the process may not be efficient.
 
 ### Apache Iceberg
 
@@ -35,17 +35,17 @@ Comet accelerates Iceberg scans of Parquet files. See the [Iceberg Guide] for mo
 
 ### CSV
 
-Comet provides experimental native CSV scan support. When `spark.comet.scan.csv.v2.enabled` is enabled, CSV files
-are read natively for improved performance. This feature is experimental and performance benefits are
+Comet provides experimental Rust-based CSV scan support. When `spark.comet.scan.csv.v2.enabled` is enabled, CSV files
+are read in Rust for improved performance. This feature is experimental and performance benefits are
 workload-dependent.
 
 Alternatively, when `spark.comet.convert.csv.enabled` is enabled, data from Spark's CSV reader is immediately
-converted into Arrow format, allowing native execution to happen after that.
+converted into Arrow format, allowing the Comet pipeline to take over after that.
 
 ### JSON
 
-Comet does not provide native JSON scan, but when `spark.comet.convert.json.enabled` is enabled, data is immediately
-converted into Arrow format, allowing native execution to happen after that.
+Comet does not provide a Rust-based JSON scan, but when `spark.comet.convert.json.enabled` is enabled, data is immediately
+converted into Arrow format, allowing the Comet pipeline to take over after that.
 
 ## Data Catalogs
 
@@ -59,7 +59,7 @@ Comet supports most standard storage systems, such as local file system and obje
 
 ### HDFS
 
-Apache DataFusion Comet native reader seamlessly scans files from remote HDFS for [supported formats](#supported-spark-data-sources)
+The Apache DataFusion Comet Rust-based reader seamlessly scans files from remote HDFS for [supported formats](#supported-spark-data-sources)
 
 ### Building Comet with HDFS support
 
@@ -122,7 +122,7 @@ Input [3]: [id#0, first_name#1, personal_info#4]
 
 ```
 
-Verify the native scan type should be `CometNativeScan`.
+Verify the scan type should be `CometNativeScan`.
 
 More on [HDFS Reader](https://github.com/apache/datafusion-comet/blob/main/native/hdfs/README.md)
 
@@ -169,7 +169,7 @@ Or use `spark-shell` with HDFS support as described [above](#building-comet-with
 
 ## S3
 
-Comet's Parquet scan completely offloads data loading to native code. It uses the
+Comet's Parquet scan completely offloads data loading to Rust. It uses the
 [`object_store` crate](https://crates.io/crates/object_store) to read data from S3 and supports
 configuring S3 access using standard
 [Hadoop S3A configurations](https://hadoop.apache.org/docs/stable/hadoop-aws/tools/hadoop-aws/index.html#General_S3A_Client_configuration)
@@ -181,8 +181,8 @@ continue to work as long as the configurations are supported and can be translat
 ### Root CA Certificates
 
 One major difference between Spark and Comet is the mechanism for discovering Root
-CA Certificates. Spark uses the JVM to read CA Certificates from the Java Trust Store, but native Comet
-scans use system Root CA Certificates (typically stored
+CA Certificates. Spark uses the JVM to read CA Certificates from the Java Trust Store, but Comet's
+Rust-based scans use system Root CA Certificates (typically stored
 in `/etc/ssl/certs` on Linux). These scans will not be able to interact with S3 if the Root CA Certificates are not
 installed.
 
@@ -254,4 +254,4 @@ Comet's S3 support has the following limitations:
 
 1. **Partial Hadoop S3A configuration support**: Not all Hadoop S3A configurations are currently supported. Only the configurations listed in the tables above are translated and applied to the underlying `object_store` crate.
 
-2. **Custom credential providers**: Custom implementations of AWS credential providers are not supported. The implementation only supports the standard credential providers listed in the table above. We are planning to add support for custom credential providers through a JNI-based adapter that will allow calling Java credential providers from native code. See [issue #1829](https://github.com/apache/datafusion-comet/issues/1829) for more details.
+2. **Custom credential providers**: Custom implementations of AWS credential providers are not supported. The implementation only supports the standard credential providers listed in the table above. We are planning to add support for custom credential providers through a JNI-based adapter that will allow calling Java credential providers from Rust code. See [issue #1829](https://github.com/apache/datafusion-comet/issues/1829) for more details.

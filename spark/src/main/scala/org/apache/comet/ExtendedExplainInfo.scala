@@ -122,9 +122,16 @@ class ExtendedExplainInfo extends ExtendedExplainGenerator {
       outString.append(if (lastChildren.last) "+- " else ":- ")
     }
 
-    val tagValue = node.getTagValue(CometExplainInfo.FALLBACK_REASONS)
-    val str = if (tagValue.nonEmpty) {
-      s" ${node.nodeName} [COMET: ${tagValue.get.mkString(", ")}]"
+    // Preserve the existing fallback-segment rendering exactly (a defined tag renders
+    // `[COMET: ...]`, even when the reason set is empty) and only add the new info segment, so
+    // this change does not perturb plans that carry no info message.
+    val fallback = node.getTagValue(CometExplainInfo.FALLBACK_REASONS)
+    val info = node.getTagValue(CometExplainInfo.EXTENSION_INFO)
+    val str = if (fallback.nonEmpty || info.exists(_.nonEmpty)) {
+      val sb = new StringBuilder(" ").append(node.nodeName)
+      fallback.foreach(v => sb.append(s" [COMET: ${v.mkString(", ")}]"))
+      info.filter(_.nonEmpty).foreach(v => sb.append(s" [COMET-INFO: ${v.mkString(", ")}]"))
+      sb.toString()
     } else {
       node.nodeName
     }
@@ -215,6 +222,7 @@ object CometCoverageStats {
 
 object CometExplainInfo {
   val FALLBACK_REASONS = new TreeNodeTag[Set[String]]("CometFallbackReasons")
+  val EXTENSION_INFO = new TreeNodeTag[Set[String]]("CometExtensionInfo")
 
   def getActualPlan(node: TreeNode[_]): TreeNode[_] = {
     node match {

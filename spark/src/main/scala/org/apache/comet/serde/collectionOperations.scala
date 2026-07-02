@@ -25,7 +25,10 @@ import org.apache.spark.sql.types.ArrayType
 import org.apache.comet.serde.ExprOuterClass.Expr
 import org.apache.comet.shims.CometTypeShim
 
-object CometReverse extends CometScalarFunction[Reverse]("reverse") with CometTypeShim {
+object CometReverse
+    extends CometScalarFunction[Reverse]("reverse")
+    with CometTypeShim
+    with CodegenDispatchFallback {
 
   // Spark 4.0 widens the string branch of Reverse to accept collated strings and propagates the
   // collation through dataType. The native reverse UDF reverses code units and produces UTF8

@@ -89,11 +89,11 @@ class CometStringExpressionSuite extends CometTestBase {
           } else if (isLiteralStr) {
             checkSparkAnswerAndFallbackReason(
               sql,
-              "Scalar values are not supported for the str argument")
+              "Scalar values are not supported for the `str` argument")
           } else if (!isLiteralPad) {
             checkSparkAnswerAndFallbackReason(
               sql,
-              "Only scalar values are supported for the pad argument")
+              "Only scalar values are supported for the `pad` argument")
           } else {
             checkSparkAnswerAndOperator(sql)
           }
@@ -261,7 +261,9 @@ class CometStringExpressionSuite extends CometTestBase {
   }
 
   test("Upper and Lower") {
-    withSQLConf(CometConf.COMET_CASE_CONVERSION_ENABLED.key -> "true") {
+    withSQLConf(
+      CometConf.getExprAllowIncompatConfigKey("Upper") -> "true",
+      CometConf.getExprAllowIncompatConfigKey("Lower") -> "true") {
       val table = "names"
       withTable(table) {
         sql(s"create table $table(id int, name varchar(20)) using parquet")
@@ -339,7 +341,7 @@ class CometStringExpressionSuite extends CometTestBase {
   }
 
   test("trim") {
-    withSQLConf(CometConf.COMET_CASE_CONVERSION_ENABLED.key -> "true") {
+    withSQLConf(CometConf.getExprAllowIncompatConfigKey("Upper") -> "true") {
       val table = "test"
       withTable(table) {
         sql(s"create table $table(col varchar(20)) using parquet")
@@ -371,12 +373,15 @@ class CometStringExpressionSuite extends CometTestBase {
 
   test("length, reverse, instr, replace, translate") {
     val table = "test"
-    withTable(table) {
-      sql(s"create table $table(col string) using parquet")
-      sql(
-        s"insert into $table values('Spark SQL  '), (NULL), (''), ('苹果手机'), ('Spark SQL  '), (NULL), (''), ('苹果手机')")
-      checkSparkAnswerAndOperator("select length(col), reverse(col), instr(col, 'SQL'), instr(col, '手机'), replace(col, 'SQL', '123')," +
-        s" replace(col, 'SQL'), replace(col, '手机', '平板'), translate(col, 'SL苹', '123') from $table")
+    withSQLConf("spark.comet.expression.StringTranslate.allowIncompatible" -> "true") {
+      withTable(table) {
+        sql(s"create table $table(col string) using parquet")
+        sql(
+          s"insert into $table values('Spark SQL  '), (NULL), (''), ('苹果手机'), ('Spark SQL  '), (NULL), (''), ('苹果手机')")
+        checkSparkAnswerAndOperator(
+          "select length(col), reverse(col), instr(col, 'SQL'), instr(col, '手机'), replace(col, 'SQL', '123')," +
+            s" replace(col, 'SQL'), replace(col, '手机', '平板'), translate(col, 'SL苹', '123') from $table")
+      }
     }
   }
 

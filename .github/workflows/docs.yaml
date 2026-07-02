@@ -29,10 +29,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout docs sources
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Checkout asf-site branch
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           ref: asf-site
           path: asf-site

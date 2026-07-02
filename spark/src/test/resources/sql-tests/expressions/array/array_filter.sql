@@ -21,11 +21,11 @@ CREATE TABLE test_array_filter(arr array<int>) USING parquet
 statement
 INSERT INTO test_array_filter VALUES (array(1, 2, 3, 4, 5)), (array(-1, 0, 1)), (array(10)), (NULL)
 
-query spark_answer_only
+query
 SELECT filter(arr, x -> x > 2) FROM test_array_filter
 
-query spark_answer_only
+query
 SELECT filter(arr, x -> x >= 0) FROM test_array_filter
 
-query spark_answer_only
+query
 SELECT filter(arr, (x, i) -> i > 0) FROM test_array_filter

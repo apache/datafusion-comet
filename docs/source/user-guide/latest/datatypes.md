@@ -17,31 +17,101 @@
   under the License.
 -->
 
-# Supported Spark Data Types
+# Spark Data Type Support
 
-Comet supports the following Spark data types. Refer to the [Comet Compatibility Guide] for information about data
-type support in scans and other operators.
+This page is the complete reference for how Apache Comet handles each Spark data type. Comet's
+native execution path is built on Apache Arrow, so the set of types Comet can express natively
+is constrained by Arrow's type system. When a query references a type Comet does not support,
+the relevant operator falls back to Spark; results are unaffected.
 
-[Comet Compatibility Guide]: compatibility/index.md
+For per-scan and per-operator type caveats (for example, Parquet read-time conversions or
+hash-aggregate group-key restrictions), see the [Compatibility Guide](compatibility/index.md).
 
-<!-- based on org.apache.comet.serde.QueryPlanSerde.supportedDataType -->
+## Status legend
 
-| Data Type    |
-| ------------ |
-| Null         |
-| Boolean      |
-| Byte         |
-| Short        |
-| Integer      |
-| Long         |
-| Float        |
-| Double       |
-| Decimal      |
-| String       |
-| Binary       |
-| Date         |
-| Timestamp    |
-| TimestampNTZ |
-| Struct       |
-| Array        |
-| Map          |
+| Status                 | Meaning                                                                                 |
+| ---------------------- | --------------------------------------------------------------------------------------- |
+| ✅ Supported           | Native support; enabled by default.                                                     |
+| ⚠️ Supported (caveats) | Works, but with limits: certain values, contexts, or configurations fall back to Spark. |
+| 🔜 Planned             | Intended; tracked by an open issue or pull request.                                     |
+
+## Not currently planned
+
+The following types fall back to Spark and are not on the current roadmap. They are omitted from
+the tables below and may be reconsidered based on demand:
+
+- **`UserDefinedType`**: user-defined types are application-specific and outside the scope of native acceleration; queries referencing UDTs fall back to Spark.
+
+## Numeric
+
+| Type          | Status | Notes                                                                                                                                                     |
+| ------------- | ------ | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ByteType`    | ✅     |                                                                                                                                                           |
+| `ShortType`   | ✅     |                                                                                                                                                           |
+| `IntegerType` | ✅     |                                                                                                                                                           |
+| `LongType`    | ✅     |                                                                                                                                                           |
+| `FloatType`   | ✅     | NaN and signed-zero handling can diverge from Spark in comparisons and aggregations. See [Floating-point Compatibility](compatibility/floating-point.md). |
+| `DoubleType`  | ✅     | NaN and signed-zero handling can diverge from Spark in comparisons and aggregations. See [Floating-point Compatibility](compatibility/floating-point.md). |
+| `DecimalType` | ✅     |                                                                                                                                                           |
+
+## String and binary
+
+| Type          | Status | Notes                                                                                                                                                         |
+| ------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `StringType`  | ✅     | Default UTF-8 binary collation is supported. Non-default collations (Spark 4.0+) fall back ([#2190](https://github.com/apache/datafusion-comet/issues/2190)). |
+| `BinaryType`  | ✅     |                                                                                                                                                               |
+| `CharType`    | ✅     | Spark normalizes `CHAR(n)` to `StringType` for evaluation; same caveats apply.                                                                                |
+| `VarcharType` | ✅     | Spark normalizes `VARCHAR(n)` to `StringType` for evaluation; same caveats apply.                                                                             |
+
+## Boolean
+
+| Type          | Status | Notes |
+| ------------- | ------ | ----- |
+| `BooleanType` | ✅     |       |
+
+## Datetime
+
+| Type               | Status | Notes                                                                                                                                                                             |
+| ------------------ | ------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `DateType`         | ✅     |                                                                                                                                                                                   |
+| `TimestampType`    | ✅     |                                                                                                                                                                                   |
+| `TimestampNTZType` | ✅     |                                                                                                                                                                                   |
+| `TimeType`         | ⚠️     | Spark 4.1+. Native serialization is in place; some operators (sort, shuffle, min/max) are still being wired up ([#4288](https://github.com/apache/datafusion-comet/issues/4288)). |
+
+## Interval
+
+Interval types fall back to Spark today. Native acceleration is tracked by
+[#4540](https://github.com/apache/datafusion-comet/issues/4540).
+
+| Type                    | Status | Notes             |
+| ----------------------- | ------ | ----------------- |
+| `YearMonthIntervalType` | 🔜     | Tracked by #4540. |
+| `DayTimeIntervalType`   | 🔜     | Tracked by #4540. |
+| `CalendarIntervalType`  | 🔜     | Tracked by #4540. |
+
+## Complex
+
+| Type         | Status | Notes                                                                                                                                                                                    |
+| ------------ | ------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `StructType` | ✅     | Empty structs (no fields) fall back.                                                                                                                                                     |
+| `ArrayType`  | ✅     |                                                                                                                                                                                          |
+| `MapType`    | ✅     | Hash aggregate group keys cannot contain a `MapType` (transitively): Arrow's row format used by DataFusion's grouped hash aggregate does not support `Map`, so such groupings fall back. |
+
+## Variant
+
+| Type          | Status | Notes                                                                                                                                                                                                          |
+| ------------- | ------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `VariantType` | 🔜     | Spark 4.0+. Native scan support is tracked by [#4295](https://github.com/apache/datafusion-comet/issues/4295); shredded Parquet read/write by [#3983](https://github.com/apache/datafusion-comet/issues/3983). |
+
+## Other
+
+| Type       | Status | Notes |
+| ---------- | ------ | ----- |
+| `NullType` | ✅     |       |
+
+## See also
+
+- [Comet Compatibility Guide](compatibility/index.md) - known incompatibilities and edge cases.
+- [Parquet Scan Compatibility](compatibility/scans.md) - per-type behavior at scan time.
+- [Supported Spark Operators](operators.md) - the equivalent reference for operators.
+- [Supported Spark Expressions](expressions.md) - the equivalent reference for expressions.

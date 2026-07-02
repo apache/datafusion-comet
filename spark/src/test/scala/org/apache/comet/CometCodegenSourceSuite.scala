@@ -700,6 +700,50 @@ class CometCodegenSourceSuite extends AnyFunSuite {
       s"expected innermost scalar getter for IntegerType element; got:\n$src")
   }
 
+  test("nested input classes emit copy() that deep-materializes off the Arrow buffers") {
+    // Higher-order functions (e.g. ArrayTransform) evaluate Spark's interpreted lambda, which
+    // calls InternalRow.copyValue on complex elements. The nested input views read straight off
+    // the per-batch Arrow buffers, so copy() must materialize into on-heap Spark structures:
+    // GenericArrayData for arrays, GenericInternalRow for structs, ArrayBasedMapData for maps.
+    // Strings clone (they alias off-heap memory) and nested complex elements recurse via copy().
+    val stringChild = ScalarColumnSpec(
+      CometBatchKernelCodegen.vectorClassBySimpleName("VarCharVector"),
+      nullable = true)
+    val innerStruct = StructColumnSpec(
+      nullable = true,
+      fields = Seq(StructFieldSpec("s", StringType, nullable = true, stringChild)))
+    // Array<Map<String, Struct<s: String>>>: exercises array, map, and struct copy() together.
+    val mapSpec = MapColumnSpec(
+      nullable = true,
+      keySparkType = StringType,
+      valueSparkType = StructType(Seq(StructField("s", StringType))),
+      key = stringChild,
+      value = innerStruct)
+    val outerArray = ArrayColumnSpec(
+      nullable = true,
+      elementSparkType = MapType(StringType, StructType(Seq(StructField("s", StringType)))),
+      element = mapSpec)
+    val mapType = MapType(StringType, StructType(Seq(StructField("s", StringType))))
+    val expr = Size(BoundReference(0, ArrayType(mapType), nullable = true))
+    val src = generate(expr, IndexedSeq(outerArray))
+
+    assert(
+      src.contains("public org.apache.spark.sql.catalyst.util.ArrayData copy()"),
+      s"expected array copy() override; got:\n$src")
+    assert(
+      src.contains("new org.apache.spark.sql.catalyst.util.GenericArrayData("),
+      s"expected array copy() to materialize a GenericArrayData; got:\n$src")
+    assert(
+      src.contains("new org.apache.spark.sql.catalyst.util.ArrayBasedMapData("),
+      s"expected map copy() to materialize an ArrayBasedMapData; got:\n$src")
+    assert(
+      src.contains("new org.apache.spark.sql.catalyst.expressions.GenericInternalRow("),
+      s"expected struct copy() to materialize a GenericInternalRow; got:\n$src")
+    assert(
+      src.contains(".clone()"),
+      s"expected string elements to clone off the Arrow buffer in copy(); got:\n$src")
+  }
+
   test("Array<Struct<a: Int>> emits array class allocating fresh InputStruct_col0_e") {
     val innerStruct = StructColumnSpec(
       nullable = true,

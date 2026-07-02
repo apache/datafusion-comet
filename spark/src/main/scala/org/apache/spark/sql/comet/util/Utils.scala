@@ -36,6 +36,7 @@ import org.apache.arrow.vector.util.VectorSchemaRootAppender
 import org.apache.spark.{SparkEnv, SparkException}
 import org.apache.spark.internal.Logging
 import org.apache.spark.io.CompressionCodec
+import org.apache.spark.sql.catalyst.expressions.Attribute
 import org.apache.spark.sql.comet.execution.arrow.ArrowReaderIterator
 import org.apache.spark.sql.types._
 import org.apache.spark.sql.vectorized.ColumnarBatch
@@ -108,6 +109,7 @@ object Utils extends CometTypeShim with Logging {
     case yi: ArrowType.Interval if yi.getUnit == IntervalUnit.YEAR_MONTH =>
       YearMonthIntervalType()
     case di: ArrowType.Interval if di.getUnit == IntervalUnit.DAY_TIME => DayTimeIntervalType()
+    case d: ArrowType.Duration if d.getUnit == TimeUnit.MICROSECOND => DayTimeIntervalType()
     case t: ArrowType.Time if t.getUnit == TimeUnit.NANOSECOND && t.getBitWidth == 64 =>
       // scalastyle:off classforname
       val clazz = Class.forName("org.apache.spark.sql.types.TimeType$")
@@ -151,6 +153,10 @@ object Utils extends CometTypeShim with Logging {
       case NullType => ArrowType.Null.INSTANCE
       case dt if isTimeType(dt) =>
         new ArrowType.Time(TimeUnit.NANOSECOND, 64)
+      case _: YearMonthIntervalType => new ArrowType.Interval(IntervalUnit.YEAR_MONTH)
+      // Spark stores DayTimeIntervalType as microseconds in an int64, matching Arrow
+      // Duration(Microsecond) rather than the lossy Interval(DayTime) {days, millis} layout.
+      case _: DayTimeIntervalType => new ArrowType.Duration(TimeUnit.MICROSECOND)
       case _ =>
         throw new UnsupportedOperationException(
           s"Unsupported data type: [${dt.getClass.getName}] ${dt.catalogString}")
@@ -204,6 +210,14 @@ object Utils extends CometTypeShim with Logging {
       toArrowField(field.name, field.dataType, field.nullable, timeZoneId)
     }.asJava)
   }
+
+  /**
+   * Build a `StructType` from a sequence of Spark `Attribute`s. Avoids
+   * `StructType.fromAttributes` (removed in Spark 4) and `DataTypeUtils.fromAttributes` (only on
+   * 4) so the same call works across supported Spark versions.
+   */
+  def fromAttributes(attributes: Seq[Attribute]): StructType =
+    StructType(attributes.map(a => StructField(a.name, a.dataType, a.nullable, a.metadata)))
 
   /**
    * Serializes a list of `ColumnarBatch` into an output stream. This method must be in `spark`

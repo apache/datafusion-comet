@@ -40,6 +40,7 @@ map_funcs <map_funcs>
 math_funcs <math_funcs>
 misc_funcs <misc_funcs>
 predicate_funcs <predicate_funcs>
+string_funcs <string_funcs>
 struct_funcs <struct_funcs>
 url_funcs <url_funcs>
 window_funcs <window_funcs>

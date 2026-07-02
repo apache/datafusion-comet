@@ -28,7 +28,7 @@ import org.apache.spark.sql.catalyst.expressions.Cast
 
 import org.apache.comet.CometConf.COMET_ONHEAP_MEMORY_OVERHEAD
 import org.apache.comet.expressions.{CometCast, CometEvalMode}
-import org.apache.comet.serde.{Compatible, Incompatible, QueryPlanSerde, Unsupported}
+import org.apache.comet.serde.{CometAggregateExpressionSerde, CometExpressionSerde, Compatible, Incompatible, NativeOptInAvailable, QueryPlanSerde, Unsupported}
 
 /**
  * Utility for generating markdown documentation from the configs.
@@ -40,113 +40,131 @@ object GenerateDocs {
   private val publicConfigs: Set[ConfigEntry[_]] = CometConf.allConfs.filter(_.isPublic).toSet
 
   /**
-   * (expression class simple name, compatible notes, incompatible reasons, unsupported reasons)
+   * Documentation notes for a single expression.
+   *
+   * @param name
+   *   expression class simple name
+   * @param compatibleNotes
+   *   differences from Spark that are always present
+   * @param incompatibleReasons
+   *   reasons the native implementation is incompatible with Spark
+   * @param unsupportedReasons
+   *   cases that Comet does not support
+   * @param nativeOptIn
+   *   whether the serde implements `NativeOptInAvailable`, meaning the expression runs a
+   *   Spark-compatible path by default and the user can opt into a faster native path
+   * @param nativeOptInConfigKey
+   *   the config key the user sets to opt into the native path
    */
-  private type CategoryNotes = Seq[(String, Seq[String], Seq[String], Seq[String])]
+  private case class ExprNotes(
+      name: String,
+      compatibleNotes: Seq[String],
+      incompatibleReasons: Seq[String],
+      unsupportedReasons: Seq[String],
+      nativeOptIn: Boolean,
+      nativeOptInConfigKey: String)
+
+  private type CategoryNotes = Seq[ExprNotes]
+
+  /** Build the documentation notes for a single expression serde. */
+  private def exprNotes(cls: Class[_], serde: CometExpressionSerde[_]): ExprNotes = {
+    val optIn = serde.isInstanceOf[NativeOptInAvailable]
+    val key = serde match {
+      case n: NativeOptInAvailable =>
+        n.nativeOptInConfigKeyOverride.getOrElse(CometConf.getExprAllowIncompatConfigKey(cls))
+      case _ => CometConf.getExprAllowIncompatConfigKey(cls)
+    }
+    ExprNotes(
+      cls.getSimpleName,
+      serde.getCompatibleNotes(),
+      serde.getIncompatibleReasons(),
+      serde.getUnsupportedReasons(),
+      optIn,
+      key)
+  }
+
+  /** Build the documentation notes for a single aggregate expression serde. */
+  private def aggExprNotes(cls: Class[_], serde: CometAggregateExpressionSerde[_]): ExprNotes =
+    ExprNotes(
+      cls.getSimpleName,
+      serde.getCompatibleNotes(),
+      serde.getIncompatibleReasons(),
+      serde.getUnsupportedReasons(),
+      // Aggregate serdes do not have a native opt-in path.
+      nativeOptIn = false,
+      nativeOptInConfigKey = CometConf.getExprAllowIncompatConfigKey(cls))
 
   /**
-   * Mapping from expression category to the compatibility guide page where that category's
+   * Mapping from expression category to the compatibility guide filename where that category's
    * auto-generated notes should be written, along with a function that produces the notes for
-   * that category from the serde maps in `QueryPlanSerde`.
+   * that category from the serde maps in `QueryPlanSerde`. Filenames are resolved relative to the
+   * per-Spark-version compatibility/expressions directory.
    */
   private def categoryPages: Map[String, (String, () => CategoryNotes)] = Map(
-    "array" -> ((
-      "compatibility/expressions/array.md",
-      () =>
-        QueryPlanSerde.arrayExpressions.toSeq.map { case (cls, serde) =>
-          (
-            cls.getSimpleName,
-            serde.getCompatibleNotes(),
-            serde.getIncompatibleReasons(),
-            serde.getUnsupportedReasons())
-        })),
-    "datetime" -> ((
-      "compatibility/expressions/datetime.md",
-      () =>
-        QueryPlanSerde.temporalExpressions.toSeq.map { case (cls, serde) =>
-          (
-            cls.getSimpleName,
-            serde.getCompatibleNotes(),
-            serde.getIncompatibleReasons(),
-            serde.getUnsupportedReasons())
-        })),
-    "math" -> ((
-      "compatibility/expressions/math.md",
-      () =>
-        QueryPlanSerde.mathExpressions.toSeq.map { case (cls, serde) =>
-          (
-            cls.getSimpleName,
-            serde.getCompatibleNotes(),
-            serde.getIncompatibleReasons(),
-            serde.getUnsupportedReasons())
-        })),
-    "struct" -> ((
-      "compatibility/expressions/struct.md",
-      () =>
-        QueryPlanSerde.structExpressions.toSeq.map { case (cls, serde) =>
-          (
-            cls.getSimpleName,
-            serde.getCompatibleNotes(),
-            serde.getIncompatibleReasons(),
-            serde.getUnsupportedReasons())
-        })),
-    "aggregate" -> ((
-      "compatibility/expressions/aggregate.md",
-      () =>
-        QueryPlanSerde.aggrSerdeMap.toSeq.map { case (cls, serde) =>
-          (
-            cls.getSimpleName,
-            serde.getCompatibleNotes(),
-            serde.getIncompatibleReasons(),
-            serde.getUnsupportedReasons())
-        })),
-    "string" -> ((
-      "compatibility/expressions/string.md",
-      () =>
-        QueryPlanSerde.stringExpressions.toSeq.map { case (cls, serde) =>
-          (
-            cls.getSimpleName,
-            serde.getCompatibleNotes(),
-            serde.getIncompatibleReasons(),
-            serde.getUnsupportedReasons())
-        })),
-    "map" -> ((
-      "compatibility/expressions/map.md",
-      () =>
-        QueryPlanSerde.mapExpressions.toSeq.map { case (cls, serde) =>
-          (
-            cls.getSimpleName,
-            serde.getCompatibleNotes(),
-            serde.getIncompatibleReasons(),
-            serde.getUnsupportedReasons())
-        })),
-    "misc" -> ((
-      "compatibility/expressions/misc.md",
-      () =>
-        QueryPlanSerde.miscExpressions.toSeq.map { case (cls, serde) =>
-          (
-            cls.getSimpleName,
-            serde.getCompatibleNotes(),
-            serde.getIncompatibleReasons(),
-            serde.getUnsupportedReasons())
-        })),
-    "url" -> ((
-      "compatibility/expressions/url.md",
-      () =>
-        QueryPlanSerde.urlExpressions.toSeq.map { case (cls, serde) =>
-          (
-            cls.getSimpleName,
-            serde.getCompatibleNotes(),
-            serde.getIncompatibleReasons(),
-            serde.getUnsupportedReasons())
-        })))
+    "array" -> ("array.md",
+    () =>
+      QueryPlanSerde.arrayExpressions.toSeq.map { case (cls, serde) =>
+        exprNotes(cls, serde)
+      }),
+    "datetime" -> ("datetime.md",
+    () =>
+      QueryPlanSerde.temporalExpressions.toSeq.map { case (cls, serde) =>
+        exprNotes(cls, serde)
+      }),
+    "math" -> ("math.md",
+    () =>
+      QueryPlanSerde.mathExpressions.toSeq.map { case (cls, serde) =>
+        exprNotes(cls, serde)
+      }),
+    "struct" -> ("struct.md",
+    () =>
+      QueryPlanSerde.structExpressions.toSeq.map { case (cls, serde) =>
+        exprNotes(cls, serde)
+      }),
+    "aggregate" -> ("aggregate.md",
+    () =>
+      QueryPlanSerde.aggrSerdeMap.toSeq.map { case (cls, serde) =>
+        aggExprNotes(cls, serde)
+      }),
+    "string" -> ("string.md",
+    () =>
+      QueryPlanSerde.stringExpressions.toSeq.map { case (cls, serde) =>
+        exprNotes(cls, serde)
+      }),
+    "map" -> ("map.md",
+    () =>
+      QueryPlanSerde.mapExpressions.toSeq.map { case (cls, serde) =>
+        exprNotes(cls, serde)
+      }),
+    "misc" -> ("misc.md",
+    () =>
+      QueryPlanSerde.miscExpressions.toSeq.map { case (cls, serde) =>
+        exprNotes(cls, serde)
+      }),
+    "url" -> ("url.md",
+    () =>
+      QueryPlanSerde.urlExpressions.toSeq.map { case (cls, serde) =>
+        exprNotes(cls, serde)
+      }))
 
+  /**
+   * Args:
+   *   - args(0): user guide root directory (e.g. `docs/source/user-guide/latest/`).
+   *   - args(1) (optional): per-Spark-version subdirectory for compatibility pages (e.g.
+   *     `spark-3.4`). When omitted, compat pages are written to `compatibility/expressions/`
+   *     directly, preserving the legacy flat layout used by released-version doc trees.
+   */
   def main(args: Array[String]): Unit = {
     val userGuideLocation = args(0)
+    val compatPagesDir = if (args.length > 1) {
+      s"$userGuideLocation/compatibility/expressions/${args(1)}"
+    } else {
+      s"$userGuideLocation/compatibility/expressions"
+    }
     generateConfigReference(s"$userGuideLocation/configs.md")
-    generateCompatibilityGuide(s"$userGuideLocation/compatibility/expressions/cast.md")
-    for ((category, (page, notesFn)) <- categoryPages) {
-      generateExpressionCompatNotes(s"$userGuideLocation/$page", category, notesFn())
+    generateCompatibilityGuide(s"$compatPagesDir/cast.md")
+    for ((category, (filename, notesFn)) <- categoryPages) {
+      generateExpressionCompatNotes(s"$compatPagesDir/$filename", category, notesFn())
     }
   }
 
@@ -243,31 +261,38 @@ object GenerateDocs {
   }
 
   private def writeExpressionCompatNotes(w: BufferedOutputStream, notes: CategoryNotes): Unit = {
-    val sorted = notes.sortBy(_._1).filter { case (_, compat, incompat, unsupported) =>
-      compat.nonEmpty || incompat.nonEmpty || unsupported.nonEmpty
+    val sorted = notes.sortBy(_.name).filter { n =>
+      n.compatibleNotes.nonEmpty || n.incompatibleReasons.nonEmpty || n.unsupportedReasons.nonEmpty
     }
-    for ((name, compat, incompat, unsupported) <- sorted) {
+    for (n <- sorted) {
+      val name = n.name
       w.write(s"\n## $name\n".getBytes)
-      if (compat.nonEmpty) {
+      if (n.compatibleNotes.nonEmpty) {
         w.write(
           ("\nThe following differences from Spark are always present and do not require" +
             " any additional configuration:\n\n").getBytes)
-        for (note <- compat) {
+        for (note <- n.compatibleNotes) {
           w.write(s"- $note\n".getBytes)
         }
       }
-      if (incompat.nonEmpty) {
-        w.write(
-          (s"\nThe following incompatibilities cause `$name` to fall back to Spark by default." +
+      if (n.incompatibleReasons.nonEmpty) {
+        val header = if (n.nativeOptIn) {
+          s"\nBy default, Comet runs a Spark-compatible implementation of `$name`. Set" +
+            s" `${n.nativeOptInConfigKey}=true` to use Comet's faster native implementation" +
+            " instead, which has the following differences from Spark:\n\n"
+        } else {
+          s"\nThe following incompatibilities cause `$name` to fall back to Spark by default." +
             s" Set `spark.comet.expression.$name.allowIncompatible=true` to enable Comet" +
-            " acceleration despite these differences.\n\n").getBytes)
-        for (reason <- incompat) {
+            " acceleration despite these differences.\n\n"
+        }
+        w.write(header.getBytes)
+        for (reason <- n.incompatibleReasons) {
           w.write(s"- $reason\n".getBytes)
         }
       }
-      if (unsupported.nonEmpty) {
+      if (n.unsupportedReasons.nonEmpty) {
         w.write("\nThe following cases are not supported by Comet:\n\n".getBytes)
-        for (reason <- unsupported) {
+        for (reason <- n.unsupportedReasons) {
           w.write(s"- $reason\n".getBytes)
         }
       }
@@ -308,7 +333,7 @@ object GenerateDocs {
         } else {
           val supportLevel = CometCast.isSupported(fromType, toType, None, mode)
           supportLevel match {
-            case Compatible(notes) =>
+            case Compatible(notes, _) =>
               notes.filter(_.trim.nonEmpty).foreach { note =>
                 annotations += ((fromTypeName, toTypeName, note.trim.replace("(10,2)", "")))
               }

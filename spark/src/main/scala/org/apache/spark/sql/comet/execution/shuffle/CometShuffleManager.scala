@@ -231,6 +231,7 @@ class CometShuffleManager(conf: SparkConf) extends ShuffleManager with Logging {
       case cometShuffleHandle: CometNativeShuffleHandle[K @unchecked, V @unchecked] =>
         val dep = cometShuffleHandle.dependency.asInstanceOf[CometShuffleDependency[_, _, _]]
         new CometNativeShuffleWriter(
+          dep.nativeShuffleSpec.get,
           dep.outputPartitioning.get,
           dep.outputAttributes,
           dep.shuffleWriteMetrics,

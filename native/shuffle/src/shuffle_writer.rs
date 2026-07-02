@@ -29,7 +29,7 @@ use datafusion::physical_expr::{EquivalenceProperties, Partitioning};
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::EmptyRecordBatchStream;
 use datafusion::{
-    arrow::{datatypes::SchemaRef, error::ArrowError},
+    arrow::datatypes::SchemaRef,
     error::Result,
     execution::context::TaskContext,
     physical_plan::{
@@ -38,9 +38,8 @@ use datafusion::{
         DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties, SendableRecordBatchStream,
     },
 };
-use futures::{StreamExt, TryFutureExt, TryStreamExt};
+use futures::{StreamExt, TryStreamExt};
 use std::{
-    any::Any,
     fmt,
     fmt::{Debug, Formatter},
     sync::Arc,
@@ -119,11 +118,6 @@ impl DisplayAs for ShuffleWriterExec {
 
 #[async_trait]
 impl ExecutionPlan for ShuffleWriterExec {
-    /// Return a reference to Any that can be used for downcasting
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn name(&self) -> &str {
         "ShuffleWriterExec"
     }
@@ -171,23 +165,23 @@ impl ExecutionPlan for ShuffleWriterExec {
         let input = self.input.execute(partition, Arc::clone(&context))?;
         let metrics = ShufflePartitionerMetrics::new(&self.metrics, 0);
 
+        // Propagate DataFusionError unchanged: the JNI bridge only downcasts a single
+        // `DataFusionError::External(SparkError)` layer, so any extra wrap here loses the
+        // typed exception (e.g. SparkArithmeticException on decimal overflow).
         Ok(Box::pin(RecordBatchStreamAdapter::new(
             self.schema(),
-            futures::stream::once(
-                external_shuffle(
-                    input,
-                    partition,
-                    self.output_data_file.clone(),
-                    self.output_index_file.clone(),
-                    self.partitioning.clone(),
-                    metrics,
-                    context,
-                    self.codec.clone(),
-                    self.tracing_enabled,
-                    self.write_buffer_size,
-                )
-                .map_err(|e| ArrowError::ExternalError(Box::new(e))),
-            )
+            futures::stream::once(external_shuffle(
+                input,
+                partition,
+                self.output_data_file.clone(),
+                self.output_index_file.clone(),
+                self.partitioning.clone(),
+                metrics,
+                context,
+                self.codec.clone(),
+                self.tracing_enabled,
+                self.write_buffer_size,
+            ))
             .try_flatten(),
         )))
     }
@@ -267,7 +261,7 @@ async fn external_shuffle(
 mod test {
     use super::*;
     use crate::{read_ipc_compressed, ShuffleBlockWriter};
-    use arrow::array::{Array, StringArray, StringBuilder};
+    use arrow::array::{Array, Int64Array, StringArray, StringBuilder};
     use arrow::datatypes::{DataType, Field, Schema};
     use arrow::record_batch::RecordBatch;
     use arrow::row::{RowConverter, SortField};
@@ -343,6 +337,7 @@ mod test {
     }
 
     #[tokio::test]
+    #[cfg_attr(miri, ignore)] // miri can't call foreign function `ZSTD_createCCtx`
     async fn shuffle_partitioner_memory() {
         let batch = create_batch(900);
         assert_eq!(8316, batch.get_array_memory_size()); // Not stable across Arrow versions
@@ -387,6 +382,60 @@ mod test {
 
         // insert another batch after spilling
         repartitioner.insert_batch(batch.clone()).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn shuffle_partitioner_charges_shared_buffer_once() {
+        // `insert_batch` slices a large batch into batch_size chunks that all share one backing
+        // buffer (the shape a partial HashAggregate's sliced emit hands the writer). The
+        // reservation and the data_size metric must charge that buffer once, not once per chunk;
+        // otherwise the chunk count multiplies it and a batch well under the memory limit spills
+        // spuriously and reports a wildly inflated data_size.
+        let n = 16_384usize;
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int64, false)]));
+        let backing = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![Arc::new(Int64Array::from_iter_values(0..n as i64))],
+        )
+        .unwrap();
+        let buffer_bytes = backing.get_array_memory_size();
+
+        let memory_limit = 512 * 1024;
+        let batch_size = 1024; // 16 chunks, all sharing the one backing buffer
+        let num_partitions = 2;
+        let runtime_env = create_runtime(memory_limit);
+        let metrics_set = ExecutionPlanMetricsSet::new();
+        let metrics = ShufflePartitionerMetrics::new(&metrics_set, 0);
+        let data_size = metrics.data_size.clone();
+        let spill_count = metrics.spill_count.clone();
+        let dir = tempfile::tempdir().unwrap();
+        let mut repartitioner = MultiPartitionShuffleRepartitioner::try_new(
+            0,
+            dir.path().join("data.out").to_str().unwrap().to_string(),
+            dir.path().join("index.out").to_str().unwrap().to_string(),
+            backing.schema(),
+            CometPartitioning::Hash(vec![Arc::new(Column::new("a", 0))], num_partitions),
+            metrics,
+            runtime_env,
+            batch_size,
+            CompressionCodec::Lz4Frame,
+            false,
+            1024 * 1024,
+        )
+        .unwrap();
+
+        repartitioner.insert_batch(backing).await.unwrap();
+
+        assert!(
+            data_size.value() <= 2 * buffer_bytes,
+            "data_size {} should charge the shared buffer about once (~{buffer_bytes} bytes), not per chunk",
+            data_size.value()
+        );
+        assert_eq!(
+            spill_count.value(),
+            0,
+            "one buffer under the memory limit must not spill once per chunk"
+        );
     }
 
     fn create_runtime(memory_limit: usize) -> Arc<RuntimeEnv> {
