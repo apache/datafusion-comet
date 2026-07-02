@@ -179,6 +179,27 @@ impl ScanExec {
         )
     }
 
+    /// Inject a native [`SendableRecordBatchStream`] into an already-constructed
+    /// `ScanExec` handle (e.g. one returned by `PhysicalPlanner::create_plan` for a
+    /// `Scan` leaf, which is built with `input_source = None`). This is what lets a
+    /// [`crate::execution::fragment`] feed the fragment's `Scan` leaves from its
+    /// DataFusion children after the plan has been built.
+    ///
+    /// A non-`TEST_EXEC_CONTEXT_ID` `exec_context_id` MUST be supplied so that
+    /// `pull_next` actually pulls from the stream instead of short-circuiting to
+    /// EOF (that short-circuit is reserved for unit tests that seed batches via
+    /// `set_input_batch`). Only the handle that `get_next_batch` is driven on needs
+    /// this — the executable leaf shares this handle's `batch` slot (an `Arc`), so
+    /// batches pulled here become visible to the plan node without touching it.
+    pub fn set_native_input(
+        &mut self,
+        exec_context_id: i64,
+        stream: SendableRecordBatchStream,
+    ) {
+        self.exec_context_id = exec_context_id;
+        self.input_source = Some(Arc::new(Mutex::new(NativeBatchStream::new(stream))));
+    }
+
     /// Unpack all dictionary types because some DataFusion operators
     /// and expressions do not support dictionary types
     fn unpack_dictionary_type(dt: &DataType) -> DataType {

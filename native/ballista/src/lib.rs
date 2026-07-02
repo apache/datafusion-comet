@@ -32,10 +32,14 @@
 
 pub mod codec;
 pub mod ffi_jni;
+pub mod fragment;
 pub mod scan;
 pub mod table_provider;
 
-pub use codec::{CometLogicalCodec, CometPhysicalCodec, COMET_MAGIC};
+pub use codec::{
+    CometLogicalCodec, CometPhysicalCodec, COMET_FRAGMENT_MAGIC, COMET_MAGIC,
+};
 pub use ffi_jni::{build_test_proto, execute_comet_proto, submit_and_export};
+pub use fragment::CometFragmentExec;
 pub use scan::CometScanExec;
 pub use table_provider::CometTableProvider;

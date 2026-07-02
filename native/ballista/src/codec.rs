@@ -29,6 +29,7 @@ use datafusion_proto::physical_plan::PhysicalExtensionCodec;
 
 use ballista_core::serde::{BallistaLogicalExtensionCodec, BallistaPhysicalExtensionCodec};
 
+use crate::fragment::CometFragmentExec;
 use crate::scan::CometScanExec;
 use crate::table_provider::CometTableProvider;
 
@@ -39,6 +40,11 @@ use crate::table_provider::CometTableProvider;
 /// are protobuf tag streams that never begin with these bytes — the
 /// embedded NUL in particular makes a collision effectively impossible.
 pub const COMET_MAGIC: &[u8] = b"CMET1\0";
+
+/// Marks a payload as a [`CometFragmentExec`] (a Comet fragment fed by
+/// DataFusion children), distinct from [`COMET_MAGIC`] for the childless
+/// [`CometScanExec`]. Same collision-safety argument as `COMET_MAGIC`.
+pub const COMET_FRAGMENT_MAGIC: &[u8] = b"CMETF\0";
 
 /// Serializes `CometScanExec` as its Comet proto bytes (tagged with `COMET_MAGIC`)
 /// and reconstructs it on decode by re-running Comet's planner via FFI. All other
@@ -55,6 +61,14 @@ impl PhysicalExtensionCodec for CometPhysicalCodec {
         inputs: &[Arc<dyn ExecutionPlan>],
         ctx: &TaskContext,
     ) -> Result<Arc<dyn ExecutionPlan>> {
+        if let Some(rest) = buf.strip_prefix(COMET_FRAGMENT_MAGIC) {
+            // `inputs` are the already-decoded DataFusion children that feed the
+            // fragment's `Scan` input leaves.
+            return Ok(Arc::new(CometFragmentExec::try_new(
+                rest.to_vec(),
+                inputs.to_vec(),
+            )?));
+        }
         if let Some(rest) = buf.strip_prefix(COMET_MAGIC) {
             return Ok(Arc::new(CometScanExec::try_new(rest.to_vec())?));
         }
@@ -62,6 +76,11 @@ impl PhysicalExtensionCodec for CometPhysicalCodec {
     }
 
     fn try_encode(&self, node: Arc<dyn ExecutionPlan>, buf: &mut Vec<u8>) -> Result<()> {
+        if let Some(fragment) = node.downcast_ref::<CometFragmentExec>() {
+            buf.extend_from_slice(COMET_FRAGMENT_MAGIC);
+            buf.extend_from_slice(fragment.proto());
+            return Ok(());
+        }
         if let Some(scan) = node.downcast_ref::<CometScanExec>() {
             buf.extend_from_slice(COMET_MAGIC);
             buf.extend_from_slice(scan.proto());
