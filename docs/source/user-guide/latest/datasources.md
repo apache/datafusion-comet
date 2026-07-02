@@ -272,13 +272,13 @@ Azure scans discover Root CA Certificates the same way S3 scans do. See [Root CA
 
 Comet first calls `MicrosoftAzureBuilder::from_env()`, so any `AZURE_*` environment variables (`AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_FEDERATED_TOKEN_FILE`, `AZURE_AUTHORITY_HOST`, `AZURE_STORAGE_*`) are honored out of the box. This is what makes AKS Workload Identity work in a stock pod with no extra configuration. Any Hadoop `fs.azure.*` keys below are then applied on top, overriding the environment.
 
-| Authentication method     | Hadoop keys                                                                                                                                                          |
-| ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Shared account key        | `fs.azure.account.key`                                                                                                                                               |
+| Authentication method     | Hadoop keys                                                                                                                                                            |
+| ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Shared account key        | `fs.azure.account.key`                                                                                                                                                 |
 | OAuth2 client credentials | `fs.azure.account.oauth2.client.id`, `fs.azure.account.oauth2.client.secret`, `fs.azure.account.oauth2.client.endpoint` (tenant id is extracted from the endpoint URL) |
-| Managed identity (MSI)    | `fs.azure.account.oauth2.msi.tenant`, `fs.azure.account.oauth2.msi.endpoint`, `fs.azure.account.oauth2.msi.authority`                                                |
-| Workload Identity         | `fs.azure.account.oauth2.client.id`, `fs.azure.account.oauth2.msi.tenant`, `fs.azure.account.oauth2.token.file`                                                      |
-| SAS token                 | `fs.azure.sas.<container>.<account>`                                                                                                                                 |
+| Managed identity (MSI)    | `fs.azure.account.oauth2.msi.tenant`, `fs.azure.account.oauth2.msi.endpoint`, `fs.azure.account.oauth2.msi.authority`                                                  |
+| Workload Identity         | `fs.azure.account.oauth2.client.id`, `fs.azure.account.oauth2.msi.tenant`, `fs.azure.account.oauth2.token.file`                                                        |
+| SAS token                 | `fs.azure.sas.<container>.<account>`                                                                                                                                   |
 
 ### Hadoop-to-object_store key mapping
 
@@ -370,7 +370,7 @@ $SPARK_HOME/bin/spark-shell \
 
 1. **Partial Hadoop ABFS configuration support**: Only the `fs.azure.*` keys listed above are translated and applied to the underlying `object_store` crate.
 
-2. **Supported schemes**: Only `abfs` and `abfss` are routed to the native Azure store. `wasb[s]`, `az`, `azure`, and `adl` are not supported. `wasb[s]` is not recognised by `object_store` at all; `az`, `azure`, and `adl` are recognised by `object_store` but treat the URL host as the *container* rather than the *account*, which is incompatible with Hadoop's account-scoped configuration keys.
+2. **Supported schemes**: Only `abfs` and `abfss` are routed to the native Azure store. `wasb[s]`, `az`, `azure`, and `adl` are not supported. `wasb[s]` is not recognised by `object_store` at all; `az`, `azure`, and `adl` are recognised by `object_store` but treat the URL host as the _container_ rather than the _account_, which is incompatible with Hadoop's account-scoped configuration keys.
 
 3. **URL shape**: URLs must include the account in the host, i.e. `abfss://<container>@<account>.dfs.core.windows.net/<path>`. Bare `abfs://<container>/<path>` (fsspec-style, no account in the URL) is not supported because Comet cannot resolve the storage account name.
 
