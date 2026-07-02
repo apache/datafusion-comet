@@ -91,8 +91,9 @@ message Expr {
     HoursTransform hours_transform = 68;
     ArraysZip arrays_zip = 69;
     JvmScalarUdf jvm_scalar_udf = 70;
-    HigherOrderFunc high_order_func = 71;
-    NamedLambdaVariable named_lambda_variable = 72;
+    PreciseTimestampConversion precise_timestamp_conversion = 71;
+    HigherOrderFunc high_order_func = 72;
+    NamedLambdaVariable named_lambda_variable = 73;
   }
 
   // Optional QueryContext for error reporting (contains SQL text and position)
@@ -145,6 +146,7 @@ message AggExpr {
     Correlation correlation = 15;
     BloomFilterAgg bloomFilterAgg = 16;
     CollectSet collectSet = 17;
+    Percentile percentile = 18;
   }
 
   // Optional filter expression for SQL FILTER (WHERE ...) clause.
@@ -246,6 +248,13 @@ message Correlation {
   DataType datatype = 4;
 }
 
+message Percentile {
+  Expr child = 1;
+  // Single percentile in [0.0, 1.0] as a literal double expression.
+  Expr percentage = 2;
+  DataType datatype = 3;
+}
+
 message BloomFilterAgg {
   Expr child = 1;
   Expr numItems = 2;
@@ -291,6 +300,14 @@ message Cast {
   // True when running against Spark 4.0+. Controls version-specific cast behaviour
   // such as the handling of leading whitespace before T-prefixed time-only strings.
   bool is_spark4_plus = 6;
+}
+
+// Spark's internal PreciseTimestampConversion, used by time-window grouping to convert
+// between TimestampType/TimestampNTZType and LongType without losing microsecond precision.
+// This is a pure reinterpret: the underlying value is unchanged, only the type is changed.
+message PreciseTimestampConversion {
+  Expr child = 1;
+  DataType datatype = 2;
 }
 
 message BinaryExpr {

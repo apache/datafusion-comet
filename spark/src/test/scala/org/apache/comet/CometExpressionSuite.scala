@@ -1032,17 +1032,20 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("native opt-in hint shown for codegen-dispatch path") {
     withTempDir { dir =>
-      // _5 column is TIMESTAMP(MICROS,false) = TimestampNTZ, which triggers Incompatible in CometHour
+      // _4 column is TIMESTAMP(MICROS,true) = TimestampType. FromUTCTimestamp is Incompatible
+      // (its native timezone parser is stricter than Spark's), so with allowIncompatible=false it
+      // rides the codegen dispatcher and surfaces the native opt-in hint.
       val path = new Path(dir.toURI.toString, "hint_test.parquet")
       makeRawTimeParquetFile(path, dictionaryEnabled = false, n = 5)
-      withSQLConf("spark.comet.expression.Hour.allowIncompatible" -> "false") {
-        val df = spark.read.parquet(path.toString).selectExpr("hour(_5) as h")
+      withSQLConf("spark.comet.expression.FromUTCTimestamp.allowIncompatible" -> "false") {
+        val df =
+          spark.read.parquet(path.toString).selectExpr("from_utc_timestamp(_4, 'UTC') as t")
         val explain =
           new ExtendedExplainInfo().generateExtendedInfo(df.queryExecution.executedPlan)
         assert(explain.contains("[COMET-INFO:"), s"Expected [COMET-INFO: in: $explain")
         assert(
-          explain.contains("native implementation of Hour"),
-          s"Expected 'native implementation of Hour' in: $explain")
+          explain.contains("native implementation of FromUTCTimestamp"),
+          s"Expected 'native implementation of FromUTCTimestamp' in: $explain")
       }
     }
   }
@@ -1738,6 +1741,48 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("unary minus across numeric types") {
+    // UnaryMinus gates input types in getSupportLevel: every Spark NumericType (incl. decimal)
+    // must stay native; interval types are unsupported and fall back to Spark.
+    withParquetTable(
+      (1 to 5).map(i =>
+        (i.toByte, i.toShort, i, i.toLong, i.toFloat, i.toDouble, BigDecimal(i * 3, 2))),
+      "umt") {
+      checkSparkAnswerAndOperator("SELECT -_1, -_2, -_3, -_4, -_5, -_6, -_7 FROM umt")
+    }
+  }
+
+  test("unary minus on float/double special values and nulls") {
+    // Negation is an IEEE sign flip, so NaN, +/-Infinity, signed zero, the float/double range
+    // limits, and null must all match Spark. (Integer Max/MinValue overflow is covered by the
+    // "unary negative integer overflow test".)
+    val floats: Seq[Option[Float]] = Seq(
+      Some(Float.NaN),
+      Some(Float.PositiveInfinity),
+      Some(Float.NegativeInfinity),
+      Some(0.0f),
+      Some(-0.0f),
+      Some(Float.MinPositiveValue),
+      Some(Float.MaxValue),
+      Some(Float.MinValue),
+      None)
+    val doubles: Seq[Option[Double]] = Seq(
+      Some(Double.NaN),
+      Some(Double.PositiveInfinity),
+      Some(Double.NegativeInfinity),
+      Some(0.0d),
+      Some(-0.0d),
+      Some(Double.MinPositiveValue),
+      Some(Double.MaxValue),
+      Some(Double.MinValue),
+      None)
+    Seq(false, true).foreach { dictionary =>
+      withParquetTable(floats.zip(doubles), "umt_special", withDictionary = dictionary) {
+        checkSparkAnswerAndOperator("SELECT -_1, -_2 FROM umt_special")
+      }
+    }
+  }
+
   test("basic arithmetic") {
     withSQLConf("parquet.enable.dictionary" -> "false") {
       withParquetTable((1 until 10).map(i => (i, i + 1)), "tbl", false) {
@@ -2066,6 +2111,22 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               |""".stripMargin)
         }
       }
+    }
+  }
+
+  test("sha2 with all-literal arguments and ConstantFolding disabled") {
+    // https://github.com/apache/datafusion-comet/issues/3340
+    // When ConstantFolding is disabled, an all-literal sha2() call reaches the native
+    // engine as scalar arguments. Verify it computes the correct result rather than crashing.
+    withSQLConf(
+      "spark.sql.optimizer.excludedRules" ->
+        "org.apache.spark.sql.catalyst.optimizer.ConstantFolding") {
+      checkSparkAnswerAndOperator("""
+          |select
+          |sha2('test', 0), sha2('test', 256), sha2('test', 224),
+          |sha2('test', 384), sha2('test', 512), sha2('test', 128), sha2('test', -1),
+          |sha2(cast(null as string), 256)
+          |""".stripMargin)
     }
   }
 
