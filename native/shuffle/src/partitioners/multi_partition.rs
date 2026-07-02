@@ -105,7 +105,6 @@ pub(crate) struct MultiPartitionShuffleRepartitioner<T: PartitionWriter> {
     partition_writer: T,
     /// Partitioning scheme to use
     partitioning: CometPartitioning,
-    runtime: Arc<RuntimeEnv>,
     metrics: ShufflePartitionerMetrics,
     /// Reused scratch space for computing partition indices
     scratch: ScratchSpace,
@@ -208,7 +207,6 @@ impl<T: PartitionWriter> MultiPartitionShuffleRepartitioner<T> {
             partition_indices: vec![vec![]; num_output_partitions],
             partition_writer,
             partitioning,
-            runtime,
             metrics,
             scratch,
             batch_size,
@@ -507,10 +505,9 @@ impl<T: PartitionWriter> MultiPartitionShuffleRepartitioner<T> {
             let mut partitioned_batches = self.partitioned_batches();
 
             for partition_id in 0..num_output_partitions {
-                self.partition_writer.spill(
+                self.partition_writer.write(
                     partition_id,
                     &mut partitioned_batches.produce(partition_id, &self.metrics.interleave_time),
-                    &self.runtime,
                     &self.metrics,
                 )?;
             }

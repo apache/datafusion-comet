@@ -134,3 +134,9 @@ impl<S: Borrow<ShuffleBlockWriter>, W: Write> BufBatchWriter<S, W> {
         Ok(())
     }
 }
+
+impl<S: Borrow<ShuffleBlockWriter>, W: Write + Seek> BufBatchWriter<S, W> {
+    pub(crate) fn writer_stream_position(&mut self) -> datafusion::common::Result<u64> {
+        self.writer.stream_position().map_err(Into::into)
+    }
+}

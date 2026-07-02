@@ -17,19 +17,8 @@
 
 use crate::metrics::ShufflePartitionerMetrics;
 use arrow::record_batch::RecordBatch;
-use datafusion::execution::runtime_env::RuntimeEnv;
 
 pub(crate) trait PartitionWriter: Send + Sync {
-    fn spill<I>(
-        &mut self,
-        pid: usize,
-        iter: &mut I,
-        runtime: &RuntimeEnv,
-        metrics: &ShufflePartitionerMetrics,
-    ) -> datafusion::common::Result<()>
-    where
-        I: Iterator<Item = datafusion::common::Result<RecordBatch>>;
-
     fn write<I>(
         &mut self,
         pid: usize,

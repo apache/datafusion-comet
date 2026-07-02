@@ -211,6 +211,7 @@ async fn external_shuffle(
         partitioning.partition_count(),
         context.session_config().batch_size(),
         write_buffer_size,
+        context.runtime_env(),
     )?;
 
     let mut repartitioner: Box<dyn ShufflePartitioner> = match &partitioning {
@@ -357,6 +358,7 @@ mod test {
             num_partitions,
             1024,
             1024 * 1024, // write_buffer_size: 1MB default
+            Arc::clone(&runtime_env),
         )
         .unwrap();
         let mut repartitioner = MultiPartitionShuffleRepartitioner::try_new(
@@ -427,6 +429,7 @@ mod test {
             num_partitions,
             1024,
             1024 * 1024, // write_buffer_size: 1MB default
+            Arc::clone(&runtime_env),
         )
         .unwrap();
         let mut repartitioner = MultiPartitionShuffleRepartitioner::try_new(
