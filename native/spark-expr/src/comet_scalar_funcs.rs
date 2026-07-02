@@ -193,6 +193,10 @@ pub fn create_comet_physical_fun_with_eval_mode(
             let func = Arc::new(spark_log);
             make_comet_scalar_udf!("spark_log", func, without data_type)
         }
+        "base64" => {
+            let func = Arc::new(crate::string_funcs::spark_base64);
+            make_comet_scalar_udf!("base64", func, without data_type)
+        }
         "split" => {
             let func = Arc::new(crate::string_funcs::spark_split);
             make_comet_scalar_udf!("split", func, without data_type)

@@ -277,7 +277,7 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `now` | ✅ | Constant-folded to a literal (alias of `current_timestamp`) |
 | `quarter` | ✅ |  |
 | `second` | ✅ |  |
-| `session_window` | 🔜 | Time-window grouping; tracked by [#4553](https://github.com/apache/datafusion-comet/issues/4553) |
+| `session_window` | 🔜 | Batch session-window grouping falls back (`UpdatingSessionsExec` is not yet native); tracked by [#4785](https://github.com/apache/datafusion-comet/issues/4785) |
 | `time_diff` | 🔜 | Spark 4.1 TIME type; tracked by [#4288](https://github.com/apache/datafusion-comet/issues/4288) |
 | `time_trunc` | 🔜 | Spark 4.1 TIME type; tracked by [#4288](https://github.com/apache/datafusion-comet/issues/4288) |
 | `timestamp_micros` | ✅ |  |
@@ -303,8 +303,8 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `unix_timestamp` | ✅ |  |
 | `weekday` | ✅ |  |
 | `weekofyear` | ✅ |  |
-| `window` | 🔜 | Time-window grouping; tracked by [#4553](https://github.com/apache/datafusion-comet/issues/4553) |
-| `window_time` | 🔜 | Time-window grouping; tracked by [#4553](https://github.com/apache/datafusion-comet/issues/4553) |
+| `window` | ✅ | Batch tumbling and sliding time-window grouping runs natively |
+| `window_time` | ✅ | Batch time-window grouping runs natively |
 | `year` | ✅ |  |
 
 ---
@@ -535,7 +535,7 @@ expression-level). The `outer` variants are wired but marked `Incompatible`; the
 | Function | Status | Notes |
 | --- | --- | --- |
 | `ascii` | ✅ |  |
-| `base64` | 🔜 | Lowers to `StaticInvoke(encode)` (not allowlisted); falls back |
+| `base64` | ✅ |  |
 | `bit_length` | ✅ |  |
 | `btrim` | ✅ |  |
 | `char` | ✅ |  |
