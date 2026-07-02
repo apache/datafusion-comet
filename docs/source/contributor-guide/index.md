@@ -54,6 +54,14 @@ S3 Credential Provider Design <s3-credential-provider-design>
 
 ```{toctree}
 :maxdepth: 2
+:caption: Experimental
+:hidden:
+
+Native Execution on Ballista <ballista_execution>
+```
+
+```{toctree}
+:maxdepth: 2
 :caption: Adding Functionality
 :hidden:
 
