@@ -29,7 +29,14 @@ edition = "2021"
 # this crate does not contain public Rust APIs so we do not publish it
 publish = false
 
+# `cdylib` builds libcomet_ballista.{dylib,so} carrying the JNI submission entry
+# (loaded by the JVM alongside libcomet); `rlib` keeps the crate usable from
+# Rust integration tests.
+[lib]
+crate-type = ["cdylib", "rlib"]
+
 [dependencies]
+jni = "0.22.4"
 datafusion-comet = { path = "../core" }
 datafusion-comet-proto = { workspace = true }
 datafusion = { workspace = true, features = ["parquet"] }

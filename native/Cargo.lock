@@ -2270,6 +2270,7 @@ dependencies = [
  "datafusion-ffi",
  "datafusion-proto",
  "futures",
+ "jni 0.22.4",
  "prost",
  "tokio",
 ]
