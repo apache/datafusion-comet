@@ -384,27 +384,30 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
   /**
    * Mapping of Spark aggregate expression class to Comet expression handler.
    */
-  val aggrSerdeMap: Map[Class[_], CometAggregateExpressionSerde[_]] = Map(
-    classOf[Average] -> CometAverage,
-    classOf[BitAndAgg] -> CometBitAndAgg,
-    classOf[BitOrAgg] -> CometBitOrAgg,
-    classOf[BitXorAgg] -> CometBitXOrAgg,
-    classOf[BloomFilterAggregate] -> CometBloomFilterAggregate,
-    classOf[CollectSet] -> CometCollectSet,
-    classOf[Corr] -> CometCorr,
-    classOf[Count] -> CometCount,
-    classOf[CovPopulation] -> CometCovPopulation,
-    classOf[CovSample] -> CometCovSample,
-    classOf[First] -> CometFirst,
-    classOf[Last] -> CometLast,
-    classOf[Max] -> CometMax,
-    classOf[Min] -> CometMin,
-    classOf[Percentile] -> CometPercentile,
-    classOf[StddevPop] -> CometStddevPop,
-    classOf[StddevSamp] -> CometStddevSamp,
-    classOf[Sum] -> CometSum,
-    classOf[VariancePop] -> CometVariancePop,
-    classOf[VarianceSamp] -> CometVarianceSamp)
+  val aggrSerdeMap: Map[Class[_], CometAggregateExpressionSerde[_]] = {
+    val base: Map[Class[_], CometAggregateExpressionSerde[_]] = Map(
+      classOf[Average] -> CometAverage,
+      classOf[BitAndAgg] -> CometBitAndAgg,
+      classOf[BitOrAgg] -> CometBitOrAgg,
+      classOf[BitXorAgg] -> CometBitXOrAgg,
+      classOf[BloomFilterAggregate] -> CometBloomFilterAggregate,
+      classOf[CollectSet] -> CometCollectSet,
+      classOf[Corr] -> CometCorr,
+      classOf[Count] -> CometCount,
+      classOf[CovPopulation] -> CometCovPopulation,
+      classOf[CovSample] -> CometCovSample,
+      classOf[First] -> CometFirst,
+      classOf[Last] -> CometLast,
+      classOf[Max] -> CometMax,
+      classOf[Min] -> CometMin,
+      classOf[Percentile] -> CometPercentile,
+      classOf[StddevPop] -> CometStddevPop,
+      classOf[StddevSamp] -> CometStddevSamp,
+      classOf[Sum] -> CometSum,
+      classOf[VariancePop] -> CometVariancePop,
+      classOf[VarianceSamp] -> CometVarianceSamp)
+    base ++ sparkVersionSpecificAggregates
+  }
 
   /**
    * Returns true if all aggregate expressions in the list have intermediate buffer formats that
