@@ -79,7 +79,6 @@ impl ApproxPercentile {
             return_array,
         }
     }
-
 }
 
 impl AggregateUDFImpl for ApproxPercentile {
