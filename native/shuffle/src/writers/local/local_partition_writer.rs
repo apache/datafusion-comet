@@ -41,7 +41,7 @@ use std::sync::Arc;
 ///   `BufBatchWriter`, so coalescing intentionally does not cross partition
 ///   boundaries. They hold the raw output writer and block writer directly.
 enum DataOutput {
-    Single(BufBatchWriter<ShuffleBlockWriter, BufWriter<File>>),
+    Single(BufBatchWriter<ShuffleBlockWriter, File>),
     Multi {
         output_writer: BufWriter<File>,
         shuffle_block_writer: ShuffleBlockWriter,
@@ -80,15 +80,15 @@ impl LocalPartitionWriter {
             .open(output_data_file.clone())
             .map_err(|e| DataFusionError::Execution(format!("shuffle write error: {e:?}")))?;
 
-        let output_writer = BufWriter::with_capacity(write_buffer_size, output_file);
         let data_output = if num_output_partitions == 1 {
             DataOutput::Single(BufBatchWriter::new(
                 shuffle_block_writer,
-                output_writer,
+                output_file,
                 write_buffer_size,
                 batch_size,
             ))
         } else {
+            let output_writer = BufWriter::with_capacity(write_buffer_size, output_file);
             let spill_writers = (0..num_output_partitions)
                 .map(|_| {
                     SpillWriter::try_new(

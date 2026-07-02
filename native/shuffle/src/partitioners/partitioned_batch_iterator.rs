@@ -18,7 +18,7 @@
 use arrow::array::RecordBatch;
 use arrow::compute::interleave_record_batch;
 use datafusion::common::DataFusionError;
-use datafusion::physical_expr_common::metrics::Time;
+use datafusion::physical_plan::metrics::Time;
 
 /// A helper struct to produce shuffled batches.
 /// This struct takes ownership of the buffered batches and partition indices from the

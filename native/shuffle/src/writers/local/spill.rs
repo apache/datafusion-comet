@@ -55,7 +55,7 @@ impl SpillWriter {
         iter: &mut I,
         runtime: &RuntimeEnv,
         metrics: &ShufflePartitionerMetrics,
-    ) -> datafusion::common::Result<usize> {
+    ) -> datafusion::common::Result<()> {
         if let Some(batch) = iter.next() {
             self.ensure_spill_file_created(runtime)?;
 
@@ -80,11 +80,8 @@ impl SpillWriter {
                 bytes_written
             };
             metrics.spilled_bytes.add(total_bytes_written);
-
-            Ok(total_bytes_written)
-        } else {
-            Ok(0)
         }
+        Ok(())
     }
 
     fn ensure_spill_file_created(
