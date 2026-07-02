@@ -95,6 +95,16 @@ INSERT INTO test_percentile_neg VALUES (-10.0), (-5.0), (0.0), (5.0), (10.0)
 query
 SELECT percentile(v, 0.5), percentile(v, 0.1), percentile(v, 0.9) FROM test_percentile_neg
 
+statement
+CREATE TABLE test_percentile_special(v double) USING parquet
+
+statement
+INSERT INTO test_percentile_special VALUES
+  (double('-Infinity')), (-0.0), (0.0), (1.0), (double('Infinity')), (double('NaN'))
+
+query
+SELECT percentile(v, 0.0), percentile(v, 0.5), percentile(v, 0.8), percentile(v, 1.0) FROM test_percentile_special
+
 -- ============================================================
 -- Unsupported forms fall back to Spark cleanly
 -- ============================================================

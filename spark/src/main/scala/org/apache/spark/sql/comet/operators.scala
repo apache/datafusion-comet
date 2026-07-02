@@ -1872,7 +1872,7 @@ object CometHashAggregateExec
     CometHashAggregateExec(
       nativeOp,
       op,
-      adjustOutputForNativeState(op),
+      op.output,
       op.groupingExpressions,
       op.aggregateExpressions,
       op.resultExpressions,
