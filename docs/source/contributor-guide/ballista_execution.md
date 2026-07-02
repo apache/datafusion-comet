@@ -108,7 +108,7 @@ Legend: ✅ done · 🔨 in progress · ⬜ planned
   returns results, with zero Spark-executor tasks. First target query: TPC-H Q1.
   - ✅ R1-T1 — JVM → native → in-process Ballista → JVM Arrow round-trip (spike).
   - ✅ R1-T2 — config flag + driver `executeCollect` override.
-  - ⬜ R1-T3 — end-to-end TPC-H Q1 via Ballista, results verified against Spark.
+  - ◐ R1-T3 — offload proven end-to-end on Q1's single-stage subset (scan + date filter + decimal projections), results match Spark, 0 executor tasks. Full Q1 GROUP BY is structurally multi-block → R2.
   - ⬜ R1-T4 (R1b) — submit to an external Ballista scheduler + executor cluster.
 - ⬜ **R2 — multi-stage distribution.** Map Comet's per-stage native fragments onto Ballista stages
   with shuffle, so plans with exchanges (aggregations, joins) distribute across executors.
