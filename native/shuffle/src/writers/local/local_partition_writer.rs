@@ -196,7 +196,9 @@ impl PartitionWriter for LocalPartitionWriter {
 
         for offset in &self.offsets {
             let offset_i64 = i64::try_from(*offset).map_err(|_| {
-                DataFusionError::Execution(format!("shuffle write error: offset overflow ({offset})"))
+                DataFusionError::Execution(format!(
+                    "shuffle write error: offset overflow ({offset})"
+                ))
             })?;
             output_index.write_all(&offset_i64.to_le_bytes())?;
         }

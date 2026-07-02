@@ -133,7 +133,8 @@ impl<T: PartitionWriter> ShufflePartitioner for SinglePartitionShufflePartitione
                 .write(0, &mut iter::once(Ok(batch)), &self.metrics)?;
         }
 
-        self.partition_writer.finish_partition(0, &mut iter::empty(), &self.metrics)?;
+        self.partition_writer
+            .finish_partition(0, &mut iter::empty(), &self.metrics)?;
 
         self.partition_writer.finish_all(&self.metrics)?;
 

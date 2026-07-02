@@ -509,7 +509,7 @@ impl<T: PartitionWriter> MultiPartitionShuffleRepartitioner<T> {
             for partition_id in 0..num_output_partitions {
                 self.partition_writer.spill(
                     partition_id,
-                    &mut partitioned_batches.produce(partition_id),
+                    &mut partitioned_batches.produce(partition_id, &self.metrics.interleave_time),
                     &self.runtime,
                     &self.metrics,
                 )?;
@@ -566,7 +566,7 @@ impl<T: PartitionWriter> ShufflePartitioner for MultiPartitionShuffleRepartition
             for i in 0..num_output_partitions {
                 self.partition_writer.finish_partition(
                     i,
-                    &mut partitioned_batches.produce(i),
+                    &mut partitioned_batches.produce(i, &self.metrics.interleave_time),
                     &self.metrics,
                 )?;
             }
