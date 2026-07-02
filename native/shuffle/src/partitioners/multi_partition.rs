@@ -18,7 +18,7 @@
 use crate::metrics::ShufflePartitionerMetrics;
 use crate::partitioners::partitioned_batch_iterator::PartitionedBatchesProducer;
 use crate::partitioners::ShufflePartitioner;
-use crate::writers::partition_writer::PartitionWriter;
+use crate::writers::PartitionWriter;
 use crate::{comet_partitioning, CometPartitioning};
 use arrow::array::{Array, ArrayData, ArrayRef, RecordBatch};
 use datafusion::common::utils::proxy::VecAllocExt;

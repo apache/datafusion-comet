@@ -17,11 +17,12 @@
 
 mod buf_batch_writer;
 mod checksum;
-pub mod local;
-pub mod partition_writer;
-pub mod rss;
+mod local;
+mod partition_writer;
 mod shuffle_block_writer;
 
 pub(crate) use buf_batch_writer::BufBatchWriter;
 pub(crate) use checksum::Checksum;
+pub(crate) use local::local_partition_writer::LocalPartitionWriter;
+pub(crate) use partition_writer::PartitionWriter;
 pub use shuffle_block_writer::{CompressionCodec, ShuffleBlockWriter};

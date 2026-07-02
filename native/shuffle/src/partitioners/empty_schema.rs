@@ -17,7 +17,7 @@
 
 use crate::metrics::ShufflePartitionerMetrics;
 use crate::partitioners::ShufflePartitioner;
-use crate::writers::partition_writer::PartitionWriter;
+use crate::writers::PartitionWriter;
 use arrow::array::RecordBatch;
 use arrow::datatypes::SchemaRef;
 use std::iter;

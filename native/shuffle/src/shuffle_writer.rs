@@ -22,7 +22,7 @@ use crate::partitioners::{
     EmptySchemaShufflePartitioner, MultiPartitionShuffleRepartitioner, ShufflePartitioner,
     SinglePartitionShufflePartitioner,
 };
-use crate::writers::local::local_partition_writer::LocalPartitionWriter;
+use crate::writers::LocalPartitionWriter;
 use crate::{CometPartitioning, CompressionCodec, ShuffleBlockWriter};
 use async_trait::async_trait;
 use datafusion::common::exec_datafusion_err;
