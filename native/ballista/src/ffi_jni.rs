@@ -118,7 +118,7 @@ pub fn build_test_proto() -> Result<Vec<u8>, String> {
 }
 
 use crate::scan::CometScanExec;
-use crate::{CometLogicalCodec, CometPhysicalCodec, CometTableProvider};
+use crate::{CometFragmentExec, CometLogicalCodec, CometPhysicalCodec, CometTableProvider};
 
 /// Run a Comet `Operator` proto on an in-process standalone Ballista engine and
 /// return the collected Arrow batches plus the result schema.
@@ -184,6 +184,208 @@ pub fn execute_comet_proto(proto: &[u8]) -> Result<(SchemaRef, Vec<RecordBatch>)
     })
 }
 
+// ---------------------------------------------------------------------------
+// R2: two-stage (distributed) GROUP BY offload
+// ---------------------------------------------------------------------------
+
+use std::time::Duration;
+
+use ballista_core::config::BallistaConfig;
+use ballista_core::execution_plans::execute_physical_plan;
+use ballista_core::serde::protobuf::scheduler_grpc_client::SchedulerGrpcClient;
+use datafusion::execution::SessionState;
+use datafusion::physical_expr::expressions::Column;
+use datafusion::physical_expr::PhysicalExpr;
+use datafusion::physical_plan::repartition::RepartitionExec;
+use datafusion::physical_plan::Partitioning;
+use datafusion_proto::protobuf::PhysicalPlanNode;
+use futures::TryStreamExt;
+
+/// Build the R2 two-stage physical plan for a distributed GROUP BY:
+///
+/// ```text
+/// CometFragmentExec(block2, children=[
+///     RepartitionExec::Hash( CometFragmentExec(block1, children=[]), keys=0..num_group_keys, N )
+/// ])
+/// ```
+///
+/// `block1` is the partial aggregate (self-contained `NativeScan` leaf); its
+/// output is `[group_keys..., agg_states...]`, so the group keys are columns
+/// `0..num_group_keys`. Hash-repartitioning on those columns co-locates every
+/// row for a group key on one downstream task, which is what lets the final
+/// aggregate in `block2` compose across the shuffle. Ballista's
+/// `DistributedPlanner` splits this plan at the `RepartitionExec(Hash)` into two
+/// stages (block1 -> ShuffleWriter; ShuffleReader -> block2), and at stage 2 the
+/// ShuffleReader becomes `block2`'s `Scan` (#100) input leaf.
+fn build_two_stage_plan(
+    block1_proto: &[u8],
+    block2_proto: &[u8],
+    num_group_keys: usize,
+    num_partitions: usize,
+) -> Result<Arc<dyn ExecutionPlan>, String> {
+    let block1: Arc<dyn ExecutionPlan> =
+        Arc::new(CometFragmentExec::try_new(block1_proto.to_vec(), vec![]).map_err(|e| {
+            format!("failed to build block1 (partial-agg) fragment: {e}")
+        })?);
+
+    let schema1 = block1.schema();
+    if num_group_keys == 0 || num_group_keys > schema1.fields().len() {
+        return Err(format!(
+            "invalid num_group_keys {num_group_keys}: block1 output has {} columns ({:?})",
+            schema1.fields().len(),
+            schema1.fields().iter().map(|f| f.name()).collect::<Vec<_>>()
+        ));
+    }
+
+    // Investigation aid: the schema of the batches that cross Ballista's IPC
+    // shuffle. block2's `Scan` (#100) leaf schema (derived from the exchange
+    // output on the JVM side) must match this for the aggregate to compose.
+    eprintln!(
+        "[comet-ballista R2] block1 (partial-agg) output schema = {:?}",
+        schema1
+    );
+
+    let hash_exprs: Vec<Arc<dyn PhysicalExpr>> = (0..num_group_keys)
+        .map(|i| Arc::new(Column::new(schema1.field(i).name(), i)) as Arc<dyn PhysicalExpr>)
+        .collect();
+
+    let repart: Arc<dyn ExecutionPlan> = Arc::new(
+        RepartitionExec::try_new(
+            block1,
+            Partitioning::Hash(hash_exprs, num_partitions.max(1)),
+        )
+        .map_err(|e| format!("failed to build hash RepartitionExec: {e}"))?,
+    );
+
+    let block2: Arc<dyn ExecutionPlan> =
+        Arc::new(CometFragmentExec::try_new(block2_proto.to_vec(), vec![repart]).map_err(
+            |e| format!("failed to build block2 (final-agg) fragment: {e}"),
+        )?);
+
+    eprintln!(
+        "[comet-ballista R2] block2 (final-agg) output schema = {:?}",
+        block2.schema()
+    );
+
+    Ok(block2)
+}
+
+/// Start an in-process standalone Ballista cluster (scheduler + executor) from
+/// `state`, so the Comet extension codecs registered on the state's config reach
+/// both sides. Mirrors `ballista::extension`'s private `setup_standalone`, but
+/// returns the scheduler URL for the direct physical-plan submission path.
+async fn start_standalone_from_state(state: &SessionState) -> Result<String, String> {
+    let addr = ballista_scheduler::standalone::new_standalone_scheduler_from_state(state)
+        .await
+        .map_err(|e| format!("failed to start standalone scheduler: {e}"))?;
+    let scheduler_url = format!("http://localhost:{}", addr.port());
+
+    let mut retries = 50;
+    let scheduler = loop {
+        match SchedulerGrpcClient::connect(scheduler_url.clone()).await {
+            Ok(s) => break s,
+            Err(e) if retries > 0 => {
+                retries -= 1;
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                let _ = e;
+            }
+            Err(e) => return Err(format!("could not connect to standalone scheduler: {e}")),
+        }
+    };
+
+    let concurrent_tasks = state.config().ballista_standalone_parallelism();
+    ballista_executor::new_standalone_executor_from_state(scheduler, concurrent_tasks, state)
+        .await
+        .map_err(|e| format!("failed to start standalone executor: {e}"))?;
+
+    Ok(scheduler_url)
+}
+
+/// Build and submit the R2 two-stage plan on an in-process standalone Ballista
+/// cluster, returning the collected Arrow result batches plus the result schema.
+///
+/// The Comet logical+physical codecs are registered on the SessionConfig so both
+/// the `CometFragmentExec` nodes and Ballista's own shuffle operators survive
+/// serialization to the scheduler/executor. The plan is submitted through T1's
+/// `execute_physical_plan`, which fetches **all** output partitions of the final
+/// stage (not just partition 0), so the returned batches cover every group.
+pub fn execute_two_stage(
+    block1_proto: &[u8],
+    block2_proto: &[u8],
+    num_group_keys: usize,
+    num_partitions: usize,
+) -> Result<(SchemaRef, Vec<RecordBatch>), String> {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| format!("failed to build tokio runtime: {e}"))?;
+
+    runtime.block_on(async move {
+        let n = num_partitions.max(1);
+        let config = SessionConfig::new_with_ballista()
+            .with_target_partitions(n)
+            .with_ballista_standalone_parallelism(n)
+            .with_ballista_physical_extension_codec(Arc::new(CometPhysicalCodec::default()))
+            .with_ballista_logical_extension_codec(Arc::new(CometLogicalCodec::default()));
+        let state = SessionStateBuilder::new()
+            .with_config(config)
+            .with_default_features()
+            .build();
+
+        // Build the plan inside the runtime: the fragments' NativeScan leaf builds
+        // via Comet's planner, which requires an active Tokio runtime.
+        let plan = build_two_stage_plan(block1_proto, block2_proto, num_group_keys, n)?;
+        let schema = plan.schema();
+
+        let scheduler_url = start_standalone_from_state(&state).await?;
+
+        let session_config = state.config().clone();
+        let codec = CometPhysicalCodec::default();
+        let session_id = state.session_id().to_string();
+
+        let stream = execute_physical_plan::<PhysicalPlanNode>(
+            scheduler_url,
+            &BallistaConfig::default(),
+            plan,
+            &codec,
+            session_id,
+            session_config,
+        )
+        .await
+        .map_err(|e| format!("failed to submit two-stage physical plan: {e}"))?;
+
+        let batches = stream
+            .try_collect::<Vec<_>>()
+            .await
+            .map_err(|e| format!("failed to collect distributed results: {e}"))?;
+
+        Ok((schema, batches))
+    })
+}
+
+/// Run the R2 two-stage plan and export the (single, concatenated) result batch
+/// into the JVM-allocated FFI structs. Returns the row count.
+///
+/// # Safety
+/// See [`export_batch_to_addresses`].
+pub unsafe fn submit_and_export_distributed(
+    block1_proto: &[u8],
+    block2_proto: &[u8],
+    num_group_keys: usize,
+    num_partitions: usize,
+    array_addrs: &[i64],
+    schema_addrs: &[i64],
+) -> Result<i64, String> {
+    let (schema, batches) =
+        execute_two_stage(block1_proto, block2_proto, num_group_keys, num_partitions)?;
+    // The final stage's partitions are concatenated into one batch so the JVM
+    // imports exactly one set of column structs (same contract as R1).
+    let batch = concat_batches(&schema, &batches)
+        .map_err(|e| format!("failed to concatenate result batches: {e}"))?;
+    export_batch_to_addresses(&batch, array_addrs, schema_addrs)?;
+    Ok(batch.num_rows() as i64)
+}
+
 /// Export one Arrow batch into caller-allocated `FFI_ArrowArray` /
 /// `FFI_ArrowSchema` structs, one per column, whose addresses were allocated by
 /// the JVM (Arrow Java `ArrowArray.allocateNew` / `ArrowSchema.allocateNew`).
@@ -243,10 +445,10 @@ pub unsafe fn submit_and_export(
 // ---------------------------------------------------------------------------
 
 mod jni_entry {
-    use super::{build_test_proto, submit_and_export};
+    use super::{build_test_proto, submit_and_export, submit_and_export_distributed};
     use comet::errors::{try_unwrap_or_throw, CometError};
     use jni::objects::{JByteArray, JClass, JLongArray, ReleaseMode};
-    use jni::sys::{jbyteArray, jlong};
+    use jni::sys::{jbyteArray, jint, jlong};
     use jni::EnvUnowned;
 
     /// JVM entry: build the fixed spike test proto Rust-side and return its
@@ -295,6 +497,50 @@ mod jni_entry {
             // into them and the JVM imports them after this returns.
             let num_rows = unsafe { submit_and_export(&proto_bytes, &arrays, &schemas) }
                 .map_err(CometError::Internal)?;
+            Ok(num_rows as jlong)
+        })
+    }
+
+    /// JVM entry: run a distributed (R2) two-stage GROUP BY offload. Builds
+    /// `CometFragmentExec(block2, [Hash-Repartition(CometFragmentExec(block1))])`,
+    /// submits it to an in-process standalone Ballista cluster (which splits it at
+    /// the hash-repartition into a partial-agg stage and a final-agg stage over a
+    /// shuffle), and exports the concatenated result batch into the JVM-allocated
+    /// Arrow C Data structs, returning the number of rows.
+    ///
+    /// # Safety
+    /// Called from the JVM via JNI; the address arrays must reference valid
+    /// caller-allocated `FFI_ArrowArray`/`FFI_ArrowSchema` structs (one per output
+    /// column of `block2`).
+    #[no_mangle]
+    pub unsafe extern "system" fn Java_org_apache_comet_ballista_NativeBallista_executeQueryDistributed(
+        e: EnvUnowned,
+        _class: JClass,
+        block1: JByteArray,
+        block2: JByteArray,
+        num_group_keys: jint,
+        num_partitions: jint,
+        array_addrs: JLongArray,
+        schema_addrs: JLongArray,
+    ) -> jlong {
+        try_unwrap_or_throw(&e, |env| {
+            let block1_bytes = env.convert_byte_array(block1)?;
+            let block2_bytes = env.convert_byte_array(block2)?;
+
+            let arrays = unsafe { array_addrs.get_elements(env, ReleaseMode::NoCopyBack)? };
+            let schemas = unsafe { schema_addrs.get_elements(env, ReleaseMode::NoCopyBack)? };
+
+            let num_rows = unsafe {
+                submit_and_export_distributed(
+                    &block1_bytes,
+                    &block2_bytes,
+                    num_group_keys as usize,
+                    num_partitions as usize,
+                    &arrays,
+                    &schemas,
+                )
+            }
+            .map_err(CometError::Internal)?;
             Ok(num_rows as jlong)
         })
     }

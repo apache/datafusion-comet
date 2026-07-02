@@ -49,6 +49,8 @@ futures = { workspace = true }
 
 ballista = { workspace = true }
 ballista-core = { workspace = true }
+ballista-scheduler = { workspace = true }
+ballista-executor = { workspace = true }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }

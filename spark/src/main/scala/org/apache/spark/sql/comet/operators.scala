@@ -403,63 +403,53 @@ object CometExec {
   }
 
   /**
-   * EXPERIMENTAL (R1): offload a single-stage Comet query to an in-process Apache DataFusion
-   * Ballista engine on the Spark driver and return the collected rows, launching NO Spark
-   * executor tasks.
+   * EXPERIMENTAL: offload a Comet query to an in-process Apache DataFusion Ballista engine on the
+   * Spark driver and return the collected rows, launching NO Spark executor tasks.
    *
-   * Enabled by `spark.comet.exec.ballista.enabled`. The whole-query native plan is already
-   * serialized on the boundary [[CometNativeExec]] (`serializedPlanOpt.plan`, produced by
-   * `convertBlock`). We hand those proto bytes to [[NativeBallista.executeQuery]], which runs
-   * them on Ballista and exports the (single, concatenated) result batch back over the Arrow C
-   * Data Interface; we import it via [[NativeUtil]] and materialize the rows on the driver.
+   * Enabled by `spark.comet.exec.ballista.enabled`. Two plan shapes are supported:
    *
-   * Only single-stage plans are supported: exactly one native block (no exchange). Anything else
-   * throws [[UnsupportedOperationException]].
+   *   - **R1 single-stage:** exactly one native block ([[CometNativeExec]] with a serialized
+   *     plan) and no Comet exchange. The whole-query native plan is submitted as one native leaf.
+   *   - **R2 two-stage GROUP BY:** exactly two native blocks with one
+   *     [[CometShuffleExchangeExec]] between them (partial aggregate below the exchange, final
+   *     aggregate above). The two blocks are submitted separately and Ballista distributes them
+   *     across a hash shuffle.
+   *
+   * Anything else throws [[UnsupportedOperationException]].
    */
   def executeCollectViaBallista(root: SparkPlan): Array[InternalRow] = {
-    // Every boundary node (top of a native block) carries a serialized plan. More than one means
-    // the plan spans a shuffle boundary -> multiple stages, which R1 does not support.
+    // Every boundary node (top of a native block) carries a serialized plan.
     val boundaries = root.collect {
       case n: CometNativeExec if n.serializedPlanOpt.isDefined => n
     }
-    val boundary = boundaries match {
-      case Seq(single) => single
+    val exchanges = root.collect { case e: CometShuffleExchangeExec => e }
+
+    (boundaries, exchanges) match {
+      case (Seq(single), Nil) =>
+        executeSingleBlockViaBallista(root, single)
+      case (Seq(_, _), Seq(exchange)) =>
+        executeTwoBlockViaBallista(root, boundaries, exchange)
       case _ =>
         throw new UnsupportedOperationException(
-          "Comet Ballista offload (R1) supports single-stage plans only; found " +
-            s"${boundaries.size} serialized native plan blocks in:\n$root")
+          "Comet Ballista offload supports either a single-stage plan (one native block, no " +
+            "Comet exchange) or a two-stage GROUP BY (two native blocks + one hash exchange); " +
+            s"found ${boundaries.size} serialized native blocks and ${exchanges.size} Comet " +
+            s"exchanges in:\n$root")
     }
-    val planBytes = boundary.serializedPlanOpt.plan.getOrElse(
-      throw new UnsupportedOperationException(
-        "Comet Ballista offload (R1) supports single-stage plans only; " +
-          s"the native plan block carries no serialized plan:\n$root"))
+  }
 
-    // The serialized template plan carries each NativeScan's `common` metadata but NOT its file
-    // list: Comet normally injects file partitions per-partition at task launch (see
-    // NativeScanPlanDataInjector). Since the offload runs the whole plan as a single native leaf,
-    // inject all partitions' files into one scan so Ballista reads the complete table.
-    val nativeScans = boundary.collect { case s: CometNativeScanExec => s }
-    val injectedPlanBytes = if (nativeScans.isEmpty) {
-      planBytes
-    } else {
-      val commonByKey = nativeScans.map { scan =>
-        scan.ensureSubqueriesResolved()
-        scan.sourceKey -> scan.commonData
-      }.toMap
-      val partitionByKey = nativeScans.map { scan =>
-        scan.sourceKey -> mergeFilePartitions(scan.perPartitionData)
-      }.toMap
-      val template = Operator.parseFrom(planBytes)
-      val injected = PlanDataInjector.injectPlanData(template, commonByKey, partitionByKey)
-      PlanDataInjector.serializeOperator(injected)
-    }
-
+  /**
+   * R1: submit a single native block as one self-contained native leaf. Ballista concatenates the
+   * whole result into a single exported batch, so one import suffices.
+   */
+  private def executeSingleBlockViaBallista(
+      root: SparkPlan,
+      boundary: CometNativeExec): Array[InternalRow] = {
+    val injectedPlanBytes = injectScanFiles(root, boundary)
     val numCols = boundary.output.length
     val nativeUtil = new NativeUtil()
     try {
       val nativeBallista = new NativeBallista
-      // Ballista concatenates the whole result into a single exported batch, so one import is
-      // sufficient for R1's single-stage plans.
       nativeUtil.getNextBatch(
         numCols,
         (arrayAddrs, schemaAddrs) =>
@@ -475,6 +465,115 @@ object CometExec {
       }
     } finally {
       nativeUtil.close()
+    }
+  }
+
+  /**
+   * R2: submit a two-stage GROUP BY. `block1` (below the exchange) is the partial aggregate over
+   * a `NativeScan`; `block2` (above the exchange) is the final aggregate whose input leaf is a
+   * plain `Scan` fed by the Ballista shuffle. The exchange's [[HashPartitioning]] gives the
+   * number of grouping columns and shuffle partitions. The native side assembles
+   * `CometFragmentExec(block2, [Hash-Repartition(CometFragmentExec(block1))])`, which Ballista
+   * splits at the hash repartition into the two shuffle stages.
+   */
+  private def executeTwoBlockViaBallista(
+      root: SparkPlan,
+      boundaries: Seq[CometNativeExec],
+      exchange: CometShuffleExchangeExec): Array[InternalRow] = {
+    // The final-aggregate block's input leaf must serialize as a plain `Scan` (#100), which the
+    // native fragment feeds from the Ballista shuffle reader — NOT a native `ShuffleScan` (#116),
+    // which expects to read Comet shuffle blocks directly. That requires direct read disabled.
+    if (CometConf.COMET_SHUFFLE_DIRECT_READ_ENABLED.get()) {
+      throw new UnsupportedOperationException(
+        "Comet Ballista two-stage (R2) offload requires " +
+          s"${CometConf.COMET_SHUFFLE_DIRECT_READ_ENABLED.key}=false so the final-aggregate " +
+          "block reads a plain Scan leaf (fed by the Ballista shuffle) rather than a native " +
+          s"ShuffleScan:\n$root")
+    }
+
+    val (numGroupKeys, numPartitions) = exchange.outputPartitioning match {
+      case HashPartitioning(expressions, n) => (expressions.length, n)
+      case other =>
+        throw new UnsupportedOperationException(
+          "Comet Ballista two-stage (R2) offload requires a HashPartitioning exchange; found " +
+            s"$other in:\n$root")
+    }
+
+    // block1 = the serialized native boundary within the exchange's subtree (partial aggregate);
+    // block2 = the other boundary (final aggregate, an ancestor of the exchange).
+    val block1 = exchange
+      .collectFirst { case n: CometNativeExec if n.serializedPlanOpt.isDefined => n }
+      .getOrElse(
+        throw new UnsupportedOperationException(
+          s"Comet Ballista two-stage (R2) offload: no serialized native block below the " +
+            s"exchange:\n$root"))
+    val block2 = boundaries
+      .find(_ ne block1)
+      .getOrElse(throw new UnsupportedOperationException(
+        s"Comet Ballista two-stage (R2) offload: could not identify the final-aggregate block " +
+          s"above the exchange:\n$root"))
+
+    val block1Bytes = injectScanFiles(root, block1)
+    val block2Bytes = block2.serializedPlanOpt.plan.getOrElse(
+      throw new UnsupportedOperationException(
+        s"Comet Ballista two-stage (R2) offload: the final-aggregate block carries no " +
+          s"serialized plan:\n$root"))
+
+    val numCols = block2.output.length
+    val nativeUtil = new NativeUtil()
+    try {
+      val nativeBallista = new NativeBallista
+      // The native side concatenates all shuffle-partition outputs into a single exported batch.
+      nativeUtil.getNextBatch(
+        numCols,
+        (arrayAddrs, schemaAddrs) =>
+          nativeBallista.executeQueryDistributed(
+            block1Bytes,
+            block2Bytes,
+            numGroupKeys,
+            numPartitions,
+            arrayAddrs,
+            schemaAddrs)) match {
+        case Some(batch) =>
+          try {
+            batch.rowIterator().asScala.map(_.copy()).toArray
+          } finally {
+            batch.close()
+          }
+        case None =>
+          Array.empty[InternalRow]
+      }
+    } finally {
+      nativeUtil.close()
+    }
+  }
+
+  /**
+   * Inject file partitions into a native block's serialized plan. The serialized template carries
+   * each `NativeScan`'s `common` metadata but NOT its file list (Comet normally injects files
+   * per-partition at task launch, see `NativeScanPlanDataInjector`). Since the offload runs a
+   * block as one native leaf, merge all partitions' files into each scan so Ballista reads the
+   * complete table. Blocks with no `NativeScan` (e.g. an R2 final-aggregate reading a shuffle)
+   * are returned unchanged.
+   */
+  private def injectScanFiles(root: SparkPlan, boundary: CometNativeExec): Array[Byte] = {
+    val planBytes = boundary.serializedPlanOpt.plan.getOrElse(
+      throw new UnsupportedOperationException(
+        s"Comet Ballista offload: the native plan block carries no serialized plan:\n$root"))
+    val nativeScans = boundary.collect { case s: CometNativeScanExec => s }
+    if (nativeScans.isEmpty) {
+      planBytes
+    } else {
+      val commonByKey = nativeScans.map { scan =>
+        scan.ensureSubqueriesResolved()
+        scan.sourceKey -> scan.commonData
+      }.toMap
+      val partitionByKey = nativeScans.map { scan =>
+        scan.sourceKey -> mergeFilePartitions(scan.perPartitionData)
+      }.toMap
+      val template = Operator.parseFrom(planBytes)
+      val injected = PlanDataInjector.injectPlanData(template, commonByKey, partitionByKey)
+      PlanDataInjector.serializeOperator(injected)
     }
   }
 

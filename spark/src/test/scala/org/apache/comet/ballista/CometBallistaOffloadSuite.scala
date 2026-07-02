@@ -121,7 +121,7 @@ class CometBallistaOffloadSuite extends CometTestBase with AdaptiveSparkPlanHelp
     }
   }
 
-  test("multi-stage collect (exchange present) throws under Ballista offload") {
+  test("two-stage GROUP BY with shuffle direct read on throws under Ballista offload") {
     assume(
       NativeBallista.isAvailable,
       s"native ballista library not available: ${NativeBallista.loadFailure.map(_.getMessage)}")
@@ -130,7 +130,10 @@ class CometBallistaOffloadSuite extends CometTestBase with AdaptiveSparkPlanHelp
       import testImplicits._
 
       // Several partition files with repeated keys, so a `GROUP BY` requires a shuffle
-      // (exchange) to aggregate across partitions -> more than one CometNativeExec boundary.
+      // (exchange) to aggregate across partitions -> two CometNativeExec boundaries. This is the
+      // R2 two-stage shape, but with shuffle direct read left ON (the default) the final block's
+      // input leaf serializes as a native ShuffleScan, which the Ballista shuffle-fed fragment
+      // cannot consume, so the offload is rejected with a clear error.
       Seq((1, 10), (1, 20), (2, 30), (2, 40), (3, 50), (3, 60), (4, 70), (4, 80))
         .toDF("k", "v")
         .repartition(4)
@@ -138,15 +141,15 @@ class CometBallistaOffloadSuite extends CometTestBase with AdaptiveSparkPlanHelp
         .parquet(dir.getCanonicalPath)
 
       // Disable AQE so the shuffle boundary/plan shape is deterministic (no runtime coalescing
-      // of the exchange back down to a single stage).
+      // of the exchange back down to a single stage). Leave directRead at its default (true).
       withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
         spark.read.parquet(dir.getCanonicalPath).createOrReplaceTempView("t2")
         val query = "SELECT k, count(*) FROM t2 GROUP BY k"
 
         withSQLConf(CometConf.COMET_EXEC_BALLISTA_ENABLED.key -> "true") {
           val df = spark.sql(query)
-          // Sanity check: the plan does contain an exchange, i.e. the single-stage guard is
-          // actually exercised and not vacuously satisfied.
+          // Sanity check: the plan does contain an exchange, i.e. the two-stage path is actually
+          // exercised and not vacuously satisfied.
           val hasExchange = df.queryExecution.executedPlan.collect {
             case e: org.apache.spark.sql.execution.exchange.Exchange => e
           }.nonEmpty
@@ -158,7 +161,7 @@ class CometBallistaOffloadSuite extends CometTestBase with AdaptiveSparkPlanHelp
             df.collect()
           }
           assert(
-            ex.getMessage.contains("single-stage plans only"),
+            ex.getMessage.contains("directRead"),
             s"unexpected exception message: ${ex.getMessage}")
         }
       }

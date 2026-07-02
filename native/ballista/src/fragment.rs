@@ -21,7 +21,8 @@ use std::sync::Arc;
 use datafusion::common::{DataFusionError, Result};
 use datafusion::execution::TaskContext;
 use datafusion::physical_plan::{
-    DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties, SendableRecordBatchStream,
+    DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties,
+    SendableRecordBatchStream,
 };
 
 use comet::execution::fragment::{build_native_fragment, native_fragment_plan_properties};
@@ -46,10 +47,32 @@ pub struct CometFragmentExec {
 
 impl CometFragmentExec {
     /// Build from Comet proto bytes and the fragment's DataFusion children. The
-    /// schema/properties are derived by building the fragment plan once (without
+    /// schema/ordering are derived by building the fragment plan once (without
     /// executing it or requiring the child streams).
+    ///
+    /// A Comet fragment is internally single-partition, but as a DataFusion node
+    /// it is a *per-partition* transform: [`execute`](Self::execute) runs the
+    /// fragment once for each output partition, feeding that partition's child
+    /// streams into the fragment's `Scan` leaves. So when the fragment has
+    /// children (e.g. a Ballista shuffle reader with `N` partitions), its output
+    /// partition count must match the children's — otherwise consumers (and the
+    /// distributed planner / result fetch) would only ever drive partition 0 and
+    /// silently drop the other `N-1` partitions' rows. A childless fragment
+    /// (self-contained `NativeScan` leaf) keeps the built plan's own partitioning.
     pub fn try_new(proto: Vec<u8>, children: Vec<Arc<dyn ExecutionPlan>>) -> Result<Self> {
-        let props = native_fragment_plan_properties(&proto).map_err(DataFusionError::Execution)?;
+        let base = native_fragment_plan_properties(&proto).map_err(DataFusionError::Execution)?;
+        let props = match children.first() {
+            Some(child) => {
+                let n = child.properties().partitioning.partition_count();
+                Arc::new(PlanProperties::new(
+                    base.eq_properties.clone(),
+                    Partitioning::UnknownPartitioning(n),
+                    base.emission_type,
+                    base.boundedness,
+                ))
+            }
+            None => base,
+        };
         Ok(Self {
             proto,
             children,

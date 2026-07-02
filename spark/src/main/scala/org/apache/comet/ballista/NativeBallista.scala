@@ -61,6 +61,40 @@ class NativeBallista {
       proto: Array[Byte],
       arrayAddrs: Array[Long],
       schemaAddrs: Array[Long]): Long
+
+  /**
+   * EXPERIMENTAL (R2): run a distributed two-stage GROUP BY offload on an in-process standalone
+   * Ballista cluster (no Spark executors).
+   *
+   * `block1` is the serialized partial-aggregate block (self-contained `NativeScan` leaf);
+   * `block2` is the serialized final-aggregate block (whose input leaf is a `Scan` fed by the
+   * shuffle). The native side assembles `CometFragmentExec(block2,
+   * [Hash-Repartition(CometFragmentExec(block1))])`, which Ballista splits at the hash
+   * repartition into a partial-agg stage and a final-agg stage across a shuffle, then exports the
+   * concatenated result batch into the caller-allocated Arrow C Data structs.
+   *
+   * @param block1
+   *   serialized partial-aggregate `Operator` proto (with file partitions injected)
+   * @param block2
+   *   serialized final-aggregate `Operator` proto (leaf is a `Scan`, not a `ShuffleScan`)
+   * @param numGroupKeys
+   *   number of grouping columns (the leading columns of block1's output to hash on)
+   * @param numPartitions
+   *   number of shuffle partitions
+   * @param arrayAddrs
+   *   memory addresses of one `ArrowArray` struct per output column of `block2`
+   * @param schemaAddrs
+   *   memory addresses of one `ArrowSchema` struct per output column of `block2`
+   * @return
+   *   the number of rows exported
+   */
+  @native def executeQueryDistributed(
+      block1: Array[Byte],
+      block2: Array[Byte],
+      numGroupKeys: Int,
+      numPartitions: Int,
+      arrayAddrs: Array[Long],
+      schemaAddrs: Array[Long]): Long
 }
 
 object NativeBallista {
