@@ -24,7 +24,6 @@ import scala.jdk.CollectionConverters._
 
 import org.apache.spark.sql.catalyst.expressions.{And, ArrayAggregate, ArrayAppend, ArrayContains, ArrayExcept, ArrayExists, ArrayFilter, ArrayForAll, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayMin, ArrayPosition, ArrayRemove, ArrayRepeat, ArraySort, ArraysOverlap, ArraysZip, ArrayTransform, ArrayUnion, Attribute, Cast, CreateArray, ElementAt, EmptyRow, Expression, Flatten, GetArrayItem, IsNotNull, LambdaFunction, Literal, NamedLambdaVariable, Reverse, Sequence, Size, Slice, SortArray, ZipWith}
 import org.apache.spark.sql.catalyst.util.GenericArrayData
-import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
 import org.apache.comet.CometConf
@@ -451,15 +450,16 @@ object CometArrayInsert extends CometExpressionSerde[ArrayInsert] {
     val srcExprProto = exprToProtoInternal(expr.children.head, inputs, binding)
     val posExprProto = exprToProtoInternal(expr.children(1), inputs, binding)
     val itemExprProto = exprToProtoInternal(expr.children(2), inputs, binding)
-    val legacyNegativeIndex =
-      SQLConf.get.getConfString("spark.sql.legacy.negativeIndexInArrayInsert").toBoolean
     if (srcExprProto.isDefined && posExprProto.isDefined && itemExprProto.isDefined) {
       val arrayInsertBuilder = ExprOuterClass.ArrayInsert
         .newBuilder()
         .setSrcArrayExpr(srcExprProto.get)
         .setPosExpr(posExprProto.get)
         .setItemExpr(itemExprProto.get)
-        .setLegacyNegativeIndex(legacyNegativeIndex)
+        // spark.sql.legacy.negativeIndexInArrayInsert=true is handled by the blanket
+        // legacy-conf fallback in CometSparkSessionExtensions.isCometLoaded, so from
+        // Comet's perspective this always runs with the non-legacy semantics.
+        .setLegacyNegativeIndex(false)
 
       Some(
         ExprOuterClass.Expr

@@ -32,23 +32,6 @@ import org.apache.comet.shims.CometExprShim
 
 object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
 
-  // Shared with CometCastSuite so the asserted reason cannot drift from production.
-  private[comet] val negativeScaleDecimalToStringReason: String =
-    "Negative-scale decimal requires spark.sql.legacy.allowNegativeScaleOfDecimal=true"
-
-  // When `spark.sql.legacy.castComplexTypesToString.enabled` is true, Spark wraps maps and
-  // structs with `[]` (instead of `{}`) when casting to string, and omits NULL elements of
-  // structs/maps/arrays (instead of rendering them as the literal "null"). Comet only
-  // implements the default formatting, so fall back to Spark for any array/map/struct to-string
-  // cast when the flag is enabled. The flag is internal in Spark 4.0 and defaults to false.
-  private[comet] val legacyCastComplexTypesToStringReason: String =
-    "spark.sql.legacy.castComplexTypesToString.enabled=true is not supported"
-
-  private def legacyCastComplexTypesToString: Boolean =
-    SQLConf.get
-      .getConfString("spark.sql.legacy.castComplexTypesToString.enabled", "false")
-      .toBoolean
-
   def supportedTypes: Seq[DataType] =
     Seq(
       DataTypes.BooleanType,
@@ -163,12 +146,6 @@ object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
       return Compatible()
     }
 
-    if (toType == DataTypes.StringType && legacyCastComplexTypesToString && (fromType
-        .isInstanceOf[ArrayType] || fromType.isInstanceOf[StructType] ||
-        fromType.isInstanceOf[MapType])) {
-      return Unsupported(Some(legacyCastComplexTypesToStringReason))
-    }
-
     (fromType, toType) match {
       case (dt: ArrayType, _: ArrayType) if dt.elementType == NullType => Compatible()
       case (ArrayType(DataTypes.DateType, _), ArrayType(toElementType, _))
@@ -277,16 +254,11 @@ object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
             "String formatting can differ for floating-point values near precision limits " +
               "or when scientific notation is used"))
       case d: DecimalType if d.scale < 0 =>
-        // Negative-scale decimals require spark.sql.legacy.allowNegativeScaleOfDecimal=true.
-        // When that config is enabled, Spark formats them using Java BigDecimal.toString()
-        // which produces scientific notation (e.g. "1.23E+4"). Comet matches this behavior.
-        // When the config is disabled, negative-scale decimals cannot be created in Spark,
-        // so we mark this as incompatible to avoid native execution on unexpected inputs.
-        val allowNegativeScale = SQLConf.get
-          .getConfString("spark.sql.legacy.allowNegativeScaleOfDecimal", "false")
-          .toBoolean
-        if (allowNegativeScale) Compatible()
-        else Incompatible(Some(negativeScaleDecimalToStringReason))
+        // Negative-scale decimals require spark.sql.legacy.allowNegativeScaleOfDecimal=true,
+        // which the blanket legacy-conf fallback in CometSparkSessionExtensions.isCometLoaded
+        // already disables Comet for. If a user opts out of that fallback, Spark formats these
+        // via Java BigDecimal.toString() (scientific notation) and Comet matches that behavior.
+        Compatible()
       case _: DecimalType =>
         // Compatible across all eval modes: LEGACY uses cast_decimal128_to_utf8 which
         // replicates Java BigDecimal.toString() (scientific notation when adj_exp < -6);
