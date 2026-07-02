@@ -2150,8 +2150,9 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  // Optimized-pivot fast path: with 12+ pivot values Spark's PivotTransformer emits a
-  // two-phase aggregate whose second phase uses PivotFirst. We assert:
+  // Optimized-pivot fast path: Spark's PivotTransformer emits a two-phase aggregate whose
+  // second phase uses PivotFirst whenever every aggregate output type is in
+  // PivotFirst.supportsDataType. We assert:
   //   1. The physical plan actually contains a PivotFirst (Spark still picked the fast path).
   //   2. Comet converted the second-phase aggregate to CometHashAggregateExec (i.e. our
   //      CometPivotFirst serde accepted the aggregate).
@@ -2172,9 +2173,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       withParquetTable(path.toUri.toString, "sales") {
         val pivotSql =
           """SELECT * FROM sales
-            |  PIVOT (sum(earnings)
-            |    FOR course IN ('dotNET', 'Java',
-            |                   '1', '2', '3', '4', '5', '6', '7', '8', '9', '10'))
+            |  PIVOT (sum(earnings) FOR course IN ('dotNET', 'Java'))
             |  ORDER BY year""".stripMargin
         val df = spark.sql(pivotSql)
         val plan = df.queryExecution.executedPlan

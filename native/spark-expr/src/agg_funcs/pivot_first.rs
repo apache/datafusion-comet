@@ -24,7 +24,7 @@
 //!
 //! State layout is one column per pivot slot, matching Spark's `aggBufferAttributes` (which
 //! declares `indexSize` `AttributeReference`s, one per pivot value). This keeps the shuffle
-//! schema between Partial and Final consistent with what Spark catalyst declared — otherwise
+//! schema between Partial and Final consistent with what Spark catalyst declared; otherwise
 //! the shuffle exchange rejects the batch. `evaluate()` reassembles the slots into a
 //! `ListArray` matching `PivotFirst.dataType = ArrayType(value_type)`.
 
@@ -35,6 +35,7 @@ use datafusion::common::{DataFusionError, Result as DFResult, ScalarValue};
 use datafusion::logical_expr::function::{AccumulatorArgs, StateFieldsArgs};
 use datafusion::logical_expr::Volatility::Immutable;
 use datafusion::logical_expr::{Accumulator, AggregateUDFImpl, Signature};
+use datafusion::physical_expr::expressions::format_state_name;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -42,13 +43,18 @@ use std::sync::Arc;
 ///
 /// `pivot_values` is a fixed, plan-time list of the pivot column values that occupy each
 /// output slot; `pivot_index[v] = i` means an input row whose pivot column equals `v` writes
-/// into slot `i`.
+/// into slot `i`. Both the vector and the map are wrapped in `Arc` because `accumulator()`
+/// fires once per group in a grouped aggregate and we want that path to bump a refcount
+/// rather than deep-clone.
 #[derive(Debug)]
 pub struct SparkPivotFirst {
     signature: Signature,
     value_type: DataType,
-    pivot_values: Vec<ScalarValue>,
-    pivot_index: HashMap<ScalarValue, usize>,
+    // Kept for `PartialEq`/`Hash` (identity of the aggregate for plan comparison) and for the
+    // deterministic slot ordering `state_fields` needs. `HashMap` alone would give us the map
+    // but not a stable order or a `Hash` impl.
+    pivot_values: Arc<Vec<ScalarValue>>,
+    pivot_index: Arc<HashMap<ScalarValue, usize>>,
 }
 
 impl PartialEq for SparkPivotFirst {
@@ -77,8 +83,8 @@ impl SparkPivotFirst {
         Self {
             signature: Signature::user_defined(Immutable),
             value_type,
-            pivot_values,
-            pivot_index,
+            pivot_values: Arc::new(pivot_values),
+            pivot_index: Arc::new(pivot_index),
         }
     }
 }
@@ -101,14 +107,12 @@ impl AggregateUDFImpl for SparkPivotFirst {
 
     fn state_fields(&self, args: StateFieldsArgs) -> DFResult<Vec<FieldRef>> {
         // One field per pivot slot, matching Spark's aggBufferAttributes so the shuffle
-        // exchange sees the same schema catalyst declared.
-        Ok(self
-            .pivot_values
-            .iter()
-            .enumerate()
-            .map(|(i, _)| {
+        // exchange sees the same schema catalyst declared. `format_state_name` is the same
+        // helper other aggregates in this crate use (see `avg.rs`, `stddev.rs`).
+        Ok((0..self.pivot_values.len())
+            .map(|i| {
                 Arc::new(Field::new(
-                    format!("{}[{}]", args.name, i),
+                    format_state_name(args.name, &i.to_string()),
                     self.value_type.clone(),
                     true,
                 ))
@@ -119,8 +123,7 @@ impl AggregateUDFImpl for SparkPivotFirst {
     fn accumulator(&self, _acc_args: AccumulatorArgs) -> DFResult<Box<dyn Accumulator>> {
         Ok(Box::new(PivotFirstAccumulator::new(
             self.value_type.clone(),
-            self.pivot_values.clone(),
-            self.pivot_index.clone(),
+            Arc::clone(&self.pivot_index),
         )))
     }
 }
@@ -130,17 +133,13 @@ impl AggregateUDFImpl for SparkPivotFirst {
 #[derive(Debug)]
 struct PivotFirstAccumulator {
     value_type: DataType,
-    pivot_index: HashMap<ScalarValue, usize>,
+    pivot_index: Arc<HashMap<ScalarValue, usize>>,
     slots: Vec<Option<ScalarValue>>,
 }
 
 impl PivotFirstAccumulator {
-    fn new(
-        value_type: DataType,
-        pivot_values: Vec<ScalarValue>,
-        pivot_index: HashMap<ScalarValue, usize>,
-    ) -> Self {
-        let slots = vec![None; pivot_values.len()];
+    fn new(value_type: DataType, pivot_index: Arc<HashMap<ScalarValue, usize>>) -> Self {
+        let slots = vec![None; pivot_index.len()];
         Self {
             value_type,
             pivot_index,
@@ -188,13 +187,9 @@ impl Accumulator for PivotFirstAccumulator {
     }
 
     fn evaluate(&mut self) -> DFResult<ScalarValue> {
-        // Collapse the slot vector into a single ScalarValue::List whose inner array is
-        // `slots.len()` items long, with typed nulls for empty slots. This matches Spark's
-        // `PivotFirst.dataType = ArrayType(value_type)`.
-        let scalars = (0..self.slots.len())
-            .map(|i| self.slot_or_null(i))
-            .collect::<DFResult<Vec<_>>>()?;
-        let flat = ScalarValue::iter_to_array(scalars)?;
+        // Collapse the per-slot state into a single ScalarValue::List with typed nulls for
+        // empty slots. This matches Spark's `PivotFirst.dataType = ArrayType(value_type)`.
+        let flat = ScalarValue::iter_to_array(self.state()?)?;
         Ok(SingleRowListArrayBuilder::new(flat).build_list_scalar())
     }
 
@@ -204,7 +199,7 @@ impl Accumulator for PivotFirstAccumulator {
     }
 
     fn state(&mut self) -> DFResult<Vec<ScalarValue>> {
-        // One ScalarValue per pivot slot; matches state_fields.
+        // One ScalarValue per pivot slot; matches `state_fields`.
         (0..self.slots.len())
             .map(|i| self.slot_or_null(i))
             .collect()
@@ -218,13 +213,19 @@ impl Accumulator for PivotFirstAccumulator {
                 states.len()
             )));
         }
+        if states.is_empty() {
+            return Ok(());
+        }
         // Each column is one slot; each row is one incoming partial state. Any non-null cell
-        // overwrites our current slot with "last write wins" (matches Spark's `PivotFirst.merge`).
-        let n_rows = states.first().map(|a| a.len()).unwrap_or(0);
+        // overwrites our current slot with "last write wins" (matches Spark's
+        // `PivotFirst.merge`). Walk backwards and break on the first non-null so we only build
+        // at most one `ScalarValue` per slot per merge, not one per row per slot.
+        let n_rows = states[0].len();
         for (slot_idx, col) in states.iter().enumerate() {
-            for row in 0..n_rows {
+            for row in (0..n_rows).rev() {
                 if !col.is_null(row) {
                     self.slots[slot_idx] = Some(ScalarValue::try_from_array(col, row)?);
+                    break;
                 }
             }
         }
@@ -245,12 +246,13 @@ mod tests {
     }
 
     fn make_acc() -> PivotFirstAccumulator {
-        let pivot_values = vec![s("a"), s("b"), s("c")];
-        let mut pivot_index = HashMap::new();
-        for (i, v) in pivot_values.iter().enumerate() {
-            pivot_index.insert(v.clone(), i);
-        }
-        PivotFirstAccumulator::new(DataType::Int32, pivot_values, pivot_index)
+        let pivot_values = [s("a"), s("b"), s("c")];
+        let pivot_index: HashMap<ScalarValue, usize> = pivot_values
+            .iter()
+            .enumerate()
+            .map(|(i, v)| (v.clone(), i))
+            .collect();
+        PivotFirstAccumulator::new(DataType::Int32, Arc::new(pivot_index))
     }
 
     #[test]

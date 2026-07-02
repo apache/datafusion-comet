@@ -16,13 +16,13 @@
 -- under the License.
 
 -- PivotFirst is Spark's internal aggregate emitted by the two-phase optimized pivot plan
--- (PivotTransformer). It only runs when every aggregate output type is in
+-- (PivotTransformer). It runs whenever every aggregate output type is in
 -- PivotFirst.supportsDataType (Boolean, Byte, Short, Int, Long, Float, Double, Decimal).
 -- These SQL tests exercise that path via SQL PIVOT clauses, one per supported value type
--- plus a handful of edge cases (unmatched pivot values, all-null groups, multiple
--- aggregates). They intentionally use `spark_answer_only` because the pivot plan's final
--- projection is a Spark expression (ExtractValue on the aggregate output) so the whole
--- query does not always run natively even when PivotFirst itself does.
+-- plus a handful of edge cases (unmatched pivot values, all-null groups, null pivot column).
+-- They intentionally use `spark_answer_only` because the pivot plan's final projection is a
+-- Spark expression (ExtractValue on the aggregate output) so the whole query does not always
+-- run natively even when PivotFirst itself does.
 
 -- ============================================================
 -- Setup: sales-like table used for most cases
@@ -47,7 +47,7 @@ INSERT INTO pf_sales VALUES
 query spark_answer_only
 SELECT * FROM pf_sales
   PIVOT (sum(earnings)
-    FOR course IN ('dotNET', 'Java', '1', '2', '3', '4', '5', '6', '7', '8', '9', '10'))
+    FOR course IN ('dotNET', 'Java'))
   ORDER BY year
 
 -- ============================================================
@@ -67,7 +67,7 @@ INSERT INTO pf_sales_bi VALUES
 query spark_answer_only
 SELECT * FROM pf_sales_bi
   PIVOT (sum(earnings)
-    FOR course IN ('dotNET', 'Java', '1', '2', '3', '4', '5', '6', '7', '8', '9', '10'))
+    FOR course IN ('dotNET', 'Java'))
   ORDER BY year
 
 -- ============================================================
@@ -77,7 +77,7 @@ SELECT * FROM pf_sales_bi
 query spark_answer_only
 SELECT * FROM pf_sales
   PIVOT (avg(earnings)
-    FOR course IN ('dotNET', 'Java', '1', '2', '3', '4', '5', '6', '7', '8', '9', '10'))
+    FOR course IN ('dotNET', 'Java'))
   ORDER BY year
 
 -- ============================================================
@@ -97,7 +97,7 @@ INSERT INTO pf_sales_f VALUES
 query spark_answer_only
 SELECT * FROM pf_sales_f
   PIVOT (min(earnings)
-    FOR course IN ('dotNET', 'Java', '1', '2', '3', '4', '5', '6', '7', '8', '9', '10'))
+    FOR course IN ('dotNET', 'Java'))
   ORDER BY year
 
 -- ============================================================
@@ -119,13 +119,13 @@ INSERT INTO pf_sales_small VALUES
 query spark_answer_only
 SELECT * FROM pf_sales_small
   PIVOT (min(s)
-    FOR course IN ('dotNET', 'Java', '1', '2', '3', '4', '5', '6', '7', '8', '9', '10'))
+    FOR course IN ('dotNET', 'Java'))
   ORDER BY year
 
 query spark_answer_only
 SELECT * FROM pf_sales_small
   PIVOT (min(b)
-    FOR course IN ('dotNET', 'Java', '1', '2', '3', '4', '5', '6', '7', '8', '9', '10'))
+    FOR course IN ('dotNET', 'Java'))
   ORDER BY year
 
 -- ============================================================
@@ -145,7 +145,7 @@ INSERT INTO pf_flags VALUES
 query spark_answer_only
 SELECT * FROM pf_flags
   PIVOT (bool_or(flag)
-    FOR course IN ('dotNET', 'Java', '1', '2', '3', '4', '5', '6', '7', '8', '9', '10'))
+    FOR course IN ('dotNET', 'Java'))
   ORDER BY year
 
 -- ============================================================
@@ -165,7 +165,7 @@ INSERT INTO pf_sales_dec VALUES
 query spark_answer_only
 SELECT * FROM pf_sales_dec
   PIVOT (sum(earnings)
-    FOR course IN ('dotNET', 'Java', '1', '2', '3', '4', '5', '6', '7', '8', '9', '10'))
+    FOR course IN ('dotNET', 'Java'))
   ORDER BY year
 
 -- ============================================================
@@ -175,7 +175,7 @@ SELECT * FROM pf_sales_dec
 query spark_answer_only
 SELECT * FROM pf_sales
   PIVOT (sum(earnings) AS s, avg(earnings) AS a
-    FOR course IN ('dotNET', 'Java', '1', '2', '3', '4', '5', '6', '7', '8', '9', '10'))
+    FOR course IN ('dotNET', 'Java'))
   ORDER BY year
 
 -- ============================================================
@@ -186,8 +186,7 @@ SELECT * FROM pf_sales
 query spark_answer_only
 SELECT * FROM pf_sales
   PIVOT (sum(earnings)
-    FOR course IN ('dotNET', 'Java', 'MissingA', 'MissingB',
-                   '1', '2', '3', '4', '5', '6', '7', '8', '9', '10'))
+    FOR course IN ('dotNET', 'Java', 'MissingA', 'MissingB'))
   ORDER BY year
 
 -- ============================================================
@@ -210,7 +209,7 @@ INSERT INTO pf_sales_extra VALUES
 query spark_answer_only
 SELECT * FROM pf_sales_extra
   PIVOT (sum(earnings)
-    FOR course IN ('dotNET', 'Java', '1', '2', '3', '4', '5', '6', '7', '8', '9', '10'))
+    FOR course IN ('dotNET', 'Java'))
   ORDER BY year
 
 -- ============================================================
@@ -230,7 +229,7 @@ INSERT INTO pf_sales_partial VALUES
 query spark_answer_only
 SELECT * FROM pf_sales_partial
   PIVOT (sum(earnings)
-    FOR course IN ('dotNET', 'Java', '1', '2', '3', '4', '5', '6', '7', '8', '9', '10'))
+    FOR course IN ('dotNET', 'Java'))
   ORDER BY year
 
 -- ============================================================
@@ -252,7 +251,7 @@ INSERT INTO pf_sales_nullable VALUES
 query spark_answer_only
 SELECT * FROM pf_sales_nullable
   PIVOT (sum(earnings)
-    FOR course IN ('dotNET', 'Java', '1', '2', '3', '4', '5', '6', '7', '8', '9', '10'))
+    FOR course IN ('dotNET', 'Java'))
   ORDER BY year
 
 -- ============================================================
@@ -276,7 +275,7 @@ INSERT INTO pf_sales_nullpivot VALUES
 query spark_answer_only
 SELECT * FROM pf_sales_nullpivot
   PIVOT (sum(earnings)
-    FOR course IN ('dotNET', 'Java', '1', '2', '3', '4', '5', '6', '7', '8', '9', '10'))
+    FOR course IN ('dotNET', 'Java'))
   ORDER BY year
 
 -- ============================================================
@@ -297,7 +296,7 @@ INSERT INTO pf_sales_intpivot VALUES
 query spark_answer_only
 SELECT * FROM pf_sales_intpivot
   PIVOT (sum(earnings)
-    FOR year IN (2012, 2013, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10))
+    FOR year IN (2012, 2013))
   ORDER BY region
 
 -- ============================================================
@@ -318,9 +317,5 @@ INSERT INTO pf_sales_datepivot VALUES
 query spark_answer_only
 SELECT * FROM pf_sales_datepivot
   PIVOT (sum(earnings)
-    FOR d IN (DATE '2024-01-01', DATE '2024-06-15',
-              DATE '1970-01-01', DATE '1970-01-02', DATE '1970-01-03',
-              DATE '1970-01-04', DATE '1970-01-05', DATE '1970-01-06',
-              DATE '1970-01-07', DATE '1970-01-08', DATE '1970-01-09',
-              DATE '1970-01-10'))
+    FOR d IN (DATE '2024-01-01', DATE '2024-06-15'))
   ORDER BY region

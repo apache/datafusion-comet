@@ -24,7 +24,7 @@ import scala.jdk.CollectionConverters._
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Literal}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, Average, BitAndAgg, BitOrAgg, BitXorAgg, BloomFilterAggregate, CentralMomentAgg, CollectSet, Corr, Count, Covariance, CovPopulation, CovSample, First, Last, Max, Min, Percentile, PivotFirst, StddevPop, StddevSamp, Sum, VariancePop, VarianceSamp}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{BooleanType, ByteType, DataType, DecimalType, DoubleType, FloatType, IntegerType, LongType, NumericType, ShortType, StringType}
+import org.apache.spark.sql.types.{ByteType, DataType, DecimalType, DoubleType, IntegerType, LongType, NumericType, ShortType, StringType}
 
 import org.apache.comet.CometConf.COMET_EXEC_STRICT_FLOATING_POINT
 import org.apache.comet.CometSparkSessionExtensions.{isSpark41Plus, withFallbackReason}
@@ -825,17 +825,8 @@ object CometCollectSet extends CometAggregateExpressionSerde[CollectSet] {
 
 object CometPivotFirst extends CometAggregateExpressionSerde[PivotFirst] {
 
-  // Mirrors Spark's `PivotFirst.supportsDataType`, which is the same gate the analyzer
-  // uses to decide between the two-phase fast path (this aggregate) and the standard
-  // filtered-aggregate path. Only the fast path emits `PivotFirst`, so we only need to
-  // cover these value types.
-  private def isValueTypeSupported(dt: DataType): Boolean = dt match {
-    case BooleanType | ByteType | ShortType | IntegerType | LongType => true
-    case FloatType | DoubleType => true
-    case _: DecimalType => true
-    case _ => false
-  }
-
+  // Delegate to Spark's own PivotFirst.supportsDataType so the two lists cannot drift if a
+  // future Spark version adds a value type to the fast-path gate.
   private def unsupportedValueTypeReason(dt: DataType): String =
     s"Unsupported value data type: $dt"
 
@@ -847,7 +838,7 @@ object CometPivotFirst extends CometAggregateExpressionSerde[PivotFirst] {
     emptyPivotValuesReason)
 
   override def getSupportLevel(expr: PivotFirst): SupportLevel = {
-    if (!isValueTypeSupported(expr.valueDataType)) {
+    if (!PivotFirst.supportsDataType(expr.valueDataType)) {
       Unsupported(Some(unsupportedValueTypeReason(expr.valueDataType)))
     } else if (expr.pivotColumnValues.isEmpty) {
       Unsupported(Some(emptyPivotValuesReason))
@@ -881,12 +872,7 @@ object CometPivotFirst extends CometAggregateExpressionSerde[PivotFirst] {
       builder.setValueColumn(valueColExpr.get)
       builder.setValueDatatype(valueDt.get)
       pivotValueExprs.foreach(v => builder.addPivotValues(v.get))
-
-      Some(
-        ExprOuterClass.AggExpr
-          .newBuilder()
-          .setPivotFirst(builder)
-          .build())
+      Some(ExprOuterClass.AggExpr.newBuilder().setPivotFirst(builder).build())
     } else if (valueDt.isEmpty) {
       withFallbackReason(
         aggExpr,
