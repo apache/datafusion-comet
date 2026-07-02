@@ -106,8 +106,8 @@ Legend: ✅ done · 🔨 in progress · ⬜ planned
 - 🔨 **R1 — driver-side offload (single-stage).** A Spark app runs a query with
   `spark.comet.exec.ballista.enabled=true`; the driver submits the whole Comet plan to Ballista and
   returns results, with zero Spark-executor tasks. First target query: TPC-H Q1.
-  - 🔨 R1-T1 — JVM → native → in-process Ballista → JVM Arrow round-trip (spike).
-  - ⬜ R1-T2 — config flag + driver `executeCollect` override.
+  - ✅ R1-T1 — JVM → native → in-process Ballista → JVM Arrow round-trip (spike).
+  - ✅ R1-T2 — config flag + driver `executeCollect` override.
   - ⬜ R1-T3 — end-to-end TPC-H Q1 via Ballista, results verified against Spark.
   - ⬜ R1-T4 (R1b) — submit to an external Ballista scheduler + executor cluster.
 - ⬜ **R2 — multi-stage distribution.** Map Comet's per-stage native fragments onto Ballista stages
@@ -124,6 +124,8 @@ Legend: ✅ done · 🔨 in progress · ⬜ planned
 
 - Single-stage only in R1 (no distribution yet); plans containing an exchange are rejected.
 - Scans are single-partition today.
+- Queries with dynamic partition pruning or correlated scalar subqueries may still launch Spark
+  executor tasks to resolve those inputs, even in Ballista mode.
 - The FFI boundary requires Comet and Ballista to be built against the same DataFusion **major**
   version.
 - Comet core links the JNI bridge, so `libjvm` must be present at runtime even where JNI is unused.
