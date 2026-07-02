@@ -209,15 +209,18 @@ private[codegen] object CometBatchKernelCodegenOutput {
    * (https://github.com/apache/arrow-java/issues/1190); remove once that ships. Only the growing
    * (`nested`) path needs it; the root output vector is pre-sized.
    */
-  private def viewSlotReserve(targetVec: String, idx: String, nested: Boolean): String =
-    if (!nested) ""
-    else
+  private def viewSlotReserve(targetVec: String, idx: String, nested: Boolean): String = {
+    if (!nested) {
+      ""
+    } else {
       // 16 is the fixed Arrow view-struct size (BaseVariableWidthViewVector.ELEMENT_SIZE). Inlined
       // rather than referenced by name because the packaged jar relocates `org.apache.arrow`.
       s"""if ($targetVec.getValueCapacity() <= $idx) {
          |  $targetVec.reallocViewBuffer((long) ($idx + 1) * 16L);
          |}
          |""".stripMargin
+    }
+  }
 
   /**
    * Composable write emitter. Returns an [[OutputEmit]] whose `setup` declares once-per-batch
@@ -278,16 +281,16 @@ private[codegen] object CometBatchKernelCodegenOutput {
         "",
         viewSlotReserve(targetVec, idx, nested) +
           s"""Object $bBase = $source.getBaseObject();
-           |int $bLen = $source.numBytes();
-           |if ($bBase instanceof byte[]) {
-           |  $targetVec.setSafe($idx, (byte[]) $bBase,
-           |      (int) ($source.getBaseOffset()
-           |          - org.apache.spark.unsafe.Platform.BYTE_ARRAY_OFFSET),
-           |      $bLen);
-           |} else {
-           |  byte[] $bArr = $source.getBytes();
-           |  $targetVec.setSafe($idx, $bArr, 0, $bArr.length);
-           |}""".stripMargin)
+             |int $bLen = $source.numBytes();
+             |if ($bBase instanceof byte[]) {
+             |  $targetVec.setSafe($idx, (byte[]) $bBase,
+             |      (int) ($source.getBaseOffset()
+             |          - org.apache.spark.unsafe.Platform.BYTE_ARRAY_OFFSET),
+             |      $bLen);
+             |} else {
+             |  byte[] $bArr = $source.getBytes();
+             |  $targetVec.setSafe($idx, $bArr, 0, $bArr.length);
+             |}""".stripMargin)
     case BinaryType =>
       OutputEmit(
         "",
