@@ -3711,6 +3711,32 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
+  test("SparkToColumnar preserves row count for zero-column input batches (df.count())") {
+    // Regression test: when spark.comet.scan is disabled but convert.parquet is enabled,
+    // Spark's count-from-metadata optimization emits ColumnarBatches with numRows > 0 and
+    // numCols == 0. SparkColumnarArrowReader used to derive the Arrow row count from
+    // per-column writes only, silently producing zero-row Arrow batches in this case and
+    // making df.count() return 0.
+    withSQLConf(
+      SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+      CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "false",
+      CometConf.COMET_SPARK_TO_ARROW_ENABLED.key -> "true",
+      CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.key -> "true") {
+      withTempPath { dir =>
+        val expected = 10000L
+        spark
+          .range(expected)
+          .selectExpr("id as key", "id % 8 as value")
+          .toDF("key", "value")
+          .write
+          .parquet(dir.toString)
+
+        val df = spark.read.parquet(dir.toString)
+        assert(df.count() == expected, "df.count() should match number of written rows")
+      }
+    }
+  }
+
   test("read CSV file") {
     Seq("", "csv").foreach { v1List =>
       withSQLConf(
