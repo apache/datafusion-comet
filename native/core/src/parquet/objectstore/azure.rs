@@ -80,10 +80,7 @@ const HADOOP_MSI_AUTHORITY: &str = "fs.azure.account.oauth2.msi.authority";
 const HADOOP_WI_TOKEN_FILE: &str = "fs.azure.account.oauth2.token.file";
 const HADOOP_SAS_PREFIX: &str = "fs.azure.sas.";
 
-const ENDPOINT_SUFFIXES: &[&str] = &[
-    "dfs.core.windows.net",
-    "blob.core.windows.net",
-];
+const ENDPOINT_SUFFIXES: &[&str] = &["dfs.core.windows.net", "blob.core.windows.net"];
 
 /// Build a `MicrosoftAzure` `ObjectStore` for `url` using `configs`.
 ///
