@@ -26,7 +26,7 @@ readme = "README.md"
 license = "Apache-2.0"
 edition = "2021"
 
-# this crate is a proof-of-concept and does not contain public Rust APIs so we do not publish this crate
+# this crate does not contain public Rust APIs so we do not publish it
 publish = false
 
 [dependencies]
@@ -39,10 +39,10 @@ async-trait = { workspace = true }
 tokio = { version = "1", features = ["rt-multi-thread"] }
 prost = "0.14.3"
 futures = { workspace = true }
-anyhow = "1"
 
 ballista = { workspace = true }
 ballista-core = { workspace = true }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+anyhow = "1"

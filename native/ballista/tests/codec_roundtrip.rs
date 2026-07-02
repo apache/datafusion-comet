@@ -12,6 +12,10 @@ use std::sync::Arc;
 use datafusion::arrow::array::{Int32Array, RecordBatch};
 use datafusion::arrow::datatypes::{DataType as ArrowDataType, Field, Schema};
 use datafusion::parquet::arrow::ArrowWriter;
+// `CoalesceBatchesExec` is deprecated upstream in favor of arrow-rs's
+// `BatchCoalescer`, but it's still a real, functional standard DataFusion
+// operator, which is exactly what this test needs on top of the Comet leaf.
+#[allow(deprecated)]
 use datafusion::physical_plan::coalesce_batches::CoalesceBatchesExec;
 use datafusion::physical_plan::{displayable, ExecutionPlan};
 use datafusion::prelude::SessionContext;
@@ -87,6 +91,7 @@ fn build_native_scan_proto(parquet_path: &std::path::Path) -> anyhow::Result<Vec
     Ok(op.encode_to_vec())
 }
 
+#[allow(deprecated)]
 #[tokio::test(flavor = "multi_thread")]
 async fn comet_leaf_survives_ballista_codec() -> anyhow::Result<()> {
     let parquet_path = std::env::temp_dir().join("comet_ffi_ballista_codec_roundtrip.parquet");

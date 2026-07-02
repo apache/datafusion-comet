@@ -41,6 +41,11 @@ pub struct CometScanExec {
 impl CometScanExec {
     /// Build from Comet proto bytes: run Comet's planner via FFI to get the plan,
     /// wrap it as a `ForeignExecutionPlan` (forcing the real FFI vtable path).
+    ///
+    /// The Tokio runtime handle is captured here (via `Handle::try_current()`),
+    /// so `try_new` (and `try_decode`, which calls it) must run inside a Tokio
+    /// runtime — true for Ballista's executor, which drives all task execution
+    /// on a Tokio runtime.
     pub fn try_new(proto: Vec<u8>) -> Result<Self> {
         let ffi = comet_ffi_plan_from_proto(&proto, Handle::try_current().ok())
             .map_err(DataFusionError::Execution)?;
@@ -84,6 +89,7 @@ impl ExecutionPlan for CometScanExec {
         self: Arc<Self>,
         _children: Vec<Arc<dyn ExecutionPlan>>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
+        debug_assert!(_children.is_empty(), "CometScanExec is a leaf");
         Ok(self)
     }
 

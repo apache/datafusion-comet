@@ -21,6 +21,9 @@ use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::catalog::{Session, TableProvider};
 use datafusion::common::Result;
 use datafusion::logical_expr::{Expr, TableType};
+use datafusion::physical_expr::expressions::Column;
+use datafusion::physical_expr::PhysicalExpr;
+use datafusion::physical_plan::projection::ProjectionExec;
 use datafusion::physical_plan::ExecutionPlan;
 
 use crate::scan::CometScanExec;
@@ -51,13 +54,31 @@ impl TableProvider for CometTableProvider {
     fn table_type(&self) -> TableType {
         TableType::Base
     }
+    // `_filters` and `_limit` are intentionally not pushed down into the Comet
+    // scan; DataFusion re-applies them on top of the returned plan.
     async fn scan(
         &self,
         _state: &dyn Session,
-        _projection: Option<&Vec<usize>>,
+        projection: Option<&Vec<usize>>,
         _filters: &[Expr],
         _limit: Option<usize>,
     ) -> Result<Arc<dyn ExecutionPlan>> {
-        Ok(Arc::new(CometScanExec::try_new(self.proto.clone())?))
+        let scan: Arc<dyn ExecutionPlan> = Arc::new(CometScanExec::try_new(self.proto.clone())?);
+        match projection {
+            Some(indices) => {
+                let exprs: Vec<(Arc<dyn PhysicalExpr>, String)> = indices
+                    .iter()
+                    .map(|&i| {
+                        let f = self.schema.field(i);
+                        (
+                            Arc::new(Column::new(f.name(), i)) as Arc<dyn PhysicalExpr>,
+                            f.name().to_string(),
+                        )
+                    })
+                    .collect();
+                Ok(Arc::new(ProjectionExec::try_new(exprs, scan)?))
+            }
+            None => Ok(scan),
+        }
     }
 }

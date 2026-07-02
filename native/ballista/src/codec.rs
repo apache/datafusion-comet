@@ -34,22 +34,18 @@ use crate::table_provider::CometTableProvider;
 
 /// Marks a payload as a Comet node so the codec can tell it apart from a
 /// Ballista/DataFusion node it should delegate.
+///
+/// Prefix-sniffing this is safe because Ballista/DataFusion codec payloads
+/// are protobuf tag streams that never begin with these bytes — the
+/// embedded NUL in particular makes a collision effectively impossible.
 pub const COMET_MAGIC: &[u8] = b"CMET1\0";
 
 /// Serializes `CometScanExec` as its Comet proto bytes (tagged with `COMET_MAGIC`)
 /// and reconstructs it on decode by re-running Comet's planner via FFI. All other
 /// nodes (including Ballista's own shuffle operators) delegate to Ballista's codec.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct CometPhysicalCodec {
     inner: BallistaPhysicalExtensionCodec,
-}
-
-impl Default for CometPhysicalCodec {
-    fn default() -> Self {
-        Self {
-            inner: BallistaPhysicalExtensionCodec::default(),
-        }
-    }
 }
 
 impl PhysicalExtensionCodec for CometPhysicalCodec {
@@ -78,17 +74,9 @@ impl PhysicalExtensionCodec for CometPhysicalCodec {
 /// Serializes `CometTableProvider` (as its Comet proto bytes, tagged with
 /// `COMET_MAGIC`) so a query's logical plan can be shipped client -> scheduler
 /// and reconstructed there. Everything else delegates to Ballista's codec.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct CometLogicalCodec {
     inner: BallistaLogicalExtensionCodec,
-}
-
-impl Default for CometLogicalCodec {
-    fn default() -> Self {
-        Self {
-            inner: BallistaLogicalExtensionCodec::default(),
-        }
-    }
 }
 
 impl LogicalExtensionCodec for CometLogicalCodec {

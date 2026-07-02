@@ -45,6 +45,10 @@ pub fn comet_ffi_plan_from_proto(
     let op = Operator::decode(proto_bytes)
         .map_err(|e| format!("failed to decode Comet Operator proto: {e}"))?;
 
+    // A fresh `SessionContext` means object-store configuration comes only
+    // from the proto's `object_store_options`, not from any ambient session.
+    // That's sufficient for local `file://` scans; remote object stores
+    // (S3, GCS, etc.) will need this revisited to plumb their config through.
     let session_ctx = Arc::new(SessionContext::new());
     let planner = PhysicalPlanner::new(session_ctx, 0);
 
