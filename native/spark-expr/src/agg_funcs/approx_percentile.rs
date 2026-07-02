@@ -17,8 +17,8 @@
 
 use super::quantile_summaries::QuantileSummaries;
 use arrow::array::{Array, ArrayRef, BinaryArray, Float64Array, ListArray};
-use arrow::buffer::OffsetBuffer;
 use arrow::datatypes::{DataType, Field, FieldRef};
+use datafusion::common::utils::SingleRowListArrayBuilder;
 use datafusion::common::{downcast_value, Result, ScalarValue};
 use datafusion::logical_expr::function::{AccumulatorArgs, StateFieldsArgs};
 use datafusion::logical_expr::Volatility::Immutable;
@@ -80,9 +80,6 @@ impl ApproxPercentile {
         }
     }
 
-    fn output_element_type(&self) -> DataType {
-        self.input_type.clone()
-    }
 }
 
 impl AggregateUDFImpl for ApproxPercentile {
@@ -98,11 +95,11 @@ impl AggregateUDFImpl for ApproxPercentile {
         if self.return_array {
             Ok(DataType::List(Arc::new(Field::new(
                 "item",
-                self.output_element_type(),
+                self.input_type.clone(),
                 false,
             ))))
         } else {
-            Ok(self.output_element_type())
+            Ok(self.input_type.clone())
         }
     }
 
@@ -168,8 +165,15 @@ impl ApproxPercentileAccumulator {
 impl Accumulator for ApproxPercentileAccumulator {
     fn update_batch(&mut self, values: &[ArrayRef]) -> Result<()> {
         let arr = downcast_value!(&values[0], Float64Array);
-        for v in arr.iter().flatten() {
-            self.summary.insert(v);
+        if arr.null_count() == 0 {
+            // Fast path: no validity checks needed, iterate the raw values.
+            for &v in arr.values() {
+                self.summary.insert(v);
+            }
+        } else {
+            for v in arr.iter().flatten() {
+                self.summary.insert(v);
+            }
         }
         Ok(())
     }
@@ -185,7 +189,12 @@ impl Accumulator for ApproxPercentileAccumulator {
                 QuantileSummaries::DEFAULT_COMPRESS_THRESHOLD,
                 digests.value(i),
             );
-            self.summary = self.summary.merge(&peer);
+            if self.summary.count() == 0 {
+                // Empty self: merge would just clone the peer, so move it in.
+                self.summary = peer;
+            } else {
+                self.summary = self.summary.merge(&peer);
+            }
         }
         Ok(())
     }
@@ -197,17 +206,16 @@ impl Accumulator for ApproxPercentileAccumulator {
 
     fn evaluate(&mut self) -> Result<ScalarValue> {
         self.summary.compress();
-        let element_type = self.input_type.clone();
         match self.summary.query(&self.percentiles) {
             None => {
                 if self.return_array {
                     // Empty digest still yields null overall in Spark.
                     Ok(ScalarValue::List(Arc::new(ListArray::new_null(
-                        Arc::new(Field::new("item", element_type, false)),
+                        Arc::new(Field::new("item", self.input_type.clone(), false)),
                         1,
                     ))))
                 } else {
-                    Ok(ScalarValue::try_from(&element_type)?)
+                    Ok(ScalarValue::try_from(&self.input_type)?)
                 }
             }
             Some(results) => {
@@ -215,10 +223,9 @@ impl Accumulator for ApproxPercentileAccumulator {
                     results.into_iter().map(|d| self.cast_back(d)).collect();
                 if self.return_array {
                     let values = ScalarValue::iter_to_array(scalars)?;
-                    let field = Arc::new(Field::new("item", element_type, false));
-                    let offsets = OffsetBuffer::from_lengths([values.len()]);
-                    let list = ListArray::new(field, offsets, values, None);
-                    Ok(ScalarValue::List(Arc::new(list)))
+                    Ok(SingleRowListArrayBuilder::new(values)
+                        .with_nullable(false)
+                        .build_list_scalar())
                 } else {
                     Ok(scalars.into_iter().next().unwrap())
                 }

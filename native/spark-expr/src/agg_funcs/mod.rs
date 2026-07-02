@@ -32,7 +32,6 @@ pub use avg::Avg;
 pub use avg_decimal::AvgDecimal;
 pub use correlation::Correlation;
 pub use covariance::Covariance;
-pub use quantile_summaries::{QuantileSummaries, Stats};
 pub use stddev::Stddev;
 pub use sum_decimal::SumDecimal;
 pub use sum_int::SumInteger;

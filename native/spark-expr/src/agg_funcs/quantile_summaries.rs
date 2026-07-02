@@ -129,6 +129,13 @@ impl QuantileSummaries {
     }
 
     pub fn compress(&mut self) {
+        // Already compressed and the head buffer is empty (insert clears the
+        // flag whenever it stages a value), so there is nothing to do. This
+        // mirrors Spark's `PercentileDigest.isCompressed` guard, which also
+        // compresses at most once.
+        if self.compressed {
+            return;
+        }
         self.with_head_buffer_inserted();
         let merge_threshold = 2.0 * self.relative_error * self.count as f64;
         self.sampled = Self::compress_immut(&self.sampled, merge_threshold);
@@ -177,7 +184,8 @@ impl QuantileSummaries {
             (2.0 * other.relative_error * other.count as f64).floor() as i64;
         let additional_other_delta = (2.0 * self.relative_error * self.count as f64).floor() as i64;
 
-        let mut merged_sampled: Vec<Stats> = Vec::new();
+        let mut merged_sampled: Vec<Stats> =
+            Vec::with_capacity(self.sampled.len() + other.sampled.len());
         let mut self_idx = 0usize;
         let mut other_idx = 0usize;
         while self_idx < self.sampled.len() && other_idx < other.sampled.len() {

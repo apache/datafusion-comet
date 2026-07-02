@@ -257,6 +257,9 @@ message Percentile {
 message ApproxPercentile {
   // Child value expression, already cast to Float64 by the serde.
   Expr child = 1;
+  // The percentiles and accuracy are carried as resolved scalars rather than
+  // child Exprs (unlike Percentile/BloomFilterAgg) because they are needed at
+  // UDAF construction time to drive return_type and accumulator shape.
   // One or more percentiles in [0.0, 1.0].
   repeated double percentiles = 2;
   // Spark's accuracy argument; relative_error = 1.0 / accuracy.
