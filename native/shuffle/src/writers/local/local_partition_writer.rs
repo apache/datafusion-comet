@@ -191,11 +191,11 @@ impl PartitionWriter for LocalPartitionWriter {
     where
         I: Iterator<Item = datafusion::common::Result<RecordBatch>>,
     {
-        assert_eq!(
-            pid as i32 - self.last_finish_pid,
-            1,
-            "LocalPartitionWriter::finish_partition must be called in order."
-        );
+        if pid as i32 - self.last_finish_pid != 1 {
+            return Err(DataFusionError::Execution(
+                "LocalPartitionWriter::finish_partition must be called in order.".to_string(),
+            ));
+        }
         self.last_finish_pid = pid as i32;
 
         let write_buffer_size = self.write_buffer_size;
