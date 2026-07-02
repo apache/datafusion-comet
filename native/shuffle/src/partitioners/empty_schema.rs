@@ -76,8 +76,6 @@ impl<T: PartitionWriter> ShufflePartitioner for EmptySchemaShufflePartitioner<T>
     fn shuffle_write(&mut self) -> datafusion::common::Result<()> {
         let start_time = Instant::now();
 
-        let mut write_timer = self.metrics.write_time.timer();
-
         // Write a single zero-column batch with the accumulated row count to partition 0
         let batch_opt = if self.total_rows > 0 {
             Some(Ok(RecordBatch::try_new_with_options(
@@ -88,6 +86,7 @@ impl<T: PartitionWriter> ShufflePartitioner for EmptySchemaShufflePartitioner<T>
         } else {
             None
         };
+
         self.partition_writer
             .finish_partition(0, &mut batch_opt.into_iter(), &self.metrics)?;
         for pid in 1..self.num_output_partitions {
@@ -95,7 +94,6 @@ impl<T: PartitionWriter> ShufflePartitioner for EmptySchemaShufflePartitioner<T>
                 .finish_partition(pid, &mut iter::empty(), &self.metrics)?;
         }
         self.partition_writer.finish_all(&self.metrics)?;
-        write_timer.stop();
 
         self.metrics
             .baseline

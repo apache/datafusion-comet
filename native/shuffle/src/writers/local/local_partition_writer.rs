@@ -185,12 +185,10 @@ impl PartitionWriter for LocalPartitionWriter {
     ) -> datafusion::common::Result<()> {
         let mut write_timer = metrics.write_time.timer();
         self.output_writer.flush()?;
-        write_timer.stop();
 
         // add one extra offset at last to ease partition length computation
         self.offsets[self.num_output_partitions] = self.output_writer.stream_position()?;
 
-        let mut write_timer = metrics.write_time.timer();
         let mut output_index = BufWriter::new(
             File::create(self.output_index_file.clone())
                 .map_err(|e| DataFusionError::Execution(format!("shuffle write error: {e:?}")))?,
