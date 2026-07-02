@@ -57,3 +57,110 @@ pub fn comet_ffi_plan_from_proto(
     let plan: Arc<dyn ExecutionPlan> = Arc::clone(&spark_plan.native_plan);
     Ok(FFI_ExecutionPlan::new(plan, runtime))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use datafusion::arrow::array::{Int32Array, RecordBatch};
+    use datafusion::arrow::datatypes::{DataType as ArrowDataType, Field, Schema};
+    use datafusion::parquet::arrow::ArrowWriter;
+    use datafusion_comet_proto::spark_expression::{data_type::DataTypeId, DataType};
+    use datafusion_comet_proto::spark_operator::{
+        operator::OpStruct, NativeScan, NativeScanCommon, SparkFilePartition, SparkPartitionedFile,
+        SparkStructField,
+    };
+    use datafusion_ffi::execution_plan::ForeignExecutionPlan;
+    use futures::StreamExt;
+
+    /// Write a tiny Parquet file with a single int32 column `a` = [1..=5].
+    fn write_test_parquet(path: &std::path::Path) {
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "a",
+            ArrowDataType::Int32,
+            true,
+        )]));
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![Arc::new(Int32Array::from(vec![1, 2, 3, 4, 5]))],
+        )
+        .unwrap();
+        let file = std::fs::File::create(path).unwrap();
+        let mut writer = ArrowWriter::try_new(file, schema, None).unwrap();
+        writer.write(&batch).unwrap();
+        writer.close().unwrap();
+    }
+
+    /// Build a Comet `Operator` proto: a single `NativeScan` over `parquet_path`.
+    fn build_native_scan_proto(parquet_path: &std::path::Path) -> Vec<u8> {
+        let int32 = DataType {
+            type_id: DataTypeId::Int32 as i32,
+            type_info: None,
+        };
+        let field_a = SparkStructField {
+            name: "a".to_string(),
+            data_type: Some(int32),
+            nullable: true,
+            metadata: Default::default(),
+        };
+        let common = NativeScanCommon {
+            required_schema: vec![field_a.clone()],
+            data_schema: vec![field_a],
+            projection_vector: vec![0],
+            session_timezone: "UTC".to_string(),
+            source: "comet-ffi-test".to_string(),
+            ..Default::default()
+        };
+        let file_size = std::fs::metadata(parquet_path).unwrap().len() as i64;
+        let partitioned_file = SparkPartitionedFile {
+            file_path: format!("file://{}", parquet_path.display()),
+            start: 0,
+            length: file_size,
+            file_size,
+            partition_values: vec![],
+        };
+        let native_scan = NativeScan {
+            common: Some(common),
+            file_partition: Some(SparkFilePartition {
+                partitioned_file: vec![partitioned_file],
+            }),
+        };
+        let op = Operator {
+            children: vec![],
+            plan_id: 0,
+            op_struct: Some(OpStruct::NativeScan(native_scan)),
+        };
+        op.encode_to_vec()
+    }
+
+    #[tokio::test]
+    async fn ffi_export_executes_native_scan() {
+        let dir = tempfile::tempdir().unwrap();
+        let parquet_path = dir.path().join("ffi_export_test.parquet");
+        write_test_parquet(&parquet_path);
+
+        let proto = build_native_scan_proto(&parquet_path);
+
+        let ffi_plan = comet_ffi_plan_from_proto(&proto, Handle::try_current().ok())
+            .expect("failed to build FFI plan from proto");
+
+        // Wrap via `ForeignExecutionPlan` to force the real FFI vtable path,
+        // rather than datafusion-ffi's same-library short-circuit.
+        let plan: Arc<dyn ExecutionPlan> = Arc::new(
+            ForeignExecutionPlan::try_from(ffi_plan)
+                .expect("failed to wrap FFI plan as ForeignExecutionPlan"),
+        );
+
+        let session_ctx = SessionContext::new();
+        let mut stream = plan
+            .execute(0, session_ctx.task_ctx())
+            .expect("failed to execute plan");
+
+        let mut total = 0usize;
+        while let Some(batch) = stream.next().await {
+            let batch = batch.expect("failed to read batch");
+            total += batch.num_rows();
+        }
+
+        assert_eq!(total, 5);
+    }
+}
