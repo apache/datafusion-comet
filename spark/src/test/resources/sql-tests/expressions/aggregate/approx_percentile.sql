@@ -21,13 +21,13 @@
 -- supported. Every query below uses the default `query` mode, which asserts
 -- native execution, so an all-fallback run of this file cannot vacuously pass.
 
--- scalar percentile over an int column
+-- scalar percentile over a bigint (long) column
 query
 SELECT approx_percentile(id, 0.5) FROM range(1000)
 
--- explicit accuracy
+-- explicit, non-default accuracy
 query
-SELECT approx_percentile(id, 0.9, 10000) FROM range(1000)
+SELECT approx_percentile(id, 0.9, 100) FROM range(1000)
 
 -- array of percentiles
 query
@@ -44,6 +44,14 @@ SELECT approx_percentile(cast(id AS double) / 7.0, 0.5) FROM range(1000)
 -- floats
 query
 SELECT approx_percentile(cast(id AS float), 0.5) FROM range(1000)
+
+-- byte input type
+query
+SELECT approx_percentile(cast(id % 100 AS byte), 0.5) FROM range(1000)
+
+-- short input type
+query
+SELECT approx_percentile(cast(id AS short), 0.5) FROM range(1000)
 
 statement
 CREATE TABLE test_approx_percentile_nulls(v int) USING parquet

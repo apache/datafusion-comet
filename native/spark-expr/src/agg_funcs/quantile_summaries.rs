@@ -63,6 +63,12 @@ impl QuantileSummaries {
         self.count
     }
 
+    /// Heap bytes held by this summary (excluding the struct itself).
+    pub fn heap_size(&self) -> usize {
+        self.sampled.capacity() * std::mem::size_of::<Stats>()
+            + self.head_sampled.capacity() * std::mem::size_of::<f64>()
+    }
+
     pub fn insert(&mut self, x: f64) {
         self.head_sampled.push(x);
         self.compressed = false;
@@ -102,6 +108,9 @@ impl QuantileSummaries {
             {
                 0
             } else {
+                // Spark uses `.toInt` here (unlike `.toLong` in merge/compress); we use i64
+                // uniformly. They diverge only past ~Int.MAX rows in one accumulator, which
+                // is not reachable in practice.
                 (2.0 * self.relative_error * current_count as f64).floor() as i64
             };
             new_samples.push(Stats {

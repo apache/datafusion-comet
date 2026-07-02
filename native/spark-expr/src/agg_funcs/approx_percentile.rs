@@ -228,6 +228,8 @@ impl Accumulator for ApproxPercentileAccumulator {
 
     fn size(&self) -> usize {
         std::mem::size_of_val(self)
+            + self.summary.heap_size()
+            + self.percentiles.capacity() * std::mem::size_of::<f64>()
     }
 }
 
