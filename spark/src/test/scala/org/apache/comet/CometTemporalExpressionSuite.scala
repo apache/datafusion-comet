@@ -362,6 +362,9 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
     }
   }
 
+  // Time-window grouping (PreciseTimestampConversion / KnownNullable) is covered by the SQL file
+  // test spark/src/test/resources/sql-tests/expressions/datetime/window.sql.
+
   private def createTimestampTestData(
       baseDate: Long = FuzzDataGenerator.defaultBaseDate): DataFrame = {
     val r = new Random(42)
