@@ -128,8 +128,8 @@ use datafusion_comet_proto::{
     spark_partitioning::{partitioning::PartitioningStruct, Partitioning as SparkPartitioning},
 };
 use datafusion_comet_spark_expr::{
-    jvm_udf::JvmScalarUdfExpr, ArrayInsert, Avg, AvgDecimal, Cast, CheckOverflow, Correlation,
-    Covariance, CreateNamedStruct, DecimalRescaleCheckOverflow, GetArrayStructFields,
+    jvm_udf::JvmScalarUdfExpr, ApproxPercentile, ArrayInsert, Avg, AvgDecimal, Cast, CheckOverflow,
+    Correlation, Covariance, CreateNamedStruct, DecimalRescaleCheckOverflow, GetArrayStructFields,
     GetStructField, IfExpr, ListExtract, NormalizeNaNAndZero, SparkCastOptions, Stddev, SumDecimal,
     ToJson, UnboundColumn, Variance, WideDecimalBinaryExpr, WideDecimalOp,
 };
@@ -2626,6 +2626,17 @@ impl PhysicalPlanner {
                     .with_distinct(false)
                     .build()
                     .map_err(|e| e.into())
+            }
+            AggExprStruct::ApproxPercentile(expr) => {
+                let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
+                let input_type = to_arrow_datatype(expr.input_type.as_ref().unwrap());
+                let func = AggregateUDF::new_from_impl(ApproxPercentile::new(
+                    expr.percentiles.clone(),
+                    expr.accuracy,
+                    input_type,
+                    expr.return_array,
+                ));
+                Self::create_aggr_func_expr("approx_percentile", schema, vec![child], func)
             }
             AggExprStruct::BloomFilterAgg(expr) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
