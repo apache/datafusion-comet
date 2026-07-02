@@ -2150,4 +2150,46 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  // Optimized-pivot fast path: with 12+ pivot values Spark's PivotTransformer emits a
+  // two-phase aggregate whose second phase uses PivotFirst. We assert:
+  //   1. The physical plan actually contains a PivotFirst (Spark still picked the fast path).
+  //   2. Comet converted the second-phase aggregate to CometHashAggregateExec (i.e. our
+  //      CometPivotFirst serde accepted the aggregate).
+  //   3. Results match Spark exactly.
+  // If any of the three fails, the test surfaces the specific breakage.
+  test("PivotFirst runs natively on the optimized pivot fast path") {
+    withTempDir { dir =>
+      val path = new Path(dir.toURI.toString, "sales")
+      spark
+        .sql("""SELECT * FROM VALUES
+               |  (2012, 'dotNET', 15000),
+               |  (2012, 'Java',   20000),
+               |  (2013, 'dotNET', 48000),
+               |  (2013, 'Java',   30000)
+               |AS t(year, course, earnings)""".stripMargin)
+        .write
+        .parquet(path.toUri.toString)
+      withParquetTable(path.toUri.toString, "sales") {
+        val pivotSql =
+          """SELECT * FROM sales
+            |  PIVOT (sum(earnings)
+            |    FOR course IN ('dotNET', 'Java',
+            |                   '1', '2', '3', '4', '5', '6', '7', '8', '9', '10'))
+            |  ORDER BY year""".stripMargin
+        val df = spark.sql(pivotSql)
+        val plan = df.queryExecution.executedPlan
+        val pivotFirstAggs = collectWithSubqueries(plan) {
+          case a: CometHashAggregateExec
+              if a.aggregateExpressions.exists(_.aggregateFunction
+                .isInstanceOf[org.apache.spark.sql.catalyst.expressions.aggregate.PivotFirst]) =>
+            a
+        }
+        assert(
+          pivotFirstAggs.nonEmpty,
+          s"Expected a CometHashAggregateExec containing PivotFirst in:\n$plan")
+        checkSparkAnswer(df)
+      }
+    }
+  }
+
 }

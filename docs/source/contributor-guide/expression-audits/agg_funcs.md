@@ -54,4 +54,12 @@
 - Spark 4.1.1 (audited 2026-06-24): identical to 4.0.1.
 - `CometPercentile` reports `Incompatible` for the otherwise-supported form because DataFusion's `percentile_cont` quantizes the interpolation weight to 6 decimal places (`INTERPOLATION_PRECISION = 1e6`), so a deeply-interpolated value can differ from Spark by up to roughly `(upper - lower) * 1e-6`. The native path is opt-in via `spark.comet.expression.Percentile.allowIncompatible=true` ([#4719](https://github.com/apache/datafusion-comet/issues/4719)).
 
+## pivot_first
+
+- Spark 3.4.3 (audited 2026-07-02): `PivotFirst(pivotColumn, valueColumn, pivotColumnValues)` is an internal `ImperativeAggregate` emitted only by the optimized-pivot fast path in `Analyzer.ResolvePivot`. It buckets `valueColumn` into an array of length `pivotColumnValues.size` indexed by matching `pivotColumn`. Null value columns are ignored, unmatched pivot values are dropped. Value types are gated by `PivotFirst.supportsDataType` (Boolean, Byte, Short, Int, Long, Float, Double, Decimal).
+- Spark 3.5.8 (audited 2026-07-02): swaps `StructType.fromAttributes` for `DataTypeUtils.fromAttributes`; no behavior change.
+- Spark 4.0.1 (audited 2026-07-02): identical to 3.5.8.
+- Spark 4.1.1 (audited 2026-07-02): identical to 4.0.1. (Spark `master` adds a defensive `findPivotIndex` wrapper that returns `-1` for null keys on the non-`AtomicType` `TreeMap` path; not present in any released version Comet builds against, and Comet's HashMap-backed lookup handles `ScalarValue::Null` safely on all types.)
+- `CometPivotFirst` (in `spark/src/main/scala/org/apache/comet/serde/aggregates.scala`) forwards the aggregate to the native `SparkPivotFirst` UDAF (`native/spark-expr/src/agg_funcs/pivot_first.rs`) when the value type is in the supported set. State layout matches Spark's `aggBufferAttributes` (one scalar column per pivot slot) so the shuffle schema between Partial and Final stays consistent. `evaluate()` reassembles the slots into a `ListArray` matching `PivotFirst.dataType = ArrayType(valueDataType)`.
+
 [Spark Expression Support]: ../../user-guide/latest/expressions.md

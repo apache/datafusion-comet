@@ -22,9 +22,9 @@ package org.apache.comet.serde
 import scala.jdk.CollectionConverters._
 
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Literal}
-import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, Average, BitAndAgg, BitOrAgg, BitXorAgg, BloomFilterAggregate, CentralMomentAgg, CollectSet, Corr, Count, Covariance, CovPopulation, CovSample, First, Last, Max, Min, Percentile, StddevPop, StddevSamp, Sum, VariancePop, VarianceSamp}
+import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, Average, BitAndAgg, BitOrAgg, BitXorAgg, BloomFilterAggregate, CentralMomentAgg, CollectSet, Corr, Count, Covariance, CovPopulation, CovSample, First, Last, Max, Min, Percentile, PivotFirst, StddevPop, StddevSamp, Sum, VariancePop, VarianceSamp}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{ByteType, DecimalType, DoubleType, IntegerType, LongType, NumericType, ShortType, StringType}
+import org.apache.spark.sql.types.{BooleanType, ByteType, DataType, DecimalType, DoubleType, FloatType, IntegerType, LongType, NumericType, ShortType, StringType}
 
 import org.apache.comet.CometConf.COMET_EXEC_STRICT_FLOATING_POINT
 import org.apache.comet.CometSparkSessionExtensions.{isSpark41Plus, withFallbackReason}
@@ -818,6 +818,83 @@ object CometCollectSet extends CometAggregateExpressionSerde[CollectSet] {
       None
     } else {
       withFallbackReason(aggExpr, child)
+      None
+    }
+  }
+}
+
+object CometPivotFirst extends CometAggregateExpressionSerde[PivotFirst] {
+
+  // Mirrors Spark's `PivotFirst.supportsDataType`, which is the same gate the analyzer
+  // uses to decide between the two-phase fast path (this aggregate) and the standard
+  // filtered-aggregate path. Only the fast path emits `PivotFirst`, so we only need to
+  // cover these value types.
+  private def isValueTypeSupported(dt: DataType): Boolean = dt match {
+    case BooleanType | ByteType | ShortType | IntegerType | LongType => true
+    case FloatType | DoubleType => true
+    case _: DecimalType => true
+    case _ => false
+  }
+
+  private def unsupportedValueTypeReason(dt: DataType): String =
+    s"Unsupported value data type: $dt"
+
+  private val emptyPivotValuesReason = "Pivot values list is empty"
+
+  override def getUnsupportedReasons(): Seq[String] = Seq(
+    "Value data type outside PivotFirst.supportsDataType " +
+      "(Boolean, Byte, Short, Int, Long, Float, Double, Decimal)",
+    emptyPivotValuesReason)
+
+  override def getSupportLevel(expr: PivotFirst): SupportLevel = {
+    if (!isValueTypeSupported(expr.valueDataType)) {
+      Unsupported(Some(unsupportedValueTypeReason(expr.valueDataType)))
+    } else if (expr.pivotColumnValues.isEmpty) {
+      Unsupported(Some(emptyPivotValuesReason))
+    } else {
+      Compatible()
+    }
+  }
+
+  override def convert(
+      aggExpr: AggregateExpression,
+      expr: PivotFirst,
+      inputs: Seq[Attribute],
+      binding: Boolean,
+      conf: SQLConf): Option[ExprOuterClass.AggExpr] = {
+    val pivotColExpr = exprToProto(expr.pivotColumn, inputs, binding)
+    val valueColExpr = exprToProto(expr.valueColumn, inputs, binding)
+    val valueDt = serializeDataType(expr.valueDataType)
+    val pivotDt = expr.pivotColumn.dataType
+
+    // Spark stores the pivot values as already-evaluated raw Scala values. Rebuild them as
+    // Literal expressions carrying the pivot column data type so the native side receives
+    // the exact bytes it will later compare against. Preserve list order - the position in
+    // this list is the output array index.
+    val pivotValueExprs =
+      expr.pivotColumnValues.map(v => exprToProto(Literal(v, pivotDt), inputs, binding))
+
+    if (pivotColExpr.isDefined && valueColExpr.isDefined && valueDt.isDefined &&
+      pivotValueExprs.forall(_.isDefined)) {
+      val builder = ExprOuterClass.PivotFirst.newBuilder()
+      builder.setPivotColumn(pivotColExpr.get)
+      builder.setValueColumn(valueColExpr.get)
+      builder.setValueDatatype(valueDt.get)
+      pivotValueExprs.foreach(v => builder.addPivotValues(v.get))
+
+      Some(
+        ExprOuterClass.AggExpr
+          .newBuilder()
+          .setPivotFirst(builder)
+          .build())
+    } else if (valueDt.isEmpty) {
+      withFallbackReason(
+        aggExpr,
+        unsupportedValueTypeReason(expr.valueDataType),
+        expr.valueColumn)
+      None
+    } else {
+      withFallbackReason(aggExpr, expr.pivotColumn, expr.valueColumn)
       None
     }
   }

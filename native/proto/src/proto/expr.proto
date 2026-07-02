@@ -145,6 +145,7 @@ message AggExpr {
     BloomFilterAgg bloomFilterAgg = 16;
     CollectSet collectSet = 17;
     Percentile percentile = 18;
+    PivotFirst pivotFirst = 19;
   }
 
   // Optional filter expression for SQL FILTER (WHERE ...) clause.
@@ -274,6 +275,21 @@ enum BloomFilterVersion {
 message CollectSet {
   Expr child = 1;
   DataType datatype = 2;
+}
+
+// Optimized Pivot second-phase aggregate. Given a `pivot_column` and a
+// pre-computed list of `pivot_values`, buckets the incoming `value_column`
+// into an array whose length is `pivot_values.size()`. Rows whose pivot
+// value is not in `pivot_values` are ignored; if multiple rows in the same
+// group map to the same bucket, the last non-null value wins (matches
+// Spark's `PivotFirst.update`/`merge`). Output type is
+// ArrayType(value_datatype). The pivot_values are serialized as Literal
+// Exprs so the value bytes and data type reach native code faithfully.
+message PivotFirst {
+  Expr pivot_column = 1;
+  Expr value_column = 2;
+  repeated Expr pivot_values = 3;
+  DataType value_datatype = 4;
 }
 
 enum EvalMode {
