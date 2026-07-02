@@ -3166,7 +3166,10 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     val n = 200
     withParquetTable((0 until 100).map(i => (i, i.toLong)), "tbl") {
       // Column-based operands (mix the column with a distinct literal) so the chain isn't
-      // constant-folded away before serialization.
+      // constant-folded away before serialization. The `col("_1") + lit(i)` leaves are
+      // intentionally cheap `Add`s: they take the non-rebalanced serde (under default ANSI on
+      // Spark 4.0 they aren't in the rebalanced integral+LEGACY path), but the values stay small
+      // so nothing overflows/throws -- the deep BITWISE chain built from them is what's under test.
       val terms = (1 to n).map(i => col("_1") + lit(i))
       checkSparkAnswerAndOperator(
         spark.table("tbl").select(terms.reduce((a, b) => a.bitwiseAND(b)).as("a")))
