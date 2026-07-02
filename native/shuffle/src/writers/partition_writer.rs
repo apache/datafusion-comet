@@ -18,7 +18,27 @@
 use crate::metrics::ShufflePartitionerMetrics;
 use arrow::record_batch::RecordBatch;
 
+/// Storage backend abstraction for shuffle partition output.
+///
+/// Decouples partitioning from storage: partitioners only produce partitioned
+/// `RecordBatch` streams, while implementations of this trait own how those
+/// batches are stored and finalized. [`LocalPartitionWriter`] implements the
+/// local file behavior; other backends (e.g. a remote shuffle writer) can be
+/// added without changing the partitioners.
+///
+/// A partitioner drives a writer as: any number of
+/// [`write`](PartitionWriter::write) calls to stage batches, then one
+/// [`finish_partition`](PartitionWriter::finish_partition) per partition in
+/// ascending id order, then a single [`finish_all`](PartitionWriter::finish_all).
+///
+/// [`LocalPartitionWriter`]: crate::writers::local::local_partition_writer::LocalPartitionWriter
 pub(crate) trait PartitionWriter: Send + Sync {
+    /// Stages the batches from `iter` for partition `pid` without finalizing it.
+    ///
+    /// Used to stream single-partition output and to stage multi-partition
+    /// spilled batches. A partition may be written multiple times and in any
+    /// order; staged data is only guaranteed visible after
+    /// [`finish_partition`](PartitionWriter::finish_partition).
     fn write<I>(
         &mut self,
         pid: usize,
@@ -28,6 +48,12 @@ pub(crate) trait PartitionWriter: Send + Sync {
     where
         I: Iterator<Item = datafusion::common::Result<RecordBatch>>;
 
+    /// Finalizes partition `pid`, writing any remaining batches from `iter` and
+    /// combining them with data previously staged via
+    /// [`write`](PartitionWriter::write).
+    ///
+    /// Must be called exactly once per partition, in ascending id order, so the
+    /// writer can lay partitions out contiguously and record their offsets.
     fn finish_partition<I>(
         &mut self,
         pid: usize,
@@ -37,6 +63,9 @@ pub(crate) trait PartitionWriter: Send + Sync {
     where
         I: Iterator<Item = datafusion::common::Result<RecordBatch>>;
 
+    /// Completes the shuffle write, flushing output and emitting the partition
+    /// index. Called exactly once, after the last
+    /// [`finish_partition`](PartitionWriter::finish_partition).
     fn finish_all(&mut self, metrics: &ShufflePartitionerMetrics)
         -> datafusion::common::Result<()>;
 }

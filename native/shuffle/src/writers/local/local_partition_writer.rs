@@ -41,7 +41,10 @@ use std::sync::Arc;
 ///   `BufBatchWriter`, so coalescing intentionally does not cross partition
 ///   boundaries. They hold the raw output writer and block writer directly.
 enum DataOutput {
+    /// Single-partition output: one long-lived writer streams all batches.
     Single(BufBatchWriter<ShuffleBlockWriter, File>),
+    /// Multi-partition output: batches are staged per partition and merged into
+    /// `output_writer` one partition at a time during `finish_partition`.
     Multi {
         output_writer: BufWriter<File>,
         shuffle_block_writer: ShuffleBlockWriter,
@@ -53,13 +56,23 @@ enum DataOutput {
     },
 }
 
+/// Local file-based [`PartitionWriter`] implementation.
+///
+/// Writes shuffle output to a single data file plus an index file recording the
+/// byte offset where each partition begins. See [`DataOutput`] for how the
+/// single- and multi-partition modes differ.
 pub(crate) struct LocalPartitionWriter {
     output_index_file: String,
     data_output: DataOutput,
+    /// Start offset of each partition in the data file, plus a trailing entry
+    /// with the total length so partition sizes are simple offset differences.
+    /// Has `num_output_partitions + 1` elements.
     offsets: Vec<u64>,
     batch_size: usize,
     write_buffer_size: usize,
     num_output_partitions: usize,
+    /// Id of the last partition passed to `finish_partition`, used to assert
+    /// partitions are finalized in ascending order. `-1` before any call.
     last_finish_pid: i32,
 }
 
