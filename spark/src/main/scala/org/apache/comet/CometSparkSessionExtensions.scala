@@ -150,6 +150,24 @@ object CometSparkSessionExtensions extends Logging {
       return false
     }
 
+    // Fall back to Spark when any spark.sql.legacy.* config is enabled, since these opt into
+    // pre-modern Spark semantics that Comet does not replicate. Users can disable this fallback
+    // via COMET_LEGACY_CONF_FALLBACK_ENABLED if they accept the loss of Spark compatibility.
+    if (COMET_LEGACY_CONF_FALLBACK_ENABLED.get(conf)) {
+      val enabledLegacyConfs = conf.getAllConfs.collect {
+        case (k, v) if k.startsWith("spark.sql.legacy.") && v.equalsIgnoreCase("true") => k
+      }
+      if (enabledLegacyConfs.nonEmpty) {
+        logWarning(
+          "Comet extension is disabled because the following spark.sql.legacy.* configs are " +
+            s"enabled: ${enabledLegacyConfs.toSeq.sorted.mkString(", ")}. " +
+            "Comet does not support Spark legacy semantics. Set " +
+            s"${COMET_LEGACY_CONF_FALLBACK_ENABLED.key}=false to keep Comet enabled anyway " +
+            "(Spark compatibility is not guaranteed in that case).")
+        return false
+      }
+    }
+
     try {
       // This will load the Comet native lib on demand, and if success, should set
       // `NativeBase.loaded` to true

@@ -102,3 +102,24 @@ string paths is tracked by
 Separately, Comet's native Parquet scan currently rejects string columns whose stored bytes are not
 valid UTF-8 rather than reading them like Spark
 ([#4121](https://github.com/apache/datafusion-comet/issues/4121)).
+
+## Spark legacy configs
+
+Spark exposes a family of `spark.sql.legacy.*` configs that opt a query into pre-modern Spark
+semantics (for example, `spark.sql.legacy.castComplexTypesToString.enabled` or
+`spark.sql.legacy.timeParserPolicy`). Comet implements current Spark semantics and does **not**
+reproduce these legacy behaviors.
+
+By default, when Comet detects that any `spark.sql.legacy.*` config is set to `true`, it disables
+itself for that session so the query runs on vanilla Spark and gets the expected legacy results.
+The fallback is logged as a warning listing the offending config keys.
+
+If you would rather keep Comet enabled even when a legacy config is set, set:
+
+```
+spark.comet.legacyConfFallback.enabled=false
+```
+
+In that mode Comet will accelerate the query as usual, but it **cannot guarantee Spark
+compatibility** — the legacy config will be silently ignored by Comet-executed operators, so
+results may diverge from what Spark would produce with the same legacy config.

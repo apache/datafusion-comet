@@ -53,6 +53,36 @@ class CometSparkSessionExtensionsSuite extends CometTestBase {
     NativeBase.setLoaded(true)
   }
 
+  test("isCometLoaded falls back to Spark when spark.sql.legacy.* is enabled") {
+    val conf = new SQLConf
+    conf.setConfString(CometConf.COMET_ENABLED.key, "true")
+    conf.setConfString(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key, "false")
+
+    // Baseline: no legacy configs set, Comet should load.
+    assert(isCometLoaded(conf))
+
+    // Any spark.sql.legacy.* set to true should disable Comet.
+    conf.setConfString("spark.sql.legacy.castComplexTypesToString.enabled", "true")
+    assert(!isCometLoaded(conf))
+
+    // Case-insensitive true value is also honored.
+    conf.setConfString("spark.sql.legacy.castComplexTypesToString.enabled", "TRUE")
+    assert(!isCometLoaded(conf))
+
+    // Setting the config to false should re-enable Comet.
+    conf.setConfString("spark.sql.legacy.castComplexTypesToString.enabled", "false")
+    assert(isCometLoaded(conf))
+
+    // Non-legacy spark.sql.* configs must not trigger fallback.
+    conf.setConfString("spark.sql.shuffle.partitions", "10")
+    assert(isCometLoaded(conf))
+
+    // Users can opt out of the legacy-config fallback and keep Comet enabled.
+    conf.setConfString("spark.sql.legacy.castComplexTypesToString.enabled", "true")
+    conf.setConfString(CometConf.COMET_LEGACY_CONF_FALLBACK_ENABLED.key, "false")
+    assert(isCometLoaded(conf))
+  }
+
   test("isCometLoaded requires CometShuffleManager when shuffle.enabled=true") {
     val conf = new SQLConf
     conf.setConfString(CometConf.COMET_ENABLED.key, "true")
