@@ -53,6 +53,7 @@ tempfile = "3.26.0"
 itertools = "0.15.0"
 paste = "1.0.14"
 datafusion = { workspace = true, features = ["parquet_encryption", "sql"] }
+datafusion-ffi = "54.0.0"
 datafusion-physical-expr-adapter = { workspace = true }
 datafusion-datasource = { workspace = true }
 datafusion-spark = { workspace = true }
