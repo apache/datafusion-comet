@@ -60,7 +60,7 @@ expressions. The following function families are **not currently planned** for n
 
 The file-metadata functions `input_file_name`, `input_file_block_start`, and `input_file_block_length` depend on scan-internal per-row file information rather than the expression layer; their support status is covered in the [scan compatibility guide](compatibility/scans.md).
 
-Note that `approx_count_distinct`, `median`, and `mode` are planned: they are mainstream (`median` and `mode` are exact aggregates). `approx_percentile` / `percentile_approx` are not currently planned because their approximate results cannot be made bit-identical to Spark.
+Note that `approx_count_distinct`, `median`, and `mode` are planned: they are mainstream (`median` and `mode` are exact aggregates).
 
 The tables below list every Spark built-in expression with its current status.
 
@@ -71,6 +71,7 @@ The tables below list every Spark built-in expression with its current status.
 | `any` | ✅ |  |
 | `any_value` | ✅ |  |
 | `approx_count_distinct` | 🔜 | tracking [#4098](https://github.com/apache/datafusion-comet/issues/4098) |
+| `approx_percentile` | ✅ | Byte, short, int, long, float, and double input; other input types fall back to Spark |
 | `array_agg` | 🔜 | Array aggregate (related to `collect_list`, [#2524](https://github.com/apache/datafusion-comet/issues/2524)) |
 | `avg` | ✅ | Interval types fall back |
 | `bit_and` | ✅ |  |
