@@ -287,7 +287,10 @@ object CometConf extends ShimCometConf {
         "is offloaded from the Spark driver to an in-process Apache DataFusion Ballista engine. " +
         "The already-serialized whole-query Comet plan is submitted to Ballista and the result " +
         "rows are returned directly on the driver, with no Spark executor tasks launched. Only " +
-        "single-stage plans (no exchange) are supported.")
+        "single-stage plans (no exchange) are supported. R1 targets single-stage queries without " +
+        "dynamic partition pruning or correlated scalar subqueries: resolving those inputs " +
+        "(via `waitForSubqueries()`/`updateResult()` before the plan is handed to Ballista) can " +
+        "still transitively launch Spark executor tasks even with this flag enabled.")
       .booleanConf
       .createWithDefault(false)
 
