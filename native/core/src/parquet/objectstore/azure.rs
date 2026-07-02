@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Construct a `MicrosoftAzure` object store from a Hadoop ABFS/WASB configuration.
+//! Construct a `MicrosoftAzure` object store from a Hadoop ABFS configuration.
 //!
 //! Comet's native scans run outside the JVM, so they bypass Hadoop's
 //! `AzureBlobFileSystem` driver entirely. This module bridges the gap by translating the
@@ -23,6 +23,14 @@
 //! `core-site.xml` or `spark.hadoop.*`) into the `object_store` crate's `AzureConfigKey`
 //! options, then layering them on top of any AZURE_* environment variables that AKS's
 //! Workload Identity webhook injects.
+//!
+//! Only `abfs[s]://<container>@<account>.<endpoint-suffix>/<path>` URLs are supported —
+//! the same URL shape Spark and Hadoop emit. `wasb[s]://` is not routed here because
+//! `object_store::ObjectStoreScheme::parse` does not recognise it (it only accepts
+//! `az | adl | azure | abfs | abfss`). The `az` / `azure` / `adl` schemes are also out of
+//! scope: `object_store`'s `MicrosoftAzureBuilder::parse_url` treats the URL host as the
+//! *container* for those schemes rather than the *account*, which does not match the
+//! account-scoped Hadoop key layout that `NativeConfig` forwards.
 //!
 //! Supported authentication, in the priority order applied to the builder:
 //!
@@ -79,8 +87,8 @@ const ENDPOINT_SUFFIXES: &[&str] = &[
 
 /// Build a `MicrosoftAzure` `ObjectStore` for `url` using `configs`.
 ///
-/// The returned `Path` is the URL's resource path (container-relative for ABFS / WASB,
-/// container+key for `az://`), suitable for direct use with `ObjectStore::get`.
+/// `url` must use the `abfs[s]://` scheme; the returned `Path` is the URL's resource path
+/// (container-relative), suitable for direct use with `ObjectStore::get`.
 pub fn create_store(
     url: &Url,
     configs: &HashMap<String, String>,
@@ -121,7 +129,7 @@ pub fn create_store(
     Ok((Box::new(store), path))
 }
 
-/// Translate a Hadoop ABFS/WASB configuration map into `(AzureConfigKey, value)` pairs.
+/// Translate a Hadoop ABFS configuration map into `(AzureConfigKey, value)` pairs.
 ///
 /// `account` and `container` are extracted from the URL and used to resolve account-scoped
 /// keys (`fs.azure.X.<account>.<endpoint-suffix>`) and the SAS namespace
@@ -212,35 +220,24 @@ fn sas_value(configs: &HashMap<String, String>, container: &str, account: &str) 
     configs.get(&bare).cloned()
 }
 
-/// Extract the storage account name from an Azure URL.
+/// Extract the storage account name from an `abfs[s]://` URL.
 ///
-/// Handles ABFS/WASB hostnames of the form `<account>.<endpoint-suffix>` and the
-/// shorter `az://<account>/...` form.
+/// ABFS hostnames are `<account>.<endpoint-suffix>` (e.g. `myacct.dfs.core.windows.net`),
+/// so the account is the first label of the host.
 fn extract_account(url: &Url) -> Option<String> {
     let host = url.host_str()?;
-    match url.scheme() {
-        "az" | "azure" | "adl" => Some(host.to_string()),
-        _ => host.split('.').next().map(str::to_string),
-    }
+    host.split('.').next().map(str::to_string)
 }
 
-/// Extract the container name from an Azure URL.
+/// Extract the container name from an `abfs[s]://` URL.
 ///
-/// ABFS/WASB encode the container as the URL user-info (`container@account.dfs...`);
-/// `az://account/container/...` encodes it as the first path segment.
+/// ABFS encodes the container as the URL user-info (`container@account.dfs...`).
 fn extract_container(url: &Url) -> Option<String> {
     let user = url.username();
-    if !user.is_empty() {
-        return Some(user.to_string());
+    if user.is_empty() {
+        return None;
     }
-    match url.scheme() {
-        "az" | "azure" | "adl" => url
-            .path_segments()
-            .and_then(|mut segs| segs.next())
-            .filter(|s| !s.is_empty())
-            .map(str::to_string),
-        _ => None,
-    }
+    Some(user.to_string())
 }
 
 /// Pull the tenant id out of an OAuth token endpoint like
@@ -266,13 +263,6 @@ mod tests {
     #[test]
     fn extracts_account_and_container_from_abfss_url() {
         let u = url("abfss://data@myacct.dfs.core.windows.net/path/file.parquet");
-        assert_eq!(extract_account(&u).as_deref(), Some("myacct"));
-        assert_eq!(extract_container(&u).as_deref(), Some("data"));
-    }
-
-    #[test]
-    fn extracts_account_and_container_from_az_url() {
-        let u = url("az://myacct/data/path/file.parquet");
         assert_eq!(extract_account(&u).as_deref(), Some("myacct"));
         assert_eq!(extract_container(&u).as_deref(), Some("data"));
     }
