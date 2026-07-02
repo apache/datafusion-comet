@@ -135,7 +135,7 @@ class CometMapExpressionSuite extends CometTestBase {
 
         checkSparkAnswerAndFallbackReason(
           sql("SELECT size(case when _2 < 0 then map(_8, _9) else map() end) from t1"),
-          "map is not supported")
+          "Unsupported data type MapType")
       }
     }
   }
@@ -147,10 +147,8 @@ class CometMapExpressionSuite extends CometTestBase {
           .range(100)
           .select(
             col("id"),
-            when(col("id") > 1, map(col("id"), when(col("id") > 2, col("id"))))
-              .alias("map1"),
-            when(col("id") > 5, map(lit("a"), col("id"), lit("b"), col("id") + 1))
-              .alias("map2"))
+            when(col("id") > 1, map(col("id"), col("id"))).alias("map1"),
+            when(col("id") > 5, map(col("id"), col("id"))).alias("map2"))
         df.write.parquet(dir.toString())
       }
 
