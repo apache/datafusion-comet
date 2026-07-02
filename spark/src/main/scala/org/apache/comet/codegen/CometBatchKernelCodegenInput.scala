@@ -175,6 +175,8 @@ private[codegen] object CometBatchKernelCodegenInput {
             "this.rowIdx",
             "        ")}
            |      }""".stripMargin
+      case (ArrowColumnSpec(cls, _), ord) if cls == classOf[ViewVarBinaryVector] =>
+        s"      case $ord: return this.col$ord.getBinary(this.rowIdx);"
     }
     val utf8Cases = withOrd.collect {
       case (ArrowColumnSpec(cls, _), ord) if cls == classOf[VarCharVector] =>
@@ -185,6 +187,8 @@ private[codegen] object CometBatchKernelCodegenInput {
             "this.rowIdx",
             "        ")}
            |      }""".stripMargin
+      case (ArrowColumnSpec(cls, _), ord) if cls == classOf[ViewVarCharVector] =>
+        s"      case $ord: return this.col$ord.getUTF8String(this.rowIdx);"
     }
 
     Seq(
@@ -209,7 +213,16 @@ private[codegen] object CometBatchKernelCodegenInput {
   }
 
   private def wrapsInCometPlainVector(cls: Class[_]): Boolean =
-    primitiveArrowClasses.contains(cls)
+    primitiveArrowClasses.contains(cls) || isViewClass(cls)
+
+  /**
+   * Arrow view vector classes (`Utf8View` / `BinaryView`). Their 16-byte-per-element view struct
+   * over potentially multiple data buffers has no contiguous offset+data layout, so the unsafe
+   * `UTF8String.fromAddress` emitters cannot read them. They wrap in [[CometPlainVector]] and
+   * read through its view-aware `getUTF8String` / `getBinary` instead.
+   */
+  private def isViewClass(cls: Class[_]): Boolean =
+    cls == classOf[ViewVarCharVector] || cls == classOf[ViewVarBinaryVector]
 
   private def emitOrdinalSwitch(methodSig: String, label: String, cases: Seq[String]): String = {
     if (cases.isEmpty) {
@@ -633,7 +646,11 @@ private[codegen] object CometBatchKernelCodegenInput {
       else ""
     spec.element match {
       case _: ScalarColumnSpec =>
-        emitArrayElementScalarGetter(spec.elementSparkType, elemPath, spec.element.nullable)
+        emitArrayElementScalarGetter(
+          spec.elementSparkType,
+          elemPath,
+          spec.element.nullable,
+          spec.element.vectorClass)
       case _: ArrayColumnSpec =>
         s"""      @Override
            |      public org.apache.spark.sql.catalyst.util.ArrayData getArray(int i) {
@@ -667,7 +684,8 @@ private[codegen] object CometBatchKernelCodegenInput {
   private def emitArrayElementScalarGetter(
       elemType: DataType,
       childField: String,
-      elementNullable: Boolean): String = {
+      elementNullable: Boolean,
+      childCls: Class[_]): String = {
     val nullGuard =
       if (elementNullable) "        if (isNullAt(i)) return null;\n"
       else ""
@@ -719,6 +737,11 @@ private[codegen] object CometBatchKernelCodegenInput {
            |          int i, int precision, int scale) {
            |$nullGuard$body
            |      }""".stripMargin
+      case _: StringType if isViewClass(childCls) =>
+        s"""      @Override
+           |      public org.apache.spark.unsafe.types.UTF8String getUTF8String(int i) {
+           |$nullGuard        return $childField.getUTF8String(startIndex + i);
+           |      }""".stripMargin
       case _: StringType =>
         s"""      @Override
            |      public org.apache.spark.unsafe.types.UTF8String getUTF8String(int i) {
@@ -727,6 +750,11 @@ private[codegen] object CometBatchKernelCodegenInput {
             s"${childField}_offsetAddr",
             "startIndex + i",
             "        ")}
+           |      }""".stripMargin
+      case BinaryType if isViewClass(childCls) =>
+        s"""      @Override
+           |      public byte[] getBinary(int i) {
+           |$nullGuard        return $childField.getBinary(startIndex + i);
            |      }""".stripMargin
       case BinaryType =>
         s"""      @Override
@@ -834,7 +862,11 @@ private[codegen] object CometBatchKernelCodegenInput {
       if (fieldNullable) s"          if (isNullAt($fi)) return null;\n"
       else ""
 
-    def fieldReadScalar(fi: Int, dt: DataType, fieldNullable: Boolean): String = {
+    def fieldReadScalar(
+        fi: Int,
+        dt: DataType,
+        fieldNullable: Boolean,
+        childCls: Class[_]): String = {
       val guard = nullGuardForCase(fi, fieldNullable)
       dt match {
         case BooleanType =>
@@ -851,6 +883,10 @@ private[codegen] object CometBatchKernelCodegenInput {
           s"        case $fi: return ${path}_f$fi.getFloat(this.rowIdx);"
         case DoubleType =>
           s"        case $fi: return ${path}_f$fi.getDouble(this.rowIdx);"
+        case BinaryType if isViewClass(childCls) =>
+          s"""        case $fi: {
+             |$guard          return ${path}_f$fi.getBinary(this.rowIdx);
+             |        }""".stripMargin
         case BinaryType =>
           s"""        case $fi: {
              |$guard${emitBinaryBodyUnsafe(
@@ -858,6 +894,10 @@ private[codegen] object CometBatchKernelCodegenInput {
               s"${path}_f${fi}_offsetAddr",
               "this.rowIdx",
               "          ")}
+             |        }""".stripMargin
+        case _: StringType if isViewClass(childCls) =>
+          s"""        case $fi: {
+             |$guard          return ${path}_f$fi.getUTF8String(this.rowIdx);
              |        }""".stripMargin
         case _: StringType =>
           s"""        case $fi: {
@@ -878,46 +918,46 @@ private[codegen] object CometBatchKernelCodegenInput {
     val booleanCases =
       scalarOrd.collect {
         case (f, fi) if f.sparkType == BooleanType =>
-          fieldReadScalar(fi, BooleanType, f.nullable)
+          fieldReadScalar(fi, BooleanType, f.nullable, f.child.vectorClass)
       }
     val byteCases =
       scalarOrd.collect {
         case (f, fi) if f.sparkType == ByteType =>
-          fieldReadScalar(fi, ByteType, f.nullable)
+          fieldReadScalar(fi, ByteType, f.nullable, f.child.vectorClass)
       }
     val shortCases =
       scalarOrd.collect {
         case (f, fi) if f.sparkType == ShortType =>
-          fieldReadScalar(fi, ShortType, f.nullable)
+          fieldReadScalar(fi, ShortType, f.nullable, f.child.vectorClass)
       }
     val intCases = scalarOrd.collect {
       case (f, fi) if f.sparkType == IntegerType || f.sparkType == DateType =>
-        fieldReadScalar(fi, IntegerType, f.nullable)
+        fieldReadScalar(fi, IntegerType, f.nullable, f.child.vectorClass)
     }
     val longCases = scalarOrd.collect {
       case (f, fi)
           if f.sparkType == LongType || f.sparkType == TimestampType ||
             f.sparkType == TimestampNTZType =>
-        fieldReadScalar(fi, LongType, f.nullable)
+        fieldReadScalar(fi, LongType, f.nullable, f.child.vectorClass)
     }
     val floatCases =
       scalarOrd.collect {
         case (f, fi) if f.sparkType == FloatType =>
-          fieldReadScalar(fi, FloatType, f.nullable)
+          fieldReadScalar(fi, FloatType, f.nullable, f.child.vectorClass)
       }
     val doubleCases =
       scalarOrd.collect {
         case (f, fi) if f.sparkType == DoubleType =>
-          fieldReadScalar(fi, DoubleType, f.nullable)
+          fieldReadScalar(fi, DoubleType, f.nullable, f.child.vectorClass)
       }
     val binaryCases =
       scalarOrd.collect {
         case (f, fi) if f.sparkType == BinaryType =>
-          fieldReadScalar(fi, BinaryType, f.nullable)
+          fieldReadScalar(fi, BinaryType, f.nullable, f.child.vectorClass)
       }
     val utf8Cases = scalarOrd.collect {
       case (f, fi) if f.sparkType.isInstanceOf[StringType] =>
-        fieldReadScalar(fi, f.sparkType, f.nullable)
+        fieldReadScalar(fi, f.sparkType, f.nullable, f.child.vectorClass)
     }
 
     val decimalCases = scalarOrd.collect {

@@ -1920,12 +1920,20 @@ fn write_nested_variable_to_buffer(
             let arr = downcast_array!(array, LargeStringArray)?;
             Ok(write_bytes_padded(buffer, arr.value(row_idx).as_bytes()))
         }
+        DataType::Utf8View => {
+            let arr = downcast_array!(array, StringViewArray)?;
+            Ok(write_bytes_padded(buffer, arr.value(row_idx).as_bytes()))
+        }
         DataType::Binary => {
             let arr = downcast_array!(array, BinaryArray)?;
             Ok(write_bytes_padded(buffer, arr.value(row_idx)))
         }
         DataType::LargeBinary => {
             let arr = downcast_array!(array, LargeBinaryArray)?;
+            Ok(write_bytes_padded(buffer, arr.value(row_idx)))
+        }
+        DataType::BinaryView => {
+            let arr = downcast_array!(array, BinaryViewArray)?;
             Ok(write_bytes_padded(buffer, arr.value(row_idx)))
         }
         DataType::Decimal128(precision, _) if *precision > MAX_LONG_DIGITS => {
@@ -1956,8 +1964,10 @@ fn write_nested_variable_to_buffer(
         _ => match data_type {
             DataType::Utf8
             | DataType::LargeUtf8
+            | DataType::Utf8View
             | DataType::Binary
             | DataType::LargeBinary
+            | DataType::BinaryView
             | DataType::Struct(_)
             | DataType::List(_)
             | DataType::LargeList(_)
