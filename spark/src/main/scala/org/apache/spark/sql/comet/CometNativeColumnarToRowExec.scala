@@ -69,6 +69,17 @@ case class CometNativeColumnarToRowExec(child: SparkPlan)
 
   override def outputOrdering: Seq[SortOrder] = child.outputOrdering
 
+  override def executeCollect(): Array[InternalRow] = {
+    if (CometConf.COMET_EXEC_BALLISTA_ENABLED.get()) {
+      // EXPERIMENTAL (R1): offload the whole-query native plan to an in-process Ballista engine on
+      // the driver instead of launching a Spark job. This ColumnarToRow node is the collect root,
+      // so the CometNativeExec boundary carrying the serialized plan is in its subtree.
+      CometExec.executeCollectViaBallista(this)
+    } else {
+      super.executeCollect()
+    }
+  }
+
   override lazy val metrics: Map[String, SQLMetric] = Map(
     "numOutputRows" -> SQLMetrics.createMetric(sparkContext, "number of output rows"),
     "numInputBatches" -> SQLMetrics.createMetric(sparkContext, "number of input batches"),

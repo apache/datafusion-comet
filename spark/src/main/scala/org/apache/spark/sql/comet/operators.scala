@@ -53,6 +53,7 @@ import com.google.protobuf.CodedOutputStream
 
 import org.apache.comet.{CometConf, CometExecIterator, CometRuntimeException, ConfigEntry}
 import org.apache.comet.CometSparkSessionExtensions.{isCometShuffleEnabled, withFallbackReason}
+import org.apache.comet.ballista.NativeBallista
 import org.apache.comet.parquet.CometParquetUtils
 import org.apache.comet.rules.CometExecRule
 import org.apache.comet.serde.{CometOperatorSerde, Compatible, Incompatible, OperatorOuterClass, SupportLevel, Unsupported}
@@ -60,6 +61,7 @@ import org.apache.comet.serde.OperatorOuterClass.{AggregateMode => CometAggregat
 import org.apache.comet.serde.QueryPlanSerde
 import org.apache.comet.serde.QueryPlanSerde.{aggExprToProto, exprToProto, isStringCollationType, supportedSortType}
 import org.apache.comet.serde.operator.CometSink
+import org.apache.comet.vector.NativeUtil
 
 /**
  * Trait for injecting per-partition planning data into operator nodes.
@@ -271,8 +273,16 @@ abstract class CometExec extends CometPlan {
   override def doExecute(): RDD[InternalRow] =
     ColumnarToRowExec(this).doExecute()
 
-  override def executeCollect(): Array[InternalRow] =
-    ColumnarToRowExec(this).executeCollect()
+  override def executeCollect(): Array[InternalRow] = {
+    if (CometConf.COMET_EXEC_BALLISTA_ENABLED.get()) {
+      // EXPERIMENTAL (R1): offload the whole-query native plan to an in-process
+      // Ballista engine on the driver and return the rows directly, launching no
+      // Spark executor tasks. See CometExec.executeCollectViaBallista.
+      CometExec.executeCollectViaBallista(this)
+    } else {
+      ColumnarToRowExec(this).executeCollect()
+    }
+  }
 
   override def outputOrdering: Seq[SortOrder] = originalPlan.outputOrdering
 
@@ -390,6 +400,102 @@ object CometExec {
       partitionIdx,
       broadcastedHadoopConfForEncryption,
       encryptedFilePaths)
+  }
+
+  /**
+   * EXPERIMENTAL (R1): offload a single-stage Comet query to an in-process Apache DataFusion
+   * Ballista engine on the Spark driver and return the collected rows, launching NO Spark
+   * executor tasks.
+   *
+   * Enabled by `spark.comet.exec.ballista.enabled`. The whole-query native plan is already
+   * serialized on the boundary [[CometNativeExec]] (`serializedPlanOpt.plan`, produced by
+   * `convertBlock`). We hand those proto bytes to [[NativeBallista.executeQuery]], which runs
+   * them on Ballista and exports the (single, concatenated) result batch back over the Arrow C
+   * Data Interface; we import it via [[NativeUtil]] and materialize the rows on the driver.
+   *
+   * Only single-stage plans are supported: exactly one native block (no exchange). Anything else
+   * throws [[UnsupportedOperationException]].
+   */
+  def executeCollectViaBallista(root: SparkPlan): Array[InternalRow] = {
+    // Every boundary node (top of a native block) carries a serialized plan. More than one means
+    // the plan spans a shuffle boundary -> multiple stages, which R1 does not support.
+    val boundaries = root.collect {
+      case n: CometNativeExec if n.serializedPlanOpt.isDefined => n
+    }
+    val boundary = boundaries match {
+      case Seq(single) => single
+      case _ =>
+        throw new UnsupportedOperationException(
+          "Comet Ballista offload (R1) supports single-stage plans only; found " +
+            s"${boundaries.size} serialized native plan blocks in:\n$root")
+    }
+    val planBytes = boundary.serializedPlanOpt.plan.getOrElse(
+      throw new UnsupportedOperationException(
+        "Comet Ballista offload (R1) supports single-stage plans only; " +
+          s"the native plan block carries no serialized plan:\n$root"))
+
+    // The serialized template plan carries each NativeScan's `common` metadata but NOT its file
+    // list: Comet normally injects file partitions per-partition at task launch (see
+    // NativeScanPlanDataInjector). Since the offload runs the whole plan as a single native leaf,
+    // inject all partitions' files into one scan so Ballista reads the complete table.
+    val nativeScans = boundary.collect { case s: CometNativeScanExec => s }
+    val injectedPlanBytes = if (nativeScans.isEmpty) {
+      planBytes
+    } else {
+      val commonByKey = nativeScans.map { scan =>
+        scan.ensureSubqueriesResolved()
+        scan.sourceKey -> scan.commonData
+      }.toMap
+      val partitionByKey = nativeScans.map { scan =>
+        scan.sourceKey -> mergeFilePartitions(scan.perPartitionData)
+      }.toMap
+      val template = Operator.parseFrom(planBytes)
+      val injected = PlanDataInjector.injectPlanData(template, commonByKey, partitionByKey)
+      PlanDataInjector.serializeOperator(injected)
+    }
+
+    val numCols = boundary.output.length
+    val nativeUtil = new NativeUtil()
+    try {
+      val nativeBallista = new NativeBallista
+      // Ballista concatenates the whole result into a single exported batch, so one import is
+      // sufficient for R1's single-stage plans.
+      nativeUtil.getNextBatch(
+        numCols,
+        (arrayAddrs, schemaAddrs) =>
+          nativeBallista.executeQuery(injectedPlanBytes, arrayAddrs, schemaAddrs)) match {
+        case Some(batch) =>
+          try {
+            batch.rowIterator().asScala.map(_.copy()).toArray
+          } finally {
+            batch.close()
+          }
+        case None =>
+          Array.empty[InternalRow]
+      }
+    } finally {
+      nativeUtil.close()
+    }
+  }
+
+  /**
+   * Merge the per-partition file lists of a native scan into a single `NativeScan` carrying every
+   * partition's files, serialized as the `partitionBytes` expected by
+   * [[NativeScanPlanDataInjector]] (a `NativeScan` whose `file_partition` holds all
+   * `partitioned_file`s). Used by the Ballista offload so the whole table is read by one native
+   * scan leaf.
+   */
+  private def mergeFilePartitions(perPartitionData: Array[Array[Byte]]): Array[Byte] = {
+    val filePartition = OperatorOuterClass.SparkFilePartition.newBuilder()
+    perPartitionData.foreach { bytes =>
+      val scan = OperatorOuterClass.NativeScan.parseFrom(bytes)
+      filePartition.addAllPartitionedFile(scan.getFilePartition.getPartitionedFileList)
+    }
+    OperatorOuterClass.NativeScan
+      .newBuilder()
+      .setFilePartition(filePartition)
+      .build()
+      .toByteArray
   }
 
   /**

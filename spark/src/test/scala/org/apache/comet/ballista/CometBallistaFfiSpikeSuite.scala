@@ -19,7 +19,6 @@
 
 package org.apache.comet.ballista
 
-import java.io.File
 import java.nio.file.{Files, Paths}
 
 import org.scalatest.funsuite.AnyFunSuite
@@ -88,42 +87,8 @@ class CometBallistaFfiSpikeSuite extends AnyFunSuite {
 
 object CometBallistaFfiSpikeSuite {
 
-  @volatile private var loaded = false
-  @volatile private var loadError: Option[Throwable] = None
-
-  /**
-   * Load `libdatafusion_comet_ballista` by absolute path (it is not on `java.library.path`). We
-   * try the `COMET_BALLISTA_LIB` env var first, then the debug/release build outputs relative to
-   * the `spark` module directory (surefire's working dir).
-   */
-  private def load(): Unit = synchronized {
-    if (loaded || loadError.isDefined) return
-    val libName = System.mapLibraryName("datafusion_comet_ballista")
-    val moduleDir = new File(System.getProperty("user.dir"))
-    val candidates = Seq(
-      sys.env.get("COMET_BALLISTA_LIB"),
-      Some(new File(moduleDir, s"../native/target/debug/$libName").getPath),
-      Some(new File(moduleDir, s"../native/target/release/$libName").getPath),
-      Some(new File(moduleDir, s"native/target/debug/$libName").getPath)).flatten
-    val found = candidates.find(p => Files.exists(Paths.get(p)))
-    found match {
-      case Some(path) =>
-        try {
-          System.load(new File(path).getAbsolutePath)
-          loaded = true
-        } catch {
-          case t: Throwable => loadError = Some(t)
-        }
-      case None =>
-        loadError = Some(
-          new UnsatisfiedLinkError(
-            s"could not find $libName in any of: ${candidates.mkString(", ")}"))
-    }
-  }
-
   def assumeLibraryLoaded(): Unit = {
-    load()
-    loadError.foreach { t =>
+    NativeBallista.loadFailure.foreach { t =>
       org.scalatest.Assertions
         .cancel(s"native ballista library not available: ${t.getMessage}", t)
     }

@@ -280,6 +280,17 @@ object CometConf extends ShimCometConf {
   val COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED: ConfigEntry[Boolean] =
     createExecEnabledConfig("localTableScan", defaultValue = false)
 
+  val COMET_EXEC_BALLISTA_ENABLED: ConfigEntry[Boolean] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.ballista.enabled")
+      .category(CATEGORY_EXEC)
+      .doc("EXPERIMENTAL: When enabled, a `collect()` on a single-stage Comet-accelerated query " +
+        "is offloaded from the Spark driver to an in-process Apache DataFusion Ballista engine. " +
+        "The already-serialized whole-query Comet plan is submitted to Ballista and the result " +
+        "rows are returned directly on the driver, with no Spark executor tasks launched. Only " +
+        "single-stage plans (no exchange) are supported.")
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_NATIVE_COLUMNAR_TO_ROW_ENABLED: ConfigEntry[Boolean] =
     conf(s"$COMET_EXEC_CONFIG_PREFIX.columnarToRow.native.enabled")
       .category(CATEGORY_EXEC)

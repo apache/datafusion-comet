@@ -33,9 +33,9 @@ use datafusion::arrow::compute::concat_batches;
 use datafusion::arrow::datatypes::{Field, Schema, SchemaRef};
 use datafusion::arrow::ffi::{FFI_ArrowArray, FFI_ArrowSchema};
 use datafusion::execution::SessionStateBuilder;
+use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::{SessionConfig, SessionContext};
 
-use comet::execution::serde::to_arrow_datatype;
 use datafusion_comet_proto::spark_operator::{operator::OpStruct, Operator};
 use prost::Message;
 
@@ -117,44 +117,23 @@ pub fn build_test_proto() -> Result<Vec<u8>, String> {
     Ok(op.encode_to_vec())
 }
 
+use crate::scan::CometScanExec;
 use crate::{CometLogicalCodec, CometPhysicalCodec, CometTableProvider};
-
-/// Derive the Arrow result schema from the `NativeScan` leaf carried in the
-/// proto. For this spike the offloaded plan is a single `NativeScan`, so its
-/// `required_schema` is the query's output schema.
-fn schema_from_proto(op: &Operator) -> Result<SchemaRef, String> {
-    let native_scan = match op.op_struct.as_ref() {
-        Some(OpStruct::NativeScan(scan)) => scan,
-        _ => return Err("expected a NativeScan operator at the plan root".to_string()),
-    };
-    let common = native_scan
-        .common
-        .as_ref()
-        .ok_or_else(|| "NativeScan is missing NativeScanCommon".to_string())?;
-    let fields: Vec<Field> = common
-        .required_schema
-        .iter()
-        .map(|f| {
-            let dt = f
-                .data_type
-                .as_ref()
-                .ok_or_else(|| format!("field {} has no data type", f.name))?;
-            Ok(Field::new(&f.name, to_arrow_datatype(dt), f.nullable))
-        })
-        .collect::<Result<_, String>>()?;
-    Ok(Arc::new(Schema::new(fields)))
-}
 
 /// Run a Comet `Operator` proto on an in-process standalone Ballista engine and
 /// return the collected Arrow batches plus the result schema.
 ///
-/// This reuses the exact "proto → standalone Ballista → RecordBatches" recipe
-/// validated in `tests/distributed.rs`, but runs `SELECT * FROM t` (no shuffle)
-/// because the spike only needs to prove the result boundary.
+/// This reuses the "proto → standalone Ballista → RecordBatches" recipe
+/// validated in `tests/distributed.rs`, running `SELECT * FROM t` (no shuffle)
+/// over a table provider that carries the whole Comet plan proto — so any
+/// operators above the scan (filter/project/aggregate) run natively too.
+///
+/// The result schema is derived from the **built** Comet plan's `schema()`
+/// (not from the scan proto's `required_schema`), so plans with operators above
+/// the scan report their true output schema rather than the raw scan schema.
 pub fn execute_comet_proto(proto: &[u8]) -> Result<(SchemaRef, Vec<RecordBatch>), String> {
-    let op =
-        Operator::decode(proto).map_err(|e| format!("failed to decode Operator proto: {e}"))?;
-    let schema = schema_from_proto(&op)?;
+    // Validate the proto decodes before spinning up the engine.
+    Operator::decode(proto).map_err(|e| format!("failed to decode Operator proto: {e}"))?;
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -162,6 +141,16 @@ pub fn execute_comet_proto(proto: &[u8]) -> Result<(SchemaRef, Vec<RecordBatch>)
         .map_err(|e| format!("failed to build tokio runtime: {e}"))?;
 
     runtime.block_on(async move {
+        // Build the whole Comet plan once (inside the Tokio runtime, which
+        // `CometScanExec::try_new` requires) so we can read its true output
+        // schema. This is the fix for the T1 spike's scan-schema shortcut: the
+        // result schema now comes from the plan, not the NativeScan proto.
+        let built: Arc<dyn ExecutionPlan> = Arc::new(
+            CometScanExec::try_new(proto.to_vec())
+                .map_err(|e| format!("failed to build Comet plan: {e}"))?,
+        );
+        let schema = built.schema();
+
         // In-process standalone Ballista cluster (scheduler + executor) with the
         // Comet codecs registered so the Comet leaf survives serialization.
         let config = SessionConfig::new_with_ballista()
