@@ -283,9 +283,15 @@ mod tests {
     fn test_spark_size_map_array() {
         use arrow::array::{Int32Array, MapArray, StringArray};
 
+        // Create test data: [{"key1": 1, "key2": 2}, {"key3": 3}, {}, null]
         let keys = StringArray::from(vec![Some("key1"), Some("key2"), Some("key3")]);
         let values = Int32Array::from(vec![Some(1), Some(2), Some(3)]);
 
+        // Create entry offsets: [0, 2, 3, 3, 3] representing:
+        // - Map 1: entries 0-1 (2 key-value pairs)
+        // - Map 2: entry 2 (1 key-value pair)
+        // - Map 3: entries 3-2 (0 key-value pairs, empty map)
+        // - Map 4: null (handled by null buffer)
         let entry_offsets = arrow::buffer::OffsetBuffer::new(vec![0i32, 2, 3, 3, 3].into());
 
         let key_field = Arc::new(Field::new("key", DataType::Utf8, false));
@@ -297,11 +303,12 @@ mod tests {
             None,
         );
 
+        // Create null buffer for the map array (fourth map is null)
         let mut null_buffer = NullBufferBuilder::new(4);
-        null_buffer.append(true);
-        null_buffer.append(true);
-        null_buffer.append(true);
-        null_buffer.append(false);
+        null_buffer.append(true); // Map with 2 entries - not null
+        null_buffer.append(true); // Map with 1 entry - not null
+        null_buffer.append(true); // Empty map - not null
+        null_buffer.append(false); // null map
 
         let map_field = Arc::new(Field::new(
             "entries",
@@ -325,16 +332,18 @@ mod tests {
         let result = spark_size_array(&array_ref).unwrap();
         let result = result.as_any().downcast_ref::<Int32Array>().unwrap();
 
-        assert_eq!(result.value(0), 2);
-        assert_eq!(result.value(1), 1);
-        assert_eq!(result.value(2), 0);
-        assert_eq!(result.value(3), -1);
+        // Expected: [2, 1, 0, -1]
+        assert_eq!(result.value(0), 2); // Map with 2 key-value pairs
+        assert_eq!(result.value(1), 1); // Map with 1 key-value pair
+        assert_eq!(result.value(2), 0); // empty map has 0 pairs
+        assert_eq!(result.value(3), -1); // null map returns -1
     }
 
     #[test]
     fn test_spark_size_scalar_map() {
         use arrow::array::{Int32Array, MapArray, StringArray};
 
+        // Test non-null map with 2 entries
         let keys = StringArray::from(vec![Some("a"), Some("b")]);
         let values = Int32Array::from(vec![Some(1), Some(2)]);
         let entry_offsets = arrow::buffer::OffsetBuffer::new(vec![0i32, 2].into());
@@ -360,13 +369,14 @@ mod tests {
         let map_array = MapArray::try_new(map_field, entry_offsets, entries, None, false).unwrap();
         let scalar = ScalarValue::Map(Arc::new(map_array));
         let result = spark_size_scalar(&scalar).unwrap();
-        assert_eq!(result, ScalarValue::Int32(Some(2)));
+        assert_eq!(result, ScalarValue::Int32(Some(2))); // Map with 2 entries
     }
 
     #[test]
     fn test_spark_size_scalar_null_map() {
         use arrow::array::{Int32Array, MapArray, StringArray};
 
+        // Test null map - Spark returns -1 for null map input
         let keys = StringArray::from(vec![Some("a")]);
         let values = Int32Array::from(vec![Some(1)]);
         let entry_offsets = arrow::buffer::OffsetBuffer::new(vec![0i32, 1].into());
@@ -389,8 +399,9 @@ mod tests {
             false,
         ));
 
+        // Mark the single map entry as null
         let mut null_buffer = NullBufferBuilder::new(1);
-        null_buffer.append(false);
+        null_buffer.append(false); // null map
 
         let map_array = MapArray::try_new(
             map_field,
@@ -402,7 +413,7 @@ mod tests {
         .unwrap();
         let scalar = ScalarValue::Map(Arc::new(map_array));
         let result = spark_size_scalar(&scalar).unwrap();
-        assert_eq!(result, ScalarValue::Int32(Some(-1)));
+        assert_eq!(result, ScalarValue::Int32(Some(-1))); // null map returns -1
     }
 
     #[test]
