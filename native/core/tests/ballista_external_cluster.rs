@@ -1,5 +1,5 @@
 // Distributes a Comet plan across a REAL external Ballista cluster: a separate
-// `comet-ballista-scheduler` process and a separate `comet-ballista-executor`
+// `comet-scheduler` process and a separate `comet-executor`
 // process, each spawned as a child of this test. This is unlike
 // `ballista_distributed.rs`, which runs an *in-process* standalone cluster
 // (scheduler + executor threads inside the test).
@@ -213,8 +213,8 @@ fn wait_for_port(port: u16, what: &str, timeout: Duration) -> anyhow::Result<()>
 #[ignore = "spawns external scheduler + executor processes and binds ports; run explicitly"]
 #[test]
 fn comet_plan_on_external_cluster() -> anyhow::Result<()> {
-    let scheduler_bin = env!("CARGO_BIN_EXE_comet-ballista-scheduler");
-    let executor_bin = env!("CARGO_BIN_EXE_comet-ballista-executor");
+    let scheduler_bin = env!("CARGO_BIN_EXE_comet-scheduler");
+    let executor_bin = env!("CARGO_BIN_EXE_comet-executor");
     let dyld = dyld_path();
 
     // --- 1. Spawn the external scheduler process ---
@@ -230,7 +230,7 @@ fn comet_plan_on_external_cluster() -> anyhow::Result<()> {
     }
     let scheduler = scheduler_cmd.spawn()?;
     let mut guard = ClusterGuard {
-        children: vec![("comet-ballista-scheduler", scheduler)],
+        children: vec![("comet-scheduler", scheduler)],
     };
     wait_for_port(SCHEDULER_PORT, "scheduler", Duration::from_secs(30))?;
 
@@ -253,7 +253,7 @@ fn comet_plan_on_external_cluster() -> anyhow::Result<()> {
         executor_cmd.env("DYLD_LIBRARY_PATH", d);
     }
     let executor = executor_cmd.spawn()?;
-    guard.children.push(("comet-ballista-executor", executor));
+    guard.children.push(("comet-executor", executor));
     wait_for_port(
         EXECUTOR_FLIGHT_PORT,
         "executor flight",

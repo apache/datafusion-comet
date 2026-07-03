@@ -26,7 +26,7 @@
 //!
 //! Only built with `--features ballista` (see `required-features` in
 //! `core/Cargo.toml`). Runs a real, externally reachable gRPC scheduler that a
-//! separate `comet-ballista-executor` process connects to.
+//! separate `comet-executor` process connects to.
 //!
 //! Configuration (all optional, env-driven so a harness can place it):
 //! - `COMET_BALLISTA_SCHEDULER_BIND_HOST` (default `127.0.0.1`)
@@ -65,7 +65,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
 
         let addr: SocketAddr = format!("{bind_host}:{bind_port}").parse()?;
-        eprintln!("[comet-ballista-scheduler] starting on {addr}");
+        eprintln!("[comet-scheduler] starting on {addr}");
 
         let cluster = BallistaCluster::new_from_config(&config).await?;
         start_server(cluster, addr, Arc::new(config)).await?;

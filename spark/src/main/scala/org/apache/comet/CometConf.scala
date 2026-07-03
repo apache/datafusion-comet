@@ -301,7 +301,7 @@ object CometConf extends ShimCometConf {
         "Ballista scheduler (e.g. `http://host:50050`) to submit the distributed plan to. When " +
         "empty (the default), the plan is submitted to an in-process standalone Ballista cluster " +
         "on the driver instead. The external scheduler and its executors must be the " +
-        "Comet-flavored `comet-ballista-scheduler` / `comet-ballista-executor` binaries so the " +
+        "Comet-flavored `comet-scheduler` / `comet-executor` binaries so the " +
         "shipped Comet plan nodes can be decoded there.")
       .stringConf
       .createWithDefault("")

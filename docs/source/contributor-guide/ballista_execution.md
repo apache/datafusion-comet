@@ -114,7 +114,7 @@ Legend: ✅ done · 🔨 in progress · ⬜ planned
   - ✅ R1-T2 — config flag + driver `executeCollect` override.
   - ◐ R1-T3 — offload proven end-to-end on Q1's single-stage subset (scan + date filter + decimal projections), results match Spark, 0 executor tasks. Full Q1 GROUP BY is structurally multi-block → R2.
   - ✅ R1-T4 (R1b) — **external cluster:** a distributed Comet plan submitted to a separate
-    `comet-ballista-scheduler` process runs on a separate, **JVM-less** `comet-ballista-executor`
+    `comet-scheduler` process runs on a separate, **JVM-less** `comet-executor`
     process and returns correct results (verified for `NativeScan`-leaf fragments; no Ballista change
     needed — the config `override_*_codec` fields already exist). Config: `spark.comet.exec.ballista.scheduler.url`.
 - 🔨 **R2 — multi-stage distribution.** A distributed 2-block `GROUP BY` (Comet partial-agg → Ballista hash shuffle → Comet final-agg) runs offloaded with 0 Spark-executor tasks and correct results — **full TPC-H Q1's aggregate now runs distributed on Ballista and matches Spark.**

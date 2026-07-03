@@ -141,13 +141,13 @@ crate-type = ["cdylib", "rlib"]
 # cluster. Only built with `--features ballista`, so the default build stays
 # Ballista-free.
 [[bin]]
-name = "comet-ballista-scheduler"
-path = "src/bin/comet-ballista-scheduler.rs"
+name = "comet-scheduler"
+path = "src/bin/comet-scheduler.rs"
 required-features = ["ballista"]
 
 [[bin]]
-name = "comet-ballista-executor"
-path = "src/bin/comet-ballista-executor.rs"
+name = "comet-executor"
+path = "src/bin/comet-executor.rs"
 required-features = ["ballista"]
 
 [[bench]]

@@ -312,7 +312,7 @@ async fn start_standalone_from_state(state: &SessionState) -> Result<String, Str
 /// executor spun up inside this process) is used, as before. If it is non-empty
 /// (e.g. `http://localhost:50050`), the plan is submitted to that **external**
 /// scheduler instead — a genuinely separate scheduler+executor deployment
-/// (`comet-ballista-scheduler` / `comet-ballista-executor`). Either way the plan
+/// (`comet-scheduler` / `comet-executor`). Either way the plan
 /// is the identical `CometFragment → hash-shuffle → CometFragment`.
 ///
 /// The Comet logical+physical codecs are registered on the SessionConfig so both

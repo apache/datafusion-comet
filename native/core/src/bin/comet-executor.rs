@@ -90,7 +90,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
 
         eprintln!(
-            "[comet-ballista-executor] flight :{port} grpc :{grpc_port} -> scheduler {}:{}",
+            "[comet-executor] flight :{port} grpc :{grpc_port} -> scheduler {}:{}",
             config.scheduler_host, config.scheduler_port
         );
 
