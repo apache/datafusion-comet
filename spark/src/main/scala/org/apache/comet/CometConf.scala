@@ -376,8 +376,8 @@ object CometConf extends ShimCometConf {
           "filter to the probe side. After the join's build side completes, min/max bounds " +
           "and membership predicates derived from the build keys are used to drop probe-side " +
           "rows before the hash probe, which can significantly speed up selective joins such " +
-          "as star-schema queries. Applies to inner, left outer, left/right semi, and left " +
-          "anti joins. A selectivity guard disables the filter on streams where it prunes " +
+          "as star-schema queries. Applies to inner, left outer, left semi, and left anti " +
+          "joins. A selectivity guard disables the filter on streams where it prunes " +
           "few rows.")
       .booleanConf
       .createWithDefault(false)

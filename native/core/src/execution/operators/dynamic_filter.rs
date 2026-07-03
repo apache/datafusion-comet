@@ -36,14 +36,15 @@ use arrow::array::RecordBatch;
 use arrow::compute::filter_record_batch;
 use arrow::datatypes::SchemaRef;
 use datafusion::common::cast::as_boolean_array;
+use datafusion::common::config::ConfigOptions;
 use datafusion::common::{DataFusionError, Result as DataFusionResult, ScalarValue};
 use datafusion::execution::TaskContext;
 use datafusion::logical_expr::ColumnarValue;
 use datafusion::physical_expr::expressions::{lit, DynamicFilterPhysicalExpr};
 use datafusion::physical_expr::PhysicalExpr;
-use datafusion::physical_plan::joins::HashJoinExec;
+use datafusion::physical_plan::joins::{HashJoinExec, PartitionMode};
 use datafusion::physical_plan::metrics::{
-    BaselineMetrics, Count, ExecutionPlanMetricsSet, MetricBuilder, MetricsSet,
+    BaselineMetrics, Count, ExecutionPlanMetricsSet, MetricBuilder, MetricsSet, Time,
 };
 use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties, RecordBatchStream,
@@ -131,12 +132,19 @@ impl ExecutionPlan for DynamicFilterExec {
         let baseline_metrics = BaselineMetrics::new(&self.metrics, partition);
         let rows_pruned =
             MetricBuilder::new(&self.metrics).counter("dynamic_filter_rows_pruned", partition);
+        // A dedicated timer rather than the baseline elapsed_compute: this operator is
+        // registered as an additional native plan on the join's SparkPlan node for
+        // metrics collection, and the metric merge sums same-named metrics — timing
+        // via elapsed_compute would inflate the join's reported compute time.
+        let eval_time =
+            MetricBuilder::new(&self.metrics).subset_time("dynamic_filter_eval_time", partition);
         Ok(Box::pin(DynamicFilterStream {
             schema: self.input.schema(),
             input,
             predicate: Arc::clone(&self.predicate),
             baseline_metrics,
             rows_pruned,
+            eval_time,
             rows_evaluated: 0,
             rows_kept: 0,
             guard_disabled: false,
@@ -154,6 +162,7 @@ struct DynamicFilterStream {
     predicate: Arc<DynamicFilterPhysicalExpr>,
     baseline_metrics: BaselineMetrics,
     rows_pruned: Count,
+    eval_time: Time,
     /// Rows seen since the filter became a real (non-placeholder) predicate.
     rows_evaluated: usize,
     rows_kept: usize,
@@ -163,7 +172,7 @@ struct DynamicFilterStream {
 
 impl DynamicFilterStream {
     fn filter_batch(&mut self, batch: RecordBatch) -> DataFusionResult<Option<RecordBatch>> {
-        let _timer = self.baseline_metrics.elapsed_compute().timer();
+        let _timer = self.eval_time.timer();
         match self.predicate.evaluate(&batch)? {
             // Placeholder (or degenerate all-true) predicate: pass through untouched.
             // Not counted toward the selectivity guard — the real filter may not have
@@ -234,29 +243,50 @@ impl RecordBatchStream for DynamicFilterStream {
 /// probe (right) child in a [`DynamicFilterExec`] that shares the same filter.
 ///
 /// Accepts either a `HashJoinExec` or a `ProjectionExec` directly above one (the shape
-/// `HashJoinExec::swap_inputs` produces) and returns the input plan unchanged when the
-/// join is not eligible. Eligibility mirrors DataFusion's own gate: the probe side must
-/// be preserved under the ON clause (`JoinType::on_lr_is_preserved().1`), which admits
-/// Inner, Left, LeftSemi, RightSemi, LeftAnti, and LeftMark joins — a probe row removed
-/// by the filter could not have matched any build row, so results are unchanged.
+/// `HashJoinExec::swap_inputs` produces). Returns the (possibly rewritten) plan plus
+/// the installed wrapper, so the planner can register the wrapper for metrics
+/// collection (`SparkPlan::new_with_additional`); when the join is not eligible the
+/// input plan is returned unchanged with `None`.
+///
+/// Eligibility mirrors DataFusion's own `allow_join_dynamic_filter_pushdown` gate:
+/// - the session option `optimizer.enable_join_dynamic_filter_pushdown` must be on,
+/// - `optimizer.preserve_file_partitions` with `PartitionMode::Partitioned` is
+///   excluded (file-group partitions are not hash-distributed by the join keys),
+/// - the probe side must be preserved under the ON clause
+///   (`JoinType::on_lr_is_preserved().1`), which admits Inner, Left, LeftSemi,
+///   RightSemi, LeftAnti, and LeftMark joins — a probe row removed by the filter
+///   could not have matched any build row, so results are unchanged.
+///
+/// DataFusion re-checks the same gate at execute time (an ineligible join never
+/// populates the filter, leaving the wrapper a harmless pass-through); checking here
+/// as well avoids installing a wrapper that can never engage.
 ///
 /// Callers must not pass null-aware anti joins (Spark NOT IN semantics); that gate
 /// lives at the call site where the flag is known.
 pub fn attach_join_dynamic_filter(
     plan: Arc<dyn ExecutionPlan>,
-) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
+    config: &ConfigOptions,
+) -> DataFusionResult<PlanWithDynamicFilter> {
     // swap_inputs may have inserted a projection above the join to restore column order.
     if plan.is::<datafusion::physical_plan::projection::ProjectionExec>() {
         let child = Arc::clone(plan.children()[0]);
-        let new_child = attach_join_dynamic_filter(child)?;
-        return plan.with_new_children(vec![new_child]);
+        let (new_child, wrapper) = attach_join_dynamic_filter(child, config)?;
+        return Ok((plan.with_new_children(vec![new_child])?, wrapper));
     }
 
     let Some(hash_join) = plan.downcast_ref::<HashJoinExec>() else {
-        return Ok(plan);
+        return Ok((plan, None));
     };
+    if !config.optimizer.enable_join_dynamic_filter_pushdown {
+        return Ok((plan, None));
+    }
+    if config.optimizer.preserve_file_partitions > 0
+        && matches!(hash_join.partition_mode(), PartitionMode::Partitioned)
+    {
+        return Ok((plan, None));
+    }
     if !hash_join.join_type().on_lr_is_preserved().1 {
-        return Ok(plan);
+        return Ok((plan, None));
     }
     let probe_keys: Vec<Arc<dyn PhysicalExpr>> = hash_join
         .on()
@@ -264,7 +294,7 @@ pub fn attach_join_dynamic_filter(
         .map(|(_, right)| Arc::clone(right))
         .collect();
     if probe_keys.is_empty() {
-        return Ok(plan);
+        return Ok((plan, None));
     }
 
     let dynamic_filter = Arc::new(DynamicFilterPhysicalExpr::new(probe_keys, lit(true)));
@@ -274,32 +304,21 @@ pub fn attach_join_dynamic_filter(
     ));
     let new_join = hash_join
         .builder()
-        .with_new_children(vec![Arc::clone(hash_join.left()), wrapped_probe])?
+        .with_new_children(vec![
+            Arc::clone(hash_join.left()),
+            Arc::clone(&wrapped_probe),
+        ])?
         .build()?
         .with_dynamic_filter_expr(dynamic_filter)
         .map_err(|e| {
             DataFusionError::Internal(format!("failed to attach join dynamic filter: {e}"))
         })?;
-    Ok(Arc::new(new_join))
+    Ok((Arc::new(new_join), Some(wrapped_probe)))
 }
 
-/// Returns the [`DynamicFilterExec`] probe-side wrapper installed by
-/// [`attach_join_dynamic_filter`], if present, so the planner can register it for
-/// metrics collection (`SparkPlan::new_with_additional`).
-pub fn find_dynamic_filter_wrapper(
-    plan: &Arc<dyn ExecutionPlan>,
-) -> Option<Arc<dyn ExecutionPlan>> {
-    if plan.is::<datafusion::physical_plan::projection::ProjectionExec>() {
-        return find_dynamic_filter_wrapper(plan.children()[0]);
-    }
-    let hash_join = plan.downcast_ref::<HashJoinExec>()?;
-    let right = hash_join.right();
-    if right.is::<DynamicFilterExec>() {
-        Some(Arc::clone(right))
-    } else {
-        None
-    }
-}
+/// Result of [`attach_join_dynamic_filter`]: the (possibly rewritten) plan and the
+/// [`DynamicFilterExec`] wrapper if one was installed.
+pub type PlanWithDynamicFilter = (Arc<dyn ExecutionPlan>, Option<Arc<dyn ExecutionPlan>>);
 
 #[cfg(test)]
 mod tests {
@@ -313,7 +332,6 @@ mod tests {
     use datafusion::logical_expr::Operator;
     use datafusion::physical_expr::expressions::{col, BinaryExpr};
     use datafusion::physical_plan::collect;
-    use datafusion::physical_plan::joins::PartitionMode;
     use datafusion::prelude::SessionContext;
 
     fn int_batch(name: &str, values: Vec<i32>) -> (SchemaRef, RecordBatch) {
@@ -374,7 +392,10 @@ mod tests {
         assert_eq!(batches.iter().map(|b| b.num_rows()).sum::<usize>(), 0);
     }
 
-    fn test_hash_join(join_type: JoinType) -> Arc<dyn ExecutionPlan> {
+    fn test_hash_join_with_mode(
+        join_type: JoinType,
+        mode: PartitionMode,
+    ) -> Arc<dyn ExecutionPlan> {
         let (build_schema, build_batch) = int_batch("a", vec![10, 20]);
         let (probe_schema, probe_batch) = int_batch("b", (0..100).collect());
         let join_on = vec![(
@@ -389,7 +410,7 @@ mod tests {
                 None,
                 &join_type,
                 None,
-                PartitionMode::CollectLeft,
+                mode,
                 NullEquality::NullEqualsNothing,
                 false,
             )
@@ -397,10 +418,16 @@ mod tests {
         )
     }
 
+    fn test_hash_join(join_type: JoinType) -> Arc<dyn ExecutionPlan> {
+        test_hash_join_with_mode(join_type, PartitionMode::CollectLeft)
+    }
+
     #[tokio::test]
     async fn test_attach_wraps_probe_side_and_preserves_results() {
         let plain = test_hash_join(JoinType::Inner);
-        let attached = attach_join_dynamic_filter(Arc::clone(&plain) as _).unwrap();
+        let (attached, installed) =
+            attach_join_dynamic_filter(Arc::clone(&plain) as _, &ConfigOptions::default()).unwrap();
+        assert!(installed.is_some());
 
         let join = attached
             .downcast_ref::<HashJoinExec>()
@@ -435,7 +462,10 @@ mod tests {
     async fn test_attach_skips_non_probe_preserved_join_types() {
         for join_type in [JoinType::Right, JoinType::Full, JoinType::RightAnti] {
             let plain = test_hash_join(join_type);
-            let attached = attach_join_dynamic_filter(Arc::clone(&plain) as _).unwrap();
+            let (attached, installed) =
+                attach_join_dynamic_filter(Arc::clone(&plain) as _, &ConfigOptions::default())
+                    .unwrap();
+            assert!(installed.is_none());
             let join = attached.downcast_ref::<HashJoinExec>().unwrap();
             assert!(
                 join.dynamic_filter_expr().is_none(),
@@ -443,5 +473,23 @@ mod tests {
             );
             assert!(join.right().downcast_ref::<DynamicFilterExec>().is_none());
         }
+    }
+
+    #[test]
+    fn test_attach_respects_upstream_config_gate() {
+        // preserve_file_partitions with Partitioned mode: mirrors DataFusion's
+        // allow_join_dynamic_filter_pushdown exclusion.
+        let plain = test_hash_join_with_mode(JoinType::Inner, PartitionMode::Partitioned);
+        let mut config = ConfigOptions::default();
+        config.optimizer.preserve_file_partitions = 1;
+        let (_, installed) = attach_join_dynamic_filter(Arc::clone(&plain) as _, &config).unwrap();
+        assert!(installed.is_none());
+
+        // Session flag off: no attachment.
+        let plain = test_hash_join(JoinType::Inner);
+        let mut config = ConfigOptions::default();
+        config.optimizer.enable_join_dynamic_filter_pushdown = false;
+        let (_, installed) = attach_join_dynamic_filter(plain as _, &config).unwrap();
+        assert!(installed.is_none());
     }
 }

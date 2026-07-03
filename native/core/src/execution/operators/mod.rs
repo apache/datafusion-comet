@@ -27,9 +27,7 @@ pub use scan::*;
 mod aligned_stream_reader;
 mod copy;
 mod dynamic_filter;
-pub use dynamic_filter::{
-    attach_join_dynamic_filter, find_dynamic_filter_wrapper, DynamicFilterExec,
-};
+pub use dynamic_filter::{attach_join_dynamic_filter, DynamicFilterExec};
 mod expand;
 pub use expand::ExpandExec;
 mod iceberg_scan;
