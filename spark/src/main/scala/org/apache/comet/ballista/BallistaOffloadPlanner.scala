@@ -23,7 +23,7 @@ import scala.collection.mutable
 
 import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference}
 import org.apache.spark.sql.catalyst.plans.physical.HashPartitioning
-import org.apache.spark.sql.comet.{CometExec, CometNativeExec}
+import org.apache.spark.sql.comet.{CometExec, CometHashJoinExec, CometNativeExec, CometSortMergeJoinExec}
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution.SparkPlan
 
@@ -80,34 +80,80 @@ object BallistaOffloadPlanner {
             "Comet Ballista offload: expected a serialized native block reachable from " +
               s"${p.nodeName}:\n$root"))
 
-    // The direct native-block inputs of `block` are the Comet hash exchanges in its subtree that
-    // are not nested under a deeper native block, discovered by a plain DFS that stops descent
-    // at each exchange. This is deliberately generic (no join-specific type matching): for a
-    // binary join block (shuffle-hash or sort-merge), DFS pre-order visits the left child's
-    // exchange before the right child's, which matches the join proto's `[left_leaf, right_leaf]`
-    // leaf order.
-    def directExchanges(block: CometNativeExec): Seq[CometShuffleExchangeExec] = {
+    // The direct native-block inputs of `p`'s subtree are the Comet hash exchanges reachable
+    // without crossing a deeper native block, discovered by a plain DFS that stops descent at
+    // each exchange. Used both at block level (to find a block's own inputs) and rooted at a
+    // single join's left/right child (to validate how a join's two sides split those inputs).
+    def directExchanges(p: SparkPlan): Seq[CometShuffleExchangeExec] = {
       val found = mutable.ArrayBuffer.empty[CometShuffleExchangeExec]
       def walk(p: SparkPlan): Unit = p match {
         case e: CometShuffleExchangeExec => found += e // do NOT descend past an exchange
         case other => other.children.foreach(walk)
       }
-      block.children.foreach(walk)
+      walk(p)
       found.toSeq
+    }
+
+    // The binary Comet join nodes directly inside `p`'s subtree, discovered the same way (DFS,
+    // stop descent at exchanges) but continuing past a join into its own children so a fused
+    // MULTI-join block (two joins with no exchange between them) is still detected.
+    def directJoins(p: SparkPlan): Seq[SparkPlan] = {
+      val found = mutable.ArrayBuffer.empty[SparkPlan]
+      def walk(p: SparkPlan): Unit = p match {
+        case _: CometShuffleExchangeExec => // do NOT descend past an exchange
+        case j @ (_: CometHashJoinExec | _: CometSortMergeJoinExec) =>
+          found += j
+          j.children.foreach(walk)
+        case other => other.children.foreach(walk)
+      }
+      walk(p)
+      found.toSeq
+    }
+
+    // Resolve a block's ordered DAG inputs (producer exchanges, in the proto's
+    // `[left_leaf, right_leaf]` order) from its direct exchanges and joins. A block may be a
+    // leaf (0 exchanges), a linear chain (1 exchange, no join -- e.g. partial->final
+    // aggregate), or a single co-partitioned join whose two sides each contribute exactly one
+    // of exactly two exchanges. Any other shape -- a fused multi-join block, a join with a
+    // broadcast (non-hash-exchange) side, or exchanges not cleanly split by a single join --
+    // throws rather than silently mis-pairing exchanges from different joins.
+    def resolveInputs(block: CometNativeExec): Seq[CometShuffleExchangeExec] = {
+      val exchanges = directExchanges(block)
+      val joins = directJoins(block)
+      (exchanges.size, joins.size) match {
+        case (0, _) => Seq.empty
+        case (1, 0) => exchanges
+        case (2, 1) =>
+          val join = joins.head
+          val (leftPlan, rightPlan) = join match {
+            case j: CometHashJoinExec => (j.left, j.right)
+            case j: CometSortMergeJoinExec => (j.left, j.right)
+          }
+          val leftEx = directExchanges(leftPlan)
+          val rightEx = directExchanges(rightPlan)
+          if (leftEx.size == 1 && rightEx.size == 1 &&
+            (leftEx.toSet ++ rightEx.toSet) == exchanges.toSet) {
+            Seq(leftEx.head, rightEx.head)
+          } else {
+            throw new UnsupportedOperationException(
+              "Comet Ballista offload: join block's two Comet exchanges are not cleanly split " +
+                s"one-each across the join's left (${leftEx.size} exchange(s)) and right " +
+                s"(${rightEx.size} exchange(s)) sides -- a broadcast join side is a future " +
+                s"increment:\n$root")
+          }
+        case (n, m) =>
+          throw new UnsupportedOperationException(
+            s"Comet Ballista offload: block resolves to $n Comet exchange(s) and $m binary " +
+              "join(s); only a leaf block (0 exchanges), a linear chain (1 exchange, no " +
+              "join), or a single co-partitioned join (exactly 2 exchanges split one-each " +
+              "across exactly one join's inputs) are supported -- a fused multi-join block " +
+              s"is a future increment:\n$root")
+      }
     }
 
     def register(block: CometNativeExec): Int = indexOf.getOrElseUpdate(
       block, {
-        val inputs = directExchanges(block)
-        // A block may have 0 inputs (leaf fragment), 1 input (linear chain), or 2 inputs (a
-        // co-partitioned join, left then right). More than 2 is a multi-input DAG shape that's
-        // out of scope for now.
-        if (inputs.size > 2) {
-          throw new UnsupportedOperationException(
-            "Comet Ballista offload: block is fed by more than two Comet exchanges " +
-              s"(${inputs.size}); multi-input DAG shapes beyond 2-way joins are not yet " +
-              s"supported:\n$root")
-        }
+        val inputs = resolveInputs(block)
         // Recurse producers first so their indices are smaller (topological order).
         inputs.foreach(ex => register(blockOf(ex.child)))
         val idx = ordered.size

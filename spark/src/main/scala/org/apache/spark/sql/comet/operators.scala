@@ -408,9 +408,10 @@ object CometExec {
    *
    * Enabled by `spark.comet.exec.ballista.enabled`. The query is decomposed into a DAG of native
    * fragments connected by hash exchanges by [[BallistaOffloadPlanner]] (currently: a single
-   * native block, or an N-block linear chain of hash exchanges -- general join/multi-input DAG
-   * shapes are a future increment), serialized as a `CometBallistaOffloadPlan`, and submitted to
-   * Ballista via the general native `executeOffloadPlan` entry point.
+   * native block; an N-block linear chain of hash exchanges; or a single co-partitioned join fed
+   * by exactly two hash exchanges -- fused multi-join blocks and broadcast join sides are a
+   * future increment), serialized as a `CometBallistaOffloadPlan`, and submitted to Ballista via
+   * the general native `executeOffloadPlan` entry point.
    *
    * Anything not yet supported by the walker throws [[UnsupportedOperationException]].
    */
