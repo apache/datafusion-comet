@@ -24,7 +24,7 @@ import java.util.concurrent.atomic.AtomicInteger
 import org.apache.spark.CometListenerBusUtils
 import org.apache.spark.scheduler.{SparkListener, SparkListenerTaskStart}
 import org.apache.spark.sql.CometTestBase
-import org.apache.spark.sql.comet.CometNativeExec
+import org.apache.spark.sql.comet.{CometHashJoinExec, CometNativeExec, CometSortMergeJoinExec}
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.internal.SQLConf
@@ -100,6 +100,29 @@ class CometBallistaJoinSuite extends CometTestBase with AdaptiveSparkPlanHelper 
     withParquetTable((0 until 200).map(i => (i, i * 10)), "l") {
       withParquetTable((0 until 200).map(i => (i % 50, i * 100)), "r") {
         val query = "SELECT l._1, l._2, r._2 FROM l JOIN r ON l._1 = r._1"
+
+        // Pre-flight: confirm the plan is the co-partitioned join shape (two Comet hash
+        // exchanges feeding a shuffle-hash/sort-merge join) BEFORE running it.
+        val executed = withSQLConf(
+          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+          SQLConf.SHUFFLE_PARTITIONS.key -> "4",
+          CometConf.COMET_SHUFFLE_DIRECT_READ_ENABLED.key -> "false",
+          SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+          CometConf.COMET_EXEC_BALLISTA_ENABLED.key -> "false") {
+          spark.sql(query).queryExecution.executedPlan
+        }
+        val exchanges = executed.collect { case e: CometShuffleExchangeExec => e }
+        assert(
+          exchanges.size == 2,
+          s"expected exactly two Comet hash exchanges (one per join side), found " +
+            s"${exchanges.size}:\n$executed")
+        val joins = executed.collect {
+          case j: CometHashJoinExec => j
+          case j: CometSortMergeJoinExec => j
+        }
+        assert(
+          joins.size == 1,
+          s"expected exactly one shuffle-hash/sort-merge join, found ${joins.size}:\n$executed")
 
         // Baseline: normal Comet execution (offload off), a positive control proving the
         // listener observes executor task starts.

@@ -104,4 +104,28 @@ class BallistaOffloadPlannerSuite extends CometTestBase {
       }
     }
   }
+
+  test("broadcast join is rejected with a clear message") {
+    // Do NOT disable auto-broadcast (no AUTO_BROADCASTJOIN_THRESHOLD=-1 override): `r` is tiny
+    // so Spark plans a broadcast join, giving a `CometBroadcastHashJoinExec` fed by a
+    // `CometBroadcastExchangeExec` build side -- the out-of-scope shape the walker must reject.
+    withParquetTable((0 until 50).map(i => (i, i * 10)), "l") {
+      withParquetTable((0 until 5).map(i => (i, i * 100)), "r") {
+        withSQLConf(
+          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+          SQLConf.SHUFFLE_PARTITIONS.key -> "4",
+          CometConf.COMET_SHUFFLE_DIRECT_READ_ENABLED.key -> "false",
+          CometConf.COMET_EXEC_BALLISTA_ENABLED.key -> "false") {
+          val plan =
+            sql("SELECT l._2, r._2 FROM l JOIN r ON l._1 = r._1").queryExecution.executedPlan
+          val e = intercept[UnsupportedOperationException] {
+            BallistaOffloadPlanner.buildOffloadPlan(plan, numPartitions = 4)
+          }
+          assert(
+            e.getMessage.toLowerCase.contains("broadcast"),
+            s"expected a message mentioning broadcast, got: ${e.getMessage}")
+        }
+      }
+    }
+  }
 }

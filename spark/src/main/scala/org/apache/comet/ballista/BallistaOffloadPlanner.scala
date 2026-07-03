@@ -23,7 +23,7 @@ import scala.collection.mutable
 
 import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference}
 import org.apache.spark.sql.catalyst.plans.physical.HashPartitioning
-import org.apache.spark.sql.comet.{CometExec, CometHashJoinExec, CometNativeExec, CometSortMergeJoinExec}
+import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometBroadcastHashJoinExec, CometExec, CometHashJoinExec, CometNativeExec, CometSortMergeJoinExec}
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution.SparkPlan
 
@@ -88,6 +88,12 @@ object BallistaOffloadPlanner {
       val found = mutable.ArrayBuffer.empty[CometShuffleExchangeExec]
       def walk(p: SparkPlan): Unit = p match {
         case e: CometShuffleExchangeExec => found += e // do NOT descend past an exchange
+        case _: CometBroadcastExchangeExec =>
+          // A broadcast build side is not a Comet hash exchange and must never be silently
+          // walked through and ignored -- reject rather than mis-classify the block.
+          throw new UnsupportedOperationException(
+            "Comet Ballista offload: broadcast joins are not supported (found a " +
+              s"CometBroadcastExchangeExec build side); a future increment:\n$root")
         case other => other.children.foreach(walk)
       }
       walk(p)
@@ -101,6 +107,10 @@ object BallistaOffloadPlanner {
       val found = mutable.ArrayBuffer.empty[SparkPlan]
       def walk(p: SparkPlan): Unit = p match {
         case _: CometShuffleExchangeExec => // do NOT descend past an exchange
+        case _: CometBroadcastHashJoinExec =>
+          throw new UnsupportedOperationException(
+            "Comet Ballista offload: broadcast joins (CometBroadcastHashJoinExec) are not " +
+              s"supported; a future increment:\n$root")
         case j @ (_: CometHashJoinExec | _: CometSortMergeJoinExec) =>
           found += j
           j.children.foreach(walk)
@@ -118,6 +128,15 @@ object BallistaOffloadPlanner {
     // broadcast (non-hash-exchange) side, or exchanges not cleanly split by a single join --
     // throws rather than silently mis-pairing exchanges from different joins.
     def resolveInputs(block: CometNativeExec): Seq[CometShuffleExchangeExec] = {
+      // A broadcast join is a supported-looking CometNativeExec (it IS a CometExec, so offload
+      // is attempted for it) but its build side is a CometBroadcastExchangeExec, not a Comet
+      // hash exchange -- reject explicitly here rather than letting it fall through and be
+      // mis-classified as a leaf/linear block by directExchanges/directJoins below.
+      if (block.isInstanceOf[CometBroadcastHashJoinExec]) {
+        throw new UnsupportedOperationException(
+          "Comet Ballista offload: broadcast joins (CometBroadcastHashJoinExec) are not " +
+            s"supported; a future increment:\n$root")
+      }
       val exchanges = directExchanges(block)
       val joins = directJoins(block)
       (exchanges.size, joins.size) match {
