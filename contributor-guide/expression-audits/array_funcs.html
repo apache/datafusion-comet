@@ -746,6 +746,15 @@ under the License.
 <li><p>Spark 4.1.1 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">inputTypes</span></code> tightened to <code class="docutils literal notranslate"><span class="pre">Seq(ArrayType,</span> <span class="pre">IntegralType)</span></code> (analysis-time only); runtime unchanged.</p></li>
 </ul>
 </section>
+<section id="shuffle">
+<h2>shuffle<a class="headerlink" href="#shuffle" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>Spark 3.4.3 (audited 2026-07-02): <code class="docutils literal notranslate"><span class="pre">Shuffle(child,</span> <span class="pre">randomSeed:</span> <span class="pre">Option[Long])</span></code>; <code class="docutils literal notranslate"><span class="pre">inputTypes</span> <span class="pre">=</span> <span class="pre">Seq(ArrayType)</span></code>, <code class="docutils literal notranslate"><span class="pre">dataType</span> <span class="pre">=</span> <span class="pre">child.dataType</span></code>, non-deterministic and stateful. Seeds a Commons Math3 <code class="docutils literal notranslate"><span class="pre">MersenneTwister</span></code> with <code class="docutils literal notranslate"><span class="pre">randomSeed</span> <span class="pre">+</span> <span class="pre">partitionIndex</span></code> and applies the “inside-out” Fisher-Yates from <code class="docutils literal notranslate"><span class="pre">RandomIndicesGenerator</span></code>. Only the one-argument <code class="docutils literal notranslate"><span class="pre">shuffle(array)</span></code> form exists in SQL. NULL input returns NULL without advancing the RNG.</p></li>
+<li><p>Spark 3.5.8 (audited 2026-07-02): identical to 3.4.3.</p></li>
+<li><p>Spark 4.0.1 (audited 2026-07-02): adds the two-argument constructor <code class="docutils literal notranslate"><span class="pre">Shuffle(child,</span> <span class="pre">seed:</span> <span class="pre">Expression)</span></code>, exposing <code class="docutils literal notranslate"><span class="pre">shuffle(array,</span> <span class="pre">seed)</span></code> in SQL (seed must be an integer/long literal). <code class="docutils literal notranslate"><span class="pre">RandomIndicesGenerator</span></code> and the eval logic are unchanged.</p></li>
+<li><p>Spark 4.1.1 (audited 2026-07-02): identical to 4.0.1. Comet routes via <code class="docutils literal notranslate"><span class="pre">CometShuffle</span></code> and a dedicated stateful <code class="docutils literal notranslate"><span class="pre">ShuffleExpr</span></code> that reproduces the same MersenneTwister and inside-out Fisher-Yates, so results match Spark bit for bit. <code class="docutils literal notranslate"><span class="pre">childTypesSupportLevel</span></code> falls back for binary/struct/map element types, consistent with the other array expressions.</p></li>
+</ul>
+</section>
 <section id="sort-array">
 <h2>sort_array<a class="headerlink" href="#sort-array" title="Link to this heading">#</a></h2>
 <ul class="simple">

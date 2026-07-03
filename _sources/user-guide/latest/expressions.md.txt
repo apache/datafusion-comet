@@ -155,7 +155,7 @@ The tables below list every Spark built-in expression with its current status.
 | `flatten` | ✅ | Binary/struct/map elements fall back |
 | `get` | ✅ |  |
 | `sequence` | ✅ |  |
-| `shuffle` | 🔜 | Random array shuffle |
+| `shuffle` | ✅ | Binary/struct/map elements fall back |
 | `slice` | ✅ | Native ([#4149](https://github.com/apache/datafusion-comet/issues/4149)) |
 | `sort_array` | ✅ | Nested struct/null arrays fall back |
 
