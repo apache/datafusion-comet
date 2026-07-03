@@ -105,15 +105,20 @@ class NativeBallista {
       schemaAddrs: Array[Long]): Long
 
   /**
-   * Run a serialized [[org.apache.comet.serde.OperatorOuterClass.CometBallistaOffloadPlan]]
-   * (a DAG of Comet native fragments + hash exchanges) on Ballista and export the single
+   * Run a serialized [[org.apache.comet.serde.OperatorOuterClass.CometBallistaOffloadPlan]] (a
+   * DAG of Comet native fragments + hash exchanges) on Ballista and export the single
    * (concatenated) result batch into the caller-allocated Arrow C Data structs.
    *
-   * @param plan serialized CometBallistaOffloadPlan
-   * @param arrayAddrs one ArrowArray struct address per output column
-   * @param schemaAddrs one ArrowSchema struct address per output column
-   * @param schedulerUrl external Ballista scheduler URL; "" = in-process standalone
-   * @return number of rows exported
+   * @param plan
+   *   serialized CometBallistaOffloadPlan
+   * @param arrayAddrs
+   *   one ArrowArray struct address per output column
+   * @param schemaAddrs
+   *   one ArrowSchema struct address per output column
+   * @param schedulerUrl
+   *   external Ballista scheduler URL; "" = in-process standalone
+   * @return
+   *   number of rows exported
    */
   @native def executeOffloadPlan(
       plan: Array[Byte],

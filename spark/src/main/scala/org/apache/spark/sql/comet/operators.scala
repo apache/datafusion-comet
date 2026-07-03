@@ -53,7 +53,7 @@ import com.google.protobuf.CodedOutputStream
 
 import org.apache.comet.{CometConf, CometExecIterator, CometRuntimeException, ConfigEntry}
 import org.apache.comet.CometSparkSessionExtensions.{isCometShuffleEnabled, withFallbackReason}
-import org.apache.comet.ballista.NativeBallista
+import org.apache.comet.ballista.{BallistaOffloadPlanner, NativeBallista}
 import org.apache.comet.parquet.CometParquetUtils
 import org.apache.comet.rules.CometExecRule
 import org.apache.comet.serde.{CometOperatorSerde, Compatible, Incompatible, OperatorOuterClass, SupportLevel, Unsupported}
@@ -406,35 +406,38 @@ object CometExec {
    * EXPERIMENTAL: offload a Comet query to an in-process Apache DataFusion Ballista engine on the
    * Spark driver and return the collected rows, launching NO Spark executor tasks.
    *
-   * Enabled by `spark.comet.exec.ballista.enabled`. Two plan shapes are supported:
+   * Enabled by `spark.comet.exec.ballista.enabled`. The query is decomposed into a DAG of native
+   * fragments connected by hash exchanges by [[BallistaOffloadPlanner]] (currently: a single
+   * native block, or an N-block linear chain of hash exchanges -- general join/multi-input DAG
+   * shapes are a future increment), serialized as a `CometBallistaOffloadPlan`, and submitted to
+   * Ballista via the general native `executeOffloadPlan` entry point.
    *
-   *   - **R1 single-stage:** exactly one native block ([[CometNativeExec]] with a serialized
-   *     plan) and no Comet exchange. The whole-query native plan is submitted as one native leaf.
-   *   - **R2 two-stage GROUP BY:** exactly two native blocks with one
-   *     [[CometShuffleExchangeExec]] between them (partial aggregate below the exchange, final
-   *     aggregate above). The two blocks are submitted separately and Ballista distributes them
-   *     across a hash shuffle.
-   *
-   * Anything else throws [[UnsupportedOperationException]].
+   * Anything not yet supported by the walker throws [[UnsupportedOperationException]].
    */
   def executeCollectViaBallista(root: SparkPlan): Array[InternalRow] = {
-    // Every boundary node (top of a native block) carries a serialized plan.
-    val boundaries = root.collect {
-      case n: CometNativeExec if n.serializedPlanOpt.isDefined => n
-    }
-    val exchanges = root.collect { case e: CometShuffleExchangeExec => e }
-
-    (boundaries, exchanges) match {
-      case (Seq(single), Nil) =>
-        executeSingleBlockViaBallista(root, single)
-      case (Seq(_, _), Seq(exchange)) =>
-        executeTwoBlockViaBallista(root, boundaries, exchange)
-      case _ =>
-        throw new UnsupportedOperationException(
-          "Comet Ballista offload supports either a single-stage plan (one native block, no " +
-            "Comet exchange) or a two-stage GROUP BY (two native blocks + one hash exchange); " +
-            s"found ${boundaries.size} serialized native blocks and ${exchanges.size} Comet " +
-            s"exchanges in:\n$root")
+    val numPartitions = root.conf.numShufflePartitions
+    val planBytes = BallistaOffloadPlanner.buildOffloadPlan(root, numPartitions)
+    val schedulerUrl = CometConf.COMET_EXEC_BALLISTA_SCHEDULER_URL.get()
+    val numCols = root.output.length
+    val nativeUtil = new NativeUtil()
+    try {
+      val nativeBallista = new NativeBallista
+      nativeUtil.getNextBatch(
+        numCols,
+        (arrayAddrs, schemaAddrs) =>
+          nativeBallista
+            .executeOffloadPlan(planBytes, arrayAddrs, schemaAddrs, schedulerUrl)) match {
+        case Some(batch) =>
+          try {
+            batch.rowIterator().asScala.map(_.copy()).toArray
+          } finally {
+            batch.close()
+          }
+        case None =>
+          Array.empty[InternalRow]
+      }
+    } finally {
+      nativeUtil.close()
     }
   }
 
@@ -608,6 +611,17 @@ object CometExec {
       PlanDataInjector.serializeOperator(injected)
     }
   }
+
+  /**
+   * Thin public wrapper exposing [[injectScanFiles]] to `org.apache.comet.ballista
+   * .BallistaOffloadPlanner`, which needs to inject file partitions into every native block's
+   * `NativeScan` leaves (not just a single block/boundary) when walking the offload DAG. Public
+   * (not `private[comet]`) because the planner lives in a different package tree
+   * (`org.apache.comet.ballista`, not `org.apache.spark.sql.comet`) that a `comet`-qualified
+   * private would not reach.
+   */
+  def injectScanFilesFor(root: SparkPlan, boundary: CometNativeExec): Array[Byte] =
+    injectScanFiles(root, boundary)
 
   /**
    * Merge the per-partition file lists of a native scan into a single `NativeScan` carrying every
