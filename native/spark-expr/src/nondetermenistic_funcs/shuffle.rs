@@ -29,7 +29,7 @@ use std::fmt::{Display, Formatter};
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex};
 
-/// A bit-for-bit port of Apache Commons Math3's `MersenneTwister`, the RNG Spark
+/// A bit-for-bit port of Apache Commons Math3's `MersenneTwister`, the PRNG Spark
 /// uses to shuffle arrays. Spark seeds a fresh generator per partition with
 /// `randomSeed + partitionIndex` and drives the "inside-out" Fisher-Yates
 /// algorithm from `org.apache.spark.sql.catalyst.util.RandomIndicesGenerator`.
@@ -178,7 +178,7 @@ impl SparkMersenneTwister {
 
     /// Port of `RandomIndicesGenerator.getNextIndices`. Fills `out` with, for each
     /// output position, the source position it should draw from. `out` is reused
-    /// across rows to avoid a per-row allocation. Advances the RNG state, which is
+    /// across rows to avoid a per-row allocation. Advances the PRNG state, which is
     /// shared across every row in the partition.
     fn next_indices_into(&mut self, length: usize, out: &mut Vec<usize>) {
         out.clear();
@@ -265,7 +265,6 @@ impl PhysicalExpr for ShuffleExpr {
             DataType::FixedSizeList(field, value_length) => {
                 shuffle_fixed_size_list(input.as_ref(), field, *value_length, rng)?
             }
-            DataType::Null => Arc::clone(&input),
             other => {
                 return exec_err!("shuffle does not support type '{other}'");
             }
@@ -296,7 +295,7 @@ impl PhysicalExpr for ShuffleExpr {
 /// Gather, for every row in order, the absolute source indices of that row's
 /// elements in shuffled order. `span(row)` returns the row's `(start, length)`
 /// within the values array. Null rows are copied through as-is without drawing
-/// from the RNG, matching Spark. The scratch buffer is reused across rows.
+/// from the PRNG, matching Spark. The scratch buffer is reused across rows.
 fn gather_shuffled_indices(
     rng: &mut SparkMersenneTwister,
     num_rows: usize,
