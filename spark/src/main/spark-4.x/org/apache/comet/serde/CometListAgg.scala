@@ -19,7 +19,7 @@
 
 package org.apache.comet.serde
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Literal}
+import org.apache.spark.sql.catalyst.expressions.Attribute
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, ListAgg}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{NullType, StringType}
@@ -36,37 +36,44 @@ import org.apache.comet.serde.QueryPlanSerde.{exprToProto, hasNonDefaultStringCo
  */
 object CometListAgg extends CometAggregateExpressionSerde[ListAgg] {
 
+  private val binaryChildReason = "`BinaryType` inputs are not supported."
+  private val withinGroupReason = "`WITHIN GROUP (ORDER BY ...)` is not supported."
+  private val nonFoldableDelimiterReason = "Non-literal delimiters are not supported."
+  private val collationReason = "Non-default string collations are not supported."
+  private val distinctReason =
+    "`DISTINCT` falls back to Spark because Comet rejects multi-column distinct aggregates."
+
   override def getUnsupportedReasons(): Seq[String] = Seq(
-    "`BinaryType` inputs are not supported.",
-    "`WITHIN GROUP (ORDER BY ...)` is not supported.",
-    "Non-literal delimiters are not supported.",
-    "Non-default string collations are not supported.",
-    "`DISTINCT` falls back to Spark because Comet rejects multi-column distinct aggregates.")
+    binaryChildReason,
+    withinGroupReason,
+    nonFoldableDelimiterReason,
+    collationReason,
+    distinctReason)
 
   override def getSupportLevel(expr: ListAgg): SupportLevel = {
-    // Spark enforces `delimiter.foldable` at analysis time, so a non-literal delimiter would
-    // fail before reaching us. Match only the two shapes we actually handle.
-    if (!expr.child.dataType.isInstanceOf[StringType]) {
-      return Unsupported(Some(s"Unsupported child data type: ${expr.child.dataType}"))
-    }
-    if (hasNonDefaultStringCollation(expr.child.dataType)) {
-      return Unsupported(Some("Non-default string collations are not supported"))
-    }
-    expr.delimiter.dataType match {
-      case _: StringType if hasNonDefaultStringCollation(expr.delimiter.dataType) =>
-        return Unsupported(Some("Non-default string collations on delimiter are not supported"))
-      case _: StringType | _: NullType => // ok
+    // Spark's analyzer already enforces `delimiter.foldable`, so this only ever rejects
+    // non-string / non-null delimiter types.
+    expr.child.dataType match {
+      case _: StringType if hasNonDefaultStringCollation(expr.child.dataType) =>
+        Unsupported(Some(collationReason))
+      case _: StringType =>
+        expr.delimiter.dataType match {
+          case _: StringType if hasNonDefaultStringCollation(expr.delimiter.dataType) =>
+            Unsupported(Some(collationReason))
+          case _: StringType | _: NullType =>
+            if (!expr.delimiter.foldable) {
+              Unsupported(Some(nonFoldableDelimiterReason))
+            } else if (expr.orderExpressions.nonEmpty) {
+              Unsupported(Some(withinGroupReason))
+            } else {
+              Compatible()
+            }
+          case other =>
+            Unsupported(Some(s"Unsupported delimiter data type: $other"))
+        }
       case other =>
-        return Unsupported(Some(s"Unsupported delimiter data type: $other"))
+        Unsupported(Some(s"Unsupported child data type: $other"))
     }
-    expr.delimiter match {
-      case _: Literal => // ok
-      case _ => return Unsupported(Some("Non-literal delimiters are not supported"))
-    }
-    if (expr.orderExpressions.nonEmpty) {
-      return Unsupported(Some("`WITHIN GROUP (ORDER BY ...)` is not supported"))
-    }
-    Compatible()
   }
 
   override def convert(
