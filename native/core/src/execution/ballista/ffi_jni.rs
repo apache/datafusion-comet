@@ -282,6 +282,102 @@ pub fn build_offload_plan(plan_bytes: &[u8]) -> Result<Arc<dyn ExecutionPlan>, S
     Ok(built.pop().expect("fragments non-empty"))
 }
 
+/// Build and submit a general `CometBallistaOffloadPlan` DAG to a Ballista
+/// cluster, returning the collected Arrow result batches plus the result schema.
+///
+/// Mirrors [`execute_two_stage`], but the plan is an arbitrary DAG of
+/// `CometFragmentExec` nodes (folded by [`build_offload_plan`]) rather than a
+/// fixed two-stage GROUP BY shape. The shuffle width `n` is read directly from
+/// the descriptor's `num_partitions` field — the authoritative parallelism for
+/// every hash repartition `build_offload_plan` builds — so `build_offload_plan`
+/// itself keeps its single-return signature.
+///
+/// As with `execute_two_stage`, an empty `scheduler_url` starts an in-process
+/// standalone cluster; a non-empty one submits to that external scheduler
+/// instead.
+pub fn execute_offload_plan(
+    plan_bytes: &[u8],
+    scheduler_url: &str,
+) -> Result<(SchemaRef, Vec<RecordBatch>), String> {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| format!("failed to build tokio runtime: {e}"))?;
+
+    runtime.block_on(async move {
+        // The descriptor carries the authoritative shuffle width; decode it for `n`.
+        let n = CometBallistaOffloadPlan::decode(plan_bytes)
+            .map_err(|e| format!("failed to decode CometBallistaOffloadPlan: {e}"))?
+            .num_partitions
+            .max(1) as usize;
+
+        // Build the plan inside the runtime: the fragments' NativeScan leaves
+        // build via Comet's planner, which requires an active Tokio runtime.
+        let plan = build_offload_plan(plan_bytes)?;
+        let config = SessionConfig::new_with_ballista()
+            .with_target_partitions(n)
+            .with_ballista_standalone_parallelism(n)
+            .with_ballista_physical_extension_codec(Arc::new(CometPhysicalCodec::default()))
+            .with_ballista_logical_extension_codec(Arc::new(CometLogicalCodec::default()));
+        let state = SessionStateBuilder::new()
+            .with_config(config)
+            .with_default_features()
+            .build();
+        let schema = plan.schema();
+
+        // Empty URL => in-process standalone; non-empty => external cluster.
+        let scheduler_url = if scheduler_url.is_empty() {
+            log::debug!("[comet-ballista R3] submitting to in-process standalone cluster");
+            start_standalone_from_state(&state).await?
+        } else {
+            log::debug!("[comet-ballista R3] submitting to external cluster at {scheduler_url}");
+            scheduler_url.to_string()
+        };
+
+        let session_config = state.config().clone();
+        let codec = CometPhysicalCodec::default();
+        let session_id = state.session_id().to_string();
+
+        let stream = execute_physical_plan::<PhysicalPlanNode>(
+            scheduler_url,
+            &BallistaConfig::default(),
+            plan,
+            &codec,
+            session_id,
+            session_config,
+        )
+        .await
+        .map_err(|e| format!("failed to submit offload plan: {e}"))?;
+
+        let batches = stream
+            .try_collect::<Vec<_>>()
+            .await
+            .map_err(|e| format!("failed to collect distributed results: {e}"))?;
+
+        Ok((schema, batches))
+    })
+}
+
+/// Run the general DAG offload plan and export the (single, concatenated)
+/// result batch into the JVM-allocated FFI structs. Returns the row count.
+///
+/// # Safety
+/// See [`export_batch_to_addresses`].
+pub unsafe fn submit_and_export_offload(
+    plan_bytes: &[u8],
+    scheduler_url: &str,
+    array_addrs: &[i64],
+    schema_addrs: &[i64],
+) -> Result<i64, String> {
+    let (schema, batches) = execute_offload_plan(plan_bytes, scheduler_url)?;
+    // The final fragment's partitions are concatenated into one batch so the
+    // JVM imports exactly one set of column structs (same contract as R1/R2).
+    let batch = concat_batches(&schema, &batches)
+        .map_err(|e| format!("failed to concatenate result batches: {e}"))?;
+    export_batch_to_addresses(&batch, array_addrs, schema_addrs)?;
+    Ok(batch.num_rows() as i64)
+}
+
 /// Start an in-process standalone Ballista cluster (scheduler + executor) from
 /// `state`, so the Comet extension codecs registered on the state's config reach
 /// both sides. Mirrors `ballista::extension`'s private `setup_standalone`, but
@@ -493,7 +589,7 @@ pub unsafe fn submit_and_export(
 // ---------------------------------------------------------------------------
 
 mod jni_entry {
-    use super::{submit_and_export, submit_and_export_distributed};
+    use super::{submit_and_export, submit_and_export_distributed, submit_and_export_offload};
     use crate::errors::{try_unwrap_or_throw, CometError};
     use jni::objects::{JByteArray, JClass, JLongArray, JString, ReleaseMode};
     use jni::sys::{jint, jlong};
@@ -590,6 +686,41 @@ mod jni_entry {
                     &arrays,
                     &schemas,
                 )
+            }
+            .map_err(CometError::Internal)?;
+            Ok(num_rows as jlong)
+        })
+    }
+
+    /// JVM entry: run a general DAG offload (R3), a `CometBallistaOffloadPlan`
+    /// describing an arbitrary DAG of `CometFragmentExec` nodes joined by hash
+    /// shuffles (folded by `build_offload_plan`). Submits it to a Ballista
+    /// cluster — in-process standalone if `schedulerUrl` is empty, or the named
+    /// external scheduler otherwise — and exports the concatenated result batch
+    /// into the JVM-allocated Arrow C Data structs, returning the number of rows.
+    ///
+    /// # Safety
+    /// Called from the JVM via JNI; the address arrays must reference valid
+    /// caller-allocated `FFI_ArrowArray`/`FFI_ArrowSchema` structs (one per
+    /// output column of the plan's final fragment).
+    #[no_mangle]
+    pub unsafe extern "system" fn Java_org_apache_comet_ballista_NativeBallista_executeOffloadPlan(
+        e: EnvUnowned,
+        _class: JClass,
+        plan: JByteArray,
+        array_addrs: JLongArray,
+        schema_addrs: JLongArray,
+        scheduler_url: JString,
+    ) -> jlong {
+        try_unwrap_or_throw(&e, |env| {
+            let plan_bytes = env.convert_byte_array(plan)?;
+            let scheduler_url: String = scheduler_url.try_to_string(env)?;
+
+            let arrays = unsafe { array_addrs.get_elements(env, ReleaseMode::NoCopyBack)? };
+            let schemas = unsafe { schema_addrs.get_elements(env, ReleaseMode::NoCopyBack)? };
+
+            let num_rows = unsafe {
+                submit_and_export_offload(&plan_bytes, &scheduler_url, &arrays, &schemas)
             }
             .map_err(CometError::Internal)?;
             Ok(num_rows as jlong)

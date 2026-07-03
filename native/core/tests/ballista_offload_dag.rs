@@ -20,7 +20,8 @@
 
 #![cfg(feature = "ballista")]
 
-use comet::execution::ballista::build_offload_plan;
+use comet::execution::ballista::{build_offload_plan, execute_offload_plan};
+use datafusion::arrow::util::pretty::pretty_format_batches;
 use datafusion::physical_plan::displayable;
 use datafusion_comet_proto::spark_operator::{
     CometBallistaOffloadPlan, OffloadFragment, OffloadInput,
@@ -105,3 +106,47 @@ fn leaf_count_mismatch_fails_fast() {
         "expected leaf-count mismatch error, got: {err}"
     );
 }
+
+/// Real submission smoke test for `execute_offload_plan`: a single-fragment
+/// descriptor (one `NativeScan` block, no inputs, no shuffle edges) run on an
+/// in-process standalone Ballista cluster. This proves the
+/// descriptor -> `build_offload_plan` -> `execute_physical_plan` submission path
+/// works end to end, without hand-building a partial+final aggregate pair (see
+/// the comment below, which covers the multi-fragment hash-shuffle case and is
+/// deferred to the Scala E2E in Task 8).
+///
+/// A plain `#[test]` (not `#[tokio::test]`): `execute_offload_plan` builds and
+/// drives its own Tokio runtime internally (it is called synchronously from
+/// JNI, with no ambient runtime), so calling it from a thread that is already
+/// driving one (e.g. inside `#[tokio::test]`) panics with "Cannot start a
+/// runtime from within a runtime".
+#[ignore = "starts an in-process Ballista cluster; run explicitly"]
+#[test]
+fn single_fragment_offload_plan_executes() {
+    let parquet = std::env::temp_dir().join("comet_ffi_ballista_offload_dag_smoke.parquet");
+    write_test_parquet(&parquet).expect("write test parquet");
+    let producer = build_native_scan_proto(&parquet).expect("build NativeScan producer block");
+
+    let plan = CometBallistaOffloadPlan {
+        num_partitions: 2,
+        fragments: vec![OffloadFragment {
+            block_proto: producer,
+            inputs: vec![],
+        }],
+    };
+
+    let (_schema, batches) =
+        execute_offload_plan(&plan.encode_to_vec(), "").expect("execute_offload_plan");
+    println!("{}", pretty_format_batches(&batches).unwrap());
+    let rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+    assert_eq!(rows, 5, "expected all 5 scanned rows (a = 1..=5)");
+}
+
+// Deferred to the Scala E2E in Task 8 (per the task-3 brief): hand-building a
+// partial+final aggregate `CometBallistaOffloadPlan` (two `NativeScan`/`Scan`
+// blocks with the right agg-state schema on each side of a hash shuffle) is
+// intricate proto plumbing that the Scala path exercises for free via the real
+// planner. `single_fragment_offload_plan_executes` above already proves the
+// `execute_offload_plan` submission path (session setup, in-process standalone
+// cluster, `execute_physical_plan` codecs) works end to end; multi-fragment DAG
+// *shape* is covered by `two_stage_aggregate_builds_hash_repartition_dag` above.
