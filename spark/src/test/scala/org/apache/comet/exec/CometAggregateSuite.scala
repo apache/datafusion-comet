@@ -108,6 +108,31 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  // Regression test for the approx_percentile distinct-aggregate crash: an aggregate with an
+  // incompatible intermediate buffer (percentile_approx) combined with a distinct aggregate is
+  // rewritten by Spark into a multi-stage plan. If part of that chain runs in Comet and part in
+  // Spark, the incompatible buffer crosses the boundary and crashes. Here we force the split with
+  // the partial/final debug configs and assert results still match Spark (the whole chain must
+  // fall back to Spark). See https://github.com/apache/datafusion-comet/issues/4813.
+  test("approx_percentile with distinct aggregate does not split across Comet and Spark") {
+    val data = (0 until 500).map(i => (i % 10, i % 100, i % 37))
+    withParquetTable(data, "tbl", false) {
+      for (disablePartial <- Seq(false, true);
+        disableFinal <- Seq(false, true);
+        groupBy <- Seq("", " GROUP BY _1")) {
+        withSQLConf(
+          CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+          CometConf.COMET_SHUFFLE_MODE.key -> "native",
+          SQLConf.USE_OBJECT_HASH_AGG.key -> "true",
+          CometConf.COMET_ENABLE_PARTIAL_HASH_AGGREGATE.key -> (!disablePartial).toString,
+          CometConf.COMET_ENABLE_FINAL_HASH_AGGREGATE.key -> (!disableFinal).toString) {
+          checkSparkAnswer(
+            s"SELECT percentile_approx(_2, 0.5), count(DISTINCT _3) FROM tbl$groupBy")
+        }
+      }
+    }
+  }
+
   test("stddev_pop should return NaN for some cases") {
     withSQLConf(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true") {
       Seq(true, false).foreach { nullOnDivideByZero =>

@@ -1526,10 +1526,14 @@ trait CometBaseAggregate {
     // In distinct aggregates there can be a combination of modes.
     // We support {Partial, PartialMerge} mix; other combinations are rejected.
     val multiMode = modes.size > 1 && modeSet != Set(Partial, PartialMerge)
-    // For a final mode HashAggregate, we only need to transform the HashAggregate
-    // if there is Comet partial aggregation, unless all aggregates have compatible
-    // intermediate buffer formats (safe for mixed Spark/Comet execution).
-    val sparkFinalMode = modes.contains(Final) && findCometPartialAgg(aggregate.child).isEmpty
+    // An aggregate that consumes intermediate buffers (Final, or the PartialMerge stages of a
+    // distinct-aggregate rewrite) must have a Comet aggregate producing those buffers below it.
+    // Otherwise Comet would try to read a Spark partial's buffer, which is only safe when every
+    // aggregate has a buffer format compatible between Spark and Comet. This guards the
+    // Spark-Partial to Comet-Merge direction; the Comet-Partial to Spark-Final direction is
+    // guarded by the COMET_UNSAFE_PARTIAL tagging pass in CometExecRule. See issues #1389, #4813.
+    val consumesBuffers = modes.contains(Final) || modes.contains(PartialMerge)
+    val missingCometProducer = consumesBuffers && findCometPartialAgg(aggregate.child).isEmpty
 
     if (multiMode) {
       withFallbackReason(
@@ -1538,12 +1542,12 @@ trait CometBaseAggregate {
       return None
     }
 
-    if (sparkFinalMode &&
+    if (missingCometProducer &&
       !QueryPlanSerde.allAggsSupportMixedExecution(aggregate.aggregateExpressions)) {
       withFallbackReason(
         aggregate,
-        "Spark Final aggregate without Comet Partial requires compatible " +
-          "intermediate buffer formats")
+        "Comet aggregate that merges intermediate buffers requires a Comet child aggregate " +
+          "when the intermediate buffer formats are incompatible with Spark")
       return None
     }
 

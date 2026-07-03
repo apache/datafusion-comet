@@ -308,6 +308,58 @@ class CometExecRuleSuite extends CometTestBase {
     }
   }
 
+  // Regression tests for https://github.com/apache/datafusion-comet/issues/4813. An aggregate with
+  // an incompatible intermediate buffer (percentile_approx) combined with a distinct aggregate is
+  // rewritten by Spark into a multi-stage plan whose partial is separated from the final by
+  // intermediate PartialMerge stages. If part of that chain runs in Comet and part in Spark the
+  // incompatible buffer crosses the boundary and crashes, so the whole chain must fall back.
+  test(
+    "CometExecRule should not split distinct aggregate with incompatible buffer (Spark final)") {
+    withTempView("test_data") {
+      createTestDataFrame.createOrReplaceTempView("test_data")
+
+      val sparkPlan = createSparkPlan(
+        spark,
+        "SELECT percentile_approx(id, 0.5), COUNT(DISTINCT name) FROM test_data")
+
+      // The distinct rewrite produces a multi-stage ObjectHashAggregate chain.
+      assert(countOperators(sparkPlan, classOf[ObjectHashAggregateExec]) > 1)
+
+      withSQLConf(
+        CometConf.COMET_ENABLE_FINAL_HASH_AGGREGATE.key -> "false",
+        CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+        val transformedPlan = applyCometExecRule(sparkPlan)
+
+        // percentile_approx has an incompatible buffer, so with the final forced to Spark the
+        // entire partial/merge chain must also stay in Spark.
+        assert(countOperators(transformedPlan, classOf[CometHashAggregateExec]) == 0)
+      }
+    }
+  }
+
+  test(
+    "CometExecRule should not split distinct aggregate with incompatible buffer (Spark part)") {
+    withTempView("test_data") {
+      createTestDataFrame.createOrReplaceTempView("test_data")
+
+      val sparkPlan = createSparkPlan(
+        spark,
+        "SELECT percentile_approx(id, 0.5), COUNT(DISTINCT name) FROM test_data")
+
+      assert(countOperators(sparkPlan, classOf[ObjectHashAggregateExec]) > 1)
+
+      withSQLConf(
+        CometConf.COMET_ENABLE_PARTIAL_HASH_AGGREGATE.key -> "false",
+        CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+        val transformedPlan = applyCometExecRule(sparkPlan)
+
+        // With the partial/merge stages forced to Spark, no Comet aggregate may consume their
+        // incompatible buffers either.
+        assert(countOperators(transformedPlan, classOf[CometHashAggregateExec]) == 0)
+      }
+    }
+  }
+
   test("CometExecRule should not convert hash aggregate when grouping key contains map type") {
     // Spark 3.4/3.5 reject `array<map<...>>` as a grouping key in the analyzer (not orderable),
     // so the plan never reaches CometExecRule on those versions. The guard we're exercising
