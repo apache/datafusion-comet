@@ -23,11 +23,11 @@
 // The point it proves:
 //   1. The two Comet-flavored binaries (which inject Comet's extension codecs,
 //      unlike the stock Ballista CLIs) start, and the executor registers.
-//   2. A two-stage Comet plan (`CometFragment(NativeScan) -> hash-shuffle ->
-//      CometFragment(Filter over a Scan)`) submitted to the external scheduler
-//      is split into two stages, shipped to the *separate* executor process,
-//      reconstructed there via the codecs, and executed — returning correct
-//      results across the process boundary.
+//   2. A two-fragment Comet DAG offload plan (`CometFragment(NativeScan) ->
+//      hash-shuffle -> CometFragment(Filter over a Scan)`) submitted to the
+//      external scheduler is split into two stages, shipped to the *separate*
+//      executor process, reconstructed there via the codecs, and executed —
+//      returning correct results across the process boundary.
 //   3. Crucially, the executor is a plain Rust process with NO running JVM (only
 //      `libjvm` on the loader path). The Comet fragments must execute there
 //      without a "JAVA_VM not initialized" panic. A childless `NativeScan`
@@ -52,14 +52,15 @@ use datafusion::arrow::datatypes::{DataType as ArrowDataType, Field, Schema, Sch
 use datafusion::parquet::arrow::ArrowWriter;
 use prost::Message;
 
-use comet::execution::ballista::execute_two_stage;
+use comet::execution::ballista::execute_offload_plan;
 use datafusion_comet_proto::spark_expression::{
     data_type::DataTypeId, expr::ExprStruct, literal, BinaryExpr, BoundReference, DataType, Expr,
     Literal,
 };
 use datafusion_comet_proto::spark_operator::{
-    operator::OpStruct, Filter, NativeScan, NativeScanCommon, Operator, Scan, SparkFilePartition,
-    SparkPartitionedFile, SparkStructField,
+    operator::OpStruct, CometBallistaOffloadPlan, Filter, NativeScan, NativeScanCommon,
+    OffloadFragment, OffloadInput, Operator, Scan, SparkFilePartition, SparkPartitionedFile,
+    SparkStructField,
 };
 
 // Non-default ports so this test does not collide with a real cluster on the
@@ -279,23 +280,33 @@ fn comet_plan_on_external_cluster() -> anyhow::Result<()> {
     // Grace for the executor to complete registration with the scheduler.
     std::thread::sleep(Duration::from_secs(3));
 
-    // --- 3. Build the two-stage Comet plan protos ---
+    // --- 3. Build the two-fragment Comet DAG offload plan ---
     let parquet = std::env::temp_dir().join("comet_external_cluster.parquet");
     write_test_parquet(&parquet)?;
     let block1 = build_native_scan_proto(&parquet)?; // NativeScan a=[1..5]
     let block2 = build_filter_over_scan_proto(); // Filter(a > 2)
+    let plan = CometBallistaOffloadPlan {
+        num_partitions: 4,
+        fragments: vec![
+            OffloadFragment {
+                block_proto: block1,
+                inputs: vec![],
+            },
+            OffloadFragment {
+                block_proto: block2,
+                inputs: vec![OffloadInput {
+                    producer: 0,
+                    hash_key_ordinals: vec![0],
+                }],
+            },
+        ],
+    };
 
     // --- 4. Submit to the EXTERNAL scheduler (non-empty URL => remote path) ---
     let scheduler_url = format!("http://127.0.0.1:{SCHEDULER_PORT}");
-    eprintln!("[harness] submitting two-stage Comet plan to {scheduler_url}");
-    let (schema, batches) = execute_two_stage(
-        &block1,
-        &block2,
-        /* num_group_keys */ 1,
-        /* num_partitions */ 4,
-        &scheduler_url,
-    )
-    .map_err(|e| anyhow::anyhow!("external submission failed: {e}"))?;
+    eprintln!("[harness] submitting DAG offload plan to {scheduler_url}");
+    let (schema, batches) = execute_offload_plan(&plan.encode_to_vec(), &scheduler_url)
+        .map_err(|e| anyhow::anyhow!("external submission failed: {e}"))?;
 
     // --- 5. Verify correctness across the process boundary ---
     let mut values: Vec<i32> = Vec::new();

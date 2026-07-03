@@ -32,8 +32,10 @@ import org.apache.comet.NativeBase
  * Comet core's single `JAVA_VM` static, so a Comet-on-executor query and an in-process offload
  * can coexist in one JVM without the "JAVA_VM not initialized" panic.
  *
- * EXPERIMENTAL (R1): used by [[org.apache.spark.sql.comet.CometExec.executeCollectViaBallista]]
- * to offload a single-stage Comet query to an in-process Ballista engine on the Spark driver.
+ * EXPERIMENTAL: used by [[org.apache.spark.sql.comet.CometExec.executeCollectViaBallista]] to
+ * offload a Comet query - a DAG of native fragments joined by hash exchanges, folded from the
+ * plan by `executeOffloadPlan` - to a Ballista engine (in-process standalone or an external
+ * cluster) on the Spark driver.
  */
 class NativeBallista {
 
@@ -46,63 +48,6 @@ class NativeBallista {
    * [[NativeBallista.isAvailable]].
    */
   @native def probeAvailable(): Unit
-
-  /**
-   * Run a serialized Comet `Operator` proto on an in-process standalone Ballista engine (no Spark
-   * executors) and export the single (concatenated) result batch into the caller-allocated Arrow
-   * C Data structs.
-   *
-   * @param proto
-   *   serialized Comet `Operator` proto
-   * @param arrayAddrs
-   *   memory addresses of one `ArrowArray` struct per output column
-   * @param schemaAddrs
-   *   memory addresses of one `ArrowSchema` struct per output column
-   * @return
-   *   the number of rows exported
-   */
-  @native def executeQuery(
-      proto: Array[Byte],
-      arrayAddrs: Array[Long],
-      schemaAddrs: Array[Long]): Long
-
-  /**
-   * EXPERIMENTAL (R2): run a distributed two-stage GROUP BY offload on an in-process standalone
-   * Ballista cluster (no Spark executors).
-   *
-   * `block1` is the serialized partial-aggregate block (self-contained `NativeScan` leaf);
-   * `block2` is the serialized final-aggregate block (whose input leaf is a `Scan` fed by the
-   * shuffle). The native side assembles `CometFragmentExec(block2,
-   * [Hash-Repartition(CometFragmentExec(block1))])`, which Ballista splits at the hash
-   * repartition into a partial-agg stage and a final-agg stage across a shuffle, then exports the
-   * concatenated result batch into the caller-allocated Arrow C Data structs.
-   *
-   * @param block1
-   *   serialized partial-aggregate `Operator` proto (with file partitions injected)
-   * @param block2
-   *   serialized final-aggregate `Operator` proto (leaf is a `Scan`, not a `ShuffleScan`)
-   * @param numGroupKeys
-   *   number of grouping columns (the leading columns of block1's output to hash on)
-   * @param numPartitions
-   *   number of shuffle partitions
-   * @param schedulerUrl
-   *   the external Ballista scheduler URL (e.g. `http://host:50050`) to submit the plan to; an
-   *   empty string submits to an in-process standalone Ballista cluster instead
-   * @param arrayAddrs
-   *   memory addresses of one `ArrowArray` struct per output column of `block2`
-   * @param schemaAddrs
-   *   memory addresses of one `ArrowSchema` struct per output column of `block2`
-   * @return
-   *   the number of rows exported
-   */
-  @native def executeQueryDistributed(
-      block1: Array[Byte],
-      block2: Array[Byte],
-      numGroupKeys: Int,
-      numPartitions: Int,
-      schedulerUrl: String,
-      arrayAddrs: Array[Long],
-      schemaAddrs: Array[Long]): Long
 
   /**
    * Run a serialized [[org.apache.comet.serde.OperatorOuterClass.CometBallistaOffloadPlan]] (a
