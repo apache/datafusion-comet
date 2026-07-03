@@ -61,13 +61,13 @@ aws-credential-types = "1.2.13"
 iceberg = { git = "https://github.com/apache/iceberg-rust", rev = "80a30d3" }
 iceberg-storage-opendal = { git = "https://github.com/apache/iceberg-rust", rev = "80a30d3", features = ["opendal-memory", "opendal-fs", "opendal-s3", "opendal-gcs", "opendal-oss", "opendal-azdls"] }
 reqsign-core = "3"
-# Path deps to the local Ballista worktree (branch feat/physical-plan-submission)
-# so T1's execute_physical_plan + PhysicalPlan(bytes) submission variant are
-# available. Revert to a fork git-rev pin once T1 lands upstream.
-ballista = { path = "/Users/andy/git/ballista-ffi-poc/ballista/client", package = "ballista" }
-ballista-core = { path = "/Users/andy/git/ballista-ffi-poc/ballista/core", package = "ballista-core" }
-ballista-scheduler = { path = "/Users/andy/git/ballista-ffi-poc/ballista/scheduler", package = "ballista-scheduler" }
-ballista-executor = { path = "/Users/andy/git/ballista-ffi-poc/ballista/executor", package = "ballista-executor" }
+# Ballista pinned to the experimental physical-plan-submission branch
+# (apache/datafusion-ballista#1924) which adds execute_physical_plan + the
+# PhysicalPlan(bytes) submission variant that the distributed offload needs.
+ballista = { git = "https://github.com/andygrove/datafusion-ballista", rev = "ec0d92799896e608efa43e446bacdc4079e7b6a2", package = "ballista" }
+ballista-core = { git = "https://github.com/andygrove/datafusion-ballista", rev = "ec0d92799896e608efa43e446bacdc4079e7b6a2", package = "ballista-core" }
+ballista-scheduler = { git = "https://github.com/andygrove/datafusion-ballista", rev = "ec0d92799896e608efa43e446bacdc4079e7b6a2", package = "ballista-scheduler" }
+ballista-executor = { git = "https://github.com/andygrove/datafusion-ballista", rev = "ec0d92799896e608efa43e446bacdc4079e7b6a2", package = "ballista-executor" }
 
 [profile.release]
 debug = true

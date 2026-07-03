@@ -1139,6 +1139,7 @@ dependencies = [
 [[package]]
 name = "ballista"
 version = "53.0.0"
+source = "git+https://github.com/andygrove/datafusion-ballista?rev=ec0d92799896e608efa43e446bacdc4079e7b6a2#ec0d92799896e608efa43e446bacdc4079e7b6a2"
 dependencies = [
  "async-trait",
  "ballista-core",
@@ -1153,6 +1154,7 @@ dependencies = [
 [[package]]
 name = "ballista-core"
 version = "53.0.0"
+source = "git+https://github.com/andygrove/datafusion-ballista?rev=ec0d92799896e608efa43e446bacdc4079e7b6a2#ec0d92799896e608efa43e446bacdc4079e7b6a2"
 dependencies = [
  "arrow-flight",
  "async-trait",
@@ -1187,6 +1189,7 @@ dependencies = [
 [[package]]
 name = "ballista-executor"
 version = "53.0.0"
+source = "git+https://github.com/andygrove/datafusion-ballista?rev=ec0d92799896e608efa43e446bacdc4079e7b6a2#ec0d92799896e608efa43e446bacdc4079e7b6a2"
 dependencies = [
  "arrow",
  "arrow-flight",
@@ -1219,6 +1222,7 @@ dependencies = [
 [[package]]
 name = "ballista-scheduler"
 version = "53.0.0"
+source = "git+https://github.com/andygrove/datafusion-ballista?rev=ec0d92799896e608efa43e446bacdc4079e7b6a2#ec0d92799896e608efa43e446bacdc4079e7b6a2"
 dependencies = [
  "arrow-flight",
  "async-trait",
