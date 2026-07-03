@@ -23,7 +23,7 @@ import scala.collection.mutable
 
 import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference}
 import org.apache.spark.sql.catalyst.plans.physical.HashPartitioning
-import org.apache.spark.sql.comet.{CometExec, CometNativeExec}
+import org.apache.spark.sql.comet.{CometExec, CometHashJoinExec, CometNativeExec}
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution.SparkPlan
 
@@ -42,10 +42,13 @@ import org.apache.comet.serde.OperatorOuterClass.CometBallistaOffloadPlan
  *   - a single native block (no Comet exchange): one fragment, no inputs.
  *   - an N-block LINEAR chain of native blocks connected by [[CometShuffleExchangeExec]] hash
  *     exchanges (the R2 two-stage GROUP BY shape generalized to N stages).
+ *   - a co-partitioned shuffle-hash join: a [[CometHashJoinExec]] block fed by exactly two Comet
+ *     hash exchanges, one under its `left` input and one under its `right` input, emitted in
+ *     left-then-right order to match the join proto's DFS leaf order.
  *
- * General join / multi-input DAG shapes (a native block fed by more than one upstream fragment)
- * are a future increment; the walker rejects anything it doesn't recognize with an
- * [[UnsupportedOperationException]] rather than guessing.
+ * Other multi-input DAG shapes (e.g. a non-join native block fed by more than one upstream
+ * fragment, or broadcast joins) are a future increment; the walker rejects anything it doesn't
+ * recognize with an [[UnsupportedOperationException]] rather than guessing.
  */
 object BallistaOffloadPlanner {
 
@@ -77,27 +80,54 @@ object BallistaOffloadPlanner {
 
     // The direct native-block inputs of `block` are the Comet exchanges in its subtree that are
     // not nested under a deeper native block.
-    def directExchanges(block: CometNativeExec): Seq[CometShuffleExchangeExec] = {
-      val found = mutable.ArrayBuffer.empty[CometShuffleExchangeExec]
+    def directExchanges(block: CometNativeExec): Seq[CometShuffleExchangeExec] = block match {
+      case j: CometHashJoinExec =>
+        // Left input then right input — matches the join proto's DFS leaf order
+        // (`parse_join_parameters` appends left then right).
+        Seq(exchangeUnder(j.left, block), exchangeUnder(j.right, block))
+      case _ =>
+        val found = mutable.ArrayBuffer.empty[CometShuffleExchangeExec]
+        def walk(p: SparkPlan): Unit = p match {
+          case e: CometShuffleExchangeExec => found += e // do NOT descend past an exchange
+          case other => other.children.foreach(walk)
+        }
+        block.children.foreach(walk)
+        found.toSeq
+    }
+
+    /** The single Comet exchange directly under `side` (a join input); reject otherwise. */
+    def exchangeUnder(side: SparkPlan, block: CometNativeExec): CometShuffleExchangeExec = {
+      val exchanges = mutable.ArrayBuffer.empty[CometShuffleExchangeExec]
       def walk(p: SparkPlan): Unit = p match {
-        case e: CometShuffleExchangeExec => found += e // do NOT descend past an exchange
+        case e: CometShuffleExchangeExec => exchanges += e
         case other => other.children.foreach(walk)
       }
-      block.children.foreach(walk)
-      found.toSeq
+      walk(side)
+      exchanges.toSeq match {
+        case Seq(one) => one
+        case other =>
+          throw new UnsupportedOperationException(
+            s"Comet Ballista offload: a shuffle-hash join input must have exactly one Comet " +
+              s"hash exchange (found ${other.size}); broadcast joins are a future increment:\n" +
+              s"$block")
+      }
     }
 
     def register(block: CometNativeExec): Int = indexOf.getOrElseUpdate(
       block, {
         val inputs = directExchanges(block)
-        // Linear-chain guard (Task 5 scope): a native block may have at most one upstream
-        // fragment. A block fed by more than one hash exchange is a join/multi-input DAG shape,
-        // out of scope until Task 6.
-        if (inputs.size > 1) {
-          throw new UnsupportedOperationException(
-            "Comet Ballista offload: block is fed by more than one Comet exchange " +
-              s"(${inputs.size}); multi-input DAG shapes (e.g. joins) are not yet supported:\n" +
-              s"$root")
+        // Linear-chain guard: a non-join native block may have at most one upstream fragment.
+        // Joins are handled explicitly above and always resolve to exactly two inputs (left,
+        // right); any other block fed by more than one hash exchange is a multi-input DAG shape
+        // that's out of scope for now.
+        block match {
+          case _: CometHashJoinExec => // exactly two inputs, guaranteed by directExchanges above
+          case _ if inputs.size > 1 =>
+            throw new UnsupportedOperationException(
+              "Comet Ballista offload: block is fed by more than one Comet exchange " +
+                s"(${inputs.size}); multi-input DAG shapes (e.g. joins) are not yet supported:\n" +
+                s"$root")
+          case _ =>
         }
         // Recurse producers first so their indices are smaller (topological order).
         inputs.foreach(ex => register(blockOf(ex.child)))
@@ -123,6 +153,19 @@ object BallistaOffloadPlanner {
 
     val planBuilder = CometBallistaOffloadPlan.newBuilder().setNumPartitions(numPartitions)
     ordered.foreach { node =>
+      // Co-partition check: a join's two inputs must be hash-partitioned to the same width.
+      // Spark's EnsureRequirements guarantees this; assert to fail fast otherwise.
+      node.block match {
+        case _: CometHashJoinExec =>
+          val ns = node.inputs.map(_.outputPartitioning).collect { case HashPartitioning(_, n) =>
+            n
+          }
+          require(
+            ns.distinct.size == 1,
+            s"Comet Ballista offload: join inputs are not co-partitioned to the same width " +
+              s"($ns):\n$root")
+        case _ =>
+      }
       val fragBuilder = OffloadFragment.newBuilder()
       // Inject file partitions into NativeScan leaves (reuse the existing helper).
       fragBuilder.setBlockProto(

@@ -66,4 +66,42 @@ class BallistaOffloadPlannerSuite extends CometTestBase {
       }
     }
   }
+
+  test("shuffle-hash join builds a join fragment with two hash inputs on the join keys") {
+    withParquetTable((0 until 50).map(i => (i, i * 10)), "l") {
+      withParquetTable((0 until 50).map(i => (i, i * 100)), "r") {
+        withSQLConf(
+          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+          SQLConf.SHUFFLE_PARTITIONS.key -> "4",
+          CometConf.COMET_SHUFFLE_DIRECT_READ_ENABLED.key -> "false",
+          SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+          CometConf.COMET_EXEC_BALLISTA_ENABLED.key -> "false") {
+          val plan =
+            sql("SELECT l._2, r._2 FROM l JOIN r ON l._1 = r._1").queryExecution.executedPlan
+          val desc = CometBallistaOffloadPlan.parseFrom(
+            BallistaOffloadPlanner.buildOffloadPlan(plan, numPartitions = 4))
+          // root fragment = the join; two inputs (left, right) each on one key ordinal
+          val join = desc.getFragments(desc.getFragmentsCount - 1)
+          assert(join.getInputsCount == 2, s"expected 2 join inputs, got:\n$desc")
+          assert(join.getInputs(0).getHashKeyOrdinalsList.size == 1)
+          assert(join.getInputs(1).getHashKeyOrdinalsList.size == 1)
+        }
+      }
+    }
+  }
+
+  test("range/ORDER BY exchange is rejected with a clear message") {
+    withParquetTable((0 until 20).map(i => (i % 3, i)), "t") {
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+        CometConf.COMET_EXEC_BALLISTA_ENABLED.key -> "false") {
+        val plan =
+          sql("SELECT _1, count(*) c FROM t GROUP BY _1 ORDER BY _1").queryExecution.executedPlan
+        val e = intercept[UnsupportedOperationException] {
+          BallistaOffloadPlanner.buildOffloadPlan(plan, numPartitions = 4)
+        }
+        assert(e.getMessage.contains("HashPartitioning") || e.getMessage.contains("range"))
+      }
+    }
+  }
 }
