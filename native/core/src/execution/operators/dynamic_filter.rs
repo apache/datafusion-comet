@@ -283,6 +283,24 @@ pub fn attach_join_dynamic_filter(
     Ok(Arc::new(new_join))
 }
 
+/// Returns the [`DynamicFilterExec`] probe-side wrapper installed by
+/// [`attach_join_dynamic_filter`], if present, so the planner can register it for
+/// metrics collection (`SparkPlan::new_with_additional`).
+pub fn find_dynamic_filter_wrapper(
+    plan: &Arc<dyn ExecutionPlan>,
+) -> Option<Arc<dyn ExecutionPlan>> {
+    if plan.is::<datafusion::physical_plan::projection::ProjectionExec>() {
+        return find_dynamic_filter_wrapper(plan.children()[0]);
+    }
+    let hash_join = plan.downcast_ref::<HashJoinExec>()?;
+    let right = hash_join.right();
+    if right.is::<DynamicFilterExec>() {
+        Some(Arc::clone(right))
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
