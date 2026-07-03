@@ -115,8 +115,15 @@ Legend: ✅ done · 🔨 in progress · ⬜ planned
   - ◐ R1-T3 — offload proven end-to-end on Q1's single-stage subset (scan + date filter + decimal projections), results match Spark, 0 executor tasks. Full Q1 GROUP BY is structurally multi-block → R2.
   - ✅ R1-T4 (R1b) — **external cluster:** a distributed Comet plan submitted to a separate
     `comet-scheduler` process runs on a separate, **JVM-less** `comet-executor`
-    process and returns correct results (verified for `NativeScan`-leaf fragments; no Ballista change
-    needed — the config `override_*_codec` fields already exist). Config: `spark.comet.exec.ballista.scheduler.url`.
+    process and returns correct results (no Ballista change needed — the config `override_*_codec`
+    fields already exist). Config: `spark.comet.exec.ballista.scheduler.url`. Proven at two layers:
+    the Rust harness (`ballista_external_cluster.rs`, a `NativeScan`→shuffle→`Filter` plan), and — via
+    `CometBallistaExternalClusterQ1Suite` (`-Pspark-4.0`, feature-built `libcomet` + binaries) — a
+    **live Spark driver** offloading **full TPC-H Q1's aggregate** to spawned `comet-scheduler` +
+    `comet-executor` child processes, results matching Spark row-for-row (incl. decimal scale) with 0
+    Spark-executor tasks. The full agg fragment (partial-agg `NativeScan` leaf → hash shuffle →
+    final-agg over a `Scan` leaf) runs on the separate JVM-less executor process without a `JAVA_VM`
+    panic.
 - 🔨 **R2 — multi-stage distribution.** A distributed 2-block `GROUP BY` (Comet partial-agg → Ballista hash shuffle → Comet final-agg) runs offloaded with 0 Spark-executor tasks and correct results — **full TPC-H Q1's aggregate now runs distributed on Ballista and matches Spark.**
   - ✅ R2-T1 (Ballista) — accept a pre-built physical plan for distribution (a `physical_plan` submission variant; its own Ballista branch/PR).
   - ✅ R2-T2 (Comet native) — feed a `ScanExec` leaf from a native `RecordBatchStream` (not only a JVM input).
