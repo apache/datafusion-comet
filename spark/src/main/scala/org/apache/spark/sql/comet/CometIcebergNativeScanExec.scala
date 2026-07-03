@@ -60,6 +60,7 @@ case class CometIcebergNativeScanExec(
     @transient override val originalPlan: BatchScanExec,
     override val serializedPlanOpt: SerializedPlan,
     metadataLocation: String,
+    scanHashCode: Int,
     @transient nativeIcebergScanMetadata: CometIcebergNativeScanMetadata)
     extends CometLeafExec {
 
@@ -258,6 +259,7 @@ case class CometIcebergNativeScanExec(
       originalPlan,
       newSerializedPlan,
       metadataLocation,
+      scanHashCode,
       nativeIcebergScanMetadata)
   }
 
@@ -271,6 +273,10 @@ case class CometIcebergNativeScanExec(
       null, // Don't need originalPlan for canonicalization
       SerializedPlan(None),
       metadataLocation,
+      // originalPlan is nulled here, so scanHashCode is the only field left that distinguishes
+      // scans differing solely in pushed-down filters. Dropping it lets ReuseExchange collapse
+      // them (see #4774).
+      scanHashCode,
       null
     ) // Don't need metadata for canonicalization
   }
@@ -296,6 +302,13 @@ case class CometIcebergNativeScanExec(
    * `originalPlan` (`@transient`) and `nativeIcebergScanMetadata` (`@transient`) are
    * intentionally omitted: they're recoverable from `metadataLocation` + the serialized plan and
    * including them would over-constrain equality across re-planning.
+   *
+   * `scanHashCode` (Iceberg's `SparkScan.hashCode()`, folding in pushed filters, snapshot,
+   * branch, and read schema) distinguishes scans that differ only in static pushed-down filters,
+   * so that ReuseExchange does not collapse two scans that read different data (see #4774). It is
+   * an `Int` and so carries a theoretical hash-collision risk, but `metadataLocation` (table +
+   * snapshot path) is compared alongside it, matching how Iceberg's `SparkBatch.equals` pairs the
+   * hash with `table.name()`.
    */
   override def equals(obj: Any): Boolean = {
     obj match {
@@ -303,14 +316,20 @@ case class CometIcebergNativeScanExec(
         this.metadataLocation == other.metadataLocation &&
         this.output == other.output &&
         this.serializedPlanOpt == other.serializedPlanOpt &&
-        this.runtimeFilters == other.runtimeFilters
+        this.runtimeFilters == other.runtimeFilters &&
+        this.scanHashCode == other.scanHashCode
       case _ =>
         false
     }
   }
 
   override def hashCode(): Int =
-    Objects.hashCode(metadataLocation, output.asJava, serializedPlanOpt, runtimeFilters)
+    Objects.hashCode(
+      metadataLocation,
+      output.asJava,
+      serializedPlanOpt,
+      runtimeFilters,
+      scanHashCode)
 }
 
 object CometIcebergNativeScanExec {
@@ -330,6 +349,9 @@ object CometIcebergNativeScanExec {
       scanExec,
       SerializedPlan(None),
       metadataLocation,
+      // Capture Iceberg's scan hash now, while the transient scan is still available; it is
+      // needed for equality after canonicalization nulls originalPlan (see #4774).
+      scanExec.scan.hashCode(),
       nativeIcebergScanMetadata)
 
     scanExec.logicalLink.foreach(exec.setLogicalLink)

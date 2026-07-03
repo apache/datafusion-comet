@@ -3055,6 +3055,70 @@ class CometIcebergNativeSuite
     }
   }
 
+  // ---- non-AQE exchange reuse tests ----
+
+  test("exchange reuse must not collapse scans with different pushed filters (#4774)") {
+    assume(icebergAvailable, "Iceberg not available")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        // Non-AQE: ReuseExchangeAndSubquery keys reuse off Exchange.canonicalized, which is
+        // where a scan's canonical form losing its pushed filters causes an incorrect collapse.
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+        SQLConf.EXCHANGE_REUSE_ENABLED.key -> "true",
+        "spark.sql.catalog.reuse_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.reuse_cat.type" -> "hadoop",
+        "spark.sql.catalog.reuse_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        spark.sql("""
+          CREATE TABLE reuse_cat.db.reuse_table (
+            id INT,
+            category STRING,
+            value DOUBLE
+          ) USING iceberg
+          PARTITIONED BY (category)
+        """)
+
+        spark.sql("""
+          INSERT INTO reuse_cat.db.reuse_table VALUES
+          (1, 'A', 10.0), (2, 'A', 20.0), (3, 'A', 30.0),
+          (4, 'B', 100.0), (5, 'B', 200.0), (6, 'B', 300.0)
+        """)
+
+        // Each branch filters on a different partition. Iceberg pushes the predicate fully into
+        // the scan, so nothing distinguishes the two branches in the plan tree above the scans.
+        // If the scans canonicalize identically, reuse points branch B at branch A's exchange,
+        // yielding A twice and dropping B.
+        val query =
+          """
+            SELECT category, SUM(value) AS total
+            FROM reuse_cat.db.reuse_table WHERE category = 'A' GROUP BY category
+            UNION ALL
+            SELECT category, SUM(value) AS total
+            FROM reuse_cat.db.reuse_table WHERE category = 'B' GROUP BY category
+          """
+
+        val (_, cometPlan) = checkSparkAnswerAndOperator(query)
+
+        // Guard against a silently-correct future regression: the two branches read different
+        // partitions, so their exchanges must not be collapsed. Assert both scans survive and
+        // that no ReusedExchangeExec merged the branches.
+        assert(
+          collectIcebergNativeScans(cometPlan).length == 2,
+          s"Expected 2 CometIcebergNativeScanExec (one per branch) but found " +
+            s"${collectIcebergNativeScans(cometPlan).length}. Plan:\n$cometPlan")
+        assert(
+          collect(cometPlan) { case r: ReusedExchangeExec => r }.isEmpty,
+          s"Scans with different pushed filters must not share an exchange:\n$cometPlan")
+
+        spark.sql("DROP TABLE reuse_cat.db.reuse_table")
+      }
+    }
+  }
+
   // ---- AQE DPP broadcast reuse tests ----
 
   private def collectIcebergDPPSubqueries(plan: SparkPlan): Seq[SparkPlan] = {
