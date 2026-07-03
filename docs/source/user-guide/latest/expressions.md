@@ -88,8 +88,8 @@ The tables below list every Spark built-in expression with its current status.
 | `every` | ✅ |  |
 | `first` | ✅ |  |
 | `first_value` | ✅ |  |
-| `grouping` | 🔜 | Grouping indicator for ROLLUP/CUBE/GROUPING SETS |
-| `grouping_id` | 🔜 | Grouping indicator for ROLLUP/CUBE/GROUPING SETS |
+| `grouping` | ✅ | Grouping indicator for ROLLUP/CUBE/GROUPING SETS |
+| `grouping_id` | ✅ | Grouping indicator for ROLLUP/CUBE/GROUPING SETS |
 | `kurtosis` | 🔜 | tracking [#4098](https://github.com/apache/datafusion-comet/issues/4098) |
 | `last` | ✅ |  |
 | `last_value` | ✅ |  |
