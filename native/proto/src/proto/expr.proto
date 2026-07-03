@@ -146,6 +146,7 @@ message AggExpr {
     BloomFilterAgg bloomFilterAgg = 16;
     CollectSet collectSet = 17;
     Percentile percentile = 18;
+    Kurtosis kurtosis = 19;
   }
 
   // Optional filter expression for SQL FILTER (WHERE ...) clause.
@@ -238,6 +239,15 @@ message Stddev {
   bool null_on_divide_by_zero = 2;
   DataType datatype = 3;
   StatisticsType stats_type = 4;
+}
+
+// Excess kurtosis (Fisher definition: normal distribution -> 0). Spark's
+// intermediate buffer is `[n, avg, m2, m3, m4]` of Float64 to match the
+// `CentralMomentAgg` DeclarativeAggregate wire format for mixed
+// Partial/Final execution with Spark.
+message Kurtosis {
+  Expr child = 1;
+  bool null_on_divide_by_zero = 2;
 }
 
 message Correlation {
