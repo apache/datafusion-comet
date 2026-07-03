@@ -28,7 +28,7 @@ import org.apache.spark.sql.types.ArrayType
 
 import org.apache.comet.CometExplainInfo
 import org.apache.comet.expressions.CometEvalMode
-import org.apache.comet.serde.{CometAggregateExpressionSerde, CometExpressionSerde, CometHllSketchAgg, CometHllSketchEstimate, CometHllUnionAgg, CometMapSort, CometToPrettyString, CometWidthBucket}
+import org.apache.comet.serde.{CometAggregateExpressionSerde, CometExpressionSerde, CometHllSketchAgg, CometHllSketchEstimate, CometHllUnion, CometHllUnionAgg, CometMapSort, CometToPrettyString, CometWidthBucket}
 import org.apache.comet.serde.ExprOuterClass.Expr
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithFallbackReason, scalarFunctionExprToProtoWithReturnType}
 
@@ -49,7 +49,8 @@ trait Spark4xCometExprShim extends CometExprShim4x {
   def sparkVersionSpecificMiscExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] =
     Map(
       classOf[ToPrettyString] -> CometToPrettyString,
-      classOf[HllSketchEstimate] -> CometHllSketchEstimate)
+      classOf[HllSketchEstimate] -> CometHllSketchEstimate,
+      classOf[HllUnion] -> CometHllUnion)
   def sparkVersionSpecificMapExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] =
     Map(classOf[MapSort] -> CometMapSort)
   def sparkVersionSpecificAggregates: Map[Class[_], CometAggregateExpressionSerde[_]] =
