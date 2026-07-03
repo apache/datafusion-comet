@@ -21,6 +21,7 @@ pub mod expression_registry;
 pub mod macros;
 pub mod operator_registry;
 
+use crate::execution::operators::attach_join_dynamic_filter;
 use crate::execution::operators::init_csv_datasource_exec;
 use crate::execution::operators::AlignedArrowStreamReader;
 use crate::execution::operators::IcebergScanExec;
@@ -1981,6 +1982,15 @@ impl PhysicalPlanner {
                 // (which matches DataFusion's default), and swap_inputs would turn LeftAnti
                 // into RightAnti, which DataFusion rejects with null_aware=true.
                 if join.build_side == BuildSide::BuildLeft as i32 || join.null_aware_anti_join {
+                    // Null-aware anti joins are excluded from dynamic filtering: NOT IN
+                    // semantics depend on observing build-side nulls, so probe rows must
+                    // not be pre-filtered.
+                    let hash_join: Arc<dyn ExecutionPlan> =
+                        if join.dynamic_filter_enabled && !join.null_aware_anti_join {
+                            attach_join_dynamic_filter(hash_join)?
+                        } else {
+                            hash_join
+                        };
                     Ok((
                         scans,
                         shuffle_scans,
@@ -1993,6 +2003,11 @@ impl PhysicalPlanner {
                 } else {
                     let swapped_hash_join =
                         hash_join.as_ref().swap_inputs(PartitionMode::Partitioned)?;
+                    let swapped_hash_join = if join.dynamic_filter_enabled {
+                        attach_join_dynamic_filter(swapped_hash_join)?
+                    } else {
+                        swapped_hash_join
+                    };
 
                     let mut additional_native_plans = vec![];
                     if swapped_hash_join.is::<ProjectionExec>() {
@@ -4602,6 +4617,7 @@ mod tests {
                 condition: None,
                 build_side: 0,
                 null_aware_anti_join: false,
+                dynamic_filter_enabled: false,
             })),
         };
 
