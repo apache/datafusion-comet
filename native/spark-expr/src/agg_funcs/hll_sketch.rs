@@ -157,7 +157,10 @@ mod tests {
         }
         let bytes = s.to_sketch_bytes();
         let est = estimate_from_bytes(&bytes).unwrap();
-        assert!((est - 1000).abs() <= 30, "estimate {est} not within 3% of 1000");
+        assert!(
+            (est - 1000).abs() <= 30,
+            "estimate {est} not within 3% of 1000"
+        );
     }
 
     #[test]
@@ -174,7 +177,10 @@ mod tests {
         u.merge(&a);
         u.merge(&b);
         let est = estimate_from_bytes(&u.to_sketch_bytes()).unwrap();
-        assert!((est - 1500).abs() <= 45, "union estimate {est} not within 3% of 1500");
+        assert!(
+            (est - 1500).abs() <= 45,
+            "union estimate {est} not within 3% of 1500"
+        );
     }
 
     /// A sketch built from raw bytes (StringType/BinaryType path) round-trips and
@@ -187,7 +193,10 @@ mod tests {
         }
         s.update_bytes(b""); // skipped, no effect
         let est = estimate_from_bytes(&s.to_sketch_bytes()).unwrap();
-        assert!((est - 1000).abs() <= 30, "estimate {est} not within 3% of 1000");
+        assert!(
+            (est - 1000).abs() <= 30,
+            "estimate {est} not within 3% of 1000"
+        );
     }
 
     /// Cross-engine regression guard: `testdata/hll_sketch_spark_lgk12.bin` was
