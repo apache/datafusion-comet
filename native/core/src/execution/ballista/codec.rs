@@ -29,9 +29,9 @@ use datafusion_proto::physical_plan::PhysicalExtensionCodec;
 
 use ballista_core::serde::{BallistaLogicalExtensionCodec, BallistaPhysicalExtensionCodec};
 
-use crate::fragment::CometFragmentExec;
-use crate::scan::CometScanExec;
-use crate::table_provider::CometTableProvider;
+use super::fragment::CometFragmentExec;
+use super::scan::CometScanExec;
+use super::table_provider::CometTableProvider;
 
 /// Marks a payload as a Comet node so the codec can tell it apart from a
 /// Ballista/DataFusion node it should delegate.

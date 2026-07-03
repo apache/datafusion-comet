@@ -26,7 +26,7 @@ use datafusion::physical_plan::{
 use datafusion_ffi::execution_plan::ForeignExecutionPlan;
 use tokio::runtime::Handle;
 
-use comet::execution::ffi::comet_ffi_plan_from_proto;
+use crate::execution::ffi::comet_ffi_plan_from_proto;
 
 /// A DataFusion leaf that carries a Comet plan protobuf and executes it via the
 /// `datafusion-ffi` boundary. Serializable through `CometPhysicalCodec` by its

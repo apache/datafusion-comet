@@ -2216,11 +2216,16 @@ dependencies = [
 name = "datafusion-comet"
 version = "1.0.0"
 dependencies = [
+ "anyhow",
  "arrow",
  "assertables",
  "async-trait",
  "aws-config",
  "aws-credential-types",
+ "ballista",
+ "ballista-core",
+ "ballista-executor",
+ "ballista-scheduler",
  "criterion",
  "datafusion",
  "datafusion-comet-common",
@@ -2233,6 +2238,7 @@ dependencies = [
  "datafusion-ffi",
  "datafusion-functions-nested",
  "datafusion-physical-expr-adapter",
+ "datafusion-proto",
  "datafusion-spark",
  "futures",
  "hdfs-sys",
@@ -2267,27 +2273,6 @@ dependencies = [
  "tokio",
  "url",
  "uuid",
-]
-
-[[package]]
-name = "datafusion-comet-ballista"
-version = "1.0.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "ballista",
- "ballista-core",
- "ballista-executor",
- "ballista-scheduler",
- "datafusion",
- "datafusion-comet",
- "datafusion-comet-proto",
- "datafusion-ffi",
- "datafusion-proto",
- "futures",
- "jni 0.22.4",
- "prost",
- "tokio",
 ]
 
 [[package]]

@@ -35,8 +35,9 @@ import org.apache.arrow.vector.IntVector
  * executors) and exports the result batch back to the JVM over the Arrow C Data Interface. The
  * JVM imports the result and asserts 5 rows come back.
  *
- * The native entry points live in `libdatafusion_comet_ballista` (the `datafusion-comet-ballista`
- * crate built as a cdylib), loaded here alongside — but independently of — `libcomet`.
+ * The native entry points live in the single `libcomet` cdylib, compiled in when Comet's native
+ * crate is built with the default-off `ballista` Cargo feature (`cd native && cargo build
+ * --features ballista`, or `make core-ballista`). There is no separate offload library.
  */
 class CometBallistaFfiSpikeSuite extends AnyFunSuite {
 

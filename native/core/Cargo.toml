@@ -54,6 +54,9 @@ itertools = "0.15.0"
 paste = "1.0.14"
 datafusion = { workspace = true, features = ["parquet_encryption", "sql"] }
 datafusion-ffi = "54.0.0"
+# Only used by the optional `ballista` offload module (extension codecs +
+# physical-plan (de)serialization); activated by the `ballista` feature.
+datafusion-proto = { version = "54.0.0", optional = true }
 datafusion-physical-expr-adapter = { workspace = true }
 datafusion-datasource = { workspace = true }
 datafusion-spark = { workspace = true }
@@ -79,6 +82,13 @@ reqsign-core = { workspace = true }
 serde_json = "1.0"
 uuid = "1.23.3"
 
+# Ballista offload deps — optional, activated by the `ballista` feature so the
+# default `libcomet` build stays Ballista-free (no ballista/tonic/second core).
+ballista = { workspace = true, optional = true }
+ballista-core = { workspace = true, optional = true }
+ballista-scheduler = { workspace = true, optional = true }
+ballista-executor = { workspace = true, optional = true }
+
 [target.'cfg(target_os = "linux")'.dependencies]
 procfs = "0.18.0"
 
@@ -93,6 +103,10 @@ lazy_static = "1.4"
 assertables = "10"
 hex = "0.4.3"
 datafusion-functions-nested = { version = "54.0.0" }
+# `#[tokio::test]` macro + `anyhow` are used by the `ballista`-feature-gated
+# integration tests under `tests/ballista_*.rs`.
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+anyhow = "1"
 
 [features]
 backtrace = ["datafusion/backtrace"]
@@ -100,6 +114,17 @@ default = ["hdfs-opendal"]
 hdfs = ["datafusion-comet-objectstore-hdfs"]
 hdfs-opendal = ["opendal", "object_store_opendal", "hdfs-sys"]
 jemalloc = ["tikv-jemallocator", "tikv-jemalloc-ctl"]
+# Folds the in-process Ballista offload (`execution::ballista`, incl. the
+# `Java_org_apache_comet_ballista_NativeBallista_*` JNI entries) into `libcomet`.
+# Default-OFF so the standard build pulls no ballista/tonic and links only one
+# copy of Comet core.
+ballista = [
+    "dep:ballista",
+    "dep:ballista-core",
+    "dep:ballista-scheduler",
+    "dep:ballista-executor",
+    "dep:datafusion-proto",
+]
 
 # exclude optional packages from cargo machete verifications
 [package.metadata.cargo-machete]

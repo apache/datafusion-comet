@@ -64,16 +64,15 @@ import org.apache.comet.CometConf
  * The test asserts the plan really is single-block before offloading, and compares full result
  * rows flag-on vs flag-off using the exact decimal types Spark produces.
  *
- * Ordering caveat (dual-library global state): both tests in this suite run in one JVM, and the
- * in-process Ballista offload statically links a SECOND copy of Comet core into
- * `libdatafusion_comet_ballista`. Its `JAVA_VM` `OnceCell` is distinct from `libcomet`'s, and
- * once an offload has run, Comet-on-Spark-executor native execution (`Native.executePlan` on a
- * `tokio-rt-worker`) can resolve `with_env` to that second, uninitialized copy and panic with
- * `JAVA_VM not initialized`. Reference oracles here therefore run with Comet fully DISABLED (pure
- * Spark), which never touches Comet native code and is immune to this interaction. The offload
- * itself is unaffected (it initializes/uses the JVM through its own path). This is an
- * infrastructure limitation of the in-process offload spike, not a correctness issue in the
- * distributed aggregate.
+ * Coexistence (single-core global state): both tests in this suite run in one JVM. Since the
+ * offload was folded into `libcomet` behind the `ballista` Cargo feature, there is now exactly
+ * ONE copy of Comet core — and one `JAVA_VM` static — shared by both the Comet-on-executor path
+ * (`Native.executePlan` on a `tokio-rt-worker`) and the in-process offload. The old dual-library
+ * hazard (a second, uninitialized `JAVA_VM` in `libdatafusion_comet_ballista` causing a `JAVA_VM
+ * not initialized` panic once an offload had run) is therefore gone. The second test's reference
+ * oracle deliberately runs with Comet ENABLED (the executor native path) AFTER the first test's
+ * offload has already run in this JVM: it is the coexistence acceptance check — a
+ * Comet-on-executor native query and an in-process offload sharing one JVM without panicking.
  */
 class CometBallistaQ1Suite extends CometTestBase with AdaptiveSparkPlanHelper {
 
@@ -385,18 +384,19 @@ class CometBallistaQ1Suite extends CometTestBase with AdaptiveSparkPlanHelper {
           s"expected exactly two serialized CometNativeExec blocks, found ${nativeBlocks.size}:\n" +
             s"$executed")
 
-        // Baseline oracle: Spark's OWN Q1 answer, with Comet fully disabled. This is the truest
-        // reference for "does the distributed offload match Spark's own Q1" (the brief's goal), and
-        // it also runs through the same listener apparatus as a positive control proving the
-        // listener observes executor task starts, so the `== 0` assertion for the offloaded run is
-        // meaningful. Comet is disabled here deliberately: a Comet-native baseline uses the native
-        // execution engine (tokio) which, once an in-process Ballista offload has run in this JVM,
-        // panics with `JAVA_VM not initialized` (dual-library global-state issue — see the class
-        // doc). Spark-only execution is immune and is the correct oracle regardless.
+        // Baseline oracle: Q1's answer computed via the Comet-on-executor native path
+        // (COMET_ENABLED=true, offload off). This is ALSO the coexistence acceptance check: the
+        // first test in this suite already ran an in-process Ballista offload in this same JVM, so
+        // this Comet-native collect drives `Native.executePlan` (tokio `with_env`) AFTER an offload
+        // — the exact scenario that used to panic with `JAVA_VM not initialized` under the old
+        // dual-library layout. With the offload folded into the single `libcomet` (one shared
+        // `JAVA_VM`), it must now run cleanly and still match Spark's Q1. It also runs through the
+        // same listener apparatus as a positive control proving the listener observes executor task
+        // starts, so the `== 0` assertion for the offloaded run is meaningful.
         var baseline: Seq[Seq[Any]] = null
         val baselineTaskStarts = countTaskStarts {
           baseline = withSQLConf(
-            CometConf.COMET_ENABLED.key -> "false",
+            CometConf.COMET_ENABLED.key -> "true",
             CometConf.COMET_EXEC_BALLISTA_ENABLED.key -> "false") {
             spark.sql(q1FullAggregate).collect().map(_.toSeq.toIndexedSeq).toIndexedSeq
           }

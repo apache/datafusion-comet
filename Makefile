@@ -28,6 +28,12 @@ all: core jvm
 
 core:
 	cd native && cargo build $(FEATURES_ARG)
+# Build the single libcomet cdylib WITH the default-off `ballista` feature, so the
+# in-process Ballista offload (and its NativeBallista JNI entries) is folded into
+# libcomet. Required before running the org.apache.comet.ballista offload suites.
+# The default `core` target stays Ballista-free.
+core-ballista:
+	cd native && cargo build --features ballista $(FEATURES_ARG)
 test-rust:
 	# We need to compile CometException so that the cargo test can pass
 	./mvnw compile -pl common -DskipTests $(PROFILES)

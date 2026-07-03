@@ -191,11 +191,7 @@ impl ScanExec {
     /// `set_input_batch`). Only the handle that `get_next_batch` is driven on needs
     /// this — the executable leaf shares this handle's `batch` slot (an `Arc`), so
     /// batches pulled here become visible to the plan node without touching it.
-    pub fn set_native_input(
-        &mut self,
-        exec_context_id: i64,
-        stream: SendableRecordBatchStream,
-    ) {
+    pub fn set_native_input(&mut self, exec_context_id: i64, stream: SendableRecordBatchStream) {
         self.exec_context_id = exec_context_id;
         self.input_source = Some(Arc::new(Mutex::new(NativeBatchStream::new(stream))));
     }

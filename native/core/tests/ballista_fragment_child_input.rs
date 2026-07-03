@@ -3,6 +3,8 @@
 // stood in for here by an in-memory child and a `CometScanExec` child), and
 // that such a fragment survives Ballista's physical-plan (de)serialization.
 
+#![cfg(feature = "ballista")]
+
 use std::sync::Arc;
 
 use datafusion::arrow::array::{Int32Array, RecordBatch};
@@ -22,7 +24,7 @@ use datafusion_proto::protobuf::PhysicalPlanNode;
 use futures::StreamExt;
 use prost::Message;
 
-use datafusion_comet_ballista::{CometFragmentExec, CometPhysicalCodec, CometScanExec};
+use comet::execution::ballista::{CometFragmentExec, CometPhysicalCodec, CometScanExec};
 use datafusion_comet_proto::spark_expression::{
     data_type::DataTypeId, expr::ExprStruct, literal, BinaryExpr, BoundReference, DataType, Expr,
     Literal,
@@ -147,7 +149,11 @@ fn build_filter_over_scan_proto() -> Vec<u8> {
 }
 
 fn int32_schema() -> SchemaRef {
-    Arc::new(Schema::new(vec![Field::new("a", ArrowDataType::Int32, true)]))
+    Arc::new(Schema::new(vec![Field::new(
+        "a",
+        ArrowDataType::Int32,
+        true,
+    )]))
 }
 
 /// A `CometFragmentExec` whose `Scan` leaf is fed by an in-memory DataFusion
@@ -185,7 +191,11 @@ async fn fragment_scan_leaf_fed_by_child() -> anyhow::Result<()> {
     }
 
     // Child produced 1..=5; the fragment's Filter keeps col0 > 2.
-    assert_eq!(values, vec![3, 4, 5], "child rows must flow through and be filtered");
+    assert_eq!(
+        values,
+        vec![3, 4, 5],
+        "child rows must flow through and be filtered"
+    );
     Ok(())
 }
 
@@ -251,8 +261,9 @@ async fn fragment_codec_roundtrip() -> anyhow::Result<()> {
 
     // Child = CometScanExec over the parquet (round-trips via COMET_MAGIC);
     // parent fragment = Filter(col0 > 2) over a Scan input leaf.
-    let child: Arc<dyn ExecutionPlan> =
-        Arc::new(CometScanExec::try_new(build_native_scan_proto(&parquet_path)?)?);
+    let child: Arc<dyn ExecutionPlan> = Arc::new(CometScanExec::try_new(build_native_scan_proto(
+        &parquet_path,
+    )?)?);
     let fragment_proto = build_filter_over_scan_proto();
     let plan: Arc<dyn ExecutionPlan> =
         Arc::new(CometFragmentExec::try_new(fragment_proto, vec![child])?);

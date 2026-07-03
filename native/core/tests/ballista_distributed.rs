@@ -9,7 +9,9 @@
 //
 // Starts an in-process Ballista scheduler + executors, so it is heavier and
 // slower than a unit test. Run explicitly:
-//   cargo test -p datafusion-comet-ballista --test distributed -- --ignored
+//   cargo test -p datafusion-comet --features ballista --test ballista_distributed -- --ignored
+
+#![cfg(feature = "ballista")]
 
 use std::sync::Arc;
 
@@ -21,7 +23,7 @@ use datafusion::execution::SessionStateBuilder;
 use datafusion::parquet::arrow::ArrowWriter;
 use datafusion::prelude::{SessionConfig, SessionContext};
 
-use datafusion_comet_ballista::{CometLogicalCodec, CometPhysicalCodec, CometTableProvider};
+use comet::execution::ballista::{CometLogicalCodec, CometPhysicalCodec, CometTableProvider};
 use datafusion_comet_proto::spark_expression::{data_type::DataTypeId, DataType};
 use datafusion_comet_proto::spark_operator::{
     operator::OpStruct, NativeScan, NativeScanCommon, Operator, SparkFilePartition,

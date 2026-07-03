@@ -6,7 +6,9 @@
 // the JVM: it allocates the FFI structs, calls `submit_and_export`, then
 // re-imports via `from_ffi` and asserts 5 rows come back.
 //
-//   cargo test -p datafusion-comet-ballista --test ffi_roundtrip -- --ignored --nocapture
+//   cargo test -p datafusion-comet --features ballista --test ballista_ffi_roundtrip -- --ignored --nocapture
+
+#![cfg(feature = "ballista")]
 
 use std::sync::Arc;
 
@@ -15,7 +17,7 @@ use datafusion::arrow::datatypes::{DataType as ArrowDataType, Field, Schema};
 use datafusion::arrow::ffi::{from_ffi, FFI_ArrowArray, FFI_ArrowSchema};
 use datafusion::parquet::arrow::ArrowWriter;
 
-use datafusion_comet_ballista::submit_and_export;
+use comet::execution::ballista::submit_and_export;
 use datafusion_comet_proto::spark_expression::{data_type::DataTypeId, DataType};
 use datafusion_comet_proto::spark_operator::{
     operator::OpStruct, NativeScan, NativeScanCommon, Operator, SparkFilePartition,

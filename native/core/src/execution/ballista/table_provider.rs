@@ -26,7 +26,7 @@ use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::projection::ProjectionExec;
 use datafusion::physical_plan::ExecutionPlan;
 
-use crate::scan::CometScanExec;
+use super::scan::CometScanExec;
 
 /// A DataFusion `TableProvider` that produces a `CometScanExec`. Carries the
 /// Comet proto so the table can be reconstructed on the scheduler side via the

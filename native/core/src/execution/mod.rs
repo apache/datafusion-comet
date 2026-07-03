@@ -16,6 +16,8 @@
 // under the License.
 
 //! PoC of vectorization execution through JNI to Rust.
+#[cfg(feature = "ballista")]
+pub mod ballista;
 pub mod columnar_to_row;
 pub mod expressions;
 pub mod ffi;

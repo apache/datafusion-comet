@@ -81,11 +81,14 @@ Two design choices make this mostly integration rather than new invention:
 **Rust** (`native/`):
 - `comet_ffi_plan_from_proto` (`datafusion-comet` core) — decodes a Comet `Operator` proto, builds
   the plan with the existing `PhysicalPlanner`, returns an `FFI_ExecutionPlan`.
-- `datafusion-comet-ballista` crate:
+- `execution::ballista` module (`datafusion-comet` core, gated behind the default-off `ballista`
+  Cargo feature — built with `cargo build --features ballista` / `make core-ballista`, so it is
+  folded into the single `libcomet` cdylib rather than a separate library):
   - `CometScanExec` — a serializable DataFusion leaf that rebuilds the plan over FFI at execute time.
   - `CometPhysicalCodec` / `CometLogicalCodec` — extension codecs that compose with Ballista's own
     (delegating non-Comet nodes) so Comet plans can be shipped to Ballista executors.
   - `CometTableProvider` — exposes a Comet plan to Ballista as a table.
+  - the `Java_org_apache_comet_ballista_NativeBallista_*` JNI entries (driver-side submission).
 
 **JVM** (`spark/`):
 - Driver-side offload hook and configuration (see below).
@@ -101,8 +104,9 @@ Two design choices make this mostly integration rather than new invention:
 
 Legend: ✅ done · 🔨 in progress · ⬜ planned
 
-- ✅ **Rust core** — FFI plan export + `datafusion-comet-ballista` crate (`CometScanExec`, composed
-  codecs, `CometTableProvider`) with codec round-trip and standalone distributed tests.
+- ✅ **Rust core** — FFI plan export + gated `execution::ballista` module in `datafusion-comet`
+  (`CometScanExec`, composed codecs, `CometTableProvider`) folded into `libcomet` behind the
+  default-off `ballista` feature, with codec round-trip and standalone distributed tests.
 - 🔨 **R1 — driver-side offload (single-stage).** A Spark app runs a query with
   `spark.comet.exec.ballista.enabled=true`; the driver submits the whole Comet plan to Ballista and
   returns results, with zero Spark-executor tasks. First target query: TPC-H Q1.
@@ -134,9 +138,11 @@ Legend: ✅ done · 🔨 in progress · ⬜ planned
 - The FFI boundary requires Comet and Ballista to be built against the same DataFusion **major**
   version.
 - Comet core links the JNI bridge, so `libjvm` must be present at runtime even where JNI is unused.
-- The `comet-ballista` cdylib statically links a second copy of Comet core, so a Comet-on-executor query
-  and an in-process Ballista offload cannot currently coexist in the same JVM (the second core's `JAVA_VM`
-  is uninitialized). Unifying that core is a planned follow-up; until then, use a single mode per JVM.
+- The offload is folded into the single `libcomet` cdylib behind the default-off `ballista` Cargo
+  feature (there is no separate `comet-ballista` cdylib / second copy of Comet core), so a
+  Comet-on-executor query and an in-process Ballista offload share one `JAVA_VM` and coexist in the
+  same JVM without the "JAVA_VM not initialized" panic. Building with the feature is required for
+  the offload entries (`make core-ballista`); the default build stays Ballista-free.
 - The single-stage `ORDER BY`/range exchange makes Q1's final sort a third stage — out of the current
   2-block scope; sort on the driver, or wait for N-block generalization.
 

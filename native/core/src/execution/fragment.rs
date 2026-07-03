@@ -60,8 +60,8 @@ const NATIVE_FRAGMENT_EXEC_ID: i64 = 0;
 /// builds without consuming a JVM input; native inputs are injected afterwards
 /// via [`ScanExec::set_native_input`].
 fn plan_from_proto(proto_bytes: &[u8]) -> Result<(Vec<ScanExec>, Arc<dyn ExecutionPlan>), String> {
-    let op =
-        Operator::decode(proto_bytes).map_err(|e| format!("failed to decode Operator proto: {e}"))?;
+    let op = Operator::decode(proto_bytes)
+        .map_err(|e| format!("failed to decode Operator proto: {e}"))?;
 
     // A fresh `SessionContext` means configuration comes only from the proto,
     // not from any ambient session (see `super::ffi`).

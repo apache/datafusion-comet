@@ -25,7 +25,7 @@ use datafusion::physical_plan::{
     SendableRecordBatchStream,
 };
 
-use comet::execution::fragment::{build_native_fragment, native_fragment_plan_properties};
+use crate::execution::fragment::{build_native_fragment, native_fragment_plan_properties};
 
 /// A DataFusion node that runs a Comet plan fragment (carried as `Operator`
 /// proto bytes) whose input-leaf `Scan` operators are fed by this node's

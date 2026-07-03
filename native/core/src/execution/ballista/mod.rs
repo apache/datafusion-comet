@@ -18,6 +18,11 @@
 //! Runs Apache DataFusion Comet native plans as leaves inside Apache
 //! DataFusion Ballista.
 //!
+//! This module is compiled into the single `libcomet` cdylib only when the
+//! default-off `ballista` Cargo feature is enabled, so the offload entry lives
+//! in the same library (and shares the same Comet core state, e.g. `JAVA_VM`)
+//! as the rest of Comet — there is no separate `comet-ballista` cdylib.
+//!
 //! - [`scan::CometScanExec`]: a serializable DataFusion leaf that carries the
 //!   Comet proto bytes (the "recipe") and builds the FFI plan at execute()
 //!   time. This is what Ballista ships to executors and reconstructs there.
@@ -36,9 +41,7 @@ pub mod fragment;
 pub mod scan;
 pub mod table_provider;
 
-pub use codec::{
-    CometLogicalCodec, CometPhysicalCodec, COMET_FRAGMENT_MAGIC, COMET_MAGIC,
-};
+pub use codec::{CometLogicalCodec, CometPhysicalCodec, COMET_FRAGMENT_MAGIC, COMET_MAGIC};
 pub use ffi_jni::{
     build_test_proto, execute_comet_proto, execute_two_stage, submit_and_export,
     submit_and_export_distributed,

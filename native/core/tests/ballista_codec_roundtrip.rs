@@ -7,6 +7,8 @@
 // executor) and execute it. The Comet leaf travels as proto bytes and is rebuilt
 // on the far side by re-running Comet's planner over FFI.
 
+#![cfg(feature = "ballista")]
+
 use std::sync::Arc;
 
 use datafusion::arrow::array::{Int32Array, RecordBatch};
@@ -24,7 +26,7 @@ use datafusion_proto::protobuf::PhysicalPlanNode;
 use futures::StreamExt;
 use prost::Message;
 
-use datafusion_comet_ballista::{CometPhysicalCodec, CometScanExec};
+use comet::execution::ballista::{CometPhysicalCodec, CometScanExec};
 use datafusion_comet_proto::spark_expression::{data_type::DataTypeId, DataType};
 use datafusion_comet_proto::spark_operator::{
     operator::OpStruct, NativeScan, NativeScanCommon, Operator, SparkFilePartition,

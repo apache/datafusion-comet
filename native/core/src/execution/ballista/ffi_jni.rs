@@ -117,8 +117,8 @@ pub fn build_test_proto() -> Result<Vec<u8>, String> {
     Ok(op.encode_to_vec())
 }
 
-use crate::scan::CometScanExec;
-use crate::{CometFragmentExec, CometLogicalCodec, CometPhysicalCodec, CometTableProvider};
+use super::scan::CometScanExec;
+use super::{CometFragmentExec, CometLogicalCodec, CometPhysicalCodec, CometTableProvider};
 
 /// Run a Comet `Operator` proto on an in-process standalone Ballista engine and
 /// return the collected Arrow batches plus the result schema.
@@ -223,17 +223,21 @@ fn build_two_stage_plan(
     num_group_keys: usize,
     num_partitions: usize,
 ) -> Result<Arc<dyn ExecutionPlan>, String> {
-    let block1: Arc<dyn ExecutionPlan> =
-        Arc::new(CometFragmentExec::try_new(block1_proto.to_vec(), vec![]).map_err(|e| {
-            format!("failed to build block1 (partial-agg) fragment: {e}")
-        })?);
+    let block1: Arc<dyn ExecutionPlan> = Arc::new(
+        CometFragmentExec::try_new(block1_proto.to_vec(), vec![])
+            .map_err(|e| format!("failed to build block1 (partial-agg) fragment: {e}"))?,
+    );
 
     let schema1 = block1.schema();
     if num_group_keys == 0 || num_group_keys > schema1.fields().len() {
         return Err(format!(
             "invalid num_group_keys {num_group_keys}: block1 output has {} columns ({:?})",
             schema1.fields().len(),
-            schema1.fields().iter().map(|f| f.name()).collect::<Vec<_>>()
+            schema1
+                .fields()
+                .iter()
+                .map(|f| f.name())
+                .collect::<Vec<_>>()
         ));
     }
 
@@ -257,10 +261,10 @@ fn build_two_stage_plan(
         .map_err(|e| format!("failed to build hash RepartitionExec: {e}"))?,
     );
 
-    let block2: Arc<dyn ExecutionPlan> =
-        Arc::new(CometFragmentExec::try_new(block2_proto.to_vec(), vec![repart]).map_err(
-            |e| format!("failed to build block2 (final-agg) fragment: {e}"),
-        )?);
+    let block2: Arc<dyn ExecutionPlan> = Arc::new(
+        CometFragmentExec::try_new(block2_proto.to_vec(), vec![repart])
+            .map_err(|e| format!("failed to build block2 (final-agg) fragment: {e}"))?,
+    );
 
     eprintln!(
         "[comet-ballista R2] block2 (final-agg) output schema = {:?}",
@@ -446,7 +450,7 @@ pub unsafe fn submit_and_export(
 
 mod jni_entry {
     use super::{build_test_proto, submit_and_export, submit_and_export_distributed};
-    use comet::errors::{try_unwrap_or_throw, CometError};
+    use crate::errors::{try_unwrap_or_throw, CometError};
     use jni::objects::{JByteArray, JClass, JLongArray, ReleaseMode};
     use jni::sys::{jbyteArray, jint, jlong};
     use jni::EnvUnowned;

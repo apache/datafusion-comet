@@ -19,14 +19,18 @@
 
 package org.apache.comet.ballista
 
-import java.io.File
-import java.nio.file.{Files, Paths}
-
 import org.apache.comet.NativeBase
 
 /**
- * JNI binding to the native driver-side Ballista submission entry, implemented in the
- * `datafusion-comet-ballista` crate (`libdatafusion_comet_ballista`).
+ * JNI binding to the native driver-side Ballista submission entry.
+ *
+ * The offload code (the `execution::ballista` module and its
+ * `Java_org_apache_comet_ballista_NativeBallista_*` JNI entries) is compiled into the single
+ * `libcomet` cdylib when Comet's native crate is built with the default-off `ballista` Cargo
+ * feature (`cd native && cargo build --features ballista`). There is no separate
+ * `libdatafusion_comet_ballista` library anymore: folding the offload into core means it shares
+ * Comet core's single `JAVA_VM` static, so a Comet-on-executor query and an in-process offload
+ * can coexist in one JVM without the "JAVA_VM not initialized" panic.
  *
  * EXPERIMENTAL (R1): used by [[org.apache.spark.sql.comet.CometExec.executeCollectViaBallista]]
  * to offload a single-stage Comet query to an in-process Ballista engine on the Spark driver.
@@ -99,77 +103,63 @@ class NativeBallista {
 
 object NativeBallista {
 
-  @volatile private var loaded = false
+  @volatile private var probed = false
+  @volatile private var available = false
   @volatile private var loadError: Option[Throwable] = None
 
   /**
-   * Load `libdatafusion_comet_ballista`.
-   *
-   * Symbol ownership: the ballista cdylib statically links Comet core and therefore re-exports
-   * core's `Java_org_apache_comet_Native_*` JNI symbols in addition to its own distinct
-   * `Java_org_apache_comet_ballista_NativeBallista_*` entries. We force `libcomet` (via
-   * [[NativeBase]]) to load FIRST so the JVM binds every core native method to `libcomet`;
-   * loading the ballista library afterwards contributes only the distinct `NativeBallista_*`
-   * symbols. This keeps all Comet core state in a single library and avoids two divergent copies.
-   *
-   * The library is not on `java.library.path`, so we resolve it by absolute path: the
-   * `COMET_BALLISTA_LIB` env var first, then the debug/release build outputs relative to the
-   * module working directory.
+   * Ensure the single `libcomet` cdylib is loaded. [[NativeBase]] already loads it for every
+   * Comet native method; because the offload JNI entries are now compiled into `libcomet` (behind
+   * the `ballista` feature), loading libcomet also binds the `NativeBallista_*` entries. There is
+   * no separate library to `System.load`.
    */
-  private def load(): Unit = synchronized {
-    if (loaded || loadError.isDefined) return
-
-    // Load libcomet first so core JNI symbols bind to it, not to the ballista cdylib's re-exports.
+  private def ensureCometLoaded(): Unit = synchronized {
+    if (loadError.isDefined) return
     try {
       NativeBase.isLoaded()
     } catch {
-      case t: Throwable =>
-        loadError = Some(t)
-        return
-    }
-
-    val libName = System.mapLibraryName("datafusion_comet_ballista")
-    val moduleDir = new File(System.getProperty("user.dir"))
-    val candidates = Seq(
-      sys.env.get("COMET_BALLISTA_LIB"),
-      Some(new File(moduleDir, s"../native/target/debug/$libName").getPath),
-      Some(new File(moduleDir, s"../native/target/release/$libName").getPath),
-      Some(new File(moduleDir, s"native/target/debug/$libName").getPath),
-      Some(new File(moduleDir, s"native/target/release/$libName").getPath)).flatten
-    candidates.find(p => Files.exists(Paths.get(p))) match {
-      case Some(path) =>
-        try {
-          System.load(new File(path).getAbsolutePath)
-          loaded = true
-        } catch {
-          case t: Throwable => loadError = Some(t)
-        }
-      case None =>
-        loadError = Some(
-          new UnsatisfiedLinkError(
-            s"could not find $libName in any of: ${candidates.mkString(", ")}"))
+      case t: Throwable => loadError = Some(t)
     }
   }
 
-  /** Load the library, throwing if it cannot be loaded. */
+  /** Load libcomet, throwing if it cannot be loaded. */
   def ensureLoaded(): Unit = {
-    load()
+    ensureCometLoaded()
     loadError.foreach { t =>
-      throw new IllegalStateException(
-        s"failed to load native ballista library: ${t.getMessage}",
-        t)
+      throw new IllegalStateException(s"failed to load native comet library: ${t.getMessage}", t)
     }
   }
 
-  /** True if the native ballista library is available (loads it on first call). */
-  def isAvailable: Boolean = {
-    load()
-    loaded
+  /**
+   * True if the offload native entries are present - i.e. `libcomet` loaded AND was built with
+   * the `ballista` Cargo feature. Detected once by resolving a `NativeBallista_*` JNI symbol; a
+   * feature-less `libcomet` has no such symbol and yields `false`, so the offload suites
+   * `assume`-skip instead of hard-failing with an `UnsatisfiedLinkError`.
+   */
+  def isAvailable: Boolean = synchronized {
+    if (probed) return available
+    probed = true
+    ensureCometLoaded()
+    if (loadError.isDefined) {
+      available = false
+    } else {
+      available =
+        try {
+          // Resolve a NativeBallista JNI entry; only a `--features ballista` libcomet has it.
+          new NativeBallista().buildTestProto()
+          true
+        } catch {
+          case t: Throwable =>
+            loadError = Some(t)
+            false
+        }
+    }
+    available
   }
 
-  /** The load failure, if any (loads the library on first call). */
+  /** The load/availability failure, if any (probes on first call). */
   def loadFailure: Option[Throwable] = {
-    load()
+    if (!probed) isAvailable
     loadError
   }
 }
