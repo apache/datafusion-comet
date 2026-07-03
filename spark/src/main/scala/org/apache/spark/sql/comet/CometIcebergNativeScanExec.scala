@@ -329,7 +329,9 @@ case class CometIcebergNativeScanExec(
       output.asJava,
       serializedPlanOpt,
       runtimeFilters,
-      scanHashCode)
+      // Ascribe java.lang.Integer: Scala 2.12 rejects the implicit Int -> Object conversion into
+      // the Object... varargs of Guava's Objects.hashCode.
+      scanHashCode: java.lang.Integer)
 }
 
 object CometIcebergNativeScanExec {
