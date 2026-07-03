@@ -726,8 +726,10 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
       // reader flag. We've seen CI fail on the off-heap branch when the on-heap branch passes.
       for {
         offheapEnabled <- Seq("true", "false")
+        legacy <- Seq("true", "false")
       } withSQLConf(
         "spark.sql.parquet.enableNestedColumnVectorizedReader" -> "true",
+        "spark.sql.legacy.parquet.returnNullStructIfAllFieldsMissing" -> legacy,
         "spark.sql.columnVector.offheap.enabled" -> offheapEnabled) {
         val df = spark.read.schema(readSchema).parquet(path.getCanonicalPath)
         checkSparkAnswer(df)
@@ -771,8 +773,10 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
 
       for {
         offheapEnabled <- Seq("true", "false")
+        legacy <- Seq("true", "false")
       } withSQLConf(
         "spark.sql.parquet.enableNestedColumnVectorizedReader" -> "true",
+        "spark.sql.legacy.parquet.returnNullStructIfAllFieldsMissing" -> legacy,
         "spark.sql.columnVector.offheap.enabled" -> offheapEnabled) {
         val df = spark.read.schema(readSchema).parquet(path.getCanonicalPath)
         checkSparkAnswer(df)

@@ -24,6 +24,7 @@ import scala.jdk.CollectionConverters._
 
 import org.apache.spark.sql.catalyst.expressions.{And, ArrayAggregate, ArrayAppend, ArrayContains, ArrayExcept, ArrayExists, ArrayFilter, ArrayForAll, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayMin, ArrayPosition, ArrayRemove, ArrayRepeat, ArraySort, ArraysOverlap, ArraysZip, ArrayTransform, ArrayUnion, Attribute, Cast, CreateArray, ElementAt, EmptyRow, Expression, Flatten, GetArrayItem, IsNotNull, LambdaFunction, Literal, NamedLambdaVariable, Reverse, Sequence, Size, Slice, SortArray, ZipWith}
 import org.apache.spark.sql.catalyst.util.GenericArrayData
+import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
 import org.apache.comet.CometConf
@@ -439,9 +440,28 @@ object CometArrayJoin
   }
 }
 
-object CometArrayInsert extends CometExpressionSerde[ArrayInsert] {
+object CometArrayInsert extends CometExpressionSerde[ArrayInsert] with CodegenDispatchFallback {
 
-  override def getSupportLevel(expr: ArrayInsert): SupportLevel = Compatible()
+  // Spark's `spark.sql.legacy.negativeIndexInArrayInsert=true` changes how a 0-based/negative
+  // position is interpreted. Rather than maintain a parallel native code path for the legacy
+  // semantics, mark `array_insert` Incompatible when the flag is on so
+  // [[CodegenDispatchFallback]] routes the expression through the JVM codegen dispatcher
+  // (Spark's own `doGenCode` inside the Comet kernel) — that gives Spark-exact results
+  // without duplicating the legacy branch natively.
+  private val legacyNegativeIndexConfig = "spark.sql.legacy.negativeIndexInArrayInsert"
+
+  private val legacyNegativeIndexReason =
+    s"`$legacyNegativeIndexConfig=true` legacy negative-index semantics are not implemented natively"
+
+  override def getIncompatibleReasons(): Seq[String] = Seq(legacyNegativeIndexReason)
+
+  override def getSupportLevel(expr: ArrayInsert): SupportLevel = {
+    if (SQLConf.get.getConfString(legacyNegativeIndexConfig, "false").toBoolean) {
+      Incompatible(Some(legacyNegativeIndexReason))
+    } else {
+      Compatible()
+    }
+  }
 
   override def convert(
       expr: ArrayInsert,
@@ -450,16 +470,19 @@ object CometArrayInsert extends CometExpressionSerde[ArrayInsert] {
     val srcExprProto = exprToProtoInternal(expr.children.head, inputs, binding)
     val posExprProto = exprToProtoInternal(expr.children(1), inputs, binding)
     val itemExprProto = exprToProtoInternal(expr.children(2), inputs, binding)
+    // Reached in two cases:
+    //   1. Legacy conf is false → getSupportLevel returned Compatible → run native.
+    //   2. Legacy conf is true AND user set allowIncompatible=true → opt in to native.
+    // In case (2) the native impl honors the legacy semantics directly so we forward the flag.
+    val legacyNegativeIndex =
+      SQLConf.get.getConfString(legacyNegativeIndexConfig, "false").toBoolean
     if (srcExprProto.isDefined && posExprProto.isDefined && itemExprProto.isDefined) {
       val arrayInsertBuilder = ExprOuterClass.ArrayInsert
         .newBuilder()
         .setSrcArrayExpr(srcExprProto.get)
         .setPosExpr(posExprProto.get)
         .setItemExpr(itemExprProto.get)
-        // spark.sql.legacy.negativeIndexInArrayInsert=true is handled by the blanket
-        // legacy-conf fallback in CometSparkSessionExtensions.isCometLoaded, so from
-        // Comet's perspective this always runs with the non-legacy semantics.
-        .setLegacyNegativeIndex(false)
+        .setLegacyNegativeIndex(legacyNegativeIndex)
 
       Some(
         ExprOuterClass.Expr

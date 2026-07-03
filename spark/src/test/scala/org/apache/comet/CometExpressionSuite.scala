@@ -3174,6 +3174,39 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("vectorized reader: missing all struct fields") {
+    Seq(true, false).foreach { offheapEnabled =>
+      withSQLConf(
+        SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXPLAIN_FALLBACK_ENABLED.key -> "false",
+        SQLConf.PARQUET_VECTORIZED_READER_NESTED_COLUMN_ENABLED.key -> "true",
+        SQLConf.COLUMN_VECTOR_OFFHEAP_ENABLED.key -> offheapEnabled.toString,
+        // SPARK-53535 (Spark 4.1+) flipped the default to "false", which preserves the parent
+        // struct's nullness so non-null parents materialise as Row(Row(null, null)). This test
+        // asserts the legacy "all missing fields => null struct" answer, so pin the conf to
+        // "true" to keep the expectation valid on both 3.x/4.0 and 4.1+. The non-legacy
+        // behaviour is covered separately by `issue #4136` in CometNativeReaderSuite.
+        "spark.sql.legacy.parquet.returnNullStructIfAllFieldsMissing" -> "true") {
+        val data = Seq(Tuple1((1, "a")), Tuple1((2, null)), Tuple1(null))
+
+        val readSchema = new StructType().add(
+          "_1",
+          new StructType()
+            .add("_3", IntegerType, nullable = false)
+            .add("_4", StringType, nullable = false),
+          nullable = false)
+
+        withParquetFile(data) { file =>
+          checkAnswer(
+            spark.read.schema(readSchema).parquet(file),
+            Row(null) :: Row(null) :: Row(null) :: Nil)
+        }
+      }
+    }
+  }
+
   test("test length function") {
     // cast(id as binary) is rejected by Spark 4 ANSI analyzer
     withSQLConf(SQLConf.ANSI_ENABLED.key -> "false") {

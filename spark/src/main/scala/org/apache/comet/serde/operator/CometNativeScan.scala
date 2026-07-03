@@ -190,13 +190,16 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with Logging {
       commonBuilder.setSessionTimezone(scan.conf.getConfString("spark.sql.session.timeZone"))
       commonBuilder.setCaseSensitive(scan.conf.getConf[Boolean](SQLConf.CASE_SENSITIVE))
 
-      // SPARK-53535 (Spark 4.1+): reading a struct whose requested fields are all missing in
-      // the Parquet file preserves the parent struct's nullness. The legacy behavior is toggled
-      // by spark.sql.legacy.parquet.returnNullStructIfAllFieldsMissing, which is handled by the
-      // blanket legacy-conf fallback in CometSparkSessionExtensions.isCometLoaded. Comet always
-      // runs the modern (non-legacy) behavior on Spark 4.1+; on older Spark versions the legacy
-      // behavior is the hardcoded default, which matches Comet's fallback.
-      commonBuilder.setReturnNullStructIfAllFieldsMissing(!isSpark41Plus)
+      // SPARK-53535 (Spark 4.1+): when reading a struct whose requested fields are all
+      // missing in the Parquet file, the new default preserves the parent struct's
+      // nullness from the file (so non-null parents materialize as a struct of all-null
+      // fields). Pre-4.1 Spark hardcodes the legacy behavior (whole struct null), which
+      // matches the Comet default we use as fallback.
+      val returnNullStructConfKey =
+        "spark.sql.legacy.parquet.returnNullStructIfAllFieldsMissing"
+      val returnNullStructDefault = if (isSpark41Plus) "false" else "true"
+      commonBuilder.setReturnNullStructIfAllFieldsMissing(
+        scan.conf.getConfString(returnNullStructConfKey, returnNullStructDefault).toBoolean)
 
       // Field-ID matching: only ask the native side to do extra work when the conf is on AND
       // the requested schema actually carries IDs. Spark's ParquetReadSupport applies the same

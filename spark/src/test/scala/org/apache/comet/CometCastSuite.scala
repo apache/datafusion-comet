@@ -734,6 +734,66 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     castTest(generateDecimalsPrecision38Scale18(), DataTypes.StringType)
   }
 
+  test("cast DecimalType with negative scale to StringType") {
+    // Negative-scale decimals are a legacy Spark feature gated on
+    // spark.sql.legacy.allowNegativeScaleOfDecimal=true. Spark LEGACY cast uses Java's
+    // BigDecimal.toString() which produces scientific notation for negative-scale values
+    // (e.g. 12300 stored as Decimal(7,-2) with unscaled=123 → "1.23E+4").
+    // CometCast.canCastToString checks the
+    // config and returns Incompatible when it is false.
+    //
+    // Parquet does not support negative-scale decimals so we use checkSparkAnswer directly
+    // (no parquet round-trip) to avoid schema coercion.
+
+    // With config enabled, enable localTableScan so Comet can take over the full plan
+    // and execute the cast natively. Parquet does not support negative-scale decimals so
+    // the data is kept in-memory; localTableScan.enabled bridges that gap.
+    withSQLConf(
+      "spark.sql.legacy.allowNegativeScaleOfDecimal" -> "true",
+      "spark.comet.exec.localTableScan.enabled" -> "true") {
+      val dfNeg2 = Seq(
+        Some(BigDecimal("0")),
+        Some(BigDecimal("100")),
+        Some(BigDecimal("12300")),
+        Some(BigDecimal("-99900")),
+        Some(BigDecimal("9999900")),
+        None)
+        .toDF("b")
+        .withColumn("a", col("b").cast(DecimalType(7, -2)))
+        .drop("b")
+        .select(col("a").cast(DataTypes.StringType).as("result"))
+      checkSparkAnswerAndOperator(dfNeg2)
+
+      val dfNeg4 = Seq(
+        Some(BigDecimal("0")),
+        Some(BigDecimal("10000")),
+        Some(BigDecimal("120000")),
+        Some(BigDecimal("-9990000")),
+        None)
+        .toDF("b")
+        .withColumn("a", col("b").cast(DecimalType(7, -4)))
+        .drop("b")
+        .select(col("a").cast(DataTypes.StringType).as("result"))
+      checkSparkAnswerAndOperator(dfNeg4)
+    }
+
+    // With config disabled (default): the SQL parser rejects negative scale, so
+    // negative-scale decimals cannot be created through normal SQL paths.
+    // CometCast.isSupported returns Incompatible for this case, ensuring Comet does
+    // not attempt native execution if such a value ever reaches the planner.
+    // Note: DecimalType(7, -2) must be constructed while config=true, because the
+    // constructor itself checks the config and throws if negative scale is disallowed.
+    var negScaleType: DecimalType = null
+    withSQLConf("spark.sql.legacy.allowNegativeScaleOfDecimal" -> "true") {
+      negScaleType = DecimalType(7, -2)
+    }
+    withSQLConf("spark.sql.legacy.allowNegativeScaleOfDecimal" -> "false") {
+      assert(
+        CometCast.isSupported(negScaleType, DataTypes.StringType, None, CometEvalMode.LEGACY) ==
+          Incompatible(Some(CometCast.negativeScaleDecimalToStringReason)))
+    }
+  }
+
   test("cast DecimalType(10,2) to TimestampType") {
     castTest(generateDecimalsPrecision10Scale2(), DataTypes.TimestampType)
   }
@@ -1537,6 +1597,19 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   test("cast between decimals with higher precision than source") {
     // cast between Decimal(10, 2) to Decimal(10,4)
     castTest(generateDecimalsPrecision10Scale2(), DataTypes.createDecimalType(10, 4))
+  }
+
+  test("cast StringType to DecimalType with negative scale (allowNegativeScaleOfDecimal)") {
+    // With allowNegativeScaleOfDecimal=true, Spark allows DECIMAL(p, s) where s < 0.
+    // The value is rounded to the nearest 10^|s| — e.g. DECIMAL(10,-4) rounds to
+    // the nearest 10000. This requires the legacy SQL parser config to be enabled.
+    withSQLConf("spark.sql.legacy.allowNegativeScaleOfDecimal" -> "true") {
+      val values =
+        Seq("12500", "15000", "99990000", "-12500", "0", "0.001", "abc", null).toDF("a")
+      // testTry=false: try_cast uses SQL string interpolation (toType.sql → "DECIMAL(10,-4)")
+      // which the SQL parser rejects regardless of allowNegativeScaleOfDecimal.
+      castTest(values, DataTypes.createDecimalType(10, -4), testTry = false)
+    }
   }
 
   test("cast between decimals with negative precision") {
