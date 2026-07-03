@@ -99,7 +99,7 @@ The tables below list every Spark built-in expression with its current status.
 | `mean` | ✅ |  |
 | `median` | ✅ | Rewrites to `percentile(col, 0.5)`; falls back by default, opt-in via allowIncompatible ([#4719](https://github.com/apache/datafusion-comet/issues/4719)) |
 | `min` | ✅ |  |
-| `min_by` | 🔜 | [#3841](https://github.com/apache/datafusion-comet/issues/3841) |
+| `min_by` | ✅ | Value and ordering must be fixed-length types |
 | `mode` | 🔜 | [#3970](https://github.com/apache/datafusion-comet/issues/3970) |
 | `percentile` | ✅ | Single literal percentage on numeric input; array of percentages and a frequency argument fall back to Spark. Falls back by default, opt-in via allowIncompatible ([#4719](https://github.com/apache/datafusion-comet/issues/4719)) |
 | `percentile_cont` | ✅ | Spark 4.0+ `WITHIN GROUP (ORDER BY ...)`; ascending only, `DESC` falls back to Spark. Falls back by default, opt-in via allowIncompatible ([#4719](https://github.com/apache/datafusion-comet/issues/4719)) |

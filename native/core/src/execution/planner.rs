@@ -2660,6 +2660,13 @@ impl PhysicalPlanner {
                 let func = AggregateUDF::new_from_impl(MaxMinBy::new_max_by());
                 Self::create_aggr_func_expr("max_by", schema, vec![value, ordering], func)
             }
+            AggExprStruct::MinBy(expr) => {
+                let value = self.create_expr(expr.value.as_ref().unwrap(), Arc::clone(&schema))?;
+                let ordering =
+                    self.create_expr(expr.ordering.as_ref().unwrap(), Arc::clone(&schema))?;
+                let func = AggregateUDF::new_from_impl(MaxMinBy::new_min_by());
+                Self::create_aggr_func_expr("min_by", schema, vec![value, ordering], func)
+            }
         }
     }
 

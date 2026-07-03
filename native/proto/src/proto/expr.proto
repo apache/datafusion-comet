@@ -147,6 +147,7 @@ message AggExpr {
     CollectSet collectSet = 17;
     Percentile percentile = 18;
     MaxBy maxBy = 19;
+    MinBy minBy = 20;
   }
 
   // Optional filter expression for SQL FILTER (WHERE ...) clause.
@@ -282,6 +283,13 @@ message MaxBy {
   // The value returned by the aggregate (associated with the maximum ordering).
   Expr value = 1;
   // The ordering expression whose maximum selects the returned value.
+  Expr ordering = 2;
+}
+
+message MinBy {
+  // The value returned by the aggregate (associated with the minimum ordering).
+  Expr value = 1;
+  // The ordering expression whose minimum selects the returned value.
   Expr ordering = 2;
 }
 
