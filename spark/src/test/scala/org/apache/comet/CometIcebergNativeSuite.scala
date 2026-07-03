@@ -3055,8 +3055,6 @@ class CometIcebergNativeSuite
     }
   }
 
-  // ---- non-AQE exchange reuse tests ----
-
   test("exchange reuse must not collapse scans with different pushed filters (#4774)") {
     assume(icebergAvailable, "Iceberg not available")
 
