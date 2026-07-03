@@ -34,7 +34,7 @@ use datafusion::execution::SessionStateBuilder;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::{SessionConfig, SessionContext};
 
-use datafusion_comet_proto::spark_operator::Operator;
+use datafusion_comet_proto::spark_operator::{CometBallistaOffloadPlan, Operator};
 use prost::Message;
 
 use super::scan::CometScanExec;
@@ -189,6 +189,97 @@ fn build_two_stage_plan(
     );
 
     Ok(block2)
+}
+
+// ---------------------------------------------------------------------------
+// R3: general DAG offload (`CometBallistaOffloadPlan`)
+// ---------------------------------------------------------------------------
+
+/// Count the `Scan` (#100) input leaves in a serialized Comet `Operator` block —
+/// the same leaves `build_native_fragment` (`native/core/src/execution/fragment.rs`)
+/// expects one child stream per, in DFS order. Used as a build-time guard so a
+/// mismatched `OffloadFragment.inputs` count fails fast in `build_offload_plan`
+/// rather than lazily inside `CometFragmentExec::execute`.
+fn comet_offload_scan_leaf_count(block_proto: &[u8]) -> Result<usize, String> {
+    use datafusion_comet_proto::spark_operator::{operator::OpStruct, Operator};
+    fn count(op: &Operator) -> usize {
+        if matches!(op.op_struct, Some(OpStruct::Scan(_))) {
+            return 1;
+        }
+        op.children.iter().map(count).sum()
+    }
+    let op = Operator::decode(block_proto).map_err(|e| format!("decode block: {e}"))?;
+    Ok(count(&op))
+}
+
+/// Fold a serialized `CometBallistaOffloadPlan` into a Ballista physical plan: a DAG
+/// of `CometFragmentExec` nodes whose inputs are `RepartitionExec(Hash)` over the
+/// producer fragments. Fragments are processed in topological order; the last is the
+/// root. Ballista's planner then splits at each hash repartition into a stage.
+pub fn build_offload_plan(plan_bytes: &[u8]) -> Result<Arc<dyn ExecutionPlan>, String> {
+    let plan = CometBallistaOffloadPlan::decode(plan_bytes)
+        .map_err(|e| format!("failed to decode CometBallistaOffloadPlan: {e}"))?;
+    if plan.fragments.is_empty() {
+        return Err("CometBallistaOffloadPlan has no fragments".to_string());
+    }
+    let n = plan.num_partitions.max(1) as usize;
+
+    let mut built: Vec<Arc<dyn ExecutionPlan>> = Vec::with_capacity(plan.fragments.len());
+    for (idx, frag) in plan.fragments.iter().enumerate() {
+        // Build-time guard: the block's actual `Scan`(#100) leaf count must match
+        // the descriptor's declared input count, or `CometFragmentExec::execute`
+        // would fail lazily (or silently under-drive leaves) later.
+        let leaf_count = comet_offload_scan_leaf_count(&frag.block_proto)
+            .map_err(|e| format!("fragment {idx}: {e}"))?;
+        if leaf_count != frag.inputs.len() {
+            return Err(format!(
+                "fragment {idx}: block has {leaf_count} Scan input leaves but the descriptor \
+                 declares {} inputs",
+                frag.inputs.len()
+            ));
+        }
+
+        // Build each input edge as a hash repartition over an already-built producer.
+        let mut children: Vec<Arc<dyn ExecutionPlan>> = Vec::with_capacity(frag.inputs.len());
+        for input in &frag.inputs {
+            let producer_idx = input.producer as usize;
+            if producer_idx >= idx {
+                return Err(format!(
+                    "fragment {idx} references producer {producer_idx} that is not earlier in \
+                     topological order"
+                ));
+            }
+            let producer = Arc::clone(&built[producer_idx]);
+            let producer_schema = producer.schema();
+            let hash_exprs: Vec<Arc<dyn PhysicalExpr>> = input
+                .hash_key_ordinals
+                .iter()
+                .map(|&ord| {
+                    let ord = ord as usize;
+                    if ord >= producer_schema.fields().len() {
+                        return Err(format!(
+                            "fragment {idx} input hash key ordinal {ord} out of range for \
+                             producer {producer_idx} with {} columns",
+                            producer_schema.fields().len()
+                        ));
+                    }
+                    Ok(
+                        Arc::new(Column::new(producer_schema.field(ord).name(), ord))
+                            as Arc<dyn PhysicalExpr>,
+                    )
+                })
+                .collect::<Result<_, String>>()?;
+            let repart = RepartitionExec::try_new(producer, Partitioning::Hash(hash_exprs, n))
+                .map_err(|e| {
+                    format!("fragment {idx}: failed to build hash RepartitionExec: {e}")
+                })?;
+            children.push(Arc::new(repart));
+        }
+        let fragment = CometFragmentExec::try_new(frag.block_proto.clone(), children)
+            .map_err(|e| format!("fragment {idx}: failed to build CometFragmentExec: {e}"))?;
+        built.push(Arc::new(fragment));
+    }
+    Ok(built.pop().expect("fragments non-empty"))
 }
 
 /// Start an in-process standalone Ballista cluster (scheduler + executor) from
