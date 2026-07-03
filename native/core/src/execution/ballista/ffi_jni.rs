@@ -22,100 +22,20 @@
 //! resulting Arrow batches back to the JVM over the Arrow C Data Interface —
 //! the same FFI mechanism Comet already uses in `jni_api::prepare_output`
 //! (`ArrayData` → caller-allocated `FFI_ArrowArray`/`FFI_ArrowSchema`).
-//!
-//! This is a SPIKE. It proves the round trip JVM → native → Ballista → JVM.
 
 use std::sync::Arc;
 
 use ballista::prelude::{SessionConfigExt, SessionContextExt};
 use datafusion::arrow::array::RecordBatch;
 use datafusion::arrow::compute::concat_batches;
-use datafusion::arrow::datatypes::{Field, Schema, SchemaRef};
+use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::ffi::{FFI_ArrowArray, FFI_ArrowSchema};
 use datafusion::execution::SessionStateBuilder;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::{SessionConfig, SessionContext};
 
-use datafusion_comet_proto::spark_operator::{operator::OpStruct, Operator};
+use datafusion_comet_proto::spark_operator::Operator;
 use prost::Message;
-
-/// Build the fixed spike test proto Rust-side: a single `NativeScan` over a
-/// freshly written Parquet file with one int32 column `a` = [1..=5]. Returned to
-/// the JVM so the JVM test can hand it straight back to [`Java_org_apache_comet_ballista_NativeBallista_executeQuery`]
-/// without needing the generated proto Java classes. This is the same proto that
-/// the Rust `tests/` build constructs.
-pub fn build_test_proto() -> Result<Vec<u8>, String> {
-    use datafusion::arrow::array::Int32Array;
-    use datafusion::arrow::datatypes::DataType as ArrowDataType;
-    use datafusion::parquet::arrow::ArrowWriter;
-    use datafusion_comet_proto::spark_expression::{data_type::DataTypeId, DataType};
-    use datafusion_comet_proto::spark_operator::{
-        NativeScan, NativeScanCommon, SparkFilePartition, SparkPartitionedFile, SparkStructField,
-    };
-
-    let parquet = std::env::temp_dir().join("comet_ffi_ballista_jvm_spike.parquet");
-    let arrow_schema = Arc::new(Schema::new(vec![Field::new(
-        "a",
-        ArrowDataType::Int32,
-        true,
-    )]));
-    let batch = RecordBatch::try_new(
-        Arc::clone(&arrow_schema),
-        vec![Arc::new(Int32Array::from(vec![1, 2, 3, 4, 5]))],
-    )
-    .map_err(|e| format!("failed to build test batch: {e}"))?;
-    let file =
-        std::fs::File::create(&parquet).map_err(|e| format!("failed to create parquet: {e}"))?;
-    let mut writer = ArrowWriter::try_new(file, arrow_schema, None)
-        .map_err(|e| format!("failed to open parquet writer: {e}"))?;
-    writer
-        .write(&batch)
-        .map_err(|e| format!("failed to write parquet: {e}"))?;
-    writer
-        .close()
-        .map_err(|e| format!("failed to close parquet: {e}"))?;
-
-    let int32 = DataType {
-        type_id: DataTypeId::Int32 as i32,
-        type_info: None,
-    };
-    let field_a = SparkStructField {
-        name: "a".to_string(),
-        data_type: Some(int32),
-        nullable: true,
-        metadata: Default::default(),
-    };
-    let common = NativeScanCommon {
-        required_schema: vec![field_a.clone()],
-        data_schema: vec![field_a],
-        projection_vector: vec![0],
-        session_timezone: "UTC".to_string(),
-        source: "comet-ffi-ballista-jvm-spike".to_string(),
-        ..Default::default()
-    };
-    let file_size = std::fs::metadata(&parquet)
-        .map_err(|e| format!("failed to stat parquet: {e}"))?
-        .len() as i64;
-    let partitioned_file = SparkPartitionedFile {
-        file_path: format!("file://{}", parquet.display()),
-        start: 0,
-        length: file_size,
-        file_size,
-        partition_values: vec![],
-    };
-    let native_scan = NativeScan {
-        common: Some(common),
-        file_partition: Some(SparkFilePartition {
-            partitioned_file: vec![partitioned_file],
-        }),
-    };
-    let op = Operator {
-        children: vec![],
-        plan_id: 0,
-        op_struct: Some(OpStruct::NativeScan(native_scan)),
-    };
-    Ok(op.encode_to_vec())
-}
 
 use super::scan::CometScanExec;
 use super::{CometFragmentExec, CometLogicalCodec, CometPhysicalCodec, CometTableProvider};
@@ -143,8 +63,8 @@ pub fn execute_comet_proto(proto: &[u8]) -> Result<(SchemaRef, Vec<RecordBatch>)
     runtime.block_on(async move {
         // Build the whole Comet plan once (inside the Tokio runtime, which
         // `CometScanExec::try_new` requires) so we can read its true output
-        // schema. This is the fix for the T1 spike's scan-schema shortcut: the
-        // result schema now comes from the plan, not the NativeScan proto.
+        // schema — the result schema comes from the built plan, not the
+        // NativeScan proto's `required_schema`.
         let built: Arc<dyn ExecutionPlan> = Arc::new(
             CometScanExec::try_new(proto.to_vec())
                 .map_err(|e| format!("failed to build Comet plan: {e}"))?,
@@ -469,8 +389,8 @@ pub unsafe fn submit_and_export(
     schema_addrs: &[i64],
 ) -> Result<i64, String> {
     let (schema, batches) = execute_comet_proto(proto)?;
-    // The spike offloads a single small scan; concatenate to one batch so the
-    // JVM imports exactly one set of column structs.
+    // Concatenate to one batch so the JVM imports exactly one set of column
+    // structs.
     let batch = concat_batches(&schema, &batches)
         .map_err(|e| format!("failed to concatenate result batches: {e}"))?;
     export_batch_to_addresses(&batch, array_addrs, schema_addrs)?;
@@ -482,27 +402,25 @@ pub unsafe fn submit_and_export(
 // ---------------------------------------------------------------------------
 
 mod jni_entry {
-    use super::{build_test_proto, submit_and_export, submit_and_export_distributed};
+    use super::{submit_and_export, submit_and_export_distributed};
     use crate::errors::{try_unwrap_or_throw, CometError};
     use jni::objects::{JByteArray, JClass, JLongArray, JString, ReleaseMode};
-    use jni::sys::{jbyteArray, jint, jlong};
+    use jni::sys::{jint, jlong};
     use jni::EnvUnowned;
 
-    /// JVM entry: build the fixed spike test proto Rust-side and return its
-    /// bytes, so the JVM test does not need the generated proto Java classes.
+    /// JVM entry: a no-op whose only purpose is symbol resolution. It is compiled
+    /// only into a `--features ballista` `libcomet`, so the JVM side can detect
+    /// whether the offload is present by resolving this symbol (see
+    /// `NativeBallista.isAvailable`); a feature-less library lacks it and yields an
+    /// `UnsatisfiedLinkError`.
     ///
     /// # Safety
     /// Called from the JVM via JNI.
     #[no_mangle]
-    pub unsafe extern "system" fn Java_org_apache_comet_ballista_NativeBallista_buildTestProto(
-        e: EnvUnowned,
+    pub unsafe extern "system" fn Java_org_apache_comet_ballista_NativeBallista_probeAvailable(
+        _e: EnvUnowned,
         _class: JClass,
-    ) -> jbyteArray {
-        try_unwrap_or_throw(&e, |env| {
-            let bytes = build_test_proto().map_err(CometError::Internal)?;
-            let arr = env.byte_array_from_slice(&bytes)?;
-            Ok(arr.into_raw())
-        })
+    ) {
     }
 
     /// JVM entry: run a Comet `Operator` proto on in-process standalone Ballista

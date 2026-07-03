@@ -41,11 +41,11 @@ class NativeBallista {
   NativeBallista.ensureLoaded()
 
   /**
-   * Build the fixed spike test proto (a single `NativeScan` over a Parquet file with one int32
-   * column `a` = [1..5]) native-side and return its serialized bytes. Lets tests exercise the
-   * proto boundary without depending on the generated proto Java classes.
+   * No-op native entry used only to detect whether `libcomet` was built with the `ballista`
+   * feature: resolving this symbol succeeds only in a `--features ballista` build. See
+   * [[NativeBallista.isAvailable]].
    */
-  @native def buildTestProto(): Array[Byte]
+  @native def probeAvailable(): Unit
 
   /**
    * Run a serialized Comet `Operator` proto on an in-process standalone Ballista engine (no Spark
@@ -150,7 +150,7 @@ object NativeBallista {
       available =
         try {
           // Resolve a NativeBallista JNI entry; only a `--features ballista` libcomet has it.
-          new NativeBallista().buildTestProto()
+          new NativeBallista().probeAvailable()
           true
         } catch {
           case t: Throwable =>
