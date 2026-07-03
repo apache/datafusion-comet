@@ -290,7 +290,10 @@ object CometConf extends ShimCometConf {
         "single-stage plans (no exchange) are supported. R1 targets single-stage queries without " +
         "dynamic partition pruning or correlated scalar subqueries: resolving those inputs " +
         "(via `waitForSubqueries()`/`updateResult()` before the plan is handed to Ballista) can " +
-        "still transitively launch Spark executor tasks even with this flag enabled.")
+        "still transitively launch Spark executor tasks even with this flag enabled. Requires " +
+        "Adaptive Query Execution to be OFF: with AQE on, the collect root is an " +
+        "`AdaptiveSparkPlanExec` rather than the Comet columnar-to-row node that carries the " +
+        "offload override, so this flag silently has no effect.")
       .booleanConf
       .createWithDefault(false)
 

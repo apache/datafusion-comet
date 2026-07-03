@@ -126,9 +126,17 @@ pub fn build_native_fragment(
 }
 
 /// Streams the fragment root while pumping its `Scan` leaves. When the root
-/// yields `Pending` (a leaf's `batch` slot is empty), each leaf handle is asked
-/// to pull its next batch, then the root is polled again — the same interleaving
+/// yields `Pending` because a leaf's `batch` slot is empty, that leaf handle is
+/// asked to pull its next batch and the root is re-polled — the same interleaving
 /// `jni_api` performs for JVM-fed scans, but with native child streams.
+///
+/// Crucially, the root is only re-polled after new input is actually fed into a
+/// leaf. If the root returns `Pending` while every leaf already has a batch
+/// pending consumption (or there are no leaves at all — e.g. a childless
+/// `NativeScan` fragment reading Parquet directly), the root is genuinely pending
+/// on its own async work and has registered a waker on `cx`; we return
+/// `Poll::Pending` and let that waker reschedule us, rather than hot-spinning the
+/// worker thread on every async-I/O `Pending`.
 struct NativeFragmentStream {
     root: SendableRecordBatchStream,
     scans: Vec<ScanExec>,
@@ -144,12 +152,34 @@ impl Stream for NativeFragmentStream {
             match this.root.poll_next_unpin(cx) {
                 Poll::Ready(item) => return Poll::Ready(item),
                 Poll::Pending => {
+                    // Feed only leaves whose `batch` slot is empty; `get_next_batch`
+                    // blocks until it delivers a batch (or EOF), so a fed leaf then
+                    // holds input and re-polling the root makes progress. Track
+                    // whether we fed anything this iteration.
+                    let mut fed_new_input = false;
                     for scan in this.scans.iter_mut() {
-                        if let Err(e) = scan.get_next_batch() {
-                            return Poll::Ready(Some(Err(DataFusionError::Execution(format!(
-                                "Comet fragment scan input error: {e}"
-                            )))));
+                        // Peek the slot without holding the lock into `get_next_batch`
+                        // (which takes it again). A slot that is already `Some` needs
+                        // no feeding; a contended `try_lock` is treated as "not empty"
+                        // (nothing to do this round).
+                        let needs_input = scan
+                            .batch
+                            .try_lock()
+                            .map(|slot| slot.is_none())
+                            .unwrap_or(false);
+                        if needs_input {
+                            if let Err(e) = scan.get_next_batch() {
+                                return Poll::Ready(Some(Err(DataFusionError::Execution(
+                                    format!("Comet fragment scan input error: {e}"),
+                                ))));
+                            }
+                            fed_new_input = true;
                         }
+                    }
+                    // Nothing new to feed: the root is pending on its own async work
+                    // and its waker (registered on `cx` above) will reschedule us.
+                    if !fed_new_input {
+                        return Poll::Pending;
                     }
                 }
             }

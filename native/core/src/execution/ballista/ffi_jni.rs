@@ -42,8 +42,8 @@ use prost::Message;
 /// Build the fixed spike test proto Rust-side: a single `NativeScan` over a
 /// freshly written Parquet file with one int32 column `a` = [1..=5]. Returned to
 /// the JVM so the JVM test can hand it straight back to [`Java_org_apache_comet_ballista_NativeBallista_executeQuery`]
-/// without needing the generated proto Java classes. This is the same proto the
-/// Rust `tests/` build.
+/// without needing the generated proto Java classes. This is the same proto that
+/// the Rust `tests/` build constructs.
 pub fn build_test_proto() -> Result<Vec<u8>, String> {
     use datafusion::arrow::array::Int32Array;
     use datafusion::arrow::datatypes::DataType as ArrowDataType;
@@ -244,10 +244,7 @@ fn build_two_stage_plan(
     // Investigation aid: the schema of the batches that cross Ballista's IPC
     // shuffle. block2's `Scan` (#100) leaf schema (derived from the exchange
     // output on the JVM side) must match this for the aggregate to compose.
-    eprintln!(
-        "[comet-ballista R2] block1 (partial-agg) output schema = {:?}",
-        schema1
-    );
+    log::debug!("[comet-ballista R2] block1 (partial-agg) output schema = {schema1:?}");
 
     let hash_exprs: Vec<Arc<dyn PhysicalExpr>> = (0..num_group_keys)
         .map(|i| Arc::new(Column::new(schema1.field(i).name(), i)) as Arc<dyn PhysicalExpr>)
@@ -266,7 +263,7 @@ fn build_two_stage_plan(
             .map_err(|e| format!("failed to build block2 (final-agg) fragment: {e}"))?,
     );
 
-    eprintln!(
+    log::debug!(
         "[comet-ballista R2] block2 (final-agg) output schema = {:?}",
         block2.schema()
     );
@@ -356,10 +353,10 @@ pub fn execute_two_stage(
         // the external path the scheduler creates the session from the submitted
         // settings + its own (Comet) codecs, so we do not start a local cluster.
         let scheduler_url = if scheduler_url.is_empty() {
-            eprintln!("[comet-ballista R2] submitting to in-process standalone cluster");
+            log::debug!("[comet-ballista R2] submitting to in-process standalone cluster");
             start_standalone_from_state(&state).await?
         } else {
-            eprintln!("[comet-ballista R2] submitting to external cluster at {scheduler_url}");
+            log::debug!("[comet-ballista R2] submitting to external cluster at {scheduler_url}");
             scheduler_url.to_string()
         };
 
@@ -439,12 +436,22 @@ unsafe fn export_batch_to_addresses(
             schema_addrs.len()
         ));
     }
+    // Export every column first; only once *all* succeed do we write into the
+    // JVM-owned structs. Exporting can fail mid-loop (e.g. an unsupported data
+    // type); writing incrementally would then leave already-written structs that
+    // the JVM never imports (and thus never releases) — a leak. Staging into a
+    // local Vec makes the write phase below infallible, so it is all-or-nothing.
+    let mut exported = Vec::with_capacity(num_cols);
     for i in 0..num_cols {
         let data = batch.column(i).to_data();
         let schema = FFI_ArrowSchema::try_from(data.data_type())
             .map_err(|e| format!("failed to export schema for column {i}: {e}"))?;
         let array = FFI_ArrowArray::new(&data);
-        // The JVM allocated these structs; write the exported values into them.
+        exported.push((array, schema));
+    }
+    // The JVM allocated these structs; write the exported values into them. This
+    // phase cannot fail, so no partial write is possible.
+    for (i, (array, schema)) in exported.into_iter().enumerate() {
         std::ptr::write(array_addrs[i] as *mut FFI_ArrowArray, array);
         std::ptr::write(schema_addrs[i] as *mut FFI_ArrowSchema, schema);
     }

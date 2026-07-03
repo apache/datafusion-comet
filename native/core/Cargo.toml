@@ -53,7 +53,10 @@ tempfile = "3.26.0"
 itertools = "0.15.0"
 paste = "1.0.14"
 datafusion = { workspace = true, features = ["parquet_encryption", "sql"] }
-datafusion-ffi = "54.0.0"
+# Only used by the optional `ballista` offload module (`execution::ffi` /
+# `execution::fragment`); activated by the `ballista` feature so the default
+# `libcomet` build links no `datafusion-ffi`.
+datafusion-ffi = { version = "54.0.0", optional = true }
 # Only used by the optional `ballista` offload module (extension codecs +
 # physical-plan (de)serialization); activated by the `ballista` feature.
 datafusion-proto = { version = "54.0.0", optional = true }
@@ -124,6 +127,7 @@ ballista = [
     "dep:ballista-scheduler",
     "dep:ballista-executor",
     "dep:datafusion-proto",
+    "dep:datafusion-ffi",
 ]
 
 # exclude optional packages from cargo machete verifications

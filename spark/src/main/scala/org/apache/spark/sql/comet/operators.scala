@@ -513,6 +513,24 @@ object CometExec {
         s"Comet Ballista two-stage (R2) offload: could not identify the final-aggregate block " +
           s"above the exchange:\n$root"))
 
+    // The native side hashes block1's leading `numGroupKeys` output columns to repartition across
+    // the shuffle, which is correct ONLY when block1 is a partial `HashAggregate` (output layout
+    // `[groupKeys..., aggStates...]`) and block2 the matching final `HashAggregate`. A different
+    // single-hash-exchange shape (e.g. a `... OVER (PARTITION BY k)` window) would hash the wrong
+    // columns and silently return wrong results, so reject anything else rather than offload it.
+    (block1, block2) match {
+      case (b1: CometHashAggregateExec, b2: CometHashAggregateExec)
+          if b1.modes.contains(Partial) && b2.modes.contains(Final) &&
+            b1.groupingExpressions.length == numGroupKeys =>
+      // ok: partial -> hash-shuffle -> final aggregate, grouping-key width matches the exchange.
+      case _ =>
+        throw new UnsupportedOperationException(
+          "Comet Ballista two-stage (R2) offload requires a partial HashAggregate below the hash " +
+            s"exchange and a final HashAggregate above it (grouping keys: $numGroupKeys); found " +
+            s"block1=${block1.nodeName}, block2=${block2.nodeName}. Other single-hash-exchange " +
+            s"shapes (e.g. a window PARTITION BY) are not supported:\n$root")
+    }
+
     val block1Bytes = injectScanFiles(root, block1)
     val block2Bytes = block2.serializedPlanOpt.plan.getOrElse(
       throw new UnsupportedOperationException(
@@ -564,6 +582,16 @@ object CometExec {
     val planBytes = boundary.serializedPlanOpt.plan.getOrElse(
       throw new UnsupportedOperationException(
         s"Comet Ballista offload: the native plan block carries no serialized plan:\n$root"))
+    // Only `CometNativeScanExec` leaves have their files injected below; an Iceberg native scan
+    // carries its splits differently (see `CometIcebergNativeScanExec.serializedPartitionData`)
+    // and would be shipped to Ballista with no files to read, silently returning zero rows. Reject.
+    val icebergScans = boundary.collect { case s: CometIcebergNativeScanExec => s }
+    if (icebergScans.nonEmpty) {
+      throw new UnsupportedOperationException(
+        "Comet Ballista offload does not support Iceberg native scans " +
+          s"(${icebergScans.size} CometIcebergNativeScanExec leaves found); only " +
+          s"CometNativeScanExec leaves can be offloaded:\n$root")
+    }
     val nativeScans = boundary.collect { case s: CometNativeScanExec => s }
     if (nativeScans.isEmpty) {
       planBytes
