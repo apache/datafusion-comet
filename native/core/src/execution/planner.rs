@@ -130,8 +130,9 @@ use datafusion_comet_proto::{
 use datafusion_comet_spark_expr::{
     jvm_udf::JvmScalarUdfExpr, ArrayInsert, Avg, AvgDecimal, Cast, CheckOverflow, Correlation,
     Covariance, CreateNamedStruct, DecimalRescaleCheckOverflow, GetArrayStructFields,
-    GetStructField, HllSketchAgg, IfExpr, ListExtract, NormalizeNaNAndZero, SparkCastOptions,
-    Stddev, SumDecimal, ToJson, UnboundColumn, Variance, WideDecimalBinaryExpr, WideDecimalOp,
+    GetStructField, HllSketchAgg, HllUnionAgg, IfExpr, ListExtract, NormalizeNaNAndZero,
+    SparkCastOptions, Stddev, SumDecimal, ToJson, UnboundColumn, Variance, WideDecimalBinaryExpr,
+    WideDecimalOp,
 };
 use itertools::Itertools;
 use jni::objects::{Global, JObject};
@@ -2658,10 +2659,12 @@ impl PhysicalPlanner {
                 let func = AggregateUDF::new_from_impl(SparkCollectSet::new());
                 Self::create_aggr_func_expr("collect_set", schema, vec![child], func)
             }
-            // hll_union_agg's native accumulator + planner arm is wired up in a follow-on task.
-            AggExprStruct::HllUnionAgg(_) => Err(ExecutionError::GeneralError(
-                "hll_union_agg is not yet supported".to_string(),
-            )),
+            AggExprStruct::HllUnionAgg(expr) => {
+                let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
+                let func =
+                    AggregateUDF::new_from_impl(HllUnionAgg::new(expr.allow_different_lg_config_k));
+                Self::create_aggr_func_expr("hll_union_agg", schema, vec![child], func)
+            }
         }
     }
 
