@@ -3108,7 +3108,7 @@ class CometIcebergNativeSuite
         // that no ReusedExchangeExec merged the branches.
         assert(
           collectIcebergNativeScans(cometPlan).length == 2,
-          s"Expected 2 CometIcebergNativeScanExec (one per branch) but found " +
+          "Expected 2 CometIcebergNativeScanExec (one per branch) but found " +
             s"${collectIcebergNativeScans(cometPlan).length}. Plan:\n$cometPlan")
         assert(
           collect(cometPlan) { case r: ReusedExchangeExec => r }.isEmpty,
