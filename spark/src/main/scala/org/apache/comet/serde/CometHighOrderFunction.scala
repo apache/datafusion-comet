@@ -21,7 +21,7 @@ package org.apache.comet.serde
 
 import scala.jdk.CollectionConverters._
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, HigherOrderFunction, LambdaFunction => SparkLambdaFunction, NamedLambdaVariable => SparkNamedLambdaVariable}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, HigherOrderFunction, LambdaFunction => SparkLambdaFunction, NamedLambdaVariable => SparkNamedLambdaVariable}
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
@@ -47,11 +47,9 @@ case class CometHighOrderFunction[T <: HigherOrderFunction](name: String)
 
   private val UNSUPPORTED_LAMBDA_TYPE = "lambda functions must be LambdaFunction"
   private val UNSUPPORTED_LAMBDA_PARAM_TYPE = "lambda arguments must be NamedLambdaVariables"
-  private val UNARY_FUNCTION_EXPECTED =
-    "DataFusion higher-order functions support only 1 argument"
 
   override def getUnsupportedReasons(): Seq[String] =
-    Seq(UNSUPPORTED_LAMBDA_TYPE, UNARY_FUNCTION_EXPECTED, UNSUPPORTED_LAMBDA_PARAM_TYPE)
+    Seq(UNSUPPORTED_LAMBDA_TYPE, UNSUPPORTED_LAMBDA_PARAM_TYPE)
 
   private def nativeUnsupportedReason(expr: T): Option[String] = {
     if (!expr.functions.forall(_.isInstanceOf[SparkLambdaFunction])) {

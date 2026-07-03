@@ -22,7 +22,7 @@ package org.apache.comet.serde
 import scala.annotation.tailrec
 import scala.jdk.CollectionConverters._
 
-import org.apache.spark.sql.catalyst.expressions.{And, ArrayAggregate, ArrayAppend, ArrayContains, ArrayExcept, ArrayExists, ArrayFilter, ArrayForAll, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayMin, ArrayPosition, ArrayRemove, ArrayRepeat, ArraySort, ArraysOverlap, ArraysZip, ArrayTransform, ArrayUnion, Attribute, Cast, CreateArray, ElementAt, EmptyRow, Expression, Flatten, GetArrayItem, IsNotNull, Literal, Reverse, Sequence, Size, Slice, SortArray, ZipWith}
+import org.apache.spark.sql.catalyst.expressions.{And, ArrayAggregate, ArrayAppend, ArrayContains, ArrayExcept, ArrayExists, ArrayFilter, ArrayForAll, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayMin, ArrayPosition, ArrayRemove, ArrayRepeat, ArraySort, ArraysOverlap, ArraysZip, ArrayTransform, ArrayUnion, Attribute, Cast, CreateArray, ElementAt, EmptyRow, Expression, Flatten, GetArrayItem, IsNotNull, LambdaFunction, Literal, Reverse, Sequence, Size, Slice, SortArray, ZipWith}
 import org.apache.spark.sql.catalyst.util.GenericArrayData
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
@@ -724,6 +724,31 @@ object CometFlatten extends CometExpressionSerde[Flatten] with ArraysBase {
 
 object CometArrayFilter extends CometHighOrderFunction[ArrayFilter]("array_filter") {
 
+  private val UNARY_FUNCTION_EXPECTED =
+    "The array_filter function in DataFusion is limited to one lambda parameter"
+
+  override def getUnsupportedReasons(): Seq[String] = Seq(UNARY_FUNCTION_EXPECTED)
+
+  private def isUnaryLambdaFunction(expr: ArrayFilter): Boolean = {
+    expr.function match {
+      case function: LambdaFunction =>
+        function.arguments.length == 1
+      case _ =>
+        false
+    }
+  }
+
+  override def getSupportLevel(expr: ArrayFilter): SupportLevel = {
+    if (!isUnaryLambdaFunction(expr)) {
+      if (CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.get()) {
+        return Compatible()
+      } else {
+        return Unsupported(Some(UNARY_FUNCTION_EXPECTED))
+      }
+    }
+    super.getSupportLevel(expr)
+  }
+
   override def convert(
       expr: ArrayFilter,
       inputs: Seq[Attribute],
@@ -733,6 +758,8 @@ object CometArrayFilter extends CometHighOrderFunction[ArrayFilter]("array_filte
         // Fast path: `array_compact` lowers to `filter(arr, x -> x is not null)`. Use the native
         // array_compact serde to avoid the per-batch JNI cost of the codegen dispatcher.
         CometArrayCompact.convert(expr, inputs, binding)
+      case _ if !isUnaryLambdaFunction(expr) =>
+        CometScalaUDF.emitJvmCodegenDispatch(expr, inputs, binding)
       case _ =>
         super.convert(expr, inputs, binding)
     }

@@ -15,23 +15,7 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
-statement
-CREATE TABLE test_array_filter(arr array<int>, threshold int) USING parquet
+-- Config: spark.comet.exec.scalaUDF.codegen.enabled=false
 
-statement
-INSERT INTO test_array_filter VALUES (array(1, 2, 3, 4, 5), 10), (array(-1, 0, 1, NULL), 10), (array(NULL, NULL), 10), (array(10), 10), (NULL, 10), (array(), 10)
-
-query
-SELECT filter(arr, x -> x > 2) FROM test_array_filter
-
-query
-SELECT filter(arr, x -> x >= 0) FROM test_array_filter
-
-query
-SELECT filter(filter(arr, x -> x < threshold), y -> y > 0) FROM test_array_filter
-
-query
-SELECT filter(filter(arr, x -> x < threshold), y -> y > 0) FROM test_array_filter
-
-query
-SELECT filter(arr, (x, i) -> i > 0) FROM test_array_filter
+query expect_fallback(The array_filter function in DataFusion is limited to one lambda parameter)
+SELECT filter(array(1, 2), (x, i) -> i > 0)

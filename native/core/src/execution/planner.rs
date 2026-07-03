@@ -3171,12 +3171,10 @@ impl PhysicalPlanner {
         lambda: &LambdaFunction,
         input_schema: &SchemaRef,
     ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
-        println!("{}", input_schema);
         let mut body_fields: Vec<Arc<Field>> =
             input_schema.fields().iter().map(Arc::clone).collect();
 
         for arg in &lambda.args {
-            println!("{}", arg.name);
             let data_type = arg.data_type.as_ref().ok_or_else(|| {
                 DataFusionError::Internal("lambda variable without data type".to_string())
             })?;
@@ -3187,7 +3185,6 @@ impl PhysicalPlanner {
                 arg.nullable,
             )));
         }
-        println!("{}", body_fields.len());
 
         let body_schema = Arc::new(Schema::new(
             body_fields
