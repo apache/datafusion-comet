@@ -3732,11 +3732,17 @@ class CometExecSuite extends CometTestBase {
           .parquet(dir.toString)
 
         val df = spark.read.parquet(dir.toString)
-        assert(df.count() == expected, "df.count() should match number of written rows")
+        // Materialize the count query explicitly so we can inspect the plan
+        // that runs — Dataset.count() executes groupBy().count() internally
+        // but doesn't expose that plan
+        val countDf = df.groupBy().count()
+        assert(
+          countDf.collect().head.getLong(0) == expected,
+          "df.count() should match number of written rows")
 
-        // Ensuring that this test actually follows the SparkColumnarArrowReader code path
-        // guarded by the fix, so we can catch future regressions.
-        val sparkToColumnar = collect(df.queryExecution.executedPlan) {
+        // Ensure this test actually exercises the SparkColumnarArrowReader code path
+        // guarded by the fix, so future regressions are caught.
+        val sparkToColumnar = collect(countDf.queryExecution.executedPlan) {
           case s: CometSparkToColumnarExec => s
         }
         assert(sparkToColumnar.nonEmpty, "Expected CometSparkToColumnarExec in the executed plan")
