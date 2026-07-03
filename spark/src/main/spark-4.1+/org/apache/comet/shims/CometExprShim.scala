@@ -27,6 +27,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.TimeType
 
 import org.apache.comet.expressions.CometEvalMode
+import org.apache.comet.serde.CometScalaUDF
 import org.apache.comet.serde.ExprOuterClass.{BinaryOutputStyle, Expr}
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithFallbackReason, scalarFunctionExprToProtoWithReturnType}
 
@@ -45,6 +46,22 @@ trait CometExprShim extends Spark4xCometExprShim {
       case _ => BinaryOutputStyle.HEX_DISCRETE
     }
   }
+
+  // Function names on `DateTimeUtils` reached via `StaticInvoke` from the Spark 4.1 `TIME` family of
+  // `RuntimeReplaceable` expressions (`HoursOfTime`, `MinutesOfTime`, `SecondsOfTime`,
+  // `SecondsOfTimeWithFraction`, `TimeAddInterval`, `SubtractTimes`, `TimeDiff`, `TimeTrunc`).
+  // Each of these is codegen-safe (the replacement itself is a `StaticInvoke` with a proper
+  // `doGenCode`) but has no native lowering yet, so we route them through the JVM codegen
+  // dispatcher to keep the enclosing projection native.
+  private val timeCodegenDispatchFunctions: Set[String] = Set(
+    "getHoursOfTime",
+    "getMinutesOfTime",
+    "getSecondsOfTime",
+    "getSecondsOfTimeWithFraction",
+    "timeAddInterval",
+    "subtractTimes",
+    "timeDiff",
+    "timeTrunc")
 
   // Spark 4.1 introduced TimeType and the make_time / to_time / try_to_time functions.
   // Their planner forms differ from the shared 4.x patterns (DateTimeUtils.makeTime
@@ -65,6 +82,14 @@ trait CometExprShim extends Spark4xCometExprShim {
         val optExpr =
           scalarFunctionExprToProtoWithReturnType("make_time", s.dataType, true, childExprs: _*)
         optExprWithFallbackReason(optExpr, expr, s.arguments: _*)
+
+      // Route the other Spark 4.1 TIME `StaticInvoke` forms through the JVM codegen dispatcher.
+      // `emitJvmCodegenDispatch` runs Spark's own `doGenCode` inside the Comet pipeline, so the
+      // projection stays native while behavior matches Spark exactly.
+      case s: StaticInvoke
+          if s.staticObject == classOf[DateTimeUtils.type] &&
+            timeCodegenDispatchFunctions.contains(s.functionName) =>
+        CometScalaUDF.emitJvmCodegenDispatch(s, inputs, binding)
 
       case i: Invoke =>
         (i.targetObject, i.functionName, i.arguments) match {

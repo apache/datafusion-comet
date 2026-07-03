@@ -25,9 +25,9 @@ import org.apache.spark.sql.types.{ArrayType, DataType, DataTypes, DecimalType, 
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, withFallbackReason}
-import org.apache.comet.serde.{CometExpressionSerde, Compatible, ExprOuterClass, Incompatible, SupportLevel, Unsupported}
+import org.apache.comet.serde.{CometExpressionSerde, CometScalaUDF, Compatible, ExprOuterClass, Incompatible, SupportLevel, Unsupported}
 import org.apache.comet.serde.ExprOuterClass.Expr
-import org.apache.comet.serde.QueryPlanSerde.{evalModeToProto, exprToProtoInternal, serializeDataType}
+import org.apache.comet.serde.QueryPlanSerde.{evalModeToProto, exprToProtoInternal, isTimeType, serializeDataType}
 import org.apache.comet.shims.CometExprShim
 
 object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
@@ -77,10 +77,18 @@ object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
       // (see `convert`), so the cast never executes natively and the result matches Spark by
       // definition. `CometLiteral` then validates the resulting literal's data type.
       Compatible()
+    } else if (involvesTimeType(cast)) {
+      // Casts to/from TIME have no native lowering yet. `convert` routes them through the JVM
+      // codegen dispatcher instead of falling the projection back to Spark; report `Compatible`
+      // here so the dispatch path is taken.
+      Compatible()
     } else {
       isSupported(cast.child.dataType, cast.dataType, cast.timeZoneId, evalMode(cast))
     }
   }
+
+  private def involvesTimeType(cast: Cast): Boolean =
+    isTimeType(cast.child.dataType) || isTimeType(cast.dataType)
 
   override def convert(
       cast: Cast,
@@ -90,6 +98,11 @@ object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
     cast.child match {
       case _: Literal =>
         exprToProtoInternal(Literal.create(cast.eval(), cast.dataType), inputs, binding)
+      case _ if involvesTimeType(cast) =>
+        // Casts to/from TIME (`TimeType(_)` <-> string/integral/decimal, precision changes) all
+        // have full Spark codegen but no native lowering. Route through the JVM codegen
+        // dispatcher so the enclosing projection stays native.
+        CometScalaUDF.emitJvmCodegenDispatch(cast, inputs, binding)
       case _ =>
         if (isAlwaysCastToNull(cast.child.dataType, cast.dataType, cometEvalMode)) {
           exprToProtoInternal(Literal.create(null, cast.dataType), inputs, binding)

@@ -751,6 +751,12 @@ case class CometScanTypeChecker() extends DataTypeSupport with CometTypeShim {
           "native execution if your data does not contain unsigned small integers. " +
           CometConf.COMPAT_GUIDE
         false
+      case dt if isTimeType(dt) =>
+        // The native Parquet reader has not been taught to decode the TIME logical type into
+        // an Arrow Time64(NANOSECOND) vector, so fall back to Spark for scans that expose one.
+        fallbackReasons += s"Unsupported $name of type $dt (native Parquet scan does not " +
+          "support TIME)"
+        false
       case dt if isStringCollationType(dt) =>
         // we don't need specific support for collation in scans, but this
         // is a convenient place to force the whole query to fall back to Spark for now

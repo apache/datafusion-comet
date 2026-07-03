@@ -24,8 +24,9 @@ import scala.collection.mutable.ListBuffer
 import org.apache.spark.sql.types._
 
 import org.apache.comet.DataTypeSupport.{ARRAY_ELEMENT, MAP_KEY, MAP_VALUE}
+import org.apache.comet.shims.CometTypeShim
 
-trait DataTypeSupport {
+trait DataTypeSupport extends CometTypeShim {
 
   /**
    * Checks if this schema is supported by checking if each field in the schema is supported.
@@ -52,6 +53,8 @@ trait DataTypeSupport {
       case BooleanType | ByteType | ShortType | IntegerType | LongType | FloatType | DoubleType |
           BinaryType | StringType | _: DecimalType | DateType | TimestampType |
           TimestampNTZType =>
+        true
+      case dt if isTimeType(dt) =>
         true
       case StructType(fields) =>
         fields.nonEmpty && fields.forall(f =>
