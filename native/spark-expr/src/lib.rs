@@ -59,6 +59,8 @@ pub mod jvm_udf;
 
 mod conditional_funcs;
 mod conversion_funcs;
+mod hll_scalar;
+pub use hll_scalar::spark_hll_sketch_estimate;
 mod map_funcs;
 pub use map_funcs::spark_map_sort;
 mod math_funcs;
