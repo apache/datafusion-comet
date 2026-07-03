@@ -28,7 +28,6 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.BinaryType
 
 import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
-import org.apache.comet.serde.CometMapFromEntries
 import org.apache.comet.testing.{DataGenOptions, ParquetGenerator, SchemaGenOptions}
 
 class CometMapExpressionSuite extends CometTestBase {
@@ -126,16 +125,15 @@ class CometMapExpressionSuite extends CometTestBase {
     }
   }
 
-  test("fallback for size with map input") {
+  test("size with map input") {
     withTempDir { dir =>
       withTempView("t1") {
         val path = new Path(dir.toURI.toString, "test.parquet")
         makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = true, 100)
         spark.read.parquet(path.toString).createOrReplaceTempView("t1")
 
-        checkSparkAnswerAndFallbackReason(
-          sql("SELECT size(case when _2 < 0 then map(_8, _9) else map() end) from t1"),
-          "Unsupported data type MapType")
+        checkSparkAnswer(
+          sql("SELECT size(case when _2 < 0 then map(_8, _9) else map() end) from t1"))
       }
     }
   }
@@ -248,18 +246,15 @@ class CometMapExpressionSuite extends CometTestBase {
     }
   }
 
-  test("map_from_entries - fallback for binary type") {
-    def fallbackReason(reason: String) = reason
+  test("map_from_entries - binary type routes through codegen dispatcher") {
     val table = "t2"
     withTable(table) {
       sql(
         s"create table $table using parquet as select cast(array() as array<binary>) as c1 from range(10)")
-      checkSparkAnswerAndFallbackReason(
-        sql(s"select map_from_entries(array(struct(c1, 0))) from $table"),
-        fallbackReason(CometMapFromEntries.keyUnsupportedReason))
-      checkSparkAnswerAndFallbackReason(
-        sql(s"select map_from_entries(array(struct(0, c1))) from $table"),
-        fallbackReason(CometMapFromEntries.valueUnsupportedReason))
+      checkSparkAnswerAndOperator(
+        sql(s"select map_from_entries(array(struct(c1, 0))) from $table"))
+      checkSparkAnswerAndOperator(
+        sql(s"select map_from_entries(array(struct(0, c1))) from $table"))
     }
   }
 
