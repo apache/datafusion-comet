@@ -294,6 +294,18 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
+  val COMET_EXEC_BALLISTA_SCHEDULER_URL: ConfigEntry[String] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.ballista.scheduler.url")
+      .category(CATEGORY_EXEC)
+      .doc("EXPERIMENTAL: When the Comet Ballista offload is enabled, the URL of an external " +
+        "Ballista scheduler (e.g. `http://host:50050`) to submit the distributed plan to. When " +
+        "empty (the default), the plan is submitted to an in-process standalone Ballista cluster " +
+        "on the driver instead. The external scheduler and its executors must be the " +
+        "Comet-flavored `comet-ballista-scheduler` / `comet-ballista-executor` binaries so the " +
+        "shipped Comet plan nodes can be decoded there.")
+      .stringConf
+      .createWithDefault("")
+
   val COMET_NATIVE_COLUMNAR_TO_ROW_ENABLED: ConfigEntry[Boolean] =
     conf(s"$COMET_EXEC_CONFIG_PREFIX.columnarToRow.native.enabled")
       .category(CATEGORY_EXEC)

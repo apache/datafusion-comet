@@ -305,12 +305,22 @@ async fn start_standalone_from_state(state: &SessionState) -> Result<String, Str
     Ok(scheduler_url)
 }
 
-/// Build and submit the R2 two-stage plan on an in-process standalone Ballista
-/// cluster, returning the collected Arrow result batches plus the result schema.
+/// Build and submit the R2 two-stage plan to a Ballista cluster, returning the
+/// collected Arrow result batches plus the result schema.
+///
+/// If `scheduler_url` is empty, an **in-process standalone** cluster (scheduler +
+/// executor spun up inside this process) is used, as before. If it is non-empty
+/// (e.g. `http://localhost:50050`), the plan is submitted to that **external**
+/// scheduler instead — a genuinely separate scheduler+executor deployment
+/// (`comet-ballista-scheduler` / `comet-ballista-executor`). Either way the plan
+/// is the identical `CometFragment → hash-shuffle → CometFragment`.
 ///
 /// The Comet logical+physical codecs are registered on the SessionConfig so both
 /// the `CometFragmentExec` nodes and Ballista's own shuffle operators survive
-/// serialization to the scheduler/executor. The plan is submitted through T1's
+/// serialization to the scheduler/executor. On the external path the codecs must
+/// *also* be registered on the scheduler and executor processes (the Comet-
+/// flavored binaries do this via their config overrides) so the shipped Comet
+/// nodes can be decoded there. The plan is submitted through T1's
 /// `execute_physical_plan`, which fetches **all** output partitions of the final
 /// stage (not just partition 0), so the returned batches cover every group.
 pub fn execute_two_stage(
@@ -318,6 +328,7 @@ pub fn execute_two_stage(
     block2_proto: &[u8],
     num_group_keys: usize,
     num_partitions: usize,
+    scheduler_url: &str,
 ) -> Result<(SchemaRef, Vec<RecordBatch>), String> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -341,7 +352,16 @@ pub fn execute_two_stage(
         let plan = build_two_stage_plan(block1_proto, block2_proto, num_group_keys, n)?;
         let schema = plan.schema();
 
-        let scheduler_url = start_standalone_from_state(&state).await?;
+        // Empty URL => in-process standalone; non-empty => external cluster. For
+        // the external path the scheduler creates the session from the submitted
+        // settings + its own (Comet) codecs, so we do not start a local cluster.
+        let scheduler_url = if scheduler_url.is_empty() {
+            eprintln!("[comet-ballista R2] submitting to in-process standalone cluster");
+            start_standalone_from_state(&state).await?
+        } else {
+            eprintln!("[comet-ballista R2] submitting to external cluster at {scheduler_url}");
+            scheduler_url.to_string()
+        };
 
         let session_config = state.config().clone();
         let codec = CometPhysicalCodec::default();
@@ -377,11 +397,17 @@ pub unsafe fn submit_and_export_distributed(
     block2_proto: &[u8],
     num_group_keys: usize,
     num_partitions: usize,
+    scheduler_url: &str,
     array_addrs: &[i64],
     schema_addrs: &[i64],
 ) -> Result<i64, String> {
-    let (schema, batches) =
-        execute_two_stage(block1_proto, block2_proto, num_group_keys, num_partitions)?;
+    let (schema, batches) = execute_two_stage(
+        block1_proto,
+        block2_proto,
+        num_group_keys,
+        num_partitions,
+        scheduler_url,
+    )?;
     // The final stage's partitions are concatenated into one batch so the JVM
     // imports exactly one set of column structs (same contract as R1).
     let batch = concat_batches(&schema, &batches)
@@ -451,7 +477,7 @@ pub unsafe fn submit_and_export(
 mod jni_entry {
     use super::{build_test_proto, submit_and_export, submit_and_export_distributed};
     use crate::errors::{try_unwrap_or_throw, CometError};
-    use jni::objects::{JByteArray, JClass, JLongArray, ReleaseMode};
+    use jni::objects::{JByteArray, JClass, JLongArray, JString, ReleaseMode};
     use jni::sys::{jbyteArray, jint, jlong};
     use jni::EnvUnowned;
 
@@ -524,12 +550,16 @@ mod jni_entry {
         block2: JByteArray,
         num_group_keys: jint,
         num_partitions: jint,
+        scheduler_url: JString,
         array_addrs: JLongArray,
         schema_addrs: JLongArray,
     ) -> jlong {
         try_unwrap_or_throw(&e, |env| {
             let block1_bytes = env.convert_byte_array(block1)?;
             let block2_bytes = env.convert_byte_array(block2)?;
+            // Empty => in-process standalone (as before); non-empty (e.g.
+            // "http://host:50050") => submit to that external scheduler.
+            let scheduler_url: String = scheduler_url.try_to_string(env)?;
 
             let arrays = unsafe { array_addrs.get_elements(env, ReleaseMode::NoCopyBack)? };
             let schemas = unsafe { schema_addrs.get_elements(env, ReleaseMode::NoCopyBack)? };
@@ -540,6 +570,7 @@ mod jni_entry {
                     &block2_bytes,
                     num_group_keys as usize,
                     num_partitions as usize,
+                    &scheduler_url,
                     &arrays,
                     &schemas,
                 )

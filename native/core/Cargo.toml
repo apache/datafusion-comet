@@ -135,6 +135,21 @@ name = "comet"
 # "rlib" is for benchmarking with criterion.
 crate-type = ["cdylib", "rlib"]
 
+# Comet-flavored Ballista scheduler/executor binaries. They register Comet's
+# extension codecs (which the stock Ballista CLIs hardcode to None) so a
+# distributed Comet plan survives (de)serialization across a real external
+# cluster. Only built with `--features ballista`, so the default build stays
+# Ballista-free.
+[[bin]]
+name = "comet-ballista-scheduler"
+path = "src/bin/comet-ballista-scheduler.rs"
+required-features = ["ballista"]
+
+[[bin]]
+name = "comet-ballista-executor"
+path = "src/bin/comet-ballista-executor.rs"
+required-features = ["ballista"]
+
 [[bench]]
 name = "array_element_append"
 harness = false

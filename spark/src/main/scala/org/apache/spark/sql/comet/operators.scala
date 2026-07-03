@@ -519,6 +519,9 @@ object CometExec {
         s"Comet Ballista two-stage (R2) offload: the final-aggregate block carries no " +
           s"serialized plan:\n$root"))
 
+    // Empty => in-process standalone Ballista; non-empty => submit to that external scheduler.
+    val schedulerUrl = CometConf.COMET_EXEC_BALLISTA_SCHEDULER_URL.get()
+
     val numCols = block2.output.length
     val nativeUtil = new NativeUtil()
     try {
@@ -532,6 +535,7 @@ object CometExec {
             block2Bytes,
             numGroupKeys,
             numPartitions,
+            schedulerUrl,
             arrayAddrs,
             schemaAddrs)) match {
         case Some(batch) =>

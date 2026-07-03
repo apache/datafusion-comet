@@ -85,6 +85,9 @@ class NativeBallista {
    *   number of grouping columns (the leading columns of block1's output to hash on)
    * @param numPartitions
    *   number of shuffle partitions
+   * @param schedulerUrl
+   *   the external Ballista scheduler URL (e.g. `http://host:50050`) to submit the plan to; an
+   *   empty string submits to an in-process standalone Ballista cluster instead
    * @param arrayAddrs
    *   memory addresses of one `ArrowArray` struct per output column of `block2`
    * @param schemaAddrs
@@ -97,6 +100,7 @@ class NativeBallista {
       block2: Array[Byte],
       numGroupKeys: Int,
       numPartitions: Int,
+      schedulerUrl: String,
       arrayAddrs: Array[Long],
       schemaAddrs: Array[Long]): Long
 }
