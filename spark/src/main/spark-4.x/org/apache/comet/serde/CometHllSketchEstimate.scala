@@ -25,6 +25,14 @@ import org.apache.spark.sql.types.LongType
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithFallbackReason, scalarFunctionExprToProtoWithReturnType}
 
 object CometHllSketchEstimate extends CometExpressionSerde[HllSketchEstimate] {
+  private val incompatReason =
+    "Comet uses a Rust DataSketches port; HLL estimates may differ slightly from Spark."
+
+  override def getIncompatibleReasons(): Seq[String] = Seq(incompatReason)
+
+  override def getSupportLevel(expr: HllSketchEstimate): SupportLevel =
+    Incompatible(Some(incompatReason))
+
   override def convert(
       expr: HllSketchEstimate,
       inputs: Seq[Attribute],

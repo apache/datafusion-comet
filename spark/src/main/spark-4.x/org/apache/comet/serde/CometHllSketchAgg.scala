@@ -41,9 +41,14 @@ object CometHllSketchAgg extends CometAggregateExpressionSerde[HllSketchAgg] {
     "The lgConfigK argument must be a foldable literal."
   private val inputTypeReason =
     "Only int, long, string, and binary input types are supported."
+  private val incompatReason =
+    "Comet uses a Rust DataSketches port; HLL sketch bytes and estimates may differ " +
+      "slightly from Spark."
 
   override def getUnsupportedReasons(): Seq[String] =
     Seq(nonLiteralLgConfigKReason, inputTypeReason)
+
+  override def getIncompatibleReasons(): Seq[String] = Seq(incompatReason)
 
   override def getSupportLevel(expr: HllSketchAgg): SupportLevel = {
     if (!expr.right.foldable) {
@@ -59,7 +64,7 @@ object CometHllSketchAgg extends CometAggregateExpressionSerde[HllSketchAgg] {
     }
     expr.left.dataType match {
       case IntegerType | LongType | StringType | BinaryType =>
-        Compatible(None)
+        Incompatible(Some(incompatReason))
       case _ => Unsupported(Some(inputTypeReason))
     }
   }
