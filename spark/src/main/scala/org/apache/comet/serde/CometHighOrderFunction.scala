@@ -25,7 +25,7 @@ import org.apache.spark.sql.catalyst.expressions.{Attribute, HigherOrderFunction
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
-import org.apache.comet.serde.CometHighOrderFunction.nlv2Proto
+import org.apache.comet.serde.CometHighOrderFunction.namedLambdaVariable2Proto
 import org.apache.comet.serde.ExprOuterClass.{HigherOrderFunc, LambdaFunction, NamedLambdaVariable}
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, serializeDataType}
 
@@ -57,10 +57,6 @@ case class CometHighOrderFunction[T <: HigherOrderFunction](name: String)
     if (!expr.functions.forall(_.isInstanceOf[SparkLambdaFunction])) {
       return Some(UNSUPPORTED_LAMBDA_TYPE)
     }
-    val lambdaFunctions = expr.functions.map(_.asInstanceOf[SparkLambdaFunction])
-    if (!lambdaFunctions.forall(_.arguments.length == 1)) {
-      return Some(UNARY_FUNCTION_EXPECTED)
-    }
     if (!expr.functions
         .flatMap(_.asInstanceOf[SparkLambdaFunction].arguments)
         .forall(_.isInstanceOf[SparkNamedLambdaVariable])) {
@@ -85,7 +81,7 @@ case class CometHighOrderFunction[T <: HigherOrderFunction](name: String)
     val nativeAvailable =
       nativeUnsupportedReason(
         expr).isEmpty && CometConf.COMET_EXEC_HIGHER_ORDER_FUNCTION_NATIVE_ENABLED.get()
-    val hofProto = hof2Proto(expr, inputs, binding)
+    val hofProto = highOrderFunction2Proto(expr, inputs, binding)
     if (nativeAvailable && hofProto.isDefined) {
       hofProto
     } else {
@@ -93,24 +89,26 @@ case class CometHighOrderFunction[T <: HigherOrderFunction](name: String)
     }
   }
 
-  private def hof2Proto(
+  private def highOrderFunction2Proto(
       expr: T,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     val argumentsProto = expr.arguments.map(exprToProtoInternal(_, inputs, binding))
     val functionsProto = expr.functions
-      .map(_.asInstanceOf[SparkLambdaFunction])
-      .map { slf =>
-        exprToProtoInternal(slf.function, inputs, binding)
+      .map { func =>
+        val sparkLambdaFunction = func.asInstanceOf[SparkLambdaFunction]
+        exprToProtoInternal(sparkLambdaFunction.function, inputs, binding)
           .flatMap { bodyProto =>
-            val nlvProto = slf.arguments
-              .map(_.asInstanceOf[SparkNamedLambdaVariable])
-              .map(nlv2Proto)
-            if (nlvProto.forall(_.isDefined)) {
+            val namedLambdaVariablesProto = sparkLambdaFunction.arguments
+              .map { arg =>
+                val sparkNamedLambdaVariable = arg.asInstanceOf[SparkNamedLambdaVariable]
+                namedLambdaVariable2Proto(sparkNamedLambdaVariable)
+              }
+            if (namedLambdaVariablesProto.forall(_.isDefined)) {
               Some(
                 LambdaFunction
                   .newBuilder()
-                  .addAllArgs(nlvProto.map(_.get).asJava)
+                  .addAllArgs(namedLambdaVariablesProto.map(_.get).asJava)
                   .setBody(bodyProto)
                   .build())
             } else {
@@ -134,7 +132,7 @@ case class CometHighOrderFunction[T <: HigherOrderFunction](name: String)
 }
 
 object CometHighOrderFunction {
-  def nlv2Proto(nlv: SparkNamedLambdaVariable): Option[NamedLambdaVariable] = {
+  def namedLambdaVariable2Proto(nlv: SparkNamedLambdaVariable): Option[NamedLambdaVariable] = {
     val dataTypeProto = serializeDataType(nlv.dataType)
     if (dataTypeProto.isEmpty) {
       withFallbackReason(nlv, s"Unsupported datatype: ${nlv.dataType}")
@@ -155,11 +153,13 @@ object CometNamedLambdaVariable extends CometExpressionSerde[SparkNamedLambdaVar
       expr: SparkNamedLambdaVariable,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    CometHighOrderFunction.nlv2Proto(expr).map { nlvProto =>
-      ExprOuterClass.Expr
-        .newBuilder()
-        .setNamedLambdaVariable(nlvProto)
-        .build()
-    }
+    CometHighOrderFunction
+      .namedLambdaVariable2Proto(expr)
+      .map { nlvProto =>
+        ExprOuterClass.Expr
+          .newBuilder()
+          .setNamedLambdaVariable(nlvProto)
+          .build()
+      }
   }
 }
