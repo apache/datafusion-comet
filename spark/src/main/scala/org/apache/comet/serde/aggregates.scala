@@ -22,7 +22,7 @@ package org.apache.comet.serde
 import scala.jdk.CollectionConverters._
 
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Literal}
-import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, Average, BitAndAgg, BitOrAgg, BitXorAgg, BloomFilterAggregate, CentralMomentAgg, CollectSet, Corr, Count, Covariance, CovPopulation, CovSample, First, Last, Max, Min, Percentile, StddevPop, StddevSamp, Sum, VariancePop, VarianceSamp}
+import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, Average, BitAndAgg, BitOrAgg, BitXorAgg, BloomFilterAggregate, CentralMomentAgg, CollectSet, Corr, Count, Covariance, CovPopulation, CovSample, First, Last, Max, MaxBy, Min, Percentile, StddevPop, StddevSamp, Sum, VariancePop, VarianceSamp}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{ByteType, DecimalType, DoubleType, IntegerType, LongType, NumericType, ShortType, StringType}
 
@@ -100,6 +100,60 @@ object CometMax extends CometAggregateExpressionSerde[Max] {
       None
     } else {
       withFallbackReason(aggExpr, child)
+      None
+    }
+  }
+}
+
+object CometMaxBy extends CometAggregateExpressionSerde[MaxBy] {
+
+  override def getCompatibleNotes(): Seq[String] = Seq(
+    "This function is non-deterministic when multiple rows share the maximum ordering value." +
+      " Results may differ from Spark in that case.")
+
+  override def getUnsupportedReasons(): Seq[String] = Seq(
+    "The value and ordering must both be fixed-length types (boolean, integral, floating-point," +
+      " decimal, date, or timestamp). A variable-length or nested type such as string, binary, or" +
+      " struct forces Spark's `SortAggregate`, which Comet does not accelerate, so the aggregate" +
+      " falls back to Spark.")
+
+  override def getSupportLevel(expr: MaxBy): SupportLevel = {
+    // Both the value and ordering must be fixed-length types. Spark only uses HashAggregate
+    // (the aggregate operator Comet accelerates) when the aggregation buffer is mutable; the
+    // buffer holds both the running value and the running ordering, so a variable-length type
+    // such as StringType in either position forces SortAggregate and falls back to Spark.
+    // The native side compares the ordering column via Arrow's row format, which supports all
+    // of these fixed-length orderable types.
+    if (!AggSerde.minMaxDataTypeSupported(expr.valueExpr.dataType)) {
+      Unsupported(Some(s"Unsupported value data type: ${expr.valueExpr.dataType}"))
+    } else if (!AggSerde.minMaxDataTypeSupported(expr.orderingExpr.dataType)) {
+      Unsupported(Some(s"Unsupported ordering data type: ${expr.orderingExpr.dataType}"))
+    } else {
+      Compatible()
+    }
+  }
+
+  override def convert(
+      aggExpr: AggregateExpression,
+      expr: MaxBy,
+      inputs: Seq[Attribute],
+      binding: Boolean,
+      conf: SQLConf): Option[ExprOuterClass.AggExpr] = {
+    val valueExpr = exprToProto(expr.valueExpr, inputs, binding)
+    val orderingExpr = exprToProto(expr.orderingExpr, inputs, binding)
+
+    if (valueExpr.isDefined && orderingExpr.isDefined) {
+      val builder = ExprOuterClass.MaxBy.newBuilder()
+      builder.setValue(valueExpr.get)
+      builder.setOrdering(orderingExpr.get)
+
+      Some(
+        ExprOuterClass.AggExpr
+          .newBuilder()
+          .setMaxBy(builder)
+          .build())
+    } else {
+      withFallbackReason(aggExpr, expr.valueExpr, expr.orderingExpr)
       None
     }
   }

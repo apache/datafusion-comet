@@ -146,6 +146,7 @@ message AggExpr {
     BloomFilterAgg bloomFilterAgg = 16;
     CollectSet collectSet = 17;
     Percentile percentile = 18;
+    MaxBy maxBy = 19;
   }
 
   // Optional filter expression for SQL FILTER (WHERE ...) clause.
@@ -275,6 +276,13 @@ enum BloomFilterVersion {
 message CollectSet {
   Expr child = 1;
   DataType datatype = 2;
+}
+
+message MaxBy {
+  // The value returned by the aggregate (associated with the maximum ordering).
+  Expr value = 1;
+  // The ordering expression whose maximum selects the returned value.
+  Expr ordering = 2;
 }
 
 enum EvalMode {

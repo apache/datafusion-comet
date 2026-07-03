@@ -95,7 +95,7 @@ The tables below list every Spark built-in expression with its current status.
 | `last_value` | ✅ |  |
 | `listagg` | 🔜 | String aggregation |
 | `max` | ✅ |  |
-| `max_by` | 🔜 | [#3841](https://github.com/apache/datafusion-comet/issues/3841) |
+| `max_by` | ✅ | Value and ordering must be fixed-length types |
 | `mean` | ✅ |  |
 | `median` | ✅ | Rewrites to `percentile(col, 0.5)`; falls back by default, opt-in via allowIncompatible ([#4719](https://github.com/apache/datafusion-comet/issues/4719)) |
 | `min` | ✅ |  |
