@@ -65,6 +65,10 @@ impl AggregateUDFImpl for HllUnionAgg {
     }
 }
 
+/// Default `lgMaxK` used by Spark's `new Union()` when constructing the empty
+/// union returned for a group that never absorbed any sketch.
+const DEFAULT_LG_K: u8 = 12;
+
 #[derive(Debug)]
 pub struct HllUnionAccumulator {
     // Spark's HllUnionAgg defers creating the Union until the first sketch is seen,
@@ -119,18 +123,31 @@ impl Accumulator for HllUnionAccumulator {
         Ok(())
     }
     fn evaluate(&mut self) -> Result<ScalarValue> {
+        // Spark's HllUnionAgg is declared non-nullable: an empty/all-null group
+        // still returns the serialized bytes of an empty `new Union()` (default
+        // lgMaxK), which estimates to 0, never NULL.
         match &self.union {
             Some(u) => Ok(ScalarValue::Binary(Some(u.to_sketch_bytes()))),
-            None => Ok(ScalarValue::Binary(None)),
+            None => Ok(ScalarValue::Binary(Some(
+                SparkHllUnion::new(DEFAULT_LG_K).to_sketch_bytes(),
+            ))),
         }
     }
     fn size(&self) -> usize {
+        // An HLL_8 sketch at lgConfigK=k can heap-allocate up to 1 << k bytes;
+        // account for that so memory reservation reflects actual usage.
         std::mem::size_of_val(self)
+            + self
+                .seen_lg_config_k
+                .map(|k| 1usize << k as usize)
+                .unwrap_or(0)
     }
     fn state(&mut self) -> Result<Vec<ScalarValue>> {
         match &self.union {
             Some(u) => Ok(vec![ScalarValue::Binary(Some(u.to_sketch_bytes()))]),
-            None => Ok(vec![ScalarValue::Binary(None)]),
+            None => Ok(vec![ScalarValue::Binary(Some(
+                SparkHllUnion::new(DEFAULT_LG_K).to_sketch_bytes(),
+            ))]),
         }
     }
     fn merge_batch(&mut self, states: &[ArrayRef]) -> Result<()> {
@@ -173,5 +190,35 @@ mod tests {
         };
         let est = crate::agg_funcs::estimate_from_bytes(&bytes).unwrap();
         assert!((est - 1500).abs() <= 45, "union estimate {est}");
+    }
+
+    /// Spark's `HllUnionAgg` is non-nullable: an empty/all-null group still
+    /// produces the serialized bytes of an empty union (estimate 0), not NULL.
+    #[test]
+    fn empty_group_evaluates_to_empty_sketch_not_null() {
+        let mut acc = HllUnionAccumulator::new(false);
+        let ScalarValue::Binary(Some(bytes)) = acc.evaluate().unwrap() else {
+            panic!("expected Binary(Some(_)) for an empty group, got NULL")
+        };
+        let est = crate::agg_funcs::estimate_from_bytes(&bytes).unwrap();
+        assert_eq!(est, 0, "empty union should estimate to 0, got {est}");
+    }
+
+    #[test]
+    fn size_accounts_for_sketch_heap() {
+        let mut a = SparkHllSketch::new(12);
+        for i in 0..10000i64 {
+            a.update_i64(i);
+        }
+        let arr = Arc::new(BinaryArray::from(vec![Some(
+            a.to_sketch_bytes().as_slice(),
+        )]));
+        let mut acc = HllUnionAccumulator::new(false);
+        acc.update_batch(&[arr]).unwrap();
+        assert!(
+            acc.size() > 1000,
+            "size() should account for the sketch heap allocation, got {}",
+            acc.size()
+        );
     }
 }

@@ -3452,4 +3452,24 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("hll_sketch_agg over all-null input estimates to 0, not NULL") {
+    assume(isSpark40Plus)
+    // Spark's HllSketchAgg/HllSketchEstimate are declared non-nullable: an empty or
+    // all-null group still produces a serialized empty sketch, and hll_sketch_estimate
+    // reads that as 0, never NULL. Guard against regressing to Binary(None) here.
+    withSQLConf(
+      "spark.comet.expression.HllSketchAgg.allowIncompatible" -> "true",
+      "spark.comet.expression.HllSketchEstimate.allowIncompatible" -> "true") {
+      withParquetTable((0 until 100).map(_ => Tuple1(null.asInstanceOf[Integer])), "tbl") {
+        val df = sql("SELECT hll_sketch_estimate(hll_sketch_agg(_1)) FROM tbl")
+        checkCometOperators(stripAQEPlan(df.queryExecution.executedPlan))
+        val row = df.collect().head
+        assert(!row.isNullAt(0), "expected a non-null estimate for an all-null group")
+        assert(
+          row.getLong(0) == 0,
+          s"expected estimate 0 for an all-null group, got ${row.getLong(0)}")
+      }
+    }
+  }
+
 }

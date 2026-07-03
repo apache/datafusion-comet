@@ -77,14 +77,12 @@ impl AggregateUDFImpl for HllSketchAgg {
 #[derive(Debug)]
 pub struct HllSketchAccumulator {
     sketch: SparkHllSketch,
-    saw_input: bool,
 }
 
 impl HllSketchAccumulator {
     pub fn new(lg_config_k: u8) -> Self {
         Self {
             sketch: SparkHllSketch::new(lg_config_k),
-            saw_input: false,
         }
     }
 }
@@ -99,27 +97,21 @@ impl Accumulator for HllSketchAccumulator {
             match ScalarValue::try_from_array(arr, i)? {
                 ScalarValue::Int8(Some(v)) => {
                     self.sketch.update_i64(v as i64);
-                    self.saw_input = true;
                 }
                 ScalarValue::Int16(Some(v)) => {
                     self.sketch.update_i64(v as i64);
-                    self.saw_input = true;
                 }
                 ScalarValue::Int32(Some(v)) => {
                     self.sketch.update_i64(v as i64);
-                    self.saw_input = true;
                 }
                 ScalarValue::Int64(Some(v)) => {
                     self.sketch.update_i64(v);
-                    self.saw_input = true;
                 }
                 ScalarValue::Utf8(Some(v)) => {
                     self.sketch.update_bytes(v.as_bytes());
-                    self.saw_input = true;
                 }
                 ScalarValue::Binary(Some(v)) => {
                     self.sketch.update_bytes(&v);
-                    self.saw_input = true;
                 }
                 // Spark's HllSketchAgg ignores null inputs.
                 ScalarValue::Int8(None)
@@ -139,22 +131,18 @@ impl Accumulator for HllSketchAccumulator {
     }
 
     fn evaluate(&mut self) -> Result<ScalarValue> {
-        // Spark returns a non-null sketch even for empty groups only when it saw input;
-        // an empty group yields NULL.
-        if !self.saw_input {
-            return Ok(ScalarValue::Binary(None));
-        }
+        // Spark's HllSketchAgg is declared non-nullable: an empty/all-null group
+        // still returns a serialized empty sketch (which estimates to 0), never NULL.
         Ok(ScalarValue::Binary(Some(self.sketch.to_sketch_bytes())))
     }
 
     fn size(&self) -> usize {
-        std::mem::size_of_val(self)
+        // An HLL_8 sketch at lgConfigK=k can heap-allocate up to 1 << k bytes;
+        // account for that so memory reservation reflects actual usage.
+        std::mem::size_of_val(self) + (1usize << self.sketch.lg_config_k() as usize)
     }
 
     fn state(&mut self) -> Result<Vec<ScalarValue>> {
-        if !self.saw_input {
-            return Ok(vec![ScalarValue::Binary(None)]);
-        }
         Ok(vec![ScalarValue::Binary(Some(
             self.sketch.to_sketch_bytes(),
         ))])
@@ -169,7 +157,6 @@ impl Accumulator for HllSketchAccumulator {
             let peer = SparkHllSketch::from_bytes(arr.value(i))?;
             // Merge peer into self by unioning; reuse SparkHllUnion via sketch merge.
             self.sketch.merge_sketch(&peer);
-            self.saw_input = true;
         }
         Ok(())
     }
@@ -192,5 +179,29 @@ mod tests {
         };
         let est = crate::agg_funcs::estimate_from_bytes(&bytes).unwrap();
         assert!((est - 1000).abs() <= 30, "estimate {est}");
+    }
+
+    /// Spark's `HllSketchAgg` is non-nullable: an empty/all-null group still
+    /// produces a serialized empty sketch (estimate 0), not NULL.
+    #[test]
+    fn empty_group_evaluates_to_empty_sketch_not_null() {
+        let mut acc = HllSketchAccumulator::new(12);
+        let ScalarValue::Binary(Some(bytes)) = acc.evaluate().unwrap() else {
+            panic!("expected Binary(Some(_)) for an empty group, got NULL")
+        };
+        let est = crate::agg_funcs::estimate_from_bytes(&bytes).unwrap();
+        assert_eq!(est, 0, "empty sketch should estimate to 0, got {est}");
+    }
+
+    #[test]
+    fn size_accounts_for_sketch_heap() {
+        let mut acc = HllSketchAccumulator::new(12);
+        let arr = Arc::new(Int64Array::from((0..10000i64).collect::<Vec<_>>()));
+        acc.update_batch(&[arr]).unwrap();
+        assert!(
+            acc.size() > 1000,
+            "size() should account for the sketch heap allocation, got {}",
+            acc.size()
+        );
     }
 }
