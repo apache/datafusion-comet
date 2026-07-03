@@ -92,8 +92,9 @@ message Expr {
     ArraysZip arrays_zip = 69;
     JvmScalarUdf jvm_scalar_udf = 70;
     PreciseTimestampConversion precise_timestamp_conversion = 71;
-    HigherOrderFunc high_order_func = 72;
-    NamedLambdaVariable named_lambda_variable = 73;
+    Shuffle shuffle = 72;
+    HigherOrderFunc high_order_func = 73;
+    NamedLambdaVariable named_lambda_variable = 74;
   }
 
   // Optional QueryContext for error reporting (contains SQL text and position)
@@ -526,6 +527,15 @@ message ArrayJoin {
 
 message Rand {
   int64 seed = 1;
+}
+
+// Spark's Shuffle returns a random permutation of the given array. It is
+// non-deterministic: the resolved random seed is combined with the partition
+// index and drives a MersenneTwister-based inside-out Fisher-Yates shuffle,
+// matching org.apache.spark.sql.catalyst.util.RandomIndicesGenerator.
+message Shuffle {
+  Expr child = 1;
+  int64 seed = 2;
 }
 
 // Spark's ArraysZip takes children: Seq[Expression] and names: Seq[Expression]
