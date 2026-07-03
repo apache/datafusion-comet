@@ -110,8 +110,10 @@ Legend: ✅ done · 🔨 in progress · ⬜ planned
   - ✅ R1-T2 — config flag + driver `executeCollect` override.
   - ◐ R1-T3 — offload proven end-to-end on Q1's single-stage subset (scan + date filter + decimal projections), results match Spark, 0 executor tasks. Full Q1 GROUP BY is structurally multi-block → R2.
   - ⬜ R1-T4 (R1b) — submit to an external Ballista scheduler + executor cluster.
-- ⬜ **R2 — multi-stage distribution.** Map Comet's per-stage native fragments onto Ballista stages
-  with shuffle, so plans with exchanges (aggregations, joins) distribute across executors.
+- 🔨 **R2 — multi-stage distribution.** A distributed 2-block `GROUP BY` (Comet partial-agg → Ballista hash shuffle → Comet final-agg) runs offloaded with 0 Spark-executor tasks and correct results.
+  - ✅ R2-T4 — 2-block `count(*)` single-key distributes across the shuffle; results match Spark, 0 executor tasks.
+  - ✅ R2-T5 — **full TPC-H Q1 aggregate distributed** (no `ORDER BY`): `sum`×4, `avg`×3, `count` over decimals grouped by two keys (`l_returnflag`, `l_linestatus`). `avg`'s partial (sum + count) state and decimal partial sums round-trip through Ballista's Arrow IPC shuffle and compose in the Comet final aggregate; results match Spark's own Q1 row-for-row (incl. decimal scale), 0 executor tasks.
+  - ⬜ N-block generalization (a trailing `ORDER BY` / range exchange is a third stage — still out of scope).
 - ⬜ **JVM-free executor.** Feature-gate the JNI bridge so the native execution crates build without
   `libjvm`, enabling a standalone Ballista executor binary.
 - ⬜ **Multi-partition scans.** Map a scan's file groups to multiple partitions (currently a

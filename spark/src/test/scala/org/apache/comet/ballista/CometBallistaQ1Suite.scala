@@ -27,6 +27,7 @@ import org.apache.spark.CometListenerBusUtils
 import org.apache.spark.scheduler.{SparkListener, SparkListenerTaskStart}
 import org.apache.spark.sql.{CometTestBase, Row}
 import org.apache.spark.sql.comet.CometNativeExec
+import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.execution.exchange.Exchange
 import org.apache.spark.sql.internal.SQLConf
@@ -62,6 +63,17 @@ import org.apache.comet.CometConf
  * against the Q1 cutoff, and Q1's decimal multiplications — as ONE exchange-free native block.
  * The test asserts the plan really is single-block before offloading, and compares full result
  * rows flag-on vs flag-off using the exact decimal types Spark produces.
+ *
+ * Ordering caveat (dual-library global state): both tests in this suite run in one JVM, and the
+ * in-process Ballista offload statically links a SECOND copy of Comet core into
+ * `libdatafusion_comet_ballista`. Its `JAVA_VM` `OnceCell` is distinct from `libcomet`'s, and
+ * once an offload has run, Comet-on-Spark-executor native execution (`Native.executePlan` on a
+ * `tokio-rt-worker`) can resolve `with_env` to that second, uninitialized copy and panic with
+ * `JAVA_VM not initialized`. Reference oracles here therefore run with Comet fully DISABLED (pure
+ * Spark), which never touches Comet native code and is immune to this interaction. The offload
+ * itself is unaffected (it initializes/uses the JVM through its own path). This is an
+ * infrastructure limitation of the in-process offload spike, not a correctness issue in the
+ * distributed aggregate.
  */
 class CometBallistaQ1Suite extends CometTestBase with AdaptiveSparkPlanHelper {
 
@@ -292,6 +304,137 @@ class CometBallistaQ1Suite extends CometTestBase with AdaptiveSparkPlanHelper {
         assert(
           offloadedTaskStarts == 0,
           s"expected 0 Spark executor tasks for the Ballista-offloaded collect, " +
+            s"but $offloadedTaskStarts started")
+      }
+    }
+  }
+
+  /**
+   * TPC-H Q1's full aggregate (NO `ORDER BY`): `sum`/`avg`/`count` over decimals, grouped by the
+   * two keys `(l_returnflag, l_linestatus)`. This is the R2 milestone — it distributes the
+   * aggregate across a Ballista hash shuffle as the two-block shape (Comet partial-agg ->
+   * `CometShuffleExchangeExec` -> Comet final-agg) and asserts the collected rows are identical
+   * to Spark's own Q1, launching ZERO Spark executor tasks.
+   *
+   * It exercises the composition risks the single-block R1 slice and the `count(*)` R2 test left
+   * unverified: `avg`'s partial state (sum + count) and decimal partial sums round-tripping
+   * through Ballista's Arrow IPC shuffle and composing in the Comet final aggregate, across two
+   * group keys.
+   *
+   * No `ORDER BY` in the offloaded query (a global sort would add a third, range-partition stage,
+   * out of the 2-block scope); both sides are sorted on the driver by `(returnflag, linestatus)`
+   * before comparison.
+   */
+  private val q1FullAggregate =
+    """
+      |SELECT l_returnflag, l_linestatus,
+      |  sum(l_quantity) AS sum_qty,
+      |  sum(l_extendedprice) AS sum_base_price,
+      |  sum(l_extendedprice * (1 - l_discount)) AS sum_disc_price,
+      |  sum(l_extendedprice * (1 - l_discount) * (1 + l_tax)) AS sum_charge,
+      |  avg(l_quantity) AS avg_qty,
+      |  avg(l_extendedprice) AS avg_price,
+      |  avg(l_discount) AS avg_disc,
+      |  count(*) AS count_order
+      |FROM lineitem
+      |WHERE l_shipdate <= date '1998-12-01' - interval '90' day
+      |GROUP BY l_returnflag, l_linestatus
+      |""".stripMargin
+
+  test(
+    "TPC-H Q1 full aggregate (sum/avg/count over decimals, two group keys) distributes across a " +
+      "Ballista shuffle with identical results and no executor tasks") {
+    assume(
+      NativeBallista.isAvailable,
+      s"native ballista library not available: ${NativeBallista.loadFailure.map(_.getMessage)}")
+
+    withTempPath { dir =>
+      // Spread the rows across several input files so rows of the same (returnflag, linestatus)
+      // group land in different partitions — the hash shuffle must then actually combine partial
+      // aggregate states across partitions for the final totals to be correct.
+      spark
+        .createDataFrame(spark.sparkContext.parallelize(lineitemRows), lineitemSchema)
+        .repartition(3)
+        .write
+        .parquet(dir.getCanonicalPath)
+
+      // AQE off so the collect root carries our executeCollect override; direct-read off so
+      // block2's input leaf serializes as a plain Scan (#100) fed by the Ballista shuffle; small
+      // shuffle-partition count keeps the in-process distributed run fast.
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+        SQLConf.SHUFFLE_PARTITIONS.key -> "4",
+        CometConf.COMET_SHUFFLE_DIRECT_READ_ENABLED.key -> "false") {
+        spark.read.parquet(dir.getCanonicalPath).createOrReplaceTempView("lineitem")
+
+        // Confirm the offloadable R2 shape BEFORE running: exactly one Comet hash exchange (two
+        // stages) and exactly two serialized CometNativeExec blocks (partial + final aggregate).
+        val executed = withSQLConf(CometConf.COMET_EXEC_BALLISTA_ENABLED.key -> "false") {
+          spark.sql(q1FullAggregate).queryExecution.executedPlan
+        }
+        val exchanges = executed.collect { case e: CometShuffleExchangeExec => e }
+        assert(
+          exchanges.size == 1,
+          s"expected exactly one Comet hash exchange (two stages), found ${exchanges.size}:\n" +
+            s"$executed")
+        val nativeBlocks = executed.collect {
+          case n: CometNativeExec if n.serializedPlanOpt.isDefined => n
+        }
+        assert(
+          nativeBlocks.size == 2,
+          s"expected exactly two serialized CometNativeExec blocks, found ${nativeBlocks.size}:\n" +
+            s"$executed")
+
+        // Baseline oracle: Spark's OWN Q1 answer, with Comet fully disabled. This is the truest
+        // reference for "does the distributed offload match Spark's own Q1" (the brief's goal), and
+        // it also runs through the same listener apparatus as a positive control proving the
+        // listener observes executor task starts, so the `== 0` assertion for the offloaded run is
+        // meaningful. Comet is disabled here deliberately: a Comet-native baseline uses the native
+        // execution engine (tokio) which, once an in-process Ballista offload has run in this JVM,
+        // panics with `JAVA_VM not initialized` (dual-library global-state issue — see the class
+        // doc). Spark-only execution is immune and is the correct oracle regardless.
+        var baseline: Seq[Seq[Any]] = null
+        val baselineTaskStarts = countTaskStarts {
+          baseline = withSQLConf(
+            CometConf.COMET_ENABLED.key -> "false",
+            CometConf.COMET_EXEC_BALLISTA_ENABLED.key -> "false") {
+            spark.sql(q1FullAggregate).collect().map(_.toSeq.toIndexedSeq).toIndexedSeq
+          }
+        }
+        assert(
+          baselineTaskStarts > 0,
+          "expected the Spark baseline collect to launch at least one Spark executor task " +
+            s"(sanity check for the listener apparatus); got $baselineTaskStarts")
+
+        // Ballista offload: run the same query with the flag on, counting executor task starts.
+        var offloaded: Seq[Seq[Any]] = null
+        val offloadedTaskStarts = countTaskStarts {
+          offloaded = withSQLConf(CometConf.COMET_EXEC_BALLISTA_ENABLED.key -> "true") {
+            spark.sql(q1FullAggregate).collect().map(_.toSeq.toIndexedSeq).toIndexedSeq
+          }
+        }
+
+        // Sort both sides by (returnflag, linestatus) on the driver (Q1's trailing ORDER BY is not
+        // offloaded). Compare full rows using the exact values Spark produced — decimals keep their
+        // computed scale, so a wrong decimal scale from avg/sum composition fails the assertion.
+        def sortKey(r: Seq[Any]): (String, String) = (s"${r.head}", s"${r(1)}")
+        val baselineSorted = baseline.sortBy(sortKey)
+        val offloadedSorted = offloaded.sortBy(sortKey)
+        assert(
+          offloadedSorted == baselineSorted,
+          "offloaded (distributed) Q1 aggregate rows do not match Spark's own Q1\n" +
+            s"  spark:     $baselineSorted\n  offloaded: $offloadedSorted")
+
+        // Sanity: the synthetic lineitem forms three surviving groups after the Q1 date filter.
+        assert(
+          baselineSorted.map(r => (s"${r.head}", s"${r(1)}")) ==
+            Seq(("A", "F"), ("N", "O"), ("R", "F")),
+          s"unexpected Q1 groups: ${baselineSorted.map(r => (r.head, r(1)))}")
+
+        // Crucially, NO Spark executor tasks ran for the offloaded (distributed) collect.
+        assert(
+          offloadedTaskStarts == 0,
+          s"expected 0 Spark executor tasks for the Ballista-offloaded distributed collect, " +
             s"but $offloadedTaskStarts started")
       }
     }
