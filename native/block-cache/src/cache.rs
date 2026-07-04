@@ -271,7 +271,8 @@ impl BlockCache {
             // range, yielding the short final block.
             let abs_end = (end_block as u64 + 1) * self.block_size;
 
-            match fetcher.fetch(&[abs_start..abs_end]).await {
+            let fetch_range = abs_start..abs_end;
+            match fetcher.fetch(std::slice::from_ref(&fetch_range)).await {
                 Ok((bytes_vec, version)) => {
                     let full = concat_bytes(bytes_vec);
                     self.metrics.record_fetch(full.len() as u64);

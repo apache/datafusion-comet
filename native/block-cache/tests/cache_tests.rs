@@ -15,6 +15,10 @@
 // specific language governing permissions and limitations
 // under the License.
 
+// The tests intentionally pass single-range slices (`&[a..b]`) to `get_ranges`; that is exactly
+// the call shape the cache serves, not a mistaken range literal.
+#![allow(clippy::single_range_in_vec_init)]
+
 use std::ops::Range;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -115,7 +119,7 @@ async fn serves_bytes_and_caches_across_calls() {
     // A cross-block range with unaligned start and end.
     let r: Range<u64> = 500..(bs as u64 * 2 + 900);
     let out = cache
-        .get_ranges(&file, &[r.clone()], &*fetcher)
+        .get_ranges(&file, std::slice::from_ref(&r), &*fetcher)
         .await
         .unwrap();
     assert_eq!(&out[0][..], &data[r.start as usize..r.end as usize]);
@@ -124,7 +128,7 @@ async fn serves_bytes_and_caches_across_calls() {
 
     // Second identical read: zero new upstream fetches.
     let out2 = cache
-        .get_ranges(&file, &[r.clone()], &*fetcher)
+        .get_ranges(&file, std::slice::from_ref(&r), &*fetcher)
         .await
         .unwrap();
     assert_eq!(&out2[0][..], &data[r.start as usize..r.end as usize]);

@@ -2044,7 +2044,6 @@ dependencies = [
  "async-trait",
  "bytes",
  "futures",
- "log",
  "tokio",
 ]
 
@@ -2101,7 +2100,6 @@ dependencies = [
  "chrono",
  "datafusion-comet-block-cache",
  "futures",
- "log",
  "object_store",
  "tokio",
 ]

@@ -36,7 +36,6 @@ async-trait = { workspace = true }
 bytes = { workspace = true }
 chrono = { workspace = true }
 futures = { workspace = true }
-log = "0.4"
 object_store = { workspace = true }
 
 [dev-dependencies]

@@ -36,7 +36,6 @@ publish = false
 async-trait = { workspace = true }
 bytes = { workspace = true }
 futures = { workspace = true }
-log = "0.4"
 tokio = { version = "1", features = ["sync"] }
 
 [dev-dependencies]
