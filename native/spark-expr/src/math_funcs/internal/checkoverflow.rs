@@ -28,7 +28,6 @@ use std::hash::Hash;
 
 use crate::SparkError;
 use std::{
-    any::Any,
     fmt::{Display, Formatter},
     sync::Arc,
 };
@@ -91,10 +90,6 @@ impl Display for CheckOverflow {
 }
 
 impl PhysicalExpr for CheckOverflow {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn fmt_sql(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         Display::fmt(self, f)
     }
@@ -274,9 +269,6 @@ mod tests {
     }
 
     impl PhysicalExpr for ScalarChild {
-        fn as_any(&self) -> &dyn Any {
-            self
-        }
         fn data_type(&self, _: &Schema) -> datafusion::common::Result<DataType> {
             Ok(DataType::Decimal128(self.1, self.2))
         }

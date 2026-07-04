@@ -18,10 +18,11 @@ under the License.
 -->
 
 {# Start the sidebar from the deepest captioned section the page lives under:
-   - user-guide/latest/* lives under user-guide/index.md → user-guide/latest/index.rst, so start at depth 2
+   - user-guide/<version>/* (latest or a released version like 0.17) lives under
+     user-guide/index.md → user-guide/<version>/index.rst, so start at depth 2
    - contributor-guide/* lives under contributor-guide/index.md, so start at depth 1
    - root and orphan pages (search, genindex) fall back to the global toctree (depth 0). #}
-{% if pagename.startswith("user-guide/latest/") and not suppress_sidebar_toctree(startdepth=2, includehidden=True) %}
+{% if pagename.startswith("user-guide/") and pagename.split("/")|length > 2 and not suppress_sidebar_toctree(startdepth=2, includehidden=True) %}
   {% set sidebar_startdepth = 2 %}
 {% elif not suppress_sidebar_toctree(startdepth=1, includehidden=True) %}
   {% set sidebar_startdepth = 1 %}

@@ -94,6 +94,11 @@ pub struct SparkParquetOptions {
     /// Whether type promotion (schema evolution) is allowed, e.g. INT32 -> INT64,
     /// FLOAT -> DOUBLE. Mirrors spark.comet.schemaEvolution.enabled.
     pub allow_type_promotion: bool,
+    /// When true, reading a Parquet TimestampLTZ column as TimestampNTZ is
+    /// permitted (Spark 4.0+, SPARK-47447); when false, it is rejected
+    /// (Spark 3.x, SPARK-36182). Mirrors Comet's per-Spark-version constant
+    /// in ShimCometConf.
+    pub allow_timestamp_ltz_to_ntz: bool,
 }
 
 impl SparkParquetOptions {
@@ -109,6 +114,7 @@ impl SparkParquetOptions {
             use_field_id: false,
             ignore_missing_field_id: false,
             allow_type_promotion: false,
+            allow_timestamp_ltz_to_ntz: false,
         }
     }
 
@@ -124,6 +130,7 @@ impl SparkParquetOptions {
             use_field_id: false,
             ignore_missing_field_id: false,
             allow_type_promotion: false,
+            allow_timestamp_ltz_to_ntz: false,
         }
     }
 }
@@ -427,6 +434,11 @@ pub fn is_hdfs_scheme(url: &Url, object_store_configs: &HashMap<String, String>)
     }
 }
 
+/// Check if the scheme is an Azure ABFS URL.
+fn is_azure_scheme(scheme: &str) -> bool {
+    matches!(scheme, "abfs" | "abfss")
+}
+
 // Creates an HDFS object store from a URL using the native HDFS implementation
 #[cfg(all(feature = "hdfs", not(feature = "hdfs-opendal")))]
 fn create_hdfs_object_store(
@@ -599,6 +611,8 @@ pub(crate) fn prepare_object_store_with_configs(
                 create_hdfs_object_store(&url)
             } else if scheme == "s3" {
                 objectstore::s3::create_store(&url, object_store_configs, Duration::from_secs(300))
+            } else if is_azure_scheme(scheme) {
+                objectstore::azure::create_store(&url, object_store_configs)
             } else {
                 parse_url(&url)
             }

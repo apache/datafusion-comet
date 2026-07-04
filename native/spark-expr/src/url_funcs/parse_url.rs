@@ -21,7 +21,6 @@
 //! which diverges from Spark's java.net.URI (RFC 3986) on several edge cases.
 //! This module uses RFC 3986 Appendix B regex parsing to match Spark exactly.
 
-use std::any::Any;
 use std::sync::{Arc, LazyLock};
 
 use arrow::array::{
@@ -182,9 +181,6 @@ impl Default for CometParseUrl {
 }
 
 impl ScalarUDFImpl for CometParseUrl {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
     fn name(&self) -> &str {
         "parse_url"
     }
@@ -220,9 +216,6 @@ impl Default for CometTryParseUrl {
 }
 
 impl ScalarUDFImpl for CometTryParseUrl {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
     fn name(&self) -> &str {
         "try_parse_url"
     }

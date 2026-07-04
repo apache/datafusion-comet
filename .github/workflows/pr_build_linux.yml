@@ -110,7 +110,7 @@ jobs:
           jdk-version: ${{ matrix.profile.java_version }}
 
       - name: Cache Maven dependencies
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: |
             ~/.m2/repository
@@ -164,7 +164,7 @@ jobs:
           jdk-version: 17
 
       - name: Cache Maven dependencies
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: |
             ~/.m2/repository
@@ -192,7 +192,7 @@ jobs:
           jdk-version: 17  # JDK only needed for JVM module proto generation
 
       - name: Restore Cargo cache
-        uses: actions/cache/restore@v5
+        uses: actions/cache/restore@v6
         with:
           path: |
             ~/.cargo/registry
@@ -219,7 +219,7 @@ jobs:
           retention-days: 1
 
       - name: Save Cargo cache
-        uses: actions/cache/save@v5
+        uses: actions/cache/save@v6
         if: github.ref == 'refs/heads/main'
         with:
           path: |
@@ -245,7 +245,7 @@ jobs:
           jdk-version: 17
 
       - name: Restore Cargo cache
-        uses: actions/cache/restore@v5
+        uses: actions/cache/restore@v6
         with:
           path: |
             ~/.cargo/registry
@@ -260,7 +260,7 @@ jobs:
         uses: ./.github/actions/rust-test
 
       - name: Save Cargo cache
-        uses: actions/cache/save@v5
+        uses: actions/cache/save@v6
         if: github.ref == 'refs/heads/main'
         with:
           path: |
@@ -419,7 +419,7 @@ jobs:
 
       # Restore cargo registry cache (for any cargo commands that might run)
       - name: Cache Cargo registry
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -462,7 +462,7 @@ jobs:
           path: native/target/release/
 
       - name: Cache Maven dependencies
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: |
             ~/.m2/repository
@@ -473,7 +473,7 @@ jobs:
 
       - name: Cache TPC-H data
         id: cache-tpch
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ./tpch
           key: tpch-${{ hashFiles('.github/workflows/pr_build_linux.yml') }}
@@ -517,7 +517,7 @@ jobs:
           path: native/target/release/
 
       - name: Cache Maven dependencies
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: |
             ~/.m2/repository
@@ -528,7 +528,7 @@ jobs:
 
       - name: Cache TPC-DS data
         id: cache-tpcds
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ./tpcds-sf-1
           key: tpcds-${{ hashFiles('.github/workflows/pr_build_linux.yml') }}

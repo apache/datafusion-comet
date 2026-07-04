@@ -19,7 +19,7 @@
 
 package org.apache.comet.serde
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, KnownFloatingPointNormalized}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, KnownFloatingPointNormalized, KnownNullable}
 import org.apache.spark.sql.catalyst.optimizer.NormalizeNaNAndZero
 
 import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
@@ -62,5 +62,21 @@ object CometKnownFloatingPointNormalized
       ExprOuterClass.Expr.newBuilder().setNormalizeNanAndZero(builder).build()
     }
     optExprWithFallbackReason(optExpr, expr, wrapped)
+  }
+}
+
+/**
+ * `KnownNullable` is a tagging expression that only marks its child as nullable; it is a runtime
+ * no-op (`eval` returns the child's value unchanged). Spark's time-window resolution wraps window
+ * bounds in `KnownNullable`, so supporting it lets those grouping queries run natively. We simply
+ * serialize the child and drop the tag.
+ */
+object CometKnownNullable extends CometExpressionSerde[KnownNullable] {
+  override def convert(
+      expr: KnownNullable,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val optExpr = exprToProtoInternal(expr.child, inputs, binding)
+    optExprWithFallbackReason(optExpr, expr, expr.child)
   }
 }
