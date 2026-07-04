@@ -53,7 +53,10 @@ pub(crate) fn global() -> Option<Arc<BlockCache>> {
     DATA_CACHE.get().and_then(|opt| opt.clone())
 }
 
-fn build(spark_config: &HashMap<String, String>, _local_dirs: &[String]) -> Option<Arc<BlockCache>> {
+fn build(
+    spark_config: &HashMap<String, String>,
+    _local_dirs: &[String],
+) -> Option<Arc<BlockCache>> {
     if !spark_config.get_bool(COMET_DATA_CACHE_ENABLED) {
         return None;
     }

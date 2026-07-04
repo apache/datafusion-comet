@@ -561,7 +561,10 @@ mod unit_tests {
     #[test]
     fn coalesce_runs_splits_gaps_and_caps() {
         // adjacent run [1,2,3] and isolated [5]
-        assert_eq!(coalesce_runs(&[1, 2, 3, 5], 8), vec![vec![1, 2, 3], vec![5]]);
+        assert_eq!(
+            coalesce_runs(&[1, 2, 3, 5], 8),
+            vec![vec![1, 2, 3], vec![5]]
+        );
         // cap at 2 blocks per run
         assert_eq!(
             coalesce_runs(&[1, 2, 3, 4], 2),

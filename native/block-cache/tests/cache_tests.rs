@@ -114,15 +114,25 @@ async fn serves_bytes_and_caches_across_calls() {
 
     // A cross-block range with unaligned start and end.
     let r: Range<u64> = 500..(bs as u64 * 2 + 900);
-    let out = cache.get_ranges(&file, &[r.clone()], &*fetcher).await.unwrap();
+    let out = cache
+        .get_ranges(&file, &[r.clone()], &*fetcher)
+        .await
+        .unwrap();
     assert_eq!(&out[0][..], &data[r.start as usize..r.end as usize]);
     let calls_after_first = fetcher.calls();
     assert!(calls_after_first >= 1);
 
     // Second identical read: zero new upstream fetches.
-    let out2 = cache.get_ranges(&file, &[r.clone()], &*fetcher).await.unwrap();
+    let out2 = cache
+        .get_ranges(&file, &[r.clone()], &*fetcher)
+        .await
+        .unwrap();
     assert_eq!(&out2[0][..], &data[r.start as usize..r.end as usize]);
-    assert_eq!(fetcher.calls(), calls_after_first, "second read must be a full cache hit");
+    assert_eq!(
+        fetcher.calls(),
+        calls_after_first,
+        "second read must be a full cache hit"
+    );
 }
 
 #[tokio::test]
@@ -159,7 +169,11 @@ async fn coalesces_adjacent_missing_blocks() {
         .await
         .unwrap();
     assert_eq!(&out[0][..], &data[0..bs * 4]);
-    assert_eq!(fetcher.calls(), 1, "four adjacent blocks should coalesce to one fetch");
+    assert_eq!(
+        fetcher.calls(),
+        1,
+        "four adjacent blocks should coalesce to one fetch"
+    );
 }
 
 #[tokio::test]
@@ -213,7 +227,11 @@ async fn single_flight_dedups_concurrent_missers() {
     for h in handles {
         h.await.unwrap();
     }
-    assert_eq!(fetcher.calls(), 1, "concurrent missers must trigger exactly one fetch");
+    assert_eq!(
+        fetcher.calls(),
+        1,
+        "concurrent missers must trigger exactly one fetch"
+    );
 }
 
 #[tokio::test]
@@ -274,11 +292,12 @@ async fn sieve_keeps_reused_block_evicts_one_hit_wonder() {
     });
     let data = seq(bs as usize * 10);
     let fetcher = MockFetcher::new(data.clone(), "v1");
-    let file = FileKey::new(0, "f");
 
     let read_block = |c: Arc<BlockCache>, f: Arc<MockFetcher>, idx: u64| async move {
         let start = idx * bs;
-        c.get_ranges(&file_clone(), &[start..start + 8], &*f).await.unwrap();
+        c.get_ranges(&file_clone(), &[start..start + 8], &*f)
+            .await
+            .unwrap();
     };
     fn file_clone() -> FileKey {
         FileKey::new(0, "f")
@@ -287,7 +306,7 @@ async fn sieve_keeps_reused_block_evicts_one_hit_wonder() {
     // Insert block 0, then re-read it so its `visited` bit is set (it is "reused").
     read_block(Arc::clone(&cache), Arc::clone(&fetcher), 0).await;
     read_block(Arc::clone(&cache), Arc::clone(&fetcher), 0).await; // hit -> visited
-    // Insert block 1 (one-hit-wonder, never revisited).
+                                                                   // Insert block 1 (one-hit-wonder, never revisited).
     read_block(Arc::clone(&cache), Arc::clone(&fetcher), 1).await;
     // Insert block 2 -> forces one eviction. SIEVE should evict the unvisited block 1,
     // keeping the reused block 0.
@@ -296,9 +315,17 @@ async fn sieve_keeps_reused_block_evicts_one_hit_wonder() {
     let calls_before = fetcher.calls();
     // Block 0 should still be cached (no fetch); block 1 should have been evicted (fetch).
     read_block(Arc::clone(&cache), Arc::clone(&fetcher), 0).await;
-    assert_eq!(fetcher.calls(), calls_before, "reused block 0 must survive eviction");
+    assert_eq!(
+        fetcher.calls(),
+        calls_before,
+        "reused block 0 must survive eviction"
+    );
     read_block(Arc::clone(&cache), Arc::clone(&fetcher), 1).await;
-    assert_eq!(fetcher.calls(), calls_before + 1, "one-hit block 1 must have been evicted");
+    assert_eq!(
+        fetcher.calls(),
+        calls_before + 1,
+        "one-hit block 1 must have been evicted"
+    );
 }
 
 #[tokio::test]
@@ -329,13 +356,20 @@ async fn set_memory_budget_shrink_evicts_then_growth_readmits() {
 
     // Reading an old block now misses (was evicted) -> a new fetch.
     cache.get_ranges(&file, &[0..8], &*fetcher).await.unwrap();
-    assert!(fetcher.calls() > filled_calls, "shrunk cache must have evicted and re-fetched");
+    assert!(
+        fetcher.calls() > filled_calls,
+        "shrunk cache must have evicted and re-fetched"
+    );
 
     // Grow back: subsequent fills are re-admitted (cache holds more again).
     cache.set_memory_budget(bs * 8);
     let before = fetcher.calls();
     cache.get_ranges(&file, &[0..8], &*fetcher).await.unwrap(); // just fetched above -> hit
-    assert_eq!(fetcher.calls(), before, "recently filled block stays after growth");
+    assert_eq!(
+        fetcher.calls(),
+        before,
+        "recently filled block stays after growth"
+    );
 }
 
 #[tokio::test]
@@ -350,7 +384,11 @@ async fn invalidate_file_drops_blocks() {
     let before = fetcher.calls();
     cache.invalidate_file(&file);
     cache.get_ranges(&file, &[0..10], &*fetcher).await.unwrap();
-    assert_eq!(fetcher.calls(), before + 1, "invalidated file must be re-fetched");
+    assert_eq!(
+        fetcher.calls(),
+        before + 1,
+        "invalidated file must be re-fetched"
+    );
 }
 
 #[tokio::test]
@@ -364,7 +402,9 @@ async fn byte_exact_over_randomized_ranges() {
     // Deterministic pseudo-random ranges (no rand dep): LCG.
     let mut state: u64 = 0x1234_5678;
     let mut next = || {
-        state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        state = state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         state >> 16
     };
     for _ in 0..200 {
@@ -379,6 +419,10 @@ async fn byte_exact_over_randomized_ranges() {
             .get_ranges(&file, &[lo as u64..hi as u64], &*fetcher)
             .await
             .unwrap();
-        assert_eq!(&out[0][..], &data[lo..hi], "byte mismatch for range {lo}..{hi}");
+        assert_eq!(
+            &out[0][..],
+            &data[lo..hi],
+            "byte mismatch for range {lo}..{hi}"
+        );
     }
 }

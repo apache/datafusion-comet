@@ -105,9 +105,8 @@ impl CachingObjectStore {
         };
         let returned = range.start..range.start + bytes.len() as u64;
         let meta = version_to_meta(location, &version);
-        let payload = GetResultPayload::Stream(
-            futures::stream::once(async move { Ok(bytes) }).boxed(),
-        );
+        let payload =
+            GetResultPayload::Stream(futures::stream::once(async move { Ok(bytes) }).boxed());
         Ok(Some(GetResult {
             payload,
             meta,
@@ -397,7 +396,11 @@ mod tests {
         assert!(calls_after_first >= 1);
 
         let b = store.get_ranges(&path, &ranges).await.unwrap();
-        assert_eq!(counting.calls(), calls_after_first, "second read must be all hits");
+        assert_eq!(
+            counting.calls(),
+            calls_after_first,
+            "second read must be all hits"
+        );
         assert_eq!(a, b);
         for (bytes, r) in b.iter().zip(&ranges) {
             assert_eq!(&bytes[..], &data[r.start as usize..r.end as usize]);
@@ -445,7 +448,10 @@ mod tests {
             ..Default::default()
         };
         let _ = store.get_opts(&path, opts).await; // precondition may fail; that's fine
-        assert!(counting.calls() > before, "conditional get must reach inner store");
+        assert!(
+            counting.calls() > before,
+            "conditional get must reach inner store"
+        );
     }
 
     #[tokio::test]
@@ -456,7 +462,10 @@ mod tests {
         let before = counting.calls();
 
         // Overwrite through the wrapper: must invalidate, so the next read re-fetches.
-        let new = seq(1 << 20).iter().map(|b| b.wrapping_add(1)).collect::<Vec<_>>();
+        let new = seq(1 << 20)
+            .iter()
+            .map(|b| b.wrapping_add(1))
+            .collect::<Vec<_>>();
         store
             .put(&path, PutPayload::from(new.clone()))
             .await
