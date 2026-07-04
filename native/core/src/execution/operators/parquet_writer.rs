@@ -477,24 +477,16 @@ impl DisplayAs for ParquetWriterExec {
 
 #[async_trait]
 impl ExecutionPlan for ParquetWriterExec {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn name(&self) -> &str {
         "ParquetWriterExec"
     }
 
-    fn metrics(&self) -> Option<MetricsSet> {
-        Some(self.metrics.clone_inner())
+    fn schema(&self) -> SchemaRef {
+        Arc::new(Schema::empty())
     }
 
     fn properties(&self) -> &Arc<PlanProperties> {
         &self.cache
-    }
-
-    fn schema(&self) -> SchemaRef {
-        Arc::new(Schema::empty())
     }
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
@@ -645,6 +637,10 @@ impl ExecutionPlan for ParquetWriterExec {
             self.schema(),
             futures::stream::once(write_task).try_flatten(),
         )))
+    }
+
+    fn metrics(&self) -> Option<MetricsSet> {
+        Some(self.metrics.clone_inner())
     }
 }
 
