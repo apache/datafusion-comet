@@ -618,6 +618,7 @@ fn register_datafusion_spark_function(session_ctx: &SessionContext) {
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkSec::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkRint::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkBitShift::right_unsigned()));
+    session_ctx.register_udf(ScalarUDF::new_from_impl(SparkSoundex::default()));
 }
 
 /// Prepares arrow arrays for output.
@@ -1191,6 +1192,7 @@ pub extern "system" fn Java_org_apache_comet_Native_getRustThreadId(
 use crate::execution::columnar_to_row::ColumnarToRowContext;
 use arrow::ffi::{from_ffi, FFI_ArrowArray, FFI_ArrowSchema};
 use datafusion_spark::function::math::bin::SparkBin;
+use datafusion_spark::function::string::soundex::SparkSoundex;
 
 /// Initialize a native columnar to row converter.
 ///

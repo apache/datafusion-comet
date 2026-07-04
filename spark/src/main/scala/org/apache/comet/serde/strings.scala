@@ -730,7 +730,7 @@ object CometFormatString extends CometCodegenDispatch[FormatString]
 
 object CometOverlay extends CometCodegenDispatch[Overlay]
 
-object CometSoundEx extends CometCodegenDispatch[SoundEx]
+object CometSoundEx extends CometScalarFunction[SoundEx]("soundex")
 
 object CometStringLocate extends CometCodegenDispatch[StringLocate]
 
