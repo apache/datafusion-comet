@@ -26,6 +26,16 @@ pub(crate) const COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED: &str =
     "spark.comet.parquet.rowFilterPushdown.enabled";
 pub(crate) const SPARK_EXECUTOR_CORES: &str = "spark.executor.cores";
 
+// Object-store data cache (see OBJECT_STORE_CACHE_DESIGN.md §2.8). All read on the native
+// side at first `createPlan` to build the process-global block cache.
+pub(crate) const COMET_DATA_CACHE_ENABLED: &str = "spark.comet.scan.dataCache.enabled";
+pub(crate) const COMET_DATA_CACHE_MEMORY_LIMIT: &str = "spark.comet.scan.dataCache.memoryLimit";
+pub(crate) const COMET_DATA_CACHE_BLOCK_SIZE: &str = "spark.comet.scan.dataCache.blockSize";
+pub(crate) const COMET_DATA_CACHE_SSD_LIMIT: &str = "spark.comet.scan.dataCache.ssd.limit";
+// Read by the phase-2 SSD tier; declared now so the key set is stable.
+#[allow(dead_code)]
+pub(crate) const COMET_DATA_CACHE_SSD_PATH: &str = "spark.comet.scan.dataCache.ssd.path";
+
 pub(crate) trait SparkConfig {
     fn get_bool(&self, name: &str) -> bool;
     fn get_u64(&self, name: &str, default_value: u64) -> u64;

@@ -420,6 +420,11 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
                 local_dirs_vec.push(local_dir);
             }
 
+            // Initialize the process-global object-store data cache on the first plan
+            // (no-op if disabled or already initialized). Must happen before the planner
+            // creates any object store so remote stores get wrapped.
+            crate::execution::data_cache::init_once(&spark_config, &local_dirs_vec);
+
             // We need to keep the session context alive. Some session state like temporary
             // dictionaries are stored in session context. If it is dropped, the temporary
             // dictionaries will be dropped as well.

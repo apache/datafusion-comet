@@ -132,6 +132,77 @@ object CometConf extends ShimCometConf {
       .checkValue(v => v > 0, "Data file concurrency limit must be positive")
       .createWithDefault(1)
 
+  val COMET_DATA_CACHE_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.scan.dataCache.enabled")
+      .category(CATEGORY_SCAN)
+      .doc(
+        "Whether to cache object-store data bytes locally (memory tier) behind the native " +
+          "scan's object store, so repeated reads of the same remote Parquet files avoid " +
+          "re-fetching from S3/HDFS/ABFS. Experimental; default false. The memory-tier " +
+          "budget is charged outside Spark's task memory pools, so size it from " +
+          "spark.executor.memoryOverhead headroom (see dataCache.memoryLimit).")
+      .booleanConf
+      .createWithDefault(false)
+
+  val COMET_DATA_CACHE_MEMORY_LIMIT: ConfigEntry[Long] =
+    conf("spark.comet.scan.dataCache.memoryLimit")
+      .category(CATEGORY_SCAN)
+      .doc(
+        "Memory-tier budget in bytes for the object-store data cache, process-wide per " +
+          "executor (accepts size suffixes, e.g. 512m, 1g). This memory sits outside " +
+          "Comet's task memory pools and must come out of spark.executor.memoryOverhead " +
+          "headroom. Only used when spark.comet.scan.dataCache.enabled is true.")
+      .bytesConf(ByteUnit.BYTE)
+      .checkValue(v => v > 0, "Data cache memory limit must be positive")
+      .createWithDefault(512L * 1024 * 1024)
+
+  val COMET_DATA_CACHE_BLOCK_SIZE: ConfigEntry[Long] =
+    conf("spark.comet.scan.dataCache.blockSize")
+      .category(CATEGORY_SCAN)
+      .doc(
+        "Block quantum in bytes for the object-store data cache (accepts size suffixes, " +
+          "e.g. 4m). Reads are aligned to this size before caching. Rounded down to a power " +
+          "of two and clamped to [1 MiB, 16 MiB] natively. Only used when " +
+          "spark.comet.scan.dataCache.enabled is true.")
+      .bytesConf(ByteUnit.BYTE)
+      .checkValue(
+        v => v >= (1L << 20) && v <= (16L << 20),
+        "Block size must be between 1 and 16 MiB")
+      .createWithDefault(4L * 1024 * 1024)
+
+  val COMET_DATA_CACHE_SSD_LIMIT: ConfigEntry[Long] =
+    conf("spark.comet.scan.dataCache.ssd.limit")
+      .category(CATEGORY_SCAN)
+      .doc(
+        "SSD-tier budget in bytes for the object-store data cache; 0 disables the tier " +
+          "(accepts size suffixes, e.g. 10g). The SSD tier is not yet implemented (phase 2) " +
+          "and this value is currently ignored beyond a log note. Only used when " +
+          "spark.comet.scan.dataCache.enabled is true.")
+      .bytesConf(ByteUnit.BYTE)
+      .checkValue(v => v >= 0, "SSD limit must be non-negative")
+      .createWithDefault(0L)
+
+  val COMET_DATA_CACHE_SSD_PATH: OptionalConfigEntry[String] =
+    conf("spark.comet.scan.dataCache.ssd.path")
+      .category(CATEGORY_SCAN)
+      .doc(
+        "Directory for the object-store data cache SSD tier (phase 2). Defaults to the first " +
+          "Spark block-manager local directory when unset. Only used when the SSD tier is " +
+          "enabled.")
+      .stringConf
+      .createOptional
+
+  val COMET_DATA_CACHE_LOCALITY_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.scan.dataCache.locality.enabled")
+      .category(CATEGORY_SCAN)
+      .doc(
+        "Whether to declare preferred locations for native scan partitions when the data " +
+          "cache is enabled, routing repeat reads of a Parquet file back to the host that " +
+          "cached it. Consumed only on the driver (never crosses JNI). No effect when " +
+          "spark.comet.scan.dataCache.enabled is false.")
+      .booleanConf
+      .createWithDefault(true)
+
   val COMET_CSV_V2_NATIVE_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.scan.csv.v2.enabled")
       .category(CATEGORY_TESTING)

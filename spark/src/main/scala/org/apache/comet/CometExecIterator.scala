@@ -278,6 +278,24 @@ object CometExecIterator extends Logging {
       CometConf.COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED.key,
       CometConf.COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED.get(SQLConf.get).toString)
 
+    // Object-store data cache configs read by the native side at first `createPlan`. The
+    // native cache is only built when `enabled` is true; the rest supply the memory-tier
+    // budget/block size (and the phase-2 SSD budget note) so native and Scala defaults never
+    // drift. `dataCache.ssd.path` is carried only if explicitly set (phase 2), and
+    // `dataCache.locality.enabled` is driver-only and deliberately never crosses JNI.
+    builder.putEntries(
+      CometConf.COMET_DATA_CACHE_ENABLED.key,
+      CometConf.COMET_DATA_CACHE_ENABLED.get(SQLConf.get).toString)
+    builder.putEntries(
+      CometConf.COMET_DATA_CACHE_MEMORY_LIMIT.key,
+      CometConf.COMET_DATA_CACHE_MEMORY_LIMIT.get(SQLConf.get).toString)
+    builder.putEntries(
+      CometConf.COMET_DATA_CACHE_BLOCK_SIZE.key,
+      CometConf.COMET_DATA_CACHE_BLOCK_SIZE.get(SQLConf.get).toString)
+    builder.putEntries(
+      CometConf.COMET_DATA_CACHE_SSD_LIMIT.key,
+      CometConf.COMET_DATA_CACHE_SSD_LIMIT.get(SQLConf.get).toString)
+
     builder.build().toByteArray
   }
 
