@@ -245,7 +245,7 @@ class RevertNativeForTransitionHeavyStagesSuite extends CometTestBase {
         val invalid = invalidColumnarBoundaries(reverted)
         assert(
           invalid.isEmpty,
-          s"revertToSpark produced invalid columnar/row boundaries " +
+          "revertToSpark produced invalid columnar/row boundaries " +
             s"(${invalid.map(_.nodeName).mkString(", ")}):\n${reverted.treeString}")
       }
     }
@@ -258,12 +258,12 @@ class RevertNativeForTransitionHeavyStagesSuite extends CometTestBase {
       CometConf.COMET_EXEC_TRANSITION_REVERT_MAX_TRANSITIONS.key -> "0",
       "spark.sql.adaptive.enabled" -> "false") {
       withParquetTable((0 until 100).map(i => (i, i % 10)), "tbl") {
-        val cometPlan =
-          withSQLConf(CometConf.COMET_EXEC_TRANSITION_REVERT_ENABLED.key -> "false") {
-            val df = sql("SELECT _2, count(*) FROM tbl GROUP BY _2")
-            df.collect()
-            stripAQEPlan(df.queryExecution.executedPlan)
-          }
+        var cometPlan: SparkPlan = null
+        withSQLConf(CometConf.COMET_EXEC_TRANSITION_REVERT_ENABLED.key -> "false") {
+          val df = sql("SELECT _2, count(*) FROM tbl GROUP BY _2")
+          df.collect()
+          cometPlan = stripAQEPlan(df.queryExecution.executedPlan)
+        }
         assume(
           cometPlan.collect { case s: CometShuffleExchangeExec => s }.nonEmpty,
           "test requires a native CometShuffleExchangeExec")
@@ -274,7 +274,7 @@ class RevertNativeForTransitionHeavyStagesSuite extends CometTestBase {
         val invalid = invalidColumnarBoundaries(result)
         assert(
           invalid.isEmpty,
-          s"rule.apply produced invalid columnar/row boundaries " +
+          "rule.apply produced invalid columnar/row boundaries " +
             s"(${invalid.map(_.nodeName).mkString(", ")}):\n${result.treeString}")
       }
     }

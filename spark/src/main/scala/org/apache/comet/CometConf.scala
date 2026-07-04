@@ -474,7 +474,7 @@ object CometConf extends ShimCometConf {
           "Only effective when spark.comet.exec.transitionRevert.enabled is true.")
       .intConf
       .checkValue(_ >= 0, "Must be >= 0.")
-      .createWithDefault(5)
+      .createWithDefault(2)
 
   val COMET_EXEC_SHUFFLE_COMPRESSION_CODEC: ConfigEntry[String] =
     conf(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.compression.codec")
