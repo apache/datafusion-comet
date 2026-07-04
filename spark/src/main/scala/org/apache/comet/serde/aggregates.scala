@@ -22,7 +22,7 @@ package org.apache.comet.serde
 import scala.jdk.CollectionConverters._
 
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Literal}
-import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, Average, BitAndAgg, BitOrAgg, BitXorAgg, BloomFilterAggregate, CentralMomentAgg, CollectSet, Corr, Count, Covariance, CovPopulation, CovSample, First, Last, Max, Min, Percentile, StddevPop, StddevSamp, Sum, VariancePop, VarianceSamp}
+import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, Average, BitAndAgg, BitOrAgg, BitXorAgg, BloomFilterAggregate, CentralMomentAgg, CollectSet, Corr, Count, Covariance, CovPopulation, CovSample, First, Kurtosis, Last, Max, Min, Percentile, StddevPop, StddevSamp, Sum, VariancePop, VarianceSamp}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{ByteType, DecimalType, DoubleType, IntegerType, LongType, NumericType, ShortType, StringType}
 
@@ -816,6 +816,39 @@ object CometCollectSet extends CometAggregateExpressionSerde[CollectSet] {
     } else if (dataType.isEmpty) {
       withFallbackReason(aggExpr, s"datatype ${expr.dataType} is not supported", child)
       None
+    } else {
+      withFallbackReason(aggExpr, child)
+      None
+    }
+  }
+}
+
+object CometKurtosis extends CometAggregateExpressionSerde[Kurtosis] {
+
+  // Not marked safe for mixed partial/final: follows the same policy as `Variance` / `Stddev`,
+  // whose complex `[n, avg, m2, ...]` buffer is not certified compatible across engines. The
+  // native accumulator does mirror Spark's `[n, avg, m2, m3, m4]` wire format, so lifting this
+  // to `true` should be considered together with the other `CentralMomentAgg` serdes.
+
+  override def convert(
+      aggExpr: AggregateExpression,
+      kurtosis: Kurtosis,
+      inputs: Seq[Attribute],
+      binding: Boolean,
+      conf: SQLConf): Option[ExprOuterClass.AggExpr] = {
+    val child = kurtosis.child
+    val childExpr = exprToProto(child, inputs, binding)
+
+    if (childExpr.isDefined) {
+      val builder = ExprOuterClass.Kurtosis.newBuilder()
+      builder.setChild(childExpr.get)
+      builder.setNullOnDivideByZero(kurtosis.nullOnDivideByZero)
+
+      Some(
+        ExprOuterClass.AggExpr
+          .newBuilder()
+          .setKurtosis(builder)
+          .build())
     } else {
       withFallbackReason(aggExpr, child)
       None

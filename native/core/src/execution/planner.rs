@@ -130,8 +130,8 @@ use datafusion_comet_proto::{
 use datafusion_comet_spark_expr::{
     jvm_udf::JvmScalarUdfExpr, ArrayInsert, Avg, AvgDecimal, Cast, CheckOverflow, Correlation,
     Covariance, CreateNamedStruct, DecimalRescaleCheckOverflow, GetArrayStructFields,
-    GetStructField, IfExpr, ListExtract, NormalizeNaNAndZero, SparkCastOptions, Stddev, SumDecimal,
-    ToJson, UnboundColumn, Variance, WideDecimalBinaryExpr, WideDecimalOp,
+    GetStructField, IfExpr, Kurtosis, ListExtract, NormalizeNaNAndZero, SparkCastOptions, Stddev,
+    SumDecimal, ToJson, UnboundColumn, Variance, WideDecimalBinaryExpr, WideDecimalOp,
 };
 use itertools::Itertools;
 use jni::objects::{Global, JObject};
@@ -2652,6 +2652,14 @@ impl PhysicalPlanner {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
                 let func = AggregateUDF::new_from_impl(SparkCollectSet::new());
                 Self::create_aggr_func_expr("collect_set", schema, vec![child], func)
+            }
+            AggExprStruct::Kurtosis(expr) => {
+                let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
+                let func = AggregateUDF::new_from_impl(Kurtosis::new(
+                    "kurtosis",
+                    expr.null_on_divide_by_zero,
+                ));
+                Self::create_aggr_func_expr("kurtosis", schema, vec![child], func)
             }
         }
     }
