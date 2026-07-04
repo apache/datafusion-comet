@@ -825,7 +825,7 @@ object CometCollectSet extends CometAggregateExpressionSerde[CollectSet] {
 
 object CometApproxCountDistinct extends CometAggregateExpressionSerde[HyperLogLogPlusPlus] {
 
-  override def supportsMixedPartialFinal: Boolean = false
+  override def supportsMixedPartialFinal: Boolean = true
 
   // Types that Comet's native `xxhash64` hashes identically to Spark's `XxHash64Function`.
   private def hashableType(dt: DataType): Boolean = dt match {

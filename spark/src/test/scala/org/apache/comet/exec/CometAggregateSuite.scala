@@ -27,7 +27,10 @@ import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.catalyst.expressions.Cast
 import org.apache.spark.sql.catalyst.optimizer.EliminateSorts
 import org.apache.spark.sql.comet.CometHashAggregateExec
+import org.apache.spark.sql.execution.SparkPlan
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
+import org.apache.spark.sql.execution.adaptive.QueryStageExec
+import org.apache.spark.sql.execution.aggregate.HashAggregateExec
 import org.apache.spark.sql.functions.{avg, col, count_distinct, sum}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DataTypes, StructField, StructType}
@@ -47,6 +50,24 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   // ANSI-mode variants opt in to ANSI explicitly via withSQLConf.
   override protected def sparkConf: SparkConf =
     super.sparkConf.set(SQLConf.ANSI_ENABLED.key, "false")
+
+  private def containsCometHashAggregate(plan: SparkPlan): Boolean = {
+    stripAQEPlan(plan)
+      .collect {
+        case stage: QueryStageExec => containsCometHashAggregate(stage.plan)
+        case _: CometHashAggregateExec => true
+      }
+      .contains(true)
+  }
+
+  private def containsSparkHashAggregate(plan: SparkPlan): Boolean = {
+    stripAQEPlan(plan)
+      .collect {
+        case stage: QueryStageExec => containsSparkHashAggregate(stage.plan)
+        case _: HashAggregateExec => true
+      }
+      .contains(true)
+  }
 
   test("min/max floating point with negative zero") {
     val r = new Random(42)
@@ -764,6 +785,34 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       // non-distinct aggregate, so the PartialMerge stage has to survive for a float-producing
       // distinct aggregate.
       checkSparkAnswerAndOperator("SELECT avg(distinct _1), sum(_1) FROM tbl")
+    }
+  }
+
+  test("approx_count_distinct partial merge supports Comet partial and Spark final") {
+    val data = (0 until 1000).map(i => (i % 50, i, if (i < 500) "g1" else "g2"))
+
+    withParquetTable(data, "tbl", false) {
+      val queries = Seq(
+        "SELECT count(DISTINCT _1), approx_count_distinct(_2), " +
+          "approx_count_distinct(_1, 0.02) FROM tbl",
+        "SELECT _3, count(DISTINCT _1), approx_count_distinct(_2), " +
+          "approx_count_distinct(_1, 0.02) FROM tbl GROUP BY _3 ORDER BY _3")
+
+      withSQLConf(
+        CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+        CometConf.COMET_SHUFFLE_MODE.key -> "native",
+        CometConf.COMET_ENABLE_FINAL_HASH_AGGREGATE.key -> "false") {
+        queries.foreach { query =>
+          val (_, cometPlan) = checkSparkAnswer(query)
+
+          assert(
+            containsCometHashAggregate(cometPlan),
+            s"Expected at least one Comet aggregate in:\n$cometPlan")
+          assert(
+            containsSparkHashAggregate(cometPlan),
+            s"Expected at least one Spark aggregate in:\n$cometPlan")
+        }
+      }
     }
   }
 

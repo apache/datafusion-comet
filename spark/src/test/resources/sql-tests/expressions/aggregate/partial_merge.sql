@@ -214,6 +214,17 @@ SELECT grp,
 FROM pm_basic GROUP BY grp ORDER BY grp
 
 -- ============================================================
+-- advanced: approx_count_distinct partial merge
+-- ============================================================
+
+query
+SELECT count(DISTINCT k), approx_count_distinct(v) FROM pm_large
+
+query
+SELECT grp, count(DISTINCT k), approx_count_distinct(v), approx_count_distinct(k, 0.02)
+FROM pm_large GROUP BY grp ORDER BY grp
+
+-- ============================================================
 -- advanced: decimal partial merge (sum/avg produce decimal state)
 -- ============================================================
 
