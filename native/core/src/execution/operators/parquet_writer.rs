@@ -51,7 +51,6 @@ use std::fs::create_dir_all;
 use std::io::Cursor;
 use std::path::Path;
 use std::{
-    any::Any,
     collections::HashMap,
     fmt,
     fmt::{Debug, Formatter},
