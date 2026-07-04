@@ -68,8 +68,16 @@ class CometPartialProjectFallbackSuite
     }
   }
 
-  private def withDetour[T](enabled: Boolean)(f: => T): T =
-    withSQLConf(CometConf.COMET_EXEC_JVM_DETOUR_ENABLED.key -> enabled.toString)(f)
+  private def withDetour[T](enabled: Boolean)(f: => T): T = {
+    // Capture the block's result explicitly rather than returning `withSQLConf`'s value:
+    // Spark 3.4/3.5 (Scala 2.12) type `withSQLConf(...)(f)` as `Unit`, so returning it directly
+    // fails to unify with `T`. Spark 4.x infers it, but this form compiles on all versions.
+    var result: Option[T] = None
+    withSQLConf(CometConf.COMET_EXEC_JVM_DETOUR_ENABLED.key -> enabled.toString) {
+      result = Some(f)
+    }
+    result.get
+  }
 
   /** Whether the (already-executed) DataFrame's plan kept a native `CometProjectExec`. */
   private def hasCometProject(df: DataFrame): Boolean =
