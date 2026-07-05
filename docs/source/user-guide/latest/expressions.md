@@ -155,7 +155,7 @@ The tables below list every Spark built-in expression with its current status.
 | `flatten` | ✅ | Binary/struct/map elements fall back |
 | `get` | ✅ |  |
 | `sequence` | ✅ |  |
-| `shuffle` | 🔜 | Random array shuffle |
+| `shuffle` | ✅ | Binary/struct/map elements fall back |
 | `slice` | ✅ | Native ([#4149](https://github.com/apache/datafusion-comet/issues/4149)) |
 | `sort_array` | ✅ | Nested struct/null arrays fall back |
 
@@ -262,13 +262,13 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `last_day` | ✅ |  |
 | `localtimestamp` | ✅ |  |
 | `make_date` | ✅ |  |
-| `make_dt_interval` | 🔜 | [#4541](https://github.com/apache/datafusion-comet/issues/4541) |
+| `make_dt_interval` | ✅ |  |
 | `make_interval` | 🔜 | Produces legacy CalendarInterval; tracked by [#4540](https://github.com/apache/datafusion-comet/issues/4540) |
 | `make_time` | 🔜 | Spark 4.1 TIME type; tracked by [#4288](https://github.com/apache/datafusion-comet/issues/4288) |
 | `make_timestamp` | ✅ |  |
 | `make_timestamp_ltz` | ✅ | 2-arg TIME form falls back |
 | `make_timestamp_ntz` | ✅ | 2-arg TIME form falls back |
-| `make_ym_interval` | 🔜 | [#4541](https://github.com/apache/datafusion-comet/issues/4541) |
+| `make_ym_interval` | ✅ |  |
 | `minute` | ✅ |  |
 | `month` | ✅ |  |
 | `monthname` | ✅ | Abbreviated month name (Spark 4.0+) |
@@ -277,7 +277,7 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `now` | ✅ | Constant-folded to a literal (alias of `current_timestamp`) |
 | `quarter` | ✅ |  |
 | `second` | ✅ |  |
-| `session_window` | 🔜 | Time-window grouping; tracked by [#4553](https://github.com/apache/datafusion-comet/issues/4553) |
+| `session_window` | 🔜 | Batch session-window grouping falls back (`UpdatingSessionsExec` is not yet native); tracked by [#4785](https://github.com/apache/datafusion-comet/issues/4785) |
 | `time_diff` | 🔜 | Spark 4.1 TIME type; tracked by [#4288](https://github.com/apache/datafusion-comet/issues/4288) |
 | `time_trunc` | 🔜 | Spark 4.1 TIME type; tracked by [#4288](https://github.com/apache/datafusion-comet/issues/4288) |
 | `timestamp_micros` | ✅ |  |
@@ -303,8 +303,8 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `unix_timestamp` | ✅ |  |
 | `weekday` | ✅ |  |
 | `weekofyear` | ✅ |  |
-| `window` | 🔜 | Time-window grouping; tracked by [#4553](https://github.com/apache/datafusion-comet/issues/4553) |
-| `window_time` | 🔜 | Time-window grouping; tracked by [#4553](https://github.com/apache/datafusion-comet/issues/4553) |
+| `window` | ✅ | Batch tumbling and sliding time-window grouping runs natively |
+| `window_time` | ✅ | Batch time-window grouping runs natively |
 | `year` | ✅ |  |
 
 ---

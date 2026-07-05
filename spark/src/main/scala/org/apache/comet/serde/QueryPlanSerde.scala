@@ -51,8 +51,13 @@ import org.apache.comet.shims.{CometExprShim, CometTypeShim}
 object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
 
   private[comet] val arrayExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
+    // ArrayAppend is a concrete expression only on Spark 3.x. Spark 4.0+ marks it
+    // RuntimeReplaceable and rewrites it to ArrayInsert before serde, so this entry is
+    // unreachable there and is kept solely for Spark 3.4/3.5.
     classOf[ArrayAppend] -> CometArrayAppend,
-    classOf[ArrayCompact] -> CometArrayCompact,
+    // ArrayCompact is RuntimeReplaceable in all supported Spark versions (rewritten to
+    // ArrayFilter(arr, IsNotNull(...))), so it never reaches serde directly; dispatch flows
+    // through CometArrayFilter -> CometArrayCompact instead. No direct registration here.
     classOf[ArrayContains] -> CometArrayContains,
     classOf[ArrayDistinct] -> CometScalarFunction("array_distinct"),
     classOf[ArrayExcept] -> CometArrayExcept,
@@ -81,7 +86,8 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
     classOf[ArrayAggregate] -> CometArrayAggregate,
     classOf[ArraySort] -> CometArraySort,
     classOf[ZipWith] -> CometZipWith,
-    classOf[Sequence] -> CometSequence)
+    classOf[Sequence] -> CometSequence,
+    classOf[Shuffle] -> CometShuffle)
 
   private val conditionalExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] =
     Map(classOf[CaseWhen] -> CometCaseWhen, classOf[If] -> CometIf)
@@ -291,11 +297,14 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       classOf[Hour] -> CometHour,
       classOf[MakeDate] -> CometMakeDate,
       classOf[MakeTimestamp] -> CometMakeTimestamp,
+      classOf[MakeYMInterval] -> CometMakeYMInterval,
+      classOf[MakeDTInterval] -> CometMakeDTInterval,
       classOf[MicrosToTimestamp] -> CometMicrosToTimestamp,
       classOf[MillisToTimestamp] -> CometMillisToTimestamp,
       classOf[MonthsBetween] -> CometMonthsBetween,
       classOf[Minute] -> CometMinute,
       classOf[NextDay] -> CometNextDay,
+      classOf[PreciseTimestampConversion] -> CometPreciseTimestampConversion,
       classOf[Second] -> CometSecond,
       classOf[SecondsToTimestamp] -> CometSecondsToTimestamp,
       classOf[TruncDate] -> CometTruncDate,
@@ -349,6 +358,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       classOf[CheckOverflow] -> CometCheckOverflow,
       classOf[Coalesce] -> CometCoalesce,
       classOf[KnownFloatingPointNormalized] -> CometKnownFloatingPointNormalized,
+      classOf[KnownNullable] -> CometKnownNullable,
       classOf[Literal] -> CometLiteral,
       classOf[MakeDecimal] -> CometMakeDecimal,
       classOf[MonotonicallyIncreasingID] -> CometMonotonicallyIncreasingId,
@@ -519,6 +529,8 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       case _: MapType => 15
       case _: StructType => 16
       case dt if isTimeType(dt) => 17
+      case _: YearMonthIntervalType => 18
+      case _: DayTimeIntervalType => 19
       case dt =>
         logWarning(s"Cannot serialize Spark data type: $dt")
         return None

@@ -15,4 +15,5 @@
 // specific language governing permissions and limitations
 // under the License.
 
+pub mod azure;
 pub mod s3;
