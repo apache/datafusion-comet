@@ -53,9 +53,7 @@ class CometFileLocalityManagerSuite extends AnyFunSuite with BeforeAndAfterEach 
     val counts = files(9)
       .flatMap(f => CometFileLocalityManager.assignedHost(f))
       .groupBy(identity)
-      .view
-      .mapValues(_.size)
-      .toMap
+      .map { case (host, occurrences) => (host, occurrences.size) }
     assert(counts.values.forall(_ == 3), s"expected 3 files per host, got $counts")
   }
 
@@ -130,7 +128,5 @@ class CometFileLocalityManagerSuite extends AnyFunSuite with BeforeAndAfterEach 
   private def hostCounts(fs: Seq[String]): Map[String, Int] =
     fs.flatMap(f => CometFileLocalityManager.assignedHost(f))
       .groupBy(identity)
-      .view
-      .mapValues(_.size)
-      .toMap
+      .map { case (host, occurrences) => (host, occurrences.size) }
 }
