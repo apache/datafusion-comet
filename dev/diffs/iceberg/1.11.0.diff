@@ -11,10 +11,26 @@ index db659dc06b..78f5e3440f 100644
  delta-standalone = "3.3.2"
  delta-spark = "3.3.2"
 diff --git a/spark/v4.1/build.gradle b/spark/v4.1/build.gradle
-index e6455fa34f..cda5ec64d8 100644
+index e6455fa34f..08b685f61a 100644
 --- a/spark/v4.1/build.gradle
 +++ b/spark/v4.1/build.gradle
-@@ -256,6 +256,7 @@ project(":iceberg-spark:iceberg-spark-runtime-${sparkMajorVersion}_${scalaVersio
+@@ -109,6 +109,7 @@ project(":iceberg-spark:iceberg-spark-${sparkMajorVersion}_${scalaVersion}") {
+     testImplementation (project(path: ':iceberg-open-api', configuration: 'testFixturesRuntimeElements'))
+     testImplementation libs.awaitility
+     testImplementation(testFixtures(project(':iceberg-parquet')))
++    testImplementation "org.apache.datafusion:comet-spark-spark${sparkMajorVersion}_${scalaVersion}:${libs.versions.comet.get()}"
+   }
+ 
+   test {
+@@ -174,6 +175,7 @@ project(":iceberg-spark:iceberg-spark-extensions-${sparkMajorVersion}_${scalaVer
+     testImplementation libs.parquet.hadoop
+     testImplementation libs.awaitility
+     testImplementation(testFixtures(project(':iceberg-parquet')))
++    testImplementation "org.apache.datafusion:comet-spark-spark${sparkMajorVersion}_${scalaVersion}:${libs.versions.comet.get()}"
+ 
+     // Required because we remove antlr plugin dependencies from the compile configuration, see note above
+     runtimeOnly libs.antlr.runtime413
+@@ -256,6 +258,7 @@ project(":iceberg-spark:iceberg-spark-runtime-${sparkMajorVersion}_${scalaVersio
      integrationImplementation project(path: ':iceberg-hive-metastore', configuration: 'testArtifacts')
      integrationImplementation project(path: ":iceberg-spark:iceberg-spark-${sparkMajorVersion}_${scalaVersion}", configuration: 'testArtifacts')
      integrationImplementation project(path: ":iceberg-spark:iceberg-spark-extensions-${sparkMajorVersion}_${scalaVersion}", configuration: 'testArtifacts')
