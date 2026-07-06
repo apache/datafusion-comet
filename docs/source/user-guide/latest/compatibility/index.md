@@ -159,6 +159,7 @@ resolves to under its own defaults.
 
 | Config key                                        | Comet-expected default |
 | ------------------------------------------------- | ---------------------- |
+| `spark.sql.legacy.allowParameterlessCount`        | `false`                |
 | `spark.sql.legacy.duplicateBetweenInput`          | `false`                |
 | `spark.sql.legacy.inSubqueryNullability`          | `false`                |
 | `spark.sql.legacy.scalarSubqueryCountBugBehavior` | `false`                |

@@ -48,6 +48,9 @@ private[comet] object LegacyConfFallback {
     "spark.sql.legacy.literal.pickMinimumPrecision" -> "false",
     // Char/varchar padding + write-side validation inserted by the analyzer.
     "spark.sql.legacy.charVarcharAsString" -> "false",
+    // Analyzer rule that lets `count()` be treated as `count(*)`; the native planner has no
+    // representation for a Count with zero children.
+    "spark.sql.legacy.allowParameterlessCount" -> "false",
     // Type-coercion / upcast rules.
     "spark.sql.legacy.doLooseUpcast" -> "false",
     "spark.sql.legacy.typeCoercion.datetimeToString.enabled" -> "false",

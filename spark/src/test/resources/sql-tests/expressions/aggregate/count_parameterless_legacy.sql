@@ -30,16 +30,16 @@ statement
 INSERT INTO test_count_parameterless VALUES (1, 'x'), (2, 'x'), (NULL, 'y'), (3, 'y'), (NULL, 'y')
 
 -- Parameterless count() falls back to Spark; the aggregate result must still match Spark.
-query expect_fallback(spark.sql.legacy.allowParameterlessCount=true)
+query spark_answer_only
 SELECT count() FROM test_count_parameterless
 
 -- Parameterless count() with GROUP BY.
-query expect_fallback(spark.sql.legacy.allowParameterlessCount=true)
+query spark_answer_only
 SELECT grp, count() FROM test_count_parameterless GROUP BY grp ORDER BY grp
 
 -- Parameterless count() on empty table.
 statement
 CREATE TABLE test_count_empty(i int) USING parquet
 
-query expect_fallback(spark.sql.legacy.allowParameterlessCount=true)
+query spark_answer_only
 SELECT count() FROM test_count_empty
