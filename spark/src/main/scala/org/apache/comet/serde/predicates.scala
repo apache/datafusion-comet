@@ -243,7 +243,8 @@ object CometIsNaN extends CometExpressionSerde[IsNaN] {
 
 object CometIn extends CometExpressionSerde[In] with CodegenDispatchFallback {
 
-  override def getIncompatibleReasons(): Seq[String] = Seq(LegacyConfHelpers.nullInEmptyListReason)
+  override def getIncompatibleReasons(): Seq[String] = Seq(
+    LegacyConfHelpers.nullInEmptyListReason)
 
   override def getSupportLevel(expr: In): SupportLevel =
     if (expr.list.isEmpty && LegacyConfHelpers.legacyNullInEmptyBehavior) {
@@ -265,7 +266,8 @@ object CometIn extends CometExpressionSerde[In] with CodegenDispatchFallback {
 
 object CometInSet extends CometExpressionSerde[InSet] with CodegenDispatchFallback {
 
-  override def getIncompatibleReasons(): Seq[String] = Seq(LegacyConfHelpers.nullInEmptyListReason)
+  override def getIncompatibleReasons(): Seq[String] = Seq(
+    LegacyConfHelpers.nullInEmptyListReason)
 
   override def getSupportLevel(expr: InSet): SupportLevel =
     if (expr.hset.isEmpty && LegacyConfHelpers.legacyNullInEmptyBehavior) {
