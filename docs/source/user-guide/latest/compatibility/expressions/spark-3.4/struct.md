@@ -36,4 +36,5 @@ The following incompatibilities cause `StructsToCsv` to fall back to Spark by de
 The following cases are not supported by Comet:
 
 - Complex types (arrays, maps, structs) in the schema are not supported
+
 <!--END:EXPR_COMPAT-->

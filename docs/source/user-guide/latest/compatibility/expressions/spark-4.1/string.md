@@ -94,4 +94,5 @@ The following differences from Spark are always present and do not require any a
 The following incompatibilities cause `StringTranslate` to fall back to Spark by default. Set `spark.comet.expression.StringTranslate.allowIncompatible=true` to enable Comet acceleration despite these differences.
 
 - DataFusion's translate iterates over Unicode graphemes (Spark uses code points) and substitutes U+0000 instead of treating it as a deletion sentinel
+
 <!--END:EXPR_COMPAT-->

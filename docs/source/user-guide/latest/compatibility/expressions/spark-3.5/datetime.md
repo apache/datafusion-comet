@@ -136,4 +136,5 @@ The following cases are not supported by Comet:
 The following cases are not supported by Comet:
 
 - Only `TimestampType` and `DateType` inputs are supported. `TimestampNTZType` is not supported because Comet incorrectly applies timezone conversion to TimestampNTZ values.
+
 <!--END:EXPR_COMPAT-->
