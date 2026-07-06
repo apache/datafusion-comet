@@ -99,10 +99,10 @@ omitted from the tables below and may be reconsidered based on demand:
 
 ## Window
 
-| Operator               | Status | Notes                                                                                                                                            |
-| ---------------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `WindowExec`           | ⚠️     | Runs natively, but only a subset of window functions is accelerated. The rest fall back. See the [expression reference](expressions.md) (#2721). |
-| `WindowGroupLimitExec` | 🔜     | Window-based limit pushdown falls back today.                                                                                                    |
+| Operator               | Status | Notes                                                                                                                                                                                            |
+| ---------------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `WindowExec`           | ⚠️     | Runs natively and is enabled by default. A broad set of window functions is accelerated; unsupported shapes fall back to Spark. See [window function compatibility](compatibility/operators.md). |
+| `WindowGroupLimitExec` | 🔜     | Window-based limit pushdown falls back today.                                                                                                                                                    |
 
 ## Generators and set operations
 
