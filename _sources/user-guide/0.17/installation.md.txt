@@ -86,6 +86,7 @@ Here are the direct links for downloading the Comet 0.17.0 jar file.
 - [Comet plugin for Spark 4.0 / Scala 2.13](https://repo1.maven.org/maven2/org/apache/datafusion/comet-spark-spark4.0_2.13/0.17.0/comet-spark-spark4.0_2.13-0.17.0.jar)
 - [Comet plugin for Spark 4.1 / Scala 2.13](https://repo1.maven.org/maven2/org/apache/datafusion/comet-spark-spark4.1_2.13/0.17.0/comet-spark-spark4.1_2.13-0.17.0.jar)
 
+
 ## Building from source
 
 Refer to the [Building from source] guide for instructions from building Comet from source, either from official

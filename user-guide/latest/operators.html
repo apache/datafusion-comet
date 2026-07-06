@@ -785,11 +785,11 @@ omitted from the tables below and may be reconsidered based on demand:</p>
 <tbody>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">WindowExec</span></code></p></td>
 <td><p>⚠️</p></td>
-<td><p>Runs natively, but only a subset of window functions is accelerated. The rest fall back. See the <a class="reference internal" href="expressions.html"><span class="std std-doc">expression reference</span></a> (#2721).</p></td>
+<td><p>Runs natively and is enabled by default. A broad set of window functions is accelerated; unsupported shapes fall back to Spark. See <a class="reference internal" href="compatibility/operators.html"><span class="std std-doc">window function compatibility</span></a>.</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">WindowGroupLimitExec</span></code></p></td>
 <td><p>🔜</p></td>
-<td><p>Window-based limit pushdown falls back today.</p></td>
+<td><p>Window-based limit pushdown falls back today (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4837">#4837</a>).</p></td>
 </tr>
 </tbody>
 </table>

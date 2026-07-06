@@ -570,8 +570,41 @@ under the License.
 <h1>Operator Compatibility<a class="headerlink" href="#operator-compatibility" title="Link to this heading">#</a></h1>
 <section id="window-functions">
 <h2>Window Functions<a class="headerlink" href="#window-functions" title="Link to this heading">#</a></h2>
-<p>Comet’s support for window functions is incomplete and known to be incorrect. It is disabled by default and
-should not be used in production. The feature will be enabled in a future release. Tracking issue: <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/2721">#2721</a>.</p>
+<p>Comet runs <code class="docutils literal notranslate"><span class="pre">WindowExec</span></code> natively and it is enabled by default (<code class="docutils literal notranslate"><span class="pre">spark.comet.exec.window.enabled</span></code>). A broad set of
+window functions is accelerated, and any shape Comet does not support falls back to Spark rather than producing an
+incorrect result. When any single window expression in a <code class="docutils literal notranslate"><span class="pre">WindowExec</span></code> falls back, the entire operator runs on Spark.</p>
+<p><strong>Accelerated natively:</strong></p>
+<ul class="simple">
+<li><p>Ranking functions: <code class="docutils literal notranslate"><span class="pre">row_number</span></code>, <code class="docutils literal notranslate"><span class="pre">rank</span></code>, <code class="docutils literal notranslate"><span class="pre">dense_rank</span></code>, <code class="docutils literal notranslate"><span class="pre">percent_rank</span></code>, <code class="docutils literal notranslate"><span class="pre">cume_dist</span></code>, <code class="docutils literal notranslate"><span class="pre">ntile</span></code>.</p></li>
+<li><p>Value functions: <code class="docutils literal notranslate"><span class="pre">lag</span></code>, <code class="docutils literal notranslate"><span class="pre">lead</span></code>, <code class="docutils literal notranslate"><span class="pre">nth_value</span></code>, <code class="docutils literal notranslate"><span class="pre">first_value</span></code> (<code class="docutils literal notranslate"><span class="pre">first</span></code>), <code class="docutils literal notranslate"><span class="pre">last_value</span></code> (<code class="docutils literal notranslate"><span class="pre">last</span></code>). <code class="docutils literal notranslate"><span class="pre">IGNORE</span> <span class="pre">NULLS</span></code> is
+supported.</p></li>
+<li><p>Aggregate window functions: <code class="docutils literal notranslate"><span class="pre">count</span></code>, <code class="docutils literal notranslate"><span class="pre">min</span></code>, <code class="docutils literal notranslate"><span class="pre">max</span></code>, <code class="docutils literal notranslate"><span class="pre">sum</span></code>, <code class="docutils literal notranslate"><span class="pre">avg</span></code>.</p></li>
+<li><p>Frame units <code class="docutils literal notranslate"><span class="pre">ROWS</span></code> and <code class="docutils literal notranslate"><span class="pre">RANGE</span></code>, with <code class="docutils literal notranslate"><span class="pre">UNBOUNDED</span> <span class="pre">PRECEDING</span></code> / <code class="docutils literal notranslate"><span class="pre">UNBOUNDED</span> <span class="pre">FOLLOWING</span></code>, <code class="docutils literal notranslate"><span class="pre">CURRENT</span> <span class="pre">ROW</span></code>, and numeric
+<code class="docutils literal notranslate"><span class="pre">PRECEDING</span></code> / <code class="docutils literal notranslate"><span class="pre">FOLLOWING</span></code> offsets.</p></li>
+</ul>
+<p><strong>Falls back to Spark:</strong></p>
+<ul class="simple">
+<li><p>Aggregate window functions other than the ones listed above, including the statistical aggregates
+(<code class="docutils literal notranslate"><span class="pre">stddev</span></code>, <code class="docutils literal notranslate"><span class="pre">stddev_pop</span></code>, <code class="docutils literal notranslate"><span class="pre">stddev_samp</span></code>, <code class="docutils literal notranslate"><span class="pre">var_pop</span></code>, <code class="docutils literal notranslate"><span class="pre">var_samp</span></code>, <code class="docutils literal notranslate"><span class="pre">corr</span></code>, <code class="docutils literal notranslate"><span class="pre">covar_pop</span></code>, <code class="docutils literal notranslate"><span class="pre">covar_samp</span></code>). These run
+natively as plain aggregations but not as window functions
+(<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4766">#4766</a>).</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">min</span></code> / <code class="docutils literal notranslate"><span class="pre">max</span></code> on string, binary, timestamp-without-time-zone, interval, or nested (array / struct) input types,
+and <code class="docutils literal notranslate"><span class="pre">sum</span></code> / <code class="docutils literal notranslate"><span class="pre">avg</span></code> on year-month or day-time interval input types. Windowed aggregates inherit the same input-type
+support as the batch aggregates, so these fall back in both contexts.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">sum</span></code> or <code class="docutils literal notranslate"><span class="pre">avg</span></code> on <code class="docutils literal notranslate"><span class="pre">DECIMAL</span></code> with a sliding (non ever-expanding) frame, because the sliding path would wrap on
+overflow instead of returning Spark’s <code class="docutils literal notranslate"><span class="pre">NULL</span></code> (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4729">#4729</a>).</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">RANGE</span></code> frame with an explicit offset when the <code class="docutils literal notranslate"><span class="pre">ORDER</span> <span class="pre">BY</span></code> column is <code class="docutils literal notranslate"><span class="pre">DATE</span></code> or <code class="docutils literal notranslate"><span class="pre">DECIMAL</span></code>
+(<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4834">#4834</a>).</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">first_value</span></code> / <code class="docutils literal notranslate"><span class="pre">last_value</span></code> on a <code class="docutils literal notranslate"><span class="pre">RANGE</span></code> frame with a literal offset
+(<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4835">#4835</a>).</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">lag</span></code> / <code class="docutils literal notranslate"><span class="pre">lead</span></code> with a non-literal default value (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4268">#4268</a>).</p></li>
+<li><p>A <code class="docutils literal notranslate"><span class="pre">ROWS</span></code> offset that is not an integer or long, or a <code class="docutils literal notranslate"><span class="pre">RANGE</span></code> offset that is not numeric.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">GROUPS</span></code> frames (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4836">#4836</a>). <code class="docutils literal notranslate"><span class="pre">DISTINCT</span></code> aggregates over a
+window are not supported by Spark either.</p></li>
+<li><p>Any <code class="docutils literal notranslate"><span class="pre">PARTITION</span> <span class="pre">BY</span></code> or <code class="docutils literal notranslate"><span class="pre">ORDER</span> <span class="pre">BY</span></code> expression that Comet cannot serialize.</p></li>
+</ul>
+<p><code class="docutils literal notranslate"><span class="pre">WindowGroupLimitExec</span></code> (window-based limit pushdown) is not yet supported and falls back to Spark
+(<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4837">#4837</a>).</p>
 </section>
 <section id="round-robin-partitioning">
 <h2>Round-Robin Partitioning<a class="headerlink" href="#round-robin-partitioning" title="Link to this heading">#</a></h2>

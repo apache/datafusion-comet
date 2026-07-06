@@ -48,4 +48,5 @@ The following incompatibilities cause `MapSort` to fall back to Spark by default
 The following cases are not supported by Comet:
 
 - MapSort is unsupported for non-scalar key types (struct, array, map, etc.).
+
 <!--END:EXPR_COMPAT-->

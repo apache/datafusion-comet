@@ -56,4 +56,5 @@ The following incompatibilities cause `SortOrder` to fall back to Spark by defau
 The following cases are not supported by Comet:
 
 - Falls back to Spark when the input type cannot be cast to string.
+
 <!--END:EXPR_COMPAT-->

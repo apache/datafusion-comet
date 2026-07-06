@@ -38,4 +38,5 @@ By default, Comet accelerates `MapFromEntries` using JVM codegen dispatch, which
 
 - `BinaryType` is not supported as a map key in `map_from_entries`
 - `BinaryType` is not supported as a map value in `map_from_entries`
+
 <!--END:EXPR_COMPAT-->
