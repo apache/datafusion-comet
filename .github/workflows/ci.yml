@@ -56,9 +56,9 @@ jobs:
       github.event_name != 'pull_request' ||
       github.event.action != 'labeled' ||
       github.event.label.name == 'run-spark-3.4-tests' ||
-
       github.event.label.name == 'run-spark-4.0-tests' ||
-      github.event.label.name == 'run-spark-4.1-tests'
+      github.event.label.name == 'run-spark-4.1-tests' ||
+      github.event.label.name == 'run-iceberg-tests'
     steps:
       - uses: actions/checkout@v7
 
