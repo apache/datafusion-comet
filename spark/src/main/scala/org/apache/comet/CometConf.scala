@@ -386,7 +386,7 @@ object CometConf extends ShimCometConf {
           "because the cap is only reachable for very large per-partition group cardinalities; " +
           "enable it when you see the offset-overflow error.")
       .booleanConf
-      .createWithDefault(false)
+      .createWithDefault(true)
 
   val COMET_SCALA_UDF_CODEGEN_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.exec.scalaUDF.codegen.enabled")

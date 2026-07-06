@@ -2159,7 +2159,10 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("CUBE(9) + COUNT(DISTINCT) wide Utf8 keys: useLargeDataTypes preserves correctness") {
+  // The test to reproduce `offset overflow` for aggregation queries, when interim data
+  // get exploded 100x comparing to initial input size.
+  // It is not supposed to run on CI as the test requires significant RAM to succeed
+  ignore("CUBE(9) + COUNT(DISTINCT) wide Utf8 keys: useLargeDataTypes preserves correctness") {
     def writeData(path: String, numRows: Long, wideBytes: Int): Unit = {
       val userPadLen = wideBytes - "user-".length
       val measurePadLen = wideBytes - "meas-".length
