@@ -21,6 +21,8 @@ package org.apache.comet
 
 import org.apache.spark.sql.internal.SQLConf
 
+import org.apache.comet.shims.ShimLegacyConfFallback
+
 /**
  * Curated set of Spark `spark.sql.legacy.*` configs whose behavior is NOT tied to a specific
  * Comet-supported expression (built-in functions with a legacy dependency are handled
@@ -33,48 +35,20 @@ import org.apache.spark.sql.internal.SQLConf
  * for the session if any of these keys is set to its non-default value, so Spark's own execution
  * path is used instead. Users can set `spark.comet.legacyConfFallback.enabled=false` to override
  * the fallback and keep Comet enabled (Spark compatibility is not guaranteed in that case).
+ *
+ * The map of legacy key -> Spark 4 default value comes from [[ShimLegacyConfFallback]]. The 4.x
+ * shim derives defaults from live [[org.apache.spark.internal.config.ConfigEntry]] references so
+ * additions/removals in Spark 4 are picked up automatically; the 3.x shim hardcodes the same
+ * defaults because several of these keys do not exist as ConfigEntry instances in Spark 3.
  */
-private[comet] object LegacyConfFallback {
+private[comet] object LegacyConfFallback extends ShimLegacyConfFallback {
 
   /**
    * Map of legacy config key -> case-insensitive Spark default value. A config triggers the
    * fallback when it is present in the session conf AND its value is not equal (case-insensitive)
    * to the default recorded here.
    */
-  val executionAffectingDefaults: Map[String, String] = Map(
-    // Decimal type-system / analyzer rules that reshape plans reaching Comet.
-    "spark.sql.legacy.allowNegativeScaleOfDecimal" -> "false",
-    "spark.sql.legacy.decimal.retainFractionDigitsOnTruncate" -> "false",
-    "spark.sql.legacy.literal.pickMinimumPrecision" -> "false",
-    // Char/varchar padding + write-side validation inserted by the analyzer.
-    "spark.sql.legacy.charVarcharAsString" -> "false",
-    // Analyzer rule that lets `count()` be treated as `count(*)`; the native planner has no
-    // representation for a Count with zero children.
-    "spark.sql.legacy.allowParameterlessCount" -> "false",
-    // Type-coercion / upcast rules.
-    "spark.sql.legacy.doLooseUpcast" -> "false",
-    "spark.sql.legacy.typeCoercion.datetimeToString.enabled" -> "false",
-    // Optimizer rules that reshape plans (subqueries, Between, empty-list IN nullability).
-    "spark.sql.legacy.duplicateBetweenInput" -> "false",
-    "spark.sql.legacy.inSubqueryNullability" -> "false",
-    "spark.sql.legacy.scalarSubqueryCountBugBehavior" -> "false",
-    // Map-key normalization used by CreateMap and friends inside ArrayBasedMapBuilder.
-    "spark.sql.legacy.disableMapKeyNormalization" -> "false",
-    // Set-op precedence changes the plan topology handed to Comet operators.
-    "spark.sql.legacy.setopsPrecedence.enabled" -> "false",
-    // View schema compensation controls whether Cast (Comet-supported) or UpCast (Comet
-    // unsupported) is injected during view resolution.
-    "spark.sql.legacy.viewSchemaCompensation" -> "true",
-    // Datetime parser policy affects CSV/JSON scan options and datetime formatters.
-    "spark.sql.legacy.timeParserPolicy" -> "CORRECTED",
-    // Datasource readers/writers Comet may accelerate.
-    "spark.sql.legacy.parquet.datetimeRebaseModeInRead" -> "CORRECTED",
-    "spark.sql.legacy.parquet.datetimeRebaseModeInWrite" -> "CORRECTED",
-    "spark.sql.legacy.parquet.int96RebaseModeInRead" -> "CORRECTED",
-    "spark.sql.legacy.parquet.int96RebaseModeInWrite" -> "CORRECTED",
-    "spark.sql.legacy.parquet.nanosAsLong" -> "false",
-    // Cached-plan behavior that leaves stale options on a Comet-accelerated file scan.
-    "spark.sql.legacy.readFileSourceTableCacheIgnoreOptions" -> "false")
+  val executionAffectingDefaults: Map[String, String] = legacyConfDefaults
 
   /** Keys in [[executionAffectingDefaults]] that are set to a non-default value on `conf`. */
   def triggeredConfigs(conf: SQLConf): Iterable[String] = {

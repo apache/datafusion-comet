@@ -109,27 +109,6 @@ object CometMax extends CometAggregateExpressionSerde[Max] {
 
 object CometCount extends CometAggregateExpressionSerde[Count] {
 
-  // When `spark.sql.legacy.allowParameterlessCount=true`, Spark allows `count()` with no
-  // arguments and treats it as `count(*)`. Comet's native planner asserts on non-empty children
-  // and would panic on such an expression, so mark it Unsupported here and let the aggregate fall
-  // back to Spark. Aggregate serdes have no [[CodegenDispatchFallback]] path (aggregates cannot
-  // be routed through the JVM codegen dispatcher), so a clean Spark fallback is the appropriate
-  // outcome. Under the default config value, Spark's analyzer rejects parameterless `count()` so
-  // this branch is unreachable.
-  private val legacyAllowParameterlessCountReason: String =
-    "`spark.sql.legacy.allowParameterlessCount=true` produces `count()` with no children, which " +
-      "the native planner does not support"
-
-  override def getUnsupportedReasons(): Seq[String] = Seq(legacyAllowParameterlessCountReason)
-
-  override def getSupportLevel(expr: Count): SupportLevel = {
-    if (expr.children.isEmpty) {
-      Unsupported(Some(legacyAllowParameterlessCountReason))
-    } else {
-      Compatible()
-    }
-  }
-
   override def convert(
       aggExpr: AggregateExpression,
       expr: Count,
