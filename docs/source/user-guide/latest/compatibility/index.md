@@ -136,62 +136,62 @@ resolves to under its own defaults.
 
 **Decimal type-system / analyzer rules**
 
-| Config key | Comet-expected default |
-| --- | --- |
-| `spark.sql.legacy.allowNegativeScaleOfDecimal` | `false` |
-| `spark.sql.legacy.decimal.retainFractionDigitsOnTruncate` | `false` |
-| `spark.sql.legacy.literal.pickMinimumPrecision` | `true` |
+| Config key                                                | Comet-expected default |
+| --------------------------------------------------------- | ---------------------- |
+| `spark.sql.legacy.allowNegativeScaleOfDecimal`            | `false`                |
+| `spark.sql.legacy.decimal.retainFractionDigitsOnTruncate` | `false`                |
+| `spark.sql.legacy.literal.pickMinimumPrecision`           | `true`                 |
 
 **Char/varchar padding and analyzer-inserted write-side validation**
 
-| Config key | Comet-expected default |
-| --- | --- |
-| `spark.sql.legacy.charVarcharAsString` | `false` |
+| Config key                             | Comet-expected default |
+| -------------------------------------- | ---------------------- |
+| `spark.sql.legacy.charVarcharAsString` | `false`                |
 
 **Type coercion and upcast rules**
 
-| Config key | Comet-expected default |
-| --- | --- |
-| `spark.sql.legacy.doLooseUpcast` | `false` |
-| `spark.sql.legacy.typeCoercion.datetimeToString.enabled` | `false` |
+| Config key                                               | Comet-expected default |
+| -------------------------------------------------------- | ---------------------- |
+| `spark.sql.legacy.doLooseUpcast`                         | `false`                |
+| `spark.sql.legacy.typeCoercion.datetimeToString.enabled` | `false`                |
 
 **Optimizer rules that reshape plans handed to Comet**
 
-| Config key | Comet-expected default |
-| --- | --- |
-| `spark.sql.legacy.duplicateBetweenInput` | `false` |
-| `spark.sql.legacy.inSubqueryNullability` | `false` |
-| `spark.sql.legacy.scalarSubqueryCountBugBehavior` | `false` |
-| `spark.sql.legacy.disableMapKeyNormalization` | `false` |
-| `spark.sql.legacy.setopsPrecedence.enabled` | `false` |
+| Config key                                        | Comet-expected default |
+| ------------------------------------------------- | ---------------------- |
+| `spark.sql.legacy.duplicateBetweenInput`          | `false`                |
+| `spark.sql.legacy.inSubqueryNullability`          | `false`                |
+| `spark.sql.legacy.scalarSubqueryCountBugBehavior` | `false`                |
+| `spark.sql.legacy.disableMapKeyNormalization`     | `false`                |
+| `spark.sql.legacy.setopsPrecedence.enabled`       | `false`                |
 
 **View resolution (Cast vs. UpCast injection)**
 
-| Config key | Comet-expected default |
-| --- | --- |
-| `spark.sql.legacy.viewSchemaCompensation` | `true` |
+| Config key                                | Comet-expected default |
+| ----------------------------------------- | ---------------------- |
+| `spark.sql.legacy.viewSchemaCompensation` | `true`                 |
 
 **Datetime parser policy**
 
-| Config key | Comet-expected default |
-| --- | --- |
-| `spark.sql.legacy.timeParserPolicy` | `CORRECTED` |
+| Config key                          | Comet-expected default |
+| ----------------------------------- | ---------------------- |
+| `spark.sql.legacy.timeParserPolicy` | `CORRECTED`            |
 
 **Parquet reader/writer semantics**
 
-| Config key | Comet-expected default |
-| --- | --- |
-| `spark.sql.legacy.parquet.datetimeRebaseModeInRead` | `CORRECTED` |
-| `spark.sql.legacy.parquet.datetimeRebaseModeInWrite` | `CORRECTED` |
-| `spark.sql.legacy.parquet.int96RebaseModeInRead` | `CORRECTED` |
-| `spark.sql.legacy.parquet.int96RebaseModeInWrite` | `CORRECTED` |
-| `spark.sql.legacy.parquet.nanosAsLong` | `false` |
+| Config key                                           | Comet-expected default |
+| ---------------------------------------------------- | ---------------------- |
+| `spark.sql.legacy.parquet.datetimeRebaseModeInRead`  | `CORRECTED`            |
+| `spark.sql.legacy.parquet.datetimeRebaseModeInWrite` | `CORRECTED`            |
+| `spark.sql.legacy.parquet.int96RebaseModeInRead`     | `CORRECTED`            |
+| `spark.sql.legacy.parquet.int96RebaseModeInWrite`    | `CORRECTED`            |
+| `spark.sql.legacy.parquet.nanosAsLong`               | `false`                |
 
 **Cached-plan behavior on file-source scans**
 
-| Config key | Comet-expected default |
-| --- | --- |
-| `spark.sql.legacy.readFileSourceTableCacheIgnoreOptions` | `false` |
+| Config key                                               | Comet-expected default |
+| -------------------------------------------------------- | ---------------------- |
+| `spark.sql.legacy.readFileSourceTableCacheIgnoreOptions` | `false`                |
 
 ### Opting out of the session-wide fallback
 
