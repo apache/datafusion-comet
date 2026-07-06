@@ -446,12 +446,13 @@ object CometArrayInsert extends CometExpressionSerde[ArrayInsert] with CodegenDi
   // position is interpreted. Rather than maintain a parallel native code path for the legacy
   // semantics, mark `array_insert` Incompatible when the flag is on so
   // [[CodegenDispatchFallback]] routes the expression through the JVM codegen dispatcher
-  // (Spark's own `doGenCode` inside the Comet kernel) — that gives Spark-exact results
+  // (Spark's own `doGenCode` inside the Comet kernel) -- that gives Spark-exact results
   // without duplicating the legacy branch natively.
   private val legacyNegativeIndexConfig = "spark.sql.legacy.negativeIndexInArrayInsert"
 
   private val legacyNegativeIndexReason =
-    s"`$legacyNegativeIndexConfig=true` legacy negative-index semantics are not implemented natively"
+    s"`$legacyNegativeIndexConfig=true` legacy negative-index semantics are not implemented" +
+      " natively"
 
   override def getIncompatibleReasons(): Seq[String] = Seq(legacyNegativeIndexReason)
 
@@ -471,8 +472,8 @@ object CometArrayInsert extends CometExpressionSerde[ArrayInsert] with CodegenDi
     val posExprProto = exprToProtoInternal(expr.children(1), inputs, binding)
     val itemExprProto = exprToProtoInternal(expr.children(2), inputs, binding)
     // Reached in two cases:
-    //   1. Legacy conf is false → getSupportLevel returned Compatible → run native.
-    //   2. Legacy conf is true AND user set allowIncompatible=true → opt in to native.
+    //   1. Legacy conf is false -> getSupportLevel returned Compatible -> run native.
+    //   2. Legacy conf is true AND user set allowIncompatible=true -> opt in to native.
     // In case (2) the native impl honors the legacy semantics directly so we forward the flag.
     val legacyNegativeIndex =
       SQLConf.get.getConfString(legacyNegativeIndexConfig, "false").toBoolean

@@ -380,12 +380,15 @@ object CometRLike extends CometExpressionSerde[RLike] with NativeOptInAvailable 
 private object PadReasons {
   val literalStrReason = "Scalar values are not supported for the `str` argument."
   val nonLiteralPadReason = "Only scalar values are supported for the `pad` argument."
+  val binaryStrReason: String =
+    "`spark.sql.legacy.lpadRpadAlwaysReturnString=true` allows lpad/rpad to run with a" +
+      " BinaryType `str` argument; Comet's native `lpad`/`rpad` only support string inputs."
 }
 
 object CometStringRPad extends CometExpressionSerde[StringRPad] {
 
   override def getUnsupportedReasons(): Seq[String] =
-    Seq(PadReasons.literalStrReason, PadReasons.nonLiteralPadReason)
+    Seq(PadReasons.literalStrReason, PadReasons.nonLiteralPadReason, PadReasons.binaryStrReason)
 
   override def getSupportLevel(expr: StringRPad): SupportLevel = {
     if (expr.str.isInstanceOf[Literal]) {
@@ -393,6 +396,9 @@ object CometStringRPad extends CometExpressionSerde[StringRPad] {
     }
     if (!expr.pad.isInstanceOf[Literal]) {
       return Unsupported(Some(PadReasons.nonLiteralPadReason))
+    }
+    if (expr.str.dataType == BinaryType) {
+      return Unsupported(Some(PadReasons.binaryStrReason))
     }
     Compatible()
   }
@@ -413,7 +419,7 @@ object CometStringRPad extends CometExpressionSerde[StringRPad] {
 object CometStringLPad extends CometExpressionSerde[StringLPad] {
 
   override def getUnsupportedReasons(): Seq[String] =
-    Seq(PadReasons.literalStrReason, PadReasons.nonLiteralPadReason)
+    Seq(PadReasons.literalStrReason, PadReasons.nonLiteralPadReason, PadReasons.binaryStrReason)
 
   override def getSupportLevel(expr: StringLPad): SupportLevel = {
     if (expr.str.isInstanceOf[Literal]) {
@@ -421,6 +427,9 @@ object CometStringLPad extends CometExpressionSerde[StringLPad] {
     }
     if (!expr.pad.isInstanceOf[Literal]) {
       return Unsupported(Some(PadReasons.nonLiteralPadReason))
+    }
+    if (expr.str.dataType == BinaryType) {
+      return Unsupported(Some(PadReasons.binaryStrReason))
     }
     Compatible()
   }

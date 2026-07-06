@@ -243,8 +243,14 @@ object CometIsNaN extends CometExpressionSerde[IsNaN] {
 
 object CometIn extends CometExpressionSerde[In] with CodegenDispatchFallback {
 
+  override def getIncompatibleReasons(): Seq[String] = Seq(LegacyConfHelpers.nullInEmptyListReason)
+
   override def getSupportLevel(expr: In): SupportLevel =
-    ComparisonUtils.collationSupportLevel("In", (expr.value +: expr.list): _*)
+    if (expr.list.isEmpty && LegacyConfHelpers.legacyNullInEmptyBehavior) {
+      Incompatible(Some(LegacyConfHelpers.nullInEmptyListReason))
+    } else {
+      ComparisonUtils.collationSupportLevel("In", (expr.value +: expr.list): _*)
+    }
 
   override def getUnsupportedReasons(): Seq[String] =
     Seq(ComparisonUtils.nonDefaultCollationDocReason)
@@ -259,8 +265,14 @@ object CometIn extends CometExpressionSerde[In] with CodegenDispatchFallback {
 
 object CometInSet extends CometExpressionSerde[InSet] with CodegenDispatchFallback {
 
+  override def getIncompatibleReasons(): Seq[String] = Seq(LegacyConfHelpers.nullInEmptyListReason)
+
   override def getSupportLevel(expr: InSet): SupportLevel =
-    ComparisonUtils.collationSupportLevel("InSet", expr.child)
+    if (expr.hset.isEmpty && LegacyConfHelpers.legacyNullInEmptyBehavior) {
+      Incompatible(Some(LegacyConfHelpers.nullInEmptyListReason))
+    } else {
+      ComparisonUtils.collationSupportLevel("InSet", expr.child)
+    }
 
   override def getUnsupportedReasons(): Seq[String] =
     Seq(ComparisonUtils.nonDefaultCollationDocReason)
@@ -294,6 +306,25 @@ trait CollationAwareBinaryPredicate[T <: BinaryExpression]
 
   override def getUnsupportedReasons(): Seq[String] =
     Seq(ComparisonUtils.nonDefaultCollationDocReason)
+}
+
+private[serde] object LegacyConfHelpers {
+
+  // Reason string shared with CometIn/CometInSet for the `null IN (empty)` divergence.
+  val nullInEmptyListReason: String =
+    "`spark.sql.legacy.nullInEmptyListBehavior=true` (or its effective default `!ansiEnabled`)" +
+      " changes `null IN (empty list)` from false to null; the native in-list path only" +
+      " implements the non-legacy semantics."
+
+  // Resolve `spark.sql.legacy.nullInEmptyListBehavior` the same way Spark does: use the explicit
+  // value if set, otherwise fall back to `!ansiEnabled`. Read by string key to stay compatible
+  // with Spark versions where the accessor is not available.
+  def legacyNullInEmptyBehavior: Boolean = {
+    val conf = SQLConf.get
+    Option(conf.getConfString("spark.sql.legacy.nullInEmptyListBehavior", null))
+      .map(_.equalsIgnoreCase("true"))
+      .getOrElse(!conf.ansiEnabled)
+  }
 }
 
 object ComparisonUtils {

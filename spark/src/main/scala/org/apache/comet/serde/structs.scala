@@ -259,13 +259,23 @@ object CometJsonToStructs extends CometCodegenDispatch[JsonToStructs] with Nativ
   }
 }
 
-object CometStructsToCsv extends CometExpressionSerde[StructsToCsv] {
+object CometStructsToCsv extends CometExpressionSerde[StructsToCsv] with CodegenDispatchFallback {
 
   private val incompatibleDataTypes = Seq(DateType, TimestampType, TimestampNTZType, BinaryType)
 
+  // When true, Spark's UnivocityGenerator wraps null values as quoted empty strings; Comet's
+  // native to_csv writer emits unquoted empty strings. Mark Incompatible so the
+  // CodegenDispatchFallback trait routes the expression through the JVM codegen dispatcher.
+  private val legacyNullValueConfKey =
+    "spark.sql.legacy.nullValueWrittenAsQuotedEmptyStringCsv"
+  private val legacyNullValueReason =
+    s"`$legacyNullValueConfKey=true` quotes NULLs as an empty quoted string in the CSV output;" +
+      " Comet's native `to_csv` writer does not implement that legacy behavior."
+
   override def getIncompatibleReasons(): Seq[String] = Seq(
     "Date, Timestamp, TimestampNTZ, and Binary data types may produce different results" +
-      " (https://github.com/apache/datafusion-comet/issues/3232)")
+      " (https://github.com/apache/datafusion-comet/issues/3232)",
+    legacyNullValueReason)
 
   override def getUnsupportedReasons(): Seq[String] = Seq(
     "Complex types (arrays, maps, structs) in the schema are not supported")
@@ -284,6 +294,9 @@ object CometStructsToCsv extends CometExpressionSerde[StructsToCsv] {
         Some(
           s"The schema ${expr.inputSchema} is not supported because " +
             s"it includes a incompatible data types: $incompatibleDataTypes"))
+    }
+    if (SQLConf.get.getConfString(legacyNullValueConfKey, "false").toBoolean) {
+      return Incompatible(Some(legacyNullValueReason))
     }
     // https://github.com/apache/datafusion-comet/issues/3232
     Incompatible()

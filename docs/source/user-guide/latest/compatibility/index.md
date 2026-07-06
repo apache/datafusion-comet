@@ -106,20 +106,98 @@ valid UTF-8 rather than reading them like Spark
 ## Spark legacy configs
 
 Spark exposes a family of `spark.sql.legacy.*` configs that opt a query into pre-modern Spark
-semantics (for example, `spark.sql.legacy.castComplexTypesToString.enabled` or
-`spark.sql.legacy.timeParserPolicy`). Comet implements current Spark semantics and does **not**
-reproduce these legacy behaviors.
+semantics. Comet handles these in two ways:
 
-By default, when Comet detects that any `spark.sql.legacy.*` config is set to `true`, it disables
-itself for that session so the query runs on vanilla Spark and gets the expected legacy results.
-The fallback is logged as a warning listing the offending config keys.
+- **Per-expression**: when a legacy config affects a specific Spark expression that Comet
+  supports (for example `spark.sql.legacy.castComplexTypesToString.enabled` for `Cast`,
+  `spark.sql.legacy.negativeIndexInArrayInsert` for `array_insert`,
+  `spark.sql.legacy.nullInEmptyListBehavior` for `IN`), Comet's serde routes the expression
+  through the JVM codegen dispatcher (Spark's own `doGenCode` inside the Comet kernel) or
+  through a native code path that honors the flag. No session-wide fallback is triggered.
+- **Session-wide execution fallback**: when a legacy config affects execution semantics but
+  is consumed by an analyzer/optimizer rule, a data-source reader/writer, or a type-system
+  utility (rather than a specific Comet-supported expression), Comet cannot fix the divergence
+  in a single serde. Instead, when
+  [`spark.comet.legacyConfFallback.enabled`](../configs.md) is `true` (default) and any config
+  in the curated list is set to a non-default value, Comet disables itself for the session so
+  Spark's own execution provides the legacy semantics. The warning names the offending config
+  keys.
 
-If you would rather keep Comet enabled even when a legacy config is set, set:
+### Curated legacy configs that trigger the session-wide fallback
 
-```
-spark.comet.legacyConfFallback.enabled=false
-```
+The list below is the exact set checked by
+`spark.comet.legacyConfFallback.enabled`. Each entry names the Spark config key and the value
+Comet compares against. The comparison is case-insensitive, and the fallback only fires when
+the key is explicitly set in the session AND its value differs from the recorded default. Keys
+absent from the session conf never trigger the fallback, regardless of their runtime resolution
+in Spark. The defaults recorded here are Spark 4.0's static defaults; when a Spark 4.0 default
+depends on another config (for example ANSI mode), the value used is what Spark 4.0 itself
+resolves to under its own defaults.
 
-In that mode Comet will accelerate the query as usual, but it **cannot guarantee Spark
-compatibility** — the legacy config will be silently ignored by Comet-executed operators, so
-results may diverge from what Spark would produce with the same legacy config.
+**Decimal type-system / analyzer rules**
+
+| Config key | Comet-expected default |
+| --- | --- |
+| `spark.sql.legacy.allowNegativeScaleOfDecimal` | `false` |
+| `spark.sql.legacy.decimal.retainFractionDigitsOnTruncate` | `false` |
+| `spark.sql.legacy.literal.pickMinimumPrecision` | `true` |
+
+**Char/varchar padding and analyzer-inserted write-side validation**
+
+| Config key | Comet-expected default |
+| --- | --- |
+| `spark.sql.legacy.charVarcharAsString` | `false` |
+
+**Type coercion and upcast rules**
+
+| Config key | Comet-expected default |
+| --- | --- |
+| `spark.sql.legacy.doLooseUpcast` | `false` |
+| `spark.sql.legacy.typeCoercion.datetimeToString.enabled` | `false` |
+
+**Optimizer rules that reshape plans handed to Comet**
+
+| Config key | Comet-expected default |
+| --- | --- |
+| `spark.sql.legacy.duplicateBetweenInput` | `false` |
+| `spark.sql.legacy.inSubqueryNullability` | `false` |
+| `spark.sql.legacy.scalarSubqueryCountBugBehavior` | `false` |
+| `spark.sql.legacy.disableMapKeyNormalization` | `false` |
+| `spark.sql.legacy.setopsPrecedence.enabled` | `false` |
+
+**View resolution (Cast vs. UpCast injection)**
+
+| Config key | Comet-expected default |
+| --- | --- |
+| `spark.sql.legacy.viewSchemaCompensation` | `true` |
+
+**Datetime parser policy**
+
+| Config key | Comet-expected default |
+| --- | --- |
+| `spark.sql.legacy.timeParserPolicy` | `CORRECTED` |
+
+**Parquet reader/writer semantics**
+
+| Config key | Comet-expected default |
+| --- | --- |
+| `spark.sql.legacy.parquet.datetimeRebaseModeInRead` | `CORRECTED` |
+| `spark.sql.legacy.parquet.datetimeRebaseModeInWrite` | `CORRECTED` |
+| `spark.sql.legacy.parquet.int96RebaseModeInRead` | `CORRECTED` |
+| `spark.sql.legacy.parquet.int96RebaseModeInWrite` | `CORRECTED` |
+| `spark.sql.legacy.parquet.nanosAsLong` | `false` |
+
+**Cached-plan behavior on file-source scans**
+
+| Config key | Comet-expected default |
+| --- | --- |
+| `spark.sql.legacy.readFileSourceTableCacheIgnoreOptions` | `false` |
+
+### Opting out of the session-wide fallback
+
+The fallback is on by default (`spark.comet.legacyConfFallback.enabled=true`). To keep Comet
+enabled even when one of the configs above is set to a non-default value, set
+`spark.comet.legacyConfFallback.enabled=false`. In that mode Comet's native operators do not
+implement the legacy semantics the flag requests: results may silently diverge from Spark for
+queries that touch the affected code paths. Spark compatibility is not guaranteed while the
+opt-out is in effect.
