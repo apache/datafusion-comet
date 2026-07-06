@@ -175,7 +175,7 @@ fn strip_timestamp_tz(
 
 /// Promote a Utf8/Binary group-by expression to its Large* variant.
 ///
-/// Gated by `spark.comet.exec.useLargeDataTypes`. The promotion is an
+/// Gated by `spark.comet.exec.aggregation.useLargeDataTypes`. The promotion is an
 /// offset-width-only cast (i32 → i64) that makes DataFusion's HashAggregate
 /// dispatch to `ByteGroupValueBuilder::<i64>`, removing the per-task `i32::MAX`
 /// (2 GiB) cap on the group-key byte buffer. Returns the wrapped expression
@@ -1117,7 +1117,7 @@ impl PhysicalPlanner {
                 let (scans, shuffle_scans, child) =
                     self.create_plan(&children[0], inputs, partition_count)?;
 
-                // When `spark.comet.exec.useLargeDataTypes` is on, wrap Utf8/Binary
+                // When `spark.comet.exec.aggregation.useLargeDataTypes` is on, wrap Utf8/Binary
                 // group keys in a Cast to LargeUtf8/LargeBinary so DataFusion dispatches
                 // to ByteGroupValueBuilder::<i64> and the per-task group-key byte buffer
                 // is no longer capped at i32::MAX (2 GiB). The promotion is reverted at
@@ -1676,7 +1676,6 @@ impl PhysicalPlanner {
                 let writer_input = align_shuffle_writer_input(
                     Arc::clone(&child.native_plan),
                     &writer.expected_output_schema,
-                    writer.use_large_data_types,
                 )?;
 
                 let partitioning = self.create_partitioning(
@@ -3541,15 +3540,9 @@ fn convert_spark_types_to_arrow_schema(
 
 /// Wrap `child` in a `SchemaAlignExec` when its output drifts from what Spark catalyst
 /// declared. See <https://github.com/apache/datafusion-comet/issues/4515>.
-///
-/// `use_large_data_types` is accepted for backward compatibility with older proto payloads
-/// but is now a no-op: the HashAggregate reverts LargeUtf8/LargeBinary group columns to
-/// their original Utf8/Binary type in its own output projection, so the shuffle writer's
-/// child never emits Large* variants and the writer's expected schema stays Utf8/Binary.
 fn align_shuffle_writer_input(
     child: Arc<dyn ExecutionPlan>,
     expected_proto: &[spark_operator::SparkStructField],
-    _use_large_data_types: bool,
 ) -> Result<Arc<dyn ExecutionPlan>, ExecutionError> {
     if expected_proto.is_empty() {
         return Ok(child);

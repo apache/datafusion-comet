@@ -369,7 +369,7 @@ object CometConf extends ShimCometConf {
       .createWithDefault(false)
 
   val COMET_AGG_USE_LARGE_DATATYPES: ConfigEntry[Boolean] =
-    conf(s"$COMET_EXEC_CONFIG_PREFIX.useLargeDataTypes")
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.aggregation.useLargeDataTypes")
       .category(CATEGORY_EXEC)
       .doc(
         "When true, Comet wraps Utf8/Binary group-by expressions inside a Cast to " +

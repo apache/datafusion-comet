@@ -28,11 +28,11 @@ import org.apache.spark.sql.catalyst.expressions.Cast
 import org.apache.spark.sql.catalyst.optimizer.EliminateSorts
 import org.apache.spark.sql.comet.CometHashAggregateExec
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
-import org.apache.spark.sql.functions.{avg, col, count_distinct, sum}
+import org.apache.spark.sql.functions.{avg, col, count_distinct, grouping, sum}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DataTypes, StructField, StructType}
 
-import org.apache.comet.{CometConf, CometNativeException}
+import org.apache.comet.CometConf
 import org.apache.comet.CometConf.COMET_EXEC_STRICT_FLOATING_POINT
 import org.apache.comet.CometSparkSessionExtensions.isSpark41Plus
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator, ParquetGenerator, SchemaGenOptions}
@@ -56,8 +56,6 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       .set(SQLConf.ANSI_ENABLED.key, "false")
       .set("spark.memory.offHeap.enabled", "false")
       .set(CometConf.COMET_ONHEAP_MEMORY_POOL_TYPE.key, "unbounded")
-      .set("spark.ui.enabled", "true")
-      .set("spark.ui.port", "4040")
 
   test("min/max floating point with negative zero") {
     val r = new Random(42)
@@ -2162,8 +2160,6 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("CUBE(9) + COUNT(DISTINCT) wide Utf8 keys: useLargeDataTypes preserves correctness") {
-    import org.apache.spark.sql.functions.{count_distinct, grouping}
-
     def writeData(path: String, numRows: Long, wideBytes: Int): Unit = {
       val userPadLen = wideBytes - "user-".length
       val measurePadLen = wideBytes - "meas-".length
@@ -2234,20 +2230,19 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           val cometAggs = collectWithSubqueries(plan) { case a: CometHashAggregateExec => a }
           assert(
             cometAggs.nonEmpty,
-            s"With useLargeDataTypes=false, expected at least one " +
+            "With useLargeDataTypes=false, expected at least one " +
               s"CometHashAggregateExec in plan, got:\n$plan")
           val e = intercept[Throwable] {
             df.collect()
           }
-          val chain =
-            Iterator.iterate(e: Throwable)(_.getCause).takeWhile(_ != null).toList ++
-              Iterator
-                .iterate(e: Throwable)(_.getCause)
-                .takeWhile(_ != null)
-                .flatMap(c => Option(c.getSuppressed).toList.flatten)
+          val chain = Iterator
+            .iterate(e: Throwable)(_.getCause)
+            .takeWhile(_ != null)
+            .flatMap(c => c +: Option(c.getSuppressed).toList.flatten)
+            .toList
           assert(
             chain.exists(t => Option(t.getMessage).exists(_.contains("offset overflow"))),
-            s"With useLargeDataTypes=false, expected an 'offset overflow' error, got:\n" +
+            "With useLargeDataTypes=false, expected an 'offset overflow' error, got:\n" +
               chain.map(t => s"  ${t.getClass.getName}: ${t.getMessage}").mkString("\n"))
         }
       }

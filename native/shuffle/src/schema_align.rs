@@ -142,9 +142,7 @@ impl SchemaAlignExec {
                     );
                 }
                 match (actual_field.data_type(), expected_field.data_type()) {
-                    (DataType::LargeUtf8, DataType::Utf8) => {
-                        ColumnAction::CastLargeStringToString
-                    }
+                    (DataType::LargeUtf8, DataType::Utf8) => ColumnAction::CastLargeStringToString,
                     (DataType::LargeBinary, DataType::Binary) => {
                         ColumnAction::CastLargeBinaryToBinary
                     }
@@ -317,7 +315,11 @@ impl SchemaAlignStream {
                                 column.data_type()
                             ))
                         })?;
-                    let mut builder = StringBuilder::with_capacity(arr.len(), 0);
+                    // Pre-size the values buffer with the exact byte total for this slice so
+                    // the underlying Vec never has to grow-and-memcpy while we replay rows.
+                    let offsets = arr.value_offsets();
+                    let values_bytes = (offsets[arr.len()] - offsets[0]) as usize;
+                    let mut builder = StringBuilder::with_capacity(arr.len(), values_bytes);
                     for i in 0..arr.len() {
                         if arr.is_null(i) {
                             builder.append_null();
@@ -338,7 +340,9 @@ impl SchemaAlignStream {
                                 column.data_type()
                             ))
                         })?;
-                    let mut builder = BinaryBuilder::with_capacity(arr.len(), 0);
+                    let offsets = arr.value_offsets();
+                    let values_bytes = (offsets[arr.len()] - offsets[0]) as usize;
+                    let mut builder = BinaryBuilder::with_capacity(arr.len(), values_bytes);
                     for i in 0..arr.len() {
                         if arr.is_null(i) {
                             builder.append_null();

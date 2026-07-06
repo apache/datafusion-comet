@@ -189,7 +189,7 @@ impl ShuffleScanExec {
             //   * unpack any dictionary-encoded columns to their value type (native shuffle
             //     may dictionary-encode string/binary columns for efficiency);
             //   * downcast LargeUtf8/LargeBinary back to Utf8/Binary when an upstream
-            //     aggregate opted into `spark.comet.exec.useLargeDataTypes` and wrote
+            //     aggregate opted into `spark.comet.exec.aggregation.useLargeDataTypes` and wrote
             //     Large* into the shuffle block while catalyst still declares the small
             //     variant. The mirror of this coercion on the write side lives in
             //     `SchemaAlignExec` (native/shuffle/src/schema_align.rs).
