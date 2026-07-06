@@ -3711,6 +3711,45 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
+  test("SparkToColumnar preserves row count for zero-column input batches (df.count())") {
+    // Regression test: when spark.comet.scan is disabled but convert.parquet is enabled,
+    // Spark's count-from-metadata optimization emits ColumnarBatches with numRows > 0 and
+    // numCols == 0. SparkColumnarArrowReader used to derive the Arrow row count from
+    // per-column writes only, silently producing zero-row Arrow batches in this case and
+    // making df.count() return 0.
+    withSQLConf(
+      SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+      CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "false",
+      CometConf.COMET_SPARK_TO_ARROW_ENABLED.key -> "true",
+      CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.key -> "true") {
+      withTempPath { dir =>
+        val expected = 10000L
+        spark
+          .range(expected)
+          .selectExpr("id as key", "id % 8 as value")
+          .toDF("key", "value")
+          .write
+          .parquet(dir.toString)
+
+        val df = spark.read.parquet(dir.toString)
+        // Materialize the count query explicitly so we can inspect the plan
+        // that runs — Dataset.count() executes groupBy().count() internally
+        // but doesn't expose that plan
+        val countDf = df.groupBy().count()
+        assert(
+          countDf.collect().head.getLong(0) == expected,
+          "df.count() should match number of written rows")
+
+        // Ensure this test actually exercises the SparkColumnarArrowReader code path
+        // guarded by the fix, so future regressions are caught.
+        val sparkToColumnar = collect(countDf.queryExecution.executedPlan) {
+          case s: CometSparkToColumnarExec => s
+        }
+        assert(sparkToColumnar.nonEmpty, "Expected CometSparkToColumnarExec in the executed plan")
+      }
+    }
+  }
+
   test("read CSV file") {
     Seq("", "csv").foreach { v1List =>
       withSQLConf(
@@ -4009,6 +4048,79 @@ class CometExecSuite extends CometTestBase {
         assert(
           numFiles == inputFiles,
           s"Expected exactly $inputFiles files to be scanned, but got metrics reporting $numFiles")
+      }
+    }
+  }
+
+  test("native parquet read failure surfaces as FAILED_READ_FILE with the file path") {
+    withTempDir { dir =>
+      val path = new Path(dir.toURI.toString, "corrupt.parquet")
+      makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = false, 1000)
+      // Corrupt column/page data in the middle of the file while leaving the footer intact, so
+      // Spark's JVM-side footer pre-check passes during planning and the native DataFusion reader
+      // fails during execution -- the path CometExecIterator must wrap as FAILED_READ_FILE.
+      val f = new java.io.File(new java.net.URI(path.toString))
+      val raf = new java.io.RandomAccessFile(f, "rw")
+      val len = raf.length()
+      raf.seek(8) // after the "PAR1" magic header, before the footer
+      raf.write(Array.fill[Byte](math.min(2048, (len / 2).toInt))(0xff.toByte))
+      raf.close()
+
+      withSQLConf(CometConf.COMET_ENABLED.key -> "true") {
+        val e = intercept[Throwable] {
+          spark.read.parquet(path.toString).collect()
+        }
+        // Spark reports its own per-file read failures as FAILED_READ_FILE carrying the path.
+        // Comet's native scan must do the same instead of leaking a raw CometNativeException.
+        val messages = Iterator
+          .iterate(e: Throwable)(_.getCause)
+          .takeWhile(_ != null)
+          .map(t => s"${t.getClass.getName}: ${t.getMessage}")
+          .toList
+        val chain = messages.mkString("\n  ")
+        // `cannotReadFilesError` is the FAILED_READ_FILE path. Its message is version-stable
+        // ("Encountered error while reading file ..."); only Spark 4.x prepends the
+        // `[FAILED_READ_FILE.NO_HINT]` error-class tag, so assert on the stable substring.
+        assert(
+          messages.exists(m => m.contains("Encountered error while reading file")),
+          s"Expected a FAILED_READ_FILE (cannotReadFilesError) in the cause chain, but got:\n  $chain")
+        assert(
+          messages.exists(m => m.contains("corrupt.parquet")),
+          s"Expected the offending file path in the cause chain, but got:\n  $chain")
+      }
+    }
+  }
+
+  test("native parquet read of a missing file surfaces readCurrentFileNotFoundError") {
+    withTempDir { dir =>
+      val path = new Path(dir.toURI.toString, "missing.parquet")
+      makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = false, 1000)
+      val f = new java.io.File(new java.net.URI(path.toString))
+
+      withSQLConf(CometConf.COMET_ENABLED.key -> "true") {
+        // Read the schema (footer) while the file exists, then delete it so it is MISSING at
+        // execution time -- mirroring a file vacuumed/removed between planning and the scan
+        // (e.g. Delta's CDC-after-VACUUM read). A missing file is distinct from a corrupt one:
+        // Spark surfaces it as `readCurrentFileNotFoundError` ("It is possible the underlying
+        // files have been updated."), NOT `cannotReadFilesError`/`FAILED_READ_FILE`. Comet's
+        // native scan must classify the object_store NotFound the same way.
+        val df = spark.read.parquet(path.toString)
+        df.queryExecution.executedPlan // force planning (footer read) before deletion
+        assert(f.delete(), s"failed to delete $f")
+
+        val e = intercept[Throwable] {
+          df.collect()
+        }
+        val messages = Iterator
+          .iterate(e: Throwable)(_.getCause)
+          .takeWhile(_ != null)
+          .map(t => s"${t.getClass.getName}: ${t.getMessage}")
+          .toList
+        val chain = messages.mkString("\n  ")
+        assert(
+          messages.exists(m =>
+            m.contains("It is possible the underlying files have been updated")),
+          s"Expected readCurrentFileNotFoundError for a missing file, but got:\n  $chain")
       }
     }
   }

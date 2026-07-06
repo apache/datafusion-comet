@@ -49,9 +49,8 @@ prost = "0.14.3"
 jni = "0.22.4"
 rand = { workspace = true }
 num = { workspace = true }
-bytes = { workspace = true }
 tempfile = "3.26.0"
-itertools = "0.14.0"
+itertools = "0.15.0"
 paste = "1.0.14"
 datafusion = { workspace = true, features = ["parquet_encryption", "sql"] }
 datafusion-physical-expr-adapter = { workspace = true }
@@ -92,7 +91,7 @@ jni = { version = "0.22.4", features = ["invocation"] }
 lazy_static = "1.4"
 assertables = "10"
 hex = "0.4.3"
-datafusion-functions-nested = { version = "53.1.0" }
+datafusion-functions-nested = { version = "54.0.0" }
 
 [features]
 backtrace = ["datafusion/backtrace"]

@@ -30,7 +30,7 @@ import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Ascending, Attribute, AttributeSet, Expression, ExpressionSet, Generator, NamedExpression, SortOrder}
-import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, AggregateMode, CollectSet, Final, First, Last, Partial, PartialMerge}
+import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, AggregateMode, CollectSet, Final, First, Last, Partial, PartialMerge, Percentile}
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide}
 import org.apache.spark.sql.catalyst.plans._
 import org.apache.spark.sql.catalyst.plans.physical._
@@ -68,6 +68,12 @@ import org.apache.comet.serde.operator.CometSink
  */
 private[comet] trait PlanDataInjector {
 
+  /**
+   * Which `OpStructCase` this injector handles. Used by `injectPlanData` for an O(1) pre-filter
+   * so we don't run every injector's `canInject` against every operator in the tree.
+   */
+  def opStructCase: Operator.OpStructCase
+
   /** Check if this injector can handle the given operator. */
   def canInject(op: Operator): Boolean
 
@@ -90,6 +96,13 @@ private[comet] object PlanDataInjector {
     // Future: DeltaPlanDataInjector, HudiPlanDataInjector, etc.
   )
 
+  // O(1) lookup by op kind: most operators in any tree don't match any injector, so the per-op
+  // `for (injector <- injectors if injector.canInject(op))` walk was paying N*M canInject calls
+  // (N operators, M injectors) just to find no match. Keying by OpStructCase lets us skip the
+  // iteration entirely for non-scan operators.
+  private val injectorsByKind: Map[Operator.OpStructCase, PlanDataInjector] =
+    injectors.map(i => i.opStructCase -> i).toMap
+
   /**
    * Injects planning data into an Operator tree by finding nodes that need injection and applying
    * the appropriate injector.
@@ -103,21 +116,24 @@ private[comet] object PlanDataInjector {
       partitionByKey: Map[String, Array[Byte]]): Operator = {
     val builder = op.toBuilder
 
-    // Try each injector to see if it can handle this operator
-    for (injector <- injectors if injector.canInject(op)) {
-      injector.getKey(op) match {
-        case Some(key) =>
-          (commonByKey.get(key), partitionByKey.get(key)) match {
-            case (Some(commonBytes), Some(partitionBytes)) =>
-              val injectedOp = injector.inject(op, commonBytes, partitionBytes)
-              // Copy the injected operator's fields to our builder
-              builder.clear()
-              builder.mergeFrom(injectedOp)
-            case _ =>
-              throw new CometRuntimeException(s"Missing planning data for key: $key")
-          }
-        case None =>
-      }
+    // O(1) by op kind, then a canInject confirm (which may inspect detail fields like `hasCommon`
+    // / `!hasFilePartition`). Most operators in any tree are non-scan and skip the lookup body.
+    injectorsByKind.get(op.getOpStructCase) match {
+      case Some(injector) if injector.canInject(op) =>
+        injector.getKey(op) match {
+          case Some(key) =>
+            (commonByKey.get(key), partitionByKey.get(key)) match {
+              case (Some(commonBytes), Some(partitionBytes)) =>
+                val injectedOp = injector.inject(op, commonBytes, partitionBytes)
+                // Copy the injected operator's fields to our builder
+                builder.clear()
+                builder.mergeFrom(injectedOp)
+              case _ =>
+                throw new CometRuntimeException(s"Missing planning data for key: $key")
+            }
+          case None =>
+        }
+      case _ =>
     }
 
     // Recursively process children
@@ -161,6 +177,8 @@ private[comet] object IcebergPlanDataInjector extends PlanDataInjector {
       }
     })
 
+  override val opStructCase: Operator.OpStructCase = Operator.OpStructCase.ICEBERG_SCAN
+
   override def canInject(op: Operator): Boolean =
     op.hasIcebergScan &&
       op.getIcebergScan.getFileScanTasksCount == 0 &&
@@ -199,6 +217,8 @@ private[comet] object IcebergPlanDataInjector extends PlanDataInjector {
  * Injector for NativeScan operators.
  */
 private[comet] object NativeScanPlanDataInjector extends PlanDataInjector {
+
+  override val opStructCase: Operator.OpStructCase = Operator.OpStructCase.NATIVE_SCAN
 
   override def canInject(op: Operator): Boolean =
     op.hasNativeScan &&
@@ -1899,6 +1919,11 @@ object CometObjectHashAggregateExec
         case cs: CollectSet =>
           val elementType = cs.children.head.dataType
           val nativeStateType = ArrayType(elementType, containsNull = true)
+          output(bufferIdx) = output(bufferIdx).withDataType(nativeStateType)
+        case _: Percentile =>
+          // DataFusion's percentile_cont keeps all values in a List<Float64> partial state.
+          // Comet casts the child to double, so the native state is ArrayType(DoubleType).
+          val nativeStateType = ArrayType(DoubleType, containsNull = true)
           output(bufferIdx) = output(bufferIdx).withDataType(nativeStateType)
         case _ =>
       }

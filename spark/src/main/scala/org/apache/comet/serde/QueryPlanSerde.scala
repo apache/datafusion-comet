@@ -36,7 +36,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
 import org.apache.comet.CometConf
-import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
+import org.apache.comet.CometSparkSessionExtensions.{withFallbackReason, withInfo}
 import org.apache.comet.expressions._
 import org.apache.comet.parquet.CometParquetUtils
 import org.apache.comet.serde.ExprOuterClass.{AggExpr, Expr, ScalarFunc}
@@ -51,8 +51,13 @@ import org.apache.comet.shims.{CometExprShim, CometTypeShim}
 object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
 
   private[comet] val arrayExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
+    // ArrayAppend is a concrete expression only on Spark 3.x. Spark 4.0+ marks it
+    // RuntimeReplaceable and rewrites it to ArrayInsert before serde, so this entry is
+    // unreachable there and is kept solely for Spark 3.4/3.5.
     classOf[ArrayAppend] -> CometArrayAppend,
-    classOf[ArrayCompact] -> CometArrayCompact,
+    // ArrayCompact is RuntimeReplaceable in all supported Spark versions (rewritten to
+    // ArrayFilter(arr, IsNotNull(...))), so it never reaches serde directly; dispatch flows
+    // through CometArrayFilter -> CometArrayCompact instead. No direct registration here.
     classOf[ArrayContains] -> CometArrayContains,
     classOf[ArrayDistinct] -> CometScalarFunction("array_distinct"),
     classOf[ArrayExcept] -> CometArrayExcept,
@@ -81,7 +86,8 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
     classOf[ArrayAggregate] -> CometArrayAggregate,
     classOf[ArraySort] -> CometArraySort,
     classOf[ZipWith] -> CometZipWith,
-    classOf[Sequence] -> CometSequence)
+    classOf[Sequence] -> CometSequence,
+    classOf[Shuffle] -> CometShuffle)
 
   private val conditionalExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] =
     Map(classOf[CaseWhen] -> CometCaseWhen, classOf[If] -> CometIf)
@@ -134,7 +140,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       classOf[Logarithm] -> CometLogarithm,
       classOf[Multiply] -> CometMultiply,
       classOf[Pi] -> CometScalarFunction("pi"),
-      classOf[Pow] -> CometScalarFunction("pow"),
+      classOf[Pow] -> CometPow,
       classOf[Rand] -> CometRand,
       classOf[Randn] -> CometRandn,
       classOf[Remainder] -> CometRemainder,
@@ -175,7 +181,6 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       classOf[MapEntries] -> CometMapEntries,
       classOf[MapValues] -> CometMapValues,
       classOf[MapFromArrays] -> CometMapFromArrays,
-      classOf[MapContainsKey] -> CometMapContainsKey,
       classOf[MapFromEntries] -> CometMapFromEntries,
       classOf[MapConcat] -> CometMapConcat,
       classOf[StringToMap] -> CometStrToMap,
@@ -252,6 +257,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       classOf[Overlay] -> CometOverlay,
       classOf[SoundEx] -> CometSoundEx,
       classOf[StringLocate] -> CometStringLocate,
+      classOf[Base64] -> CometBase64,
       classOf[UnBase64] -> CometUnBase64,
       classOf[ToCharacter] -> CometToCharacter,
       classOf[ToNumber] -> CometToNumber,
@@ -291,11 +297,14 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       classOf[Hour] -> CometHour,
       classOf[MakeDate] -> CometMakeDate,
       classOf[MakeTimestamp] -> CometMakeTimestamp,
+      classOf[MakeYMInterval] -> CometMakeYMInterval,
+      classOf[MakeDTInterval] -> CometMakeDTInterval,
       classOf[MicrosToTimestamp] -> CometMicrosToTimestamp,
       classOf[MillisToTimestamp] -> CometMillisToTimestamp,
       classOf[MonthsBetween] -> CometMonthsBetween,
       classOf[Minute] -> CometMinute,
       classOf[NextDay] -> CometNextDay,
+      classOf[PreciseTimestampConversion] -> CometPreciseTimestampConversion,
       classOf[Second] -> CometSecond,
       classOf[SecondsToTimestamp] -> CometSecondsToTimestamp,
       classOf[TruncDate] -> CometTruncDate,
@@ -349,6 +358,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       classOf[CheckOverflow] -> CometCheckOverflow,
       classOf[Coalesce] -> CometCoalesce,
       classOf[KnownFloatingPointNormalized] -> CometKnownFloatingPointNormalized,
+      classOf[KnownNullable] -> CometKnownNullable,
       classOf[Literal] -> CometLiteral,
       classOf[MakeDecimal] -> CometMakeDecimal,
       classOf[MonotonicallyIncreasingID] -> CometMonotonicallyIncreasingId,
@@ -390,6 +400,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
     classOf[Last] -> CometLast,
     classOf[Max] -> CometMax,
     classOf[Min] -> CometMin,
+    classOf[Percentile] -> CometPercentile,
     classOf[StddevPop] -> CometStddevPop,
     classOf[StddevSamp] -> CometStddevSamp,
     classOf[Sum] -> CometSum,
@@ -518,6 +529,8 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       case _: MapType => 15
       case _: StructType => 16
       case dt if isTimeType(dt) => 17
+      case _: YearMonthIntervalType => 18
+      case _: DayTimeIntervalType => 19
       case dt =>
         logWarning(s"Cannot serialize Spark data type: $dt")
         return None
@@ -664,7 +677,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
                   s"${CometConf.COMPAT_GUIDE}.")
               None
             }
-          case Compatible(notes) =>
+          case Compatible(notes, _) =>
             if (notes.isDefined) {
               logWarning(s"Comet supports $fn but has notes: ${notes.get}")
             }
@@ -787,8 +800,13 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
             // falls back to Spark. Falling back is also the result when the dispatcher cannot
             // handle the expression.
             val dispatched = handler match {
-              case _: CodegenDispatchFallback =>
-                CometScalaUDF.emitJvmCodegenDispatch(expr, inputs, binding)
+              case h: CodegenDispatchFallback =>
+                CometScalaUDF.emitJvmCodegenDispatch(expr, inputs, binding).map { proto =>
+                  val key = h.nativeOptInConfigKeyOverride
+                    .getOrElse(CometConf.getExprAllowIncompatConfigKey(exprConfName))
+                  withInfo(expr, NativeOptIn.message(exprConfName, key))
+                  proto
+                }
               case _ => None
             }
             dispatched.orElse {
@@ -801,9 +819,12 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
               None
             }
           }
-        case Compatible(notes) =>
+        case Compatible(notes, nativeOptIn) =>
           if (notes.isDefined) {
             logWarning(s"Comet supports $expr but has notes: ${notes.get}")
+          }
+          nativeOptIn.foreach { optIn =>
+            withInfo(expr, NativeOptIn.message(exprConfName, optIn.configKey))
           }
           handler.convert(expr, inputs, binding)
       }

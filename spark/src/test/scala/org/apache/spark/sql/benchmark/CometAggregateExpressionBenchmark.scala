@@ -103,6 +103,28 @@ object CometAggregateExpressionBenchmark extends CometBenchmarkBase {
       "count_distinct_high_card",
       "SELECT COUNT(DISTINCT c_int) FROM parquetV1Table GROUP BY high_card_grp"))
 
+  // Exact percentile. Only the single-percentage, default-frequency, numeric-input form runs
+  // natively (maps to DataFusion's percentile_cont); other forms fall back to Spark.
+  private val percentileAggregates = List(
+    AggExprConfig(
+      "percentile_int_median",
+      "SELECT percentile(c_int, 0.5) FROM parquetV1Table GROUP BY grp"),
+    AggExprConfig(
+      "percentile_long_median",
+      "SELECT percentile(c_long, 0.5) FROM parquetV1Table GROUP BY grp"),
+    AggExprConfig(
+      "percentile_double_median",
+      "SELECT percentile(c_double, 0.5) FROM parquetV1Table GROUP BY grp"),
+    AggExprConfig(
+      "percentile_double_p90",
+      "SELECT percentile(c_double, 0.9) FROM parquetV1Table GROUP BY grp"),
+    AggExprConfig(
+      "percentile_double_global",
+      "SELECT percentile(c_double, 0.5) FROM parquetV1Table"),
+    AggExprConfig(
+      "percentile_double_high_card",
+      "SELECT percentile(c_double, 0.5) FROM parquetV1Table GROUP BY high_card_grp"))
+
   override def runCometBenchmark(mainArgs: Array[String]): Unit = {
     val values = 1024 * 1024
 
@@ -125,7 +147,8 @@ object CometAggregateExpressionBenchmark extends CometBenchmarkBase {
             """))
 
           val allAggregates = basicAggregates ++ statisticalAggregates ++ bitwiseAggregates ++
-            multiKeyAggregates ++ multiAggregates ++ decimalAggregates ++ highCardinalityAggregates
+            multiKeyAggregates ++ multiAggregates ++ decimalAggregates ++
+            highCardinalityAggregates ++ percentileAggregates
 
           allAggregates.foreach { config =>
             runExpressionBenchmark(config.name, v, config.query, config.extraCometConfigs)

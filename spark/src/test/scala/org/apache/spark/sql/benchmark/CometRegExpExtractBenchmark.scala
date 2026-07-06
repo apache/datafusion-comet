@@ -152,7 +152,8 @@ object CometRegExpExtractBenchmark extends CometBenchmarkBase {
     val baseExec = Map(
       CometConf.COMET_ENABLED.key -> "true",
       CometConf.COMET_EXEC_ENABLED.key -> "true",
-      "spark.sql.optimizer.constantFolding.enabled" -> "false")
+      "spark.sql.optimizer.excludedRules" ->
+        "org.apache.spark.sql.catalyst.optimizer.ConstantFolding")
 
     benchmark.addCase("Comet (Exec, native Rust regex)") { _ =>
       val configs =

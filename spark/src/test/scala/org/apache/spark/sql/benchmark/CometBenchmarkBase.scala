@@ -124,7 +124,8 @@ trait CometBenchmarkBase
     val cometExecConfigs = Map(
       CometConf.COMET_ENABLED.key -> "true",
       CometConf.COMET_EXEC_ENABLED.key -> "true",
-      "spark.sql.optimizer.constantFolding.enabled" -> "false") ++ extraCometConfigs
+      "spark.sql.optimizer.excludedRules" ->
+        "org.apache.spark.sql.catalyst.optimizer.ConstantFolding") ++ extraCometConfigs
 
     // Check that the plan is fully Comet native before running the benchmark
     withSQLConf(cometExecConfigs.toSeq: _*) {

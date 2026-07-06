@@ -60,7 +60,7 @@ jobs:
       github.event.label.name == 'run-spark-4.0-tests' ||
       github.event.label.name == 'run-spark-4.1-tests'
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Set up Java
         uses: actions/setup-java@v5
@@ -118,7 +118,7 @@ jobs:
       iceberg_1_9:  ${{ steps.compute.outputs.iceberg_1_9 }}
       iceberg_1_10: ${{ steps.compute.outputs.iceberg_1_10 }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           # Need both branches' history so we can diff base..head for PRs and
           # before..after for pushes.
