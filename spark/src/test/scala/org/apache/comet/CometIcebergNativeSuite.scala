@@ -27,7 +27,7 @@ import scala.jdk.CollectionConverters._
 
 import org.apache.spark.CometListenerBusUtils
 import org.apache.spark.scheduler.{SparkListener, SparkListenerTaskEnd}
-import org.apache.spark.sql.CometTestBase
+import org.apache.spark.sql.{CometTestBase, DataFrame}
 import org.apache.spark.sql.catalyst.expressions.DynamicPruningExpression
 import org.apache.spark.sql.comet._
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
@@ -59,16 +59,41 @@ class CometIcebergNativeSuite
     }
   }
 
-  /**
-   * Helper to verify query correctness and that exactly one CometIcebergNativeScanExec is used.
-   * This ensures both correct results and that the native Iceberg scan operator is being used.
-   */
+  private def assertSingleNativeScan(cometPlan: SparkPlan): Unit = {
+    val scans = collectIcebergNativeScans(cometPlan)
+    assert(
+      scans.length == 1,
+      s"Expected exactly 1 CometIcebergNativeScanExec but found ${scans.length}. Plan:\n$cometPlan")
+  }
+
+  /** Verifies query correctness and that exactly one CometIcebergNativeScanExec is used. */
   private def checkIcebergNativeScan(query: String): Unit = {
     val (_, cometPlan) = checkSparkAnswer(query)
-    val icebergScans = collectIcebergNativeScans(cometPlan)
+    assertSingleNativeScan(cometPlan)
+  }
+
+  /** DataFrame variant of [[checkIcebergNativeScan]] for reads needing per-read options. */
+  private def checkIcebergNativeScan(df: => DataFrame): Unit = {
+    val (_, cometPlan) = checkSparkAnswer(df)
+    assertSingleNativeScan(cometPlan)
+  }
+
+  /**
+   * Asserts a query stays native even when its DPP filter falls back (SMJ / non-Comet BHJ / reuse
+   * disabled), where only the runtime filter, not the scan, reverts to Spark.
+   */
+  private def assertIcebergNativeScanPresent(cometPlan: SparkPlan): Unit =
     assert(
-      icebergScans.length == 1,
-      s"Expected exactly 1 CometIcebergNativeScanExec but found ${icebergScans.length}. Plan:\n$cometPlan")
+      collectIcebergNativeScans(cometPlan).nonEmpty,
+      s"Expected a native Iceberg scan but found none. Plan:\n$cometPlan")
+
+  /** Verifies query correctness and that it falls back to Spark for the given reason. */
+  private def checkIcebergNativeScanFallback(query: String, reason: String): Unit = {
+    val (_, cometPlan) = checkSparkAnswer(query)
+    assert(
+      collectIcebergNativeScans(cometPlan).isEmpty,
+      s"Expected fallback to Spark ($reason) but found a CometIcebergNativeScanExec. " +
+        s"Plan:\n$cometPlan")
   }
 
   test("create and query simple Iceberg table with Hadoop catalog") {
@@ -2017,10 +2042,9 @@ class CometIcebergNativeSuite
             (3, 'Charlie', NULL)
         """)
 
-        // Test filtering on struct IS NULL - this should fall back to Spark
-        // (iceberg-rust doesn't support IS NULL on complex type columns yet)
-        checkSparkAnswer(
-          "SELECT * FROM test_cat.db.struct_filter_test WHERE address IS NULL ORDER BY id")
+        checkIcebergNativeScanFallback(
+          "SELECT * FROM test_cat.db.struct_filter_test WHERE address IS NULL ORDER BY id",
+          "iceberg-rust does not support IS NULL on complex type columns")
 
         spark.sql("DROP TABLE test_cat.db.struct_filter_test")
       }
@@ -2093,10 +2117,9 @@ class CometIcebergNativeSuite
             (3, 'Charlie', named_struct('city', 'NYC', 'zip', 10001))
         """)
 
-        // Test filtering on entire struct value - this falls back to Spark
-        // (Iceberg Java doesn't push down this type of filter)
-        checkSparkAnswer(
-          "SELECT * FROM test_cat.db.struct_value_filter_test WHERE address = named_struct('city', 'NYC', 'zip', 10001) ORDER BY id")
+        checkIcebergNativeScanFallback(
+          "SELECT * FROM test_cat.db.struct_value_filter_test WHERE address = named_struct('city', 'NYC', 'zip', 10001) ORDER BY id",
+          "Iceberg Java does not push down whole-struct equality filters")
 
         spark.sql("DROP TABLE test_cat.db.struct_value_filter_test")
       }
@@ -2131,10 +2154,9 @@ class CometIcebergNativeSuite
             (3, 'Charlie', NULL)
         """)
 
-        // Test filtering on array IS NULL - this should fall back to Spark
-        // (iceberg-rust doesn't support IS NULL on complex type columns yet)
-        checkSparkAnswer(
-          "SELECT * FROM test_cat.db.array_filter_test WHERE values IS NULL ORDER BY id")
+        checkIcebergNativeScanFallback(
+          "SELECT * FROM test_cat.db.array_filter_test WHERE values IS NULL ORDER BY id",
+          "iceberg-rust does not support IS NULL on complex type columns")
 
         spark.sql("DROP TABLE test_cat.db.array_filter_test")
       }
@@ -2169,10 +2191,9 @@ class CometIcebergNativeSuite
             (3, 'Charlie', array(1, 7, 8))
         """)
 
-        // Test filtering with array_contains - this should fall back to Spark
-        // (Iceberg Java only pushes down NOT NULL, which fails in iceberg-rust)
-        checkSparkAnswer(
-          "SELECT * FROM test_cat.db.array_element_filter_test WHERE array_contains(values, 1) ORDER BY id")
+        checkIcebergNativeScanFallback(
+          "SELECT * FROM test_cat.db.array_element_filter_test WHERE array_contains(values, 1) ORDER BY id",
+          "Iceberg Java only pushes down NOT NULL, which iceberg-rust rejects")
 
         spark.sql("DROP TABLE test_cat.db.array_element_filter_test")
       }
@@ -2207,10 +2228,9 @@ class CometIcebergNativeSuite
             (3, 'Charlie', array(1, 2, 3))
         """)
 
-        // Test filtering on entire array value - this should fall back to Spark
-        // (Iceberg Java only pushes down NOT NULL, which fails in iceberg-rust)
-        checkSparkAnswer(
-          "SELECT * FROM test_cat.db.array_value_filter_test WHERE values = array(1, 2, 3) ORDER BY id")
+        checkIcebergNativeScanFallback(
+          "SELECT * FROM test_cat.db.array_value_filter_test WHERE values = array(1, 2, 3) ORDER BY id",
+          "Iceberg Java only pushes down NOT NULL, which iceberg-rust rejects")
 
         spark.sql("DROP TABLE test_cat.db.array_value_filter_test")
       }
@@ -2245,10 +2265,9 @@ class CometIcebergNativeSuite
             (3, 'Charlie', NULL)
         """)
 
-        // Test filtering on map IS NULL - this should fall back to Spark
-        // (iceberg-rust doesn't support IS NULL on complex type columns yet)
-        checkSparkAnswer(
-          "SELECT * FROM test_cat.db.map_filter_test WHERE properties IS NULL ORDER BY id")
+        checkIcebergNativeScanFallback(
+          "SELECT * FROM test_cat.db.map_filter_test WHERE properties IS NULL ORDER BY id",
+          "iceberg-rust does not support IS NULL on complex type columns")
 
         spark.sql("DROP TABLE test_cat.db.map_filter_test")
       }
@@ -2283,10 +2302,9 @@ class CometIcebergNativeSuite
             (3, 'Charlie', map('age', 30, 'score', 80))
         """)
 
-        // Test filtering with map key access - this should fall back to Spark
-        // (Iceberg Java only pushes down NOT NULL, which fails in iceberg-rust)
-        checkSparkAnswer(
-          "SELECT * FROM test_cat.db.map_key_filter_test WHERE properties['age'] = 30 ORDER BY id")
+        checkIcebergNativeScanFallback(
+          "SELECT * FROM test_cat.db.map_key_filter_test WHERE properties['age'] = 30 ORDER BY id",
+          "Iceberg Java only pushes down NOT NULL, which iceberg-rust rejects")
 
         spark.sql("DROP TABLE test_cat.db.map_key_filter_test")
       }
@@ -3266,6 +3284,7 @@ class CometIcebergNativeSuite
             |JOIN aqe_multi_dim d ON f.id = d.id AND f.data = d.data
             |WHERE d.date = DATE '1970-01-02'""".stripMargin
         val (_, cometPlan) = checkSparkAnswer(query)
+        assertIcebergNativeScanPresent(cometPlan)
 
         assertNoLeftoverCSAB(cometPlan)
 
@@ -3431,6 +3450,7 @@ class CometIcebergNativeSuite
             |JOIN fallback_dim d ON f.date = d.date AND d.id = 1
             |ORDER BY f.id""".stripMargin
         val (_, cometPlan) = checkSparkAnswer(query)
+        assertIcebergNativeScanPresent(cometPlan)
         assertNoLeftoverCSAB(cometPlan)
 
         spark.sql("DROP TABLE aqe_cat.db.fallback_fact")
@@ -3480,6 +3500,7 @@ class CometIcebergNativeSuite
         assert(result.isEmpty, s"Expected empty result but got ${result.length} rows")
 
         val (_, cometPlan) = checkSparkAnswer(query)
+        assertIcebergNativeScanPresent(cometPlan)
 
         assertNoLeftoverCSAB(cometPlan)
 
@@ -3541,6 +3562,7 @@ class CometIcebergNativeSuite
 
         // Should produce correct results regardless of DPP path
         val (_, cometPlan) = checkSparkAnswer(query)
+        assertIcebergNativeScanPresent(cometPlan)
         // Even when no BHJ exists, no CSAB should survive the rule. On 3.5+ the rule
         // emits TrueLiteral or aggregate SubqueryExec; on 3.4 the wrapper is never
         // created in the first place. A leftover CSAB would crash at runtime.
@@ -3615,6 +3637,7 @@ class CometIcebergNativeSuite
             |JOIN union_dim d ON f.fact_date = d.dim_date
             |WHERE d.dim_id > 7""".stripMargin
         val (_, cometPlan) = checkSparkAnswer(query)
+        assertIcebergNativeScanPresent(cometPlan)
 
         // No CSAB should survive on either version (would crash at execution otherwise).
         assertNoLeftoverCSAB(cometPlan)
@@ -3705,6 +3728,7 @@ class CometIcebergNativeSuite
             |WHERE d.country = 'US'
             |GROUP BY 1""".stripMargin
         val (_, cometPlan) = checkSparkAnswer(query)
+        assertIcebergNativeScanPresent(cometPlan)
 
         assertNoLeftoverCSAB(cometPlan)
 
@@ -3782,6 +3806,7 @@ class CometIcebergNativeSuite
             |WHERE d.dim_id = 1
             |ORDER BY f.id""".stripMargin
         val (_, cometPlan) = checkSparkAnswer(query)
+        assertIcebergNativeScanPresent(cometPlan)
 
         assertNoLeftoverCSAB(cometPlan)
 
@@ -3844,6 +3869,7 @@ class CometIcebergNativeSuite
             |FROM aqe_cat.db.exchg_fact f
             |JOIN exchg_dim d ON f.data = d.data AND f.fact_date = d.dim_date""".stripMargin
         val (_, cometPlan) = checkSparkAnswer(query)
+        assertIcebergNativeScanPresent(cometPlan)
 
         assertNoLeftoverCSAB(cometPlan)
 
@@ -3974,6 +4000,7 @@ class CometIcebergNativeSuite
             |)
             |SELECT * FROM v1 a JOIN v1 b ON a.store_id = b.store_id""".stripMargin
         val (_, cometPlan) = checkSparkAnswer(query)
+        assertIcebergNativeScanPresent(cometPlan)
 
         assertNoLeftoverCSAB(cometPlan)
 
@@ -4188,8 +4215,7 @@ class CometIcebergNativeSuite
           .load("split_cat.db.single_row_group_split")
           .where("id = 0")
           .select("id")
-        val rows = df.collect()
-        assert(rows.length == 1, s"Expected 1 row, got ${rows.length}: ${rows.mkString(", ")}")
+        checkIcebergNativeScan(df)
       }
     }
   }
