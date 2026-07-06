@@ -577,9 +577,11 @@ task thread. All Spark tasks on an executor share one tokio runtime.</p>
 method on any worker thread, and may move it between threads across polls. Any state must live
 in the operator struct or be shared via <code class="docutils literal notranslate"><span class="pre">Arc</span></code>.</p>
 <p><strong>JNI calls work from any thread, but have overhead.</strong> <code class="docutils literal notranslate"><span class="pre">JVMClasses::get_env()</span></code> calls
-<code class="docutils literal notranslate"><span class="pre">AttachCurrentThread</span></code>, which acquires JVM internal locks. The <code class="docutils literal notranslate"><span class="pre">AttachGuard</span></code> detaches the thread
-when dropped. Repeated attach/detach cycles on tokio workers add overhead, so avoid calling
-into the JVM on hot paths during stream execution.</p>
+<code class="docutils literal notranslate"><span class="pre">AttachCurrentThread</span></code>, which acquires JVM internal locks. The attachment is cached in
+thread-local storage and is only released when the worker thread itself exits, not when the
+<code class="docutils literal notranslate"><span class="pre">AttachGuard</span></code> is dropped. This is why the tokio runtime has to be shut down (releasing its
+worker threads) for the JVM to be able to exit. Acquiring the JVM locks on each <code class="docutils literal notranslate"><span class="pre">get_env()</span></code>
+call adds overhead, so avoid calling into the JVM on hot paths during stream execution.</p>
 <p><strong>Do not call <code class="docutils literal notranslate"><span class="pre">TaskContext.get()</span></code> from JVM callbacks during execution.</strong> Spark’s <code class="docutils literal notranslate"><span class="pre">TaskContext</span></code> is
 a <code class="docutils literal notranslate"><span class="pre">ThreadLocal</span></code> on the executor task thread. JVM methods invoked from tokio worker threads will
 see <code class="docutils literal notranslate"><span class="pre">null</span></code>. If you need task metadata, capture it at construction time (in <code class="docutils literal notranslate"><span class="pre">createPlan</span></code> or
@@ -600,7 +602,9 @@ to unwrap decryption keys during Parquet reads. It uses a stored <code class="do
 </section>
 <section id="the-tokio-runtime">
 <h3>The tokio runtime<a class="headerlink" href="#the-tokio-runtime" title="Link to this heading">#</a></h3>
-<p>The runtime is created once per executor JVM in a <code class="docutils literal notranslate"><span class="pre">Lazy&lt;Runtime&gt;</span></code> static:</p>
+<p>The runtime is stored in a <code class="docutils literal notranslate"><span class="pre">Mutex&lt;Option&lt;Runtime&gt;&gt;</span></code> static and created lazily on first use. It
+is torn down on plugin shutdown (via <code class="docutils literal notranslate"><span class="pre">release_runtime</span></code>) so that the tokio worker threads exit
+and the JVM can shut down cleanly:</p>
 <ul class="simple">
 <li><p><strong>Worker threads:</strong> <code class="docutils literal notranslate"><span class="pre">num_cpus</span></code> by default, configurable via <code class="docutils literal notranslate"><span class="pre">COMET_WORKER_THREADS</span></code></p></li>
 <li><p><strong>Max blocking threads:</strong> 512 by default, configurable via <code class="docutils literal notranslate"><span class="pre">COMET_MAX_BLOCKING_THREADS</span></code></p></li>
