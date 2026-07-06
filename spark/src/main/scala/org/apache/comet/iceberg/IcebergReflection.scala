@@ -248,13 +248,15 @@ object IcebergReflection extends Logging {
     if (isStagedScan(scan)) {
       Some(java.util.Collections.emptyList[AnyRef]())
     } else {
-      findMethodInHierarchy(scan.getClass, "filterExpressions") match {
+      // Iceberg 1.11 renamed SparkScan.filterExpressions() to filters(); 1.8-1.10 use the old name.
+      findMethodInHierarchy(scan.getClass, "filters")
+        .orElse(findMethodInHierarchy(scan.getClass, "filterExpressions")) match {
         case Some(method) =>
           Some(method.invoke(scan).asInstanceOf[java.util.List[_]])
         case None =>
           logError(
             "Iceberg reflection failure: Failed to get filter expressions from SparkScan: " +
-              s"filterExpressions() not found on ${scan.getClass.getName}")
+              s"filters()/filterExpressions() not found on ${scan.getClass.getName}")
           None
       }
     }
@@ -527,15 +529,19 @@ object IcebergReflection extends Logging {
    *   The expected Iceberg Schema, or None if reflection fails
    */
   def getExpectedSchema(scan: Any): Option[Any] = {
-    findMethodInHierarchy(scan.getClass, "expectedSchema").flatMap { schemaMethod =>
-      try {
-        Some(schemaMethod.invoke(scan))
-      } catch {
-        case e: Exception =>
-          logError(s"Failed to get expectedSchema from SparkScan: ${e.getMessage}")
-          None
+    // Iceberg 1.11 renamed SparkScan.expectedSchema() to projection() (the projected read
+    // schema); 1.8-1.10 still expose expectedSchema(). Try the new name first, then fall back.
+    findMethodInHierarchy(scan.getClass, "projection")
+      .orElse(findMethodInHierarchy(scan.getClass, "expectedSchema"))
+      .flatMap { schemaMethod =>
+        try {
+          Some(schemaMethod.invoke(scan))
+        } catch {
+          case e: Exception =>
+            logError(s"Failed to get projection/expectedSchema from SparkScan: ${e.getMessage}")
+            None
+        }
       }
-    }
   }
 
   /**
