@@ -23,10 +23,10 @@ package org.apache.comet.shims
  * Spark 3.x variant: several entries in this map (view-schema compensation, decimal truncate,
  * duplicate-between, scalar-subquery count-bug, disable-map-key-normalization, cache-ignore-
  * options) do not exist as [[org.apache.spark.internal.config.ConfigEntry]] instances in Spark
- * 3.5 or earlier, so the defaults are hardcoded. They match the Spark 4 defaults on purpose:
- * the fallback rule is "when a legacy key is set to something other than the Spark 4 default,
- * disable Comet". This keeps 3.x and 4.x behaviourally aligned even though 3.x can't derive
- * the defaults live. See the 4.x shim for the reference-derived variant.
+ * 3.5 or earlier, so the defaults are hardcoded. They match the Spark 4 defaults on purpose: the
+ * fallback rule is "when a legacy key is set to something other than the Spark 4 default, disable
+ * Comet". This keeps 3.x and 4.x behaviourally aligned even though 3.x can't derive the defaults
+ * live. See the 4.x shim for the reference-derived variant.
  */
 trait ShimLegacyConfFallback {
 
