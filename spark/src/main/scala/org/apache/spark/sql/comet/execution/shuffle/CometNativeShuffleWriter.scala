@@ -347,10 +347,6 @@ class CometNativeShuffleWriter[K, V](
     val expectedFields = outputAttributes
       .map(a => StructField(a.name, a.dataType, a.nullable, a.metadata))
     schema2Proto(expectedFields).foreach(shuffleWriterBuilder.addExpectedOutputSchema)
-    // Mirror of `spark.comet.exec.useLargeDataTypes` so the native planner can decide
-    // whether SchemaAlignExec should downcast LargeUtf8/LargeBinary back to Utf8/Binary
-    // (default behaviour) or preserve the Large* variants end-to-end through shuffle.
-    shuffleWriterBuilder.setUseLargeDataTypes(CometConf.COMET_AGG_USE_LARGE_DATATYPES.get())
 
     OperatorOuterClass.Operator
       .newBuilder()
