@@ -102,7 +102,7 @@ omitted from the tables below and may be reconsidered based on demand:
 | Operator               | Status | Notes                                                                                                                                                                                            |
 | ---------------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `WindowExec`           | ⚠️     | Runs natively and is enabled by default. A broad set of window functions is accelerated; unsupported shapes fall back to Spark. See [window function compatibility](compatibility/operators.md). |
-| `WindowGroupLimitExec` | 🔜     | Window-based limit pushdown falls back today.                                                                                                                                                    |
+| `WindowGroupLimitExec` | 🔜     | Window-based limit pushdown falls back today ([#4837](https://github.com/apache/datafusion-comet/issues/4837)).                                                                                  |
 
 ## Generators and set operations
 

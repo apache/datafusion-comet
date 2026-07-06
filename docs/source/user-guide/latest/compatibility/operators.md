@@ -38,19 +38,25 @@ incorrect result. When any single window expression in a `WindowExec` falls back
 
 - Aggregate window functions other than the ones listed above, including the statistical aggregates
   (`stddev`, `stddev_pop`, `stddev_samp`, `var_pop`, `var_samp`, `corr`, `covar_pop`, `covar_samp`). These run
-  natively as plain aggregations but not as window functions.
-- `min` / `max` on string, binary, timestamp-without-time-zone, interval, or nested (array / struct) input types.
-- `sum` / `avg` on year-month or day-time interval input types.
+  natively as plain aggregations but not as window functions
+  ([#4766](https://github.com/apache/datafusion-comet/issues/4766)).
+- `min` / `max` on string, binary, timestamp-without-time-zone, interval, or nested (array / struct) input types,
+  and `sum` / `avg` on year-month or day-time interval input types. Windowed aggregates inherit the same input-type
+  support as the batch aggregates, so these fall back in both contexts.
 - `sum` or `avg` on `DECIMAL` with a sliding (non ever-expanding) frame, because the sliding path would wrap on
   overflow instead of returning Spark's `NULL` ([#4729](https://github.com/apache/datafusion-comet/issues/4729)).
-- `RANGE` frame with an explicit offset when the `ORDER BY` column is `DATE` or `DECIMAL`.
-- `first_value` / `last_value` on a `RANGE` frame with a literal offset.
+- `RANGE` frame with an explicit offset when the `ORDER BY` column is `DATE` or `DECIMAL`
+  ([#4834](https://github.com/apache/datafusion-comet/issues/4834)).
+- `first_value` / `last_value` on a `RANGE` frame with a literal offset
+  ([#4835](https://github.com/apache/datafusion-comet/issues/4835)).
 - `lag` / `lead` with a non-literal default value ([#4268](https://github.com/apache/datafusion-comet/issues/4268)).
 - A `ROWS` offset that is not an integer or long, or a `RANGE` offset that is not numeric.
-- `GROUPS` frames and `DISTINCT` aggregates over a window.
+- `GROUPS` frames ([#4836](https://github.com/apache/datafusion-comet/issues/4836)). `DISTINCT` aggregates over a
+  window are not supported by Spark either.
 - Any `PARTITION BY` or `ORDER BY` expression that Comet cannot serialize.
 
-`WindowGroupLimitExec` (window-based limit pushdown) is not yet supported and falls back to Spark.
+`WindowGroupLimitExec` (window-based limit pushdown) is not yet supported and falls back to Spark
+([#4837](https://github.com/apache/datafusion-comet/issues/4837)).
 
 ## Round-Robin Partitioning
 
