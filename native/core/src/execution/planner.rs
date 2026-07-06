@@ -721,13 +721,18 @@ impl PhysicalPlanner {
                     options.quote,
                     options.escape,
                     options.null_value,
+                    options.timezone,
+                    options.date_format,
+                    options.timestamp_format,
+                    options.timestamp_ntz_format,
                     options.quote_all,
+                    options.escape_quotes,
                     options.ignore_leading_white_space,
                     options.ignore_trailing_white_space,
                 );
                 Ok(Arc::new(ToCsv::new(
                     csv_struct_expr,
-                    &options.timezone,
+                    expr.null_as_quoted_empty_string,
                     csv_write_options,
                 )))
             }

@@ -361,7 +361,8 @@ message FromJson {
 
 message ToCsv {
   Expr child = 1;
-  CsvWriteOptions options = 2;
+  bool null_as_quoted_empty_string = 2;
+  CsvWriteOptions options = 3;
 }
 
 message CsvWriteOptions {
@@ -370,9 +371,13 @@ message CsvWriteOptions {
   string escape = 3;
   string null_value = 4;
   bool quote_all = 5;
-  bool ignore_leading_white_space = 6;
-  bool ignore_trailing_white_space = 7;
-  string timezone = 8;
+  bool escape_quotes = 6;
+  bool ignore_leading_white_space = 7;
+  bool ignore_trailing_white_space = 8;
+  string timezone = 9;
+  string date_format = 10;
+  string timestamp_format = 11;
+  string timestamp_ntz_format = 12;
 }
 
 enum BinaryOutputStyle {

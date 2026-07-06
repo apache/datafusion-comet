@@ -22,13 +22,14 @@ package org.apache.comet.serde
 import scala.jdk.CollectionConverters._
 import scala.util.Try
 
+import org.apache.spark.sql.catalyst.csv.CSVOptions
 import org.apache.spark.sql.catalyst.expressions.{Attribute, CreateNamedStruct, GetArrayStructFields, GetStructField, JsonToStructs, StructsToCsv, StructsToJson}
+import org.apache.spark.sql.catalyst.util.DateFormatter
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
-import org.apache.comet.DataTypeSupport
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, serializeDataType}
 
 object CometCreateNamedStruct extends CometExpressionSerde[CreateNamedStruct] {
@@ -261,73 +262,50 @@ object CometJsonToStructs extends CometCodegenDispatch[JsonToStructs] with Nativ
 
 object CometStructsToCsv extends CometExpressionSerde[StructsToCsv] {
 
-  private val incompatibleDataTypes = Seq(DateType, TimestampType, TimestampNTZType, BinaryType)
-
-  override def getIncompatibleReasons(): Seq[String] = Seq(
-    "Date, Timestamp, TimestampNTZ, and Binary data types may produce different results" +
-      " (https://github.com/apache/datafusion-comet/issues/3232)")
-
-  override def getUnsupportedReasons(): Seq[String] = Seq(
-    "Complex types (arrays, maps, structs) in the schema are not supported")
-
-  override def getSupportLevel(expr: StructsToCsv): SupportLevel = {
-    val dataTypes = expr.inputSchema.fields.map(_.dataType)
-    val containsComplexType = dataTypes.exists(DataTypeSupport.isComplexType)
-    if (containsComplexType) {
-      return Unsupported(
-        Some(
-          s"The schema ${expr.inputSchema} is not supported because it includes a complex type"))
-    }
-    val containsIncompatibleDataTypes = dataTypes.exists(incompatibleDataTypes.contains)
-    if (containsIncompatibleDataTypes) {
-      return Incompatible(
-        Some(
-          s"The schema ${expr.inputSchema} is not supported because " +
-            s"it includes a incompatible data types: $incompatibleDataTypes"))
-    }
-    // https://github.com/apache/datafusion-comet/issues/3232
-    Incompatible()
-  }
-
   override def convert(
       expr: StructsToCsv,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    for {
+    (for {
       childProto <- exprToProtoInternal(expr.child, inputs, binding)
     } yield {
       val optionsProto = options2Proto(expr.options, expr.timeZoneId)
+      val nullAsQuotedEmptyString =
+        SQLConf.get.getConf(SQLConf.LEGACY_NULL_VALUE_WRITTEN_AS_QUOTED_EMPTY_STRING_CSV)
       val toCsv = ExprOuterClass.ToCsv
         .newBuilder()
         .setChild(childProto)
+        .setNullAsQuotedEmptyString(nullAsQuotedEmptyString)
         .setOptions(optionsProto)
         .build()
       ExprOuterClass.Expr.newBuilder().setToCsv(toCsv).build()
+    }).orElse {
+      withFallbackReason(expr, expr.child)
+      None
     }
   }
 
   private def options2Proto(
       options: Map[String, String],
-      timeZoneId: Option[String]): ExprOuterClass.CsvWriteOptions = {
+      defaultTimeZoneId: Option[String]): ExprOuterClass.CsvWriteOptions = {
+    val csvOptions = new CSVOptions(
+      options,
+      columnPruning = true,
+      defaultTimeZoneId = defaultTimeZoneId.getOrElse("UTC"))
     ExprOuterClass.CsvWriteOptions
       .newBuilder()
-      .setDelimiter(options.getOrElse("delimiter", ","))
-      .setQuote(options.getOrElse("quote", "\""))
-      .setEscape(options.getOrElse("escape", "\\"))
-      .setNullValue(options.getOrElse("nullValue", ""))
-      .setTimezone(timeZoneId.getOrElse("UTC"))
-      .setIgnoreLeadingWhiteSpace(options
-        .get("ignoreLeadingWhiteSpace")
-        .flatMap(ignoreLeadingWhiteSpace => Try(ignoreLeadingWhiteSpace.toBoolean).toOption)
-        .getOrElse(true))
-      .setIgnoreTrailingWhiteSpace(options
-        .get("ignoreTrailingWhiteSpace")
-        .flatMap(ignoreTrailingWhiteSpace => Try(ignoreTrailingWhiteSpace.toBoolean).toOption)
-        .getOrElse(true))
-      .setQuoteAll(options
-        .get("quoteAll")
-        .flatMap(quoteAll => Try(quoteAll.toBoolean).toOption)
-        .getOrElse(false))
+      .setDelimiter(csvOptions.delimiter)
+      .setQuote(csvOptions.quote.toString)
+      .setEscape(csvOptions.escape.toString)
+      .setNullValue(csvOptions.nullValue)
+      .setTimezone(csvOptions.zoneId.toString)
+      .setIgnoreLeadingWhiteSpace(csvOptions.ignoreLeadingWhiteSpaceFlagInWrite)
+      .setIgnoreTrailingWhiteSpace(csvOptions.ignoreTrailingWhiteSpaceFlagInWrite)
+      .setQuoteAll(csvOptions.quoteAll)
+      .setEscapeQuotes(csvOptions.escapeQuotes)
+      .setDateFormat(csvOptions.dateFormatInWrite)
+      .setTimestampFormat(csvOptions.timestampFormatInWrite)
+      .setTimestampNtzFormat(csvOptions.timestampNTZFormatInWrite)
       .build()
   }
 }
