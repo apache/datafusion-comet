@@ -70,4 +70,5 @@ The following incompatibilities cause `SortArray` to fall back to Spark by defau
 The following cases are not supported by Comet:
 
 - Nested arrays with `Struct` or `Null` child values are not supported natively and will fall back to Spark.
+
 <!--END:EXPR_COMPAT-->

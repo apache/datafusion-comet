@@ -50,4 +50,5 @@ The following cases are not supported by Comet:
 The following incompatibilities cause `SortOrder` to fall back to Spark by default. Set `spark.comet.expression.SortOrder.allowIncompatible=true` to enable Comet acceleration despite these differences.
 
 - When `spark.comet.exec.strictFloatingPoint=true`, sorting on floating-point types is not 100% compatible with Spark
+
 <!--END:EXPR_COMPAT-->
