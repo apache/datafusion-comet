@@ -2338,7 +2338,7 @@ trait CometBaseAggregate[T <: BaseAggregateExec] extends CometOperatorSerde[T] {
     // ColumnPruning leaves when nothing reads a global aggregate's output. The native planner
     // handles that shape.
     if (aggregateExpressions.isEmpty) {
-      val hashAggBuilder = OperatorOuterClass.HashAggregate.newBuilder()
+      val hashAggBuilder = newHashAggBuilder(aggregate)
       hashAggBuilder.addAllGroupingExprs(groupingExprs.map(_.get).asJava)
       hashAggBuilder.setOrderedByGroupingKeys(orderedByGroupingKeys)
       // Spark has no expression mode to serialize here. An empty aggregate with a required child
@@ -2350,8 +2350,6 @@ trait CometBaseAggregate[T <: BaseAggregateExec] extends CometOperatorSerde[T] {
         CometAggregateMode.Partial
       }
       hashAggBuilder.setModeValue(mode.getNumber)
-      hashAggBuilder.setUseLargeDataTypes(
-        CometConf.COMET_AGG_USE_LARGE_DATATYPES.get(aggregate.conf))
       buildAggOp(
         builder,
         hashAggBuilder,
@@ -2403,13 +2401,11 @@ trait CometBaseAggregate[T <: BaseAggregateExec] extends CometOperatorSerde[T] {
 
       if (childOp.nonEmpty && groupingExprs.forall(_.isDefined) &&
         aggExprs.forall(_.isDefined)) {
-        val hashAggBuilder = OperatorOuterClass.HashAggregate.newBuilder()
+        val hashAggBuilder = newHashAggBuilder(aggregate)
         hashAggBuilder.addAllGroupingExprs(groupingExprs.map(_.get).asJava)
         hashAggBuilder.addAllAggExprs(aggExprs.map(_.get).asJava)
         hashAggBuilder.setModeValue(mode.getNumber)
         hashAggBuilder.setOrderedByGroupingKeys(orderedByGroupingKeys)
-        hashAggBuilder.setUseLargeDataTypes(
-          CometConf.COMET_AGG_USE_LARGE_DATATYPES.get(aggregate.conf))
 
         // Send per-expression modes and buffer offset for PartialMerge handling
         if (hasPartialMerge) {
@@ -2445,6 +2441,14 @@ trait CometBaseAggregate[T <: BaseAggregateExec] extends CometOperatorSerde[T] {
       }
     }
 
+  }
+
+  private def newHashAggBuilder(
+      aggregate: BaseAggregateExec): OperatorOuterClass.HashAggregate.Builder = {
+    val hashAggBuilder = OperatorOuterClass.HashAggregate.newBuilder()
+    hashAggBuilder.setUseLargeDataTypes(
+      CometConf.COMET_AGG_USE_LARGE_DATATYPES.get(aggregate.conf))
+    hashAggBuilder
   }
 
   /**

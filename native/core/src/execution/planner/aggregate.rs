@@ -77,7 +77,7 @@ type PhyAggResult = Result<Vec<AggregateFunctionExpr>, ExecutionError>;
 
 /// Promote a Utf8/Binary group-by expression to its Large* variant.
 ///
-/// Gated by `spark.comet.exec.useLargeDataTypes`. The promotion is an
+/// Gated by `spark.comet.exec.aggregation.useLargeDataTypes`. The promotion is an
 /// offset-width-only cast (i32 → i64) that makes DataFusion's HashAggregate
 /// dispatch to `ByteGroupValueBuilder::<i64>`, removing the per-task `i32::MAX`
 /// (2 GiB) cap on the group-key byte buffer. Returns the wrapped expression
@@ -158,7 +158,7 @@ impl OperatorBuilder for HashAggBuilder {
             ));
         }
 
-        // When `spark.comet.exec.useLargeDataTypes` is on, wrap Utf8/Binary
+        // When `spark.comet.exec.aggregation.useLargeDataTypes` is on, wrap Utf8/Binary
         // group keys in a Cast to LargeUtf8/LargeBinary so DataFusion dispatches
         // to ByteGroupValueBuilder::<i64> and the per-task group-key byte buffer
         // is no longer capped at i32::MAX (2 GiB). The promotion is reverted at
