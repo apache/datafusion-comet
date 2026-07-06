@@ -52,10 +52,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   // from SparkConf at SparkContext init (CometExecIterator.scala:295/310), NOT from
   // per-query SQLConf, so they must live here.
   override protected def sparkConf: SparkConf =
-    super.sparkConf
-      .set(SQLConf.ANSI_ENABLED.key, "false")
-      .set("spark.memory.offHeap.enabled", "false")
-      .set(CometConf.COMET_ONHEAP_MEMORY_POOL_TYPE.key, "unbounded")
+    super.sparkConf.set(SQLConf.ANSI_ENABLED.key, "false")
 
   test("min/max floating point with negative zero") {
     val r = new Random(42)
