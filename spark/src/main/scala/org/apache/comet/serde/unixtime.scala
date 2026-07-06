@@ -31,19 +31,26 @@ object CometFromUnixTime extends CometExpressionSerde[FromUnixTime] with Codegen
 
   private val collationReason = DatetimeCollation.reason("from_unixtime")
 
-  private val formatReason =
-    "Only supports the default datetime format pattern `yyyy-MM-dd HH:mm:ss`." +
-      " DataFusion's valid timestamp range differs from Spark" +
-      " (https://github.com/apache/datafusion/issues/16594)"
+  override def getIncompatibleReasons(): Seq[String] = Seq(
+    "DataFusion's valid timestamp range differs from Spark" +
+      " (https://github.com/apache/datafusion/issues/16594)") ++
+    DatetimeCollation.incompatibleReasons("from_unixtime")
 
-  override def getIncompatibleReasons(): Seq[String] =
-    Seq(formatReason) ++ DatetimeCollation.incompatibleReasons("from_unixtime")
+  override def getCompatibleNotes(): Seq[String] = Seq(
+    "Only the default datetime format pattern `yyyy-MM-dd HH:mm:ss` runs natively via " +
+      "DataFusion's `to_char`. Non-default patterns route through Spark's own " +
+      "`FromUnixTime.doGenCode` via the Arrow-direct codegen dispatcher when " +
+      "`spark.comet.exec.scalaUDF.codegen.enabled=true` (the default). When the codegen " +
+      "dispatcher is disabled the operator falls back to Spark in those cases.")
 
   override def getSupportLevel(expr: FromUnixTime): SupportLevel = {
     if (DatetimeCollation.hasNonDefaultCollation(expr)) {
       Incompatible(Some(collationReason))
+    } else if (expr.format != Literal(TimestampFormatter.defaultPattern())) {
+      Incompatible(
+        Some("Only the default datetime pattern `yyyy-MM-dd HH:mm:ss` is supported natively"))
     } else {
-      Incompatible(Some(formatReason))
+      Incompatible(None)
     }
   }
 
@@ -51,25 +58,25 @@ object CometFromUnixTime extends CometExpressionSerde[FromUnixTime] with Codegen
       expr: FromUnixTime,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val secExpr = exprToProtoInternal(expr.sec, inputs, binding)
-    // TODO: DataFusion toChar does not support Spark datetime pattern format
-    // https://github.com/apache/datafusion/issues/16577
-    // https://github.com/apache/datafusion/issues/14536
-    // After fixing these issues, use provided `format` instead of the manual replacement below
-    val formatExpr = exprToProtoInternal(Literal("%Y-%m-%d %H:%M:%S"), inputs, binding)
-    val timeZone = exprToProtoInternal(Literal(expr.timeZoneId.orNull), inputs, binding)
-
-    if (expr.format != Literal(TimestampFormatter.defaultPattern)) {
-      withFallbackReason(expr, "Datetime pattern format is unsupported")
-      None
-    } else if (secExpr.isDefined && formatExpr.isDefined) {
-      val timestampExpr =
-        scalarFunctionExprToProto("from_unixtime", Seq(secExpr, timeZone): _*)
-      val optExpr = scalarFunctionExprToProto("to_char", Seq(timestampExpr, formatExpr): _*)
-      optExprWithFallbackReason(optExpr, expr, expr.sec, expr.format)
+    if (expr.format != Literal(TimestampFormatter.defaultPattern())) {
+      CometScalaUDF.emitJvmCodegenDispatch(expr, inputs, binding)
     } else {
-      withFallbackReason(expr, expr.sec, expr.format)
-      None
+      val secExpr = exprToProtoInternal(expr.sec, inputs, binding)
+      // TODO: DataFusion toChar does not support Spark datetime pattern format
+      // https://github.com/apache/datafusion/issues/16577
+      // https://github.com/apache/datafusion/issues/14536
+      // After fixing these issues, use provided `format` instead of the manual replacement below
+      val formatExpr = exprToProtoInternal(Literal("%Y-%m-%d %H:%M:%S"), inputs, binding)
+      val timeZone = exprToProtoInternal(Literal(expr.timeZoneId.orNull), inputs, binding)
+      if (secExpr.isDefined && formatExpr.isDefined) {
+        val timestampExpr =
+          scalarFunctionExprToProto("from_unixtime", Seq(secExpr, timeZone): _*)
+        val optExpr = scalarFunctionExprToProto("to_char", Seq(timestampExpr, formatExpr): _*)
+        optExprWithFallbackReason(optExpr, expr, expr.sec, expr.format)
+      } else {
+        withFallbackReason(expr, expr.sec, expr.format)
+        None
+      }
     }
   }
 }

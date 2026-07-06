@@ -26,16 +26,17 @@ CREATE TABLE test_from_unix_time_enabled(t long) USING parquet
 statement
 INSERT INTO test_from_unix_time_enabled VALUES (0), (1718451045), (-1), (NULL), (2147483647)
 
--- Even with allowIncompatible=true, the default datetime pattern is unsupported natively
-query spark_answer_only
+-- With allowIncompatible=true, the default datetime pattern runs natively
+query
 SELECT from_unixtime(t) FROM test_from_unix_time_enabled
 
-query spark_answer_only
+-- Non-default format patterns are handled by the JVM codegen dispatcher
+query
 SELECT from_unixtime(t, 'yyyy-MM-dd') FROM test_from_unix_time_enabled
 
 -- literal arguments
-query spark_answer_only
+query
 SELECT from_unixtime(0)
 
-query spark_answer_only
+query
 SELECT from_unixtime(1718451045, 'yyyy-MM-dd')
