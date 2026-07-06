@@ -19,7 +19,6 @@
 
 package org.apache.comet.shims
 
-import org.apache.spark.internal.config.ConfigEntry
 import org.apache.spark.sql.internal.SQLConf
 
 /**
@@ -31,50 +30,52 @@ import org.apache.spark.sql.internal.SQLConf
  * When a legacy key was removed in Spark 4 (the four parquet rebase aliases), we still ship the
  * legacy key -> Spark 4 non-legacy default; on Spark 4 the check is effectively inert because
  * `SQLConf.set` rejects removed keys, but the entry is kept so 3.x behaviour is consistent.
+ *
+ * Note: `ConfigEntry` itself is `private[spark]`, so we never spell the type — every value below
+ * is a direct method call on a `SQLConf` val, and the compiler resolves `defaultValueString`
+ * without exposing the type name to this compilation unit.
  */
 trait ShimLegacyConfFallback {
 
-  private def entryDefault(entry: ConfigEntry[_]): String = entry.defaultValueString
-
   protected def legacyConfDefaults: Map[String, String] = Map(
     "spark.sql.legacy.allowNegativeScaleOfDecimal" ->
-      entryDefault(SQLConf.LEGACY_ALLOW_NEGATIVE_SCALE_OF_DECIMAL_ENABLED),
+      SQLConf.LEGACY_ALLOW_NEGATIVE_SCALE_OF_DECIMAL_ENABLED.defaultValueString,
     "spark.sql.legacy.decimal.retainFractionDigitsOnTruncate" ->
-      entryDefault(SQLConf.LEGACY_RETAIN_FRACTION_DIGITS_FIRST),
+      SQLConf.LEGACY_RETAIN_FRACTION_DIGITS_FIRST.defaultValueString,
     "spark.sql.legacy.literal.pickMinimumPrecision" ->
-      entryDefault(SQLConf.LITERAL_PICK_MINIMUM_PRECISION),
+      SQLConf.LITERAL_PICK_MINIMUM_PRECISION.defaultValueString,
     "spark.sql.legacy.charVarcharAsString" ->
-      entryDefault(SQLConf.LEGACY_CHAR_VARCHAR_AS_STRING),
+      SQLConf.LEGACY_CHAR_VARCHAR_AS_STRING.defaultValueString,
     "spark.sql.legacy.allowParameterlessCount" ->
-      entryDefault(SQLConf.ALLOW_PARAMETERLESS_COUNT),
+      SQLConf.ALLOW_PARAMETERLESS_COUNT.defaultValueString,
     "spark.sql.legacy.doLooseUpcast" ->
-      entryDefault(SQLConf.LEGACY_LOOSE_UPCAST),
+      SQLConf.LEGACY_LOOSE_UPCAST.defaultValueString,
     "spark.sql.legacy.typeCoercion.datetimeToString.enabled" ->
-      entryDefault(SQLConf.LEGACY_CAST_DATETIME_TO_STRING),
+      SQLConf.LEGACY_CAST_DATETIME_TO_STRING.defaultValueString,
     "spark.sql.legacy.duplicateBetweenInput" ->
-      entryDefault(SQLConf.LEGACY_DUPLICATE_BETWEEN_INPUT),
+      SQLConf.LEGACY_DUPLICATE_BETWEEN_INPUT.defaultValueString,
     "spark.sql.legacy.inSubqueryNullability" ->
-      entryDefault(SQLConf.LEGACY_IN_SUBQUERY_NULLABILITY),
+      SQLConf.LEGACY_IN_SUBQUERY_NULLABILITY.defaultValueString,
     "spark.sql.legacy.scalarSubqueryCountBugBehavior" ->
-      entryDefault(SQLConf.LEGACY_SCALAR_SUBQUERY_COUNT_BUG_HANDLING),
+      SQLConf.LEGACY_SCALAR_SUBQUERY_COUNT_BUG_HANDLING.defaultValueString,
     "spark.sql.legacy.disableMapKeyNormalization" ->
-      entryDefault(SQLConf.DISABLE_MAP_KEY_NORMALIZATION),
+      SQLConf.DISABLE_MAP_KEY_NORMALIZATION.defaultValueString,
     "spark.sql.legacy.setopsPrecedence.enabled" ->
-      entryDefault(SQLConf.LEGACY_SETOPS_PRECEDENCE_ENABLED),
+      SQLConf.LEGACY_SETOPS_PRECEDENCE_ENABLED.defaultValueString,
     "spark.sql.legacy.viewSchemaCompensation" ->
-      entryDefault(SQLConf.VIEW_SCHEMA_COMPENSATION),
+      SQLConf.VIEW_SCHEMA_COMPENSATION.defaultValueString,
     "spark.sql.legacy.timeParserPolicy" ->
-      entryDefault(SQLConf.LEGACY_TIME_PARSER_POLICY),
+      SQLConf.LEGACY_TIME_PARSER_POLICY.defaultValueString,
     "spark.sql.legacy.parquet.datetimeRebaseModeInRead" ->
-      entryDefault(SQLConf.PARQUET_REBASE_MODE_IN_READ),
+      SQLConf.PARQUET_REBASE_MODE_IN_READ.defaultValueString,
     "spark.sql.legacy.parquet.datetimeRebaseModeInWrite" ->
-      entryDefault(SQLConf.PARQUET_REBASE_MODE_IN_WRITE),
+      SQLConf.PARQUET_REBASE_MODE_IN_WRITE.defaultValueString,
     "spark.sql.legacy.parquet.int96RebaseModeInRead" ->
-      entryDefault(SQLConf.PARQUET_INT96_REBASE_MODE_IN_READ),
+      SQLConf.PARQUET_INT96_REBASE_MODE_IN_READ.defaultValueString,
     "spark.sql.legacy.parquet.int96RebaseModeInWrite" ->
-      entryDefault(SQLConf.PARQUET_INT96_REBASE_MODE_IN_WRITE),
+      SQLConf.PARQUET_INT96_REBASE_MODE_IN_WRITE.defaultValueString,
     "spark.sql.legacy.parquet.nanosAsLong" ->
-      entryDefault(SQLConf.LEGACY_PARQUET_NANOS_AS_LONG),
+      SQLConf.LEGACY_PARQUET_NANOS_AS_LONG.defaultValueString,
     "spark.sql.legacy.readFileSourceTableCacheIgnoreOptions" ->
-      entryDefault(SQLConf.READ_FILE_SOURCE_TABLE_CACHE_IGNORE_OPTIONS))
+      SQLConf.READ_FILE_SOURCE_TABLE_CACHE_IGNORE_OPTIONS.defaultValueString)
 }
