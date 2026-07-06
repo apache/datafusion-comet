@@ -44,4 +44,5 @@ The following differences from Spark are always present and do not require any a
 The following differences from Spark are always present and do not require any additional configuration:
 
 - This function is not deterministic. Results may not match Spark.
+
 <!--END:EXPR_COMPAT-->
