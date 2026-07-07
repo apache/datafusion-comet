@@ -807,14 +807,11 @@ html[data-theme="light"] .bd-links li.current:not(:has(li.current)) > a.current.
 .bd-content { padding: 0 !important; }
 
 .bd-article-container {
-  max-width: 860px !important;
+  /* Let the article fill the space between the sidebars and grow with the
+     window, rather than capping at a fixed width and leaving side gaps. */
+  max-width: none !important;
   padding: 44px 60px 88px !important;
   margin: 0 !important;
-  /* Anchor to the left edge of the grid cell so the article's left
-     position stays stable whether or not the right-side TOC is rendered.
-     Without justify-self:start, pydata's grid centers the container in
-     its cell — which shifts the content right on TOC-less pages. */
-  justify-self: start !important;
 }
 
 article.bd-article {
