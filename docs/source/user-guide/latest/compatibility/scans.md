@@ -67,7 +67,9 @@ The following limitations raise an error at scan time rather than falling back t
   Arrow, whose string type is strictly UTF-8. Reading a Parquet file whose `STRING` column contains
   non-UTF-8 bytes fails with `Parquet error: encountered non UTF-8 data`. Disable Comet for the
   query, or cast the column to `BINARY` before persisting, if you need to preserve non-UTF-8 bytes.
-  See [#4121](https://github.com/apache/datafusion-comet/issues/4121).
+  Separately, non-UTF-8 bytes that reach native execution from a JVM-side columnar source are not
+  currently validated at the Arrow FFI import boundary. See [#4121](https://github.com/apache/datafusion-comet/issues/4121)
+  and the tracking issue [#4764](https://github.com/apache/datafusion-comet/issues/4764).
 - Reading `TimestampLTZ` as `TimestampNTZ` on Spark 3.x. Spark raises an error per
   [SPARK-36182](https://issues.apache.org/jira/browse/SPARK-36182) because LTZ encodes UTC-adjusted
   instants that cannot be safely reinterpreted as timezone-free values, and Comet matches this by
