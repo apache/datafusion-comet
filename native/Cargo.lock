@@ -3596,7 +3596,7 @@ dependencies = [
 [[package]]
 name = "iceberg"
 version = "0.9.0"
-source = "git+https://github.com/mbutrovich/iceberg-rust?branch=comet-eqdel-repro#338c781bae3d35e30d06d951faf5ffc45fc52795"
+source = "git+https://github.com/mbutrovich/iceberg-rust?branch=comet_iceberg_1.11#7374742e4b3d44e52dc28b3d30fef5fc44658010"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -3652,7 +3652,7 @@ dependencies = [
 [[package]]
 name = "iceberg-storage-opendal"
 version = "0.9.0"
-source = "git+https://github.com/mbutrovich/iceberg-rust?branch=comet-eqdel-repro#338c781bae3d35e30d06d951faf5ffc45fc52795"
+source = "git+https://github.com/mbutrovich/iceberg-rust?branch=comet_iceberg_1.11#7374742e4b3d44e52dc28b3d30fef5fc44658010"
 dependencies = [
  "anyhow",
  "async-trait",
