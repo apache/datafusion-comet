@@ -24,7 +24,7 @@ import scala.util.Random
 import org.apache.spark.sql._
 import org.apache.spark.sql.catalyst.FunctionIdentifier
 import org.apache.spark.sql.catalyst.expressions.{Expression, ExpressionInfo}
-import org.apache.spark.sql.catalyst.expressions.aggregate.BloomFilterAggregate
+import org.apache.spark.sql.catalyst.expressions.aggregate.{BloomFilterAggregate, Final, Partial}
 import org.apache.spark.sql.comet._
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution._
@@ -75,6 +75,20 @@ class CometExecRuleSuite extends CometTestBase {
         countOperators(stage.plan, opClass)
       case op if op.getClass.isAssignableFrom(opClass) => 1
     }.sum
+  }
+
+  private def collectHashAggregates(plan: SparkPlan): Seq[HashAggregateExec] = {
+    stripAQEPlan(plan).collect {
+      case stage: QueryStageExec => collectHashAggregates(stage.plan)
+      case agg: HashAggregateExec => Seq(agg)
+    }.flatten
+  }
+
+  private def collectCometHashAggregates(plan: SparkPlan): Seq[CometHashAggregateExec] = {
+    stripAQEPlan(plan).collect {
+      case stage: QueryStageExec => collectCometHashAggregates(stage.plan)
+      case agg: CometHashAggregateExec => Seq(agg)
+    }.flatten
   }
 
   test(
@@ -227,6 +241,58 @@ class CometExecRuleSuite extends CometTestBase {
         // Safe aggregates allow mixed execution: partial stays Spark, final can be Comet
         assert(countOperators(transformedPlan, classOf[HashAggregateExec]) == 1) // partial only
         assert(countOperators(transformedPlan, classOf[CometHashAggregateExec]) == 1) // final
+      }
+    }
+  }
+
+  test("CometExecRule should allow approx_count_distinct Comet partial and Spark final") {
+    withTempView("test_data") {
+      createTestDataFrame.createOrReplaceTempView("test_data")
+
+      val query =
+        """SELECT
+          |  approx_count_distinct(id),
+          |  approx_count_distinct(name),
+          |  approx_count_distinct(id, 0.02)
+          |FROM test_data""".stripMargin
+
+      withSQLConf(
+        CometConf.COMET_ENABLE_FINAL_HASH_AGGREGATE.key -> "false",
+        CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+        val (_, cometPlan) = checkSparkAnswer(query)
+        val sparkAggs = collectHashAggregates(cometPlan)
+        val cometAggs = collectCometHashAggregates(cometPlan)
+
+        assert(sparkAggs.size == 1)
+        assert(sparkAggs.head.aggregateExpressions.map(_.mode).distinct == Seq(Final))
+        assert(cometAggs.size == 1)
+        assert(cometAggs.head.modes == Seq(Partial))
+      }
+    }
+  }
+
+  test("CometExecRule should allow approx_count_distinct Spark partial and Comet final") {
+    withTempView("test_data") {
+      createTestDataFrame.createOrReplaceTempView("test_data")
+
+      val query =
+        """SELECT
+          |  approx_count_distinct(id),
+          |  approx_count_distinct(name),
+          |  approx_count_distinct(id, 0.02)
+          |FROM test_data""".stripMargin
+
+      withSQLConf(
+        CometConf.COMET_ENABLE_PARTIAL_HASH_AGGREGATE.key -> "false",
+        CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+        val (_, cometPlan) = checkSparkAnswer(query)
+        val sparkAggs = collectHashAggregates(cometPlan)
+        val cometAggs = collectCometHashAggregates(cometPlan)
+
+        assert(sparkAggs.size == 1)
+        assert(sparkAggs.head.aggregateExpressions.map(_.mode).distinct == Seq(Partial))
+        assert(cometAggs.size == 1)
+        assert(cometAggs.head.modes == Seq(Final))
       }
     }
   }

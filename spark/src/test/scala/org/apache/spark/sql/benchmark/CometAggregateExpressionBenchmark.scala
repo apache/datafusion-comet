@@ -125,6 +125,21 @@ object CometAggregateExpressionBenchmark extends CometBenchmarkBase {
       "percentile_double_high_card",
       "SELECT percentile(c_double, 0.5) FROM parquetV1Table GROUP BY high_card_grp"))
 
+  // approx_count_distinct (Spark's HyperLogLogPlusPlus). c_int has ~10000 distinct values.
+  private val approxCountDistinctAggregates = List(
+    AggExprConfig(
+      "approx_count_distinct_int",
+      "SELECT approx_count_distinct(c_int) FROM parquetV1Table GROUP BY grp"),
+    AggExprConfig(
+      "approx_count_distinct_string",
+      "SELECT approx_count_distinct(CAST(c_int AS STRING)) FROM parquetV1Table GROUP BY grp"),
+    AggExprConfig(
+      "approx_count_distinct_global",
+      "SELECT approx_count_distinct(c_int) FROM parquetV1Table"),
+    AggExprConfig(
+      "approx_count_distinct_high_card",
+      "SELECT approx_count_distinct(c_int) FROM parquetV1Table GROUP BY high_card_grp"))
+
   override def runCometBenchmark(mainArgs: Array[String]): Unit = {
     val values = 1024 * 1024
 
@@ -148,7 +163,7 @@ object CometAggregateExpressionBenchmark extends CometBenchmarkBase {
 
           val allAggregates = basicAggregates ++ statisticalAggregates ++ bitwiseAggregates ++
             multiKeyAggregates ++ multiAggregates ++ decimalAggregates ++
-            highCardinalityAggregates ++ percentileAggregates
+            highCardinalityAggregates ++ percentileAggregates ++ approxCountDistinctAggregates
 
           allAggregates.foreach { config =>
             runExpressionBenchmark(config.name, v, config.query, config.extraCometConfigs)

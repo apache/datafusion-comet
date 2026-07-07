@@ -22,9 +22,9 @@ package org.apache.comet.serde
 import scala.jdk.CollectionConverters._
 
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Literal}
-import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, Average, BitAndAgg, BitOrAgg, BitXorAgg, BloomFilterAggregate, CentralMomentAgg, CollectSet, Corr, Count, Covariance, CovPopulation, CovSample, First, Last, Max, Min, Percentile, StddevPop, StddevSamp, Sum, VariancePop, VarianceSamp}
+import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, Average, BitAndAgg, BitOrAgg, BitXorAgg, BloomFilterAggregate, CentralMomentAgg, CollectSet, Corr, Count, Covariance, CovPopulation, CovSample, First, HyperLogLogPlusPlus, Last, Max, Min, Percentile, StddevPop, StddevSamp, Sum, VariancePop, VarianceSamp}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{ByteType, DecimalType, DoubleType, IntegerType, LongType, NumericType, ShortType, StringType}
+import org.apache.spark.sql.types.{BinaryType, BooleanType, ByteType, DataType, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, NumericType, ShortType, StringType, TimestampNTZType, TimestampType}
 
 import org.apache.comet.CometConf.COMET_EXEC_STRICT_FLOATING_POINT
 import org.apache.comet.CometSparkSessionExtensions.{isSpark41Plus, withFallbackReason}
@@ -818,6 +818,57 @@ object CometCollectSet extends CometAggregateExpressionSerde[CollectSet] {
       None
     } else {
       withFallbackReason(aggExpr, child)
+      None
+    }
+  }
+}
+
+object CometApproxCountDistinct extends CometAggregateExpressionSerde[HyperLogLogPlusPlus] {
+
+  override def supportsMixedPartialFinal: Boolean = true
+
+  // Types that Comet's native `xxhash64` hashes identically to Spark's `XxHash64Function`.
+  private def hashableType(dt: DataType): Boolean = dt match {
+    case BooleanType => true
+    case ByteType | ShortType | IntegerType | LongType => true
+    case FloatType | DoubleType => true
+    case _: DecimalType => true
+    case DateType | TimestampType | TimestampNTZType => true
+    case StringType | BinaryType => true
+    case _ => false
+  }
+
+  override def getSupportLevel(expr: HyperLogLogPlusPlus): SupportLevel = {
+    if (!hashableType(expr.child.dataType)) {
+      Unsupported(Some(s"Unsupported input data type: ${expr.child.dataType}"))
+    } else {
+      Compatible()
+    }
+  }
+
+  override def convert(
+      aggExpr: AggregateExpression,
+      expr: HyperLogLogPlusPlus,
+      inputs: Seq[Attribute],
+      binding: Boolean,
+      conf: SQLConf): Option[ExprOuterClass.AggExpr] = {
+    val childExpr = exprToProto(expr.child, inputs, binding)
+
+    if (childExpr.isDefined) {
+      // Precision `p` is derived from `relativeSD` with the exact formula Spark uses in
+      // `HyperLogLogPlusPlusHelper`, so the native register layout matches Spark.
+      val p = Math.ceil(2.0d * Math.log(1.106d / expr.relativeSD) / Math.log(2.0d)).toInt
+      val builder = ExprOuterClass.HllPlusPlus.newBuilder()
+      builder.setChild(childExpr.get)
+      builder.setPrecision(p)
+
+      Some(
+        ExprOuterClass.AggExpr
+          .newBuilder()
+          .setHllpp(builder)
+          .build())
+    } else {
+      withFallbackReason(aggExpr, expr.child)
       None
     }
   }
