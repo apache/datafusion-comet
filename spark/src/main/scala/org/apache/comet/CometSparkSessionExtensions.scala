@@ -133,7 +133,21 @@ object CometSparkSessionExtensions extends Logging {
       : (FunctionIdentifier, ExpressionInfo, Seq[Expression] => Expression) = {
     val name = "comet_version"
     val versionLiteral = Literal(UTF8String.fromString(COMET_VERSION), StringType)
-    val info = new ExpressionInfo(classOf[Literal].getCanonicalName, null, name)
+    // Populate the full ExpressionInfo so that Spark's ExpressionInfoSuite (SPARK-32870, and the
+    // example-output check) is satisfied for this injected function. The example output is derived
+    // from COMET_VERSION so it matches the value the function actually returns across releases.
+    val info = new ExpressionInfo(
+      classOf[Literal].getCanonicalName,
+      "",
+      name,
+      s"_FUNC_() - Returns the Apache DataFusion Comet version.",
+      "",
+      s"\n    Examples:\n      > SELECT _FUNC_();\n       $COMET_VERSION\n  ",
+      "",
+      "misc_funcs",
+      "1.0.0",
+      "",
+      "")
     val builder = (args: Seq[Expression]) => {
       if (args.nonEmpty) {
         throw new IllegalArgumentException(
