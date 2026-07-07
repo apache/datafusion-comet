@@ -710,17 +710,19 @@ index 1669301d2d..f48b4f674a 100644
              .enableHiveSupport()
              .getOrCreate();
 diff --git a/spark/v4.1/spark/src/test/java/org/apache/iceberg/spark/sql/TestFilterPushDown.java b/spark/v4.1/spark/src/test/java/org/apache/iceberg/spark/sql/TestFilterPushDown.java
-index e5a9d63b68..fcbd1bf24f 100644
+index e5a9d63b68..220d445851 100644
 --- a/spark/v4.1/spark/src/test/java/org/apache/iceberg/spark/sql/TestFilterPushDown.java
 +++ b/spark/v4.1/spark/src/test/java/org/apache/iceberg/spark/sql/TestFilterPushDown.java
-@@ -667,9 +667,7 @@ public class TestFilterPushDown extends TestBaseWithCatalog {
+@@ -667,9 +667,11 @@ public class TestFilterPushDown extends TestBaseWithCatalog {
      String planAsString = sparkPlan.toString().replaceAll("#(\\d+L?)", "");
  
      if (sparkFilter != null) {
--      assertThat(planAsString)
--          .as("Post scan filter should match")
++      // Comet accelerates the post-scan filter as CometFilter; predicates it does not support
++      // (e.g. on variant columns) fall back to a Spark Filter.
+       assertThat(planAsString)
+           .as("Post scan filter should match")
 -          .containsAnyOf("Filter (" + sparkFilter + ")", "Filter " + sparkFilter);
-+      assertThat(planAsString).as("Post scan filter should match").contains("CometFilter");
++          .containsAnyOf("CometFilter", "Filter (" + sparkFilter + ")", "Filter " + sparkFilter);
      } else {
        assertThat(planAsString).as("Should be no post scan filter").doesNotContain("Filter (");
      }

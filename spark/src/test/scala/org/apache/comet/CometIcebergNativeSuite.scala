@@ -681,6 +681,89 @@ class CometIcebergNativeSuite
     }
   }
 
+  /**
+   * Writes a genuine equality-delete file keyed on a single column and commits it via rowDelta.
+   * Spark SQL only ever emits position deletes, so equality deletes must be written with
+   * Iceberg's low-level writer primitives (see [[org.apache.iceberg.data.CometEqualityDeletes]]).
+   */
+  private def commitEqualityDelete(
+      catalogName: String,
+      namespace: String,
+      tableName: String,
+      column: String,
+      value: Any,
+      warehouseDir: File): Unit = {
+    val catalog = spark.sessionState.catalogManager
+      .catalog(catalogName)
+      .asInstanceOf[org.apache.iceberg.spark.SparkCatalog]
+    val ident = org.apache.spark.sql.connector.catalog.Identifier.of(Array(namespace), tableName)
+    val table = catalog
+      .loadTable(ident)
+      .asInstanceOf[org.apache.iceberg.spark.source.SparkTable]
+      .table()
+
+    val deleteRowSchema = table.schema().select(column)
+    val record: org.apache.iceberg.data.Record =
+      org.apache.iceberg.data.GenericRecord.create(deleteRowSchema)
+    record.setField(column, value)
+    val out = table
+      .io()
+      .newOutputFile(new File(warehouseDir, s"eq-delete-${System.nanoTime()}.parquet").toString)
+    val deleteFile = org.apache.iceberg.data.CometEqualityDeletes.write(
+      table,
+      out,
+      null,
+      java.util.Collections.singletonList(record),
+      deleteRowSchema)
+    table.newRowDelta().addDeletes(deleteFile).commit()
+  }
+
+  // Regression for the native scan applying an equality delete keyed on a column that has since
+  // been dropped (schema evolution). The delete's field id is absent from the current schema, so
+  // the serde must recover it from the table's schema history to build the task schema; before the
+  // fix this errored with "field not found" / a native panic. Mirrors Iceberg-Java's
+  // TestSparkReaderDeletes.testEqualityDeleteWithSchemaEvolution, which Spark SQL cannot express
+  // (SQL emits only position deletes), hence the low-level equality-delete write above.
+  test("equality delete on a since-dropped column is applied by the native scan") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+        spark.sql(
+          "CREATE TABLE test_cat.db.eq_delete_evolution (id INT, data STRING) USING iceberg " +
+            "TBLPROPERTIES ('format-version' = '2')")
+        spark.sql(
+          "INSERT INTO test_cat.db.eq_delete_evolution VALUES (1, 'a'), (2, 'b'), (3, 'c')")
+        spark.sql("ALTER TABLE test_cat.db.eq_delete_evolution ADD COLUMN status STRING")
+        spark.sql(
+          "INSERT INTO test_cat.db.eq_delete_evolution VALUES " +
+            "(4, 'd', 'ACTIVE'), (5, 'e', 'INACTIVE'), (6, 'f', 'ACTIVE')")
+
+        // Equality delete on `status`, which is then dropped from the schema.
+        commitEqualityDelete(
+          "test_cat",
+          "db",
+          "eq_delete_evolution",
+          "status",
+          "INACTIVE",
+          warehouseDir)
+        spark.sql("ALTER TABLE test_cat.db.eq_delete_evolution DROP COLUMN status")
+
+        // Only row 5 (status = INACTIVE) is deleted; the scan must resolve the dropped `status`
+        // field from schema history to apply the delete natively.
+        checkIcebergNativeScan("SELECT id, data FROM test_cat.db.eq_delete_evolution ORDER BY id")
+
+        spark.sql("DROP TABLE test_cat.db.eq_delete_evolution")
+      }
+    }
+  }
+
   test("MOR table with multiple delete operations - mixed delete types") {
     assume(icebergAvailable, "Iceberg not available in classpath")
 
@@ -4249,6 +4332,61 @@ class CometIcebergNativeSuite
         } finally {
           spark.sql(s"DROP TABLE IF EXISTS $table PURGE")
         }
+      }
+    }
+  }
+
+  // Mirrors TestSelect.simpleTypesInFilter. A predicate literal on a FLOAT column is carried as a
+  // double; iceberg-rust cannot bind a double datum to a float column ("Can't convert datum from
+  // double type to float type"). Expected resolution: fall back (or coerce) on the type mismatch.
+  test("float column compared to a double predicate literal") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+        val table = "test_cat.db.float_filter"
+        spark.sql(s"CREATE TABLE $table (id BIGINT, f FLOAT) USING iceberg")
+        spark.sql(s"INSERT INTO $table VALUES (1, 1.1), (2, 2.2), (3, 3.3)")
+        checkSparkAnswer(s"SELECT id FROM $table WHERE f > 1.1 ORDER BY id")
+        spark.sql(s"DROP TABLE $table")
+      }
+    }
+  }
+
+  // Mirrors TestFilterPushDown.testVariantExtractFiltering. The native scan does not support the
+  // VARIANT type, so the read falls back to Spark entirely; this asserts the fallback is graceful
+  // and correct. (The upstream failure is a plan-shape assertion in the diff's checkFilters helper,
+  // not a Comet execution bug, so this repro passes.)
+  test("variant column filter falls back to Spark") {
+    assume(isSpark40Plus, "VARIANT type requires Spark 4.0+")
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+        val table = "test_cat.db.variant_filter"
+        spark.sql(
+          s"CREATE TABLE $table (id BIGINT, data VARIANT) USING iceberg " +
+            "TBLPROPERTIES ('format-version' = '3')")
+        spark.sql(s"""
+          INSERT INTO $table VALUES
+            (1, parse_json('{"num": 25}')),
+            (2, parse_json('{"num": 30}')),
+            (3, parse_json('{"num": 35}'))
+        """)
+        checkIcebergNativeScanFallback(
+          s"SELECT id FROM $table WHERE try_variant_get(data, '$$.num', 'int') > 30 ORDER BY id",
+          "the native scan does not support the VARIANT type")
+        spark.sql(s"DROP TABLE $table")
       }
     }
   }

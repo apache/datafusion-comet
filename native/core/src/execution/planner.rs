@@ -3778,6 +3778,30 @@ fn parse_file_scan_tasks_from_common(
                 .field_ids
                 .clone();
 
+            // TEMP DEBUG (iceberg 1.11 eq-delete-on-dropped-column repro): remove before merge.
+            {
+                let schema_field_ids: Vec<(i32, String)> = schema_ref
+                    .as_struct()
+                    .fields()
+                    .iter()
+                    .map(|f| (f.id, f.name.clone()))
+                    .collect();
+                let deletes_dbg: Vec<(String, String, Option<Vec<i32>>)> = deletes
+                    .iter()
+                    .map(|d| {
+                        (
+                            d.file_path.clone(),
+                            format!("{:?}", d.file_type),
+                            d.equality_ids.clone(),
+                        )
+                    })
+                    .collect();
+                eprintln!(
+                    "COMET-DEBUG planner task file={} schema_field_ids={:?} project_field_ids={:?} deletes={:?}",
+                    proto_task.data_file_path, schema_field_ids, project_field_ids, deletes_dbg
+                );
+            }
+
             Ok(iceberg::scan::FileScanTask {
                 file_size_in_bytes: proto_task.file_size_in_bytes,
                 data_file_path: proto_task.data_file_path.clone(),

@@ -159,6 +159,15 @@ object IcebergReflection extends Logging {
     }
   }
 
+  /** The file format of a ContentFile (data or delete file), e.g. "PARQUET", "AVRO", "ORC". */
+  def getFileFormat(file: Any): Option[String] = {
+    try {
+      Some(file.getClass.getMethod("format").invoke(file).toString)
+    } catch {
+      case _: Exception => None
+    }
+  }
+
   /**
    * Gets the Iceberg Table from a SparkScan.
    *
@@ -352,6 +361,81 @@ object IcebergReflection extends Logging {
       case e: Exception =>
         logError(s"Iceberg reflection failure: Failed to get schema from table: ${e.getMessage}")
         None
+    }
+  }
+
+  /**
+   * All schema versions a table has had (table.schemas().values()), for resolving field ids of
+   * columns that have since been dropped -- mirrors Iceberg-Java's FieldLookup. table.schemas()
+   * is stable across Iceberg 1.5-1.11.
+   */
+  def getAllSchemas(table: Any): Seq[Any] = {
+    import scala.jdk.CollectionConverters._
+    try {
+      table.getClass
+        .getMethod("schemas")
+        .invoke(table)
+        .asInstanceOf[java.util.Map[_, _]]
+        .values()
+        .asScala
+        .toSeq
+    } catch {
+      case e: Exception =>
+        logDebug(s"Iceberg reflection: table.schemas() not available: ${e.getMessage}")
+        Seq.empty
+    }
+  }
+
+  /** Returns the `Types.NestedField` for `fieldId` in `schema`, or None. */
+  def findFieldObject(schema: Any, fieldId: Int): Option[Any] = {
+    try {
+      val findFieldMethod = schema.getClass.getMethod("findField", classOf[Int])
+      Option(findFieldMethod.invoke(schema, fieldId.asInstanceOf[AnyRef]))
+    } catch {
+      case _: Exception => None
+    }
+  }
+
+  /**
+   * Returns a schema equal to `baseSchema` but guaranteed to contain `requiredFieldIds`. Any id
+   * not already present is resolved from the table's schema history (`table.schemas()`) and
+   * appended.
+   *
+   * This mirrors Iceberg-Java's `DeleteFilter.fileProjection`: an equality delete may be keyed on
+   * a column that has since been dropped from the current schema, and iceberg-rust needs that
+   * column in the task schema to read and apply the delete. Called at serialization time, so it
+   * throws on failure (a required id that cannot be resolved, or any reflection error) rather
+   * than silently degrading; CometScanRule is responsible for falling back before we get here.
+   */
+  def schemaWithRequiredFields(baseSchema: Any, table: Any, requiredFieldIds: Seq[Int]): Any = {
+    val existingIds = buildFieldIdMapping(baseSchema).values.toSet
+    val missingIds = requiredFieldIds.distinct.filterNot(existingIds.contains)
+    if (missingIds.isEmpty) {
+      baseSchema
+    } else {
+      logDebug(
+        s"Iceberg equality delete references field id(s) ${missingIds.mkString(",")} absent from " +
+          "the task schema; resolving from table schema history to build the native scan schema")
+      val history = getAllSchemas(table)
+      val resolvedFields = missingIds.map { id =>
+        history.iterator
+          .flatMap(s => findFieldObject(s, id))
+          .toSeq
+          .headOption
+          .getOrElse(throw new IllegalStateException(
+            s"Cannot resolve equality-delete field id $id in table schema history"))
+      }
+      val existing =
+        baseSchema.getClass
+          .getMethod("columns")
+          .invoke(baseSchema)
+          .asInstanceOf[java.util.List[_]]
+      val newColumns = new java.util.ArrayList[Any](existing)
+      resolvedFields.foreach(newColumns.add)
+      baseSchema.getClass
+        .getConstructor(classOf[java.util.List[_]])
+        .newInstance(newColumns)
+        .asInstanceOf[AnyRef]
     }
   }
 
