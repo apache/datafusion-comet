@@ -31,7 +31,7 @@ sealed trait SupportLevel
  * differences in some specific edge cases that are unlikely to be an issue for most users.
  *
  * Any compatibility differences are noted in the
- * [[https://datafusion.apache.org/comet/user-guide/compatibility.html Comet Compatibility Guide]].
+ * [[https://datafusion.apache.org/comet/user-guide/latest/compatibility/index.html Comet Compatibility Guide]].
  */
 case class Compatible(notes: Option[String] = None, nativeOptIn: Option[NativeOptIn] = None)
     extends SupportLevel
@@ -40,7 +40,7 @@ case class Compatible(notes: Option[String] = None, nativeOptIn: Option[NativeOp
  * Comet supports this feature but results can be different from Spark.
  *
  * Any compatibility differences are noted in the
- * [[https://datafusion.apache.org/comet/user-guide/compatibility.html Comet Compatibility Guide]].
+ * [[https://datafusion.apache.org/comet/user-guide/latest/compatibility/index.html Comet Compatibility Guide]].
  */
 case class Incompatible(notes: Option[String] = None) extends SupportLevel
 
