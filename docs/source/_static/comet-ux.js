@@ -207,6 +207,27 @@
       });
   }
 
+  // ── Section titles toggle collapse/expand too ──────────────────────
+  // pydata's toctree hoists the link out of <details> for nav items that
+  // are both a page and a section header (e.g. "0.17.x (current)",
+  // "Expression Compatibility"), so by default only the chevron toggles;
+  // clicking the title just navigates. Since navigating to a page inside
+  // its own section makes that section "current" (auto-expanded), a title
+  // click reads as "expand-only" — clicking it again just reloads the same
+  // page, which is still expanded. Make the title toggle the same
+  // <details> the chevron does, so both controls behave symmetrically.
+  function initSectionTitleToggle() {
+    var titles = document.querySelectorAll('.bd-links li.has-children > a.reference');
+    titles.forEach(function (link) {
+      var details = link.nextElementSibling;
+      if (!details || details.tagName !== 'DETAILS') return;
+      link.addEventListener('click', function (e) {
+        e.preventDefault();
+        details.open = !details.open;
+      });
+    });
+  }
+
   // ── Breadcrumb trim ────────────────────────────────────────────────
   // "Comet 0.16.0-SNAPSHOT User Guide" reads as noise in a breadcrumb
   // when the section is already shown in the top nav. Trim to "0.16.0-
@@ -241,6 +262,7 @@
   function bootstrap() {
     initHomeNavLink();
     initSidebarToggle();
+    initSectionTitleToggle();
     initSidebarSearch();
     initSecondaryTocVisibility();
     initBreadcrumbTrim();

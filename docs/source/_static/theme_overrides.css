@@ -409,6 +409,29 @@ html[data-theme="dark"] .bd-sidebar form.bd-search {
   padding-top: 12px !important;
 }
 
+/* Per-version caption groups nested inside a version's own accordion on
+   every User Guide page (see user_guide_sidebar_html in conf.py). They sit
+   inside a <details>, which the top-level "User Guide" caption never does,
+   so this selector reaches only them. Indent to align under that version's
+   link, de-emphasize relative to the top-level caption, and add the same
+   hairline-divider treatment already used above for the version groups
+   under "Older Versions" — makes the IA snap visually instead of relying
+   on a 1px font-size delta alone. */
+.bd-links details > p.caption {
+  padding-left: 32px !important;
+  font-size: 10px !important;
+  font-weight: 600 !important;
+  margin-top: 14px !important;
+  padding-top: 14px !important;
+  border-top: 1px solid var(--pst-color-border-muted) !important;
+}
+
+.bd-links details > p.caption:first-child {
+  margin-top: 4px !important;
+  padding-top: 4px !important;
+  border-top: none !important;
+}
+
 /* ── Nav items ── */
 .bd-links ul {
   list-style: none !important;

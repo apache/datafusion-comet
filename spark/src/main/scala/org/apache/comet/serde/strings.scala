@@ -19,7 +19,7 @@
 
 package org.apache.comet.serde
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, BitLength, Cast, Concat, ConcatWs, Elt, Expression, FindInSet, FormatNumber, FormatString, GetJsonObject, If, InitCap, IsNull, Left, Length, Levenshtein, Like, Literal, Lower, Mask, OctetLength, Overlay, RegExpExtract, RegExpExtractAll, RegExpInStr, RegExpReplace, Right, RLike, SoundEx, StringLocate, StringLPad, StringRepeat, StringReplace, StringRPad, StringSplit, StringTranslate, Substring, SubstringIndex, ToCharacter, ToNumber, TryToNumber, UnBase64, Upper}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, Base64, BitLength, Cast, Concat, ConcatWs, Elt, Expression, FindInSet, FormatNumber, FormatString, GetJsonObject, If, InitCap, IsNull, Left, Length, Levenshtein, Like, Literal, Lower, Mask, OctetLength, Overlay, RegExpExtract, RegExpExtractAll, RegExpInStr, RegExpReplace, Right, RLike, SoundEx, StringLocate, StringLPad, StringRepeat, StringReplace, StringRPad, StringSplit, StringTranslate, Substring, SubstringIndex, ToCharacter, ToNumber, TryToNumber, UnBase64, Upper}
 import org.apache.spark.sql.types.{BinaryType, DataTypes, LongType, StringType}
 import org.apache.spark.unsafe.types.UTF8String
 
@@ -733,6 +733,24 @@ object CometOverlay extends CometCodegenDispatch[Overlay]
 object CometSoundEx extends CometCodegenDispatch[SoundEx]
 
 object CometStringLocate extends CometCodegenDispatch[StringLocate]
+
+// On Spark 3.4 `Base64` is a plain expression node and always chunks the output (it uses
+// `java.util.Base64.getMimeEncoder()` with no arguments). On Spark 3.5+ it is RuntimeReplaceable
+// and lowers to a `StaticInvoke`, handled by CometBase64StaticInvoke instead.
+object CometBase64 extends CometExpressionSerde[Base64] {
+  override def convert(expr: Base64, inputs: Seq[Attribute], binding: Boolean): Option[Expr] = {
+    val childExpr = exprToProtoInternal(expr.child, inputs, binding)
+    val chunkExpr = exprToProtoInternal(Literal(true), inputs, binding)
+    val optExpr =
+      scalarFunctionExprToProtoWithReturnType(
+        "base64",
+        StringType,
+        failOnError = false,
+        childExpr,
+        chunkExpr)
+    optExprWithFallbackReason(optExpr, expr, expr.child)
+  }
+}
 
 object CometUnBase64 extends CometCodegenDispatch[UnBase64]
 

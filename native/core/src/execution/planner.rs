@@ -41,6 +41,7 @@ use datafusion::functions_aggregate::bit_and_or_xor::{bit_and_udaf, bit_or_udaf,
 use datafusion::functions_aggregate::count::count_udaf;
 use datafusion::functions_aggregate::min_max::max_udaf;
 use datafusion::functions_aggregate::min_max::min_udaf;
+use datafusion::functions_aggregate::percentile_cont::percentile_cont_udaf;
 use datafusion::functions_aggregate::sum::sum_udaf;
 use datafusion::physical_expr::aggregate::{AggregateExprBuilder, AggregateFunctionExpr};
 use datafusion::physical_plan::windows::{BoundedWindowAggExec, WindowAggExec};
@@ -583,6 +584,16 @@ impl PhysicalPlanner {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
                 let data_type = to_arrow_datatype(expr.datatype.as_ref().unwrap());
                 Ok(Arc::new(NormalizeNaNAndZero::new(data_type, child)))
+            }
+            ExprStruct::PreciseTimestampConversion(expr) => {
+                let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
+                let data_type = to_arrow_datatype(expr.datatype.as_ref().unwrap());
+                // Spark's PreciseTimestampConversion reinterprets the value between
+                // Timestamp (microseconds) and Long without any conversion. Arrow's cast kernel
+                // performs exactly this zero-cost reinterpret between Timestamp(µs) and Int64,
+                // so we use DataFusion's CastExpr (arrow semantics) rather than Comet's
+                // Spark-compatible Cast (which would scale by 1_000_000).
+                Ok(Arc::new(CastExpr::new(child, data_type, None)))
             }
             ExprStruct::Subquery(expr) => {
                 let id = expr.id;
@@ -2601,6 +2612,21 @@ impl PhysicalPlanner {
                 ));
                 Self::create_aggr_func_expr("correlation", schema, vec![child1, child2], func)
             }
+            AggExprStruct::Percentile(expr) => {
+                let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
+                let percentile =
+                    self.create_expr(expr.percentage.as_ref().unwrap(), Arc::clone(&schema))?;
+                // DataFusion's percentile_cont uses the same `index = p * (n - 1)` linear
+                // interpolation as Spark's exact Percentile, so results match for the single
+                // percentage case wired here.
+                AggregateExprBuilder::new(percentile_cont_udaf(), vec![child, percentile])
+                    .schema(schema)
+                    .alias("percentile_cont")
+                    .with_ignore_nulls(false)
+                    .with_distinct(false)
+                    .build()
+                    .map_err(|e| e.into())
+            }
             AggExprStruct::BloomFilterAgg(expr) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
                 let num_items =
@@ -3638,7 +3664,8 @@ fn parse_file_scan_tasks_from_common(
                     Ok(iceberg::scan::FileScanTaskDeleteFile {
                         file_path: del.file_path.clone(),
                         file_type,
-                        file_size_in_bytes: del.file_size_in_bytes,
+                        // Not serialized; filled in by IcebergScanExec::fill_delete_file_sizes.
+                        file_size_in_bytes: 0,
                         partition_spec_id: del.partition_spec_id,
                         equality_ids: if del.equality_ids.is_empty() {
                             None

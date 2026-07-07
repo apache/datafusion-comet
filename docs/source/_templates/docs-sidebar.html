@@ -17,29 +17,32 @@ specific language governing permissions and limitations
 under the License.
 -->
 
-{# Use startdepth=1 consistently across ALL pages so the sidebar stays
-   stable as users navigate within a section. Only the .current highlight
-   moves; the tree structure (e.g. 0.16.x / Dev Snapshot / Older Versions
-   inside User Guide) does not change between sibling pages.
-
-   We deliberately drop upstream's startdepth=2 exception for
-   /user-guide/latest/*. That exception swapped the visible toctree to
-   the snapshot's own captioned subgroups (Getting Started / What Comet
-   Supports / Compatibility), which made clicking a Dev Snapshot child
-   page reload the sidebar with a completely different tree. Reviewers
-   and users found that disorienting. With startdepth=1 fixed, the same
-   three groups stay visible everywhere in User Guide, the active page
-   is highlighted in orange, and parent groups expand inline.
-
-   Orphan pages (no parent section toctree at depth 1) fall back to the
-   global toctree at depth 0. #}
-{% if not suppress_sidebar_toctree(startdepth=1, includehidden=True) %}
+{# Start the sidebar from the deepest captioned section the page lives under:
+   - user-guide/* (any version, including the index itself) always anchors
+     at user-guide/index (depth 1) and nests each version's own captioned
+     groups inside that version's accordion (see user_guide_sidebar_html in
+     conf.py), so the same version-accordion tree stays visible and stable
+     across every User Guide page — only the "current" highlighting and
+     which accordion is expanded change.
+   - contributor-guide/* lives under contributor-guide/index.md, so start at depth 1
+   - root and orphan pages (search, genindex) fall back to the global toctree (depth 0).
+   user_guide_versioned additionally requires a real depth-1 ancestor to
+   exist, so orphan pages under user-guide/ (not reachable from any
+   toctree) fall through to the depth-0 global fallback below instead of
+   crashing generate_toctree_html. #}
+{% set user_guide_versioned = pagename.startswith("user-guide/") and not suppress_sidebar_toctree(startdepth=1, includehidden=True) %}
+{% if user_guide_versioned %}
+{% elif not suppress_sidebar_toctree(startdepth=1, includehidden=True) %}
   {% set sidebar_startdepth = 1 %}
 {% else %}
   {% set sidebar_startdepth = 0 %}
 {% endif %}
 <nav class="bd-links" id="bd-docs-nav" aria-label="Main navigation">
   <div class="bd-toc-item active">
-    {{ generate_toctree_html("sidebar", startdepth=sidebar_startdepth, maxdepth=4, collapse=False, includehidden=True, titles_only=True) }}
+    {% if user_guide_versioned %}
+      {{ user_guide_sidebar_html() }}
+    {% else %}
+      {{ generate_toctree_html("sidebar", startdepth=sidebar_startdepth, maxdepth=4, collapse=False, includehidden=True, titles_only=True) }}
+    {% endif %}
   </div>
 </nav>

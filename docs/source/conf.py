@@ -199,6 +199,108 @@ def _substitute_version(app, docname, source):
         source[0] = source[0].replace("$COMET_VERSION", _comet_version)
 
 
+# -- User Guide sidebar: nest per-version pages under captions --------------
+# Every User Guide page groups its pages under captions (Getting Started,
+# What Comet Supports, ...) via nested `.. toctree::` blocks in that version's
+# own index page — except the tree rendered from user-guide/index itself
+# (the version accordion: current version, Development Snapshot, Older
+# Versions), where expanding a version used to show a flat list instead of
+# the same captioned groups. That's because Sphinx's toctree resolution only
+# keeps `:caption:` labels for the page acting as the root of the resolved
+# fragment; once a version's toctree is merged as a *child* of the index page
+# (two hops away), its captions are dropped. To nest them back in, we resolve
+# each version's own toctree separately (as if it were the root, via
+# pydata-sphinx-theme's internal toctree helpers) and splice the captioned
+# fragment into that version's accordion in the outer, uncaptioned tree.
+# Older Versions is left as-is; it isn't touched here.
+#
+# We render this same nested tree, always anchored at user-guide/index, for
+# EVERY page under user-guide/ (not just the index page). Sub-pages used to
+# fall back to a different, shallower anchor (the version's own index),
+# which dropped the version accordion entirely and replaced the sidebar with
+# a completely different tree on every navigation — jarring, and the reason
+# an earlier commit on this branch flattened everything back to one
+# consistent depth. Keeping one fixed anchor everywhere gets the same
+# stability without giving up captions: only the "current" highlighting and
+# which accordion is auto-expanded change between pages.
+#
+# This relies on two undocumented, module-level helpers from
+# pydata_sphinx_theme.toctree (get_nonroot_toctree, add_collapse_checkboxes).
+# They're pinned via requirements.txt (pydata-sphinx-theme<0.17.0), so a
+# theme upgrade won't silently change this behavior.
+
+def _build_user_guide_sidebar_html(app, pagename, context):
+    from bs4 import BeautifulSoup
+    from pydata_sphinx_theme.toctree import (
+        _get_ancestor_pagename,
+        add_collapse_checkboxes,
+        get_nonroot_toctree,
+    )
+    from sphinx.environment.adapters.toctree import TocTree
+
+    outer = context["generate_toctree_html"](
+        "sidebar", startdepth=1, maxdepth=4, collapse=False,
+        includehidden=True, titles_only=True,
+    )
+    # generate_toctree_html is memoized by the theme and returns a shared,
+    # mutable BeautifulSoup object; re-parse into an independent tree so the
+    # splicing below can't compound across repeated calls for this page.
+    soup = BeautifulSoup(str(outer), "html.parser")
+
+    # Resolve the same depth-1 ancestor generate_toctree_html used above
+    # (user-guide/index, regardless of which user-guide/* page is actually
+    # being rendered) so we read its toctree's own doc list rather than
+    # pagename's — pagename is the page being viewed, not the page that
+    # owns the version-accordion toctree.
+    toctree = TocTree(app.env)
+    ancestorname, _ = _get_ancestor_pagename(app, pagename, startdepth=1)
+
+    # That toctree lists, in order: the current stable version, the
+    # development snapshot, then Older Versions. Nest captions into the
+    # first two; Older Versions keeps its existing flat list.
+    version_docnames = app.env.toctree_includes.get(ancestorname, [])
+    top_level_items = soup.select("ul.bd-sidenav > li.toctree-l1")
+
+    for li, docname in zip(top_level_items, version_docnames[:2]):
+        details = li.find("details")
+        inner_ul = details.find("ul") if details else None
+        if inner_ul is None:
+            continue
+        captioned = get_nonroot_toctree(
+            app, pagename, docname, toctree,
+            collapse=False, maxdepth=4, includehidden=True, titles_only=True,
+        )
+        if captioned is None:
+            continue
+        frag_soup = BeautifulSoup(
+            app.builder.render_partial(captioned)["fragment"], "html.parser"
+        )
+        # The fragment was resolved as its own root, so its items are labeled
+        # toctree-l1/-l2/...; shift by one to match the depth they actually
+        # sit at once nested inside this version's own l1 entry.
+        for tag in frag_soup.find_all(class_=True):
+            tag["class"] = [
+                f"toctree-l{int(cl[len('toctree-l'):]) + 1}"
+                if cl.startswith("toctree-l") and cl[len("toctree-l"):].isdigit()
+                else cl
+                for cl in tag["class"]
+            ]
+        add_collapse_checkboxes(frag_soup)
+        for child in list(frag_soup.children):
+            inner_ul.insert_before(child)
+        inner_ul.decompose()
+
+    return str(soup)
+
+
+def _add_user_guide_sidebar_context(app, pagename, templatename, context, doctree):
+    if pagename.startswith("user-guide/"):
+        context["user_guide_sidebar_html"] = (
+            lambda: _build_user_guide_sidebar_html(app, pagename, context)
+        )
+
+
 def setup(app):
     app.connect("source-read", _substitute_version)
+    app.connect("html-page-context", _add_user_guide_sidebar_context)
     return {"version": _comet_version, "parallel_read_safe": True, "parallel_write_safe": True}
