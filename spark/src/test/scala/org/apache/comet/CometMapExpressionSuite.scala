@@ -247,4 +247,18 @@ class CometMapExpressionSuite extends CometTestBase {
     }
   }
 
+  test("map_entries on non-null value map from local table scan (#4789)") {
+    // An in-memory Map encodes valueContainsNull=false; the local scan must widen the map value
+    // to nullable so map_entries' native ListArray/Struct build does not fail on the child type.
+    // ConvertToLocalRelation must be disabled or the expression folds at plan time.
+    withSQLConf(
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
+      "spark.sql.optimizer.excludedRules" ->
+        "org.apache.spark.sql.catalyst.optimizer.ConvertToLocalRelation") {
+      import testImplicits._
+      val df = Seq(Map(1 -> 100, 2 -> 200)).toDF("m")
+      checkSparkAnswerAndOperator(df.selectExpr("map_entries(m)"))
+    }
+  }
+
 }
