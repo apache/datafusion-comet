@@ -34,16 +34,18 @@ Runs your existing Spark queries on the Apache DataFusion native engine, no code
 </div>
 <pre class="comet-terminal__body"><span class="term-line term-comment"># Add the Comet jar to your existing Spark job — no code changes</span>
 <span class="term-line"><span class="term-prompt">$</span> $SPARK_HOME/bin/spark-shell \</span>
-<span class="term-line term-indent">--jars comet-spark-spark4.1_2.13-0.16.0.jar \</span>
+<span class="term-line term-indent">--jars comet-spark-spark4.1_2.13-$COMET_VERSION.jar \</span>
 <span class="term-line term-indent">--conf spark.plugins=org.apache.spark.CometPlugin \</span>
-<span class="term-line term-indent">--conf spark.shuffle.manager=org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager</span>
+<span class="term-line term-indent">--conf spark.shuffle.manager=org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager \</span>
+<span class="term-line term-indent">--conf spark.memory.offHeap.enabled=true \</span>
+<span class="term-line term-indent">--conf spark.memory.offHeap.size=4g</span>
 <span class="term-line term-spacer"></span>
 <span class="term-line term-comment">// Your existing queries now run on the DataFusion native engine</span>
 <span class="term-line"><span class="term-prompt">scala&gt;</span> spark.sql(<span class="term-str">"SELECT category, COUNT(*) FROM events GROUP BY category"</span>).show()</span>
 <span class="term-line term-cursor"><span class="term-prompt">scala&gt;</span> <span class="term-blink">▍</span></span></pre>
 </div>
 
-<p class="comet-hero__note">Off-heap memory and classpath tuning flags are covered in the <a href="user-guide/latest/installation.html">installation guide</a>.</p>
+<p class="comet-hero__note">Classpath and advanced tuning flags are covered in the <a href="user-guide/latest/installation.html">installation guide</a>.</p>
 
 <div class="comet-hero__ctas">
 <a class="comet-cta comet-cta--primary" href="user-guide/latest/installation.html">Install Comet <span aria-hidden="true">→</span></a>
