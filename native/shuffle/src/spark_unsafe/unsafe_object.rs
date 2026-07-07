@@ -18,8 +18,7 @@
 use super::list::SparkUnsafeArray;
 use super::map::SparkUnsafeMap;
 use super::row::SparkUnsafeRow;
-use datafusion_comet_common::bytes_to_i128;
-use datafusion_comet_spark_expr::utils::decode_utf8_spark_lossy;
+use datafusion_comet_common::{bytes_to_i128, decode_utf8_spark_lossy};
 use std::borrow::Cow;
 
 const MAX_LONG_DIGITS: u8 = 18;
