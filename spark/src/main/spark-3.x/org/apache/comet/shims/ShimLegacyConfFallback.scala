@@ -31,7 +31,6 @@ package org.apache.comet.shims
 trait ShimLegacyConfFallback {
 
   protected def legacyConfDefaults: Map[String, String] = Map(
-    "spark.sql.legacy.allowNegativeScaleOfDecimal" -> "false",
     "spark.sql.legacy.decimal.retainFractionDigitsOnTruncate" -> "false",
     "spark.sql.legacy.literal.pickMinimumPrecision" -> "true",
     "spark.sql.legacy.charVarcharAsString" -> "false",

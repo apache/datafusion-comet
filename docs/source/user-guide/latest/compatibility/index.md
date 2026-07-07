@@ -138,9 +138,13 @@ resolves to under its own defaults.
 
 | Config key                                                | Comet-expected default |
 | --------------------------------------------------------- | ---------------------- |
-| `spark.sql.legacy.allowNegativeScaleOfDecimal`            | `false`                |
 | `spark.sql.legacy.decimal.retainFractionDigitsOnTruncate` | `false`                |
 | `spark.sql.legacy.literal.pickMinimumPrecision`           | `true`                 |
+
+Note: `spark.sql.legacy.allowNegativeScaleOfDecimal` is intentionally NOT in this list.
+Negative-scale decimals are handled per-expression — `CometCast.isSupported` returns
+`Incompatible` when the flag is `false` and `Compatible` when the user opts in — so enabling
+the legacy flag does not disable Comet for the whole session.
 
 **Char/varchar padding and analyzer-inserted write-side validation**
 

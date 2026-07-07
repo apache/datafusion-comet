@@ -38,8 +38,6 @@ import org.apache.spark.sql.internal.SQLConf
 trait ShimLegacyConfFallback {
 
   protected def legacyConfDefaults: Map[String, String] = Map(
-    "spark.sql.legacy.allowNegativeScaleOfDecimal" ->
-      SQLConf.LEGACY_ALLOW_NEGATIVE_SCALE_OF_DECIMAL_ENABLED.defaultValueString,
     "spark.sql.legacy.decimal.retainFractionDigitsOnTruncate" ->
       SQLConf.LEGACY_RETAIN_FRACTION_DIGITS_FIRST.defaultValueString,
     "spark.sql.legacy.literal.pickMinimumPrecision" ->
