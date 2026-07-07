@@ -88,8 +88,8 @@ The tables below list every Spark built-in expression with its current status.
 | `every` | ✅ |  |
 | `first` | ✅ |  |
 | `first_value` | ✅ |  |
-| `grouping` | 🔜 | Grouping indicator for ROLLUP/CUBE/GROUPING SETS |
-| `grouping_id` | 🔜 | Grouping indicator for ROLLUP/CUBE/GROUPING SETS |
+| `grouping` | ✅ | Grouping indicator for ROLLUP/CUBE/GROUPING SETS |
+| `grouping_id` | ✅ | Grouping indicator for ROLLUP/CUBE/GROUPING SETS |
 | `kurtosis` | 🔜 | tracking [#4098](https://github.com/apache/datafusion-comet/issues/4098) |
 | `last` | ✅ |  |
 | `last_value` | ✅ |  |
@@ -625,13 +625,16 @@ expression-level). The `outer` variants are wired but marked `Incompatible`; the
 
 ## window_funcs
 
-Window functions run via `CometWindowExec`. Aggregate window functions
-(`count`, `min`, `max`, `sum`, `avg`, `first_value`, `last_value`),
-ranking functions (`row_number`, `rank`, `dense_rank`, `percent_rank`,
-`cume_dist`, `ntile`), and value-shift functions (`lag`, `lead`,
-`nth_value`) are all wired in the window serde and execute natively.
-A handful of frame shapes still fall back — see the per-function notes
-for the exact unsupported cases.
+Window functions run via `CometWindowExec`, which is enabled by default.
+Aggregate window functions (`count`, `min`, `max`, `sum`, `avg`,
+`first_value`, `last_value`), ranking functions (`row_number`, `rank`,
+`dense_rank`, `percent_rank`, `cume_dist`, `ntile`), and value-shift
+functions (`lag`, `lead`, `nth_value`) are all wired in the window serde
+and execute natively. Statistical aggregates such as `stddev`, `var_pop`,
+`corr`, and `covar_pop` run natively as plain aggregations but fall back
+to Spark when used as window functions. A handful of frame shapes also
+fall back. See [window function compatibility](compatibility/operators.md)
+for the full list of supported functions, frames, and fallback cases.
 
 | Function | Status | Notes |
 | --- | --- | --- |
