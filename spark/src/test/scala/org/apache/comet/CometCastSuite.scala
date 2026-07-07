@@ -26,7 +26,6 @@ import scala.jdk.CollectionConverters._
 import scala.util.Random
 
 import org.apache.hadoop.fs.Path
-import org.apache.spark.SparkConf
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row, SaveMode}
 import org.apache.spark.sql.catalyst.expressions.Cast
 import org.apache.spark.sql.catalyst.parser.ParseException
@@ -42,11 +41,6 @@ import org.apache.comet.serde.{Compatible, Incompatible, Unsupported}
 class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   import testImplicits._
-
-  // Casts in this suite predominantly test non-ANSI semantics (silent overflow/null on
-  // invalid input); tests that target ANSI behavior opt in explicitly via withSQLConf.
-  override protected def sparkConf: SparkConf =
-    super.sparkConf.set(SQLConf.ANSI_ENABLED.key, "false")
 
   /** Create a data generator using a fixed seed so that tests are reproducible */
   private val gen = DataGenerator.DEFAULT
