@@ -59,8 +59,9 @@ url = "2.2"
 aws-config = "1.8.18"
 aws-credential-types = "1.2.13"
 # Tracks the comet_iceberg_1.11 integration branch, which carries two fixes pending upstream:
-# the equality-delete null handling (apache/iceberg-rust#2781) and double/float predicate
-# coercion. Revert to apache/iceberg-rust at the merged rev once both land.
+# equality-delete null handling (apache/iceberg-rust#2781) and double/float predicate coercion
+# in Datum::to() (apache/iceberg-rust#2783). Revert to apache/iceberg-rust at the merged rev
+# once both land.
 iceberg = { git = "https://github.com/mbutrovich/iceberg-rust", branch = "comet_iceberg_1.11" }
 iceberg-storage-opendal = { git = "https://github.com/mbutrovich/iceberg-rust", branch = "comet_iceberg_1.11", features = ["opendal-memory", "opendal-fs", "opendal-s3", "opendal-gcs", "opendal-oss", "opendal-azdls"] }
 reqsign-core = "3"
