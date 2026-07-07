@@ -295,11 +295,17 @@ INSERT INTO test_sort_array_nested_struct VALUES
   (array()),
   (NULL)
 
-query expect_fallback(Sort on array element type ArrayType(StructType(StructField(a,IntegerType)
+-- SortArray mixes in CodegenDispatchFallback, so nested arrays with Struct children have no
+-- native path but route through the JVM codegen dispatcher (Spark's own SortArray.doGenCode
+-- inside the Comet pipeline) and stay native while matching Spark exactly.
+query
 SELECT sort_array(arr) FROM test_sort_array_nested_struct
 
-query expect_fallback(Sort on array element type ArrayType(StructType(StructField(a,IntegerType)
+query
 SELECT sort_array(arr, false) FROM test_sort_array_nested_struct
+
+-- Non-literal (foldable) ascendingOrder is exercised in sort_array_min_spark_4_0.sql: Spark 3.4/3.5
+-- reject a non-literal sort order at analysis time, so those cases are gated to Spark 4.0+.
 
 -- literal arguments
 query
@@ -391,7 +397,10 @@ SELECT
   sort_array(array(NULL, NULL)),
   sort_array(cast(NULL as array<int>))
 
-query expect_fallback(Sort on array element type ArrayType(StructType(StructField(a,IntegerType)
+-- nested arrays with Struct children have no native path but route through the JVM codegen
+-- dispatcher (Spark's own SortArray.doGenCode inside the Comet pipeline) and stay native while
+-- matching Spark exactly.
+query
 SELECT sort_array(
   array(
     array(named_struct('a', 2)),
