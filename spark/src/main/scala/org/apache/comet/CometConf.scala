@@ -49,7 +49,7 @@ object CometConf extends ShimCometConf {
     "Guide (https://datafusion.apache.org/comet/user-guide/latest/compatibility/index.html)"
 
   private val TUNING_GUIDE = "For more information, refer to the Comet Tuning " +
-    "Guide (https://datafusion.apache.org/comet/user-guide/tuning.html)"
+    "Guide (https://datafusion.apache.org/comet/user-guide/latest/tuning.html)"
 
   private val TRACING_GUIDE = "For more information, refer to the Comet Tracing " +
     "Guide (https://datafusion.apache.org/comet/contributor-guide/tracing.html)"
