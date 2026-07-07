@@ -3378,14 +3378,14 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("upper shows native opt-in via caseConversion config key") {
+  test("upper shows native opt-in via per-expression allowIncompatible config key") {
     withTable("t_upper") {
       spark.sql("create table t_upper(s string) using parquet")
       spark.sql("insert into t_upper values ('abc'), ('xyz')")
       val df = spark.sql("select upper(s) as u from t_upper")
       val explain = new ExtendedExplainInfo().generateExtendedInfo(df.queryExecution.executedPlan)
       assert(explain.contains("native implementation of Upper"))
-      assert(explain.contains("spark.comet.caseConversion.enabled"))
+      assert(explain.contains("spark.comet.expression.Upper.allowIncompatible"))
     }
   }
 
