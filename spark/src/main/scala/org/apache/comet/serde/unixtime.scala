@@ -29,8 +29,6 @@ import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithFa
 // https://github.com/apache/datafusion/issues/16594
 object CometFromUnixTime extends CometExpressionSerde[FromUnixTime] with CodegenDispatchFallback {
 
-  private val collationReason = DatetimeCollation.reason("from_unixtime")
-
   // Applies even to the default format: Comet executes natively but DataFusion's valid timestamp
   // range differs from Spark, so results can differ outside that range.
   private val timestampRangeReason =
@@ -43,7 +41,7 @@ object CometFromUnixTime extends CometExpressionSerde[FromUnixTime] with Codegen
     "Only the default datetime format pattern `yyyy-MM-dd HH:mm:ss` is supported"
 
   override def getIncompatibleReasons(): Seq[String] =
-    Seq(timestampRangeReason) ++ DatetimeCollation.incompatibleReasons("from_unixtime")
+    Seq(timestampRangeReason)
 
   override def getUnsupportedReasons(): Seq[String] =
     Seq(formatReason)
@@ -52,15 +50,12 @@ object CometFromUnixTime extends CometExpressionSerde[FromUnixTime] with Codegen
   // `CodegenDispatchFallback` is mixed in, an `Unsupported` result still stays in the Comet
   // pipeline via JVM codegen dispatch (Spark's own `doGenCode`) rather than falling back to Spark.
   //
-  // The format check comes first: a collation can only appear on the format argument, so a collated
-  // format is always a non-default format and therefore has no native path (`Unsupported`). This
-  // differs from expressions like `date_format` whose native path handles arbitrary formats and are
-  // merely `Incompatible` for non-default collations.
+  // Unlike the other datetime expressions, from_unixtime needs no collation guard: a collation can
+  // only appear on the format argument, and any collated format is a non-default format, which is
+  // already `Unsupported` here.
   override def getSupportLevel(expr: FromUnixTime): SupportLevel = {
     if (expr.format != Literal(TimestampFormatter.defaultPattern)) {
       Unsupported(Some(formatReason))
-    } else if (DatetimeCollation.hasNonDefaultCollation(expr)) {
-      Incompatible(Some(collationReason))
     } else {
       Incompatible(Some(timestampRangeReason))
     }
