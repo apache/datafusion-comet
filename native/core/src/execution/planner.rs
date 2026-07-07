@@ -3711,21 +3711,38 @@ fn parse_file_scan_tasks_from_common(
             };
 
             let bound_predicate = if let Some(idx) = proto_task.residual_idx {
-                proto_common
+                let pred = proto_common
                     .residual_pool
                     .get(idx as usize)
-                    .and_then(convert_spark_expr_to_predicate)
-                    .map(
-                        |pred| -> Result<iceberg::expr::BoundPredicate, ExecutionError> {
-                            pred.bind(Arc::clone(&schema_ref), true).map_err(|e| {
-                                ExecutionError::GeneralError(format!(
-                                    "Failed to bind predicate to schema: {}",
-                                    e
-                                ))
-                            })
-                        },
-                    )
-                    .transpose()?
+                    .and_then(convert_spark_expr_to_predicate);
+                // COMET-DEBUG float/double bind: remove before merge.
+                if let Some(ref p) = pred {
+                    let schema_field_types: Vec<(String, String)> = schema_ref
+                        .as_struct()
+                        .fields()
+                        .iter()
+                        .map(|f| (f.name.clone(), format!("{:?}", f.field_type)))
+                        .collect();
+                    eprintln!(
+                        "COMET-DEBUG bind predicate={:?} schema_field_types={:?}",
+                        p, schema_field_types
+                    );
+                }
+                match pred {
+                    Some(p) => match p.bind(Arc::clone(&schema_ref), true) {
+                        Ok(bound) => Some(bound),
+                        // The residual predicate only drives row-group pruning; the post-scan
+                        // filter still enforces correctness. iceberg-rust cannot bind a datum
+                        // whose type differs from the column (e.g. a double literal against a
+                        // float column), so on a bind failure we skip pushdown rather than fail
+                        // the scan, mirroring the NOT IN handling above.
+                        Err(e) => {
+                            eprintln!("COMET-DEBUG bind FAILED: {e}");
+                            None
+                        }
+                    },
+                    None => None,
+                }
             } else {
                 None
             };

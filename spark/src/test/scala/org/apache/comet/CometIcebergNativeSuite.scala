@@ -4337,8 +4337,9 @@ class CometIcebergNativeSuite
   }
 
   // Mirrors TestSelect.simpleTypesInFilter. A predicate literal on a FLOAT column is carried as a
-  // double; iceberg-rust cannot bind a double datum to a float column ("Can't convert datum from
-  // double type to float type"). Expected resolution: fall back (or coerce) on the type mismatch.
+  // double, and iceberg-rust's Datum::to() has no double-to-float arm, so binding the residual to
+  // the schema fails. The residual only drives row-group pruning, so the native scan skips the
+  // failed pushdown and the post-scan CometFilter still enforces correctness.
   test("float column compared to a double predicate literal") {
     assume(icebergAvailable, "Iceberg not available in classpath")
     withTempIcebergDir { warehouseDir =>
@@ -4352,7 +4353,7 @@ class CometIcebergNativeSuite
         val table = "test_cat.db.float_filter"
         spark.sql(s"CREATE TABLE $table (id BIGINT, f FLOAT) USING iceberg")
         spark.sql(s"INSERT INTO $table VALUES (1, 1.1), (2, 2.2), (3, 3.3)")
-        checkSparkAnswer(s"SELECT id FROM $table WHERE f > 1.1 ORDER BY id")
+        checkIcebergNativeScan(spark.sql(s"SELECT id FROM $table WHERE f > 1.1 ORDER BY id"))
         spark.sql(s"DROP TABLE $table")
       }
     }
