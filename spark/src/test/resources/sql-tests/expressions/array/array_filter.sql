@@ -29,3 +29,22 @@ SELECT filter(arr, x -> x >= 0) FROM test_array_filter
 
 query
 SELECT filter(arr, (x, i) -> i > 0) FROM test_array_filter
+
+statement
+CREATE TABLE test_array_filter_captured(arr array<int>, c int) USING parquet
+
+statement
+INSERT INTO test_array_filter_captured VALUES
+  (array(1, NULL, 2), 5),
+  (array(3, NULL, 4), NULL),
+  (array(NULL, NULL), 7),
+  (NULL, 1)
+
+-- Genuine array_compact fast path: IsNotNull on the lambda variable drops the null elements.
+query
+SELECT filter(arr, x -> x IS NOT NULL) FROM test_array_filter_captured
+
+-- Regression for #4830: IsNotNull on captured column `c` is not array_compact and must not drop
+-- the null elements of `arr`.
+query
+SELECT filter(arr, x -> c IS NOT NULL) FROM test_array_filter_captured
