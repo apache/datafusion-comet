@@ -604,7 +604,7 @@ with Spark. For dates beyond this range, functions that involve timezone-aware c
 </section>
 <section id="converttimezone">
 <h2>ConvertTimezone<a class="headerlink" href="#converttimezone" title="Link to this heading">#</a></h2>
-<p>By default, Comet runs a Spark-compatible implementation of <code class="docutils literal notranslate"><span class="pre">ConvertTimezone</span></code>. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.ConvertTimezone.allowIncompatible=true</span></code> to use Comet’s faster native implementation instead, which has the following differences from Spark:</p>
+<p>By default, <code class="docutils literal notranslate"><span class="pre">ConvertTimezone</span></code> is evaluated in the JVM using Spark’s own code-generated implementation (run inside the Comet pipeline), which matches Spark exactly. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.ConvertTimezone.allowIncompatible=true</span></code> to opt into Comet’s native implementation instead, which has the following differences from Spark:</p>
 <ul class="simple">
 <li><p>Comet’s native timezone parser only accepts IANA zone IDs (e.g. <code class="docutils literal notranslate"><span class="pre">America/Los_Angeles</span></code>) and fixed offsets in <code class="docutils literal notranslate"><span class="pre">+HH:MM</span></code> form. Spark also accepts forms such as <code class="docutils literal notranslate"><span class="pre">GMT+1</span></code>, <code class="docutils literal notranslate"><span class="pre">UTC+1</span></code>, or three-letter abbreviations like <code class="docutils literal notranslate"><span class="pre">PST</span></code>; queries using those forms will throw a native parse error at execution time. See https://github.com/apache/datafusion-comet/issues/2013.</p></li>
 </ul>
@@ -615,86 +615,86 @@ with Spark. For dates beyond this range, functions that involve timezone-aware c
 <ul class="simple">
 <li><p>Format strings in a curated allow-list run natively via DataFusion’s <code class="docutils literal notranslate"><span class="pre">to_char</span></code> for UTC sessions. Other format strings (including non-literal formats), as well as non-UTC sessions, route through Spark’s own <code class="docutils literal notranslate"><span class="pre">DateFormatClass.doGenCode</span></code> via the Arrow-direct codegen dispatcher when <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.scalaUDF.codegen.enabled=true</span></code> (the default). When the codegen dispatcher is disabled the operator falls back to Spark in those cases.</p></li>
 </ul>
-<p>By default, Comet runs a Spark-compatible implementation of <code class="docutils literal notranslate"><span class="pre">DateFormatClass</span></code>. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.DateFormatClass.allowIncompatible=true</span></code> to use Comet’s faster native implementation instead, which has the following differences from Spark:</p>
+<p>By default, <code class="docutils literal notranslate"><span class="pre">DateFormatClass</span></code> is evaluated in the JVM using Spark’s own code-generated implementation (run inside the Comet pipeline), which matches Spark exactly. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.DateFormatClass.allowIncompatible=true</span></code> to opt into Comet’s native implementation instead, which has the following differences from Spark:</p>
 <ul class="simple">
 <li><p>Non-UTC timezones may produce different results than Spark</p></li>
 </ul>
 </section>
 <section id="days">
 <h2>Days<a class="headerlink" href="#days" title="Link to this heading">#</a></h2>
-<p>The following cases are not supported by Comet:</p>
+<p>The following cases are not supported by Comet and always fall back to Spark, regardless of any <code class="docutils literal notranslate"><span class="pre">allowIncompatible</span></code> setting:</p>
 <ul class="simple">
 <li><p>Only <code class="docutils literal notranslate"><span class="pre">DateType</span></code> and <code class="docutils literal notranslate"><span class="pre">TimestampType</span></code> inputs are supported. <code class="docutils literal notranslate"><span class="pre">TimestampNTZType</span></code> is not supported.</p></li>
 </ul>
 </section>
 <section id="fromutctimestamp">
 <h2>FromUTCTimestamp<a class="headerlink" href="#fromutctimestamp" title="Link to this heading">#</a></h2>
-<p>By default, Comet runs a Spark-compatible implementation of <code class="docutils literal notranslate"><span class="pre">FromUTCTimestamp</span></code>. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.FromUTCTimestamp.allowIncompatible=true</span></code> to use Comet’s faster native implementation instead, which has the following differences from Spark:</p>
+<p>By default, <code class="docutils literal notranslate"><span class="pre">FromUTCTimestamp</span></code> is evaluated in the JVM using Spark’s own code-generated implementation (run inside the Comet pipeline), which matches Spark exactly. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.FromUTCTimestamp.allowIncompatible=true</span></code> to opt into Comet’s native implementation instead, which has the following differences from Spark:</p>
 <ul class="simple">
 <li><p>Comet’s native timezone parser only accepts IANA zone IDs (e.g. <code class="docutils literal notranslate"><span class="pre">America/Los_Angeles</span></code>) and fixed offsets in <code class="docutils literal notranslate"><span class="pre">+HH:MM</span></code> form. Spark also accepts forms such as <code class="docutils literal notranslate"><span class="pre">GMT+1</span></code>, <code class="docutils literal notranslate"><span class="pre">UTC+1</span></code>, or three-letter abbreviations like <code class="docutils literal notranslate"><span class="pre">PST</span></code>; queries using those forms will throw a native parse error at execution time. See https://github.com/apache/datafusion-comet/issues/2013.</p></li>
 </ul>
 </section>
 <section id="fromunixtime">
 <h2>FromUnixTime<a class="headerlink" href="#fromunixtime" title="Link to this heading">#</a></h2>
-<p>By default, Comet runs a Spark-compatible implementation of <code class="docutils literal notranslate"><span class="pre">FromUnixTime</span></code>. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.FromUnixTime.allowIncompatible=true</span></code> to use Comet’s faster native implementation instead, which has the following differences from Spark:</p>
+<p>By default, <code class="docutils literal notranslate"><span class="pre">FromUnixTime</span></code> is evaluated in the JVM using Spark’s own code-generated implementation (run inside the Comet pipeline), which matches Spark exactly. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.FromUnixTime.allowIncompatible=true</span></code> to opt into Comet’s native implementation instead, which has the following differences from Spark:</p>
 <ul class="simple">
 <li><p>Only supports the default datetime format pattern <code class="docutils literal notranslate"><span class="pre">yyyy-MM-dd</span> <span class="pre">HH:mm:ss</span></code>. DataFusion’s valid timestamp range differs from Spark (https://github.com/apache/datafusion/issues/16594)</p></li>
 </ul>
 </section>
 <section id="hours">
 <h2>Hours<a class="headerlink" href="#hours" title="Link to this heading">#</a></h2>
-<p>The following cases are not supported by Comet:</p>
+<p>The following cases are not supported by Comet and always fall back to Spark, regardless of any <code class="docutils literal notranslate"><span class="pre">allowIncompatible</span></code> setting:</p>
 <ul class="simple">
 <li><p>Only <code class="docutils literal notranslate"><span class="pre">TimestampType</span></code> and <code class="docutils literal notranslate"><span class="pre">TimestampNTZType</span></code> inputs are supported.</p></li>
 </ul>
 </section>
 <section id="precisetimestampconversion">
 <h2>PreciseTimestampConversion<a class="headerlink" href="#precisetimestampconversion" title="Link to this heading">#</a></h2>
-<p>The following cases are not supported by Comet:</p>
+<p>The following cases are not supported by Comet and always fall back to Spark, regardless of any <code class="docutils literal notranslate"><span class="pre">allowIncompatible</span></code> setting:</p>
 <ul class="simple">
 <li><p>Only reinterprets between TimestampType/TimestampNTZType and LongType are supported.</p></li>
 </ul>
 </section>
 <section id="secondstotimestamp">
 <h2>SecondsToTimestamp<a class="headerlink" href="#secondstotimestamp" title="Link to this heading">#</a></h2>
-<p>The following cases are not supported by Comet:</p>
+<p>The following cases are not supported by Comet and always fall back to Spark, regardless of any <code class="docutils literal notranslate"><span class="pre">allowIncompatible</span></code> setting:</p>
 <ul class="simple">
 <li><p>Only <code class="docutils literal notranslate"><span class="pre">IntegerType</span></code>, <code class="docutils literal notranslate"><span class="pre">LongType</span></code>, <code class="docutils literal notranslate"><span class="pre">FloatType</span></code>, and <code class="docutils literal notranslate"><span class="pre">DoubleType</span></code> inputs are supported. <code class="docutils literal notranslate"><span class="pre">DecimalType</span></code>, <code class="docutils literal notranslate"><span class="pre">ByteType</span></code>, and <code class="docutils literal notranslate"><span class="pre">ShortType</span></code> fall back to Spark.</p></li>
 </ul>
 </section>
 <section id="toutctimestamp">
 <h2>ToUTCTimestamp<a class="headerlink" href="#toutctimestamp" title="Link to this heading">#</a></h2>
-<p>By default, Comet runs a Spark-compatible implementation of <code class="docutils literal notranslate"><span class="pre">ToUTCTimestamp</span></code>. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.ToUTCTimestamp.allowIncompatible=true</span></code> to use Comet’s faster native implementation instead, which has the following differences from Spark:</p>
+<p>By default, <code class="docutils literal notranslate"><span class="pre">ToUTCTimestamp</span></code> is evaluated in the JVM using Spark’s own code-generated implementation (run inside the Comet pipeline), which matches Spark exactly. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.ToUTCTimestamp.allowIncompatible=true</span></code> to opt into Comet’s native implementation instead, which has the following differences from Spark:</p>
 <ul class="simple">
 <li><p>Comet’s native timezone parser only accepts IANA zone IDs (e.g. <code class="docutils literal notranslate"><span class="pre">America/Los_Angeles</span></code>) and fixed offsets in <code class="docutils literal notranslate"><span class="pre">+HH:MM</span></code> form. Spark also accepts forms such as <code class="docutils literal notranslate"><span class="pre">GMT+1</span></code>, <code class="docutils literal notranslate"><span class="pre">UTC+1</span></code>, or three-letter abbreviations like <code class="docutils literal notranslate"><span class="pre">PST</span></code>; queries using those forms will throw a native parse error at execution time. See https://github.com/apache/datafusion-comet/issues/2013.</p></li>
 </ul>
 </section>
 <section id="truncdate">
 <h2>TruncDate<a class="headerlink" href="#truncdate" title="Link to this heading">#</a></h2>
-<p>By default, Comet runs a Spark-compatible implementation of <code class="docutils literal notranslate"><span class="pre">TruncDate</span></code>. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.TruncDate.allowIncompatible=true</span></code> to use Comet’s faster native implementation instead, which has the following differences from Spark:</p>
+<p>By default, <code class="docutils literal notranslate"><span class="pre">TruncDate</span></code> is evaluated in the JVM using Spark’s own code-generated implementation (run inside the Comet pipeline), which matches Spark exactly. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.TruncDate.allowIncompatible=true</span></code> to opt into Comet’s native implementation instead, which has the following differences from Spark:</p>
 <ul class="simple">
 <li><p>Non-literal format strings will throw an exception instead of returning NULL</p></li>
 </ul>
-<p>The following cases are not supported by Comet:</p>
+<p>The following cases have no native implementation and always run in the JVM using Spark’s code-generated implementation (inside the Comet pipeline):</p>
 <ul class="simple">
 <li><p>Only the following formats are supported: year, yyyy, yy, quarter, mon, month, mm, week</p></li>
 </ul>
 </section>
 <section id="trunctimestamp">
 <h2>TruncTimestamp<a class="headerlink" href="#trunctimestamp" title="Link to this heading">#</a></h2>
-<p>By default, Comet runs a Spark-compatible implementation of <code class="docutils literal notranslate"><span class="pre">TruncTimestamp</span></code>. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.TruncTimestamp.allowIncompatible=true</span></code> to use Comet’s faster native implementation instead, which has the following differences from Spark:</p>
+<p>By default, <code class="docutils literal notranslate"><span class="pre">TruncTimestamp</span></code> is evaluated in the JVM using Spark’s own code-generated implementation (run inside the Comet pipeline), which matches Spark exactly. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.TruncTimestamp.allowIncompatible=true</span></code> to opt into Comet’s native implementation instead, which has the following differences from Spark:</p>
 <ul class="simple">
 <li><p>Produces incorrect results when used with non-UTC timezones. Compatible when timezone is UTC. (https://github.com/apache/datafusion-comet/issues/2649)</p></li>
 <li><p>Non-literal format strings will throw an exception instead of returning NULL</p></li>
 </ul>
-<p>The following cases are not supported by Comet:</p>
+<p>The following cases have no native implementation and always run in the JVM using Spark’s code-generated implementation (inside the Comet pipeline):</p>
 <ul class="simple">
 <li><p>Only the following formats are supported: year, yyyy, yy, quarter, mon, month, mm, week, day, dd, hour, minute, second, millisecond, microsecond</p></li>
 </ul>
 </section>
 <section id="unixtimestamp">
 <h2>UnixTimestamp<a class="headerlink" href="#unixtimestamp" title="Link to this heading">#</a></h2>
-<p>The following cases are not supported by Comet:</p>
+<p>The following cases are not supported by Comet and always fall back to Spark, regardless of any <code class="docutils literal notranslate"><span class="pre">allowIncompatible</span></code> setting:</p>
 <ul class="simple">
 <li><p>Only <code class="docutils literal notranslate"><span class="pre">DateType</span></code>, <code class="docutils literal notranslate"><span class="pre">TimestampType</span></code>, and <code class="docutils literal notranslate"><span class="pre">TimestampNTZType</span></code> inputs are supported.</p></li>
 </ul>

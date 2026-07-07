@@ -587,7 +587,7 @@ IEEE total ordering for floating-point, which differs from Spark’s <code class
 </section>
 <section id="mapfromentries">
 <h2>MapFromEntries<a class="headerlink" href="#mapfromentries" title="Link to this heading">#</a></h2>
-<p>By default, Comet runs a Spark-compatible implementation of <code class="docutils literal notranslate"><span class="pre">MapFromEntries</span></code>. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.MapFromEntries.allowIncompatible=true</span></code> to use Comet’s faster native implementation instead, which has the following differences from Spark:</p>
+<p>By default, <code class="docutils literal notranslate"><span class="pre">MapFromEntries</span></code> is evaluated in the JVM using Spark’s own code-generated implementation (run inside the Comet pipeline), which matches Spark exactly. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.MapFromEntries.allowIncompatible=true</span></code> to opt into Comet’s native implementation instead, which has the following differences from Spark:</p>
 <ul class="simple">
 <li><p><code class="docutils literal notranslate"><span class="pre">BinaryType</span></code> is not supported as a map key in <code class="docutils literal notranslate"><span class="pre">map_from_entries</span></code></p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">BinaryType</span></code> is not supported as a map value in <code class="docutils literal notranslate"><span class="pre">map_from_entries</span></code></p></li>
@@ -599,7 +599,7 @@ IEEE total ordering for floating-point, which differs from Spark’s <code class
 <ul class="simple">
 <li><p>MapSort on floating-point keys is not 100% compatible with Spark when <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.strictFloatingPoint=true</span></code>.</p></li>
 </ul>
-<p>The following cases are not supported by Comet:</p>
+<p>The following cases are not supported by Comet and always fall back to Spark, regardless of any <code class="docutils literal notranslate"><span class="pre">allowIncompatible</span></code> setting:</p>
 <ul class="simple">
 <li><p>MapSort is unsupported for non-scalar key types (struct, array, map, etc.).</p></li>
 </ul>

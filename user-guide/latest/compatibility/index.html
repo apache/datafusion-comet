@@ -582,7 +582,7 @@ under the License.
 <section id="compatible-by-default-opt-in-to-native">
 <h2>Compatible by default, opt in to native<a class="headerlink" href="#compatible-by-default-opt-in-to-native" title="Link to this heading">#</a></h2>
 <p>Comet runs a Spark-compatible implementation of every supported expression by default. Some
-expressions also have a faster native implementation that can differ from Spark for certain
+expressions also have a native implementation that can differ from Spark for certain
 inputs. These are not used unless you opt in by setting the relevant
 <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.&lt;Name&gt;.allowIncompatible=true</span></code> config (a few use a dedicated config, noted
 per expression below), after which you accept the documented differences.</p>
@@ -600,11 +600,11 @@ expression inside Comet’s native pipeline (via the Arrow-direct codegen dispat
 produces byte-exact Spark results at the cost of one JNI round-trip per batch. It is gated
 globally by <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.scalaUDF.codegen.enabled</span></code> (enabled by default); when the
 dispatcher is disabled, these expressions fall back to Spark.</p></li>
-<li><p>A <strong>native</strong> (Rust / DataFusion) implementation that is faster, with no JNI overhead, but
-has known semantic differences from Spark for some inputs or patterns.</p></li>
+<li><p>A <strong>native</strong> (Rust / DataFusion) implementation that avoids the JNI round-trip but has
+known semantic differences from Spark for some inputs or patterns.</p></li>
 </ul>
 <p>Because the codegen-dispatch path matches Spark exactly, Comet uses it by <strong>default</strong>. The
-faster native path is <strong>opt-in per expression</strong> via that expression’s
+native path is <strong>opt-in per expression</strong> via that expression’s
 <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.&lt;ExprClassName&gt;.allowIncompatible=true</span></code> flag, which declares that you
 accept its differences from Spark. There is no global opt-in. When the native path is enabled
 but a specific input or pattern has no native implementation, Comet routes that case back

@@ -50,7 +50,7 @@ If you need to process dates far in the future with accurate timezone handling, 
 
 ## ConvertTimezone
 
-By default, Comet runs a Spark-compatible implementation of `ConvertTimezone`. Set `spark.comet.expression.ConvertTimezone.allowIncompatible=true` to use Comet's faster native implementation instead, which has the following differences from Spark:
+By default, `ConvertTimezone` is evaluated in the JVM using Spark's own code-generated implementation (run inside the Comet pipeline), which matches Spark exactly. Set `spark.comet.expression.ConvertTimezone.allowIncompatible=true` to opt into Comet's native implementation instead, which has the following differences from Spark:
 
 - Comet's native timezone parser only accepts IANA zone IDs (e.g. `America/Los_Angeles`) and fixed offsets in `+HH:MM` form. Spark also accepts forms such as `GMT+1`, `UTC+1`, or three-letter abbreviations like `PST`; queries using those forms will throw a native parse error at execution time. See https://github.com/apache/datafusion-comet/issues/2013.
 - convert_timezone does not support non-UTF8_BINARY collations (https://github.com/apache/datafusion-comet/issues/4646)
@@ -61,39 +61,39 @@ The following differences from Spark are always present and do not require any a
 
 - Format strings in a curated allow-list run natively via DataFusion's `to_char` for UTC sessions. Other format strings (including non-literal formats), as well as non-UTC sessions, route through Spark's own `DateFormatClass.doGenCode` via the Arrow-direct codegen dispatcher when `spark.comet.exec.scalaUDF.codegen.enabled=true` (the default). When the codegen dispatcher is disabled the operator falls back to Spark in those cases.
 
-By default, Comet runs a Spark-compatible implementation of `DateFormatClass`. Set `spark.comet.expression.DateFormatClass.allowIncompatible=true` to use Comet's faster native implementation instead, which has the following differences from Spark:
+By default, `DateFormatClass` is evaluated in the JVM using Spark's own code-generated implementation (run inside the Comet pipeline), which matches Spark exactly. Set `spark.comet.expression.DateFormatClass.allowIncompatible=true` to opt into Comet's native implementation instead, which has the following differences from Spark:
 
 - Non-UTC timezones may produce different results than Spark
 - date_format does not support non-UTF8_BINARY collations (https://github.com/apache/datafusion-comet/issues/4646)
 
 ## Days
 
-The following cases are not supported by Comet:
+The following cases are not supported by Comet and always fall back to Spark, regardless of any `allowIncompatible` setting:
 
 - Only `DateType` and `TimestampType` inputs are supported. `TimestampNTZType` is not supported.
 
 ## FromUTCTimestamp
 
-By default, Comet runs a Spark-compatible implementation of `FromUTCTimestamp`. Set `spark.comet.expression.FromUTCTimestamp.allowIncompatible=true` to use Comet's faster native implementation instead, which has the following differences from Spark:
+By default, `FromUTCTimestamp` is evaluated in the JVM using Spark's own code-generated implementation (run inside the Comet pipeline), which matches Spark exactly. Set `spark.comet.expression.FromUTCTimestamp.allowIncompatible=true` to opt into Comet's native implementation instead, which has the following differences from Spark:
 
 - Comet's native timezone parser only accepts IANA zone IDs (e.g. `America/Los_Angeles`) and fixed offsets in `+HH:MM` form. Spark also accepts forms such as `GMT+1`, `UTC+1`, or three-letter abbreviations like `PST`; queries using those forms will throw a native parse error at execution time. See https://github.com/apache/datafusion-comet/issues/2013.
 
 ## FromUnixTime
 
-By default, Comet runs a Spark-compatible implementation of `FromUnixTime`. Set `spark.comet.expression.FromUnixTime.allowIncompatible=true` to use Comet's faster native implementation instead, which has the following differences from Spark:
+By default, `FromUnixTime` is evaluated in the JVM using Spark's own code-generated implementation (run inside the Comet pipeline), which matches Spark exactly. Set `spark.comet.expression.FromUnixTime.allowIncompatible=true` to opt into Comet's native implementation instead, which has the following differences from Spark:
 
 - Only supports the default datetime format pattern `yyyy-MM-dd HH:mm:ss`. DataFusion's valid timestamp range differs from Spark (https://github.com/apache/datafusion/issues/16594)
 - from_unixtime does not support non-UTF8_BINARY collations (https://github.com/apache/datafusion-comet/issues/4646)
 
 ## Hours
 
-The following cases are not supported by Comet:
+The following cases are not supported by Comet and always fall back to Spark, regardless of any `allowIncompatible` setting:
 
 - Only `TimestampType` and `TimestampNTZType` inputs are supported.
 
 ## MakeTimestamp
 
-By default, Comet runs a Spark-compatible implementation of `MakeTimestamp`. Set `spark.comet.expression.MakeTimestamp.allowIncompatible=true` to use Comet's faster native implementation instead, which has the following differences from Spark:
+By default, `MakeTimestamp` is evaluated in the JVM using Spark's own code-generated implementation (run inside the Comet pipeline), which matches Spark exactly. Set `spark.comet.expression.MakeTimestamp.allowIncompatible=true` to opt into Comet's native implementation instead, which has the following differences from Spark:
 
 - make_timestamp does not support non-UTF8_BINARY collations (https://github.com/apache/datafusion-comet/issues/4646)
 
@@ -105,48 +105,48 @@ The following incompatibilities cause `NextDay` to fall back to Spark by default
 
 ## PreciseTimestampConversion
 
-The following cases are not supported by Comet:
+The following cases are not supported by Comet and always fall back to Spark, regardless of any `allowIncompatible` setting:
 
 - Only reinterprets between TimestampType/TimestampNTZType and LongType are supported.
 
 ## SecondsToTimestamp
 
-The following cases are not supported by Comet:
+The following cases are not supported by Comet and always fall back to Spark, regardless of any `allowIncompatible` setting:
 
 - Only `IntegerType`, `LongType`, `FloatType`, and `DoubleType` inputs are supported. `DecimalType`, `ByteType`, and `ShortType` fall back to Spark.
 
 ## ToUTCTimestamp
 
-By default, Comet runs a Spark-compatible implementation of `ToUTCTimestamp`. Set `spark.comet.expression.ToUTCTimestamp.allowIncompatible=true` to use Comet's faster native implementation instead, which has the following differences from Spark:
+By default, `ToUTCTimestamp` is evaluated in the JVM using Spark's own code-generated implementation (run inside the Comet pipeline), which matches Spark exactly. Set `spark.comet.expression.ToUTCTimestamp.allowIncompatible=true` to opt into Comet's native implementation instead, which has the following differences from Spark:
 
 - Comet's native timezone parser only accepts IANA zone IDs (e.g. `America/Los_Angeles`) and fixed offsets in `+HH:MM` form. Spark also accepts forms such as `GMT+1`, `UTC+1`, or three-letter abbreviations like `PST`; queries using those forms will throw a native parse error at execution time. See https://github.com/apache/datafusion-comet/issues/2013.
 
 ## ToUnixTimestamp
 
-By default, Comet runs a Spark-compatible implementation of `ToUnixTimestamp`. Set `spark.comet.expression.ToUnixTimestamp.allowIncompatible=true` to use Comet's faster native implementation instead, which has the following differences from Spark:
+By default, `ToUnixTimestamp` is evaluated in the JVM using Spark's own code-generated implementation (run inside the Comet pipeline), which matches Spark exactly. Set `spark.comet.expression.ToUnixTimestamp.allowIncompatible=true` to opt into Comet's native implementation instead, which has the following differences from Spark:
 
 - to_unix_timestamp does not support non-UTF8_BINARY collations (https://github.com/apache/datafusion-comet/issues/4646)
 
 ## TruncDate
 
-By default, Comet runs a Spark-compatible implementation of `TruncDate`. Set `spark.comet.expression.TruncDate.allowIncompatible=true` to use Comet's faster native implementation instead, which has the following differences from Spark:
+By default, `TruncDate` is evaluated in the JVM using Spark's own code-generated implementation (run inside the Comet pipeline), which matches Spark exactly. Set `spark.comet.expression.TruncDate.allowIncompatible=true` to opt into Comet's native implementation instead, which has the following differences from Spark:
 
 - Non-literal format strings will throw an exception instead of returning NULL
 - trunc does not support non-UTF8_BINARY collations (https://github.com/apache/datafusion-comet/issues/4646)
 
-The following cases are not supported by Comet:
+The following cases have no native implementation and always run in the JVM using Spark's code-generated implementation (inside the Comet pipeline):
 
 - Only the following formats are supported: year, yyyy, yy, quarter, mon, month, mm, week
 
 ## TruncTimestamp
 
-By default, Comet runs a Spark-compatible implementation of `TruncTimestamp`. Set `spark.comet.expression.TruncTimestamp.allowIncompatible=true` to use Comet's faster native implementation instead, which has the following differences from Spark:
+By default, `TruncTimestamp` is evaluated in the JVM using Spark's own code-generated implementation (run inside the Comet pipeline), which matches Spark exactly. Set `spark.comet.expression.TruncTimestamp.allowIncompatible=true` to opt into Comet's native implementation instead, which has the following differences from Spark:
 
 - Produces incorrect results when used with non-UTC timezones. Compatible when timezone is UTC. (https://github.com/apache/datafusion-comet/issues/2649)
 - Non-literal format strings will throw an exception instead of returning NULL
 - date_trunc does not support non-UTF8_BINARY collations (https://github.com/apache/datafusion-comet/issues/4646)
 
-The following cases are not supported by Comet:
+The following cases have no native implementation and always run in the JVM using Spark's code-generated implementation (inside the Comet pipeline):
 
 - Only the following formats are supported: year, yyyy, yy, quarter, mon, month, mm, week, day, dd, hour, minute, second, millisecond, microsecond
 
@@ -156,7 +156,7 @@ The following incompatibilities cause `UnixTimestamp` to fall back to Spark by d
 
 - unix_timestamp does not support non-UTF8_BINARY collations (https://github.com/apache/datafusion-comet/issues/4646)
 
-The following cases are not supported by Comet:
+The following cases are not supported by Comet and always fall back to Spark, regardless of any `allowIncompatible` setting:
 
 - Only `DateType`, `TimestampType`, and `TimestampNTZType` inputs are supported.
 <!--END:EXPR_COMPAT-->

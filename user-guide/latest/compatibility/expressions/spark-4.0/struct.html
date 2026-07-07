@@ -577,14 +577,14 @@ under the License.
 <!--BEGIN:EXPR_COMPAT[struct]-->
 <section id="createnamedstruct">
 <h2>CreateNamedStruct<a class="headerlink" href="#createnamedstruct" title="Link to this heading">#</a></h2>
-<p>The following cases are not supported by Comet:</p>
+<p>The following cases are not supported by Comet and always fall back to Spark, regardless of any <code class="docutils literal notranslate"><span class="pre">allowIncompatible</span></code> setting:</p>
 <ul class="simple">
 <li><p><code class="docutils literal notranslate"><span class="pre">CreateNamedStruct</span></code> with duplicate field names is not supported</p></li>
 </ul>
 </section>
 <section id="jsontostructs">
 <h2>JsonToStructs<a class="headerlink" href="#jsontostructs" title="Link to this heading">#</a></h2>
-<p>By default, Comet runs a Spark-compatible implementation of <code class="docutils literal notranslate"><span class="pre">JsonToStructs</span></code>. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.JsonToStructs.allowIncompatible=true</span></code> to use Comet’s faster native implementation instead, which has the following differences from Spark:</p>
+<p>By default, <code class="docutils literal notranslate"><span class="pre">JsonToStructs</span></code> is evaluated in the JVM using Spark’s own code-generated implementation (run inside the Comet pipeline), which matches Spark exactly. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.JsonToStructs.allowIncompatible=true</span></code> to opt into Comet’s native implementation instead, which has the following differences from Spark:</p>
 <ul class="simple">
 <li><p>Partially implemented and not comprehensively tested</p></li>
 </ul>
@@ -595,14 +595,14 @@ under the License.
 <ul class="simple">
 <li><p>Date, Timestamp, TimestampNTZ, and Binary data types may produce different results (https://github.com/apache/datafusion-comet/issues/3232)</p></li>
 </ul>
-<p>The following cases are not supported by Comet:</p>
+<p>The following cases are not supported by Comet and always fall back to Spark, regardless of any <code class="docutils literal notranslate"><span class="pre">allowIncompatible</span></code> setting:</p>
 <ul class="simple">
 <li><p>Complex types (arrays, maps, structs) in the schema are not supported</p></li>
 </ul>
 </section>
 <section id="structstojson">
 <h2>StructsToJson<a class="headerlink" href="#structstojson" title="Link to this heading">#</a></h2>
-<p>By default, Comet runs a Spark-compatible implementation of <code class="docutils literal notranslate"><span class="pre">StructsToJson</span></code>. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.StructsToJson.allowIncompatible=true</span></code> to use Comet’s faster native implementation instead, which has the following differences from Spark:</p>
+<p>By default, <code class="docutils literal notranslate"><span class="pre">StructsToJson</span></code> is evaluated in the JVM using Spark’s own code-generated implementation (run inside the Comet pipeline), which matches Spark exactly. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.StructsToJson.allowIncompatible=true</span></code> to opt into Comet’s native implementation instead, which has the following differences from Spark:</p>
 <ul class="simple">
 <li><p>Does not support <code class="docutils literal notranslate"><span class="pre">+Infinity</span></code> and <code class="docutils literal notranslate"><span class="pre">-Infinity</span></code> for numeric types (float, double). (https://github.com/apache/datafusion-comet/issues/3016)</p></li>
 </ul>

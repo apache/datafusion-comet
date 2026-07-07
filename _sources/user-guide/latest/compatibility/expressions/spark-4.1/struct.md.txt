@@ -23,13 +23,13 @@ under the License.
 
 ## CreateNamedStruct
 
-The following cases are not supported by Comet:
+The following cases are not supported by Comet and always fall back to Spark, regardless of any `allowIncompatible` setting:
 
 - `CreateNamedStruct` with duplicate field names is not supported
 
 ## JsonToStructs
 
-By default, Comet runs a Spark-compatible implementation of `JsonToStructs`. Set `spark.comet.expression.JsonToStructs.allowIncompatible=true` to use Comet's faster native implementation instead, which has the following differences from Spark:
+By default, `JsonToStructs` is evaluated in the JVM using Spark's own code-generated implementation (run inside the Comet pipeline), which matches Spark exactly. Set `spark.comet.expression.JsonToStructs.allowIncompatible=true` to opt into Comet's native implementation instead, which has the following differences from Spark:
 
 - Partially implemented and not comprehensively tested
 
@@ -39,13 +39,13 @@ The following incompatibilities cause `StructsToCsv` to fall back to Spark by de
 
 - Date, Timestamp, TimestampNTZ, and Binary data types may produce different results (https://github.com/apache/datafusion-comet/issues/3232)
 
-The following cases are not supported by Comet:
+The following cases are not supported by Comet and always fall back to Spark, regardless of any `allowIncompatible` setting:
 
 - Complex types (arrays, maps, structs) in the schema are not supported
 
 ## StructsToJson
 
-By default, Comet runs a Spark-compatible implementation of `StructsToJson`. Set `spark.comet.expression.StructsToJson.allowIncompatible=true` to use Comet's faster native implementation instead, which has the following differences from Spark:
+By default, `StructsToJson` is evaluated in the JVM using Spark's own code-generated implementation (run inside the Comet pipeline), which matches Spark exactly. Set `spark.comet.expression.StructsToJson.allowIncompatible=true` to opt into Comet's native implementation instead, which has the following differences from Spark:
 
 - Does not support `+Infinity` and `-Infinity` for numeric types (float, double). (https://github.com/apache/datafusion-comet/issues/3016)
 <!--END:EXPR_COMPAT-->

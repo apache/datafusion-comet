@@ -577,7 +577,7 @@ under the License.
 <!--BEGIN:EXPR_COMPAT[aggregate]-->
 <section id="average">
 <h2>Average<a class="headerlink" href="#average" title="Link to this heading">#</a></h2>
-<p>The following cases are not supported by Comet:</p>
+<p>The following cases are not supported by Comet and always fall back to Spark, regardless of any <code class="docutils literal notranslate"><span class="pre">allowIncompatible</span></code> setting:</p>
 <ul class="simple">
 <li><p>YearMonthIntervalType and DayTimeIntervalType inputs are not supported</p></li>
 </ul>
@@ -609,7 +609,7 @@ under the License.
 <ul class="simple">
 <li><p>Interpolated values may differ from Spark by up to <code class="docutils literal notranslate"><span class="pre">(upper</span> <span class="pre">-</span> <span class="pre">lower)</span> <span class="pre">*</span> <span class="pre">1e-6</span></code> because DataFusion quantizes the interpolation weight to 6 decimal places (#4719).</p></li>
 </ul>
-<p>The following cases are not supported by Comet:</p>
+<p>The following cases are not supported by Comet and always fall back to Spark, regardless of any <code class="docutils literal notranslate"><span class="pre">allowIncompatible</span></code> setting:</p>
 <ul class="simple">
 <li><p>An array of percentages is not supported.</p></li>
 <li><p>The percentage argument must be a literal.</p></li>

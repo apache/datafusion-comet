@@ -23,7 +23,7 @@ under the License.
 
 ## Average
 
-The following cases are not supported by Comet:
+The following cases are not supported by Comet and always fall back to Spark, regardless of any `allowIncompatible` setting:
 
 - YearMonthIntervalType and DayTimeIntervalType inputs are not supported
 
@@ -51,7 +51,7 @@ The following incompatibilities cause `Percentile` to fall back to Spark by defa
 
 - Interpolated values may differ from Spark by up to `(upper - lower) * 1e-6` because DataFusion quantizes the interpolation weight to 6 decimal places (#4719).
 
-The following cases are not supported by Comet:
+The following cases are not supported by Comet and always fall back to Spark, regardless of any `allowIncompatible` setting:
 
 - An array of percentages is not supported.
 - The percentage argument must be a literal.

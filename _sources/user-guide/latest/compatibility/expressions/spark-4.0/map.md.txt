@@ -34,7 +34,7 @@ IEEE total ordering for floating-point, which differs from Spark's `Double.compa
 
 ## MapFromEntries
 
-By default, Comet runs a Spark-compatible implementation of `MapFromEntries`. Set `spark.comet.expression.MapFromEntries.allowIncompatible=true` to use Comet's faster native implementation instead, which has the following differences from Spark:
+By default, `MapFromEntries` is evaluated in the JVM using Spark's own code-generated implementation (run inside the Comet pipeline), which matches Spark exactly. Set `spark.comet.expression.MapFromEntries.allowIncompatible=true` to opt into Comet's native implementation instead, which has the following differences from Spark:
 
 - `BinaryType` is not supported as a map key in `map_from_entries`
 - `BinaryType` is not supported as a map value in `map_from_entries`
@@ -45,7 +45,7 @@ The following incompatibilities cause `MapSort` to fall back to Spark by default
 
 - MapSort on floating-point keys is not 100% compatible with Spark when `spark.comet.exec.strictFloatingPoint=true`.
 
-The following cases are not supported by Comet:
+The following cases are not supported by Comet and always fall back to Spark, regardless of any `allowIncompatible` setting:
 
 - MapSort is unsupported for non-scalar key types (struct, array, map, etc.).
 
