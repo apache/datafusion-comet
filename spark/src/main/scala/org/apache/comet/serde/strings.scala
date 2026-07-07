@@ -56,18 +56,16 @@ class CometCaseConversionBase[T <: Expression](function: String)
   override def getIncompatibleReasons(): Seq[String] =
     Seq("Results can vary depending on locale and character set")
 
-  override def nativeOptInConfigKeyOverride: Option[String] =
-    Some(CometConf.COMET_CASE_CONVERSION_ENABLED.key)
-
   override def getSupportLevel(expr: T): SupportLevel =
-    if (!CometConf.COMET_CASE_CONVERSION_ENABLED.get()) {
-      Compatible(nativeOptIn = Some(NativeOptIn(CometConf.COMET_CASE_CONVERSION_ENABLED.key)))
+    if (!CometConf.isExprAllowIncompat(getExprConfigName(expr))) {
+      Compatible(nativeOptIn =
+        Some(NativeOptIn(CometConf.getExprAllowIncompatConfigKey(getExprConfigName(expr)))))
     } else {
       Compatible()
     }
 
   override def convert(expr: T, inputs: Seq[Attribute], binding: Boolean): Option[Expr] = {
-    if (CometConf.COMET_CASE_CONVERSION_ENABLED.get()) {
+    if (CometConf.isExprAllowIncompat(getExprConfigName(expr))) {
       // Native scalar function: faster but does not match Spark for locale-specific characters
       // (e.g. Turkish dotted/dotless I). Opt-in.
       super.convert(expr, inputs, binding)

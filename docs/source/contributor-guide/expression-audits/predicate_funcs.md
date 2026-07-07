@@ -94,7 +94,7 @@
 ## ilike
 
 - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
-- Spark 3.5.8 (audited 2026-05-27): baseline. `ILike(left, right, escapeChar) extends RuntimeReplaceable`; the analyzer rewrites to `Like(Lower(left), Lower(right), escapeChar)`. Comet handles via `CometLike` and `CometLower` (case-conversion path, gated by `spark.comet.caseConversion.enabled=false` by default).
+- Spark 3.5.8 (audited 2026-07-07): baseline. `ILike(left, right, escapeChar) extends RuntimeReplaceable`; the analyzer rewrites to `Like(Lower(left), Lower(right), escapeChar)`. Comet handles via `CometLike` and `CometLower` (the case-conversion path is Spark-compatible by default via codegen dispatch, with a faster native path available behind `spark.comet.expression.Lower.allowIncompatible=true`).
 - Spark 4.0.1 (audited 2026-05-27): identical to 3.5.8.
 - Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
 
