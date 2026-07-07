@@ -736,7 +736,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("cast DecimalType with negative scale to StringType") {
     withSQLConf(
-      "spark.sql.legacy.allowNegativeScaleOfDecimal" -> "false",
+      "spark.sql.legacy.allowNegativeScaleOfDecimal" -> "true",
       "spark.comet.exec.localTableScan.enabled" -> "true") {
       val dfNeg2 = Seq(
         Some(BigDecimal("0")),
