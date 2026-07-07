@@ -140,7 +140,7 @@ object CometSparkSessionExtensions extends Logging {
       classOf[Literal].getCanonicalName,
       "",
       name,
-      s"_FUNC_() - Returns the Apache DataFusion Comet version.",
+      "_FUNC_() - Returns the Apache DataFusion Comet version.",
       "",
       s"\n    Examples:\n      > SELECT _FUNC_();\n       $COMET_VERSION\n  ",
       "",
