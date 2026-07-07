@@ -64,15 +64,33 @@ abstract class CometTestBase
     with CometPlanChecker {
   import testImplicits._
 
-  protected val shuffleManager: String =
-    "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager"
+  protected def shuffleManagerConfs: Map[String, String] = {
+    sys.env.getOrElse("COMET_SHUFFLE_MANAGER", "").toLowerCase match {
+      case "uniffle" =>
+        Map(
+          SHUFFLE_MANAGER.key -> "org.apache.spark.sql.comet.uniffle.CometUniffleShuffleManager",
+          CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+          CometConf.COMET_SHUFFLE_MODE.key -> "native",
+          // uniffle shuffle does not support jvm columnar shuffle, so we disable it for now
+          CometConf.COMET_EXEC_SHUFFLE_CONVERT_FROM_SPARK_PLAN_ENABLED.key -> "false",
+          "spark.rss.coordinator.quorum" -> "localhost:19999",
+          "spark.rss.storage.type" -> "MEMORY_LOCALFILE",
+          "spark.rss.client.type" -> "GRPC_NETTY",
+          "spark.serializer" -> "org.apache.spark.serializer.KryoSerializer",
+          "spark.shuffle.service.enabled" -> "false",
+          "spark.sql.adaptive.localShuffleReader.enabled" -> "false")
+      case _ =>
+        Map(
+          SHUFFLE_MANAGER.key -> "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager",
+          CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true")
+    }
+  }
 
   protected def sparkConf: SparkConf = {
     val conf = new SparkConf()
     conf.set("spark.hadoop.fs.file.impl", classOf[DebugFilesystem].getName)
     conf.set("spark.ui.enabled", "false")
     conf.set(SQLConf.SHUFFLE_PARTITIONS, 10) // reduce parallelism in tests
-    conf.set(SHUFFLE_MANAGER, shuffleManager)
     conf.set(MEMORY_OFFHEAP_ENABLED.key, "true")
     conf.set(MEMORY_OFFHEAP_SIZE.key, "2g")
     conf.set(SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key, "1g")
@@ -99,6 +117,11 @@ abstract class CometTestBase
     conf.set(
       "spark.sql.resultQueryStage.maxThreadThreshold",
       sys.env.getOrElse("SPARK_TEST_SQL_RESULT_QUERY_STAGE_MAX_THREAD_THRESHOLD", "1024"))
+
+    shuffleManagerConfs.foreach { case (k, v) =>
+      conf.set(k, v)
+    }
+
     conf
   }
 

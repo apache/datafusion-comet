@@ -25,6 +25,7 @@ import org.apache.spark.{CometTaskMemoryManager, TaskContext}
 import org.apache.spark.sql.comet.CometMetricNode
 
 import org.apache.comet.parquet.CometFileKeyUnwrapper
+import org.apache.comet.shuffle.ShufflePartitionPusher
 
 class Native extends NativeBase {
 
@@ -254,4 +255,7 @@ class Native extends NativeBase {
    */
   @native def columnarToRowClose(c2rHandle: Long): Unit
 
+  @native def createRssPartitionPusher(pusher: ShufflePartitionPusher): Long
+
+  @native def releaseRssPartitionPusher(handle: Long): Unit
 }

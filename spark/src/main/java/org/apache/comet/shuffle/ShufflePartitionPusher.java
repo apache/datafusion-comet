@@ -17,18 +17,9 @@
  * under the License.
  */
 
-package org.apache.comet;
+package org.apache.comet.shuffle;
 
-import java.io.IOException;
-import java.nio.ByteBuffer;
+public interface ShufflePartitionPusher {
 
-public interface CometShuffleBlockIterator {
-
-  int hasNext() throws IOException;
-
-  ByteBuffer getBuffer();
-
-  int getCurrentBlockLength();
-
-  void close() throws IOException;
+  int pushPartitionData(int partitionId, byte[] bytes, int length);
 }

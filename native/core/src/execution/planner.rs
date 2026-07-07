@@ -117,6 +117,9 @@ use datafusion::physical_plan::limit::GlobalLimitExec;
 use datafusion::physical_plan::unnest::{ListUnnest, UnnestExec};
 use datafusion_comet_proto::spark_expression::ListLiteral;
 use datafusion_comet_proto::spark_operator::SparkFilePartition;
+use datafusion_comet_proto::spark_partitioning::partition_writer::PartitionWriterStruct::{
+    LocalPartitionWriter, RssPartitionWriter,
+};
 use datafusion_comet_proto::{
     spark_expression::{
         self, agg_expr::ExprStruct as AggExprStruct, expr::ExprStruct, literal::Value, AggExpr,
@@ -129,6 +132,7 @@ use datafusion_comet_proto::{
     },
     spark_partitioning::{partitioning::PartitioningStruct, Partitioning as SparkPartitioning},
 };
+use datafusion_comet_shuffle::ShufflePartitionWriter;
 use datafusion_comet_spark_expr::{
     jvm_udf::JvmScalarUdfExpr, ApproxPercentile, ArrayInsert, Avg, AvgDecimal, Cast, CheckOverflow,
     Correlation, Covariance, CreateNamedStruct, DecimalRescaleCheckOverflow, GetArrayStructFields,
@@ -1633,6 +1637,22 @@ impl PhysicalPlanner {
                 }?;
 
                 let write_buffer_size = writer.write_buffer_size as usize;
+                let partition_writer_struct = writer
+                    .partition_writer
+                    .as_ref()
+                    .and_then(|pw| pw.partition_writer_struct.clone())
+                    .ok_or_else(|| {
+                        GeneralError("ShuffleWriter is missing partition_writer".to_string())
+                    })?;
+                let shuffle_partition_writer = match partition_writer_struct {
+                    LocalPartitionWriter(local) => ShufflePartitionWriter::Local {
+                        output_data_file: local.output_data_file,
+                        output_index_file: local.output_index_file,
+                    },
+                    RssPartitionWriter(rss) => ShufflePartitionWriter::Rss {
+                        rss_partition_pusher_handle: rss.rss_partition_pusher,
+                    },
+                };
                 // Zero on the wire means the limit is disabled; normalize it here so the writer
                 // only ever sees a real limit or none at all.
                 let max_buffer_bytes =
@@ -1641,8 +1661,7 @@ impl PhysicalPlanner {
                     writer_input,
                     partitioning,
                     codec,
-                    writer.output_data_file.clone(),
-                    writer.output_index_file.clone(),
+                    shuffle_partition_writer,
                     writer.tracing_enabled,
                     write_buffer_size,
                     max_buffer_bytes,

@@ -561,6 +561,14 @@ object CometShuffleExchangeExec
       return reasons.toSeq
     }
 
+    // TODO: code factor
+    if (conf.contains("spark.shuffle.manager") &&
+      conf.getConfString("spark.shuffle.manager") ==
+        "org.apache.spark.sql.comet.uniffle.CometUniffleShuffleManager") {
+      reasons += "CometUniffleShuffleManager does not support jvm columnar shuffle"
+      return reasons.toSeq
+    }
+
     if (isShuffleOperator(s.child)) {
       reasons += s"Child ${s.child.getClass.getName} is a shuffle operator"
       return reasons.toSeq

@@ -35,7 +35,7 @@ import org.apache.spark.storage.BlockManagerId
 import org.apache.spark.storage.ShuffleBlockFetcherIterator
 import org.apache.spark.util.CompletionIterator
 
-import org.apache.comet.{CometConf, Native}
+import org.apache.comet.{CometConf, CometLocalShuffleBlockIterator, CometNativeShuffleReader, CometShuffleBlockIterator, Native}
 import org.apache.comet.vector.NativeUtil
 
 /**
@@ -52,6 +52,7 @@ class CometBlockStoreShuffleReader[K, C](
     mapOutputTracker: MapOutputTracker = SparkEnv.get.mapOutputTracker,
     shouldBatchFetch: Boolean = false)
     extends ShuffleReader[K, C]
+    with CometNativeShuffleReader
     with Logging {
 
   private val dep = handle.dependency.asInstanceOf[CometShuffleDependency[_, _, _]]
@@ -157,12 +158,16 @@ class CometBlockStoreShuffleReader[K, C](
    * Returns the raw concatenated InputStream of all shuffle blocks, bypassing the decode step.
    * Used by ShuffleScan direct read path.
    */
-  def readAsRawStream(): InputStream = {
+  private def readAsRawStream(): InputStream = {
     val streams = fetchIterator.map(_._2)
     new java.io.SequenceInputStream(new java.util.Enumeration[InputStream] {
       override def hasMoreElements: Boolean = streams.hasNext
       override def nextElement(): InputStream = streams.next()
     })
+  }
+
+  override def readAsShuffleBlockIterator(): CometShuffleBlockIterator = {
+    new CometLocalShuffleBlockIterator(this.readAsRawStream())
   }
 
   private def fetchContinuousBlocksInBatch: Boolean = {

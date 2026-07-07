@@ -19,16 +19,7 @@
 
 package org.apache.comet;
 
-import java.io.IOException;
-import java.nio.ByteBuffer;
+public interface CometNativeShuffleReader {
 
-public interface CometShuffleBlockIterator {
-
-  int hasNext() throws IOException;
-
-  ByteBuffer getBuffer();
-
-  int getCurrentBlockLength();
-
-  void close() throws IOException;
+  CometShuffleBlockIterator readAsShuffleBlockIterator();
 }

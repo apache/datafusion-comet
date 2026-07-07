@@ -22,8 +22,8 @@ use crate::partitioners::{
     EmptySchemaShufflePartitioner, MultiPartitionShuffleRepartitioner, ShufflePartitioner,
     SinglePartitionShufflePartitioner,
 };
-use crate::writers::LocalPartitionWriter;
-use crate::{CometPartitioning, CompressionCodec, ShuffleBlockWriter};
+use crate::writers::{LocalPartitionWriter, PartitionWriter, RssPartitionWriter};
+use crate::{CometPartitioning, CompressionCodec, RssPartitionPusher, ShuffleBlockWriter};
 use async_trait::async_trait;
 use datafusion::common::exec_datafusion_err;
 use datafusion::physical_expr::{EquivalenceProperties, Partitioning};
@@ -46,6 +46,17 @@ use std::{
     sync::Arc,
 };
 
+#[derive(Debug, Clone)]
+pub enum ShufflePartitionWriter {
+    Local {
+        output_data_file: String,
+        output_index_file: String,
+    },
+    Rss {
+        rss_partition_pusher_handle: i64,
+    },
+}
+
 /// The shuffle writer operator maps each input partition to M output partitions based on a
 /// partitioning scheme. No guarantees are made about the order of the resulting partitions.
 #[derive(Debug)]
@@ -54,10 +65,8 @@ pub struct ShuffleWriterExec {
     input: Arc<dyn ExecutionPlan>,
     /// Partitioning scheme to use
     partitioning: CometPartitioning,
-    /// Output data file path
-    output_data_file: String,
-    /// Output index file path
-    output_index_file: String,
+    /// Partition writer
+    partition_writer: ShufflePartitionWriter,
     /// Metrics
     metrics: ExecutionPlanMetricsSet,
     /// Cache for expensive-to-compute plan properties
@@ -78,8 +87,7 @@ impl ShuffleWriterExec {
         input: Arc<dyn ExecutionPlan>,
         partitioning: CometPartitioning,
         codec: CompressionCodec,
-        output_data_file: String,
-        output_index_file: String,
+        partition_writer: ShufflePartitionWriter,
         tracing_enabled: bool,
         write_buffer_size: usize,
         max_buffer_bytes: Option<usize>,
@@ -95,8 +103,7 @@ impl ShuffleWriterExec {
             input,
             partitioning,
             metrics: ExecutionPlanMetricsSet::new(),
-            output_data_file,
-            output_index_file,
+            partition_writer,
             cache,
             codec,
             tracing_enabled,
@@ -153,8 +160,7 @@ impl ExecutionPlan for ShuffleWriterExec {
                 Arc::clone(&children[0]),
                 self.partitioning.clone(),
                 self.codec.clone(),
-                self.output_data_file.clone(),
-                self.output_index_file.clone(),
+                self.partition_writer.clone(),
                 self.tracing_enabled,
                 self.write_buffer_size,
                 self.max_buffer_bytes,
@@ -179,8 +185,7 @@ impl ExecutionPlan for ShuffleWriterExec {
             futures::stream::once(external_shuffle(
                 input,
                 partition,
-                self.output_data_file.clone(),
-                self.output_index_file.clone(),
+                self.partition_writer.clone(),
                 self.partitioning.clone(),
                 metrics,
                 context,
@@ -198,8 +203,7 @@ impl ExecutionPlan for ShuffleWriterExec {
 async fn external_shuffle(
     mut input: SendableRecordBatchStream,
     partition: usize,
-    output_data_file: String,
-    output_index_file: String,
+    partition_writer: ShufflePartitionWriter,
     partitioning: CometPartitioning,
     metrics: ShufflePartitionerMetrics,
     context: Arc<TaskContext>,
@@ -211,41 +215,69 @@ async fn external_shuffle(
     let schema = input.schema();
 
     let shuffle_block_writer = ShuffleBlockWriter::try_new(schema.as_ref(), codec.clone())?;
-    let local_partition_writer = LocalPartitionWriter::try_new(
-        output_data_file,
-        output_index_file,
-        shuffle_block_writer,
-        partitioning.partition_count(),
-        context.session_config().batch_size(),
-        write_buffer_size,
-        context.runtime_env(),
-    )?;
 
-    let mut repartitioner: Box<dyn ShufflePartitioner> = match &partitioning {
-        _ if schema.fields().is_empty() => {
-            log::debug!("found empty schema, overriding {partitioning:?} partitioning with EmptySchemaShufflePartitioner");
-            Box::new(EmptySchemaShufflePartitioner::try_new(
-                local_partition_writer,
-                Arc::clone(&schema),
+    let mut repartitioner: Box<dyn ShufflePartitioner> = match partition_writer {
+        ShufflePartitionWriter::Local {
+            output_data_file,
+            output_index_file,
+        } => {
+            let local_partition_writer = LocalPartitionWriter::try_new(
+                output_data_file,
+                output_index_file,
+                shuffle_block_writer,
                 partitioning.partition_count(),
+                context.session_config().batch_size(),
+                write_buffer_size,
+                context.runtime_env(),
+            )?;
+            build_repartitioner(
+                partition,
+                local_partition_writer,
+                partitioning,
+                &schema,
                 metrics,
-            )?)
+                &context,
+                tracing_enabled,
+                max_buffer_bytes,
+            )?
         }
-        any if any.partition_count() == 1 => Box::new(SinglePartitionShufflePartitioner::try_new(
-            local_partition_writer,
-            metrics,
-            context.session_config().batch_size(),
-        )?),
-        _ => Box::new(MultiPartitionShuffleRepartitioner::try_new(
-            partition,
-            local_partition_writer,
-            partitioning,
-            metrics,
-            context.runtime_env(),
-            context.session_config().batch_size(),
-            tracing_enabled,
-            max_buffer_bytes,
-        )?),
+        ShufflePartitionWriter::Rss {
+            rss_partition_pusher_handle,
+        } => {
+            // `rss_partition_pusher_handle` is a raw pointer to a `Box<RssPartitionPusher>`
+            // created by `createRssPartitionPusher` and released separately by
+            // `releaseRssPartitionPusher`, so we borrow it here without taking ownership.
+            debug_assert!(
+                rss_partition_pusher_handle != 0,
+                "external_shuffle: rss_partition_pusher_handle is null"
+            );
+            let pusher = unsafe {
+                (rss_partition_pusher_handle as *mut RssPartitionPusher)
+                    .as_mut()
+                    .ok_or_else(|| {
+                        exec_datafusion_err!(
+                            "external_shuffle: rss_partition_pusher_handle is null"
+                        )
+                    })?
+            };
+            let rss_partition_writer = RssPartitionWriter::try_new(
+                pusher,
+                shuffle_block_writer,
+                partitioning.partition_count(),
+                context.session_config().batch_size(),
+                write_buffer_size,
+            )?;
+            build_repartitioner(
+                partition,
+                rss_partition_writer,
+                partitioning,
+                &schema,
+                metrics,
+                &context,
+                tracing_enabled,
+                max_buffer_bytes,
+            )?
+        }
     };
 
     while let Some(batch) = input.next().await {
@@ -265,6 +297,49 @@ async fn external_shuffle(
 
     // shuffle writer always has empty output
     Ok(Box::pin(EmptyRecordBatchStream::new(Arc::clone(&schema))) as SendableRecordBatchStream)
+}
+
+/// Selects the appropriate [`ShufflePartitioner`] for the given `partitioning` and wires it to
+/// `partition_writer`, which controls where the partitioned output is stored (local files or a
+/// remote shuffle service). The partitioner choice is independent of the storage backend.
+#[allow(clippy::too_many_arguments)]
+fn build_repartitioner<W: PartitionWriter + 'static>(
+    partition: usize,
+    partition_writer: W,
+    partitioning: CometPartitioning,
+    schema: &SchemaRef,
+    metrics: ShufflePartitionerMetrics,
+    context: &Arc<TaskContext>,
+    tracing_enabled: bool,
+    max_buffer_bytes: Option<usize>,
+) -> Result<Box<dyn ShufflePartitioner>> {
+    let repartitioner: Box<dyn ShufflePartitioner> = match &partitioning {
+        _ if schema.fields().is_empty() => {
+            log::debug!("found empty schema, overriding {partitioning:?} partitioning with EmptySchemaShufflePartitioner");
+            Box::new(EmptySchemaShufflePartitioner::try_new(
+                partition_writer,
+                Arc::clone(schema),
+                partitioning.partition_count(),
+                metrics,
+            )?)
+        }
+        any if any.partition_count() == 1 => Box::new(SinglePartitionShufflePartitioner::try_new(
+            partition_writer,
+            metrics,
+            context.session_config().batch_size(),
+        )?),
+        _ => Box::new(MultiPartitionShuffleRepartitioner::try_new(
+            partition,
+            partition_writer,
+            partitioning,
+            metrics,
+            context.runtime_env(),
+            context.session_config().batch_size(),
+            tracing_enabled,
+            max_buffer_bytes,
+        )?),
+    };
+    Ok(repartitioner)
 }
 
 #[cfg(test)]
@@ -558,8 +633,10 @@ mod test {
             ))),
             CometPartitioning::Hash(vec![Arc::new(Column::new("a", 0))], 16),
             CompressionCodec::Zstd(1),
-            data_file.to_str().unwrap().to_string(),
-            index_file.to_str().unwrap().to_string(),
+            ShufflePartitionWriter::Local {
+                output_data_file: data_file.to_str().unwrap().to_string(),
+                output_index_file: index_file.to_str().unwrap().to_string(),
+            },
             false,
             1024 * 1024,
             max_buffer_bytes,
@@ -683,8 +760,10 @@ mod test {
                 ))),
                 partitioning,
                 CompressionCodec::Zstd(1),
-                "/tmp/data.out".to_string(),
-                "/tmp/index.out".to_string(),
+                ShufflePartitionWriter::Local {
+                    output_data_file: "/tmp/data.out".to_string(),
+                    output_index_file: "/tmp/index.out".to_string(),
+                },
                 false,
                 1024 * 1024, // write_buffer_size: 1MB default
                 None,
@@ -743,8 +822,10 @@ mod test {
                 ))),
                 CometPartitioning::RoundRobin(num_partitions, 0),
                 CompressionCodec::Zstd(1),
-                data_file.clone(),
-                index_file.clone(),
+                ShufflePartitionWriter::Local {
+                    output_data_file: data_file.clone(),
+                    output_index_file: index_file.clone(),
+                },
                 false,
                 1024 * 1024,
                 None,
@@ -955,8 +1036,10 @@ mod test {
             ))),
             CometPartitioning::RoundRobin(num_partitions, 0),
             CompressionCodec::Zstd(1),
-            data_file.to_str().unwrap().to_string(),
-            index_file.to_str().unwrap().to_string(),
+            ShufflePartitionWriter::Local {
+                output_data_file: data_file.to_str().unwrap().to_string(),
+                output_index_file: index_file.to_str().unwrap().to_string(),
+            },
             false,
             1024 * 1024,
             None,
@@ -1044,8 +1127,10 @@ mod test {
             ))),
             CometPartitioning::RoundRobin(num_partitions, 0),
             CompressionCodec::Zstd(1),
-            data_file.to_str().unwrap().to_string(),
-            index_file.to_str().unwrap().to_string(),
+            ShufflePartitionWriter::Local {
+                output_data_file: data_file.to_str().unwrap().to_string(),
+                output_index_file: index_file.to_str().unwrap().to_string(),
+            },
             false,
             1024 * 1024,
             None,

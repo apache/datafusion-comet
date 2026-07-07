@@ -583,3 +583,79 @@ jobs:
           SPARK_TPCDS_JOIN_CONF: |
             spark.sql.autoBroadcastJoinThreshold=-1
             spark.sql.join.forceApplyShuffledHashJoin=true
+
+  # Uniffle integration test - verifies Comet shuffle against a local Uniffle cluster
+  uniffle-integration-test:
+    needs: build-native
+    name: Uniffle Integration Test
+    runs-on: ubuntu-24.04
+    container:
+      image: amd64/rust
+    env:
+      JAVA_TOOL_OPTIONS: --add-exports=java.base/sun.nio.ch=ALL-UNNAMED --add-exports=java.base/sun.util.calendar=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.lang=ALL-UNNAMED
+      UNIFFLE_VERSION: 0.10.0
+      HADOOP_VERSION: 2.10.2
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Rust & Java toolchain
+        uses: ./.github/actions/setup-builder
+        with:
+          rust-version: ${{ env.RUST_VERSION }}
+          jdk-version: 17
+
+      - name: Download native library
+        uses: actions/download-artifact@v8
+        with:
+          name: native-lib-linux
+          path: native/target/release/
+
+      - name: Cache Maven dependencies
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.m2/repository
+            /root/.m2/repository
+          key: ${{ runner.os }}-java-maven-${{ hashFiles('**/pom.xml') }}
+          restore-keys: |
+            ${{ runner.os }}-java-maven-
+
+      - name: Install Uniffle
+        run: |
+          wget "https://www.apache.org/dyn/closer.lua/uniffle/${UNIFFLE_VERSION}/apache-uniffle-${UNIFFLE_VERSION}-bin.tar.gz?action=download" \
+            -O "/opt/apache-uniffle-${UNIFFLE_VERSION}-bin.tar.gz"
+          wget "https://www.apache.org/dyn/closer.lua/hadoop/common/hadoop-${HADOOP_VERSION}/hadoop-${HADOOP_VERSION}.tar.gz?action=download" \
+            -O "/opt/hadoop-${HADOOP_VERSION}.tar.gz"
+          mkdir /opt/uniffle
+          tar xzf "/opt/apache-uniffle-${UNIFFLE_VERSION}-bin.tar.gz" \
+            -C /opt/uniffle --strip-components=1
+          tar xzf "/opt/hadoop-${HADOOP_VERSION}.tar.gz" -C /opt/
+          mkdir /opt/uniffle/shuffle_data
+          printf 'XMX_SIZE=16g\nHADOOP_HOME=/opt/hadoop-%s\n' "${HADOOP_VERSION}" \
+            > /opt/uniffle/conf/rss-env.sh
+          printf 'rss.coordinator.shuffle.nodes.max 1\nrss.rpc.server.port 19999\n' \
+            > /opt/uniffle/conf/coordinator.conf
+          printf '%s\n' \
+            'rss.server.app.expired.withoutHeartbeat 7200000' \
+            'rss.server.heartbeat.delay 3000' \
+            'rss.rpc.server.port 19997' \
+            'rss.rpc.server.type GRPC_NETTY' \
+            'rss.jetty.http.port 19996' \
+            'rss.server.netty.port 19995' \
+            'rss.storage.basePath /opt/uniffle/shuffle_data' \
+            'rss.storage.type MEMORY_LOCALFILE' \
+            'rss.coordinator.quorum localhost:19999' \
+            'rss.server.flush.thread.alive 10' \
+            'rss.server.single.buffer.flush.threshold 64m' \
+            > /opt/uniffle/conf/server.conf
+          cd /opt/uniffle
+          bash ./bin/start-coordinator.sh
+          bash ./bin/start-shuffle-server.sh
+
+      - name: Build project
+        run: |
+          ./mvnw -B -Prelease install -DskipTests -Pspark-3.5,uniffle
+
+      - name: Run Uniffle integration tests
+        run: |
+          export COMET_SHUFFLE_MANAGER=uniffle && ./mvnw test -Pspark-3.5,uniffle,uniffle-comet-test -pl spark

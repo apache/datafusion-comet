@@ -195,7 +195,9 @@ mod comet_s3_credential_dispatcher;
 mod comet_task_memory_manager;
 mod comet_udf_bridge;
 mod shuffle_block_iterator;
+mod shuffle_partition_pusher;
 
+use crate::shuffle_partition_pusher::ShufflePartitionPusher;
 use arrow_array_stream::ArrowArrayStream;
 pub use comet_metric_node::*;
 pub use comet_s3_credential_dispatcher::CometS3CredentialDispatcher;
@@ -238,6 +240,8 @@ pub struct JVMClasses<'a> {
     pub comet_udf_bridge: Option<CometUdfBridge<'a>>,
     /// JNI handles for the CometS3CredentialDispatcher SPI and the CometS3Credentials POJO.
     pub comet_s3_credential_dispatcher: CometS3CredentialDispatcher<'a>,
+    /// TODO: add comment
+    pub shuffle_partition_pusher: ShufflePartitionPusher<'a>,
 }
 
 unsafe impl Send for JVMClasses<'_> {}
@@ -316,6 +320,7 @@ impl JVMClasses<'_> {
                     bridge
                 },
                 comet_s3_credential_dispatcher: CometS3CredentialDispatcher::new(env).unwrap(),
+                shuffle_partition_pusher: ShufflePartitionPusher::new(env).unwrap(),
             }
         });
     }
