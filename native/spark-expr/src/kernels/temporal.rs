@@ -102,19 +102,20 @@ fn trunc_days_to_week(days: i32) -> Option<i32> {
 }
 
 // Based on arrow_arith/temporal.rs:extract_component_from_datetime_array
-// Transforms an array of DateTime<Tz> to an arrayOf TimeStampMicrosecond after applying an
-// operation
+// Transforms an array of DateTime<Tz> to an array of TimestampMicrosecond after applying an
+// operation. The output array carries the input timezone annotation so downstream operators
+// (shuffle, sort, row converter) observe a matching schema.
 fn as_timestamp_tz_with_op<A: ArrayAccessor<Item = T::Native>, T: ArrowTemporalType, F>(
     iter: ArrayIter<A>,
     mut builder: PrimitiveBuilder<TimestampMicrosecondType>,
-    tz: &str,
+    tz_str: &str,
     op: F,
 ) -> Result<TimestampMicrosecondArray, SparkError>
 where
     F: Fn(DateTime<Tz>) -> i64,
     i64: From<T::Native>,
 {
-    let tz: Tz = tz.parse()?;
+    let tz: Tz = tz_str.parse()?;
     for value in iter {
         match value {
             Some(value) => match as_datetime_with_timezone::<T>(value.into(), tz) {
@@ -128,7 +129,7 @@ where
             None => builder.append_null(),
         }
     }
-    Ok(builder.finish())
+    Ok(builder.finish().with_timezone(tz_str))
 }
 
 fn as_timestamp_tz_with_op_single<T: ArrowTemporalType, F>(
@@ -798,8 +799,8 @@ macro_rules! timestamp_trunc_array_fmt_helper {
                 }
                 Ok(builder.finish())
             }
-            DataType::Timestamp(TimeUnit::Microsecond, Some(tz)) => {
-                let tz: Tz = tz.parse()?;
+            DataType::Timestamp(TimeUnit::Microsecond, Some(tz_str)) => {
+                let tz: Tz = tz_str.parse()?;
                 for (index, val) in iter.enumerate() {
                     let op_result = match $formats.value(index).to_uppercase().as_str() {
                         "YEAR" | "YYYY" | "YY" => {
@@ -859,7 +860,7 @@ macro_rules! timestamp_trunc_array_fmt_helper {
                     };
                     op_result?
                 }
-                Ok(builder.finish())
+                Ok(builder.finish().with_timezone(tz_str.as_ref()))
             }
             dt => {
                 return_compute_error_with!(
@@ -1259,5 +1260,31 @@ mod tests {
         } else {
             unreachable!()
         }
+    }
+
+    /// Truncating a November timestamp in `America/Denver` to QUARTER must land on the start of
+    /// Q4, which is October 1 — and October 1 is still MDT (UTC-6), not MST (UTC-7). The
+    /// pre-fix kernel reused the input's MST offset for the truncated date, producing a result
+    /// one hour late. Also verifies the output array carries the input timezone, which is what
+    /// allows the result to flow through shuffle/sort without a `RowConverter` schema mismatch.
+    #[test]
+    fn test_timestamp_trunc_dst_boundary() {
+        // 2023-11-15 18:30:00 UTC = 2023-11-15 11:30 MST
+        let ts_utc_micros: i64 = 1700069400 * 1_000_000;
+        let array =
+            TimestampMicrosecondArray::from(vec![ts_utc_micros]).with_timezone("America/Denver");
+
+        let result = timestamp_trunc(&array, "QUARTER".to_string()).unwrap();
+
+        // 2023-10-01 00:00:00 MDT = 2023-10-01 06:00:00 UTC
+        let expected_utc_micros: i64 = 1696140000 * 1_000_000;
+        assert_eq!(result.value(0), expected_utc_micros);
+        assert_eq!(
+            result.data_type(),
+            &arrow::datatypes::DataType::Timestamp(
+                arrow::datatypes::TimeUnit::Microsecond,
+                Some("America/Denver".into())
+            )
+        );
     }
 }
