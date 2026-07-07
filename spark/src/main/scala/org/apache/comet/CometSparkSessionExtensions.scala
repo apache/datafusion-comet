@@ -25,11 +25,15 @@ import org.apache.spark.SparkConf
 import org.apache.spark.internal.Logging
 import org.apache.spark.network.util.ByteUnit
 import org.apache.spark.sql.{SparkSession, SparkSessionExtensions}
+import org.apache.spark.sql.catalyst.FunctionIdentifier
+import org.apache.spark.sql.catalyst.expressions.{Expression, ExpressionInfo, Literal}
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.trees.TreeNode
 import org.apache.spark.sql.comet._
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.types.StringType
+import org.apache.spark.unsafe.types.UTF8String
 
 import org.apache.comet.CometConf._
 import org.apache.comet.rules.{CometExecRule, CometPlanAdaptiveDynamicPruningFilters, CometReuseSubquery, CometScanRule, CometSpark34AqeDppFallbackRule, EliminateRedundantTransitions, RevertNativeForTransitionHeavyStages}
@@ -99,6 +103,7 @@ class CometSparkSessionExtensions
     extensions.injectQueryStagePrepRule { session => CometExecRule(session) }
     injectQueryStageOptimizerRuleShim(extensions, CometPlanAdaptiveDynamicPruningFilters)
     injectQueryStageOptimizerRuleShim(extensions, CometReuseSubquery)
+    extensions.injectFunction(CometSparkSessionExtensions.cometVersionFunction)
   }
 
   case class CometScanColumnar(session: SparkSession) extends ColumnarRule {
@@ -118,6 +123,26 @@ class CometSparkSessionExtensions
 
 object CometSparkSessionExtensions extends Logging {
   lazy val isBigEndian: Boolean = ByteOrder.nativeOrder().equals(ByteOrder.BIG_ENDIAN)
+
+  /**
+   * SQL function `comet_version()` returning the Comet build version as a string. Registered via
+   * `SparkSessionExtensions.injectFunction` so users can query the loaded Comet version, e.g.
+   * `SELECT comet_version()`.
+   */
+  private[comet] val cometVersionFunction
+      : (FunctionIdentifier, ExpressionInfo, Seq[Expression] => Expression) = {
+    val name = "comet_version"
+    val versionLiteral = Literal(UTF8String.fromString(COMET_VERSION), StringType)
+    val info = new ExpressionInfo(classOf[Literal].getCanonicalName, null, name)
+    val builder = (args: Seq[Expression]) => {
+      if (args.nonEmpty) {
+        throw new IllegalArgumentException(
+          s"Function $name does not accept arguments (got ${args.length})")
+      }
+      versionLiteral
+    }
+    (FunctionIdentifier(name), info, builder)
+  }
 
   /**
    * Checks whether Comet extension should be loaded for Spark.

@@ -130,4 +130,20 @@ class CometSparkSessionExtensionsSuite extends CometTestBase {
       getCometShuffleMemorySize(conf, sqlConf) ==
         getBytesFromMib((1024 * 0.2).toLong))
   }
+
+  test("comet_version() returns the Comet build version") {
+    withSQLConf(CometConf.COMET_EXEC_ENABLED.key -> "false") {
+      val result = spark.sql("SELECT comet_version()").collect()
+      assert(result.length == 1)
+      val version = result(0).getString(0)
+      assert(version == COMET_VERSION, s"Expected $COMET_VERSION but got $version")
+    }
+  }
+
+  test("comet_version() rejects arguments") {
+    val ex = intercept[Exception] {
+      spark.sql("SELECT comet_version(1)").collect()
+    }
+    assert(ex.getMessage.contains("comet_version"))
+  }
 }
