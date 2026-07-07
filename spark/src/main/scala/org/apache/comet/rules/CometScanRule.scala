@@ -445,14 +445,6 @@ case class CometScanRule(session: SparkSession)
             return withFallbackReasons(scanExec, fallbackReasons.toSet)
         }
 
-        // scalastyle:off println
-        val dbgScanSchema = IcebergReflection.buildFieldIdMapping(metadata.scanSchema)
-        val dbgTableSchema = IcebergReflection.buildFieldIdMapping(metadata.tableSchema)
-        println(
-          s"COMET-DEBUG scanrule scanSchema=$dbgScanSchema tableSchema=$dbgTableSchema " +
-            s"numTasks=${metadata.tasks.size}")
-        // scalastyle:on println
-
         // Now perform all validation using the pre-extracted metadata
         // Check if table uses a FileIO implementation compatible with iceberg-rust
 

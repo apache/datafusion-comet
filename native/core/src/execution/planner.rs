@@ -3711,38 +3711,24 @@ fn parse_file_scan_tasks_from_common(
             };
 
             let bound_predicate = if let Some(idx) = proto_task.residual_idx {
-                let pred = proto_common
+                proto_common
                     .residual_pool
                     .get(idx as usize)
-                    .and_then(convert_spark_expr_to_predicate);
-                // COMET-DEBUG float/double bind: remove before merge.
-                if let Some(ref p) = pred {
-                    let schema_field_types: Vec<(String, String)> = schema_ref
-                        .as_struct()
-                        .fields()
-                        .iter()
-                        .map(|f| (f.name.clone(), format!("{:?}", f.field_type)))
-                        .collect();
-                    eprintln!(
-                        "COMET-DEBUG bind predicate={:?} schema_field_types={:?}",
-                        p, schema_field_types
-                    );
-                }
-                match pred {
-                    Some(p) => match p.bind(Arc::clone(&schema_ref), true) {
-                        Ok(bound) => Some(bound),
+                    .and_then(convert_spark_expr_to_predicate)
+                    .and_then(|pred| {
                         // The residual predicate only drives row-group pruning; the post-scan
                         // filter still enforces correctness. iceberg-rust cannot bind a datum
-                        // whose type differs from the column (e.g. a double literal against a
-                        // float column), so on a bind failure we skip pushdown rather than fail
-                        // the scan, mirroring the NOT IN handling above.
-                        Err(e) => {
-                            eprintln!("COMET-DEBUG bind FAILED: {e}");
-                            None
+                        // whose type has no conversion to the column type, so on a bind failure
+                        // we skip pushdown rather than fail the scan, mirroring the NOT IN
+                        // handling above.
+                        match pred.bind(Arc::clone(&schema_ref), true) {
+                            Ok(bound) => Some(bound),
+                            Err(e) => {
+                                log::warn!("Skipping Iceberg predicate pushdown; bind failed: {e}");
+                                None
+                            }
                         }
-                    },
-                    None => None,
-                }
+                    })
             } else {
                 None
             };
@@ -3794,30 +3780,6 @@ fn parse_file_scan_tasks_from_common(
                 })?
                 .field_ids
                 .clone();
-
-            // TEMP DEBUG (iceberg 1.11 eq-delete-on-dropped-column repro): remove before merge.
-            {
-                let schema_field_ids: Vec<(i32, String)> = schema_ref
-                    .as_struct()
-                    .fields()
-                    .iter()
-                    .map(|f| (f.id, f.name.clone()))
-                    .collect();
-                let deletes_dbg: Vec<(String, String, Option<Vec<i32>>)> = deletes
-                    .iter()
-                    .map(|d| {
-                        (
-                            d.file_path.clone(),
-                            format!("{:?}", d.file_type),
-                            d.equality_ids.clone(),
-                        )
-                    })
-                    .collect();
-                eprintln!(
-                    "COMET-DEBUG planner task file={} schema_field_ids={:?} project_field_ids={:?} deletes={:?}",
-                    proto_task.data_file_path, schema_field_ids, project_field_ids, deletes_dbg
-                );
-            }
 
             Ok(iceberg::scan::FileScanTask {
                 file_size_in_bytes: proto_task.file_size_in_bytes,

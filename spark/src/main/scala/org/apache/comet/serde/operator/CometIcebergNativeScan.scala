@@ -918,31 +918,6 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
                   taskBuilder.setDeleteFilesIdx(deleteFilesIdx)
                 }
 
-                // scalastyle:off println
-                val dbgEqIds = deleteFilesList.map(_.getEqualityIdsList).mkString(";")
-                println(
-                  s"COMET-DEBUG serde task schemaIdx=$schemaIdx " +
-                    s"schemaFieldIds=${IcebergReflection.buildFieldIdMapping(schema)} " +
-                    s"projectFieldIds=$projectFieldIds " +
-                    s"output=${output.map(_.name).mkString(",")} deleteEqualityIds=$dbgEqIds")
-                // Can we recover a dropped equality-delete column's field via table.schemas()?
-                val dbgAllSchemas = IcebergReflection.getAllSchemas(metadata.table)
-                deleteFilesList.foreach { df =>
-                  df.getEqualityIdsList.forEach { id =>
-                    val fid = id.intValue()
-                    val inTaskSchema = IcebergReflection.getFieldInfo(schema, fid)
-                    val inCurrentTable = IcebergReflection.getFieldInfo(metadata.tableSchema, fid)
-                    val acrossHistory =
-                      dbgAllSchemas
-                        .flatMap(s => IcebergReflection.getFieldInfo(s, fid))
-                        .headOption
-                    println(
-                      s"COMET-DEBUG eqFieldResolve id=$fid inTaskSchema=$inTaskSchema " +
-                        s"inCurrentTable=$inCurrentTable acrossHistory=$acrossHistory")
-                  }
-                }
-                // scalastyle:on println
-
                 val residualExprOpt =
                   try {
                     val residualExpr = residualMethod.invoke(task)
