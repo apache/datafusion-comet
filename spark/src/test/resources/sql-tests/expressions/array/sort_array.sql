@@ -304,16 +304,8 @@ SELECT sort_array(arr) FROM test_sort_array_nested_struct
 query
 SELECT sort_array(arr, false) FROM test_sort_array_nested_struct
 
--- ascendingOrder given as a foldable non-literal expression. Spark requires ascendingOrder to be
--- foldable, but this suite disables constant folding, so the serde sees `And`/`Or` rather than a
--- boolean literal. That has no native path, but SortArray mixes in CodegenDispatchFallback, so it
--- routes through the JVM codegen dispatcher (Spark's own SortArray.doGenCode inside the Comet
--- pipeline) and stays native while matching Spark exactly.
-query
-SELECT sort_array(arr, true AND true) FROM test_sort_array_int
-
-query
-SELECT sort_array(arr, false OR false) FROM test_sort_array_int
+-- Non-literal (foldable) ascendingOrder is exercised in sort_array_min_spark_4_0.sql: Spark 3.4/3.5
+-- reject a non-literal sort order at analysis time, so those cases are gated to Spark 4.0+.
 
 -- literal arguments
 query
