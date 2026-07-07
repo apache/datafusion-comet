@@ -51,6 +51,11 @@ object CometFromUnixTime extends CometExpressionSerde[FromUnixTime] with Codegen
   // A non-default format has no native (DataFusion) path, so it is `Unsupported`. Because
   // `CodegenDispatchFallback` is mixed in, an `Unsupported` result still stays in the Comet
   // pipeline via JVM codegen dispatch (Spark's own `doGenCode`) rather than falling back to Spark.
+  //
+  // The format check comes first: a collation can only appear on the format argument, so a collated
+  // format is always a non-default format and therefore has no native path (`Unsupported`). This
+  // differs from expressions like `date_format` whose native path handles arbitrary formats and are
+  // merely `Incompatible` for non-default collations.
   override def getSupportLevel(expr: FromUnixTime): SupportLevel = {
     if (expr.format != Literal(TimestampFormatter.defaultPattern)) {
       Unsupported(Some(formatReason))
