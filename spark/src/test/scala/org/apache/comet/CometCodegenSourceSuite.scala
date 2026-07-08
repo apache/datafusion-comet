@@ -21,6 +21,7 @@ package org.apache.comet
 
 import org.scalatest.funsuite.AnyFunSuite
 
+import org.apache.arrow.vector.types.pojo.ArrowType
 import org.apache.spark.SparkConf
 import org.apache.spark.serializer.JavaSerializer
 import org.apache.spark.sql.catalyst.InternalRow
@@ -58,6 +59,12 @@ class CometCodegenSourceSuite extends AnyFunSuite {
 
   private val nullableString = ArrowColumnSpec(varCharVectorClass, nullable = true)
   private val nonNullableString = ArrowColumnSpec(varCharVectorClass, nullable = false)
+
+  private val viewCharVectorClass =
+    CometBatchKernelCodegen.vectorClassBySimpleName("ViewVarCharVector")
+  private val viewBinaryVectorClass =
+    CometBatchKernelCodegen.vectorClassBySimpleName("ViewVarBinaryVector")
+  private val nullableStringView = ArrowColumnSpec(viewCharVectorClass, nullable = true)
 
   private def gen(
       expr: org.apache.spark.sql.catalyst.expressions.Expression,
@@ -119,6 +126,104 @@ class CometCodegenSourceSuite extends AnyFunSuite {
       src.contains("org.apache.spark.unsafe.types.UTF8String"),
       s"expected UTF8String reference; got:\n$src")
     assert(src.contains(".fromAddress("), s"expected zero-copy fromAddress read; got:\n$src")
+  }
+
+  test("Utf8View input reads through the CometPlainVector view API, not unsafe fromAddress") {
+    // Utf8View has a 16-byte-per-element view struct over potentially many data buffers, so the
+    // contiguous offset+data unsafe read is invalid. The view column wraps in CometPlainVector
+    // and reads via `getUTF8String`, which dispatches to the view-aware `ViewVarCharVector.get`.
+    val expr = Length(BoundReference(0, StringType, nullable = true))
+    val src = gen(expr, nullableStringView)
+    assert(
+      src.contains("this.col0.getUTF8String(this.rowIdx)"),
+      s"expected view read to delegate to CometPlainVector.getUTF8String; got:\n$src")
+    assert(
+      !src.contains(".fromAddress("),
+      s"expected no unsafe contiguous-buffer read for a view column; got:\n$src")
+    assert(
+      !src.contains("col0_offsetAddr") && !src.contains("col0_valueAddr"),
+      s"expected no cached offset/value buffer addresses for a view column; got:\n$src")
+  }
+
+  test("BinaryView input reads through the CometPlainVector view API, not unsafe copyMemory") {
+    val expr = Length(BoundReference(0, BinaryType, nullable = true))
+    val src = gen(expr, ArrowColumnSpec(viewBinaryVectorClass, nullable = true))
+    assert(
+      src.contains("this.col0.getBinary(this.rowIdx)"),
+      s"expected view read to delegate to CometPlainVector.getBinary; got:\n$src")
+    assert(
+      !src.contains("col0_offsetAddr") && !src.contains("col0_valueAddr"),
+      s"expected no cached buffer addresses for a binary view column; got:\n$src")
+  }
+
+  test("StringType output allocates a ViewVarCharVector and exports a Utf8View field") {
+    // Native serde promises Utf8View for string results, so the FFI output vector must be a view
+    // to match. `outputVectorClass` emits the view cast; `toFfiArrowField` carries Utf8View.
+    val expr = Upper(BoundReference(0, StringType, nullable = true))
+    val src = gen(expr, nullableStringView)
+    assert(
+      src.contains("ViewVarCharVector"),
+      s"expected the output cast to target ViewVarCharVector; got:\n$src")
+    val field = CometBatchKernelCodegen.toFfiArrowField("out", StringType, nullable = true)
+    assert(
+      field.getType.isInstanceOf[ArrowType.Utf8View],
+      s"expected a Utf8View output field; got: ${field.getType}")
+  }
+
+  test("BinaryType output allocates a ViewVarBinaryVector and exports a BinaryView field") {
+    val expr = Literal.create(Array[Byte](1, 2, 3), BinaryType)
+    val src = gen(expr)
+    assert(
+      src.contains("ViewVarBinaryVector"),
+      s"expected the output cast to target ViewVarBinaryVector; got:\n$src")
+    val field = CometBatchKernelCodegen.toFfiArrowField("out", BinaryType, nullable = true)
+    assert(
+      field.getType.isInstanceOf[ArrowType.BinaryView],
+      s"expected a BinaryView output field; got: ${field.getType}")
+  }
+
+  test("ArrayType(StringType) output nested string leaf exports a Utf8View child field") {
+    // viewifyStringBinary recurses, so string/binary leaves nested in list/struct/map outputs
+    // also carry the view type.
+    val field =
+      CometBatchKernelCodegen.toFfiArrowField("out", ArrayType(StringType), nullable = true)
+    val child = field.getChildren.get(0)
+    assert(
+      child.getType.isInstanceOf[ArrowType.Utf8View],
+      s"expected the list's element field to be Utf8View; got: ${child.getType}")
+  }
+
+  test("ArrayType(StringType) input with Utf8View child reads elements via getUTF8String") {
+    val viewChild = ScalarColumnSpec(viewCharVectorClass, nullable = true)
+    val arraySpec =
+      ArrayColumnSpec(nullable = true, elementSparkType = StringType, element = viewChild)
+    val expr = Size(BoundReference(0, ArrayType(StringType), nullable = true))
+    val src = gen(expr, arraySpec)
+    assert(
+      src.contains("getUTF8String(startIndex + i)"),
+      s"expected nested view element read via getUTF8String; got:\n$src")
+    assert(
+      !src.contains(".fromAddress("),
+      s"expected no unsafe contiguous read for a nested view element; got:\n$src")
+  }
+
+  test("nested view output reserves the view slot before setSafe (arrow-java#1190 workaround)") {
+    // arrow-java#1190: handleSafe under-reserves the view buffer for empty values, overrunning the
+    // 16-byte slot. The nested (growing) write path must reserve the slot up front.
+    val expr = CreateArray(
+      Seq(BoundReference(0, StringType, nullable = true), Literal.create("x", StringType)))
+    val src = gen(expr, nullableStringView)
+    assert(
+      src.contains(".reallocViewBuffer(") && src.contains(".getValueCapacity()"),
+      s"expected a guarded view slot reserve before the nested string write; got:\n$src")
+  }
+
+  test("top-level string output does not reserve view slots (root is pre-sized to numRows)") {
+    val expr = Upper(BoundReference(0, StringType, nullable = true))
+    val src = gen(expr, nullableStringView)
+    assert(
+      !src.contains(".reallocViewBuffer("),
+      s"expected no view slot reserve for a pre-sized root output; got:\n$src")
   }
 
   test("NullIntolerant expression emits input-null short-circuit before ev.code") {

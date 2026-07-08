@@ -97,6 +97,8 @@ object Utils extends CometTypeShim with Logging {
     case float: ArrowType.FloatingPoint if float.getPrecision == FloatingPointPrecision.DOUBLE =>
       DoubleType
     case ArrowType.Utf8.INSTANCE => StringType
+    case ArrowType.Utf8View.INSTANCE => StringType
+    case ArrowType.BinaryView.INSTANCE => BinaryType
     case ArrowType.Binary.INSTANCE => BinaryType
     case _: ArrowType.FixedSizeBinary => BinaryType
     case d: ArrowType.Decimal => DecimalType(d.getPrecision, d.getScale)
@@ -425,7 +427,8 @@ object Utils extends CometTypeShim with Logging {
           _: BigIntVector | _: Float4Vector | _: Float8Vector | _: VarCharVector |
           _: DecimalVector | _: DateDayVector | _: TimeStampMicroTZVector | _: VarBinaryVector |
           _: FixedSizeBinaryVector | _: TimeStampMicroVector | _: StructVector | _: ListVector |
-          _: MapVector | _: NullVector | _: TimeNanoVector) =>
+          _: MapVector | _: ViewVarCharVector | _: ViewVarBinaryVector | _: NullVector |
+          _: TimeNanoVector) =>
         v.asInstanceOf[FieldVector]
       case _ =>
         throw new SparkException(s"Unsupported Arrow Vector for $reason: ${valueVector.getClass}")

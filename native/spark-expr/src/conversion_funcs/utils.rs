@@ -76,10 +76,16 @@ pub fn spark_cast_postprocess(
             unary_dyn::<_, Int64Type>(&array, |v| div_floor(v, MICROS_PER_SECOND)).unwrap()
         }
         (DataType::Timestamp(_, _), DataType::Utf8) => remove_trailing_zeroes(array),
+        (DataType::Timestamp(_, _), DataType::Utf8View) => remove_trailing_zeroes_view(array),
         (DataType::Dictionary(_, value_type), DataType::Utf8)
             if matches!(value_type.as_ref(), &DataType::Timestamp(_, _)) =>
         {
             remove_trailing_zeroes(array)
+        }
+        (DataType::Dictionary(_, value_type), DataType::Utf8View)
+            if matches!(value_type.as_ref(), &DataType::Timestamp(_, _)) =>
+        {
+            remove_trailing_zeroes_view(array)
         }
         _ => array,
     }
@@ -100,6 +106,18 @@ fn remove_trailing_zeroes(array: ArrayRef) -> ArrayRef {
         .map(|s| s.map(trim_end))
         .collect::<GenericStringArray<i32>>();
     Arc::new(result) as ArrayRef
+}
+
+fn remove_trailing_zeroes_view(array: ArrayRef) -> ArrayRef {
+    let string_array = array.as_string_view();
+    let mut builder = arrow::array::StringViewBuilder::with_capacity(string_array.len());
+    for opt_s in string_array.iter() {
+        match opt_s {
+            Some(s) => builder.append_value(trim_end(s)),
+            None => builder.append_null(),
+        }
+    }
+    Arc::new(builder.finish()) as ArrayRef
 }
 
 fn trim_end(s: &str) -> &str {

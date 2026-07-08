@@ -39,7 +39,7 @@ impl BloomFilterMightContain {
         Ok(Self {
             bloom_filter,
             signature: Signature::exact(
-                vec![DataType::Binary, DataType::Int64],
+                vec![DataType::BinaryView, DataType::Int64],
                 Volatility::Immutable,
             ),
         })
@@ -54,7 +54,7 @@ fn evaluate_bloom_filter(
     let batch = RecordBatch::new_empty(Arc::new(Schema::empty()));
     let bloom_filter_bytes = bloom_filter_expr.evaluate(&batch)?;
     match bloom_filter_bytes {
-        ColumnarValue::Scalar(ScalarValue::Binary(v)) => {
+        ColumnarValue::Scalar(ScalarValue::BinaryView(v)) => {
             Ok(v.map(|v| SparkBloomFilter::from(v.as_slice())))
         }
         _ => internal_err!("Bloom filter expression should be evaluated as a scalar binary value"),

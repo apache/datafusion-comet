@@ -71,6 +71,8 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
     case "TimeStampMicroTZVector" => classOf[TimeStampMicroTZVector]
     case "VarCharVector" => classOf[VarCharVector]
     case "VarBinaryVector" => classOf[VarBinaryVector]
+    case "ViewVarCharVector" => classOf[ViewVarCharVector]
+    case "ViewVarBinaryVector" => classOf[ViewVarBinaryVector]
     case "IntervalYearVector" => classOf[IntervalYearVector]
     case "DurationVector" => classOf[DurationVector]
     case other => throw new IllegalArgumentException(s"unknown Arrow vector class: $other")

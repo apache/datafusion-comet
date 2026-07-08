@@ -315,7 +315,7 @@ class CometCodegenSuite
       assertCodegenRan {
         checkSparkAnswerAndOperator(sql("SELECT javaLen(s) FROM t"))
       }
-      assertKernelSignaturePresent(Seq(classOf[VarCharVector]), IntegerType)
+      assertKernelSignaturePresent(Seq(classOf[ViewVarCharVector]), IntegerType)
     }
   }
 
@@ -355,7 +355,7 @@ class CometCodegenSuite
       assertCodegenRan {
         checkSparkAnswerAndOperator(sql("SELECT outer(inner(s)) FROM t"))
       }
-      assertKernelSignaturePresent(Seq(classOf[VarCharVector]), StringType)
+      assertKernelSignaturePresent(Seq(classOf[ViewVarCharVector]), StringType)
     }
   }
 
@@ -368,7 +368,7 @@ class CometCodegenSuite
       assertCodegenRan {
         checkSparkAnswerAndOperator(sql("SELECT isShort(len(s)) FROM t"))
       }
-      assertKernelSignaturePresent(Seq(classOf[VarCharVector]), BooleanType)
+      assertKernelSignaturePresent(Seq(classOf[ViewVarCharVector]), BooleanType)
     }
   }
 
@@ -384,15 +384,15 @@ class CometCodegenSuite
       assertOneKernelForSubtree {
         checkSparkAnswerAndOperator(sql("SELECT lvl3(lvl2(lvl1(s))) FROM t"))
       }
-      assertKernelSignaturePresent(Seq(classOf[VarCharVector]), IntegerType)
+      assertKernelSignaturePresent(Seq(classOf[ViewVarCharVector]), IntegerType)
     }
   }
 
   test("multi-column ScalaUDF composition join(upperU(c1), lowerU(c2))") {
     // One multi-arg user UDF consuming two other user UDFs, each on a different input column.
-    // The bound tree has two BoundReferences, and the kernel is specialized on two VarCharVector
-    // columns. `assertOneKernelForSubtree` asserts that the two-branch composition fuses into a
-    // single kernel rather than one per branch or one per UDF.
+    // The bound tree has two BoundReferences, and the kernel is specialized on two
+    // ViewVarCharVector columns. `assertOneKernelForSubtree` asserts that the two-branch
+    // composition fuses into a single kernel rather than one per branch or one per UDF.
     // Input rows intentionally exclude nulls (see note on the three-deep test above).
     spark.udf.register("upperU", (s: String) => if (s == null) null else s.toUpperCase)
     spark.udf.register("lowerU", (s: String) => if (s == null) null else s.toLowerCase)
@@ -404,7 +404,7 @@ class CometCodegenSuite
         checkSparkAnswerAndOperator(sql("SELECT joinU(upperU(c1), lowerU(c2)) FROM t"))
       }
       assertKernelSignaturePresent(
-        Seq(classOf[VarCharVector], classOf[VarCharVector]),
+        Seq(classOf[ViewVarCharVector], classOf[ViewVarCharVector]),
         StringType)
     }
   }
@@ -548,7 +548,7 @@ class CometCodegenSuite
       assertCodegenRan {
         checkSparkAnswerAndOperator(sql("SELECT codePoint(s) FROM t"))
       }
-      assertKernelSignaturePresent(Seq(classOf[VarCharVector]), IntegerType)
+      assertKernelSignaturePresent(Seq(classOf[ViewVarCharVector]), IntegerType)
     }
   }
 
@@ -560,12 +560,13 @@ class CometCodegenSuite
       assertCodegenRan {
         checkSparkAnswerAndOperator(sql("SELECT bytes(s) FROM t"))
       }
-      assertKernelSignaturePresent(Seq(classOf[VarCharVector]), BinaryType)
+      assertKernelSignaturePresent(Seq(classOf[ViewVarCharVector]), BinaryType)
     }
   }
 
   test("ScalaUDF on BinaryType") {
-    // Binary input getter path: VarBinaryVector with byte[] reads via Spark's `getBinary` getter.
+    // Binary input getter path: ViewVarBinaryVector with byte[] reads via Spark's `getBinary`
+    // getter (routed through CometPlainVector's view API).
     spark.udf.register("blen", (b: Array[Byte]) => if (b == null) -1 else b.length)
     withTable("t") {
       sql("CREATE TABLE t (b BINARY) USING parquet")
@@ -573,7 +574,7 @@ class CometCodegenSuite
       assertCodegenRan {
         checkSparkAnswerAndOperator(sql("SELECT blen(b) FROM t"))
       }
-      assertKernelSignaturePresent(Seq(classOf[VarBinaryVector]), IntegerType)
+      assertKernelSignaturePresent(Seq(classOf[ViewVarBinaryVector]), IntegerType)
     }
   }
 
@@ -581,7 +582,7 @@ class CometCodegenSuite
     // First use of the ArrayType output path end-to-end. The UDF returns a `Seq[String]`,
     // which Spark encodes as `ArrayType(StringType, containsNull = true)`. The dispatcher's
     // canHandle accepts it (ArrayType is supported when its element type is supported),
-    // allocateOutput builds a ListVector with an inner VarCharVector, and emitWrite recurses
+    // allocateOutput builds a ListVector with an inner ViewVarCharVector, and emitWrite recurses
     // into the StringType case for the per-element UTF8 on-heap shortcut. End-to-end answer
     // matches Spark.
     spark.udf.register(

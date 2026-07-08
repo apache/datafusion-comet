@@ -25,7 +25,7 @@ import scala.util.control.NonFatal
 import org.apache.arrow.memory.BufferAllocator
 import org.apache.arrow.vector._
 import org.apache.arrow.vector.complex.{ListVector, MapVector, StructVector}
-import org.apache.arrow.vector.types.pojo.{ArrowType, Field}
+import org.apache.arrow.vector.types.pojo.{ArrowType, Field, FieldType}
 import org.apache.spark.sql.catalyst.expressions.codegen.CodegenContext
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.types._
@@ -46,7 +46,29 @@ private[codegen] object CometBatchKernelCodegenOutput {
    * [[allocateOutput]], which pin `getField()` so the cached Field actually reaches export.
    */
   def toFfiArrowField(name: String, dataType: DataType, nullable: Boolean): Field =
-    renameForArrowRustFfi(Utils.toArrowField(name, dataType, nullable, "UTC"))
+    viewifyStringBinary(
+      renameForArrowRustFfi(Utils.toArrowField(name, dataType, nullable, "UTC")))
+
+  /**
+   * Rewrite `Utf8` -> `Utf8View` and `Binary` -> `BinaryView` throughout the field tree. Native
+   * serde promises view types for string/binary results (`to_arrow_datatype`), so the
+   * FFI-exported output vector must carry the view type to match what the native plan expects.
+   * Recurses so string/binary leaves nested in list/struct/map outputs are rewritten too. Pairs
+   * with [[outputVectorClass]] emitting `ViewVarCharVector` / `ViewVarBinaryVector`.
+   */
+  private def viewifyStringBinary(field: Field): Field = {
+    val newType = field.getType match {
+      case _: ArrowType.Utf8 => ArrowType.Utf8View.INSTANCE
+      case _: ArrowType.Binary => ArrowType.BinaryView.INSTANCE
+      case other => other
+    }
+    val newChildren = field.getChildren.asScala.map(viewifyStringBinary).toList.asJava
+    val ft = field.getFieldType
+    new Field(
+      field.getName,
+      new FieldType(ft.isNullable, newType, ft.getDictionary, ft.getMetadata),
+      newChildren)
+  }
 
   private def renameForArrowRustFfi(field: Field): Field = {
     val children = field.getChildren.asScala
@@ -166,8 +188,8 @@ private[codegen] object CometBatchKernelCodegenOutput {
     case FloatType => classOf[Float4Vector].getName
     case DoubleType => classOf[Float8Vector].getName
     case _: DecimalType => classOf[DecimalVector].getName
-    case _: StringType => classOf[VarCharVector].getName
-    case BinaryType => classOf[VarBinaryVector].getName
+    case _: StringType => classOf[ViewVarCharVector].getName
+    case BinaryType => classOf[ViewVarBinaryVector].getName
     case DateType => classOf[DateDayVector].getName
     case TimestampType => classOf[TimeStampMicroTZVector].getName
     case TimestampNTZType => classOf[TimeStampMicroVector].getName
@@ -179,6 +201,25 @@ private[codegen] object CometBatchKernelCodegenOutput {
     case other =>
       throw new UnsupportedOperationException(
         s"CometBatchKernelCodegen.outputVectorClass: unsupported output type $other")
+  }
+
+  /**
+   * Reserve the full view slot before a growing (nested) `setSafe` into a `Utf8View` /
+   * `BinaryView` child. Works around arrow-java under-allocating the view buffer for empty values
+   * (https://github.com/apache/arrow-java/issues/1190); remove once that ships. Only the growing
+   * (`nested`) path needs it; the root output vector is pre-sized.
+   */
+  private def viewSlotReserve(targetVec: String, idx: String, nested: Boolean): String = {
+    if (!nested) {
+      ""
+    } else {
+      // 16 is the fixed Arrow view-struct size (BaseVariableWidthViewVector.ELEMENT_SIZE). Inlined
+      // rather than referenced by name because the packaged jar relocates `org.apache.arrow`.
+      s"""if ($targetVec.getValueCapacity() <= $idx) {
+         |  $targetVec.reallocViewBuffer((long) ($idx + 1) * 16L);
+         |}
+         |""".stripMargin
+    }
   }
 
   /**
@@ -238,19 +279,23 @@ private[codegen] object CometBatchKernelCodegenOutput {
       val bArr = ctx.freshName("utfArr")
       OutputEmit(
         "",
-        s"""Object $bBase = $source.getBaseObject();
-           |int $bLen = $source.numBytes();
-           |if ($bBase instanceof byte[]) {
-           |  $targetVec.setSafe($idx, (byte[]) $bBase,
-           |      (int) ($source.getBaseOffset()
-           |          - org.apache.spark.unsafe.Platform.BYTE_ARRAY_OFFSET),
-           |      $bLen);
-           |} else {
-           |  byte[] $bArr = $source.getBytes();
-           |  $targetVec.setSafe($idx, $bArr, 0, $bArr.length);
-           |}""".stripMargin)
+        viewSlotReserve(targetVec, idx, nested) +
+          s"""Object $bBase = $source.getBaseObject();
+             |int $bLen = $source.numBytes();
+             |if ($bBase instanceof byte[]) {
+             |  $targetVec.setSafe($idx, (byte[]) $bBase,
+             |      (int) ($source.getBaseOffset()
+             |          - org.apache.spark.unsafe.Platform.BYTE_ARRAY_OFFSET),
+             |      $bLen);
+             |} else {
+             |  byte[] $bArr = $source.getBytes();
+             |  $targetVec.setSafe($idx, $bArr, 0, $bArr.length);
+             |}""".stripMargin)
     case BinaryType =>
-      OutputEmit("", s"$targetVec.setSafe($idx, $source, 0, $source.length);")
+      OutputEmit(
+        "",
+        viewSlotReserve(targetVec, idx, nested) +
+          s"$targetVec.setSafe($idx, $source, 0, $source.length);")
     case ArrayType(elementType, containsNull) =>
       // Spark's `doGenCode` for ArrayType produces an `ArrayData` value. Iterate elements,
       // write each into the `ListVector`'s child, bracket with `startNewValue`/`endValue`. The

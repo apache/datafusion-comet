@@ -92,11 +92,21 @@ class CometScalaUDFCodegen extends CometUDF with Logging {
       inputs.length >= 1,
       "CometScalaUDFCodegen requires at least 1 input (serialized expression), " +
         s"got ${inputs.length}")
-    val exprVec = inputs(0).asInstanceOf[VarBinaryVector]
+    // Arg 0 arrives as a binary scalar. Native serde emits `Bytes` as `BinaryView`, so the vector
+    // is a `ViewVarBinaryVector`; older non-view producers hand back a `VarBinaryVector`. Accept
+    // both.
+    val exprVec = inputs(0)
     require(
       exprVec.getValueCount >= 1 && !exprVec.isNull(0),
       "CometScalaUDFCodegen requires non-null serialized expression bytes at arg 0")
-    val bytes = exprVec.get(0)
+    val bytes = exprVec match {
+      case v: VarBinaryVector => v.get(0)
+      case v: ViewVarBinaryVector => v.get(0)
+      case other =>
+        throw new IllegalArgumentException(
+          "CometScalaUDFCodegen requires a binary vector carrying the serialized expression at " +
+            s"arg 0, got ${other.getClass.getSimpleName}")
+    }
 
     // TODO(dict-encoded): kernels assume materialized inputs. Dict-encoded vectors would fail the
     // cast in `specFor` below. Fix is to materialize at the dispatcher (via
@@ -219,8 +229,8 @@ class CometScalaUDFCodegen extends CometUDF with Logging {
       StructColumnSpec(nullable = true, fieldSpecs)
     case _: BitVector | _: TinyIntVector | _: SmallIntVector | _: IntVector | _: BigIntVector |
         _: Float4Vector | _: Float8Vector | _: DecimalVector | _: VarCharVector |
-        _: VarBinaryVector | _: DateDayVector | _: TimeStampMicroVector |
-        _: TimeStampMicroTZVector =>
+        _: VarBinaryVector | _: ViewVarCharVector | _: ViewVarBinaryVector | _: DateDayVector |
+        _: TimeStampMicroVector | _: TimeStampMicroTZVector =>
       ScalarColumnSpec(v.getClass.asInstanceOf[Class[_ <: ValueVector]], nullable = true)
     case other =>
       throw new UnsupportedOperationException(

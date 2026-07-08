@@ -60,7 +60,7 @@ impl BloomFilterAgg {
         data_type: DataType,
         version: SparkBloomFilterVersion,
     ) -> Self {
-        assert!(matches!(data_type, DataType::Binary));
+        assert!(matches!(data_type, DataType::BinaryView));
         Self {
             signature: Signature::uniform(
                 1,
@@ -70,6 +70,7 @@ impl BloomFilterAgg {
                     DataType::Int32,
                     DataType::Int64,
                     DataType::Utf8,
+                    DataType::Utf8View,
                 ],
                 Volatility::Immutable,
             ),
@@ -90,7 +91,7 @@ impl AggregateUDFImpl for BloomFilterAgg {
     }
 
     fn return_type(&self, _arg_types: &[DataType]) -> Result<DataType> {
-        Ok(DataType::Binary)
+        Ok(DataType::BinaryView)
     }
 
     fn accumulator(&self, _acc_args: AccumulatorArgs) -> Result<Box<dyn Accumulator>> {
@@ -137,12 +138,16 @@ impl Accumulator for SparkBloomFilter {
                 ScalarValue::Utf8(Some(value)) => {
                     self.put_binary(value.as_bytes());
                 }
+                ScalarValue::Utf8View(Some(value)) => {
+                    self.put_binary(value.as_bytes());
+                }
                 // Spark's BloomFilterAggregate.update ignores null inputs.
                 ScalarValue::Int8(None)
                 | ScalarValue::Int16(None)
                 | ScalarValue::Int32(None)
                 | ScalarValue::Int64(None)
-                | ScalarValue::Utf8(None) => {}
+                | ScalarValue::Utf8(None)
+                | ScalarValue::Utf8View(None) => {}
                 other => {
                     return Err(DataFusionError::Internal(format!(
                         "bloom_filter_agg received an unsupported input type: {other:?}"
@@ -159,9 +164,9 @@ impl Accumulator for SparkBloomFilter {
         // empty-input bloom_filter_agg yields NULL rather than a serialized
         // empty filter.
         if self.cardinality() == 0 {
-            return Ok(ScalarValue::Binary(None));
+            return Ok(ScalarValue::BinaryView(None));
         }
-        Ok(ScalarValue::Binary(Some(self.spark_serialization())))
+        Ok(ScalarValue::BinaryView(Some(self.spark_serialization())))
     }
 
     fn size(&self) -> usize {
