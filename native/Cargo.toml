@@ -78,3 +78,45 @@ codegen-units = 16   # Parallel codegen (faster compile, slightly larger binary)
 debug-assertions = true
 panic = "unwind"     # Allow panics to be caught and logged across FFI boundary
 # overflow-checks inherited as false from release
+
+# TEMPORARY (issue #4859): build against the DataFusion fork branch carrying the
+# nested-projection leaf-mask fix. The branch is off tag 54.0.0, so it is API-identical
+# to the crates.io 54.0.0 build. Drop this once the fix lands in a DataFusion release.
+[patch.crates-io]
+datafusion = { git = "https://github.com/mbutrovich/datafusion", branch = "comet-4859-nested-projection" }
+datafusion-catalog = { git = "https://github.com/mbutrovich/datafusion", branch = "comet-4859-nested-projection" }
+datafusion-catalog-listing = { git = "https://github.com/mbutrovich/datafusion", branch = "comet-4859-nested-projection" }
+datafusion-common = { git = "https://github.com/mbutrovich/datafusion", branch = "comet-4859-nested-projection" }
+datafusion-common-runtime = { git = "https://github.com/mbutrovich/datafusion", branch = "comet-4859-nested-projection" }
+datafusion-datasource = { git = "https://github.com/mbutrovich/datafusion", branch = "comet-4859-nested-projection" }
+datafusion-datasource-arrow = { git = "https://github.com/mbutrovich/datafusion", branch = "comet-4859-nested-projection" }
+datafusion-datasource-avro = { git = "https://github.com/mbutrovich/datafusion", branch = "comet-4859-nested-projection" }
+datafusion-datasource-csv = { git = "https://github.com/mbutrovich/datafusion", branch = "comet-4859-nested-projection" }
+datafusion-datasource-json = { git = "https://github.com/mbutrovich/datafusion", branch = "comet-4859-nested-projection" }
+datafusion-datasource-parquet = { git = "https://github.com/mbutrovich/datafusion", branch = "comet-4859-nested-projection" }
+datafusion-doc = { git = "https://github.com/mbutrovich/datafusion", branch = "comet-4859-nested-projection" }
+datafusion-execution = { git = "https://github.com/mbutrovich/datafusion", branch = "comet-4859-nested-projection" }
+datafusion-expr = { git = "https://github.com/mbutrovich/datafusion", branch = "comet-4859-nested-projection" }
+datafusion-expr-common = { git = "https://github.com/mbutrovich/datafusion", branch = "comet-4859-nested-projection" }
+datafusion-ffi = { git = "https://github.com/mbutrovich/datafusion", branch = "comet-4859-nested-projection" }
+datafusion-functions = { git = "https://github.com/mbutrovich/datafusion", branch = "comet-4859-nested-projection" }
+datafusion-functions-aggregate = { git = "https://github.com/mbutrovich/datafusion", branch = "comet-4859-nested-projection" }
+datafusion-functions-aggregate-common = { git = "https://github.com/mbutrovich/datafusion", branch = "comet-4859-nested-projection" }
+datafusion-functions-nested = { git = "https://github.com/mbutrovich/datafusion", branch = "comet-4859-nested-projection" }
+datafusion-functions-table = { git = "https://github.com/mbutrovich/datafusion", branch = "comet-4859-nested-projection" }
+datafusion-functions-window = { git = "https://github.com/mbutrovich/datafusion", branch = "comet-4859-nested-projection" }
+datafusion-functions-window-common = { git = "https://github.com/mbutrovich/datafusion", branch = "comet-4859-nested-projection" }
+datafusion-macros = { git = "https://github.com/mbutrovich/datafusion", branch = "comet-4859-nested-projection" }
+datafusion-optimizer = { git = "https://github.com/mbutrovich/datafusion", branch = "comet-4859-nested-projection" }
+datafusion-physical-expr = { git = "https://github.com/mbutrovich/datafusion", branch = "comet-4859-nested-projection" }
+datafusion-physical-expr-adapter = { git = "https://github.com/mbutrovich/datafusion", branch = "comet-4859-nested-projection" }
+datafusion-physical-expr-common = { git = "https://github.com/mbutrovich/datafusion", branch = "comet-4859-nested-projection" }
+datafusion-physical-optimizer = { git = "https://github.com/mbutrovich/datafusion", branch = "comet-4859-nested-projection" }
+datafusion-physical-plan = { git = "https://github.com/mbutrovich/datafusion", branch = "comet-4859-nested-projection" }
+datafusion-proto = { git = "https://github.com/mbutrovich/datafusion", branch = "comet-4859-nested-projection" }
+datafusion-proto-common = { git = "https://github.com/mbutrovich/datafusion", branch = "comet-4859-nested-projection" }
+datafusion-pruning = { git = "https://github.com/mbutrovich/datafusion", branch = "comet-4859-nested-projection" }
+datafusion-session = { git = "https://github.com/mbutrovich/datafusion", branch = "comet-4859-nested-projection" }
+datafusion-spark = { git = "https://github.com/mbutrovich/datafusion", branch = "comet-4859-nested-projection" }
+datafusion-sql = { git = "https://github.com/mbutrovich/datafusion", branch = "comet-4859-nested-projection" }
+datafusion-substrait = { git = "https://github.com/mbutrovich/datafusion", branch = "comet-4859-nested-projection" }
