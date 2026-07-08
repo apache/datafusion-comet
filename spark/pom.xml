@@ -528,6 +528,7 @@ under the License.
             <configuration>
               <sources>
                 <source>src/test/${shims.majorVerSrc}</source>
+                <source>src/test/${shims.minorPlusVerSrc}</source>
                 <source>src/test/${shims.minorVerSrc}</source>
               </sources>
             </configuration>
