@@ -389,9 +389,14 @@ impl PhysicalPlanner {
                             DataType::Timestamp(TimeUnit::Microsecond, Some(tz)) => {
                                 ScalarValue::TimestampMicrosecond(Some(*value), Some(tz))
                             }
+                            // Spark 4.1 TimeType literals arrive as i64 nanoseconds-since-midnight,
+                            // matching Arrow's Time64(Nanosecond) storage exactly.
+                            DataType::Time64(TimeUnit::Nanosecond) => {
+                                ScalarValue::Time64Nanosecond(Some(*value))
+                            }
                             dt => {
                                 return Err(GeneralError(format!(
-                                    "Expected either 'Int64' or 'Timestamp' for LongVal, but found {dt:?}"
+                                    "Expected 'Int64', 'Timestamp', or 'Time64(Nanosecond)' for LongVal, but found {dt:?}"
                                 )))
                             }
                         },

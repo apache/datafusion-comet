@@ -44,6 +44,13 @@
 - Spark 4.0.1 (audited 2026-05-12): `inputTypes` widened to `StringTypeWithCollation`; behaviour unchanged for ASCII timezone strings.
 - Marked `Incompatible`: Comet's native timezone parser only accepts IANA zone IDs (e.g. `America/Los_Angeles`) and fixed `+HH:MM` offsets, while Spark also accepts legacy forms (`GMT+1`, `UTC+1`, three-letter abbreviations like `PST`). By default it runs through the codegen dispatcher (Spark-correct) and uses the native path only when incompatible expressions are explicitly allowed, where legacy zone forms throw a native parse error at execution (https://github.com/apache/datafusion-comet/issues/2013).
 
+## hour
+
+- Spark 3.4.3 (audited 2026-07-08): baseline. `Hour(TIMESTAMP)` only; no TIME-input variant. Handled by `CometHour`.
+- Spark 3.5.8 (audited 2026-07-08): identical to 3.4.3.
+- Spark 4.0.1 (audited 2026-07-08): identical to 3.5.8; still no `TimeType`.
+- Spark 4.1.1 (audited 2026-07-08): non-TIME `Hour` continues to use `CometHour`. `hour()` on a `TimeType` child routes through `HourExpressionBuilder` to `HoursOfTime`, a `RuntimeReplaceable` whose replacement is `StaticInvoke(DateTimeUtils, IntegerType, "getHoursOfTime", Seq(child))`. Comet's Spark 4.1 shim rewrites it to DataFusion's built-in `datepart('hour', time)`, which accepts Arrow `Time64(Nanosecond)` and returns Int32, matching Spark's Int result. `EXTRACT(HOUR FROM time)` rewrites to the same `HoursOfTime`, so it uses the same shim path. No timezone dependence: `TimeType` is a local time-of-day and `DateTimeUtils.getHoursOfTime` just calls `nanosToLocalTime(nanos).getHour`.
+
 ## make_timestamp_ltz
 
 - The 6-argument form rewrites to `MakeTimestamp` and runs via the codegen dispatcher. The 2-argument `(date, time)` form requires the Spark 4.1 TIME type and falls back.

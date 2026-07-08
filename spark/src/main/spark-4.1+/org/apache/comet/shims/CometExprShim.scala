@@ -66,6 +66,26 @@ trait CometExprShim extends Spark4xCometExprShim {
           scalarFunctionExprToProtoWithReturnType("make_time", s.dataType, true, childExprs: _*)
         optExprWithFallbackReason(optExpr, expr, s.arguments: _*)
 
+      // Spark 4.1's HoursOfTime is RuntimeReplaceable and resolves to
+      // StaticInvoke(DateTimeUtils, IntegerType, "getHoursOfTime", Seq(timeChild)).
+      // The child is a TimeType, which Comet maps to Arrow's Time64(Nanosecond). Route
+      // to DataFusion's built-in date_part, whose signature accepts Time and returns
+      // Int32 for hour, matching Spark's Int return type.
+      case s: StaticInvoke
+          if s.staticObject == classOf[DateTimeUtils.type] &&
+            s.functionName == "getHoursOfTime" &&
+            s.arguments.size == 1 &&
+            s.arguments.head.dataType.isInstanceOf[TimeType] =>
+        val periodExpr = exprToProtoInternal(Literal("hour"), inputs, binding)
+        val childExpr = exprToProtoInternal(s.arguments.head, inputs, binding)
+        val optExpr = scalarFunctionExprToProtoWithReturnType(
+          "datepart",
+          s.dataType,
+          false,
+          periodExpr,
+          childExpr)
+        optExprWithFallbackReason(optExpr, expr, s.arguments: _*)
+
       case i: Invoke =>
         (i.targetObject, i.functionName, i.arguments) match {
           case (Literal(parser: ToTimeParser, _), "parse", args)
