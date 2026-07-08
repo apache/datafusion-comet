@@ -19,10 +19,16 @@
 
 package org.apache.comet.shims
 
+import org.apache.spark.sql.catalyst.expressions.aggregate.Mode
 import org.apache.spark.sql.execution.datasources.VariantMetadata
 import org.apache.spark.sql.types.{ArrayType, DataType, MapType, StringType, StructType}
 
 trait CometTypeShim {
+  // `reverseOpt` is set for `mode() WITHIN GROUP (ORDER BY col [DESC])` and the
+  // `mode(col, deterministic)` form, both of which carry ordered tie-breaking that Comet does not
+  // implement yet. The plain `mode(col)` form leaves it as `None`.
+  def modeHasUnsupportedOrdering(expr: Mode): Boolean = expr.reverseOpt.isDefined
+
   // A `StringType` carries collation metadata in Spark 4.0. Only non-default (non-UTF8_BINARY)
   // collations have semantics Comet's byte-level hashing/sorting/equality cannot honor. The
   // default `StringType` object is `StringType(UTF8_BINARY_COLLATION_ID)`, so comparing
