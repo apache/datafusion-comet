@@ -55,6 +55,7 @@ message Operator {
     CsvScan csv_scan = 115;
     ShuffleScan shuffle_scan = 116;
     BroadcastNestedLoopJoin broadcast_nested_loop_join = 117;
+    WindowGroupLimit window_group_limit = 118;
   }
 }
 
@@ -576,4 +577,18 @@ message Window {
   repeated spark.spark_expression.Expr order_by_list = 2;
   repeated spark.spark_expression.Expr partition_by_list = 3;
   Operator child = 4;
+}
+
+// Top-K rows per partition group. Corresponds to Spark's WindowGroupLimitExec
+// (Spark 3.5+). Comet currently supports the ROW_NUMBER pushdown case only,
+// which routes to DataFusion's PartitionedTopKExec. Fields:
+//   partition_by_list: partition keys (must be non-empty for the ROW_NUMBER
+//                      pushdown path — global top-K should be lowered to a
+//                      SortExec with fetch instead).
+//   order_by_list:     ORDER BY sort expressions.
+//   limit:             the K in "top-K per partition".
+message WindowGroupLimit {
+  repeated spark.spark_expression.Expr partition_by_list = 1;
+  repeated spark.spark_expression.Expr order_by_list = 2;
+  int32 limit = 3;
 }

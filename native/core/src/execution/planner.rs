@@ -46,6 +46,7 @@ use datafusion::functions_aggregate::min_max::max_udaf;
 use datafusion::functions_aggregate::min_max::min_udaf;
 use datafusion::functions_aggregate::sum::sum_udaf;
 use datafusion::physical_expr::aggregate::{AggregateExprBuilder, AggregateFunctionExpr};
+use datafusion::physical_plan::sorts::partitioned_topk::PartitionedTopKExec;
 use datafusion::physical_plan::windows::{BoundedWindowAggExec, WindowAggExec};
 use datafusion::physical_plan::InputOrderMode;
 use datafusion::{
@@ -2137,6 +2138,73 @@ impl PhysicalPlanner {
                     scans,
                     shuffle_scans,
                     Arc::new(SparkPlan::new(spark_plan.plan_id, final_plan, vec![child])),
+                ))
+            }
+            OpStruct::WindowGroupLimit(wgl) => {
+                // Comet only serializes the ROW_NUMBER pushdown case with a non-empty
+                // PARTITION BY (see CometWindowGroupLimitExec.convert). RANK / DENSE_RANK and
+                // empty PARTITION BY fall back to Spark, so the proto here is guaranteed to
+                // have a non-empty partition_by_list. Route to DataFusion's
+                // `PartitionedTopKExec`, which maintains one bounded heap per distinct
+                // partition key and emits the top `limit` rows per partition — exactly the
+                // semantics of Spark's SimpleLimitIterator over a partition-sorted stream.
+                assert_eq!(children.len(), 1);
+                let (scans, shuffle_scans, child) =
+                    self.create_plan(&children[0], inputs, partition_count)?;
+                let input_schema = child.schema();
+
+                if wgl.partition_by_list.is_empty() {
+                    return Err(GeneralError(
+                        "WindowGroupLimit with empty partition_by_list should have fallen back \
+                         to Spark; native path only supports the partitioned ROW_NUMBER top-K"
+                            .to_string(),
+                    ));
+                }
+
+                // Partition keys arrive as bare exprs (no direction). Spark's WGL requires the
+                // child to be sorted by partition-keys ASCENDING then by order-by keys, and
+                // PartitionedTopKExec expects `[partition_keys, order_keys]` as a single
+                // LexOrdering. Materialize partition keys with SortOptions matching Spark's
+                // `SortOrder(_, Ascending)` (ascending, nulls_first) so the row-encoding used
+                // for per-partition equality inside PartitionedTopKExec matches.
+                let partition_prefix_len = wgl.partition_by_list.len();
+                let partition_sort_options = SortOptions {
+                    descending: false,
+                    nulls_first: true,
+                };
+                let mut sort_exprs: Vec<PhysicalSortExpr> =
+                    Vec::with_capacity(partition_prefix_len + wgl.order_by_list.len());
+                for expr in &wgl.partition_by_list {
+                    let phys = self.create_expr(expr, Arc::clone(&input_schema))?;
+                    sort_exprs.push(PhysicalSortExpr {
+                        expr: phys,
+                        options: partition_sort_options,
+                    });
+                }
+                for expr in &wgl.order_by_list {
+                    sort_exprs.push(self.create_sort_expr(expr, Arc::clone(&input_schema))?);
+                }
+
+                let ordering = LexOrdering::new(sort_exprs).ok_or_else(|| {
+                    GeneralError("WindowGroupLimit produced empty LexOrdering".to_string())
+                })?;
+
+                let fetch = wgl.limit as usize;
+                let topk: Arc<dyn ExecutionPlan> = Arc::new(PartitionedTopKExec::try_new(
+                    Arc::clone(&child.native_plan),
+                    ordering,
+                    partition_prefix_len,
+                    fetch,
+                )?);
+
+                Ok((
+                    scans,
+                    shuffle_scans,
+                    Arc::new(SparkPlan::new(
+                        spark_plan.plan_id,
+                        topk,
+                        vec![Arc::clone(&child)],
+                    )),
                 ))
             }
             OpStruct::ShuffleScan(scan) => {
