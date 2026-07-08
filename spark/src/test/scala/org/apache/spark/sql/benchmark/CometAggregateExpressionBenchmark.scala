@@ -125,6 +125,28 @@ object CometAggregateExpressionBenchmark extends CometBenchmarkBase {
       "percentile_double_high_card",
       "SELECT percentile(c_double, 0.5) FROM parquetV1Table GROUP BY high_card_grp"))
 
+  // max_by / min_by run natively only when both the value and ordering are fixed-length types (a
+  // variable-length value or ordering forces Spark's SortAggregate, which Comet does not run).
+  private val maxMinByAggregates = List(
+    AggExprConfig("max_by_int", "SELECT max_by(c_int, c_long) FROM parquetV1Table GROUP BY grp"),
+    AggExprConfig(
+      "max_by_double",
+      "SELECT max_by(c_double, c_int) FROM parquetV1Table GROUP BY grp"),
+    AggExprConfig(
+      "max_by_decimal",
+      "SELECT max_by(c_decimal, c_int) FROM parquetV1Table GROUP BY grp"),
+    AggExprConfig(
+      "max_by_high_card",
+      "SELECT max_by(c_int, c_long) FROM parquetV1Table GROUP BY high_card_grp"),
+    AggExprConfig("max_by_global", "SELECT max_by(c_int, c_long) FROM parquetV1Table"),
+    AggExprConfig("min_by_int", "SELECT min_by(c_int, c_long) FROM parquetV1Table GROUP BY grp"),
+    AggExprConfig(
+      "min_by_double",
+      "SELECT min_by(c_double, c_int) FROM parquetV1Table GROUP BY grp"),
+    AggExprConfig(
+      "min_by_high_card",
+      "SELECT min_by(c_int, c_long) FROM parquetV1Table GROUP BY high_card_grp"))
+
   override def runCometBenchmark(mainArgs: Array[String]): Unit = {
     val values = 1024 * 1024
 
@@ -148,7 +170,7 @@ object CometAggregateExpressionBenchmark extends CometBenchmarkBase {
 
           val allAggregates = basicAggregates ++ statisticalAggregates ++ bitwiseAggregates ++
             multiKeyAggregates ++ multiAggregates ++ decimalAggregates ++
-            highCardinalityAggregates ++ percentileAggregates
+            highCardinalityAggregates ++ percentileAggregates ++ maxMinByAggregates
 
           allAggregates.foreach { config =>
             runExpressionBenchmark(config.name, v, config.query, config.extraCometConfigs)

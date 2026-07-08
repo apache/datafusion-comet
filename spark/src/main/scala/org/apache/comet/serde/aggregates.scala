@@ -22,7 +22,7 @@ package org.apache.comet.serde
 import scala.jdk.CollectionConverters._
 
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Literal}
-import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, Average, BitAndAgg, BitOrAgg, BitXorAgg, BloomFilterAggregate, CentralMomentAgg, CollectSet, Corr, Count, Covariance, CovPopulation, CovSample, First, Last, Max, Min, Percentile, StddevPop, StddevSamp, Sum, VariancePop, VarianceSamp}
+import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, Average, BitAndAgg, BitOrAgg, BitXorAgg, BloomFilterAggregate, CentralMomentAgg, CollectSet, Corr, Count, Covariance, CovPopulation, CovSample, First, Last, Max, MaxBy, MaxMinBy, Min, MinBy, Percentile, StddevPop, StddevSamp, Sum, VariancePop, VarianceSamp}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{ByteType, DecimalType, DoubleType, IntegerType, LongType, NumericType, ShortType, StringType}
 
@@ -103,6 +103,82 @@ object CometMax extends CometAggregateExpressionSerde[Max] {
       None
     }
   }
+}
+
+/**
+ * Shared serde for `max_by` and `min_by`. Both are 2-argument `MaxMinBy` `DeclarativeAggregate`s
+ * differing only in the comparison direction, so the value/ordering handling is identical.
+ */
+abstract class CometMaxMinBy[T <: MaxMinBy] extends CometAggregateExpressionSerde[T] {
+
+  /** `true` for `max_by`, `false` for `min_by`. */
+  protected def isMax: Boolean
+
+  /** `"maximum"` or `"minimum"`, used in the non-determinism note. */
+  private def extremum: String = if (isMax) "maximum" else "minimum"
+
+  override def getCompatibleNotes(): Seq[String] = Seq(
+    s"This function is non-deterministic when multiple rows share the $extremum ordering value." +
+      " Results may differ from Spark in that case.")
+
+  override def getUnsupportedReasons(): Seq[String] = Seq(
+    "The value and ordering must both be fixed-length types (boolean, integral, floating-point," +
+      " decimal, date, or timestamp). A variable-length or nested type such as string, binary, or" +
+      " struct forces Spark's `SortAggregate`, which Comet does not accelerate, so the aggregate" +
+      " falls back to Spark.")
+
+  override def getSupportLevel(expr: T): SupportLevel = {
+    // Both the value and ordering must be fixed-length types. Spark only uses HashAggregate
+    // (the aggregate operator Comet accelerates) when the aggregation buffer is mutable; the
+    // buffer holds both the running value and the running ordering, so a variable-length type
+    // such as StringType in either position forces SortAggregate and falls back to Spark.
+    // The native side compares the ordering column via Arrow's row format, which supports all
+    // of these fixed-length orderable types.
+    if (!AggSerde.minMaxDataTypeSupported(expr.valueExpr.dataType)) {
+      Unsupported(Some(s"Unsupported value data type: ${expr.valueExpr.dataType}"))
+    } else if (!AggSerde.minMaxDataTypeSupported(expr.orderingExpr.dataType)) {
+      Unsupported(Some(s"Unsupported ordering data type: ${expr.orderingExpr.dataType}"))
+    } else {
+      Compatible()
+    }
+  }
+
+  override def convert(
+      aggExpr: AggregateExpression,
+      expr: T,
+      inputs: Seq[Attribute],
+      binding: Boolean,
+      conf: SQLConf): Option[ExprOuterClass.AggExpr] = {
+    val valueExpr = exprToProto(expr.valueExpr, inputs, binding)
+    val orderingExpr = exprToProto(expr.orderingExpr, inputs, binding)
+
+    if (valueExpr.isDefined && orderingExpr.isDefined) {
+      val aggBuilder = ExprOuterClass.AggExpr.newBuilder()
+      if (isMax) {
+        val builder = ExprOuterClass.MaxBy.newBuilder()
+        builder.setValue(valueExpr.get)
+        builder.setOrdering(orderingExpr.get)
+        aggBuilder.setMaxBy(builder)
+      } else {
+        val builder = ExprOuterClass.MinBy.newBuilder()
+        builder.setValue(valueExpr.get)
+        builder.setOrdering(orderingExpr.get)
+        aggBuilder.setMinBy(builder)
+      }
+      Some(aggBuilder.build())
+    } else {
+      withFallbackReason(aggExpr, expr.valueExpr, expr.orderingExpr)
+      None
+    }
+  }
+}
+
+object CometMaxBy extends CometMaxMinBy[MaxBy] {
+  override protected def isMax: Boolean = true
+}
+
+object CometMinBy extends CometMaxMinBy[MinBy] {
+  override protected def isMax: Boolean = false
 }
 
 object CometCount extends CometAggregateExpressionSerde[Count] {

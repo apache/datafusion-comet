@@ -39,12 +39,26 @@
 - Spark 3.5.8 (2026-05-26)
 - Spark 4.0.1 (2026-05-26)
 
+## max_by
+
+- Spark 3.4.3 (2026-07-03): `MaxBy` is a 2-argument `DeclarativeAggregate` registered as `expression[MaxBy]("max_by")`. Buffer is `(valueWithExtremumOrdering, extremumOrdering)`; null orderings are ignored, the value paired with the maximum ordering is returned (and may itself be null), and an all-null-ordering group yields null. Comet implements a native `max_by` aggregate. Only fixed-length value and ordering types are accelerated: a variable-length or nested type (string, binary, struct) forces Spark's `SortAggregate`, which Comet does not support, so those cases fall back to Spark. `max_by` is non-deterministic when several rows tie on the maximum ordering, matching Spark's documented behavior.
+- Spark 3.5.8 (2026-07-03): aggregate logic identical to 3.4.3.
+- Spark 4.0.1 (2026-07-03): aggregate logic identical to 3.4.3; only the `@ExpressionDescription` example and note text differ.
+- Spark 4.1.1 (2026-07-03): aggregate logic identical to 3.4.3. The 3-argument top-k form `max_by(x, y, k)` (via `MaxByBuilder` / `MaxMinByK`) is only present on Spark master, not in any released 3.4 through 4.1 version, so Comet handles only the 2-argument form.
+
 ## median
 
 - Spark 3.4.3 (audited 2026-06-24): `Median(child)` is a `RuntimeReplaceableAggregate` with `replacement = Percentile(child, Literal(0.5))`. Catalyst rewrites `median(x)` to `percentile(x, 0.5)` before Comet sees the plan, so it is served by `CometPercentile`.
 - Spark 3.5.8 (audited 2026-06-24): identical to 3.4.3.
 - Spark 4.0.1 (audited 2026-06-24): `replacement` becomes `lazy val`; semantics unchanged.
 - Spark 4.1.1 (audited 2026-06-24): identical to 4.0.1.
+
+## min_by
+
+- Spark 3.4.3 (2026-07-03): `MinBy` shares the abstract `MaxMinBy` `DeclarativeAggregate` with `MaxBy`, differing only in the comparison direction (`least` / `<` instead of `greatest` / `>`). Registered as `expression[MinBy]("min_by")`. Null orderings are ignored, the value paired with the minimum ordering is returned (and may itself be null), and an all-null-ordering group yields null. Comet serves it through the same native `MaxMinBy` aggregate as `max_by`, with the same fixed-length value and ordering restriction (variable-length or nested types fall back to Spark). Non-deterministic on ties, matching Spark.
+- Spark 3.5.8 (2026-07-03): aggregate logic identical to 3.4.3.
+- Spark 4.0.1 (2026-07-03): aggregate logic identical to 3.4.3; only the `@ExpressionDescription` example and note text differ.
+- Spark 4.1.1 (2026-07-03): aggregate logic identical to 3.4.3. The 3-argument top-k form `min_by(x, y, k)` (via `MinByBuilder` / `MaxMinByK`) is only present on Spark master, so Comet handles only the 2-argument form.
 
 ## percentile
 
