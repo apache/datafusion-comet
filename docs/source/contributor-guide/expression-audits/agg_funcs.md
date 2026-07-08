@@ -39,6 +39,14 @@
 - Spark 3.5.8 (2026-05-26)
 - Spark 4.0.1 (2026-05-26)
 
+## listagg
+
+- Spark 3.4.3 (audited 2026-07-03): does not exist. `ListAgg` was added in Spark 4.0.
+- Spark 3.5.8 (audited 2026-07-03): does not exist.
+- Spark 4.0.1 (audited 2026-07-03): `ListAgg(child, delimiter, orderExpressions)` in `aggregate/collect.scala`. Accepts `StringType` or `BinaryType` inputs; result type matches child. Skips nulls; empty or all-null groups return `NULL`. A `NULL` delimiter is treated as an empty string. `CometListAgg` maps only the simple form: `StringType` child with a literal `StringType`/`NullType` delimiter and no `WITHIN GROUP`. `BinaryType` inputs, `WITHIN GROUP (ORDER BY ...)`, non-literal delimiters, and non-default collations fall back to Spark. `DISTINCT` falls back because Comet rejects multi-column distinct aggregates (`ListAgg` has two children).
+- Spark 4.1.1 (audited 2026-07-03): byte-identical to 4.0.1.
+- Native accumulator (`SparkListAgg`) returns `Utf8` but keeps its intermediate state as `Binary`, matching Spark's `TypedImperativeAggregate` buffer schema so the Comet shuffle layer does not insert a `Utf8` → `Binary` cast the merge side cannot read back.
+
 ## median
 
 - Spark 3.4.3 (audited 2026-06-24): `Median(child)` is a `RuntimeReplaceableAggregate` with `replacement = Percentile(child, Literal(0.5))`. Catalyst rewrites `median(x)` to `percentile(x, 0.5)` before Comet sees the plan, so it is served by `CometPercentile`.

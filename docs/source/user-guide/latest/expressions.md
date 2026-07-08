@@ -93,7 +93,7 @@ The tables below list every Spark built-in expression with its current status.
 | `kurtosis` | 🔜 | tracking [#4098](https://github.com/apache/datafusion-comet/issues/4098) |
 | `last` | ✅ |  |
 | `last_value` | ✅ |  |
-| `listagg` | 🔜 | String aggregation |
+| `listagg` | ✅ | Spark 4.0+. `StringType` input with a literal delimiter; `WITHIN GROUP (ORDER BY ...)` and `BinaryType` inputs fall back to Spark. |
 | `max` | ✅ |  |
 | `max_by` | 🔜 | [#3841](https://github.com/apache/datafusion-comet/issues/3841) |
 | `mean` | ✅ |  |
@@ -119,7 +119,7 @@ The tables below list every Spark built-in expression with its current status.
 | `stddev` | ✅ |  |
 | `stddev_pop` | ✅ |  |
 | `stddev_samp` | ✅ |  |
-| `string_agg` | 🔜 | String aggregation (alias of `listagg`) |
+| `string_agg` | ✅ | Alias of `listagg`; same restrictions apply. |
 | `sum` | ✅ |  |
 | `try_avg` | ✅ | Interval types fall back |
 | `try_sum` | ✅ |  |

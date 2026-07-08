@@ -146,6 +146,7 @@ message AggExpr {
     BloomFilterAgg bloomFilterAgg = 16;
     CollectSet collectSet = 17;
     Percentile percentile = 18;
+    ListAgg listAgg = 19;
   }
 
   // Optional filter expression for SQL FILTER (WHERE ...) clause.
@@ -275,6 +276,19 @@ enum BloomFilterVersion {
 message CollectSet {
   Expr child = 1;
   DataType datatype = 2;
+}
+
+// Spark 4.0+ LISTAGG / STRING_AGG aggregate.
+//
+// Comet only serializes the simple form: a StringType child with a literal
+// (or NULL) delimiter and no WITHIN GROUP ORDER BY. DISTINCT is handled by
+// Spark's multi-stage plan rewrite before the aggregate reaches Comet.
+message ListAgg {
+  Expr child = 1;
+  // Literal delimiter expression. NULL delimiter is normalized to empty string
+  // by Spark's semantics.
+  Expr delimiter = 2;
+  DataType datatype = 3;
 }
 
 enum EvalMode {
