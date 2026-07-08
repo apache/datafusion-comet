@@ -684,10 +684,19 @@ html[data-theme="light"] .bd-links li.current:not(:has(li.current)) > a.current.
   font-weight: 400 !important;
 }
 
-/* Mobile sidebar nav header */
+/* Mobile sidebar nav header. Extra top padding: the mobile off-canvas
+   sidebar is a native <dialog> opened via showModal(), which the browser
+   promotes to the "top layer" above everything else and makes the rest of
+   the page inert — so the hamburger button behind it is never reachable
+   while the drawer is open, by design (Escape and tapping the backdrop
+   both already close it correctly). But this drawer's own first item —
+   the "Home" link comet-ux.js prepends into its nav copy — sat close
+   enough to the header's hamburger position that a user instinctively
+   tapping there to close the menu was likely to hit "Home" and navigate
+   away instead. Push it down so it doesn't overlap that corner. */
 .sidebar-header-items {
   border-bottom: 1px solid var(--pst-color-border) !important;
-  padding: 8px 0 !important;
+  padding: 56px 0 8px !important;
 }
 
 /* ─── LAYOUT GRID ──────────────────────────────────────────────────── */
@@ -1344,10 +1353,14 @@ body:has(.comet-hero) article.bd-article {
 
 /* Landing page: hide chrome that doesn't belong on a marketing page.
    The H1 stays (now lives inside the hero as the project's brand statement)
-   so we no longer hide it. */
+   so we no longer hide it. myst_heading_anchors auto-adds a "#" permalink
+   next to every heading so readers can deep-link to a doc subsection —
+   useful on regular content pages, but meaningless on the hero title of a
+   landing page, so it's hidden here specifically. */
 body:has(.comet-hero) .bd-breadcrumbs,
 body:has(.comet-hero) footer.prev-next-footer,
-body:has(.comet-hero) .prev-next-area {
+body:has(.comet-hero) .prev-next-area,
+body:has(.comet-hero) a.headerlink {
   display: none !important;
 }
 
