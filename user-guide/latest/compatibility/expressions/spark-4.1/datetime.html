@@ -808,8 +808,11 @@ with Spark. For dates beyond this range, functions that involve timezone-aware c
 <h2>FromUnixTime<a class="headerlink" href="#fromunixtime" title="Link to this heading">#</a></h2>
 <p>By default, <code class="docutils literal notranslate"><span class="pre">FromUnixTime</span></code> is evaluated in the JVM using Spark’s own code-generated implementation (run inside the Comet pipeline), which matches Spark exactly. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.FromUnixTime.allowIncompatible=true</span></code> to opt into Comet’s native implementation instead, which has the following differences from Spark:</p>
 <ul class="simple">
-<li><p>Only supports the default datetime format pattern <code class="docutils literal notranslate"><span class="pre">yyyy-MM-dd</span> <span class="pre">HH:mm:ss</span></code>. DataFusion’s valid timestamp range differs from Spark (https://github.com/apache/datafusion/issues/16594)</p></li>
-<li><p>from_unixtime does not support non-UTF8_BINARY collations (https://github.com/apache/datafusion-comet/issues/4646)</p></li>
+<li><p>DataFusion’s valid timestamp range differs from Spark (https://github.com/apache/datafusion/issues/16594)</p></li>
+</ul>
+<p>The following cases have no native implementation and always run in the JVM using Spark’s code-generated implementation (inside the Comet pipeline):</p>
+<ul class="simple">
+<li><p>Only the default datetime format pattern <code class="docutils literal notranslate"><span class="pre">yyyy-MM-dd</span> <span class="pre">HH:mm:ss</span></code> is supported</p></li>
 </ul>
 </section>
 <section id="hours">

@@ -76,7 +76,11 @@ By default, `FromUTCTimestamp` is evaluated in the JVM using Spark's own code-ge
 
 By default, `FromUnixTime` is evaluated in the JVM using Spark's own code-generated implementation (run inside the Comet pipeline), which matches Spark exactly. Set `spark.comet.expression.FromUnixTime.allowIncompatible=true` to opt into Comet's native implementation instead, which has the following differences from Spark:
 
-- Only supports the default datetime format pattern `yyyy-MM-dd HH:mm:ss`. DataFusion's valid timestamp range differs from Spark (https://github.com/apache/datafusion/issues/16594)
+- DataFusion's valid timestamp range differs from Spark (https://github.com/apache/datafusion/issues/16594)
+
+The following cases have no native implementation and always run in the JVM using Spark's code-generated implementation (inside the Comet pipeline):
+
+- Only the default datetime format pattern `yyyy-MM-dd HH:mm:ss` is supported
 
 ## Hours
 
