@@ -768,6 +768,13 @@ object CometShuffleExchangeExec
     // writer serializes them with their exprId, so they must be registered against the iterator or
     // the native lookup fails with "Subquery N not found". Both the native-child and
     // non-native-child native-shuffle paths funnel through here.
+    //
+    // Only ScalarSubquery is matched because it is the sole expression QueryPlanSerde turns into a
+    // native Subquery proto (and the only id the native side looks up); this mirrors the other
+    // registration sites (CometExec.collectSubqueries, CometNativeExec.prepareSubqueries). The
+    // exprId is stable under reuse, so a ReusedSubqueryExec plan still resolves to the same result.
+    // The `case _ => Nil` fallthrough is safe: partitionings that are not Expressions
+    // (SinglePartition, RoundRobinPartitioning) carry no key expressions to hold a subquery.
     val partitioningSubqueries = outputPartitioning match {
       case e: Expression => e.collect { case s: ScalarSubquery => s }
       case _ => Nil
