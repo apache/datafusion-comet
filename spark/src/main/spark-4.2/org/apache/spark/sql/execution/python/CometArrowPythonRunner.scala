@@ -36,8 +36,6 @@ class CometArrowPythonRunner(
     evalType: Int,
     argOffsets: Array[Array[Int]],
     override val schema: StructType,
-    timeZoneId: String,
-    largeVarTypes: Boolean,
     pythonRunnerConf: Map[String, String],
     override val pythonMetrics: Map[String, SQLMetric],
     jobArtifactUUID: Option[String],

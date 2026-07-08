@@ -58,8 +58,22 @@ env:
 
 jobs:
   pyarrow-udf:
-    name: PyArrow UDF (Spark 4.0, JDK 17, Python 3.11)
+    name: PyArrow UDF (${{ matrix.name }}, JDK 17, Python 3.11)
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Run a real Python worker against each 4.x runner. The 4.0 and 4.1 subclasses differ in
+          # constructor shape and `writeUDF` arity, so both need worker-level coverage; a wiring
+          # divergence in one would otherwise slip through. (4.2 is a preview with no released
+          # pyspark, so it stays compile-only via the pr_build matrix.)
+          - name: Spark 4.0
+            maven_profiles: "-Pspark-4.0 -Pscala-2.13"
+            pyspark: "4.0.2"
+          - name: Spark 4.1
+            maven_profiles: "-Pspark-4.1"
+            pyspark: "4.1.2"
     container:
       # Pinned to the Debian 12 (bookworm) base so the system `python3` is 3.11. The default
       # `amd64/rust` image is Debian 13 (trixie) which ships Python 3.13 and no python3.11 apt
@@ -82,14 +96,14 @@ jobs:
           path: |
             ~/.m2/repository
             /root/.m2/repository
-          key: ${{ runner.os }}-java-maven-${{ hashFiles('**/pom.xml') }}-pyarrow-udf
+          key: ${{ runner.os }}-java-maven-${{ hashFiles('**/pom.xml') }}-pyarrow-udf-${{ matrix.pyspark }}
           restore-keys: |
             ${{ runner.os }}-java-maven-
 
-      - name: Build Comet (debug, Spark 4.0 / Scala 2.13)
+      - name: Build Comet (debug, ${{ matrix.name }} / Scala 2.13)
         run: |
           cd native && cargo build
-          cd .. && ./mvnw -B install -DskipTests -Pspark-4.0 -Pscala-2.13
+          cd .. && ./mvnw -B install -DskipTests ${{ matrix.maven_profiles }}
 
       - name: Install Python 3.11 and pip
         run: |
@@ -97,7 +111,7 @@ jobs:
           apt-get install -y --no-install-recommends python3 python3-venv python3-pip
           python3 -m venv /tmp/venv
           /tmp/venv/bin/pip install --upgrade pip
-          /tmp/venv/bin/pip install "pyspark==4.0.2" "pyarrow>=14" pandas pytest
+          /tmp/venv/bin/pip install "pyspark==${{ matrix.pyspark }}" "pyarrow>=14" pandas pytest
 
       - name: Run PyArrow UDF pytest
         env:

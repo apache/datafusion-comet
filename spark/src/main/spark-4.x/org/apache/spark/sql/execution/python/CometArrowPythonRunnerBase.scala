@@ -174,7 +174,11 @@ private[python] trait CometArrowPythonRunnerBase
           // Comet's FFI-imported vectors leave the Arrow Field name null, so restore the real
           // column names from the input schema (the worker reads columns by name, and shaded
           // Arrow rejects a null field name). The field types and child structure are kept as-is
-          // so copyVector still walks the source and destination trees in lockstep.
+          // so copyVector still walks the source and destination trees in lockstep. Keeping the
+          // type as-is also means a TimestampType reaches the worker with Comet's UTC time zone
+          // rather than the session zone vanilla Spark would label it with; this is a documented
+          // limitation (see pyarrow-udfs.md), not a value difference, since the stored instant is
+          // identical.
           val childNames = inputStructType.fieldNames
           val childFields = (0 until cometBatch.numCols()).map { i =>
             val vecField =

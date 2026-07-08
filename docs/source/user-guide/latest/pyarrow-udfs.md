@@ -191,6 +191,16 @@ on the unoptimized path.
   enabled; vanilla `PythonMapInArrowExec` / `MapInPandasExec` handle the operation. The Spark 3.5
   `PythonArrowInput` trait has a different contract than 4.x and a separate implementation has
   not been written. Track 3.5 support as a future follow-on if there is user demand.
+- Timestamps are presented to the UDF with a `UTC` time zone rather than the session time zone.
+  Comet normalizes timestamps to UTC internally, and the accelerated path builds the Arrow schema
+  it sends to Python from Comet's own vectors, so a `TimestampType` column reaches the worker
+  labelled `Timestamp(MICROSECOND, "UTC")`. Vanilla Spark instead labels it with
+  `spark.sql.session.timeZone`. The stored value is the same absolute instant either way, so a
+  passthrough or value-based UDF round-trips identically. The difference is only observable to a
+  UDF that reads the Arrow field's time zone or localizes to wall-clock time (for example a
+  `mapInPandas` UDF that strips the tz and treats the value as naive local time): under a non-UTC
+  session time zone such a UDF can diverge from the unoptimized path. Set
+  `spark.comet.exec.pyarrowUdf.enabled=false` for those UDFs.
 - `spark.sql.execution.arrow.useLargeVarTypes=true` is not supported. With this conf enabled,
   Spark widens `StringType` and `BinaryType` to Arrow's 8-byte-offset variants in the
   destination IPC root, while Comet's source vectors always use 4-byte offsets. The buffer-copy

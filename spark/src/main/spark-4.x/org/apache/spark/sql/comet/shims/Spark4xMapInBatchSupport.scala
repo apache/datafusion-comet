@@ -62,21 +62,17 @@ trait Spark4xMapInBatchSupport {
   /** Inputs every 4.x `ArrowPythonRunner` constructor needs in the same shape. */
   protected case class RunnerInputs(
       chainedFunc: Seq[(ChainedPythonFunctions, Long)],
-      timeZoneId: String,
-      largeVarTypes: Boolean,
       pythonRunnerConf: Map[String, String],
       jobArtifactUUID: Option[String])
 
   /**
    * Resolves the `SQLConf`-derived inputs the `ArrowPythonRunner` needs. Must be called on the
    * driver: `SQLConf.get` reads from a thread-local `ConfigReader` that only exists on the
-   * driver, so dereferencing `conf.sessionLocalTimeZone` etc. from a task closure NPEs.
+   * driver, so dereferencing `conf` from a task closure NPEs.
    */
   protected def runnerInputs(pythonUDF: PythonUDF, conf: SQLConf): RunnerInputs =
     RunnerInputs(
       chainedFunc = Seq((ChainedPythonFunctions(Seq(pythonUDF.func)), pythonUDF.resultId.id)),
-      timeZoneId = conf.sessionLocalTimeZone,
-      largeVarTypes = conf.arrowUseLargeVarTypes,
       pythonRunnerConf = ArrowPythonRunner.getPythonRunnerConfMap(conf),
       jobArtifactUUID = JobArtifactSet.getCurrentJobArtifactState.map(_.uuid))
 }
