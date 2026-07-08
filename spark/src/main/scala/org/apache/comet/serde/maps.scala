@@ -75,42 +75,15 @@ object CometMapExtract extends CometExpressionSerde[GetMapValue] {
   }
 }
 
-/**
- * Shared support for the `spark.sql.mapKeyDedupPolicy` divergence between Spark and Comet.
- *
- * Spark's `ArrayBasedMapBuilder` (used by `MapFromArrays` and `MapFromEntries`) applies the
- * policy on duplicate keys (`EXCEPTION` — the default, raising `DUPLICATED_MAP_KEY` — or
- * `LAST_WIN`, keeping the last occurrence). Comet's native `map` scalar has no LAST_WIN path, so
- * only the `EXCEPTION` mode agrees with Spark; `LAST_WIN` diverges and must fall back. Duplicate-
- * key data cases under `EXCEPTION` remain a separately tracked user-observable divergence.
- *
- * Other map-building expressions (`CreateMap`, `MapConcat`, `TransformKeys`) already delegate to
- * Spark's own `doGenCode` via `CometCodegenDispatch`, so they inherit Spark's dedup semantics for
- * free and do not need this gate.
- */
 private object MapKeyDedupPolicySupport {
-  private val LastWin = "LAST_WIN"
-
   val incompatibleReason: String =
-    s"`${SQLConf.MAP_KEY_DEDUP_POLICY.key}` is set to `$LastWin`; Comet's native map construction " +
+    s"`${SQLConf.MAP_KEY_DEDUP_POLICY.key}` is set to `${SQLConf.MapKeyDedupPolicy.LAST_WIN}`; Comet's native map construction " +
       "does not implement LAST_WIN dedup semantics."
 
   def isLastWin: Boolean =
-    SQLConf.get.getConf(SQLConf.MAP_KEY_DEDUP_POLICY).equalsIgnoreCase(LastWin)
+    SQLConf.get.getConf(SQLConf.MAP_KEY_DEDUP_POLICY).toString.equalsIgnoreCase(
+      SQLConf.MapKeyDedupPolicy.LAST_WIN.toString)
 }
-
-object CometMapFromArrays extends CometExpressionSerde[MapFromArrays] {
-
-  override def getIncompatibleReasons(): Seq[String] =
-    Seq(MapKeyDedupPolicySupport.incompatibleReason)
-
-  override def getSupportLevel(expr: MapFromArrays): SupportLevel = {
-    if (MapKeyDedupPolicySupport.isLastWin) {
-      Incompatible(Some(MapKeyDedupPolicySupport.incompatibleReason))
-    } else {
-      Compatible(None)
-    }
-  }
 
   override def convert(
       expr: MapFromArrays,
