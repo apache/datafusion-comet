@@ -763,6 +763,17 @@ object CometShuffleExchangeExec
       spec: NativeShuffleSpec): ShuffleDependency[Int, ColumnarBatch, ColumnarBatch] = {
     val numParts = thinRDD.getNumPartitions
 
+    // Subqueries in the partitioning expressions (e.g. DISTRIBUTE BY over a subquery) belong to
+    // this exchange, not the native child, so the child's collectSubqueries misses them. The
+    // writer serializes them with their exprId, so they must be registered against the iterator or
+    // the native lookup fails with "Subquery N not found". Both shuffle paths funnel through here.
+    val partitioningSubqueries = outputPartitioning match {
+      case e: Expression => e.collect { case s: ScalarSubquery => s }
+      case _ => Nil
+    }
+    val augmentedSpec = spec.copy(execContext =
+      spec.execContext.copy(subqueries = spec.execContext.subqueries ++ partitioningSubqueries))
+
     // The code block below is mostly brought over from
     // ShuffleExchangeExec::prepareShuffleDependency
     val (partitioner, rangePartitionBounds) = outputPartitioning match {
@@ -831,7 +842,7 @@ object CometShuffleExchangeExec
       shuffleWriteMetrics = metrics,
       numParts = numParts,
       rangePartitionBounds = rangePartitionBounds,
-      nativeShuffleSpec = Some(spec))
+      nativeShuffleSpec = Some(augmentedSpec))
   }
 
   /**
