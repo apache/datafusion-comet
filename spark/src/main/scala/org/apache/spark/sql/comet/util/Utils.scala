@@ -97,7 +97,9 @@ object Utils extends CometTypeShim with Logging {
     case float: ArrowType.FloatingPoint if float.getPrecision == FloatingPointPrecision.DOUBLE =>
       DoubleType
     case ArrowType.Utf8.INSTANCE => StringType
+    case ArrowType.LargeUtf8.INSTANCE => StringType
     case ArrowType.Binary.INSTANCE => BinaryType
+    case ArrowType.LargeBinary.INSTANCE => BinaryType
     case _: ArrowType.FixedSizeBinary => BinaryType
     case d: ArrowType.Decimal => DecimalType(d.getPrecision, d.getScale)
     case date: ArrowType.Date if date.getUnit == DateUnit.DAY => DateType
@@ -423,7 +425,8 @@ object Utils extends CometTypeShim with Logging {
     valueVector match {
       case v @ (_: BitVector | _: TinyIntVector | _: SmallIntVector | _: IntVector |
           _: BigIntVector | _: Float4Vector | _: Float8Vector | _: VarCharVector |
-          _: DecimalVector | _: DateDayVector | _: TimeStampMicroTZVector | _: VarBinaryVector |
+          _: LargeVarCharVector | _: DecimalVector | _: DateDayVector |
+          _: TimeStampMicroTZVector | _: VarBinaryVector | _: LargeVarBinaryVector |
           _: FixedSizeBinaryVector | _: TimeStampMicroVector | _: StructVector | _: ListVector |
           _: MapVector | _: NullVector | _: TimeNanoVector) =>
         v.asInstanceOf[FieldVector]

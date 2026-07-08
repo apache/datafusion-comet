@@ -1028,6 +1028,18 @@ impl ColumnarToRowContext {
         }
 
         match (actual_type, schema_type) {
+            // Spark's StringType / BinaryType map to Utf8 / Binary at the JVM-declared
+            // schema layer, but the upstream native plan may legitimately emit the Large*
+            // variants (e.g. CometHashAggregate group-key promotion under
+            // `spark.comet.exec.aggregation.useLargeDataTypes`). The downstream typed dispatch handles
+            // both i32 and i64 offsets natively (`TypedArray::String`/`LargeString` and
+            // `Binary`/`LargeBinary`), so pass the array through unchanged. The cast
+            // kernel would refuse a Large->small downcast whose absolute offsets exceed
+            // i32::MAX even when the logical slice would fit, so attempting the cast here
+            // is both unnecessary and incorrect.
+            (DataType::LargeUtf8, DataType::Utf8) | (DataType::LargeBinary, DataType::Binary) => {
+                Ok(Arc::clone(array))
+            }
             (DataType::Dictionary(_, _), schema)
                 if !matches!(schema, DataType::Dictionary(_, _)) =>
             {

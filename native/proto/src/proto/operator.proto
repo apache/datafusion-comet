@@ -308,6 +308,11 @@ message HashAggregate {
   // Offset in the child's output where aggregate buffer attributes start.
   // Used by PartialMerge to locate state fields in the input.
   int32 initial_input_buffer_offset = 7;
+  // When true, the native planner wraps Utf8/Binary group-by expressions in a Cast to
+  // LargeUtf8/LargeBinary (and casts the aggregate's output back to Utf8/Binary), which
+  // promotes the group-key byte buffer from i32 to i64 offsets and removes the 2 GiB cap.
+  // Driven by spark.comet.exec.aggregation.useLargeDataTypes.
+  bool use_large_data_types = 9;
 }
 
 message Limit {

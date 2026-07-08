@@ -29,7 +29,8 @@ use crate::conversion_funcs::numeric::{
 use crate::conversion_funcs::string::{
     cast_string_to_date, cast_string_to_decimal, cast_string_to_float, cast_string_to_int,
     cast_string_to_timestamp, cast_string_to_timestamp_ntz,
-    is_df_cast_from_string_spark_compatible, spark_cast_utf8_to_boolean,
+    is_df_cast_from_large_string_spark_compatible, is_df_cast_from_string_spark_compatible,
+    spark_cast_utf8_to_boolean,
 };
 use crate::conversion_funcs::temporal::{
     cast_date_to_timestamp, is_df_cast_from_date_spark_compatible,
@@ -497,12 +498,19 @@ fn is_datafusion_spark_compatible(from_type: &DataType, to_type: &DataType) -> b
             is_df_cast_from_decimal_spark_compatible(to_type)
         }
         DataType::Utf8 => is_df_cast_from_string_spark_compatible(to_type),
+        DataType::LargeUtf8 => is_df_cast_from_large_string_spark_compatible(to_type),
         DataType::Date32 => is_df_cast_from_date_spark_compatible(to_type),
         DataType::Timestamp(_, _) => is_df_cast_from_timestamp_spark_compatible(to_type),
         DataType::Binary => {
             // note that this is not completely Spark compatible because
             // DataFusion only supports binary data containing valid UTF-8 strings
-            matches!(to_type, DataType::Utf8)
+            matches!(to_type, DataType::Utf8 | DataType::LargeBinary)
+        }
+        DataType::LargeBinary => {
+            // Symmetric with Binary: allow the offset-width narrowing back to
+            // Binary. Utf8 conversion is not offered here because arrow does not
+            // provide a direct LargeBinary -> Utf8 cast that validates the bytes.
+            matches!(to_type, DataType::Binary)
         }
         _ => false,
     }
