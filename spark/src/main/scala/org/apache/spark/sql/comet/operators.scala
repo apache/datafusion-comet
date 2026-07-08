@@ -39,7 +39,7 @@ import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.{AQEShuffleReadExec, BroadcastQueryStageExec, ShuffleQueryStageExec}
-import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, HashAggregateExec, ObjectHashAggregateExec}
+import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, HashAggregateExec, ObjectHashAggregateExec, SortAggregateExec}
 import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, BroadcastNestedLoopJoinExec, HashJoin, ShuffledHashJoinExec, SortMergeJoinExec}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
@@ -1515,6 +1515,63 @@ case class CometUnionExec(
 
 trait CometBaseAggregate {
 
+  /**
+   * Shared support-level check used by every aggregate serde: honor the unit-test knobs that
+   * selectively disable Comet conversion for partial or final aggregates.
+   */
+  protected def baseAggregateSupportLevel(op: BaseAggregateExec): SupportLevel = {
+    if (!CometConf.COMET_ENABLE_PARTIAL_HASH_AGGREGATE.get(op.conf) &&
+      op.aggregateExpressions.exists(expr => expr.mode == Partial || expr.mode == PartialMerge)) {
+      return Unsupported(Some("Partial aggregates disabled via test config"))
+    }
+    if (!CometConf.COMET_ENABLE_FINAL_HASH_AGGREGATE.get(op.conf) &&
+      op.aggregateExpressions.exists(_.mode == Final)) {
+      return Unsupported(Some("Final aggregates disabled via test config"))
+    }
+    Compatible()
+  }
+
+  /**
+   * For Partial mode aggregates containing TypedImperativeAggregate functions (like CollectSet),
+   * the Spark-side output declares buffer columns as BinaryType (Spark serializes state to
+   * binary). However, the native Comet aggregate produces the actual state type (e.g.,
+   * ArrayType(elementType) for CollectSet). This corrects the output schema to match the native
+   * state types so the shuffle exchange schema is consistent with the actual data.
+   *
+   * NOTE: If a new TypedImperativeAggregate function (e.g., CollectList) is added natively, add a
+   * case branch here mapping it to the native state type.
+   */
+  protected def adjustOutputForNativeState(op: BaseAggregateExec): Seq[Attribute] = {
+    val modes = op.aggregateExpressions.map(_.mode).distinct
+    if (modes != Seq(Partial)) {
+      return op.output
+    }
+
+    val numGrouping = op.groupingExpressions.length
+    val output = op.output.toArray
+
+    var bufferIdx = numGrouping
+    for (aggExpr <- op.aggregateExpressions) {
+      val aggFunc = aggExpr.aggregateFunction
+      val bufferAttrs = aggFunc.aggBufferAttributes
+      aggFunc match {
+        case cs: CollectSet =>
+          val elementType = cs.children.head.dataType
+          val nativeStateType = ArrayType(elementType, containsNull = true)
+          output(bufferIdx) = output(bufferIdx).withDataType(nativeStateType)
+        case _: Percentile =>
+          // DataFusion's percentile_cont keeps all values in a List<Float64> partial state.
+          // Comet casts the child to double, so the native state is ArrayType(DoubleType).
+          val nativeStateType = ArrayType(DoubleType, containsNull = true)
+          output(bufferIdx) = output(bufferIdx).withDataType(nativeStateType)
+        case _ =>
+      }
+      bufferIdx += bufferAttrs.length
+    }
+
+    output.toSeq
+  }
+
   def doConvert(
       aggregate: BaseAggregateExec,
       builder: Operator.Builder,
@@ -1781,21 +1838,19 @@ trait CometBaseAggregate {
   }
 
   /**
-   * Find the first Comet partial aggregate in the plan. If it reaches a Spark HashAggregate with
-   * partial or partial-merge mode, it will return None.
+   * Find the first Comet partial aggregate in the plan. If it reaches a Spark BaseAggregateExec
+   * (HashAggregate / ObjectHashAggregate / SortAggregate) with partial or partial-merge mode, it
+   * will return None.
    */
-  private def findCometPartialAgg(plan: SparkPlan): Option[CometHashAggregateExec] = {
+  private def findCometPartialAgg(plan: SparkPlan): Option[CometBaseAggregateExec] = {
     def isPartialOrMerge(mode: AggregateMode): Boolean =
       mode == Partial || mode == PartialMerge
 
     plan.collectFirst {
-      case agg: CometHashAggregateExec
+      case agg: CometBaseAggregateExec
           if agg.aggregateExpressions.forall(e => isPartialOrMerge(e.mode)) =>
         Some(agg)
-      case agg: HashAggregateExec
-          if agg.aggregateExpressions.forall(e => isPartialOrMerge(e.mode)) =>
-        None
-      case agg: ObjectHashAggregateExec
+      case agg: BaseAggregateExec
           if agg.aggregateExpressions.forall(e => isPartialOrMerge(e.mode)) =>
         None
       case a: AQEShuffleReadExec => findCometPartialAgg(a.child)
@@ -1812,19 +1867,8 @@ object CometHashAggregateExec
   override def enabledConfig: Option[ConfigEntry[Boolean]] = Some(
     CometConf.COMET_EXEC_AGGREGATE_ENABLED)
 
-  override def getSupportLevel(op: HashAggregateExec): SupportLevel = {
-    // some unit tests need to disable partial or final hash aggregate support to test that
-    // CometExecRule does not allow mixed Spark/Comet aggregates
-    if (!CometConf.COMET_ENABLE_PARTIAL_HASH_AGGREGATE.get(op.conf) &&
-      op.aggregateExpressions.exists(expr => expr.mode == Partial || expr.mode == PartialMerge)) {
-      return Unsupported(Some("Partial aggregates disabled via test config"))
-    }
-    if (!CometConf.COMET_ENABLE_FINAL_HASH_AGGREGATE.get(op.conf) &&
-      op.aggregateExpressions.exists(_.mode == Final)) {
-      return Unsupported(Some("Final aggregates disabled via test config"))
-    }
-    Compatible()
-  }
+  override def getSupportLevel(op: HashAggregateExec): SupportLevel =
+    baseAggregateSupportLevel(op)
 
   override def convert(
       aggregate: HashAggregateExec,
@@ -1854,19 +1898,8 @@ object CometObjectHashAggregateExec
   override def enabledConfig: Option[ConfigEntry[Boolean]] = Some(
     CometConf.COMET_EXEC_AGGREGATE_ENABLED)
 
-  override def getSupportLevel(op: ObjectHashAggregateExec): SupportLevel = {
-    // Mirror the same test-knobs as CometHashAggregateExec so that mixed-execution
-    // unit tests can selectively disable partial or final ObjectHashAggregateExec conversion.
-    if (!CometConf.COMET_ENABLE_PARTIAL_HASH_AGGREGATE.get(op.conf) &&
-      op.aggregateExpressions.exists(expr => expr.mode == Partial || expr.mode == PartialMerge)) {
-      return Unsupported(Some("Partial aggregates disabled via test config"))
-    }
-    if (!CometConf.COMET_ENABLE_FINAL_HASH_AGGREGATE.get(op.conf) &&
-      op.aggregateExpressions.exists(_.mode == Final)) {
-      return Unsupported(Some("Final aggregates disabled via test config"))
-    }
-    Compatible()
-  }
+  override def getSupportLevel(op: ObjectHashAggregateExec): SupportLevel =
+    baseAggregateSupportLevel(op)
 
   override def convert(
       aggregate: ObjectHashAggregateExec,
@@ -1895,72 +1928,73 @@ object CometObjectHashAggregateExec
       op.child,
       SerializedPlan(None))
   }
+}
 
-  /**
-   * For Partial mode aggregates containing TypedImperativeAggregate functions (like CollectSet),
-   * the Spark-side output declares buffer columns as BinaryType (since Spark serializes state to
-   * binary). However, the native Comet aggregate produces the actual state type (e.g.,
-   * ArrayType(elementType) for CollectSet). This method corrects the output schema to match the
-   * native state types so the shuffle exchange schema is consistent with the actual data.
-   *
-   * NOTE: If a new TypedImperativeAggregate function (e.g., CollectList) is added natively, add a
-   * case branch here mapping it to the native state type.
-   */
-  private def adjustOutputForNativeState(op: ObjectHashAggregateExec): Seq[Attribute] = {
-    // This adjustment only applies to pure-Partial aggregates (checked below).
-    val modes = op.aggregateExpressions.map(_.mode).distinct
-    if (modes != Seq(Partial)) {
-      return op.output
+object CometSortAggregateExec
+    extends CometOperatorSerde[SortAggregateExec]
+    with CometBaseAggregate {
+
+  override def enabledConfig: Option[ConfigEntry[Boolean]] = Some(
+    CometConf.COMET_EXEC_AGGREGATE_ENABLED)
+
+  override def getSupportLevel(op: SortAggregateExec): SupportLevel =
+    baseAggregateSupportLevel(op)
+
+  override def convert(
+      aggregate: SortAggregateExec,
+      builder: Operator.Builder,
+      childOp: OperatorOuterClass.Operator*): Option[OperatorOuterClass.Operator] = {
+
+    // SortAggregate is planned for TypedImperativeAggregate functions whose intermediate
+    // buffer formats differ between Spark and Comet (same risk as ObjectHashAggregate).
+    // Require Comet shuffle so a Partial->Final pair never spans the JVM/native boundary.
+    if (!isCometShuffleEnabled(aggregate.conf)) {
+      return None
     }
 
-    val numGrouping = op.groupingExpressions.length
-    val output = op.output.toArray
+    doConvert(aggregate, builder, childOp: _*)
+  }
 
-    var bufferIdx = numGrouping
-    for (aggExpr <- op.aggregateExpressions) {
-      val aggFunc = aggExpr.aggregateFunction
-      val bufferAttrs = aggFunc.aggBufferAttributes
-      aggFunc match {
-        case cs: CollectSet =>
-          val elementType = cs.children.head.dataType
-          val nativeStateType = ArrayType(elementType, containsNull = true)
-          output(bufferIdx) = output(bufferIdx).withDataType(nativeStateType)
-        case _: Percentile =>
-          // DataFusion's percentile_cont keeps all values in a List<Float64> partial state.
-          // Comet casts the child to double, so the native state is ArrayType(DoubleType).
-          val nativeStateType = ArrayType(DoubleType, containsNull = true)
-          output(bufferIdx) = output(bufferIdx).withDataType(nativeStateType)
-        case _ =>
-      }
-      bufferIdx += bufferAttrs.length
-    }
-
-    output.toSeq
+  override def createExec(nativeOp: Operator, op: SortAggregateExec): CometNativeExec = {
+    // The native AggregateExec auto-detects Sorted input mode from the child's output ordering
+    // and produces output sorted by the grouping keys; CometExec.outputOrdering defaults to
+    // originalPlan.outputOrdering, which is SortAggregateExec's grouping-key ordering, so
+    // downstream operators that elided a sort against it still see a satisfying ordering.
+    CometSortAggregateExec(
+      nativeOp,
+      op,
+      adjustOutputForNativeState(op),
+      op.groupingExpressions,
+      op.aggregateExpressions,
+      op.resultExpressions,
+      op.child.output,
+      op.child,
+      SerializedPlan(None))
   }
 }
 
-case class CometHashAggregateExec(
-    override val nativeOp: Operator,
-    override val originalPlan: SparkPlan,
-    override val output: Seq[Attribute],
-    groupingExpressions: Seq[NamedExpression],
-    aggregateExpressions: Seq[AggregateExpression],
-    resultExpressions: Seq[NamedExpression],
-    input: Seq[Attribute],
-    child: SparkPlan,
-    override val serializedPlanOpt: SerializedPlan)
+/**
+ * Common base for Comet's aggregate wrapper operators. The hash-based and sort-based variants
+ * share the same native AggregateExec serialization and rendering; they are kept as distinct plan
+ * node types only so the executed plan reflects whether Spark planned a HashAggregateExec /
+ * ObjectHashAggregateExec or a SortAggregateExec (the native AggregateExec auto-detects sorted
+ * input mode from the child ordering, so execution is otherwise identical).
+ */
+abstract class CometBaseAggregateExec
     extends CometUnaryExec
     with PartitioningPreservingUnaryExecNode {
+
+  def groupingExpressions: Seq[NamedExpression]
+  def aggregateExpressions: Seq[AggregateExpression]
+  def resultExpressions: Seq[NamedExpression]
+  def input: Seq[Attribute]
 
   // The aggExprs could be empty. For example, if the aggregate functions only have
   // distinct aggregate functions or only have group by, the aggExprs is empty and
   // modes is empty too.
-  val modes: Seq[AggregateMode] = aggregateExpressions.map(_.mode).distinct
+  lazy val modes: Seq[AggregateMode] = aggregateExpressions.map(_.mode).distinct
 
   override def producedAttributes: AttributeSet = outputSet ++ AttributeSet(resultExpressions)
-
-  override protected def withNewChildInternal(newChild: SparkPlan): SparkPlan =
-    this.copy(child = newChild)
 
   override def verboseStringWithOperatorId(): String = {
     s"""
@@ -1973,6 +2007,24 @@ case class CometHashAggregateExec(
 
   override def stringArgs: Iterator[Any] =
     Iterator(input, modes, groupingExpressions, aggregateExpressions, child)
+
+  override protected def outputExpressions: Seq[NamedExpression] = resultExpressions
+}
+
+case class CometHashAggregateExec(
+    override val nativeOp: Operator,
+    override val originalPlan: SparkPlan,
+    override val output: Seq[Attribute],
+    groupingExpressions: Seq[NamedExpression],
+    aggregateExpressions: Seq[AggregateExpression],
+    resultExpressions: Seq[NamedExpression],
+    input: Seq[Attribute],
+    child: SparkPlan,
+    override val serializedPlanOpt: SerializedPlan)
+    extends CometBaseAggregateExec {
+
+  override protected def withNewChildInternal(newChild: SparkPlan): SparkPlan =
+    this.copy(child = newChild)
 
   override def equals(obj: Any): Boolean = {
     obj match {
@@ -1991,8 +2043,40 @@ case class CometHashAggregateExec(
 
   override def hashCode(): Int =
     Objects.hashCode(output, groupingExpressions, aggregateExpressions, input, modes, child)
+}
 
-  override protected def outputExpressions: Seq[NamedExpression] = resultExpressions
+case class CometSortAggregateExec(
+    override val nativeOp: Operator,
+    override val originalPlan: SparkPlan,
+    override val output: Seq[Attribute],
+    groupingExpressions: Seq[NamedExpression],
+    aggregateExpressions: Seq[AggregateExpression],
+    resultExpressions: Seq[NamedExpression],
+    input: Seq[Attribute],
+    child: SparkPlan,
+    override val serializedPlanOpt: SerializedPlan)
+    extends CometBaseAggregateExec {
+
+  override protected def withNewChildInternal(newChild: SparkPlan): SparkPlan =
+    this.copy(child = newChild)
+
+  override def equals(obj: Any): Boolean = {
+    obj match {
+      case other: CometSortAggregateExec =>
+        this.output == other.output &&
+        this.groupingExpressions == other.groupingExpressions &&
+        this.aggregateExpressions == other.aggregateExpressions &&
+        this.input == other.input &&
+        this.modes == other.modes &&
+        this.child == other.child &&
+        this.serializedPlanOpt == other.serializedPlanOpt
+      case _ =>
+        false
+    }
+  }
+
+  override def hashCode(): Int =
+    Objects.hashCode(output, groupingExpressions, aggregateExpressions, input, modes, child)
 }
 
 trait CometHashJoin {

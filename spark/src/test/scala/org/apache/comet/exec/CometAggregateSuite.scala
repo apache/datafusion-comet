@@ -28,6 +28,7 @@ import org.apache.spark.sql.catalyst.expressions.Cast
 import org.apache.spark.sql.catalyst.optimizer.EliminateSorts
 import org.apache.spark.sql.comet.CometHashAggregateExec
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
+import org.apache.spark.sql.execution.aggregate.SortAggregateExec
 import org.apache.spark.sql.functions.{avg, col, count_distinct, sum}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DataTypes, StructField, StructType}
@@ -2107,6 +2108,46 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           |""".stripMargin,
         "Grouping on map-containing types is not supported")
     }
+  }
+
+  // useObjectHashAggregateExec=false forces Spark to plan SortAggregateExec for
+  // TypedImperativeAggregate functions like collect_set. Comet converts those just like
+  // ObjectHashAggregateExec via the shared CometBaseAggregate path. Broader data-type and
+  // edge-case coverage lives in the SQL file test
+  // spark/src/test/resources/sql-tests/expressions/aggregate/sort_aggregate.sql; these Scala
+  // tests additionally assert that Spark actually planned a SortAggregateExec, which the SQL
+  // framework cannot check.
+  private def assertSortAggregateRunsNatively(query: String): Unit = {
+    withSQLConf(
+      "spark.sql.execution.useObjectHashAggregateExec" -> "false",
+      CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+      withTempView("tbl") {
+        Seq((1, "a"), (2, "a"), (1, "a"), (3, "b"), (4, "b"), (4, "b"))
+          .toDF("v", "g")
+          .createOrReplaceTempView("tbl")
+        // Spark must actually plan a SortAggregateExec for this query; otherwise the test
+        // would pass without exercising the new code path.
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          val plan = stripAQEPlan(sql(query).queryExecution.executedPlan)
+          assert(
+            plan.find(_.isInstanceOf[SortAggregateExec]).isDefined,
+            s"Expected SortAggregateExec in Spark-only plan but got:\n$plan")
+        }
+        checkSparkAnswerAndOperator(sql(query))
+      }
+    }
+  }
+
+  test("SortAggregate with collect_set is converted to native") {
+    assertSortAggregateRunsNatively(
+      "SELECT g, sort_array(collect_set(v)) FROM tbl GROUP BY g ORDER BY g")
+  }
+
+  test("SortAggregate global collect_set (no grouping keys) is converted to native") {
+    // Empty grouping is a distinct plan shape: no pre-aggregate sort, empty output ordering,
+    // and adjustOutputForNativeState with zero grouping columns.
+    assertSortAggregateRunsNatively("SELECT sort_array(collect_set(v)) FROM tbl")
   }
 
   // Regression: Catalyst prunes `HashAggregateExec.resultExpressions` to
