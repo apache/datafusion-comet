@@ -17,19 +17,20 @@
  * under the License.
  */
 
-package org.apache.comet.shims
+package org.apache.spark.sql.comet.shims
 
-import org.apache.spark.sql.internal.{LegacyBehaviorPolicy, SQLConf}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression}
+import org.apache.spark.sql.execution.SparkPlan
 
-trait ShimSQLConf {
-  protected val LEGACY = LegacyBehaviorPolicy.LEGACY
-  protected val CORRECTED = LegacyBehaviorPolicy.CORRECTED
-
-  /**
-   * Reads `spark.sql.execution.arrow.useLargeVarTypes`. Spark 4.x exposes a typed accessor; 3.4
-   * lacks it (a 3.5 backport added it, but Comet's 3.x shim collapses both into a single string
-   * fallback). Forward to the accessor here so callers do not depend on which version they're
-   * compiled against.
-   */
-  protected def arrowUseLargeVarTypes(conf: SQLConf): Boolean = conf.arrowUseLargeVarTypes
-}
+/**
+ * Spark-version-agnostic projection of a `MapInBatchExec` (`PythonMapInArrowExec`,
+ * `MapInArrowExec`, or `MapInPandasExec`) that the Comet rewrite needs. Lives outside the shims
+ * so the Comet planner can pattern-match on it without depending on which concrete Spark class
+ * was matched.
+ */
+case class MapInBatchInfo(
+    func: Expression,
+    output: Seq[Attribute],
+    child: SparkPlan,
+    isBarrier: Boolean,
+    pythonEvalType: Int)
