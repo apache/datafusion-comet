@@ -28,6 +28,7 @@ import org.apache.spark.sql.types.{ByteType, DecimalType, DoubleType, IntegerTyp
 
 import org.apache.comet.CometConf.COMET_EXEC_STRICT_FLOATING_POINT
 import org.apache.comet.CometSparkSessionExtensions.{isSpark41Plus, withFallbackReason}
+import org.apache.comet.expressions.CometEvalMode
 import org.apache.comet.serde.QueryPlanSerde.{evalModeToProto, exprToProto, serializeDataType}
 import org.apache.comet.shims.CometEvalModeUtil
 
@@ -130,6 +131,11 @@ object CometCount extends CometAggregateExpressionSerde[Count] {
 
 object CometAverage extends CometAggregateExpressionSerde[Average] {
 
+  override def supportsMixedPartialFinal(fn: Average): Boolean =
+    // Non-decimal AVG has a (sum: double, count: long) buffer matching Spark. Decimal AVG is
+    // deferred (overflow nulls count differently) and stays unsafe for mixed execution.
+    !fn.child.dataType.isInstanceOf[DecimalType]
+
   override def getUnsupportedReasons(): Seq[String] = Seq(
     "YearMonthIntervalType and DayTimeIntervalType inputs are not supported")
 
@@ -185,6 +191,11 @@ object CometAverage extends CometAggregateExpressionSerde[Average] {
 }
 
 object CometSum extends CometAggregateExpressionSerde[Sum] {
+
+  override def supportsMixedPartialFinal(fn: Sum): Boolean =
+    // SUM's buffer matches Spark for Legacy/Ansi (decimal adds is_empty, also matching), but
+    // TRY-mode integer SUM carries a Comet-internal has_all_nulls column that Spark cannot read.
+    CometEvalModeUtil.fromSparkEvalMode(CometEvalModeUtil.sumEvalMode(fn)) != CometEvalMode.TRY
 
   override def getSupportLevel(expr: Sum): SupportLevel =
     if (AggSerde.sumDataTypeSupported(expr.dataType)) {
