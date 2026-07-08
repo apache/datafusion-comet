@@ -75,7 +75,43 @@ object CometMapExtract extends CometExpressionSerde[GetMapValue] {
   }
 }
 
+/**
+ * Shared support for the `spark.sql.mapKeyDedupPolicy` divergence between Spark and Comet.
+ *
+ * Spark's `ArrayBasedMapBuilder` (used by `MapFromArrays` and `MapFromEntries`) rejects null map
+ * keys and applies the policy on duplicate keys (default `EXCEPTION`, or `LAST_WIN`). Comet's
+ * native map construction implements neither behaviour, so the two only agree when the config is
+ * at its default and the user input contains no null / duplicate keys. This helper narrows the
+ * divergence to the config-driven half: when the policy has been switched away from the default
+ * we mark the expression as incompatible so it falls back to Spark. The null-key / duplicate-key
+ * data cases under the default policy remain user-observable divergences tracked separately.
+ *
+ * Other map-building expressions (`CreateMap`, `MapConcat`, `TransformKeys`) already delegate to
+ * Spark's own `doGenCode` via `CometCodegenDispatch`, so they inherit Spark's dedup semantics for
+ * free and do not need this gate.
+ */
+private object MapKeyDedupPolicySupport {
+  val incompatibleReason: String =
+    s"`${SQLConf.MAP_KEY_DEDUP_POLICY.key}` is set to a non-default value; Comet does not " +
+      "enforce Spark's map-key dedup semantics (LAST_WIN vs EXCEPTION) or reject null map keys."
+
+  def isDefault: Boolean =
+    SQLConf.get.getConf(SQLConf.MAP_KEY_DEDUP_POLICY) ==
+      SQLConf.MAP_KEY_DEDUP_POLICY.defaultValueString
+}
+
 object CometMapFromArrays extends CometExpressionSerde[MapFromArrays] {
+
+  override def getIncompatibleReasons(): Seq[String] =
+    Seq(MapKeyDedupPolicySupport.incompatibleReason)
+
+  override def getSupportLevel(expr: MapFromArrays): SupportLevel = {
+    if (!MapKeyDedupPolicySupport.isDefault) {
+      Incompatible(Some(MapKeyDedupPolicySupport.incompatibleReason))
+    } else {
+      Compatible(None)
+    }
+  }
 
   override def convert(
       expr: MapFromArrays,
@@ -127,16 +163,18 @@ object CometMapFromEntries
     "`BinaryType` is not supported as a map value in `map_from_entries`"
 
   override def getIncompatibleReasons(): Seq[String] =
-    Seq(keyUnsupportedReason, valueUnsupportedReason)
+    Seq(keyUnsupportedReason, valueUnsupportedReason, MapKeyDedupPolicySupport.incompatibleReason)
 
   override def getSupportLevel(expr: MapFromEntries): SupportLevel = {
     if (SupportLevel.containsType(expr.dataType.keyType, classOf[BinaryType])) {
-      return Incompatible(Some(keyUnsupportedReason))
+      Incompatible(Some(keyUnsupportedReason))
+    } else if (SupportLevel.containsType(expr.dataType.valueType, classOf[BinaryType])) {
+      Incompatible(Some(valueUnsupportedReason))
+    } else if (!MapKeyDedupPolicySupport.isDefault) {
+      Incompatible(Some(MapKeyDedupPolicySupport.incompatibleReason))
+    } else {
+      Compatible(None)
     }
-    if (SupportLevel.containsType(expr.dataType.valueType, classOf[BinaryType])) {
-      return Incompatible(Some(valueUnsupportedReason))
-    }
-    Compatible(None)
   }
 }
 
