@@ -197,7 +197,7 @@ fn spark_size_scalar(scalar: &ScalarValue) -> Result<ScalarValue, DataFusionErro
             if array.is_null(0) {
                 Ok(ScalarValue::Int32(Some(-1)))
             } else {
-                let len = array.value_length(0) as i32;
+                let len = array.value_length(0);
                 Ok(ScalarValue::Int32(Some(len)))
             }
         }
