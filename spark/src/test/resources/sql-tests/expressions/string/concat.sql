@@ -57,17 +57,20 @@ SELECT concat('hello', ' ', 'world'), concat('', '', ''), concat(NULL, 'b', 'c')
 statement
 CREATE TABLE test_concat_binary USING parquet AS SELECT cast(uuid() as binary) c1, cast(uuid() as binary) c2, cast(uuid() as binary) c3, cast(uuid() as binary) c4, cast(null as binary) c5 FROM range(10)
 
-query expect_fallback(CONCAT supports only string input parameters)
+-- Concat mixes in CodegenDispatchFallback, so non-string (binary) children have no native path
+-- but route through the JVM codegen dispatcher (Spark's own Concat.doGenCode inside the Comet
+-- pipeline) and stay native while matching Spark exactly.
+query
 SELECT concat(c1, c2) AS x FROM test_concat_binary
 
-query expect_fallback(CONCAT supports only string input parameters)
+query
 SELECT concat(c1, c1) AS x FROM test_concat_binary
 
-query expect_fallback(CONCAT supports only string input parameters)
+query
 SELECT concat(c1, c2, c3) AS x FROM test_concat_binary
 
-query expect_fallback(CONCAT supports only string input parameters)
+query
 SELECT concat(c1, c2, c3, c5) AS x FROM test_concat_binary
 
-query expect_fallback(CONCAT supports only string input parameters)
+query
 SELECT concat(concat(c1, c2, c3), concat(c1, c3)) AS x FROM test_concat_binary

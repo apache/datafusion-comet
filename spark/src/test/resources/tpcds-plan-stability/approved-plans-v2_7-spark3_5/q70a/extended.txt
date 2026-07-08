@@ -8,7 +8,7 @@ CometNativeColumnarToRow
                   +- CometColumnarExchange
                      +- HashAggregate
                         +- Union
-                           :-  HashAggregate [COMET: Spark Final aggregate without Comet Partial requires compatible intermediate buffer formats]
+                           :-  HashAggregate [COMET: Spark Final aggregate without Comet Partial requires compatible intermediate buffer formats, but the following aggregate function(s) have incompatible buffers: sum]
                            :  +- Exchange
                            :     +- HashAggregate
                            :        +- Project
@@ -58,10 +58,10 @@ CometNativeColumnarToRow
                            :                                                              +- CometProject
                            :                                                                 +- CometFilter
                            :                                                                    +- CometNativeScan parquet spark_catalog.default.date_dim
-                           :-  HashAggregate [COMET: Spark Final aggregate without Comet Partial requires compatible intermediate buffer formats]
+                           :-  HashAggregate [COMET: Spark Final aggregate without Comet Partial requires compatible intermediate buffer formats, but the following aggregate function(s) have incompatible buffers: sum]
                            :  +- Exchange
                            :     +- HashAggregate
-                           :        +-  HashAggregate [COMET: Spark Final aggregate without Comet Partial requires compatible intermediate buffer formats]
+                           :        +-  HashAggregate [COMET: Spark Final aggregate without Comet Partial requires compatible intermediate buffer formats, but the following aggregate function(s) have incompatible buffers: sum]
                            :           +- Exchange
                            :              +- HashAggregate
                            :                 +- Project
@@ -111,10 +111,10 @@ CometNativeColumnarToRow
                            :                                                                       +- CometProject
                            :                                                                          +- CometFilter
                            :                                                                             +- CometNativeScan parquet spark_catalog.default.date_dim
-                           +-  HashAggregate [COMET: Spark Final aggregate without Comet Partial requires compatible intermediate buffer formats]
+                           +-  HashAggregate [COMET: Spark Final aggregate without Comet Partial requires compatible intermediate buffer formats, but the following aggregate function(s) have incompatible buffers: sum]
                               +- Exchange
                                  +- HashAggregate
-                                    +-  HashAggregate [COMET: Spark Final aggregate without Comet Partial requires compatible intermediate buffer formats]
+                                    +-  HashAggregate [COMET: Spark Final aggregate without Comet Partial requires compatible intermediate buffer formats, but the following aggregate function(s) have incompatible buffers: sum]
                                        +- Exchange
                                           +- HashAggregate
                                              +- Project
