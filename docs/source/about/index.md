@@ -1,4 +1,4 @@
-<!---
+<!--
 Licensed to the Apache Software Foundation (ASF) under one
 or more contributor license agreements.  See the NOTICE file
 distributed with this work for additional information
@@ -7,7 +7,7 @@ to you under the Apache License, Version 2.0 (the
 "License"); you may not use this file except in compliance
 with the License.  You may obtain a copy of the License at
 
-http://www.apache.org/licenses/LICENSE-2.0
+  http://www.apache.org/licenses/LICENSE-2.0
 
 Unless required by applicable law or agreed to in writing,
 software distributed under the License is distributed on an
@@ -17,27 +17,21 @@ specific language governing permissions and limitations
 under the License.
 -->
 
-# Expression Compatibility (Spark 4.0)
+# About
 
-Compatibility notes for Comet running on Apache Spark 4.0. Expressions that are not 100%
-Spark-compatible fall back to Spark by default, except those with a JVM codegen-dispatch
-path, which stay in Comet's native pipeline and match Spark exactly. Set
-`spark.comet.expression.EXPRNAME.allowIncompatible=true`, where `EXPRNAME` is the Spark
-expression class name, to run Comet's native implementation despite its differences
-from Spark. See the [Comet Supported Expressions Guide](../../../expressions.md)
-for more information on this configuration setting.
+Background on the project: how Comet compares to similar accelerators, how releases
+are versioned, and links to the Apache Software Foundation resources behind it.
+
+- [Comparison with Gluten](gluten_comparison.md) — how Comet differs from other Spark accelerators
+- [Versioning Policy](versioning_policy.md) — what our version numbers mean and our release cadence
+- [ASF Links](../asf/index.md) — licensing, donations, security reporting, and the code of conduct
 
 ```{toctree}
 :maxdepth: 1
+:caption: About
+:hidden:
 
-aggregate
-array
-datetime
-map
-math
-misc
-string
-struct
-url
-cast
+Comparison with Gluten <gluten_comparison>
+Versioning Policy <versioning_policy>
+ASF Links <../asf/index>
 ```

@@ -86,7 +86,8 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
     classOf[ArrayAggregate] -> CometArrayAggregate,
     classOf[ArraySort] -> CometArraySort,
     classOf[ZipWith] -> CometZipWith,
-    classOf[Sequence] -> CometSequence)
+    classOf[Sequence] -> CometSequence,
+    classOf[Shuffle] -> CometShuffle)
 
   private val conditionalExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] =
     Map(classOf[CaseWhen] -> CometCaseWhen, classOf[If] -> CometIf)
@@ -780,8 +781,22 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       }
       handler.getSupportLevel(expr) match {
         case Unsupported(notes) =>
-          withFallbackReason(expr, notes.getOrElse(""))
-          None
+          // `CodegenDispatchFallback` serdes have no native path for these cases either, but the
+          // dispatcher can still run Spark's own `doGenCode` inside the Comet pipeline. Try that
+          // before falling the projection back to Spark. No `[COMET-INFO]` hint here: unlike
+          // `Incompatible`, there is no native opt-in for the user to flip, so log at debug level
+          // to give anyone tracing why a projection stayed native something to go on.
+          dispatchIfFallback(handler, expr, inputs, binding)
+            .map { case (_, proto) =>
+              logDebug(
+                s"$expr has no native path (${notes.getOrElse("unsupported")}) but is routed " +
+                  "through the JVM codegen dispatcher to stay in the Comet pipeline.")
+              proto
+            }
+            .orElse {
+              withFallbackReason(expr, notes.getOrElse(""))
+              None
+            }
         case Incompatible(notes) =>
           val exprAllowIncompat = CometConf.isExprAllowIncompat(exprConfName)
           if (exprAllowIncompat) {
@@ -798,15 +813,12 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
             // pipeline) so the projection stays native while still matching Spark. Everything else
             // falls back to Spark. Falling back is also the result when the dispatcher cannot
             // handle the expression.
-            val dispatched = handler match {
-              case h: CodegenDispatchFallback =>
-                CometScalaUDF.emitJvmCodegenDispatch(expr, inputs, binding).map { proto =>
-                  val key = h.nativeOptInConfigKeyOverride
-                    .getOrElse(CometConf.getExprAllowIncompatConfigKey(exprConfName))
-                  withInfo(expr, NativeOptIn.message(exprConfName, key))
-                  proto
-                }
-              case _ => None
+            val dispatched = dispatchIfFallback(handler, expr, inputs, binding).map {
+              case (h, proto) =>
+                val key = h.nativeOptInConfigKeyOverride
+                  .getOrElse(CometConf.getExprAllowIncompatConfigKey(exprConfName))
+                withInfo(expr, NativeOptIn.message(exprConfName, key))
+                proto
             }
             dispatched.orElse {
               val optionalNotes = notes.map(str => s" ($str)").getOrElse("")
@@ -1047,6 +1059,23 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       case o => o
     }
 
+  }
+
+  /**
+   * If `handler` is a `CodegenDispatchFallback`, run `expr` through the JVM codegen dispatcher
+   * and return `Some((handler, proto))` on success; otherwise return `None`. Shared by the
+   * `Unsupported` and (non-opt-in) `Incompatible` arms of `exprToProtoInternal` so they don't
+   * each inline the same pattern match. Returning the matched handler lets the `Incompatible` arm
+   * reach `nativeOptInConfigKeyOverride` without re-pattern-matching the same value.
+   */
+  private def dispatchIfFallback(
+      handler: CometExpressionSerde[_],
+      expr: Expression,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[(CodegenDispatchFallback, Expr)] = handler match {
+    case h: CodegenDispatchFallback =>
+      CometScalaUDF.emitJvmCodegenDispatch(expr, inputs, binding).map(h -> _)
+    case _ => None
   }
 
   // scalastyle:off

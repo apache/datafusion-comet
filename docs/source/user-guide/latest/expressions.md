@@ -88,8 +88,8 @@ The tables below list every Spark built-in expression with its current status.
 | `every` | ✅ |  |
 | `first` | ✅ |  |
 | `first_value` | ✅ |  |
-| `grouping` | 🔜 | Grouping indicator for ROLLUP/CUBE/GROUPING SETS |
-| `grouping_id` | 🔜 | Grouping indicator for ROLLUP/CUBE/GROUPING SETS |
+| `grouping` | ✅ | Grouping indicator for ROLLUP/CUBE/GROUPING SETS |
+| `grouping_id` | ✅ | Grouping indicator for ROLLUP/CUBE/GROUPING SETS |
 | `kurtosis` | 🔜 | tracking [#4098](https://github.com/apache/datafusion-comet/issues/4098) |
 | `last` | ✅ |  |
 | `last_value` | ✅ |  |
@@ -155,7 +155,7 @@ The tables below list every Spark built-in expression with its current status.
 | `flatten` | ✅ | Binary/struct/map elements fall back |
 | `get` | ✅ |  |
 | `sequence` | ✅ |  |
-| `shuffle` | 🔜 | Random array shuffle |
+| `shuffle` | ✅ | Binary/struct/map elements fall back |
 | `slice` | ✅ | Native ([#4149](https://github.com/apache/datafusion-comet/issues/4149)) |
 | `sort_array` | ✅ | Nested struct/null arrays fall back |
 
@@ -262,13 +262,13 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `last_day` | ✅ |  |
 | `localtimestamp` | ✅ |  |
 | `make_date` | ✅ |  |
-| `make_dt_interval` | 🔜 | [#4541](https://github.com/apache/datafusion-comet/issues/4541) |
+| `make_dt_interval` | ✅ |  |
 | `make_interval` | 🔜 | Produces legacy CalendarInterval; tracked by [#4540](https://github.com/apache/datafusion-comet/issues/4540) |
 | `make_time` | 🔜 | Spark 4.1 TIME type; tracked by [#4288](https://github.com/apache/datafusion-comet/issues/4288) |
 | `make_timestamp` | ✅ |  |
 | `make_timestamp_ltz` | ✅ | 2-arg TIME form falls back |
 | `make_timestamp_ntz` | ✅ | 2-arg TIME form falls back |
-| `make_ym_interval` | 🔜 | [#4541](https://github.com/apache/datafusion-comet/issues/4541) |
+| `make_ym_interval` | ✅ |  |
 | `minute` | ✅ |  |
 | `month` | ✅ |  |
 | `monthname` | ✅ | Abbreviated month name (Spark 4.0+) |
@@ -625,13 +625,16 @@ expression-level). The `outer` variants are wired but marked `Incompatible`; the
 
 ## window_funcs
 
-Window functions run via `CometWindowExec`. Aggregate window functions
-(`count`, `min`, `max`, `sum`, `avg`, `first_value`, `last_value`),
-ranking functions (`row_number`, `rank`, `dense_rank`, `percent_rank`,
-`cume_dist`, `ntile`), and value-shift functions (`lag`, `lead`,
-`nth_value`) are all wired in the window serde and execute natively.
-A handful of frame shapes still fall back — see the per-function notes
-for the exact unsupported cases.
+Window functions run via `CometWindowExec`, which is enabled by default.
+Aggregate window functions (`count`, `min`, `max`, `sum`, `avg`,
+`first_value`, `last_value`), ranking functions (`row_number`, `rank`,
+`dense_rank`, `percent_rank`, `cume_dist`, `ntile`), and value-shift
+functions (`lag`, `lead`, `nth_value`) are all wired in the window serde
+and execute natively. Statistical aggregates such as `stddev`, `var_pop`,
+`corr`, and `covar_pop` run natively as plain aggregations but fall back
+to Spark when used as window functions. A handful of frame shapes also
+fall back. See [window function compatibility](compatibility/operators.md)
+for the full list of supported functions, frames, and fallback cases.
 
 | Function | Status | Notes |
 | --- | --- | --- |
