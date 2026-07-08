@@ -754,7 +754,7 @@ under the License.
 </thead>
 <tbody>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.scan.allowDisabledParquetVectorizedReader</span></code></p></td>
-<td><p>Whether to allow Comet’s native scan to replace the Parquet scan when Spark’s spark.sql.parquet.enableVectorizedReader is set to false. By default (false), Comet falls back to Spark in that case, because Comet’s native readers mirror Spark’s vectorized reader semantics rather than Spark’s parquet-mr (non-vectorized) semantics, which permit silent overflow / null-on-narrowing that Comet has no equivalent for. For more information, refer to the <a class="reference external" href="https://datafusion.apache.org/comet/user-guide/compatibility.html">Comet Compatibility Guide</a>.</p></td>
+<td><p>Whether to allow Comet’s native scan to replace the Parquet scan when Spark’s spark.sql.parquet.enableVectorizedReader is set to false. By default (false), Comet falls back to Spark in that case, because Comet’s native readers mirror Spark’s vectorized reader semantics rather than Spark’s parquet-mr (non-vectorized) semantics, which permit silent overflow / null-on-narrowing that Comet has no equivalent for. For more information, refer to the <a class="reference external" href="https://datafusion.apache.org/comet/user-guide/latest/compatibility/index.html">Comet Compatibility Guide</a>.</p></td>
 <td><p>false</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.scan.icebergNative.dataFileConcurrencyLimit</span></code></p></td>
@@ -766,7 +766,7 @@ under the License.
 <td><p>true</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.scan.unsignedSmallIntSafetyCheck</span></code></p></td>
-<td><p>Parquet files may contain unsigned 8-bit integers (UINT_8) which Spark maps to ShortType. When this config is true (default), Comet falls back to Spark for ShortType columns because we cannot distinguish signed INT16 (safe) from unsigned UINT_8 (may produce different results). Set to false to allow native execution of ShortType columns if you know your data does not contain unsigned UINT_8 columns from improperly encoded Parquet files. For more information, refer to the <a class="reference external" href="https://datafusion.apache.org/comet/user-guide/compatibility.html">Comet Compatibility Guide</a>.</p></td>
+<td><p>Parquet files may contain unsigned 8-bit integers (UINT_8) which Spark maps to ShortType. When this config is true (default), Comet falls back to Spark for ShortType columns because we cannot distinguish signed INT16 (safe) from unsigned UINT_8 (may produce different results). Set to false to allow native execution of ShortType columns if you know your data does not contain unsigned UINT_8 columns from improperly encoded Parquet files. For more information, refer to the <a class="reference external" href="https://datafusion.apache.org/comet/user-guide/latest/compatibility/index.html">Comet Compatibility Guide</a>.</p></td>
 <td><p>true</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.hadoop.fs.comet.libhdfs.schemes</span></code></p></td>
@@ -870,7 +870,7 @@ under the License.
 <td><p>true</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.replaceSortMergeJoin</span></code></p></td>
-<td><p>Experimental feature to force Spark to replace SortMergeJoin with ShuffledHashJoin for improved performance. This feature is not stable yet. For more information, refer to the <a class="reference external" href="https://datafusion.apache.org/comet/user-guide/tuning.html">Comet Tuning Guide</a>.</p></td>
+<td><p>Experimental feature to force Spark to replace SortMergeJoin with ShuffledHashJoin for improved performance. This feature is not stable yet. For more information, refer to the <a class="reference external" href="https://datafusion.apache.org/comet/user-guide/latest/tuning.html">Comet Tuning Guide</a>.</p></td>
 <td><p>false</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.scalaUDF.codegen.enabled</span></code></p></td>
@@ -878,7 +878,7 @@ under the License.
 <td><p>true</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.strictFloatingPoint</span></code></p></td>
-<td><p>When enabled, fall back to Spark for floating-point operations that may differ from Spark, such as when comparing or sorting -0.0 and 0.0. For more information, refer to the <a class="reference external" href="https://datafusion.apache.org/comet/user-guide/compatibility.html">Comet Compatibility Guide</a>.</p></td>
+<td><p>When enabled, fall back to Spark for floating-point operations that may differ from Spark, such as when comparing or sorting -0.0 and 0.0. For more information, refer to the <a class="reference external" href="https://datafusion.apache.org/comet/user-guide/latest/compatibility/index.html">Comet Compatibility Guide</a>.</p></td>
 <td><p>false</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.transitionRevert.enabled</span></code></p></td>
@@ -1065,11 +1065,11 @@ under the License.
 <td><p>8192</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.memoryPool</span></code></p></td>
-<td><p>The type of memory pool to be used for Comet native execution when running Spark in off-heap mode. Available pool types are <code class="docutils literal notranslate"><span class="pre">greedy_unified</span></code> and <code class="docutils literal notranslate"><span class="pre">fair_unified</span></code>. For more information, refer to the <a class="reference external" href="https://datafusion.apache.org/comet/user-guide/tuning.html">Comet Tuning Guide</a>.</p></td>
+<td><p>The type of memory pool to be used for Comet native execution when running Spark in off-heap mode. Available pool types are <code class="docutils literal notranslate"><span class="pre">greedy_unified</span></code> and <code class="docutils literal notranslate"><span class="pre">fair_unified</span></code>. For more information, refer to the <a class="reference external" href="https://datafusion.apache.org/comet/user-guide/latest/tuning.html">Comet Tuning Guide</a>.</p></td>
 <td><p>fair_unified</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.memoryPool.fraction</span></code></p></td>
-<td><p>Fraction of off-heap memory pool that is available to Comet. Only applies to off-heap mode. For more information, refer to the <a class="reference external" href="https://datafusion.apache.org/comet/user-guide/tuning.html">Comet Tuning Guide</a>.</p></td>
+<td><p>Fraction of off-heap memory pool that is available to Comet. Only applies to off-heap mode. For more information, refer to the <a class="reference external" href="https://datafusion.apache.org/comet/user-guide/latest/tuning.html">Comet Tuning Guide</a>.</p></td>
 <td><p>1.0</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.tracing.enabled</span></code></p></td>
@@ -1095,7 +1095,7 @@ under the License.
 </thead>
 <tbody>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.columnar.shuffle.memory.factor</span></code></p></td>
-<td><p>Fraction of Comet memory to be allocated per executor process for columnar shuffle when running in on-heap mode. For more information, refer to the <a class="reference external" href="https://datafusion.apache.org/comet/user-guide/tuning.html">Comet Tuning Guide</a>.</p></td>
+<td><p>Fraction of Comet memory to be allocated per executor process for columnar shuffle when running in on-heap mode. For more information, refer to the <a class="reference external" href="https://datafusion.apache.org/comet/user-guide/latest/tuning.html">Comet Tuning Guide</a>.</p></td>
 <td><p>1.0</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.debug.memory</span></code></p></td>
