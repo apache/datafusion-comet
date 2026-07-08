@@ -766,7 +766,8 @@ object CometShuffleExchangeExec
     // Subqueries in the partitioning expressions (e.g. DISTRIBUTE BY over a subquery) belong to
     // this exchange, not the native child, so the child's collectSubqueries misses them. The
     // writer serializes them with their exprId, so they must be registered against the iterator or
-    // the native lookup fails with "Subquery N not found". Both shuffle paths funnel through here.
+    // the native lookup fails with "Subquery N not found". Both the native-child and
+    // non-native-child native-shuffle paths funnel through here.
     val partitioningSubqueries = outputPartitioning match {
       case e: Expression => e.collect { case s: ScalarSubquery => s }
       case _ => Nil
