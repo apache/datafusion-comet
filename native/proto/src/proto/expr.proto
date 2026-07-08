@@ -146,6 +146,8 @@ message AggExpr {
     BloomFilterAgg bloomFilterAgg = 16;
     CollectSet collectSet = 17;
     Percentile percentile = 18;
+    HllSketchAgg hllSketchAgg = 19;
+    HllUnionAgg hllUnionAgg = 20;
   }
 
   // Optional filter expression for SQL FILTER (WHERE ...) clause.
@@ -270,6 +272,20 @@ enum BloomFilterVersion {
   BLOOM_FILTER_VERSION_UNSPECIFIED = 0;
   BLOOM_FILTER_VERSION_V1 = 1;
   BLOOM_FILTER_VERSION_V2 = 2;
+}
+
+message HllSketchAgg {
+  // Child value expression (integral, string, or binary).
+  Expr child = 1;
+  // DataSketches lgConfigK (log2 of the number of buckets), Spark default 12.
+  int32 lg_config_k = 2;
+}
+
+message HllUnionAgg {
+  // Child sketch expression (Binary column of serialized HLL sketches).
+  Expr child = 1;
+  // When false, Spark errors if input sketches have differing lgConfigK.
+  bool allow_different_lg_config_k = 2;
 }
 
 message CollectSet {

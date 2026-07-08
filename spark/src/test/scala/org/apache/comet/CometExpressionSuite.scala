@@ -3424,4 +3424,96 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("hll_sketch_agg and hll_sketch_estimate (incompatible, opt-in)") {
+    assume(isSpark40Plus)
+    // HLL is approximate: Comet's Rust DataSketches estimator differs slightly from
+    // Spark's after a merge, so these functions are Incompatible. Opt in, assert the
+    // query runs natively (no fallback), and that the estimate is within HLL error of
+    // the TRUE distinct count (700). Do NOT compare bit-exactly to Spark.
+    withSQLConf(
+      "spark.comet.expression.HllSketchAgg.allowIncompatible" -> "true",
+      "spark.comet.expression.HllSketchEstimate.allowIncompatible" -> "true") {
+      withParquetTable((0 until 1000).map(i => (i % 700, i)), "tbl") {
+        def checkEstimate(query: String): Unit = {
+          val df = sql(query)
+          checkCometOperators(stripAQEPlan(df.queryExecution.executedPlan))
+          val est = df.collect().head.getLong(0)
+          assert(
+            math.abs(est - 700).toDouble / 700 <= 0.05,
+            s"estimate $est not within 5% of the true distinct count 700 for: $query")
+        }
+        checkEstimate("SELECT hll_sketch_estimate(hll_sketch_agg(_1)) FROM tbl")
+        checkEstimate("SELECT hll_sketch_estimate(hll_sketch_agg(_1, 14)) FROM tbl")
+        checkEstimate("SELECT hll_sketch_estimate(hll_sketch_agg(cast(_1 as string))) FROM tbl")
+      }
+    }
+  }
+
+  test("hll_union_agg and hll_union (incompatible, opt-in)") {
+    assume(isSpark40Plus)
+    withSQLConf(
+      "spark.comet.expression.HllSketchAgg.allowIncompatible" -> "true",
+      "spark.comet.expression.HllSketchEstimate.allowIncompatible" -> "true",
+      "spark.comet.expression.HllUnionAgg.allowIncompatible" -> "true",
+      "spark.comet.expression.HllUnion.allowIncompatible" -> "true") {
+      withParquetTable((0 until 1000).map(i => (i % 3, i)), "tbl") {
+        // hll_union_agg: union the per-group sketches -> ~1000 distinct.
+        val aggDf = sql(
+          "SELECT hll_sketch_estimate(hll_union_agg(s)) FROM " +
+            "(SELECT _1 AS g, hll_sketch_agg(_2) AS s FROM tbl GROUP BY _1)")
+        checkCometOperators(stripAQEPlan(aggDf.queryExecution.executedPlan))
+        val aggEst = aggDf.collect().head.getLong(0)
+        assert(math.abs(aggEst - 1000).toDouble / 1000 <= 0.05, s"union_agg estimate $aggEst")
+
+        // hll_union: union two disjoint group sketches -> ~667 distinct.
+        val unionDf = sql(
+          "SELECT hll_sketch_estimate(hll_union(a.s, b.s)) FROM " +
+            "(SELECT hll_sketch_agg(_2) AS s FROM tbl WHERE _1 = 0) a, " +
+            "(SELECT hll_sketch_agg(_2) AS s FROM tbl WHERE _1 = 1) b")
+        checkCometOperators(stripAQEPlan(unionDf.queryExecution.executedPlan))
+        val unionEst = unionDf.collect().head.getLong(0)
+        assert(math.abs(unionEst - 667).toDouble / 667 <= 0.05, s"union estimate $unionEst")
+      }
+    }
+  }
+
+  test("hll_union_agg rejects different lgConfigK when not allowed") {
+    assume(isSpark40Plus)
+    withSQLConf(
+      "spark.comet.expression.HllSketchAgg.allowIncompatible" -> "true",
+      "spark.comet.expression.HllUnionAgg.allowIncompatible" -> "true") {
+      withParquetTable((0 until 100).map(i => Tuple1(i)), "tbl") {
+        // A lgConfigK=10 sketch unioned with a lgConfigK=12 sketch (allowDifferentLgConfigK
+        // defaults false) must throw in BOTH Spark and Comet.
+        val df = sql(
+          "SELECT hll_union_agg(s) FROM (" +
+            "  SELECT hll_sketch_agg(_1, 10) AS s FROM tbl UNION ALL" +
+            "  SELECT hll_sketch_agg(_1, 12) AS s FROM tbl)")
+        val (sparkErr, cometErr) = checkSparkAnswerMaybeThrows(df)
+        assert(sparkErr.isDefined, "expected Spark to throw on different lgConfigK")
+        assert(cometErr.isDefined, "expected Comet to throw on different lgConfigK")
+      }
+    }
+  }
+
+  test("hll_sketch_agg over all-null input estimates to 0, not NULL") {
+    assume(isSpark40Plus)
+    // Spark's HllSketchAgg/HllSketchEstimate are declared non-nullable: an empty or
+    // all-null group still produces a serialized empty sketch, and hll_sketch_estimate
+    // reads that as 0, never NULL. Guard against regressing to Binary(None) here.
+    withSQLConf(
+      "spark.comet.expression.HllSketchAgg.allowIncompatible" -> "true",
+      "spark.comet.expression.HllSketchEstimate.allowIncompatible" -> "true") {
+      withParquetTable((0 until 100).map(_ => Tuple1(null.asInstanceOf[Integer])), "tbl") {
+        val df = sql("SELECT hll_sketch_estimate(hll_sketch_agg(_1)) FROM tbl")
+        checkCometOperators(stripAQEPlan(df.queryExecution.executedPlan))
+        val row = df.collect().head
+        assert(!row.isNullAt(0), "expected a non-null estimate for an all-null group")
+        assert(
+          row.getLong(0) == 0,
+          s"expected estimate 0 for an all-null group, got ${row.getLong(0)}")
+      }
+    }
+  }
+
 }

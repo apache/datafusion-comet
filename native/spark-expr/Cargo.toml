@@ -44,6 +44,7 @@ twox-hash = "2.1.2"
 rand = { workspace = true }
 hex = "0.4.3"
 base64 = "0.22.1"
+datasketches = { workspace = true }
 
 [dev-dependencies]
 arrow = {workspace = true}

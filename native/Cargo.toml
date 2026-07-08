@@ -49,6 +49,7 @@ datafusion-comet-proto = { path = "proto" }
 datafusion-comet-shuffle = { path = "shuffle" }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 chrono-tz = { version = "0.10" }
+datasketches = { version = "0.3.0", features = ["hll"] }
 futures = "0.3.32"
 num = "0.4"
 rand = "0.10"

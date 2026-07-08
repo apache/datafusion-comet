@@ -20,6 +20,7 @@
 package org.apache.comet.shims
 
 import org.apache.spark.sql.catalyst.expressions._
+import org.apache.spark.sql.catalyst.expressions.aggregate.{HllSketchAgg, HllUnionAgg}
 import org.apache.spark.sql.catalyst.expressions.json.{JsonExpressionUtils, StructsToJsonEvaluator}
 import org.apache.spark.sql.catalyst.expressions.objects.{Invoke, StaticInvoke}
 import org.apache.spark.sql.catalyst.expressions.url.ParseUrlEvaluator
@@ -27,7 +28,7 @@ import org.apache.spark.sql.types.ArrayType
 
 import org.apache.comet.CometExplainInfo
 import org.apache.comet.expressions.CometEvalMode
-import org.apache.comet.serde.{CometExpressionSerde, CometMapSort, CometToPrettyString, CometWidthBucket}
+import org.apache.comet.serde.{CometAggregateExpressionSerde, CometExpressionSerde, CometHllSketchAgg, CometHllSketchEstimate, CometHllUnion, CometHllUnionAgg, CometMapSort, CometToPrettyString, CometWidthBucket}
 import org.apache.comet.serde.ExprOuterClass.Expr
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithFallbackReason, scalarFunctionExprToProtoWithReturnType}
 
@@ -46,9 +47,14 @@ trait Spark4xCometExprShim extends CometExprShim4x {
   def sparkVersionSpecificMathExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] =
     Map(classOf[WidthBucket] -> CometWidthBucket)
   def sparkVersionSpecificMiscExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] =
-    Map(classOf[ToPrettyString] -> CometToPrettyString)
+    Map(
+      classOf[ToPrettyString] -> CometToPrettyString,
+      classOf[HllSketchEstimate] -> CometHllSketchEstimate,
+      classOf[HllUnion] -> CometHllUnion)
   def sparkVersionSpecificMapExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] =
     Map(classOf[MapSort] -> CometMapSort)
+  def sparkVersionSpecificAggregates: Map[Class[_], CometAggregateExpressionSerde[_]] =
+    Map(classOf[HllSketchAgg] -> CometHllSketchAgg, classOf[HllUnionAgg] -> CometHllUnionAgg)
 
   def sparkVersionSpecificExprToProtoInternal(
       expr: Expression,

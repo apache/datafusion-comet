@@ -16,6 +16,7 @@
 // under the License.
 
 use crate::hash_funcs::*;
+use crate::hll_scalar::{spark_hll_sketch_estimate, spark_hll_union};
 use crate::json_funcs::JsonArrayLength;
 use crate::map_funcs::spark_map_sort;
 use crate::math_funcs::abs::abs;
@@ -220,6 +221,14 @@ pub fn create_comet_physical_fun_with_eval_mode(
         "map_sort" => {
             let func = Arc::new(spark_map_sort);
             make_comet_scalar_udf!("spark_map_sort", func, without data_type)
+        }
+        "hll_sketch_estimate" => {
+            let func = Arc::new(|args: &[ColumnarValue]| spark_hll_sketch_estimate(args));
+            make_comet_scalar_udf!("hll_sketch_estimate", func, without data_type)
+        }
+        "hll_union" => {
+            let func = Arc::new(|args: &[ColumnarValue]| spark_hll_union(args));
+            make_comet_scalar_udf!("hll_union", func, without data_type)
         }
         "to_time" => {
             make_comet_scalar_udf!("to_time", spark_to_time, without data_type, fail_on_error)
