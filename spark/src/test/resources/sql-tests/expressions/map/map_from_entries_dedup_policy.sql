@@ -15,11 +15,11 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- Verifies that `map_from_entries` falls back to Spark when the map-key dedup policy is switched
--- away from its default (EXCEPTION) to LAST_WIN. `CometMapFromEntries` mixes in
--- `CodegenDispatchFallback`, so its native `Incompatible` normally routes through the JVM codegen
--- dispatcher; we disable the dispatcher here so the incompat branch surfaces as a genuine Spark
--- fallback rather than in-pipeline codegen. The default-mode compatible case is covered by
+-- Verifies that `map_from_entries` falls back to Spark when `spark.sql.mapKeyDedupPolicy` is set
+-- to `LAST_WIN`. `CometMapFromEntries` mixes in `CodegenDispatchFallback`, so its native
+-- `Incompatible` normally routes through the JVM codegen dispatcher; we disable the dispatcher
+-- here so the incompat branch surfaces as a genuine Spark fallback rather than in-pipeline
+-- codegen. The default `EXCEPTION` mode agrees with Comet and is covered by
 -- `map_from_entries.sql`.
 
 -- Config: spark.sql.mapKeyDedupPolicy=LAST_WIN

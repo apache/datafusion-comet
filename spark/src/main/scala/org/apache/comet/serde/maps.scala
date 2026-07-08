@@ -78,26 +78,25 @@ object CometMapExtract extends CometExpressionSerde[GetMapValue] {
 /**
  * Shared support for the `spark.sql.mapKeyDedupPolicy` divergence between Spark and Comet.
  *
- * Spark's `ArrayBasedMapBuilder` (used by `MapFromArrays` and `MapFromEntries`) rejects null map
- * keys and applies the policy on duplicate keys (default `EXCEPTION`, or `LAST_WIN`). Comet's
- * native map construction implements neither behaviour, so the two only agree when the config is
- * at its default and the user input contains no null / duplicate keys. This helper narrows the
- * divergence to the config-driven half: when the policy has been switched away from the default
- * we mark the expression as incompatible so it falls back to Spark. The null-key / duplicate-key
- * data cases under the default policy remain user-observable divergences tracked separately.
+ * Spark's `ArrayBasedMapBuilder` (used by `MapFromArrays` and `MapFromEntries`) applies the
+ * policy on duplicate keys (`EXCEPTION` — the default, raising `DUPLICATED_MAP_KEY` — or
+ * `LAST_WIN`, keeping the last occurrence). Comet's native `map` scalar has no LAST_WIN path, so
+ * only the `EXCEPTION` mode agrees with Spark; `LAST_WIN` diverges and must fall back. Duplicate-
+ * key data cases under `EXCEPTION` remain a separately tracked user-observable divergence.
  *
  * Other map-building expressions (`CreateMap`, `MapConcat`, `TransformKeys`) already delegate to
  * Spark's own `doGenCode` via `CometCodegenDispatch`, so they inherit Spark's dedup semantics for
  * free and do not need this gate.
  */
 private object MapKeyDedupPolicySupport {
-  val incompatibleReason: String =
-    s"`${SQLConf.MAP_KEY_DEDUP_POLICY.key}` is set to a non-default value; Comet does not " +
-      "enforce Spark's map-key dedup semantics (LAST_WIN vs EXCEPTION) or reject null map keys."
+  private val LastWin = "LAST_WIN"
 
-  def isDefault: Boolean =
-    SQLConf.get.getConf(SQLConf.MAP_KEY_DEDUP_POLICY) ==
-      SQLConf.MAP_KEY_DEDUP_POLICY.defaultValueString
+  val incompatibleReason: String =
+    s"`${SQLConf.MAP_KEY_DEDUP_POLICY.key}` is set to `$LastWin`; Comet's native map construction " +
+      "does not implement LAST_WIN dedup semantics."
+
+  def isLastWin: Boolean =
+    SQLConf.get.getConf(SQLConf.MAP_KEY_DEDUP_POLICY).equalsIgnoreCase(LastWin)
 }
 
 object CometMapFromArrays extends CometExpressionSerde[MapFromArrays] {
@@ -106,7 +105,7 @@ object CometMapFromArrays extends CometExpressionSerde[MapFromArrays] {
     Seq(MapKeyDedupPolicySupport.incompatibleReason)
 
   override def getSupportLevel(expr: MapFromArrays): SupportLevel = {
-    if (!MapKeyDedupPolicySupport.isDefault) {
+    if (MapKeyDedupPolicySupport.isLastWin) {
       Incompatible(Some(MapKeyDedupPolicySupport.incompatibleReason))
     } else {
       Compatible(None)
@@ -170,7 +169,7 @@ object CometMapFromEntries
       Incompatible(Some(keyUnsupportedReason))
     } else if (SupportLevel.containsType(expr.dataType.valueType, classOf[BinaryType])) {
       Incompatible(Some(valueUnsupportedReason))
-    } else if (!MapKeyDedupPolicySupport.isDefault) {
+    } else if (MapKeyDedupPolicySupport.isLastWin) {
       Incompatible(Some(MapKeyDedupPolicySupport.incompatibleReason))
     } else {
       Compatible(None)

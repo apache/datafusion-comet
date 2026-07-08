@@ -15,11 +15,10 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- Verifies that `map_from_arrays` falls back to Spark when the map-key dedup policy is switched
--- away from its default (EXCEPTION) to LAST_WIN. Spark's ArrayBasedMapBuilder honours both null-key
--- rejection and the dedup policy; Comet's native `map` scalar does neither, so the two paths only
--- agree at the default policy. The default-mode compatible case is covered by
--- `map_from_arrays.sql`.
+-- Verifies that `map_from_arrays` falls back to Spark when `spark.sql.mapKeyDedupPolicy` is set
+-- to `LAST_WIN`. Spark's ArrayBasedMapBuilder keeps the last occurrence of each duplicate key;
+-- Comet's native `map` scalar has no LAST_WIN path, so it must fall back. The default `EXCEPTION`
+-- mode agrees with Comet and is covered by `map_from_arrays.sql`.
 
 -- Config: spark.sql.mapKeyDedupPolicy=LAST_WIN
 
