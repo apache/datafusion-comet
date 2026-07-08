@@ -33,7 +33,7 @@ import org.apache.comet.shims.CometEvalModeUtil
 
 object CometMin extends CometAggregateExpressionSerde[Min] {
 
-  override def supportsMixedPartialFinal: Boolean = true
+  override def supportsMixedPartialFinal(fn: Min): Boolean = true
 
   override def getSupportLevel(expr: Min): SupportLevel =
     AggSerde.minMaxSupportLevel(expr.dataType)
@@ -70,7 +70,7 @@ object CometMin extends CometAggregateExpressionSerde[Min] {
 
 object CometMax extends CometAggregateExpressionSerde[Max] {
 
-  override def supportsMixedPartialFinal: Boolean = true
+  override def supportsMixedPartialFinal(fn: Max): Boolean = true
 
   override def getSupportLevel(expr: Max): SupportLevel =
     AggSerde.minMaxSupportLevel(expr.dataType)
@@ -300,7 +300,7 @@ object CometLast extends CometAggregateExpressionSerde[Last] {
 }
 
 object CometBitAndAgg extends CometAggregateExpressionSerde[BitAndAgg] {
-  override def supportsMixedPartialFinal: Boolean = true
+  override def supportsMixedPartialFinal(fn: BitAndAgg): Boolean = true
 
   override def getSupportLevel(expr: BitAndAgg): SupportLevel =
     if (AggSerde.bitwiseAggTypeSupported(expr.dataType)) {
@@ -339,7 +339,7 @@ object CometBitAndAgg extends CometAggregateExpressionSerde[BitAndAgg] {
 }
 
 object CometBitOrAgg extends CometAggregateExpressionSerde[BitOrAgg] {
-  override def supportsMixedPartialFinal: Boolean = true
+  override def supportsMixedPartialFinal(fn: BitOrAgg): Boolean = true
 
   override def getSupportLevel(expr: BitOrAgg): SupportLevel =
     if (AggSerde.bitwiseAggTypeSupported(expr.dataType)) {
@@ -378,7 +378,7 @@ object CometBitOrAgg extends CometAggregateExpressionSerde[BitOrAgg] {
 }
 
 object CometBitXOrAgg extends CometAggregateExpressionSerde[BitXorAgg] {
-  override def supportsMixedPartialFinal: Boolean = true
+  override def supportsMixedPartialFinal(fn: BitXorAgg): Boolean = true
 
   override def getSupportLevel(expr: BitXorAgg): SupportLevel =
     if (AggSerde.bitwiseAggTypeSupported(expr.dataType)) {
@@ -707,7 +707,7 @@ object CometCorr extends CometAggregateExpressionSerde[Corr] {
 
 object CometBloomFilterAggregate extends CometAggregateExpressionSerde[BloomFilterAggregate] {
 
-  override def supportsMixedPartialFinal: Boolean = true
+  override def supportsMixedPartialFinal(fn: BloomFilterAggregate): Boolean = true
 
   override def getSupportLevel(expr: BloomFilterAggregate): SupportLevel =
     expr.child.dataType match {

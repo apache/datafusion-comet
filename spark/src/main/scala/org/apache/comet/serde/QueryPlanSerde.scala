@@ -432,7 +432,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       case Some(handler) =>
         handler
           .asInstanceOf[CometAggregateExpressionSerde[AggregateFunction]]
-          .supportsMixedPartialFinal
+          .supportsMixedPartialFinal(fn)
       case None => false
     }
   }
