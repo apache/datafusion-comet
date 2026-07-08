@@ -52,7 +52,7 @@ under the License.
 <link href="../../../_static/styles/pydata-sphinx-theme.css?digest=8878045cc6db502f8baf" rel="stylesheet" />
 
     <link rel="stylesheet" type="text/css" href="../../../_static/pygments.css?v=8f2a1f02" />
-    <link rel="stylesheet" type="text/css" href="../../../_static/theme_overrides.css?v=16d24cc4" />
+    <link rel="stylesheet" type="text/css" href="../../../_static/theme_overrides.css?v=bfdde722" />
   
   <!-- So that users can add custom icons -->
   <script src="../../../_static/scripts/fontawesome.js?digest=8878045cc6db502f8baf"></script>
@@ -65,7 +65,7 @@ under the License.
     <script src="../../../_static/sphinx_highlight.js?v=dc90522c"></script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'user-guide/latest/compatibility/spark-versions';</script>
     <script async="true" defer="true" src="https://buttons.github.io/buttons.js"></script>
-    <script src="../../../_static/comet-ux.js?v=a40e1bd8"></script>
+    <script src="../../../_static/comet-ux.js?v=97577a30"></script>
     <link rel="index" title="Index" href="../../../genindex.html" />
     <link rel="search" title="Search" href="../../../search.html" />
     <link rel="next" title="Understanding Comet Plans" href="../understanding-comet-plans.html" />
@@ -746,6 +746,10 @@ compatibility guide.</p>
 <section id="spark-3-4">
 <h2>Spark 3.4<a class="headerlink" href="#spark-3-4" title="Link to this heading">#</a></h2>
 <p>Spark 3.4.3 is supported with Java 11/17 and Scala 2.12/2.13.</p>
+<div class="admonition warning">
+<p class="admonition-title">Warning</p>
+<p>Spark 3.4 support is deprecated as of the 1.0.0 release and will be removed in the 1.1.0 release.</p>
+</div>
 <section id="known-limitations">
 <h3>Known Limitations<a class="headerlink" href="#known-limitations" title="Link to this heading">#</a></h3>
 <ul class="simple">
@@ -762,6 +766,11 @@ See <a class="reference internal" href="scans.html#parquet-scan-limitations"><sp
 <section id="spark-3-5">
 <h2>Spark 3.5<a class="headerlink" href="#spark-3-5" title="Link to this heading">#</a></h2>
 <p>Spark 3.5.8 is supported with Java 11/17 and Scala 2.12/2.13.</p>
+<div class="admonition warning">
+<p class="admonition-title">Warning</p>
+<p>JDK 11 support is deprecated as of the 1.0.0 release and will be removed in the 1.1.0 release.
+We recommend moving to JDK 17 or later.</p>
+</div>
 <section id="id1">
 <h3>Known Limitations<a class="headerlink" href="#id1" title="Link to this heading">#</a></h3>
 <ul class="simple">
@@ -781,8 +790,7 @@ See <a class="reference internal" href="scans.html#parquet-scan-limitations"><sp
 <section id="id2">
 <h3>Known Limitations<a class="headerlink" href="#id2" title="Link to this heading">#</a></h3>
 <ul class="simple">
-<li><p><strong>Collation support</strong> (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/1947">#1947</a>,
-<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4051">#4051</a>): Spark 4.0 introduced collation
+<li><p><strong>Collation support</strong>: Spark 4.0 introduced collation
 support. Non-default collated strings are not yet supported by Comet and will fall back to Spark.</p></li>
 </ul>
 </section>

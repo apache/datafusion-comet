@@ -52,7 +52,7 @@ under the License.
 <link href="../../../_static/styles/pydata-sphinx-theme.css?digest=8878045cc6db502f8baf" rel="stylesheet" />
 
     <link rel="stylesheet" type="text/css" href="../../../_static/pygments.css?v=8f2a1f02" />
-    <link rel="stylesheet" type="text/css" href="../../../_static/theme_overrides.css?v=16d24cc4" />
+    <link rel="stylesheet" type="text/css" href="../../../_static/theme_overrides.css?v=bfdde722" />
   
   <!-- So that users can add custom icons -->
   <script src="../../../_static/scripts/fontawesome.js?digest=8878045cc6db502f8baf"></script>
@@ -65,7 +65,7 @@ under the License.
     <script src="../../../_static/sphinx_highlight.js?v=dc90522c"></script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'user-guide/latest/compatibility/operators';</script>
     <script async="true" defer="true" src="https://buttons.github.io/buttons.js"></script>
-    <script src="../../../_static/comet-ux.js?v=a40e1bd8"></script>
+    <script src="../../../_static/comet-ux.js?v=97577a30"></script>
     <link rel="index" title="Index" href="../../../genindex.html" />
     <link rel="search" title="Search" href="../../../search.html" />
     <link rel="next" title="Expression Compatibility" href="expressions/index.html" />
@@ -764,7 +764,7 @@ natively as plain aggregations but not as window functions
 and <code class="docutils literal notranslate"><span class="pre">sum</span></code> / <code class="docutils literal notranslate"><span class="pre">avg</span></code> on year-month or day-time interval input types. Windowed aggregates inherit the same input-type
 support as the batch aggregates, so these fall back in both contexts.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">sum</span></code> or <code class="docutils literal notranslate"><span class="pre">avg</span></code> on <code class="docutils literal notranslate"><span class="pre">DECIMAL</span></code> with a sliding (non ever-expanding) frame, because the sliding path would wrap on
-overflow instead of returning Spark’s <code class="docutils literal notranslate"><span class="pre">NULL</span></code> (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4729">#4729</a>).</p></li>
+overflow instead of returning Spark’s <code class="docutils literal notranslate"><span class="pre">NULL</span></code>.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">RANGE</span></code> frame with an explicit offset when the <code class="docutils literal notranslate"><span class="pre">ORDER</span> <span class="pre">BY</span></code> column is <code class="docutils literal notranslate"><span class="pre">DATE</span></code> or <code class="docutils literal notranslate"><span class="pre">DECIMAL</span></code>
 (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4834">#4834</a>).</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">first_value</span></code> / <code class="docutils literal notranslate"><span class="pre">last_value</span></code> on a <code class="docutils literal notranslate"><span class="pre">RANGE</span></code> frame with a literal offset
