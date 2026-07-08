@@ -162,7 +162,13 @@ object IcebergReflection extends Logging {
   /** The file format of a ContentFile (data or delete file), e.g. "PARQUET", "AVRO", "ORC". */
   def getFileFormat(file: Any): Option[String] = {
     try {
-      Some(file.getClass.getMethod("format").invoke(file).toString)
+      // Resolve format() on the public ContentFile interface. Iceberg's concrete file impls are
+      // package-private, so a method resolved on the concrete class throws IllegalAccessException
+      // when invoked.
+      // TODO callers in a loop (e.g. validateIcebergFileScanTasks) already hold a cached
+      // contentFileClass; add an overload that takes it to avoid reloading per file.
+      val contentFileClass = loadClass(ClassNames.CONTENT_FILE)
+      Some(contentFileClass.getMethod("format").invoke(file).toString)
     } catch {
       case _: Exception => None
     }

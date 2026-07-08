@@ -726,6 +726,13 @@ class CometIcebergNativeSuite
   // (SQL emits only position deletes), hence the low-level equality-delete write above.
   test("equality delete on a since-dropped column is applied by the native scan") {
     assume(icebergAvailable, "Iceberg not available in classpath")
+    // Reading a table with an equality delete keyed on a since-dropped column requires Iceberg
+    // 1.11+, whose DeleteFileIndex resolves the dropped field from the table's schema history.
+    // Iceberg <= 1.10 NPEs in canContainEqDeletesForFile during scan planning, an upstream
+    // limitation independent of Comet (plain Spark hits it too), so gate on the Iceberg version.
+    assume(
+      icebergVersionAtLeast(1, 11),
+      "Equality delete on a dropped column requires Iceberg 1.11+ schema-history resolution")
 
     withTempIcebergDir { warehouseDir =>
       withSQLConf(

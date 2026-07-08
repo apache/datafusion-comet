@@ -37,6 +37,29 @@ trait CometIcebergTestBase {
       case _: ClassNotFoundException => false
     }
 
+  /**
+   * Whether the Iceberg library on the classpath is at least the given (major, minor) version.
+   * Returns false if the version cannot be determined, so version-gated tests skip rather than
+   * risk running on an unsupported version.
+   */
+  protected def icebergVersionAtLeast(major: Int, minor: Int): Boolean =
+    try {
+      val version = IcebergReflection
+        .loadClass("org.apache.iceberg.IcebergBuild")
+        .getMethod("version")
+        .invoke(null)
+        .toString
+      version.split("[.-]", 3) match {
+        case Array(maj, min, _*) =>
+          val m = maj.toInt
+          val n = min.toInt
+          m > major || (m == major && n >= minor)
+        case _ => false
+      }
+    } catch {
+      case _: Exception => false
+    }
+
   protected def withTempIcebergDir(f: File => Unit): Unit = {
     val dir = Files.createTempDirectory("comet-iceberg-test").toFile
     try f(dir)
