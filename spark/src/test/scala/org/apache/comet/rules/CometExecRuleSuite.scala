@@ -323,6 +323,30 @@ class CometExecRuleSuite extends CometTestBase {
     }
   }
 
+  test("CometExecRule should not allow decimal SUM mixed execution") {
+    withTempView("test_data") {
+      createTestDataFrame.createOrReplaceTempView("test_data")
+      // Precision must be large enough (prec + 4 > 15) that Spark's own DecimalAggregates
+      // optimizer rule does not rewrite SUM to operate on the unscaled Long value, which would
+      // sidestep the decimal buffer path this test is meant to exercise.
+      val sparkPlan =
+        createSparkPlan(
+          spark,
+          "SELECT SUM(CAST(id AS DECIMAL(20, 2))) FROM test_data GROUP BY (id % 3)")
+      assert(countOperators(sparkPlan, classOf[HashAggregateExec]) == 2)
+      withSQLConf(
+        CometConf.COMET_ENABLE_FINAL_HASH_AGGREGATE.key -> "false",
+        CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+        val transformedPlan = applyCometExecRule(sparkPlan)
+        // Decimal SUM overflow detection (ANSI throw / Legacy null) does not survive a
+        // Spark-partial / Comet-final split, so mixed execution is unsafe and the partial
+        // must also fall back to Spark.
+        assert(countOperators(transformedPlan, classOf[HashAggregateExec]) == 2)
+        assert(countOperators(transformedPlan, classOf[CometHashAggregateExec]) == 0)
+      }
+    }
+  }
+
   test("CometExecRule should allow AVG mixed Spark partial and Comet final") {
     withTempView("test_data") {
       createTestDataFrame.createOrReplaceTempView("test_data")

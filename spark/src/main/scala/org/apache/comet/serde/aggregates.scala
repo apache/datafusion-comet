@@ -193,9 +193,11 @@ object CometAverage extends CometAggregateExpressionSerde[Average] {
 object CometSum extends CometAggregateExpressionSerde[Sum] {
 
   override def supportsMixedPartialFinal(fn: Sum): Boolean =
-    // SUM's buffer matches Spark for Legacy/Ansi (decimal adds is_empty, also matching), but
+    // Decimal SUM is excluded: overflow detection (ANSI throw / Legacy null) does not survive a
+    // Spark-partial / Comet-final split, so the required ArithmeticException is never raised.
     // TRY-mode integer SUM carries a Comet-internal has_all_nulls column that Spark cannot read.
-    CometEvalModeUtil.fromSparkEvalMode(CometEvalModeUtil.sumEvalMode(fn)) != CometEvalMode.TRY
+    !fn.child.dataType.isInstanceOf[DecimalType] &&
+      CometEvalModeUtil.fromSparkEvalMode(CometEvalModeUtil.sumEvalMode(fn)) != CometEvalMode.TRY
 
   override def getSupportLevel(expr: Sum): SupportLevel =
     if (AggSerde.sumDataTypeSupported(expr.dataType)) {
