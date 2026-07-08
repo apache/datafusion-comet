@@ -43,15 +43,11 @@ The following features are not supported and cause Comet to fall back to Spark:
 - No support for `input_file_name()`, `input_file_block_start()`, or `input_file_block_length()` SQL functions.
   Comet's Parquet scan does not use Spark's `FileScanRDD`, so these functions cannot populate their values.
 - No support for `ignoreMissingFiles` or `ignoreCorruptFiles` being set to `true`
-- Duplicate field names in case-insensitive mode (e.g., a Parquet file with both `B` and `b` columns)
-  are detected at read time and raise a `SparkRuntimeException` with error class `_LEGACY_ERROR_TEMP_2093`,
-  matching Spark's behavior.
 - `spark.sql.parquet.enableVectorizedReader=false`. Disabling the vectorized reader opts into
   Spark's parquet-mr semantics (silent overflow, null-on-narrowing), which Comet's native reader
   does not replicate. By default Comet falls back to Spark in this case. Set
   `spark.comet.scan.allowDisabledParquetVectorizedReader=true` to opt in to running the
-  Comet Parquet scan regardless. See
-  [#4352](https://github.com/apache/datafusion-comet/issues/4352).
+  Comet Parquet scan regardless.
 
 The following limitation may produce incorrect results without falling back to Spark:
 

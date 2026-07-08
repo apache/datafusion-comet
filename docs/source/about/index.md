@@ -17,14 +17,21 @@ specific language governing permissions and limitations
 under the License.
 -->
 
-# ASF Links
+# About
 
-Apache DataFusion Comet is part of the Apache Software Foundation. The links below point to ASF
-resources covering licensing, donations, security reporting, and the Foundation's code of conduct.
+Background on the project: how Comet compares to similar accelerators, how releases
+are versioned, and links to the Apache Software Foundation resources behind it.
 
-- [Apache Software Foundation](https://apache.org)
-- [License](https://www.apache.org/licenses/)
-- [Donate](https://www.apache.org/foundation/sponsorship.html)
-- [Thanks](https://www.apache.org/foundation/thanks.html)
-- [Security](https://www.apache.org/security/)
-- [Code of conduct](https://www.apache.org/foundation/policies/conduct.html)
+- [Comparison with Gluten](gluten_comparison.md) — how Comet differs from other Spark accelerators
+- [Versioning Policy](versioning_policy.md) — what our version numbers mean and our release cadence
+- [ASF Links](../asf/index.md) — licensing, donations, security reporting, and the code of conduct
+
+```{toctree}
+:maxdepth: 1
+:caption: About
+:hidden:
+
+Comparison with Gluten <gluten_comparison>
+Versioning Policy <versioning_policy>
+ASF Links <../asf/index>
+```
