@@ -268,6 +268,7 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.expression.Divide.enabled` | Enable Comet acceleration for `Divide` | true |
 | `spark.comet.expression.ElementAt.enabled` | Enable Comet acceleration for `ElementAt` | true |
 | `spark.comet.expression.Elt.enabled` | Enable Comet acceleration for `Elt` | true |
+| `spark.comet.expression.Empty2Null.enabled` | Enable Comet acceleration for `Empty2Null` | true |
 | `spark.comet.expression.EndsWith.enabled` | Enable Comet acceleration for `EndsWith` | true |
 | `spark.comet.expression.EqualNullSafe.enabled` | Enable Comet acceleration for `EqualNullSafe` | true |
 | `spark.comet.expression.EqualTo.enabled` | Enable Comet acceleration for `EqualTo` | true |
