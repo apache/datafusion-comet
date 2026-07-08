@@ -146,6 +146,7 @@ message AggExpr {
     BloomFilterAgg bloomFilterAgg = 16;
     CollectSet collectSet = 17;
     Percentile percentile = 18;
+    Regr regr = 19;
   }
 
   // Optional filter expression for SQL FILTER (WHERE ...) clause.
@@ -245,6 +246,34 @@ message Correlation {
   Expr child2 = 2;
   bool null_on_divide_by_zero = 3;
   DataType datatype = 4;
+}
+
+// Simple linear regression aggregates (regr_slope, regr_intercept, regr_r2,
+// regr_sxx, regr_syy, regr_sxy). child1 is the dependent variable (y) and
+// child2 is the independent variable (x).
+message Regr {
+  enum RegrType {
+    SLOPE = 0;
+    INTERCEPT = 1;
+    R2 = 2;
+    SXX = 3;
+    SYY = 4;
+    SXY = 5;
+  }
+  Expr child1 = 1;
+  Expr child2 = 2;
+  RegrType regr_type = 3;
+  DataType datatype = 4;
+  // Only consulted for SLOPE and INTERCEPT. When true (Spark 3.5+), VariancePop(x)
+  // is computed only over rows where both y and x are non-null. When false
+  // (Spark 3.4), VariancePop(x) includes every row where x is non-null even if y
+  // is null, matching the pre-fix Spark 3.4 semantics.
+  bool filter_var_by_pair_nulls = 5;
+  // Only consulted for R2. Spark 4.1 swapped the degenerate-case handling of
+  // regr_r2. When true (Spark 4.1+), a constant dependent variable (m2(y) = 0)
+  // returns 1.0 and a constant independent variable (m2(x) = 0) returns null.
+  // When false (Spark 3.4/3.5/4.0), those two cases are reversed.
+  bool r2_constant_dependent_is_perfect_fit = 6;
 }
 
 message Percentile {
