@@ -22,8 +22,8 @@ pub mod macros;
 pub mod operator_registry;
 
 use crate::execution::operators::init_csv_datasource_exec;
-use crate::execution::operators::AlignedArrowStreamReader;
 use crate::execution::operators::IcebergScanExec;
+use crate::execution::operators::{AlignedArrowStreamReader, InputBatchStream};
 use crate::execution::{
     expressions::list_positions::ListPositionsExpr,
     expressions::subquery::Subquery,
@@ -1533,8 +1533,13 @@ impl PhysicalPlanner {
 
                 // Consumes the first input source for the scan. The Java side passes an
                 // `org.apache.arrow.c.ArrowArrayStream` whose `memoryAddress` points at the C
-                // struct; native takes ownership via `AlignedArrowStreamReader::from_raw`.
-                let input_source = if self.exec_context_id == TEST_EXEC_CONTEXT_ID
+                // struct; native takes ownership via `AlignedArrowStreamReader::from_raw`. Wrapped
+                // as `dyn InputBatchStream` so `ScanExec` can equally be driven by a native
+                // `SendableRecordBatchStream` (see `ScanExec::new_native`); this JVM path's
+                // behavior is otherwise unchanged.
+                let input_source: Option<Arc<std::sync::Mutex<dyn InputBatchStream>>> = if self
+                    .exec_context_id
+                    == TEST_EXEC_CONTEXT_ID
                     && inputs.is_empty()
                 {
                     // For unit test, we will set input batch to scan directly by `set_input_batch`.

@@ -16,8 +16,17 @@
 // under the License.
 
 //! PoC of vectorization execution through JNI to Rust.
+#[cfg(feature = "ballista")]
+pub mod ballista;
 pub mod columnar_to_row;
 pub mod expressions;
+// `ffi` and `fragment` are used only by the feature-gated `ballista` offload
+// module (and their own `#[cfg(test)]` code). Gating them keeps the default
+// `libcomet` build from compiling the offload path or linking `datafusion-ffi`.
+#[cfg(feature = "ballista")]
+pub mod ffi;
+#[cfg(feature = "ballista")]
+pub mod fragment;
 pub mod jni_api;
 pub(crate) mod merge_as_partial;
 pub(crate) mod metrics;

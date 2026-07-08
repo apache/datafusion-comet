@@ -45,6 +45,8 @@ import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
 import org.apache.spark.util.{SparkFatalException, Utils}
 import org.apache.spark.util.io.ChunkedByteBuffer
 
+import org.apache.comet.CometConf
+
 /**
  * Copied from Spark `ColumnarToRowExec`. Comet needs the fix for SPARK-50235 but cannot wait for
  * the fix to be released in Spark versions. We copy the implementation here to apply the fix.
@@ -61,6 +63,17 @@ case class CometColumnarToRowExec(child: SparkPlan)
   override def outputPartitioning: Partitioning = child.outputPartitioning
 
   override def outputOrdering: Seq[SortOrder] = child.outputOrdering
+
+  override def executeCollect(): Array[InternalRow] = {
+    if (CometConf.COMET_EXEC_BALLISTA_ENABLED.get()) {
+      // EXPERIMENTAL (R1): offload the whole-query native plan to an in-process Ballista engine on
+      // the driver instead of launching a Spark job. This ColumnarToRow node is the collect root,
+      // so the CometNativeExec boundary carrying the serialized plan is in its subtree.
+      CometExec.executeCollectViaBallista(this)
+    } else {
+      super.executeCollect()
+    }
+  }
 
   // `ColumnarToRowExec` processes the input RDD directly, which is kind of a leaf node in the
   // codegen stage and needs to do the limit check.

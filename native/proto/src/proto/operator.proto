@@ -58,6 +58,31 @@ message Operator {
   }
 }
 
+// A distributed offload plan: a DAG of Comet native fragments connected by hash
+// exchanges. `fragments` is topologically ordered; the last entry is the root
+// (the final stage whose output is returned to the driver).
+message CometBallistaOffloadPlan {
+  repeated OffloadFragment fragments = 1;
+  // Shuffle width applied to every hash exchange (one consistent partition count).
+  uint32 num_partitions = 2;
+}
+
+message OffloadFragment {
+  // The serialized Comet `Operator` plan for this fragment (with file partitions
+  // already injected for NativeScan leaves).
+  bytes block_proto = 1;
+  // Inputs in the same DFS order the fragment's `Scan` (#100) leaves appear
+  // (left subtree before right). Empty for a leaf fragment (a NativeScan block).
+  repeated OffloadInput inputs = 2;
+}
+
+message OffloadInput {
+  // Index into `CometBallistaOffloadPlan.fragments` of the producing fragment.
+  uint32 producer = 1;
+  // Hash-partition key ordinals into the PRODUCER fragment's output schema.
+  repeated uint32 hash_key_ordinals = 2;
+}
+
 message SparkPartitionedFile {
   string file_path = 1;
   int64 start = 2;
