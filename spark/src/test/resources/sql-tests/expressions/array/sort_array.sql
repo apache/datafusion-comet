@@ -301,6 +301,9 @@ SELECT sort_array(arr) FROM test_sort_array_nested_struct
 query
 SELECT sort_array(arr, false) FROM test_sort_array_nested_struct
 
+-- Non-literal (foldable) ascendingOrder is exercised in sort_array_min_spark_4_0.sql: Spark 3.4/3.5
+-- reject a non-literal sort order at analysis time, so those cases are gated to Spark 4.0+.
+
 -- literal arguments
 query
 SELECT

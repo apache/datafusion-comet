@@ -21,7 +21,41 @@ statement
 CREATE TABLE test_soundex(s string) USING parquet
 
 statement
-INSERT INTO test_soundex VALUES ('Miller'), ('Robert'), ('Rupert'), (''), (NULL)
+INSERT INTO test_soundex VALUES
+  ('Miller'),
+  (NULL),
+  (''),
+  ('Apache Spark'),
+  ('123'),
+  ('a123'),
+  ('Datafusion'),
+  ('Ashcroft'),
+  ('B1B'),
+  ('B B'),
+  ('BAB'),
+  ('#hello'),
+  (' hello'),
+  ('\thello'),
+  ('😀hello'),
+  ('1abc'),
+  ('A'),
+  ('BFPV'),
+  ('Robert'),
+  ('Rupert'),
+  ('robert'),
+  ('rObErT'),
+  ('Müller'),
+  ('Abcdefghijklmnop'),
+  ('Lloyd'),
+  ('BWB'),
+  ('BHB'),
+  ('Tymczak'),
+  ('Aeiou'),
+  ('1Robert'),
+  ('Smith-Jones'),
+  ('#'),
+  ('\nhello'),
+  ('   ');
 
 query
 SELECT s, soundex(s) FROM test_soundex
@@ -29,3 +63,7 @@ SELECT s, soundex(s) FROM test_soundex
 -- literal arguments
 query
 SELECT soundex('Miller'), soundex('Tymczak')
+
+-- additional test for soundex with concat
+query
+SELECT concat(soundex('   '), 'Spark') as concat_spark;
