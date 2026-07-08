@@ -44,7 +44,7 @@ incorrect result. When any single window expression in a `WindowExec` falls back
   and `sum` / `avg` on year-month or day-time interval input types. Windowed aggregates inherit the same input-type
   support as the batch aggregates, so these fall back in both contexts.
 - `sum` or `avg` on `DECIMAL` with a sliding (non ever-expanding) frame, because the sliding path would wrap on
-  overflow instead of returning Spark's `NULL` ([#4729](https://github.com/apache/datafusion-comet/issues/4729)).
+  overflow instead of returning Spark's `NULL`.
 - `RANGE` frame with an explicit offset when the `ORDER BY` column is `DATE` or `DECIMAL`
   ([#4834](https://github.com/apache/datafusion-comet/issues/4834)).
 - `first_value` / `last_value` on a `RANGE` frame with a literal offset
