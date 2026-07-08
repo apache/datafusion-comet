@@ -124,14 +124,6 @@ Comet's native `CAST(date AS STRING)` is compatible with Spark. Years below 1000
 zero-padded to four digits (e.g. year 999 renders as `0999-01-01`). Years above 9999 are
 rendered without truncation. The cast is timezone-independent.
 
-## String to TimestampNTZ
-
-Comet's native `CAST(string AS TIMESTAMP_NTZ)` implementation matches Apache Spark's behavior.
-Unlike `CAST(string AS TIMESTAMP)`, this cast is timezone-independent: any timezone offset in
-the input string (e.g. `+08:00`, `Z`, `UTC`) is silently discarded, and the local date-time
-components are preserved as-is. Time-only strings (e.g. `T12:34:56`, `12:34`) produce `NULL`.
-The result is always a wall-clock timestamp with no timezone conversion or DST adjustment.
-
 ## Decimal with Negative Scale to String
 
 Casting a `DecimalType` with a negative scale to `StringType` is marked as incompatible when
