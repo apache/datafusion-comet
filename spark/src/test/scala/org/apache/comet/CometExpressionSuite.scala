@@ -1032,17 +1032,20 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("native opt-in hint shown for codegen-dispatch path") {
     withTempDir { dir =>
-      // _5 column is TIMESTAMP(MICROS,false) = TimestampNTZ, which triggers Incompatible in CometHour
+      // _4 column is TIMESTAMP(MICROS,true) = TimestampType. FromUTCTimestamp is Incompatible
+      // (its native timezone parser is stricter than Spark's), so with allowIncompatible=false it
+      // rides the codegen dispatcher and surfaces the native opt-in hint.
       val path = new Path(dir.toURI.toString, "hint_test.parquet")
       makeRawTimeParquetFile(path, dictionaryEnabled = false, n = 5)
-      withSQLConf("spark.comet.expression.Hour.allowIncompatible" -> "false") {
-        val df = spark.read.parquet(path.toString).selectExpr("hour(_5) as h")
+      withSQLConf("spark.comet.expression.FromUTCTimestamp.allowIncompatible" -> "false") {
+        val df =
+          spark.read.parquet(path.toString).selectExpr("from_utc_timestamp(_4, 'UTC') as t")
         val explain =
           new ExtendedExplainInfo().generateExtendedInfo(df.queryExecution.executedPlan)
         assert(explain.contains("[COMET-INFO:"), s"Expected [COMET-INFO: in: $explain")
         assert(
-          explain.contains("native implementation of Hour"),
-          s"Expected 'native implementation of Hour' in: $explain")
+          explain.contains("native implementation of FromUTCTimestamp"),
+          s"Expected 'native implementation of FromUTCTimestamp' in: $explain")
       }
     }
   }
@@ -1857,6 +1860,13 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             // After fixing these issues, change checkSparkAnswer to checkSparkAnswerAndOperator
             checkSparkAnswer(s"SELECT from_unixtime(_5, 'yyyy') FROM $table $where")
             checkSparkAnswer(s"SELECT from_unixtime(_8, 'yyyy') FROM $table $where")
+            // A non-default format is Unsupported (no native DataFusion path), but at the default
+            // allowIncompatible=false it stays a Comet operator via CodegenDispatchFallback
+            // (Spark's own codegen) rather than falling back to Spark. See #4575.
+            withSQLConf(
+              CometConf.getExprAllowIncompatConfigKey(classOf[FromUnixTime]) -> "false") {
+              checkSparkAnswerAndOperator(s"SELECT from_unixtime(_5, 'yyyy') FROM $table $where")
+            }
             withSQLConf(SESSION_LOCAL_TIMEZONE.key -> "Asia/Kathmandu") {
               checkSparkAnswerAndOperator(s"SELECT from_unixtime(_5) FROM $table $where")
               checkSparkAnswerAndOperator(s"SELECT from_unixtime(_8) FROM $table $where")
@@ -3268,6 +3278,43 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       // by Spark -- it stays intact as a single deeply-nested predicate, so exercise that path
       // directly.
       checkSparkAnswerAndOperator(spark.table("tbl").where(orChain))
+    }
+  }
+
+  test("deep bitwise And/Or/Xor chains do not overflow the protobuf recursion limit") {
+    // Same protobuf-recursion-limit concern as the AND/OR case, for the (always-integral,
+    // exactly associative) bitwise operators: a left-deep chain of N serializes N levels deep
+    // and overflows the default limit (100) when re-parsed. Comet rebalances them.
+    val n = 200
+    withParquetTable((0 until 100).map(i => (i, i.toLong)), "tbl") {
+      // Column-based operands (mix the column with a distinct literal) so the chain isn't
+      // constant-folded away before serialization. The `col("_1") + lit(i)` leaves are
+      // intentionally cheap `Add`s: they take the non-rebalanced serde (under default ANSI on
+      // Spark 4.0 they aren't in the rebalanced integral+LEGACY path), but the values stay small
+      // so nothing overflows/throws -- the deep BITWISE chain built from them is what's under test.
+      val terms = (1 to n).map(i => col("_1") + lit(i))
+      checkSparkAnswerAndOperator(
+        spark.table("tbl").select(terms.reduce((a, b) => a.bitwiseAND(b)).as("a")))
+      checkSparkAnswerAndOperator(
+        spark.table("tbl").select(terms.reduce((a, b) => a.bitwiseOR(b)).as("o")))
+      checkSparkAnswerAndOperator(
+        spark.table("tbl").select(terms.reduce((a, b) => a.bitwiseXOR(b)).as("x")))
+    }
+  }
+
+  test("deep integral Add/Multiply chains do not overflow the protobuf recursion limit") {
+    // Integral + non-ANSI (LEGACY, wrapping) Add/Multiply are exactly associative, so Comet
+    // rebalances the deep chain. (ANSI/TRY, float, and decimal are intentionally NOT rebalanced
+    // -- their result or overflow behaviour depends on grouping -- so force non-ANSI here.)
+    val n = 200
+    withSQLConf(SQLConf.ANSI_ENABLED.key -> "false") {
+      withParquetTable((0 until 100).map(i => (i, i.toLong)), "tbl") {
+        val terms = (1 to n).map(i => col("_1") + lit(i))
+        checkSparkAnswerAndOperator(spark.table("tbl").select(terms.reduce(_ + _).as("a")))
+        // Wrapping (mod 2^32) multiply: the product overflows Int but wraps identically in
+        // Spark and Comet, so the rebalanced grouping yields the same value.
+        checkSparkAnswerAndOperator(spark.table("tbl").select(terms.reduce(_ * _).as("m")))
+      }
     }
   }
 

@@ -175,6 +175,13 @@
 - Spark 4.0.1 (audited 2026-05-27): semantics unchanged; ANSI default flips to `true`.
 - Spark 4.1.1 (audited 2026-05-27): `inputTypes` tightened to `Seq(ArrayType, IntegralType)` (analysis-time only); runtime unchanged.
 
+## shuffle
+
+- Spark 3.4.3 (audited 2026-07-02): `Shuffle(child, randomSeed: Option[Long])`; `inputTypes = Seq(ArrayType)`, `dataType = child.dataType`, non-deterministic and stateful. Seeds a Commons Math3 `MersenneTwister` with `randomSeed + partitionIndex` and applies the "inside-out" Fisher-Yates from `RandomIndicesGenerator`. Only the one-argument `shuffle(array)` form exists in SQL. NULL input returns NULL without advancing the RNG.
+- Spark 3.5.8 (audited 2026-07-02): identical to 3.4.3.
+- Spark 4.0.1 (audited 2026-07-02): adds the two-argument constructor `Shuffle(child, seed: Expression)`, exposing `shuffle(array, seed)` in SQL (seed must be an integer/long literal). `RandomIndicesGenerator` and the eval logic are unchanged.
+- Spark 4.1.1 (audited 2026-07-02): identical to 4.0.1. Comet routes via `CometShuffle` and a dedicated stateful `ShuffleExpr` that reproduces the same MersenneTwister and inside-out Fisher-Yates, so results match Spark bit for bit. `childTypesSupportLevel` falls back for binary/struct/map element types, consistent with the other array expressions.
+
 ## sort_array
 
 - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.

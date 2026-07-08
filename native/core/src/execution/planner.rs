@@ -585,6 +585,16 @@ impl PhysicalPlanner {
                 let data_type = to_arrow_datatype(expr.datatype.as_ref().unwrap());
                 Ok(Arc::new(NormalizeNaNAndZero::new(data_type, child)))
             }
+            ExprStruct::PreciseTimestampConversion(expr) => {
+                let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
+                let data_type = to_arrow_datatype(expr.datatype.as_ref().unwrap());
+                // Spark's PreciseTimestampConversion reinterprets the value between
+                // Timestamp (microseconds) and Long without any conversion. Arrow's cast kernel
+                // performs exactly this zero-cost reinterpret between Timestamp(µs) and Int64,
+                // so we use DataFusion's CastExpr (arrow semantics) rather than Comet's
+                // Spark-compatible Cast (which would scale by 1_000_000).
+                Ok(Arc::new(CastExpr::new(child, data_type, None)))
+            }
             ExprStruct::Subquery(expr) => {
                 let id = expr.id;
                 let data_type = to_arrow_datatype(expr.datatype.as_ref().unwrap());
