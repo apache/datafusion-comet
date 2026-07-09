@@ -45,7 +45,7 @@ use datafusion::functions_aggregate::percentile_cont::percentile_cont_udaf;
 use datafusion::functions_aggregate::sum::sum_udaf;
 use datafusion::physical_expr::aggregate::{AggregateExprBuilder, AggregateFunctionExpr};
 use datafusion::physical_plan::windows::{BoundedWindowAggExec, WindowAggExec};
-use datafusion::physical_plan::{ColumnarValue, InputOrderMode};
+use datafusion::physical_plan::InputOrderMode;
 use datafusion::{
     arrow::{compute::SortOptions, datatypes::SchemaRef},
     common::DataFusionError,
@@ -92,18 +92,20 @@ use datafusion::datasource::listing::PartitionedFile;
 use datafusion::logical_expr::type_coercion::functions::fields_with_udf;
 use datafusion::logical_expr::type_coercion::other::get_coerce_type_for_case_expression;
 use datafusion::logical_expr::{
-    AggregateUDF, LambdaParametersProgress, ReturnFieldArgs, ScalarUDF, TypeSignature,
-    ValueOrLambda, WindowFrame, WindowFrameBound, WindowFrameUnits, WindowFunctionDefinition,
+    AggregateUDF, HigherOrderUDF, LambdaParametersProgress, ReturnFieldArgs, ScalarUDF,
+    TypeSignature, ValueOrLambda, WindowFrame, WindowFrameBound, WindowFrameUnits,
+    WindowFunctionDefinition,
 };
 use datafusion::physical_expr::expressions::{LambdaExpr, LambdaVariable, Literal, StatsType};
 use datafusion::physical_expr::window::WindowExpr;
 use datafusion::physical_expr::{HigherOrderFunctionExpr, LexOrdering};
 
+use crate::execution::lambda::{pin_unused_params, LambdaScope, LambdaScopes};
 use crate::parquet::parquet_exec::init_datasource_exec;
 use arrow::array::{
     new_empty_array, Array, ArrayRef, BinaryBuilder, BooleanArray, Date32Array, Decimal128Array,
     Float32Array, Float64Array, Int16Array, Int32Array, Int64Array, Int8Array, ListArray,
-    NullArray, RecordBatch, StringBuilder, TimestampMicrosecondArray,
+    NullArray, StringBuilder, TimestampMicrosecondArray,
 };
 use arrow::buffer::{BooleanBuffer, NullBuffer, OffsetBuffer};
 use arrow::row::{OwnedRow, RowConverter, SortField};
@@ -137,9 +139,7 @@ use itertools::Itertools;
 use jni::objects::{Global, JObject};
 use num::{BigInt, ToPrimitive};
 use object_store::path::Path;
-use std::cell::RefCell;
 use std::cmp::max;
-use std::collections::HashSet;
 use std::{collections::HashMap, sync::Arc};
 use url::Url;
 
@@ -149,7 +149,6 @@ type PhyExprResult = Result<Vec<(Arc<dyn PhysicalExpr>, String)>, ExecutionError
 type PartitionPhyExprResult = Result<Vec<Arc<dyn PhysicalExpr>>, ExecutionError>;
 pub type PlanCreationResult =
     Result<(Vec<ScanExec>, Vec<ShuffleScanExec>, Arc<SparkPlan>), ExecutionError>;
-type LambdaScope = HashMap<i64, (usize, FieldRef)>;
 
 struct JoinParameters {
     pub left: Arc<SparkPlan>,
@@ -178,110 +177,6 @@ fn strip_timestamp_tz(
     }
 }
 
-/// Pops the lambda scope on drop, so early returns / `?` inside
-/// `create_lambda_expr` cannot leave a stale scope on the stack.
-struct LambdaScopeGuard<'a> {
-    scopes: &'a RefCell<Vec<LambdaScope>>,
-}
-
-impl<'a> LambdaScopeGuard<'a> {
-    fn push(scopes: &'a RefCell<Vec<LambdaScope>>, scope: LambdaScope) -> Self {
-        scopes.borrow_mut().push(scope);
-        Self { scopes }
-    }
-}
-
-impl Drop for LambdaScopeGuard<'_> {
-    fn drop(&mut self) {
-        self.scopes.borrow_mut().pop();
-    }
-}
-
-/// Zero-cost wrapper that pins a lambda's parameter variables into the
-/// expression tree even when the body doesn't reference them.
-///
-/// `LambdaExpr::new` computes its projection from the indices *used* in the
-/// body and compacts them to `0..k`, while HOF implementations build the
-/// lambda's evaluation batch as `[projected env columns] ++ [ALL params]`.
-/// If a param is unused, nested lambda variables get compacted into the
-/// slot the runtime reserves for that param, causing
-/// "Field of physical LambdaVariable ... doesn't match batch field".
-/// Keeping every param in `children()` forces it into the projection, so
-/// the compacted index space always matches the runtime batch layout.
-#[derive(Debug)]
-struct LambdaParamsCapture {
-    body: Arc<dyn PhysicalExpr>,
-    /// LambdaVariable exprs for params NOT referenced by `body`.
-    unused_params: Vec<Arc<dyn PhysicalExpr>>,
-}
-
-impl std::fmt::Display for LambdaParamsCapture {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "{}", self.body)
-    }
-}
-
-// Manually implement PartialEq and Hash because `Arc<dyn PhysicalExpr>`
-// fields prevent deriving them (see rust-lang/rust#78808); this mirrors
-// how DataFusion's own `LambdaExpr` does it. Equality/hash must cover
-// BOTH fields: two captures with the same body but different pinned
-// params produce different projections in the enclosing `LambdaExpr`,
-// so they are not interchangeable (e.g. under common-subexpression
-// elimination or plan-equality checks).
-impl PartialEq for LambdaParamsCapture {
-    fn eq(&self, other: &Self) -> bool {
-        self.body.eq(&other.body) && self.unused_params.eq(&other.unused_params)
-    }
-}
-
-impl Eq for LambdaParamsCapture {}
-
-impl std::hash::Hash for LambdaParamsCapture {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.body.hash(state);
-        self.unused_params.hash(state);
-    }
-}
-
-impl PhysicalExpr for LambdaParamsCapture {
-    fn data_type(&self, s: &Schema) -> datafusion::common::Result<DataType> {
-        self.body.data_type(s)
-    }
-
-    fn nullable(&self, s: &Schema) -> datafusion::common::Result<bool> {
-        self.body.nullable(s)
-    }
-
-    fn evaluate(&self, batch: &RecordBatch) -> datafusion::common::Result<ColumnarValue> {
-        // params never evaluated — they exist only to be seen by
-        // LambdaExpr::new's index scan and transform_down remapping
-        self.body.evaluate(batch)
-    }
-
-    fn children(&self) -> Vec<&Arc<dyn PhysicalExpr>> {
-        let mut c = vec![&self.body];
-        c.extend(self.unused_params.iter());
-        c
-    }
-
-    fn with_new_children(
-        self: Arc<Self>,
-        children: Vec<Arc<dyn PhysicalExpr>>,
-    ) -> datafusion::common::Result<Arc<dyn PhysicalExpr>> {
-        let (body, params) = children.split_first().ok_or_else(|| {
-            DataFusionError::Internal("LambdaParamsCapture requires children".into())
-        })?;
-        Ok(Arc::new(LambdaParamsCapture {
-            body: Arc::clone(body),
-            unused_params: params.to_vec(),
-        }))
-    }
-
-    fn fmt_sql(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.body.fmt_sql(f)
-    }
-}
-
 #[derive(Default)]
 pub struct BinaryExprOptions {
     pub is_integral_div: bool,
@@ -301,7 +196,7 @@ pub struct PhysicalPlanner {
     task_context: Option<Arc<Global<JObject<'static>>>>,
     /// Stack of lambda variable scopes, innermost last. Planning is
     /// single-threaded per planner, so `RefCell` is sufficient.
-    lambda_scopes: RefCell<Vec<LambdaScope>>,
+    lambda_scopes: LambdaScopes,
 }
 
 impl Default for PhysicalPlanner {
@@ -318,7 +213,7 @@ impl PhysicalPlanner {
             partition,
             query_context_registry: datafusion_comet_spark_expr::create_query_context_map(),
             task_context: None,
-            lambda_scopes: RefCell::new(Vec::new()),
+            lambda_scopes: LambdaScopes::default(),
         }
     }
 
@@ -647,24 +542,12 @@ impl PhysicalPlanner {
                 self.create_high_order_function_expr(hof, input_schema)
             }
             ExprStruct::NamedLambdaVariable(nlv) => {
-                // Resolve strictly by Spark exprId, searching scopes from the
-                // innermost outwards. This is immune to shadowing
-                // (filter(a, x -> exists(b, x -> ...))) and to lambda variable
-                // names colliding with batch column names — both of which
-                // name-based resolution against the extended schema gets wrong.
-                let scopes = self.lambda_scopes.borrow();
-                let (idx, field) = scopes
-                    .iter()
-                    .rev()
-                    .find_map(|s| s.get(&nlv.expr_id))
-                    .cloned()
-                    .ok_or_else(|| {
-                        GeneralError(format!(
-                            "Lambda variable '{}' (exprId={}) is not bound in any \
-                             enclosing lambda scope",
-                            nlv.name, nlv.expr_id
-                        ))
-                    })?;
+                let (idx, field) = self.lambda_scopes.resolve(nlv.expr_id).ok_or_else(|| {
+                    GeneralError(format!(
+                        "Lambda variable '{}' (exprId={}) is not bound in any enclosing lambda scope",
+                        nlv.name, nlv.expr_id
+                    ))
+                })?;
                 Ok(Arc::new(LambdaVariable::new(idx, field)))
             }
             ExprStruct::CaseWhen(case_when) => {
@@ -3253,89 +3136,74 @@ impl PhysicalPlanner {
         expr: &HigherOrderFunc,
         input_schema: SchemaRef,
     ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
-        let comet_hof_func =
-            create_comet_hof_func(expr.func_name.as_str(), &self.session_ctx.state())?;
+        let udf = create_comet_hof_func(&expr.func_name, &self.session_ctx.state())?;
 
-        let value_args = expr
+        // 1. Plan value args.
+        let value_args: Vec<Arc<dyn PhysicalExpr>> = expr
             .value_args
             .iter()
             .map(|e| self.create_expr(e, Arc::clone(&input_schema)))
-            .collect::<Result<Vec<_>, _>>()?;
+            .collect::<Result<_, _>>()?;
 
-        // Resolve each lambda's parameter fields the same way
-        // HigherOrderFunctionExpr::evaluate will at runtime: ask the UDF via
-        // lambda_parameters(), feeding it the value args' return fields.
-        // Using the Spark-declared type/nullability instead diverges when the
-        // native arg's element field differs (e.g. Spark says containsNull =
-        // false for array(1,2,3), but the native literal's element field is
-        // nullable), and LambdaVariable's runtime field check is exact.
-        //
-        // NOTE: same ordering assumption as below — all value args precede
-        // all lambdas.
-        let mut planning_fields: Vec<ValueOrLambda<FieldRef, Option<FieldRef>>> = value_args
-            .iter()
-            .map(|e| Ok(ValueOrLambda::Value(e.return_field(input_schema.as_ref())?)))
-            .collect::<Result<Vec<_>, DataFusionError>>()?;
-        // Lambda return fields are unknown before the bodies are planned.
-        planning_fields.extend(std::iter::repeat_n(
-            ValueOrLambda::Lambda(None),
+        // 2. Resolve lambda param field types via the UDF (mirrors runtime).
+        let param_fields = Self::resolve_lambda_param_fields(
+            &udf,
+            &expr.func_name,
+            &value_args,
             expr.lambdas.len(),
-        ));
+            input_schema.as_ref(),
+        )?;
 
-        let lambda_param_fields: Vec<Vec<FieldRef>> =
-            match comet_hof_func.lambda_parameters(0, &planning_fields)? {
-                LambdaParametersProgress::Complete(items) => items,
-                // Partial can only occur for multi-lambda functions where a
-                // later lambda's params depend on an earlier lambda's return
-                // type; fail loudly rather
-                // than guess.
-                LambdaParametersProgress::Partial(_) => {
-                    return Err(GeneralError(format!(
-                        "{}: lambda_parameters returned a partial result at planning time; \
-                         multi-step lambda resolution is not supported yet",
-                        expr.func_name
-                    )))
-                }
-            };
-
-        if lambda_param_fields.len() < expr.lambdas.len() {
-            return Err(GeneralError(format!(
-                "{}: expected parameter fields for {} lambdas, got {}",
-                expr.func_name,
-                expr.lambdas.len(),
-                lambda_param_fields.len()
-            )));
-        }
-
-        let lambdas = expr
+        // 3. Plan lambdas with resolved param fields.
+        let lambdas: Vec<Arc<dyn PhysicalExpr>> = expr
             .lambdas
             .iter()
-            .zip(&lambda_param_fields)
+            .zip(&param_fields)
             .map(|(l, fields)| self.create_lambda_expr(l, &input_schema, fields))
-            .collect::<Result<Vec<_>, _>>()?;
+            .collect::<Result<_, _>>()?;
 
-        // NOTE: assumes all value arguments precede all lambda arguments (see
-        // earlier comment; holds for array_filter).
-        let mut args: Vec<Arc<dyn PhysicalExpr>> =
-            Vec::with_capacity(value_args.len() + lambdas.len());
-        args.extend(value_args);
+        // 4. NOTE: assumes value args precede lambdas (holds for array_filter).
+        let mut args = value_args;
         args.extend(lambdas);
 
-        let higher_order_function_expr = HigherOrderFunctionExpr::try_new_with_schema(
-            comet_hof_func,
+        Ok(Arc::new(HigherOrderFunctionExpr::try_new_with_schema(
+            udf,
             args,
             &input_schema,
             Arc::new(ConfigOptions::default()),
-        )?;
+        )?))
+    }
 
-        Ok(Arc::new(higher_order_function_expr))
+    fn resolve_lambda_param_fields(
+        udf: &HigherOrderUDF,
+        func_name: &str,
+        value_args: &[Arc<dyn PhysicalExpr>],
+        n_lambdas: usize,
+        schema: &Schema,
+    ) -> Result<Vec<Vec<FieldRef>>, ExecutionError> {
+        let mut planning_fields: Vec<ValueOrLambda<FieldRef, Option<FieldRef>>> = value_args
+            .iter()
+            .map(|e| Ok(ValueOrLambda::Value(e.return_field(schema)?)))
+            .collect::<Result<_, DataFusionError>>()?;
+        planning_fields.extend(std::iter::repeat_n(ValueOrLambda::Lambda(None), n_lambdas));
+
+        match udf.lambda_parameters(0, &planning_fields)? {
+            LambdaParametersProgress::Complete(items) if items.len() >= n_lambdas => Ok(items),
+            LambdaParametersProgress::Complete(items) => Err(GeneralError(format!(
+                "{func_name}: expected parameter fields for {n_lambdas} lambdas, got {}",
+                items.len()
+            ))),
+            LambdaParametersProgress::Partial(_) => Err(GeneralError(format!(
+                "{func_name}: multi-step lambda resolution is not supported yet"
+            ))),
+        }
     }
 
     fn create_lambda_expr(
         &self,
         lambda: &LambdaFunction,
         input_schema: &SchemaRef,
-        param_fields: &[FieldRef], // resolved via HOF's lambda_parameters()
+        param_fields: &[FieldRef],
     ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
         if param_fields.len() < lambda.args.len() {
             return Err(GeneralError(format!(
@@ -3345,18 +3213,15 @@ impl PhysicalPlanner {
             )));
         }
 
+        // Build extended schema = input schema ++ lambda params, and the scope.
         let mut body_fields: Vec<FieldRef> = input_schema.fields().iter().map(Arc::clone).collect();
-
-        let mut scope: LambdaScope = HashMap::with_capacity(lambda.args.len());
+        let mut scope = LambdaScope::with_capacity(lambda.args.len());
         let mut scope_entries: Vec<(usize, FieldRef)> = Vec::with_capacity(lambda.args.len());
         let mut param_names: Vec<String> = Vec::with_capacity(lambda.args.len());
 
         for (arg, resolved) in lambda.args.iter().zip(param_fields) {
-            // Use the natively-resolved field (exact type + nullability the
-            // runtime will produce), renamed to the Spark variable name —
-            // mirroring `param.renamed(name)` in HigherOrderFunctionExpr::evaluate.
+            // Runtime uses `param.renamed(name)` — do the same here.
             let field: FieldRef = Arc::new(resolved.as_ref().clone().with_name(&arg.name));
-
             let idx = body_fields.len();
             if scope
                 .insert(arg.expr_id, (idx, Arc::clone(&field)))
@@ -3376,68 +3241,22 @@ impl PhysicalPlanner {
             body_fields
                 .iter()
                 .map(|f| f.as_ref().clone())
-                .collect::<Vec<Field>>(),
+                .collect::<Vec<_>>(),
         ));
-
         let lambda_body = lambda
             .body
             .as_ref()
             .ok_or_else(|| GeneralError("lambda has no body".to_string()))?;
 
-        // 2. Plan the body with this lambda's scope on the stack. Variable
-        //    references resolve by exprId, innermost scope first (see the
-        //    NamedLambdaVariable arm in create_expr). A nested HigherOrderFunc
-        //    inside the body re-enters create_lambda_expr, pushing its own
-        //    scope on top. The guard pops the scope even if create_expr
-        //    fails, so `?` cannot leave a stale scope behind.
+        // Plan the body under this scope; the guard pops on any `?` / drop.
         let body_expr = {
-            let _guard = LambdaScopeGuard::push(&self.lambda_scopes, scope);
+            let _guard = self.lambda_scopes.enter(scope);
             self.create_expr(lambda_body, body_schema)?
         };
 
-        // 3. Pin unused parameters.
-        //
-        //    `LambdaExpr::new` computes its projection from the indices
-        //    actually referenced in the body and compacts them to 0..k, while
-        //    HOF implementations build the lambda's evaluation batch as
-        //    [projected env columns] ++ [ALL params]. If a param is not
-        //    referenced (e.g. `x` in
-        //    `filter(arr, x -> size(filter(array(1,2,3), y -> y > 15)) > 0)`),
-        //    nested lambda variables get compacted into the runtime slot
-        //    reserved for that param, failing with "Field of physical
-        //    LambdaVariable ... doesn't match batch field". Keeping every
-        //    param visible in children() forces its index into the
-        //    projection, so the compacted index space always matches the
-        //    runtime batch layout.
-        let mut used_indices: HashSet<usize> = HashSet::new();
-        body_expr
-            .apply(|e| {
-                if let Some(v) = e.downcast_ref::<LambdaVariable>() {
-                    used_indices.insert(v.index());
-                }
-                Ok(TreeNodeRecursion::Continue)
-            })
-            .expect("closure is infallible");
+        // Pin unused params so LambdaExpr's index compaction stays consistent.
+        let body_expr = pin_unused_params(body_expr, &scope_entries);
 
-        let unused_params: Vec<Arc<dyn PhysicalExpr>> = scope_entries
-            .iter()
-            .filter(|(idx, _)| !used_indices.contains(idx))
-            .map(|(idx, field)| {
-                Arc::new(LambdaVariable::new(*idx, Arc::clone(field))) as Arc<dyn PhysicalExpr>
-            })
-            .collect();
-
-        let body_expr: Arc<dyn PhysicalExpr> = if unused_params.is_empty() {
-            body_expr
-        } else {
-            Arc::new(LambdaParamsCapture {
-                body: body_expr,
-                unused_params,
-            })
-        };
-
-        // 4. LambdaExpr::try_new computes projection / projected_body itself
-        //    from the (now fully pinned) body.
         Ok(Arc::new(LambdaExpr::try_new(param_names, body_expr)?))
     }
 

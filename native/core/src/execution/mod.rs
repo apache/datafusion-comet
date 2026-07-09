@@ -28,6 +28,7 @@ pub use datafusion_comet_shuffle as shuffle;
 pub(crate) mod sort;
 pub(crate) mod spark_plan;
 pub use datafusion_comet_spark_expr::timezone;
+pub mod lambda;
 mod memory_pools;
 pub(crate) mod spark_config;
 pub(crate) mod tracing;
