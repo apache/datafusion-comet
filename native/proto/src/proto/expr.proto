@@ -570,6 +570,7 @@ message NamedLambdaVariable {
   string name = 1;
   DataType data_type = 2;
   bool nullable = 3;
+  int64 expr_id = 4;
 }
 
 message LambdaFunction {

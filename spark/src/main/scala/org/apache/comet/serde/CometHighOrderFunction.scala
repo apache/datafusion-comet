@@ -41,7 +41,6 @@ import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, serializeData
  *   - a JVM codegen dispatch (Scala UDF fallback via `CometScalaUDF.emitJvmCodegenDispatch`),
  *     used when the native path is unavailable but `COMET_SCALA_UDF_CODEGEN_ENABLED` is enabled.
  */
-
 case class CometHighOrderFunction[T <: HigherOrderFunction](name: String)
     extends CometExpressionSerde[T] {
 
@@ -140,6 +139,7 @@ object CometHighOrderFunction {
       NamedLambdaVariable
         .newBuilder()
         .setName(nlv.name)
+        .setExprId(nlv.exprId.id)
         .setNullable(nlv.nullable)
         .setDataType(dataTypeProto.get)
         .build())
