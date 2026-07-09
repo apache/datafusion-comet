@@ -120,21 +120,13 @@ object CometSortArray extends CometExpressionSerde[SortArray] with CodegenDispat
     "When `" + CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key + "=true`, sorting on" +
       " floating-point types is not 100% compatible with Spark")
 
-  override def getUnsupportedReasons(): Seq[String] = Seq(
-    "Nested arrays with `Struct` or `Null` child values are not supported natively")
-
-  private def supportedSortArrayElementType(
-      dt: DataType,
-      nestedInArray: Boolean = false): Boolean = {
+  private def supportedSortArrayElementType(dt: DataType): Boolean = {
     dt match {
-      // DataFusion's array_sort compares nested arrays through Arrow's rank kernel.
-      // That kernel does not support Struct or Null child values,
-      // so array<array<struct<...>>> and array<array<null>> would fail at runtime.
-      case _: NullType if !nestedInArray =>
+      case _: NullType =>
         true
       case ArrayType(elementType, _) =>
-        supportedSortArrayElementType(elementType, nestedInArray = true)
-      case StructType(fields) if !nestedInArray =>
+        supportedSortArrayElementType(elementType)
+      case StructType(fields) =>
         fields.forall(f => supportedSortArrayElementType(f.dataType))
       case _ =>
         supportedScalarSortElementType(dt)

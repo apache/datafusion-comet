@@ -221,6 +221,14 @@
     titles.forEach(function (link) {
       var details = link.nextElementSibling;
       if (!details || details.tagName !== 'DETAILS') return;
+      link.setAttribute('role', 'button');
+      link.setAttribute('aria-expanded', details.open ? 'true' : 'false');
+      // Listen on <details>'s own toggle event, not just this link's click,
+      // so aria-expanded stays correct whether the chevron/summary or the
+      // title triggered the change.
+      details.addEventListener('toggle', function () {
+        link.setAttribute('aria-expanded', details.open ? 'true' : 'false');
+      });
       link.addEventListener('click', function (e) {
         e.preventDefault();
         details.open = !details.open;

@@ -28,6 +28,10 @@ compatibility guide.
 
 Spark 3.4.3 is supported with Java 11/17 and Scala 2.12/2.13.
 
+```{warning}
+Spark 3.4 support is deprecated as of the 1.0.0 release and will be removed in the 1.1.0 release.
+```
+
 ### Known Limitations
 
 - **Reading `TimestampLTZ` as `TimestampNTZ`**: Spark 3.4 raises an error for this operation
@@ -42,6 +46,11 @@ Spark 3.4.3 is supported with Java 11/17 and Scala 2.12/2.13.
 ## Spark 3.5
 
 Spark 3.5.8 is supported with Java 11/17 and Scala 2.12/2.13.
+
+```{warning}
+JDK 11 support is deprecated as of the 1.0.0 release and will be removed in the 1.1.0 release.
+We recommend moving to JDK 17 or later.
+```
 
 ### Known Limitations
 
