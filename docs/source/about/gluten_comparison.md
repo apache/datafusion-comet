@@ -208,9 +208,6 @@ represent real-world queries, especially for ETL use cases. For example, there a
 and little string manipulation, regular expressions, or other advanced expressions. We recommend running your own
 benchmarks based on your existing Spark jobs.
 
-The scripts that were used to generate Comet's own TPC-H and TPC-DS results can be found
-[here](https://github.com/apache/datafusion-comet/tree/main/benchmarks/tpc).
-
 ## Ease of Development & Contributing
 
 Setting up a local development environment with Comet is generally easier than with Gluten due to Rust's package
