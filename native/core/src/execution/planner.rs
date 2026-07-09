@@ -3731,17 +3731,20 @@ fn parse_file_scan_tasks_from_common(
                     .residual_pool
                     .get(idx as usize)
                     .and_then(convert_spark_expr_to_predicate)
-                    .map(
-                        |pred| -> Result<iceberg::expr::BoundPredicate, ExecutionError> {
-                            pred.bind(Arc::clone(&schema_ref), true).map_err(|e| {
-                                ExecutionError::GeneralError(format!(
-                                    "Failed to bind predicate to schema: {}",
-                                    e
-                                ))
-                            })
-                        },
-                    )
-                    .transpose()?
+                    .and_then(|pred| {
+                        // The residual predicate only drives row-group pruning; the post-scan
+                        // filter still enforces correctness. iceberg-rust cannot bind a datum
+                        // whose type has no conversion to the column type, so on a bind failure
+                        // we skip pushdown rather than fail the scan, mirroring the NOT IN
+                        // handling above.
+                        match pred.bind(Arc::clone(&schema_ref), true) {
+                            Ok(bound) => Some(bound),
+                            Err(e) => {
+                                log::warn!("Skipping Iceberg predicate pushdown; bind failed: {e}");
+                                None
+                            }
+                        }
+                    })
             } else {
                 None
             };
