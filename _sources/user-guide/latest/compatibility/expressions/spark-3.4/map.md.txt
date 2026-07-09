@@ -32,12 +32,19 @@ IEEE total ordering for floating-point, which differs from Spark's `Double.compa
 
 <!--BEGIN:EXPR_COMPAT[map]-->
 
+## MapFromArrays
+
+The following incompatibilities cause `MapFromArrays` to fall back to Spark by default. Set `spark.comet.expression.MapFromArrays.allowIncompatible=true` to enable Comet acceleration despite these differences.
+
+- `spark.sql.mapKeyDedupPolicy` is set to `LAST_WIN`; Comet's native map construction does not implement LAST_WIN dedup semantics.
+
 ## MapFromEntries
 
 By default, `MapFromEntries` is evaluated in the JVM using Spark's own code-generated implementation (run inside the Comet pipeline), which matches Spark exactly. Set `spark.comet.expression.MapFromEntries.allowIncompatible=true` to opt into Comet's native implementation instead, which has the following differences from Spark:
 
 - `BinaryType` is not supported as a map key in `map_from_entries`
 - `BinaryType` is not supported as a map value in `map_from_entries`
+- `spark.sql.mapKeyDedupPolicy` is set to `LAST_WIN`; Comet's native map construction does not implement LAST_WIN dedup semantics.
 
 ## StringToMap
 

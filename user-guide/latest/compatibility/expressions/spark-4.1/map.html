@@ -758,12 +758,20 @@ IEEE total ordering for floating-point, which differs from Spark’s <code class
 <code class="docutils literal notranslate"><span class="pre">NaN</span></code> and <code class="docutils literal notranslate"><span class="pre">-0.0</span></code>.</p>
 <!--BEGIN:EXPR_COMPAT[map]-->
 </section>
+<section id="mapfromarrays">
+<h2>MapFromArrays<a class="headerlink" href="#mapfromarrays" title="Link to this heading">#</a></h2>
+<p>The following incompatibilities cause <code class="docutils literal notranslate"><span class="pre">MapFromArrays</span></code> to fall back to Spark by default. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.MapFromArrays.allowIncompatible=true</span></code> to enable Comet acceleration despite these differences.</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">spark.sql.mapKeyDedupPolicy</span></code> is set to <code class="docutils literal notranslate"><span class="pre">LAST_WIN</span></code>; Comet’s native map construction does not implement LAST_WIN dedup semantics.</p></li>
+</ul>
+</section>
 <section id="mapfromentries">
 <h2>MapFromEntries<a class="headerlink" href="#mapfromentries" title="Link to this heading">#</a></h2>
 <p>By default, <code class="docutils literal notranslate"><span class="pre">MapFromEntries</span></code> is evaluated in the JVM using Spark’s own code-generated implementation (run inside the Comet pipeline), which matches Spark exactly. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.MapFromEntries.allowIncompatible=true</span></code> to opt into Comet’s native implementation instead, which has the following differences from Spark:</p>
 <ul class="simple">
 <li><p><code class="docutils literal notranslate"><span class="pre">BinaryType</span></code> is not supported as a map key in <code class="docutils literal notranslate"><span class="pre">map_from_entries</span></code></p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">BinaryType</span></code> is not supported as a map value in <code class="docutils literal notranslate"><span class="pre">map_from_entries</span></code></p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">spark.sql.mapKeyDedupPolicy</span></code> is set to <code class="docutils literal notranslate"><span class="pre">LAST_WIN</span></code>; Comet’s native map construction does not implement LAST_WIN dedup semantics.</p></li>
 </ul>
 </section>
 <section id="mapsort">
@@ -836,6 +844,7 @@ IEEE total ordering for floating-point, which differs from Spark’s <code class
   <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="visible nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#mapsort-spark-4-0">MapSort (Spark 4.0+)</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#mapfromarrays">MapFromArrays</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#mapfromentries">MapFromEntries</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#mapsort">MapSort</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#stringtomap">StringToMap</a></li>
