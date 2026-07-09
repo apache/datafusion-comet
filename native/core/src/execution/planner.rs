@@ -155,6 +155,53 @@ struct JoinParameters {
     pub join_type: DFJoinType,
 }
 
+/// Return a copy of `data_type` with every nested field marked nullable. Map key fields are left
+/// non-nullable to preserve Arrow's map invariant. Primitive types are returned unchanged.
+fn make_all_fields_nullable(data_type: &DataType) -> DataType {
+    fn nullable_field(field: &Field, nullable: bool) -> FieldRef {
+        Arc::new(
+            Field::new(
+                field.name(),
+                make_all_fields_nullable(field.data_type()),
+                nullable,
+            )
+            .with_metadata(field.metadata().clone()),
+        )
+    }
+    match data_type {
+        DataType::Struct(fields) => {
+            DataType::Struct(fields.iter().map(|f| nullable_field(f, true)).collect())
+        }
+        DataType::List(field) => DataType::List(nullable_field(field, true)),
+        DataType::LargeList(field) => DataType::LargeList(nullable_field(field, true)),
+        DataType::FixedSizeList(field, len) => {
+            DataType::FixedSizeList(nullable_field(field, true), *len)
+        }
+        DataType::Map(entries, sorted) => {
+            // Map entries are a non-nullable struct of {key (non-null), value}. Recurse into the
+            // key/value types but keep the key field non-nullable per Arrow's map invariant.
+            match entries.data_type() {
+                DataType::Struct(kv) => {
+                    let new_kv = kv
+                        .iter()
+                        .enumerate()
+                        .map(|(i, f)| nullable_field(f, i != 0))
+                        .collect();
+                    let new_entries = Field::new(
+                        entries.name(),
+                        DataType::Struct(new_kv),
+                        entries.is_nullable(),
+                    )
+                    .with_metadata(entries.metadata().clone());
+                    DataType::Map(Arc::new(new_entries), *sorted)
+                }
+                _ => data_type.clone(),
+            }
+        }
+        other => other.clone(),
+    }
+}
+
 /// If `expr` evaluates to `Timestamp(_, Some(_))` against `schema`, wrap it in a
 /// metadata-only cast to `Timestamp(_, None)`. This is required because
 /// DataFusion's `SortMergeJoinExec` comparator only supports timezone-less
@@ -2662,11 +2709,13 @@ impl PhysicalPlanner {
             }
             AggExprStruct::CollectSet(expr) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
+                let child = Self::coerce_collect_child_nullability(child, &schema)?;
                 let func = AggregateUDF::new_from_impl(SparkCollectSet::new());
                 Self::create_aggr_func_expr("collect_set", schema, vec![child], func)
             }
             AggExprStruct::CollectList(expr) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
+                let child = Self::coerce_collect_child_nullability(child, &schema)?;
                 let func = AggregateUDF::new_from_impl(SparkCollectList::new());
                 Self::create_aggr_func_expr("collect_list", schema, vec![child], func)
             }
@@ -3272,6 +3321,27 @@ impl PhysicalPlanner {
         };
 
         Ok(scalar_expr)
+    }
+
+    /// `collect_list` / `collect_set` build their result list with all element fields marked
+    /// nullable, regardless of the input's nullability. However `SparkCollectList::return_type`
+    /// (and `SparkCollectSet`) derive the element type directly from the child, preserving any
+    /// non-nullable nested field. When the child is a nested type with a non-nullable inner field
+    /// (e.g. a struct field), the declared aggregate output disagrees with the array the
+    /// accumulator actually produces, and DataFusion's grouped `AggregateExec` fails validating
+    /// its output batch ("column types must match schema types"). Cast the child to the
+    /// all-nullable variant of its type so the declared and produced types stay consistent.
+    fn coerce_collect_child_nullability(
+        child: Arc<dyn PhysicalExpr>,
+        schema: &SchemaRef,
+    ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
+        let child_type = child.data_type(schema.as_ref())?;
+        let nullable_type = make_all_fields_nullable(&child_type);
+        if child_type.equals_datatype(&nullable_type) {
+            Ok(child)
+        } else {
+            Ok(Arc::new(CastExpr::new(child, nullable_type, None)))
+        }
     }
 
     fn create_aggr_func_expr(

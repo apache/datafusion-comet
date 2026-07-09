@@ -48,6 +48,38 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   override protected def sparkConf: SparkConf =
     super.sparkConf.set(SQLConf.ANSI_ENABLED.key, "false")
 
+  test("collect_list over struct with non-nullable fields") {
+    // Building a struct from non-nullable columns yields non-nullable struct fields. The native
+    // collect_list accumulator emits a list whose element fields are all nullable, so the produced
+    // array must be reconciled with the declared aggregate output type, otherwise the grouped
+    // native aggregate fails with "column types must match schema types".
+    import org.apache.spark.sql.functions.{collect_list, expr}
+    import org.apache.spark.sql.execution.LocalTableScanExec
+    // One row per (a, b) group keeps each collected list deterministic for the answer comparison.
+    // repartition inserts a Comet exchange so the aggregate runs natively over a Comet child; the
+    // in-memory source stays a (non-Comet) LocalTableScan, which we allow via excludedClasses.
+    val df = Seq(("1", "2", 1), ("2", "3", 3))
+      .toDF("a", "b", "c")
+      .repartition(col("a"))
+      .withColumn("d", expr("named_struct('a', a, 'b', b, 'c', c)"))
+    val include = Seq(classOf[CometHashAggregateExec])
+    // Single grouped collect_list of a struct with a non-nullable field.
+    checkSparkAnswerAndOperator(
+      df.groupBy("a", "b").agg(collect_list("d")),
+      include,
+      classOf[LocalTableScanExec])
+    // Multi-stage: the array<struct> result flows through a projection into a second collect_list
+    // (the SPARK-22223 plan shape), so the nested struct field nullability must round-trip.
+    checkSparkAnswerAndOperator(
+      df.groupBy("a", "b")
+        .agg(collect_list("d").as("e"))
+        .withColumn("f", expr("named_struct('b', b, 'e', e)"))
+        .groupBy("a")
+        .agg(collect_list("f")),
+      include,
+      classOf[LocalTableScanExec])
+  }
+
   test("collect_list/collect_set combined with distinct aggregate falls back safely") {
     // SPARK-17616: a distinct aggregate combined with collect_list/collect_set produces a
     // multi-stage plan where the buffer-producing Partial may run in Spark (e.g. over a
