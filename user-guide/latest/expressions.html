@@ -920,7 +920,7 @@ expressions. The following function families are <strong>not currently planned</
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">median</span></code></p></td>
 <td><p>✅</p></td>
-<td><p>Rewrites to <code class="docutils literal notranslate"><span class="pre">percentile(col,</span> <span class="pre">0.5)</span></code>; falls back by default, opt-in via allowIncompatible (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4719">#4719</a>)</p></td>
+<td><p>Rewrites to <code class="docutils literal notranslate"><span class="pre">percentile(col,</span> <span class="pre">0.5)</span></code> and runs natively for supported percentile inputs</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">min</span></code></p></td>
 <td><p>✅</p></td>
@@ -936,11 +936,11 @@ expressions. The following function families are <strong>not currently planned</
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">percentile</span></code></p></td>
 <td><p>✅</p></td>
-<td><p>Single literal percentage on numeric input; array of percentages and a frequency argument fall back to Spark. Falls back by default, opt-in via allowIncompatible (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4719">#4719</a>)</p></td>
+<td><p>Single literal percentage on numeric input runs natively; array of percentages and a frequency argument fall back to Spark</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">percentile_cont</span></code></p></td>
 <td><p>✅</p></td>
-<td><p>Spark 4.0+ <code class="docutils literal notranslate"><span class="pre">WITHIN</span> <span class="pre">GROUP</span> <span class="pre">(ORDER</span> <span class="pre">BY</span> <span class="pre">...)</span></code>; ascending only, <code class="docutils literal notranslate"><span class="pre">DESC</span></code> falls back to Spark. Falls back by default, opt-in via allowIncompatible (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4719">#4719</a>)</p></td>
+<td><p>Spark 4.0+ <code class="docutils literal notranslate"><span class="pre">WITHIN</span> <span class="pre">GROUP</span> <span class="pre">(ORDER</span> <span class="pre">BY</span> <span class="pre">...)</span></code>; ascending only runs natively, <code class="docutils literal notranslate"><span class="pre">DESC</span></code> falls back to Spark</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">percentile_disc</span></code></p></td>
 <td><p>🔜</p></td>
