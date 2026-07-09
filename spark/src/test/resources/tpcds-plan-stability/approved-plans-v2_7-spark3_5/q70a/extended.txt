@@ -37,7 +37,7 @@ CometNativeColumnarToRow
                            :                          +- Project
                            :                             +- Filter
                            :                                +- Window
-                           :                                   +-  WindowGroupLimit [COMET: WindowGroupLimit is not supported]
+                           :                                   +-  WindowGroupLimit [COMET: WindowGroupLimit: RANK not yet supported (only ROW_NUMBER)]
                            :                                      +- CometNativeColumnarToRow
                            :                                         +- CometSort
                            :                                            +- CometHashAggregate
@@ -90,7 +90,7 @@ CometNativeColumnarToRow
                            :                                   +- Project
                            :                                      +- Filter
                            :                                         +- Window
-                           :                                            +-  WindowGroupLimit [COMET: WindowGroupLimit is not supported]
+                           :                                            +-  WindowGroupLimit [COMET: WindowGroupLimit: RANK not yet supported (only ROW_NUMBER)]
                            :                                               +- CometNativeColumnarToRow
                            :                                                  +- CometSort
                            :                                                     +- CometHashAggregate
@@ -143,7 +143,7 @@ CometNativeColumnarToRow
                                                                +- Project
                                                                   +- Filter
                                                                      +- Window
-                                                                        +-  WindowGroupLimit [COMET: WindowGroupLimit is not supported]
+                                                                        +-  WindowGroupLimit [COMET: WindowGroupLimit: RANK not yet supported (only ROW_NUMBER)]
                                                                            +- CometNativeColumnarToRow
                                                                               +- CometSort
                                                                                  +- CometHashAggregate

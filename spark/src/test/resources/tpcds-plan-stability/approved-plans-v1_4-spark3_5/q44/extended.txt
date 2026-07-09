@@ -9,11 +9,11 @@ TakeOrderedAndProject
       :     :     :  +- Project
       :     :     :     +- Filter
       :     :     :        +- Window
-      :     :     :           +-  WindowGroupLimit [COMET: WindowGroupLimit is not supported]
+      :     :     :           +-  WindowGroupLimit [COMET: WindowGroupLimit: RANK not yet supported (only ROW_NUMBER)]
       :     :     :              +- CometNativeColumnarToRow
       :     :     :                 +- CometSort
       :     :     :                    +- CometColumnarExchange
-      :     :     :                       +-  WindowGroupLimit [COMET: WindowGroupLimit is not supported]
+      :     :     :                       +-  WindowGroupLimit [COMET: WindowGroupLimit: RANK not yet supported (only ROW_NUMBER)]
       :     :     :                          +- CometNativeColumnarToRow
       :     :     :                             +- CometSort
       :     :     :                                +- CometFilter
@@ -35,11 +35,11 @@ TakeOrderedAndProject
       :     :        +- Project
       :     :           +- Filter
       :     :              +- Window
-      :     :                 +-  WindowGroupLimit [COMET: WindowGroupLimit is not supported]
+      :     :                 +-  WindowGroupLimit [COMET: WindowGroupLimit: RANK not yet supported (only ROW_NUMBER)]
       :     :                    +- CometNativeColumnarToRow
       :     :                       +- CometSort
       :     :                          +- CometColumnarExchange
-      :     :                             +-  WindowGroupLimit [COMET: WindowGroupLimit is not supported]
+      :     :                             +-  WindowGroupLimit [COMET: WindowGroupLimit: RANK not yet supported (only ROW_NUMBER)]
       :     :                                +- CometNativeColumnarToRow
       :     :                                   +- CometSort
       :     :                                      +- CometFilter
