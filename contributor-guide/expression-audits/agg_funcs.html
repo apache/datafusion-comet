@@ -558,6 +558,13 @@ under the License.
 <li><p>Spark 4.0.1 (audited 2026-05-26): identical to 3.4.3.</p></li>
 </ul>
 </section>
+<section id="approx-percentile">
+<h2>approx_percentile<a class="headerlink" href="#approx-percentile" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-07-02): <code class="docutils literal notranslate"><span class="pre">ApproximatePercentile(child,</span> <span class="pre">percentageExpression,</span> <span class="pre">accuracyExpression)</span></code> is a <code class="docutils literal notranslate"><span class="pre">TypedImperativeAggregate</span></code> backed by a Greenwald-Khanna <code class="docutils literal notranslate"><span class="pre">PercentileDigest</span></code> quantile summary with relative error <code class="docutils literal notranslate"><span class="pre">1.0</span> <span class="pre">/</span> <span class="pre">accuracy</span></code>. <code class="docutils literal notranslate"><span class="pre">child</span></code> accepts <code class="docutils literal notranslate"><span class="pre">NumericType</span></code>, <code class="docutils literal notranslate"><span class="pre">DateType</span></code>, <code class="docutils literal notranslate"><span class="pre">TimestampType</span></code>, <code class="docutils literal notranslate"><span class="pre">TimestampNTZType</span></code>, and interval types (all cast to <code class="docutils literal notranslate"><span class="pre">double</span></code> internally); <code class="docutils literal notranslate"><span class="pre">percentage</span></code> is a single literal or literal array in <code class="docutils literal notranslate"><span class="pre">[0.0,</span> <span class="pre">1.0]</span></code>; <code class="docutils literal notranslate"><span class="pre">accuracy</span></code> is a positive literal (default 10000). NULL inputs are skipped; an empty or all-null group returns NULL. <code class="docutils literal notranslate"><span class="pre">approx_percentile</span></code> is a SQL alias for the primary function name <code class="docutils literal notranslate"><span class="pre">percentile_approx</span></code>.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">CometApproxPercentile</span></code> maps the byte, short, int, long, float, and double input forms to a native Greenwald-Khanna quantile summary port with the same insert/compress/merge/query algorithm and relative error, casting the result back to the input type. <code class="docutils literal notranslate"><span class="pre">percentage</span></code> and <code class="docutils literal notranslate"><span class="pre">accuracy</span></code> must be foldable literals, matching Spark. Date, timestamp, interval, and decimal inputs fall back to Spark.</p></li>
+</ul>
+</section>
 <section id="avg">
 <h2>avg<a class="headerlink" href="#avg" title="Link to this heading">#</a></h2>
 <ul class="simple">
@@ -643,6 +650,7 @@ under the License.
   <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="visible nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#any">any</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#approx-percentile">approx_percentile</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#avg">avg</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#bit-and">bit_and</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#median">median</a></li>

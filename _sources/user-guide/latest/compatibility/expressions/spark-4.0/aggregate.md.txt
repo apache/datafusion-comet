@@ -21,6 +21,14 @@ under the License.
 
 <!--BEGIN:EXPR_COMPAT[aggregate]-->
 
+## ApproximatePercentile
+
+The following cases are not supported by Comet and always fall back to Spark, regardless of any `allowIncompatible` setting:
+
+- The percentage argument must be a foldable literal.
+- The accuracy argument must be a foldable literal.
+- Only byte, short, int, long, float, and double input types are supported.
+
 ## Average
 
 The following cases are not supported by Comet and always fall back to Spark, regardless of any `allowIncompatible` setting:

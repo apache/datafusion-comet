@@ -748,6 +748,15 @@ under the License.
 <section id="aggregate-expressions">
 <h1>Aggregate Expressions<a class="headerlink" href="#aggregate-expressions" title="Link to this heading">#</a></h1>
 <!--BEGIN:EXPR_COMPAT[aggregate]-->
+<section id="approximatepercentile">
+<h2>ApproximatePercentile<a class="headerlink" href="#approximatepercentile" title="Link to this heading">#</a></h2>
+<p>The following cases are not supported by Comet and always fall back to Spark, regardless of any <code class="docutils literal notranslate"><span class="pre">allowIncompatible</span></code> setting:</p>
+<ul class="simple">
+<li><p>The percentage argument must be a foldable literal.</p></li>
+<li><p>The accuracy argument must be a foldable literal.</p></li>
+<li><p>Only byte, short, int, long, float, and double input types are supported.</p></li>
+</ul>
+</section>
 <section id="average">
 <h2>Average<a class="headerlink" href="#average" title="Link to this heading">#</a></h2>
 <p>The following cases are not supported by Comet and always fall back to Spark, regardless of any <code class="docutils literal notranslate"><span class="pre">allowIncompatible</span></code> setting:</p>
@@ -837,6 +846,7 @@ under the License.
   </div>
   <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="visible nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#approximatepercentile">ApproximatePercentile</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#average">Average</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#collectset">CollectSet</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#first">First</a></li>

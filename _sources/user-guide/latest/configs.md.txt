@@ -465,6 +465,7 @@ These settings can be used to determine which parts of the plan are accelerated 
 <!-- prettier-ignore-start -->
 | Config | Description | Default Value |
 |--------|-------------|---------------|
+| `spark.comet.expression.ApproximatePercentile.enabled` | Enable Comet acceleration for `ApproximatePercentile` | true |
 | `spark.comet.expression.Average.enabled` | Enable Comet acceleration for `Average` | true |
 | `spark.comet.expression.BitAndAgg.enabled` | Enable Comet acceleration for `BitAndAgg` | true |
 | `spark.comet.expression.BitOrAgg.enabled` | Enable Comet acceleration for `BitOrAgg` | true |
