@@ -60,8 +60,6 @@ this safety without a garbage collector, so there is no additional runtime overh
 If users are just interested in speeding up their existing Spark jobs and do not need to implement UDFs in native
 code, then we suggest benchmarking with both solutions and choosing the fastest one for your use case.
 
-![github-stars-datafusion-velox.png](/_static/images/github-stars-datafusion-velox.png)
-
 ## Community and Governance
 
 Comet is developed within the Apache DataFusion project, and its native execution is built directly on the
