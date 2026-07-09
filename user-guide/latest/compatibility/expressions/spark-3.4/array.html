@@ -791,10 +791,6 @@ under the License.
 <ul class="simple">
 <li><p>When <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.strictFloatingPoint=true</span></code>, sorting on floating-point types is not 100% compatible with Spark</p></li>
 </ul>
-<p>The following cases have no native implementation and always run in the JVM using Spark’s code-generated implementation (inside the Comet pipeline):</p>
-<ul class="simple">
-<li><p>Nested arrays with <code class="docutils literal notranslate"><span class="pre">Struct</span></code> or <code class="docutils literal notranslate"><span class="pre">Null</span></code> child values are not supported natively</p></li>
-</ul>
 <!--END:EXPR_COMPAT-->
 </section>
 </section>
