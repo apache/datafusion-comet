@@ -97,7 +97,12 @@ object Utils extends CometTypeShim with Logging {
     case float: ArrowType.FloatingPoint if float.getPrecision == FloatingPointPrecision.DOUBLE =>
       DoubleType
     case ArrowType.Utf8.INSTANCE => StringType
+    // Large (64-bit offset) variants: a PyArrow UDF's Python output may use large_string /
+    // large_binary (e.g. pandas 3 backs string columns with Arrow large types), and mapInArrow
+    // passes those types straight through to the JVM. CometPlainVector reads both offset widths.
+    case ArrowType.LargeUtf8.INSTANCE => StringType
     case ArrowType.Binary.INSTANCE => BinaryType
+    case ArrowType.LargeBinary.INSTANCE => BinaryType
     case _: ArrowType.FixedSizeBinary => BinaryType
     case d: ArrowType.Decimal => DecimalType(d.getPrecision, d.getScale)
     case date: ArrowType.Date if date.getUnit == DateUnit.DAY => DateType

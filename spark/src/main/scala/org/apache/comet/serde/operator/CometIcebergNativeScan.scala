@@ -835,7 +835,24 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
 
                 val schema: AnyRef =
                   if (hasDeletes) {
-                    taskSchema
+                    // An equality delete may be keyed on a column dropped from the current schema
+                    // (schema evolution). iceberg-rust must read that column to apply the delete,
+                    // so union the equality-delete field ids into the task schema, resolving any
+                    // dropped ones from the table's schema history (mirrors Iceberg-Java's
+                    // DeleteFilter.fileProjection).
+                    val equalityFieldIds = deletes.asScala.flatMap { df =>
+                      IcebergReflection
+                        .getEqualityFieldIds(df)
+                        .asScala
+                        .map(_.asInstanceOf[java.lang.Integer].intValue())
+                    }.toSeq
+                    if (equalityFieldIds.nonEmpty) {
+                      IcebergReflection
+                        .schemaWithRequiredFields(taskSchema, metadata.table, equalityFieldIds)
+                        .asInstanceOf[AnyRef]
+                    } else {
+                      taskSchema
+                    }
                   } else {
                     val scanSchemaFieldIds = IcebergReflection
                       .buildFieldIdMapping(metadata.scanSchema)
