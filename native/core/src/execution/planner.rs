@@ -3688,6 +3688,9 @@ fn parse_file_scan_tasks_from_common(
                         } else {
                             Some(del.equality_ids.clone())
                         },
+                        referenced_data_file: del.referenced_data_file.clone(),
+                        content_offset: del.content_offset,
+                        content_size_in_bytes: del.content_size_in_bytes,
                     })
                 })
                 .collect::<Result<Vec<_>, ExecutionError>>()

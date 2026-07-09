@@ -78,6 +78,7 @@ object IcebergReflection extends Logging {
    */
   object FileFormats {
     val PARQUET = "PARQUET"
+    val PUFFIN = "PUFFIN"
   }
 
   /**

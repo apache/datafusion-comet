@@ -462,12 +462,16 @@ case class CometScanRule(session: SparkSession)
 
         // Check Iceberg table format version
 
+        // V3 adds column types iceberg-rust cannot read (variant, geometry, geography, unknown).
+        // We do not enumerate them here: the readSchema allow-list in DataTypeSupport already
+        // falls back on any type Comet does not support, which is more future-proof than a deny
+        // list. This gate only bounds the format version.
         val formatVersionSupported = IcebergReflection.getFormatVersion(metadata.table) match {
           case Some(formatVersion) =>
-            if (formatVersion > 2) {
+            if (formatVersion > 3) {
               fallbackReasons += "Iceberg table format version " +
                 s"$formatVersion is not supported. " +
-                "Comet only supports Iceberg table format V1 and V2"
+                "Comet supports Iceberg table format V1, V2, and V3"
               false
             } else {
               true
@@ -605,15 +609,17 @@ case class CometScanRule(session: SparkSession)
             if (!taskValidation.deleteFiles.isEmpty) {
               val historicSchemas = IcebergReflection.getAllSchemas(metadata.table)
               taskValidation.deleteFiles.asScala.foreach { deleteFile =>
-                // iceberg-rust only reads Parquet delete files. Avro/ORC positional or
-                // equality deletes must be applied by Spark.
+                // iceberg-rust reads Parquet delete files (position and equality) and Puffin
+                // deletion vectors. Avro/ORC deletes must be applied by Spark.
                 IcebergReflection.getFileFormat(deleteFile) match {
-                  case Some(fmt) if fmt.equalsIgnoreCase(IcebergReflection.FileFormats.PARQUET) =>
+                  case Some(fmt)
+                      if fmt.equalsIgnoreCase(IcebergReflection.FileFormats.PARQUET) ||
+                        fmt.equalsIgnoreCase(IcebergReflection.FileFormats.PUFFIN) =>
                   case Some(fmt) =>
                     hasUnsupportedDeletes = true
                     fallbackReasons +=
                       s"Delete file format '$fmt' is not supported by iceberg-rust. " +
-                        "Only Parquet delete files can be applied natively."
+                        "Only Parquet and Puffin delete files can be applied natively."
                   case None =>
                     hasUnsupportedDeletes = true
                     logWarning(

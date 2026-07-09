@@ -283,6 +283,36 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
           case _: Exception =>
         }
 
+        // V3 deletion vector coordinates. These DeleteFile accessors exist only on newer Iceberg
+        // versions and return null for non-deletion-vector deletes, so absence is expected and
+        // non-fatal.
+        try {
+          deleteFileClass.getMethod("referencedDataFile").invoke(deleteFile) match {
+            case path: String => deleteBuilder.setReferencedDataFile(path)
+            case _ =>
+          }
+        } catch {
+          case _: Exception =>
+        }
+
+        try {
+          deleteFileClass.getMethod("contentOffset").invoke(deleteFile) match {
+            case offset: java.lang.Long => deleteBuilder.setContentOffset(offset)
+            case _ =>
+          }
+        } catch {
+          case _: Exception =>
+        }
+
+        try {
+          deleteFileClass.getMethod("contentSizeInBytes").invoke(deleteFile) match {
+            case size: java.lang.Long => deleteBuilder.setContentSizeInBytes(size)
+            case _ =>
+          }
+        } catch {
+          case _: Exception =>
+        }
+
         deleteBuilder.build()
       }.toSeq
     } catch {
