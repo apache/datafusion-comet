@@ -29,12 +29,13 @@ import org.apache.spark.sql.types.{ByteType, DecimalType, DoubleType, FloatType,
 
 import org.apache.comet.CometConf.COMET_EXEC_STRICT_FLOATING_POINT
 import org.apache.comet.CometSparkSessionExtensions.{isSpark41Plus, withFallbackReason}
+import org.apache.comet.expressions.CometEvalMode
 import org.apache.comet.serde.QueryPlanSerde.{evalModeToProto, exprToProto, serializeDataType}
 import org.apache.comet.shims.CometEvalModeUtil
 
 object CometMin extends CometAggregateExpressionSerde[Min] {
 
-  override def supportsMixedPartialFinal: Boolean = true
+  override def supportsMixedPartialFinal(fn: Min): Boolean = true
 
   override def getSupportLevel(expr: Min): SupportLevel =
     AggSerde.minMaxSupportLevel(expr.dataType)
@@ -71,7 +72,7 @@ object CometMin extends CometAggregateExpressionSerde[Min] {
 
 object CometMax extends CometAggregateExpressionSerde[Max] {
 
-  override def supportsMixedPartialFinal: Boolean = true
+  override def supportsMixedPartialFinal(fn: Max): Boolean = true
 
   override def getSupportLevel(expr: Max): SupportLevel =
     AggSerde.minMaxSupportLevel(expr.dataType)
@@ -131,6 +132,11 @@ object CometCount extends CometAggregateExpressionSerde[Count] {
 
 object CometAverage extends CometAggregateExpressionSerde[Average] {
 
+  override def supportsMixedPartialFinal(fn: Average): Boolean =
+    // Non-decimal AVG has a (sum: double, count: long) buffer matching Spark. Decimal AVG is
+    // deferred (overflow nulls count differently) and stays unsafe for mixed execution.
+    !fn.child.dataType.isInstanceOf[DecimalType]
+
   override def getUnsupportedReasons(): Seq[String] = Seq(
     "YearMonthIntervalType and DayTimeIntervalType inputs are not supported")
 
@@ -186,6 +192,13 @@ object CometAverage extends CometAggregateExpressionSerde[Average] {
 }
 
 object CometSum extends CometAggregateExpressionSerde[Sum] {
+
+  override def supportsMixedPartialFinal(fn: Sum): Boolean =
+    // Decimal SUM is excluded: overflow detection (ANSI throw / Legacy null) does not survive a
+    // Spark-partial / Comet-final split, so the required ArithmeticException is never raised.
+    // TRY-mode integer SUM carries a Comet-internal has_all_nulls column that Spark cannot read.
+    !fn.child.dataType.isInstanceOf[DecimalType] &&
+      CometEvalModeUtil.fromSparkEvalMode(CometEvalModeUtil.sumEvalMode(fn)) != CometEvalMode.TRY
 
   override def getSupportLevel(expr: Sum): SupportLevel =
     if (AggSerde.sumDataTypeSupported(expr.dataType)) {
@@ -301,7 +314,7 @@ object CometLast extends CometAggregateExpressionSerde[Last] {
 }
 
 object CometBitAndAgg extends CometAggregateExpressionSerde[BitAndAgg] {
-  override def supportsMixedPartialFinal: Boolean = true
+  override def supportsMixedPartialFinal(fn: BitAndAgg): Boolean = true
 
   override def getSupportLevel(expr: BitAndAgg): SupportLevel =
     if (AggSerde.bitwiseAggTypeSupported(expr.dataType)) {
@@ -340,7 +353,7 @@ object CometBitAndAgg extends CometAggregateExpressionSerde[BitAndAgg] {
 }
 
 object CometBitOrAgg extends CometAggregateExpressionSerde[BitOrAgg] {
-  override def supportsMixedPartialFinal: Boolean = true
+  override def supportsMixedPartialFinal(fn: BitOrAgg): Boolean = true
 
   override def getSupportLevel(expr: BitOrAgg): SupportLevel =
     if (AggSerde.bitwiseAggTypeSupported(expr.dataType)) {
@@ -379,7 +392,7 @@ object CometBitOrAgg extends CometAggregateExpressionSerde[BitOrAgg] {
 }
 
 object CometBitXOrAgg extends CometAggregateExpressionSerde[BitXorAgg] {
-  override def supportsMixedPartialFinal: Boolean = true
+  override def supportsMixedPartialFinal(fn: BitXorAgg): Boolean = true
 
   override def getSupportLevel(expr: BitXorAgg): SupportLevel =
     if (AggSerde.bitwiseAggTypeSupported(expr.dataType)) {
@@ -599,18 +612,11 @@ object CometPercentile extends CometAggregateExpressionSerde[Percentile] {
   private val nonLiteralPercentageReason = "The percentage argument must be a literal."
   private val frequencyReason = "A frequency argument is not supported."
   // `reverse` is set when `percentile_cont`/`percentile_disc` is used with
-  // `WITHIN GROUP (ORDER BY ... DESC)` on Spark 4.0+. The native `percentile_cont` always
+  // `WITHIN GROUP (ORDER BY ... DESC)` on Spark 4.0+. The native percentile UDAF always
   // interpolates in ascending order, so the descending form would return a wrong answer.
   private val descendingReason =
     "Descending order in `WITHIN GROUP (ORDER BY ... DESC)` is not supported."
   private val inputTypeReason = "Only numeric input types are supported."
-  // DataFusion's percentile_cont quantizes the linear interpolation weight to 6 decimal places,
-  // so an interpolated percentile may differ from Spark by up to `(upper - lower) * 1e-6`.
-  // See #4719.
-  private val precisionReason =
-    "Interpolated values may differ from Spark by up to `(upper - lower) * 1e-6` because" +
-      " DataFusion quantizes the interpolation weight to 6 decimal places (#4719)."
-
   override def getUnsupportedReasons(): Seq[String] = Seq(
     arrayOfPercentagesReason,
     nonLiteralPercentageReason,
@@ -618,15 +624,10 @@ object CometPercentile extends CometAggregateExpressionSerde[Percentile] {
     descendingReason,
     inputTypeReason)
 
-  override def getIncompatibleReasons(): Seq[String] = Seq(precisionReason)
-
   override def getSupportLevel(expr: Percentile): SupportLevel = {
     // Only the single-percentage, default-frequency, numeric-input, ascending form is wired
-    // today. It maps to DataFusion's percentile_cont, which uses the same `index = p * (n - 1)`
-    // linear interpolation as Spark's exact Percentile, but quantizes the interpolation weight to
-    // 6 decimal places (see precisionReason / #4719), so the supported form is Incompatible rather
-    // than Compatible. Array-of-percentages, a non-default frequency argument, descending order,
-    // and interval inputs fall back to Spark.
+    // today. It maps to Comet's Spark-compatible percentile UDAF. Array-of-percentages, a
+    // non-default frequency argument, descending order, and interval inputs fall back to Spark.
     if (expr.percentageExpression.dataType != DoubleType) {
       return Unsupported(Some(arrayOfPercentagesReason))
     }
@@ -641,7 +642,7 @@ object CometPercentile extends CometAggregateExpressionSerde[Percentile] {
       return Unsupported(Some(descendingReason))
     }
     expr.child.dataType match {
-      case _: NumericType => Incompatible(Some(precisionReason))
+      case _: NumericType => Compatible()
       case _ => Unsupported(Some(inputTypeReason))
     }
   }
@@ -653,7 +654,7 @@ object CometPercentile extends CometAggregateExpressionSerde[Percentile] {
       binding: Boolean,
       conf: SQLConf): Option[ExprOuterClass.AggExpr] = {
     // Spark computes the percentile over the values as doubles; cast the child up front so the
-    // native percentile_cont returns Float64 / DoubleType to match Spark.
+    // native percentile UDAF returns Float64 / DoubleType to match Spark.
     val childExpr = exprToProto(Cast(percentile.child, DoubleType), inputs, binding)
     val percentageExpr =
       exprToProto(Literal(percentile.percentageExpression.eval(), DoubleType), inputs, binding)
@@ -780,7 +781,7 @@ object CometCorr extends CometAggregateExpressionSerde[Corr] {
 
 object CometBloomFilterAggregate extends CometAggregateExpressionSerde[BloomFilterAggregate] {
 
-  override def supportsMixedPartialFinal: Boolean = true
+  override def supportsMixedPartialFinal(fn: BloomFilterAggregate): Boolean = true
 
   override def getSupportLevel(expr: BloomFilterAggregate): SupportLevel =
     expr.child.dataType match {

@@ -208,6 +208,32 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("mixed engine sum/avg: Comet partial + Spark final matches Spark") {
+    val data = (0 until 100).map(i => (i, i.toLong, i.toDouble, i % 7))
+    withParquetTable(data, "tbl") {
+      withSQLConf(
+        CometConf.COMET_ENABLE_FINAL_HASH_AGGREGATE.key -> "false",
+        CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+        CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
+        checkSparkAnswer(
+          "SELECT _4, SUM(_1), SUM(_2), SUM(_3), AVG(_1), AVG(_2), AVG(_3) FROM tbl GROUP BY _4")
+      }
+    }
+  }
+
+  test("mixed engine sum/avg: Spark partial + Comet final matches Spark") {
+    val data = (0 until 100).map(i => (i, i.toLong, i.toDouble, i % 7))
+    withParquetTable(data, "tbl") {
+      withSQLConf(
+        CometConf.COMET_ENABLE_PARTIAL_HASH_AGGREGATE.key -> "false",
+        CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+        CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
+        checkSparkAnswer(
+          "SELECT _4, SUM(_1), SUM(_2), SUM(_3), AVG(_1), AVG(_2), AVG(_3) FROM tbl GROUP BY _4")
+      }
+    }
+  }
+
   test("Aggregation without aggregate expressions should use correct result expressions") {
     withSQLConf(
       CometConf.COMET_ENABLED.key -> "true",

@@ -2023,7 +2023,7 @@ dependencies = [
  "pprof",
  "procfs",
  "prost",
- "rand 0.10.1",
+ "rand 0.10.2",
  "reqsign-core",
  "reqwest 0.12.28",
  "serde_json",
@@ -2145,7 +2145,7 @@ dependencies = [
  "hex",
  "jni 0.22.4",
  "num",
- "rand 0.10.1",
+ "rand 0.10.2",
  "regex",
  "serde",
  "serde_json",
@@ -3596,7 +3596,7 @@ dependencies = [
 [[package]]
 name = "iceberg"
 version = "0.9.0"
-source = "git+https://github.com/apache/iceberg-rust?rev=80a30d3#80a30d3440928e1456fd116db934d829844a1a42"
+source = "git+https://github.com/apache/iceberg-rust?rev=148afc5#148afc50ee950b2cd8d99c0243242ef45f3948c5"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -3652,7 +3652,7 @@ dependencies = [
 [[package]]
 name = "iceberg-storage-opendal"
 version = "0.9.0"
-source = "git+https://github.com/apache/iceberg-rust?rev=80a30d3#80a30d3440928e1456fd116db934d829844a1a42"
+source = "git+https://github.com/apache/iceberg-rust?rev=148afc5#148afc50ee950b2cd8d99c0243242ef45f3948c5"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4565,7 +4565,7 @@ dependencies = [
  "parking_lot",
  "percent-encoding",
  "quick-xml 0.39.4",
- "rand 0.10.1",
+ "rand 0.10.2",
  "reqwest 0.12.28",
  "ring",
  "rustls-pki-types",
@@ -5516,9 +5516,9 @@ dependencies = [
 
 [[package]]
 name = "rand"
-version = "0.10.1"
+version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d2e8e8bcc7961af1fdac401278c6a831614941f6164ee3bf4ce61b7edb162207"
+checksum = "c7f5fa3a058cd35567ef9bfa5e75732bee0f9e4c55fa90477bef2dfcdbc4be80"
 dependencies = [
  "chacha20",
  "getrandom 0.4.3",
@@ -6597,7 +6597,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix 1.1.4",
  "windows-sys 0.61.2",

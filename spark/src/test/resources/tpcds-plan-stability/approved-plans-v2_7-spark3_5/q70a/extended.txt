@@ -5,11 +5,11 @@ CometNativeColumnarToRow
          +- CometSort
             +- CometExchange
                +- CometHashAggregate
-                  +- CometColumnarExchange
-                     +- HashAggregate
-                        +- Union
-                           :-  HashAggregate [COMET: Comet aggregate that merges intermediate buffers requires a Comet child aggregate when the intermediate buffer formats are incompatible with Spark]
-                           :  +- Exchange
+                  +- CometExchange
+                     +- CometHashAggregate
+                        +- CometUnion
+                           :- CometHashAggregate
+                           :  +- CometColumnarExchange
                            :     +- HashAggregate
                            :        +- Project
                            :           +- BroadcastHashJoin
@@ -58,11 +58,11 @@ CometNativeColumnarToRow
                            :                                                              +- CometProject
                            :                                                                 +- CometFilter
                            :                                                                    +- CometNativeScan parquet spark_catalog.default.date_dim
-                           :-  HashAggregate [COMET: Comet aggregate that merges intermediate buffers requires a Comet child aggregate when the intermediate buffer formats are incompatible with Spark]
-                           :  +- Exchange
-                           :     +- HashAggregate
-                           :        +-  HashAggregate [COMET: Comet aggregate that merges intermediate buffers requires a Comet child aggregate when the intermediate buffer formats are incompatible with Spark]
-                           :           +- Exchange
+                           :- CometHashAggregate
+                           :  +- CometExchange
+                           :     +- CometHashAggregate
+                           :        +- CometHashAggregate
+                           :           +- CometColumnarExchange
                            :              +- HashAggregate
                            :                 +- Project
                            :                    +- BroadcastHashJoin
@@ -111,11 +111,11 @@ CometNativeColumnarToRow
                            :                                                                       +- CometProject
                            :                                                                          +- CometFilter
                            :                                                                             +- CometNativeScan parquet spark_catalog.default.date_dim
-                           +-  HashAggregate [COMET: Comet aggregate that merges intermediate buffers requires a Comet child aggregate when the intermediate buffer formats are incompatible with Spark]
-                              +- Exchange
-                                 +- HashAggregate
-                                    +-  HashAggregate [COMET: Comet aggregate that merges intermediate buffers requires a Comet child aggregate when the intermediate buffer formats are incompatible with Spark]
-                                       +- Exchange
+                           +- CometHashAggregate
+                              +- CometExchange
+                                 +- CometHashAggregate
+                                    +- CometHashAggregate
+                                       +- CometColumnarExchange
                                           +- HashAggregate
                                              +- Project
                                                 +- BroadcastHashJoin
@@ -165,4 +165,4 @@ CometNativeColumnarToRow
                                                                                                       +- CometFilter
                                                                                                          +- CometNativeScan parquet spark_catalog.default.date_dim
 
-Comet accelerated 103 out of 156 eligible operators (66%). Final plan contains 10 transitions between Spark and Comet.
+Comet accelerated 117 out of 156 eligible operators (75%). Final plan contains 10 transitions between Spark and Comet.
