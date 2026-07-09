@@ -104,7 +104,7 @@ object CometAggregateExpressionBenchmark extends CometBenchmarkBase {
       "SELECT COUNT(DISTINCT c_int) FROM parquetV1Table GROUP BY high_card_grp"))
 
   // Exact percentile. Only the single-percentage, default-frequency, numeric-input form runs
-  // natively (maps to DataFusion's percentile_cont); other forms fall back to Spark.
+  // natively through Comet's Spark-compatible percentile UDAF; other forms fall back to Spark.
   private val percentileAggregates = List(
     AggExprConfig(
       "percentile_int_median",
