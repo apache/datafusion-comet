@@ -241,7 +241,7 @@ index e5494726695..00937f025c2 100644
  
    test("A cached table preserves the partitioning and ordering of its cached SparkPlan") {
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/DataFrameAggregateSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/DataFrameAggregateSuite.scala
-index 6f3090d8908..af60512e183 100644
+index 6f3090d8908..4774aad5019 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/DataFrameAggregateSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/DataFrameAggregateSuite.scala
 @@ -27,8 +27,9 @@ import org.apache.spark.{SparkException, SparkThrowable}
@@ -266,21 +266,13 @@ index 6f3090d8908..af60512e183 100644
          }
  
          // test case for ObjectHashAggregate and SortAggregate
-@@ -771,7 +774,12 @@ class DataFrameAggregateSuite extends QueryTest
-   }
+@@ -788,12 +791,12 @@ class DataFrameAggregateSuite extends QueryTest
+       assert(sortAggPlans.isEmpty)
  
-   test("SPARK-22223: ObjectHashAggregate should not introduce unnecessary shuffle") {
--    withSQLConf(SQLConf.USE_OBJECT_HASH_AGG.key -> "true") {
-+    withSQLConf(
-+        SQLConf.USE_OBJECT_HASH_AGG.key -> "true",
-+        // Comet runs collect_list/collect_set natively (CometHashAggregateExec), so the
-+        // ObjectHashAggregateExec this test asserts on is no longer present. Disable Comet
-+        // to preserve the original plan-shape assertions.
-+        "spark.comet.enabled" -> "false") {
-       val df = Seq(("1", "2", 1), ("1", "2", 2), ("2", "3", 3), ("2", "3", 4)).toDF("a", "b", "c")
-         .repartition(col("a"))
- 
-@@ -793,7 +801,7 @@ class DataFrameAggregateSuite extends QueryTest
+       val objHashAggPlans = collect(aggPlan) {
+-        case objHashAgg: ObjectHashAggregateExec => objHashAgg
++        case objHashAgg @ (_: ObjectHashAggregateExec | _: CometHashAggregateExec) => objHashAgg
+       }
        assert(objHashAggPlans.nonEmpty)
  
        val exchangePlans = collect(aggPlan) {
