@@ -617,16 +617,17 @@ git<span class="w"> </span>add<span class="w"> </span>-A
 git<span class="w"> </span>diff<span class="w"> </span>apache-iceberg-1.8.1<span class="w"> </span>&gt;<span class="w"> </span>../datafusion-comet/dev/diffs/iceberg/1.8.1.diff
 </pre></div>
 </div>
-<p>Repeat for each Iceberg version (1.8.1, 1.9.1, 1.10.0). The file contents differ between versions, so each
+<p>Repeat for each Iceberg version (1.8.1, 1.9.1, 1.10.0, 1.11.0). The file contents differ between versions, so each
 diff must be generated against its own tag.</p>
 </section>
 <section id="running-tests-in-ci">
 <h2>Running Tests in CI<a class="headerlink" href="#running-tests-in-ci" title="Link to this heading">#</a></h2>
 <p>The <code class="docutils literal notranslate"><span class="pre">iceberg_spark_test_&lt;version&gt;.yml</span></code> workflows apply these diffs and run the three Gradle targets above
 against each Iceberg version. Iceberg 1.8.1 runs against Spark 3.4.3 with Java 11; Iceberg 1.9.1 and 1.10.0
-run against Spark 3.5.8 with Java 17. The latest Iceberg version (1.10) runs on every pull request and on
-pushes to main; the older versions (1.8, 1.9) run only on pushes to main. All caller workflows delegate to
-<code class="docutils literal notranslate"><span class="pre">iceberg_spark_test_reusable.yml</span></code>, which holds the build and test job logic.</p>
+run against Spark 3.5.8 with Java 17; Iceberg 1.11.0 runs against Spark 4.1.2 with Java 17. Iceberg 1.11
+(the only version testing Spark 4.1) runs on every pull request and on pushes to main; the older versions
+(1.8, 1.9, 1.10) run only on pushes to main, or on a pull request labeled <code class="docutils literal notranslate"><span class="pre">run-iceberg-tests</span></code>. All caller
+workflows delegate to <code class="docutils literal notranslate"><span class="pre">iceberg_spark_test_reusable.yml</span></code>, which holds the build and test job logic.</p>
 </section>
 </section>
 
