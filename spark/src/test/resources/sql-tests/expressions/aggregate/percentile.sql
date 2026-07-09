@@ -15,10 +15,7 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- Native exact percentile via DataFusion percentile_cont (same (n-1)*p interpolation as Spark).
--- Marked Incompatible because DataFusion quantizes the interpolation weight to 6 decimal places
--- (#4719); allow it here so the native path is exercised.
--- Config: spark.comet.expression.Percentile.allowIncompatible=true
+-- Native exact percentile via Comet's Spark-compatible percentile UDAF.
 
 statement
 CREATE TABLE test_percentile(g int, v double, i int) USING parquet
@@ -28,6 +25,12 @@ INSERT INTO test_percentile VALUES
   (1, 1.0, 10), (1, 2.0, 20), (1, 3.0, 30), (1, 4.0, 40),
   (2, 10.0, 5), (2, 20.0, 15), (2, NULL, 25)
 
+statement
+CREATE TABLE test_percentile_precision(v double) USING parquet
+
+statement
+INSERT INTO test_percentile_precision VALUES (0.0), (10000000.0)
+
 -- global percentile, interpolated and exact-rank cases
 query
 SELECT percentile(v, 0.5) FROM test_percentile
@@ -35,9 +38,17 @@ SELECT percentile(v, 0.5) FROM test_percentile
 query
 SELECT percentile(v, 0.0), percentile(v, 1.0), percentile(v, 0.25), percentile(v, 0.9) FROM test_percentile
 
+-- deeply interpolated percentile that would differ if the interpolation weight were quantized
+query
+SELECT percentile(v, 0.123456789) FROM test_percentile_precision
+
 -- grouped
 query
 SELECT g, percentile(v, 0.5) FROM test_percentile GROUP BY g ORDER BY g
+
+-- mixed distinct aggregate plans use PartialMerge; percentile must preserve its percentage
+query
+SELECT g, count(DISTINCT i), percentile(v, 0.5) FROM test_percentile GROUP BY g ORDER BY g
 
 -- integer input (cast to double)
 query
@@ -83,6 +94,16 @@ INSERT INTO test_percentile_neg VALUES (-10.0), (-5.0), (0.0), (5.0), (10.0)
 
 query
 SELECT percentile(v, 0.5), percentile(v, 0.1), percentile(v, 0.9) FROM test_percentile_neg
+
+statement
+CREATE TABLE test_percentile_special(v double) USING parquet
+
+statement
+INSERT INTO test_percentile_special VALUES
+  (double('-Infinity')), (-0.0), (0.0), (1.0), (double('Infinity')), (double('NaN'))
+
+query
+SELECT percentile(v, 0.0), percentile(v, 0.5), percentile(v, 0.8), percentile(v, 1.0) FROM test_percentile_special
 
 -- ============================================================
 -- Unsupported forms fall back to Spark cleanly

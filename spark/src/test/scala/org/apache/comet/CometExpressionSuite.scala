@@ -1860,6 +1860,13 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             // After fixing these issues, change checkSparkAnswer to checkSparkAnswerAndOperator
             checkSparkAnswer(s"SELECT from_unixtime(_5, 'yyyy') FROM $table $where")
             checkSparkAnswer(s"SELECT from_unixtime(_8, 'yyyy') FROM $table $where")
+            // A non-default format is Unsupported (no native DataFusion path), but at the default
+            // allowIncompatible=false it stays a Comet operator via CodegenDispatchFallback
+            // (Spark's own codegen) rather than falling back to Spark. See #4575.
+            withSQLConf(
+              CometConf.getExprAllowIncompatConfigKey(classOf[FromUnixTime]) -> "false") {
+              checkSparkAnswerAndOperator(s"SELECT from_unixtime(_5, 'yyyy') FROM $table $where")
+            }
             withSQLConf(SESSION_LOCAL_TIMEZONE.key -> "Asia/Kathmandu") {
               checkSparkAnswerAndOperator(s"SELECT from_unixtime(_5) FROM $table $where")
               checkSparkAnswerAndOperator(s"SELECT from_unixtime(_8) FROM $table $where")

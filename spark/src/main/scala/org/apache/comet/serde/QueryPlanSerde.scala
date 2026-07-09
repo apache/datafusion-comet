@@ -262,7 +262,8 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       classOf[ToCharacter] -> CometToCharacter,
       classOf[ToNumber] -> CometToNumber,
       classOf[TryToNumber] -> CometTryToNumber,
-      classOf[Mask] -> CometMask)
+      classOf[Mask] -> CometMask,
+      classOf[Empty2Null] -> CometEmpty2Null)
     base ++ sparkVersionSpecificStringExpressions
   }
 
@@ -413,15 +414,27 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
    * in the other.
    */
   def allAggsSupportMixedExecution(aggExprs: Seq[AggregateExpression]): Boolean = {
-    aggExprs.forall { aggExpr =>
-      val fn = aggExpr.aggregateFunction
-      aggrSerdeMap.get(fn.getClass) match {
-        case Some(handler) =>
-          handler
-            .asInstanceOf[CometAggregateExpressionSerde[AggregateFunction]]
-            .supportsMixedPartialFinal
-        case None => false
-      }
+    aggExprs.forall(aggExpr => supportsMixedExecution(aggExpr.aggregateFunction))
+  }
+
+  /**
+   * Returns the aggregate functions in the list whose intermediate buffer formats are not known
+   * to be compatible between Spark and Comet. These are the functions that prevent a Spark Final
+   * aggregate (without a Comet Partial) from running, since the buffer produced by one engine
+   * cannot be safely consumed by the other.
+   */
+  def aggsNotSupportingMixedExecution(
+      aggExprs: Seq[AggregateExpression]): Seq[AggregateFunction] = {
+    aggExprs.map(_.aggregateFunction).filterNot(supportsMixedExecution)
+  }
+
+  private def supportsMixedExecution(fn: AggregateFunction): Boolean = {
+    aggrSerdeMap.get(fn.getClass) match {
+      case Some(handler) =>
+        handler
+          .asInstanceOf[CometAggregateExpressionSerde[AggregateFunction]]
+          .supportsMixedPartialFinal(fn)
+      case None => false
     }
   }
 
