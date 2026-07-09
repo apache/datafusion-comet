@@ -15,17 +15,29 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! A bit-for-bit port of Spark's `QuantileSummaries` (Greenwald-Khanna), the
+//! A faithful port of Spark's `QuantileSummaries` (Greenwald-Khanna), the
 //! sketch behind `approx_percentile` / `percentile_approx`. Kept free of any
 //! DataFusion dependency so it can be unit-tested in isolation.
 //!
 //! Reference: `org.apache.spark.sql.catalyst.util.QuantileSummaries`.
-
-use std::collections::VecDeque;
+//!
+//! Results are bit-identical to Spark for deterministic plans. What is
+//! load-bearing for that identity, and must not change:
+//!   - the 50000-value head-buffer flush boundary (`DEFAULT_HEAD_SIZE`),
+//!   - the integer arithmetic: `floor(2 * relative_error * count)` for `delta`,
+//!     `2 * relative_error * count` for the compress/merge threshold, `/ 2` for
+//!     `target_error`, and `ceil(percentile * count)` for the query rank,
+//!   - the backward compress traversal with the `< merge_threshold` test that
+//!     always preserves the minimum,
+//!   - the non-commutative merge interleave and its asymmetric delta adjustment,
+//!   - the ascending multi-percentile query sweep with its ceil-rank search.
+//!
+//! The data-structure choices (Vec vs deque, copy vs clone, rebuild vs in-place)
+//! do not affect results and are free to be optimized.
 
 /// A single sampled statistic: the value, its minimum rank jump `g`, and the
 /// maximum span of the rank `delta`.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Stats {
     pub value: f64,
     pub g: i64,
@@ -69,6 +81,12 @@ impl QuantileSummaries {
             + self.head_sampled.capacity() * std::mem::size_of::<f64>()
     }
 
+    /// Reserve space in the head buffer for `additional` incoming values, so a
+    /// batch of inserts does not repeatedly grow it.
+    pub fn reserve(&mut self, additional: usize) {
+        self.head_sampled.reserve(additional);
+    }
+
     pub fn insert(&mut self, x: f64) {
         self.head_sampled.push(x);
         self.compressed = false;
@@ -86,12 +104,12 @@ impl QuantileSummaries {
         }
         let mut current_count = self.count;
         let mut sorted = std::mem::take(&mut self.head_sampled);
-        // Spark relies on `Array[Double].sorted`; use total ordering so the port
-        // is deterministic even in the presence of NaN (Spark's typical inputs
-        // are NaN-free).
-        sorted.sort_by(|a, b| a.total_cmp(b));
+        // Spark relies on `Array[Double].sorted`. The sort key is the value
+        // itself, so equal keys are bit-equal elements and stability is
+        // irrelevant; `total_cmp` gives a deterministic total order.
+        sorted.sort_unstable_by(|a, b| a.total_cmp(b));
 
-        let mut new_samples: Vec<Stats> = Vec::new();
+        let mut new_samples: Vec<Stats> = Vec::with_capacity(self.sampled.len() + sorted.len());
         let mut sample_idx = 0usize;
         let mut ops_idx = 0usize;
         while ops_idx < sorted.len() {
@@ -99,7 +117,7 @@ impl QuantileSummaries {
             while sample_idx < self.sampled.len()
                 && self.sampled[sample_idx].value <= current_sample
             {
-                new_samples.push(self.sampled[sample_idx].clone());
+                new_samples.push(self.sampled[sample_idx]);
                 sample_idx += 1;
             }
             current_count += 1;
@@ -108,9 +126,8 @@ impl QuantileSummaries {
             {
                 0
             } else {
-                // Spark uses `.toInt` here (unlike `.toLong` in merge/compress); we use i64
-                // uniformly. They diverge only past ~Int.MAX rows in one accumulator, which
-                // is not reachable in practice.
+                // Spark: `math.floor(2 * relativeError * currentCount).toLong`
+                // (verified `.toLong` in 3.4/3.5/4.0/4.1), matching our i64.
                 (2.0 * self.relative_error * current_count as f64).floor() as i64
             };
             new_samples.push(Stats {
@@ -121,7 +138,7 @@ impl QuantileSummaries {
             ops_idx += 1;
         }
         while sample_idx < self.sampled.len() {
-            new_samples.push(self.sampled[sample_idx].clone());
+            new_samples.push(self.sampled[sample_idx]);
             sample_idx += 1;
         }
         self.sampled = new_samples;
@@ -146,27 +163,30 @@ impl QuantileSummaries {
         if current_samples.is_empty() {
             return Vec::new();
         }
-        let mut res: VecDeque<Stats> = VecDeque::new();
-        let mut head = current_samples[current_samples.len() - 1].clone();
+        // Spark prepends into a `ListBuffer`; we push in the same order and
+        // reverse once, which yields an identical sequence.
+        let mut res: Vec<Stats> = Vec::with_capacity(current_samples.len());
+        let mut head = current_samples[current_samples.len() - 1];
         // Traverse backward from size-2 down to index 1 (index 0 is preserved
         // separately so the minimum is always kept).
         let mut i = current_samples.len() as isize - 2;
         while i >= 1 {
-            let sample1 = &current_samples[i as usize];
+            let sample1 = current_samples[i as usize];
             if ((sample1.g + head.g + head.delta) as f64) < merge_threshold {
                 head.g += sample1.g;
             } else {
-                res.push_front(head.clone());
-                head = sample1.clone();
+                res.push(head);
+                head = sample1;
             }
             i -= 1;
         }
-        res.push_front(head.clone());
-        let curr_head = &current_samples[0];
+        res.push(head);
+        let curr_head = current_samples[0];
         if curr_head.value <= head.value && current_samples.len() > 1 {
-            res.push_front(curr_head.clone());
+            res.push(curr_head);
         }
-        res.into()
+        res.reverse();
+        res
     }
 
     pub fn merge(&self, other: &QuantileSummaries) -> QuantileSummaries {
@@ -194,7 +214,7 @@ impl QuantileSummaries {
             let (mut next_sample, additional_delta) = if self_sample.value < other_sample.value {
                 self_idx += 1;
                 (
-                    self_sample.clone(),
+                    *self_sample,
                     if other_idx > 0 {
                         additional_self_delta
                     } else {
@@ -204,7 +224,7 @@ impl QuantileSummaries {
             } else {
                 other_idx += 1;
                 (
-                    other_sample.clone(),
+                    *other_sample,
                     if self_idx > 0 {
                         additional_other_delta
                     } else {
@@ -216,11 +236,11 @@ impl QuantileSummaries {
             merged_sampled.push(next_sample);
         }
         while self_idx < self.sampled.len() {
-            merged_sampled.push(self.sampled[self_idx].clone());
+            merged_sampled.push(self.sampled[self_idx]);
             self_idx += 1;
         }
         while other_idx < other.sampled.len() {
-            merged_sampled.push(other.sampled[other_idx].clone());
+            merged_sampled.push(other.sampled[other_idx]);
             other_idx += 1;
         }
         let comp = Self::compress_immut(
@@ -426,6 +446,51 @@ mod tests {
         let got = merged.query(&[0.5]).unwrap()[0];
         let exact = exact_percentile(&all, 0.5);
         assert!((got - exact).abs() <= EPS * all.len() as f64 + 1.0);
+    }
+
+    #[test]
+    fn extreme_percentiles_hit_short_circuits() {
+        let values: Vec<f64> = (1..=1000).map(|i| i as f64).collect();
+        let qs = summary_of(&values);
+        // 0.0 <= relative_error short-circuits to the minimum, 1.0 >= 1 -
+        // relative_error to the maximum.
+        assert_eq!(qs.query(&[0.0]).unwrap()[0], 1.0);
+        assert_eq!(qs.query(&[1.0]).unwrap()[0], 1000.0);
+    }
+
+    #[test]
+    fn negative_values_are_ordered() {
+        let values: Vec<f64> = (-500..500).map(|i| i as f64).collect();
+        let mut sorted = values.clone();
+        sorted.sort_by(|a, b| a.total_cmp(b));
+        let qs = summary_of(&values);
+        let got = qs.query(&[0.5]).unwrap()[0];
+        let exact = exact_percentile(&sorted, 0.5);
+        assert!((got - exact).abs() <= EPS * values.len() as f64 + 1.0);
+    }
+
+    #[test]
+    fn duplicate_heavy_column_accumulates_g() {
+        // Five distinct values repeated 200 times each; forces `g` accumulation
+        // in `compress_immut`.
+        let values: Vec<f64> = (0..1000).map(|i| (i % 5) as f64).collect();
+        let qs = summary_of(&values);
+        for &p in &[0.1, 0.5, 0.9] {
+            let got = qs.query(&[p]).unwrap()[0];
+            assert!((0.0..=4.0).contains(&got), "p={p} produced {got}");
+        }
+    }
+
+    #[test]
+    fn signed_zero_ordering_is_deterministic() {
+        // `total_cmp` orders -0.0 before 0.0; inserting both must not panic and
+        // must produce a value drawn from the input.
+        let qs = summary_of(&[-0.0, 0.0, -0.0, 0.0, 1.0]);
+        let got = qs.query(&[0.5]).unwrap()[0];
+        assert!(
+            got == 0.0 || got == 1.0,
+            "median of signed zeros produced {got}"
+        );
     }
 
     #[test]

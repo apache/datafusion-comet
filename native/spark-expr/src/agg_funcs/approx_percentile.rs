@@ -156,7 +156,23 @@ impl ApproxPercentileAccumulator {
             DataType::Int32 => ScalarValue::Int32(Some(d as i32)),
             DataType::Int64 => ScalarValue::Int64(Some(d as i64)),
             DataType::Float32 => ScalarValue::Float32(Some(d as f32)),
-            _ => ScalarValue::Float64(Some(d)),
+            DataType::Float64 => ScalarValue::Float64(Some(d)),
+            // The serde only marks byte/short/int/long/float/double as
+            // supported, so no other type reaches the accumulator.
+            other => unreachable!("unsupported approx_percentile input type: {other}"),
+        }
+    }
+
+    /// The null Spark produces for an empty result: a typed null scalar, or a
+    /// null list when the call returns an array of percentiles.
+    fn null_result(&self) -> Result<ScalarValue> {
+        if self.return_array {
+            Ok(ScalarValue::List(Arc::new(ListArray::new_null(
+                Arc::new(Field::new("item", self.input_type.clone(), false)),
+                1,
+            ))))
+        } else {
+            Ok(ScalarValue::try_from(&self.input_type)?)
         }
     }
 }
@@ -164,6 +180,7 @@ impl ApproxPercentileAccumulator {
 impl Accumulator for ApproxPercentileAccumulator {
     fn update_batch(&mut self, values: &[ArrayRef]) -> Result<()> {
         let arr = downcast_value!(&values[0], Float64Array);
+        self.summary.reserve(arr.len() - arr.null_count());
         if arr.null_count() == 0 {
             // Fast path: no validity checks needed, iterate the raw values.
             for &v in arr.values() {
@@ -189,7 +206,8 @@ impl Accumulator for ApproxPercentileAccumulator {
                 digests.value(i),
             );
             if self.summary.count() == 0 {
-                // Empty self: merge would just clone the peer, so move it in.
+                // Empty self: `merge` would return a clone of the (potentially
+                // large) peer, so move the owned peer in and skip the clone.
                 self.summary = peer;
             } else {
                 self.summary = self.summary.merge(&peer);
@@ -205,30 +223,21 @@ impl Accumulator for ApproxPercentileAccumulator {
 
     fn evaluate(&mut self) -> Result<ScalarValue> {
         self.summary.compress();
-        match self.summary.query(&self.percentiles) {
-            None => {
-                if self.return_array {
-                    // Empty digest still yields null overall in Spark.
-                    Ok(ScalarValue::List(Arc::new(ListArray::new_null(
-                        Arc::new(Field::new("item", self.input_type.clone(), false)),
-                        1,
-                    ))))
-                } else {
-                    Ok(ScalarValue::try_from(&self.input_type)?)
-                }
-            }
-            Some(results) => {
-                let scalars: Vec<ScalarValue> =
-                    results.into_iter().map(|d| self.cast_back(d)).collect();
-                if self.return_array {
-                    let values = ScalarValue::iter_to_array(scalars)?;
-                    Ok(SingleRowListArrayBuilder::new(values)
-                        .with_nullable(false)
-                        .build_list_scalar())
-                } else {
-                    Ok(scalars.into_iter().next().unwrap())
-                }
-            }
+        // Spark returns null whenever the result would be empty, i.e. no rows
+        // were aggregated (`query` returns `None`) or the percentage argument
+        // was an empty array (`query` returns `Some([])`).
+        let results = match self.summary.query(&self.percentiles) {
+            Some(r) if !r.is_empty() => r,
+            _ => return self.null_result(),
+        };
+        let scalars: Vec<ScalarValue> = results.into_iter().map(|d| self.cast_back(d)).collect();
+        if self.return_array {
+            let values = ScalarValue::iter_to_array(scalars)?;
+            Ok(SingleRowListArrayBuilder::new(values)
+                .with_nullable(false)
+                .build_list_scalar())
+        } else {
+            Ok(scalars.into_iter().next().unwrap())
         }
     }
 
@@ -273,6 +282,22 @@ mod tests {
     #[test]
     fn empty_input_is_null() {
         let mut acc = ApproxPercentileAccumulator::new(vec![0.5], 10000, DataType::Int64, false);
+        assert!(acc.evaluate().unwrap().is_null());
+    }
+
+    #[test]
+    fn array_output_empty_input_is_null() {
+        let mut acc =
+            ApproxPercentileAccumulator::new(vec![0.25, 0.5, 0.75], 10000, DataType::Float64, true);
+        assert!(acc.evaluate().unwrap().is_null());
+    }
+
+    #[test]
+    fn empty_percentiles_is_null() {
+        // An empty percentage array yields null in Spark even with data present.
+        let mut acc = ApproxPercentileAccumulator::new(vec![], 10000, DataType::Float64, true);
+        acc.update_batch(&[f64_array((1..=1000).map(|i| i as f64).collect())])
+            .unwrap();
         assert!(acc.evaluate().unwrap().is_null());
     }
 

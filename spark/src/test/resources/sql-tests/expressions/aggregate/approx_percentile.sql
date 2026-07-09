@@ -25,6 +25,22 @@
 query
 SELECT approx_percentile(id, 0.5) FROM range(1000)
 
+-- int input type
+query
+SELECT approx_percentile(cast(id AS int), 0.5) FROM range(1000)
+
+-- extreme percentiles 0.0 and 1.0 exercise the query short-circuits
+query
+SELECT approx_percentile(id, 0.0), approx_percentile(id, 1.0) FROM range(1000)
+
+-- negative values
+query
+SELECT approx_percentile(cast(id AS int) - 500, 0.5) FROM range(1000)
+
+-- low-cardinality / duplicate-heavy column exercises `g` accumulation
+query
+SELECT approx_percentile(id % 5, 0.5) FROM range(1000)
+
 -- explicit, non-default accuracy
 query
 SELECT approx_percentile(id, 0.9, 100) FROM range(1000)
@@ -66,3 +82,7 @@ SELECT approx_percentile(v, 0.5) FROM test_approx_percentile_nulls
 -- empty input yields null
 query
 SELECT approx_percentile(v, 0.5) FROM (SELECT id AS v FROM range(1000) WHERE id < 0)
+
+-- array output with empty input yields null
+query
+SELECT approx_percentile(v, array(0.25, 0.5, 0.75)) FROM (SELECT id AS v FROM range(1000) WHERE id < 0)
