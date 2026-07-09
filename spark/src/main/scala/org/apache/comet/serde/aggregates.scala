@@ -22,9 +22,10 @@ package org.apache.comet.serde
 import scala.jdk.CollectionConverters._
 
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Literal}
-import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, Average, BitAndAgg, BitOrAgg, BitXorAgg, BloomFilterAggregate, CentralMomentAgg, CollectSet, Corr, Count, Covariance, CovPopulation, CovSample, First, Last, Max, Min, Percentile, StddevPop, StddevSamp, Sum, VariancePop, VarianceSamp}
+import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, ApproximatePercentile, Average, BitAndAgg, BitOrAgg, BitXorAgg, BloomFilterAggregate, CentralMomentAgg, CollectSet, Corr, Count, Covariance, CovPopulation, CovSample, First, Last, Max, Min, Percentile, StddevPop, StddevSamp, Sum, VariancePop, VarianceSamp}
+import org.apache.spark.sql.catalyst.util.ArrayData
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{ByteType, DecimalType, DoubleType, IntegerType, LongType, NumericType, ShortType, StringType}
+import org.apache.spark.sql.types.{ByteType, DecimalType, DoubleType, FloatType, IntegerType, LongType, NumericType, ShortType, StringType}
 
 import org.apache.comet.CometConf.COMET_EXEC_STRICT_FLOATING_POINT
 import org.apache.comet.CometSparkSessionExtensions.{isSpark41Plus, withFallbackReason}
@@ -671,6 +672,78 @@ object CometPercentile extends CometAggregateExpressionSerde[Percentile] {
           .build())
     } else {
       withFallbackReason(aggExpr, percentile.child)
+      None
+    }
+  }
+}
+
+object CometApproxPercentile extends CometAggregateExpressionSerde[ApproximatePercentile] {
+
+  private val nonLiteralPercentageReason =
+    "The percentage argument must be a foldable literal."
+  private val nonLiteralAccuracyReason =
+    "The accuracy argument must be a foldable literal."
+  private val inputTypeReason =
+    "Only byte, short, int, long, float, and double input types are supported."
+
+  override def getUnsupportedReasons(): Seq[String] =
+    Seq(nonLiteralPercentageReason, nonLiteralAccuracyReason, inputTypeReason)
+
+  override def getSupportLevel(expr: ApproximatePercentile): SupportLevel = {
+    if (!expr.percentageExpression.foldable) {
+      return Unsupported(Some(nonLiteralPercentageReason))
+    }
+    if (!expr.accuracyExpression.foldable) {
+      return Unsupported(Some(nonLiteralAccuracyReason))
+    }
+    expr.child.dataType match {
+      case ByteType | ShortType | IntegerType | LongType | FloatType | DoubleType =>
+        Compatible(None)
+      case _ => Unsupported(Some(inputTypeReason))
+    }
+  }
+
+  override def convert(
+      aggExpr: AggregateExpression,
+      expr: ApproximatePercentile,
+      inputs: Seq[Attribute],
+      binding: Boolean,
+      conf: SQLConf): Option[ExprOuterClass.AggExpr] = {
+    // Spark accumulates values as doubles; cast the child up front so the
+    // accumulator sees a single Float64 column, then cast results back to the
+    // input type natively via input_type.
+    val childExpr = exprToProto(Cast(expr.child, DoubleType), inputs, binding)
+    val inputType = serializeDataType(expr.child.dataType)
+
+    val (percentiles, returnArray) = expr.percentageExpression.eval() match {
+      case d: Double => (Seq(d), false)
+      case arr: ArrayData => (arr.toDoubleArray().toSeq, true)
+      case other =>
+        withFallbackReason(aggExpr, s"Unsupported percentage literal: $other", expr.child)
+        return None
+    }
+    val accuracy = expr.accuracyExpression.eval() match {
+      case i: Int => i.toLong
+      case l: Long => l
+      case other =>
+        withFallbackReason(aggExpr, s"Unsupported accuracy literal: $other", expr.child)
+        return None
+    }
+
+    if (childExpr.isDefined && inputType.isDefined) {
+      val builder = ExprOuterClass.ApproxPercentile.newBuilder()
+      builder.setChild(childExpr.get)
+      percentiles.foreach(builder.addPercentiles(_))
+      builder.setAccuracy(accuracy)
+      builder.setReturnArray(returnArray)
+      builder.setInputType(inputType.get)
+      Some(
+        ExprOuterClass.AggExpr
+          .newBuilder()
+          .setApproxPercentile(builder)
+          .build())
+    } else {
+      withFallbackReason(aggExpr, expr.child)
       None
     }
   }
