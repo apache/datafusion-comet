@@ -100,7 +100,7 @@ impl HdfsManager {
                 let hdfs_builder = hdfsNewBuilder();
                 let cstr_uri = CString::new(namenode_uri.as_bytes()).unwrap();
                 hdfsBuilderSetNameNode(hdfs_builder, cstr_uri.as_ptr());
-                info!("Connecting to Namenode ({})", &namenode_uri);
+                info!("Connecting to Namenode ({})", namenode_uri);
                 hdfsBuilderConnect(hdfs_builder)
             };
 
