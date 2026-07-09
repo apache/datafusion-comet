@@ -1802,8 +1802,8 @@ trait CometBaseAggregate {
   /**
    * For partial-like aggregates containing TypedImperativeAggregate functions (like CollectSet,
    * CollectList, and Percentile), the Spark-side output declares buffer columns as BinaryType
-   * because Spark serializes state to binary. Native Comet emits the actual state type, so fix the
-   * exposed output schema before shuffle/exchange code consumes it.
+   * because Spark serializes state to binary. Native Comet emits the actual state type, so fix
+   * the exposed output schema before shuffle/exchange code consumes it.
    *
    * NOTE: If a new TypedImperativeAggregate function is added natively, add a case branch here
    * mapping it to the native state type.
