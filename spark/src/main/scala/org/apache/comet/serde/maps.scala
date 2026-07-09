@@ -77,13 +77,29 @@ object CometMapExtract extends CometExpressionSerde[GetMapValue] {
 
 private object MapKeyDedupPolicySupport {
   val incompatibleReason: String =
-    s"`${SQLConf.MAP_KEY_DEDUP_POLICY.key}` is set to `${SQLConf.MapKeyDedupPolicy.LAST_WIN}`; Comet's native map construction " +
+    s"`${SQLConf.MAP_KEY_DEDUP_POLICY.key}` is set to " +
+      s"`${SQLConf.MapKeyDedupPolicy.LAST_WIN}`; Comet's native map construction " +
       "does not implement LAST_WIN dedup semantics."
 
   def isLastWin: Boolean =
-    SQLConf.get.getConf(SQLConf.MAP_KEY_DEDUP_POLICY).toString.equalsIgnoreCase(
-      SQLConf.MapKeyDedupPolicy.LAST_WIN.toString)
+    SQLConf.get
+      .getConf(SQLConf.MAP_KEY_DEDUP_POLICY)
+      .toString
+      .equalsIgnoreCase(SQLConf.MapKeyDedupPolicy.LAST_WIN.toString)
 }
+
+object CometMapFromArrays extends CometExpressionSerde[MapFromArrays] {
+
+  override def getIncompatibleReasons(): Seq[String] =
+    Seq(MapKeyDedupPolicySupport.incompatibleReason)
+
+  override def getSupportLevel(expr: MapFromArrays): SupportLevel = {
+    if (MapKeyDedupPolicySupport.isLastWin) {
+      Incompatible(Some(MapKeyDedupPolicySupport.incompatibleReason))
+    } else {
+      Compatible(None)
+    }
+  }
 
   override def convert(
       expr: MapFromArrays,
