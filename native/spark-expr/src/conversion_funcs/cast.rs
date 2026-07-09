@@ -734,7 +734,7 @@ impl Display for Cast {
         write!(
             f,
             "Cast [data_type: {}, timezone: {}, child: {}, eval_mode: {:?}]",
-            self.data_type, self.cast_options.timezone, self.child, &self.cast_options.eval_mode
+            self.data_type, self.cast_options.timezone, self.child, self.cast_options.eval_mode
         )
     }
 }
