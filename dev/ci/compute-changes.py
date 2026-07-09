@@ -242,6 +242,25 @@ FILTERS = {
         ".github/actions/setup-builder/**",
         ".github/actions/setup-iceberg-builder/**",
     ],
+    "iceberg_1_11": [
+        "native/**/src/**",
+        "native/**/Cargo.toml",
+        "native/Cargo.lock",
+        "!native/hdfs/**",
+        "!native/fs-hdfs/**",
+        "common/src/main/**",
+        "common/pom.xml",
+        "spark/src/main/**",
+        "!spark/src/main/scala/org/apache/comet/GenerateDocs.scala",
+        "spark/pom.xml",
+        "dev/diffs/iceberg/**",
+        "pom.xml",
+        "rust-toolchain.toml",
+        ".github/workflows/ci.yml",
+        ".github/workflows/iceberg_spark_test_reusable.yml",
+        ".github/actions/setup-builder/**",
+        ".github/actions/setup-iceberg-builder/**",
+    ],
 }
 
 
