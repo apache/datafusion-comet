@@ -69,8 +69,14 @@ optimizer rules, and performance work are shared across the whole DataFusion eco
 DataFusion users benefits Comet, and work done for Comet benefits them in turn.
 
 Velox is also an open-source project with contributors from multiple organizations, but its development has been
-primarily driven by Meta. Users evaluating long-term adoption may want to weigh the governance model and breadth of
+primarily driven by Meta. Contributing to Velox additionally requires signing a Contributor License Agreement: the
+Velox [contributing guide] instructs contributors to sign the Meta [CLA] before their contributions can be accepted.
+Comet and DataFusion follow the standard Apache Software Foundation contribution model and do not require a per-contributor
+CLA. Users evaluating long-term adoption may want to weigh the governance model, contribution process, and breadth of
 the community behind each engine alongside the technical differences.
+
+[contributing guide]: https://github.com/facebookincubator/velox/blob/main/CONTRIBUTING.md
+[CLA]: https://code.facebook.com/cla
 
 ## Spark Version Support
 
