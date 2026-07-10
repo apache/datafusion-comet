@@ -3249,10 +3249,9 @@ impl PhysicalPlanner {
             .ok_or_else(|| GeneralError("lambda has no body".to_string()))?;
 
         // Plan the body under this scope; the guard pops on any `?` / drop.
-        let body_expr = {
-            let _guard = self.lambda_scopes.enter(scope);
-            self.create_expr(lambda_body, body_schema)?
-        };
+        let body_expr = self
+            .lambda_scopes
+            .with_scope(scope, || self.create_expr(lambda_body, body_schema))?;
 
         // Pin unused params so LambdaExpr's index compaction stays consistent.
         let body_expr = pin_unused_params(body_expr, &scope_entries);

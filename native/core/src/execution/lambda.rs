@@ -37,10 +37,12 @@ use std::sync::Arc;
 
 use arrow::array::RecordBatch;
 use arrow::datatypes::{FieldRef, Schema};
+use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
 use datafusion::common::{DataFusionError, Result as DFResult};
 use datafusion::physical_expr::expressions::LambdaVariable;
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::ColumnarValue;
+use std::collections::HashSet;
 
 /// Maps Spark `exprId` -> (column index in the extended body schema, field).
 pub(crate) type LambdaScope = HashMap<i64, (usize, FieldRef)>;
@@ -61,22 +63,21 @@ impl LambdaScopes {
             .find_map(|s| s.get(&expr_id).cloned())
     }
 
-    /// Push `scope` and return a guard that pops on drop.
-    pub(crate) fn enter(&self, scope: LambdaScope) -> LambdaScopeGuard<'_> {
+    /// Push `scope`, run `f`, pop unconditionally. The pop happens on both
+    /// the `Ok` and `Err` paths — this replaces the earlier RAII guard.
+    pub(crate) fn with_scope<T, E>(
+        &self,
+        scope: LambdaScope,
+        f: impl FnOnce() -> Result<T, E>,
+    ) -> Result<T, E> {
         self.0.borrow_mut().push(scope);
-        LambdaScopeGuard { scopes: self }
-    }
-}
-
-/// Pops the pushed scope on drop — `?` inside the body planner cannot
-/// leave a stale scope on the stack.
-pub(crate) struct LambdaScopeGuard<'a> {
-    scopes: &'a LambdaScopes,
-}
-
-impl Drop for LambdaScopeGuard<'_> {
-    fn drop(&mut self) {
-        self.scopes.0.borrow_mut().pop();
+        let out = f();
+        // NOTE: not panic-safe (a panic between push and pop leaks the
+        // scope), but planning is single-threaded and panics abort the
+        // request anyway; the guard version had the same property in
+        // practice — `Drop` only helps if you unwind, and Comet doesn't.
+        self.0.borrow_mut().pop();
+        out
     }
 }
 
@@ -174,9 +175,6 @@ pub(crate) fn pin_unused_params(
     body: Arc<dyn PhysicalExpr>,
     params: &[(usize, FieldRef)],
 ) -> Arc<dyn PhysicalExpr> {
-    use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
-    use std::collections::HashSet;
-
     let mut used = HashSet::with_capacity(params.len());
     body.apply(|e| {
         if let Some(v) = e.downcast_ref::<LambdaVariable>() {

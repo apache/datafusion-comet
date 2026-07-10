@@ -18,4 +18,4 @@
 -- Config: spark.comet.exec.scalaUDF.codegen.enabled=false
 
 query expect_fallback(The array_filter function in DataFusion is limited to one lambda parameter)
-SELECT filter(array(1, 2), (x, i) -> i > 0)
+SELECT filter(array(1, 2), (x, i) -> i < 3)

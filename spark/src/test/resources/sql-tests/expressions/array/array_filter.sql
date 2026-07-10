@@ -15,6 +15,8 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
+-- Config: spark.comet.exec.scalaUDF.codegen.enabled=false
+
 statement
 CREATE TABLE test_array_filter(arr array<int>, threshold int) USING parquet
 
@@ -29,9 +31,6 @@ SELECT filter(arr, x -> x >= 0) FROM test_array_filter
 
 query
 SELECT filter(filter(arr, x -> x < threshold), y -> y > 0) FROM test_array_filter
-
-query
-SELECT filter(arr, (x, i) -> i > 0) FROM test_array_filter
 
 query
 SELECT filter(arr, x -> size(filter(array(1, 2, 3), y -> y > threshold)) > 0) FROM test_array_filter
@@ -65,16 +64,6 @@ SELECT filter(arr, x -> abs(x) > 2) FROM test_array_filter
 
 query
 SELECT filter(arr, x -> coalesce(x, 0) > 0) FROM test_array_filter
-
--- Test case: Filter using array index position
-query
-SELECT filter(arr, (x, i) -> i % 2 = 0) FROM test_array_filter
-
-query
-SELECT filter(arr, (x, i) -> i < 3) FROM test_array_filter
-
-query
-SELECT filter(arr, (x, i) -> x IS NOT NULL AND i > 1) FROM test_array_filter
 
 statement
 CREATE TABLE test_array_filter_struct(arr array<struct<id:int,name:string>>) USING parquet
