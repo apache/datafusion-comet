@@ -118,38 +118,52 @@ fn compact_list<OffsetSize: OffsetSizeTrait>(
 
     let values = list_array.values();
     let original_data = values.to_data();
-    let mut offsets = Vec::<OffsetSize>::with_capacity(list_array.len() + 1);
+    let len = list_array.len();
+    let mut offsets = Vec::<OffsetSize>::with_capacity(len + 1);
     offsets.push(OffsetSize::zero());
     let mut mutable = MutableArrayData::with_capacities(
         vec![&original_data],
         false,
         Capacities::Array(original_data.len()),
     );
-    let mut valid = NullBufferBuilder::new(list_array.len());
+    let mut valid = NullBufferBuilder::new(len);
 
     // Use logical_nulls() instead of is_null() to correctly handle NullArray.
     // NullArray::nulls() returns None (which makes is_null() return false),
     // but logical_nulls() correctly reports all elements as null.
     let value_nulls = values.logical_nulls();
+    let offsets_slice = list_array.offsets();
 
-    for (row_index, offset_window) in list_array.offsets().windows(2).enumerate() {
+    for row_index in 0..len {
         if list_array.is_null(row_index) {
             offsets.push(offsets[row_index]);
             valid.append_null();
             continue;
         }
 
-        let start = offset_window[0].to_usize().unwrap();
-        let end = offset_window[1].to_usize().unwrap();
-        let mut copied = 0usize;
+        let start = offsets_slice[row_index].to_usize().unwrap();
+        let end = offsets_slice[row_index + 1].to_usize().unwrap();
 
-        for i in start..end {
-            let is_null = value_nulls.as_ref().map(|n| n.is_null(i)).unwrap_or(false);
-            if !is_null {
-                mutable.extend(0, i, i + 1);
-                copied += 1;
+        let copied = match &value_nulls {
+            // No null elements, so nothing is removed: copy the whole slice in
+            // a single extend rather than one extend per element.
+            None => {
+                if end > start {
+                    mutable.extend(0, start, end);
+                }
+                end - start
             }
-        }
+            // Copy each maximal contiguous run of non-null elements in a single
+            // extend, skipping the null elements in between.
+            Some(value_nulls) => {
+                let mut copied = 0usize;
+                for (run_start, run_end) in value_nulls.slice(start, end - start).valid_slices() {
+                    mutable.extend(0, start + run_start, start + run_end);
+                    copied += run_end - run_start;
+                }
+                copied
+            }
+        };
 
         offsets.push(offsets[row_index] + OffsetSize::usize_as(copied));
         valid.append_non_null();

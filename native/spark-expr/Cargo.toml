@@ -85,6 +85,10 @@ name = "padding"
 harness = false
 
 [[bench]]
+name = "array_compact"
+harness = false
+
+[[bench]]
 name = "date_trunc"
 harness = false
 
