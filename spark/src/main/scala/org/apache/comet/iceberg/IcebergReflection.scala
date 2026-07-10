@@ -790,7 +790,9 @@ object IcebergReflection extends Logging {
     val sparkSchemaUtil = loadClass(ClassNames.SPARK_SCHEMA_UTIL)
     val schemaClass = loadClass(ClassNames.SCHEMA)
     val convert = sparkSchemaUtil.getMethod("convert", schemaClass)
-    convert.invoke(null, schema).asInstanceOf[org.apache.spark.sql.types.StructType]
+    convert
+      .invoke(null, schema.asInstanceOf[AnyRef])
+      .asInstanceOf[org.apache.spark.sql.types.StructType]
   }
 }
 
