@@ -736,6 +736,47 @@ object IcebergReflection extends Logging {
 
     unsupportedTypes.toList
   }
+
+  /**
+   * True if the table has table-level encryption configured. Encrypted Parquet footers cannot be
+   * read by Comet's native reader, so such tables must fall back to Spark.
+   */
+  def hasTableEncryption(table: Any): Boolean =
+    getTableProperties(table).exists(_.containsKey("encryption.key-id"))
+
+  /**
+   * Returns the names of schema columns (including nested struct/list/map fields) that declare a
+   * V3 initial-default value. iceberg-rust does not synthesize default values for columns absent
+   * from a data file, so reads projecting such columns must fall back. Throws on reflection
+   * failure so the caller can fall back rather than risk a native crash.
+   */
+  def columnsWithInitialDefault(schema: Any): List[String] = {
+    import scala.jdk.CollectionConverters._
+    val columns =
+      schema.getClass.getMethod("columns").invoke(schema).asInstanceOf[java.util.List[_]]
+    columns.asScala.flatMap(walkFieldForDefault).toList
+  }
+
+  private def walkFieldForDefault(field: Any): List[String] = {
+    import scala.jdk.CollectionConverters._
+    val name = field.getClass.getMethod("name").invoke(field).asInstanceOf[String]
+    val here =
+      if (field.getClass.getMethod("initialDefault").invoke(field) != null) List(name) else Nil
+    val fieldType = field.getClass.getMethod("type").invoke(field)
+    val nested =
+      if (fieldType.getClass.getMethod("isNestedType").invoke(fieldType).asInstanceOf[Boolean]) {
+        val nestedType = fieldType.getClass.getMethod("asNestedType").invoke(fieldType)
+        val fields =
+          nestedType.getClass
+            .getMethod("fields")
+            .invoke(nestedType)
+            .asInstanceOf[java.util.List[_]]
+        fields.asScala.flatMap(walkFieldForDefault).toList
+      } else {
+        Nil
+      }
+    here ++ nested
+  }
 }
 
 /**

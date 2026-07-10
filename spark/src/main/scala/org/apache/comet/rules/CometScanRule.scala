@@ -481,6 +481,32 @@ case class CometScanRule(session: SparkSession)
             false
         }
 
+        // Encrypted Parquet footers cannot be read by the native reader.
+        val encryptionSupported = !IcebergReflection.hasTableEncryption(metadata.table)
+        if (!encryptionSupported) {
+          fallbackReasons += "Iceberg table encryption is not supported by Comet's native reader"
+        }
+
+        // iceberg-rust does not synthesize V3 initial-default values for columns absent from a
+        // data file, so a scan projecting such a column must fall back. Reflection failure also
+        // falls back rather than risk a native crash.
+        val defaultValuesSupported =
+          try {
+            val defaulted = IcebergReflection.columnsWithInitialDefault(metadata.scanSchema)
+            if (defaulted.nonEmpty) {
+              fallbackReasons += "Iceberg column(s) with V3 default values are not yet supported " +
+                s"by Comet's native reader: ${defaulted.mkString(", ")}"
+              false
+            } else {
+              true
+            }
+          } catch {
+            case e: Exception =>
+              fallbackReasons += "Iceberg reflection failure: could not verify V3 default " +
+                s"values: ${e.getMessage}"
+              false
+          }
+
         // Single-pass validation of all FileScanTasks
         val taskValidation =
           try {
@@ -719,6 +745,7 @@ case class CometScanRule(session: SparkSession)
         }
 
         if (schemaSupported && fileIOCompatible && formatVersionSupported &&
+          encryptionSupported && defaultValuesSupported &&
           taskValidation.allParquet && allSupportedFilesystems && partitionTypesSupported &&
           complexTypePredicatesSupported && transformFunctionsSupported &&
           deleteFileTypesSupported && dppSubqueriesSupported) {
