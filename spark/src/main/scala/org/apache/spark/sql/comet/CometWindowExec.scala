@@ -21,7 +21,7 @@ package org.apache.spark.sql.comet
 
 import scala.jdk.CollectionConverters._
 
-import org.apache.spark.sql.catalyst.expressions.{Alias, Attribute, AttributeSet, Cast, CumeDist, CurrentRow, DenseRank, Divide, Expression, FrameType, Lag, Lead, Literal, MakeDecimal, NamedExpression, NthValue, NTile, PercentRank, RangeFrame, Rank, RowFrame, RowNumber, SortOrder, SpecialFrameBoundary, SpecifiedWindowFrame, UnboundedFollowing, UnboundedPreceding, UnscaledValue, WindowExpression}
+import org.apache.spark.sql.catalyst.expressions.{Alias, Attribute, AttributeSet, Cast, CumeDist, CurrentRow, DenseRank, Divide, Expression, Lag, Lead, Literal, MakeDecimal, NamedExpression, NthValue, NTile, PercentRank, RangeFrame, Rank, RowFrame, RowNumber, SortOrder, SpecialFrameBoundary, SpecifiedWindowFrame, UnboundedFollowing, UnboundedPreceding, UnscaledValue, WindowExpression}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, Average, Complete, Count, First, Last, Max, Min, Sum}
 import org.apache.spark.sql.catalyst.plans.physical.Partitioning
 import org.apache.spark.sql.execution.SparkPlan
@@ -42,22 +42,6 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
 
   override def enabledConfig: Option[ConfigEntry[Boolean]] = Some(
     CometConf.COMET_EXEC_WINDOW_ENABLED)
-
-  private def isGroupsFrame(frameType: FrameType): Boolean =
-    frameType.sql.equalsIgnoreCase("GROUPS")
-
-  private def isPhysicalOffsetFrame(frameType: FrameType): Boolean =
-    frameType == RowFrame || isGroupsFrame(frameType)
-
-  private def frameTypeToProto(frameType: FrameType): Option[OperatorOuterClass.WindowFrameType] =
-    frameType match {
-      case RowFrame => Some(OperatorOuterClass.WindowFrameType.Rows)
-      case RangeFrame => Some(OperatorOuterClass.WindowFrameType.Range)
-      // Spark versions supported today do not expose a GroupsFrame class, but
-      // keep serde ready for Spark versions that do by matching the SQL spelling.
-      case other if isGroupsFrame(other) => Some(OperatorOuterClass.WindowFrameType.Groups)
-      case _ => None
-    }
 
   override def convert(
       op: WindowExec,
@@ -439,9 +423,9 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
 
     val (frameType, lowerBound, upperBound) = f match {
       case SpecifiedWindowFrame(frameType, lBound, uBound) =>
-        val frameProto = frameTypeToProto(frameType).getOrElse {
-          withFallbackReason(windowExpr, s"Unsupported window frame type: ${frameType.sql}")
-          return None
+        val frameProto = frameType match {
+          case RowFrame => OperatorOuterClass.WindowFrameType.Rows
+          case RangeFrame => OperatorOuterClass.WindowFrameType.Range
         }
 
         val lBoundProto = lBound match {
@@ -455,14 +439,14 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
               .newBuilder()
               .setCurrentRow(OperatorOuterClass.CurrentRow.newBuilder().build())
               .build()
-          case e if isPhysicalOffsetFrame(frameType) =>
+          case e if frameType == RowFrame =>
             val offset = e.eval() match {
               case i: Integer => i.toLong
               case l: Long => l
               case _ =>
                 withFallbackReason(
                   windowExpr,
-                  s"Unsupported ${frameType.sql} frame lower offset: $e (${e.dataType})")
+                  s"Unsupported ROWS frame lower offset: $e (${e.dataType})")
                 return None
             }
             OperatorOuterClass.LowerWindowFrameBound
@@ -491,7 +475,7 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
           case e =>
             withFallbackReason(
               windowExpr,
-              s"${frameType.sql} frame with non-numeric offset is not supported: ${e.dataType}")
+              s"RANGE frame with non-numeric offset is not supported: ${e.dataType}")
             return None
         }
 
@@ -506,14 +490,14 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
               .newBuilder()
               .setCurrentRow(OperatorOuterClass.CurrentRow.newBuilder().build())
               .build()
-          case e if isPhysicalOffsetFrame(frameType) =>
+          case e if frameType == RowFrame =>
             val offset = e.eval() match {
               case i: Integer => i.toLong
               case l: Long => l
               case _ =>
                 withFallbackReason(
                   windowExpr,
-                  s"Unsupported ${frameType.sql} frame upper offset: $e (${e.dataType})")
+                  s"Unsupported ROWS frame upper offset: $e (${e.dataType})")
                 return None
             }
             OperatorOuterClass.UpperWindowFrameBound
@@ -542,7 +526,7 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
           case e =>
             withFallbackReason(
               windowExpr,
-              s"${frameType.sql} frame with non-numeric offset is not supported: ${e.dataType}")
+              s"RANGE frame with non-numeric offset is not supported: ${e.dataType}")
             return None
         }
 

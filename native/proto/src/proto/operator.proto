@@ -435,6 +435,8 @@ message WindowExpr {
 enum WindowFrameType {
   Rows = 0;
   Range = 1;
+  // Reserved for forward compatibility. Supported Spark versions cannot
+  // currently construct GROUPS window frames.
   Groups = 2;
 }
 

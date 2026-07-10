@@ -3206,6 +3206,8 @@ fn spark_window_frame_to_datafusion(
     let units = match spark_window_frame.frame_type() {
         WindowFrameType::Rows => WindowFrameUnits::Rows,
         WindowFrameType::Range => WindowFrameUnits::Range,
+        // The protocol reserves GROUPS for a future Spark version that can
+        // construct the corresponding Catalyst window frame.
         WindowFrameType::Groups => WindowFrameUnits::Groups,
     };
 
@@ -3219,8 +3221,9 @@ fn spark_window_frame_to_datafusion(
                 physical_window_frame_unbounded_preceding(units)
             }
             LowerFrameBoundStruct::Preceding(offset) => {
-                // Spark encodes ROWS/GROUPS bound direction via the sign of
-                // the offset: negative => PRECEDING, positive => FOLLOWING.
+                // The Comet protocol encodes physical ROWS/GROUPS bound
+                // direction via the sign of the offset: negative =>
+                // PRECEDING, positive => FOLLOWING.
                 // The proto `LowerWindowFrameBound` only carries a `Preceding`
                 // variant, so Comet overloads it for both cases. Route to the
                 // matching DataFusion `WindowFrameBound` based on the sign.
@@ -3254,9 +3257,8 @@ fn spark_window_frame_to_datafusion(
             UpperFrameBoundStruct::Following(offset) => match units {
                 WindowFrameUnits::Rows | WindowFrameUnits::Groups => {
                     // Mirror the lower-bound sign handling: the upper proto
-                    // variant is `Following`, but Spark encodes the bound
-                    // direction via sign. Negative => PRECEDING, positive =>
-                    // FOLLOWING.
+                    // variant is `Following`, while the signed offset carries
+                    // the direction. Negative => PRECEDING, positive => FOLLOWING.
                     signed_physical_offset_window_frame_bound(offset.offset)
                 }
                 WindowFrameUnits::Range => {
@@ -4319,7 +4321,7 @@ mod tests {
     use datafusion_comet_spark_expr::EvalMode;
 
     #[test]
-    fn test_groups_window_frame_with_offsets() {
+    fn test_groups_window_frame_proto_conversion_with_offsets() {
         let frame = spark_operator::WindowFrame {
             frame_type: spark_operator::WindowFrameType::Groups as i32,
             lower_bound: Some(spark_operator::LowerWindowFrameBound {
@@ -4358,7 +4360,7 @@ mod tests {
     }
 
     #[test]
-    fn test_groups_window_frame_defaults_to_unbounded() {
+    fn test_groups_window_frame_proto_conversion_defaults_to_unbounded() {
         let frame = spark_operator::WindowFrame {
             frame_type: spark_operator::WindowFrameType::Groups as i32,
             lower_bound: None,
