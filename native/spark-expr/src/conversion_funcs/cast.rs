@@ -63,7 +63,6 @@ use datafusion::common::{internal_err, DataFusionError, Result as DataFusionResu
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::ColumnarValue;
 use std::{
-    any::Any,
     fmt::{Debug, Display, Formatter},
     hash::Hash,
     sync::Arc,
@@ -733,16 +732,12 @@ impl Display for Cast {
         write!(
             f,
             "Cast [data_type: {}, timezone: {}, child: {}, eval_mode: {:?}]",
-            self.data_type, self.cast_options.timezone, self.child, &self.cast_options.eval_mode
+            self.data_type, self.cast_options.timezone, self.child, self.cast_options.eval_mode
         )
     }
 }
 
 impl PhysicalExpr for Cast {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn fmt_sql(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         Display::fmt(self, f)
     }

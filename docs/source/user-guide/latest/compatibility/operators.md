@@ -21,8 +21,42 @@ under the License.
 
 ## Window Functions
 
-Comet's support for window functions is incomplete and known to be incorrect. It is disabled by default and
-should not be used in production. The feature will be enabled in a future release. Tracking issue: [#2721](https://github.com/apache/datafusion-comet/issues/2721).
+Comet runs `WindowExec` natively and it is enabled by default (`spark.comet.exec.window.enabled`). A broad set of
+window functions is accelerated, and any shape Comet does not support falls back to Spark rather than producing an
+incorrect result. When any single window expression in a `WindowExec` falls back, the entire operator runs on Spark.
+
+**Accelerated natively:**
+
+- Ranking functions: `row_number`, `rank`, `dense_rank`, `percent_rank`, `cume_dist`, `ntile`.
+- Value functions: `lag`, `lead`, `nth_value`, `first_value` (`first`), `last_value` (`last`). `IGNORE NULLS` is
+  supported.
+- Aggregate window functions: `count`, `min`, `max`, `sum`, `avg`.
+- Frame units `ROWS` and `RANGE`, with `UNBOUNDED PRECEDING` / `UNBOUNDED FOLLOWING`, `CURRENT ROW`, and numeric
+  `PRECEDING` / `FOLLOWING` offsets.
+
+**Falls back to Spark:**
+
+- Aggregate window functions other than the ones listed above, including the statistical aggregates
+  (`stddev`, `stddev_pop`, `stddev_samp`, `var_pop`, `var_samp`, `corr`, `covar_pop`, `covar_samp`). These run
+  natively as plain aggregations but not as window functions
+  ([#4766](https://github.com/apache/datafusion-comet/issues/4766)).
+- `min` / `max` on string, binary, timestamp-without-time-zone, interval, or nested (array / struct) input types,
+  and `sum` / `avg` on year-month or day-time interval input types. Windowed aggregates inherit the same input-type
+  support as the batch aggregates, so these fall back in both contexts.
+- `sum` or `avg` on `DECIMAL` with a sliding (non ever-expanding) frame, because the sliding path would wrap on
+  overflow instead of returning Spark's `NULL`.
+- `RANGE` frame with an explicit offset when the `ORDER BY` column is `DATE` or `DECIMAL`
+  ([#4834](https://github.com/apache/datafusion-comet/issues/4834)).
+- `first_value` / `last_value` on a `RANGE` frame with a literal offset
+  ([#4835](https://github.com/apache/datafusion-comet/issues/4835)).
+- `lag` / `lead` with a non-literal default value ([#4268](https://github.com/apache/datafusion-comet/issues/4268)).
+- A `ROWS` offset that is not an integer or long, or a `RANGE` offset that is not numeric.
+- `GROUPS` frames ([#4836](https://github.com/apache/datafusion-comet/issues/4836)). `DISTINCT` aggregates over a
+  window are not supported by Spark either.
+- Any `PARTITION BY` or `ORDER BY` expression that Comet cannot serialize.
+
+`WindowGroupLimitExec` (window-based limit pushdown) is not yet supported and falls back to Spark
+([#4837](https://github.com/apache/datafusion-comet/issues/4837)).
 
 ## Round-Robin Partitioning
 

@@ -32,7 +32,7 @@ import org.apache.spark.sql.execution._
 import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.CometConf._
-import org.apache.comet.rules.{CometExecRule, CometPlanAdaptiveDynamicPruningFilters, CometReuseSubquery, CometScanRule, CometSpark34AqeDppFallbackRule, EliminateRedundantTransitions}
+import org.apache.comet.rules.{CometExecRule, CometPlanAdaptiveDynamicPruningFilters, CometReuseSubquery, CometScanRule, CometSpark34AqeDppFallbackRule, EliminateRedundantTransitions, RevertNativeForTransitionHeavyStages}
 import org.apache.comet.shims.ShimCometSparkSessionExtensions
 
 /**
@@ -51,7 +51,8 @@ import org.apache.comet.shims.ShimCometSparkSessionExtensions
  *         - CometExecRule.convertSubqueryBroadcasts converts SubqueryBroadcastExec to
  *           CometSubqueryBroadcastExec for exchange reuse with Comet broadcasts
  *      b. insertTransitions:        ColumnarToRow/RowToColumnar added
- *      c. postColumnarTransitions:  EliminateRedundantTransitions
+ *      c. postColumnarTransitions:  RevertNativeForTransitionHeavyStages,
+ *                                   EliminateRedundantTransitions
  *   5. ReuseExchangeAndSubquery     -- Spark deduplicates subqueries (sees Comet nodes)
  * }}}
  *
@@ -74,7 +75,8 @@ import org.apache.comet.shims.ShimCometSparkSessionExtensions
  *     2. postStageCreationRules -> ApplyColumnarRulesAndInsertTransitions:
  *        a. preColumnarTransitions: CometScanRule, CometExecRule (no-ops, already converted)
  *        b. insertTransitions
- *        c. postColumnarTransitions: EliminateRedundantTransitions
+ *        c. postColumnarTransitions: RevertNativeForTransitionHeavyStages,
+ *                                    EliminateRedundantTransitions
  * }}}
  *
  * On Spark 3.4, injectQueryStageOptimizerRule is unavailable. CometExecRule does not wrap SABs,
@@ -106,8 +108,11 @@ class CometSparkSessionExtensions
   case class CometExecColumnar(session: SparkSession) extends ColumnarRule {
     override def preColumnarTransitions: Rule[SparkPlan] = CometExecRule(session)
 
-    override def postColumnarTransitions: Rule[SparkPlan] =
-      EliminateRedundantTransitions(session)
+    override def postColumnarTransitions: Rule[SparkPlan] = {
+      val rules =
+        Seq(RevertNativeForTransitionHeavyStages(session), EliminateRedundantTransitions(session))
+      plan => rules.foldLeft(plan) { case (p, rule) => rule(p) }
+    }
   }
 }
 
@@ -359,6 +364,23 @@ object CometSparkSessionExtensions extends Logging {
    */
   def hasFallbackReason(node: TreeNode[_]): Boolean = {
     node.getTagValue(CometExplainInfo.FALLBACK_REASONS).exists(_.nonEmpty)
+  }
+
+  /**
+   * Record a purely informational message on a `TreeNode`. Unlike `withFallbackReason`, this does
+   * NOT cause the node to fall back to Spark: the planning rules never read this tag. Messages
+   * accumulate (never overwrite) on the node's `EXTENSION_INFO` tag and are surfaced in verbose
+   * extended explain output under a `[COMET-INFO: ...]` label. Use this to point the user at a
+   * faster or alternative path that is available but not currently selected, such as a native
+   * implementation gated behind a config.
+   */
+  def withInfo[T <: TreeNode[_]](node: T, message: String): T = {
+    if (message != null && message.nonEmpty) {
+      val existing =
+        node.getTagValue(CometExplainInfo.EXTENSION_INFO).getOrElse(Set.empty[String])
+      node.setTagValue(CometExplainInfo.EXTENSION_INFO, existing + message)
+    }
+    node
   }
 
 }

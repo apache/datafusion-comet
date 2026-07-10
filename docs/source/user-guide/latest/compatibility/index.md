@@ -31,6 +31,19 @@ This guide documents areas where Comet's behavior is known to differ from Spark.
 - **JSON**: choosing between the native and Spark-compatible engines for JSON expressions.
 - **Spark versions**: version-specific known issues and limitations.
 
+## Compatible by default, opt in to native
+
+Comet runs a Spark-compatible implementation of every supported expression by default. Some
+expressions also have a native implementation that can differ from Spark for certain
+inputs. These are not used unless you opt in by setting the relevant
+`spark.comet.expression.<Name>.allowIncompatible=true` config (a few use a dedicated config, noted
+per expression below), after which you accept the documented differences.
+
+You can discover where a native opt-in is available for a specific query in the verbose extended
+explain output. A `[COMET-INFO: ...]` segment points at an available native path and does not mean
+the operator falls back to Spark. This is distinct from `[COMET: ...]`, which records a reason an
+operator did fall back.
+
 ## Native and codegen-dispatch implementations
 
 Some Spark expressions have two implementations in Comet:
@@ -40,11 +53,11 @@ Some Spark expressions have two implementations in Comet:
   produces byte-exact Spark results at the cost of one JNI round-trip per batch. It is gated
   globally by `spark.comet.exec.scalaUDF.codegen.enabled` (enabled by default); when the
   dispatcher is disabled, these expressions fall back to Spark.
-- A **native** (Rust / DataFusion) implementation that is faster, with no JNI overhead, but
-  has known semantic differences from Spark for some inputs or patterns.
+- A **native** (Rust / DataFusion) implementation that avoids the JNI round-trip but has
+  known semantic differences from Spark for some inputs or patterns.
 
 Because the codegen-dispatch path matches Spark exactly, Comet uses it by **default**. The
-faster native path is **opt-in per expression** via that expression's
+native path is **opt-in per expression** via that expression's
 `spark.comet.expression.<ExprClassName>.allowIncompatible=true` flag, which declares that you
 accept its differences from Spark. There is no global opt-in. When the native path is enabled
 but a specific input or pattern has no native implementation, Comet routes that case back

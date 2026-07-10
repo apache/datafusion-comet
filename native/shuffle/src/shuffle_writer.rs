@@ -22,7 +22,8 @@ use crate::partitioners::{
     EmptySchemaShufflePartitioner, MultiPartitionShuffleRepartitioner, ShufflePartitioner,
     SinglePartitionShufflePartitioner,
 };
-use crate::{CometPartitioning, CompressionCodec};
+use crate::writers::LocalPartitionWriter;
+use crate::{CometPartitioning, CompressionCodec, ShuffleBlockWriter};
 use async_trait::async_trait;
 use datafusion::common::exec_datafusion_err;
 use datafusion::physical_expr::{EquivalenceProperties, Partitioning};
@@ -40,7 +41,6 @@ use datafusion::{
 };
 use futures::{StreamExt, TryStreamExt};
 use std::{
-    any::Any,
     fmt,
     fmt::{Debug, Formatter},
     sync::Arc,
@@ -119,11 +119,6 @@ impl DisplayAs for ShuffleWriterExec {
 
 #[async_trait]
 impl ExecutionPlan for ShuffleWriterExec {
-    /// Return a reference to Any that can be used for downcasting
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn name(&self) -> &str {
         "ShuffleWriterExec"
     }
@@ -208,39 +203,40 @@ async fn external_shuffle(
 ) -> Result<SendableRecordBatchStream> {
     let schema = input.schema();
 
+    let shuffle_block_writer = ShuffleBlockWriter::try_new(schema.as_ref(), codec.clone())?;
+    let local_partition_writer = LocalPartitionWriter::try_new(
+        output_data_file,
+        output_index_file,
+        shuffle_block_writer,
+        partitioning.partition_count(),
+        context.session_config().batch_size(),
+        write_buffer_size,
+        context.runtime_env(),
+    )?;
+
     let mut repartitioner: Box<dyn ShufflePartitioner> = match &partitioning {
         _ if schema.fields().is_empty() => {
             log::debug!("found empty schema, overriding {partitioning:?} partitioning with EmptySchemaShufflePartitioner");
             Box::new(EmptySchemaShufflePartitioner::try_new(
-                output_data_file,
-                output_index_file,
+                local_partition_writer,
                 Arc::clone(&schema),
                 partitioning.partition_count(),
                 metrics,
-                codec,
             )?)
         }
         any if any.partition_count() == 1 => Box::new(SinglePartitionShufflePartitioner::try_new(
-            output_data_file,
-            output_index_file,
-            Arc::clone(&schema),
+            local_partition_writer,
             metrics,
             context.session_config().batch_size(),
-            codec,
-            write_buffer_size,
         )?),
         _ => Box::new(MultiPartitionShuffleRepartitioner::try_new(
             partition,
-            output_data_file,
-            output_index_file,
-            Arc::clone(&schema),
+            local_partition_writer,
             partitioning,
             metrics,
             context.runtime_env(),
             context.session_config().batch_size(),
-            codec,
             tracing_enabled,
-            write_buffer_size,
         )?),
     };
 
@@ -343,6 +339,7 @@ mod test {
     }
 
     #[tokio::test]
+    #[cfg_attr(miri, ignore)] // miri can't call foreign function `ZSTD_createCCtx`
     async fn shuffle_partitioner_memory() {
         let batch = create_batch(900);
         assert_eq!(8316, batch.get_array_memory_size()); // Not stable across Arrow versions
@@ -351,38 +348,47 @@ mod test {
         let num_partitions = 2;
         let runtime_env = create_runtime(memory_limit);
         let metrics_set = ExecutionPlanMetricsSet::new();
-        let mut repartitioner = MultiPartitionShuffleRepartitioner::try_new(
-            0,
+        let shuffle_block_writer =
+            ShuffleBlockWriter::try_new(batch.schema().as_ref(), CompressionCodec::Lz4Frame)
+                .unwrap();
+        let local_partition_writer = LocalPartitionWriter::try_new(
             "/tmp/data.out".to_string(),
             "/tmp/index.out".to_string(),
-            batch.schema(),
+            shuffle_block_writer,
+            num_partitions,
+            1024,
+            1024 * 1024, // write_buffer_size: 1MB default
+            Arc::clone(&runtime_env),
+        )
+        .unwrap();
+        let mut repartitioner = MultiPartitionShuffleRepartitioner::try_new(
+            0,
+            local_partition_writer,
             CometPartitioning::Hash(vec![Arc::new(Column::new("a", 0))], num_partitions),
             ShufflePartitionerMetrics::new(&metrics_set, 0),
             runtime_env,
             1024,
-            CompressionCodec::Lz4Frame,
             false,
-            1024 * 1024, // write_buffer_size: 1MB default
         )
         .unwrap();
 
         repartitioner.insert_batch(batch.clone()).await.unwrap();
 
         {
-            let partition_writers = repartitioner.partition_writers();
-            assert_eq!(partition_writers.len(), 2);
+            let spill_writers = repartitioner.partition_writer().get_spill_writers();
+            assert_eq!(spill_writers.len(), 2);
 
-            assert!(!partition_writers[0].has_spill_file());
-            assert!(!partition_writers[1].has_spill_file());
+            assert!(!spill_writers[0].has_spill_file());
+            assert!(!spill_writers[1].has_spill_file());
         }
 
         repartitioner.spill().unwrap();
 
         // after spill, there should be spill files
         {
-            let partition_writers = repartitioner.partition_writers();
-            assert!(partition_writers[0].has_spill_file());
-            assert!(partition_writers[1].has_spill_file());
+            let spill_writers = repartitioner.partition_writer().get_spill_writers();
+            assert!(spill_writers[0].has_spill_file());
+            assert!(spill_writers[1].has_spill_file());
         }
 
         // insert another batch after spilling
@@ -414,18 +420,26 @@ mod test {
         let data_size = metrics.data_size.clone();
         let spill_count = metrics.spill_count.clone();
         let dir = tempfile::tempdir().unwrap();
-        let mut repartitioner = MultiPartitionShuffleRepartitioner::try_new(
-            0,
+        let shuffle_block_writer =
+            ShuffleBlockWriter::try_new(schema.as_ref(), CompressionCodec::Lz4Frame).unwrap();
+        let local_partition_writer = LocalPartitionWriter::try_new(
             dir.path().join("data.out").to_str().unwrap().to_string(),
             dir.path().join("index.out").to_str().unwrap().to_string(),
-            backing.schema(),
+            shuffle_block_writer,
+            num_partitions,
+            1024,
+            1024 * 1024, // write_buffer_size: 1MB default
+            Arc::clone(&runtime_env),
+        )
+        .unwrap();
+        let mut repartitioner = MultiPartitionShuffleRepartitioner::try_new(
+            0,
+            local_partition_writer,
             CometPartitioning::Hash(vec![Arc::new(Column::new("a", 0))], num_partitions),
             metrics,
             runtime_env,
             batch_size,
-            CompressionCodec::Lz4Frame,
             false,
-            1024 * 1024,
         )
         .unwrap();
 

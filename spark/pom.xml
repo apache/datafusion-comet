@@ -26,7 +26,7 @@ under the License.
   <parent>
     <groupId>org.apache.datafusion</groupId>
     <artifactId>comet-parent-spark${spark.version.short}_${scala.binary.version}</artifactId>
-    <version>0.18.0-SNAPSHOT</version>
+    <version>1.0.0-SNAPSHOT</version>
     <relativePath>../pom.xml</relativePath>
   </parent>
 
@@ -203,7 +203,7 @@ under the License.
   </dependencies>
 
   <profiles>
-    <!-- Iceberg dependencies vary by Spark version (Iceberg 1.8.1 for Spark 3.x, 1.10.0 for Spark 4.0) -->
+    <!-- Iceberg dependencies vary by Spark version (Iceberg 1.8.1 for Spark 3.x, 1.10.0 for Spark 4.0, 1.11.0 for Spark 4.1) -->
     <profile>
       <id>spark-3.4</id>
       <dependencies>
@@ -284,11 +284,10 @@ under the License.
         <activeByDefault>true</activeByDefault>
       </activation>
       <dependencies>
-        <!-- iceberg-spark-runtime-4.1 is not yet published; reuse the 4.0 runtime -->
         <dependency>
           <groupId>org.apache.iceberg</groupId>
-          <artifactId>iceberg-spark-runtime-4.0_${scala.binary.version}</artifactId>
-          <version>1.10.0</version>
+          <artifactId>iceberg-spark-runtime-${spark.version.short}_${scala.binary.version}</artifactId>
+          <version>1.11.0</version>
           <scope>test</scope>
         </dependency>
         <!-- Jetty 11.x for Spark 4.1 (jakarta.servlet); matches Spark 4.1.2's jetty.version -->
@@ -541,6 +540,7 @@ under the License.
             <configuration>
               <sources>
                 <source>src/main/${shims.majorVerSrc}</source>
+                <source>src/main/${shims.minorPlusVerSrc}</source>
                 <source>src/main/${shims.minorVerSrc}</source>
               </sources>
             </configuration>

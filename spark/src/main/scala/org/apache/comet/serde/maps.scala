@@ -24,6 +24,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
 import org.apache.comet.serde.QueryPlanSerde.{createBinaryExpr, exprToProtoInternal, optExprWithFallbackReason, scalarFunctionExprToProto}
+import org.apache.comet.shims.CometTypeShim
 
 object CometMapKeys extends CometExpressionSerde[MapKeys] {
 
@@ -74,7 +75,31 @@ object CometMapExtract extends CometExpressionSerde[GetMapValue] {
   }
 }
 
+private object MapKeyDedupPolicySupport {
+  val incompatibleReason: String =
+    s"`${SQLConf.MAP_KEY_DEDUP_POLICY.key}` is set to " +
+      s"`${SQLConf.MapKeyDedupPolicy.LAST_WIN}`; Comet's native map construction " +
+      "does not implement LAST_WIN dedup semantics."
+
+  def isLastWin: Boolean =
+    SQLConf.get
+      .getConf(SQLConf.MAP_KEY_DEDUP_POLICY)
+      .toString
+      .equalsIgnoreCase(SQLConf.MapKeyDedupPolicy.LAST_WIN.toString)
+}
+
 object CometMapFromArrays extends CometExpressionSerde[MapFromArrays] {
+
+  override def getIncompatibleReasons(): Seq[String] =
+    Seq(MapKeyDedupPolicySupport.incompatibleReason)
+
+  override def getSupportLevel(expr: MapFromArrays): SupportLevel = {
+    if (MapKeyDedupPolicySupport.isLastWin) {
+      Incompatible(Some(MapKeyDedupPolicySupport.incompatibleReason))
+    } else {
+      Compatible(None)
+    }
+  }
 
   override def convert(
       expr: MapFromArrays,
@@ -117,23 +142,6 @@ object CometMapFromArrays extends CometExpressionSerde[MapFromArrays] {
   }
 }
 
-object CometMapContainsKey extends CometExpressionSerde[MapContainsKey] {
-
-  override def convert(
-      expr: MapContainsKey,
-      inputs: Seq[Attribute],
-      binding: Boolean): Option[ExprOuterClass.Expr] = {
-    // Replace with array_has(map_keys(map), key)
-    val mapExpr = exprToProtoInternal(expr.left, inputs, binding)
-    val keyExpr = exprToProtoInternal(expr.right, inputs, binding)
-
-    val mapKeysExpr = scalarFunctionExprToProto("map_keys", mapExpr)
-
-    val mapContainsKeyExpr = scalarFunctionExprToProto("array_has", mapKeysExpr, keyExpr)
-    optExprWithFallbackReason(mapContainsKeyExpr, expr, expr.children: _*)
-  }
-}
-
 object CometMapFromEntries
     extends CometScalarFunction[MapFromEntries]("map_from_entries")
     with CodegenDispatchFallback {
@@ -143,20 +151,22 @@ object CometMapFromEntries
     "`BinaryType` is not supported as a map value in `map_from_entries`"
 
   override def getIncompatibleReasons(): Seq[String] =
-    Seq(keyUnsupportedReason, valueUnsupportedReason)
+    Seq(keyUnsupportedReason, valueUnsupportedReason, MapKeyDedupPolicySupport.incompatibleReason)
 
   override def getSupportLevel(expr: MapFromEntries): SupportLevel = {
     if (SupportLevel.containsType(expr.dataType.keyType, classOf[BinaryType])) {
-      return Incompatible(Some(keyUnsupportedReason))
+      Incompatible(Some(keyUnsupportedReason))
+    } else if (SupportLevel.containsType(expr.dataType.valueType, classOf[BinaryType])) {
+      Incompatible(Some(valueUnsupportedReason))
+    } else if (MapKeyDedupPolicySupport.isLastWin) {
+      Incompatible(Some(MapKeyDedupPolicySupport.incompatibleReason))
+    } else {
+      Compatible(None)
     }
-    if (SupportLevel.containsType(expr.dataType.valueType, classOf[BinaryType])) {
-      return Incompatible(Some(valueUnsupportedReason))
-    }
-    Compatible(None)
   }
 }
 
-object CometStrToMap extends CometScalarFunction[StringToMap]("str_to_map") {
+object CometStrToMap extends CometScalarFunction[StringToMap]("str_to_map") with CometTypeShim {
 
   // Spark 4.1.1+ honours spark.sql.legacy.truncateForEmptyRegexSplit by truncating trailing
   // empty entries from the split result. Comet's native str_to_map always behaves as if the flag
@@ -164,9 +174,20 @@ object CometStrToMap extends CometScalarFunction[StringToMap]("str_to_map") {
   // resolves on older Spark versions where the config is not registered.
   private val legacyTruncateConfig = "spark.sql.legacy.truncateForEmptyRegexSplit"
 
+  private val legacyTruncateReason =
+    s"`$legacyTruncateConfig` is enabled, so trailing empty split entries may differ from Spark."
+
+  private val collationReason =
+    "`str_to_map` does not support non-UTF8_BINARY collations on the input string or delimiters."
+
+  override def getIncompatibleReasons(): Seq[String] =
+    Seq(legacyTruncateReason, collationReason)
+
   override def getSupportLevel(expr: StringToMap): SupportLevel = {
     if (SQLConf.get.getConfString(legacyTruncateConfig, "false").toBoolean) {
-      Incompatible(Some(s"$legacyTruncateConfig is enabled"))
+      Incompatible(Some(legacyTruncateReason))
+    } else if (expr.children.exists(child => hasNonDefaultStringCollation(child.dataType))) {
+      Incompatible(Some(collationReason))
     } else {
       Compatible(None)
     }

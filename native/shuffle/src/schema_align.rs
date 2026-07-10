@@ -50,7 +50,6 @@ use datafusion::{
 };
 use futures::{Stream, StreamExt};
 use std::{
-    any::Any,
     collections::HashSet,
     pin::Pin,
     sync::{Arc, Mutex, OnceLock},
@@ -182,10 +181,6 @@ impl DisplayAs for SchemaAlignExec {
 }
 
 impl ExecutionPlan for SchemaAlignExec {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn schema(&self) -> SchemaRef {
         Arc::clone(&self.target_schema)
     }

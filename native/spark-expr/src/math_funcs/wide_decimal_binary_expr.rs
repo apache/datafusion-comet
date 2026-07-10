@@ -31,7 +31,7 @@ use datafusion::logical_expr::ColumnarValue;
 use datafusion::physical_expr::PhysicalExpr;
 use std::fmt::{Display, Formatter};
 use std::hash::Hash;
-use std::{any::Any, sync::Arc};
+use std::sync::Arc;
 
 /// The arithmetic operation to perform.
 #[derive(Debug, Hash, PartialEq, Eq, Clone, Copy)]
@@ -165,10 +165,6 @@ fn max_for_precision(precision: u8) -> i256 {
 }
 
 impl PhysicalExpr for WideDecimalBinaryExpr {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn data_type(&self, _input_schema: &Schema) -> Result<DataType> {
         Ok(DataType::Decimal128(
             self.output_precision,

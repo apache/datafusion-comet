@@ -22,7 +22,6 @@ use datafusion::common::{
 use datafusion::logical_expr::{
     ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility,
 };
-use std::any::Any;
 
 use crate::kernels::temporal::{date_trunc_array_fmt_dyn, date_trunc_dyn};
 
@@ -51,10 +50,6 @@ impl Default for SparkDateTrunc {
 }
 
 impl ScalarUDFImpl for SparkDateTrunc {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn name(&self) -> &str {
         "date_trunc"
     }

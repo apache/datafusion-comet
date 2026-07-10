@@ -631,8 +631,12 @@ fn try_classify_file_read_error(error: &DataFusionError) -> Option<SparkError> {
         // one: Spark surfaces it as `readCurrentFileNotFoundError` ("It is possible the underlying
         // files have been updated."), not `cannotReadFilesError`. The NotFound may arrive directly
         // (`DFE::ObjectStore`) or wrapped by the parquet reader as `ParquetError::External(..)`, so
-        // inspect the source chain. Delta's CDC-after-VACUUM read depends on this distinction.
-        DFE::ParquetError(pe) if source_chain_has_object_store_not_found(pe.as_ref()) => {
+        // inspect the source chain. Delta's CDC-after-VACUUM read depends on this distinction. The
+        // message fallback covers the cached reader, which flattens NotFound into a sourceless string.
+        DFE::ParquetError(pe)
+            if source_chain_has_object_store_not_found(pe.as_ref())
+                || parquet_message_has_object_store_not_found(pe) =>
+        {
             Some(SparkError::FileNotFound {
                 message: error.to_string(),
             })
@@ -702,6 +706,15 @@ fn source_chain_has_object_store_not_found(err: &(dyn std::error::Error + 'stati
         current = e.source();
     }
     false
+}
+
+/// Fallback for the one path that loses the typed error: DataFusion's `CachedParquetFileReader`
+/// flattens a missing-file NotFound into `ParquetError::General(format!(...))` with no `source()` to
+/// walk. Match `object_store`'s NotFound `Display`, which is identical across stores (so it holds on
+/// S3), unlike the OS-specific "No such file or directory".
+fn parquet_message_has_object_store_not_found(pe: &ParquetError) -> bool {
+    let msg = pe.to_string();
+    msg.contains("Object at location") && msg.contains("not found")
 }
 
 /// Build the message for a `CannotReadFile` error. parquet-rs reports a bad magic / unreadable
@@ -1322,6 +1335,24 @@ mod tests {
             Some(SparkError::FileNotFound { .. }) => {}
             other => {
                 panic!("expected FileNotFound for a NotFound-wrapping ParquetError, got {other:?}")
+            }
+        }
+    }
+
+    #[test]
+    fn classify_flattened_metadata_not_found_is_file_not_found() {
+        // DataFusion's CachedParquetFileReader flattens NotFound into a sourceless General error;
+        // classification falls back to the message. See #3978.
+        let e = DataFusionError::ParquetError(Box::new(parquet::errors::ParquetError::General(
+            "Failed to fetch metadata for file /tmp/t/missing.parquet: Object Store error: \
+             Object at location /tmp/t/missing.parquet not found: No such file or directory \
+             (os error 2)"
+                .to_string(),
+        )));
+        match try_classify_file_read_error(&e) {
+            Some(SparkError::FileNotFound { .. }) => {}
+            other => {
+                panic!("expected FileNotFound for a flattened metadata NotFound, got {other:?}")
             }
         }
     }
