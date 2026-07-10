@@ -2720,131 +2720,7 @@ impl PhysicalPlanner {
             }
         };
 
-        let units = match spark_window_frame.frame_type() {
-            WindowFrameType::Rows => WindowFrameUnits::Rows,
-            WindowFrameType::Range => WindowFrameUnits::Range,
-        };
-
-        let lower_bound: WindowFrameBound = match spark_window_frame
-            .lower_bound
-            .as_ref()
-            .and_then(|inner| inner.lower_frame_bound_struct.as_ref())
-        {
-            Some(l) => match l {
-                LowerFrameBoundStruct::UnboundedPreceding(_) => match units {
-                    WindowFrameUnits::Rows => {
-                        WindowFrameBound::Preceding(ScalarValue::UInt64(None))
-                    }
-                    WindowFrameUnits::Range => {
-                        WindowFrameBound::Preceding(ScalarValue::Int64(None))
-                    }
-                    WindowFrameUnits::Groups => {
-                        return Err(GeneralError(
-                            "WindowFrameUnits::Groups is not supported.".to_string(),
-                        ));
-                    }
-                },
-                LowerFrameBoundStruct::Preceding(offset) => {
-                    // Spark encodes ROWS bound direction via the sign of the offset:
-                    // negative => PRECEDING, positive => FOLLOWING. The proto
-                    // `LowerWindowFrameBound` only carries a `Preceding` variant, so
-                    // Comet overloads it for both cases. Route to the matching
-                    // DataFusion `WindowFrameBound` based on the sign.
-                    match units {
-                        WindowFrameUnits::Rows => {
-                            let abs = offset.offset.unsigned_abs();
-                            if offset.offset < 0 {
-                                WindowFrameBound::Preceding(ScalarValue::UInt64(Some(abs)))
-                            } else {
-                                WindowFrameBound::Following(ScalarValue::UInt64(Some(abs)))
-                            }
-                        }
-                        WindowFrameUnits::Range => {
-                            let scalar = match offset.range_offset.as_ref() {
-                                Some(lit) => numeric_literal_to_scalar(lit)?,
-                                None => ScalarValue::Int64(Some(offset.offset.abs())),
-                            };
-                            WindowFrameBound::Preceding(scalar)
-                        }
-                        WindowFrameUnits::Groups => {
-                            return Err(GeneralError(
-                                "WindowFrameUnits::Groups is not supported.".to_string(),
-                            ));
-                        }
-                    }
-                }
-                LowerFrameBoundStruct::CurrentRow(_) => WindowFrameBound::CurrentRow,
-            },
-            None => match units {
-                WindowFrameUnits::Rows => WindowFrameBound::Preceding(ScalarValue::UInt64(None)),
-                WindowFrameUnits::Range => WindowFrameBound::Preceding(ScalarValue::Int64(None)),
-                WindowFrameUnits::Groups => {
-                    return Err(GeneralError(
-                        "WindowFrameUnits::Groups is not supported.".to_string(),
-                    ));
-                }
-            },
-        };
-
-        let upper_bound: WindowFrameBound = match spark_window_frame
-            .upper_bound
-            .as_ref()
-            .and_then(|inner| inner.upper_frame_bound_struct.as_ref())
-        {
-            Some(u) => match u {
-                UpperFrameBoundStruct::UnboundedFollowing(_) => match units {
-                    WindowFrameUnits::Rows => {
-                        WindowFrameBound::Following(ScalarValue::UInt64(None))
-                    }
-                    WindowFrameUnits::Range => {
-                        WindowFrameBound::Following(ScalarValue::Int64(None))
-                    }
-                    WindowFrameUnits::Groups => {
-                        return Err(GeneralError(
-                            "WindowFrameUnits::Groups is not supported.".to_string(),
-                        ));
-                    }
-                },
-                UpperFrameBoundStruct::Following(offset) => match units {
-                    WindowFrameUnits::Rows => {
-                        // Mirror the lower-bound sign handling: the upper proto
-                        // variant is `Following`, but Spark encodes the bound
-                        // direction via sign. Negative => PRECEDING, positive =>
-                        // FOLLOWING.
-                        let abs = offset.offset.unsigned_abs();
-                        if offset.offset < 0 {
-                            WindowFrameBound::Preceding(ScalarValue::UInt64(Some(abs)))
-                        } else {
-                            WindowFrameBound::Following(ScalarValue::UInt64(Some(abs)))
-                        }
-                    }
-                    WindowFrameUnits::Range => {
-                        let scalar = match offset.range_offset.as_ref() {
-                            Some(lit) => numeric_literal_to_scalar(lit)?,
-                            None => ScalarValue::Int64(Some(offset.offset)),
-                        };
-                        WindowFrameBound::Following(scalar)
-                    }
-                    WindowFrameUnits::Groups => {
-                        return Err(GeneralError(
-                            "WindowFrameUnits::Groups is not supported.".to_string(),
-                        ));
-                    }
-                },
-                UpperFrameBoundStruct::CurrentRow(_) => WindowFrameBound::CurrentRow,
-            },
-            None => match units {
-                WindowFrameUnits::Rows => WindowFrameBound::Following(ScalarValue::UInt64(None)),
-                WindowFrameUnits::Range => WindowFrameBound::Following(ScalarValue::Int64(None)),
-                WindowFrameUnits::Groups => {
-                    return Err(GeneralError(
-                        "WindowFrameUnits::Groups is not supported.".to_string(),
-                    ));
-                }
-            },
-        };
-
-        let window_frame = WindowFrame::new_bounds(units, lower_bound, upper_bound);
+        let window_frame = spark_window_frame_to_datafusion(spark_window_frame)?;
         let lex_orderings = LexOrdering::new(sort_exprs.to_vec());
         let sort_phy_exprs = lex_orderings.as_deref().unwrap_or(&[]);
 
@@ -3295,6 +3171,108 @@ fn expr_to_columns(
     right_field_indices.sort();
 
     Ok((left_field_indices, right_field_indices))
+}
+
+fn physical_window_frame_unbounded_preceding(units: WindowFrameUnits) -> WindowFrameBound {
+    match units {
+        WindowFrameUnits::Rows | WindowFrameUnits::Groups => {
+            WindowFrameBound::Preceding(ScalarValue::UInt64(None))
+        }
+        WindowFrameUnits::Range => WindowFrameBound::Preceding(ScalarValue::Int64(None)),
+    }
+}
+
+fn physical_window_frame_unbounded_following(units: WindowFrameUnits) -> WindowFrameBound {
+    match units {
+        WindowFrameUnits::Rows | WindowFrameUnits::Groups => {
+            WindowFrameBound::Following(ScalarValue::UInt64(None))
+        }
+        WindowFrameUnits::Range => WindowFrameBound::Following(ScalarValue::Int64(None)),
+    }
+}
+
+fn signed_physical_offset_window_frame_bound(offset: i64) -> WindowFrameBound {
+    let abs = offset.unsigned_abs();
+    if offset < 0 {
+        WindowFrameBound::Preceding(ScalarValue::UInt64(Some(abs)))
+    } else {
+        WindowFrameBound::Following(ScalarValue::UInt64(Some(abs)))
+    }
+}
+
+fn spark_window_frame_to_datafusion(
+    spark_window_frame: &spark_operator::WindowFrame,
+) -> Result<WindowFrame, ExecutionError> {
+    let units = match spark_window_frame.frame_type() {
+        WindowFrameType::Rows => WindowFrameUnits::Rows,
+        WindowFrameType::Range => WindowFrameUnits::Range,
+        WindowFrameType::Groups => WindowFrameUnits::Groups,
+    };
+
+    let lower_bound: WindowFrameBound = match spark_window_frame
+        .lower_bound
+        .as_ref()
+        .and_then(|inner| inner.lower_frame_bound_struct.as_ref())
+    {
+        Some(l) => match l {
+            LowerFrameBoundStruct::UnboundedPreceding(_) => {
+                physical_window_frame_unbounded_preceding(units)
+            }
+            LowerFrameBoundStruct::Preceding(offset) => {
+                // Spark encodes ROWS/GROUPS bound direction via the sign of
+                // the offset: negative => PRECEDING, positive => FOLLOWING.
+                // The proto `LowerWindowFrameBound` only carries a `Preceding`
+                // variant, so Comet overloads it for both cases. Route to the
+                // matching DataFusion `WindowFrameBound` based on the sign.
+                match units {
+                    WindowFrameUnits::Rows | WindowFrameUnits::Groups => {
+                        signed_physical_offset_window_frame_bound(offset.offset)
+                    }
+                    WindowFrameUnits::Range => {
+                        let scalar = match offset.range_offset.as_ref() {
+                            Some(lit) => numeric_literal_to_scalar(lit)?,
+                            None => ScalarValue::Int64(Some(offset.offset.abs())),
+                        };
+                        WindowFrameBound::Preceding(scalar)
+                    }
+                }
+            }
+            LowerFrameBoundStruct::CurrentRow(_) => WindowFrameBound::CurrentRow,
+        },
+        None => physical_window_frame_unbounded_preceding(units),
+    };
+
+    let upper_bound: WindowFrameBound = match spark_window_frame
+        .upper_bound
+        .as_ref()
+        .and_then(|inner| inner.upper_frame_bound_struct.as_ref())
+    {
+        Some(u) => match u {
+            UpperFrameBoundStruct::UnboundedFollowing(_) => {
+                physical_window_frame_unbounded_following(units)
+            }
+            UpperFrameBoundStruct::Following(offset) => match units {
+                WindowFrameUnits::Rows | WindowFrameUnits::Groups => {
+                    // Mirror the lower-bound sign handling: the upper proto
+                    // variant is `Following`, but Spark encodes the bound
+                    // direction via sign. Negative => PRECEDING, positive =>
+                    // FOLLOWING.
+                    signed_physical_offset_window_frame_bound(offset.offset)
+                }
+                WindowFrameUnits::Range => {
+                    let scalar = match offset.range_offset.as_ref() {
+                        Some(lit) => numeric_literal_to_scalar(lit)?,
+                        None => ScalarValue::Int64(Some(offset.offset)),
+                    };
+                    WindowFrameBound::Following(scalar)
+                }
+            },
+            UpperFrameBoundStruct::CurrentRow(_) => WindowFrameBound::CurrentRow,
+        },
+        None => physical_window_frame_unbounded_following(units),
+    };
+
+    Ok(WindowFrame::new_bounds(units, lower_bound, upper_bound))
 }
 
 /// Convert a Spark numeric Literal proto into a `ScalarValue` whose data type
@@ -4308,6 +4286,7 @@ mod tests {
     };
     use arrow::datatypes::{DataType, Field, FieldRef, Fields, Schema};
     use datafusion::catalog::memory::DataSourceExec;
+    use datafusion::common::ScalarValue;
     use datafusion::config::TableParquetOptions;
     use datafusion::datasource::listing::PartitionedFile;
     use datafusion::datasource::object_store::ObjectStoreUrl;
@@ -4315,7 +4294,7 @@ mod tests {
         FileGroup, FileScanConfigBuilder, FileSource, ParquetSource,
     };
     use datafusion::error::DataFusionError;
-    use datafusion::logical_expr::ScalarUDF;
+    use datafusion::logical_expr::{ScalarUDF, WindowFrameBound, WindowFrameUnits};
     use datafusion::physical_plan::ExecutionPlan;
     use datafusion::{assert_batches_eq, physical_plan::common::collect, prelude::SessionContext};
     use datafusion_physical_expr_adapter::PhysicalExprAdapterFactory;
@@ -4325,7 +4304,7 @@ mod tests {
     use crate::execution::{operators::InputBatch, planner::PhysicalPlanner};
 
     use crate::execution::operators::ExecutionError;
-    use crate::execution::planner::literal_to_array_ref;
+    use crate::execution::planner::{literal_to_array_ref, spark_window_frame_to_datafusion};
     use crate::parquet::parquet_support::SparkParquetOptions;
     use crate::parquet::schema_adapter::SparkPhysicalExprAdapterFactory;
     use datafusion_comet_proto::spark_expression::expr::ExprStruct;
@@ -4338,6 +4317,66 @@ mod tests {
         spark_operator::{operator::OpStruct, Operator},
     };
     use datafusion_comet_spark_expr::EvalMode;
+
+    #[test]
+    fn test_groups_window_frame_with_offsets() {
+        let frame = spark_operator::WindowFrame {
+            frame_type: spark_operator::WindowFrameType::Groups as i32,
+            lower_bound: Some(spark_operator::LowerWindowFrameBound {
+                lower_frame_bound_struct: Some(
+                    spark_operator::lower_window_frame_bound::LowerFrameBoundStruct::Preceding(
+                        spark_operator::Preceding {
+                            offset: -1,
+                            range_offset: None,
+                        },
+                    ),
+                ),
+            }),
+            upper_bound: Some(spark_operator::UpperWindowFrameBound {
+                upper_frame_bound_struct: Some(
+                    spark_operator::upper_window_frame_bound::UpperFrameBoundStruct::Following(
+                        spark_operator::Following {
+                            offset: 2,
+                            range_offset: None,
+                        },
+                    ),
+                ),
+            }),
+        };
+
+        let frame = spark_window_frame_to_datafusion(&frame).unwrap();
+
+        assert_eq!(frame.units, WindowFrameUnits::Groups);
+        assert_eq!(
+            frame.start_bound,
+            WindowFrameBound::Preceding(ScalarValue::UInt64(Some(1)))
+        );
+        assert_eq!(
+            frame.end_bound,
+            WindowFrameBound::Following(ScalarValue::UInt64(Some(2)))
+        );
+    }
+
+    #[test]
+    fn test_groups_window_frame_defaults_to_unbounded() {
+        let frame = spark_operator::WindowFrame {
+            frame_type: spark_operator::WindowFrameType::Groups as i32,
+            lower_bound: None,
+            upper_bound: None,
+        };
+
+        let frame = spark_window_frame_to_datafusion(&frame).unwrap();
+
+        assert_eq!(frame.units, WindowFrameUnits::Groups);
+        assert_eq!(
+            frame.start_bound,
+            WindowFrameBound::Preceding(ScalarValue::UInt64(None))
+        );
+        assert_eq!(
+            frame.end_bound,
+            WindowFrameBound::Following(ScalarValue::UInt64(None))
+        );
+    }
 
     #[test]
     fn test_unpack_dictionary_primitive() {

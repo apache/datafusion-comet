@@ -435,6 +435,7 @@ message WindowExpr {
 enum WindowFrameType {
   Rows = 0;
   Range = 1;
+  Groups = 2;
 }
 
 message WindowFrame {
@@ -460,7 +461,7 @@ message UpperWindowFrameBound {
 }
 
 message Preceding {
-  // Used for ROWS frames. Integer row count.
+  // Used for ROWS and GROUPS frames. Integer row/group count.
   int64 offset = 1;
   // Used for RANGE frames. Carries the typed offset value so the native
   // side can build a ScalarValue whose type matches the ORDER BY column.
@@ -468,7 +469,7 @@ message Preceding {
 }
 
 message Following {
-  // Used for ROWS frames. Integer row count.
+  // Used for ROWS and GROUPS frames. Integer row/group count.
   int64 offset = 1;
   // Used for RANGE frames. Carries the typed offset value so the native
   // side can build a ScalarValue whose type matches the ORDER BY column.
