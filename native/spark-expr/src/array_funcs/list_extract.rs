@@ -287,10 +287,10 @@ fn list_extract<O: OffsetSizeTrait>(
         let len = offset_window[1].as_usize() - start;
 
         if list_array.is_null(row) {
-            mutable.extend_nulls(1);
+            mutable.try_extend_nulls(1)?;
         } else if let Some(index) = index {
             if let Some(i) = adjust_index(index, len)? {
-                mutable.extend(0, start + i, start + i + 1);
+                mutable.try_extend(0, start + i, start + i + 1)?;
             } else if fail_on_error {
                 // Throw appropriate error based on whether this is element_at (one_based=true)
                 // or GetArrayItem (one_based=false)
@@ -309,11 +309,11 @@ fn list_extract<O: OffsetSizeTrait>(
                 };
                 return Err(error_wrapper(error));
             } else {
-                mutable.extend(1, 0, 1);
+                mutable.try_extend(1, 0, 1)?;
             }
         } else {
             // index is NULL → result is NULL
-            mutable.extend_nulls(1);
+            mutable.try_extend_nulls(1)?;
         }
     }
 

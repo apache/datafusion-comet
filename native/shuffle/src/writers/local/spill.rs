@@ -20,12 +20,13 @@ use crate::writers::BufBatchWriter;
 use crate::ShuffleBlockWriter;
 use arrow::record_batch::RecordBatch;
 use datafusion::common::DataFusionError;
-use datafusion::execution::disk_manager::RefCountedTempFile;
 use datafusion::execution::runtime_env::RuntimeEnv;
+use datafusion::execution::SpillFile as DfSpillFile;
 use std::fs::{File, OpenOptions};
+use std::sync::Arc;
 
 struct SpillFile {
-    temp_file: RefCountedTempFile,
+    temp_file: Arc<dyn DfSpillFile>,
     file: File,
 }
 
@@ -97,7 +98,11 @@ impl SpillWriter {
                 .write(true)
                 .create(true)
                 .truncate(true)
-                .open(spill_file.path())
+                .open(spill_file.path().ok_or_else(|| {
+                    DataFusionError::Execution(
+                        "Spill file backend does not expose a local path".to_string(),
+                    )
+                })?)
                 .map_err(|e| {
                     DataFusionError::Execution(format!("Error occurred while spilling {e}"))
                 })?;
@@ -112,7 +117,7 @@ impl SpillWriter {
     pub(crate) fn path(&self) -> Option<&std::path::Path> {
         self.spill_file
             .as_ref()
-            .map(|spill_file| spill_file.temp_file.path())
+            .and_then(|spill_file| spill_file.temp_file.path())
     }
 
     #[cfg(test)]

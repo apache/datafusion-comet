@@ -495,14 +495,8 @@ impl GroupsAccumulator for SumIntGroupsAccumulatorLegacy {
         &mut self,
         values: &[ArrayRef],
         group_indices: &[usize],
-        opt_filter: Option<&BooleanArray>,
         total_num_groups: usize,
     ) -> DFResult<()> {
-        debug_assert!(
-            opt_filter.is_none(),
-            "opt_filter is not supported in merge_batch"
-        );
-
         if values.len() != 1 {
             return Err(DataFusionError::Internal(format!(
                 "Invalid state while merging batch. Expected 1 element but found {}",
@@ -642,14 +636,8 @@ impl GroupsAccumulator for SumIntGroupsAccumulatorAnsi {
         &mut self,
         values: &[ArrayRef],
         group_indices: &[usize],
-        opt_filter: Option<&BooleanArray>,
         total_num_groups: usize,
     ) -> DFResult<()> {
-        debug_assert!(
-            opt_filter.is_none(),
-            "opt_filter is not supported in merge_batch"
-        );
-
         if values.len() != 1 {
             return Err(DataFusionError::Internal(format!(
                 "Invalid state while merging batch. Expected 1 element but found {}",
@@ -826,14 +814,8 @@ impl GroupsAccumulator for SumIntGroupsAccumulatorTry {
         &mut self,
         values: &[ArrayRef],
         group_indices: &[usize],
-        opt_filter: Option<&BooleanArray>,
         total_num_groups: usize,
     ) -> DFResult<()> {
-        debug_assert!(
-            opt_filter.is_none(),
-            "opt_filter is not supported in merge_batch"
-        );
-
         if values.len() != 2 {
             return Err(DataFusionError::Internal(format!(
                 "Invalid state while merging batch. Expected 2 elements but found {}",

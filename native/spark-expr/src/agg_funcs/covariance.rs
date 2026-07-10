@@ -414,7 +414,6 @@ impl GroupsAccumulator for CovarianceGroupsAccumulator {
         &mut self,
         values: &[ArrayRef],
         group_indices: &[usize],
-        _opt_filter: Option<&BooleanArray>,
         total_num_groups: usize,
     ) -> Result<()> {
         assert_eq!(values.len(), 4, "four arguments to merge_batch");
@@ -563,8 +562,8 @@ mod groups_tests {
         let rstate = right.state(EmitTo::All).unwrap();
 
         let mut merged = pop();
-        merged.merge_batch(&lstate, &[0], None, 1).unwrap();
-        merged.merge_batch(&rstate, &[0], None, 1).unwrap();
+        merged.merge_batch(&lstate, &[0], 1).unwrap();
+        merged.merge_batch(&rstate, &[0], 1).unwrap();
         let merged_result = evaluate(&mut merged)[0].unwrap();
 
         assert!((single - merged_result).abs() < 1e-12);

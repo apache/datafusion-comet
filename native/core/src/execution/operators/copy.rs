@@ -37,7 +37,9 @@ pub(crate) fn copy_array(array: &dyn Array) -> ArrayRef {
 
     let mut mutable = MutableArrayData::new(vec![&data], false, capacity);
 
-    mutable.extend(0, 0, capacity);
+    mutable
+        .try_extend(0, 0, capacity)
+        .expect("copy_array: extend within existing array cannot overflow");
 
     if matches!(array.data_type(), DataType::Dictionary(_, _)) {
         let copied_dict = make_array(mutable.freeze());
@@ -50,7 +52,9 @@ pub(crate) fn copy_array(array: &dyn Array) -> ArrayRef {
                 let data = values.to_data();
 
                 let mut mutable = MutableArrayData::new(vec![&data], false, values.len());
-                mutable.extend(0, 0, values.len());
+                mutable
+                    .try_extend(0, 0, values.len())
+                    .expect("copy_array: extend within existing array cannot overflow");
 
                 let copied_dict = ref_copied_dict.with_values(make_array(mutable.freeze()));
                 Arc::new(copied_dict)

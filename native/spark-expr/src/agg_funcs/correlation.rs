@@ -335,7 +335,6 @@ impl GroupsAccumulator for CorrelationGroupsAccumulator {
         &mut self,
         values: &[ArrayRef],
         group_indices: &[usize],
-        opt_filter: Option<&BooleanArray>,
         total_num_groups: usize,
     ) -> Result<()> {
         assert_eq!(values.len(), 6, "six state columns to merge_batch");
@@ -358,11 +357,11 @@ impl GroupsAccumulator for CorrelationGroupsAccumulator {
         ];
 
         self.covar
-            .merge_batch(&covar_state, group_indices, opt_filter, total_num_groups)?;
+            .merge_batch(&covar_state, group_indices, total_num_groups)?;
         self.var1
-            .merge_batch(&var1_state, group_indices, opt_filter, total_num_groups)?;
+            .merge_batch(&var1_state, group_indices, total_num_groups)?;
         self.var2
-            .merge_batch(&var2_state, group_indices, opt_filter, total_num_groups)?;
+            .merge_batch(&var2_state, group_indices, total_num_groups)?;
         Ok(())
     }
 

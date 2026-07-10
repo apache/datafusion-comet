@@ -231,11 +231,10 @@ impl GroupsAccumulator for StddevGroupsAccumulator {
         &mut self,
         values: &[ArrayRef],
         group_indices: &[usize],
-        opt_filter: Option<&BooleanArray>,
         total_num_groups: usize,
     ) -> Result<()> {
         self.inner
-            .merge_batch(values, group_indices, opt_filter, total_num_groups)
+            .merge_batch(values, group_indices, total_num_groups)
     }
 
     fn evaluate(&mut self, emit_to: EmitTo) -> Result<ArrayRef> {
