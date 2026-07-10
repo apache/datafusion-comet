@@ -766,26 +766,6 @@ case class CometScanRule(session: SparkSession)
           complexTypePredicatesSupported && transformFunctionsSupported &&
           deleteFileTypesSupported && dppSubqueriesSupported
 
-        // TEMP instrumentation: dump every gate and the decision for each Iceberg scan.
-        logWarning(
-          "iceberg gate dump: " +
-            s"table=${metadata.metadataLocation} " +
-            s"formatVersion=${IcebergReflection.getFormatVersion(metadata.table)} " +
-            s"decision=${if (nativeEligible) "NATIVE" else "FALLBACK"} | " +
-            s"schemaSupported=$schemaSupported fileIOCompatible=$fileIOCompatible " +
-            s"formatVersionSupported=$formatVersionSupported " +
-            s"encryptionSupported=$encryptionSupported " +
-            s"defaultValuesSupported=$defaultValuesSupported " +
-            s"schemaTypesSupported=$schemaTypesSupported " +
-            s"allParquet=${taskValidation.allParquet} " +
-            s"allSupportedFilesystems=$allSupportedFilesystems " +
-            s"partitionTypesSupported=$partitionTypesSupported " +
-            s"complexTypePredicatesSupported=$complexTypePredicatesSupported " +
-            s"transformFunctionsSupported=$transformFunctionsSupported " +
-            s"deleteFileTypesSupported=$deleteFileTypesSupported " +
-            s"dppSubqueriesSupported=$dppSubqueriesSupported | " +
-            s"fallbackReasons=${fallbackReasons.toList}")
-
         if (nativeEligible) {
           CometBatchScanExec(
             scanExec.clone().asInstanceOf[BatchScanExec],
