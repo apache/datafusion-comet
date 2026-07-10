@@ -51,6 +51,7 @@ object IcebergReflection extends Logging {
     val UNBOUND_PREDICATE = "org.apache.iceberg.expressions.UnboundPredicate"
     val SPARK_BATCH_QUERY_SCAN = "org.apache.iceberg.spark.source.SparkBatchQueryScan"
     val SPARK_STAGED_SCAN = "org.apache.iceberg.spark.source.SparkStagedScan"
+    val SPARK_SCHEMA_UTIL = "org.apache.iceberg.spark.SparkSchemaUtil"
   }
 
   /**
@@ -776,6 +777,20 @@ object IcebergReflection extends Logging {
         Nil
       }
     here ++ nested
+  }
+
+  /**
+   * Converts an Iceberg `Schema` to the Spark `StructType` it reads as, via
+   * `SparkSchemaUtil.convert`. Comet serializes the whole table/scan schema to native (not just
+   * projected columns), so callers use this to run the schema through Comet's existing type
+   * allow-list and fall back if any column is a type the native reader does not support (e.g.
+   * variant). Throws on reflection failure so the caller can fall back.
+   */
+  def toSparkSchema(schema: Any): org.apache.spark.sql.types.StructType = {
+    val sparkSchemaUtil = loadClass(ClassNames.SPARK_SCHEMA_UTIL)
+    val schemaClass = loadClass(ClassNames.SCHEMA)
+    val convert = sparkSchemaUtil.getMethod("convert", schemaClass)
+    convert.invoke(null, schema).asInstanceOf[org.apache.spark.sql.types.StructType]
   }
 }
 

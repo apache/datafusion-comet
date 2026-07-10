@@ -507,6 +507,22 @@ case class CometScanRule(session: SparkSession)
               false
           }
 
+        // Comet serializes the whole table/scan schema to native, not just projected columns, so a
+        // type the native reader does not support (e.g. variant) breaks the scan even when that
+        // column is not projected. The readSchema allow-list above only covers projected columns,
+        // so run the same allow-list over the full schema Comet may serialize. Reflection failure
+        // also falls back.
+        val schemaTypesSupported =
+          try {
+            val fullSchema = IcebergReflection.toSparkSchema(metadata.tableSchema)
+            typeChecker.isSchemaSupported(fullSchema, fallbackReasons)
+          } catch {
+            case e: Exception =>
+              fallbackReasons += "Iceberg reflection failure: could not verify column " +
+                s"types: ${e.getMessage}"
+              false
+          }
+
         // Single-pass validation of all FileScanTasks
         val taskValidation =
           try {
@@ -744,11 +760,33 @@ case class CometScanRule(session: SparkSession)
           }
         }
 
-        if (schemaSupported && fileIOCompatible && formatVersionSupported &&
-          encryptionSupported && defaultValuesSupported &&
+        val nativeEligible = schemaSupported && fileIOCompatible && formatVersionSupported &&
+          encryptionSupported && defaultValuesSupported && schemaTypesSupported &&
           taskValidation.allParquet && allSupportedFilesystems && partitionTypesSupported &&
           complexTypePredicatesSupported && transformFunctionsSupported &&
-          deleteFileTypesSupported && dppSubqueriesSupported) {
+          deleteFileTypesSupported && dppSubqueriesSupported
+
+        // TEMP instrumentation: dump every gate and the decision for each Iceberg scan.
+        logWarning(
+          "iceberg gate dump: " +
+            s"table=${metadata.metadataLocation} " +
+            s"formatVersion=${IcebergReflection.getFormatVersion(metadata.table)} " +
+            s"decision=${if (nativeEligible) "NATIVE" else "FALLBACK"} | " +
+            s"schemaSupported=$schemaSupported fileIOCompatible=$fileIOCompatible " +
+            s"formatVersionSupported=$formatVersionSupported " +
+            s"encryptionSupported=$encryptionSupported " +
+            s"defaultValuesSupported=$defaultValuesSupported " +
+            s"schemaTypesSupported=$schemaTypesSupported " +
+            s"allParquet=${taskValidation.allParquet} " +
+            s"allSupportedFilesystems=$allSupportedFilesystems " +
+            s"partitionTypesSupported=$partitionTypesSupported " +
+            s"complexTypePredicatesSupported=$complexTypePredicatesSupported " +
+            s"transformFunctionsSupported=$transformFunctionsSupported " +
+            s"deleteFileTypesSupported=$deleteFileTypesSupported " +
+            s"dppSubqueriesSupported=$dppSubqueriesSupported | " +
+            s"fallbackReasons=${fallbackReasons.toList}")
+
+        if (nativeEligible) {
           CometBatchScanExec(
             scanExec.clone().asInstanceOf[BatchScanExec],
             runtimeFilters = scanExec.runtimeFilters,
