@@ -17,7 +17,7 @@
 
 use std::sync::Arc;
 
-use arrow::array::{Array, OffsetSizeTrait};
+use arrow::array::{Array, BinaryBuilder, OffsetSizeTrait};
 use arrow::datatypes::DataType;
 use datafusion::common::{cast::as_generic_string_array, exec_err, DataFusionError, ScalarValue};
 use datafusion::logical_expr::ColumnarValue;
@@ -97,7 +97,7 @@ fn spark_unhex_inner<T: OffsetSizeTrait>(
             // Every two input hex digits produce one output byte, so the decoded data is at most
             // half the total input length. Preallocating both the offset and value buffers avoids
             // the repeated doublings a fresh `BinaryBuilder` would incur across the whole column.
-            let mut builder = arrow::array::BinaryBuilder::with_capacity(
+            let mut builder = BinaryBuilder::with_capacity(
                 string_array.len(),
                 string_array.value_data().len() / 2,
             );

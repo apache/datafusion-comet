@@ -23,26 +23,15 @@ use datafusion_comet_spark_expr::spark_unhex;
 use std::hint::black_box;
 use std::sync::Arc;
 
-/// Build a column of hex strings representative of `unhex` inputs: mostly valid
-/// hex of varying lengths (some odd), a few nulls, and some invalid strings that
-/// exercise the error/null-fallback branch.
-fn create_hex_array(size: usize) -> ArrayRef {
-    let hex_samples = [
-        "537061726B2053514C",                 // "Spark SQL"
-        "1C",                                 // short even
-        "A1B",                                // odd length
-        "737472696E67",                       // "string"
-        "0011223344556677889900aabbccddeeff", // longer, mixed case
-        "deadBEEF",                           // mixed case
-        "ZZ",                                 // invalid -> null
-        "",                                   // empty -> empty binary
-    ];
+/// Build a Utf8 array of `size` rows by cycling through `samples`, inserting a
+/// null every `null_every` rows (0 = no nulls).
+fn build(samples: &[&str], size: usize, null_every: usize) -> ArrayRef {
     let mut builder = StringBuilder::new();
     for i in 0..size {
-        if i % 17 == 0 {
+        if null_every != 0 && i % null_every == 0 {
             builder.append_null();
         } else {
-            builder.append_value(hex_samples[i % hex_samples.len()]);
+            builder.append_value(samples[i % samples.len()]);
         }
     }
     Arc::new(builder.finish())
@@ -50,12 +39,70 @@ fn create_hex_array(size: usize) -> ArrayRef {
 
 fn criterion_benchmark(c: &mut Criterion) {
     let size = 8192;
-    let array = create_hex_array(size);
 
-    c.bench_function("spark_unhex: mixed hex column", |b| {
-        let args = vec![ColumnarValue::Array(Arc::clone(&array))];
-        b.iter(|| black_box(spark_unhex(black_box(&args)).unwrap()))
-    });
+    // Dense column of valid, even-length hex strings, no nulls.
+    let all_valid = build(
+        &[
+            "537061726B2053514C",
+            "737472696E67",
+            "1C",
+            "deadbeef",
+            "0011ccddeeff",
+        ],
+        size,
+        0,
+    );
+    // Same shape but with ~6% nulls interleaved.
+    let with_nulls = build(
+        &[
+            "537061726B2053514C",
+            "737472696E67",
+            "1C",
+            "deadbeef",
+            "0011ccddeeff",
+        ],
+        size,
+        17,
+    );
+    // Long valid hex strings, exercising the decode loop and allocation.
+    let long_valid = build(
+        &[
+            "0011223344556677889900aabbccddeeff0011223344556677889900aabbccddeeff",
+            "537061726b2053514c537061726b2053514c537061726b2053514c537061726b2053514c",
+        ],
+        size,
+        0,
+    );
+    // Mostly invalid inputs (odd length or non-hex), which decode to null.
+    let invalid = build(&["ZZ", "A1B", "xyz", "12G4", "gg"], size, 0);
+    // A diverse mix of the above shapes plus empty strings.
+    let mixed = build(
+        &[
+            "537061726B2053514C",
+            "1C",
+            "A1B",
+            "737472696E67",
+            "0011223344556677889900aabbccddeeff",
+            "deadBEEF",
+            "ZZ",
+            "",
+        ],
+        size,
+        17,
+    );
+
+    let mut bench = |name: &str, arr: &ArrayRef| {
+        let args = vec![ColumnarValue::Array(Arc::clone(arr))];
+        c.bench_function(name, |b| {
+            b.iter(|| black_box(spark_unhex(black_box(&args)).unwrap()))
+        });
+    };
+
+    bench("spark_unhex: all valid", &all_valid);
+    bench("spark_unhex: with nulls", &with_nulls);
+    bench("spark_unhex: long strings", &long_valid);
+    bench("spark_unhex: invalid inputs", &invalid);
+    bench("spark_unhex: mixed hex column", &mixed);
 }
 
 criterion_group!(benches, criterion_benchmark);
