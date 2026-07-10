@@ -17,7 +17,9 @@
 
 use std::sync::Arc;
 
-use arrow::array::{Array, AsArray, GenericBinaryArray, OffsetSizeTrait, StringArray};
+use arrow::array::{
+    Array, AsArray, GenericBinaryArray, GenericStringBuilder, OffsetSizeTrait, StringArray,
+};
 use arrow::datatypes::DataType;
 use base64::prelude::BASE64_STANDARD;
 use base64::Engine;
@@ -62,11 +64,41 @@ pub fn spark_base64(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusionE
     }
 }
 
+const LINE_LEN: usize = 76;
+
+/// Length of the padded base64 encoding of `n` input bytes.
+fn base64_encoded_len(n: usize) -> usize {
+    n.div_ceil(3) * 4
+}
+
 fn encode_array<O: OffsetSizeTrait>(array: &GenericBinaryArray<O>, chunk: bool) -> StringArray {
-    array
-        .iter()
-        .map(|value| value.map(|bytes| encode(bytes, chunk)))
-        .collect()
+    // Encode into a builder, reusing scratch buffers across rows. This avoids a
+    // fresh per-row heap allocation for each element's base64 string (and, when
+    // chunking, its line-wrapped copy) that the previous per-element
+    // `encode()` + `collect()` incurred, and sizes the value buffer up front.
+    let data_capacity: usize = (0..array.len())
+        .filter(|&i| array.is_valid(i))
+        .map(|i| base64_encoded_len(array.value(i).len()))
+        .sum();
+    let mut builder = GenericStringBuilder::<i32>::with_capacity(array.len(), data_capacity);
+    let mut encoded = String::new();
+    let mut wrapped = String::new();
+    for i in 0..array.len() {
+        if array.is_null(i) {
+            builder.append_null();
+            continue;
+        }
+        encoded.clear();
+        BASE64_STANDARD.encode_string(array.value(i), &mut encoded);
+        if chunk && encoded.len() > LINE_LEN {
+            wrapped.clear();
+            chunk_into_lines_buf(&encoded, &mut wrapped);
+            builder.append_value(&wrapped);
+        } else {
+            builder.append_value(&encoded);
+        }
+    }
+    builder.finish()
 }
 
 fn encode(bytes: &[u8], chunk: bool) -> String {
@@ -83,12 +115,19 @@ fn encode(bytes: &[u8], chunk: bool) -> String {
 /// offsets and character offsets coincide. Takes the string by value so the common short-input
 /// case (no wrapping needed) returns it without a second allocation.
 fn chunk_into_lines(encoded: String) -> String {
-    const LINE_LEN: usize = 76;
     if encoded.len() <= LINE_LEN {
         return encoded;
     }
+    let mut out = String::new();
+    chunk_into_lines_buf(&encoded, &mut out);
+    out
+}
+
+/// Append the CRLF-wrapped form of `encoded` (lines of at most 76 characters) into `out`.
+/// The caller is expected to have cleared `out`; only used when `encoded.len() > LINE_LEN`.
+fn chunk_into_lines_buf(encoded: &str, out: &mut String) {
     let separators = (encoded.len() - 1) / LINE_LEN;
-    let mut out = String::with_capacity(encoded.len() + separators * 2);
+    out.reserve(encoded.len() + separators * 2);
     let mut offset = 0;
     while offset < encoded.len() {
         if offset > 0 {
@@ -98,7 +137,6 @@ fn chunk_into_lines(encoded: String) -> String {
         out.push_str(&encoded[offset..end]);
         offset = end;
     }
-    out
 }
 
 #[cfg(test)]
