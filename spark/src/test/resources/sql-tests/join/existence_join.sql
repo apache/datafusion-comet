@@ -22,6 +22,9 @@
 -- CometHashJoinExec, and CometSortMergeJoinExec all carrying joinType =
 -- ExistenceJoin.
 
+-- Native ExistenceJoin support is experimental and disabled by default.
+-- Config: spark.comet.exec.existenceJoin.enabled=true
+
 -- ============================================================
 -- Setup: covers NULLs, duplicates, empty build side
 -- ============================================================
