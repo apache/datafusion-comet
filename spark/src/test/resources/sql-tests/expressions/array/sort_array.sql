@@ -295,9 +295,6 @@ INSERT INTO test_sort_array_nested_struct VALUES
   (array()),
   (NULL)
 
--- SortArray mixes in CodegenDispatchFallback, so nested arrays with Struct children have no
--- native path but route through the JVM codegen dispatcher (Spark's own SortArray.doGenCode
--- inside the Comet pipeline) and stay native while matching Spark exactly.
 query
 SELECT sort_array(arr) FROM test_sort_array_nested_struct
 
@@ -397,9 +394,6 @@ SELECT
   sort_array(array(NULL, NULL)),
   sort_array(cast(NULL as array<int>))
 
--- nested arrays with Struct children have no native path but route through the JVM codegen
--- dispatcher (Spark's own SortArray.doGenCode inside the Comet pipeline) and stay native while
--- matching Spark exactly.
 query
 SELECT sort_array(
   array(
