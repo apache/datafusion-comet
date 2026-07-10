@@ -149,8 +149,7 @@ SELECT cast(named_struct('a', named_struct('b', named_struct('c', 1, 'd', 'leaf'
 query
 SELECT cast(named_struct('s1', '', 's2', ' ', 's3', cast(null as string)) as string)
 
--- Map-valued field: not supported, falls back to Spark.
-query expect_fallback(to StringType is not supported)
+query
 SELECT cast(named_struct('m', map('k', 1)) as string)
 
 -- ----------------------------------------------------------------------------
