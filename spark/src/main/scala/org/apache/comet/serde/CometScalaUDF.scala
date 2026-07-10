@@ -24,7 +24,7 @@ import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference,
 import org.apache.spark.sql.types.BinaryType
 
 import org.apache.comet.CometConf
-import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
+import org.apache.comet.CometSparkSessionExtensions.{withFallbackReason, withInfo}
 import org.apache.comet.codegen.CometBatchKernelCodegen
 import org.apache.comet.serde.ExprOuterClass.Expr
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, serializeDataType}
@@ -70,11 +70,12 @@ object CometScalaUDF extends CometExpressionSerde[ScalaUDF] {
       expr: Expression,
       inputs: Seq[Attribute],
       binding: Boolean): Option[Expr] = {
+    val exprName = expr.prettyName
     if (!CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.get()) {
       withFallbackReason(
         expr,
-        s"${CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key}=false; expression has no native " +
-          "path so the plan falls back to Spark")
+        s"$exprName: ${CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key}=false; expression has " +
+          "no native path so the plan falls back to Spark")
       return None
     }
 
@@ -97,7 +98,7 @@ object CometScalaUDF extends CometExpressionSerde[ScalaUDF] {
     // at execute.
     CometBatchKernelCodegen.canHandle(boundExpr) match {
       case Some(reason) =>
-        withFallbackReason(expr, reason)
+        withFallbackReason(expr, s"$exprName: $reason")
         return None
       case None =>
     }
@@ -110,12 +111,26 @@ object CometScalaUDF extends CometExpressionSerde[ScalaUDF] {
     val buffer = serializer.serialize(boundExpr)
     val bytes = new Array[Byte](buffer.remaining())
     buffer.get(bytes)
-    val exprArg = exprToProtoInternal(Literal(bytes, BinaryType), inputs, binding)
-      .getOrElse(return None)
+    val exprArg = exprToProtoInternal(Literal(bytes, BinaryType), inputs, binding).getOrElse {
+      withFallbackReason(
+        expr,
+        s"$exprName: codegen dispatch: could not serialize closure-serialized bound " +
+          "expression payload")
+      return None
+    }
 
-    val dataArgs =
-      attrs.map(a => exprToProtoInternal(a, inputs, binding).getOrElse(return None))
-    val returnTypeProto = serializeDataType(expr.dataType).getOrElse(return None)
+    val dataArgs = attrs.map { a =>
+      exprToProtoInternal(a, inputs, binding).getOrElse {
+        withFallbackReason(expr, s"$exprName: codegen dispatch: could not serialize data arg $a")
+        return None
+      }
+    }
+    val returnTypeProto = serializeDataType(expr.dataType).getOrElse {
+      withFallbackReason(
+        expr,
+        s"$exprName: codegen dispatch: unsupported return type ${expr.dataType}")
+      return None
+    }
 
     val udfBuilder = ExprOuterClass.JvmScalarUdf
       .newBuilder()
@@ -125,6 +140,15 @@ object CometScalaUDF extends CometExpressionSerde[ScalaUDF] {
     udfBuilder
       .setReturnType(returnTypeProto)
       .setReturnNullable(expr.nullable)
+    // Surface the dispatch route in extended explain output when the user opts in via
+    // `spark.comet.explainCodegen.enabled=true`. `rollUpInfoMessages` in `CometExecRule` walks
+    // `op.expressions` via `TreeNode.collect` and copies each expression's `EXTENSION_INFO` tag
+    // onto the resulting Comet plan node, where `ExtendedExplainInfo` renders it as
+    // `[COMET-INFO: ...]`. Informational only: `withInfo` does not trigger fallback, so the
+    // projection remains a Comet operator regardless of this setting.
+    if (CometConf.COMET_EXPLAIN_CODEGEN_ENABLED.get()) {
+      withInfo(expr, s"${exprName.toLowerCase}: routes through JVM codegen dispatcher")
+    }
     Some(
       ExprOuterClass.Expr
         .newBuilder()

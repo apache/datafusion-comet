@@ -131,6 +131,46 @@ class CometCodegenSuite
     }
   }
 
+  test("explainCodegen.enabled surfaces routed expressions in COMET-INFO") {
+    // Two built-in expressions in the same SELECT that both route through the JVM codegen
+    // dispatcher (hypot -> CometHypot, levenshtein -> CometLevenshtein, both extend
+    // CometCodegenDispatch). With codegen dispatch enabled AND
+    // `spark.comet.explainCodegen.enabled=true`, `emitJvmCodegenDispatch` tags each expression
+    // with a withInfo message on its EXTENSION_INFO tag. `CometExecRule.rollUpInfoMessages`
+    // walks the projection's expression trees and copies those tags onto the CometProjectExec
+    // node, where `ExtendedExplainInfo` renders them as `[COMET-INFO: ...]`. This test verifies
+    // both named expressions surface in the info block while the projection stays Comet-native.
+    withTable("t") {
+      sql("CREATE TABLE t (a DOUBLE, b DOUBLE, s1 STRING, s2 STRING) USING parquet")
+      sql("INSERT INTO t VALUES (3.0, 4.0, 'kitten', 'sitting')")
+
+      withSQLConf(
+        CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "true",
+        CometConf.COMET_EXPLAIN_CODEGEN_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_PROJECT_ENABLED.key -> "true",
+        CometConf.COMET_EXTENDED_EXPLAIN_FORMAT.key ->
+          CometConf.COMET_EXTENDED_EXPLAIN_FORMAT_VERBOSE) {
+        val df = sql("SELECT hypot(a, b), levenshtein(s1, s2) FROM t")
+        checkSparkAnswerAndOperator(df)
+        val explain =
+          new ExtendedExplainInfo().generateExtendedInfo(df.queryExecution.executedPlan)
+        // Print so the test log shows the shape of the info annotation.
+        // scalastyle:off println
+        println(s"[codegen-fallback explain]\n$explain")
+        // scalastyle:on println
+        assert(
+          explain.contains("[COMET-INFO:"),
+          s"expected a [COMET-INFO: segment in explain output, got:\n$explain")
+        assert(
+          explain.contains("hypot: routes through JVM codegen dispatcher"),
+          s"expected 'hypot' codegen-dispatch info in explain output, got:\n$explain")
+        assert(
+          explain.contains("levenshtein: routes through JVM codegen dispatcher"),
+          s"expected 'levenshtein' codegen-dispatch info in explain output, got:\n$explain")
+      }
+    }
+  }
+
   test("dispatcher caches the compiled kernel across batches of one query") {
     // Within a single query, the dispatcher compiles a kernel for the (expression, schema) pair
     // once and reuses it across every subsequent batch of the same shape. Force multiple batches

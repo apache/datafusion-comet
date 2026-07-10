@@ -686,6 +686,17 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
+  val COMET_EXPLAIN_CODEGEN_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.explainCodegen.enabled")
+      .category(CATEGORY_EXEC_EXPLAIN)
+      .doc(
+        "When this setting is enabled, Comet will annotate expressions that route through the " +
+          "JVM codegen dispatcher (Spark's `doGenCode` running inside a Comet kernel) with a " +
+          "`[COMET-INFO: ...]` message in extended explain output. Disabled by default to keep " +
+          "the plan display quiet unless the user is investigating dispatch coverage.")
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_ONHEAP_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.exec.onHeap.enabled")
       .category(CATEGORY_TESTING)
