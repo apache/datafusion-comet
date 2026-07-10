@@ -580,6 +580,9 @@ class CometIcebergNativeSuite
   // them, matching Spark.
   test("MOR V3 table with DELETION VECTORS - verify deletes are applied") {
     assume(icebergAvailable, "Iceberg not available in classpath")
+    // Format version 3 (and its deletion vectors) requires Iceberg 1.11+. Older Iceberg
+    // rejects `format-version=3` at table creation.
+    assume(icebergVersionAtLeast(1, 11), "Iceberg V3 tables require Iceberg 1.11+")
 
     withTempIcebergDir { warehouseDir =>
       withSQLConf(
