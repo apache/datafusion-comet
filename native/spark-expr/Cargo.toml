@@ -127,3 +127,7 @@ harness = false
 [[bench]]
 name = "unhex"
 harness = false
+
+[[bench]]
+name = "array_size"
+harness = false
