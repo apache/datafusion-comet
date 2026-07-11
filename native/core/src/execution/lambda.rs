@@ -67,18 +67,10 @@ impl LambdaScopes {
     ) -> Result<T, E> {
         self.0.borrow_mut().push(scope);
         let out = f();
-        // NOTE: not panic-safe (a panic between push and pop leaks the
-        // scope), but planning is single-threaded and panics abort the
-        // request anyway; the guard version had the same property in
-        // practice — `Drop` only helps if you unwind, and Comet doesn't.
         self.0.borrow_mut().pop();
         out
     }
 }
-
-// ---------------------------------------------------------------------------
-// LambdaParamsCapture
-// ---------------------------------------------------------------------------
 
 /// Wrap a lambda body so that params which are *unused* in the body still
 /// appear in `children()`.
