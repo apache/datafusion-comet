@@ -148,6 +148,7 @@ message AggExpr {
     BloomFilterAgg bloomFilterAgg = 16;
     CollectSet collectSet = 17;
     Percentile percentile = 18;
+    ApproxPercentile approxPercentile = 19;
   }
 
   // Optional filter expression for SQL FILTER (WHERE ...) clause.
@@ -254,6 +255,22 @@ message Percentile {
   // Single percentile in [0.0, 1.0] as a literal double expression.
   Expr percentage = 2;
   DataType datatype = 3;
+}
+
+message ApproxPercentile {
+  // Child value expression, already cast to Float64 by the serde.
+  Expr child = 1;
+  // The percentiles and accuracy are carried as resolved scalars rather than
+  // child Exprs (unlike Percentile/BloomFilterAgg) because they are needed at
+  // UDAF construction time to drive return_type and accumulator shape.
+  // One or more percentiles in [0.0, 1.0].
+  repeated double percentiles = 2;
+  // Spark's accuracy argument; relative_error = 1.0 / accuracy.
+  int64 accuracy = 3;
+  // True when the percentile argument was an array (output is a list).
+  bool return_array = 4;
+  // Spark's input/output type, used to cast results back from Float64.
+  DataType input_type = 5;
 }
 
 message BloomFilterAgg {

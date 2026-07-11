@@ -46,10 +46,10 @@ import org.apache.comet.shims.ShimCometConf
 object CometConf extends ShimCometConf {
 
   val COMPAT_GUIDE: String = "For more information, refer to the Comet Compatibility " +
-    "Guide (https://datafusion.apache.org/comet/user-guide/compatibility.html)"
+    "Guide (https://datafusion.apache.org/comet/user-guide/latest/compatibility/index.html)"
 
   private val TUNING_GUIDE = "For more information, refer to the Comet Tuning " +
-    "Guide (https://datafusion.apache.org/comet/user-guide/tuning.html)"
+    "Guide (https://datafusion.apache.org/comet/user-guide/latest/tuning.html)"
 
   private val TRACING_GUIDE = "For more information, refer to the Comet Tracing " +
     "Guide (https://datafusion.apache.org/comet/contributor-guide/tracing.html)"
@@ -299,6 +299,18 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(true)
 
+  val COMET_PYARROW_UDF_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.exec.pyarrowUdf.enabled")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "Experimental: whether to enable optimized execution of PyArrow UDFs " +
+          "(mapInArrow/mapInPandas). When enabled, Comet passes Arrow columnar data " +
+          "directly to Python UDFs without the intermediate Arrow-to-Row-to-Arrow " +
+          "conversion that Spark normally performs. Disabled by default while the " +
+          "feature stabilizes.")
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_TRACING_ENABLED: ConfigEntry[Boolean] = conf("spark.comet.tracing.enabled")
     .category(CATEGORY_TUNING)
     .doc(s"Enable fine-grained tracing of events and memory usage. $TRACING_GUIDE.")
@@ -459,6 +471,32 @@ object CometConf extends ShimCometConf {
           "the extra conversion.")
       .booleanConf
       .createWithDefault(true)
+
+  val COMET_EXEC_TRANSITION_REVERT_ENABLED: ConfigEntry[Boolean] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.transitionRevert.enabled")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "When enabled, Comet reverts a query stage to Spark row-based execution if the number " +
+          "of columnar-to-row (C2R) transitions in the stage exceeds the configured threshold. " +
+          "This avoids the overhead of repeated format conversions in stages where many " +
+          "operators fall back to row-based execution.")
+      .booleanConf
+      .createWithDefault(false)
+
+  val COMET_EXEC_TRANSITION_REVERT_MAX_TRANSITIONS: ConfigEntry[Int] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.transitionRevert.maxTransitions")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "The maximum number of columnar-to-row (C2R) transitions allowed in a single query " +
+          "stage before Comet reverts the entire stage to Spark row-based execution. When " +
+          "columnar shuffle is enabled, each such C2R typically implies a corresponding " +
+          "row-to-columnar conversion to feed back into the columnar shuffle, so each counted " +
+          "C2R is a useful proxy for the conversion overhead in the stage. Set to 0 to revert " +
+          "any stage with transitions. " +
+          "Only effective when spark.comet.exec.transitionRevert.enabled is true.")
+      .intConf
+      .checkValue(_ >= 0, "Must be >= 0.")
+      .createWithDefault(2)
 
   val COMET_EXEC_SHUFFLE_COMPRESSION_CODEC: ConfigEntry[String] =
     conf(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.compression.codec")
