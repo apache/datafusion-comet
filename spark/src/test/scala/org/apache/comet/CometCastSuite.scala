@@ -1790,9 +1790,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           assert(
             CometCast.isSupported(fromType, toType, None, CometEvalMode.LEGACY) ==
               Unsupported(Some(expectedMessage)))
-          checkSparkAnswerAndFallbackReason(
-            data.select(col("a").cast(toType).as("converted")),
-            expectedMessage)
+          checkSparkAnswerAndOperator(data.select(col("a").cast(toType).as("converted")))
         }
       }
     }
