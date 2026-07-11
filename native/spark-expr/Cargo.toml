@@ -131,3 +131,7 @@ harness = false
 [[bench]]
 name = "array_size"
 harness = false
+
+[[bench]]
+name = "parse_url"
+harness = false
