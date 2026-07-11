@@ -30,6 +30,8 @@ import org.apache.spark.sql.execution.adaptive.QueryStageExec
 import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
 
 import org.apache.comet.CometConf
+import org.apache.comet.CometSparkSessionExtensions.withInfo
+import org.apache.comet.serde.NativeOptIn
 import org.apache.comet.shims.ShimSQLConf
 
 // This rule is responsible for eliminating redundant transitions between row-based and
@@ -114,13 +116,26 @@ case class EliminateRedundantTransitions(session: SparkSession)
       // source string/binary vectors always use 4-byte offsets while the destination root is
       // allocated with 8-byte offsets when this conf is on. The buffer counts match but the
       // offset width does not, so a direct memcpy would corrupt the offsets.
-      case EligibleMapInBatch(info, columnarChild) =>
-        CometMapInBatchExec(
-          info.func,
-          info.output,
-          columnarChild,
-          info.isBarrier,
-          info.pythonEvalType)
+      //
+      // `EligibleMapInBatch` matches whenever the operator *would* run natively if the feature
+      // were enabled. When it is disabled (the default) we leave the vanilla Spark operator in
+      // place but annotate it with a non-fallback `[COMET-INFO]` hint so the user knows the native
+      // path exists behind a config flag.
+      case p @ EligibleMapInBatch(info, columnarChild) =>
+        if (CometConf.COMET_PYARROW_UDF_ENABLED.get()) {
+          CometMapInBatchExec(
+            info.func,
+            info.output,
+            columnarChild,
+            info.isBarrier,
+            info.pythonEvalType)
+        } else {
+          withInfo(
+            p,
+            NativeOptIn.message(
+              "PyArrow UDFs (mapInArrow/mapInPandas)",
+              CometConf.COMET_PYARROW_UDF_ENABLED.key))
+        }
 
       // Spark adds `RowToColumnar` under Comet columnar shuffle. But it's redundant as the
       // shuffle takes row-based input.
@@ -174,19 +189,19 @@ case class EliminateRedundantTransitions(session: SparkSession)
   }
 
   /**
-   * Matches the plans this rule should rewrite to `CometMapInBatchExec`. Single extractor used in
-   * the `transformUp` arm above so the matchers and conf reads run once per visited plan. Returns
-   * `(info, columnarChild)` where `columnarChild` is the Comet columnar producer that
-   * `CometMapInBatchExec` will consume directly. Returns `None` (and the arm misses) when the
-   * conf is off, when `useLargeVarTypes` forces the fallback, when the plan is not one of the
-   * version-shimmed MapInArrow / MapInPandas operators, or when the child is not a Comet
-   * columnar-to-row transition we can strip.
+   * Matches the plans that could run natively as `CometMapInBatchExec`, independent of whether
+   * the `spark.comet.exec.pyarrowUdf.enabled` feature flag is set. The `transformUp` arm reads
+   * that flag to decide between rewriting the operator and merely annotating it with an opt-in
+   * hint. Single extractor so the matchers run once per visited plan. Returns `(info,
+   * columnarChild)` where `columnarChild` is the Comet columnar producer that
+   * `CometMapInBatchExec` will consume directly. Returns `None` (and the arm misses) when
+   * `useLargeVarTypes` forces the fallback, when the plan is not one of the version-shimmed
+   * MapInArrow / MapInPandas operators, or when the child is not a Comet columnar-to-row
+   * transition we can strip.
    */
   private object EligibleMapInBatch {
     def unapply(plan: SparkPlan): Option[(MapInBatchInfo, SparkPlan)] = {
-      if (!CometConf.COMET_PYARROW_UDF_ENABLED.get()) {
-        None
-      } else if (arrowUseLargeVarTypes(plan.conf)) {
+      if (arrowUseLargeVarTypes(plan.conf)) {
         None
       } else {
         matchMapInArrow(plan)
