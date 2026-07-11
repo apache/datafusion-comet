@@ -542,7 +542,7 @@ impl PhysicalPlanner {
                 self.create_high_order_function_expr(hof, input_schema)
             }
             ExprStruct::NamedLambdaVariable(nlv) => {
-                let (idx, field) = self.lambda_scopes.resolve(nlv.expr_id).ok_or_else(|| {
+                let (idx, field) = self.lambda_scopes.resolve_variable(nlv.expr_id).ok_or_else(|| {
                     GeneralError(format!(
                         "Lambda variable '{}' (exprId={}) is not bound in any enclosing lambda scope",
                         nlv.name, nlv.expr_id

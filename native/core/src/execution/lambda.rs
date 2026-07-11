@@ -33,7 +33,7 @@ use std::sync::Arc;
 use arrow::array::RecordBatch;
 use arrow::datatypes::{FieldRef, Schema};
 use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
-use datafusion::common::{DataFusionError, Result as DFResult};
+use datafusion::common::{DataFusionError, Result};
 use datafusion::physical_expr::expressions::LambdaVariable;
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::ColumnarValue;
@@ -42,16 +42,19 @@ use std::collections::HashSet;
 /// Maps Spark `exprId` -> (column index in the extended body schema, field).
 pub(crate) type LambdaScope = HashMap<i64, (usize, FieldRef)>;
 
-/// Stack of lambda scopes, innermost last. Planning is single-threaded per
-/// planner, so `RefCell` is sufficient.
+/// A stack of lambda variable scopes, innermost last.
+/// Planning is single-threaded per planner, so `RefCell` is sufficient to manage
+/// the stack of scopes during the recursive planning process.
 #[derive(Default)]
-pub(crate) struct LambdaScopes(RefCell<Vec<LambdaScope>>);
+pub(crate) struct LambdaScopes {
+    stack: RefCell<Vec<LambdaScope>>,
+}
 
 impl LambdaScopes {
     /// Resolve a lambda variable by Spark `exprId`, searching innermost
     /// scope first.
-    pub(crate) fn resolve(&self, expr_id: i64) -> Option<(usize, FieldRef)> {
-        self.0
+    pub(crate) fn resolve_variable(&self, expr_id: i64) -> Option<(usize, FieldRef)> {
+        self.stack
             .borrow()
             .iter()
             .rev()
@@ -65,9 +68,9 @@ impl LambdaScopes {
         scope: LambdaScope,
         f: impl FnOnce() -> Result<T, E>,
     ) -> Result<T, E> {
-        self.0.borrow_mut().push(scope);
+        self.stack.borrow_mut().push(scope);
         let out = f();
-        self.0.borrow_mut().pop();
+        self.stack.borrow_mut().pop();
         out
     }
 }
@@ -115,15 +118,15 @@ impl std::hash::Hash for LambdaParamsCapture {
 }
 
 impl PhysicalExpr for LambdaParamsCapture {
-    fn data_type(&self, s: &Schema) -> DFResult<arrow::datatypes::DataType> {
+    fn data_type(&self, s: &Schema) -> Result<arrow::datatypes::DataType> {
         self.body.data_type(s)
     }
 
-    fn nullable(&self, s: &Schema) -> DFResult<bool> {
+    fn nullable(&self, s: &Schema) -> Result<bool> {
         self.body.nullable(s)
     }
 
-    fn evaluate(&self, batch: &RecordBatch) -> DFResult<ColumnarValue> {
+    fn evaluate(&self, batch: &RecordBatch) -> Result<ColumnarValue> {
         // Params are never evaluated — they exist only for the index scan
         // in `LambdaExpr::new` and the `transform_down` remapping.
         self.body.evaluate(batch)
@@ -139,7 +142,7 @@ impl PhysicalExpr for LambdaParamsCapture {
     fn with_new_children(
         self: Arc<Self>,
         children: Vec<Arc<dyn PhysicalExpr>>,
-    ) -> DFResult<Arc<dyn PhysicalExpr>> {
+    ) -> Result<Arc<dyn PhysicalExpr>> {
         let (body, params) = children.split_first().ok_or_else(|| {
             DataFusionError::Internal("LambdaParamsCapture requires children".into())
         })?;
@@ -162,18 +165,18 @@ pub(crate) fn pin_unused_params(
     body: Arc<dyn PhysicalExpr>,
     params: &[(usize, FieldRef)],
 ) -> Arc<dyn PhysicalExpr> {
-    let mut used = HashSet::with_capacity(params.len());
-    body.apply(|e| {
+    let mut used_indices = HashSet::new();
+
+    let _ = body.apply(|e| {
         if let Some(v) = e.downcast_ref::<LambdaVariable>() {
-            used.insert(v.index());
+            used_indices.insert(v.index());
         }
         Ok(TreeNodeRecursion::Continue)
-    })
-    .expect("closure is infallible");
+    });
 
     let unused_params: Vec<Arc<dyn PhysicalExpr>> = params
         .iter()
-        .filter(|(idx, _)| !used.contains(idx))
+        .filter(|(idx, _)| !used_indices.contains(idx))
         .map(|(idx, field)| {
             Arc::new(LambdaVariable::new(*idx, Arc::clone(field))) as Arc<dyn PhysicalExpr>
         })
