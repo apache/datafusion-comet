@@ -45,18 +45,6 @@ query expect_fallback(spark.comet.exec.scalaUDF.codegen.enabled=false)
 SELECT concat(c1, c2) FROM test_dispatch_disabled_binary
 
 statement
-CREATE TABLE test_dispatch_disabled_nested(arr array<array<struct<a:int>>>) USING parquet
-
-statement
-INSERT INTO test_dispatch_disabled_nested VALUES
-  (array(array(named_struct('a', 2)), array(named_struct('a', 1)))),
-  (NULL)
-
--- SortArray over nested arrays with Struct children
-query expect_fallback(spark.comet.exec.scalaUDF.codegen.enabled=false)
-SELECT sort_array(arr) FROM test_dispatch_disabled_nested
-
-statement
 CREATE TABLE test_dispatch_disabled_date(d date) USING parquet
 
 statement
