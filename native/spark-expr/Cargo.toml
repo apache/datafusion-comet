@@ -57,6 +57,10 @@ name = "datafusion_comet_spark_expr"
 path = "src/lib.rs"
 
 [[bench]]
+name = "log"
+harness = false
+
+[[bench]]
 name = "cast_from_string"
 harness = false
 
