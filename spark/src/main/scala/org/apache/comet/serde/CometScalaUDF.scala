@@ -19,6 +19,8 @@
 
 package org.apache.comet.serde
 
+import java.util.Locale
+
 import org.apache.spark.SparkEnv
 import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference, AttributeSeq, BindReferences, Expression, Literal, RuntimeReplaceable, ScalaUDF}
 import org.apache.spark.sql.types.BinaryType
@@ -147,7 +149,9 @@ object CometScalaUDF extends CometExpressionSerde[ScalaUDF] {
     // `[COMET-INFO: ...]`. Informational only: `withInfo` does not trigger fallback, so the
     // projection remains a Comet operator regardless of this setting.
     if (CometConf.COMET_EXPLAIN_CODEGEN_ENABLED.get()) {
-      withInfo(expr, s"${exprName.toLowerCase}: routes through JVM codegen dispatcher")
+      withInfo(
+        expr,
+        s"${exprName.toLowerCase(Locale.ROOT)}: routes through JVM codegen dispatcher")
     }
     Some(
       ExprOuterClass.Expr

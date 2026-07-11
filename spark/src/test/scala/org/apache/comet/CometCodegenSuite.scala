@@ -154,10 +154,6 @@ class CometCodegenSuite
         checkSparkAnswerAndOperator(df)
         val explain =
           new ExtendedExplainInfo().generateExtendedInfo(df.queryExecution.executedPlan)
-        // Print so the test log shows the shape of the info annotation.
-        // scalastyle:off println
-        println(s"[codegen-fallback explain]\n$explain")
-        // scalastyle:on println
         assert(
           explain.contains("[COMET-INFO:"),
           s"expected a [COMET-INFO: segment in explain output, got:\n$explain")
