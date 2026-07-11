@@ -603,15 +603,44 @@ case class CometScanRule(session: SparkSession)
 
           try {
             if (!taskValidation.deleteFiles.isEmpty) {
+              val historicSchemas = IcebergReflection.getAllSchemas(metadata.table)
               taskValidation.deleteFiles.asScala.foreach { deleteFile =>
+                // iceberg-rust only reads Parquet delete files. Avro/ORC positional or
+                // equality deletes must be applied by Spark.
+                IcebergReflection.getFileFormat(deleteFile) match {
+                  case Some(fmt) if fmt.equalsIgnoreCase(IcebergReflection.FileFormats.PARQUET) =>
+                  case Some(fmt) =>
+                    hasUnsupportedDeletes = true
+                    fallbackReasons +=
+                      s"Delete file format '$fmt' is not supported by iceberg-rust. " +
+                        "Only Parquet delete files can be applied natively."
+                  case None =>
+                    hasUnsupportedDeletes = true
+                    logWarning(
+                      "Could not determine Iceberg delete file format; falling back to Spark")
+                    fallbackReasons += "Could not determine Iceberg delete file format"
+                }
+
                 val equalityFieldIds = IcebergReflection.getEqualityFieldIds(deleteFile)
 
                 if (!equalityFieldIds.isEmpty) {
-                  // Look up field types
                   equalityFieldIds.asScala.foreach { fieldId =>
-                    val fieldInfo = IcebergReflection.getFieldInfo(
-                      metadata.scanSchema,
-                      fieldId.asInstanceOf[Int])
+                    val fid = fieldId.asInstanceOf[Int]
+                    // Resolve against the current schema, then the table's schema history: an
+                    // equality delete may be keyed on a column that has since been dropped, which
+                    // the serde must still put in the task schema to apply the delete natively.
+                    val inCurrentSchema =
+                      IcebergReflection.getFieldInfo(metadata.tableSchema, fid)
+                    val fieldInfo = inCurrentSchema.orElse(
+                      historicSchemas.iterator
+                        .flatMap(s => IcebergReflection.getFieldInfo(s, fid))
+                        .toSeq
+                        .headOption)
+                    if (inCurrentSchema.isEmpty && fieldInfo.isDefined) {
+                      logDebug(
+                        s"Iceberg equality-delete field id $fid is absent from the current table " +
+                          "schema; resolved from schema history (likely a dropped column)")
+                    }
                     fieldInfo match {
                       case Some((fieldName, fieldType)) =>
                         if (fieldType.contains("struct")) {
@@ -623,6 +652,13 @@ case class CometScanRule(session: SparkSession)
                               "require datum conversion support that is not yet implemented."
                         }
                       case None =>
+                        hasUnsupportedDeletes = true
+                        logWarning(
+                          s"Iceberg equality-delete field id $fid unresolvable in the table " +
+                            "schema or its history; falling back to Spark")
+                        fallbackReasons +=
+                          s"Equality delete references field id $fid which cannot be resolved " +
+                            "in the table schema or its history"
                     }
                   }
                 }

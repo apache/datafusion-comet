@@ -338,6 +338,7 @@ jobs:
               org.apache.comet.exec.CometGenerateExecSuite
               org.apache.comet.exec.CometWindowExecSuite
               org.apache.comet.exec.CometJoinSuite
+              org.apache.spark.sql.comet.CometMapInBatchSuite
               org.apache.comet.CometNativeSuite
               org.apache.comet.CometSetOpWithGroupBySuite
               org.apache.comet.CometSparkSessionExtensionsSuite
@@ -348,6 +349,7 @@ jobs:
               org.apache.comet.rules.CometScanRuleSuite
               org.apache.comet.rules.CometScanSchemeFallbackSuite
               org.apache.comet.rules.CometExecRuleSuite
+              org.apache.comet.rules.RevertNativeForTransitionHeavyStagesSuite
               org.apache.spark.sql.CometTPCDSQuerySuite
               org.apache.spark.sql.CometTPCDSQueryTestSuite
               org.apache.spark.sql.CometTPCHQuerySuite
@@ -358,12 +360,14 @@ jobs:
               org.apache.spark.sql.comet.CometShuffleFallbackStickinessSuite
               org.apache.spark.sql.comet.PlanDataInjectorSuite
               org.apache.spark.sql.comet.CometDecimalArithmeticViewSuite
+              org.apache.spark.sql.comet.CometScanWithPlanDataSuite
               org.apache.spark.sql.comet.util.UtilsSuite
               org.apache.comet.objectstore.NativeConfigSuite
               org.apache.spark.sql.CometToPrettyStringSuite
               org.apache.spark.sql.CometCollationSuite
               org.apache.comet.CometFuzzAggregateSuite
               org.apache.spark.sql.comet.execution.arrow.CometArrowStreamSuite
+              org.apache.spark.sql.CometSparkInternalFunctionsSuite
           - name: "expressions"
             value: |
               org.apache.comet.CometExpressionSuite

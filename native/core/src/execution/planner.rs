@@ -41,7 +41,6 @@ use datafusion::functions_aggregate::bit_and_or_xor::{bit_and_udaf, bit_or_udaf,
 use datafusion::functions_aggregate::count::count_udaf;
 use datafusion::functions_aggregate::min_max::max_udaf;
 use datafusion::functions_aggregate::min_max::min_udaf;
-use datafusion::functions_aggregate::percentile_cont::percentile_cont_udaf;
 use datafusion::functions_aggregate::sum::sum_udaf;
 use datafusion::physical_expr::aggregate::{AggregateExprBuilder, AggregateFunctionExpr};
 use datafusion::physical_plan::windows::{BoundedWindowAggExec, WindowAggExec};
@@ -74,7 +73,7 @@ use datafusion::{
 use datafusion_comet_spark_expr::{
     create_comet_physical_fun, create_comet_physical_fun_with_eval_mode, BinaryOutputStyle,
     BloomFilterAgg, BloomFilterMightContain, CsvWriteOptions, EvalMode, SparkArraysZipFunc,
-    SparkBloomFilterVersion, SumInteger, ToCsv,
+    SparkBloomFilterVersion, SparkPercentile, SumInteger, ToCsv,
 };
 use datafusion_spark::function::aggregate::collect::SparkCollectSet;
 use iceberg::expr::Bind;
@@ -128,8 +127,8 @@ use datafusion_comet_proto::{
     spark_partitioning::{partitioning::PartitioningStruct, Partitioning as SparkPartitioning},
 };
 use datafusion_comet_spark_expr::{
-    jvm_udf::JvmScalarUdfExpr, ArrayInsert, Avg, AvgDecimal, Cast, CheckOverflow, Correlation,
-    Covariance, CreateNamedStruct, DecimalRescaleCheckOverflow, GetArrayStructFields,
+    jvm_udf::JvmScalarUdfExpr, ApproxPercentile, ArrayInsert, Avg, AvgDecimal, Cast, CheckOverflow,
+    Correlation, Covariance, CreateNamedStruct, DecimalRescaleCheckOverflow, GetArrayStructFields,
     GetStructField, IfExpr, ListExtract, NormalizeNaNAndZero, SparkCastOptions, Stddev, SumDecimal,
     ToJson, UnboundColumn, Variance, WideDecimalBinaryExpr, WideDecimalOp,
 };
@@ -2616,16 +2615,29 @@ impl PhysicalPlanner {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
                 let percentile =
                     self.create_expr(expr.percentage.as_ref().unwrap(), Arc::clone(&schema))?;
-                // DataFusion's percentile_cont uses the same `index = p * (n - 1)` linear
-                // interpolation as Spark's exact Percentile, so results match for the single
-                // percentage case wired here.
-                AggregateExprBuilder::new(percentile_cont_udaf(), vec![child, percentile])
+                // Spark's exact Percentile uses full-precision linear interpolation. Comet uses
+                // its own UDAF rather than DataFusion's percentile_cont because DataFusion
+                // quantizes the interpolation weight.
+                let percentile_value = percentile_value(expr.percentage.as_ref().unwrap())?;
+                let func = AggregateUDF::new_from_impl(SparkPercentile::try_new(percentile_value)?);
+                AggregateExprBuilder::new(func.into(), vec![child, percentile])
                     .schema(schema)
-                    .alias("percentile_cont")
+                    .alias("percentile")
                     .with_ignore_nulls(false)
                     .with_distinct(false)
                     .build()
                     .map_err(|e| e.into())
+            }
+            AggExprStruct::ApproxPercentile(expr) => {
+                let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
+                let input_type = to_arrow_datatype(expr.input_type.as_ref().unwrap());
+                let func = AggregateUDF::new_from_impl(ApproxPercentile::new(
+                    expr.percentiles.clone(),
+                    expr.accuracy,
+                    input_type,
+                    expr.return_array,
+                ));
+                Self::create_aggr_func_expr("approx_percentile", schema, vec![child], func)
             }
             AggExprStruct::BloomFilterAgg(expr) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
@@ -3273,6 +3285,21 @@ impl PhysicalPlanner {
     }
 }
 
+fn percentile_value(expr: &spark_expression::Expr) -> Result<f64, ExecutionError> {
+    match &expr.expr_struct {
+        Some(ExprStruct::Literal(literal)) if !literal.is_null => match &literal.value {
+            Some(Value::DoubleVal(value)) => Ok(*value),
+            Some(Value::FloatVal(value)) => Ok(*value as f64),
+            _ => Err(GeneralError(
+                "Percentile value must be a floating-point literal".to_string(),
+            )),
+        },
+        _ => Err(GeneralError(
+            "Percentile value must be a non-null literal".to_string(),
+        )),
+    }
+}
+
 /// Collects the indices of the columns in the input schema that are used in the expression
 /// and returns them as a pair of vectors, one for the left side and one for the right side.
 fn expr_to_columns(
@@ -3715,17 +3742,20 @@ fn parse_file_scan_tasks_from_common(
                     .residual_pool
                     .get(idx as usize)
                     .and_then(convert_spark_expr_to_predicate)
-                    .map(
-                        |pred| -> Result<iceberg::expr::BoundPredicate, ExecutionError> {
-                            pred.bind(Arc::clone(&schema_ref), true).map_err(|e| {
-                                ExecutionError::GeneralError(format!(
-                                    "Failed to bind predicate to schema: {}",
-                                    e
-                                ))
-                            })
-                        },
-                    )
-                    .transpose()?
+                    .and_then(|pred| {
+                        // The residual predicate only drives row-group pruning; the post-scan
+                        // filter still enforces correctness. iceberg-rust cannot bind a datum
+                        // whose type has no conversion to the column type, so on a bind failure
+                        // we skip pushdown rather than fail the scan, mirroring the NOT IN
+                        // handling above.
+                        match pred.bind(Arc::clone(&schema_ref), true) {
+                            Ok(bound) => Some(bound),
+                            Err(e) => {
+                                log::warn!("Skipping Iceberg predicate pushdown; bind failed: {e}");
+                                None
+                            }
+                        }
+                    })
             } else {
                 None
             };

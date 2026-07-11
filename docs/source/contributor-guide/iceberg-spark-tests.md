@@ -88,13 +88,14 @@ git add -A
 git diff apache-iceberg-1.8.1 > ../datafusion-comet/dev/diffs/iceberg/1.8.1.diff
 ```
 
-Repeat for each Iceberg version (1.8.1, 1.9.1, 1.10.0). The file contents differ between versions, so each
+Repeat for each Iceberg version (1.8.1, 1.9.1, 1.10.0, 1.11.0). The file contents differ between versions, so each
 diff must be generated against its own tag.
 
 ## Running Tests in CI
 
 The `iceberg_spark_test_<version>.yml` workflows apply these diffs and run the three Gradle targets above
 against each Iceberg version. Iceberg 1.8.1 runs against Spark 3.4.3 with Java 11; Iceberg 1.9.1 and 1.10.0
-run against Spark 3.5.8 with Java 17. The latest Iceberg version (1.10) runs on every pull request and on
-pushes to main; the older versions (1.8, 1.9) run only on pushes to main. All caller workflows delegate to
-`iceberg_spark_test_reusable.yml`, which holds the build and test job logic.
+run against Spark 3.5.8 with Java 17; Iceberg 1.11.0 runs against Spark 4.1.2 with Java 17. Iceberg 1.11
+(the only version testing Spark 4.1) runs on every pull request and on pushes to main; the older versions
+(1.8, 1.9, 1.10) run only on pushes to main, or on a pull request labeled `run-iceberg-tests`. All caller
+workflows delegate to `iceberg_spark_test_reusable.yml`, which holds the build and test job logic.
