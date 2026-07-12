@@ -20,13 +20,16 @@
 package org.apache.spark.sql.comet
 
 import java.util.Locale
+import java.util.ServiceLoader
 
 import scala.collection.mutable
 import scala.collection.mutable.ArrayBuffer
 import scala.jdk.CollectionConverters._
+import scala.util.control.NonFatal
 
 import org.apache.spark.{Partition, TaskContext}
 import org.apache.spark.broadcast.Broadcast
+import org.apache.spark.internal.Logging
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Ascending, Attribute, AttributeSet, Expression, ExpressionSet, Generator, NamedExpression, SortOrder}
@@ -87,14 +90,34 @@ private[comet] trait PlanDataInjector {
 /**
  * Registry and utilities for injecting per-partition planning data into operator trees.
  */
-private[comet] object PlanDataInjector {
+private[comet] object PlanDataInjector extends Logging {
 
-  // Registry of injectors for different operator types
-  private val injectors: Seq[PlanDataInjector] = Seq(
-    IcebergPlanDataInjector,
-    NativeScanPlanDataInjector
-    // Future: DeltaPlanDataInjector, HudiPlanDataInjector, etc.
-  )
+  // Registry of injectors for different operator types. The built-in injectors live in core.
+  // Out-of-tree contribs (e.g. contrib-delta's `DeltaPlanDataInjector`) are discovered via the
+  // standard JDK `ServiceLoader`: a contrib ships a
+  // `META-INF/services/org.apache.spark.sql.comet.PlanDataInjector` resource naming its
+  // implementation, so it joins the registry without core holding any compile-time reference or
+  // contrib-specific code. Default builds carry no such service file, so discovery yields nothing
+  // and the registry is exactly the built-ins -- zero contrib surface at runtime.
+  private[comet] val injectors: Seq[PlanDataInjector] = {
+    val builtin: Seq[PlanDataInjector] = Seq(IcebergPlanDataInjector, NativeScanPlanDataInjector)
+    val discovered: Seq[PlanDataInjector] =
+      try {
+        ServiceLoader.load(classOf[PlanDataInjector], getClass.getClassLoader).asScala.toSeq
+      } catch {
+        // A misbuilt contrib jar -- a malformed service file, or a listed provider that can't be
+        // instantiated -- surfaces as ServiceConfigurationError while the iterator is forced.
+        // Warn so it's diagnosable, then continue with the built-ins so the planner stays alive.
+        // NonFatal covers ServiceConfigurationError (it is not a LinkageError).
+        case NonFatal(e) =>
+          logWarning(
+            "Failed to load contrib PlanDataInjector services; " +
+              "continuing with built-in injectors only",
+            e)
+          Seq.empty
+      }
+    builtin ++ discovered
+  }
 
   // O(1) lookup by op kind: most operators in any tree don't match any injector, so the per-op
   // `for (injector <- injectors if injector.canInject(op))` walk was paying N*M canInject calls
@@ -152,6 +175,73 @@ private[comet] object PlanDataInjector {
     op.writeTo(codedOutput)
     codedOutput.checkNoSpaceLeft()
     bytes
+  }
+
+  /**
+   * Find all plan nodes with per-partition planning data in the plan tree. Returns two maps keyed
+   * by a unique identifier: one for common data (shared across partitions) and one for
+   * per-partition data.
+   *
+   * Recognises Iceberg scans (keyed by metadata_location) plus any leaf scan that surfaces its
+   * data via the [[CometScanWithPlanData]] trait (`CometNativeScanExec` and out-of-tree contrib
+   * scans such as the Delta contrib's `CometDeltaNativeScanExec`).
+   *
+   * Stops at stage boundaries (shuffle exchanges, etc.) because partition indices are only valid
+   * within the same stage.
+   *
+   * @return
+   *   (commonByKey, perPartitionByKey) - common data is shared, per-partition varies
+   */
+  private[comet] def findAllPlanData(
+      plan: SparkPlan): (Map[String, Array[Byte]], Map[String, Array[Array[Byte]]]) = {
+    plan match {
+      case iceberg: CometIcebergNativeScanExec =>
+        // Trigger Spark's standard prepare -> waitForSubqueries lifecycle so DPP
+        // InSubqueryExec values are resolved before commonData is read. Without this,
+        // the parent CometNativeExec.executeQuery flow never invokes the scan's
+        // executeQuery, leaving DPP unresolved and forcing a sync-on-this await inside
+        // the serializedPartitionData lazy val initializer (a known deadlock surface).
+        iceberg.ensureSubqueriesResolved()
+        if (iceberg.commonData.nonEmpty && iceberg.perPartitionData.nonEmpty) {
+          (
+            Map(iceberg.metadataLocation -> iceberg.commonData),
+            Map(iceberg.metadataLocation -> iceberg.perPartitionData))
+        } else {
+          (Map.empty, Map.empty)
+        }
+
+      // Generic path for leaf scans that surface planning data via the
+      // `CometScanWithPlanData` trait. Catches `CometNativeScanExec` and any contrib
+      // leaf scan (e.g. the Delta contrib's `CometDeltaNativeScanExec`) without
+      // requiring core to compile-time reference contrib classes. The trait's
+      // `self: CometLeafExec` self-type guarantees this is also a `CometLeafExec`, so
+      // the compound pattern always matches and we can drive the subquery lifecycle
+      // directly -- there is no silent "not a leaf" skip.
+      case s: CometLeafExec with CometScanWithPlanData =>
+        s.ensureSubqueriesResolved()
+        if (s.commonData.nonEmpty && s.perPartitionData.nonEmpty) {
+          (Map(s.sourceKey -> s.commonData), Map(s.sourceKey -> s.perPartitionData))
+        } else {
+          (Map.empty, Map.empty)
+        }
+
+      // Broadcast stages are boundaries - don't collect per-partition data from inside them.
+      // After DPP filtering, broadcast scans may have different partition counts than the
+      // probe side, causing ArrayIndexOutOfBoundsException in CometExecRDD.getPartitions.
+      case _: BroadcastQueryStageExec | _: CometBroadcastExchangeExec =>
+        (Map.empty, Map.empty)
+
+      // Stage boundaries - stop searching (partition indices won't align after these)
+      case _: ShuffleQueryStageExec | _: AQEShuffleReadExec | _: CometShuffleExchangeExec |
+          _: CometUnionExec | _: CometTakeOrderedAndProjectExec | _: CometCoalesceExec |
+          _: ReusedExchangeExec | _: CometSparkToColumnarExec =>
+        (Map.empty, Map.empty)
+
+      // Continue searching through other operators, combining results from all children
+      case _ =>
+        val results = plan.children.map(findAllPlanData)
+        (results.flatMap(_._1).toMap, results.flatMap(_._2).toMap)
+    }
   }
 }
 
@@ -539,7 +629,7 @@ abstract class CometNativeExec extends CometExec {
       }
 
     // Find planning data within this stage (stops at shuffle boundaries).
-    val (commonByKey, perPartitionByKey) = findAllPlanData(this)
+    val (commonByKey, perPartitionByKey) = PlanDataInjector.findAllPlanData(this)
 
     // Collect the input batches from the child operators. Non-shuffle inputs become
     // RDD[ArrowArrayStream] (one stream per partition, exported via the C Stream Interface
@@ -718,8 +808,16 @@ abstract class CometNativeExec extends CometExec {
    */
   def foreachUntilCometInput(plan: SparkPlan)(func: SparkPlan => Unit): Unit = {
     plan match {
-      case _: CometNativeScanExec | _: CometScanExec | _: CometBatchScanExec |
-          _: CometIcebergNativeScanExec | _: CometCsvNativeScanExec | _: ShuffleQueryStageExec |
+      // Match `CometLeafExec` first so contrib leaf scans (e.g. the Delta
+      // contrib's `CometDeltaNativeScanExec`) are recognised as input boundaries
+      // without requiring a core compile-time reference to the contrib class.
+      // All built-in leaf scans (`CometNativeScanExec`, `CometIcebergNativeScanExec`,
+      // `CometCsvNativeScanExec`) also extend `CometLeafExec`, so this is a
+      // strict superset of the previous enumeration -- it just generalises the
+      // input-boundary concept from "this fixed list" to "any leaf Comet exec".
+      case _: CometLeafExec =>
+        func(plan)
+      case _: CometScanExec | _: CometBatchScanExec | _: ShuffleQueryStageExec |
           _: AQEShuffleReadExec | _: CometShuffleExchangeExec | _: CometUnionExec |
           _: CometTakeOrderedAndProjectExec | _: CometCoalesceExec | _: ReusedExchangeExec |
           _: CometBroadcastExchangeExec | _: BroadcastQueryStageExec |
@@ -752,63 +850,6 @@ abstract class CometNativeExec extends CometExec {
     }
     walk(plan)
     indices.toSet
-  }
-
-  /**
-   * Find all plan nodes with per-partition planning data in the plan tree. Returns two maps keyed
-   * by a unique identifier: one for common data (shared across partitions) and one for
-   * per-partition data.
-   *
-   * Currently supports Iceberg scans (keyed by metadata_location). Additional scan types can be
-   * added by extending this method.
-   *
-   * Stops at stage boundaries (shuffle exchanges, etc.) because partition indices are only valid
-   * within the same stage.
-   *
-   * @return
-   *   (commonByKey, perPartitionByKey) - common data is shared, per-partition varies
-   */
-  private def findAllPlanData(
-      plan: SparkPlan): (Map[String, Array[Byte]], Map[String, Array[Array[Byte]]]) = {
-    plan match {
-      case iceberg: CometIcebergNativeScanExec =>
-        // Trigger Spark's standard prepare -> waitForSubqueries lifecycle so DPP
-        // InSubqueryExec values are resolved before commonData is read. Without this,
-        // the parent CometNativeExec.executeQuery flow never invokes the scan's
-        // executeQuery, leaving DPP unresolved and forcing a sync-on-this await inside
-        // the serializedPartitionData lazy val initializer (a known deadlock surface).
-        iceberg.ensureSubqueriesResolved()
-        if (iceberg.commonData.nonEmpty && iceberg.perPartitionData.nonEmpty) {
-          (
-            Map(iceberg.metadataLocation -> iceberg.commonData),
-            Map(iceberg.metadataLocation -> iceberg.perPartitionData))
-        } else {
-          (Map.empty, Map.empty)
-        }
-
-      case nativeScan: CometNativeScanExec =>
-        nativeScan.ensureSubqueriesResolved()
-        (
-          Map(nativeScan.sourceKey -> nativeScan.commonData),
-          Map(nativeScan.sourceKey -> nativeScan.perPartitionData))
-
-      // Broadcast stages are boundaries - don't collect per-partition data from inside them.
-      // After DPP filtering, broadcast scans may have different partition counts than the
-      // probe side, causing ArrayIndexOutOfBoundsException in CometExecRDD.getPartitions.
-      case _: BroadcastQueryStageExec | _: CometBroadcastExchangeExec =>
-        (Map.empty, Map.empty)
-
-      // Stage boundaries - stop searching (partition indices won't align after these)
-      case _: ShuffleQueryStageExec | _: AQEShuffleReadExec | _: CometShuffleExchangeExec |
-          _: CometUnionExec | _: CometTakeOrderedAndProjectExec | _: CometCoalesceExec |
-          _: ReusedExchangeExec | _: CometSparkToColumnarExec =>
-        (Map.empty, Map.empty)
-
-      // Continue searching through other operators, combining results from all children
-      case _ =>
-        val results = plan.children.map(findAllPlanData)
-        (results.flatMap(_._1).toMap, results.flatMap(_._2).toMap)
-    }
   }
 
   /**
@@ -899,6 +940,52 @@ abstract class CometLeafExec extends CometNativeExec with LeafExecNode {
     prepare()
     waitForSubqueries()
   }
+}
+
+/**
+ * Marker trait for scan execs that surface planning data (a `commonData` block + per-partition
+ * task bytes keyed by `sourceKey`) so that a parent `CometNativeExec` can find and inject the
+ * data when the scan is fused into a larger native subtree.
+ *
+ * Implemented by `CometNativeScanExec` and the contrib's `CometDeltaNativeScanExec` -- without
+ * it, [[PlanDataInjector.findAllPlanData]] cannot collect the per-partition tasks and the
+ * parent's native execution receives an empty input. (`CometIcebergNativeScanExec` does NOT use
+ * this trait; it has a dedicated `findAllPlanData` case.)
+ *
+ * Each implementation also resolves its own DPP subqueries via `ensureSubqueriesResolved` before
+ * `commonData`/`perPartitionData` are read. That method lives on [[CometLeafExec]], so the `self:
+ * CometLeafExec` self-type below makes "is a leaf scan" a compile-time requirement: an
+ * implementer cannot forget to extend [[CometLeafExec]] (which would otherwise compile and then
+ * silently skip subquery resolution -- the deadlock surface `ensureSubqueriesResolved` exists to
+ * prevent). It also lets [[PlanDataInjector.findAllPlanData]] drive the lifecycle without a
+ * runtime "not a leaf" fallback.
+ */
+trait CometScanWithPlanData { self: CometLeafExec =>
+  def sourceKey: String
+  def commonData: Array[Byte]
+  def perPartitionData: Array[Array[Byte]]
+
+  // DPP / partition filters that may carry AQE SubqueryAdaptiveBroadcast
+  // subqueries needing rewrite by CometPlanAdaptiveDynamicPruningFilters.
+  // Default empty: scans with dedicated handling (CometNativeScanExec,
+  // CometIcebergNativeScanExec) don't use this path.
+  def dynamicPruningFilters: Seq[Expression] = Nil
+
+  // Install rewritten DPP filters on this scan. Implementers whose filters live
+  // in a @transient field (which TreeNode.makeCopy can't carry, #3510) update
+  // them via a transient side-channel and return `this` -- so the optimizer
+  // rule's rewrite lands on the SAME instance that executes, instead of a copy
+  // that gets dropped when the enclosing native block is rebuilt. Only called
+  // when `dynamicPruningFilters` is non-empty, so the default is never reached
+  // for scans that leave it empty.
+  //
+  // TODO(#3510): once TreeNode.makeCopy preserves @transient fields, the
+  // mutate-and-return-`this` workaround can collapse back to a normal copy, mirroring
+  // the matching TODO in CometPlanAdaptiveDynamicPruningFilters.
+  def withDynamicPruningFilters(filters: Seq[Expression]): SparkPlan =
+    throw new UnsupportedOperationException(
+      s"${getClass.getSimpleName} exposes dynamicPruningFilters but does not " +
+        "override withDynamicPruningFilters")
 }
 
 abstract class CometUnaryExec extends CometNativeExec with UnaryExecNode
@@ -1550,9 +1637,9 @@ trait CometBaseAggregate {
         val names = incompatibleAggs.map(_.prettyName).distinct.sorted.mkString(", ")
         withFallbackReason(
           aggregate,
-          "Spark Final aggregate without Comet Partial requires compatible " +
-            "intermediate buffer formats, but the following aggregate function(s) " +
-            s"have incompatible buffers: $names")
+          "Comet aggregate that merges intermediate buffers requires a Comet child aggregate " +
+            "when the intermediate buffer formats are incompatible with Spark. " +
+            s"Incompatible aggregate function(s): $names")
         return None
       }
     }
@@ -1799,6 +1886,46 @@ trait CometBaseAggregate {
         .addChildren(hashAggOp)
         .setProjection(projection)
         .build())
+  }
+
+  /**
+   * For partial-like aggregates containing TypedImperativeAggregate functions (like CollectSet
+   * and Percentile), the Spark-side output declares buffer columns as BinaryType because Spark
+   * serializes state to binary. Native Comet emits the actual state type, so fix the exposed
+   * output schema before shuffle/exchange code consumes it.
+   *
+   * NOTE: If a new TypedImperativeAggregate function (e.g., CollectList) is added natively, add a
+   * case branch here mapping it to the native state type.
+   */
+  protected def adjustOutputForNativeState(op: BaseAggregateExec): Seq[Attribute] = {
+    val modeSet = op.aggregateExpressions.map(_.mode).toSet
+    if (modeSet.isEmpty || !modeSet.subsetOf(Set(Partial, PartialMerge))) {
+      return op.output
+    }
+
+    val numGrouping = op.groupingExpressions.length
+    val output = op.output.toArray
+
+    var bufferIdx = numGrouping
+    for (aggExpr <- op.aggregateExpressions) {
+      val aggFunc = aggExpr.aggregateFunction
+      val bufferAttrs = aggFunc.aggBufferAttributes
+      aggFunc match {
+        case cs: CollectSet =>
+          val elementType = cs.children.head.dataType
+          val nativeStateType = ArrayType(elementType, containsNull = true)
+          output(bufferIdx) = output(bufferIdx).withDataType(nativeStateType)
+        case _: Percentile =>
+          // Comet's native percentile UDAF keeps all values in a List<Float64> partial state.
+          // Comet casts the child to double, so the native state is ArrayType(DoubleType).
+          val nativeStateType = ArrayType(DoubleType, containsNull = true)
+          output(bufferIdx) = output(bufferIdx).withDataType(nativeStateType)
+        case _ =>
+      }
+      bufferIdx += bufferAttrs.length
+    }
+
+    output.toSeq
   }
 
   /**

@@ -39,7 +39,7 @@ index 6df8bc85b51..dabb75e2b75 100644
        withSpark(sc) { sc =>
          TestUtils.waitUntilExecutorsUp(sc, 2, 60000)
 diff --git a/pom.xml b/pom.xml
-index dc201151999..d5c08f11ded 100644
+index dc201151999..20ee0e7482a 100644
 --- a/pom.xml
 +++ b/pom.xml
 @@ -152,6 +152,8 @@
@@ -392,23 +392,35 @@ index 0d807aeae4d..6d7744e771b 100644
  
        withTempView("t0", "t1", "t2") {
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/DataFrameAggregateSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/DataFrameAggregateSuite.scala
-index bfe15b33768..8b1a1c08f20 100644
+index bfe15b33768..550549f1c7c 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/DataFrameAggregateSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/DataFrameAggregateSuite.scala
-@@ -28,10 +28,11 @@ import org.apache.spark.{SparkArithmeticException, SparkRuntimeException}
+@@ -28,10 +28,12 @@ import org.apache.spark.{SparkArithmeticException, SparkRuntimeException}
  import org.apache.spark.sql.catalyst.plans.logical.Expand
  import org.apache.spark.sql.catalyst.util.AUTO_GENERATED_ALIAS
  import org.apache.spark.sql.errors.DataTypeErrors.toSQLId
 +import org.apache.spark.sql.comet.CometHashAggregateExec
  import org.apache.spark.sql.execution.WholeStageCodegenExec
  import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
++import org.apache.spark.sql.comet.CometHashAggregateExec
  import org.apache.spark.sql.execution.aggregate.{HashAggregateExec, ObjectHashAggregateExec, SortAggregateExec}
 -import org.apache.spark.sql.execution.exchange.ShuffleExchangeExec
 +import org.apache.spark.sql.execution.exchange.ShuffleExchangeLike
  import org.apache.spark.sql.expressions.Window
  import org.apache.spark.sql.functions._
  import org.apache.spark.sql.internal.SQLConf
-@@ -801,7 +802,8 @@ class DataFrameAggregateSuite extends QueryTest
+@@ -792,7 +794,9 @@ class DataFrameAggregateSuite extends QueryTest
+             case _ => false
+           }.isDefined)
+         } else {
+-          assert(stripAQEPlan(hashAggPlan).isInstanceOf[HashAggregateExec])
++          val strippedPlan = stripAQEPlan(hashAggPlan)
++          assert(strippedPlan.isInstanceOf[HashAggregateExec] ||
++            strippedPlan.exists(_.isInstanceOf[CometHashAggregateExec]))
+         }
+ 
+         // test case for ObjectHashAggregate and SortAggregate
+@@ -801,7 +805,8 @@ class DataFrameAggregateSuite extends QueryTest
          val objHashAggOrSortAggPlan =
            stripAQEPlan(objHashAggOrSortAggDF.queryExecution.executedPlan)
          if (useObjectHashAgg) {
@@ -418,7 +430,7 @@ index bfe15b33768..8b1a1c08f20 100644
          } else {
            assert(objHashAggOrSortAggPlan.isInstanceOf[SortAggregateExec])
          }
-@@ -851,12 +853,12 @@ class DataFrameAggregateSuite extends QueryTest
+@@ -851,12 +856,12 @@ class DataFrameAggregateSuite extends QueryTest
        assert(sortAggPlans.isEmpty)
  
        val objHashAggPlans = collect(aggPlan) {
@@ -2265,7 +2277,7 @@ index a3cfdc5a240..3793b6191bf 100644
        })
        checkAnswer(distinctWithId, Seq(Row(1, 0), Row(1, 0)))
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala
-index 3e7d26f74bd..7e70e72fa3e 100644
+index 3e7d26f74bd..79232dc3664 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala
 @@ -27,12 +27,14 @@ import org.apache.spark.SparkException
@@ -2682,7 +2694,17 @@ index 3e7d26f74bd..7e70e72fa3e 100644
          }.isEmpty)
          assert(collect(initialExecutedPlan) {
            case i: InMemoryTableScanLike => i
-@@ -3310,7 +3354,8 @@ class AdaptiveQueryExecSuite
+@@ -3220,7 +3264,8 @@ class AdaptiveQueryExecSuite
+     }
+   }
+ 
+-  test("SPARK-44040: Fix compute stats when AggregateExec nodes above QueryStageExec") {
++  test("SPARK-44040: Fix compute stats when AggregateExec nodes above QueryStageExec",
++      IgnoreComet("https://github.com/apache/datafusion-comet/issues/4412")) {
+     val emptyDf = spark.range(1).where("false")
+     val aggDf1 = emptyDf.agg(sum("id").as("id")).withColumn("name", lit("df1"))
+     val aggDf2 = emptyDf.agg(sum("id").as("id")).withColumn("name", lit("df2"))
+@@ -3310,7 +3355,8 @@ class AdaptiveQueryExecSuite
  
        val plan = df.queryExecution.executedPlan.asInstanceOf[AdaptiveSparkPlanExec]
        assert(plan.inputPlan.isInstanceOf[TakeOrderedAndProjectExec])

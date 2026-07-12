@@ -17,40 +17,66 @@
 
 use std::sync::Arc;
 
-use arrow::array::OffsetSizeTrait;
+use arrow::array::{Array, BinaryBuilder, OffsetSizeTrait};
 use arrow::datatypes::DataType;
 use datafusion::common::{cast::as_generic_string_array, exec_err, DataFusionError, ScalarValue};
 use datafusion::logical_expr::ColumnarValue;
 
-/// Helper function to convert a hex digit to a binary value.
-fn unhex_digit(c: u8) -> Result<u8, DataFusionError> {
-    match c {
-        b'0'..=b'9' => Ok(c - b'0'),
-        b'A'..=b'F' => Ok(10 + c - b'A'),
-        b'a'..=b'f' => Ok(10 + c - b'a'),
-        _ => Err(DataFusionError::Execution(
-            "Input to unhex_digit is not a valid hex digit".to_string(),
-        )),
+/// Sentinel stored in `HEX_LUT` for bytes that are not valid hex digits. Its value `0xFF` has all
+/// bits set, so OR-ing the two nibbles of a byte and comparing the result against `INVALID_HEX`
+/// rejects the byte whenever either nibble is invalid: valid nibbles are `<= 0x0F`, so a valid
+/// pair can never OR up to `0xFF`. This lets the decode loop test both nibbles with one comparison.
+const INVALID_HEX: u8 = 0xFF;
+
+/// Lookup table mapping each possible input byte to its hex value, or `INVALID_HEX` for bytes
+/// that are not `0-9`, `A-F`, or `a-f`. Built at compile time so decoding is a single indexed
+/// load per digit rather than a chain of range comparisons.
+const HEX_LUT: [u8; 256] = build_hex_lut();
+
+const fn build_hex_lut() -> [u8; 256] {
+    let mut lut = [INVALID_HEX; 256];
+    let mut i = 0;
+    while i < 256 {
+        lut[i] = match i as u8 {
+            c @ b'0'..=b'9' => c - b'0',
+            c @ b'A'..=b'F' => c - b'A' + 10,
+            c @ b'a'..=b'f' => c - b'a' + 10,
+            _ => INVALID_HEX,
+        };
+        i += 1;
     }
+    lut
+}
+
+#[inline]
+fn invalid_hex_digit() -> DataFusionError {
+    DataFusionError::Execution("Input to unhex is not a valid hex digit".to_string())
 }
 
 /// Convert a hex string to binary and store the result in `result`. Returns an error if the input
 /// is not a valid hex string.
 fn unhex(hex_str: &str, result: &mut Vec<u8>) -> Result<(), DataFusionError> {
     let bytes = hex_str.as_bytes();
+    // Each output byte consumes two hex digits (the optional leading nibble rounds up).
+    result.reserve(bytes.len().div_ceil(2));
 
     let mut i = 0;
 
     if (bytes.len() & 0x01) != 0 {
-        let v = unhex_digit(bytes[0])?;
-
+        let v = HEX_LUT[bytes[0] as usize];
+        if v == INVALID_HEX {
+            return Err(invalid_hex_digit());
+        }
         result.push(v);
         i += 1;
     }
 
     while i < bytes.len() {
-        let first = unhex_digit(bytes[i])?;
-        let second = unhex_digit(bytes[i + 1])?;
+        let first = HEX_LUT[bytes[i] as usize];
+        let second = HEX_LUT[bytes[i + 1] as usize];
+        if (first | second) == INVALID_HEX {
+            return Err(invalid_hex_digit());
+        }
         result.push((first << 4) | second);
 
         i += 2;
@@ -68,7 +94,13 @@ fn spark_unhex_inner<T: OffsetSizeTrait>(
             let string_array = as_generic_string_array::<T>(array)?;
 
             let mut encoded = Vec::new();
-            let mut builder = arrow::array::BinaryBuilder::new();
+            // Every two input hex digits produce one output byte, so the decoded data is at most
+            // half the total input length. Preallocating both the offset and value buffers avoids
+            // the repeated doublings a fresh `BinaryBuilder` would incur across the whole column.
+            let mut builder = BinaryBuilder::with_capacity(
+                string_array.len(),
+                string_array.value_data().len() / 2,
+            );
 
             for item in string_array.iter() {
                 if let Some(s) = item {

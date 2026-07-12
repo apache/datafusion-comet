@@ -1,5 +1,5 @@
 diff --git a/pom.xml b/pom.xml
-index edd2ad57880..a47b7dec672 100644
+index edd2ad57880..45f8fd01538 100644
 --- a/pom.xml
 +++ b/pom.xml
 @@ -152,6 +152,8 @@
@@ -241,23 +241,35 @@ index e5494726695..00937f025c2 100644
  
    test("A cached table preserves the partitioning and ordering of its cached SparkPlan") {
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/DataFrameAggregateSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/DataFrameAggregateSuite.scala
-index 6f3090d8908..e6681f4d8e4 100644
+index 6f3090d8908..5db376a3754 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/DataFrameAggregateSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/DataFrameAggregateSuite.scala
-@@ -25,10 +25,11 @@ import org.scalatest.matchers.must.Matchers.the
+@@ -25,10 +25,12 @@ import org.scalatest.matchers.must.Matchers.the
  
  import org.apache.spark.{SparkException, SparkThrowable}
  import org.apache.spark.sql.catalyst.plans.logical.Expand
 +import org.apache.spark.sql.comet.CometHashAggregateExec
  import org.apache.spark.sql.execution.WholeStageCodegenExec
  import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
++import org.apache.spark.sql.comet.CometHashAggregateExec
  import org.apache.spark.sql.execution.aggregate.{HashAggregateExec, ObjectHashAggregateExec, SortAggregateExec}
 -import org.apache.spark.sql.execution.exchange.ShuffleExchangeExec
 +import org.apache.spark.sql.execution.exchange.ShuffleExchangeLike
  import org.apache.spark.sql.expressions.Window
  import org.apache.spark.sql.functions._
  import org.apache.spark.sql.internal.SQLConf
-@@ -738,7 +739,8 @@ class DataFrameAggregateSuite extends QueryTest
+@@ -729,7 +731,9 @@ class DataFrameAggregateSuite extends QueryTest
+             case _ => false
+           }.isDefined)
+         } else {
+-          assert(stripAQEPlan(hashAggPlan).isInstanceOf[HashAggregateExec])
++          val strippedPlan = stripAQEPlan(hashAggPlan)
++          assert(strippedPlan.isInstanceOf[HashAggregateExec] ||
++            strippedPlan.exists(_.isInstanceOf[CometHashAggregateExec]))
+         }
+ 
+         // test case for ObjectHashAggregate and SortAggregate
+@@ -738,7 +742,8 @@ class DataFrameAggregateSuite extends QueryTest
          val objHashAggOrSortAggPlan =
            stripAQEPlan(objHashAggOrSortAggDF.queryExecution.executedPlan)
          if (useObjectHashAgg) {
@@ -267,7 +279,7 @@ index 6f3090d8908..e6681f4d8e4 100644
          } else {
            assert(objHashAggOrSortAggPlan.isInstanceOf[SortAggregateExec])
          }
-@@ -788,12 +790,12 @@ class DataFrameAggregateSuite extends QueryTest
+@@ -788,12 +793,12 @@ class DataFrameAggregateSuite extends QueryTest
        assert(sortAggPlans.isEmpty)
  
        val objHashAggPlans = collect(aggPlan) {
@@ -1518,7 +1530,7 @@ index 5a413c77754..207b66e1d7b 100644
  
    import testImplicits._
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala
-index 2f8e401e743..dbcf3171946 100644
+index 2f8e401e743..7849c685b19 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala
 @@ -27,9 +27,11 @@ import org.scalatest.time.SpanSugar._
@@ -1924,7 +1936,17 @@ index 2f8e401e743..dbcf3171946 100644
          }.size == (if (firstAccess) 2 else 0))
          assert(collect(initialExecutedPlan) {
            case i: InMemoryTableScanLike => i
-@@ -2980,7 +3023,9 @@ class AdaptiveQueryExecSuite
+@@ -2938,7 +2981,8 @@ class AdaptiveQueryExecSuite
+     }
+   }
+ 
+-  test("SPARK-44040: Fix compute stats when AggregateExec nodes above QueryStageExec") {
++  test("SPARK-44040: Fix compute stats when AggregateExec nodes above QueryStageExec",
++      IgnoreComet("https://github.com/apache/datafusion-comet/issues/4412")) {
+     val emptyDf = spark.range(1).where("false")
+     val aggDf1 = emptyDf.agg(sum("id").as("id")).withColumn("name", lit("df1"))
+     val aggDf2 = emptyDf.agg(sum("id").as("id")).withColumn("name", lit("df2"))
+@@ -2980,7 +3024,9 @@ class AdaptiveQueryExecSuite
  
        val plan = df.queryExecution.executedPlan.asInstanceOf[AdaptiveSparkPlanExec]
        assert(plan.inputPlan.isInstanceOf[TakeOrderedAndProjectExec])

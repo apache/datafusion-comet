@@ -262,7 +262,8 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       classOf[ToCharacter] -> CometToCharacter,
       classOf[ToNumber] -> CometToNumber,
       classOf[TryToNumber] -> CometTryToNumber,
-      classOf[Mask] -> CometMask)
+      classOf[Mask] -> CometMask,
+      classOf[Empty2Null] -> CometEmpty2Null)
     base ++ sparkVersionSpecificStringExpressions
   }
 
@@ -386,6 +387,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
    * Mapping of Spark aggregate expression class to Comet expression handler.
    */
   val aggrSerdeMap: Map[Class[_], CometAggregateExpressionSerde[_]] = Map(
+    classOf[ApproximatePercentile] -> CometApproxPercentile,
     classOf[Average] -> CometAverage,
     classOf[BitAndAgg] -> CometBitAndAgg,
     classOf[BitOrAgg] -> CometBitOrAgg,
@@ -433,7 +435,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       case Some(handler) =>
         handler
           .asInstanceOf[CometAggregateExpressionSerde[AggregateFunction]]
-          .supportsMixedPartialFinal
+          .supportsMixedPartialFinal(fn)
       case None => false
     }
   }
