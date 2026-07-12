@@ -62,7 +62,6 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
     case "TinyIntVector" => classOf[TinyIntVector]
     case "SmallIntVector" => classOf[SmallIntVector]
     case "IntVector" => classOf[IntVector]
-    case "IntervalYearVector" => classOf[IntervalYearVector]
     case "BigIntVector" => classOf[BigIntVector]
     case "Float4Vector" => classOf[Float4Vector]
     case "Float8Vector" => classOf[Float8Vector]
@@ -85,7 +84,6 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
     case BooleanType | ByteType | ShortType | IntegerType | LongType => true
     case FloatType | DoubleType => true
     case _: DecimalType => true
-    case _: YearMonthIntervalType => true
     case _: StringType | _: BinaryType => true
     case DateType | TimestampType | TimestampNTZType => true
     case _: YearMonthIntervalType | _: DayTimeIntervalType => true

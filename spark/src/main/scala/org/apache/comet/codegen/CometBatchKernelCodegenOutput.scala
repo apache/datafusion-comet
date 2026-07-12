@@ -162,7 +162,6 @@ private[codegen] object CometBatchKernelCodegenOutput {
     case ByteType => classOf[TinyIntVector].getName
     case ShortType => classOf[SmallIntVector].getName
     case IntegerType => classOf[IntVector].getName
-    case _: YearMonthIntervalType => classOf[IntervalYearVector].getName
     case LongType => classOf[BigIntVector].getName
     case FloatType => classOf[Float4Vector].getName
     case DoubleType => classOf[Float8Vector].getName
@@ -397,7 +396,7 @@ private[codegen] object CometBatchKernelCodegenOutput {
       case BooleanType => s"$target.getBoolean($idx)"
       case ByteType => s"$target.getByte($idx)"
       case ShortType => s"$target.getShort($idx)"
-      case IntegerType | DateType | _: YearMonthIntervalType => s"$target.getInt($idx)"
+      case IntegerType | DateType => s"$target.getInt($idx)"
       case LongType | TimestampType | TimestampNTZType => s"$target.getLong($idx)"
       case FloatType => s"$target.getFloat($idx)"
       case DoubleType => s"$target.getDouble($idx)"

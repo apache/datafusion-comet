@@ -505,7 +505,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
   def supportedDataType(dt: DataType, allowComplex: Boolean = false): Boolean = dt match {
     case _: ByteType | _: ShortType | _: IntegerType | _: LongType | _: FloatType |
         _: DoubleType | _: StringType | _: BinaryType | _: TimestampType | _: TimestampNTZType |
-        _: DecimalType | _: DateType | _: BooleanType | _: NullType | _: YearMonthIntervalType =>
+        _: DecimalType | _: DateType | _: BooleanType | _: NullType =>
       true
     case dt if isTimeType(dt) =>
       true

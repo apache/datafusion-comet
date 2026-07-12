@@ -42,7 +42,7 @@ object CometLiteral extends CometExpressionSerde[Literal] with Logging {
 
   override def getSupportLevel(expr: Literal): SupportLevel = {
 
-    if (supportedDataType(
+    if (expr.dataType.isInstanceOf[YearMonthIntervalType] || supportedDataType(
         expr.dataType,
         allowComplex = expr.value == null ||
 

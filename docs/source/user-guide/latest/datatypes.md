@@ -80,14 +80,14 @@ the tables below and may be reconsidered based on demand:
 
 ## Interval
 
-Interval type support is incremental and tracked by
+Interval types fall back to Spark today. Native acceleration is tracked by
 [#4540](https://github.com/apache/datafusion-comet/issues/4540).
 
-| Type                    | Status | Notes                                                                   |
-| ----------------------- | ------ | ----------------------------------------------------------------------- |
-| `YearMonthIntervalType` | ✅     | Supported for `make_ym_interval` and YearMonth interval multiplication. |
-| `DayTimeIntervalType`   | 🔜     | Tracked by #4540.                                                       |
-| `CalendarIntervalType`  | 🔜     | Tracked by #4540.                                                       |
+| Type                    | Status | Notes             |
+| ----------------------- | ------ | ----------------- |
+| `YearMonthIntervalType` | ✅      |                   |
+| `DayTimeIntervalType`   | ✅      |                   |
+| `CalendarIntervalType`  | 🔜     | Tracked by #4540. |
 
 ## Complex
 
