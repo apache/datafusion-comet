@@ -85,8 +85,8 @@ Interval types fall back to Spark today. Native acceleration is tracked by
 
 | Type                    | Status | Notes             |
 | ----------------------- | ------ | ----------------- |
-| `YearMonthIntervalType` | ✅      |                   |
-| `DayTimeIntervalType`   | ✅      |                   |
+| `YearMonthIntervalType` | ✅     |                   |
+| `DayTimeIntervalType`   | ✅     |                   |
 | `CalendarIntervalType`  | 🔜     | Tracked by #4540. |
 
 ## Complex
