@@ -41,22 +41,25 @@ object CometLiteral extends CometExpressionSerde[Literal] with Logging {
     "Not all data types are supported for literal values")
 
   override def getSupportLevel(expr: Literal): SupportLevel = {
-
-    if (expr.dataType.isInstanceOf[YearMonthIntervalType] || supportedDataType(
-        expr.dataType,
+    val dataType = expr.dataType
+    if (supportedDataType(
+        dataType,
         allowComplex = expr.value == null ||
 
           // Nested literal support for native reader
           // can be tracked https://github.com/apache/datafusion-comet/issues/1937
-          (expr.dataType
+          (dataType
             .isInstanceOf[ArrayType] && (!isComplexType(
-            expr.dataType.asInstanceOf[ArrayType].elementType) || expr.dataType
+            dataType.asInstanceOf[ArrayType].elementType) || dataType
             .asInstanceOf[ArrayType]
             .elementType
             .isInstanceOf[ArrayType])))) {
       Compatible(None)
     } else {
-      Unsupported(Some(s"Unsupported data type ${expr.dataType}"))
+      dataType match {
+        case _: YearMonthIntervalType => Compatible(None)
+        case _ => Unsupported(Some(s"Unsupported data type $dataType"))
+      }
     }
   }
 
