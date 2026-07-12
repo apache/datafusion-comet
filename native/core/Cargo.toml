@@ -62,6 +62,8 @@ datafusion-comet-spark-expr = { workspace = true }
 datafusion-comet-jni-bridge = { workspace = true }
 datafusion-comet-proto = { workspace = true }
 datafusion-comet-shuffle = { workspace = true }
+datafusion-comet-block-cache = { workspace = true }
+datafusion-comet-object-store-cache = { workspace = true }
 object_store = { workspace = true }
 url = { workspace = true }
 aws-config = { workspace = true }

@@ -37,6 +37,7 @@ import org.apache.spark.util.collection._
 
 import com.google.common.base.Objects
 
+import org.apache.comet.CometConf
 import org.apache.comet.parquet.CometParquetUtils
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.QueryPlanSerde.exprToProto
@@ -255,6 +256,18 @@ case class CometNativeScanExec(
       (Some(broadcastedConf), relation.inputFiles.toSeq)
     } else {
       (None, Seq.empty)
+    }
+
+    // Cache-affinity: when the data cache and locality are enabled, assign each scanned file
+    // a sticky owner host so repeat reads route back to the executor that cached it. This is
+    // a driver-side hint consumed by CometExecRDD.getPreferredLocations (section 2.10).
+    if (CometConf.COMET_DATA_CACHE_ENABLED.get() &&
+      CometConf.COMET_DATA_CACHE_LOCALITY_ENABLED.get()) {
+      val allPaths = perPartitionFilePaths.iterator.flatten.toSeq
+      if (allPaths.nonEmpty) {
+        val hosts = CometFileLocalityManager.getAvailableHosts(sparkContext)
+        CometFileLocalityManager.assignFilesForQuery(allPaths, hosts)
+      }
     }
 
     new CometExecRDD(

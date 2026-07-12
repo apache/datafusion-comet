@@ -1997,8 +1997,10 @@ dependencies = [
  "aws-credential-types",
  "criterion",
  "datafusion",
+ "datafusion-comet-block-cache",
  "datafusion-comet-common",
  "datafusion-comet-jni-bridge",
+ "datafusion-comet-object-store-cache",
  "datafusion-comet-objectstore-hdfs",
  "datafusion-comet-proto",
  "datafusion-comet-shuffle",
@@ -2043,6 +2045,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "datafusion-comet-block-cache"
+version = "1.0.0"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "futures",
+ "tokio",
+]
+
+[[package]]
 name = "datafusion-comet-common"
 version = "1.0.0"
 dependencies = [
@@ -2084,6 +2096,19 @@ dependencies = [
  "prost",
  "regex",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "datafusion-comet-object-store-cache"
+version = "1.0.0"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "chrono",
+ "datafusion-comet-block-cache",
+ "futures",
+ "object_store",
+ "tokio",
 ]
 
 [[package]]

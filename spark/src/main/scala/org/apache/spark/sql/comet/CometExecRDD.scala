@@ -144,6 +144,17 @@ private[spark] class CometExecRDD(
 
   // Duplicates logic from Spark's ZippedPartitionsBaseRDD.getPreferredLocations
   override def getPreferredLocations(split: Partition): Seq[String] = {
+    // Cache-affinity: for a file-backed scan partition, prefer the host(s) that own its
+    // files in the data cache. Pure lookup (assignment happens at scan planning), so this
+    // stays cheap - it is called per partition by the DAGScheduler. When the data cache /
+    // locality is disabled no files are ever assigned, so this returns Nil and we fall back.
+    split match {
+      case p: CometExecPartition if p.filePaths.nonEmpty =>
+        val hosts = CometFileLocalityManager.preferredHostsForPartition(p.filePaths)
+        if (hosts.nonEmpty) return hosts
+      case _ =>
+    }
+
     if (inputRDDs == null || inputRDDs.isEmpty) return Nil
 
     val idx = split.index

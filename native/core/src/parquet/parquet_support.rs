@@ -34,6 +34,7 @@ use datafusion::error::DataFusionError;
 use datafusion::execution::object_store::ObjectStoreUrl;
 use datafusion::execution::runtime_env::RuntimeEnv;
 use datafusion::physical_plan::ColumnarValue;
+use datafusion_comet_object_store_cache::CachingObjectStore;
 use datafusion_comet_spark_expr::EvalMode;
 use log::debug;
 use object_store::path::Path;
@@ -552,6 +553,38 @@ fn object_store_cache() -> &'static ObjectStoreCache {
     CACHE.get_or_init(|| RwLock::new(HashMap::new()))
 }
 
+/// Wrap `store` with the process-global data cache when the cache is enabled and the store
+/// is remote (any scheme but local `file`). Returns `store` unchanged otherwise, so a
+/// disabled cache constructs no wrapper.
+fn maybe_wrap_with_data_cache(
+    store: Arc<dyn ObjectStore>,
+    url_key: &str,
+    config_hash: u64,
+    scheme: &str,
+) -> Arc<dyn ObjectStore> {
+    // Local filesystem reads are already served from the OS page cache; don't wrap them.
+    if scheme == "file" {
+        return store;
+    }
+    match crate::execution::data_cache::global() {
+        Some(cache) => {
+            let namespace = data_cache_namespace(url_key, config_hash);
+            debug!("Wrapping object store {url_key} with Comet data cache (namespace {namespace})");
+            Arc::new(CachingObjectStore::new(store, cache, namespace))
+        }
+        None => store,
+    }
+}
+
+/// Derive the cache namespace that isolates one logical store from another. Uses the same
+/// distinguishing inputs as the object-store instance cache key `(url_key, config_hash)`.
+fn data_cache_namespace(url_key: &str, config_hash: u64) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    url_key.hash(&mut hasher);
+    config_hash.hash(&mut hasher);
+    hasher.finish()
+}
+
 /// Compute a hash of the object store configuration for cache keying.
 fn hash_object_store_configs(configs: &HashMap<String, String>) -> u64 {
     let mut hasher = DefaultHasher::new();
@@ -619,6 +652,9 @@ pub(crate) fn prepare_object_store_with_configs(
             .map_err(|e| ExecutionError::GeneralError(e.to_string()))?;
 
             let store: Arc<dyn ObjectStore> = Arc::from(store);
+            // Wrap remote stores with the process-global data cache when enabled. Wrapping
+            // before the instance-cache insert means later reuses pick up the cached wrapper.
+            let store = maybe_wrap_with_data_cache(store, &url_key, config_hash, scheme);
             // Insert into cache
             if let Ok(mut cache) = object_store_cache().write() {
                 cache.insert(cache_key, Arc::clone(&store));
