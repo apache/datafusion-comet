@@ -39,7 +39,7 @@ index 6c51bd4ff2e..e72ec1d26e2 100644
        withSpark(sc) { sc =>
          TestUtils.waitUntilExecutorsUp(sc, 2, 60000)
 diff --git a/pom.xml b/pom.xml
-index 252cfdf9073..60cb9dcb7cf 100644
+index 252cfdf9073..50ec9d6314e 100644
 --- a/pom.xml
 +++ b/pom.xml
 @@ -148,6 +148,8 @@
@@ -47,7 +47,7 @@ index 252cfdf9073..60cb9dcb7cf 100644
      <ivy.version>2.5.3</ivy.version>
      <oro.version>2.0.8</oro.version>
 +    <spark.version.short>4.0</spark.version.short>
-+    <comet.version>0.18.0-SNAPSHOT</comet.version>
++    <comet.version>1.0.0-SNAPSHOT</comet.version>
      <!--
      If you change codahale.metrics.version, you also need to change
      the link to metrics.dropwizard.io in docs/monitoring.md.
@@ -378,19 +378,32 @@ index 0f42502f1d9..e9ff802141f 100644
  
        withTempView("t0", "t1", "t2") {
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/DataFrameAggregateSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/DataFrameAggregateSuite.scala
-index 9db406ff12f..245e4caa319 100644
+index 9db406ff12f..19b4bb8e39d 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/DataFrameAggregateSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/DataFrameAggregateSuite.scala
-@@ -30,7 +30,7 @@ import org.apache.spark.sql.errors.DataTypeErrors.toSQLId
+@@ -29,8 +29,9 @@ import org.apache.spark.sql.catalyst.util.AUTO_GENERATED_ALIAS
+ import org.apache.spark.sql.errors.DataTypeErrors.toSQLId
  import org.apache.spark.sql.execution.WholeStageCodegenExec
  import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
++import org.apache.spark.sql.comet.CometHashAggregateExec
  import org.apache.spark.sql.execution.aggregate.{HashAggregateExec, ObjectHashAggregateExec, SortAggregateExec}
 -import org.apache.spark.sql.execution.exchange.ShuffleExchangeExec
 +import org.apache.spark.sql.execution.exchange.ShuffleExchangeLike
  import org.apache.spark.sql.expressions.Window
  import org.apache.spark.sql.functions._
  import org.apache.spark.sql.internal.SQLConf
-@@ -855,7 +855,7 @@ class DataFrameAggregateSuite extends QueryTest
+@@ -791,7 +792,9 @@ class DataFrameAggregateSuite extends QueryTest
+             case _ => false
+           }.isDefined)
+         } else {
+-          assert(stripAQEPlan(hashAggPlan).isInstanceOf[HashAggregateExec])
++          val strippedPlan = stripAQEPlan(hashAggPlan)
++          assert(strippedPlan.isInstanceOf[HashAggregateExec] ||
++            strippedPlan.exists(_.isInstanceOf[CometHashAggregateExec]))
+         }
+ 
+         // test case for ObjectHashAggregate and SortAggregate
+@@ -855,7 +858,7 @@ class DataFrameAggregateSuite extends QueryTest
        assert(objHashAggPlans.nonEmpty)
  
        val exchangePlans = collect(aggPlan) {
@@ -1182,37 +1195,6 @@ index 575a4ae69d1..129d9f27232 100644
        }
      }
    }
-diff --git a/sql/core/src/test/scala/org/apache/spark/sql/SparkSessionExtensionSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/SparkSessionExtensionSuite.scala
-index c1c041509c3..7d463e4b85e 100644
---- a/sql/core/src/test/scala/org/apache/spark/sql/SparkSessionExtensionSuite.scala
-+++ b/sql/core/src/test/scala/org/apache/spark/sql/SparkSessionExtensionSuite.scala
-@@ -235,6 +235,8 @@ class SparkSessionExtensionSuite extends SparkFunSuite with SQLHelper with Adapt
-     withSession(extensions) { session =>
-       session.conf.set(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key, true)
-       session.conf.set(SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key, "-1")
-+      // https://github.com/apache/datafusion-comet/issues/1197
-+      session.conf.set("spark.comet.enabled", false)
-       assert(session.sessionState.columnarRules.contains(
-         MyColumnarRule(PreRuleReplaceAddWithBrokenVersion(), MyPostRule())))
-       import session.implicits._
-@@ -293,6 +295,8 @@ class SparkSessionExtensionSuite extends SparkFunSuite with SQLHelper with Adapt
-     }
-     withSession(extensions) { session =>
-       session.conf.set(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key, enableAQE)
-+      // https://github.com/apache/datafusion-comet/issues/1197
-+      session.conf.set("spark.comet.enabled", false)
-       assert(session.sessionState.columnarRules.contains(
-         MyColumnarRule(PreRuleReplaceAddWithBrokenVersion(), MyPostRule())))
-       import session.implicits._
-@@ -331,6 +335,8 @@ class SparkSessionExtensionSuite extends SparkFunSuite with SQLHelper with Adapt
-     val session = SparkSession.builder()
-       .master("local[1]")
-       .config(COLUMN_BATCH_SIZE.key, 2)
-+      // https://github.com/apache/datafusion-comet/issues/1197
-+      .config("spark.comet.enabled", false)
-       .withExtensions { extensions =>
-         extensions.injectColumnar(session =>
-           MyColumnarRule(PreRuleReplaceAddWithBrokenVersion(), MyPostRule())) }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/SparkSessionJobTaggingAndCancellationSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/SparkSessionJobTaggingAndCancellationSuite.scala
 index 5ba69c8f9d9..ac1256afe88 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/SparkSessionJobTaggingAndCancellationSuite.scala
@@ -1310,7 +1292,7 @@ index 0df7f806272..9cdfe8b8f46 100644
              df.collect()
            }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala
-index 2e33f6505ab..fc1a2c8f964 100644
+index 2e33f6505ab..be967565303 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala
 @@ -23,10 +23,11 @@ import org.apache.spark.SparkRuntimeException
@@ -1354,7 +1336,7 @@ index 2e33f6505ab..fc1a2c8f964 100644
        }
        assert(exchanges.size === 1)
      }
-@@ -2678,18 +2691,25 @@ class SubquerySuite extends QueryTest
+@@ -2678,18 +2691,29 @@ class SubquerySuite extends QueryTest
      def checkFileSourceScan(query: String, answer: Seq[Row]): Unit = {
        val df = sql(query)
        checkAnswer(df, answer)
@@ -1384,7 +1366,11 @@ index 2e33f6505ab..fc1a2c8f964 100644
 -      assert(fileSourceScanExec.head.metrics("numFiles").value === 1)
 -      assert(fileSourceScanExec.head.metrics("numOutputRows").value === answer.size)
 +      assert(dataSourceScanExec.head.metrics("numFiles").value === 1)
-+      assert(dataSourceScanExec.head.metrics("numOutputRows").value === answer.size)
++      val numOutputRows = dataSourceScanExec.head match {
++        case n: CometNativeScanExec => n.metrics("output_rows").value
++        case other => other.metrics("numOutputRows").value
++      }
++      assert(numOutputRows === answer.size)
      }
  
      withTable("t1", "t2") {
@@ -2149,7 +2135,7 @@ index a3cfdc5a240..3793b6191bf 100644
        })
        checkAnswer(distinctWithId, Seq(Row(1, 0), Row(1, 0)))
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala
-index 272be70f9fe..d38a6d41a47 100644
+index 272be70f9fe..4a175083adf 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala
 @@ -28,12 +28,14 @@ import org.apache.spark.SparkException
@@ -2566,6 +2552,26 @@ index 272be70f9fe..d38a6d41a47 100644
          }.isEmpty)
          assert(collect(initialExecutedPlan) {
            case i: InMemoryTableScanLike => i
+@@ -3039,7 +3083,8 @@ class AdaptiveQueryExecSuite
+     }
+   }
+ 
+-  test("SPARK-44040: Fix compute stats when AggregateExec nodes above QueryStageExec") {
++  test("SPARK-44040: Fix compute stats when AggregateExec nodes above QueryStageExec",
++      IgnoreComet("https://github.com/apache/datafusion-comet/issues/4412")) {
+     val emptyDf = spark.range(1).where("false")
+     val aggDf1 = emptyDf.agg(sum("id").as("id")).withColumn("name", lit("df1"))
+     val aggDf2 = emptyDf.agg(sum("id").as("id")).withColumn("name", lit("df2"))
+@@ -3129,7 +3174,8 @@ class AdaptiveQueryExecSuite
+ 
+       val plan = df.queryExecution.executedPlan.asInstanceOf[AdaptiveSparkPlanExec]
+       assert(plan.inputPlan.isInstanceOf[TakeOrderedAndProjectExec])
+-      assert(plan.finalPhysicalPlan.isInstanceOf[WindowExec])
++      assert(plan.finalPhysicalPlan.isInstanceOf[WindowExec] ||
++        plan.finalPhysicalPlan.exists(_.isInstanceOf[CometWindowExec]))
+       plan.inputPlan.output.zip(plan.finalPhysicalPlan.output).foreach { case (o1, o2) =>
+         assert(o1.semanticEquals(o2), "Different output column order after AQE optimization")
+       }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/SchemaPruningSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/SchemaPruningSuite.scala
 index 269990d7d14..140ee4112b1 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/SchemaPruningSuite.scala
@@ -2906,7 +2912,7 @@ index 30503af0fab..1491f4bc2d5 100644
  
    import testImplicits._
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetRowIndexSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetRowIndexSuite.scala
-index 08fd8a9ecb5..306958da489 100644
+index 08fd8a9ecb5..06967aec8e1 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetRowIndexSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetRowIndexSuite.scala
 @@ -27,6 +27,7 @@ import org.apache.parquet.hadoop.ParquetWriter.DEFAULT_BLOCK_SIZE
@@ -2928,7 +2934,7 @@ index 08fd8a9ecb5..306958da489 100644
 +              numPartitions +=
 +                b.originalPlan.inputRDD.partitions.length
 +              numOutputRows +=
-+                b.metrics("numOutputRows").value
++                b.metrics("output_rows").value
              case _ =>
            }
            assert(numPartitions > 0)

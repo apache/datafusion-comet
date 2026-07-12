@@ -790,3 +790,48 @@ SELECT
   LAG(a, 1, c)  OVER (ORDER BY b) AS lg,
   LEAD(a, 1, c) OVER (ORDER BY b) AS ld
 FROM lag_lead_nulls
+
+-- ############################################################
+-- Section 8: decimal aggregate overflow semantics
+-- ############################################################
+-- Spark returns NULL when a decimal SUM overflows the result precision under
+-- non-ANSI semantics. Comet's native window path enforces this for
+-- ever-expanding frames (lower bound UNBOUNDED PRECEDING) via its
+-- overflow-aware SumDecimal UDAF. Sliding frames would route to DataFusion's
+-- built-in sum, whose accumulator wraps on overflow instead of returning NULL,
+-- so Comet falls back to Spark for sliding decimal SUM / AVG (#4729).
+
+statement
+CREATE TABLE dec_overflow(g int, v decimal(38,0)) USING parquet
+
+statement
+INSERT INTO dec_overflow VALUES
+  (1, 90000000000000000000000000000000000000),
+  (1, 90000000000000000000000000000000000000),
+  (1, 90000000000000000000000000000000000000)
+
+-- ============================================================
+-- 8.1: ever-expanding decimal SUM that overflows the result precision
+-- returns NULL (Comet's SumDecimal UDAF matches Spark's overflow-to-NULL).
+-- ============================================================
+
+query
+SELECT v,
+  SUM(v) OVER (PARTITION BY g ORDER BY v
+               ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS run_sum
+FROM dec_overflow
+
+-- ============================================================
+-- 8.2: sliding decimal SUM falls back to Spark. DataFusion's built-in sum
+-- wraps on overflow (producing an out-of-range Decimal128) rather than
+-- returning Spark's NULL, and overflow can't be detected at plan time, so the
+-- whole sliding decimal SUM case falls back. Re-enable native execution when
+-- the native window path enforces Spark decimal overflow semantics for
+-- sliding frames.
+-- ============================================================
+
+query expect_fallback(SUM on DECIMAL with a sliding window frame is not supported)
+SELECT v,
+  SUM(v) OVER (PARTITION BY g ORDER BY v
+               ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING) AS tail_sum
+FROM dec_overflow

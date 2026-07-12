@@ -21,15 +21,14 @@ package org.apache.spark.sql.comet
 
 import scala.jdk.CollectionConverters._
 
-import org.apache.spark.sql.catalyst.expressions.{Alias, Attribute, AttributeSet, CumeDist, CurrentRow, DenseRank, Expression, Lag, Lead, Literal, MakeDecimal, NamedExpression, NthValue, NTile, PercentRank, RangeFrame, Rank, RowFrame, RowNumber, SortOrder, SpecialFrameBoundary, SpecifiedWindowFrame, UnboundedFollowing, UnboundedPreceding, WindowExpression}
+import org.apache.spark.sql.catalyst.expressions.{Alias, Attribute, AttributeSet, Cast, CumeDist, CurrentRow, DenseRank, Divide, Expression, Lag, Lead, Literal, MakeDecimal, NamedExpression, NthValue, NTile, PercentRank, RangeFrame, Rank, RowFrame, RowNumber, SortOrder, SpecialFrameBoundary, SpecifiedWindowFrame, UnboundedFollowing, UnboundedPreceding, UnscaledValue, WindowExpression}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, Average, Complete, Count, First, Last, Max, Min, Sum}
 import org.apache.spark.sql.catalyst.plans.physical.Partitioning
 import org.apache.spark.sql.execution.SparkPlan
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.execution.window.WindowExec
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{DateType, DecimalType, LongType, NumericType}
-import org.apache.spark.sql.types.Decimal
+import org.apache.spark.sql.types.{DataType, DateType, Decimal, DecimalType, DoubleType, LongType, NumericType}
 
 import com.google.common.base.Objects
 
@@ -50,12 +49,11 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
       childOp: OperatorOuterClass.Operator*): Option[OperatorOuterClass.Operator] = {
     val output = op.child.output
 
-    val winExprs: Array[WindowExpression] = op.windowExpression.map {
-      case Alias(w: WindowExpression, _) => w
-      case Alias(MakeDecimal(w: WindowExpression, _, _, _), _) => w
-      case other =>
-        withFallbackReason(op, s"Unsupported window expression: $other", other)
+    val winExprs: Array[WindowExpressionInfo] = op.windowExpression.map { expr =>
+      extractWindowExpression(expr).getOrElse {
+        withFallbackReason(op, s"Unsupported window expression: $expr", expr)
         return None
+      }
     }.toArray
 
     if (winExprs.length != op.windowExpression.length) {
@@ -80,7 +78,9 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
       // operator itself carries a fallback attribution. Without this, the plan
       // prints a bare `Window` and the real reason lives on a sub-expression
       // that isn't obvious in the standard explain output.
-      val failing = winExprs.toSeq.zip(windowExprProto).collect { case (we, None) => we } ++
+      val failing = winExprs.toSeq.zip(windowExprProto).collect { case (we, None) =>
+        we.windowExpression
+      } ++
         op.partitionSpec.zip(partitionExprs).collect { case (e, None) => e } ++
         op.orderSpec.zip(sortOrders).collect { case (e, None) => e }
       withFallbackReason(op, failing: _*)
@@ -88,10 +88,111 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
     }
   }
 
-  private def windowExprToProto(
+  private case class WindowExpressionInfo(
+      windowExpression: WindowExpression,
+      resultDataType: DataType)
+
+  private def extractWindowExpression(expr: Expression): Option[WindowExpressionInfo] = {
+    expr match {
+      case Alias(child, _) =>
+        extractWindowExpression(child)
+      case w: WindowExpression =>
+        Some(WindowExpressionInfo(w, w.dataType))
+      case m @ MakeDecimal(child, _, _, _) =>
+        for {
+          info <- extractWindowExpression(child)
+          rewritten <- restoreDecimalAggregateInput(info.windowExpression)
+        } yield {
+          info.copy(windowExpression = rewritten, resultDataType = m.dataType)
+        }
+      case c @ Cast(Divide(child, divisor, _), _: DecimalType, _, _) =>
+        for {
+          info <- extractWindowExpression(child)
+          rewritten <- restoreDecimalAverageInput(info.windowExpression, divisor)
+        } yield {
+          info.copy(windowExpression = rewritten, resultDataType = c.dataType)
+        }
+      case _ =>
+        None
+    }
+  }
+
+  // Spark's DecimalAggregates rule wraps decimal SUM / AVG window aggregates
+  // around UnscaledValue plus rescaling arithmetic. Comet's native decimal
+  // aggregates expect the original decimal child, so restore that child only
+  // for the exact wrapper shapes emitted by DecimalAggregates.
+  private def restoreDecimalAggregateInput(
+      windowExpr: WindowExpression): Option[WindowExpression] = {
+    restoreDecimalSumInput(windowExpr).orElse(restoreDecimalAverageInput(windowExpr).map(_._1))
+  }
+
+  private def restoreDecimalAverageInput(
       windowExpr: WindowExpression,
+      divisor: Expression): Option[WindowExpression] = {
+    restoreDecimalAverageInput(windowExpr)
+      .filter { case (_, scale) =>
+        isExpectedDecimalAverageDivisor(divisor, scale)
+      }
+      .map(_._1)
+  }
+
+  private def restoreDecimalAverageInput(
+      windowExpr: WindowExpression): Option[(WindowExpression, Int)] = {
+    var scale: Option[Int] = None
+    val rewritten = windowExpr
+      .transform { case agg @ AggregateExpression(avg: Average, _, _, _, _) =>
+        avg.child match {
+          case UnscaledValue(child) =>
+            child.dataType match {
+              case dt: DecimalType =>
+                scale = Some(dt.scale)
+                agg.copy(aggregateFunction = avg.copy(child = child))
+              case _ =>
+                agg
+            }
+          case _ =>
+            agg
+        }
+      }
+      .asInstanceOf[WindowExpression]
+    scale.map(rewritten -> _)
+  }
+
+  private def restoreDecimalSumInput(windowExpr: WindowExpression): Option[WindowExpression] = {
+    var restored = false
+    val rewritten = windowExpr
+      .transform { case agg @ AggregateExpression(sum: Sum, _, _, _, _) =>
+        sum.child match {
+          case UnscaledValue(child) if child.dataType.isInstanceOf[DecimalType] =>
+            restored = true
+            agg.copy(aggregateFunction = sum.copy(child = child))
+          case _ =>
+            agg
+        }
+      }
+      .asInstanceOf[WindowExpression]
+    if (restored) {
+      Some(rewritten)
+    } else {
+      None
+    }
+  }
+
+  private def isExpectedDecimalAverageDivisor(divisor: Expression, scale: Int): Boolean = {
+    val expected = BigDecimal(10).pow(scale)
+    divisor match {
+      case Literal(value: java.lang.Double, DoubleType) =>
+        BigDecimal(value.toString) == expected
+      case _ =>
+        false
+    }
+  }
+
+  private def windowExprToProto(
+      windowExprInfo: WindowExpressionInfo,
       output: Seq[Attribute],
       conf: SQLConf): Option[OperatorOuterClass.WindowExpr] = {
+    val windowExpr = windowExprInfo.windowExpression
 
     val aggregateExpressions: Array[AggregateExpression] = windowExpr.flatMap { expr =>
       expr match {
@@ -227,6 +328,40 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
     }
 
     val f = windowExpr.windowSpec.frameSpecification
+
+    // SUM / AVG over a DECIMAL with a sliding frame (lower bound other than
+    // UNBOUNDED PRECEDING) routes to DataFusion's built-in sum / avg, whose
+    // accumulators wrap on overflow instead of returning Spark's NULL. Only
+    // the ever-expanding path uses Comet's overflow-aware SumDecimal /
+    // AvgDecimal UDAFs, so on overflow the sliding case produces a wrapped,
+    // out-of-range value rather than NULL. Whether the running value overflows
+    // can't be known at plan time, so fall back to Spark for the whole sliding
+    // decimal case, mirroring the RANGE-frame fallbacks below.
+    // https://github.com/apache/datafusion-comet/issues/4729
+    val isEverExpanding = f match {
+      case SpecifiedWindowFrame(_, UnboundedPreceding, _) => true
+      case _: SpecifiedWindowFrame => false
+      case _ => true
+    }
+    if (!isEverExpanding) {
+      windowExpr.windowFunction match {
+        case agg: AggregateExpression =>
+          agg.aggregateFunction match {
+            case s: Sum if s.dataType.isInstanceOf[DecimalType] =>
+              withFallbackReason(
+                windowExpr,
+                "SUM on DECIMAL with a sliding window frame is not supported")
+              return None
+            case a: Average if a.dataType.isInstanceOf[DecimalType] =>
+              withFallbackReason(
+                windowExpr,
+                "AVG on DECIMAL with a sliding window frame is not supported")
+              return None
+            case _ =>
+          }
+        case _ =>
+      }
+    }
 
     // Comet's native window planner ships RANGE frame offsets as
     // ScalarValue::Int64, but a couple of ORDER BY types don't tolerate that:
@@ -419,7 +554,7 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
     val spec =
       OperatorOuterClass.WindowSpecDefinition.newBuilder().setFrameSpecification(frame).build()
 
-    val resultTypeProto = serializeDataType(windowExpr.dataType)
+    val resultTypeProto = serializeDataType(windowExprInfo.resultDataType)
 
     if (builtinFunc.isDefined) {
       val b = OperatorOuterClass.WindowExpr

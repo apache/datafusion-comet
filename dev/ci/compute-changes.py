@@ -80,6 +80,14 @@ FILTERS = {
         ".asf.yaml",
         ".github/workflows/docs.yaml",
         "docs/**",
+        # Generated docs (configs.md, per-version expression compatibility pages) are
+        # built from these Scala sources by GenerateDocs, so changes to them must
+        # republish the site even when no docs/ file is touched.
+        "spark/src/main/scala/org/apache/comet/CometConf.scala",
+        "spark/src/main/scala/org/apache/comet/GenerateDocs.scala",
+        "spark/src/main/scala/org/apache/comet/serde/**",
+        "spark/src/main/scala/org/apache/comet/expressions/**",
+        "spark/src/main/spark-*/**",
     ],
     "spark_3_4": [
         "native/**/src/**",
@@ -216,6 +224,25 @@ FILTERS = {
         ".github/actions/setup-iceberg-builder/**",
     ],
     "iceberg_1_10": [
+        "native/**/src/**",
+        "native/**/Cargo.toml",
+        "native/Cargo.lock",
+        "!native/hdfs/**",
+        "!native/fs-hdfs/**",
+        "common/src/main/**",
+        "common/pom.xml",
+        "spark/src/main/**",
+        "!spark/src/main/scala/org/apache/comet/GenerateDocs.scala",
+        "spark/pom.xml",
+        "dev/diffs/iceberg/**",
+        "pom.xml",
+        "rust-toolchain.toml",
+        ".github/workflows/ci.yml",
+        ".github/workflows/iceberg_spark_test_reusable.yml",
+        ".github/actions/setup-builder/**",
+        ".github/actions/setup-iceberg-builder/**",
+    ],
+    "iceberg_1_11": [
         "native/**/src/**",
         "native/**/Cargo.toml",
         "native/Cargo.lock",

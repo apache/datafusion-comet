@@ -91,6 +91,11 @@ private[comet] class SparkColumnarArrowReader(
     rowsConsumedInCurrent += rowsToProduce
 
     writer.finish()
+    // ArrowWriter derives the root row count from its per-column writes, so a zero-column
+    // input batch (Spark's count-from-metadata scan: numRows > 0, numCols == 0) would otherwise
+    // produce a root with rowCount == 0 and silently drop the rows. Set rowCount explicitly so
+    // downstream aggregations (e.g. df.count()) see the correct value.
+    getVectorSchemaRoot.setRowCount(rowsToProduce)
     onConversionNs(System.nanoTime() - startNs)
     true
   }
