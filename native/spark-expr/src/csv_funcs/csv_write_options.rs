@@ -45,6 +45,7 @@ impl Display for CsvWriteOptions {
 }
 
 impl CsvWriteOptions {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         delimiter: String,
         quote: String,
