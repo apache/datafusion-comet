@@ -19,7 +19,7 @@ use crate::execution::operators::ExecutionError;
 use crate::parquet::encryption_support::{CometEncryptionConfig, ENCRYPTION_FACTORY_ID};
 use crate::parquet::parquet_support::SparkParquetOptions;
 use crate::parquet::schema_adapter::SparkPhysicalExprAdapterFactory;
-use arrow::datatypes::{Field, SchemaRef};
+use arrow::datatypes::{Field, FieldRef, SchemaRef};
 use datafusion::config::TableParquetOptions;
 use datafusion::datasource::listing::PartitionedFile;
 use datafusion::datasource::physical_plan::parquet::CachedParquetFileReaderFactory;
@@ -122,13 +122,14 @@ pub(crate) fn init_datasource_exec(
         }
         _ => (Arc::clone(&required_schema), None),
     };
-    let partition_fields: Vec<_> = partition_schema
+    let partition_fields: Vec<FieldRef> = partition_schema
         .iter()
         .flat_map(|s| s.fields().iter())
-        .map(|f| Arc::new(Field::new(f.name(), f.data_type().clone(), f.is_nullable())) as _)
+        .map(|f| Arc::new(Field::new(f.name(), f.data_type().clone(), f.is_nullable())))
         .collect();
-    let table_schema =
-        TableSchema::from_file_schema(base_schema).with_table_partition_cols(partition_fields);
+    let table_schema = TableSchema::builder(base_schema)
+        .with_table_partition_cols(partition_fields)
+        .build();
 
     let mut parquet_source = ParquetSource::new(table_schema)
         .with_table_parquet_options(table_parquet_options)

@@ -207,23 +207,22 @@ impl GroupsAccumulator for MergeAsPartialGroupsAccumulator {
         &mut self,
         values: &[ArrayRef],
         group_indices: &[usize],
-        opt_filter: Option<&BooleanArray>,
+        _opt_filter: Option<&BooleanArray>,
         total_num_groups: usize,
     ) -> Result<()> {
         // Redirect update to merge — this is the key trick.
         self.inner
-            .merge_batch(values, group_indices, opt_filter, total_num_groups)
+            .merge_batch(values, group_indices, total_num_groups)
     }
 
     fn merge_batch(
         &mut self,
         values: &[ArrayRef],
         group_indices: &[usize],
-        opt_filter: Option<&BooleanArray>,
         total_num_groups: usize,
     ) -> Result<()> {
         self.inner
-            .merge_batch(values, group_indices, opt_filter, total_num_groups)
+            .merge_batch(values, group_indices, total_num_groups)
     }
 
     fn evaluate(&mut self, emit_to: EmitTo) -> Result<ArrayRef> {

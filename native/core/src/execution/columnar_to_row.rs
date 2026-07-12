@@ -2499,11 +2499,14 @@ mod tests {
         let schema = vec![DataType::FixedSizeBinary(3)];
         let mut ctx = ColumnarToRowContext::new(schema, 100);
 
-        let array: ArrayRef = Arc::new(FixedSizeBinaryArray::from(vec![
-            Some(&[1u8, 2, 3][..]),
-            Some(&[4u8, 5, 6][..]),
-            None, // Test null handling
-        ]));
+        let array: ArrayRef = Arc::new(
+            FixedSizeBinaryArray::try_from(vec![
+                Some(&[1u8, 2, 3][..]),
+                Some(&[4u8, 5, 6][..]),
+                None, // Test null handling
+            ])
+            .unwrap(),
+        );
         let arrays = vec![array];
 
         let (ptr, offsets, lengths) = ctx.convert(&arrays, 3).unwrap();

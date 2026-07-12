@@ -340,7 +340,6 @@ impl GroupsAccumulator for VarianceGroupsAccumulator {
         &mut self,
         values: &[ArrayRef],
         group_indices: &[usize],
-        _opt_filter: Option<&BooleanArray>,
         total_num_groups: usize,
     ) -> Result<()> {
         assert_eq!(values.len(), 3, "three arguments to merge_batch");
@@ -512,8 +511,8 @@ mod groups_tests {
         let right_state = right.state(EmitTo::All).unwrap();
 
         let mut merged = pop_acc();
-        merged.merge_batch(&left_state, &[0], None, 1).unwrap();
-        merged.merge_batch(&right_state, &[0], None, 1).unwrap();
+        merged.merge_batch(&left_state, &[0], 1).unwrap();
+        merged.merge_batch(&right_state, &[0], 1).unwrap();
         let merged_result = evaluate(&mut merged)[0].unwrap();
 
         assert!((single_result - merged_result).abs() < 1e-12);

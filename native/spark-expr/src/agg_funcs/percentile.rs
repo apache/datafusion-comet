@@ -221,7 +221,6 @@ impl GroupsAccumulator for SparkPercentileGroupsAccumulator {
         &mut self,
         values: &[ArrayRef],
         group_indices: &[usize],
-        _opt_filter: Option<&BooleanArray>,
         total_num_groups: usize,
     ) -> Result<()> {
         let input_group_values = values[0].as_list::<i32>();

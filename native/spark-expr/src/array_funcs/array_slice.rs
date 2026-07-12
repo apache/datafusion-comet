@@ -163,7 +163,7 @@ fn slice_list<O: OffsetSizeTrait>(
         } else {
             let take = std::cmp::min(length_value, arr_len - zero_based_start) as usize;
             let begin = row_start + zero_based_start as usize;
-            mutable.extend(0, begin, begin + take);
+            mutable.try_extend(0, begin, begin + take)?;
             take
         };
 

@@ -541,14 +541,8 @@ impl GroupsAccumulator for SumDecimalGroupsAccumulator {
         &mut self,
         values: &[ArrayRef],
         group_indices: &[usize],
-        opt_filter: Option<&BooleanArray>,
         total_num_groups: usize,
     ) -> DFResult<()> {
-        debug_assert!(
-            opt_filter.is_none(),
-            "opt_filter is not supported in merge_batch"
-        );
-
         self.resize_helper(total_num_groups);
 
         // For decimal sum, always expect 2 arrays regardless of eval_mode
