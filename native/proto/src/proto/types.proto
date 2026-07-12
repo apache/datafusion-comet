@@ -61,6 +61,7 @@ message DataType {
     STRUCT = 16;
     TIME = 17;
     YEAR_MONTH_INTERVAL = 18;
+    DAY_TIME_INTERVAL = 19;
   }
   DataTypeId type_id = 1;
 

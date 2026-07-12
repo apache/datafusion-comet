@@ -97,7 +97,11 @@ pub fn to_arrow_datatype(dt_value: &DataType) -> ArrowDataType {
         DataTypeId::TimestampNtz => ArrowDataType::Timestamp(TimeUnit::Microsecond, None),
         DataTypeId::Date => ArrowDataType::Date32,
         DataTypeId::Time => ArrowDataType::Time64(TimeUnit::Nanosecond),
+        // Spark's YearMonthIntervalType maps to Arrow Interval(YearMonth) (int32 months).
         DataTypeId::YearMonthInterval => ArrowDataType::Interval(IntervalUnit::YearMonth),
+        // Spark's DayTimeIntervalType stores microseconds in an int64, which matches Arrow
+        // Duration(Microsecond) rather than the lossy Interval(DayTime) {days, millis} layout.
+        DataTypeId::DayTimeInterval => ArrowDataType::Duration(TimeUnit::Microsecond),
         DataTypeId::Null => ArrowDataType::Null,
         DataTypeId::List => match dt_value
             .type_info
