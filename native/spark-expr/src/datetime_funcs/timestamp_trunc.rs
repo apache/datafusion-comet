@@ -16,6 +16,7 @@
 // under the License.
 
 use crate::utils::array_with_timezone;
+use arrow::array::ArrayRef;
 use arrow::datatypes::{DataType, Schema, TimeUnit::Microsecond};
 use arrow::record_batch::RecordBatch;
 use datafusion::common::{DataFusionError, ScalarValue, ScalarValue::Utf8};
@@ -35,13 +36,10 @@ pub struct TimestampTruncExpr {
     child: Arc<dyn PhysicalExpr>,
     /// Scalar UTF8 string matching the valid values in Spark SQL: https://spark.apache.org/docs/latest/api/sql/index.html#date_trunc
     format: Arc<dyn PhysicalExpr>,
-    /// String containing a timezone name. The name must be found in the standard timezone
-    /// database (https://en.wikipedia.org/wiki/List_of_tz_database_time_zones). The string is
-    /// later parsed into a chrono::TimeZone.
-    /// Timestamp arrays in this implementation are kept in arrays of UTC timestamps (in micros)
-    /// along with a single value for the associated TimeZone. The timezone offset is applied
-    /// just before any operations on the timestamp
-    timezone: String,
+    /// IANA timezone name (e.g. `America/Los_Angeles`) or fixed offset (`+HH:MM`). Stored as
+    /// `Arc<str>` so it can be cheaply cloned onto Arrow `Timestamp` data types without
+    /// reallocating, and parsed once into a `chrono::TimeZone` per batch.
+    timezone: Arc<str>,
 }
 
 impl Hash for TimestampTruncExpr {
@@ -68,7 +66,7 @@ impl TimestampTruncExpr {
         TimestampTruncExpr {
             child,
             format,
-            timezone,
+            timezone: Arc::from(timezone),
         }
     }
 }
@@ -89,12 +87,20 @@ impl PhysicalExpr for TimestampTruncExpr {
     }
 
     fn data_type(&self, input_schema: &Schema) -> datafusion::common::Result<DataType> {
+        // The kernel converts the input to the session timezone and emits an array stamped with
+        // that timezone (NTZ stays NTZ). The declared `data_type` has to match or
+        // shuffle/sort/`RowConverter` will fail with a schema-mismatch error.
+        let session_tz = || DataType::Timestamp(Microsecond, Some(Arc::clone(&self.timezone)));
         match self.child.data_type(input_schema)? {
-            DataType::Dictionary(key_type, _) => Ok(DataType::Dictionary(
-                key_type,
-                Box::new(DataType::Timestamp(Microsecond, None)),
-            )),
-            _ => Ok(DataType::Timestamp(Microsecond, None)),
+            DataType::Timestamp(_, None) => Ok(DataType::Timestamp(Microsecond, None)),
+            DataType::Dictionary(key_type, inner) => {
+                let inner_out = match inner.as_ref() {
+                    DataType::Timestamp(_, None) => DataType::Timestamp(Microsecond, None),
+                    _ => session_tz(),
+                };
+                Ok(DataType::Dictionary(key_type, Box::new(inner_out)))
+            }
+            _ => Ok(session_tz()),
         }
     }
 
@@ -105,47 +111,32 @@ impl PhysicalExpr for TimestampTruncExpr {
     fn evaluate(&self, batch: &RecordBatch) -> datafusion::common::Result<ColumnarValue> {
         let timestamp = self.child.evaluate(batch)?;
         let format = self.format.evaluate(batch)?;
-        let tz = self.timezone.clone();
+        let tz = &self.timezone;
+        let resolve_tz = |ts: ArrayRef| -> datafusion::common::Result<ArrayRef> {
+            // For TimestampNTZ (Timestamp(Microsecond, None)), skip timezone conversion.
+            // NTZ values are timezone-independent and truncation should operate directly on the
+            // naive microsecond values without any timezone resolution.
+            if matches!(ts.data_type(), DataType::Timestamp(Microsecond, None)) {
+                Ok(ts)
+            } else {
+                Ok(array_with_timezone(
+                    ts,
+                    tz.to_string(),
+                    Some(&DataType::Timestamp(Microsecond, Some(Arc::clone(tz)))),
+                )?)
+            }
+        };
         match (timestamp, format) {
             (ColumnarValue::Array(ts), ColumnarValue::Scalar(Utf8(Some(format)))) => {
-                // For TimestampNTZ (Timestamp(Microsecond, None)), skip timezone conversion.
-                // NTZ values are timezone-independent and truncation should operate directly
-                // on the naive microsecond values without any timezone resolution.
-                let is_ntz = matches!(ts.data_type(), DataType::Timestamp(Microsecond, None));
-                let ts = if is_ntz {
-                    ts
-                } else {
-                    array_with_timezone(
-                        ts,
-                        tz.clone(),
-                        Some(&DataType::Timestamp(Microsecond, Some(tz.into()))),
-                    )?
-                };
-                let result = timestamp_trunc_dyn(&ts, format)?;
+                let result = timestamp_trunc_dyn(&resolve_tz(ts)?, format)?;
                 Ok(ColumnarValue::Array(result))
             }
             (ColumnarValue::Array(ts), ColumnarValue::Array(formats)) => {
-                let is_ntz = matches!(ts.data_type(), DataType::Timestamp(Microsecond, None));
-                let ts = if is_ntz {
-                    ts
-                } else {
-                    array_with_timezone(
-                        ts,
-                        tz.clone(),
-                        Some(&DataType::Timestamp(Microsecond, Some(tz.into()))),
-                    )?
-                };
-                let result = timestamp_trunc_array_fmt_dyn(&ts, &formats)?;
+                let result = timestamp_trunc_array_fmt_dyn(&resolve_tz(ts)?, &formats)?;
                 Ok(ColumnarValue::Array(result))
             }
             (ColumnarValue::Scalar(ts_scalar), ColumnarValue::Scalar(Utf8(Some(format)))) => {
-                let ts_arr = ts_scalar.to_array()?;
-                let ts = array_with_timezone(
-                    ts_arr,
-                    tz.clone(),
-                    Some(&DataType::Timestamp(Microsecond, Some(tz.into()))),
-                )?;
-                let result = timestamp_trunc_dyn(&ts, format)?;
+                let result = timestamp_trunc_dyn(&resolve_tz(ts_scalar.to_array()?)?, format)?;
                 let scalar = ScalarValue::try_from_array(&result, 0)?;
                 Ok(ColumnarValue::Scalar(scalar))
             }
@@ -168,7 +159,7 @@ impl PhysicalExpr for TimestampTruncExpr {
         Ok(Arc::new(TimestampTruncExpr::new(
             Arc::clone(&children[0]),
             Arc::clone(&self.format),
-            self.timezone.clone(),
+            self.timezone.to_string(),
         )))
     }
 }
