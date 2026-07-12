@@ -173,6 +173,7 @@ private[codegen] object CometBatchKernelCodegenOutput {
     case TimestampNTZType => classOf[TimeStampMicroVector].getName
     case _: YearMonthIntervalType => classOf[IntervalYearVector].getName
     case _: DayTimeIntervalType => classOf[DurationVector].getName
+    case CalendarIntervalType => classOf[IntervalMonthDayNanoVector].getName
     case _: ArrayType => classOf[ListVector].getName
     case _: StructType => classOf[StructVector].getName
     case _: MapType => classOf[MapVector].getName
@@ -216,6 +217,14 @@ private[codegen] object CometBatchKernelCodegenOutput {
       // DayTimeIntervalType -> DurationVector.set(int, long micros).
       val set = if (nested) "setSafe" else "set"
       OutputEmit("", s"$targetVec.$set($idx, $source);")
+    case CalendarIntervalType =>
+      val set = if (nested) "setSafe" else "set"
+      val interval = ctx.freshName("interval")
+      OutputEmit(
+        "",
+        s"""org.apache.spark.unsafe.types.CalendarInterval $interval = $source;
+           |$targetVec.$set($idx, $interval.months, $interval.days,
+           |    java.lang.Math.multiplyExact($interval.microseconds, 1000L));""".stripMargin)
     case dt: DecimalType =>
       // DecimalOutputShortFastPath: precision <= 18 fits in a signed long, so pass the unscaled
       // value to `setSafe(int, long)` and skip the BigDecimal allocation.
@@ -398,6 +407,7 @@ private[codegen] object CometBatchKernelCodegenOutput {
       case ShortType => s"$target.getShort($idx)"
       case IntegerType | DateType => s"$target.getInt($idx)"
       case LongType | TimestampType | TimestampNTZType => s"$target.getLong($idx)"
+      case CalendarIntervalType => s"$target.getInterval($idx)"
       case FloatType => s"$target.getFloat($idx)"
       case DoubleType => s"$target.getDouble($idx)"
       case dt: DecimalType => s"$target.getDecimal($idx, ${dt.precision}, ${dt.scale})"

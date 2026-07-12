@@ -25,9 +25,13 @@ import org.scalatest.funsuite.AnyFunSuite
 import org.scalatest.matchers.should.Matchers
 
 import org.apache.arrow.memory.RootAllocator
-import org.apache.arrow.vector.{BigIntVector, IntVector}
+import org.apache.arrow.vector.{BigIntVector, IntervalMonthDayNanoVector, IntVector, VectorSchemaRoot}
 import org.apache.arrow.vector.types.pojo.{ArrowType, Field, FieldType, Schema}
+import org.apache.spark.sql.catalyst.expressions.GenericInternalRow
+import org.apache.spark.sql.comet.util.Utils
+import org.apache.spark.sql.types.CalendarIntervalType
 import org.apache.spark.sql.vectorized.ColumnarBatch
+import org.apache.spark.unsafe.types.CalendarInterval
 
 import org.apache.comet.vector.{CometPlainVector, CometVector}
 
@@ -49,6 +53,33 @@ class CometArrowStreamSuite extends AnyFunSuite with Matchers {
   private def batchOf(vectors: CometVector*): ColumnarBatch = {
     val numRows = if (vectors.isEmpty) 0 else vectors.head.getValueVector.getValueCount
     new ColumnarBatch(vectors.toArray, numRows)
+  }
+
+  test("CalendarIntervalType round-trips through Arrow writer and Comet vector") {
+    val allocator = new RootAllocator(Integer.MAX_VALUE)
+    val field = Utils.toArrowField("interval", CalendarIntervalType, nullable = true, "UTC")
+    Utils.fromArrowField(field) shouldBe CalendarIntervalType
+    val root = VectorSchemaRoot.create(new Schema(Seq(field).asJava), allocator)
+    try {
+      val expected = new CalendarInterval(14, -3, 1234567L)
+      val writer = ArrowWriter.create(root)
+      writer.write(new GenericInternalRow(Array[Any](expected)))
+      writer.write(new GenericInternalRow(Array[Any](null)))
+      writer.finish()
+
+      val arrow = root.getVector(0).asInstanceOf[IntervalMonthDayNanoVector]
+      IntervalMonthDayNanoVector.getMonths(arrow.getDataBuffer, 0) shouldBe expected.months
+      IntervalMonthDayNanoVector.getDays(arrow.getDataBuffer, 0) shouldBe expected.days
+      IntervalMonthDayNanoVector.getNanoseconds(arrow.getDataBuffer, 0) shouldBe
+        expected.microseconds * 1000L
+
+      val comet = new CometPlainVector(arrow, false)
+      comet.getInterval(0) shouldBe expected
+      comet.getInterval(1) shouldBe null
+    } finally {
+      root.close()
+      allocator.close()
+    }
   }
 
   test("reconcileStreamSchema returns expected schema unchanged on empty iterator") {

@@ -73,6 +73,7 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
     case "VarBinaryVector" => classOf[VarBinaryVector]
     case "IntervalYearVector" => classOf[IntervalYearVector]
     case "DurationVector" => classOf[DurationVector]
+    case "IntervalMonthDayNanoVector" => classOf[IntervalMonthDayNanoVector]
     case other => throw new IllegalArgumentException(s"unknown Arrow vector class: $other")
   }
 
@@ -86,7 +87,7 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
     case _: DecimalType => true
     case _: StringType | _: BinaryType => true
     case DateType | TimestampType | TimestampNTZType => true
-    case _: YearMonthIntervalType | _: DayTimeIntervalType => true
+    case _: YearMonthIntervalType | _: DayTimeIntervalType | CalendarIntervalType => true
     case ArrayType(inner, _) => isSupportedDataType(inner)
     case st: StructType => st.fields.forall(f => isSupportedDataType(f.dataType))
     case mt: MapType => isSupportedDataType(mt.keyType) && isSupportedDataType(mt.valueType)

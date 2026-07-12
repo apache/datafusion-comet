@@ -83,8 +83,8 @@ private[arrow] object ArrowWriter {
       case (_: YearMonthIntervalType, vector: IntervalYearVector) =>
         new IntervalYearWriter(vector)
       case (_: DayTimeIntervalType, vector: DurationVector) => new DurationWriter(vector)
-//      case (CalendarIntervalType, vector: IntervalMonthDayNanoVector) =>
-//        new IntervalMonthDayNanoWriter(vector)
+      case (CalendarIntervalType, vector: IntervalMonthDayNanoVector) =>
+        new IntervalMonthDayNanoWriter(vector)
       case (dt, _) =>
         throw QueryExecutionErrors.notSupportTypeError(dt)
     }

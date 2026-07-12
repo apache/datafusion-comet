@@ -25,12 +25,15 @@ import org.apache.arrow.vector._
 import org.apache.spark.{SparkConf, TaskContext}
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.api.java.UDF1
-import org.apache.spark.sql.catalyst.expressions.{CreateArray, CreateMap, CreateNamedStruct, Expression, Literal, MapConcat}
+import org.apache.spark.sql.catalyst.expressions.{BoundReference, CreateArray, CreateMap, CreateNamedStruct, Expression, Literal, MapConcat}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.types._
 import org.apache.spark.unsafe.types.UTF8String
 
+import org.apache.comet.codegen.CometBatchKernelCodegen
+import org.apache.comet.codegen.CometBatchKernelCodegen.ArrowColumnSpec
 import org.apache.comet.udf.codegen.CometScalaUDFCodegen
+import org.apache.comet.vector.CometVector
 
 /**
  * End-to-end correctness for the Arrow-direct codegen dispatcher. Covers the scalar and complex
@@ -73,6 +76,36 @@ class CometCodegenSuite
         sql(s"INSERT INTO t VALUES ${tuples.mkString(", ")}")
       }
       f
+    }
+  }
+
+  test("codegen kernel round-trips CalendarIntervalType") {
+    val input = new IntervalMonthDayNanoVector("in", CometArrowAllocator)
+    val field =
+      CometBatchKernelCodegen.toFfiArrowField("out", CalendarIntervalType, nullable = true)
+    val output = CometBatchKernelCodegen.allocateOutput(field, 2, 0)
+    try {
+      input.allocateNew()
+      input.setSafe(0, 14, -3, 1234567000L)
+      input.setNull(1)
+      input.setValueCount(2)
+
+      val expr = BoundReference(0, CalendarIntervalType, nullable = true)
+      val spec = ArrowColumnSpec(classOf[IntervalMonthDayNanoVector], nullable = true)
+      val kernel = CometBatchKernelCodegen.compile(expr, IndexedSeq(spec)).newInstance()
+      kernel.init(0)
+      kernel.process(Array(input), output, 2)
+      output.setValueCount(2)
+
+      val comet = CometVector.getVector(output, null)
+      val actual = comet.getInterval(0)
+      assert(actual.months === 14)
+      assert(actual.days === -3)
+      assert(actual.microseconds === 1234567L)
+      assert(comet.getInterval(1) == null)
+    } finally {
+      output.close()
+      input.close()
     }
   }
 
