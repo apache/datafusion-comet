@@ -157,7 +157,7 @@ object CometScalaUDF extends CometExpressionSerde[ScalaUDF] {
       .setReturnNullable(expr.nullable)
     // Opt-in dispatch annotation for extended explain. Rolled up per operator by
     // `CometExecRule.rollUpInfoMessages` into a single `[COMET-INFO: JVM codegen dispatcher:
-    // ...]` line. Informational only — does not trigger fallback.
+    // ...]` line. Informational only - does not trigger fallback.
     if (CometConf.COMET_EXPLAIN_CODEGEN_ENABLED.get()) {
       withCodegenDispatchExpr(expr, exprName)
     }
