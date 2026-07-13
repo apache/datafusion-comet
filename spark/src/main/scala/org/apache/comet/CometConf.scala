@@ -46,10 +46,10 @@ import org.apache.comet.shims.ShimCometConf
 object CometConf extends ShimCometConf {
 
   val COMPAT_GUIDE: String = "For more information, refer to the Comet Compatibility " +
-    "Guide (https://datafusion.apache.org/comet/user-guide/compatibility.html)"
+    "Guide (https://datafusion.apache.org/comet/user-guide/latest/compatibility/index.html)"
 
   private val TUNING_GUIDE = "For more information, refer to the Comet Tuning " +
-    "Guide (https://datafusion.apache.org/comet/user-guide/tuning.html)"
+    "Guide (https://datafusion.apache.org/comet/user-guide/latest/tuning.html)"
 
   private val TRACING_GUIDE = "For more information, refer to the Comet Tracing " +
     "Guide (https://datafusion.apache.org/comet/contributor-guide/tracing.html)"
@@ -298,6 +298,18 @@ object CometConf extends ShimCometConf {
         "Deprecated: this config will be removed in a future release.")
       .booleanConf
       .createWithDefault(true)
+
+  val COMET_PYARROW_UDF_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.exec.pyarrowUdf.enabled")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "Experimental: whether to enable optimized execution of PyArrow UDFs " +
+          "(mapInArrow/mapInPandas). When enabled, Comet passes Arrow columnar data " +
+          "directly to Python UDFs without the intermediate Arrow-to-Row-to-Arrow " +
+          "conversion that Spark normally performs. Disabled by default while the " +
+          "feature stabilizes.")
+      .booleanConf
+      .createWithDefault(false)
 
   val COMET_TRACING_ENABLED: ConfigEntry[Boolean] = conf("spark.comet.tracing.enabled")
     .category(CATEGORY_TUNING)

@@ -15,20 +15,25 @@
 // specific language governing permissions and limitations
 // under the License.
 
+mod approx_percentile;
 mod avg;
 mod avg_decimal;
 mod correlation;
 mod covariance;
+mod percentile;
+mod quantile_summaries;
 mod stddev;
 mod sum_decimal;
 mod sum_int;
 mod variance;
 mod welford;
 
+pub use approx_percentile::ApproxPercentile;
 pub use avg::Avg;
 pub use avg_decimal::AvgDecimal;
 pub use correlation::Correlation;
 pub use covariance::Covariance;
+pub use percentile::SparkPercentile;
 pub use stddev::Stddev;
 pub use sum_decimal::SumDecimal;
 pub use sum_int::SumInteger;
