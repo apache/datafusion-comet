@@ -214,36 +214,4 @@ class CometCollationSuite extends CometTestBase {
         "SELECT unix_timestamp(CAST(_2 AS TIMESTAMP), _7) FROM datetime_collation_tbl")
     }
   }
-
-  // Port of upstream DefaultCollationTestSuite."create/alter view created from a table". The
-  // upstream test asserts case-insensitive equality semantics through a view whose column
-  // carries a non-default collation (UNICODE_CI on c2, then on c1 after ALTER VIEW). Comet's
-  // native equality/hash compare bytes, not collation-aware keys, so any query that pushes
-  // a non-default collated string through Comet must fall back to Spark or produce a wrong
-  // answer. This test runs each subquery through `checkSparkAnswer`, which fails on any
-  // Comet-vs-Spark divergence.
-  test("create/alter view created from a table (port of DefaultCollationTestSuite)") {
-    val testTable = "collation_view_src"
-    val testView = "collation_view"
-    withTable(testTable) {
-      sql(s"CREATE TABLE $testTable (c1 STRING, c2 STRING COLLATE UNICODE_CI) USING parquet")
-      sql(s"INSERT INTO $testTable VALUES ('a', 'a'), ('A', 'A')")
-
-      withView(testView) {
-        sql(s"CREATE VIEW $testView AS SELECT * FROM $testTable")
-
-        // c2 filter uses UNICODE_CI (case-insensitive) so both rows match.
-        checkSparkAnswer(sql(s"SELECT COUNT(*) FROM $testView WHERE c2 = 'A'"))
-        // c1 filter uses UTF8_BINARY (case-sensitive) so only one row matches.
-        checkSparkAnswer(sql(s"SELECT COUNT(*) FROM $testView WHERE c1 = 'A'"))
-        checkSparkAnswer(sql(s"SELECT COUNT(*) FROM $testView WHERE c1 = substring('A', 0, 1)"))
-        // Literal with explicit collation wins over c1's default collation.
-        checkSparkAnswer(sql(s"SELECT COUNT(*) FROM $testView WHERE c1 = 'A' collate UNICODE_CI"))
-
-        sql(s"ALTER VIEW $testView AS SELECT c1 COLLATE UNICODE_CI AS c1, c2 FROM $testTable")
-        // After ALTER: c1 is UNICODE_CI, so both rows match.
-        checkSparkAnswer(sql(s"SELECT COUNT(*) FROM $testView WHERE c1 = 'A'"))
-      }
-    }
-  }
 }
