@@ -341,15 +341,8 @@ message ShuffleWriter {
 }
 
 message ParquetWriter {
-  string output_path = 1;
   CompressionCodec compression = 2;
   repeated string column_names = 4;
-  // Working directory for temporary files (legacy path used before task_output_path existed).
-  optional string work_dir = 5;
-  // Job ID for tracking this write operation
-  optional string job_id = 6;
-  // Task attempt ID for this specific task
-  optional int32 task_attempt_id = 7;
   // Options for configuring object stores such as AWS S3, GCS, etc. The key-value pairs are taken
   // from Hadoop configuration for compatibility with Hadoop FileSystem implementations of object
   // stores.

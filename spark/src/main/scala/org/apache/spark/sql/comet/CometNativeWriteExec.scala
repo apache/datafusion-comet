@@ -56,7 +56,6 @@ object CometNativeWriteExec {
       committer: FileCommitProtocol,
       serializableHadoopConf: SerializableConfiguration,
       outputWriterFactory: OutputWriterFactory,
-      commitProtocolJobId: String,
       jobTrackerID: String)
       extends Serializable
 }
@@ -64,10 +63,10 @@ object CometNativeWriteExec {
 /**
  * Comet physical operator for native Parquet write operations.
  *
- * When [[commitProtocol]] is present, this operator follows Spark's FileCommitProtocol lifecycle:
- * driver setupJob, executor setupTask/newTaskTempFile/commitTask or abortTask, and driver
- * commitJob or abortJob. Native code writes exactly to the task temp file returned by Spark's
- * commit protocol; it does not generate its own final part-file names.
+ * This operator follows Spark's FileCommitProtocol lifecycle: driver setupJob, executor
+ * setupTask/newTaskTempFile/commitTask or abortTask, and driver commitJob or abortJob. Native
+ * code writes exactly to the task temp file returned by Spark's commit protocol; it does not
+ * generate its own final part-file names.
  *
  * @param nativeOp
  *   The native operator representing the write operation (template, modified per task)
@@ -76,13 +75,13 @@ object CometNativeWriteExec {
  * @param outputPath
  *   The final output directory for the write
  * @param commitProtocol
- *   Spark file commit protocol state. If absent, files are written directly under outputPath.
+ *   Spark file commit protocol state
  */
 case class CometNativeWriteExec(
     nativeOp: Operator,
     child: SparkPlan,
     outputPath: String,
-    commitProtocol: Option[CommitProtocolConfig] = None)
+    commitProtocol: CommitProtocolConfig)
     extends CometNativeExec
     with UnaryExecNode {
 
@@ -115,38 +114,31 @@ case class CometNativeWriteExec(
   }
 
   private def executeWriteAndCommit(): Unit = {
-    commitProtocol match {
-      case Some(protocol) =>
-        val jobContext = createJobContext(protocol)
+    val jobContext = createJobContext(commitProtocol)
 
-        // Match Spark's FileFormatWriter lifecycle: setupJob is outside the try block because it
-        // only initializes the job; failures after this point should abort the job.
-        protocol.committer.setupJob(jobContext)
+    // Match Spark's FileFormatWriter lifecycle: setupJob is outside the try block because it
+    // only initializes the job; failures after this point should abort the job.
+    commitProtocol.committer.setupJob(jobContext)
 
-        try {
-          val commitMessages = runNativeWriteJob(protocol)
-          protocol.committer.commitJob(jobContext, commitMessages.toSeq)
+    try {
+      val commitMessages = runNativeWriteJob(commitProtocol)
+      commitProtocol.committer.commitJob(jobContext, commitMessages.toSeq)
 
-          val filesWritten = metrics("files_written").value
-          val bytesWritten = metrics("bytes_written").value
-          val rowsWritten = metrics("rows_written").value
-          logInfo(
-            s"Successfully committed native write job to $outputPath: " +
-              s"$filesWritten files, $bytesWritten bytes, $rowsWritten rows")
-        } catch {
-          case t: Throwable =>
-            abortJob(protocol, jobContext, t)
-            throw t
-        }
-
-      case None =>
-        // Direct-write fallback for tests or callers that do not provide a commit protocol.
-        nativeWriteTasks(None).count()
+      val filesWritten = metrics("files_written").value
+      val bytesWritten = metrics("bytes_written").value
+      val rowsWritten = metrics("rows_written").value
+      logInfo(
+        s"Successfully committed native write job to $outputPath: " +
+          s"$filesWritten files, $bytesWritten bytes, $rowsWritten rows")
+    } catch {
+      case t: Throwable =>
+        abortJob(commitProtocol, jobContext, t)
+        throw t
     }
   }
 
   private def runNativeWriteJob(protocol: CommitProtocolConfig): Array[TaskCommitMessage] = {
-    val writeRDD = nativeWriteTasks(Some(protocol))
+    val writeRDD = nativeWriteTasks(protocol)
     val ret = new Array[TaskCommitMessage](writeRDD.partitions.length)
 
     sparkContext.runJob(
@@ -166,8 +158,7 @@ case class CometNativeWriteExec(
     ret
   }
 
-  private def nativeWriteTasks(
-      capturedCommitProtocol: Option[CommitProtocolConfig]): RDD[TaskCommitMessage] = {
+  private def nativeWriteTasks(protocol: CommitProtocolConfig): RDD[TaskCommitMessage] = {
     val childRDD = if (child.supportsColumnar) {
       child.executeColumnar()
     } else {
@@ -203,38 +194,25 @@ case class CometNativeWriteExec(
           }
           emitted = true
 
-          var taskCommitter: Option[(FileCommitProtocol, TaskAttemptContext)] = None
+          val taskAttemptContext =
+            createTaskContext(protocol, sparkStageId, partitionId, sparkAttemptNumber)
+          protocol.committer.setupTask(taskAttemptContext)
+
           var execIterator: CometExecIterator = null
 
           try {
-            val taskOutputPath = capturedCommitProtocol match {
-              case Some(protocol) =>
-                val taskAttemptContext =
-                  createTaskContext(protocol, sparkStageId, partitionId, sparkAttemptNumber)
-                protocol.committer.setupTask(taskAttemptContext)
-                taskCommitter = Some(protocol.committer -> taskAttemptContext)
-
-                val fileExtension =
-                  protocol.outputWriterFactory.getFileExtension(taskAttemptContext)
-                protocol.committer.newTaskTempFile(
-                  taskAttemptContext,
-                  None,
-                  FileNameSpec("", "-c000" + fileExtension))
-
-              case None =>
-                directTaskOutputPath(partitionId)
-            }
+            val fileExtension = protocol.outputWriterFactory.getFileExtension(taskAttemptContext)
+            val taskOutputPath = protocol.committer.newTaskTempFile(
+              taskAttemptContext,
+              None,
+              FileNameSpec("", "-c000" + fileExtension))
 
             val parquetWriter = capturedNativeOp.getParquetWriter.toBuilder
               .setTaskOutputPath(taskOutputPath)
-              .setTaskAttemptId(sparkAttemptNumber)
-
-            capturedCommitProtocol.foreach { protocol =>
-              parquetWriter.setJobId(protocol.commitProtocolJobId)
-            }
+              .build()
 
             val modifiedNativeOp = capturedNativeOp.toBuilder
-              .setParquetWriter(parquetWriter.build())
+              .setParquetWriter(parquetWriter)
               .build()
 
             val nativeMetrics = CometMetricNode.fromCometPlan(writeExec)
@@ -260,29 +238,22 @@ case class CometNativeWriteExec(
               execIterator.next().close()
             }
 
-            taskCommitter match {
-              case Some((committer, taskAttemptContext)) =>
-                val message = committer.commitTask(taskAttemptContext)
-                logInfo(s"Task ${taskAttemptContext.getTaskAttemptID} committed successfully")
-                message
-              case None =>
-                FileCommitProtocol.EmptyTaskCommitMessage
-            }
+            val message = protocol.committer.commitTask(taskAttemptContext)
+            logInfo(s"Task ${taskAttemptContext.getTaskAttemptID} committed successfully")
+            message
           } catch {
             case t: Throwable =>
-              taskCommitter.foreach { case (committer, taskAttemptContext) =>
-                try {
-                  committer.abortTask(taskAttemptContext)
+              try {
+                protocol.committer.abortTask(taskAttemptContext)
+                logWarning(
+                  s"Task ${taskAttemptContext.getTaskAttemptID} aborted due to exception: " +
+                    Option(t.getMessage).getOrElse(t.getClass.getName))
+              } catch {
+                case abortError: Throwable =>
                   logWarning(
-                    s"Task ${taskAttemptContext.getTaskAttemptID} aborted due to exception: " +
-                      Option(t.getMessage).getOrElse(t.getClass.getName))
-                } catch {
-                  case abortError: Throwable =>
-                    logWarning(
-                      s"Error aborting task ${taskAttemptContext.getTaskAttemptID}",
-                      abortError)
-                    t.addSuppressed(abortError)
-                }
+                    s"Error aborting task ${taskAttemptContext.getTaskAttemptID}",
+                    abortError)
+                  t.addSuppressed(abortError)
               }
               throw t
           } finally {
@@ -302,11 +273,6 @@ case class CometNativeWriteExec(
     op.writeTo(codedOutput)
     codedOutput.checkNoSpaceLeft()
     bytes
-  }
-
-  private def directTaskOutputPath(partitionId: Int): String = {
-    val separator = if (outputPath.endsWith("/")) "" else "/"
-    f"${outputPath}${separator}part-$partitionId%05d.parquet"
   }
 
   private def abortJob(

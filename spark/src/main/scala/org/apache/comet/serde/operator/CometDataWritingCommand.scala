@@ -135,7 +135,6 @@ object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec
 
       val writerOpBuilder = OperatorOuterClass.ParquetWriter
         .newBuilder()
-        .setOutputPath(outputPath)
         .setCompression(codec)
         .addAllColumnNames(cmd.query.output.map(_.name).asJava)
       // The task_output_path is filled in by CometNativeWriteExec at execution time from
@@ -209,10 +208,9 @@ object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec
       committer = committer,
       serializableHadoopConf = new SerializableConfiguration(job.getConfiguration),
       outputWriterFactory = outputWriterFactory,
-      commitProtocolJobId = commitProtocolJobId,
       jobTrackerID = CometNativeWriteExec.newJobTrackerID())
 
-    CometNativeWriteExec(nativeOp, childPlan, outputPath, Some(commitProtocol))
+    CometNativeWriteExec(nativeOp, childPlan, outputPath, commitProtocol)
   }
 
   private def parseCompressionCodec(cmd: InsertIntoHadoopFsRelationCommand) = {
