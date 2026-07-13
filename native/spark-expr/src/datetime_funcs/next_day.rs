@@ -54,19 +54,45 @@ impl Default for SparkNextDay {
     }
 }
 
+/// Longest recognized (upper-cased) day-of-week name is "WEDNESDAY" at 9 bytes.
+const MAX_DAY_OF_WEEK_LEN: usize = 9;
+
+/// Match an already upper-cased day-of-week name (as raw bytes) to a [`Weekday`].
+#[inline]
+fn weekday_from_uppercase(upper: &[u8]) -> Option<Weekday> {
+    match upper {
+        b"SU" | b"SUN" | b"SUNDAY" => Some(Weekday::Sun),
+        b"MO" | b"MON" | b"MONDAY" => Some(Weekday::Mon),
+        b"TU" | b"TUE" | b"TUESDAY" => Some(Weekday::Tue),
+        b"WE" | b"WED" | b"WEDNESDAY" => Some(Weekday::Wed),
+        b"TH" | b"THU" | b"THURSDAY" => Some(Weekday::Thu),
+        b"FR" | b"FRI" | b"FRIDAY" => Some(Weekday::Fri),
+        b"SA" | b"SAT" | b"SATURDAY" => Some(Weekday::Sat),
+        _ => None,
+    }
+}
+
 /// Match a day-of-week name to a [`Weekday`]. Mirrors Spark's
 /// `DateTimeUtils.getDayOfWeekFromString`: case-insensitive, but with no whitespace trimming.
 fn day_of_week_from_string(day_of_week: &str) -> Option<Weekday> {
-    match day_of_week.to_uppercase().as_str() {
-        "SU" | "SUN" | "SUNDAY" => Some(Weekday::Sun),
-        "MO" | "MON" | "MONDAY" => Some(Weekday::Mon),
-        "TU" | "TUE" | "TUESDAY" => Some(Weekday::Tue),
-        "WE" | "WED" | "WEDNESDAY" => Some(Weekday::Wed),
-        "TH" | "THU" | "THURSDAY" => Some(Weekday::Thu),
-        "FR" | "FRI" | "FRIDAY" => Some(Weekday::Fri),
-        "SA" | "SAT" | "SATURDAY" => Some(Weekday::Sat),
-        _ => None,
+    // Fast path: for ASCII input (the overwhelmingly common case) Unicode
+    // upper-casing is identical to ASCII upper-casing, so upper-case into a
+    // stack buffer and avoid the per-row heap allocation that `to_uppercase`
+    // incurs.
+    if day_of_week.is_ascii() {
+        let bytes = day_of_week.as_bytes();
+        // The buffer only needs to hold the longest recognized name; anything
+        // longer cannot match, so reject it rather than overflow the buffer.
+        let mut buf = [0u8; MAX_DAY_OF_WEEK_LEN];
+        if bytes.len() > buf.len() {
+            return None;
+        }
+        let upper = &mut buf[..bytes.len()];
+        upper.copy_from_slice(bytes);
+        upper.make_ascii_uppercase();
+        return weekday_from_uppercase(upper);
     }
+    weekday_from_uppercase(day_of_week.to_uppercase().as_bytes())
 }
 
 /// The first date strictly after `days` (days since the Unix epoch) that falls on `weekday`.
@@ -174,6 +200,14 @@ mod tests {
         assert_eq!(day_of_week_from_string("MO "), None);
         assert_eq!(day_of_week_from_string(""), None);
         assert_eq!(day_of_week_from_string("NOT_A_DAY"), None);
+        // Mixed case is accepted on the ASCII fast path.
+        assert_eq!(day_of_week_from_string("wEdNeSdAy"), Some(Weekday::Wed));
+        // Inputs longer than any recognized name never match.
+        assert_eq!(day_of_week_from_string("SUNDAYSUNDAY"), None);
+        // Non-ASCII input falls back to full Unicode upper-casing, matching the
+        // reference behavior (e.g. U+017F LONG S upper-cases to 'S').
+        assert_eq!(day_of_week_from_string("\u{17f}unday"), Some(Weekday::Sun));
+        assert_eq!(day_of_week_from_string("úñîçödé"), None);
     }
 
     #[test]
