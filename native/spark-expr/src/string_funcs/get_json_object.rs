@@ -20,7 +20,10 @@ use datafusion::common::{
     cast::as_generic_string_array, exec_err, Result as DataFusionResult, ScalarValue,
 };
 use datafusion::logical_expr::ColumnarValue;
+use serde::de::{DeserializeSeed, IgnoredAny, MapAccess, SeqAccess, Visitor};
+use serde::{Deserialize, Deserializer};
 use serde_json::Value;
+use std::fmt;
 use std::sync::Arc;
 
 /// Extracts a string from a ScalarValue, returning Ok(None) for null values.
@@ -69,7 +72,7 @@ pub fn spark_get_json_object(args: &[ColumnarValue]) -> DataFusionResult<Columna
             };
 
             let json_strings = as_generic_string_array::<i32>(json_array)?;
-            let mut builder = StringBuilder::new();
+            let mut builder = StringBuilder::with_capacity(json_strings.len(), 0);
 
             for i in 0..json_strings.len() {
                 if json_strings.is_null(i) {
@@ -108,7 +111,7 @@ pub fn spark_get_json_object(args: &[ColumnarValue]) -> DataFusionResult<Columna
         (ColumnarValue::Array(json_array), ColumnarValue::Array(path_array)) => {
             let json_strings = as_generic_string_array::<i32>(json_array)?;
             let path_strings = as_generic_string_array::<i32>(path_array)?;
-            let mut builder = StringBuilder::new();
+            let mut builder = StringBuilder::with_capacity(json_strings.len(), 0);
 
             for i in 0..json_strings.len() {
                 if json_strings.is_null(i) || path_strings.is_null(i) {
@@ -252,13 +255,11 @@ fn parse_json_path(path: &str) -> Option<ParsedPath> {
 /// Evaluate a parsed JSONPath against a JSON string.
 /// Returns the result as a string, or None if no match.
 fn evaluate_path(json_str: &str, path: &ParsedPath) -> Option<String> {
-    let value: Value = serde_json::from_str(json_str).ok()?;
-
     if !path.has_wildcard {
-        // Fast path: no wildcards, no Vec allocations
-        let result = evaluate_no_wildcard(&value, &path.segments)?;
-        return value_to_string(result);
+        return value_into_string(extract_no_wildcard(json_str, &path.segments)?);
     }
+
+    let value: Value = serde_json::from_str(json_str).ok()?;
 
     // Wildcard path: may return multiple results
     let results = evaluate_with_wildcard(&value, &path.segments);
@@ -268,38 +269,151 @@ fn evaluate_path(json_str: &str, path: &ParsedPath) -> Option<String> {
         1 => {
             // Single wildcard match: Spark preserves JSON serialization format
             // (strings keep their quotes, numbers don't)
-            let s = serde_json::to_string(results[0]).ok()?;
-            if s == "null" {
+            if results[0].is_null() {
                 None
             } else {
-                Some(s)
+                serde_json::to_string(results[0]).ok()
             }
         }
-        _ => {
-            // Multiple results: wrap in JSON array
-            let arr = Value::Array(results.into_iter().cloned().collect());
-            Some(arr.to_string())
-        }
+        // Multiple results: wrap in JSON array. A slice of `&Value` serializes
+        // as a JSON array, so no clone into an owned `Value::Array` is needed.
+        _ => serde_json::to_string(&results).ok(),
     }
 }
 
-/// Fast-path evaluation for paths without wildcards.
-/// Returns a reference to the matched value, or None if no match.
-fn evaluate_no_wildcard<'a>(value: &'a Value, segments: &[PathSegment]) -> Option<&'a Value> {
-    if segments.is_empty() {
-        return Some(value);
+/// Evaluation for paths without wildcards.
+///
+/// Descends into the document while it is being parsed, so only the matched
+/// subtree is materialized as a `Value`; everything else is skipped by the
+/// parser without allocating. The whole document is still consumed, so
+/// malformed JSON anywhere in the input yields no match, as a full parse would.
+fn extract_no_wildcard(json_str: &str, segments: &[PathSegment]) -> Option<Value> {
+    let mut de = serde_json::Deserializer::from_str(json_str);
+    let found = PathSeed { segments }.deserialize(&mut de).ok()?;
+    de.end().ok()?;
+    found
+}
+
+/// Deserializes the value at `segments`, discarding everything else.
+struct PathSeed<'a> {
+    segments: &'a [PathSegment],
+}
+
+impl<'de> DeserializeSeed<'de> for PathSeed<'_> {
+    type Value = Option<Value>;
+
+    fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<Self::Value, D::Error> {
+        if self.segments.is_empty() {
+            return Value::deserialize(deserializer).map(Some);
+        }
+        deserializer.deserialize_any(SegmentVisitor {
+            segments: self.segments,
+        })
+    }
+}
+
+/// Applies `segments[0]` to the value being visited. A value whose shape does
+/// not match the segment (an index into an object, say) is skipped and reported
+/// as no match rather than as an error, matching a lookup on a parsed document.
+struct SegmentVisitor<'a> {
+    segments: &'a [PathSegment],
+}
+
+impl<'de> Visitor<'de> for SegmentVisitor<'_> {
+    type Value = Option<Value>;
+
+    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("a JSON value")
     }
 
-    match &segments[0] {
-        PathSegment::Field(name) => {
-            let child = value.as_object()?.get(name)?;
-            evaluate_no_wildcard(child, &segments[1..])
+    fn visit_bool<E>(self, _: bool) -> Result<Self::Value, E> {
+        Ok(None)
+    }
+
+    fn visit_i64<E>(self, _: i64) -> Result<Self::Value, E> {
+        Ok(None)
+    }
+
+    fn visit_u64<E>(self, _: u64) -> Result<Self::Value, E> {
+        Ok(None)
+    }
+
+    fn visit_f64<E>(self, _: f64) -> Result<Self::Value, E> {
+        Ok(None)
+    }
+
+    fn visit_str<E>(self, _: &str) -> Result<Self::Value, E> {
+        Ok(None)
+    }
+
+    fn visit_unit<E>(self) -> Result<Self::Value, E> {
+        Ok(None)
+    }
+
+    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+        let PathSegment::Field(name) = &self.segments[0] else {
+            IgnoredAny.visit_map(map)?;
+            return Ok(None);
+        };
+
+        let mut found = None;
+        // Every entry is visited so that a duplicated key resolves to its last
+        // occurrence, as it would in a parsed object.
+        while let Some(matched) = map.next_key_seed(KeySeed(name))? {
+            if matched {
+                found = map.next_value_seed(PathSeed {
+                    segments: &self.segments[1..],
+                })?;
+            } else {
+                map.next_value::<IgnoredAny>()?;
+            }
         }
-        PathSegment::Index(idx) => {
-            let child = value.as_array()?.get(*idx)?;
-            evaluate_no_wildcard(child, &segments[1..])
+        Ok(found)
+    }
+
+    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+        let PathSegment::Index(idx) = &self.segments[0] else {
+            IgnoredAny.visit_seq(seq)?;
+            return Ok(None);
+        };
+
+        for _ in 0..*idx {
+            if seq.next_element::<IgnoredAny>()?.is_none() {
+                return Ok(None);
+            }
         }
-        PathSegment::Wildcard => unreachable!("wildcard in no-wildcard path"),
+        let found = seq
+            .next_element_seed(PathSeed {
+                segments: &self.segments[1..],
+            })?
+            .flatten();
+        // The remaining elements are still visited, so that a malformed element
+        // after the match yields no match, as a full parse would.
+        IgnoredAny.visit_seq(seq)?;
+        Ok(found)
+    }
+}
+
+/// Compares an object key against a field name without allocating it.
+struct KeySeed<'a>(&'a str);
+
+impl<'de> DeserializeSeed<'de> for KeySeed<'_> {
+    type Value = bool;
+
+    fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<bool, D::Error> {
+        deserializer.deserialize_str(self)
+    }
+}
+
+impl<'de> Visitor<'de> for KeySeed<'_> {
+    type Value = bool;
+
+    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("an object key")
+    }
+
+    fn visit_str<E>(self, key: &str) -> Result<bool, E> {
+        Ok(key == self.0)
     }
 }
 
@@ -341,11 +455,11 @@ fn evaluate_with_wildcard<'a>(value: &'a Value, segments: &[PathSegment]) -> Vec
 /// - Strings are returned without quotes
 /// - null returns None
 /// - Numbers, booleans, objects, arrays are serialized as JSON
-fn value_to_string(value: &Value) -> Option<String> {
+fn value_into_string(value: Value) -> Option<String> {
     match value {
         Value::Null => None,
-        Value::String(s) => Some(s.clone()),
-        _ => Some(value.to_string()),
+        Value::String(s) => Some(s),
+        other => Some(other.to_string()),
     }
 }
 
