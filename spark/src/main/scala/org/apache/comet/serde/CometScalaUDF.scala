@@ -26,7 +26,7 @@ import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference,
 import org.apache.spark.sql.types.BinaryType
 
 import org.apache.comet.CometConf
-import org.apache.comet.CometSparkSessionExtensions.{withFallbackReason, withInfo}
+import org.apache.comet.CometSparkSessionExtensions.{withCodegenDispatchExpr, withFallbackReason}
 import org.apache.comet.codegen.CometBatchKernelCodegen
 import org.apache.comet.serde.ExprOuterClass.Expr
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, serializeDataType}
@@ -58,6 +58,19 @@ object CometScalaUDF extends CometExpressionSerde[ScalaUDF] {
     emitJvmCodegenDispatch(expr, inputs, binding)
 
   /**
+   * Canonical name for annotation. `BinaryMathExpression` (Hypot, Pow, ...) overrides
+   * `prettyName` to raw uppercase; `ScalaUDF.prettyName` collapses to `"scalaudf"` for every user
+   * UDF. Prefer `ScalaUDF.udfName` when set, then lowercase to normalize.
+   */
+  private def displayName(expr: Expression): String = {
+    val raw = expr match {
+      case s: ScalaUDF => s.udfName.getOrElse(s.prettyName)
+      case other => other.prettyName
+    }
+    raw.toLowerCase(Locale.ROOT)
+  }
+
+  /**
    * Bind `expr`, closure-serialize it, and emit a `JvmScalarUdf` proto routed through
    * [[CometScalaUDFCodegen]] so that native execution evaluates the expression inside the
    * Arrow-direct codegen dispatcher. The dispatcher will Janino-compile `expr.doGenCode` into a
@@ -72,7 +85,7 @@ object CometScalaUDF extends CometExpressionSerde[ScalaUDF] {
       expr: Expression,
       inputs: Seq[Attribute],
       binding: Boolean): Option[Expr] = {
-    val exprName = expr.prettyName
+    val exprName = displayName(expr)
     if (!CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.get()) {
       withFallbackReason(
         expr,
@@ -142,16 +155,11 @@ object CometScalaUDF extends CometExpressionSerde[ScalaUDF] {
     udfBuilder
       .setReturnType(returnTypeProto)
       .setReturnNullable(expr.nullable)
-    // Surface the dispatch route in extended explain output when the user opts in via
-    // `spark.comet.explainCodegen.enabled=true`. `rollUpInfoMessages` in `CometExecRule` walks
-    // `op.expressions` via `TreeNode.collect` and copies each expression's `EXTENSION_INFO` tag
-    // onto the resulting Comet plan node, where `ExtendedExplainInfo` renders it as
-    // `[COMET-INFO: ...]`. Informational only: `withInfo` does not trigger fallback, so the
-    // projection remains a Comet operator regardless of this setting.
+    // Opt-in dispatch annotation for extended explain. Rolled up per operator by
+    // `CometExecRule.rollUpInfoMessages` into a single `[COMET-INFO: JVM codegen dispatcher:
+    // ...]` line. Informational only — does not trigger fallback.
     if (CometConf.COMET_EXPLAIN_CODEGEN_ENABLED.get()) {
-      withInfo(
-        expr,
-        s"${exprName.toLowerCase(Locale.ROOT)}: routes through JVM codegen dispatcher")
+      withCodegenDispatchExpr(expr, exprName)
     }
     Some(
       ExprOuterClass.Expr

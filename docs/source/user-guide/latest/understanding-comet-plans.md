@@ -91,7 +91,7 @@ They serve different purposes and produce output in different places.
 | ---------------------------------------- | ---------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
 | `spark.comet.explainFallback.enabled`    | Driver log (only when fallback)    | A WARN with the list of reasons each query stage could not run in Comet.                                                            |
 | `spark.comet.logFallbackReasons.enabled` | Driver log                         | One WARN per fallback reason as it is encountered, without surrounding plan context.                                                |
-| `spark.comet.explainCodegen.enabled`     | `ExtendedExplainInfo` / SQL UI     | A `[COMET-INFO: <expr>: routes through JVM codegen dispatcher]` annotation per routed expression on the surrounding Comet operator. |
+| `spark.comet.explainCodegen.enabled`     | `ExtendedExplainInfo` / SQL UI     | A single `[COMET-INFO: JVM codegen dispatcher: <name1>, <name2>, ...]` segment naming each expression on the operator that was routed through the JVM codegen dispatcher. |
 | `spark.comet.explain.format`             | Spark SQL UI (Spark 4.0 and newer) | Annotated plan or fallback-reason list, depending on `verbose` (default) or `fallback` value.                                       |
 | `spark.comet.explain.native.enabled`     | Executor logs, per task            | The DataFusion plan with metrics, useful for inspecting Rust execution.                                                             |
 
@@ -111,16 +111,20 @@ across many queries.
 
 ### `spark.comet.explainCodegen.enabled`
 
-Disabled by default. When enabled, every Spark expression that Comet routes
-through the JVM codegen dispatcher (Spark's own `doGenCode` running inside a
-Comet kernel — the path used for expressions with no native DataFusion
-implementation, gated by `spark.comet.exec.scalaUDF.codegen.enabled=true`) is
-annotated with `<expr_name>: routes through JVM codegen dispatcher`. The
-annotation rolls up onto the surrounding `CometProject` / `CometFilter` /
-etc. and is rendered inside the `[COMET-INFO: ...]` segment of extended
-explain output (verbose format). The projection stays Comet-native — this is
-informational only, useful for distinguishing "runs natively in DataFusion"
-from "runs Spark's generated code inside a Comet kernel".
+Disabled by default. When enabled, Comet annotates the surrounding Comet
+operator (`CometProject`, `CometFilter`, etc.) with a single combined
+`[COMET-INFO: JVM codegen dispatcher: <name1>, <name2>, ...]` segment listing
+every expression on that operator that was routed through the JVM codegen
+dispatcher (Spark's own `doGenCode` running inside a Comet kernel), gated by
+`spark.comet.exec.scalaUDF.codegen.enabled=true`. The projection stays
+Comet-native — this is informational only, useful for distinguishing "runs
+natively in DataFusion" from "runs Spark's generated code inside a Comet
+kernel". The annotation only appears for expressions Comet actually routed
+through the dispatcher on this plan — either because no native DataFusion
+implementation exists (`CometCodegenDispatch` serdes such as `hypot`,
+`levenshtein`, `pmod`), or because a native path exists but declined this
+specific input (`CodegenDispatchFallback` mixins). It is not a general "this
+expression ran here" marker.
 
 Example:
 
@@ -137,7 +141,7 @@ Output:
 
 ```
 CometNativeColumnarToRow
-+- CometProject [COMET-INFO: hypot: routes through JVM codegen dispatcher, levenshtein: routes through JVM codegen dispatcher]
++- CometProject [COMET-INFO: JVM codegen dispatcher: hypot, levenshtein]
    +- CometNativeScan parquet spark_catalog.default.t
 
 Comet accelerated 2 out of 2 eligible operators (100%). Final plan contains 1 transitions between Spark and Comet.
