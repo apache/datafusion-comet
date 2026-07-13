@@ -869,8 +869,10 @@ object CometConf extends ShimCometConf {
   // Used on native side. Check spark_config.rs how the config is used
   val COMET_MAX_TEMP_DIRECTORY_SIZE: ConfigEntry[Long] =
     conf("spark.comet.maxTempDirectorySize")
-      .category(CATEGORY_EXEC)
-      .doc("The maximum amount of data (in bytes) stored inside the temporary directories.")
+      .category(CATEGORY_TUNING)
+      .doc("The maximum amount of data (in bytes) stored inside the temporary directories " +
+        "used by native operators when spilling. Once the limit is reached, further spills " +
+        "will fail and the query will error out.")
       .bytesConf(ByteUnit.BYTE)
       .createWithDefault(100L * 1024 * 1024 * 1024) // 100 GB
 
