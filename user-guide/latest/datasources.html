@@ -788,7 +788,7 @@ converted into Arrow format, allowing the Comet pipeline to take over after that
 Build a Comet for <code class="docutils literal notranslate"><span class="pre">spark-4.1</span></code> provide a JDK path in <code class="docutils literal notranslate"><span class="pre">JAVA_HOME</span></code>
 Provide the JRE linker path in <code class="docutils literal notranslate"><span class="pre">RUSTFLAGS</span></code>, the path can vary depending on the system. Typically JRE linker is a part of installed JDK</p>
 <div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="nb">export</span><span class="w"> </span><span class="nv">JAVA_HOME</span><span class="o">=</span><span class="s2">&quot;/opt/homebrew/opt/openjdk@17&quot;</span>
-make<span class="w"> </span>release<span class="w"> </span><span class="nv">PROFILES</span><span class="o">=</span><span class="s2">&quot;-Pspark-4.1&quot;</span><span class="w"> </span><span class="nv">COMET_FEATURES</span><span class="o">=</span>hdfs<span class="w"> </span><span class="nv">RUSTFLAGS</span><span class="o">=</span><span class="s2">&quot;-L </span><span class="nv">$JAVA_HOME</span><span class="s2">/libexec/openjdk.jdk/Contents/Home/lib/server&quot;</span>
+make<span class="w"> </span>release<span class="w"> </span><span class="nv">PROFILES</span><span class="o">=</span><span class="s2">&quot;-Pspark-4.1&quot;</span><span class="w"> </span><span class="nv">RUSTFLAGS</span><span class="o">=</span><span class="s2">&quot;-L </span><span class="nv">$JAVA_HOME</span><span class="s2">/libexec/openjdk.jdk/Contents/Home/lib/server&quot;</span>
 </pre></div>
 </div>
 <p>Start Comet with HDFS support as <a class="reference internal" href="installation.html#run-spark-shell-with-comet-enabled"><span class="std std-ref">described</span></a>
@@ -823,7 +823,7 @@ Arguments:<span class="w"> </span><span class="o">[</span>id#0,<span class="w"> 
 Input<span class="w"> </span><span class="o">[</span><span class="m">3</span><span class="o">]</span>:<span class="w"> </span><span class="o">[</span>id#0,<span class="w"> </span>first_name#1,<span class="w"> </span>personal_info#4<span class="o">]</span>
 
 
-<span class="m">25</span>/01/30<span class="w"> </span><span class="m">16</span>:50:44<span class="w"> </span>INFO<span class="w"> </span>fs-hdfs-0.1.12/src/hdfs.rs:<span class="w"> </span>Connecting<span class="w"> </span>to<span class="w"> </span>Namenode<span class="w"> </span><span class="o">(</span>hdfs://namenode:9000<span class="o">)</span>
+<span class="m">25</span>/01/30<span class="w"> </span><span class="m">16</span>:50:44<span class="w"> </span>INFO<span class="w"> </span>opendal::services::hdfs:<span class="w"> </span>Connecting<span class="w"> </span>to<span class="w"> </span>Namenode<span class="w"> </span><span class="o">(</span>hdfs://namenode:9000<span class="o">)</span>
 +---+----------+-----------------+
 <span class="p">|</span>id<span class="w"> </span><span class="p">|</span>first_name<span class="p">|</span>personal_info<span class="w">    </span><span class="p">|</span>
 +---+----------+-----------------+
@@ -833,7 +833,6 @@ Input<span class="w"> </span><span class="o">[</span><span class="m">3</span><sp
 </pre></div>
 </div>
 <p>Verify the scan type should be <code class="docutils literal notranslate"><span class="pre">CometNativeScan</span></code>.</p>
-<p>More on <a class="reference external" href="https://github.com/apache/datafusion-comet/blob/main/native/hdfs/README.md">HDFS Reader</a></p>
 </section>
 <section id="local-hdfs-development">
 <h3>Local HDFS development<a class="headerlink" href="#local-hdfs-development" title="Link to this heading">#</a></h3>
@@ -854,7 +853,7 @@ Input<span class="w"> </span><span class="o">[</span><span class="m">3</span><sp
 <li><p>Check the local namenode is up and running on <code class="docutils literal notranslate"><span class="pre">http://localhost:9870/dfshealth.html#tab-overview</span></code></p></li>
 <li><p>Build a project with HDFS support</p></li>
 </ul>
-<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="nv">JAVA_HOME</span><span class="o">=</span><span class="s2">&quot;/opt/homebrew/opt/openjdk@17&quot;</span><span class="w"> </span>make<span class="w"> </span>release<span class="w"> </span><span class="nv">PROFILES</span><span class="o">=</span><span class="s2">&quot;-Pspark-4.1&quot;</span><span class="w"> </span><span class="nv">COMET_FEATURES</span><span class="o">=</span>hdfs<span class="w"> </span><span class="nv">RUSTFLAGS</span><span class="o">=</span><span class="s2">&quot;-L /opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home/lib/server&quot;</span>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="nv">JAVA_HOME</span><span class="o">=</span><span class="s2">&quot;/opt/homebrew/opt/openjdk@17&quot;</span><span class="w"> </span>make<span class="w"> </span>release<span class="w"> </span><span class="nv">PROFILES</span><span class="o">=</span><span class="s2">&quot;-Pspark-4.1&quot;</span><span class="w"> </span><span class="nv">RUSTFLAGS</span><span class="o">=</span><span class="s2">&quot;-L /opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home/lib/server&quot;</span>
 </pre></div>
 </div>
 <ul class="simple">
