@@ -135,3 +135,7 @@ harness = false
 [[bench]]
 name = "parse_url"
 harness = false
+
+[[bench]]
+name = "cast_binary_to_string"
+harness = false
