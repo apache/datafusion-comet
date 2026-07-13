@@ -861,8 +861,10 @@ object CometConf extends ShimCometConf {
   val COMET_LIBHDFS_SCHEMES: OptionalConfigEntry[String] =
     conf(s"spark.hadoop.$COMET_LIBHDFS_SCHEMES_KEY")
       .category(CATEGORY_SCAN)
-      .doc("Defines filesystem schemes (e.g., hdfs, webhdfs) that the native side accesses " +
-        "via libhdfs, separated by commas. Valid only when built with hdfs-opendal feature enabled.")
+      .doc(
+        "Defines filesystem schemes (e.g., hdfs, webhdfs) that the native side accesses " +
+          "via libhdfs, separated by commas. Valid only when built with hdfs-opendal feature " +
+          "enabled.")
       .stringConf
       .createOptional
 
