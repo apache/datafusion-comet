@@ -44,6 +44,50 @@ SELECT shiftright(col1, 2), shiftright(col1, col2) FROM test
 query
 SELECT shiftleft(col1, 2), shiftleft(col1, col2) FROM test
 
+-- ShiftRightUnsigned: first arg is Int or Long, second is Int. Returns the
+-- same integer type as the first argument. Shift amount is normalized to the
+-- bit width (Java semantics) for negative and large shifts.
+statement
+CREATE TABLE test_shiftrightunsigned_int(v int, s int) USING parquet
+
+statement
+INSERT INTO test_shiftrightunsigned_int VALUES
+  (1, 1),
+  (-1, 1),
+  (8, 2),
+  (2147483647, 1),
+  (-2147483648, 1),
+  (0, 0),
+  (1, 0),
+  (1, 31),
+  (1, 32),
+  (1, 33),
+  (1, -1),
+  (NULL, 1),
+  (1, NULL)
+
+query
+SELECT shiftrightunsigned(v, s) FROM test_shiftrightunsigned_int
+
+statement
+CREATE TABLE test_shiftrightunsigned_long(v bigint, s int) USING parquet
+
+statement
+INSERT INTO test_shiftrightunsigned_long VALUES
+  (1, 1),
+  (-1, 1),
+  (9223372036854775807, 1),
+  (-9223372036854775808, 1),
+  (0, 0),
+  (1, 63),
+  (1, 64),
+  (1, -1),
+  (NULL, 1),
+  (1, NULL)
+
+query
+SELECT shiftrightunsigned(v, s) FROM test_shiftrightunsigned_long
+
 query
 SELECT ~(11), ~col1, ~col2 FROM test
 
@@ -79,3 +123,6 @@ SELECT bit_get(11, 0), bit_get(11, 1), bit_get(11, 2), bit_get(11, 3)
 
 query
 SELECT shiftright(1111, 2), shiftleft(1111, 2)
+
+query
+SELECT shiftrightunsigned(1, 1), shiftrightunsigned(-1, 1), shiftrightunsigned(2147483647, 1), shiftrightunsigned(cast(-1 as bigint), 1)

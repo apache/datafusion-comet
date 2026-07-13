@@ -24,7 +24,7 @@ use arrow::array::{
     builder::{
         ArrayBuilder, BinaryBuilder, BooleanBuilder, Date32Builder, Decimal128Builder,
         Float32Builder, Float64Builder, Int16Builder, Int32Builder, Int64Builder, Int8Builder,
-        ListBuilder, StringBuilder, StructBuilder, Time64NanosecondBuilder,
+        ListBuilder, NullBuilder, StringBuilder, StructBuilder, Time64NanosecondBuilder,
         TimestampMicrosecondBuilder,
     },
     MapBuilder,
@@ -394,6 +394,12 @@ pub fn append_to_builder<const NULLABLE: bool>(
         DataType::Date32 => {
             let builder = downcast_builder_ref!(Date32Builder, builder);
             array.append_dates_to_builder::<NULLABLE>(builder);
+        }
+        DataType::Null => {
+            let builder = downcast_builder_ref!(NullBuilder, builder);
+            for _ in 0..array.get_num_elements() {
+                builder.append_null();
+            }
         }
         DataType::Binary => {
             add_values!(

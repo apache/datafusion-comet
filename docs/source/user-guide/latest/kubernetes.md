@@ -72,7 +72,7 @@ spec:
   image: apache/datafusion-comet:$COMET_VERSION-spark3.5.5-scala2.12-java11
   imagePullPolicy: IfNotPresent
   mainClass: org.apache.spark.examples.SparkPi
-  mainApplicationFile: local:///opt/spark/examples/jars/spark-examples_2.13-4.1.1.jar
+  mainApplicationFile: local:///opt/spark/examples/jars/spark-examples_2.13-4.1.2.jar
   sparkConf:
     "spark.executor.extraClassPath": "/opt/spark/jars/comet-spark-spark3.5_2.12-$COMET_VERSION.jar"
     "spark.driver.extraClassPath": "/opt/spark/jars/comet-spark-spark3.5_2.12-$COMET_VERSION.jar"
@@ -82,17 +82,17 @@ spec:
     "spark.comet.exec.shuffle.enabled": "true"
     "spark.comet.exec.shuffle.mode": "auto"
     "spark.shuffle.manager": "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager"
-  sparkVersion: 4.1.1
+  sparkVersion: 4.1.2
   driver:
     labels:
-      version: 4.1.1
+      version: 4.1.2
     cores: 1
     coreLimit: 1200m
     memory: 512m
     serviceAccount: spark-operator-spark
   executor:
     labels:
-      version: 4.1.1
+      version: 4.1.2
     instances: 1
     cores: 1
     coreLimit: 1200m

@@ -20,6 +20,9 @@
 package org.apache.comet.iceberg
 
 import org.apache.spark.internal.Logging
+import org.apache.spark.sql.SparkSession
+
+import org.apache.comet.util.ClassLoaders
 
 /**
  * Shared reflection utilities for Iceberg operations.
@@ -100,19 +103,7 @@ object IcebergReflection extends Logging {
    * @return
    *   The loaded Class object
    */
-  def loadClass(className: String): Class[_] = {
-    val classLoader = Thread.currentThread().getContextClassLoader
-    if (classLoader != null) {
-      // scalastyle:off classforname
-      Class.forName(className, true, classLoader)
-      // scalastyle:on classforname
-    } else {
-      // Fallback to default classloader if context classloader is null
-      // scalastyle:off classforname
-      Class.forName(className)
-      // scalastyle:on classforname
-    }
-  }
+  def loadClass(className: String): Class[_] = ClassLoaders.loadClass(className)
 
   /**
    * Searches through class hierarchy to find a method (including protected methods).
@@ -163,6 +154,21 @@ object IcebergReflection extends Logging {
     try {
       val contentFileClass = loadClass(ClassNames.CONTENT_FILE)
       extractFileLocation(contentFileClass, file)
+    } catch {
+      case _: Exception => None
+    }
+  }
+
+  /** The file format of a ContentFile (data or delete file), e.g. "PARQUET", "AVRO", "ORC". */
+  def getFileFormat(file: Any): Option[String] = {
+    try {
+      // Resolve format() on the public ContentFile interface. Iceberg's concrete file impls are
+      // package-private, so a method resolved on the concrete class throws IllegalAccessException
+      // when invoked.
+      // TODO callers in a loop (e.g. validateIcebergFileScanTasks) already hold a cached
+      // contentFileClass; add an overload that takes it to avoid reloading per file.
+      val contentFileClass = loadClass(ClassNames.CONTENT_FILE)
+      Some(contentFileClass.getMethod("format").invoke(file).toString)
     } catch {
       case _: Exception => None
     }
@@ -257,13 +263,15 @@ object IcebergReflection extends Logging {
     if (isStagedScan(scan)) {
       Some(java.util.Collections.emptyList[AnyRef]())
     } else {
-      findMethodInHierarchy(scan.getClass, "filterExpressions") match {
+      // Iceberg 1.11 renamed SparkScan.filterExpressions() to filters(); 1.8-1.10 use the old name.
+      findMethodInHierarchy(scan.getClass, "filters")
+        .orElse(findMethodInHierarchy(scan.getClass, "filterExpressions")) match {
         case Some(method) =>
           Some(method.invoke(scan).asInstanceOf[java.util.List[_]])
         case None =>
           logError(
             "Iceberg reflection failure: Failed to get filter expressions from SparkScan: " +
-              s"filterExpressions() not found on ${scan.getClass.getName}")
+              s"filters()/filterExpressions() not found on ${scan.getClass.getName}")
           None
       }
     }
@@ -359,6 +367,81 @@ object IcebergReflection extends Logging {
       case e: Exception =>
         logError(s"Iceberg reflection failure: Failed to get schema from table: ${e.getMessage}")
         None
+    }
+  }
+
+  /**
+   * All schema versions a table has had (table.schemas().values()), for resolving field ids of
+   * columns that have since been dropped -- mirrors Iceberg-Java's FieldLookup. table.schemas()
+   * is stable across Iceberg 1.5-1.11.
+   */
+  def getAllSchemas(table: Any): Seq[Any] = {
+    import scala.jdk.CollectionConverters._
+    try {
+      table.getClass
+        .getMethod("schemas")
+        .invoke(table)
+        .asInstanceOf[java.util.Map[_, _]]
+        .values()
+        .asScala
+        .toSeq
+    } catch {
+      case e: Exception =>
+        logDebug(s"Iceberg reflection: table.schemas() not available: ${e.getMessage}")
+        Seq.empty
+    }
+  }
+
+  /** Returns the `Types.NestedField` for `fieldId` in `schema`, or None. */
+  def findFieldObject(schema: Any, fieldId: Int): Option[Any] = {
+    try {
+      val findFieldMethod = schema.getClass.getMethod("findField", classOf[Int])
+      Option(findFieldMethod.invoke(schema, fieldId.asInstanceOf[AnyRef]))
+    } catch {
+      case _: Exception => None
+    }
+  }
+
+  /**
+   * Returns a schema equal to `baseSchema` but guaranteed to contain `requiredFieldIds`. Any id
+   * not already present is resolved from the table's schema history (`table.schemas()`) and
+   * appended.
+   *
+   * This mirrors Iceberg-Java's `DeleteFilter.fileProjection`: an equality delete may be keyed on
+   * a column that has since been dropped from the current schema, and iceberg-rust needs that
+   * column in the task schema to read and apply the delete. Called at serialization time, so it
+   * throws on failure (a required id that cannot be resolved, or any reflection error) rather
+   * than silently degrading; CometScanRule is responsible for falling back before we get here.
+   */
+  def schemaWithRequiredFields(baseSchema: Any, table: Any, requiredFieldIds: Seq[Int]): Any = {
+    val existingIds = buildFieldIdMapping(baseSchema).values.toSet
+    val missingIds = requiredFieldIds.distinct.filterNot(existingIds.contains)
+    if (missingIds.isEmpty) {
+      baseSchema
+    } else {
+      logDebug(
+        s"Iceberg equality delete references field id(s) ${missingIds.mkString(",")} absent from " +
+          "the task schema; resolving from table schema history to build the native scan schema")
+      val history = getAllSchemas(table)
+      val resolvedFields = missingIds.map { id =>
+        history.iterator
+          .flatMap(s => findFieldObject(s, id))
+          .toSeq
+          .headOption
+          .getOrElse(throw new IllegalStateException(
+            s"Cannot resolve equality-delete field id $id in table schema history"))
+      }
+      val existing =
+        baseSchema.getClass
+          .getMethod("columns")
+          .invoke(baseSchema)
+          .asInstanceOf[java.util.List[_]]
+      val newColumns = new java.util.ArrayList[Any](existing)
+      resolvedFields.foreach(newColumns.add)
+      baseSchema.getClass
+        .getConstructor(classOf[java.util.List[_]])
+        .newInstance(newColumns)
+        .asInstanceOf[AnyRef]
     }
   }
 
@@ -536,15 +619,19 @@ object IcebergReflection extends Logging {
    *   The expected Iceberg Schema, or None if reflection fails
    */
   def getExpectedSchema(scan: Any): Option[Any] = {
-    findMethodInHierarchy(scan.getClass, "expectedSchema").flatMap { schemaMethod =>
-      try {
-        Some(schemaMethod.invoke(scan))
-      } catch {
-        case e: Exception =>
-          logError(s"Failed to get expectedSchema from SparkScan: ${e.getMessage}")
-          None
+    // Iceberg 1.11 renamed SparkScan.expectedSchema() to projection() (the projected read
+    // schema); 1.8-1.10 still expose expectedSchema(). Try the new name first, then fall back.
+    findMethodInHierarchy(scan.getClass, "projection")
+      .orElse(findMethodInHierarchy(scan.getClass, "expectedSchema"))
+      .flatMap { schemaMethod =>
+        try {
+          Some(schemaMethod.invoke(scan))
+        } catch {
+          case e: Exception =>
+            logError(s"Failed to get projection/expectedSchema from SparkScan: ${e.getMessage}")
+            None
+        }
       }
-    }
   }
 
   /**
@@ -672,6 +759,9 @@ object IcebergReflection extends Logging {
  *   Mapping from column names to Iceberg field IDs (built from scanSchema)
  * @param catalogProperties
  *   Catalog properties for FileIO (S3 credentials, regions, etc.)
+ * @param catalogName
+ *   Spark V2 catalog name forwarded as `dispatchKey` to CometS3CredentialBridge. `None` when the
+ *   table has no catalog identity (e.g. HadoopTables loaded by raw path).
  */
 case class CometIcebergNativeScanMetadata(
     table: Any,
@@ -682,6 +772,7 @@ case class CometIcebergNativeScanMetadata(
     tableSchema: Any,
     globalFieldIdMapping: Map[String, Int],
     catalogProperties: Map[String, String],
+    catalogName: Option[String],
     fileFormat: String)
 
 object CometIcebergNativeScanMetadata extends Logging {
@@ -737,7 +828,64 @@ object CometIcebergNativeScanMetadata extends Logging {
         tableSchema = tableSchema,
         globalFieldIdMapping = globalFieldIdMapping,
         catalogProperties = catalogProperties,
+        catalogName = deriveCatalogName(table),
         fileFormat = FileFormats.PARQUET)
     }
   }
+
+  /**
+   * Extracts the Spark V2 catalog name from an Iceberg `Table`. `Table.name()` returns
+   * `catalog.namespace.table` for tables loaded through a catalog; we intersect against the
+   * registered V2 catalogs so a value like `s3.foo` is not mistaken for a catalog `s3`. Returns
+   * `None` for HadoopTables loaded by raw path or when reflection fails.
+   */
+  private[iceberg] def deriveCatalogName(table: Any): Option[String] =
+    deriveCatalogName(table, registeredCatalogNames _)
+
+  /**
+   * Test seam that lets tests inject a fixed catalog set without bootstrapping a SparkSession.
+   */
+  private[iceberg] def deriveCatalogName(
+      table: Any,
+      knownCatalogNames: () => Iterable[String]): Option[String] = {
+    if (table == null) return None
+    invokeTableName(table).flatMap { name =>
+      if (name.isEmpty || name == "null") {
+        None
+      } else {
+        knownCatalogNames()
+          .find(c => name == c || name.startsWith(c + "."))
+          .orElse {
+            val idx = name.indexOf('.')
+            if (idx > 0) Some(name.substring(0, idx)) else None
+          }
+      }
+    }
+  }
+
+  private def invokeTableName(table: Any): Option[String] = {
+    try {
+      table.getClass.getMethod("name").invoke(table) match {
+        case s: String => Some(s)
+        case other if other != null => Some(other.toString)
+        case null => None
+      }
+    } catch {
+      case e: Exception =>
+        logWarning(
+          s"Iceberg reflection: Table.name() not callable on ${table.getClass.getName}. " +
+            "Native S3 credential dispatch will fall back to bucket-keyed isolation: " +
+            s"${e.getMessage}")
+        None
+    }
+  }
+
+  private def registeredCatalogNames(): Iterable[String] =
+    try {
+      SparkSession.active.sessionState.catalogManager.listCatalogs(None)
+    } catch {
+      case e: Exception =>
+        logDebug(s"Could not list V2 catalogs from SparkSession: ${e.getMessage}")
+        Nil
+    }
 }

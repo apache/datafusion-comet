@@ -108,6 +108,31 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  // Regression test for the approx_percentile distinct-aggregate crash: an aggregate with an
+  // incompatible intermediate buffer (percentile_approx) combined with a distinct aggregate is
+  // rewritten by Spark into a multi-stage plan. If part of that chain runs in Comet and part in
+  // Spark, the incompatible buffer crosses the boundary and crashes. Here we force the split with
+  // the partial/final debug configs and assert results still match Spark (the whole chain must
+  // fall back to Spark). See https://github.com/apache/datafusion-comet/issues/4813.
+  test("approx_percentile with distinct aggregate does not split across Comet and Spark") {
+    val data = (0 until 500).map(i => (i % 10, i % 100, i % 37))
+    withParquetTable(data, "tbl", false) {
+      for (disablePartial <- Seq(false, true);
+        disableFinal <- Seq(false, true);
+        groupBy <- Seq("", " GROUP BY _1")) {
+        withSQLConf(
+          CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+          CometConf.COMET_SHUFFLE_MODE.key -> "native",
+          SQLConf.USE_OBJECT_HASH_AGG.key -> "true",
+          CometConf.COMET_ENABLE_PARTIAL_HASH_AGGREGATE.key -> (!disablePartial).toString,
+          CometConf.COMET_ENABLE_FINAL_HASH_AGGREGATE.key -> (!disableFinal).toString) {
+          checkSparkAnswer(
+            s"SELECT percentile_approx(_2, 0.5), count(DISTINCT _3) FROM tbl$groupBy")
+        }
+      }
+    }
+  }
+
   test("stddev_pop should return NaN for some cases") {
     withSQLConf(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true") {
       Seq(true, false).foreach { nullOnDivideByZero =>
@@ -179,6 +204,32 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
         val df = sql("select sum(a), avg(a) from allNulls")
         checkSparkAnswer(df)
+      }
+    }
+  }
+
+  test("mixed engine sum/avg: Comet partial + Spark final matches Spark") {
+    val data = (0 until 100).map(i => (i, i.toLong, i.toDouble, i % 7))
+    withParquetTable(data, "tbl") {
+      withSQLConf(
+        CometConf.COMET_ENABLE_FINAL_HASH_AGGREGATE.key -> "false",
+        CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+        CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
+        checkSparkAnswer(
+          "SELECT _4, SUM(_1), SUM(_2), SUM(_3), AVG(_1), AVG(_2), AVG(_3) FROM tbl GROUP BY _4")
+      }
+    }
+  }
+
+  test("mixed engine sum/avg: Spark partial + Comet final matches Spark") {
+    val data = (0 until 100).map(i => (i, i.toLong, i.toDouble, i % 7))
+    withParquetTable(data, "tbl") {
+      withSQLConf(
+        CometConf.COMET_ENABLE_PARTIAL_HASH_AGGREGATE.key -> "false",
+        CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+        CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
+        checkSparkAnswer(
+          "SELECT _4, SUM(_1), SUM(_2), SUM(_3), AVG(_1), AVG(_2), AVG(_3) FROM tbl GROUP BY _4")
       }
     }
   }
@@ -2106,6 +2157,47 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           |GROUP BY a
           |""".stripMargin,
         "Grouping on map-containing types is not supported")
+    }
+  }
+
+  // Regression: Catalyst prunes `HashAggregateExec.resultExpressions` to
+  // empty for EXISTS / row-existence-only subqueries. The native HashAggregate's natural
+  // output (the grouping keys) then disagrees with the pruned JVM `output`, leaking through
+  // any boundary that derived its schema from `output`. The fix wraps the aggregate in an
+  // explicit Projection op when natural != declared.
+  //
+  // Surfaced upstream in `subquery/exists-subquery/exists-orderby-limit.sql` (query #19,
+  // an EXISTS over `max(...) GROUP BY state LIMIT 1 OFFSET 2`). The exact `EXISTS-in-WHERE`
+  // shape doesn't reproduce under CometTestBase's optimizer state, but `count(*)` over the
+  // same derived aggregate triggers the equivalent ColumnPruning path locally - we assert
+  // the inner HashAgg's resultExpressions actually got pruned, so a future Spark version
+  // that breaks the trigger fails the test loudly rather than passing silently.
+  test("HashAggregate with catalyst-pruned resultExpressions returns 0-col output") {
+    withTempDir { dir =>
+      val deptPath = new Path(dir.toURI.toString, "dept")
+      spark
+        .sql("""SELECT * FROM VALUES
+               |  (10, 'CA'), (20, 'NY'), (30, 'TX'),
+               |  (40, 'OR'), (50, 'NJ'), (70, 'FL')
+               |AS t(dept_id, state)""".stripMargin)
+        .write
+        .parquet(deptPath.toUri.toString)
+      withParquetTable(deptPath.toUri.toString, "dept") {
+        val sql =
+          """SELECT count(*) FROM (
+            |  SELECT max(dept_id) AS m FROM dept GROUP BY state LIMIT 1 OFFSET 2) sub""".stripMargin
+        val plan = spark.sql(sql).queryExecution.executedPlan
+        val pruned = collectWithSubqueries(plan) {
+          case a: org.apache.spark.sql.execution.aggregate.HashAggregateExec
+              if a.resultExpressions.isEmpty =>
+            a
+          case a: CometHashAggregateExec if a.resultExpressions.isEmpty => a
+        }
+        assert(
+          pruned.nonEmpty,
+          s"Expected a HashAggregateExec with empty resultExpressions in:\n$plan")
+        checkSparkAnswerAndOperator(sql)
+      }
     }
   }
 

@@ -115,7 +115,12 @@ statement
 INSERT INTO test_array_distinct_double VALUES
   (array(1.123, 0.1234, 1.121, 1.123, 0.1234)),
   (NULL),
-  (array(NULL, 1.0, NULL, 2.0))
+  (array(NULL, 1.0, NULL, 2.0)),
+  (array(CAST('NaN' AS DOUBLE), CAST('NaN' AS DOUBLE))),
+  (array(CAST('NaN' AS DOUBLE), CAST('NaN' AS DOUBLE), 1.0, 1.0)),
+  (array(CAST('NaN' AS DOUBLE), NULL, CAST('NaN' AS DOUBLE), NULL, 1.0)),
+  (array(CAST('Infinity' AS DOUBLE), CAST('-Infinity' AS DOUBLE), CAST('Infinity' AS DOUBLE), 0.0)),
+  (array(0.0, -0.0, 1.0))
 
 query
 SELECT array_distinct(arr) FROM test_array_distinct_double
@@ -145,7 +150,12 @@ statement
 INSERT INTO test_array_distinct_float VALUES
   (array(CAST(1.123 AS FLOAT), CAST(0.1234 AS FLOAT), CAST(1.121 AS FLOAT), CAST(1.123 AS FLOAT))),
   (NULL),
-  (array(CAST(NULL AS FLOAT), CAST(1.0 AS FLOAT), CAST(NULL AS FLOAT)))
+  (array(CAST(NULL AS FLOAT), CAST(1.0 AS FLOAT), CAST(NULL AS FLOAT))),
+  (array(CAST('NaN' AS FLOAT), CAST('NaN' AS FLOAT))),
+  (array(CAST('NaN' AS FLOAT), CAST('NaN' AS FLOAT), CAST(1.0 AS FLOAT))),
+  (array(CAST('NaN' AS FLOAT), NULL, CAST('NaN' AS FLOAT), NULL, CAST(1.0 AS FLOAT))),
+  (array(CAST('Infinity' AS FLOAT), CAST('-Infinity' AS FLOAT), CAST('Infinity' AS FLOAT), CAST(0.0 AS FLOAT))),
+  (array(CAST(0.0 AS FLOAT), CAST(-0.0 AS FLOAT), CAST(1.0 AS FLOAT)))
 
 query
 SELECT array_distinct(arr) FROM test_array_distinct_float

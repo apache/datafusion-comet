@@ -19,48 +19,15 @@
 use crate::execution::operators::ExecutionError;
 use arrow::{
     array::ArrayData,
-    ffi::{from_ffi, FFI_ArrowArray, FFI_ArrowSchema},
+    ffi::{FFI_ArrowArray, FFI_ArrowSchema},
 };
 
 pub trait SparkArrowConvert {
-    /// Build Arrow Arrays from C data interface passed from Spark.
-    /// It accepts a tuple (ArrowArray address, ArrowSchema address).
-    fn from_spark(addresses: (i64, i64)) -> Result<Self, ExecutionError>
-    where
-        Self: Sized;
-
     /// Move Arrow Arrays to C data interface.
     fn move_to_spark(&self, array: i64, schema: i64) -> Result<(), ExecutionError>;
 }
 
 impl SparkArrowConvert for ArrayData {
-    fn from_spark(addresses: (i64, i64)) -> Result<Self, ExecutionError> {
-        let (array_ptr, schema_ptr) = addresses;
-
-        let array_ptr = array_ptr as *mut FFI_ArrowArray;
-        let schema_ptr = schema_ptr as *mut FFI_ArrowSchema;
-
-        if array_ptr.is_null() || schema_ptr.is_null() {
-            return Err(ExecutionError::ArrowError(
-                "At least one of passed pointers is null".to_string(),
-            ));
-        };
-
-        // `ArrowArray` will convert raw pointers back to `Arc`. No worries
-        // about memory leak.
-        let mut ffi_array = unsafe {
-            let array_data = std::ptr::replace(array_ptr, FFI_ArrowArray::empty());
-            let schema_data = std::ptr::replace(schema_ptr, FFI_ArrowSchema::empty());
-
-            from_ffi(array_data, &schema_data)?
-        };
-
-        // Align imported buffers from Java.
-        ffi_array.align_buffers();
-
-        Ok(ffi_array)
-    }
-
     /// Move this ArrowData to pointers of Arrow C data interface.
     fn move_to_spark(&self, array: i64, schema: i64) -> Result<(), ExecutionError> {
         let array_ptr = array as *mut FFI_ArrowArray;

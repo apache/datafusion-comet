@@ -24,15 +24,22 @@ helpful to have a roadmap for some of the major items that require coordination 
 
 ## Window Expressions
 
-Native window execution is currently disabled by default due to known correctness issues ([#2721], [#2841]).
-In addition, dedicated window functions such as `rank`, `dense_rank`, `row_number`, `lag`, `lead`, `ntile`,
-`cume_dist`, `percent_rank`, and `nth_value` are not yet implemented and fall back to Spark ([#2705]). The
-goal is to enable windowed aggregates by default ([#4007]) and add the missing dedicated window functions.
+Native window execution runs by default (`spark.comet.exec.window.enabled`). The ranking functions (`rank`,
+`dense_rank`, `row_number`, `percent_rank`, `cume_dist`, `ntile`), value functions (`lag`, `lead`, `nth_value`,
+`first_value`, `last_value`), and the `count`, `min`, `max`, `sum`, and `avg` aggregates are accelerated.
+Remaining work is to close the gaps that still fall back to Spark: statistical aggregates (`stddev`, `variance`,
+`corr`, `covar`) and `collect_list` / `collect_set` as window functions ([#4766]), `GROUPS` frames ([#4836]), `RANGE` frames with explicit date or
+decimal offsets ([#4834]), `first_value` / `last_value` on `RANGE` frames with a literal offset ([#4835]),
+non-literal `lag` / `lead` default values ([#4268]), and `WindowGroupLimitExec` ([#4837]). See the
+[window function compatibility guide](../user-guide/latest/compatibility/operators.md) for the complete list of
+supported functions, frames, and fallback cases.
 
-[#2705]: https://github.com/apache/datafusion-comet/issues/2705
-[#2721]: https://github.com/apache/datafusion-comet/issues/2721
-[#2841]: https://github.com/apache/datafusion-comet/issues/2841
-[#4007]: https://github.com/apache/datafusion-comet/issues/4007
+[#4268]: https://github.com/apache/datafusion-comet/issues/4268
+[#4766]: https://github.com/apache/datafusion-comet/issues/4766
+[#4834]: https://github.com/apache/datafusion-comet/issues/4834
+[#4835]: https://github.com/apache/datafusion-comet/issues/4835
+[#4836]: https://github.com/apache/datafusion-comet/issues/4836
+[#4837]: https://github.com/apache/datafusion-comet/issues/4837
 
 ## Lambda Expressions
 

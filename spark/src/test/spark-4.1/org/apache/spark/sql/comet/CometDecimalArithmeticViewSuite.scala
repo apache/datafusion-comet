@@ -26,7 +26,7 @@ import org.apache.spark.sql.types.DecimalType
 
 class CometDecimalArithmeticViewSuite extends CometTestBase {
 
-  // Spark 4.1.1 (SPARK-53968) stores `spark.sql.decimalOperations.allowPrecisionLoss` per
+  // Spark 4.1+ (SPARK-53968) stores `spark.sql.decimalOperations.allowPrecisionLoss` per
   // arithmetic expression so a view's analyzed plan keeps a stable result type across config
   // changes. Comet's DecimalPrecision rule used to recompute the result type from the current
   // SQLConf, producing a CheckOverflow target that disagreed with the stored Add.dataType and
@@ -56,7 +56,7 @@ class CometDecimalArithmeticViewSuite extends CometTestBase {
             assert(
               dt === add.dataType,
               s"CheckOverflow target $dt must match Add.dataType ${add.dataType}; mismatch " +
-                s"causes the decimal buffer to be re-labelled at the wrong scale.")
+                "causes the decimal buffer to be re-labelled at the wrong scale.")
           case other =>
             fail(s"Expected DecimalPrecision.promote to wrap Add in CheckOverflow, got: $other")
         }

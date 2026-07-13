@@ -29,7 +29,7 @@ use datafusion::logical_expr::Volatility::Immutable;
 use datafusion::logical_expr::{
     Accumulator, AggregateUDFImpl, EmitTo, GroupsAccumulator, ReversedUDAF, Signature,
 };
-use std::{any::Any, sync::Arc};
+use std::sync::Arc;
 
 #[derive(Debug, PartialEq, Eq, Hash)]
 pub struct SumInteger {
@@ -52,10 +52,6 @@ impl SumInteger {
 }
 
 impl AggregateUDFImpl for SumInteger {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn name(&self) -> &str {
         "sum"
     }

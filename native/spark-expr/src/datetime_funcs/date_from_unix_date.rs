@@ -21,7 +21,6 @@ use datafusion::common::{utils::take_function_args, DataFusionError, Result, Sca
 use datafusion::logical_expr::{
     ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility,
 };
-use std::any::Any;
 use std::sync::Arc;
 
 /// Spark-compatible date_from_unix_date function.
@@ -48,10 +47,6 @@ impl Default for SparkDateFromUnixDate {
 }
 
 impl ScalarUDFImpl for SparkDateFromUnixDate {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn name(&self) -> &str {
         "date_from_unix_date"
     }

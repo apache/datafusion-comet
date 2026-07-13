@@ -42,15 +42,16 @@ use datafusion::{
     prelude::{SessionConfig, SessionContext},
 };
 use datafusion_comet_proto::spark_operator::Operator;
+use datafusion_comet_spark_expr::url_funcs::{CometParseUrl, CometTryParseUrl};
 use datafusion_spark::function::array::array_contains::SparkArrayContains;
 use datafusion_spark::function::bitwise::bit_count::SparkBitCount;
 use datafusion_spark::function::bitwise::bit_get::SparkBitGet;
+use datafusion_spark::function::bitwise::bit_shift::SparkBitShift;
 use datafusion_spark::function::bitwise::bitwise_not::SparkBitwiseNot;
 use datafusion_spark::function::datetime::date_add::SparkDateAdd;
 use datafusion_spark::function::datetime::date_sub::SparkDateSub;
 use datafusion_spark::function::datetime::from_utc_timestamp::SparkFromUtcTimestamp;
 use datafusion_spark::function::datetime::last_day::SparkLastDay;
-use datafusion_spark::function::datetime::next_day::SparkNextDay;
 use datafusion_spark::function::datetime::to_utc_timestamp::SparkToUtcTimestamp;
 use datafusion_spark::function::hash::crc32::SparkCrc32;
 use datafusion_spark::function::hash::sha1::SparkSha1;
@@ -60,6 +61,7 @@ use datafusion_spark::function::map::str_to_map::SparkStrToMap;
 use datafusion_spark::function::math::expm1::SparkExpm1;
 use datafusion_spark::function::math::factorial::SparkFactorial;
 use datafusion_spark::function::math::hex::SparkHex;
+use datafusion_spark::function::math::rint::SparkRint;
 use datafusion_spark::function::math::trigonometry::SparkCsc;
 use datafusion_spark::function::math::trigonometry::SparkSec;
 use datafusion_spark::function::math::width_bucket::SparkWidthBucket;
@@ -89,7 +91,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use std::{sync::Arc, task::Poll};
-use tokio::runtime::Runtime;
+use tokio::runtime::{Handle, Runtime};
 use tokio::sync::mpsc;
 
 use crate::execution::memory_pools::{
@@ -106,7 +108,8 @@ use crate::execution::tracing::{
 use crate::execution::memory_pools::logging_pool::LoggingMemoryPool;
 use crate::execution::spark_config::{
     SparkConfig, COMET_DEBUG_ENABLED, COMET_DEBUG_MEMORY, COMET_EXPLAIN_NATIVE_ENABLED,
-    COMET_MAX_TEMP_DIRECTORY_SIZE, COMET_TRACING_ENABLED, SPARK_EXECUTOR_CORES,
+    COMET_MAX_TEMP_DIRECTORY_SIZE, COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED,
+    COMET_TRACING_ENABLED, SPARK_EXECUTOR_CORES,
 };
 use crate::parquet::encryption_support::{CometEncryptionFactory, ENCRYPTION_FACTORY_ID};
 use datafusion_comet_proto::spark_operator::operator::OpStruct;
@@ -115,7 +118,7 @@ use std::sync::OnceLock;
 #[cfg(feature = "jemalloc")]
 use tikv_jemalloc_ctl::{epoch, stats};
 
-static TOKIO_RUNTIME: OnceLock<Runtime> = OnceLock::new();
+static TOKIO_RUNTIME: Mutex<Option<Runtime>> = Mutex::new(None);
 
 #[cfg(feature = "jemalloc")]
 fn log_jemalloc_usage() {
@@ -209,12 +212,39 @@ fn build_runtime(default_worker_threads: Option<usize>) -> Runtime {
 /// Initialize the global Tokio runtime with the given default worker thread count.
 /// If the runtime is already initialized, this is a no-op.
 pub fn init_runtime(default_worker_threads: usize) {
-    TOKIO_RUNTIME.get_or_init(|| build_runtime(Some(default_worker_threads)));
+    let mut guard = TOKIO_RUNTIME.lock();
+    if guard.is_none() {
+        *guard = Some(build_runtime(Some(default_worker_threads)));
+    }
 }
 
-/// Function to get a handle to the global Tokio runtime
-pub fn get_runtime() -> &'static Runtime {
-    TOKIO_RUNTIME.get_or_init(|| build_runtime(None))
+/// Returns a handle to the global Tokio runtime, lazily initializing it if needed.
+///
+/// A [`Handle`] is returned (rather than a `&'static Runtime`) so that the runtime
+/// can be torn down via [`release_runtime`]. The handle is cheap to clone and can be
+/// used with `spawn` / `block_on` just like a `Runtime`.
+pub fn get_runtime() -> Handle {
+    let mut guard = TOKIO_RUNTIME.lock();
+    guard
+        .get_or_insert_with(|| build_runtime(None))
+        .handle()
+        .clone()
+}
+
+/// Tears down the global Tokio runtime, if it has been initialized.
+///
+/// The runtime is moved out of the global slot and shut down in the background so the
+/// calling (JNI) thread is not blocked waiting for worker threads to finish. Any handles
+/// previously returned by [`get_runtime`] will start failing their spawns once the runtime
+/// is gone, so this must only be called when no native execution is in flight.
+///
+/// Must not be called from within the runtime's own worker threads, otherwise the shutdown
+/// would deadlock/panic.
+pub fn release_runtime() {
+    let runtime = TOKIO_RUNTIME.lock().take();
+    if let Some(runtime) = runtime {
+        runtime.shutdown_timeout(Duration::from_secs(3));
+    }
 }
 
 /// Returns a short name for an OpStruct variant.
@@ -237,6 +267,7 @@ fn op_name(op: &OpStruct) -> &'static str {
         OpStruct::Explode(_) => "Explode",
         OpStruct::CsvScan(_) => "CsvScan",
         OpStruct::ShuffleScan(_) => "ShuffleScan",
+        OpStruct::BroadcastNestedLoopJoin(_) => "BroadcastNestedLoopJoin",
     }
 }
 
@@ -553,6 +584,16 @@ fn prepare_datafusion_session_context(
         }
     }
 
+    // Translate the Comet-namespaced row-level pushdown flag into the equivalent
+    // DataFusion session options. `pushdown_filters` enables the parquet reader's
+    // RowFilter evaluation during decode (late materialization); `reorder_filters`
+    // is only meaningful when pushdown_filters is on, so they move together.
+    if spark_config.get_bool(COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED) {
+        session_config = session_config
+            .set_str("datafusion.execution.parquet.pushdown_filters", "true")
+            .set_str("datafusion.execution.parquet.reorder_filters", "true");
+    }
+
     let runtime = rt_config.build()?;
 
     let mut session_ctx = SessionContext::new_with_config_rt(session_config, Arc::new(runtime));
@@ -580,7 +621,6 @@ fn register_datafusion_spark_function(session_ctx: &SessionContext) {
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkDateSub::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkFromUtcTimestamp::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkLastDay::default()));
-    session_ctx.register_udf(ScalarUDF::new_from_impl(SparkNextDay::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkToUtcTimestamp::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkSha1::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkConcat::default()));
@@ -599,8 +639,13 @@ fn register_datafusion_spark_function(session_ctx: &SessionContext) {
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkUrlEncode::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkTryUrlDecode::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkCsc::default()));
+    session_ctx.register_udf(ScalarUDF::new_from_impl(CometParseUrl::default()));
+    session_ctx.register_udf(ScalarUDF::new_from_impl(CometTryParseUrl::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkFactorial::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkSec::default()));
+    session_ctx.register_udf(ScalarUDF::new_from_impl(SparkRint::default()));
+    session_ctx.register_udf(ScalarUDF::new_from_impl(SparkBitShift::right_unsigned()));
+    session_ctx.register_udf(ScalarUDF::new_from_impl(SparkSoundex::default()));
 }
 
 /// Prepares arrow arrays for output.
@@ -1174,6 +1219,7 @@ pub extern "system" fn Java_org_apache_comet_Native_getRustThreadId(
 use crate::execution::columnar_to_row::ColumnarToRowContext;
 use arrow::ffi::{from_ffi, FFI_ArrowArray, FFI_ArrowSchema};
 use datafusion_spark::function::math::bin::SparkBin;
+use datafusion_spark::function::string::soundex::SparkSoundex;
 
 /// Initialize a native columnar to row converter.
 ///

@@ -209,7 +209,7 @@ class CometDppFallbackRepro3949Suite extends CometTestBase {
     def walk(p: SparkPlan): Unit = {
       p match {
         case s: CometShuffleExchangeExec =>
-          val tags = s.getTagValue(CometExplainInfo.EXTENSION_INFO).getOrElse(Set.empty[String])
+          val tags = s.getTagValue(CometExplainInfo.FALLBACK_REASONS).getOrElse(Set.empty[String])
           if (tags.exists(_.contains("Dynamic Partition Pruning"))) acc += s
         case _ =>
       }

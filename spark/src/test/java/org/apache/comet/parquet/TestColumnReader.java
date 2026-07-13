@@ -39,15 +39,15 @@ public class TestColumnReader {
     BufferAllocator allocator = new RootAllocator(Integer.MAX_VALUE);
 
     ValueVector vv = new IntVector("v1", allocator);
-    CometVector vector = new CometPlainVector(vv, false);
+    CometVector vector = new CometPlainVector(vv);
     assertTrue(vector.isFixedLength());
 
     vv = new FixedSizeBinaryVector("v2", allocator, 12);
-    vector = new CometPlainVector(vv, false);
+    vector = new CometPlainVector(vv);
     assertTrue(vector.isFixedLength());
 
     vv = new VarBinaryVector("v3", allocator);
-    vector = new CometPlainVector(vv, false);
+    vector = new CometPlainVector(vv);
     assertFalse(vector.isFixedLength());
   }
 }
