@@ -42,7 +42,6 @@ jni = "0.22.4"
 futures = { workspace = true }
 twox-hash = "2.1.2"
 rand = { workspace = true }
-hex = "0.4.3"
 base64 = "0.22.1"
 
 [dev-dependencies]
