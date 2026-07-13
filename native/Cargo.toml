@@ -61,13 +61,14 @@ aws-credential-types = "1.2.13"
 iceberg = { git = "https://github.com/apache/iceberg-rust", rev = "80a30d3" }
 iceberg-storage-opendal = { git = "https://github.com/apache/iceberg-rust", rev = "80a30d3", features = ["opendal-memory", "opendal-fs", "opendal-s3", "opendal-gcs", "opendal-oss", "opendal-azdls"] }
 reqsign-core = "3"
-# Ballista pinned to an apache/datafusion-ballista main rev that includes
+# Ballista pinned to the apache/datafusion-ballista 54.0.0-rc2 tag
+# (commit 18566b9c692ccb946b36e49590dd774d0a04e4a5), which includes
 # execute_physical_plan + the PhysicalPlan(bytes) submission variant the
 # distributed offload needs (PR #1924, merged).
-ballista = { git = "https://github.com/apache/datafusion-ballista", rev = "6472c7f21ad1a824b123037b2f18669bd1538bca", package = "ballista" }
-ballista-core = { git = "https://github.com/apache/datafusion-ballista", rev = "6472c7f21ad1a824b123037b2f18669bd1538bca", package = "ballista-core" }
-ballista-scheduler = { git = "https://github.com/apache/datafusion-ballista", rev = "6472c7f21ad1a824b123037b2f18669bd1538bca", package = "ballista-scheduler" }
-ballista-executor = { git = "https://github.com/apache/datafusion-ballista", rev = "6472c7f21ad1a824b123037b2f18669bd1538bca", package = "ballista-executor" }
+ballista = { git = "https://github.com/apache/datafusion-ballista", rev = "18566b9c692ccb946b36e49590dd774d0a04e4a5", package = "ballista" }
+ballista-core = { git = "https://github.com/apache/datafusion-ballista", rev = "18566b9c692ccb946b36e49590dd774d0a04e4a5", package = "ballista-core" }
+ballista-scheduler = { git = "https://github.com/apache/datafusion-ballista", rev = "18566b9c692ccb946b36e49590dd774d0a04e4a5", package = "ballista-scheduler" }
+ballista-executor = { git = "https://github.com/apache/datafusion-ballista", rev = "18566b9c692ccb946b36e49590dd774d0a04e4a5", package = "ballista-executor" }
 
 [profile.release]
 debug = true

@@ -1138,8 +1138,8 @@ dependencies = [
 
 [[package]]
 name = "ballista"
-version = "53.0.0"
-source = "git+https://github.com/apache/datafusion-ballista?rev=6472c7f21ad1a824b123037b2f18669bd1538bca#6472c7f21ad1a824b123037b2f18669bd1538bca"
+version = "54.0.0"
+source = "git+https://github.com/apache/datafusion-ballista?rev=18566b9c692ccb946b36e49590dd774d0a04e4a5#18566b9c692ccb946b36e49590dd774d0a04e4a5"
 dependencies = [
  "async-trait",
  "ballista-core",
@@ -1153,8 +1153,8 @@ dependencies = [
 
 [[package]]
 name = "ballista-core"
-version = "53.0.0"
-source = "git+https://github.com/apache/datafusion-ballista?rev=6472c7f21ad1a824b123037b2f18669bd1538bca#6472c7f21ad1a824b123037b2f18669bd1538bca"
+version = "54.0.0"
+source = "git+https://github.com/apache/datafusion-ballista?rev=18566b9c692ccb946b36e49590dd774d0a04e4a5#18566b9c692ccb946b36e49590dd774d0a04e4a5"
 dependencies = [
  "arrow-flight",
  "async-trait",
@@ -1188,8 +1188,8 @@ dependencies = [
 
 [[package]]
 name = "ballista-executor"
-version = "53.0.0"
-source = "git+https://github.com/apache/datafusion-ballista?rev=6472c7f21ad1a824b123037b2f18669bd1538bca#6472c7f21ad1a824b123037b2f18669bd1538bca"
+version = "54.0.0"
+source = "git+https://github.com/apache/datafusion-ballista?rev=18566b9c692ccb946b36e49590dd774d0a04e4a5#18566b9c692ccb946b36e49590dd774d0a04e4a5"
 dependencies = [
  "arrow",
  "arrow-flight",
@@ -1203,6 +1203,7 @@ dependencies = [
  "futures",
  "libc",
  "log",
+ "lru",
  "memory-stats",
  "mimalloc",
  "parking_lot",
@@ -1221,8 +1222,8 @@ dependencies = [
 
 [[package]]
 name = "ballista-scheduler"
-version = "53.0.0"
-source = "git+https://github.com/apache/datafusion-ballista?rev=6472c7f21ad1a824b123037b2f18669bd1538bca#6472c7f21ad1a824b123037b2f18669bd1538bca"
+version = "54.0.0"
+source = "git+https://github.com/apache/datafusion-ballista?rev=18566b9c692ccb946b36e49590dd774d0a04e4a5#18566b9c692ccb946b36e49590dd774d0a04e4a5"
 dependencies = [
  "arrow-flight",
  "async-trait",
@@ -4637,6 +4638,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "lru"
+version = "0.18.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0b6180140927ee907000b0aa540091f6ea512ead4447c92b8fc35bc72788a5a6"
+dependencies = [
+ "hashbrown 0.17.1",
+]
+
+[[package]]
 name = "lru-slab"
 version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4836,7 +4846,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5790,7 +5800,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "03da047801ff44bb6a4d407d4860c05fd70bb81714e6b2f3812603d5b145b042"
 dependencies = [
  "heck",
- "itertools 0.14.0",
+ "itertools 0.13.0",
  "log",
  "multimap",
  "petgraph",
@@ -5811,7 +5821,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b570b25f7617e43d59005d0990ccb79e950a423952cea19671b7a876da390adf"
 dependencies = [
  "anyhow",
- "itertools 0.14.0",
+ "itertools 0.13.0",
  "proc-macro2",
  "quote",
  "syn 2.0.118",
@@ -7051,7 +7061,7 @@ dependencies = [
  "cfg-if",
  "libc",
  "psm",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
