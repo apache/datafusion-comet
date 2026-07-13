@@ -466,11 +466,12 @@ case class CometScanRule(session: SparkSession)
         // We do not enumerate them here: the readSchema allow-list in DataTypeSupport already
         // falls back on any type Comet does not support, which is more future-proof than a deny
         // list. This gate only bounds the format version.
-        val formatVersionSupported = IcebergReflection.getFormatVersion(metadata.table) match {
-          case Some(formatVersion) =>
-            if (formatVersion > 3) {
+        val formatVersion = IcebergReflection.getFormatVersion(metadata.table)
+        val formatVersionSupported = formatVersion match {
+          case Some(v) =>
+            if (v > 3) {
               fallbackReasons += "Iceberg table format version " +
-                s"$formatVersion is not supported. " +
+                s"$v is not supported. " +
                 "Comet supports Iceberg table format V1, V2, and V3"
               false
             } else {
@@ -487,24 +488,30 @@ case class CometScanRule(session: SparkSession)
           fallbackReasons += "Iceberg table encryption is not supported by Comet's native reader"
         }
 
-        // iceberg-rust does not synthesize V3 initial-default values for columns absent from a
-        // data file, so a scan projecting such a column must fall back. Reflection failure also
-        // falls back rather than risk a native crash.
+        // Column default values are a V3 spec feature, so V1/V2 tables cannot have them and need
+        // no check. Only inspect V3 tables. iceberg-rust does not synthesize a V3 initial-default
+        // for a column absent from a data file, so a scan projecting such a column must fall back.
+        // A V3 table implies an Iceberg version new enough to expose initialDefault(), so a
+        // reflection failure here is unexpected and also falls back rather than risk a crash.
         val defaultValuesSupported =
-          try {
-            val defaulted = IcebergReflection.columnsWithInitialDefault(metadata.scanSchema)
-            if (defaulted.nonEmpty) {
-              fallbackReasons += "Iceberg column(s) with V3 default values are not yet supported " +
-                s"by Comet's native reader: ${defaulted.mkString(", ")}"
-              false
-            } else {
-              true
+          if (!formatVersion.exists(_ >= 3)) {
+            true
+          } else {
+            try {
+              val defaulted = IcebergReflection.columnsWithInitialDefault(metadata.scanSchema)
+              if (defaulted.nonEmpty) {
+                fallbackReasons += "Iceberg column(s) with V3 default values are not yet " +
+                  s"supported by Comet's native reader: ${defaulted.mkString(", ")}"
+                false
+              } else {
+                true
+              }
+            } catch {
+              case e: Exception =>
+                fallbackReasons += "Iceberg reflection failure: could not verify V3 default " +
+                  s"values: ${e.getMessage}"
+                false
             }
-          } catch {
-            case e: Exception =>
-              fallbackReasons += "Iceberg reflection failure: could not verify V3 default " +
-                s"values: ${e.getMessage}"
-              false
           }
 
         // Comet serializes the whole table/scan schema to native, not just projected columns, so a
