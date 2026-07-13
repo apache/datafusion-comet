@@ -48,3 +48,24 @@ SELECT filter(arr, x -> x IS NOT NULL) FROM test_array_filter_captured
 -- the null elements of `arr`.
 query
 SELECT filter(arr, x -> c IS NOT NULL) FROM test_array_filter_captured
+
+-- IsNotNull on an expression of the lambda var: the operand is not a bare NamedLambdaVariable,
+-- so the guard must reject it and the codegen dispatcher must run Spark's semantics.
+query
+SELECT filter(arr, x -> (x + 1) IS NOT NULL) FROM test_array_filter_captured
+
+-- Compound predicate combining IsNotNull with another condition: structural match must fail so
+-- Spark's own evaluation is used.
+query
+SELECT filter(arr, x -> x IS NOT NULL AND x > 1) FROM test_array_filter_captured
+
+-- Boundary cases for the fast path: null array input and an all-nulls array. array_compact must
+-- propagate the row-level null and turn the all-nulls array into an empty array.
+statement
+CREATE TABLE test_array_filter_boundary(arr array<int>) USING parquet
+
+statement
+INSERT INTO test_array_filter_boundary VALUES (NULL), (array()), (array(NULL, NULL))
+
+query
+SELECT filter(arr, x -> x IS NOT NULL) FROM test_array_filter_boundary
