@@ -15,7 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow::array::{Array, ArrayRef, Int32Array};
+use arrow::array::builder::Int32Builder;
+use arrow::array::{Array, ArrayRef, GenericListArray, Int32Array, OffsetSizeTrait};
 use arrow::datatypes::{DataType, Field};
 use datafusion::common::{exec_err, DataFusionError, Result as DataFusionResult, ScalarValue};
 use datafusion::logical_expr::{
@@ -98,30 +99,14 @@ fn spark_size_array(array: &ArrayRef) -> Result<ArrayRef, DataFusionError> {
                 .as_any()
                 .downcast_ref::<arrow::array::ListArray>()
                 .ok_or_else(|| DataFusionError::Internal("Expected ListArray".to_string()))?;
-
-            for i in 0..list_array.len() {
-                if list_array.is_null(i) {
-                    builder.append_value(-1); // Spark behavior: return -1 for null
-                } else {
-                    let list_len = list_array.value(i).len() as i32;
-                    builder.append_value(list_len);
-                }
-            }
+            append_list_sizes(&mut builder, list_array);
         }
         DataType::LargeList(_) => {
             let list_array = array
                 .as_any()
                 .downcast_ref::<arrow::array::LargeListArray>()
                 .ok_or_else(|| DataFusionError::Internal("Expected LargeListArray".to_string()))?;
-
-            for i in 0..list_array.len() {
-                if list_array.is_null(i) {
-                    builder.append_value(-1); // Spark behavior: return -1 for null
-                } else {
-                    let list_len = list_array.value(i).len() as i32;
-                    builder.append_value(list_len);
-                }
-            }
+            append_list_sizes(&mut builder, list_array);
         }
         DataType::FixedSizeList(_, size) => {
             let fixed_list_array = array
@@ -163,6 +148,23 @@ fn spark_size_array(array: &ArrayRef) -> Result<ArrayRef, DataFusionError> {
     }
 
     Ok(Arc::new(builder.finish()))
+}
+
+/// Append the element count of each list row to `builder`, using `-1` for null
+/// rows (Spark's behavior). `value_length` reads the row's element count from the
+/// offset buffer, avoiding the per-row allocation that `value(i).len()` would incur
+/// from materializing a sliced array.
+fn append_list_sizes<O: OffsetSizeTrait>(
+    builder: &mut Int32Builder,
+    list_array: &GenericListArray<O>,
+) {
+    for i in 0..list_array.len() {
+        if list_array.is_null(i) {
+            builder.append_value(-1); // Spark behavior: return -1 for null
+        } else {
+            builder.append_value(list_array.value_length(i).as_usize() as i32);
+        }
+    }
 }
 
 fn spark_size_scalar(scalar: &ScalarValue) -> Result<ScalarValue, DataFusionError> {
