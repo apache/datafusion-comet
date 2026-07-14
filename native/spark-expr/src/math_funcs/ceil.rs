@@ -78,7 +78,20 @@ pub fn spark_ceil(
 #[inline]
 fn decimal_ceil_f(scale: &i8) -> impl Fn(i128) -> i128 {
     let div = 10_i128.pow_wrapping(*scale as u32);
-    move |x: i128| div_ceil(x, div)
+    // 128-bit division is a compiler intrinsic call, while 64-bit division maps to a single
+    // hardware instruction. Decimals with precision <= 18 always fit in 64 bits, so take that
+    // path whenever both the value and the divisor do, and fall back to 128-bit otherwise.
+    let div_i64 = i64::try_from(div).ok();
+    move |x: i128| match (div_i64, i64::try_from(x)) {
+        (Some(d), Ok(x)) => {
+            let quotient = x / d;
+            // `d` is positive, so a positive remainder means the truncated quotient is below
+            // the true value and has to be rounded up.
+            let adjusted = if x % d > 0 { quotient + 1 } else { quotient };
+            adjusted as i128
+        }
+        _ => div_ceil(x, div),
+    }
 }
 
 #[cfg(test)]
