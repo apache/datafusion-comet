@@ -30,19 +30,27 @@ import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
+import org.apache.comet.rules.CometScanContrib
 
 /**
- * Reflection-only bridge for optional Lance Spark integration.
+ * `CometScanContrib` implementation for Lance V2 scans.
  *
- * Default Comet builds must not depend on Lance classes. This object treats both Lance Spark and
- * the Comet contrib-lance scaffold as optional runtime classes and falls back cleanly when either
- * side is absent.
+ * The class is loaded through `ServiceLoader` from the optional contrib-lance profile. It keeps
+ * Lance Spark references reflective so building this contrib does not require a lance-spark
+ * compile-time dependency.
  */
-object LanceIntegration extends Logging {
+class LanceScanRuleExtension extends CometScanContrib with Logging {
 
   private val LanceScanClassName = "org.lance.spark.read.LanceScan"
   private val NativeScanPlanMethod = "nativeScanPlan"
-  private val ContribSupportModule = "org.apache.comet.lance.CometLanceSupport$"
+
+  override def tryTransform(scanExec: BatchScanExec): Option[SparkPlan] = {
+    if (!isLanceScan(scanExec.scan)) {
+      return None
+    }
+
+    Some(tryCreateNativeScan(scanExec).getOrElse(scanExec))
+  }
 
   def isLanceScan(scan: Any): Boolean = {
     scan != null && {
@@ -58,7 +66,25 @@ object LanceIntegration extends Logging {
       None
     }
 
-  def tryCreateNativeScan(scanExec: BatchScanExec): Option[SparkPlan] = {
+  def invokeNativeScanPlan(scan: Any): Option[Any] = {
+    try {
+      findNoArgMethod(scan.getClass, NativeScanPlanMethod)
+        .flatMap { method =>
+          optionalResult(method.invoke(scan))
+        }
+    } catch {
+      case e: InvocationTargetException =>
+        logWarning(
+          s"Native Lance scan disabled because $NativeScanPlanMethod() threw: " +
+            s"${Option(e.getCause).map(_.getMessage).getOrElse(e.getMessage)}")
+        None
+      case NonFatal(e) =>
+        logWarning(s"Native Lance scan disabled by reflection failure: $e")
+        None
+    }
+  }
+
+  private def tryCreateNativeScan(scanExec: BatchScanExec): Option[SparkPlan] = {
     if (!CometConf.COMET_LANCE_NATIVE_ENABLED.get(scanExec.conf)) {
       withFallbackReason(
         scanExec,
@@ -84,54 +110,16 @@ object LanceIntegration extends Logging {
         return None
     }
 
-    val support = loadContribSupport match {
-      case Some(module) => module
-      case None =>
+    try {
+      CometLanceSupport.tryTransform(scanExec, nativePlan.asInstanceOf[AnyRef])
+    } catch {
+      case NonFatal(e) =>
+        logWarning(
+          "Native Lance scan disabled because contrib-lance threw while creating the scan",
+          e)
         withFallbackReason(
           scanExec,
-          "Native Lance scan disabled because the contrib-lance build profile is not present")
-        return None
-    }
-
-    try {
-      val method =
-        support.getClass.getMethod("tryTransform", classOf[BatchScanExec], classOf[Object])
-      method.invoke(support, scanExec, nativePlan.asInstanceOf[AnyRef]) match {
-        case plan: Option[_] => plan.asInstanceOf[Option[SparkPlan]]
-        case other =>
-          logWarning(
-            "Native Lance scan disabled because contrib-lance returned unexpected " +
-              s"result: ${Option(other).map(_.getClass.getName).getOrElse("null")}")
-          None
-      }
-    } catch {
-      case e: InvocationTargetException =>
-        val cause = Option(e.getCause).getOrElse(e)
-        logWarning(
-          "Native Lance scan disabled because contrib-lance threw during reflection: " +
-            s"${cause.getClass.getName}: ${cause.getMessage}",
-          cause)
-        None
-      case NonFatal(e) =>
-        logWarning(s"Native Lance scan disabled by contrib-lance reflection failure: $e")
-        None
-    }
-  }
-
-  private[comet] def invokeNativeScanPlan(scan: Any): Option[Any] = {
-    try {
-      findNoArgMethod(scan.getClass, NativeScanPlanMethod)
-        .flatMap { method =>
-          optionalResult(method.invoke(scan))
-        }
-    } catch {
-      case e: InvocationTargetException =>
-        logWarning(
-          s"Native Lance scan disabled because $NativeScanPlanMethod() threw: " +
-            s"${Option(e.getCause).map(_.getMessage).getOrElse(e.getMessage)}")
-        None
-      case NonFatal(e) =>
-        logWarning(s"Native Lance scan disabled by reflection failure: $e")
+          s"Native Lance scan disabled because contrib-lance threw: ${e.getMessage}")
         None
     }
   }
@@ -162,15 +150,6 @@ object LanceIntegration extends Logging {
     }
     None
   }
-
-  private def loadContribSupport: Option[AnyRef] =
-    loadClass(ContribSupportModule).flatMap { clazz =>
-      try {
-        Some(clazz.getField("MODULE$").get(null).asInstanceOf[AnyRef])
-      } catch {
-        case NonFatal(_) => None
-      }
-    }
 
   private def loadClass(className: String): Option[Class[_]] = {
     try {

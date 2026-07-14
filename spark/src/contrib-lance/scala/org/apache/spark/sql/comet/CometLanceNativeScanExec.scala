@@ -44,7 +44,7 @@ case class CometLanceNativeScanExec(
     override val sourceKey: String,
     lanceDescriptor: LanceNativeScanDescriptor)
     extends CometLeafExec
-    with CometLanceNativeScanLike {
+    with CometScanWithPlanData {
 
   override val supportsColumnar: Boolean = true
 

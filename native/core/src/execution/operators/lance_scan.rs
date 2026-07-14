@@ -17,7 +17,6 @@
 
 //! Native Lance table scan operator.
 
-use std::any::Any;
 use std::collections::HashMap;
 use std::fmt;
 use std::pin::Pin;
@@ -39,6 +38,7 @@ use datafusion::physical_plan::{
 use futures::future::{BoxFuture, FutureExt};
 use futures::Stream;
 use lance::dataset::builder::DatasetBuilder;
+use lance::deps::datafusion::execution::SendableRecordBatchStream as LanceSendableRecordBatchStream;
 
 use crate::execution::operators::ExecutionError;
 
@@ -172,17 +172,17 @@ impl LanceScanExec {
             scanner.batch_size(batch_size);
         }
 
-        Ok(scanner.try_into_stream().await.map_err(lance_error)?.into())
+        let lance_stream: LanceSendableRecordBatchStream =
+            scanner.try_into_stream().await.map_err(lance_error)?.into();
+        Ok(Box::pin(LanceRecordBatchStreamAdapter {
+            inner: lance_stream,
+        }))
     }
 }
 
 impl ExecutionPlan for LanceScanExec {
     fn name(&self) -> &str {
         "LanceScanExec"
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        self
     }
 
     fn schema(&self) -> SchemaRef {
@@ -253,6 +253,28 @@ impl DisplayAs for LanceScanExec {
             self.spark_partition_index,
             self.fragment_ids.len()
         )
+    }
+}
+
+struct LanceRecordBatchStreamAdapter {
+    inner: LanceSendableRecordBatchStream,
+}
+
+impl Stream for LanceRecordBatchStreamAdapter {
+    type Item = DFResult<RecordBatch>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.get_mut();
+        this.inner
+            .as_mut()
+            .poll_next(cx)
+            .map(|poll| poll.map(|result| result.map_err(lance_error)))
+    }
+}
+
+impl RecordBatchStream for LanceRecordBatchStreamAdapter {
+    fn schema(&self) -> SchemaRef {
+        self.inner.schema()
     }
 }
 

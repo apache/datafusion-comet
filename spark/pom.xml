@@ -350,6 +350,20 @@ under the License.
                   </sources>
                 </configuration>
               </execution>
+              <execution>
+                <id>add-contrib-lance-resources</id>
+                <phase>generate-resources</phase>
+                <goals>
+                  <goal>add-resource</goal>
+                </goals>
+                <configuration>
+                  <resources>
+                    <resource>
+                      <directory>src/contrib-lance/resources</directory>
+                    </resource>
+                  </resources>
+                </configuration>
+              </execution>
             </executions>
           </plugin>
         </plugins>

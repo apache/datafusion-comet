@@ -23,7 +23,7 @@ import java.io.File
 import java.net.URLClassLoader
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
-import java.util.ServiceLoader
+import java.util.{Collections, ServiceLoader}
 
 import scala.jdk.CollectionConverters._
 
@@ -122,19 +122,26 @@ class CometScanWithPlanDataSuite extends AnyFunSuite {
     assert(perPartitionByKey.isEmpty)
   }
 
-  test("PlanDataInjector registry contains only built-in injectors on a default build") {
-    // No contrib ships a META-INF/services/...PlanDataInjector on the default test classpath, so
-    // ServiceLoader discovery adds nothing and the registry is exactly the two built-ins.
+  test("PlanDataInjector registry keeps built-ins and discovers contrib injectors when present") {
     val injectors = PlanDataInjector.injectors
+    val builtin = Set(IcebergPlanDataInjector, NativeScanPlanDataInjector)
     assert(
       injectors.contains(IcebergPlanDataInjector),
       "registry must keep the built-in Iceberg injector")
     assert(
       injectors.contains(NativeScanPlanDataInjector),
       "registry must keep the built-in native-scan injector")
-    assert(
-      injectors.forall(i => i == IcebergPlanDataInjector || i == NativeScanPlanDataInjector),
-      s"default build must carry no contrib injectors, got: ${injectors.map(_.getClass.getName)}")
+
+    val contribInjectors = injectors.filterNot(builtin.contains).map(_.getClass.getName)
+    if (classAvailable("org.apache.spark.sql.comet.LancePlanDataInjector")) {
+      assert(
+        contribInjectors.contains("org.apache.spark.sql.comet.LancePlanDataInjector"),
+        s"contrib-lance build should discover the Lance injector, got: $contribInjectors")
+    } else {
+      assert(
+        contribInjectors.isEmpty,
+        s"default build must carry no contrib injectors, got: $contribInjectors")
+    }
   }
 
   test("a contrib PlanDataInjector is discovered via ServiceLoader (META-INF/services)") {
@@ -154,7 +161,16 @@ class CometScanWithPlanDataSuite extends AnyFunSuite {
         new File(servicesDir, classOf[PlanDataInjector].getName).toPath,
         (classOf[TestStubPlanDataInjector].getName + "\n").getBytes(StandardCharsets.UTF_8))
 
-      val loader = new URLClassLoader(Array(svcDir.toURI.toURL), getClass.getClassLoader)
+      val serviceResource = "META-INF/services/" + classOf[PlanDataInjector].getName
+      val serviceUrl = new File(servicesDir, classOf[PlanDataInjector].getName).toURI.toURL
+      val loader = new URLClassLoader(Array(svcDir.toURI.toURL), getClass.getClassLoader) {
+        override def getResources(name: String): java.util.Enumeration[java.net.URL] =
+          if (name == serviceResource) {
+            Collections.enumeration(Collections.singletonList(serviceUrl))
+          } else {
+            super.getResources(name)
+          }
+      }
       val discovered =
         ServiceLoader.load(classOf[PlanDataInjector], loader).asScala.toSeq
       assert(
@@ -168,6 +184,14 @@ class CometScanWithPlanDataSuite extends AnyFunSuite {
       del(svcDir)
     }
   }
+
+  private def classAvailable(className: String): Boolean =
+    try {
+      Class.forName(className, false, getClass.getClassLoader)
+      true
+    } catch {
+      case _: ClassNotFoundException | _: NoClassDefFoundError => false
+    }
 }
 
 /**

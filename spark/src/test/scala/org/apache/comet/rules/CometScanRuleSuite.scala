@@ -19,7 +19,7 @@
 
 package org.apache.comet.rules
 
-import java.util.{Arrays, LinkedHashMap, Optional => JOptional}
+import java.util.{Arrays, LinkedHashMap, Optional => JOptional, ServiceLoader}
 
 import scala.jdk.CollectionConverters._
 import scala.util.Random
@@ -32,7 +32,6 @@ import org.apache.spark.sql.execution.adaptive.QueryStageExec
 import org.apache.spark.sql.types.{DataTypes, StructField, StructType}
 
 import org.apache.comet.CometConf
-import org.apache.comet.lance.LanceIntegration
 import org.apache.comet.serde.OperatorOuterClass
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
 
@@ -144,7 +143,11 @@ class CometScanRuleSuite extends CometTestBase {
     assert(!CometConf.COMET_LANCE_NATIVE_ENABLED.get())
   }
 
-  test("LanceIntegration nativeScanPlan reflection handles fallback paths") {
+  test("Lance scan-rule extension nativeScanPlan reflection handles fallback paths") {
+    val extension = loadContribLanceScanExtension.getOrElse {
+      cancel("contrib-lance profile is not enabled")
+    }
+
     class WithNativeScanPlan {
       def nativeScanPlan(): String = "native-plan"
     }
@@ -172,13 +175,34 @@ class CometScanRuleSuite extends CometTestBase {
 
     cases.foreach { case (name, scan, expected) =>
       assert(
-        LanceIntegration.invokeNativeScanPlan(scan).map(_.toString) == expected,
+        invokeNativeScanPlan(extension, scan).map(_.toString) == expected,
         s"unexpected reflection result for $name")
     }
 
     val nonLanceScan = new WithNativeScanPlan
-    assert(!LanceIntegration.isLanceScan(nonLanceScan))
-    assert(LanceIntegration.nativeScanPlan(nonLanceScan).isEmpty)
+    assert(!isLanceScan(extension, nonLanceScan))
+    assert(nativeScanPlan(extension, nonLanceScan).isEmpty)
+  }
+
+  test("Lance contrib services are discoverable when contrib-lance profile is enabled") {
+    loadContribLanceScanExtension.getOrElse {
+      cancel("contrib-lance profile is not enabled")
+    }
+
+    val scanContribs =
+      ServiceLoader.load(classOf[CometScanContrib], getClass.getClassLoader).asScala.toSeq
+    assert(
+      scanContribs.exists(_.getClass.getName == "org.apache.comet.lance.LanceScanRuleExtension"),
+      s"expected Lance scan-rule extension, got: ${scanContribs.map(_.getClass.getName)}")
+
+    val planDataInjectorClass =
+      Class.forName("org.apache.spark.sql.comet.PlanDataInjector", false, getClass.getClassLoader)
+    val planDataInjectors =
+      ServiceLoader.load(planDataInjectorClass, getClass.getClassLoader).asScala.toSeq
+    assert(
+      planDataInjectors.exists(
+        _.getClass.getName == "org.apache.spark.sql.comet.LancePlanDataInjector"),
+      s"expected Lance plan-data injector, got: ${planDataInjectors.map(_.getClass.getName)}")
   }
 
   test("Lance native scan serde reflects descriptor common fields and split fragments") {
@@ -277,6 +301,33 @@ class CometScanRuleSuite extends CometTestBase {
         .get(null)
         .asInstanceOf[AnyRef]
     }.toOption
+
+  private def loadContribLanceScanExtension: Option[AnyRef] =
+    Try {
+      Class
+        .forName("org.apache.comet.lance.LanceScanRuleExtension")
+        .getConstructor()
+        .newInstance()
+        .asInstanceOf[AnyRef]
+    }.toOption
+
+  private def invokeNativeScanPlan(extension: AnyRef, scan: Any): Option[Any] =
+    extension.getClass
+      .getMethod("invokeNativeScanPlan", classOf[Object])
+      .invoke(extension, scan.asInstanceOf[AnyRef])
+      .asInstanceOf[Option[Any]]
+
+  private def isLanceScan(extension: AnyRef, scan: Any): Boolean =
+    extension.getClass
+      .getMethod("isLanceScan", classOf[Object])
+      .invoke(extension, scan.asInstanceOf[AnyRef])
+      .asInstanceOf[Boolean]
+
+  private def nativeScanPlan(extension: AnyRef, scan: Any): Option[Any] =
+    extension.getClass
+      .getMethod("nativeScanPlan", classOf[Object])
+      .invoke(extension, scan.asInstanceOf[AnyRef])
+      .asInstanceOf[Option[Any]]
 
   private def serializeFakeLanceDescriptor(
       serde: AnyRef,
