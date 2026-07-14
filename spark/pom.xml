@@ -525,6 +525,20 @@ under the License.
                   </sources>
                 </configuration>
               </execution>
+              <execution>
+                <id>add-contrib-lance-resources</id>
+                <phase>generate-resources</phase>
+                <goals>
+                  <goal>add-resource</goal>
+                </goals>
+                <configuration>
+                  <resources>
+                    <resource>
+                      <directory>src/contrib-lance/resources</directory>
+                    </resource>
+                  </resources>
+                </configuration>
+              </execution>
             </executions>
           </plugin>
         </plugins>
@@ -668,13 +682,11 @@ under the License.
                   <pattern>org.apache.arrow</pattern>
                   <shadedPattern>${comet.shade.packageName}.arrow</shadedPattern>
                   <excludes>
-                    <!-- Keep the entire C Data Interface unshaded. Spark does not ship
-                       arrow-c-data, so no classpath clash is possible. Shading a subset
-                       splits package-private access between the shaded and original
-                       packages (e.g. Data -> ArrayStreamExporter constructor) and breaks
-                       JNI lookups in jni_wrapper.cc that reference these classes by literal
-                       name. -->
-                    <exclude>org/apache/arrow/c/**</exclude>
+                    <!-- The bundled native library exports fixed
+                       Java_org_apache_arrow_c_jni_* symbols. These wrappers only use primitive
+                       values and their own package types, so they can remain unshaded while the
+                       Arrow C model and importer classes are relocated. -->
+                    <exclude>org/apache/arrow/c/jni/**</exclude>
                   </excludes>
                 </relocation>
                 <relocation>

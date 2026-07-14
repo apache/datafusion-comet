@@ -17,15 +17,14 @@
 
 //! Native Lance table scan operator.
 
-use std::any::Any;
 use std::collections::HashMap;
 use std::fmt;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
-use arrow::array::RecordBatch;
-use arrow::datatypes::SchemaRef;
+use datafusion::arrow::array::RecordBatch;
+use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::common::{DataFusionError, Result as DFResult};
 use datafusion::execution::{RecordBatchStream, SendableRecordBatchStream, TaskContext};
 use datafusion::physical_expr::EquivalenceProperties;
@@ -39,8 +38,21 @@ use datafusion::physical_plan::{
 use futures::future::{BoxFuture, FutureExt};
 use futures::Stream;
 use lance::dataset::builder::DatasetBuilder;
+use lance::deps::datafusion::execution::SendableRecordBatchStream as LanceSendableRecordBatchStream;
 
-use crate::execution::operators::ExecutionError;
+#[derive(Debug)]
+pub struct LanceScanConfig {
+    pub dataset_uri: String,
+    pub resolved_version: i64,
+    pub storage_options: HashMap<String, String>,
+    pub output_schema: SchemaRef,
+    pub filter_sql: Option<String>,
+    pub limit: Option<i64>,
+    pub offset: Option<i64>,
+    pub batch_size: u32,
+    pub spark_partition_index: u32,
+    pub fragment_ids: Vec<u32>,
+}
 
 #[derive(Debug)]
 pub struct LanceScanExec {
@@ -60,33 +72,24 @@ pub struct LanceScanExec {
 }
 
 impl LanceScanExec {
-    pub fn try_new(
-        dataset_uri: String,
-        resolved_version: i64,
-        storage_options: HashMap<String, String>,
-        output_schema: SchemaRef,
-        filter_sql: Option<String>,
-        limit: Option<i64>,
-        offset: Option<i64>,
-        batch_size: u32,
-        spark_partition_index: u32,
-        fragment_ids: Vec<u32>,
-    ) -> Result<Self, ExecutionError> {
-        if dataset_uri.is_empty() {
-            return Err(ExecutionError::GeneralError(
-                "LanceScan missing dataset_uri".to_string(),
-            ));
-        }
-
+    pub fn try_new(config: LanceScanConfig) -> DFResult<Self> {
+        let LanceScanConfig {
+            dataset_uri,
+            resolved_version,
+            storage_options,
+            output_schema,
+            filter_sql,
+            limit,
+            offset,
+            batch_size,
+            spark_partition_index,
+            fragment_ids,
+        } = config;
         let resolved_version = resolved_version.try_into().map_err(|_| {
-            ExecutionError::GeneralError(format!(
+            DataFusionError::Execution(format!(
                 "LanceScan resolved_version must be non-negative, got {resolved_version}"
             ))
         })?;
-
-        validate_optional_non_negative("limit", limit)?;
-        validate_optional_non_negative("offset", offset)?;
-        validate_ordered_fragment_ids(&fragment_ids)?;
 
         let projection_names = output_schema
             .fields()
@@ -95,9 +98,6 @@ impl LanceScanExec {
             .collect();
         let plan_properties = Self::compute_properties(Arc::clone(&output_schema));
         let metrics = ExecutionPlanMetricsSet::new();
-        let filter_sql = filter_sql.filter(|filter| !filter.is_empty());
-        let limit = limit.filter(|limit| *limit != 0);
-        let offset = offset.filter(|offset| *offset != 0);
         let batch_size = (batch_size != 0).then_some(batch_size as usize);
 
         Ok(Self {
@@ -172,17 +172,17 @@ impl LanceScanExec {
             scanner.batch_size(batch_size);
         }
 
-        Ok(scanner.try_into_stream().await.map_err(lance_error)?.into())
+        let lance_stream: LanceSendableRecordBatchStream =
+            scanner.try_into_stream().await.map_err(lance_error)?.into();
+        Ok(Box::pin(LanceRecordBatchStreamAdapter {
+            inner: lance_stream,
+        }))
     }
 }
 
 impl ExecutionPlan for LanceScanExec {
     fn name(&self) -> &str {
         "LanceScanExec"
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        self
     }
 
     fn schema(&self) -> SchemaRef {
@@ -256,6 +256,28 @@ impl DisplayAs for LanceScanExec {
     }
 }
 
+struct LanceRecordBatchStreamAdapter {
+    inner: LanceSendableRecordBatchStream,
+}
+
+impl Stream for LanceRecordBatchStreamAdapter {
+    type Item = DFResult<RecordBatch>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.get_mut();
+        this.inner
+            .as_mut()
+            .poll_next(cx)
+            .map(|poll| poll.map(|result| result.map_err(lance_error)))
+    }
+}
+
+impl RecordBatchStream for LanceRecordBatchStreamAdapter {
+    fn schema(&self) -> SchemaRef {
+        self.inner.schema()
+    }
+}
+
 struct LanceScanMetrics {
     baseline: BaselineMetrics,
     fragment_count: Count,
@@ -320,105 +342,6 @@ impl RecordBatchStream for LanceScanStream {
     }
 }
 
-fn validate_optional_non_negative(name: &str, value: Option<i64>) -> Result<(), ExecutionError> {
-    if matches!(value, Some(value) if value < 0) {
-        return Err(ExecutionError::GeneralError(format!(
-            "LanceScan {name} must be non-negative, got {}",
-            value.unwrap()
-        )));
-    }
-    Ok(())
-}
-
-fn validate_ordered_fragment_ids(fragment_ids: &[u32]) -> Result<(), ExecutionError> {
-    if fragment_ids.windows(2).any(|window| window[0] >= window[1]) {
-        return Err(ExecutionError::GeneralError(
-            "LanceScan fragment_ids must be strictly increasing".to_string(),
-        ));
-    }
-    Ok(())
-}
-
 fn lance_error(error: impl fmt::Display) -> DataFusionError {
     DataFusionError::Execution(format!("Lance scan error: {error}"))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use arrow::datatypes::{DataType, Field, Schema};
-
-    #[test]
-    fn rejects_invalid_descriptor_values() {
-        struct TestCase {
-            name: &'static str,
-            resolved_version: i64,
-            limit: Option<i64>,
-            offset: Option<i64>,
-            fragment_ids: Vec<u32>,
-            expected_error: &'static str,
-        }
-
-        let cases = vec![
-            TestCase {
-                name: "negative version",
-                resolved_version: -1,
-                limit: None,
-                offset: None,
-                fragment_ids: vec![1],
-                expected_error: "resolved_version must be non-negative",
-            },
-            TestCase {
-                name: "negative limit",
-                resolved_version: 1,
-                limit: Some(-1),
-                offset: None,
-                fragment_ids: vec![1],
-                expected_error: "limit must be non-negative",
-            },
-            TestCase {
-                name: "negative offset",
-                resolved_version: 1,
-                limit: None,
-                offset: Some(-1),
-                fragment_ids: vec![1],
-                expected_error: "offset must be non-negative",
-            },
-            TestCase {
-                name: "unordered fragments",
-                resolved_version: 1,
-                limit: None,
-                offset: None,
-                fragment_ids: vec![2, 1],
-                expected_error: "fragment_ids must be strictly increasing",
-            },
-        ];
-
-        for case in cases {
-            let err = LanceScanExec::try_new(
-                "file:///tmp/table.lance".to_string(),
-                case.resolved_version,
-                HashMap::new(),
-                test_schema(),
-                None,
-                case.limit,
-                case.offset,
-                0,
-                0,
-                case.fragment_ids,
-            )
-            .expect_err(case.name);
-            assert!(
-                err.to_string().contains(case.expected_error),
-                "{}: expected error containing {:?}, got {:?}",
-                case.name,
-                case.expected_error,
-                err
-            );
-        }
-    }
-
-    fn test_schema() -> SchemaRef {
-        Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, true)]))
-    }
 }

@@ -22,8 +22,6 @@ pub use crate::errors::ExecutionError;
 pub use aligned_stream_reader::*;
 pub use copy::*;
 pub use iceberg_scan::*;
-#[cfg(feature = "contrib-lance")]
-pub use lance_scan::LanceScanExec;
 pub use scan::*;
 
 mod aligned_stream_reader;
@@ -36,8 +34,6 @@ mod iceberg_common;
 mod iceberg_scan;
 mod iceberg_write;
 pub use iceberg_write::IcebergWriteExec;
-#[cfg(feature = "contrib-lance")]
-mod lance_scan;
 mod parquet_writer;
 pub use parquet_writer::{ParquetCompression, ParquetWriterExec};
 mod csv_scan;

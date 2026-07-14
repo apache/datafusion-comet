@@ -21,12 +21,19 @@ package org.apache.comet.lance
 
 import scala.collection.mutable.ListBuffer
 
+import org.apache.spark.rdd.RDD
+import org.apache.spark.sql.catalyst.InternalRow
+import org.apache.spark.sql.catalyst.expressions.{Attribute, SortOrder}
 import org.apache.spark.sql.comet.CometBatchScanExec
+import org.apache.spark.sql.catalyst.plans.physical.Partitioning
 import org.apache.spark.sql.execution.SparkPlan
+import org.apache.spark.sql.execution.LeafExecNode
 import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
+import org.apache.spark.sql.vectorized.ColumnarBatch
 
 import org.apache.comet.CometSparkSessionExtensions.withFallbackReasons
-import org.apache.comet.serde.OperatorOuterClass.Operator
+import org.apache.comet.rules.CometContribScanMarker
+import org.apache.comet.serde.CometOperatorSerde
 import org.apache.comet.serde.operator.CometLanceNativeScan
 
 object CometLanceSupport {
@@ -41,12 +48,28 @@ object CometLanceSupport {
       withFallbackReasons(scanExec, fallbackReasons.toSet)
       None
     } else {
-      val builder = Operator.newBuilder().setPlanId(scanExec.id)
-      CometLanceNativeScan
-        .convert(scanExec, builder, Option(nativeScanPlan))
-        .map { nativeOp =>
-          CometLanceNativeScan.createExec(nativeOp, scanExec, Option(nativeScanPlan))
-        }
+      val marker = LanceScanExec(scanExec, nativeScanPlan)
+      scanExec.logicalLink.foreach(marker.setLogicalLink)
+      Some(marker)
     }
   }
+}
+
+case class LanceScanExec(originalPlan: BatchScanExec, nativeScanPlan: Object)
+    extends LeafExecNode
+    with CometContribScanMarker {
+
+  override def scanHandler: CometOperatorSerde[_ <: SparkPlan] = CometLanceNativeScan
+
+  override def output: Seq[Attribute] = originalPlan.output
+
+  override def outputPartitioning: Partitioning = originalPlan.outputPartitioning
+
+  override def outputOrdering: Seq[SortOrder] = originalPlan.outputOrdering
+
+  override def supportsColumnar: Boolean = originalPlan.supportsColumnar
+
+  override protected def doExecute(): RDD[InternalRow] = originalPlan.execute()
+
+  override protected def doExecuteColumnar(): RDD[ColumnarBatch] = originalPlan.executeColumnar()
 }
