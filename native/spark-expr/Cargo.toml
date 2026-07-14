@@ -125,5 +125,17 @@ name = "to_time"
 harness = false
 
 [[bench]]
+name = "unhex"
+harness = false
+
+[[bench]]
 name = "array_size"
+harness = false
+
+[[bench]]
+name = "parse_url"
+harness = false
+
+[[bench]]
+name = "to_json"
 harness = false

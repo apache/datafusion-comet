@@ -17,7 +17,7 @@
 
 [workspace]
 default-members = ["core", "spark-expr", "common", "proto", "jni-bridge", "shuffle"]
-members = ["core", "spark-expr", "common", "proto", "jni-bridge", "shuffle", "hdfs", "fs-hdfs"]
+members = ["core", "spark-expr", "common", "proto", "jni-bridge", "shuffle"]
 resolver = "2"
 
 [workspace.package]
