@@ -195,18 +195,14 @@ class CometParquetWriterSuite extends CometTestBase {
         CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED.key -> "true",
         CometConf.getOperatorAllowIncompatConfigKey(classOf[DataWritingCommandExec]) -> "true",
         CometConf.COMET_EXEC_ENABLED.key -> "true",
-        SQLConf.PARQUET_COMPRESSION.key -> "brotli") {
+        SQLConf.PARQUET_COMPRESSION.key -> "lz4_raw") {
 
-        // brotli is a real Parquet codec that Comet does not support, so the write must
-        // fall back to Spark's own writer instead of using CometNativeWriteExec. This
-        // project's Hadoop dependency does not bundle a BrotliCodec implementation, so
-        // Spark's writer itself fails here for reasons unrelated to Comet; that failure
-        // (rather than a successful round trip) is what proves the write actually reached
-        // Spark's normal code path instead of Comet's native one.
-        val plan =
-          captureWritePlan(path => df.write.parquet(path), outputPath, allowFailure = true)
+        val plan = captureWritePlan(path => df.write.parquet(path), outputPath)
         assertNoCometNativeWriteExec(plan)
       }
+
+      checkAnswer(spark.read.parquet(outputPath), df.collect())
+      assertParquetCodec(outputPath, CompressionCodecName.LZ4_RAW)
     }
   }
 
@@ -448,10 +444,7 @@ class CometParquetWriterSuite extends CometTestBase {
    * @return
    *   The captured execution plan
    */
-  private def captureWritePlan(
-      writeOp: String => Unit,
-      outputPath: String,
-      allowFailure: Boolean = false): SparkPlan = {
+  private def captureWritePlan(writeOp: String => Unit, outputPath: String): SparkPlan = {
     var capturedPlan: Option[QueryExecution] = None
 
     val listener = new org.apache.spark.sql.util.QueryExecutionListener {
@@ -461,21 +454,16 @@ class CometParquetWriterSuite extends CometTestBase {
         }
       }
 
-      override def onFailure(funcName: String, qe: QueryExecution, exception: Exception): Unit = {
-        if (allowFailure && (funcName == "save" || funcName.contains("command"))) {
-          capturedPlan = Some(qe)
-        }
-      }
+      override def onFailure(
+          funcName: String,
+          qe: QueryExecution,
+          exception: Exception): Unit = {}
     }
 
     spark.listenerManager.register(listener)
 
     try {
-      if (allowFailure) {
-        intercept[Exception](writeOp(outputPath))
-      } else {
-        writeOp(outputPath)
-      }
+      writeOp(outputPath)
 
       // Wait for listener to be called with timeout
       val maxWaitTimeMs = 15000
