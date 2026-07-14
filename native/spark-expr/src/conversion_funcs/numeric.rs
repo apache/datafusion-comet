@@ -20,7 +20,7 @@ use crate::conversion_funcs::utils::MICROS_PER_SECOND;
 use crate::{EvalMode, SparkError, SparkResult};
 use arrow::array::{
     Array, ArrayRef, AsArray, BooleanBuilder, Decimal128Array, Decimal128Builder, Float32Array,
-    Float64Array, GenericStringArray, Int16Array, Int32Array, Int64Array, Int8Array,
+    Float64Array, GenericStringBuilder, Int16Array, Int32Array, Int64Array, Int8Array,
     OffsetSizeTrait, PrimitiveArray, StringBuilder, TimestampMicrosecondBuilder,
 };
 use arrow::datatypes::{
@@ -142,6 +142,8 @@ macro_rules! cast_float_to_string {
         ) -> SparkResult<ArrayRef>
         where
             OffsetSize: OffsetSizeTrait, {
+                use std::fmt::Write;
+
                 let array = from.as_any().downcast_ref::<$output_type>().unwrap();
 
                 // If the absolute number is less than 10,000,000 and greater or equal than 0.001, the
@@ -155,53 +157,65 @@ macro_rules! cast_float_to_string {
                 const LOWER_SCIENTIFIC_BOUND: $type = 0.001;
                 const UPPER_SCIENTIFIC_BOUND: $type = 10000000.0;
 
-                let output_array = array
-                    .iter()
-                    .map(|value| match value {
-                        Some(value) if value == <$type>::INFINITY => Ok(Some("Infinity".to_string())),
-                        Some(value) if value == <$type>::NEG_INFINITY => Ok(Some("-Infinity".to_string())),
-                        Some(value)
-                            if (value.abs() < UPPER_SCIENTIFIC_BOUND
-                                && value.abs() >= LOWER_SCIENTIFIC_BOUND)
-                                || value.abs() == 0.0 =>
-                        {
-                            let trailing_zero = if value.fract() == 0.0 { ".0" } else { "" };
+                // Values are formatted straight into the builder, so no intermediate String
+                // is allocated per row.
+                let mut builder = GenericStringBuilder::<OffsetSize>::with_capacity(
+                    array.len(),
+                    array.len() * 8,
+                );
+                // Reused across rows by the scientific-notation path, which has to inspect
+                // the formatted text before emitting it.
+                let mut scratch = String::with_capacity(32);
 
-                            Ok(Some(format!("{value}{trailing_zero}")))
+                for value in array.iter() {
+                    let Some(value) = value else {
+                        builder.append_null();
+                        continue;
+                    };
+                    let abs = value.abs();
+                    if (LOWER_SCIENTIFIC_BOUND..UPPER_SCIENTIFIC_BOUND).contains(&abs)
+                        || abs == 0.0
+                    {
+                        let _ = write!(builder, "{value}");
+                        if value.fract() == 0.0 {
+                            // Spark always renders a fractional digit; Rust omits it.
+                            let _ = builder.write_str(".0");
                         }
-                        Some(value)
-                            if value.abs() >= UPPER_SCIENTIFIC_BOUND
-                                || value.abs() < LOWER_SCIENTIFIC_BOUND =>
-                        {
-                            // Spark uses Java's Float.MIN_VALUE / Double.MIN_VALUE strings for
-                            // the smallest subnormal values; Rust's formatter rounds them more.
-                            if value.abs().to_bits() == 1 {
-                                let sign = if value.is_sign_negative() { "-" } else { "" };
-                                Ok(Some(format!("{sign}{}", $min_value)))
-                            } else {
-                                let formatted = format!("{value:E}");
-
-                                if formatted.contains(".") {
-                                    Ok(Some(formatted))
-                                } else {
-                                    // `formatted` is already in scientific notation and can be split up by E
-                                    // in order to add the missing trailing 0 which gets removed for numbers with a fraction of 0.0
-                                    let prepare_number: Vec<&str> = formatted.split("E").collect();
-
-                                    let coefficient = prepare_number[0];
-
-                                    let exponent = prepare_number[1];
-
-                                    Ok(Some(format!("{coefficient}.0E{exponent}")))
-                                }
+                        builder.append_value("");
+                    } else if !value.is_finite() {
+                        // NaN and the infinities are excluded by the range check above.
+                        builder.append_value(if value.is_nan() {
+                            "NaN"
+                        } else if value.is_sign_positive() {
+                            "Infinity"
+                        } else {
+                            "-Infinity"
+                        });
+                    } else if abs.to_bits() == 1 {
+                        // Java's Double.toString / Float.toString are not shortest-roundtrip
+                        // and render the smallest subnormals with more digits than Rust does.
+                        builder.append_value(if value.is_sign_negative() {
+                            concat!("-", $min_value)
+                        } else {
+                            $min_value
+                        });
+                    } else {
+                        scratch.clear();
+                        let _ = write!(scratch, "{value:E}");
+                        match scratch.split_once('E') {
+                            Some((coefficient, exponent)) if !coefficient.contains('.') => {
+                                // Spark keeps the fractional digit Rust drops from a whole
+                                // coefficient.
+                                let _ = builder.write_str(coefficient);
+                                let _ = builder.write_str(".0E");
+                                builder.append_value(exponent);
                             }
+                            _ => builder.append_value(&scratch),
                         }
-                        Some(value) => Ok(Some(value.to_string())),
-                        _ => Ok(None),
-                    })
-                    .collect::<Result<GenericStringArray<OffsetSize>, SparkError>>()?;
+                    }
+                }
 
-                Ok(Arc::new(output_array))
+                Ok(Arc::new(builder.finish()))
             }
 
         cast::<$offset_type>($from, $eval_mode)
