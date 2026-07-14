@@ -117,10 +117,10 @@ case class EliminateRedundantTransitions(session: SparkSession)
       // allocated with 8-byte offsets when this conf is on. The buffer counts match but the
       // offset width does not, so a direct memcpy would corrupt the offsets.
       //
-      // `EligibleMapInBatch` matches whenever the operator *would* run natively if the feature
-      // were enabled. When it is disabled (the default) we leave the vanilla Spark operator in
-      // place but annotate it with a non-fallback `[COMET-INFO]` hint so the user knows the native
-      // path exists behind a config flag.
+      // `EligibleMapInBatch` matches whenever the operator would run natively if the feature were
+      // enabled. When it is disabled (the default) we leave the vanilla Spark operator in place
+      // but annotate it with a non-fallback `[COMET-INFO]` hint so the user knows the native path
+      // exists behind a config flag.
       case p @ EligibleMapInBatch(info, columnarChild) =>
         if (CometConf.COMET_PYARROW_UDF_ENABLED.get()) {
           CometMapInBatchExec(
