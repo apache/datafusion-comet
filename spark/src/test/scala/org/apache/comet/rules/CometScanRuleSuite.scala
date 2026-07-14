@@ -202,8 +202,7 @@ class CometScanRuleSuite extends CometTestBase {
     val projectedSchema = StructType(Seq(StructField("id", DataTypes.IntegerType, false)))
     val descriptor = new FakeLanceNativeScanPlan(requiredSchema, projectedSchema)
 
-    val (common, partitions) =
-      serializeFakeLanceDescriptor(serde, descriptor, "fallback-scan", requiredSchema)
+    val (common, partitions) = serializeFakeLanceDescriptor(serde, descriptor)
 
     assert(common.getScanId == "scan-123")
     assert(common.getDatasetUri == "s3://bucket/table.lance")
@@ -238,21 +237,17 @@ class CometScanRuleSuite extends CometTestBase {
         .asInstanceOf[AnyRef]
     }.toOption
 
-  private def serializeFakeLanceDescriptor(
-      serde: AnyRef,
-      descriptor: AnyRef,
-      fallbackScanId: String,
-      fallbackRequiredSchema: StructType)
+  private def serializeFakeLanceDescriptor(serde: AnyRef, descriptor: AnyRef)
       : (OperatorOuterClass.LanceScanCommon, Array[OperatorOuterClass.LanceScan]) = {
     val method = serde.getClass.getMethods
       .find(method =>
-        method.getName == "serializeNativePlan" && method.getParameterTypes.length == 3)
+        method.getName == "serializeNativePlan" && method.getParameterTypes.length == 1)
       .getOrElse {
         throw new AssertionError("CometLanceNativeScan.serializeNativePlan was not found")
       }
 
     val serialized = method
-      .invoke(serde, descriptor, fallbackScanId, fallbackRequiredSchema)
+      .invoke(serde, descriptor)
       .asInstanceOf[Product]
     val commonBytes = serialized.productElement(0).asInstanceOf[Array[Byte]]
     val partitionBytes = serialized.productElement(1).asInstanceOf[Array[Array[Byte]]]
@@ -262,9 +257,7 @@ class CometScanRuleSuite extends CometTestBase {
       partitionBytes.map(OperatorOuterClass.LanceScan.parseFrom))
   }
 
-  private class FakeLanceNativeScanPlan(
-      requiredSchema: StructType,
-      projectedSchema: StructType) {
+  private class FakeLanceNativeScanPlan(requiredSchema: StructType, projectedSchema: StructType) {
     private val storageOptions = new LinkedHashMap[String, String]()
     storageOptions.put("region", "us-west-2")
     storageOptions.put("endpoint", "http://127.0.0.1:9000")
