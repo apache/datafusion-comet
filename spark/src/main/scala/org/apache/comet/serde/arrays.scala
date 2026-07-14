@@ -22,7 +22,7 @@ package org.apache.comet.serde
 import scala.annotation.tailrec
 import scala.jdk.CollectionConverters._
 
-import org.apache.spark.sql.catalyst.expressions.{And, ArrayAggregate, ArrayAppend, ArrayContains, ArrayExcept, ArrayExists, ArrayFilter, ArrayForAll, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayMin, ArrayPosition, ArrayRemove, ArrayRepeat, ArraySort, ArraysOverlap, ArraysZip, ArrayTransform, ArrayUnion, Attribute, Cast, CreateArray, ElementAt, EmptyRow, Expression, Flatten, GetArrayItem, IsNotNull, LambdaFunction, Literal, Reverse, Sequence, Size, Slice, SortArray, ZipWith}
+import org.apache.spark.sql.catalyst.expressions.{And, ArrayAggregate, ArrayAppend, ArrayContains, ArrayExcept, ArrayExists, ArrayFilter, ArrayForAll, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayMin, ArrayPosition, ArrayRemove, ArrayRepeat, ArraySort, ArraysOverlap, ArraysZip, ArrayTransform, ArrayUnion, Attribute, Cast, CreateArray, ElementAt, EmptyRow, Expression, Flatten, GetArrayItem, IsNotNull, LambdaFunction, Literal, NamedLambdaVariable, Reverse, Sequence, Size, Slice, SortArray, ZipWith}
 import org.apache.spark.sql.catalyst.util.GenericArrayData
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
@@ -744,10 +744,12 @@ object CometArrayFilter extends CometHighOrderFunction[ArrayFilter]("array_filte
       expr: ArrayFilter,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    expr.function.children.headOption match {
-      case Some(_: IsNotNull) =>
-        // Fast path: `array_compact` lowers to `filter(arr, x -> x is not null)`. Use the native
-        // array_compact serde to avoid the per-batch JNI cost of the codegen dispatcher.
+    expr.function match {
+      case LambdaFunction(IsNotNull(v: NamedLambdaVariable), Seq(lambdaVar), _)
+          if v.exprId == lambdaVar.exprId =>
+        // Fast path: Catalyst desugars `array_compact` to `filter(arr, x -> x IS NOT NULL)`, so
+        // restore the native serde here (avoids per-batch JNI). Guard requires the IsNotNull
+        // operand to be the lambda variable itself, not a captured column (#4830).
         CometArrayCompact.convert(expr, inputs, binding)
       case _ if !isUnaryLambdaFunction(expr) =>
         CometScalaUDF.emitJvmCodegenDispatch(expr, inputs, binding)
