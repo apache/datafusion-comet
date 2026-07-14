@@ -188,7 +188,7 @@ certain environments, such as single-node setups with fast NVMe drives, at the e
 
 ### Native scans
 
-For native scans it is better to check `spark.sql.files.maxPartitionBytes` which is `128MB` by default and
+For native scans it is better to check `spark.sql.files.maxPartitionBytes` which is `128M` by default and
 set it to `spark.sql.files.maxPartitionBytes: 64M`. The difference comes from how Apache DataFusion and Spark determine the Parquet row group boundaries.
 This would help to split more uniformly the work for scan tasks
 
