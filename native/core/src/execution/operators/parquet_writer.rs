@@ -279,10 +279,6 @@ impl ParquetWriterExec {
         })
     }
 
-    fn compression_to_parquet(&self) -> Result<Compression> {
-        self.compression.to_parquet()
-    }
-
     /// Create an Arrow writer based on the storage scheme
     ///
     /// # Arguments
@@ -482,7 +478,7 @@ impl ExecutionPlan for ParquetWriterExec {
         let input_schema = self.input.schema();
         let work_dir = self.work_dir.clone();
         let task_attempt_id = self.task_attempt_id;
-        let compression = self.compression_to_parquet()?;
+        let compression = self.compression.to_parquet()?;
         let column_names = self.column_names.clone();
 
         assert_eq!(input_schema.fields().len(), column_names.len());
