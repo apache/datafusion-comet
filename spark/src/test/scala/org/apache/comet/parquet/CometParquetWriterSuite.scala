@@ -143,7 +143,7 @@ class CometParquetWriterSuite extends CometTestBase {
   }
 
   test("parquet write with each supported compression codec") {
-    Seq("none", "snappy", "lz4", "zstd", "gzip").foreach { codec =>
+    Seq("none", "uncompressed", "snappy", "lz4", "zstd", "gzip").foreach { codec =>
       withTempPath { dir =>
         val outputPath = new File(dir, s"output_$codec.parquet").getAbsolutePath
         val df = spark.range(0, 100).selectExpr("id", "cast(id as string) as name")
@@ -160,6 +160,52 @@ class CometParquetWriterSuite extends CometTestBase {
 
         checkAnswer(spark.read.parquet(outputPath), df.collect())
         assertParquetCodec(outputPath, expectedCodecName(codec))
+      }
+    }
+  }
+
+  test("parquet write honors parquet.compression option over SQLConf default") {
+    withTempPath { dir =>
+      val outputPath = new File(dir, "output.parquet").getAbsolutePath
+      val df = spark.range(0, 100).selectExpr("id", "cast(id as string) as name")
+
+      withSQLConf(
+        CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED.key -> "true",
+        CometConf.getOperatorAllowIncompatConfigKey(classOf[DataWritingCommandExec]) -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        SQLConf.PARQUET_COMPRESSION.key -> "snappy") {
+
+        val plan = captureWritePlan(
+          path => df.write.option("parquet.compression", "gzip").parquet(path),
+          outputPath)
+        assertHasCometNativeWriteExec(plan)
+      }
+
+      checkAnswer(spark.read.parquet(outputPath), df.collect())
+      assertParquetCodec(outputPath, CompressionCodecName.GZIP)
+    }
+  }
+
+  test("parquet write with unsupported compression codec falls back to Spark") {
+    withTempPath { dir =>
+      val outputPath = new File(dir, "output.parquet").getAbsolutePath
+      val df = spark.range(0, 100).selectExpr("id", "cast(id as string) as name")
+
+      withSQLConf(
+        CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED.key -> "true",
+        CometConf.getOperatorAllowIncompatConfigKey(classOf[DataWritingCommandExec]) -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        SQLConf.PARQUET_COMPRESSION.key -> "brotli") {
+
+        // brotli is a real Parquet codec that Comet does not support, so the write must
+        // fall back to Spark's own writer instead of using CometNativeWriteExec. This
+        // project's Hadoop dependency does not bundle a BrotliCodec implementation, so
+        // Spark's writer itself fails here for reasons unrelated to Comet; that failure
+        // (rather than a successful round trip) is what proves the write actually reached
+        // Spark's normal code path instead of Comet's native one.
+        val plan =
+          captureWritePlan(path => df.write.parquet(path), outputPath, allowFailure = true)
+        assertNoCometNativeWriteExec(plan)
       }
     }
   }
@@ -402,7 +448,10 @@ class CometParquetWriterSuite extends CometTestBase {
    * @return
    *   The captured execution plan
    */
-  private def captureWritePlan(writeOp: String => Unit, outputPath: String): SparkPlan = {
+  private def captureWritePlan(
+      writeOp: String => Unit,
+      outputPath: String,
+      allowFailure: Boolean = false): SparkPlan = {
     var capturedPlan: Option[QueryExecution] = None
 
     val listener = new org.apache.spark.sql.util.QueryExecutionListener {
@@ -412,16 +461,21 @@ class CometParquetWriterSuite extends CometTestBase {
         }
       }
 
-      override def onFailure(
-          funcName: String,
-          qe: QueryExecution,
-          exception: Exception): Unit = {}
+      override def onFailure(funcName: String, qe: QueryExecution, exception: Exception): Unit = {
+        if (allowFailure && (funcName == "save" || funcName.contains("command"))) {
+          capturedPlan = Some(qe)
+        }
+      }
     }
 
     spark.listenerManager.register(listener)
 
     try {
-      writeOp(outputPath)
+      if (allowFailure) {
+        intercept[Exception](writeOp(outputPath))
+      } else {
+        writeOp(outputPath)
+      }
 
       // Wait for listener to be called with timeout
       val maxWaitTimeMs = 15000
@@ -463,6 +517,22 @@ class CometParquetWriterSuite extends CometTestBase {
       s"Expected exactly one CometNativeWriteExec in the plan, but found $nativeWriteCount:\n${plan.treeString}")
   }
 
+  private def assertNoCometNativeWriteExec(plan: SparkPlan): Unit = {
+    val hasNativeWrite = plan.exists {
+      case _: CometNativeWriteExec => true
+      case d: DataWritingCommandExec =>
+        d.child.exists {
+          case _: CometNativeWriteExec => true
+          case _ => false
+        }
+      case _ => false
+    }
+
+    assert(
+      !hasNativeWrite,
+      s"Expected no CometNativeWriteExec in the plan, but found one:\n${plan.treeString}")
+  }
+
   private def writeWithCometNativeWriteExec(
       inputPath: String,
       outputPath: String,
@@ -497,7 +567,7 @@ class CometParquetWriterSuite extends CometTestBase {
   }
 
   private def expectedCodecName(sparkCodec: String): CompressionCodecName = sparkCodec match {
-    case "none" => CompressionCodecName.UNCOMPRESSED
+    case "none" | "uncompressed" => CompressionCodecName.UNCOMPRESSED
     case "snappy" => CompressionCodecName.SNAPPY
     case "lz4" => CompressionCodecName.LZ4
     case "zstd" => CompressionCodecName.ZSTD
