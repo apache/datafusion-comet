@@ -139,3 +139,7 @@ harness = false
 [[bench]]
 name = "to_json"
 harness = false
+
+[[bench]]
+name = "regexp_extract_all"
+harness = false
