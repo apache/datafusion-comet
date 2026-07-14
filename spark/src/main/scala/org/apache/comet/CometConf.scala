@@ -686,6 +686,15 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
+  val COMET_EXPLAIN_CODEGEN_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.explainCodegen.enabled")
+      .category(CATEGORY_EXEC_EXPLAIN)
+      .doc("When enabled, Comet annotates the surrounding Comet operator with a `[COMET-INFO: " +
+        "JVM codegen dispatcher: <names>]` segment listing every expression it routed through " +
+        "the JVM codegen dispatcher. Disabled by default.")
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_ONHEAP_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.exec.onHeap.enabled")
       .category(CATEGORY_TESTING)
