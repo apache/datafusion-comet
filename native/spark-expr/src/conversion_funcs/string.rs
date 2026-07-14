@@ -17,8 +17,8 @@
 
 use crate::{timezone, EvalMode, SparkError, SparkResult};
 use arrow::array::{
-    Array, ArrayRef, ArrowPrimitiveType, BooleanArray, Decimal128Builder, GenericStringArray,
-    OffsetSizeTrait, PrimitiveArray, PrimitiveBuilder, StringArray,
+    Array, ArrayRef, ArrowPrimitiveType, BooleanArray, BooleanBuilder, Decimal128Builder,
+    GenericStringArray, OffsetSizeTrait, PrimitiveArray, PrimitiveBuilder, StringArray,
 };
 use arrow::compute::DecimalCast;
 use arrow::datatypes::{
@@ -254,6 +254,28 @@ where
     pruned_float_str.parse::<F>().ok()
 }
 
+/// Parse the boolean literals Spark accepts in a string-to-boolean cast, returning
+/// `None` for anything else.
+///
+/// Trimming before comparing is equivalent to trimming afterwards: ASCII case folding
+/// never turns a whitespace character into a non-whitespace one, or vice versa.
+#[inline]
+fn parse_utf8_to_boolean(value: &str) -> Option<bool> {
+    let trimmed = value.trim();
+    match trimmed.len() {
+        1 => match trimmed.as_bytes()[0] {
+            b't' | b'T' | b'y' | b'Y' | b'1' => Some(true),
+            b'f' | b'F' | b'n' | b'N' | b'0' => Some(false),
+            _ => None,
+        },
+        2 if trimmed.eq_ignore_ascii_case("no") => Some(false),
+        3 if trimmed.eq_ignore_ascii_case("yes") => Some(true),
+        4 if trimmed.eq_ignore_ascii_case("true") => Some(true),
+        5 if trimmed.eq_ignore_ascii_case("false") => Some(false),
+        _ => None,
+    }
+}
+
 pub(crate) fn spark_cast_utf8_to_boolean<OffsetSize>(
     from: &dyn Array,
     eval_mode: EvalMode,
@@ -266,22 +288,26 @@ where
         .downcast_ref::<GenericStringArray<OffsetSize>>()
         .unwrap();
 
-    let output_array = array
+    // Only ANSI mode can fail, so the other modes avoid the per-row `Result` entirely.
+    if eval_mode == EvalMode::Ansi {
+        let mut builder = BooleanBuilder::with_capacity(array.len());
+        for value in array.iter() {
+            match value {
+                Some(value) => match parse_utf8_to_boolean(value) {
+                    Some(parsed) => builder.append_value(parsed),
+                    None => return Err(invalid_value(value, "STRING", "BOOLEAN")),
+                },
+                None => builder.append_null(),
+            }
+        }
+
+        return Ok(Arc::new(builder.finish()));
+    }
+
+    let output_array: BooleanArray = array
         .iter()
-        .map(|value| match value {
-            Some(value) => match value.to_ascii_lowercase().trim() {
-                "t" | "true" | "y" | "yes" | "1" => Ok(Some(true)),
-                "f" | "false" | "n" | "no" | "0" => Ok(Some(false)),
-                _ if eval_mode == EvalMode::Ansi => Err(SparkError::CastInvalidValue {
-                    value: value.to_string(),
-                    from_type: "STRING".to_string(),
-                    to_type: "BOOLEAN".to_string(),
-                }),
-                _ => Ok(None),
-            },
-            _ => Ok(None),
-        })
-        .collect::<Result<BooleanArray, _>>()?;
+        .map(|value| value.and_then(parse_utf8_to_boolean))
+        .collect();
 
     Ok(Arc::new(output_array))
 }
@@ -1986,6 +2012,38 @@ mod tests {
             EvalMode::Legacy => parse_string_to_i8_legacy(str),
             EvalMode::Ansi => parse_string_to_i8_ansi(str),
             EvalMode::Try => parse_string_to_i8_try(str),
+        }
+    }
+
+    #[test]
+    fn test_parse_utf8_to_boolean() {
+        for truthy in [
+            "t", "T", "true", "TRUE", "tRuE", "y", "Y", "yes", "YES", "1",
+        ] {
+            assert_eq!(parse_utf8_to_boolean(truthy), Some(true), "{truthy}");
+        }
+        for falsy in [
+            "f", "F", "false", "FALSE", "fAlSe", "n", "N", "no", "NO", "0",
+        ] {
+            assert_eq!(parse_utf8_to_boolean(falsy), Some(false), "{falsy}");
+        }
+        // Surrounding whitespace is ignored, as in Spark.
+        assert_eq!(parse_utf8_to_boolean(" \ttrue\n "), Some(true));
+        assert_eq!(parse_utf8_to_boolean("  no  "), Some(false));
+        // Anything else casts to NULL.
+        for invalid in [
+            "",
+            " ",
+            "tru",
+            "truely",
+            "2",
+            "-1",
+            "on",
+            "off",
+            "úñî",
+            "ｔｒｕｅ",
+        ] {
+            assert_eq!(parse_utf8_to_boolean(invalid), None, "{invalid}");
         }
     }
 
