@@ -21,6 +21,7 @@ use chrono::{
     DateTime, Datelike, Duration, LocalResult, NaiveDate, NaiveDateTime, TimeZone, Timelike, Utc,
 };
 
+use std::borrow::Cow;
 use std::sync::Arc;
 
 use arrow::array::{
@@ -321,21 +322,48 @@ where
     }
 }
 
+/// Truncates a date expressed as days since the epoch, returning `None` if it is out of range.
+type DateTruncFn = fn(i32) -> Option<i32>;
+
+/// The `date_trunc` formats Spark accepts, and the truncation each one selects.
+const DATE_TRUNC_FORMATS: [(&str, DateTruncFn); 8] = [
+    ("YEAR", trunc_days_to_year),
+    ("YYYY", trunc_days_to_year),
+    ("YY", trunc_days_to_year),
+    ("QUARTER", trunc_days_to_quarter),
+    ("MONTH", trunc_days_to_month),
+    ("MON", trunc_days_to_month),
+    ("MM", trunc_days_to_month),
+    ("WEEK", trunc_days_to_week),
+];
+
+/// Resolve a `date_trunc` format string to the corresponding truncation function.
+///
+/// The format is matched case-insensitively. Every supported format is ASCII, so ASCII input can
+/// be compared in place, leaving the per-row format column path allocation-free. Non-ASCII input
+/// still needs full Unicode case folding to fold the same way Spark does.
+fn date_trunc_fn_for_format(format: &str) -> Result<DateTruncFn, SparkError> {
+    let key: Cow<str> = if format.is_ascii() {
+        Cow::Borrowed(format)
+    } else {
+        Cow::Owned(format.to_uppercase())
+    };
+    DATE_TRUNC_FORMATS
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case(&key))
+        .map(|(_, trunc_fn)| *trunc_fn)
+        .ok_or_else(|| {
+            SparkError::Internal(format!(
+                "Unsupported format: {format:?} for function 'date_trunc'"
+            ))
+        })
+}
+
 /// Optimized date truncation for Date32 arrays
 /// Works directly with days since epoch instead of converting to/from NaiveDateTime
 fn date_trunc_date32(array: &Date32Array, format: String) -> Result<Date32Array, SparkError> {
     // Select the truncation function based on format
-    let trunc_fn: fn(i32) -> Option<i32> = match format.to_uppercase().as_str() {
-        "YEAR" | "YYYY" | "YY" => trunc_days_to_year,
-        "QUARTER" => trunc_days_to_quarter,
-        "MONTH" | "MON" | "MM" => trunc_days_to_month,
-        "WEEK" => trunc_days_to_week,
-        _ => {
-            return Err(SparkError::Internal(format!(
-                "Unsupported format: {format:?} for function 'date_trunc'"
-            )))
-        }
-    };
+    let trunc_fn = date_trunc_fn_for_format(&format)?;
 
     // Apply truncation to each element
     let result: Date32Array = array
@@ -438,20 +466,19 @@ macro_rules! date_trunc_array_fmt_helper {
         let iter = $array.into_iter();
         match $datatype {
             DataType::Date32 => {
+                // Format columns are almost always constant or very low cardinality, so remember
+                // the last format seen and skip re-resolving it for every row.
+                let mut cached: Option<(&str, DateTruncFn)> = None;
                 for (index, val) in iter.enumerate() {
-                    let trunc_fn: fn(i32) -> Option<i32> =
-                        match $formats.value(index).to_uppercase().as_str() {
-                            "YEAR" | "YYYY" | "YY" => trunc_days_to_year,
-                            "QUARTER" => trunc_days_to_quarter,
-                            "MONTH" | "MON" | "MM" => trunc_days_to_month,
-                            "WEEK" => trunc_days_to_week,
-                            _ => {
-                                return Err(SparkError::Internal(format!(
-                                    "Unsupported format: {:?} for function 'date_trunc'",
-                                    $formats.value(index)
-                                )))
-                            }
-                        };
+                    let format = $formats.value(index);
+                    let trunc_fn = match cached {
+                        Some((cached_format, trunc_fn)) if cached_format == format => trunc_fn,
+                        _ => {
+                            let trunc_fn = date_trunc_fn_for_format(format)?;
+                            cached = Some((format, trunc_fn));
+                            trunc_fn
+                        }
+                    };
                     match val.and_then(trunc_fn) {
                         Some(days) => builder.append_value(days),
                         None => builder.append_null(),
