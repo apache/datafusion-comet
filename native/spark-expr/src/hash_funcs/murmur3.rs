@@ -68,36 +68,46 @@ pub fn spark_murmur3_hash(args: &[ColumnarValue]) -> Result<ColumnarValue, DataF
     }
 }
 
+#[inline]
+fn mix_k1(mut k1: i32) -> i32 {
+    k1 = k1.mul_wrapping(0xcc9e2d51u32 as i32);
+    k1 = k1.rotate_left(15);
+    k1 = k1.mul_wrapping(0x1b873593u32 as i32);
+    k1
+}
+
+#[inline]
+fn mix_h1(mut h1: i32, k1: i32) -> i32 {
+    h1 ^= k1;
+    h1 = h1.rotate_left(13);
+    h1 = h1.mul_wrapping(5).add_wrapping(0xe6546b64u32 as i32);
+    h1
+}
+
+#[inline]
+fn fmix(mut h1: i32, len: i32) -> i32 {
+    h1 ^= len;
+    h1 ^= (h1 as u32 >> 16) as i32;
+    h1 = h1.mul_wrapping(0x85ebca6bu32 as i32);
+    h1 ^= (h1 as u32 >> 13) as i32;
+    h1 = h1.mul_wrapping(0xc2b2ae35u32 as i32);
+    h1 ^= (h1 as u32 >> 16) as i32;
+    h1
+}
+
+/// Spark-compatible murmur3 hash of an `i64`, equivalent to
+/// `spark_compatible_murmur3_hash(item.to_le_bytes(), seed)` but with the two 4-byte
+/// words mixed directly, without going through a byte slice.
+#[inline]
+pub fn spark_compatible_murmur3_hash_long(item: i64, seed: u32) -> u32 {
+    let mut h1 = mix_h1(seed as i32, mix_k1(item as i32));
+    h1 = mix_h1(h1, mix_k1((item >> 32) as i32));
+    fmix(h1, 8) as u32
+}
+
 /// Spark-compatible murmur3 hash function
 #[inline]
 pub fn spark_compatible_murmur3_hash<T: AsRef<[u8]>>(data: T, seed: u32) -> u32 {
-    #[inline]
-    fn mix_k1(mut k1: i32) -> i32 {
-        k1 = k1.mul_wrapping(0xcc9e2d51u32 as i32);
-        k1 = k1.rotate_left(15);
-        k1 = k1.mul_wrapping(0x1b873593u32 as i32);
-        k1
-    }
-
-    #[inline]
-    fn mix_h1(mut h1: i32, k1: i32) -> i32 {
-        h1 ^= k1;
-        h1 = h1.rotate_left(13);
-        h1 = h1.mul_wrapping(5).add_wrapping(0xe6546b64u32 as i32);
-        h1
-    }
-
-    #[inline]
-    fn fmix(mut h1: i32, len: i32) -> i32 {
-        h1 ^= len;
-        h1 ^= (h1 as u32 >> 16) as i32;
-        h1 = h1.mul_wrapping(0x85ebca6bu32 as i32);
-        h1 ^= (h1 as u32 >> 13) as i32;
-        h1 = h1.mul_wrapping(0xc2b2ae35u32 as i32);
-        h1 ^= (h1 as u32 >> 16) as i32;
-        h1
-    }
-
     #[inline]
     unsafe fn hash_bytes_by_int(data: &[u8], seed: u32) -> i32 {
         // safety: data length must be aligned to 4 bytes
@@ -194,9 +204,33 @@ mod tests {
     use arrow::array::{Float32Array, Float64Array};
     use std::sync::Arc;
 
-    use crate::murmur3::create_murmur3_hashes;
+    use crate::murmur3::{
+        create_murmur3_hashes, spark_compatible_murmur3_hash, spark_compatible_murmur3_hash_long,
+    };
     use crate::test_hashes_with_nulls;
     use datafusion::arrow::array::{ArrayRef, Int32Array, Int64Array, Int8Array, StringArray};
+
+    #[test]
+    fn test_hash_long_matches_byte_slice_hash() {
+        for seed in [0u32, 42, 0xffff_ffff, 12345] {
+            for item in [
+                0i64,
+                1,
+                -1,
+                42,
+                i64::MIN,
+                i64::MAX,
+                0x0123_4567_89ab_cdef,
+                -0x0123_4567_89ab_cdef,
+            ] {
+                assert_eq!(
+                    spark_compatible_murmur3_hash_long(item, seed),
+                    spark_compatible_murmur3_hash(item.to_le_bytes(), seed),
+                    "item={item}, seed={seed}"
+                );
+            }
+        }
+    }
 
     fn test_murmur3_hash<I: Clone, T: arrow::array::Array + From<Vec<Option<I>>> + 'static>(
         values: Vec<Option<I>>,
