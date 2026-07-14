@@ -30,7 +30,6 @@ use opendal::Operator;
 #[cfg(feature = "hdfs-opendal")]
 use std::io::Cursor;
 
-use crate::execution::shuffle::CompressionCodec;
 use crate::parquet::parquet_support::is_hdfs_scheme;
 #[cfg(feature = "hdfs-opendal")]
 use crate::parquet::parquet_support::{create_hdfs_operator, prepare_object_store_with_configs};
@@ -52,10 +51,36 @@ use datafusion::{
 use futures::TryStreamExt;
 use parquet::{
     arrow::ArrowWriter,
-    basic::{Compression, ZstdLevel},
+    basic::{Compression, GzipLevel, ZstdLevel},
     file::properties::WriterProperties,
 };
 use url::Url;
+
+/// Compression codecs supported by the native Parquet writer.
+///
+/// This is deliberately separate from the shuffle `CompressionCodec`: gzip is a valid Parquet
+/// codec but is not a codec we compress shuffle blocks with.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ParquetCompression {
+    None,
+    Snappy,
+    Lz4,
+    Zstd(i32),
+    Gzip,
+}
+
+impl ParquetCompression {
+    pub fn to_parquet(&self) -> Result<Compression> {
+        match self {
+            ParquetCompression::None => Ok(Compression::UNCOMPRESSED),
+            ParquetCompression::Snappy => Ok(Compression::SNAPPY),
+            ParquetCompression::Lz4 => Ok(Compression::LZ4),
+            ParquetCompression::Zstd(level) => Ok(Compression::ZSTD(ZstdLevel::try_new(*level)?)),
+            // Level 6, matching the default of parquet-mr's zlib codec
+            ParquetCompression::Gzip => Ok(Compression::GZIP(GzipLevel::default())),
+        }
+    }
+}
 
 /// Enum representing different types of Arrow writers based on storage backend
 enum ParquetWriter {
@@ -202,7 +227,7 @@ pub struct ParquetWriterExec {
     /// Task attempt ID for this specific task
     task_attempt_id: Option<i32>,
     /// Compression codec
-    compression: CompressionCodec,
+    compression: ParquetCompression,
     /// Partition ID (from Spark TaskContext)
     partition_id: i32,
     /// Column names to use in the output Parquet file
@@ -224,7 +249,7 @@ impl ParquetWriterExec {
         work_dir: String,
         job_id: Option<String>,
         task_attempt_id: Option<i32>,
-        compression: CompressionCodec,
+        compression: ParquetCompression,
         partition_id: i32,
         column_names: Vec<String>,
         object_store_options: HashMap<String, String>,
@@ -255,12 +280,7 @@ impl ParquetWriterExec {
     }
 
     fn compression_to_parquet(&self) -> Result<Compression> {
-        match self.compression {
-            CompressionCodec::None => Ok(Compression::UNCOMPRESSED),
-            CompressionCodec::Zstd(level) => Ok(Compression::ZSTD(ZstdLevel::try_new(level)?)),
-            CompressionCodec::Lz4Frame => Ok(Compression::LZ4),
-            CompressionCodec::Snappy => Ok(Compression::SNAPPY),
-        }
+        self.compression.to_parquet()
     }
 
     /// Create an Arrow writer based on the storage scheme
@@ -576,6 +596,31 @@ mod tests {
     use arrow::datatypes::{DataType, Field, Schema};
     use std::sync::Arc;
 
+    #[test]
+    fn test_parquet_compression_to_parquet() {
+        assert_eq!(
+            ParquetCompression::None.to_parquet().unwrap(),
+            Compression::UNCOMPRESSED
+        );
+        assert_eq!(
+            ParquetCompression::Snappy.to_parquet().unwrap(),
+            Compression::SNAPPY
+        );
+        assert_eq!(
+            ParquetCompression::Lz4.to_parquet().unwrap(),
+            Compression::LZ4
+        );
+        assert_eq!(
+            ParquetCompression::Zstd(3).to_parquet().unwrap(),
+            Compression::ZSTD(ZstdLevel::try_new(3).unwrap())
+        );
+        // gzip level 6 matches the default of parquet-mr's zlib codec
+        assert_eq!(
+            ParquetCompression::Gzip.to_parquet().unwrap(),
+            Compression::GZIP(GzipLevel::default())
+        );
+    }
+
     /// Helper function to create a test RecordBatch with 1000 rows of (int, string) data
     /// Example batch_id 1 -> 0..1000, 2 -> 1001..2000
     #[allow(dead_code)]
@@ -819,7 +864,7 @@ mod tests {
             work_dir,
             None,      // job_id
             Some(123), // task_attempt_id
-            CompressionCodec::None,
+            ParquetCompression::None,
             0, // partition_id
             column_names,
             HashMap::new(), // object_store_options
