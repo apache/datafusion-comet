@@ -44,6 +44,9 @@ twox-hash = "2.1.2"
 rand = { workspace = true }
 hex = "0.4.3"
 base64 = "0.22.1"
+# Spike: jiff as a chrono replacement. A date-only expression (next_day) needs only the
+# civil date API, so the heavy tzdb bundle default features are disabled.
+jiff = { version = "0.2.29", default-features = false, features = ["std"] }
 
 [dev-dependencies]
 arrow = {workspace = true}

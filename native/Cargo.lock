@@ -2058,6 +2058,7 @@ dependencies = [
  "datafusion-comet-jni-bridge",
  "futures",
  "hex",
+ "jiff",
  "jni 0.22.4",
  "num",
  "rand 0.10.2",
