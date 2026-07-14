@@ -44,7 +44,7 @@ import org.apache.comet.serde.QueryPlanSerde.serializeDataType
  */
 object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec] {
 
-  private val supportedCompressionCodes = Set("none", "snappy", "lz4", "zstd")
+  private val supportedCompressionCodes = Set("none", "snappy", "lz4", "zstd", "gzip")
 
   override def enabledConfig: Option[ConfigEntry[Boolean]] =
     Some(CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED)
@@ -121,6 +121,7 @@ object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec
         case "snappy" => OperatorOuterClass.CompressionCodec.Snappy
         case "lz4" => OperatorOuterClass.CompressionCodec.Lz4
         case "zstd" => OperatorOuterClass.CompressionCodec.Zstd
+        case "gzip" => OperatorOuterClass.CompressionCodec.Gzip
         case "none" => OperatorOuterClass.CompressionCodec.None
         case other =>
           withFallbackReason(op, s"Unsupported compression codec: $other")
