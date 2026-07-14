@@ -255,7 +255,26 @@ class Native extends NativeBase {
    */
   @native def columnarToRowClose(c2rHandle: Long): Unit
 
+  /**
+   * Create a native RSS partition pusher backed by a JVM shuffle pusher.
+   *
+   * The returned handle remains owned by the caller and must be released with
+   * [[releaseRssPartitionPusher]] after the native shuffle writer has finished using it.
+   *
+   * @param pusher
+   *   The JVM callback that receives encoded data for each shuffle partition.
+   * @return
+   *   A handle to the native RSS partition pusher.
+   */
   @native def createRssPartitionPusher(pusher: ShufflePartitionPusher): Long
 
+  /**
+   * Release a native RSS partition pusher.
+   *
+   * The handle must not be released more than once or used after this call.
+   *
+   * @param handle
+   *   The handle returned by [[createRssPartitionPusher]].
+   */
   @native def releaseRssPartitionPusher(handle: Long): Unit
 }

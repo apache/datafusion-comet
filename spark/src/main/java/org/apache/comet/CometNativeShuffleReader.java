@@ -19,7 +19,21 @@
 
 package org.apache.comet;
 
+/**
+ * A shuffle reader that can expose encoded shuffle blocks directly to Comet's native execution
+ * engine.
+ *
+ * <p>This interface enables the native shuffle scan path to consume and decode shuffle blocks via
+ * JNI, bypassing JVM-side conversion to columnar batches and Arrow FFI.
+ */
 public interface CometNativeShuffleReader {
 
+  /**
+   * Creates an iterator over the encoded shuffle blocks selected by this reader.
+   *
+   * <p>The caller is responsible for closing the returned iterator after consumption.
+   *
+   * @return an iterator that supplies shuffle blocks to the native execution engine
+   */
   CometShuffleBlockIterator readAsShuffleBlockIterator();
 }

@@ -20,6 +20,11 @@ use jni::objects::{Global, JObject};
 use std::io::Write;
 use std::sync::Arc;
 
+/// Forwards encoded shuffle data to a Java `ShufflePartitionPusher`.
+///
+/// The global JNI reference keeps the Java pusher alive and is shared by partition-specific clones
+/// created with [`Self::clone_with_pid`]. The [`Write`] implementation copies each buffer into a
+/// Java byte array and invokes `ShufflePartitionPusher.pushPartitionData`.
 #[derive(Debug)]
 pub struct RssPartitionPusher {
     pid: i32,
@@ -27,10 +32,14 @@ pub struct RssPartitionPusher {
 }
 
 impl RssPartitionPusher {
+    /// Creates a pusher without an assigned output partition.
+    ///
+    /// Use [`Self::clone_with_pid`] to create the partition-specific instances that write data.
     pub fn try_new(jobject: Arc<Global<JObject<'static>>>) -> datafusion::common::Result<Self> {
         Ok(RssPartitionPusher { pid: -1, jobject })
     }
 
+    /// Creates a pusher for `pid` that shares the same Java pusher reference.
     pub fn clone_with_pid(&self, pid: i32) -> Self {
         RssPartitionPusher {
             pid,
@@ -38,6 +47,9 @@ impl RssPartitionPusher {
         }
     }
 
+    /// Pushes `buf` to the Java pusher for this instance's output partition.
+    ///
+    /// Returns the number of bytes reported as accepted by the Java callback.
     pub fn push_partition_data(&mut self, buf: &[u8]) -> datafusion::common::Result<i32> {
         let length = buf.len() as i32;
         JVMClasses::with_env(|env| {

@@ -24,7 +24,7 @@ import java.util
 import scala.collection.JavaConverters._
 
 import org.apache.spark.{SparkConf, TaskContext}
-import org.apache.spark.executor.ShuffleWriteMetrics
+import org.apache.spark.executor.{ShuffleReadMetrics, ShuffleWriteMetrics}
 import org.apache.spark.shuffle.{RssShuffleHandle, RssShuffleManager, RssSparkConfig, RssSparkShuffleUtils, ShuffleHandle, ShuffleReader, ShuffleReadMetricsReporter, ShuffleWriteMetricsReporter, ShuffleWriter}
 import org.apache.spark.shuffle.handle.{ShuffleHandleInfo, SimpleShuffleHandleInfo}
 import org.apache.spark.sql.comet.execution.shuffle.{CometNativeShuffle, CometShuffleDependency}
@@ -37,8 +37,25 @@ import org.apache.uniffle.shaded.org.roaringbitmap.longlong.Roaring64NavigableMa
 
 import org.apache.comet.CometConf
 
+private[uniffle] object CometUniffleShuffleManager {
+  private[uniffle] class ReadMetrics(reporter: ShuffleReadMetricsReporter)
+      extends ShuffleReadMetrics {
+    override def incRemoteBytesRead(v: Long): Unit = reporter.incRemoteBytesRead(v)
+
+    override def incFetchWaitTime(v: Long): Unit = reporter.incFetchWaitTime(v)
+
+    override def incRecordsRead(v: Long): Unit = reporter.incRecordsRead(v)
+  }
+
+  private[uniffle] def cometRssSparkConf(sparkConf: SparkConf): SparkConf = sparkConf.clone
+    .set(RssSparkConfig.SPARK_RSS_CONFIG_PREFIX + RssSparkConfig.RSS_ROW_BASED.key, "false")
+    .set("spark.rss.client.io.compression.codec", "NONE")
+}
+
 class CometUniffleShuffleManager(conf: SparkConf, isDriver: Boolean)
     extends RssShuffleManager(conf, isDriver) {
+
+  import CometUniffleShuffleManager._
 
   assert(
     conf.get(CometConf.COMET_SHUFFLE_MODE.key, "") == "native",
@@ -92,7 +109,10 @@ class CometUniffleShuffleManager(conf: SparkConf, isDriver: Boolean)
           shuffleId,
           context.stageAttemptNumber,
           shuffleHandleInfo.createPartitionReplicaTracking)
-        val readMetrics = context.taskMetrics.shuffleReadMetrics
+        val readMetrics =
+          if (metrics != null) new ReadMetrics(metrics)
+          else context.taskMetrics.shuffleReadMetrics
+        val rssSparkConf = cometRssSparkConf(sparkConf)
         val shuffleRemoteStorageInfo = rssShuffleHandle.getRemoteStorage
         val shuffleRemoteStoragePath = shuffleRemoteStorageInfo.getPath
         val readerHadoopConf = RssSparkShuffleUtils.getRemoteStorageHadoopConf(
@@ -116,7 +136,7 @@ class CometUniffleShuffleManager(conf: SparkConf, isDriver: Boolean)
           taskIdBitmap,
           readMetrics,
           this.managerClientSupplier,
-          RssSparkConfig.toRssConf(this.sparkConf),
+          RssSparkConfig.toRssConf(rssSparkConf),
           this.dataDistributionType,
           shuffleHandleInfo.getAllPartitionServersForReader)
       case _ =>
@@ -193,10 +213,7 @@ class CometUniffleShuffleManager(conf: SparkConf, isDriver: Boolean)
         } else {
           writeMetrics = context.taskMetrics.shuffleWriteMetrics
         }
-        // set rss.row.based to false to mark it as columnar shuffle
-        val conf: SparkConf = sparkConf.clone
-          .set(RssSparkConfig.SPARK_RSS_CONFIG_PREFIX + RssSparkConfig.RSS_ROW_BASED.key, "false")
-          .set("spark.rss.client.io.compression.codec", "NONE")
+        val conf = cometRssSparkConf(sparkConf)
 
         CometUniffleShuffleWriter[K, V, V](
           dependency.nativeShuffleSpec.get,

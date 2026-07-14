@@ -36,15 +36,32 @@ import org.apache.comet.serde.OperatorOuterClass.{CompressionCodec, Operator}
 import org.apache.comet.serde.PartitioningOuterClass.PartitionWriter
 import org.apache.comet.serde.operator.schema2Proto
 
+/** Shared native plan construction and execution for local and RSS shuffle writers. */
 trait CometBaseNativeShuffleWriter {
 
   def spec: NativeShuffleSpec
+
   def outputPartitioning: Partitioning
+
   def outputAttributes: Seq[Attribute]
+
   def rangePartitionBounds: Option[Seq[InternalRow]]
+
   def numParts: Int
+
   def context: TaskContext
 
+  /**
+   * Execute a native shuffle write that pushes partition data to an RSS implementation.
+   *
+   * @param inputs
+   *   The native shuffle input iterator for the current map partition.
+   * @param shuffleWriterSQLMetrics
+   *   SQL metrics updated by the native shuffle writer and its child plan.
+   * @param rssPartitionPusherHandle
+   *   A live native handle returned by `Native.createRssPartitionPusher`. Ownership remains with
+   *   the caller.
+   */
   def nativeWrite[K, V](
       inputs: Iterator[Product2[K, V]],
       shuffleWriterSQLMetrics: Map[String, SQLMetric],
@@ -53,6 +70,18 @@ trait CometBaseNativeShuffleWriter {
     nativeWrite(inputs, shuffleWriterSQLMetrics, unifiedPlan)
   }
 
+  /**
+   * Execute a native shuffle write to local data and index files.
+   *
+   * @param inputs
+   *   The native shuffle input iterator for the current map partition.
+   * @param shuffleWriterSQLMetrics
+   *   SQL metrics updated by the native shuffle writer and its child plan.
+   * @param dataFile
+   *   Path to the shuffle data file written by native code.
+   * @param indexFile
+   *   Path to the shuffle index file written by native code.
+   */
   def nativeWrite[K, V](
       inputs: Iterator[Product2[K, V]],
       shuffleWriterSQLMetrics: Map[String, SQLMetric],
@@ -130,6 +159,7 @@ trait CometBaseNativeShuffleWriter {
 
   }
 
+  /** Build a unified shuffle plan that writes local data and index files. */
   private def buildUnifiedPlan(dataFile: String, indexFile: String): Operator = {
     val partitionWriter = PartitionWriter
       .newBuilder()
@@ -144,6 +174,9 @@ trait CometBaseNativeShuffleWriter {
     buildUnifiedPlan(partitionWriter)
   }
 
+  /**
+   * Build a unified shuffle plan that sends partition data through an RSS pusher.
+   */
   protected def buildUnifiedPlan(rssPartitionPusherHandle: Long): Operator = {
     val partitionWriter = PartitionWriter
       .newBuilder()

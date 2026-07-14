@@ -19,7 +19,19 @@
 
 package org.apache.comet.shuffle;
 
+/**
+ * Callback used by the native shuffle writer to push encoded partition data through a JVM shuffle
+ * implementation.
+ */
 public interface ShufflePartitionPusher {
 
+  /**
+   * Pushes encoded shuffle data for an output partition.
+   *
+   * @param partitionId the output partition that receives the data
+   * @param bytes the byte array containing the encoded shuffle data
+   * @param length the number of valid bytes in {@code bytes}
+   * @return the number of bytes consumed by the shuffle implementation
+   */
   int pushPartitionData(int partitionId, byte[] bytes, int length);
 }

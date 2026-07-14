@@ -1352,9 +1352,14 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_columnarToRowClose(
     })
 }
 
-#[no_mangle]
+/// Create a native RSS partition pusher backed by the supplied Java pusher.
+///
+/// The returned handle owns the native pusher and must eventually be passed to
+/// `releaseRssPartitionPusher`.
+///
 /// # Safety
-/// TODO: add comment
+/// `pusher` must be a valid JNI reference for the duration of this call.
+#[no_mangle]
 pub unsafe extern "system" fn Java_org_apache_comet_Native_createRssPartitionPusher(
     e: EnvUnowned,
     _class: JClass,
@@ -1369,9 +1374,12 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createRssPartitionPus
     })
 }
 
-#[no_mangle]
+/// Release a native RSS partition pusher created by `createRssPartitionPusher`.
+///
 /// # Safety
-/// TODO: add comment
+/// `handle` must be a non-zero valid handle returned by `createRssPartitionPusher`. It must not be
+/// released more than once or used after this function returns.
+#[no_mangle]
 pub unsafe extern "system" fn Java_org_apache_comet_Native_releaseRssPartitionPusher(
     e: EnvUnowned,
     _class: JClass,
