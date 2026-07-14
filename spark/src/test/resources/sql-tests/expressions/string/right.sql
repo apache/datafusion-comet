@@ -15,10 +15,13 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- Note: Right is a RuntimeReplaceable expression. Spark replaces it with
--- If(IsNull(str), null, If(len <= 0, "", Substring(str, -len, len)))
--- before Comet sees it. CometRight handles the serde, but the optimizer
--- may replace it first. We use spark_answer_only to verify correctness.
+-- Note: Right is a RuntimeReplaceable expression whose replacement is
+-- If(IsNull(str), null, If(len <= 0, "", Substring(str, -len, len))).
+-- Comet serialises expr.replacement, so NULL propagation for len <= 0
+-- and non-literal len are handled by the replacement tree.
+
+-- ConfigMatrix: parquet.enable.dictionary=false,true
+
 statement
 CREATE TABLE test_str_right(s string, n int) USING parquet
 
@@ -43,13 +46,18 @@ query
 -- n exceeds length of 'hello' (5 chars)
 SELECT right(s, 10) FROM test_str_right
 
--- literal + column: falls back
+-- literal + column
 query
 SELECT right('hello', n) FROM test_str_right
 
 -- literal + literal
 query
 SELECT right('hello', 3), right('hello', 0), right('hello', -1), right('', 3), right(NULL, 3)
+
+-- integer boundaries: Int.MinValue exercises Spark 4.x UnaryMinus(len, failOnError=false),
+-- which overflows to Int.MinValue and only reaches Substring when the len<=0 guard is honoured.
+query
+SELECT right('hello', 2147483647), right('hello', -2147483648)
 
 -- null propagation with len <= 0 (critical: NULL str with non-positive len must return NULL, not empty string)
 query
@@ -74,6 +82,16 @@ SELECT s, right(s, 2) FROM test_str_right_nulls
 -- equivalence with substring
 query
 SELECT s, right(s, 3), substring(s, -3, 3) FROM test_str_right_nulls
+
+-- non-literal len across integer widths
+statement
+CREATE TABLE test_str_right_int_widths(s string, nt tinyint, ns smallint, ni int, nb bigint) USING parquet
+
+statement
+INSERT INTO test_str_right_int_widths VALUES ('hello', 2, 3, 4, 5), ('hello', -1, 0, 10, NULL), (NULL, 2, 2, 2, 2)
+
+query
+SELECT right(s, nt), right(s, ns), right(s, ni), right(s, nb) FROM test_str_right_int_widths
 
 -- unicode
 statement
