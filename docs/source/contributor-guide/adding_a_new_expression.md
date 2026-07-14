@@ -486,12 +486,14 @@ must therefore **decode** them, not reinterpret them. Building a Rust `String`/`
 bytes is undefined behaviour, and an Arrow string array that holds invalid UTF-8 is unsound for the
 downstream kernels that read it via `StringArray::value` (which assumes the UTF-8 invariant).
 
-Use `crate::utils::decode_utf8_spark_lossy`. It replaces each ill-formed sequence with `U+FFFD`
-exactly as the JVM's `new String(bytes, UTF_8)` does, so Comet's rendered output matches Spark
-(including the surrogate-range cases where `str::from_utf8_lossy` would differ). This is the decoder
-used by both `CAST(binary AS string)` and the native columnar shuffle. See the
+Use `datafusion_comet_common::decode_utf8_spark_lossy` (defined in `native/common/src/utils.rs`). It
+replaces each ill-formed sequence with `U+FFFD` exactly as the JVM's `new String(bytes, UTF_8)` does,
+so Comet's rendered output matches Spark (including the surrogate-range cases where
+`str::from_utf8_lossy` would differ). This is the decoder used by both `CAST(binary AS string)` and
+the native columnar shuffle. See the
 [strings with non-UTF-8 bytes](../user-guide/latest/compatibility/index.md) note in the
-compatibility guide for the user-visible behavior.
+compatibility guide for the user-visible behavior, including the cases where decoding diverges from
+Spark.
 
 ### API Differences Between Spark Versions
 

@@ -82,10 +82,22 @@ character `U+FFFD`. Spark itself applies the identical replacement whenever such
 materialized (collected, printed, or passed to most string functions), so the rendered result
 matches Spark.
 
-The one observable difference is byte-preserving round-trips: Spark keeps the original bytes, so
-`CAST(CAST(X'FF' AS STRING) AS BINARY)` returns `X'FF'`, whereas Comet returns the UTF-8 encoding of
-`U+FFFD` (`X'EFBFBD'`). Operations that inspect the raw bytes (re-casting to binary, `octet_length`,
-hashing) can therefore differ for non-UTF-8 input.
+Decoding is not byte-preserving, so results can differ from Spark for any operation that works on the
+underlying bytes rather than on the rendered text:
+
+- **Round-trips.** Spark keeps the original bytes, so `CAST(CAST(X'FF' AS STRING) AS BINARY)` returns
+  `X'FF'`, whereas Comet returns the UTF-8 encoding of `U+FFFD` (`X'EFBFBD'`). `octet_length` and
+  hashing of such a string differ for the same reason.
+- **Value identity.** Decoding maps every ill-formed sequence onto the same `U+FFFD`, so two Spark
+  strings that hold different bytes can become equal in Comet. For example, with `b = X'FF'`,
+  `CAST(b AS STRING) = CAST(X'EFBFBD' AS STRING)` is `false` in Spark (`UTF8String` compares the raw
+  bytes) but `true` in Comet. Equality, joins, grouping, ordering, and byte-based string functions
+  such as `contains` can therefore disagree with Spark when non-UTF-8 bytes are involved.
+
+Both differences require string data that is not valid UTF-8, which does not occur for text read from
+Parquet or produced by string expressions. Consistent handling of invalid UTF-8 across all native
+string paths is tracked by
+[#4764](https://github.com/apache/datafusion-comet/issues/4764).
 
 Separately, Comet's native Parquet scan currently rejects string columns whose stored bytes are not
 valid UTF-8 rather than reading them like Spark

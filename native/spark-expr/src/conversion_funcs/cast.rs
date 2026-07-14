@@ -866,10 +866,13 @@ fn cast_binary_formatter(value: &[u8]) -> Cow<'_, str> {
     // `decode_utf8_spark_lossy` replaces ill-formed sequences with U+FFFD exactly as Spark's
     // `new String(bytes, UTF_8)` does (the same decoder Comet's native shuffle uses, #4521). The
     // result is memory-safe valid UTF-8, never feeds invalid bytes into downstream native string
-    // kernels, and matches Spark's rendered output byte-for-byte. It diverges from Spark only under
-    // byte-level round-trips such as CAST(CAST(x AS string) AS binary), where Spark still has the
-    // original bytes and Comet has the U+FFFD replacements. Returning `Cow` lets the valid path
-    // borrow so the caller appends without an intermediate allocation.
+    // kernels, and matches Spark's rendered output byte-for-byte. It diverges from Spark for
+    // operations that read the underlying bytes rather than the rendered text: byte-level round-trips
+    // such as CAST(CAST(x AS string) AS binary) (Spark still has the original bytes), and value
+    // identity, since every ill-formed sequence decodes to the same U+FFFD and so two strings that
+    // differ in Spark can compare equal in Comet. Both are documented in the compatibility guide and
+    // tracked by #4764. Returning `Cow` lets the valid path borrow so the caller appends without an
+    // intermediate allocation.
     decode_utf8_spark_lossy(value)
 }
 
