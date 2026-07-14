@@ -28,6 +28,8 @@ import java.nio.ByteOrder;
 import java.nio.channels.Channels;
 import java.nio.channels.ReadableByteChannel;
 
+import org.apache.comet.shuffle.CometShuffleBlockIterator;
+
 /**
  * Provides raw compressed shuffle blocks to native code via JNI.
  *

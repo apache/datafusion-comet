@@ -17,7 +17,7 @@
  * under the License.
  */
 
-package org.apache.comet;
+package org.apache.comet.shuffle;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;

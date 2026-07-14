@@ -42,7 +42,8 @@ import org.apache.uniffle.common.config.RssConf
 import org.apache.uniffle.shaded.org.roaringbitmap.longlong.Roaring64NavigableMap
 import org.apache.uniffle.storage.handler.impl.ShuffleServerReadCostTracker
 
-import org.apache.comet.{CometNativeShuffleReader, CometShuffleBlockIterator, Native}
+import org.apache.comet.Native
+import org.apache.comet.shuffle.{CometNativeShuffleReader, CometShuffleBlockIterator}
 import org.apache.comet.vector.NativeUtil
 
 class CometUniffleShuffleReader[K, C](

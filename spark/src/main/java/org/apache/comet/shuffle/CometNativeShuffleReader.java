@@ -17,7 +17,7 @@
  * under the License.
  */
 
-package org.apache.comet;
+package org.apache.comet.shuffle;
 
 /**
  * A shuffle reader that can expose encoded shuffle blocks directly to Comet's native execution

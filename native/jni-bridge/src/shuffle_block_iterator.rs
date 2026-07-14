@@ -37,7 +37,7 @@ pub struct CometShuffleBlockIterator<'a> {
 }
 
 impl<'a> CometShuffleBlockIterator<'a> {
-    pub const JVM_CLASS: &'static str = "org/apache/comet/CometShuffleBlockIterator";
+    pub const JVM_CLASS: &'static str = "org/apache/comet/shuffle/CometShuffleBlockIterator";
 
     pub fn new(env: &mut Env<'a>) -> JniResult<CometShuffleBlockIterator<'a>> {
         let class = env.find_class(JNIString::new(Self::JVM_CLASS))?;

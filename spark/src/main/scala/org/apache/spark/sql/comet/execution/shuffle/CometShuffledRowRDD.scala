@@ -28,7 +28,8 @@ import org.apache.spark.sql.execution.metric.{SQLMetric, SQLShuffleReadMetricsRe
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
-import org.apache.comet.{CometNativeShuffleReader, CometRuntimeException, CometShuffleBlockIterator}
+import org.apache.comet.CometRuntimeException
+import org.apache.comet.shuffle.{CometNativeShuffleReader, CometShuffleBlockIterator}
 
 /**
  * Different from [[org.apache.spark.sql.execution.ShuffledRowRDD]], this RDD is specialized for

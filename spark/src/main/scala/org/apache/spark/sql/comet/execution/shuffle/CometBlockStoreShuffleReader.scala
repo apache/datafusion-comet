@@ -35,7 +35,8 @@ import org.apache.spark.storage.BlockManagerId
 import org.apache.spark.storage.ShuffleBlockFetcherIterator
 import org.apache.spark.util.CompletionIterator
 
-import org.apache.comet.{CometConf, CometLocalShuffleBlockIterator, CometNativeShuffleReader, CometShuffleBlockIterator, Native}
+import org.apache.comet.{CometConf, CometLocalShuffleBlockIterator, Native}
+import org.apache.comet.shuffle.{CometNativeShuffleReader, CometShuffleBlockIterator}
 import org.apache.comet.vector.NativeUtil
 
 /**
