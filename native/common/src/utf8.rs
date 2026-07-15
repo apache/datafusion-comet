@@ -115,6 +115,11 @@ pub fn decode_string_arrays(array: &ArrayRef) -> Result<ArrayRef, ArrowError> {
                 *ordered,
             )?))
         }
+        // Note: string *view* types (Utf8View, BinaryView, etc.) fall through here undecoded.
+        // Spark's JVM->native FFI only ever emits StringType as Utf8/LargeUtf8 (plus dictionaries
+        // and nesting thereof), so this is safe today. If a future producer starts handing a
+        // view-typed string column across FFI, a decode arm must be added above, or the
+        // from_utf8_unchecked UB this function exists to prevent will silently return.
         _ => Ok(Arc::clone(array)),
     }
 }
@@ -403,5 +408,37 @@ mod walker_tests {
             Arc::ptr_eq(&input, &out),
             "map with all-valid values must be unchanged"
         );
+    }
+
+    #[test]
+    fn trailing_empty_string_offset_is_handled() {
+        // element 0 = "ab", element 1 = "" (its offset lands exactly at values.len()).
+        let input = utf8_unchecked(&[0, 2, 2], b"ab", 2);
+        let out = decode_string_arrays(&input).unwrap();
+        assert!(
+            Arc::ptr_eq(&input, &out),
+            "valid input with a trailing empty element must be returned unchanged"
+        );
+        let s = out.as_any().downcast_ref::<StringArray>().unwrap();
+        assert_eq!(s.value(0), "ab");
+        assert_eq!(s.value(1), "");
+    }
+
+    #[test]
+    fn sliced_array_is_decoded() {
+        // Slicing shifts offsets[0] away from 0; the fast path must still handle this correctly.
+        let base: ArrayRef = Arc::new(StringArray::from(vec!["aa", "bb", "cc"]));
+        let sliced: ArrayRef = base.slice(1, 2);
+        let out = decode_string_arrays(&sliced).unwrap();
+        // Slicing already produces a new Arc distinct from `base`, so ptr_eq against `base` isn't
+        // meaningful here; what matters is that the fast path recognizes the slice as valid and
+        // returns it unchanged (same Arc as `sliced`) rather than rebuilding it.
+        assert!(
+            Arc::ptr_eq(&sliced, &out),
+            "valid sliced input must be returned unchanged"
+        );
+        let s = out.as_any().downcast_ref::<StringArray>().unwrap();
+        assert_eq!(s.value(0), "bb");
+        assert_eq!(s.value(1), "cc");
     }
 }
