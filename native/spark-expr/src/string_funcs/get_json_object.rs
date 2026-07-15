@@ -549,6 +549,49 @@ mod tests {
     }
 
     #[test]
+    fn test_null_midpath_is_null() {
+        // A null encountered before the path is exhausted has no child to
+        // recurse into, so the lookup yields no match (SegmentVisitor::visit_unit).
+        let path = parse_json_path("$.a.b").unwrap();
+        assert_eq!(evaluate_path(r#"{"a":null}"#, &path), None);
+    }
+
+    #[test]
+    fn test_match_then_trailing_garbage_is_null() {
+        // The match is found early, but trailing content makes the document
+        // malformed; the full document must still be validated (de.end()).
+        let path = parse_json_path("$.a").unwrap();
+        assert_eq!(evaluate_path(r#"{"a":1} garbage"#, &path), None);
+    }
+
+    #[test]
+    fn test_match_then_malformed_sibling_is_null() {
+        // "a" matches early, but the "b" sibling is malformed; visit_map must
+        // keep draining entries after a match so the parse still rejects this.
+        let path = parse_json_path("$.a").unwrap();
+        assert_eq!(evaluate_path(r#"{"a":1,"b":}"#, &path), None);
+    }
+
+    #[test]
+    fn test_array_match_then_malformed_element_is_null() {
+        // The element at index 0 matches, but a later element is malformed;
+        // visit_seq must keep draining elements after a match.
+        let path = parse_json_path("$[0]").unwrap();
+        assert_eq!(evaluate_path(r#"[1,,]"#, &path), None);
+    }
+
+    #[test]
+    fn test_duplicate_key_last_wins() {
+        // Every entry is visited, so a duplicated key resolves to its last
+        // occurrence, matching serde_json's preserve_order overwrite behavior.
+        let path = parse_json_path("$.a").unwrap();
+        assert_eq!(
+            evaluate_path(r#"{"a":1,"a":2}"#, &path),
+            Some("2".to_string())
+        );
+    }
+
+    #[test]
     fn test_evaluate_missing_field() {
         let path = parse_json_path("$.c").unwrap();
         assert_eq!(evaluate_path(r#"{"a":"b"}"#, &path), None);
