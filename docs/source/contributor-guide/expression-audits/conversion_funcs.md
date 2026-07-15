@@ -35,5 +35,6 @@
   - `spark.sql.legacy.castComplexTypesToString.enabled=true` is not honoured by Comet (https://github.com/apache/datafusion-comet/issues/4492).
   - `CAST(<float|double> AS DECIMAL)` rounding may differ from Spark (`Incompatible`, gated by `spark.comet.expression.Cast.allowIncompatible`, tracked at https://github.com/apache/datafusion-comet/issues/1371).
 - Spark registers the type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `decimal`, `double`, `float`, `int`, `smallint`, `string`, `timestamp`, `tinyint`) as cast aliases. Each lowers to the same `Cast` node, so Comet handles it via the `cast` implementation with the same compatibility profile.
+- Performance (tuned 2026-07-15, PR #4941): float-to-int and decimal-to-int narrowing casts (`cast_float_to_int16_down`/`cast_float_to_int32_up`/`cast_decimal_to_int16_down`/`cast_decimal_to_int32_up`) now map the values buffer with Arrow `unary` (legacy) / `try_unary` (ANSI) instead of a per-element `Option`/`Result` iterator-collect, and the decimal macros hoist the constant `10^scale` divisor out of the loop. 49-91% faster with no regression; overflow/NaN/wrap semantics unchanged. Benchmark: `benches/cast_narrowing.rs`.
 
 [Spark Expression Support]: ../../user-guide/latest/expressions.md
