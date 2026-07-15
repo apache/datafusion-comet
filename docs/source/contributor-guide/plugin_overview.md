@@ -96,9 +96,10 @@ In the native code there is a `PhysicalPlanner` struct (in `planner.rs`) which c
 Apache DataFusion `ExecutionPlan`. In some cases, Comet provides specialized physical operators and expressions to
 override the DataFusion versions to ensure compatibility with Apache Spark.
 
-The leaf nodes in the physical plan are always `ScanExec` and each of these operators will make a JNI call to
-`CometBatchIterator.next()` to fetch the next input batch. The input could be a Comet native Parquet scan,
-a Spark exchange, or another native plan.
+The leaf nodes in the physical plan are always `ScanExec`. Each JVM-sourced input is exported once as an
+[Arrow C Stream](https://arrow.apache.org/docs/format/CStreamInterface.html) (`org.apache.arrow.c.ArrowArrayStream`),
+and `ScanExec` pulls each input batch through a single C callback rather than making a JNI call per batch. The
+input could be a Comet native Parquet scan, a Spark exchange, or another native plan.
 
 `CometNativeExec` creates a `CometExecIterator` and applies this iterator to the input RDD
 partitions. Each call to `CometExecIterator.next()` will invoke `Native.executePlan`. Once the plan finishes

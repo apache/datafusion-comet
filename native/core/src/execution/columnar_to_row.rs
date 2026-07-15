@@ -1052,10 +1052,10 @@ impl ColumnarToRowContext {
                 })
             }
             (DataType::Int32, DataType::Decimal128(precision, scale)) => {
-                // Parquet stores small-precision decimals as Int32 for efficiency.
-                // When COMET_USE_DECIMAL_128 is false, BatchReader produces these types.
-                // The Int32 value is already scaled (e.g., -1 means -0.01 for scale 2).
-                // We need to reinterpret (not cast) to Decimal128 preserving the value.
+                // Parquet stores small-precision decimals as Int32 for efficiency, and the
+                // reader may surface them as the physical Int32 type. The value is already
+                // scaled (e.g., -1 means -0.01 for scale 2). Reinterpret (not cast) to
+                // Decimal128 preserving the value.
                 let int_array = array.as_any().downcast_ref::<Int32Array>().ok_or_else(|| {
                     CometError::Internal("Failed to downcast to Int32Array".to_string())
                 })?;
@@ -2581,8 +2581,7 @@ mod tests {
     #[test]
     fn test_convert_int32_to_decimal128() {
         // Test that Int32 arrays are correctly cast to Decimal128 when schema expects Decimal128.
-        // This can happen when COMET_USE_DECIMAL_128 is false and the parquet reader produces
-        // Int32 for small-precision decimals.
+        // This can happen when the parquet reader surfaces small-precision decimals as Int32.
 
         // Create an Int32 array representing decimals: [-1, -2, -3] which at scale 2 means
         // [-0.01, -0.02, -0.03]
@@ -2619,8 +2618,7 @@ mod tests {
     #[test]
     fn test_convert_int64_to_decimal128() {
         // Test that Int64 arrays are correctly cast to Decimal128 when schema expects Decimal128.
-        // This can happen when COMET_USE_DECIMAL_128 is false and the parquet reader produces
-        // Int64 for medium-precision decimals.
+        // This can happen when the parquet reader surfaces medium-precision decimals as Int64.
 
         // Create an Int64 array representing decimals
         let int_array: ArrayRef = Arc::new(Int64Array::from(vec![-100i64, -200, -300]));

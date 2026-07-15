@@ -46,10 +46,10 @@ import org.apache.comet.shims.ShimCometConf
 object CometConf extends ShimCometConf {
 
   val COMPAT_GUIDE: String = "For more information, refer to the Comet Compatibility " +
-    "Guide (https://datafusion.apache.org/comet/user-guide/compatibility.html)"
+    "Guide (https://datafusion.apache.org/comet/user-guide/latest/compatibility/index.html)"
 
   private val TUNING_GUIDE = "For more information, refer to the Comet Tuning " +
-    "Guide (https://datafusion.apache.org/comet/user-guide/tuning.html)"
+    "Guide (https://datafusion.apache.org/comet/user-guide/latest/tuning.html)"
 
   private val TRACING_GUIDE = "For more information, refer to the Comet Tracing " +
     "Guide (https://datafusion.apache.org/comet/contributor-guide/tracing.html)"
@@ -142,14 +142,17 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
-  val COMET_RESPECT_PARQUET_FILTER_PUSHDOWN: ConfigEntry[Boolean] =
-    conf("spark.comet.parquet.respectFilterPushdown")
+  val COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.parquet.rowFilterPushdown.enabled")
       .category(CATEGORY_PARQUET)
       .doc(
-        "Whether to respect Spark's PARQUET_FILTER_PUSHDOWN_ENABLED config. This needs to be " +
-          "respected when running the Spark SQL test suite but the default setting " +
-          "results in poor performance in Comet when using the new native scans, " +
-          "disabled by default")
+        "When enabled, the native Parquet reader evaluates pushed filters during decode " +
+          "and lazily materializes projected columns for surviving rows (DataFusion's " +
+          "pushdown_filters / late-materialization). Format-level pruning (row-group " +
+          "statistics, page index, bloom filters) is independent of this flag and runs " +
+          "whenever Spark's spark.sql.parquet.filterPushdown is enabled. Disabling this " +
+          "flag still lets format-level pruning work; the per-row eval falls back to " +
+          "the CometFilter operator above the scan.")
       .booleanConf
       .createWithDefault(false)
 
@@ -254,6 +257,8 @@ object CometConf extends ShimCometConf {
     createExecEnabledConfig("broadcastExchange", defaultValue = true)
   val COMET_EXEC_HASH_JOIN_ENABLED: ConfigEntry[Boolean] =
     createExecEnabledConfig("hashJoin", defaultValue = true)
+  val COMET_EXEC_BROADCAST_NESTED_LOOP_JOIN_ENABLED: ConfigEntry[Boolean] =
+    createExecEnabledConfig("broadcastNestedLoopJoin", defaultValue = true)
   val COMET_EXEC_SORT_MERGE_JOIN_ENABLED: ConfigEntry[Boolean] =
     createExecEnabledConfig("sortMergeJoin", defaultValue = true)
   val COMET_EXEC_AGGREGATE_ENABLED: ConfigEntry[Boolean] =
@@ -289,7 +294,20 @@ object CometConf extends ShimCometConf {
   val COMET_EXEC_SORT_MERGE_JOIN_WITH_JOIN_FILTER_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.exec.sortMergeJoinWithJoinFilter.enabled")
       .category(CATEGORY_ENABLE_EXEC)
-      .doc("Experimental support for Sort Merge Join with filter")
+      .doc("Support for Sort Merge Join with filter. " +
+        "Deprecated: this config will be removed in a future release.")
+      .booleanConf
+      .createWithDefault(true)
+
+  val COMET_PYARROW_UDF_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.exec.pyarrowUdf.enabled")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "Experimental: whether to enable optimized execution of PyArrow UDFs " +
+          "(mapInArrow/mapInPandas). When enabled, Comet passes Arrow columnar data " +
+          "directly to Python UDFs without the intermediate Arrow-to-Row-to-Arrow " +
+          "conversion that Spark normally performs. Disabled by default while the " +
+          "feature stabilizes.")
       .booleanConf
       .createWithDefault(false)
 
@@ -365,13 +383,15 @@ object CometConf extends ShimCometConf {
   val COMET_SCALA_UDF_CODEGEN_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.exec.scalaUDF.codegen.enabled")
       .category(CATEGORY_EXEC)
-      .doc("Experimental. Whether to route Spark `ScalaUDF` expressions through Comet's " +
+      .doc("Whether to route Spark `ScalaUDF` expressions through Comet's " +
         "Arrow-direct codegen dispatcher. When enabled, a supported ScalaUDF is compiled into " +
         "a per-batch kernel that reads and writes Arrow vectors directly from native " +
         "execution. When disabled, plans containing a ScalaUDF fall back to Spark for the " +
-        "enclosing operator.")
+        "enclosing operator. The same dispatcher backs the regex family (`rlike`, " +
+        "`regexp_replace`, `split`, `regexp_extract`, `regexp_extract_all`, `regexp_instr`) so " +
+        "those route through it by default as well.")
       .booleanConf
-      .createWithDefault(false)
+      .createWithDefault(true)
 
   val COMET_EXEC_SHUFFLE_WITH_HASH_PARTITIONING_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.native.shuffle.partitioning.hash.enabled")
@@ -441,6 +461,32 @@ object CometConf extends ShimCometConf {
           "the extra conversion.")
       .booleanConf
       .createWithDefault(true)
+
+  val COMET_EXEC_TRANSITION_REVERT_ENABLED: ConfigEntry[Boolean] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.transitionRevert.enabled")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "When enabled, Comet reverts a query stage to Spark row-based execution if the number " +
+          "of columnar-to-row (C2R) transitions in the stage exceeds the configured threshold. " +
+          "This avoids the overhead of repeated format conversions in stages where many " +
+          "operators fall back to row-based execution.")
+      .booleanConf
+      .createWithDefault(false)
+
+  val COMET_EXEC_TRANSITION_REVERT_MAX_TRANSITIONS: ConfigEntry[Int] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.transitionRevert.maxTransitions")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "The maximum number of columnar-to-row (C2R) transitions allowed in a single query " +
+          "stage before Comet reverts the entire stage to Spark row-based execution. When " +
+          "columnar shuffle is enabled, each such C2R typically implies a corresponding " +
+          "row-to-columnar conversion to feed back into the columnar shuffle, so each counted " +
+          "C2R is a useful proxy for the conversion overhead in the stage. Set to 0 to revert " +
+          "any stage with transitions. " +
+          "Only effective when spark.comet.exec.transitionRevert.enabled is true.")
+      .intConf
+      .checkValue(_ >= 0, "Must be >= 0.")
+      .createWithDefault(2)
 
   val COMET_EXEC_SHUFFLE_COMPRESSION_CODEC: ConfigEntry[String] =
     conf(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.compression.codec")
@@ -640,6 +686,15 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
+  val COMET_EXPLAIN_CODEGEN_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.explainCodegen.enabled")
+      .category(CATEGORY_EXEC_EXPLAIN)
+      .doc("When enabled, Comet annotates the surrounding Comet operator with a `[COMET-INFO: " +
+        "JVM codegen dispatcher: <names>]` segment listing every expression it routed through " +
+        "the JVM codegen dispatcher. Disabled by default.")
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_ONHEAP_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.exec.onHeap.enabled")
       .category(CATEGORY_TESTING)
@@ -698,16 +753,6 @@ object CometConf extends ShimCometConf {
         "written to the Proleptic Gregorian calendar and will not be rebased.")
       .booleanConf
       .createWithDefault(false)
-
-  val COMET_USE_DECIMAL_128: ConfigEntry[Boolean] = conf("spark.comet.use.decimal128")
-    .internal()
-    .category(CATEGORY_EXEC)
-    .doc("If true, Comet will always use 128 bits to represent a decimal value, regardless of " +
-      "its precision. If false, Comet will use 32, 64 and 128 bits respectively depending on " +
-      "the precision. N.B. this is NOT a user-facing config but should be inferred and set by " +
-      "Comet itself.")
-    .booleanConf
-    .createWithDefault(false)
 
   val COMET_USE_LAZY_MATERIALIZATION: ConfigEntry[Boolean] = conf(
     "spark.comet.use.lazyMaterialization")
@@ -825,8 +870,10 @@ object CometConf extends ShimCometConf {
   val COMET_LIBHDFS_SCHEMES: OptionalConfigEntry[String] =
     conf(s"spark.hadoop.$COMET_LIBHDFS_SCHEMES_KEY")
       .category(CATEGORY_SCAN)
-      .doc("Defines filesystem schemes (e.g., hdfs, webhdfs) that the native side accesses " +
-        "via libhdfs, separated by commas. Valid only when built with hdfs feature enabled.")
+      .doc(
+        "Defines filesystem schemes (e.g., hdfs, webhdfs) that the native side accesses " +
+          "via libhdfs, separated by commas. Valid only when built with hdfs-opendal feature " +
+          "enabled.")
       .stringConf
       .createOptional
 

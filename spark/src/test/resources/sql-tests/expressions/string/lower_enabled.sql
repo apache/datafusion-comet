@@ -15,8 +15,8 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- Test lower() with case conversion enabled (happy path)
--- Config: spark.comet.caseConversion.enabled=true
+-- Test lower() with the standard allowIncompatible opt-in (happy path)
+-- Config: spark.comet.expression.Lower.allowIncompatible=true
 
 statement
 CREATE TABLE test_lower_enabled(s string) USING parquet

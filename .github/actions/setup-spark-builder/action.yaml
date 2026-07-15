@@ -28,10 +28,15 @@ inputs:
     description: 'Skip native build (when using pre-built artifact)'
     required: false
     default: 'false'
+  skip-spark-clone:
+    description: 'Skip cloning Spark and applying patches (when apache-spark/ is pre-staged from a build-jvm artifact)'
+    required: false
+    default: 'false'
 runs:
   using: "composite"
   steps:
     - name: Clone Spark repo
+      if: ${{ inputs.skip-spark-clone != 'true' }}
       uses: actions/checkout@v6
       with:
         repository: apache/spark
@@ -40,6 +45,7 @@ runs:
         fetch-depth: 1
 
     - name: Setup Spark for Comet
+      if: ${{ inputs.skip-spark-clone != 'true' }}
       shell: bash
       run: |
         cd apache-spark

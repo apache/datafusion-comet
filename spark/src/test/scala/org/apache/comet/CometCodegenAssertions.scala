@@ -20,9 +20,12 @@
 package org.apache.comet
 
 import org.apache.arrow.vector.ValueVector
+import org.apache.spark.sql.catalyst.expressions.Expression
 import org.apache.spark.sql.types.DataType
 
+import org.apache.comet.codegen.CometBatchKernelCodegen
 import org.apache.comet.udf.codegen.CometScalaUDFCodegen
+import org.apache.comet.vector.CometVector
 
 /**
  * Shared assertions for the codegen-dispatcher test suites. Mix in alongside `CometTestBase`.
@@ -78,5 +81,28 @@ trait CometCodegenAssertions {
       present,
       s"expected kernel signature $expectedNames -> $output; " +
         s"cache had ${sigs.map { case (c, d) => (c.map(_.getSimpleName), d) }}")
+  }
+
+  /**
+   * Compiles `expr` (no input columns), runs one batch of `numRows`, and hands the output
+   * `CometVector` to `read`. Every row evaluates to the same value (the expression has no input),
+   * which still exercises the cross-row cumulative child index of the collection output writer:
+   * the child of a List / Map grows by each row's element count, so a batch of N rows drives the
+   * accumulation that a single row cannot. Drives the writer directly, without a query plan, so
+   * it reaches complex-output expressions the serde does not route through dispatch today. The
+   * vector is closed after `read` returns, so `read` must fully materialize what it needs.
+   */
+  protected def runKernel[T](expr: Expression, numRows: Int)(read: CometVector => T): T = {
+    val kernel = CometBatchKernelCodegen.compile(expr, IndexedSeq.empty).newInstance()
+    val field = CometBatchKernelCodegen.toFfiArrowField("out", expr.dataType, nullable = true)
+    val out = CometBatchKernelCodegen.allocateOutput(field, numRows, 0)
+    try {
+      kernel.init(0)
+      kernel.process(Array.empty[ValueVector], out, numRows)
+      out.setValueCount(numRows)
+      read(CometVector.getVector(out, null))
+    } finally {
+      out.close()
+    }
   }
 }

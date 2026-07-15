@@ -21,19 +21,9 @@ package org.apache.comet.serde
 
 import org.apache.spark.sql.catalyst.expressions.{Attribute, ParseUrl}
 
-import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithInfo, scalarFunctionExprToProto}
+import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithFallbackReason, scalarFunctionExprToProto}
 
-// On Spark 4.x ParseUrl is RuntimeReplaceable and handled via CometExprShim (ParseUrlEvaluator).
 object CometParseUrl extends CometExpressionSerde[ParseUrl] {
-
-  private val incompatibleReason =
-    "Native parse_url diverges from Spark on several edge cases " +
-      "(https://github.com/apache/datafusion/issues/21943)"
-
-  override def getIncompatibleReasons(): Seq[String] = Seq(incompatibleReason)
-
-  override def getSupportLevel(expr: ParseUrl): SupportLevel =
-    Incompatible(Some(incompatibleReason))
 
   override def convert(
       expr: ParseUrl,
@@ -42,6 +32,6 @@ object CometParseUrl extends CometExpressionSerde[ParseUrl] {
     val funcName = if (expr.failOnError) "parse_url" else "try_parse_url"
     val childExprs = expr.children.map(exprToProtoInternal(_, inputs, binding))
     val optExpr = scalarFunctionExprToProto(funcName, childExprs: _*)
-    optExprWithInfo(optExpr, expr, expr.children: _*)
+    optExprWithFallbackReason(optExpr, expr, expr.children: _*)
   }
 }

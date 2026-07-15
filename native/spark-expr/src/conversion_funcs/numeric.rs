@@ -134,7 +134,7 @@ macro_rules! cast_float_to_timestamp_impl {
 }
 
 macro_rules! cast_float_to_string {
-    ($from:expr, $eval_mode:expr, $type:ty, $output_type:ty, $offset_type:ty) => {{
+    ($from:expr, $eval_mode:expr, $type:ty, $output_type:ty, $offset_type:ty, $min_value:expr) => {{
 
         fn cast<OffsetSize>(
             from: &dyn Array,
@@ -173,20 +173,27 @@ macro_rules! cast_float_to_string {
                             if value.abs() >= UPPER_SCIENTIFIC_BOUND
                                 || value.abs() < LOWER_SCIENTIFIC_BOUND =>
                         {
-                            let formatted = format!("{value:E}");
-
-                            if formatted.contains(".") {
-                                Ok(Some(formatted))
+                            // Spark uses Java's Float.MIN_VALUE / Double.MIN_VALUE strings for
+                            // the smallest subnormal values; Rust's formatter rounds them more.
+                            if value.abs().to_bits() == 1 {
+                                let sign = if value.is_sign_negative() { "-" } else { "" };
+                                Ok(Some(format!("{sign}{}", $min_value)))
                             } else {
-                                // `formatted` is already in scientific notation and can be split up by E
-                                // in order to add the missing trailing 0 which gets removed for numbers with a fraction of 0.0
-                                let prepare_number: Vec<&str> = formatted.split("E").collect();
+                                let formatted = format!("{value:E}");
 
-                                let coefficient = prepare_number[0];
+                                if formatted.contains(".") {
+                                    Ok(Some(formatted))
+                                } else {
+                                    // `formatted` is already in scientific notation and can be split up by E
+                                    // in order to add the missing trailing 0 which gets removed for numbers with a fraction of 0.0
+                                    let prepare_number: Vec<&str> = formatted.split("E").collect();
 
-                                let exponent = prepare_number[1];
+                                    let coefficient = prepare_number[0];
 
-                                Ok(Some(format!("{coefficient}.0E{exponent}")))
+                                    let exponent = prepare_number[1];
+
+                                    Ok(Some(format!("{coefficient}.0E{exponent}")))
+                                }
                             }
                         }
                         Some(value) => Ok(Some(value.to_string())),
@@ -248,53 +255,36 @@ macro_rules! cast_int_to_int_macro {
         $eval_mode:expr,
         $from_arrow_primitive_type: ty,
         $to_arrow_primitive_type: ty,
-        $from_data_type: expr,
         $to_native_type: ty,
         $spark_from_data_type_name: expr,
-        $spark_to_data_type_name: expr
+        $spark_to_data_type_name: expr,
+        $spark_int_literal_suffix: expr
     ) => {{
         let cast_array = $array
             .as_any()
             .downcast_ref::<PrimitiveArray<$from_arrow_primitive_type>>()
             .unwrap();
-        let spark_int_literal_suffix = match $from_data_type {
-            &DataType::Int64 => "L",
-            &DataType::Int16 => "S",
-            &DataType::Int8 => "T",
-            _ => "",
-        };
 
-        let output_array = match $eval_mode {
-            EvalMode::Legacy => cast_array
-                .iter()
-                .map(|value| match value {
-                    Some(value) => {
-                        Ok::<Option<$to_native_type>, SparkError>(Some(value as $to_native_type))
-                    }
-                    _ => Ok(None),
+        let output_array: PrimitiveArray<$to_arrow_primitive_type> = match $eval_mode {
+            // Legacy narrowing keeps the low-order bits of the source value, which is what a
+            // wrapping `as` conversion does. Being infallible, it maps the values buffer in a
+            // single pass and carries the null buffer over untouched.
+            EvalMode::Legacy => {
+                cast_array.unary::<_, $to_arrow_primitive_type>(|value| value as $to_native_type)
+            }
+            // `try_unary` only applies the conversion to non-null slots, so an out-of-range
+            // value sitting under a null cannot raise a spurious overflow error.
+            _ => cast_array.try_unary::<_, $to_arrow_primitive_type, SparkError>(|value| {
+                <$to_native_type>::try_from(value).map_err(|_| {
+                    cast_overflow(
+                        &(value.to_string() + $spark_int_literal_suffix),
+                        $spark_from_data_type_name,
+                        $spark_to_data_type_name,
+                    )
                 })
-                .collect::<Result<PrimitiveArray<$to_arrow_primitive_type>, _>>(),
-            _ => cast_array
-                .iter()
-                .map(|value| match value {
-                    Some(value) => {
-                        let res = <$to_native_type>::try_from(value);
-                        if res.is_err() {
-                            Err(cast_overflow(
-                                &(value.to_string() + spark_int_literal_suffix),
-                                $spark_from_data_type_name,
-                                $spark_to_data_type_name,
-                            ))
-                        } else {
-                            Ok::<Option<$to_native_type>, SparkError>(Some(res.unwrap()))
-                        }
-                    }
-                    _ => Ok(None),
-                })
-                .collect::<Result<PrimitiveArray<$to_arrow_primitive_type>, _>>(),
-        }?;
-        let result: SparkResult<ArrayRef> = Ok(Arc::new(output_array) as ArrayRef);
-        result
+            })?,
+        };
+        Ok(Arc::new(output_array) as ArrayRef)
     }};
 }
 
@@ -650,7 +640,7 @@ pub(crate) fn spark_cast_float64_to_utf8<OffsetSize>(
 where
     OffsetSize: OffsetSizeTrait,
 {
-    cast_float_to_string!(from, _eval_mode, f64, Float64Array, OffsetSize)
+    cast_float_to_string!(from, _eval_mode, f64, Float64Array, OffsetSize, "4.9E-324")
 }
 
 pub(crate) fn spark_cast_float32_to_utf8<OffsetSize>(
@@ -660,7 +650,7 @@ pub(crate) fn spark_cast_float32_to_utf8<OffsetSize>(
 where
     OffsetSize: OffsetSizeTrait,
 {
-    cast_float_to_string!(from, _eval_mode, f32, Float32Array, OffsetSize)
+    cast_float_to_string!(from, _eval_mode, f32, Float32Array, OffsetSize, "1.4E-45")
 }
 
 fn cast_int_to_decimal128_internal<T>(
@@ -773,22 +763,22 @@ pub(crate) fn spark_cast_int_to_int(
 ) -> SparkResult<ArrayRef> {
     match (from_type, to_type) {
         (DataType::Int64, DataType::Int32) => cast_int_to_int_macro!(
-            array, eval_mode, Int64Type, Int32Type, from_type, i32, "BIGINT", "INT"
+            array, eval_mode, Int64Type, Int32Type, i32, "BIGINT", "INT", "L"
         ),
         (DataType::Int64, DataType::Int16) => cast_int_to_int_macro!(
-            array, eval_mode, Int64Type, Int16Type, from_type, i16, "BIGINT", "SMALLINT"
+            array, eval_mode, Int64Type, Int16Type, i16, "BIGINT", "SMALLINT", "L"
         ),
         (DataType::Int64, DataType::Int8) => cast_int_to_int_macro!(
-            array, eval_mode, Int64Type, Int8Type, from_type, i8, "BIGINT", "TINYINT"
+            array, eval_mode, Int64Type, Int8Type, i8, "BIGINT", "TINYINT", "L"
         ),
         (DataType::Int32, DataType::Int16) => cast_int_to_int_macro!(
-            array, eval_mode, Int32Type, Int16Type, from_type, i16, "INT", "SMALLINT"
+            array, eval_mode, Int32Type, Int16Type, i16, "INT", "SMALLINT", ""
         ),
-        (DataType::Int32, DataType::Int8) => cast_int_to_int_macro!(
-            array, eval_mode, Int32Type, Int8Type, from_type, i8, "INT", "TINYINT"
-        ),
+        (DataType::Int32, DataType::Int8) => {
+            cast_int_to_int_macro!(array, eval_mode, Int32Type, Int8Type, i8, "INT", "TINYINT", "")
+        }
         (DataType::Int16, DataType::Int8) => cast_int_to_int_macro!(
-            array, eval_mode, Int16Type, Int8Type, from_type, i8, "SMALLINT", "TINYINT"
+            array, eval_mode, Int16Type, Int8Type, i8, "SMALLINT", "TINYINT", "S"
         ),
         _ => unreachable!(
             "{}",
@@ -1115,6 +1105,27 @@ mod tests {
         let result =
             spark_cast_int_to_int(&array, EvalMode::Ansi, &DataType::Int64, &DataType::Int32);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_spark_cast_float_min_value_to_string() {
+        let float_array: ArrayRef = Arc::new(Float32Array::from(vec![
+            Some(f32::from_bits(1)),
+            Some(-f32::from_bits(1)),
+        ]));
+        let result = spark_cast_float32_to_utf8::<i32>(&float_array, EvalMode::Legacy).unwrap();
+        let strings = result.as_string::<i32>();
+        assert_eq!(strings.value(0), "1.4E-45");
+        assert_eq!(strings.value(1), "-1.4E-45");
+
+        let double_array: ArrayRef = Arc::new(Float64Array::from(vec![
+            Some(f64::from_bits(1)),
+            Some(-f64::from_bits(1)),
+        ]));
+        let result = spark_cast_float64_to_utf8::<i32>(&double_array, EvalMode::Legacy).unwrap();
+        let strings = result.as_string::<i32>();
+        assert_eq!(strings.value(0), "4.9E-324");
+        assert_eq!(strings.value(1), "-4.9E-324");
     }
 
     #[test]

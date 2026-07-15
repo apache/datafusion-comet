@@ -22,7 +22,14 @@ package org.apache.comet.vector;
 import org.apache.arrow.vector.ValueVector;
 import org.apache.spark.unsafe.types.UTF8String;
 
-/** A dictionary which maps indices (integers) to values. */
+/**
+ * Decoded dictionary values referenced by {@link CometDictionaryVector}.
+ *
+ * <p>Wraps the dictionary's {@link CometPlainVector} of values and exposes per-type scalar
+ * accessors that callers can index by decoded dictionary ID. For decimals, the raw big-endian Arrow
+ * bytes are reversed and copied into a per-ID cache so that repeated random-access reads do not
+ * redo the conversion.
+ */
 public class CometDictionary implements AutoCloseable {
   private static final int DECIMAL_BYTE_WIDTH = 16;
 

@@ -63,6 +63,7 @@ mod map_funcs;
 pub use map_funcs::spark_map_sort;
 mod math_funcs;
 mod nondetermenistic_funcs;
+pub mod url_funcs;
 
 pub use array_funcs::*;
 pub use conditional_funcs::*;
@@ -75,18 +76,19 @@ pub use comet_scalar_funcs::{
 };
 pub use csv_funcs::*;
 pub use datetime_funcs::{
-    spark_to_time, SparkDateDiff, SparkDateFromUnixDate, SparkDateTrunc, SparkHour,
-    SparkHoursTransform, SparkMakeDate, SparkMakeTime, SparkMinute, SparkSecond,
-    SparkSecondsToTimestamp, SparkUnixTimestamp, TimestampTruncExpr,
+    spark_day_name, spark_month_name, spark_to_time, SparkDateDiff, SparkDateFromUnixDate,
+    SparkDateTrunc, SparkHour, SparkHoursTransform, SparkMakeDate, SparkMakeTime, SparkMinute,
+    SparkNextDay, SparkSecond, SparkSecondsToTimestamp, SparkUnixTimestamp, TimestampTruncExpr,
 };
 pub use error::{decimal_overflow_error, SparkError, SparkErrorWithContext, SparkResult};
 pub use hash_funcs::*;
 pub use json_funcs::{FromJson, ToJson};
 pub use math_funcs::{
-    create_modulo_expr, create_negate_expr, spark_ceil, spark_decimal_div,
-    spark_decimal_integral_div, spark_floor, spark_log, spark_make_decimal, spark_round,
-    spark_unhex, spark_unscaled_value, CheckOverflow, DecimalRescaleCheckOverflow, NegativeExpr,
-    NormalizeNaNAndZero, WideDecimalBinaryExpr, WideDecimalOp,
+    checked_add, checked_div, checked_mul, checked_sub, create_modulo_expr, create_negate_expr,
+    spark_ceil, spark_decimal_div, spark_decimal_integral_div, spark_floor, spark_log,
+    spark_make_decimal, spark_round, spark_unhex, spark_unscaled_value, CheckOverflow,
+    DecimalRescaleCheckOverflow, NegativeExpr, NormalizeNaNAndZero, WideDecimalBinaryExpr,
+    WideDecimalOp,
 };
 pub use query_context::{create_query_context_map, QueryContext, QueryContextMap};
 pub use string_funcs::*;

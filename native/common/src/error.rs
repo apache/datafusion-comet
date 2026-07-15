@@ -215,6 +215,15 @@ pub enum SparkError {
         spark_type: String,
     },
 
+    /// A per-file read failure (corrupt footer/page, truncated/empty file, deleted file) raised by
+    /// the native parquet reader / object_store. Classified by typed `DataFusionError` variant (no
+    /// message matching) and translated by the JVM shim into Spark's `FAILED_READ_FILE`
+    /// (`QueryExecutionErrors.cannotReadFilesError`). `file_path` may be empty when the underlying
+    /// error doesn't carry it (only `object_store::Error::NotFound` does); the JVM side then fills
+    /// it from the per-task file list.
+    #[error("Encountered error while reading file {file_path}: {message}")]
+    CannotReadFile { file_path: String, message: String },
+
     #[error("ArrowError: {0}.")]
     Arrow(Arc<ArrowError>),
 
@@ -291,6 +300,7 @@ impl SparkError {
             SparkError::DuplicateFieldByFieldId { .. } => "DuplicateFieldByFieldId",
             SparkError::ParquetMissingFieldIds => "ParquetMissingFieldIds",
             SparkError::ParquetSchemaConvert { .. } => "ParquetSchemaConvert",
+            SparkError::CannotReadFile { .. } => "CannotReadFile",
             SparkError::Arrow(_) => "Arrow",
             SparkError::Internal(_) => "Internal",
         }
@@ -528,6 +538,12 @@ impl SparkError {
                     "sparkType": spark_type,
                 })
             }
+            SparkError::CannotReadFile { file_path, message } => {
+                serde_json::json!({
+                    "filePath": file_path,
+                    "message": message,
+                })
+            }
             SparkError::Arrow(e) => {
                 serde_json::json!({
                     "message": e.to_string(),
@@ -616,6 +632,10 @@ impl SparkError {
             SparkError::ParquetSchemaConvert { .. } => {
                 "org/apache/spark/sql/execution/datasources/SchemaColumnConvertNotSupportedException"
             }
+
+            // CannotReadFile - converted to a FAILED_READ_FILE SparkException by the shim
+            // (QueryExecutionErrors.cannotReadFilesError).
+            SparkError::CannotReadFile { .. } => "org/apache/spark/SparkException",
 
             // Generic errors
             SparkError::Arrow(_) | SparkError::Internal(_) => "org/apache/spark/SparkException",
@@ -706,6 +726,10 @@ impl SparkError {
             // by the JVM shim. The shim wraps it in the version-appropriate
             // SparkException error class, so no error class is exposed here.
             SparkError::ParquetSchemaConvert { .. } => None,
+
+            // CannotReadFile — the JVM shim wraps it via cannotReadFilesError, which supplies the
+            // FAILED_READ_FILE error class, so none is exposed here.
+            SparkError::CannotReadFile { .. } => None,
 
             // Generic errors (no error class)
             SparkError::Arrow(_) | SparkError::Internal(_) => None,

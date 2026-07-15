@@ -69,8 +69,9 @@ Native shuffle (`CometExchange`) is selected when all of the following condition
                                       ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                         CometNativeShuffleWriter                             │
-│  - Constructs protobuf operator plan                                         │
-│  - Invokes native execution via CometExec.getCometIterator()                 │
+│  - Builds protobuf operator plan: ShuffleWriter(child = childNativeOp)       │
+│  - Reads per-partition leaf iterators from CometNativeShuffleInputIterator   │
+│  - Drives one CometExecIterator per partition                                │
 └─────────────────────────────────────────────────────────────────────────────┘
                                       │
                                       ▼ (JNI)
@@ -103,13 +104,14 @@ Native shuffle (`CometExchange`) is selected when all of the following condition
 
 ### Scala Side
 
-| Class                          | Location                                         | Description                                                                                   |
-| ------------------------------ | ------------------------------------------------ | --------------------------------------------------------------------------------------------- |
-| `CometShuffleExchangeExec`     | `.../shuffle/CometShuffleExchangeExec.scala`     | Physical plan node. Validates types and partitioning, creates `CometShuffleDependency`.       |
-| `CometNativeShuffleWriter`     | `.../shuffle/CometNativeShuffleWriter.scala`     | Implements `ShuffleWriter`. Builds protobuf plan and invokes native execution.                |
-| `CometShuffleDependency`       | `.../shuffle/CometShuffleDependency.scala`       | Extends `ShuffleDependency`. Holds shuffle type, schema, and range partition bounds.          |
-| `CometBlockStoreShuffleReader` | `.../shuffle/CometBlockStoreShuffleReader.scala` | Reads shuffle blocks via `ShuffleBlockFetcherIterator`. Decodes Arrow IPC to `ColumnarBatch`. |
-| `NativeBatchDecoderIterator`   | `.../shuffle/NativeBatchDecoderIterator.scala`   | Reads compressed Arrow IPC from input stream. Calls native decode via JNI.                    |
+| Class                          | Location                                         | Description                                                                                                                                         |
+| ------------------------------ | ------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `CometShuffleExchangeExec`     | `.../shuffle/CometShuffleExchangeExec.scala`     | Physical plan node. Validates types and partitioning, creates `CometShuffleDependency`.                                                             |
+| `CometNativeShuffleWriter`     | `.../shuffle/CometNativeShuffleWriter.scala`     | Implements `ShuffleWriter`. Builds the unified `ShuffleWriter(child = childNativeOp)` plan and runs it in one `CometExecIterator` per partition.    |
+| `CometShuffleDependency`       | `.../shuffle/CometShuffleDependency.scala`       | Extends `ShuffleDependency`. Holds shuffle type, schema, range partition bounds, and (native shuffle only) a `NativeShuffleSpec`.                   |
+| `CometNativeShuffleInputRDD`   | `.../shuffle/CometNativeShuffleInputRDD.scala`   | Thin scheduling-anchor RDD on the native-shuffle path. `compute` returns a `CometNativeShuffleInputIterator` carrying per-partition leaf iterators. |
+| `CometBlockStoreShuffleReader` | `.../shuffle/CometBlockStoreShuffleReader.scala` | Reads shuffle blocks via `ShuffleBlockFetcherIterator`. Decodes Arrow IPC to `ColumnarBatch`.                                                       |
+| `NativeBatchDecoderIterator`   | `.../shuffle/NativeBatchDecoderIterator.scala`   | Reads compressed Arrow IPC from input stream. Calls native decode via JNI.                                                                          |
 
 ### Rust Side
 
@@ -123,11 +125,19 @@ Native shuffle (`CometExchange`) is selected when all of the following condition
 
 ### Write Path
 
-1. **Plan construction**: `CometNativeShuffleWriter` builds a protobuf operator plan containing:
-   - A scan operator reading from the input iterator
-   - A `ShuffleWriter` operator with partitioning config and compression codec
+1. **Plan construction**: `CometNativeShuffleWriter` builds a protobuf operator tree with a
+   `ShuffleWriter` operator at the root and `childNativeOp` as its child. `childNativeOp` takes
+   one of two shapes:
+   - The child plan's `nativeOp` directly, when `CometShuffleExchangeExec`'s child is a
+     `CometNativeExec` subtree. The upstream operators run inside the same `CometExecIterator`
+     as the writer, with no JVM-to-native batch boundary between them.
+   - A synthetic `Scan("ShuffleWriterInput")` placeholder, when the dep was built via the
+     convenience `prepareShuffleDependency(rdd, ...)` overload (used by
+     `CometCollectLimitExec` and `CometTakeOrderedAndProjectExec`, or when the
+     exchange's child is a non-native `CometPlan` such as `CometSparkToColumnarExec`). Native
+     code reads `ColumnarBatch`es from the JVM input iterator via Arrow C Stream Interface.
 
-2. **Native execution**: `CometExec.getCometIterator()` executes the plan in Rust.
+2. **Native execution**: A single `CometExecIterator` per partition runs the unified plan.
 
 3. **Partitioning**: `ShuffleWriterExec` receives batches and routes to the appropriate partitioner:
    - `MultiPartitionShuffleRepartitioner`: For hash/range/round-robin partitioning

@@ -48,6 +48,17 @@ object CometMonotonicallyIncreasingId extends CometExpressionSerde[Monotonically
 }
 
 sealed abstract class CometRandCommonSerde[T <: Expression] extends CometExpressionSerde[T] {
+  protected val nonLiteralSeedReason = "The `seed` argument must be a literal value"
+
+  override def getUnsupportedReasons(): Seq[String] = Seq(nonLiteralSeedReason)
+
+  protected def seedExprOf(expr: T): Expression
+
+  override def getSupportLevel(expr: T): SupportLevel = seedExprOf(expr) match {
+    case _: Literal => Compatible()
+    case _ => Unsupported(Some(nonLiteralSeedReason))
+  }
+
   protected def extractSeedFromExpr(expr: Expression): Option[Long] = {
     expr match {
       case Literal(seed: Long, _) => Some(seed)
@@ -58,6 +69,8 @@ sealed abstract class CometRandCommonSerde[T <: Expression] extends CometExpress
 }
 
 object CometRand extends CometRandCommonSerde[Rand] {
+  override protected def seedExprOf(expr: Rand): Expression = expr.child
+
   override def convert(
       expr: Rand,
       inputs: Seq[Attribute],
@@ -72,6 +85,8 @@ object CometRand extends CometRandCommonSerde[Rand] {
 }
 
 object CometRandn extends CometRandCommonSerde[Randn] {
+  override protected def seedExprOf(expr: Randn): Expression = expr.child
+
   override def convert(
       expr: Randn,
       inputs: Seq[Attribute],
