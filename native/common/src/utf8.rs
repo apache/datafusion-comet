@@ -35,12 +35,16 @@ pub fn decode_string_arrays(array: &ArrayRef) -> Result<ArrayRef, ArrowError> {
         DataType::Dictionary(_, value_type)
             if matches!(value_type.as_ref(), DataType::Utf8 | DataType::LargeUtf8) =>
         {
+            // Capture the original Arc before `downcast_dictionary_array!` shadows `array`, so the
+            // unchanged branch returns it verbatim, preserving the zero-copy contract that the
+            // Struct/List/Map arms rely on via `Arc::ptr_eq`.
+            let original = Arc::clone(array);
             downcast_dictionary_array!(
                 array => {
                     let values = array.values();
                     let decoded = decode_string_arrays(values)?;
                     if Arc::ptr_eq(&decoded, values) {
-                        Ok(Arc::new(array.clone()))
+                        Ok(original)
                     } else {
                         Ok(Arc::new(array.with_values(decoded)))
                     }
@@ -258,7 +262,9 @@ mod walker_tests {
         assert_eq!(s.value(0), "\u{FFFD}");
     }
 
-    use arrow::array::{DictionaryArray, Int32Array, ListArray, StructArray};
+    use arrow::array::{
+        DictionaryArray, FixedSizeListArray, Int32Array, ListArray, MapArray, StructArray,
+    };
     use arrow::datatypes::{Field, Fields, Int32Type};
 
     /// An invalid Utf8 leaf ["\u{FFFD}"] built from raw bytes.
@@ -319,6 +325,83 @@ mod walker_tests {
         assert!(
             Arc::ptr_eq(&input, &out),
             "all-valid nested input must be unchanged"
+        );
+    }
+
+    #[test]
+    fn dictionary_valid_values_are_zero_copy() {
+        let values: ArrayRef = Arc::new(StringArray::from(vec!["a", "b"]));
+        let keys = Int32Array::from(vec![0, 1, 0]);
+        let input: ArrayRef = Arc::new(DictionaryArray::<Int32Type>::new(keys, values));
+        let out = decode_string_arrays(&input).unwrap();
+        assert!(
+            Arc::ptr_eq(&input, &out),
+            "dictionary with all-valid values must be returned as the original Arc"
+        );
+    }
+
+    #[test]
+    fn fixed_size_list_values_are_decoded() {
+        let field = Arc::new(Field::new("item", DataType::Utf8, true));
+        let input: ArrayRef =
+            Arc::new(FixedSizeListArray::try_new(field, 1, invalid_leaf(), None).unwrap());
+        let out = decode_string_arrays(&input).unwrap();
+        let l = out.as_any().downcast_ref::<FixedSizeListArray>().unwrap();
+        let vals = l.values().as_any().downcast_ref::<StringArray>().unwrap();
+        assert_eq!(vals.value(0), "\u{FFFD}");
+    }
+
+    #[test]
+    fn fixed_size_list_valid_is_zero_copy() {
+        let field = Arc::new(Field::new("item", DataType::Utf8, true));
+        let leaf: ArrayRef = Arc::new(StringArray::from(vec!["ok"]));
+        let input: ArrayRef = Arc::new(FixedSizeListArray::try_new(field, 1, leaf, None).unwrap());
+        let out = decode_string_arrays(&input).unwrap();
+        assert!(
+            Arc::ptr_eq(&input, &out),
+            "fixed-size list with all-valid values must be unchanged"
+        );
+    }
+
+    /// Build a Map array whose single entry maps `key` -> `values` (a Utf8 leaf array of length 1).
+    fn build_map(key: &str, values: ArrayRef) -> ArrayRef {
+        let entries_fields = Fields::from(vec![
+            Arc::new(Field::new("keys", DataType::Utf8, false)),
+            Arc::new(Field::new("values", DataType::Utf8, true)),
+        ]);
+        let keys: ArrayRef = Arc::new(StringArray::from(vec![key]));
+        let entries = StructArray::new(entries_fields.clone(), vec![keys, values], None);
+        let map_field = Arc::new(Field::new(
+            "entries",
+            DataType::Struct(entries_fields),
+            false,
+        ));
+        let offsets = arrow::buffer::OffsetBuffer::new(vec![0i32, 1].into());
+        Arc::new(MapArray::try_new(map_field, offsets, entries, None, false).unwrap())
+    }
+
+    #[test]
+    fn map_values_are_decoded() {
+        let input = build_map("k", invalid_leaf());
+        let out = decode_string_arrays(&input).unwrap();
+        let m = out.as_any().downcast_ref::<MapArray>().unwrap();
+        let values = m
+            .entries()
+            .column(1)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert_eq!(values.value(0), "\u{FFFD}");
+    }
+
+    #[test]
+    fn map_valid_is_zero_copy() {
+        let values: ArrayRef = Arc::new(StringArray::from(vec!["ok"]));
+        let input = build_map("k", values);
+        let out = decode_string_arrays(&input).unwrap();
+        assert!(
+            Arc::ptr_eq(&input, &out),
+            "map with all-valid values must be unchanged"
         );
     }
 }
