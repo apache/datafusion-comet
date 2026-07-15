@@ -119,8 +119,24 @@ impl PhysicalExpr for CheckOverflow {
 
                 let decimal_array = as_primitive_array::<Decimal128Type>(&array);
 
-                let casted_array = if self.fail_on_error {
-                    // Returning error if overflow - convert decimal overflow to SparkError
+                // Fast path shared by both ANSI and non-ANSI: `is_valid_decimal_precision` is a
+                // small, inlined bounds check and `all` short-circuits at the first overflow. When
+                // nothing overflows (the common shape for decimal arithmetic in TPC-DS) we reuse the
+                // input buffers via `to_data()`, which only clones cheap Arc metadata. This avoids
+                // the heavier per-value `validate_decimal_precision` scan (ANSI) or the allocating
+                // `null_if_overflow_precision` (non-ANSI) below.
+                let no_overflow = decimal_array
+                    .iter()
+                    .flatten()
+                    .all(|v| Decimal128Type::is_valid_decimal_precision(v, *precision));
+
+                let casted_array = if no_overflow {
+                    Decimal128Array::from(decimal_array.to_data())
+                } else if self.fail_on_error {
+                    // ANSI mode with a genuine overflow. Re-run the heavier
+                    // `validate_decimal_precision` so it builds the precise Spark error for the
+                    // first offending value. This extra scan only runs on the error path, which
+                    // aborts the query anyway.
                     decimal_array
                         .validate_decimal_precision(*precision)
                         .map_err(|e| {
@@ -155,19 +171,14 @@ impl PhysicalExpr for CheckOverflow {
                                 DataFusionError::ArrowError(Box::new(e), None)
                             }
                         })?;
-                    Decimal128Array::from(decimal_array.to_data())
-                } else if decimal_array
-                    .iter()
-                    .flatten()
-                    .all(|v| Decimal128Type::is_valid_decimal_precision(v, *precision))
-                {
-                    // Fast path: no value overflows the target precision, so reuse the input
-                    // buffers instead of allocating a new array via null_if_overflow_precision.
-                    // to_data() only clones cheap Arc metadata, and `all` short-circuits at the
-                    // first overflow so the fallback below pays at most a tiny extra scan.
-                    Decimal128Array::from(decimal_array.to_data())
+                    // `is_valid_decimal_precision` and `validate_decimal_precision` check identical
+                    // precision bounds, so reaching here means `validate_decimal_precision` should
+                    // already have returned an error above.
+                    return Err(DataFusionError::Internal(
+                        "CheckOverflow detected an overflow that validate_decimal_precision did not report".to_string(),
+                    ));
                 } else {
-                    // Overflowing values become null.
+                    // Non-ANSI: overflowing values become null.
                     decimal_array.null_if_overflow_precision(*precision)
                 };
 
