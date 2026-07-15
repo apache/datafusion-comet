@@ -93,23 +93,21 @@ fn extract_all_array<O: OffsetSizeTrait>(
     regex: &Regex,
     group_idx: usize,
 ) -> ArrayRef {
-    let mut values_builder = StringBuilder::new();
+    let mut values_builder = StringBuilder::with_capacity(array.len(), values_capacity(array));
     let mut offsets: Vec<i32> = Vec::with_capacity(array.len() + 1);
     let mut null_buffer = BooleanBufferBuilder::new(array.len());
     offsets.push(0);
 
-    for i in 0..array.len() {
-        if array.is_null(i) {
-            offsets.push(values_builder.len() as i32);
-            null_buffer.append(false);
-        } else {
-            for caps in regex.captures_iter(array.value(i)) {
-                let s = caps.get(group_idx).map(|m| m.as_str()).unwrap_or("");
-                values_builder.append_value(s);
+    let mut matcher = GroupMatcher::new(regex, group_idx);
+    for value in array.iter() {
+        match value {
+            Some(s) => {
+                matcher.for_each_match(s, |s| values_builder.append_value(s));
+                null_buffer.append(true);
             }
-            offsets.push(values_builder.len() as i32);
-            null_buffer.append(true);
+            None => null_buffer.append(false),
         }
+        offsets.push(values_builder.len() as i32);
     }
 
     let values = Arc::new(values_builder.finish()) as ArrayRef;
@@ -123,15 +121,90 @@ fn extract_all_array<O: OffsetSizeTrait>(
     ))
 }
 
+/// Byte capacity to pre-allocate for the extracted strings of `array`.
+///
+/// The extracted text is a subset of the subject, so the subject's own byte length is an upper
+/// bound; it is capped so that a large batch does not reserve far more than it is likely to use.
+fn values_capacity<O: OffsetSizeTrait>(array: &GenericStringArray<O>) -> usize {
+    const MAX_CAPACITY: usize = 1 << 20;
+    let offsets = array.value_offsets();
+    let subject_bytes = offsets[array.len()].as_usize() - offsets[0].as_usize();
+    subject_bytes.min(MAX_CAPACITY)
+}
+
 fn extract_one(input: &str, regex: &Regex, group_idx: usize) -> Vec<String> {
-    regex
-        .captures_iter(input)
-        .map(|caps| {
-            caps.get(group_idx)
-                .map(|m| m.as_str().to_string())
-                .unwrap_or_default()
-        })
-        .collect()
+    let mut matches = Vec::new();
+    GroupMatcher::new(regex, group_idx).for_each_match(input, |s| matches.push(s.to_string()));
+    matches
+}
+
+/// Walks the non-overlapping matches of a regex, yielding the text of one capture group.
+///
+/// This is equivalent to iterating `Regex::captures_iter` and reading group `group_idx` from
+/// each `Captures`, but `captures_iter` allocates a fresh capture-slot buffer for every match.
+/// Here a single `CaptureLocations` is reused across all matches and all rows, and when only
+/// the whole match is needed (`idx = 0`) the capture groups are not resolved at all.
+struct GroupMatcher<'a> {
+    regex: &'a Regex,
+    group_idx: usize,
+    locations: regex::CaptureLocations,
+}
+
+impl<'a> GroupMatcher<'a> {
+    fn new(regex: &'a Regex, group_idx: usize) -> Self {
+        Self {
+            regex,
+            group_idx,
+            locations: regex.capture_locations(),
+        }
+    }
+
+    /// Calls `emit` once per match with the matched text of the capture group, using the empty
+    /// string for a group that did not participate in the match.
+    fn for_each_match<F: FnMut(&str)>(&mut self, input: &str, mut emit: F) {
+        if self.group_idx == 0 {
+            for m in self.regex.find_iter(input) {
+                emit(m.as_str());
+            }
+            return;
+        }
+
+        let mut search_start = 0;
+        let mut last_match_end: Option<usize> = None;
+        while search_start <= input.len() {
+            let Some(m) = self
+                .regex
+                .captures_read_at(&mut self.locations, input, search_start)
+            else {
+                return;
+            };
+            // The same empty match is never reported twice: an empty match landing on the end of
+            // the previous match is dropped.
+            if m.is_empty() && Some(m.end()) == last_match_end {
+                search_start = next_char_start(input, m.end());
+                continue;
+            }
+            emit(
+                self.locations
+                    .get(self.group_idx)
+                    .map_or("", |(start, end)| &input[start..end]),
+            );
+            last_match_end = Some(m.end());
+            // Resuming at the end of an empty match would just find it again, so step over the
+            // character it sits on.
+            search_start = if m.is_empty() {
+                next_char_start(input, m.end())
+            } else {
+                m.end()
+            };
+        }
+    }
+}
+
+/// Byte index of the character following the one starting at `index`. An `index` at the end of
+/// `input` yields an index past the end, which terminates the search.
+fn next_char_start(input: &str, index: usize) -> usize {
+    index + input[index..].chars().next().map_or(1, char::len_utf8)
 }
 
 fn null_result(len: Option<usize>) -> ColumnarValue {
