@@ -36,6 +36,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.StructType
 
 import org.apache.comet.CometConf
+import org.apache.comet.CometSparkSessionExtensions.isSpark35Plus
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator, SchemaGenOptions}
 
 class CometParquetWriterSuite extends CometTestBase {
@@ -187,6 +188,7 @@ class CometParquetWriterSuite extends CometTestBase {
   }
 
   test("parquet write with unsupported compression codec falls back to Spark") {
+    assume(isSpark35Plus, "lz4_raw was added in Spark 3.5")
     withTempPath { dir =>
       val outputPath = new File(dir, "output.parquet").getAbsolutePath
       val df = spark.range(0, 100).selectExpr("id", "cast(id as string) as name")
