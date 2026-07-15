@@ -16,7 +16,10 @@
 // under the License.
 
 use crate::decode_utf8_spark_lossy;
-use arrow::array::{Array, ArrayRef, GenericStringArray, GenericStringBuilder, OffsetSizeTrait};
+use arrow::array::{
+    downcast_dictionary_array, Array, ArrayRef, FixedSizeListArray, GenericListArray,
+    GenericStringArray, GenericStringBuilder, MapArray, OffsetSizeTrait, StructArray,
+};
 use arrow::datatypes::DataType;
 use arrow::error::ArrowError;
 use std::sync::Arc;
@@ -29,6 +32,85 @@ pub fn decode_string_arrays(array: &ArrayRef) -> Result<ArrayRef, ArrowError> {
     match array.data_type() {
         DataType::Utf8 => decode_generic_string::<i32>(array),
         DataType::LargeUtf8 => decode_generic_string::<i64>(array),
+        DataType::Dictionary(_, value_type)
+            if matches!(value_type.as_ref(), DataType::Utf8 | DataType::LargeUtf8) =>
+        {
+            downcast_dictionary_array!(
+                array => {
+                    let values = array.values();
+                    let decoded = decode_string_arrays(values)?;
+                    if Arc::ptr_eq(&decoded, values) {
+                        Ok(Arc::new(array.clone()))
+                    } else {
+                        Ok(Arc::new(array.with_values(decoded)))
+                    }
+                }
+                t => unreachable!("dictionary type checked by guard: {t}"),
+            )
+        }
+        DataType::Struct(fields) => {
+            let s = array
+                .as_any()
+                .downcast_ref::<StructArray>()
+                .expect("data type checked by caller");
+            let mut changed = false;
+            let mut columns = Vec::with_capacity(s.num_columns());
+            for col in s.columns() {
+                let decoded = decode_string_arrays(col)?;
+                changed |= !Arc::ptr_eq(&decoded, col);
+                columns.push(decoded);
+            }
+            if !changed {
+                return Ok(Arc::clone(array));
+            }
+            Ok(Arc::new(StructArray::new(
+                fields.clone(),
+                columns,
+                s.nulls().cloned(),
+            )))
+        }
+        DataType::List(_) => decode_list::<i32>(array),
+        DataType::LargeList(_) => decode_list::<i64>(array),
+        DataType::FixedSizeList(field, size) => {
+            let list = array
+                .as_any()
+                .downcast_ref::<FixedSizeListArray>()
+                .expect("data type checked by caller");
+            let values = list.values();
+            let decoded = decode_string_arrays(values)?;
+            if Arc::ptr_eq(&decoded, values) {
+                return Ok(Arc::clone(array));
+            }
+            Ok(Arc::new(FixedSizeListArray::try_new(
+                Arc::clone(field),
+                *size,
+                decoded,
+                list.nulls().cloned(),
+            )?))
+        }
+        DataType::Map(field, ordered) => {
+            let map = array
+                .as_any()
+                .downcast_ref::<MapArray>()
+                .expect("data type checked by caller");
+            let entries: ArrayRef = Arc::new(map.entries().clone());
+            let decoded = decode_string_arrays(&entries)?;
+            if Arc::ptr_eq(&decoded, &entries) {
+                return Ok(Arc::clone(array));
+            }
+            let decoded_struct = decoded
+                .as_any()
+                .downcast_ref::<StructArray>()
+                .expect("entries are a struct")
+                .clone();
+            Ok(Arc::new(MapArray::try_new(
+                Arc::clone(field),
+                map.offsets().clone(),
+                decoded_struct,
+                map.nulls().cloned(),
+                *ordered,
+            )?))
+        }
         _ => Ok(Arc::clone(array)),
     }
 }
@@ -78,6 +160,28 @@ fn decode_generic_string<O: OffsetSizeTrait>(array: &ArrayRef) -> Result<ArrayRe
         }
     }
     Ok(Arc::new(builder.finish()))
+}
+
+fn decode_list<O: OffsetSizeTrait>(array: &ArrayRef) -> Result<ArrayRef, ArrowError> {
+    let list = array
+        .as_any()
+        .downcast_ref::<GenericListArray<O>>()
+        .expect("data type checked by caller");
+    let values = list.values();
+    let decoded = decode_string_arrays(values)?;
+    if Arc::ptr_eq(&decoded, values) {
+        return Ok(Arc::clone(array));
+    }
+    let field = match array.data_type() {
+        DataType::List(f) | DataType::LargeList(f) => Arc::clone(f),
+        _ => unreachable!("decode_list called on non-list"),
+    };
+    Ok(Arc::new(GenericListArray::<O>::try_new(
+        field,
+        list.offsets().clone(),
+        decoded,
+        list.nulls().cloned(),
+    )?))
 }
 
 #[cfg(test)]
@@ -152,5 +256,69 @@ mod walker_tests {
         let out = decode_string_arrays(&make_array(data)).unwrap();
         let s = out.as_any().downcast_ref::<LargeStringArray>().unwrap();
         assert_eq!(s.value(0), "\u{FFFD}");
+    }
+
+    use arrow::array::{DictionaryArray, Int32Array, ListArray, StructArray};
+    use arrow::datatypes::{Field, Fields, Int32Type};
+
+    /// An invalid Utf8 leaf ["\u{FFFD}"] built from raw bytes.
+    fn invalid_leaf() -> ArrayRef {
+        utf8_unchecked(&[0, 1], &[0xFF], 1)
+    }
+
+    #[test]
+    fn dictionary_values_are_decoded() {
+        let values = invalid_leaf();
+        let keys = Int32Array::from(vec![0, 0]);
+        let dict: ArrayRef = Arc::new(DictionaryArray::<Int32Type>::new(keys, values));
+        let out = decode_string_arrays(&dict).unwrap();
+        let d = out
+            .as_any()
+            .downcast_ref::<DictionaryArray<Int32Type>>()
+            .unwrap();
+        let vals = d.values().as_any().downcast_ref::<StringArray>().unwrap();
+        assert_eq!(vals.value(0), "\u{FFFD}");
+    }
+
+    #[test]
+    fn struct_field_is_decoded() {
+        let field = Arc::new(Field::new("s", DataType::Utf8, true));
+        let input: ArrayRef = Arc::new(StructArray::new(
+            Fields::from(vec![field]),
+            vec![invalid_leaf()],
+            None,
+        ));
+        let out = decode_string_arrays(&input).unwrap();
+        let s = out.as_any().downcast_ref::<StructArray>().unwrap();
+        let col = s.column(0).as_any().downcast_ref::<StringArray>().unwrap();
+        assert_eq!(col.value(0), "\u{FFFD}");
+    }
+
+    #[test]
+    fn list_values_are_decoded() {
+        let field = Arc::new(Field::new("item", DataType::Utf8, true));
+        let offsets = arrow::buffer::OffsetBuffer::new(vec![0i32, 1].into());
+        let input: ArrayRef =
+            Arc::new(ListArray::try_new(field, offsets, invalid_leaf(), None).unwrap());
+        let out = decode_string_arrays(&input).unwrap();
+        let l = out.as_any().downcast_ref::<ListArray>().unwrap();
+        let vals = l.values().as_any().downcast_ref::<StringArray>().unwrap();
+        assert_eq!(vals.value(0), "\u{FFFD}");
+    }
+
+    #[test]
+    fn valid_struct_is_zero_copy() {
+        let field = Arc::new(Field::new("s", DataType::Utf8, true));
+        let leaf: ArrayRef = Arc::new(StringArray::from(vec!["ok"]));
+        let input: ArrayRef = Arc::new(StructArray::new(
+            Fields::from(vec![field]),
+            vec![leaf],
+            None,
+        ));
+        let out = decode_string_arrays(&input).unwrap();
+        assert!(
+            Arc::ptr_eq(&input, &out),
+            "all-valid nested input must be unchanged"
+        );
     }
 }
