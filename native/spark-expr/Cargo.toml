@@ -198,3 +198,7 @@ harness = false
 [[bench]]
 name = "unscaled_value"
 harness = false
+
+[[bench]]
+name = "cast_int_to_decimal"
+harness = false
