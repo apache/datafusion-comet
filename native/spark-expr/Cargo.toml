@@ -139,3 +139,7 @@ harness = false
 [[bench]]
 name = "to_json"
 harness = false
+
+[[bench]]
+name = "floor"
+harness = false
