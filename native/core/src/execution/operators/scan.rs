@@ -30,6 +30,7 @@ use datafusion::{
     physical_expr::*,
     physical_plan::{ExecutionPlan, *},
 };
+use datafusion_comet_common::decode_string_arrays;
 use futures::Stream;
 use itertools::Itertools;
 use std::{
@@ -156,12 +157,21 @@ impl ScanExec {
                 let columns = record_batch.columns();
                 let mut inputs: Vec<ArrayRef> = Vec::with_capacity(columns.len());
                 for col in columns {
-                    inputs.push(copy_or_unpack_array(col, &CopyMode::UnpackOrClone)?);
+                    inputs.push(import_column(col)?);
                 }
                 Ok(InputBatch::new(inputs, Some(num_rows)))
             }
         }
     }
+}
+
+/// Transform one FFI-imported column for native execution: first decode any invalid UTF-8 to the
+/// Spark-rendered form (arrow's `from_ffi` imports string buffers unchecked), then copy/unpack.
+/// Decoding runs before unpacking so a `Dictionary(_, Utf8)` decodes its compact values, not the
+/// expanded ones.
+fn import_column(col: &ArrayRef) -> Result<ArrayRef, CometError> {
+    let decoded = decode_string_arrays(col)?;
+    Ok(copy_or_unpack_array(&decoded, &CopyMode::UnpackOrClone)?)
 }
 
 fn schema_from_data_types(data_types: &[DataType]) -> SchemaRef {
@@ -370,5 +380,30 @@ impl InputBatch {
         });
 
         InputBatch::Batch(columns, num_rows)
+    }
+}
+
+#[cfg(test)]
+mod import_tests {
+    use super::*;
+    use arrow::array::{make_array, Array, ArrayData, ArrayRef, StringArray};
+    use arrow::buffer::Buffer;
+    use arrow::datatypes::DataType;
+
+    #[test]
+    fn import_decodes_invalid_utf8_column() {
+        // An FFI-imported Utf8 column with invalid bytes [0xFF] -> must be decoded, not passed
+        // through, so downstream `value()` is sound.
+        let data = unsafe {
+            ArrayData::builder(DataType::Utf8)
+                .len(1)
+                .add_buffer(Buffer::from_slice_ref([0i32, 1]))
+                .add_buffer(Buffer::from(vec![0xFFu8]))
+                .build_unchecked()
+        };
+        let col: ArrayRef = make_array(data);
+        let out = import_column(&col).unwrap();
+        let s = out.as_any().downcast_ref::<StringArray>().unwrap();
+        assert_eq!(s.value(0), "\u{FFFD}");
     }
 }

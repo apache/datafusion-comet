@@ -41,6 +41,7 @@ use datafusion::{
     physical_plan::{display::DisplayableExecutionPlan, SendableRecordBatchStream},
     prelude::{SessionConfig, SessionContext},
 };
+use datafusion_comet_common::decode_string_arrays;
 use datafusion_comet_proto::spark_operator::Operator;
 use datafusion_comet_spark_expr::url_funcs::{CometParseUrl, CometTryParseUrl};
 use datafusion_spark::function::array::array_contains::SparkArrayContains;
@@ -1298,7 +1299,10 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_columnarToRowConvert(
             let array_data = from_ffi(ffi_array, &ffi_schema)
                 .map_err(|e| CometError::Internal(format!("Failed to import array: {}", e)))?;
 
-            arrays.push(arrow::array::make_array(array_data));
+            let imported = arrow::array::make_array(array_data);
+            arrays.push(decode_string_arrays(&imported).map_err(|e| {
+                CometError::Internal(format!("Failed to decode imported string array: {}", e))
+            })?);
         }
 
         // Convert columnar to row
