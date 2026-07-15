@@ -686,6 +686,15 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
+  val COMET_EXPLAIN_CODEGEN_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.explainCodegen.enabled")
+      .category(CATEGORY_EXEC_EXPLAIN)
+      .doc("When enabled, Comet annotates the surrounding Comet operator with a `[COMET-INFO: " +
+        "JVM codegen dispatcher: <names>]` segment listing every expression it routed through " +
+        "the JVM codegen dispatcher. Disabled by default.")
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_ONHEAP_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.exec.onHeap.enabled")
       .category(CATEGORY_TESTING)
@@ -861,8 +870,10 @@ object CometConf extends ShimCometConf {
   val COMET_LIBHDFS_SCHEMES: OptionalConfigEntry[String] =
     conf(s"spark.hadoop.$COMET_LIBHDFS_SCHEMES_KEY")
       .category(CATEGORY_SCAN)
-      .doc("Defines filesystem schemes (e.g., hdfs, webhdfs) that the native side accesses " +
-        "via libhdfs, separated by commas. Valid only when built with hdfs feature enabled.")
+      .doc(
+        "Defines filesystem schemes (e.g., hdfs, webhdfs) that the native side accesses " +
+          "via libhdfs, separated by commas. Valid only when built with hdfs-opendal feature " +
+          "enabled.")
       .stringConf
       .createOptional
 
