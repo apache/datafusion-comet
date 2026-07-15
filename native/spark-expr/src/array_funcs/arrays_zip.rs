@@ -17,7 +17,8 @@
 
 use arrow::array::RecordBatch;
 use arrow::array::{
-    new_null_array, Array, ArrayRef, Capacities, ListArray, MutableArrayData, StructArray,
+    new_null_array, Array, ArrayRef, Capacities, ListArray, MutableArrayData, NullBufferBuilder,
+    StructArray,
 };
 use arrow::buffer::{NullBuffer, OffsetBuffer};
 use arrow::datatypes::DataType::{FixedSizeList, LargeList, List, Null};
@@ -29,9 +30,8 @@ use datafusion::logical_expr::ColumnarValue;
 use datafusion::physical_expr::PhysicalExpr;
 use std::fmt::{Display, Formatter};
 use std::sync::Arc;
-// TODO: Reuse functions from DF
-// use datafusion::functions_nested::utils::make_scalar_function;
-// use datafusion::functions_nested::arrays_zip::arrays_zip_inner;
+// TODO: replace the local copy of `make_scalar_function` below with
+// `datafusion::functions_nested::utils::make_scalar_function` if it is ever made public.
 
 #[derive(Debug, Eq, Hash, PartialEq)]
 pub struct SparkArraysZipFunc {
@@ -146,18 +146,54 @@ where
     }
 }
 
-/// This struct is copied from https://github.com/apache/datafusion/blob/53.0.0/datafusion/functions-nested/src/arrays_zip.rs#L40
-struct ListColumnView {
-    /// The flat values array backing this list column.
-    values: ArrayRef,
-    /// Pre-computed per-row start offsets (length = num_rows + 1).
-    offsets: Vec<usize>,
-    /// Pre-computed null bitmap: true means the row is null.
-    is_null: Vec<bool>,
+/// Per-row element ranges of a list column, borrowed from the input array so that
+/// no per-row offset vector has to be materialized.
+enum ListOffsets<'a> {
+    I32(&'a [i32]),
+    I64(&'a [i64]),
+    /// Fixed-size lists have implicit offsets of `row * size`.
+    Fixed(usize),
 }
 
-/// This function is copied from https://github.com/apache/datafusion/blob/53.0.0/datafusion/functions-nested/src/arrays_zip.rs#L159
-/// with an additional names argument to parameterized struct keys like Spark does
+impl ListOffsets<'_> {
+    #[inline]
+    fn range(&self, row: usize) -> (usize, usize) {
+        match self {
+            ListOffsets::I32(offsets) => (offsets[row] as usize, offsets[row + 1] as usize),
+            ListOffsets::I64(offsets) => (offsets[row] as usize, offsets[row + 1] as usize),
+            ListOffsets::Fixed(size) => (row * size, (row + 1) * size),
+        }
+    }
+}
+
+/// Type-erased view of a list column, covering List, LargeList and FixedSizeList.
+///
+/// Derived from the equivalent crate-private struct in Apache DataFusion's
+/// `datafusion-functions-nested`; the representation has since diverged so that the
+/// input's offsets and null buffer are borrowed rather than re-materialized per row.
+struct ListColumnView<'a> {
+    /// The flat values array backing this list column.
+    values: &'a ArrayRef,
+    offsets: ListOffsets<'a>,
+    nulls: Option<&'a NullBuffer>,
+}
+
+impl ListColumnView<'_> {
+    #[inline]
+    fn is_null(&self, row: usize) -> bool {
+        self.nulls.is_some_and(|nulls| nulls.is_null(row))
+    }
+}
+
+/// Zips N list arrays into a list of structs: field `i` of the struct at position `j` of a
+/// row holds element `j` of argument `i`. Within a row, shorter arrays are padded with nulls
+/// to the longest array's length, and a row that is null in every argument produces a null
+/// row. `names` supplies the struct field names, which Spark derives from the argument
+/// expressions.
+///
+/// Derived from the equivalent crate-private function in Apache DataFusion's
+/// `datafusion-functions-nested`, with the added names argument and a different copying
+/// strategy.
 pub fn arrays_zip_inner(args: &[ArrayRef], names: Vec<String>) -> Result<ArrayRef> {
     if args.is_empty() {
         return exec_err!("arrays_zip requires at least one argument");
@@ -174,38 +210,29 @@ pub fn arrays_zip_inner(args: &[ArrayRef], names: Vec<String>) -> Result<ArrayRe
         match arg.data_type() {
             List(field) => {
                 let arr = as_list_array(arg)?;
-                let raw_offsets = arr.value_offsets();
-                let offsets: Vec<usize> = raw_offsets.iter().map(|&o| o as usize).collect();
-                let is_null = (0..num_rows).map(|row| arr.is_null(row)).collect();
                 element_types.push(field.data_type().clone());
                 views.push(Some(ListColumnView {
-                    values: Arc::clone(arr.values()),
-                    offsets,
-                    is_null,
+                    values: arr.values(),
+                    offsets: ListOffsets::I32(arr.value_offsets()),
+                    nulls: arr.nulls(),
                 }));
             }
             LargeList(field) => {
                 let arr = as_large_list_array(arg)?;
-                let raw_offsets = arr.value_offsets();
-                let offsets: Vec<usize> = raw_offsets.iter().map(|&o| o as usize).collect();
-                let is_null = (0..num_rows).map(|row| arr.is_null(row)).collect();
                 element_types.push(field.data_type().clone());
                 views.push(Some(ListColumnView {
-                    values: Arc::clone(arr.values()),
-                    offsets,
-                    is_null,
+                    values: arr.values(),
+                    offsets: ListOffsets::I64(arr.value_offsets()),
+                    nulls: arr.nulls(),
                 }));
             }
             FixedSizeList(field, size) => {
                 let arr = as_fixed_size_list_array(arg)?;
-                let size = *size as usize;
-                let offsets: Vec<usize> = (0..=num_rows).map(|row| row * size).collect();
-                let is_null = (0..num_rows).map(|row| arr.is_null(row)).collect();
                 element_types.push(field.data_type().clone());
                 views.push(Some(ListColumnView {
-                    values: Arc::clone(arr.values()),
-                    offsets,
-                    is_null,
+                    values: arr.values(),
+                    offsets: ListOffsets::Fixed(*size as usize),
+                    nulls: arr.nulls(),
                 }));
             }
             Null => {
@@ -218,12 +245,6 @@ pub fn arrays_zip_inner(args: &[ArrayRef], names: Vec<String>) -> Result<ArrayRe
         }
     }
 
-    // Collect per-column values data for MutableArrayData builders.
-    let values_data: Vec<_> = views
-        .iter()
-        .map(|v| v.as_ref().map(|view| view.values.to_data()))
-        .collect();
-
     let struct_fields: Fields = element_types
         .iter()
         .enumerate()
@@ -231,96 +252,111 @@ pub fn arrays_zip_inner(args: &[ArrayRef], names: Vec<String>) -> Result<ArrayRe
         .collect::<Vec<_>>()
         .into();
 
-    // Create a MutableArrayData builder per column. For None (Null-typed)
-    // args we only need extend_nulls, so we track them separately.
-    let mut builders: Vec<Option<MutableArrayData>> = values_data
-        .iter()
-        .map(|vd| {
-            vd.as_ref().map(|data| {
-                MutableArrayData::with_capacities(vec![data], true, Capacities::Array(0))
-            })
-        })
-        .collect();
-
+    // First pass: the output length of each row is the longest of that row's arrays; rows
+    // where every array is null produce a null. Computing the offsets up front gives the
+    // builders an exact capacity and lets the copy pass below run one column at a time.
     let mut offsets: Vec<i32> = Vec::with_capacity(num_rows + 1);
     offsets.push(0);
-    let mut null_mask: Vec<bool> = Vec::with_capacity(num_rows);
+    let mut nulls = NullBufferBuilder::new(num_rows);
     let mut total_values: usize = 0;
 
-    // Process each row: compute per-array lengths, then copy values
-    // and pad shorter arrays with NULLs.
     for row_idx in 0..num_rows {
         let mut max_len: usize = 0;
         let mut all_null = true;
 
         for view in views.iter().flatten() {
-            if !view.is_null[row_idx] {
+            if !view.is_null(row_idx) {
                 all_null = false;
-                let len = view.offsets[row_idx + 1] - view.offsets[row_idx];
-                max_len = max_len.max(len);
+                let (start, end) = view.offsets.range(row_idx);
+                max_len = max_len.max(end - start);
             }
         }
 
         if all_null {
-            null_mask.push(true);
-            offsets.push(*offsets.last().unwrap());
-            continue;
+            nulls.append_null();
+        } else {
+            nulls.append_non_null();
+            total_values += max_len;
         }
-        null_mask.push(false);
-
-        // Extend each column builder for this row.
-        for (col_idx, view) in views.iter().enumerate() {
-            match view {
-                Some(v) if !v.is_null[row_idx] => {
-                    let start = v.offsets[row_idx];
-                    let end = v.offsets[row_idx + 1];
-                    let len = end - start;
-                    let builder = builders[col_idx].as_mut().unwrap();
-                    builder.extend(0, start, end);
-                    if len < max_len {
-                        builder.extend_nulls(max_len - len);
-                    }
-                }
-                _ => {
-                    // Null list entry or None (Null-typed) arg — all nulls.
-                    if let Some(builder) = builders[col_idx].as_mut() {
-                        builder.extend_nulls(max_len);
-                    }
-                }
-            }
-        }
-
-        total_values += max_len;
-        let last = *offsets.last().unwrap();
-        offsets.push(last + max_len as i32);
+        offsets.push(total_values as i32);
     }
 
-    // Assemble struct columns from builders.
+    // The builders below borrow this data, so it has to outlive them.
+    let values_data: Vec<_> = views
+        .iter()
+        .map(|v| v.as_ref().map(|view| view.values.to_data()))
+        .collect();
+
+    // One MutableArrayData builder per column. Null-typed args have no backing data, so they
+    // get no builder; they are materialized as an all-null column when assembling the struct.
+    let mut builders: Vec<Option<MutableArrayData>> = values_data
+        .iter()
+        .map(|vd| {
+            vd.as_ref().map(|data| {
+                MutableArrayData::with_capacities(vec![data], true, Capacities::Array(total_values))
+            })
+        })
+        .collect();
+
+    // Second pass: copy values one column at a time, merging the runs of rows that need no
+    // padding into a single `extend` call. Rows of equal length across all arrays (the common
+    // case) therefore cost one bulk copy per column rather than one call per row.
+    fn flush(pending: &mut Option<(usize, usize)>, builder: &mut MutableArrayData<'_>) {
+        if let Some((start, end)) = pending.take() {
+            builder.extend(0, start, end);
+        }
+    }
+
+    for (view, builder) in views.iter().zip(builders.iter_mut()) {
+        let (Some(view), Some(builder)) = (view.as_ref(), builder.as_mut()) else {
+            continue;
+        };
+        let mut pending: Option<(usize, usize)> = None;
+        for row_idx in 0..num_rows {
+            // A null output row, or one whose arrays are all empty, contributes nothing.
+            let max_len = (offsets[row_idx + 1] - offsets[row_idx]) as usize;
+            if max_len == 0 {
+                continue;
+            }
+
+            if view.is_null(row_idx) {
+                flush(&mut pending, builder);
+                builder.extend_nulls(max_len);
+                continue;
+            }
+
+            let (start, end) = view.offsets.range(row_idx);
+            match pending {
+                // Rows this column is null for break the run, since they consume no values.
+                Some((pending_start, pending_end)) if pending_end == start => {
+                    pending = Some((pending_start, end))
+                }
+                _ => {
+                    flush(&mut pending, builder);
+                    pending = Some((start, end));
+                }
+            }
+
+            // Padding has to be appended right after this row's values, so the pending run
+            // cannot be carried any further.
+            if end - start < max_len {
+                flush(&mut pending, builder);
+                builder.extend_nulls(max_len - (end - start));
+            }
+        }
+        flush(&mut pending, builder);
+    }
+
+    // Assemble struct columns from builders. A column without a builder is a Null-typed arg.
     let struct_columns: Vec<ArrayRef> = builders
         .into_iter()
-        .zip(element_types.iter())
-        .map(|(builder, elem_type)| match builder {
+        .map(|builder| match builder {
             Some(b) => arrow::array::make_array(b.freeze()),
-            None => new_null_array(
-                if elem_type.is_null() {
-                    &Null
-                } else {
-                    elem_type
-                },
-                total_values,
-            ),
+            None => new_null_array(&Null, total_values),
         })
         .collect();
 
     let struct_array = StructArray::try_new(struct_fields, struct_columns, None)?;
-
-    let null_buffer = if null_mask.iter().any(|&v| v) {
-        Some(NullBuffer::from(
-            null_mask.iter().map(|v| !v).collect::<Vec<bool>>(),
-        ))
-    } else {
-        None
-    };
 
     let result = ListArray::try_new(
         Arc::new(Field::new_list_field(
@@ -329,8 +365,165 @@ pub fn arrays_zip_inner(args: &[ArrayRef], names: Vec<String>) -> Result<ArrayRe
         )),
         OffsetBuffer::new(offsets.into()),
         Arc::new(struct_array),
-        null_buffer,
+        nulls.finish(),
     )?;
 
     Ok(Arc::new(result))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arrow::array::{
+        new_null_array, Int32Array, Int64Array, LargeListArray, StringArray, StructArray,
+    };
+    use arrow::util::display::{ArrayFormatter, FormatOptions};
+
+    fn names(n: usize) -> Vec<String> {
+        (0..n).map(|i| format!("{i}")).collect()
+    }
+
+    /// Renders the zipped list array row by row so tests can assert on the
+    /// exact output, including padding and nulls.
+    fn zip_to_strings(args: &[ArrayRef]) -> Vec<Option<String>> {
+        let result = arrays_zip_inner(args, names(args.len())).unwrap();
+        let options = FormatOptions::default().with_null("null");
+        let formatter = ArrayFormatter::try_new(&result, &options).unwrap();
+        (0..result.len())
+            .map(|row| {
+                if result.is_null(row) {
+                    None
+                } else {
+                    Some(formatter.value(row).to_string())
+                }
+            })
+            .collect()
+    }
+
+    fn int_list(rows: Vec<Option<Vec<Option<i32>>>>) -> ArrayRef {
+        Arc::new(ListArray::from_iter_primitive::<
+            arrow::datatypes::Int32Type,
+            _,
+            _,
+        >(rows))
+    }
+
+    #[test]
+    fn test_equal_lengths() {
+        let a = int_list(vec![
+            Some(vec![Some(1), Some(2)]),
+            Some(vec![Some(3), Some(4)]),
+        ]);
+        let b: ArrayRef = Arc::new(ListArray::new(
+            Arc::new(Field::new_list_field(DataType::Utf8, true)),
+            OffsetBuffer::new(vec![0, 2, 4].into()),
+            Arc::new(StringArray::from(vec![
+                Some("a"),
+                None,
+                Some("c"),
+                Some("d"),
+            ])),
+            None,
+        ));
+        assert_eq!(
+            zip_to_strings(&[a, b]),
+            vec![
+                Some("[{0: 1, 1: a}, {0: 2, 1: null}]".to_string()),
+                Some("[{0: 3, 1: c}, {0: 4, 1: d}]".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_ragged_lengths_are_padded_with_nulls() {
+        let a = int_list(vec![
+            Some(vec![Some(1), Some(2), Some(3)]),
+            Some(vec![]),
+            Some(vec![Some(9)]),
+        ]);
+        let b = int_list(vec![
+            Some(vec![Some(10)]),
+            Some(vec![Some(20)]),
+            Some(vec![Some(30), Some(40)]),
+        ]);
+        assert_eq!(
+            zip_to_strings(&[a, b]),
+            vec![
+                Some("[{0: 1, 1: 10}, {0: 2, 1: null}, {0: 3, 1: null}]".to_string()),
+                Some("[{0: null, 1: 20}]".to_string()),
+                Some("[{0: 9, 1: 30}, {0: null, 1: 40}]".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_null_rows() {
+        // Row 1 is null in every column, so the whole output row is null.
+        let a = int_list(vec![Some(vec![Some(1)]), None, None]);
+        let b = int_list(vec![None, None, Some(vec![Some(2), Some(3)])]);
+        assert_eq!(
+            zip_to_strings(&[a, b]),
+            vec![
+                Some("[{0: 1, 1: null}]".to_string()),
+                None,
+                Some("[{0: null, 1: 2}, {0: null, 1: 3}]".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_large_list_and_null_typed_argument() {
+        let a: ArrayRef = Arc::new(LargeListArray::new(
+            Arc::new(Field::new_list_field(DataType::Int64, true)),
+            OffsetBuffer::new(vec![0i64, 2, 2].into()),
+            Arc::new(Int64Array::from(vec![7, 8])),
+            Some(NullBuffer::from(vec![true, false])),
+        ));
+        let b: ArrayRef = new_null_array(&DataType::Null, 2);
+        assert_eq!(
+            zip_to_strings(&[a, b]),
+            vec![
+                Some("[{0: 7, 1: null}, {0: 8, 1: null}]".to_string()),
+                // The Null-typed argument carries no length, so a row whose only
+                // list argument is null is itself null.
+                None,
+            ]
+        );
+    }
+
+    #[test]
+    fn test_sliced_input() {
+        // A sliced list array has a non-zero first offset, exercising the run
+        // coalescing on a value range that does not start at zero.
+        let values = Arc::new(Int32Array::from(vec![1, 2, 3, 4, 5, 6]));
+        let list: ArrayRef = Arc::new(ListArray::new(
+            Arc::new(Field::new_list_field(DataType::Int32, true)),
+            OffsetBuffer::new(vec![0, 2, 4, 6].into()),
+            values,
+            None,
+        ));
+        let sliced = list.slice(1, 2);
+        let other = int_list(vec![Some(vec![Some(0)]), Some(vec![Some(0)])]);
+        assert_eq!(
+            zip_to_strings(&[sliced, other]),
+            vec![
+                Some("[{0: 3, 1: 0}, {0: 4, 1: null}]".to_string()),
+                Some("[{0: 5, 1: 0}, {0: 6, 1: null}]".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_struct_field_names() {
+        let a = int_list(vec![Some(vec![Some(1)])]);
+        let result = arrays_zip_inner(&[a], vec!["x".to_string()]).unwrap();
+        let list = result.as_any().downcast_ref::<ListArray>().unwrap();
+        let values = list
+            .values()
+            .as_any()
+            .downcast_ref::<StructArray>()
+            .unwrap();
+        assert_eq!(values.fields().len(), 1);
+        assert_eq!(values.fields()[0].name(), "x");
+    }
 }
