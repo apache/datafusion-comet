@@ -49,13 +49,6 @@ By default, `InitCap` is evaluated in the JVM using Spark's own code-generated i
 
 - Treats hyphen as a word separator (e.g. `robert rose-smith` produces `Robert Rose-Smith` instead of Spark's `Robert Rose-smith`) (https://github.com/apache/datafusion-comet/issues/1052)
 
-## Left
-
-The following cases are not supported by Comet and always fall back to Spark, regardless of any `allowIncompatible` setting:
-
-- Only supports `BinaryType` and `StringType` input
-- The length argument must be a literal value
-
 ## Length
 
 The following cases are not supported by Comet and always fall back to Spark, regardless of any `allowIncompatible` setting:
@@ -92,12 +85,6 @@ By default, `Reverse` is evaluated in the JVM using Spark's own code-generated i
 
 - native reverse does not support arrays whose element type contains binary, struct, or map
 - reverse does not support non-UTF8_BINARY collations (https://github.com/apache/datafusion-comet/issues/2190)
-
-## Right
-
-The following cases are not supported by Comet and always fall back to Spark, regardless of any `allowIncompatible` setting:
-
-- Only supports `StringType` input
 
 ## StringLPad
 

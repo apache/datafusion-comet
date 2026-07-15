@@ -780,14 +780,6 @@ under the License.
 <li><p>Treats hyphen as a word separator (e.g. <code class="docutils literal notranslate"><span class="pre">robert</span> <span class="pre">rose-smith</span></code> produces <code class="docutils literal notranslate"><span class="pre">Robert</span> <span class="pre">Rose-Smith</span></code> instead of Spark’s <code class="docutils literal notranslate"><span class="pre">Robert</span> <span class="pre">Rose-smith</span></code>) (https://github.com/apache/datafusion-comet/issues/1052)</p></li>
 </ul>
 </section>
-<section id="left">
-<h2>Left<a class="headerlink" href="#left" title="Link to this heading">#</a></h2>
-<p>The following cases are not supported by Comet and always fall back to Spark, regardless of any <code class="docutils literal notranslate"><span class="pre">allowIncompatible</span></code> setting:</p>
-<ul class="simple">
-<li><p>Only supports <code class="docutils literal notranslate"><span class="pre">BinaryType</span></code> and <code class="docutils literal notranslate"><span class="pre">StringType</span></code> input</p></li>
-<li><p>The length argument must be a literal value</p></li>
-</ul>
-</section>
 <section id="length">
 <h2>Length<a class="headerlink" href="#length" title="Link to this heading">#</a></h2>
 <p>The following cases are not supported by Comet and always fall back to Spark, regardless of any <code class="docutils literal notranslate"><span class="pre">allowIncompatible</span></code> setting:</p>
@@ -829,13 +821,6 @@ under the License.
 <ul class="simple">
 <li><p>native reverse does not support arrays whose element type contains binary, struct, or map</p></li>
 <li><p>reverse does not support non-UTF8_BINARY collations (https://github.com/apache/datafusion-comet/issues/2190)</p></li>
-</ul>
-</section>
-<section id="right">
-<h2>Right<a class="headerlink" href="#right" title="Link to this heading">#</a></h2>
-<p>The following cases are not supported by Comet and always fall back to Spark, regardless of any <code class="docutils literal notranslate"><span class="pre">allowIncompatible</span></code> setting:</p>
-<ul class="simple">
-<li><p>Only supports <code class="docutils literal notranslate"><span class="pre">StringType</span></code> input</p></li>
 </ul>
 </section>
 <section id="stringlpad">
@@ -943,14 +928,12 @@ under the License.
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#concat">Concat</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#getjsonobject">GetJsonObject</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#initcap">InitCap</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#left">Left</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#length">Length</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#lower">Lower</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#octetlength">OctetLength</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#rlike">RLike</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#regexpreplace">RegExpReplace</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#reverse">Reverse</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#right">Right</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#stringlpad">StringLPad</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#stringrpad">StringRPad</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#stringrepeat">StringRepeat</a></li>
