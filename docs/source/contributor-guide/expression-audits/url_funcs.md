@@ -21,6 +21,10 @@
 
 > Audit notes for expressions in this category that have been audited. Absence of an entry means the expression has not been audited yet, not that it is unsupported. See the user guide [Spark Expression Support] for current support status.
 
+## parse_url
+
+- Performance (tuned 2026-07-11, PR #4893): cache the compiled query regex in a thread-local single-slot cache keyed by the query key, eliminating per-row `Regex::new()` recompilation in the QUERY-with-key path (the key is constant across a batch in practice). Up to 50x faster. Benchmark: `benches/parse_url.rs`.
+
 ## try_url_decode
 
 - 4.0.1, 2026-05-05
