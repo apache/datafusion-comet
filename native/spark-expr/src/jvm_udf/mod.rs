@@ -28,6 +28,7 @@ use datafusion::common::Result as DFResult;
 use datafusion::logical_expr::ColumnarValue;
 use datafusion::physical_expr::PhysicalExpr;
 
+use datafusion_comet_common::decode_string_arrays;
 use datafusion_comet_jni_bridge::errors::{CometError, ExecutionError};
 use datafusion_comet_jni_bridge::JVMClasses;
 use jni::objects::{Global, JObject, JValue};
@@ -238,7 +239,10 @@ impl PhysicalExpr for JvmScalarUdfExpr {
         // exactly once when the Box drops at end of scope.
         let result_data = unsafe { from_ffi(*out_array, &out_schema) }
             .map_err(|e| CometError::Arrow { source: e })?;
-        Ok(ColumnarValue::Array(make_array(result_data)))
+        let imported = make_array(result_data);
+        let decoded =
+            decode_string_arrays(&imported).map_err(|e| CometError::Arrow { source: e })?;
+        Ok(ColumnarValue::Array(decoded))
     }
 
     fn children(&self) -> Vec<&Arc<dyn PhysicalExpr>> {
