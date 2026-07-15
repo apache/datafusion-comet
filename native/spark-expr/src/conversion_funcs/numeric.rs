@@ -19,9 +19,9 @@ use crate::conversion_funcs::utils::cast_overflow;
 use crate::conversion_funcs::utils::MICROS_PER_SECOND;
 use crate::{EvalMode, SparkError, SparkResult};
 use arrow::array::{
-    Array, ArrayRef, AsArray, BooleanBuilder, Decimal128Array, Decimal128Builder, Float32Array,
-    Float64Array, GenericStringArray, Int16Array, Int32Array, Int64Array, Int8Array,
-    OffsetSizeTrait, PrimitiveArray, StringBuilder, TimestampMicrosecondBuilder,
+    Array, ArrayRef, AsArray, BooleanBuilder, Decimal128Array, Float32Array, Float64Array,
+    GenericStringArray, Int16Array, Int32Array, Int64Array, Int8Array, OffsetSizeTrait,
+    PrimitiveArray, StringBuilder, TimestampMicrosecondBuilder,
 };
 use arrow::datatypes::{
     i256, is_validate_decimal_precision, ArrowPrimitiveType, DataType, Decimal128Type, Float32Type,
@@ -663,48 +663,41 @@ where
     T: ArrowPrimitiveType,
     T::Native: Into<i128>,
 {
-    let mut builder = Decimal128Builder::with_capacity(array.len());
     let multiplier = 10_i128.pow(scale as u32);
 
-    for i in 0..array.len() {
-        if array.is_null(i) {
-            builder.append_null();
-        } else {
-            let v = array.value(i).into();
-            let scaled = v.checked_mul(multiplier);
-            match scaled {
-                Some(scaled) => {
-                    if !is_validate_decimal_precision(scaled, precision) {
-                        match eval_mode {
-                            EvalMode::Ansi => {
-                                return Err(SparkError::NumericValueOutOfRange {
-                                    value: v.to_string(),
-                                    precision,
-                                    scale,
-                                });
-                            }
-                            EvalMode::Try | EvalMode::Legacy => builder.append_null(),
-                        }
-                    } else {
-                        builder.append_value(scaled);
-                    }
+    // Single vectorized pass: a value that overflows the multiply or does not fit the output
+    // precision maps to null. `unary_opt` only applies the closure to non-null slots and carries
+    // the input null buffer over, replacing the per-element builder loop without a second pass.
+    let result: Decimal128Array = array.unary_opt::<_, Decimal128Type>(|v| {
+        let v: i128 = v.into();
+        v.checked_mul(multiplier)
+            .filter(|scaled| is_validate_decimal_precision(*scaled, precision))
+    });
+
+    // ANSI must raise on out-of-range values instead of nulling them. `unary_opt` only nulls
+    // non-null inputs that overflow, so a null count beyond the input's signals an overflow to
+    // report. This check is O(1); the element-wise rescan runs only on the rare error path and
+    // reports the first offending value with Spark's exact error.
+    if eval_mode == EvalMode::Ansi && result.null_count() > array.null_count() {
+        for i in 0..array.len() {
+            if !array.is_null(i) {
+                let v: i128 = array.value(i).into();
+                let overflows = v
+                    .checked_mul(multiplier)
+                    .map(|scaled| !is_validate_decimal_precision(scaled, precision))
+                    .unwrap_or(true);
+                if overflows {
+                    return Err(SparkError::NumericValueOutOfRange {
+                        value: v.to_string(),
+                        precision,
+                        scale,
+                    });
                 }
-                _ => match eval_mode {
-                    EvalMode::Ansi => {
-                        return Err(SparkError::NumericValueOutOfRange {
-                            value: v.to_string(),
-                            precision,
-                            scale,
-                        })
-                    }
-                    EvalMode::Legacy | EvalMode::Try => builder.append_null(),
-                },
             }
         }
     }
-    Ok(Arc::new(
-        builder.with_precision_and_scale(precision, scale)?.finish(),
-    ))
+
+    Ok(Arc::new(result.with_precision_and_scale(precision, scale)?))
 }
 
 pub(crate) fn cast_int_to_decimal128(
@@ -1159,6 +1152,60 @@ mod tests {
         assert_eq!(decimal_array.value(0), 10000); // 100 * 10^2
         assert_eq!(decimal_array.value(1), -10000); // -100 * 10^2
         assert!(decimal_array.is_null(2));
+    }
+
+    #[test]
+    fn test_cast_int_to_decimal128_overflow_legacy_nulls() {
+        // 1000 * 10^2 = 100000 does not fit precision 3 -> null (legacy). Valid values and the
+        // input null are preserved, exercising the vectorized sentinel + masking path.
+        let array: ArrayRef = Arc::new(Int32Array::from(vec![Some(9), Some(1000), None, Some(-9)]));
+        let result = cast_int_to_decimal128(
+            &array,
+            EvalMode::Legacy,
+            &DataType::Int32,
+            &DataType::Decimal128(3, 2),
+            3,
+            2,
+        )
+        .unwrap();
+        let d = result.as_primitive::<Decimal128Type>();
+        assert_eq!(d.value(0), 900); // 9.00
+        assert!(d.is_null(1)); // overflow -> null
+        assert!(d.is_null(2)); // input null preserved
+        assert_eq!(d.value(3), -900);
+        assert_eq!(d.data_type(), &DataType::Decimal128(3, 2));
+    }
+
+    #[test]
+    fn test_cast_int_to_decimal128_no_overflow_ansi() {
+        let array: ArrayRef = Arc::new(Int32Array::from(vec![Some(9), None, Some(-9)]));
+        let result = cast_int_to_decimal128(
+            &array,
+            EvalMode::Ansi,
+            &DataType::Int32,
+            &DataType::Decimal128(3, 2),
+            3,
+            2,
+        )
+        .unwrap();
+        let d = result.as_primitive::<Decimal128Type>();
+        assert_eq!(d.value(0), 900);
+        assert!(d.is_null(1));
+        assert_eq!(d.value(2), -900);
+    }
+
+    #[test]
+    fn test_cast_int_to_decimal128_overflow_ansi_errors() {
+        let array: ArrayRef = Arc::new(Int32Array::from(vec![Some(9), Some(1000)]));
+        let result = cast_int_to_decimal128(
+            &array,
+            EvalMode::Ansi,
+            &DataType::Int32,
+            &DataType::Decimal128(3, 2),
+            3,
+            2,
+        );
+        assert!(result.is_err());
     }
     #[test]
     fn test_cast_int_to_timestamp() {
