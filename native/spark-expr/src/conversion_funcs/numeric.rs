@@ -828,40 +828,45 @@ where
     <T as ArrowPrimitiveType>::Native: AsPrimitive<f64>,
 {
     let input = array.as_any().downcast_ref::<PrimitiveArray<T>>().unwrap();
-    let mut cast_array = PrimitiveArray::<Decimal128Type>::builder(input.len());
-
     let mul = 10_f64.powi(scale as i32);
 
-    for i in 0..input.len() {
-        if input.is_null(i) {
-            cast_array.append_null();
-            continue;
-        }
+    // Single vectorized pass: a value with no in-range integer form (NaN / infinity) or that
+    // does not fit the output precision maps to null. `unary_opt` only applies the closure to
+    // non-null slots and carries the input null buffer over, so it replaces the per-element
+    // builder loop without a second pass.
+    let result: Decimal128Array = input.unary_opt::<_, Decimal128Type>(|v| {
+        let f: f64 = v.as_();
+        (f * mul)
+            .round()
+            .to_i128()
+            .filter(|x| is_validate_decimal_precision(*x, precision))
+    });
 
-        let input_value = input.value(i).as_();
-        if let Some(v) = (input_value * mul).round().to_i128() {
-            if is_validate_decimal_precision(v, precision) {
-                cast_array.append_value(v);
-                continue;
+    // ANSI must raise on out-of-range values instead of nulling them. `unary_opt` only nulls
+    // non-null inputs that overflow, so a null count beyond the input's signals an overflow to
+    // report. This check is O(1); the element-wise rescan runs only on the rare error path and
+    // reports the first offending value with Spark's exact error.
+    if eval_mode == EvalMode::Ansi && result.null_count() > input.null_count() {
+        for i in 0..input.len() {
+            if !input.is_null(i) {
+                let input_value: f64 = input.value(i).as_();
+                let fits = (input_value * mul)
+                    .round()
+                    .to_i128()
+                    .map(|x| is_validate_decimal_precision(x, precision))
+                    .unwrap_or(false);
+                if !fits {
+                    return Err(SparkError::NumericValueOutOfRange {
+                        value: input_value.to_string(),
+                        precision,
+                        scale,
+                    });
+                }
             }
-        };
-
-        if eval_mode == EvalMode::Ansi {
-            return Err(SparkError::NumericValueOutOfRange {
-                value: input_value.to_string(),
-                precision,
-                scale,
-            });
         }
-        cast_array.append_null();
     }
 
-    let res = Arc::new(
-        cast_array
-            .with_precision_and_scale(precision, scale)?
-            .finish(),
-    ) as ArrayRef;
-    Ok(res)
+    Ok(Arc::new(result.with_precision_and_scale(precision, scale)?))
 }
 
 pub(crate) fn spark_cast_nonintegral_numeric_to_integral(
@@ -1285,6 +1290,48 @@ mod tests {
         assert!(casted.is_null(7));
         assert!(casted.is_null(8));
         assert!(casted.is_null(9));
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn test_cast_float_to_decimal_no_overflow_fast_path() {
+        // All values fit precision 10, scale 2, so the vectorized fast path is taken and the
+        // input null is preserved.
+        let a: ArrayRef = Arc::new(Float64Array::from(vec![
+            Some(42.0),
+            Some(-1.5),
+            None,
+            Some(0.0),
+        ]));
+        let b =
+            cast_floating_point_to_decimal128::<Float64Type>(&a, 10, 2, EvalMode::Legacy).unwrap();
+        let d = b.as_primitive::<Decimal128Type>();
+        assert_eq!(d.value(0), 4200); // 42.00
+        assert_eq!(d.value(1), -150); // -1.50
+        assert!(d.is_null(2));
+        assert_eq!(d.value(3), 0);
+        assert_eq!(d.data_type(), &DataType::Decimal128(10, 2));
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn test_cast_float_to_decimal_ansi_no_overflow() {
+        let a: ArrayRef = Arc::new(Float64Array::from(vec![Some(42.0), None, Some(-1.5)]));
+        let b =
+            cast_floating_point_to_decimal128::<Float64Type>(&a, 10, 2, EvalMode::Ansi).unwrap();
+        let d = b.as_primitive::<Decimal128Type>();
+        assert_eq!(d.value(0), 4200);
+        assert!(d.is_null(1));
+        assert_eq!(d.value(2), -150);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn test_cast_float_to_decimal_ansi_overflow_errors() {
+        // 4242.42 * 10^2 = 424242 does not fit precision 4 -> ANSI error.
+        let a: ArrayRef = Arc::new(Float64Array::from(vec![Some(1.0), Some(4242.42)]));
+        let result = cast_floating_point_to_decimal128::<Float64Type>(&a, 4, 2, EvalMode::Ansi);
+        assert!(result.is_err());
     }
 
     #[test]
