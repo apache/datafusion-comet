@@ -38,3 +38,20 @@ SELECT /*+ REPARTITION(3) */ named_struct('t', make_time(hours, minutes, secs)) 
 
 query
 SELECT /*+ REPARTITION(3) */ array(make_time(hours, minutes, secs)) AS arr FROM test_time_shuffle
+
+query
+SELECT /*+ REPARTITION(3) */
+    array(make_time(hours, minutes, secs), make_time(0, 0, 0), CAST(NULL AS TIME)) AS arr
+FROM test_time_shuffle
+
+query
+SELECT /*+ REPARTITION(3) */
+    CASE
+        WHEN hours IS NULL THEN CAST(array() AS ARRAY<TIME>)
+        ELSE array(make_time(hours, minutes, secs), make_time(23, 59, 59.999999))
+    END AS arr
+FROM test_time_shuffle
+
+query
+SELECT /*+ REPARTITION(3) */ map(make_time(hours, minutes, secs), hours) AS m FROM test_time_shuffle
+WHERE hours IS NOT NULL AND minutes IS NOT NULL AND secs IS NOT NULL

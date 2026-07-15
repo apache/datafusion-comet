@@ -379,6 +379,10 @@ pub fn append_to_builder<const NULLABLE: bool>(
             let builder = downcast_builder_ref!(Int64Builder, builder);
             array.append_longs_to_builder::<NULLABLE>(builder);
         }
+        DataType::Time64(TimeUnit::Nanosecond) => {
+            let builder = downcast_builder_ref!(Time64NanosecondBuilder, builder);
+            array.append_time64s_to_builder::<NULLABLE>(builder);
+        }
         DataType::Float32 => {
             let builder = downcast_builder_ref!(Float32Builder, builder);
             array.append_floats_to_builder::<NULLABLE>(builder);
