@@ -147,3 +147,7 @@ harness = false
 [[bench]]
 name = "to_json"
 harness = false
+
+[[bench]]
+name = "utf8_decode"
+harness = false
