@@ -138,3 +138,15 @@ harness = false
 [[bench]]
 name = "cast_binary_to_string"
 harness = false
+
+[[bench]]
+name = "arrays_overlap"
+harness = false
+
+[[bench]]
+name = "checked_arithmetic"
+harness = false
+
+[[bench]]
+name = "to_json"
+harness = false

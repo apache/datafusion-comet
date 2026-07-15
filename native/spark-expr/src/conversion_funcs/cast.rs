@@ -50,8 +50,8 @@ use arrow::datatypes::{Field, Fields, GenericBinaryType};
 use arrow::error::ArrowError;
 use arrow::{
     array::{
-        cast::AsArray, types::Int32Type, Array, ArrayRef, GenericStringArray, Int16Array,
-        Int32Array, Int64Array, Int8Array, OffsetSizeTrait, PrimitiveArray,
+        cast::AsArray, types::Int32Type, Array, ArrayRef, Int16Array, Int32Array, Int64Array,
+        Int8Array, OffsetSizeTrait, PrimitiveArray,
     },
     compute::{cast_with_options, take, CastOptions},
     record_batch::RecordBatch,
@@ -62,6 +62,7 @@ use base64::Engine;
 use datafusion::common::{internal_err, DataFusionError, Result as DataFusionResult, ScalarValue};
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::ColumnarValue;
+use datafusion_comet_common::decode_utf8_spark_lossy;
 use std::{
     fmt::{Debug, Display, Formatter, Write},
     hash::Hash,
@@ -855,29 +856,18 @@ fn cast_binary_to_string<O: OffsetSizeTrait>(
         .downcast_ref::<GenericByteArray<GenericBinaryType<O>>>()
         .unwrap();
 
-    let Some(style) = spark_cast_options.binary_output_style else {
-        // The value bytes are not transformed, so the offsets, values and nulls can be handed
-        // over untouched.
-        let (offsets, values, nulls) = input.clone().into_parts();
-        // SAFETY: the offsets and nulls come from a `GenericBinaryArray` with the same offset
-        // type, so they satisfy the layout invariants of `GenericStringArray`. The UTF-8
-        // invariant is knowingly waived: Spark reads the binary payload of a `UTF8String` as-is
-        // and never validates it here, so validating would reject values Spark accepts.
-        let output = unsafe { GenericStringArray::<O>::new_unchecked(offsets, values, nulls) };
-        return Ok(Arc::new(output));
-    };
-
     let num_rows = input.len();
     let offsets = input.value_offsets();
     let value_bytes = offsets[num_rows].as_usize() - offsets[0].as_usize();
     // Upper bound on the encoded length so the value buffer is allocated once. Base64 rounds up
-    // to a multiple of four per row, hence the extra `num_rows` slack.
-    let capacity = match style {
-        BinaryOutputStyle::Utf8 => value_bytes,
-        BinaryOutputStyle::Basic => 6 * value_bytes + 2 * num_rows,
-        BinaryOutputStyle::Base64 => 4 * value_bytes.div_ceil(3) + num_rows,
-        BinaryOutputStyle::Hex => 2 * value_bytes,
-        BinaryOutputStyle::HexDiscrete => 3 * value_bytes + 2 * num_rows,
+    // to a multiple of four per row, hence the extra `num_rows` slack. The default and UTF8 paths
+    // decode JVM-compatibly-lossily, which can expand each byte to a 3-byte U+FFFD replacement.
+    let capacity = match spark_cast_options.binary_output_style {
+        None | Some(BinaryOutputStyle::Utf8) => 3 * value_bytes,
+        Some(BinaryOutputStyle::Basic) => 6 * value_bytes + 2 * num_rows,
+        Some(BinaryOutputStyle::Base64) => 4 * value_bytes.div_ceil(3) + num_rows,
+        Some(BinaryOutputStyle::Hex) => 2 * value_bytes,
+        Some(BinaryOutputStyle::HexDiscrete) => 3 * value_bytes + 2 * num_rows,
     };
 
     let mut builder = GenericStringBuilder::<O>::with_capacity(num_rows, capacity);
@@ -890,19 +880,28 @@ fn cast_binary_to_string<O: OffsetSizeTrait>(
         };
         // Encode directly into the builder's value buffer; `append_value("")` then terminates
         // the row. Writing to the builder is infallible.
-        let written = match style {
-            BinaryOutputStyle::Utf8 => builder.write_str(std::str::from_utf8(value).unwrap()),
-            BinaryOutputStyle::Basic => write_bracketed(&mut builder, value, ", ", write_i8),
-            BinaryOutputStyle::Base64 => {
+        let written = match spark_cast_options.binary_output_style {
+            // Default CAST(binary AS string) and the UTF8 ToPrettyString style (Spark 4.0+) both
+            // render via `new String(bytes, UTF_8)`. Route through the shared JVM-compatible lossy
+            // decoder so ill-formed bytes become U+FFFD (matching Spark) instead of being
+            // reinterpreted unchecked (UB) or panicking on non-UTF-8 input (#4488, #4763). The
+            // valid-UTF-8 path borrows, so it copies once (into the Arrow value buffer). Divergence
+            // for byte-level round-trips such as CAST(CAST(x AS string) AS binary) and value
+            // identity is documented in the compatibility guide and tracked by #4764.
+            None | Some(BinaryOutputStyle::Utf8) => {
+                builder.write_str(&decode_utf8_spark_lossy(value))
+            }
+            Some(BinaryOutputStyle::Basic) => write_bracketed(&mut builder, value, ", ", write_i8),
+            Some(BinaryOutputStyle::Base64) => {
                 base64_buffer.clear();
                 BASE64_STANDARD_NO_PAD.encode_string(value, &mut base64_buffer);
                 builder.write_str(&base64_buffer)
             }
-            BinaryOutputStyle::Hex => value
+            Some(BinaryOutputStyle::Hex) => value
                 .iter()
                 .try_for_each(|byte| write_upper_hex(&mut builder, *byte)),
             // Spark's default SPACE_DELIMITED_UPPERCASE_HEX
-            BinaryOutputStyle::HexDiscrete => {
+            Some(BinaryOutputStyle::HexDiscrete) => {
                 write_bracketed(&mut builder, value, " ", write_upper_hex)
             }
         };
@@ -919,6 +918,57 @@ mod tests {
     use arrow::buffer::OffsetBuffer;
     use arrow::datatypes::TimestampMicrosecondType;
     use arrow::datatypes::{Field, Fields};
+
+    #[test]
+    fn test_cast_binary_to_string_replaces_invalid_utf8_jvm_compatibly() {
+        // Invalid bytes are replaced with U+FFFD instead of reinterpreted as an invalid `str`,
+        // and the granularity matches the JVM: the surrogate-range sequence [ED A0 80] collapses
+        // to a single U+FFFD (Rust's `from_utf8_lossy` would emit three). Valid UTF-8 ("abc") is
+        // preserved exactly and NULL stays NULL.
+        let input = BinaryArray::from_opt_vec(vec![
+            Some(&[0xFFu8, 0xFE][..]),
+            None,
+            Some("abc".as_bytes()),
+            Some(&[0xEDu8, 0xA0, 0x80][..]),
+        ]);
+        // binary_output_style defaults to None, i.e. the plain (non-ToPrettyString) cast path.
+        let cast_options = SparkCastOptions::new(EvalMode::Legacy, "UTC", false);
+
+        let result = cast_binary_to_string::<i32>(&input, &cast_options).unwrap();
+
+        let strings = result.as_string::<i32>();
+        assert_eq!(strings.len(), 4);
+        assert_eq!(strings.value(0), "\u{FFFD}\u{FFFD}");
+        assert!(strings.is_null(1));
+        assert_eq!(strings.value(2), "abc");
+        assert_eq!(strings.value(3), "\u{FFFD}");
+    }
+
+    #[test]
+    fn test_cast_binary_to_string_utf8_output_style_replaces_invalid_utf8() {
+        // Spark's `binaryOutputStyle=UTF8` (Spark 4.0+) ToPrettyString formatter renders binary via
+        // `new String(bytes, UTF_8)`. Previously this arm called `String::from_utf8(..).unwrap()`,
+        // which panicked the executor on non-UTF-8 input. It must now decode JVM-compatibly-lossily,
+        // matching the default cast path's replacement behavior.
+        let input = BinaryArray::from_opt_vec(vec![
+            Some(&[0xFFu8, 0xFE][..]),
+            None,
+            Some("abc".as_bytes()),
+            Some(&[0xEDu8, 0xA0, 0x80][..]),
+        ]);
+        let mut cast_options = SparkCastOptions::new(EvalMode::Legacy, "UTC", false);
+        cast_options.binary_output_style = Some(BinaryOutputStyle::Utf8);
+
+        let result = cast_binary_to_string::<i32>(&input, &cast_options).unwrap();
+
+        let strings = result.as_string::<i32>();
+        assert_eq!(strings.len(), 4);
+        assert_eq!(strings.value(0), "\u{FFFD}\u{FFFD}");
+        assert!(strings.is_null(1));
+        assert_eq!(strings.value(2), "abc");
+        assert_eq!(strings.value(3), "\u{FFFD}");
+    }
+
     #[test]
     fn test_cast_binary_to_string_styles() {
         let input: ArrayRef = Arc::new(BinaryArray::from_opt_vec(vec![
@@ -983,8 +1033,10 @@ mod tests {
     }
 
     #[test]
-    fn test_cast_binary_to_string_default_style_preserves_bytes() {
-        // The default style hands the raw bytes over untouched, even when they are not valid UTF-8.
+    fn test_cast_binary_to_string_default_style_valid_utf8_through_spark_cast() {
+        // Exercises the default cast path through the public `spark_cast` entry point. Invalid bytes
+        // decode JVM-compatibly-lossily to U+FFFD (#4763), while valid multi-byte UTF-8 ("héllo") is
+        // preserved exactly.
         let input: ArrayRef = Arc::new(BinaryArray::from_opt_vec(vec![
             Some(b"\xff\xfe".as_slice()),
             None,
@@ -1000,7 +1052,7 @@ mod tests {
         .into_array(input.len())
         .unwrap();
         let result = result.as_string::<i32>();
-        assert_eq!(result.value(0).as_bytes(), b"\xff\xfe");
+        assert_eq!(result.value(0), "\u{FFFD}\u{FFFD}");
         assert!(result.is_null(1));
         assert_eq!(result.value(2), "héllo");
     }
