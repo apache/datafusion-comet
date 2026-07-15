@@ -421,9 +421,6 @@ class CometParquetWriterSuite extends CometTestBase {
           captureWritePlan(p => replacement.write.mode(SaveMode.Overwrite).parquet(p), outputPath)
         assertHasCometNativeWriteExec(plan)
         checkAnswer(spark.read.parquet(outputPath), replacement)
-        assert(
-          spark.read.parquet(outputPath).count() == 50L,
-          "Overwrite should leave only the replacement rows")
       }
     }
   }
@@ -595,8 +592,8 @@ class CometParquetWriterSuite extends CometTestBase {
     if (!outputDir.exists() || !outputDir.isDirectory) {
       Set.empty
     } else {
-      Option(outputDir.listFiles())
-        .getOrElse(Array.empty)
+      outputDir
+        .listFiles()
         .filter(_.getName.startsWith("part-"))
         .map(_.getName)
         .toSet

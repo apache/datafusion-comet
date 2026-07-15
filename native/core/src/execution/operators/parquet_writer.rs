@@ -551,13 +551,12 @@ impl ExecutionPlan for ParquetWriterExec {
             bytes_written.add(file_size as usize);
             rows_written.add(total_rows as usize);
 
-            // Log metadata for debugging
-            if cfg!(debug_assertions) {
-                eprintln!(
-                    "Wrote Parquet file: path={}, size={}, rows={}",
-                    part_file, file_size, total_rows
-                );
-            }
+            log::debug!(
+                "Wrote Parquet file: path={}, size={}, rows={}",
+                part_file,
+                file_size,
+                total_rows
+            );
 
             // Return empty stream to indicate completion
             Ok::<_, DataFusionError>(futures::stream::empty())
