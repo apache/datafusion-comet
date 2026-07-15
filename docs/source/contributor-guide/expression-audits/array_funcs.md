@@ -41,6 +41,7 @@
 - Spark 3.5.8 (audited 2026-05-27): identical to 3.4.3.
 - Spark 4.0.1 (audited 2026-05-27): the replacement is wrapped in `KnownNotContainsNull(...)` (analysis-only hint, no semantic change).
 - Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
+- Performance (tuned 2026-07-15, PR #4934): added a no-op fast path to `spark_array_compact` that returns the input unchanged (zero-copy) when the values buffer has no null elements, skipping the per-element `MutableArrayData::extend` loop. ~1000x faster on null-free arrays; sparse/dense element-null shapes are unchanged (same code path). Benchmark: `benches/array_compact.rs`.
 
 ## array_contains
 
