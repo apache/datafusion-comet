@@ -95,14 +95,14 @@ being a no-op or a regression.**
 
 ## Rationalization table
 
-| Excuse | Reality |
-| --- | --- |
-| "Measuring the baseline is overhead, I'll benchmark once at the end" | Without a `main` baseline you cannot report a change %, and you cannot tell a win from noise. Baseline first. |
-| "Dense-null regression is an edge case" | Real columns have dense nulls. A regression there is a regression. Gate the path or drop it. |
-| "Existing tests are enough proof, no need to check the null buffer" | Tests may not assert null placement. Confirm bit-identical output explicitly. |
-| "This trades a bit of the null case for a big win elsewhere" | That is a trade-off, not an optimization. Only submit a strict improvement (or a correctly-gated per-batch path). |
-| "I'll edit the code, then run the baseline" | `cargo bench` compiles from disk. A baseline built with your change already applied measures the optimized code and hides the real speedup. Baseline on unmodified source; stash the edit if needed. |
-| "One shape flagged a 2% regression, abandon it" | Criterion compares separate runs; small flags on an untouched code path are cross-run noise. Take a second sample before deciding — real regressions reproduce. |
+| Excuse                                                               | Reality                                                                                                                                                                                              |
+| -------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| "Measuring the baseline is overhead, I'll benchmark once at the end" | Without a `main` baseline you cannot report a change %, and you cannot tell a win from noise. Baseline first.                                                                                        |
+| "Dense-null regression is an edge case"                              | Real columns have dense nulls. A regression there is a regression. Gate the path or drop it.                                                                                                         |
+| "Existing tests are enough proof, no need to check the null buffer"  | Tests may not assert null placement. Confirm bit-identical output explicitly.                                                                                                                        |
+| "This trades a bit of the null case for a big win elsewhere"         | That is a trade-off, not an optimization. Only submit a strict improvement (or a correctly-gated per-batch path).                                                                                    |
+| "I'll edit the code, then run the baseline"                          | `cargo bench` compiles from disk. A baseline built with your change already applied measures the optimized code and hides the real speedup. Baseline on unmodified source; stash the edit if needed. |
+| "One shape flagged a 2% regression, abandon it"                      | Criterion compares separate runs; small flags on an untouched code path are cross-run noise. Take a second sample before deciding — real regressions reproduce.                                      |
 
 ## Related skills
 
