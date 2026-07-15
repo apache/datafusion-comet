@@ -197,7 +197,13 @@ impl PhysicalExpr for DecimalRescaleCheckOverflow {
                         rescale_and_check(value, delta, scale_factor, bound, fail_on_error)
                     })?;
 
-                let result = if !fail_on_error {
+                let result = if !fail_on_error && result.values().contains(&i128::MAX) {
+                    // The rescale pass writes i128::MAX as an overflow sentinel for values that
+                    // do not fit the output precision. Only when a sentinel is present do we need
+                    // the extra null-masking pass (which allocates a new array); `any`
+                    // short-circuits at the first sentinel, so the common no-overflow case skips
+                    // that allocation entirely. ANSI mode raises on overflow and never produces a
+                    // sentinel, so it also skips this pass.
                     result.null_if_overflow_precision(p_out)
                 } else {
                     result
@@ -341,6 +347,19 @@ mod tests {
         let batch = make_batch(vec![Some(10)], 38, 0);
         let result = eval_expr(&batch, 0, 3, 2, true);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_overflow_with_nulls_legacy() {
+        // Mixes valid, overflowing, and null inputs so the sentinel fallback path runs with
+        // nulls present: overflow and null both yield null, valid values are preserved.
+        let batch = make_batch(vec![Some(150), Some(10_000), None, Some(250)], 10, 2);
+        let result = eval_expr(&batch, 2, 4, 2, false).unwrap();
+        let arr = result.as_primitive::<Decimal128Type>();
+        assert_eq!(arr.value(0), 150);
+        assert!(arr.is_null(1)); // 10000 > 9999 (max for precision 4) -> null
+        assert!(arr.is_null(2)); // input null stays null
+        assert_eq!(arr.value(3), 250);
     }
 
     #[test]
