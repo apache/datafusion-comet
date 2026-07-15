@@ -15,14 +15,17 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow::array::{ArrowNativeTypeOp, BooleanArray, Int64Array};
+use arrow::array::{Array, ArrowNativeTypeOp, BooleanArray, Int64Array};
+use arrow::buffer::BooleanBuffer;
 use arrow::datatypes::ToByteSlice;
 use datafusion::common::{DataFusionError, Result as DFResult};
 use std::cmp;
 
 use crate::bloom_filter::spark_bit_array;
 use crate::bloom_filter::spark_bit_array::SparkBitArray;
-use crate::hash_funcs::murmur3::spark_compatible_murmur3_hash;
+use crate::hash_funcs::murmur3::{
+    spark_compatible_murmur3_hash, spark_compatible_murmur3_hash_long,
+};
 
 const SPARK_BLOOM_FILTER_VERSION_1: i32 = 1;
 const SPARK_BLOOM_FILTER_VERSION_2: i32 = 2;
@@ -71,6 +74,8 @@ pub struct SparkBloomFilter {
     /// Murmur3 seed. V1 always uses 0; V2 stores a per-filter seed (Spark's
     /// `BloomFilterImplV2.DEFAULT_SEED` is also 0, so 0 is the common case).
     seed: i32,
+    /// Reciprocal of the V1 bit-index modulus. Derived from `bits`, whose size never changes.
+    modulus: FastMod32,
 }
 
 pub fn optimal_num_hash_functions(expected_items: i32, num_bits: i32) -> i32 {
@@ -116,8 +121,10 @@ impl From<&[u8]> for SparkBloomFilter {
             bits[i as usize] = read_num_be_bytes!(i64, 8, buf[offset..]) as u64;
             offset += 8;
         }
+        let bits = SparkBitArray::new(bits);
         Self {
-            bits: SparkBitArray::new(bits),
+            modulus: FastMod32::for_bit_size(bits.bit_size()),
+            bits,
             num_hash_functions: num_hash_functions as u32,
             version,
             seed,
@@ -136,9 +143,10 @@ impl SparkBloomFilter {
         seed: i32,
     ) -> Self {
         let num_words = spark_bit_array::num_words(num_bits as usize);
-        let bits = vec![0u64; num_words];
+        let bits = SparkBitArray::new(vec![0u64; num_words]);
         Self {
-            bits: SparkBitArray::new(bits),
+            modulus: FastMod32::for_bit_size(bits.bit_size()),
+            bits,
             num_hash_functions: num_hash_functions as u32,
             version,
             seed: match version {
@@ -177,13 +185,8 @@ impl SparkBloomFilter {
     /// matching `BloomFilterImpl.scatterHashAndSetAllBits` (Spark <= 4.0; still
     /// available as the V1 codepath in 4.1+).
     fn scatter_v1(&mut self, h1: u32, h2: u32, set: bool) -> Option<bool> {
-        let bit_size = self.bits.bit_size() as i32;
         for i in 1..=self.num_hash_functions {
-            let mut combined_hash = (h1 as i32).add_wrapping((i as i32).mul_wrapping(h2 as i32));
-            if combined_hash < 0 {
-                combined_hash = !combined_hash;
-            }
-            let idx = (combined_hash % bit_size) as usize;
+            let idx = v1_bit_index(h1, h2, i, &self.modulus);
             if set {
                 self.bits.set(idx);
             } else if !self.bits.get(idx) {
@@ -235,29 +238,40 @@ impl SparkBloomFilter {
         }
     }
 
+    /// The two murmur3 hashes Spark's `BloomFilter` derives every bit index from: the item
+    /// hashed with the filter seed, then hashed again with the first hash as seed.
+    #[inline]
+    fn hashes_long(&self, item: i64) -> (u32, u32) {
+        let h1 = spark_compatible_murmur3_hash_long(item, self.seed as u32);
+        (h1, spark_compatible_murmur3_hash_long(item, h1))
+    }
+
+    /// [`Self::hashes_long`] for binary items.
+    fn hashes_binary(&self, item: &[u8]) -> (u32, u32) {
+        let h1 = spark_compatible_murmur3_hash(item, self.seed as u32);
+        (h1, spark_compatible_murmur3_hash(item, h1))
+    }
+
     /// Put a long item into the filter. Returns `false`; the original Spark
     /// `BloomFilter.put` returns whether any bit changed, but no current Comet
     /// caller uses that, so we don't bother computing it.
     pub fn put_long(&mut self, item: i64) -> bool {
-        let h1 = spark_compatible_murmur3_hash(item.to_le_bytes(), self.seed as u32);
-        let h2 = spark_compatible_murmur3_hash(item.to_le_bytes(), h1);
+        let (h1, h2) = self.hashes_long(item);
         self.scatter(h1, h2, true);
         false
     }
 
     pub fn put_binary(&mut self, item: &[u8]) -> bool {
-        let h1 = spark_compatible_murmur3_hash(item, self.seed as u32);
-        let h2 = spark_compatible_murmur3_hash(item, h1);
+        let (h1, h2) = self.hashes_binary(item);
         self.scatter(h1, h2, true);
         false
     }
 
     pub fn might_contain_long(&self, item: i64) -> bool {
-        let h1 = spark_compatible_murmur3_hash(item.to_le_bytes(), self.seed as u32);
-        let h2 = spark_compatible_murmur3_hash(item.to_le_bytes(), h1);
+        let (h1, h2) = self.hashes_long(item);
         match self.version {
             SparkBloomFilterVersion::V1 => {
-                might_contain_long_v1(&self.bits, self.num_hash_functions, h1, h2)
+                might_contain_long_v1(&self.bits, self.num_hash_functions, h1, h2, &self.modulus)
             }
             SparkBloomFilterVersion::V2 => {
                 might_contain_long_v2(&self.bits, self.num_hash_functions, h1, h2)
@@ -266,10 +280,37 @@ impl SparkBloomFilter {
     }
 
     pub fn might_contain_longs(&self, items: &Int64Array) -> BooleanArray {
-        items
-            .iter()
-            .map(|v| v.map(|x| self.might_contain_long(x)))
-            .collect()
+        // The probe function is the same for every row, so the version is resolved once here
+        // rather than once per row.
+        let mut probed = match self.version {
+            SparkBloomFilterVersion::V1 => self.probe_each(items, |bits, num_hash, h1, h2| {
+                might_contain_long_v1(bits, num_hash, h1, h2, &self.modulus)
+            }),
+            SparkBloomFilterVersion::V2 => self.probe_each(items, might_contain_long_v2),
+        };
+
+        // A null row must not report a match, so mask its probe result off.
+        let nulls = items.nulls();
+        if let Some(nulls) = nulls {
+            probed &= nulls.inner();
+        }
+        BooleanArray::new(probed, nulls.cloned())
+    }
+
+    /// Probe `items` with `probe`, one bit per row. Null rows are probed anyway — their slot in
+    /// the values buffer holds an arbitrary but valid i64 — which keeps the loop branch-free
+    /// with respect to nullability. The caller masks those results off.
+    #[inline]
+    fn probe_each(
+        &self,
+        items: &Int64Array,
+        probe: impl Fn(&SparkBitArray, u32, u32, u32) -> bool,
+    ) -> BooleanBuffer {
+        let values = items.values();
+        BooleanBuffer::collect_bool(values.len(), |i| {
+            let (h1, h2) = self.hashes_long(values[i]);
+            probe(&self.bits, self.num_hash_functions, h1, h2)
+        })
     }
 
     /// Number of set bits in the underlying bit array. Mirrors Spark's
@@ -341,18 +382,54 @@ impl SparkBloomFilter {
     }
 }
 
-fn might_contain_long_v1(bits: &SparkBitArray, num_hash_functions: u32, h1: u32, h2: u32) -> bool {
-    let bit_size = bits.bit_size() as i32;
-    for i in 1..=num_hash_functions {
-        let mut combined_hash = (h1 as i32).add_wrapping((i as i32).mul_wrapping(h2 as i32));
-        if combined_hash < 0 {
-            combined_hash = !combined_hash;
-        }
-        if !bits.get((combined_hash % bit_size) as usize) {
-            return false;
+/// Remainder by a fixed 32-bit modulus, computed with multiplications instead of a hardware
+/// division (Lemire's method). The modulus is fixed for the life of a filter, so the reciprocal
+/// is computed once at construction rather than once per bit index.
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
+struct FastMod32 {
+    divisor: u32,
+    reciprocal: u64,
+}
+
+impl FastMod32 {
+    /// The modulus a V1 probe reduces by. Spark truncates the bit size to `int` before taking
+    /// the remainder, and the dividend is always non-negative, so only the magnitude of the
+    /// truncated divisor matters.
+    fn for_bit_size(bit_size: u64) -> Self {
+        let divisor = (bit_size as i32).unsigned_abs();
+        Self {
+            divisor,
+            reciprocal: (u64::MAX / divisor as u64).wrapping_add(1),
         }
     }
-    true
+
+    #[inline]
+    fn rem(&self, n: u32) -> u32 {
+        let lowbits = self.reciprocal.wrapping_mul(n as u64);
+        ((lowbits as u128 * self.divisor as u128) >> 64) as u32
+    }
+}
+
+/// The `i`th V1 bit index for a hash pair: `combinedHash = h1 + i*h2`, folded to a non-negative
+/// value and reduced modulo the bit size. Shared by the read and write paths so they cannot
+/// drift apart.
+#[inline]
+fn v1_bit_index(h1: u32, h2: u32, i: u32, modulus: &FastMod32) -> usize {
+    let mut combined_hash = (h1 as i32).add_wrapping((i as i32).mul_wrapping(h2 as i32));
+    if combined_hash < 0 {
+        combined_hash = !combined_hash;
+    }
+    modulus.rem(combined_hash as u32) as usize
+}
+
+fn might_contain_long_v1(
+    bits: &SparkBitArray,
+    num_hash_functions: u32,
+    h1: u32,
+    h2: u32,
+    modulus: &FastMod32,
+) -> bool {
+    (1..=num_hash_functions).all(|i| bits.get(v1_bit_index(h1, h2, i, modulus)))
 }
 
 fn might_contain_long_v2(bits: &SparkBitArray, num_hash_functions: u32, h1: u32, h2: u32) -> bool {
