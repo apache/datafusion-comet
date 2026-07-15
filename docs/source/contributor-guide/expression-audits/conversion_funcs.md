@@ -35,5 +35,6 @@
   - `spark.sql.legacy.castComplexTypesToString.enabled=true` is not honoured by Comet (https://github.com/apache/datafusion-comet/issues/4492).
   - `CAST(<float|double> AS DECIMAL)` rounding may differ from Spark (`Incompatible`, gated by `spark.comet.expression.Cast.allowIncompatible`, tracked at https://github.com/apache/datafusion-comet/issues/1371).
 - Spark registers the type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `decimal`, `double`, `float`, `int`, `smallint`, `string`, `timestamp`, `tinyint`) as cast aliases. Each lowers to the same `Cast` node, so Comet handles it via the `cast` implementation with the same compatibility profile.
+- Performance (tuned 2026-07-15, PR #4939): integer-to-decimal casts (`cast_int_to_decimal128_internal`) now convert in a single vectorized `unary_opt` pass that maps overflowing values to null, replacing the per-element `Decimal128Builder` loop. ANSI raises via an O(1) null-count check plus a rare element-wise rescan. 28-50% faster with no regression on any shape. Benchmark: `benches/cast_int_to_decimal.rs`.
 
 [Spark Expression Support]: ../../user-guide/latest/expressions.md
