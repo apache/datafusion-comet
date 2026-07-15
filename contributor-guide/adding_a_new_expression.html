@@ -969,6 +969,22 @@ create a native expression</p></li>
 </pre></div>
 </div>
 </section>
+<section id="producing-strings-from-arbitrary-bytes">
+<h4>Producing strings from arbitrary bytes<a class="headerlink" href="#producing-strings-from-arbitrary-bytes" title="Link to this heading">#</a></h4>
+<p>Spark’s <code class="docutils literal notranslate"><span class="pre">StringType</span></code> may contain bytes that are not valid UTF-8 (Spark stores them verbatim), but
+Arrow’s string arrays must be valid UTF-8. Any native code that turns arbitrary bytes into a string
+must therefore <strong>decode</strong> them, not reinterpret them. Building a Rust <code class="docutils literal notranslate"><span class="pre">String</span></code>/<code class="docutils literal notranslate"><span class="pre">&amp;str</span></code> from non-UTF-8
+bytes is undefined behaviour, and an Arrow string array that holds invalid UTF-8 is unsound for the
+downstream kernels that read it via <code class="docutils literal notranslate"><span class="pre">StringArray::value</span></code> (which assumes the UTF-8 invariant).</p>
+<p>Use <code class="docutils literal notranslate"><span class="pre">datafusion_comet_common::decode_utf8_spark_lossy</span></code> (defined in <code class="docutils literal notranslate"><span class="pre">native/common/src/utils.rs</span></code>). It
+replaces each ill-formed sequence with <code class="docutils literal notranslate"><span class="pre">U+FFFD</span></code> exactly as the JVM’s <code class="docutils literal notranslate"><span class="pre">new</span> <span class="pre">String(bytes,</span> <span class="pre">UTF_8)</span></code> does,
+so Comet’s rendered output matches Spark (including the surrogate-range cases where
+<code class="docutils literal notranslate"><span class="pre">str::from_utf8_lossy</span></code> would differ). This is the decoder used by both <code class="docutils literal notranslate"><span class="pre">CAST(binary</span> <span class="pre">AS</span> <span class="pre">string)</span></code> and
+the native columnar shuffle. See the
+<a class="reference internal" href="../user-guide/latest/compatibility/index.html"><span class="std std-doc">strings with non-UTF-8 bytes</span></a> note in the
+compatibility guide for the user-visible behavior, including the cases where decoding diverges from
+Spark.</p>
+</section>
 </section>
 <section id="api-differences-between-spark-versions">
 <h3>API Differences Between Spark Versions<a class="headerlink" href="#api-differences-between-spark-versions" title="Link to this heading">#</a></h3>
@@ -1100,6 +1116,7 @@ create a native expression</p></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#generally-adding-a-new-expression">Generally Adding a New Expression</a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#adding-a-new-scalar-function-expression">Adding a New Scalar Function Expression</a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#implementing-the-function">Implementing the Function</a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#producing-strings-from-arbitrary-bytes">Producing strings from arbitrary bytes</a></li>
 </ul>
 </li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#api-differences-between-spark-versions">API Differences Between Spark Versions</a></li>

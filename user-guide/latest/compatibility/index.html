@@ -789,6 +789,36 @@ incompatible cases fall back to Spark by default, and <code class="docutils lite
 (incompatible) path instead. <code class="docutils literal notranslate"><span class="pre">cast</span></code> is the main example; see the
 <a class="reference internal" href="../expressions.html"><span class="std std-doc">expression reference</span></a> for which expressions have incompatible cases.</p>
 </section>
+<section id="strings-with-non-utf-8-bytes">
+<h2>Strings with non-UTF-8 bytes<a class="headerlink" href="#strings-with-non-utf-8-bytes" title="Link to this heading">#</a></h2>
+<p>Spark’s <code class="docutils literal notranslate"><span class="pre">StringType</span></code> can hold arbitrary bytes, including sequences that are not valid UTF-8 (for
+example <code class="docutils literal notranslate"><span class="pre">CAST(X'FF'</span> <span class="pre">AS</span> <span class="pre">STRING)</span></code>). Arrow’s string type requires valid UTF-8, so Comet cannot store
+the raw bytes natively. When Comet produces a string from arbitrary bytes (such as
+<code class="docutils literal notranslate"><span class="pre">CAST(binary</span> <span class="pre">AS</span> <span class="pre">string)</span></code> or a columnar shuffle), it decodes them the same way the JVM does
+(<code class="docutils literal notranslate"><span class="pre">new</span> <span class="pre">String(bytes,</span> <span class="pre">UTF_8)</span></code>), replacing each ill-formed sequence with the Unicode replacement
+character <code class="docutils literal notranslate"><span class="pre">U+FFFD</span></code>. Spark itself applies the identical replacement whenever such a string is
+materialized (collected, printed, or passed to most string functions), so the rendered result
+matches Spark.</p>
+<p>Decoding is not byte-preserving, so results can differ from Spark for any operation that works on the
+underlying bytes rather than on the rendered text:</p>
+<ul class="simple">
+<li><p><strong>Round-trips.</strong> Spark keeps the original bytes, so <code class="docutils literal notranslate"><span class="pre">CAST(CAST(X'FF'</span> <span class="pre">AS</span> <span class="pre">STRING)</span> <span class="pre">AS</span> <span class="pre">BINARY)</span></code> returns
+<code class="docutils literal notranslate"><span class="pre">X'FF'</span></code>, whereas Comet returns the UTF-8 encoding of <code class="docutils literal notranslate"><span class="pre">U+FFFD</span></code> (<code class="docutils literal notranslate"><span class="pre">X'EFBFBD'</span></code>). <code class="docutils literal notranslate"><span class="pre">octet_length</span></code> and
+hashing of such a string differ for the same reason.</p></li>
+<li><p><strong>Value identity.</strong> Decoding maps every ill-formed sequence onto the same <code class="docutils literal notranslate"><span class="pre">U+FFFD</span></code>, so two Spark
+strings that hold different bytes can become equal in Comet. For example, with <code class="docutils literal notranslate"><span class="pre">b</span> <span class="pre">=</span> <span class="pre">X'FF'</span></code>,
+<code class="docutils literal notranslate"><span class="pre">CAST(b</span> <span class="pre">AS</span> <span class="pre">STRING)</span> <span class="pre">=</span> <span class="pre">CAST(X'EFBFBD'</span> <span class="pre">AS</span> <span class="pre">STRING)</span></code> is <code class="docutils literal notranslate"><span class="pre">false</span></code> in Spark (<code class="docutils literal notranslate"><span class="pre">UTF8String</span></code> compares the raw
+bytes) but <code class="docutils literal notranslate"><span class="pre">true</span></code> in Comet. Equality, joins, grouping, ordering, and byte-based string functions
+such as <code class="docutils literal notranslate"><span class="pre">contains</span></code> can therefore disagree with Spark when non-UTF-8 bytes are involved.</p></li>
+</ul>
+<p>Both differences require string data that is not valid UTF-8, which does not occur for text read from
+Parquet or produced by string expressions. Consistent handling of invalid UTF-8 across all native
+string paths is tracked by
+<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4764">#4764</a>.</p>
+<p>Separately, Comet’s native Parquet scan currently rejects string columns whose stored bytes are not
+valid UTF-8 rather than reading them like Spark
+(<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4121">#4121</a>).</p>
+</section>
 </section>
 
 
@@ -840,6 +870,7 @@ incompatible cases fall back to Spark by default, and <code class="docutils lite
     <ul class="visible nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#compatible-by-default-opt-in-to-native">Compatible by default, opt in to native</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#native-and-codegen-dispatch-implementations">Native and codegen-dispatch implementations</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#strings-with-non-utf-8-bytes">Strings with non-UTF-8 bytes</a></li>
 </ul>
   </nav></div>
 
