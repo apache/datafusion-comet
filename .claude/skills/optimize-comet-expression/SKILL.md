@@ -43,12 +43,23 @@ being a no-op or a regression.**
    ```sh
    cd native && cargo bench --bench <name> -- --save-baseline main
    ```
+   The baseline must be **built from unmodified source**. `cargo bench` recompiles from whatever
+   is on disk when it runs, so if your optimization is already in the working tree (or a slow
+   build is still compiling when you start editing), the "baseline" measures the optimized code
+   and every speedup looks like zero. Only the benchmark file and `Cargo.toml` bench registration
+   may be present. If you have already edited the expression, `git stash push -- <source file>`,
+   capture the baseline, then `git stash pop`. Confirm the run finished before editing.
 4. **Optimize**, preserving exact semantics. Pick a technique from the catalog in the guide.
 5. **Prove correctness.** Run the existing unit tests for the function; they must pass unchanged.
    Output must be bit-identical to `main` (values, null buffer, errors). There is no differential
    fuzz harness in this repo — the unit tests are the gate. If coverage is thin, add tests (or run
    `audit-comet-expression`) before claiming correctness.
-6. **Re-measure.** `cargo bench --bench <name> -- --baseline main`.
+6. **Re-measure.** `cargo bench --bench <name> -- --baseline main`. Criterion's "change" compares
+   two separate process runs, so a small (±a few %) flag on a shape can be cross-run system noise
+   (thermal, background load), not a real effect. Before trusting any flagged regression, take a
+   **second independent sample** (`--baseline main` again) — real changes reproduce, noise does
+   not. A shape whose code path you did not touch cannot truly regress: if it flags, it is noise,
+   and the fix is another sample, not abandoning the change.
 7. **Apply the no-regression gate** (below) before writing any PR.
 8. **Finish:** `make format`, build, `cargo clippy --all-targets --workspace -- -D warnings`.
    PR title ``perf: optimize `$ARGUMENTS` (Nx faster)``, paste the criterion output for every
@@ -61,9 +72,11 @@ being a no-op or a regression.**
 
 ## The gate: what blocks a submission
 
-- **A shape got meaningfully slower.** Do NOT submit. Even a 90%-faster-no-nulls win does not
-  justify a 30%-slower-dense-nulls loss. Either gate the fast path behind a per-batch runtime
-  check that picks the right path, or abandon the change. A Comet PR was closed for exactly this.
+- **A shape got meaningfully and reproducibly slower.** Do NOT submit. Even a 90%-faster-no-nulls
+  win does not justify a 30%-slower-dense-nulls loss. Either gate the fast path behind a per-batch
+  runtime check that picks the right path, or abandon the change. A Comet PR was closed for exactly
+  this. "Reproducibly" matters: confirm a flagged regression on a second sample first (step 6) —
+  a ~2% flag on a code path you did not touch is noise, not a blocker.
 - **No meaningful speedup on any shape.** There is nothing to submit. A change inside criterion's
   noise threshold is not an improvement.
 - **Output differs from `main`** on any input, including null placement or error behavior.
@@ -88,6 +101,8 @@ being a no-op or a regression.**
 | "Dense-null regression is an edge case" | Real columns have dense nulls. A regression there is a regression. Gate the path or drop it. |
 | "Existing tests are enough proof, no need to check the null buffer" | Tests may not assert null placement. Confirm bit-identical output explicitly. |
 | "This trades a bit of the null case for a big win elsewhere" | That is a trade-off, not an optimization. Only submit a strict improvement (or a correctly-gated per-batch path). |
+| "I'll edit the code, then run the baseline" | `cargo bench` compiles from disk. A baseline built with your change already applied measures the optimized code and hides the real speedup. Baseline on unmodified source; stash the edit if needed. |
+| "One shape flagged a 2% regression, abandon it" | Criterion compares separate runs; small flags on an untouched code path are cross-run noise. Take a second sample before deciding — real regressions reproduce. |
 
 ## Related skills
 
