@@ -264,6 +264,7 @@
 ## unhex
 
 - Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): `Unhex(child, failOnError)`. Spark 4.x widens input to `StringTypeWithCollation` and wraps the inner call in try/catch; Comet `CometUnhex` forwards `failOnError` to native `spark_unhex` but does not gate on collation.
+- Performance (tuned 2026-07-11, PR #4876): compile-time 256-entry hex lookup table plus a preallocated `BinaryBuilder`, cutting per-byte branching and repeated buffer reallocations. Up to 31% faster on long strings. Benchmark: `benches/unhex.rs`.
 
 ## width_bucket
 
