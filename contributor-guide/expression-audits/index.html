@@ -424,6 +424,7 @@ under the License.
 <li class="toctree-l2"><a class="reference internal" href="../benchmarking_spark_sql_perf.html">TPC-DS Benchmarking with spark-sql-perf</a></li>
 </ul>
 </details></li>
+<li class="toctree-l1"><a class="reference internal" href="../optimizing_expressions.html">Optimizing Scalar Expressions</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../profiling.html">Profiling</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../tracing.html">Tracing</a></li>
 </ul>
@@ -541,7 +542,12 @@ under the License.
 <section id="expression-audits">
 <h1>Expression Audits<a class="headerlink" href="#expression-audits" title="Link to this heading">#</a></h1>
 <p>This section records per-version audit notes for Spark expressions that have been audited for Comet compatibility. These are findings from auditing the Spark implementation across versions (3.4.3, 3.5.8, 4.0.1), not a statement of support status.</p>
-<p>For the authoritative list of which expressions Comet supports, see the user guide <a class="reference internal" href="../../user-guide/latest/expressions.html"><span class="std std-doc">Spark Expression Support</span></a>. To audit an expression, use the <code class="docutils literal notranslate"><span class="pre">audit-comet-expression</span></code> skill, which appends its findings to the relevant category page below.</p>
+<p>Two kinds of audit are recorded per expression:</p>
+<ul class="simple">
+<li><p><strong>Correctness audits</strong> compare the Spark implementation across versions and note divergences and test-coverage gaps. Use the <code class="docutils literal notranslate"><span class="pre">audit-comet-expression</span></code> skill, which appends its findings to the relevant category page below.</p></li>
+<li><p><strong>Performance audits</strong> record when a native expression has been performance-tuned, so contributors can see at a glance which expressions have already been optimized. Recorded as a dated <code class="docutils literal notranslate"><span class="pre">Performance</span> <span class="pre">(tuned</span> <span class="pre">...)</span></code> line under the expression, they name the technique, the measured speedup, the linking PR, and the benchmark file. Use the <code class="docutils literal notranslate"><span class="pre">optimize-comet-expression</span></code> skill (see <a class="reference internal" href="../optimizing_expressions.html"><span class="std std-doc">Optimizing Scalar Expressions</span></a>), which appends this line after a change is benchmarked and merged.</p></li>
+</ul>
+<p>For the authoritative list of which expressions Comet supports, see the user guide <a class="reference internal" href="../../user-guide/latest/expressions.html"><span class="std std-doc">Spark Expression Support</span></a>.</p>
 <div class="toctree-wrapper compound">
 <ul>
 <li class="toctree-l1"><a class="reference internal" href="agg_funcs.html">agg_funcs</a></li>

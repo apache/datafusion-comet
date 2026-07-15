@@ -428,6 +428,7 @@ under the License.
 <li class="toctree-l2"><a class="reference internal" href="../benchmarking_spark_sql_perf.html">TPC-DS Benchmarking with spark-sql-perf</a></li>
 </ul>
 </details></li>
+<li class="toctree-l1"><a class="reference internal" href="../optimizing_expressions.html">Optimizing Scalar Expressions</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../profiling.html">Profiling</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../tracing.html">Tracing</a></li>
 </ul>
@@ -584,6 +585,7 @@ under the License.
 <li><p>Spark 4.0.1 (audited 2026-05-27): byte-for-byte identical to 3.5.8.</p></li>
 <li><p>Spark 4.1.1 (audited 2026-05-27): byte-for-byte identical to 3.5.8.</p></li>
 <li><p>Known limitation: <code class="docutils literal notranslate"><span class="pre">Size</span></code> over <code class="docutils literal notranslate"><span class="pre">MapType</span></code> falls back to Spark (https://github.com/apache/datafusion-comet/issues/4472).</p></li>
+<li><p>Performance (tuned 2026-07-10, PR #4877): compute list row sizes from the offset buffer instead of allocating a sliced <code class="docutils literal notranslate"><span class="pre">ArrayRef</span></code> per row via <code class="docutils literal notranslate"><span class="pre">list_array.value(i)</span></code>, removing one heap allocation per row. ~94% faster. Benchmark: <code class="docutils literal notranslate"><span class="pre">benches/array_size.rs</span></code>.</p></li>
 </ul>
 </section>
 </section>

@@ -428,6 +428,7 @@ under the License.
 <li class="toctree-l2"><a class="reference internal" href="../benchmarking_spark_sql_perf.html">TPC-DS Benchmarking with spark-sql-perf</a></li>
 </ul>
 </details></li>
+<li class="toctree-l1"><a class="reference internal" href="../optimizing_expressions.html">Optimizing Scalar Expressions</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../profiling.html">Profiling</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../tracing.html">Tracing</a></li>
 </ul>
@@ -912,6 +913,7 @@ under the License.
 <h2>unhex<a class="headerlink" href="#unhex" title="Link to this heading">#</a></h2>
 <ul class="simple">
 <li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">Unhex(child,</span> <span class="pre">failOnError)</span></code>. Spark 4.x widens input to <code class="docutils literal notranslate"><span class="pre">StringTypeWithCollation</span></code> and wraps the inner call in try/catch; Comet <code class="docutils literal notranslate"><span class="pre">CometUnhex</span></code> forwards <code class="docutils literal notranslate"><span class="pre">failOnError</span></code> to native <code class="docutils literal notranslate"><span class="pre">spark_unhex</span></code> but does not gate on collation.</p></li>
+<li><p>Performance (tuned 2026-07-11, PR #4876): compile-time 256-entry hex lookup table plus a preallocated <code class="docutils literal notranslate"><span class="pre">BinaryBuilder</span></code>, cutting per-byte branching and repeated buffer reallocations. Up to 31% faster on long strings. Benchmark: <code class="docutils literal notranslate"><span class="pre">benches/unhex.rs</span></code>.</p></li>
 </ul>
 </section>
 <section id="width-bucket">

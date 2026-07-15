@@ -428,6 +428,7 @@ under the License.
 <li class="toctree-l2"><a class="reference internal" href="../benchmarking_spark_sql_perf.html">TPC-DS Benchmarking with spark-sql-perf</a></li>
 </ul>
 </details></li>
+<li class="toctree-l1"><a class="reference internal" href="../optimizing_expressions.html">Optimizing Scalar Expressions</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../profiling.html">Profiling</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../tracing.html">Tracing</a></li>
 </ul>
@@ -550,6 +551,12 @@ under the License.
 <blockquote>
 <div><p>Audit notes for expressions in this category that have been audited. Absence of an entry means the expression has not been audited yet, not that it is unsupported. See the user guide <a class="reference internal" href="../../user-guide/latest/expressions.html"><span class="std std-doc">Spark Expression Support</span></a> for current support status.</p>
 </div></blockquote>
+<section id="parse-url">
+<h2>parse_url<a class="headerlink" href="#parse-url" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>Performance (tuned 2026-07-11, PR #4893): cache the compiled query regex in a thread-local single-slot cache keyed by the query key, eliminating per-row <code class="docutils literal notranslate"><span class="pre">Regex::new()</span></code> recompilation in the QUERY-with-key path (the key is constant across a batch in practice). Up to 50x faster. Benchmark: <code class="docutils literal notranslate"><span class="pre">benches/parse_url.rs</span></code>.</p></li>
+</ul>
+</section>
 <section id="try-url-decode">
 <h2>try_url_decode<a class="headerlink" href="#try-url-decode" title="Link to this heading">#</a></h2>
 <ul class="simple">
@@ -621,6 +628,7 @@ under the License.
   </div>
   <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="visible nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#parse-url">parse_url</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#try-url-decode">try_url_decode</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#url-decode">url_decode</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#url-encode">url_encode</a></li>

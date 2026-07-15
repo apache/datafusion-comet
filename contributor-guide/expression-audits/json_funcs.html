@@ -428,6 +428,7 @@ under the License.
 <li class="toctree-l2"><a class="reference internal" href="../benchmarking_spark_sql_perf.html">TPC-DS Benchmarking with spark-sql-perf</a></li>
 </ul>
 </details></li>
+<li class="toctree-l1"><a class="reference internal" href="../optimizing_expressions.html">Optimizing Scalar Expressions</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../profiling.html">Profiling</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../tracing.html">Tracing</a></li>
 </ul>
@@ -578,6 +579,7 @@ under the License.
 <h2>to_json<a class="headerlink" href="#to-json" title="Link to this heading">#</a></h2>
 <ul class="simple">
 <li><p>Partial native support; options and map/array inputs fall back.</p></li>
+<li><p>Performance (tuned 2026-07-13, PR #4902): <code class="docutils literal notranslate"><span class="pre">escape_string</span></code> returns <code class="docutils literal notranslate"><span class="pre">Cow</span></code> (zero-alloc borrow when nothing needs escaping) and bulk-copies unescaped byte runs instead of pushing char-by-char per value. 2x faster. Benchmark: <code class="docutils literal notranslate"><span class="pre">benches/to_json.rs</span></code>.</p></li>
 </ul>
 </section>
 </section>

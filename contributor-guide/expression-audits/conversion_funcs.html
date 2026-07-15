@@ -428,6 +428,7 @@ under the License.
 <li class="toctree-l2"><a class="reference internal" href="../benchmarking_spark_sql_perf.html">TPC-DS Benchmarking with spark-sql-perf</a></li>
 </ul>
 </details></li>
+<li class="toctree-l1"><a class="reference internal" href="../optimizing_expressions.html">Optimizing Scalar Expressions</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../profiling.html">Profiling</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../tracing.html">Tracing</a></li>
 </ul>
@@ -568,6 +569,7 @@ under the License.
 </ul>
 </li>
 <li><p>Spark registers the type-name conversion functions (<code class="docutils literal notranslate"><span class="pre">bigint</span></code>, <code class="docutils literal notranslate"><span class="pre">binary</span></code>, <code class="docutils literal notranslate"><span class="pre">boolean</span></code>, <code class="docutils literal notranslate"><span class="pre">date</span></code>, <code class="docutils literal notranslate"><span class="pre">decimal</span></code>, <code class="docutils literal notranslate"><span class="pre">double</span></code>, <code class="docutils literal notranslate"><span class="pre">float</span></code>, <code class="docutils literal notranslate"><span class="pre">int</span></code>, <code class="docutils literal notranslate"><span class="pre">smallint</span></code>, <code class="docutils literal notranslate"><span class="pre">string</span></code>, <code class="docutils literal notranslate"><span class="pre">timestamp</span></code>, <code class="docutils literal notranslate"><span class="pre">tinyint</span></code>) as cast aliases. Each lowers to the same <code class="docutils literal notranslate"><span class="pre">Cast</span></code> node, so Comet handles it via the <code class="docutils literal notranslate"><span class="pre">cast</span></code> implementation with the same compatibility profile.</p></li>
+<li><p>Performance (tuned 2026-07-14, PR #4920): narrowing integer casts (<code class="docutils literal notranslate"><span class="pre">spark_cast_int_to_int</span></code>) map the values buffer in a single pass with Arrow <code class="docutils literal notranslate"><span class="pre">unary</span></code>/<code class="docutils literal notranslate"><span class="pre">try_unary</span></code> and carry the null buffer over untouched, replacing an element-by-element <code class="docutils literal notranslate"><span class="pre">Option</span></code>/<code class="docutils literal notranslate"><span class="pre">Result</span></code> iterator-collect. Up to 100x faster on narrowing casts. Benchmark: <code class="docutils literal notranslate"><span class="pre">benches/cast_numeric.rs</span></code>.</p></li>
 </ul>
 </section>
 </section>
