@@ -414,3 +414,7 @@ harness = false
 [[bench]]
 name = "json_array_length"
 harness = false
+
+[[bench]]
+name = "utf8_decode"
+harness = false
