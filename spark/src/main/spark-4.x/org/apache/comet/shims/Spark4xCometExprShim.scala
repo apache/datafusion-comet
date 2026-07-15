@@ -64,11 +64,14 @@ trait Spark4xCometExprShim extends CometExprShim4x {
 
       case knc: KnownNotContainsNull =>
         // On Spark 4.0+, array_compact rewrites to KnownNotContainsNull(ArrayFilter(IsNotNull)).
-        // Strip the wrapper and serialize the inner ArrayFilter as spark_array_compact.
+        // Strip the wrapper and serialize the inner ArrayFilter as spark_array_compact. The
+        // guard requires the IsNotNull operand to be the lambda's own variable (matched by
+        // exprId to handle nested-lambda shadowing), not a captured column (#4830).
         knc.child match {
           case filter: ArrayFilter =>
-            filter.function.children.headOption match {
-              case Some(_: IsNotNull) =>
+            filter.function match {
+              case LambdaFunction(IsNotNull(v: NamedLambdaVariable), Seq(lambdaVar), _)
+                  if v.exprId == lambdaVar.exprId =>
                 val arrayChild = filter.left
                 val elementType = arrayChild.dataType.asInstanceOf[ArrayType].elementType
                 val arrayExprProto = exprToProtoInternal(arrayChild, inputs, binding)
