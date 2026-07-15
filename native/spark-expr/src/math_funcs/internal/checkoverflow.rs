@@ -133,50 +133,27 @@ impl PhysicalExpr for CheckOverflow {
                 let casted_array = if no_overflow {
                     Decimal128Array::from(decimal_array.to_data())
                 } else if self.fail_on_error {
-                    // ANSI mode with a genuine overflow. Re-run the heavier
-                    // `validate_decimal_precision` so it builds the precise Spark error for the
-                    // first offending value. This extra scan only runs on the error path, which
-                    // aborts the query anyway.
-                    decimal_array
-                        .validate_decimal_precision(*precision)
-                        .map_err(|e| {
-                            if matches!(e, arrow::error::ArrowError::InvalidArgumentError(_))
-                                && e.to_string().contains("too large to store in a Decimal128") {
-                                // Find the first overflowing value
-                                let overflow_value = decimal_array
-                                    .iter()
-                                    .find(|v| {
-                                        if let Some(val) = v {
-                                            arrow::array::types::Decimal128Type::validate_decimal_precision(
-                                                *val, *precision, *scale
-                                            ).is_err()
-                                        } else {
-                                            false
-                                        }
-                                    })
-                                    .and_then(|v| v)
-                                    .unwrap_or(0);
-
-                                let spark_error = crate::error::decimal_overflow_error(overflow_value, *precision, *scale);
-
-                                // Wrap with query_context if present
-                                if let Some(ctx) = &self.query_context {
-                                    DataFusionError::External(Box::new(
-                                        crate::SparkErrorWithContext::with_context(spark_error, Arc::clone(ctx))
-                                    ))
-                                } else {
-                                    DataFusionError::External(Box::new(spark_error))
-                                }
-                            } else {
-                                DataFusionError::ArrowError(Box::new(e), None)
-                            }
-                        })?;
-                    // `is_valid_decimal_precision` and `validate_decimal_precision` check identical
-                    // precision bounds, so reaching here means `validate_decimal_precision` should
-                    // already have returned an error above.
-                    return Err(DataFusionError::Internal(
-                        "CheckOverflow detected an overflow that validate_decimal_precision did not report".to_string(),
-                    ));
+                    // ANSI mode with a genuine overflow. The fast-path scan already proved an
+                    // overflow exists, so locate the first offending value and raise the precise
+                    // Spark error directly. `is_valid_decimal_precision` checks both the upper and
+                    // lower precision bounds, so this catches negative (underflow) overflow as well
+                    // as positive. This branch only runs on the error path, which aborts the query.
+                    let overflow_value = decimal_array
+                        .iter()
+                        .flatten()
+                        .find(|v| !Decimal128Type::is_valid_decimal_precision(*v, *precision))
+                        .unwrap_or(0);
+                    let spark_error =
+                        crate::error::decimal_overflow_error(overflow_value, *precision, *scale);
+                    return Err(match &self.query_context {
+                        Some(ctx) => DataFusionError::External(Box::new(
+                            crate::SparkErrorWithContext::with_context(
+                                spark_error,
+                                Arc::clone(ctx),
+                            ),
+                        )),
+                        None => DataFusionError::External(Box::new(spark_error)),
+                    });
                 } else {
                     // Non-ANSI: overflowing values become null.
                     decimal_array.null_if_overflow_precision(*precision)
@@ -476,5 +453,60 @@ mod tests {
         let batch = array_batch(vec![Some(999), Some(1000)], 38, 0);
         let result = array_check_overflow(3, 0, true).evaluate(&batch);
         assert!(result.is_err(), "expected error on overflow in ANSI mode");
+    }
+
+    #[test]
+    fn test_array_negative_overflow_nulled_legacy() {
+        // -1000 is below the precision-3 lower bound (-999) → nulled; other values kept.
+        // Guards the negative (underflow) bound, which is a distinct branch from positive overflow.
+        let batch = array_batch(vec![Some(-1000), Some(5)], 38, 0);
+        let out = eval_array(&array_check_overflow(3, 0, false), &batch);
+        assert_eq!(out.iter().collect::<Vec<_>>(), vec![None, Some(5)]);
+    }
+
+    #[test]
+    fn test_array_negative_overflow_ansi_errors() {
+        // ANSI mode must raise on a negative overflow, not only a positive one. The previous
+        // implementation string-matched "too large" and silently missed the "too small" branch.
+        let batch = array_batch(vec![Some(5), Some(-1000)], 38, 0);
+        let result = array_check_overflow(3, 0, true).evaluate(&batch);
+        assert!(
+            result.is_err(),
+            "expected error on negative overflow in ANSI mode"
+        );
+    }
+
+    #[test]
+    fn test_array_all_null_reuses_input_and_preserves_mask() {
+        // The fast-path scan is `flatten().all(...)`, which returns true on an all-null batch
+        // (empty after flatten). The input must be reused unchanged with its null mask intact.
+        let batch = array_batch(vec![None, None, None], 38, 0);
+        let out = eval_array(&array_check_overflow(3, 0, false), &batch);
+        assert_eq!(out.data_type(), &DataType::Decimal128(3, 0));
+        assert_eq!(out.iter().collect::<Vec<_>>(), vec![None, None, None]);
+    }
+
+    #[test]
+    fn test_array_all_overflow_nulled_legacy() {
+        // Every value overflows precision 3 → every slot nulled in legacy mode.
+        let batch = array_batch(vec![Some(1000), Some(5000), Some(-2000)], 38, 0);
+        let out = eval_array(&array_check_overflow(3, 0, false), &batch);
+        assert_eq!(out.iter().collect::<Vec<_>>(), vec![None, None, None]);
+    }
+
+    #[test]
+    fn test_array_all_overflow_ansi_errors() {
+        let batch = array_batch(vec![Some(1000), Some(5000)], 38, 0);
+        let result = array_check_overflow(3, 0, true).evaluate(&batch);
+        assert!(result.is_err(), "expected error on overflow in ANSI mode");
+    }
+
+    #[test]
+    fn test_array_boundary_precision_max_passes_and_over_by_one_overflows() {
+        // 999 is exactly the max for precision 3 and must pass; 9999 is over and must be nulled.
+        // Pins the off-by-one on the precision bound.
+        let batch = array_batch(vec![Some(999), Some(9999)], 38, 0);
+        let out = eval_array(&array_check_overflow(3, 0, false), &batch);
+        assert_eq!(out.iter().collect::<Vec<_>>(), vec![Some(999), None]);
     }
 }
