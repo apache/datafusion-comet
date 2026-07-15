@@ -117,6 +117,22 @@ fn compact_list<OffsetSize: OffsetSizeTrait>(
     };
 
     let values = list_array.values();
+
+    // logical_nulls() (not nulls()) is used so a NullArray, whose elements are
+    // all logically null, is correctly reported as fully null. NullArray::nulls()
+    // returns None, which would make is_null() report false for every element.
+    let value_nulls = values.logical_nulls();
+
+    // Fast path: array_compact only removes null elements. When the values buffer
+    // has no null elements there is nothing to remove, so every row is returned
+    // unchanged and the result is bit-identical to the input (same offsets, values,
+    // and row null buffer). This skips the per-element MutableArrayData::extend
+    // loop below and reuses the input buffers without copying. The null-containing
+    // path is left untouched, so shapes with dense element nulls do not regress.
+    if value_nulls.as_ref().map(|n| n.null_count()).unwrap_or(0) == 0 {
+        return Ok(Arc::new(list_array.clone()));
+    }
+
     let original_data = values.to_data();
     let mut offsets = Vec::<OffsetSize>::with_capacity(list_array.len() + 1);
     offsets.push(OffsetSize::zero());
@@ -126,11 +142,6 @@ fn compact_list<OffsetSize: OffsetSizeTrait>(
         Capacities::Array(original_data.len()),
     );
     let mut valid = NullBufferBuilder::new(list_array.len());
-
-    // Use logical_nulls() instead of is_null() to correctly handle NullArray.
-    // NullArray::nulls() returns None (which makes is_null() return false),
-    // but logical_nulls() correctly reports all elements as null.
-    let value_nulls = values.logical_nulls();
 
     for (row_index, offset_window) in list_array.offsets().windows(2).enumerate() {
         if list_array.is_null(row_index) {
@@ -162,4 +173,87 @@ fn compact_list<OffsetSize: OffsetSizeTrait>(
         new_values,
         valid.finish(),
     )?))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arrow::array::{Int32Array, Int32Builder, ListArray, ListBuilder};
+
+    /// Build a `ListArray<Int32>`. `None` row = null row; inner `None` = null element.
+    fn i32_list(rows: Vec<Option<Vec<Option<i32>>>>) -> ListArray {
+        let mut b = ListBuilder::new(Int32Builder::new());
+        for row in rows {
+            match row {
+                None => b.append(false),
+                Some(elems) => {
+                    for e in elems {
+                        b.values().append_option(e);
+                    }
+                    b.append(true);
+                }
+            }
+        }
+        b.finish()
+    }
+
+    fn read(arr: &ArrayRef) -> Vec<Option<Vec<Option<i32>>>> {
+        let list = arr.as_any().downcast_ref::<ListArray>().unwrap();
+        (0..list.len())
+            .map(|i| {
+                if list.is_null(i) {
+                    None
+                } else {
+                    let v = list.value(i);
+                    let v = v.as_any().downcast_ref::<Int32Array>().unwrap();
+                    Some(
+                        (0..v.len())
+                            .map(|j| (!v.is_null(j)).then(|| v.value(j)))
+                            .collect(),
+                    )
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn no_element_nulls_returns_input_bit_identical() {
+        // Includes a null row and an empty row: the fast path must preserve both.
+        let input = i32_list(vec![
+            Some(vec![Some(1), Some(2)]),
+            None,
+            Some(vec![]),
+            Some(vec![Some(3)]),
+        ]);
+        let out = compact_list::<i32>(&input).unwrap();
+        // Fast path returns the input unchanged, so ArrayData must be identical.
+        assert_eq!(input.to_data(), out.to_data());
+    }
+
+    #[test]
+    fn removes_null_elements_preserving_rows() {
+        let input = i32_list(vec![
+            Some(vec![Some(1), None, Some(2)]),
+            Some(vec![None, None]),
+            None,
+            Some(vec![Some(3)]),
+        ]);
+        let out = compact_list::<i32>(&input).unwrap();
+        assert_eq!(
+            read(&out),
+            vec![
+                Some(vec![Some(1), Some(2)]),
+                Some(vec![]),
+                None,
+                Some(vec![Some(3)]),
+            ]
+        );
+    }
+
+    #[test]
+    fn all_null_elements_become_empty_rows() {
+        let input = i32_list(vec![Some(vec![None, None]), Some(vec![None])]);
+        let out = compact_list::<i32>(&input).unwrap();
+        assert_eq!(read(&out), vec![Some(vec![]), Some(vec![])]);
+    }
 }
