@@ -497,7 +497,7 @@ index f33432ddb6f..b375e285dde 100644
              }
            assert(scanOption.isDefined)
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/ExplainSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/ExplainSuite.scala
-index a6b295578d6..91acca4306f 100644
+index a6b295578d6..1167bbe6554 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/ExplainSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/ExplainSuite.scala
 @@ -260,7 +260,8 @@ class ExplainSuite extends ExplainSuiteHelper with DisableAdaptiveExecutionSuite
@@ -1474,7 +1474,7 @@ index ac710c32296..2854b433dd3 100644
  
    import testImplicits._
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala
-index 593bd7bb4ba..32af28b0238 100644
+index 593bd7bb4ba..fc751584620 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala
 @@ -26,9 +26,11 @@ import org.scalatest.time.SpanSugar._
@@ -1781,7 +1781,15 @@ index 593bd7bb4ba..32af28b0238 100644
        }.size == 1)
        checkAnswer(ds, testData)
      }
-@@ -2028,7 +2064,8 @@ class AdaptiveQueryExecSuite
+@@ -1901,6 +1937,7 @@ class AdaptiveQueryExecSuite
+       df.collect()
+       assert(collect(df.queryExecution.executedPlan) {
+         case u: UnionExec => u
++        case u: CometUnionExec => u
+       }.size == numUnion)
+       assert(collect(df.queryExecution.executedPlan) {
+         case r: AQEShuffleReadExec => r
+@@ -2028,7 +2065,8 @@ class AdaptiveQueryExecSuite
      }
    }
  
@@ -1791,7 +1799,7 @@ index 593bd7bb4ba..32af28b0238 100644
      withTempView("t1", "t2") {
        def checkJoinStrategy(shouldShuffleHashJoin: Boolean): Unit = {
          Seq("100", "100000").foreach { size =>
-@@ -2114,7 +2151,8 @@ class AdaptiveQueryExecSuite
+@@ -2114,7 +2152,8 @@ class AdaptiveQueryExecSuite
      }
    }
  
@@ -1801,7 +1809,7 @@ index 593bd7bb4ba..32af28b0238 100644
      withTempView("v") {
        withSQLConf(
          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
-@@ -2213,7 +2251,7 @@ class AdaptiveQueryExecSuite
+@@ -2213,7 +2252,7 @@ class AdaptiveQueryExecSuite
                runAdaptiveAndVerifyResult(s"SELECT $repartition key1 FROM skewData1 " +
                  s"JOIN skewData2 ON key1 = key2 GROUP BY key1")
              val shuffles1 = collect(adaptive1) {
@@ -1810,7 +1818,7 @@ index 593bd7bb4ba..32af28b0238 100644
              }
              assert(shuffles1.size == 3)
              // shuffles1.head is the top-level shuffle under the Aggregate operator
-@@ -2226,7 +2264,7 @@ class AdaptiveQueryExecSuite
+@@ -2226,7 +2265,7 @@ class AdaptiveQueryExecSuite
                runAdaptiveAndVerifyResult(s"SELECT $repartition key1 FROM skewData1 " +
                  s"JOIN skewData2 ON key1 = key2")
              val shuffles2 = collect(adaptive2) {
@@ -1819,7 +1827,7 @@ index 593bd7bb4ba..32af28b0238 100644
              }
              if (hasRequiredDistribution) {
                assert(shuffles2.size == 3)
-@@ -2260,7 +2298,8 @@ class AdaptiveQueryExecSuite
+@@ -2260,7 +2299,8 @@ class AdaptiveQueryExecSuite
      }
    }
  
@@ -1829,7 +1837,7 @@ index 593bd7bb4ba..32af28b0238 100644
      CostEvaluator.instantiate(
        classOf[SimpleShuffleSortCostEvaluator].getCanonicalName, spark.sparkContext.getConf)
      intercept[IllegalArgumentException] {
-@@ -2404,6 +2443,7 @@ class AdaptiveQueryExecSuite
+@@ -2404,6 +2444,7 @@ class AdaptiveQueryExecSuite
            val (_, adaptive) = runAdaptiveAndVerifyResult(query)
            assert(adaptive.collect {
              case sort: SortExec => sort
@@ -1837,7 +1845,7 @@ index 593bd7bb4ba..32af28b0238 100644
            }.size == 1)
            val read = collect(adaptive) {
              case read: AQEShuffleReadExec => read
-@@ -2421,7 +2461,8 @@ class AdaptiveQueryExecSuite
+@@ -2421,7 +2462,8 @@ class AdaptiveQueryExecSuite
      }
    }
  
@@ -1847,7 +1855,7 @@ index 593bd7bb4ba..32af28b0238 100644
      withTempView("v") {
        withSQLConf(
          SQLConf.ADAPTIVE_OPTIMIZE_SKEWS_IN_REBALANCE_PARTITIONS_ENABLED.key -> "true",
-@@ -2533,7 +2574,7 @@ class AdaptiveQueryExecSuite
+@@ -2533,7 +2575,7 @@ class AdaptiveQueryExecSuite
            runAdaptiveAndVerifyResult("SELECT key1 FROM skewData1 JOIN skewData2 ON key1 = key2 " +
              "JOIN skewData3 ON value2 = value3")
          val shuffles1 = collect(adaptive1) {
@@ -1856,7 +1864,7 @@ index 593bd7bb4ba..32af28b0238 100644
          }
          assert(shuffles1.size == 4)
          val smj1 = findTopLevelSortMergeJoin(adaptive1)
-@@ -2544,7 +2585,7 @@ class AdaptiveQueryExecSuite
+@@ -2544,7 +2586,7 @@ class AdaptiveQueryExecSuite
            runAdaptiveAndVerifyResult("SELECT key1 FROM skewData1 JOIN skewData2 ON key1 = key2 " +
              "JOIN skewData3 ON value1 = value3")
          val shuffles2 = collect(adaptive2) {
