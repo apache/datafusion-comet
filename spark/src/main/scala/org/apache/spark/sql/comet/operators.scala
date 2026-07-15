@@ -2069,6 +2069,12 @@ case class CometHashAggregateExec(
         this.output == other.output &&
         this.groupingExpressions == other.groupingExpressions &&
         this.aggregateExpressions == other.aggregateExpressions &&
+        // resultExpressions carries any post-aggregate projection fused into the Final
+        // aggregate (e.g. count+1 vs count-1 in count-bug decorrelation). It must
+        // participate in identity, otherwise two aggregates differing only in that
+        // projection canonicalize identically and an enclosing broadcast exchange is
+        // wrongly deduplicated by exchange reuse. See issue #4242.
+        this.resultExpressions == other.resultExpressions &&
         this.input == other.input &&
         this.modes == other.modes &&
         this.child == other.child &&
@@ -2079,7 +2085,14 @@ case class CometHashAggregateExec(
   }
 
   override def hashCode(): Int =
-    Objects.hashCode(output, groupingExpressions, aggregateExpressions, input, modes, child)
+    Objects.hashCode(
+      output,
+      groupingExpressions,
+      aggregateExpressions,
+      resultExpressions,
+      input,
+      modes,
+      child)
 
   override protected def outputExpressions: Seq[NamedExpression] = resultExpressions
 }
