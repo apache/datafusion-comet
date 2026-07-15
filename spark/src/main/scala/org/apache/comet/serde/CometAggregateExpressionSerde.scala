@@ -87,7 +87,7 @@ trait CometAggregateExpressionSerde[T <: AggregateFunction] {
    * the other. Aggregates with simple single-value buffers (MIN, MAX, COUNT, bitwise) are safe;
    * SUM and non-decimal AVG match Spark's buffer and are safe except where noted per instance
    * (e.g. TRY-mode SUM uses a Comet-internal flag column). Mixed COUNT was previously excluded
-   * because of two Spark 4.0 regressions — AQE's `PropagateEmptyRelationAfterAQE` and the
+   * because of two Spark 4.0 regressions: AQE's `PropagateEmptyRelationAfterAQE` and the
    * count-bug decorrelation for correlated IN subqueries. Both are fixed upstream in
    * `CometBroadcastExchangeExec` canonicalization, so COUNT is again safe by default.
    */
