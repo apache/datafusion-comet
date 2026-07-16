@@ -1328,10 +1328,55 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore)]
     fn test_cast_float_to_decimal_ansi_overflow_errors() {
-        // 4242.42 * 10^2 = 424242 does not fit precision 4 -> ANSI error.
-        let a: ArrayRef = Arc::new(Float64Array::from(vec![Some(1.0), Some(4242.42)]));
-        let result = cast_floating_point_to_decimal128::<Float64Type>(&a, 4, 2, EvalMode::Ansi);
-        assert!(result.is_err());
+        // Precision overflow: 4242.42 * 10^2 = 424242 does not fit precision 4. Two overflow
+        // rows with distinct string forms pin that the rescan reports the *first* offender.
+        let a: ArrayRef = Arc::new(Float64Array::from(vec![
+            Some(1.0),
+            Some(4242.42),
+            Some(9999.99),
+        ]));
+        match cast_floating_point_to_decimal128::<Float64Type>(&a, 4, 2, EvalMode::Ansi) {
+            Err(SparkError::NumericValueOutOfRange {
+                value,
+                precision,
+                scale,
+            }) => {
+                assert_eq!(value, "4242.42");
+                assert_eq!(precision, 4);
+                assert_eq!(scale, 2);
+            }
+            other => panic!("expected NumericValueOutOfRange, got {other:?}"),
+        }
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn test_cast_float_to_decimal_ansi_nan_errors() {
+        // NaN / infinity have no in-range integer form: `to_i128()` returns `None`, so the
+        // closure nulls the slot and the rescan must recompute `fits == false` and raise.
+        // This is a distinct path from finite precision overflow — assert both here to lock
+        // the reported value string.
+        let a: ArrayRef = Arc::new(Float64Array::from(vec![Some(1.0), Some(f64::NAN)]));
+        match cast_floating_point_to_decimal128::<Float64Type>(&a, 10, 2, EvalMode::Ansi) {
+            Err(SparkError::NumericValueOutOfRange {
+                value,
+                precision,
+                scale,
+            }) => {
+                assert_eq!(value, "NaN");
+                assert_eq!(precision, 10);
+                assert_eq!(scale, 2);
+            }
+            other => panic!("expected NumericValueOutOfRange, got {other:?}"),
+        }
+
+        let a: ArrayRef = Arc::new(Float64Array::from(vec![Some(f64::INFINITY)]));
+        match cast_floating_point_to_decimal128::<Float64Type>(&a, 10, 2, EvalMode::Ansi) {
+            Err(SparkError::NumericValueOutOfRange { value, .. }) => {
+                assert_eq!(value, "inf");
+            }
+            other => panic!("expected NumericValueOutOfRange, got {other:?}"),
+        }
     }
 
     #[test]
