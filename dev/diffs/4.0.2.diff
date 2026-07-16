@@ -1374,28 +1374,6 @@ index 2e33f6505ab..be967565303 100644
      }
  
      withTable("t1", "t2") {
-diff --git a/sql/core/src/test/scala/org/apache/spark/sql/VariantEndToEndSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/VariantEndToEndSuite.scala
-index a40e34d94d0..d3b3c0801bb 100644
---- a/sql/core/src/test/scala/org/apache/spark/sql/VariantEndToEndSuite.scala
-+++ b/sql/core/src/test/scala/org/apache/spark/sql/VariantEndToEndSuite.scala
-@@ -17,6 +17,7 @@
- package org.apache.spark.sql
- 
- import org.apache.spark.{SparkException, SparkRuntimeException}
-+import org.apache.spark.sql.IgnoreComet
- import org.apache.spark.sql.QueryTest.sameRows
- import org.apache.spark.sql.catalyst.InternalRow
- import org.apache.spark.sql.catalyst.expressions.{Cast, Literal}
-@@ -340,7 +341,8 @@ class VariantEndToEndSuite extends QueryTest with SharedSparkSession {
-     dataVector.close()
-   }
- 
--  test("cast to variant/to_variant_object with scan input") {
-+  test("cast to variant/to_variant_object with scan input",
-+      IgnoreComet("\"VariantType\" not supported")) {
-     Seq("NO_CODEGEN", "CODEGEN_ONLY").foreach { codegenMode =>
-       withSQLConf(SQLConf.CODEGEN_FACTORY_MODE.key -> codegenMode) {
-         withTempPath { dir =>
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/collation/CollationSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/collation/CollationSuite.scala
 index 11e9547dfc5..637411056ae 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/collation/CollationSuite.scala

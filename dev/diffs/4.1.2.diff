@@ -1473,28 +1473,6 @@ index 3ba48da0e32..0313aaa9ec6 100644
      }
  
      withTable("t1", "t2") {
-diff --git a/sql/core/src/test/scala/org/apache/spark/sql/VariantEndToEndSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/VariantEndToEndSuite.scala
-index 8a0e2c29653..b4c436a88df 100644
---- a/sql/core/src/test/scala/org/apache/spark/sql/VariantEndToEndSuite.scala
-+++ b/sql/core/src/test/scala/org/apache/spark/sql/VariantEndToEndSuite.scala
-@@ -17,6 +17,7 @@
- package org.apache.spark.sql
- 
- import org.apache.spark.{SparkException, SparkRuntimeException}
-+import org.apache.spark.sql.IgnoreComet
- import org.apache.spark.sql.QueryTest.sameRows
- import org.apache.spark.sql.catalyst.InternalRow
- import org.apache.spark.sql.catalyst.expressions.{Cast, Literal}
-@@ -340,7 +341,8 @@ class VariantEndToEndSuite extends QueryTest with SharedSparkSession {
-     dataVector.close()
-   }
- 
--  test("cast to variant/to_variant_object with scan input") {
-+  test("cast to variant/to_variant_object with scan input",
-+      IgnoreComet("\"VariantType\" not supported")) {
-     Seq("NO_CODEGEN", "CODEGEN_ONLY").foreach { codegenMode =>
-       withSQLConf(SQLConf.CODEGEN_FACTORY_MODE.key -> codegenMode) {
-         withTempPath { dir =>
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/VariantShreddingSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/VariantShreddingSuite.scala
 index fee375db10a..8c2c24e2c5f 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/VariantShreddingSuite.scala
