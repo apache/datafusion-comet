@@ -166,17 +166,12 @@ object CometMapFromEntries
   }
 }
 
-object CometStrToMap
-    extends CometScalarFunction[StringToMap]("str_to_map")
-    with CometTypeShim
-    with CodegenDispatchFallback {
+object CometStrToMap extends CometScalarFunction[StringToMap]("str_to_map") with CometTypeShim {
 
   // Spark 4.1.1+ honours spark.sql.legacy.truncateForEmptyRegexSplit by truncating trailing
   // empty entries from the split result. Comet's native str_to_map always behaves as if the flag
-  // were false. When the flag is true, mark this Incompatible so the CodegenDispatchFallback
-  // trait routes the expression through the JVM codegen dispatcher (Spark's own doGenCode inside
-  // the Comet kernel) rather than falling the entire projection back to Spark. Read by string
-  // key so it resolves on older Spark versions where the config is not registered.
+  // were false, so it is incompatible when legacy truncation is enabled. Read by string key so it
+  // resolves on older Spark versions where the config is not registered.
   private val legacyTruncateConfig = "spark.sql.legacy.truncateForEmptyRegexSplit"
 
   private val legacyTruncateReason =
