@@ -255,53 +255,36 @@ macro_rules! cast_int_to_int_macro {
         $eval_mode:expr,
         $from_arrow_primitive_type: ty,
         $to_arrow_primitive_type: ty,
-        $from_data_type: expr,
         $to_native_type: ty,
         $spark_from_data_type_name: expr,
-        $spark_to_data_type_name: expr
+        $spark_to_data_type_name: expr,
+        $spark_int_literal_suffix: expr
     ) => {{
         let cast_array = $array
             .as_any()
             .downcast_ref::<PrimitiveArray<$from_arrow_primitive_type>>()
             .unwrap();
-        let spark_int_literal_suffix = match $from_data_type {
-            &DataType::Int64 => "L",
-            &DataType::Int16 => "S",
-            &DataType::Int8 => "T",
-            _ => "",
-        };
 
-        let output_array = match $eval_mode {
-            EvalMode::Legacy => cast_array
-                .iter()
-                .map(|value| match value {
-                    Some(value) => {
-                        Ok::<Option<$to_native_type>, SparkError>(Some(value as $to_native_type))
-                    }
-                    _ => Ok(None),
+        let output_array: PrimitiveArray<$to_arrow_primitive_type> = match $eval_mode {
+            // Legacy narrowing keeps the low-order bits of the source value, which is what a
+            // wrapping `as` conversion does. Being infallible, it maps the values buffer in a
+            // single pass and carries the null buffer over untouched.
+            EvalMode::Legacy => {
+                cast_array.unary::<_, $to_arrow_primitive_type>(|value| value as $to_native_type)
+            }
+            // `try_unary` only applies the conversion to non-null slots, so an out-of-range
+            // value sitting under a null cannot raise a spurious overflow error.
+            _ => cast_array.try_unary::<_, $to_arrow_primitive_type, SparkError>(|value| {
+                <$to_native_type>::try_from(value).map_err(|_| {
+                    cast_overflow(
+                        &(value.to_string() + $spark_int_literal_suffix),
+                        $spark_from_data_type_name,
+                        $spark_to_data_type_name,
+                    )
                 })
-                .collect::<Result<PrimitiveArray<$to_arrow_primitive_type>, _>>(),
-            _ => cast_array
-                .iter()
-                .map(|value| match value {
-                    Some(value) => {
-                        let res = <$to_native_type>::try_from(value);
-                        if res.is_err() {
-                            Err(cast_overflow(
-                                &(value.to_string() + spark_int_literal_suffix),
-                                $spark_from_data_type_name,
-                                $spark_to_data_type_name,
-                            ))
-                        } else {
-                            Ok::<Option<$to_native_type>, SparkError>(Some(res.unwrap()))
-                        }
-                    }
-                    _ => Ok(None),
-                })
-                .collect::<Result<PrimitiveArray<$to_arrow_primitive_type>, _>>(),
-        }?;
-        let result: SparkResult<ArrayRef> = Ok(Arc::new(output_array) as ArrayRef);
-        result
+            })?,
+        };
+        Ok(Arc::new(output_array) as ArrayRef)
     }};
 }
 
@@ -780,22 +763,22 @@ pub(crate) fn spark_cast_int_to_int(
 ) -> SparkResult<ArrayRef> {
     match (from_type, to_type) {
         (DataType::Int64, DataType::Int32) => cast_int_to_int_macro!(
-            array, eval_mode, Int64Type, Int32Type, from_type, i32, "BIGINT", "INT"
+            array, eval_mode, Int64Type, Int32Type, i32, "BIGINT", "INT", "L"
         ),
         (DataType::Int64, DataType::Int16) => cast_int_to_int_macro!(
-            array, eval_mode, Int64Type, Int16Type, from_type, i16, "BIGINT", "SMALLINT"
+            array, eval_mode, Int64Type, Int16Type, i16, "BIGINT", "SMALLINT", "L"
         ),
         (DataType::Int64, DataType::Int8) => cast_int_to_int_macro!(
-            array, eval_mode, Int64Type, Int8Type, from_type, i8, "BIGINT", "TINYINT"
+            array, eval_mode, Int64Type, Int8Type, i8, "BIGINT", "TINYINT", "L"
         ),
         (DataType::Int32, DataType::Int16) => cast_int_to_int_macro!(
-            array, eval_mode, Int32Type, Int16Type, from_type, i16, "INT", "SMALLINT"
+            array, eval_mode, Int32Type, Int16Type, i16, "INT", "SMALLINT", ""
         ),
-        (DataType::Int32, DataType::Int8) => cast_int_to_int_macro!(
-            array, eval_mode, Int32Type, Int8Type, from_type, i8, "INT", "TINYINT"
-        ),
+        (DataType::Int32, DataType::Int8) => {
+            cast_int_to_int_macro!(array, eval_mode, Int32Type, Int8Type, i8, "INT", "TINYINT", "")
+        }
         (DataType::Int16, DataType::Int8) => cast_int_to_int_macro!(
-            array, eval_mode, Int16Type, Int8Type, from_type, i8, "SMALLINT", "TINYINT"
+            array, eval_mode, Int16Type, Int8Type, i8, "SMALLINT", "TINYINT", "S"
         ),
         _ => unreachable!(
             "{}",
