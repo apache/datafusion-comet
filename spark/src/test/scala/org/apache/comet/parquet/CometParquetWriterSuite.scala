@@ -24,7 +24,7 @@ import java.io.File
 import scala.util.{Random, Using}
 
 import org.apache.hadoop.fs.{FileSystem, Path}
-import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
+import org.apache.spark.sql.{AnalysisException, CometTestBase, DataFrame, Row, SaveMode}
 import org.apache.spark.sql.comet.{CometBatchScanExec, CometNativeScanExec, CometNativeWriteExec, CometScanExec}
 import org.apache.spark.sql.execution.{FileSourceScanExec, QueryExecution, SparkPlan}
 import org.apache.spark.sql.execution.command.DataWritingCommandExec
@@ -348,6 +348,210 @@ class CometParquetWriterSuite extends CometTestBase {
     }
   }
 
+  test("SaveMode.ErrorIfExists writes natively when target does not exist") {
+    withTempPath { dir =>
+      val outputPath = new File(dir, "output.parquet").getAbsolutePath
+      val sourcePath = new File(dir, "source.parquet").getAbsolutePath
+      withNativeWriter {
+        val df = materializeAsCometSource(
+          (1 to 100).map(i => (i, s"str_$i")).toDF("id", "name"),
+          sourcePath)
+        val plan =
+          captureWritePlan(p => df.write.mode(SaveMode.ErrorIfExists).parquet(p), outputPath)
+        assertHasCometNativeWriteExec(plan)
+        checkAnswer(spark.read.parquet(outputPath), df)
+      }
+    }
+  }
+
+  test("SaveMode.ErrorIfExists throws when target directory has data") {
+    withTempPath { dir =>
+      val outputPath = new File(dir, "output.parquet").getAbsolutePath
+      val original = (1 to 100).map(i => (i, s"orig_$i")).toDF("id", "name")
+      // Pre-populate target with Spark's writer so the second write hits the exists check.
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        original.write.parquet(outputPath)
+      }
+      val partFilesBefore = listPartFileNames(outputPath)
+
+      withNativeWriter {
+        val newDf = (200 to 250).map(i => (i, s"new_$i")).toDF("id", "name")
+        intercept[AnalysisException] {
+          newDf.write.mode(SaveMode.ErrorIfExists).parquet(outputPath)
+        }
+      }
+
+      // Original files must remain untouched.
+      assert(
+        listPartFileNames(outputPath) == partFilesBefore,
+        "ErrorIfExists must not modify the target when it already exists")
+      checkAnswer(spark.read.parquet(outputPath), original)
+    }
+  }
+
+  test("SaveMode.Overwrite writes natively when target does not exist") {
+    withTempPath { dir =>
+      val outputPath = new File(dir, "output.parquet").getAbsolutePath
+      val sourcePath = new File(dir, "source.parquet").getAbsolutePath
+      withNativeWriter {
+        val df = materializeAsCometSource(
+          (1 to 100).map(i => (i, s"str_$i")).toDF("id", "name"),
+          sourcePath)
+        val plan = captureWritePlan(p => df.write.mode(SaveMode.Overwrite).parquet(p), outputPath)
+        assertHasCometNativeWriteExec(plan)
+        checkAnswer(spark.read.parquet(outputPath), df)
+      }
+    }
+  }
+
+  test("SaveMode.Overwrite replaces existing parquet data") {
+    withTempPath { dir =>
+      val outputPath = new File(dir, "output.parquet").getAbsolutePath
+      val sourcePath = new File(dir, "source.parquet").getAbsolutePath
+      val original = (1 to 200).map(i => (i, s"old_$i")).toDF("id", "name")
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        original.write.parquet(outputPath)
+      }
+
+      withNativeWriter {
+        val replacement = materializeAsCometSource(
+          (1 to 50).map(i => (i, s"new_$i")).toDF("id", "name"),
+          sourcePath)
+        val plan =
+          captureWritePlan(p => replacement.write.mode(SaveMode.Overwrite).parquet(p), outputPath)
+        assertHasCometNativeWriteExec(plan)
+        checkAnswer(spark.read.parquet(outputPath), replacement)
+      }
+    }
+  }
+
+  test("SaveMode.Overwrite with empty DataFrame clears target") {
+    withTempPath { dir =>
+      val outputPath = new File(dir, "output.parquet").getAbsolutePath
+      val original = (1 to 200).map(i => (i, s"str_$i")).toDF("id", "name")
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        original.write.parquet(outputPath)
+      }
+
+      withNativeWriter {
+        // Empty inline source falls back to Spark's writer (LocalTableScan is not Comet-native);
+        // this test asserts the SaveMode.Overwrite + empty semantic, not writer identity.
+        original.limit(0).write.mode(SaveMode.Overwrite).parquet(outputPath)
+      }
+
+      // Read with explicit schema in case the write produced no part files.
+      val readback = spark.read.schema(original.schema).parquet(outputPath)
+      assert(readback.count() == 0L, "Overwrite with an empty DataFrame must yield zero rows")
+    }
+  }
+
+  test("SaveMode.Append writes natively when target does not exist") {
+    withTempPath { dir =>
+      val outputPath = new File(dir, "output.parquet").getAbsolutePath
+      val sourcePath = new File(dir, "source.parquet").getAbsolutePath
+      withNativeWriter {
+        val df = materializeAsCometSource(
+          (1 to 100).map(i => (i, s"str_$i")).toDF("id", "name"),
+          sourcePath)
+        val plan = captureWritePlan(p => df.write.mode(SaveMode.Append).parquet(p), outputPath)
+        assertHasCometNativeWriteExec(plan)
+        checkAnswer(spark.read.parquet(outputPath), df)
+      }
+    }
+  }
+
+  test("SaveMode.Append adds new files alongside existing data") {
+    withTempPath { dir =>
+      val outputPath = new File(dir, "output.parquet").getAbsolutePath
+      val sourcePath = new File(dir, "source.parquet").getAbsolutePath
+      val first = (1 to 100).map(i => (i, s"first_$i")).toDF("id", "name")
+      // Seed the target with the vanilla Spark writer so Comet's append runs against real files.
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        first.write.parquet(outputPath)
+      }
+      val filesBefore = listPartFileNames(outputPath)
+
+      withNativeWriter {
+        val second = materializeAsCometSource(
+          (101 to 150).map(i => (i, s"second_$i")).toDF("id", "name"),
+          sourcePath)
+        val plan =
+          captureWritePlan(p => second.write.mode(SaveMode.Append).parquet(p), outputPath)
+        assertHasCometNativeWriteExec(plan)
+
+        val filesAfter = listPartFileNames(outputPath)
+        assert(
+          filesAfter.size > filesBefore.size,
+          s"Append should have added new part files (before=${filesBefore.size}, " +
+            s"after=${filesAfter.size})")
+        assert(
+          filesBefore.subsetOf(filesAfter),
+          "Append must not remove the pre-existing part files")
+        checkAnswer(spark.read.parquet(outputPath), first.union(second))
+      }
+    }
+  }
+
+  test("SaveMode.Append with empty DataFrame does not lose existing data") {
+    withTempPath { dir =>
+      val outputPath = new File(dir, "output.parquet").getAbsolutePath
+      val original = (1 to 100).map(i => (i, s"str_$i")).toDF("id", "name")
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        original.write.parquet(outputPath)
+      }
+      val partFilesBefore = listPartFileNames(outputPath)
+
+      withNativeWriter {
+        val empty = original.limit(0)
+        empty.write.mode(SaveMode.Append).parquet(outputPath)
+      }
+
+      // Empty append must never lose data; may or may not create empty part files.
+      val partFilesAfter = listPartFileNames(outputPath)
+      assert(
+        partFilesBefore.subsetOf(partFilesAfter),
+        "Empty append must not delete existing part files")
+      checkAnswer(spark.read.parquet(outputPath), original)
+    }
+  }
+
+  test("SaveMode.Ignore writes natively when target does not exist") {
+    withTempPath { dir =>
+      val outputPath = new File(dir, "output.parquet").getAbsolutePath
+      val sourcePath = new File(dir, "source.parquet").getAbsolutePath
+      withNativeWriter {
+        val df = materializeAsCometSource(
+          (1 to 100).map(i => (i, s"str_$i")).toDF("id", "name"),
+          sourcePath)
+        val plan = captureWritePlan(p => df.write.mode(SaveMode.Ignore).parquet(p), outputPath)
+        assertHasCometNativeWriteExec(plan)
+        checkAnswer(spark.read.parquet(outputPath), df)
+      }
+    }
+  }
+
+  test("SaveMode.Ignore is a no-op when target has data") {
+    withTempPath { dir =>
+      val outputPath = new File(dir, "output.parquet").getAbsolutePath
+      val original = (1 to 100).map(i => (i, s"orig_$i")).toDF("id", "name")
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        original.write.parquet(outputPath)
+      }
+      val partFilesBefore = listPartFileNames(outputPath)
+
+      withNativeWriter {
+        val other = (200 to 250).map(i => (i, s"other_$i")).toDF("id", "name")
+        // InsertIntoHadoopFsRelationCommand.run() skips the write on Ignore + existing target.
+        other.write.mode(SaveMode.Ignore).parquet(outputPath)
+      }
+
+      assert(
+        listPartFileNames(outputPath) == partFilesBefore,
+        "Ignore must not add or remove files when the target already exists")
+      checkAnswer(spark.read.parquet(outputPath), original)
+    }
+  }
+
   private def createTestData(inputDir: File): String = {
     val inputPath = new File(inputDir, "input.parquet").getAbsolutePath
     val schema = FuzzDataGenerator.generateSchema(
@@ -364,6 +568,36 @@ class CometParquetWriterSuite extends CometTestBase {
       df.write.parquet(inputPath)
     }
     inputPath
+  }
+
+  private def withNativeWriter(f: => Unit): Unit = {
+    withSQLConf(
+      CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED.key -> "true",
+      CometConf.COMET_OPERATOR_DATA_WRITING_COMMAND_ALLOW_INCOMPAT.key -> "true",
+      CometConf.COMET_EXEC_ENABLED.key -> "true",
+      SQLConf.SESSION_LOCAL_TIMEZONE.key -> "America/Halifax")(f)
+  }
+
+  // Persist `df` to `sourcePath` with Comet disabled and return a DataFrame that reads it back,
+  // so the source plan is a Comet scan (satisfying CometExecRule.requiresNativeChildren).
+  private def materializeAsCometSource(df: DataFrame, sourcePath: String): DataFrame = {
+    withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+      df.write.parquet(sourcePath)
+    }
+    spark.read.parquet(sourcePath)
+  }
+
+  private def listPartFileNames(dir: String): Set[String] = {
+    val outputDir = new File(dir)
+    if (!outputDir.exists() || !outputDir.isDirectory) {
+      Set.empty
+    } else {
+      outputDir
+        .listFiles()
+        .filter(_.getName.startsWith("part-"))
+        .map(_.getName)
+        .toSet
+    }
   }
 
   /**

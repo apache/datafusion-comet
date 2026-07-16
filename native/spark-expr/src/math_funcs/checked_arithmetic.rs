@@ -15,14 +15,16 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow::array::{Array, ArrowNativeTypeOp, PrimitiveArray, PrimitiveBuilder};
+use arrow::array::{Array, ArrowNativeTypeOp, BooleanBufferBuilder, PrimitiveArray};
 use arrow::array::{ArrayRef, AsArray};
 
 use crate::{divide_by_zero_error, EvalMode, SparkError};
+use arrow::buffer::NullBuffer;
 use arrow::datatypes::{
     ArrowPrimitiveType, DataType, Float16Type, Float32Type, Float64Type, Int16Type, Int32Type,
     Int64Type, Int8Type,
 };
+use arrow::error::ArrowError;
 use datafusion::common::DataFusionError;
 use datafusion::physical_plan::ColumnarValue;
 use std::sync::Arc;
@@ -36,108 +38,94 @@ pub fn try_arithmetic_kernel<T>(
 where
     T: ArrowPrimitiveType,
 {
-    let len = left.len();
-    let mut builder = PrimitiveBuilder::<T>::with_capacity(len);
     match op {
-        "checked_add" => {
-            for i in 0..len {
-                if left.is_null(i) || right.is_null(i) {
-                    builder.append_null();
-                } else {
-                    match left.value(i).add_checked(right.value(i)) {
-                        Ok(v) => builder.append_value(v),
-                        Err(_e) => {
-                            if is_ansi_mode {
-                                return Err(SparkError::ArithmeticOverflow {
-                                    from_type: String::from("integer"),
-                                }
-                                .into());
-                            } else {
-                                builder.append_null();
-                            }
+        "checked_add" => checked_binary(left, right, is_ansi_mode, false, |l, r| l.add_checked(r)),
+        "checked_sub" => checked_binary(left, right, is_ansi_mode, false, |l, r| l.sub_checked(r)),
+        "checked_mul" => checked_binary(left, right, is_ansi_mode, false, |l, r| l.mul_checked(r)),
+        "checked_div" => checked_binary(left, right, is_ansi_mode, true, |l, r| l.div_checked(r)),
+        _ => Err(DataFusionError::Internal(format!(
+            "Unsupported operation: {:?}",
+            op
+        ))),
+    }
+}
+
+fn checked_binary<T, F>(
+    left: &PrimitiveArray<T>,
+    right: &PrimitiveArray<T>,
+    is_ansi_mode: bool,
+    is_div: bool,
+    op: F,
+) -> Result<ArrayRef, DataFusionError>
+where
+    T: ArrowPrimitiveType,
+    F: Fn(T::Native, T::Native) -> Result<T::Native, ArrowError>,
+{
+    if is_ansi_mode {
+        return arrow::compute::kernels::arity::try_binary::<_, _, _, T>(left, right, op)
+            .map(|array| Arc::new(array) as ArrayRef)
+            .map_err(|e| match e {
+                ArrowError::DivideByZero => divide_by_zero_error().into(),
+                _ => DataFusionError::from(SparkError::ArithmeticOverflow {
+                    from_type: String::from("integer"),
+                }),
+            });
+    }
+
+    let len = left.len();
+    let lhs = &left.values()[..len];
+    let rhs = &right.values()[..len];
+    let nulls = NullBuffer::union(left.nulls(), right.nulls());
+
+    let mut values = vec![T::Native::default(); len];
+    let mut overflowed: Vec<usize> = Vec::new();
+
+    for (i, (out, (&l, &r))) in values.iter_mut().zip(lhs.iter().zip(rhs)).enumerate() {
+        match op(l, r) {
+            Ok(v) => *out = v,
+            Err(_) => {
+                if !is_ansi_mode {
+                    overflowed.push(i);
+                } else if nulls.as_ref().is_none_or(|n| n.is_valid(i)) {
+                    return if is_div && r.is_zero() {
+                        Err(divide_by_zero_error().into())
+                    } else {
+                        Err(SparkError::ArithmeticOverflow {
+                            from_type: String::from("integer"),
                         }
-                    }
+                        .into())
+                    };
                 }
             }
-        }
-        "checked_sub" => {
-            for i in 0..len {
-                if left.is_null(i) || right.is_null(i) {
-                    builder.append_null();
-                } else {
-                    match left.value(i).sub_checked(right.value(i)) {
-                        Ok(v) => builder.append_value(v),
-                        Err(_e) => {
-                            if is_ansi_mode {
-                                return Err(SparkError::ArithmeticOverflow {
-                                    from_type: String::from("integer"),
-                                }
-                                .into());
-                            } else {
-                                builder.append_null();
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        "checked_mul" => {
-            for i in 0..len {
-                if left.is_null(i) || right.is_null(i) {
-                    builder.append_null();
-                } else {
-                    match left.value(i).mul_checked(right.value(i)) {
-                        Ok(v) => builder.append_value(v),
-                        Err(_e) => {
-                            if is_ansi_mode {
-                                return Err(SparkError::ArithmeticOverflow {
-                                    from_type: String::from("integer"),
-                                }
-                                .into());
-                            } else {
-                                builder.append_null();
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        "checked_div" => {
-            for i in 0..len {
-                if left.is_null(i) || right.is_null(i) {
-                    builder.append_null();
-                } else {
-                    match left.value(i).div_checked(right.value(i)) {
-                        Ok(v) => builder.append_value(v),
-                        Err(_e) => {
-                            if is_ansi_mode {
-                                return if right.value(i).is_zero() {
-                                    Err(divide_by_zero_error().into())
-                                } else {
-                                    return Err(SparkError::ArithmeticOverflow {
-                                        from_type: String::from("integer"),
-                                    }
-                                    .into());
-                                };
-                            } else {
-                                builder.append_null();
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        _ => {
-            return Err(DataFusionError::Internal(format!(
-                "Unsupported operation: {:?}",
-                op
-            )))
         }
     }
 
-    Ok(Arc::new(builder.finish()) as ArrayRef)
-}
+    let nulls = if overflowed.is_empty() {
+        nulls
+    } else {
+        let mut validity = BooleanBufferBuilder::new(len);
+        match &nulls {
+            Some(n) => validity.append_buffer(n.inner()),
+            None => validity.append_n(len, true),
+        }
+        for i in overflowed {
+            validity.set_bit(i, false);
+        }
+        Some(NullBuffer::new(validity.finish()))
+    };
 
+    if let Some(n) = &nulls {
+        if n.null_count() > 0 {
+            for (out, valid) in values.iter_mut().zip(n.iter()) {
+                if !valid {
+                    *out = T::Native::default();
+                }
+            }
+        }
+    }
+
+    Ok(Arc::new(PrimitiveArray::<T>::new(values.into(), nulls)) as ArrayRef)
+}
 pub fn checked_add(
     args: &[ColumnarValue],
     data_type: &DataType,
@@ -253,4 +241,95 @@ fn checked_arithmetic_internal(
     };
 
     Ok(ColumnarValue::Array(result_array?))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arrow::array::{Float64Array, Int32Array};
+
+    fn int32_args(left: Vec<Option<i32>>, right: Vec<Option<i32>>) -> Vec<ColumnarValue> {
+        vec![
+            ColumnarValue::Array(Arc::new(Int32Array::from(left))),
+            ColumnarValue::Array(Arc::new(Int32Array::from(right))),
+        ]
+    }
+
+    fn as_int32(value: ColumnarValue) -> Int32Array {
+        let ColumnarValue::Array(array) = value else {
+            unreachable!()
+        };
+        array.as_primitive::<Int32Type>().clone()
+    }
+
+    #[test]
+    fn test_checked_add_propagates_nulls() {
+        let args = int32_args(
+            vec![Some(1), None, Some(3), None],
+            vec![Some(10), Some(20), None, None],
+        );
+        let result = as_int32(checked_add(&args, &DataType::Int32, EvalMode::Ansi).unwrap());
+        assert_eq!(result, Int32Array::from(vec![Some(11), None, None, None]));
+    }
+
+    #[test]
+    fn test_checked_add_overflow_is_null_in_try_mode() {
+        let args = int32_args(vec![Some(i32::MAX), Some(1)], vec![Some(1), Some(1)]);
+        let result = as_int32(checked_add(&args, &DataType::Int32, EvalMode::Try).unwrap());
+        assert_eq!(result, Int32Array::from(vec![None, Some(2)]));
+    }
+
+    #[test]
+    fn test_checked_add_overflow_errors_in_ansi_mode() {
+        let args = int32_args(vec![Some(i32::MAX)], vec![Some(1)]);
+        assert!(checked_add(&args, &DataType::Int32, EvalMode::Ansi).is_err());
+    }
+
+    #[test]
+    fn test_checked_sub_and_mul_overflow() {
+        let args = int32_args(vec![Some(i32::MIN), Some(5)], vec![Some(1), Some(3)]);
+        let result = as_int32(checked_sub(&args, &DataType::Int32, EvalMode::Try).unwrap());
+        assert_eq!(result, Int32Array::from(vec![None, Some(2)]));
+
+        let args = int32_args(vec![Some(i32::MAX), Some(5)], vec![Some(2), Some(3)]);
+        let result = as_int32(checked_mul(&args, &DataType::Int32, EvalMode::Try).unwrap());
+        assert_eq!(result, Int32Array::from(vec![None, Some(15)]));
+    }
+
+    #[test]
+    fn test_checked_div_by_zero() {
+        let args = vec![
+            ColumnarValue::Array(Arc::new(Float64Array::from(vec![Some(1.0), Some(8.0)]))),
+            ColumnarValue::Array(Arc::new(Float64Array::from(vec![Some(0.0), Some(2.0)]))),
+        ];
+        let ColumnarValue::Array(array) =
+            checked_div(&args, &DataType::Float64, EvalMode::Try).unwrap()
+        else {
+            unreachable!()
+        };
+        assert_eq!(
+            array.as_primitive::<Float64Type>(),
+            &Float64Array::from(vec![None, Some(4.0)])
+        );
+
+        assert!(checked_div(&args, &DataType::Float64, EvalMode::Ansi).is_err());
+    }
+
+    /// A null slot may hold any value in its underlying buffer (e.g. after a filter or a slice).
+    /// Such a row must not overflow-error in ANSI mode, and its result slot must read back as a
+    /// null holding the default value.
+    #[test]
+    fn test_null_row_with_garbage_value_does_not_error_in_ansi_mode() {
+        let nulls = NullBuffer::from(vec![false, true]);
+        let left = Int32Array::new(vec![i32::MAX, 1].into(), Some(nulls));
+        let right = Int32Array::from(vec![Some(1), Some(1)]);
+        let args = vec![
+            ColumnarValue::Array(Arc::new(left)),
+            ColumnarValue::Array(Arc::new(right)),
+        ];
+
+        let result = as_int32(checked_add(&args, &DataType::Int32, EvalMode::Ansi).unwrap());
+        assert_eq!(result, Int32Array::from(vec![None, Some(2)]));
+        assert_eq!(result.values()[0], 0);
+    }
 }
