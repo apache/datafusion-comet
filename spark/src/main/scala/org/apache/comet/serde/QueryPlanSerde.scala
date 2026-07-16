@@ -1109,6 +1109,8 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
           _: DoubleType | _: DecimalType | _: DateType | _: TimestampType | _: TimestampNTZType |
           _: BooleanType | _: BinaryType | _: StringType =>
         true
+      case dt if isTimeType(dt) =>
+        true
       case _ =>
         false
     }
