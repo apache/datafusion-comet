@@ -15,13 +15,19 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
+-- Note: Left is a RuntimeReplaceable expression whose replacement is
+-- Substring(str, Literal(1), len). Comet serialises expr.replacement, so
+-- non-literal len goes through the SparkSubstring UDF natively.
+
+-- ConfigMatrix: parquet.enable.dictionary=false,true
+
 statement
 CREATE TABLE test_str_left(s string, n int) USING parquet
 
 statement
 INSERT INTO test_str_left VALUES ('hello', 3), ('hello', 0), ('hello', -1), ('hello', 10), ('', 3), (NULL, 3), ('hello', NULL)
 
-query expect_fallback(Substring pos and len must be literals)
+query
 SELECT left(s, n) FROM test_str_left
 
 -- column + literal
@@ -40,12 +46,43 @@ query
 SELECT left(s, 10) FROM test_str_left
 
 -- literal + column
-query expect_fallback(Substring pos and len must be literals)
+query
 SELECT left('hello', n) FROM test_str_left
 
 -- literal + literal
 query
 SELECT left('hello', 3), left('hello', 0), left('hello', -1), left('', 3), left(NULL, 3)
+
+-- integer boundaries
+query
+SELECT left('hello', 2147483647), left('hello', -2147483648)
+
+-- null propagation across combinations
+query
+SELECT left(CAST(NULL AS STRING), 0), left(CAST(NULL AS STRING), -1), left(CAST(NULL AS STRING), 2)
+
+-- non-literal len across integer widths
+statement
+CREATE TABLE test_str_left_int_widths(s string, nt tinyint, ns smallint, ni int, nb bigint) USING parquet
+
+statement
+INSERT INTO test_str_left_int_widths VALUES ('hello', 2, 3, 4, 5), ('hello', -1, 0, 10, NULL), (NULL, 2, 2, 2, 2)
+
+query
+SELECT left(s, nt), left(s, ns), left(s, ni), left(s, nb) FROM test_str_left_int_widths
+
+-- BinaryType input (Spark's Left accepts StringType and BinaryType)
+statement
+CREATE TABLE test_str_left_bin(b binary, n int) USING parquet
+
+statement
+INSERT INTO test_str_left_bin VALUES (CAST('hello' AS BINARY), 3), (CAST('' AS BINARY), 3), (NULL, 3), (CAST('hello' AS BINARY), 0), (CAST('hello' AS BINARY), -1), (X'00010203', 2)
+
+query
+SELECT left(b, n) FROM test_str_left_bin
+
+query
+SELECT left(b, 3) FROM test_str_left_bin
 
 -- unicode
 statement
@@ -62,3 +99,7 @@ SELECT s, left(s, 4) FROM test_str_left_unicode
 
 query
 SELECT s, left(s, 0) FROM test_str_left_unicode
+
+-- equivalence with substring
+query
+SELECT s, left(s, 3), substring(s, 1, 3) FROM test_str_left_unicode

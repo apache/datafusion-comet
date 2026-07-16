@@ -383,4 +383,19 @@ object CometSparkSessionExtensions extends Logging {
     node
   }
 
+  /**
+   * Record that `node` (typically an `Expression`) is routing through the JVM codegen dispatcher.
+   * `CometExecRule.rollUpInfoMessages` collects the names across an operator's expression trees
+   * and emits one combined `[COMET-INFO: ...]` segment.
+   */
+  def withCodegenDispatchExpr[T <: TreeNode[_]](node: T, name: String): T = {
+    if (name != null && name.nonEmpty) {
+      val existing = node
+        .getTagValue(CometExplainInfo.CODEGEN_DISPATCH_EXPRS)
+        .getOrElse(Set.empty[String])
+      node.setTagValue(CometExplainInfo.CODEGEN_DISPATCH_EXPRS, existing + name)
+    }
+    node
+  }
+
 }
