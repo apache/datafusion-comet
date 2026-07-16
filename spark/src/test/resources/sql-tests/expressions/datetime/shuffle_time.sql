@@ -55,3 +55,10 @@ FROM test_time_shuffle
 query
 SELECT /*+ REPARTITION(3) */ map(make_time(hours, minutes, secs), hours) AS m FROM test_time_shuffle
 WHERE hours IS NOT NULL AND minutes IS NOT NULL AND secs IS NOT NULL
+
+query
+SELECT /*+ REPARTITION(3, t) */ t
+FROM (
+    SELECT make_time(hours, minutes, secs) AS t
+    FROM test_time_shuffle
+)

@@ -397,6 +397,8 @@ object CometShuffleExchangeExec
         // Decimals with precision > 18 require Java BigDecimal conversion before hashing
         // d.precision <= 18
         true
+      case dt if isTimeType(dt) =>
+        true
       case _ =>
         false
     }
