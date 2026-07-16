@@ -187,6 +187,35 @@ class CometParquetWriterSuite extends CometTestBase {
     }
   }
 
+  test("parquet write honors compression option over parquet.compression and SQLConf") {
+    // Precedence, highest to lowest, matches Spark's ParquetOptions:
+    //   `compression` write option > `parquet.compression` write option > spark.sql.parquet.compression.codec
+    // Use a distinct wrong codec at each lower layer so any leak surfaces as a codec mismatch.
+    withTempPath { dir =>
+      val outputPath = new File(dir, "output.parquet").getAbsolutePath
+      val df = spark.range(0, 100).selectExpr("id", "cast(id as string) as name")
+
+      withSQLConf(
+        CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED.key -> "true",
+        CometConf.getOperatorAllowIncompatConfigKey(classOf[DataWritingCommandExec]) -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        SQLConf.PARQUET_COMPRESSION.key -> "zstd") {
+
+        val plan = captureWritePlan(
+          path =>
+            df.write
+              .option("compression", "gzip")
+              .option("parquet.compression", "snappy")
+              .parquet(path),
+          outputPath)
+        assertHasCometNativeWriteExec(plan)
+      }
+
+      checkAnswer(spark.read.parquet(outputPath), df.collect())
+      assertParquetCodec(outputPath, CompressionCodecName.GZIP)
+    }
+  }
+
   test("parquet write with unsupported compression codec falls back to Spark") {
     assume(isSpark35Plus, "lz4_raw was added in Spark 3.5")
     withTempPath { dir =>
