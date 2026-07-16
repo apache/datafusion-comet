@@ -35,25 +35,31 @@ object CometNot extends CometExpressionSerde[Not] {
       binding: Boolean): Option[ExprOuterClass.Expr] = {
 
     expr.child match {
-      case expr: EqualTo =>
+      case inner: EqualTo if !ComparisonUtils.hasCollatedOperand(inner.left, inner.right) =>
         createBinaryExpr(
-          expr,
-          expr.left,
-          expr.right,
+          inner,
+          inner.left,
+          inner.right,
           inputs,
           binding,
           (builder, binaryExpr) => builder.setNeq(binaryExpr))
-      case expr: EqualNullSafe =>
+      case inner: EqualNullSafe if !ComparisonUtils.hasCollatedOperand(inner.left, inner.right) =>
         createBinaryExpr(
-          expr,
-          expr.left,
-          expr.right,
+          inner,
+          inner.left,
+          inner.right,
           inputs,
           binding,
           (builder, binaryExpr) => builder.setNeqNullSafe(binaryExpr))
-      case expr: In =>
-        ComparisonUtils.in(expr, expr.value, expr.list, inputs, binding, negate = true)
+      case inner: In if !ComparisonUtils.hasCollatedOperand(inner.value +: inner.list) =>
+        ComparisonUtils.in(inner, inner.value, inner.list, inputs, binding, negate = true)
       case _ =>
+        // Includes the collated variants of EqualTo / EqualNullSafe / In above: fall through so
+        // the child expression's own serde is consulted, which now returns `Unsupported` for
+        // non-UTF8_BINARY operands (see `CometEqualTo.getSupportLevel` and siblings). That makes
+        // `exprToProtoInternal` return None for the child, which cascades this Not to None and
+        // falls the enclosing operator back to Spark — the only way to honour collation-aware
+        // (in)equality without a native path.
         createUnaryExpr(
           expr,
           expr.child,
@@ -104,6 +110,8 @@ object CometOr extends CometExpressionSerde[Or] {
 }
 
 object CometEqualTo extends CometExpressionSerde[EqualTo] {
+  override def getSupportLevel(expr: EqualTo): SupportLevel =
+    ComparisonUtils.collationSupportLevel(expr.left, expr.right)
   override def convert(
       expr: EqualTo,
       inputs: Seq[Attribute],
@@ -119,6 +127,8 @@ object CometEqualTo extends CometExpressionSerde[EqualTo] {
 }
 
 object CometEqualNullSafe extends CometExpressionSerde[EqualNullSafe] {
+  override def getSupportLevel(expr: EqualNullSafe): SupportLevel =
+    ComparisonUtils.collationSupportLevel(expr.left, expr.right)
   override def convert(
       expr: EqualNullSafe,
       inputs: Seq[Attribute],
@@ -134,6 +144,8 @@ object CometEqualNullSafe extends CometExpressionSerde[EqualNullSafe] {
 }
 
 object CometGreaterThan extends CometExpressionSerde[GreaterThan] {
+  override def getSupportLevel(expr: GreaterThan): SupportLevel =
+    ComparisonUtils.collationSupportLevel(expr.left, expr.right)
   override def convert(
       expr: GreaterThan,
       inputs: Seq[Attribute],
@@ -149,6 +161,8 @@ object CometGreaterThan extends CometExpressionSerde[GreaterThan] {
 }
 
 object CometGreaterThanOrEqual extends CometExpressionSerde[GreaterThanOrEqual] {
+  override def getSupportLevel(expr: GreaterThanOrEqual): SupportLevel =
+    ComparisonUtils.collationSupportLevel(expr.left, expr.right)
   override def convert(
       expr: GreaterThanOrEqual,
       inputs: Seq[Attribute],
@@ -164,6 +178,8 @@ object CometGreaterThanOrEqual extends CometExpressionSerde[GreaterThanOrEqual] 
 }
 
 object CometLessThan extends CometExpressionSerde[LessThan] {
+  override def getSupportLevel(expr: LessThan): SupportLevel =
+    ComparisonUtils.collationSupportLevel(expr.left, expr.right)
   override def convert(
       expr: LessThan,
       inputs: Seq[Attribute],
@@ -179,6 +195,8 @@ object CometLessThan extends CometExpressionSerde[LessThan] {
 }
 
 object CometLessThanOrEqual extends CometExpressionSerde[LessThanOrEqual] {
+  override def getSupportLevel(expr: LessThanOrEqual): SupportLevel =
+    ComparisonUtils.collationSupportLevel(expr.left, expr.right)
   override def convert(
       expr: LessThanOrEqual,
       inputs: Seq[Attribute],
@@ -234,6 +252,15 @@ object CometIsNaN extends CometExpressionSerde[IsNaN] {
 }
 
 object CometIn extends CometExpressionSerde[In] {
+
+  override def getSupportLevel(expr: In): SupportLevel = {
+    if (ComparisonUtils.hasCollatedOperand(expr.value +: expr.list)) {
+      Unsupported(Some(ComparisonUtils.nonDefaultCollationReason("In")))
+    } else {
+      Compatible()
+    }
+  }
+
   override def convert(
       expr: In,
       inputs: Seq[Attribute],
@@ -243,6 +270,15 @@ object CometIn extends CometExpressionSerde[In] {
 }
 
 object CometInSet extends CometExpressionSerde[InSet] {
+
+  override def getSupportLevel(expr: InSet): SupportLevel = {
+    if (ComparisonUtils.hasCollatedOperand(expr.child)) {
+      Unsupported(Some(ComparisonUtils.nonDefaultCollationReason("InSet")))
+    } else {
+      Compatible()
+    }
+  }
+
   override def convert(
       expr: InSet,
       inputs: Seq[Attribute],
@@ -258,6 +294,29 @@ object CometInSet extends CometExpressionSerde[InSet] {
 }
 
 object ComparisonUtils {
+
+  // Comet's native equality/ordering/hashing compare raw bytes, so any predicate operand carrying
+  // a non-UTF8_BINARY collation (Spark 4+) would produce wrong answers on the native path — e.g.
+  // `'a' = 'A'` under `UNICODE_CI` returns true in Spark but false byte-wise. Every binary
+  // comparison and `In`/`InSet` serde routes its `getSupportLevel` through here so that any
+  // collated operand triggers a clean fallback to Spark. `hasNonDefaultStringCollation` walks
+  // nested types too, so collated strings inside array/map/struct operands are also caught.
+  def nonDefaultCollationReason(exprName: String): String =
+    s"$exprName does not support non-UTF8_BINARY collated operands; " +
+      "native comparison is byte-wise and cannot honour collation semantics."
+
+  def hasCollatedOperand(operands: Expression*): Boolean =
+    operands.exists(op => hasNonDefaultStringCollation(op.dataType))
+
+  def hasCollatedOperand(operands: Iterable[Expression]): Boolean =
+    operands.exists(op => hasNonDefaultStringCollation(op.dataType))
+
+  def collationSupportLevel(left: Expression, right: Expression): SupportLevel =
+    if (hasCollatedOperand(left, right)) {
+      Unsupported(Some(nonDefaultCollationReason("BinaryComparison")))
+    } else {
+      Compatible()
+    }
 
   def in(
       expr: Expression,
