@@ -149,5 +149,9 @@ name = "to_json"
 harness = false
 
 [[bench]]
+name = "decimal_rescale"
+harness = false
+
+[[bench]]
 name = "check_overflow"
 harness = false
