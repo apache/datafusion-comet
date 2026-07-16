@@ -15,22 +15,19 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- Tests that str_to_map routes through the JVM codegen dispatcher when
--- spark.sql.legacy.truncateForEmptyRegexSplit is enabled. In legacy mode Spark truncates
--- trailing empty entries from the split result, which Comet's native str_to_map does not
--- honour. `CometStrToMap` marks the expression Incompatible when the flag is on and mixes in
--- [[CodegenDispatchFallback]], so the projection stays native (Spark's own `doGenCode` runs
--- inside the Comet kernel) while producing Spark-exact results.
+-- Tests that str_to_map falls back to Spark when
+-- spark.sql.legacy.truncateForEmptyRegexSplit is enabled. In legacy mode Spark truncates trailing
+-- empty entries from the split result, which Comet's native str_to_map does not honour.
 -- See https://github.com/apache/datafusion-comet/issues/4477
 
 -- Config: spark.sql.legacy.truncateForEmptyRegexSplit=true
 
--- trailing pair delimiter: legacy mode truncates the trailing empty entry; Comet delegates to
--- the codegen dispatcher.
-query
+-- trailing pair delimiter: legacy mode truncates the trailing empty entry, so Comet must fall
+-- back to Spark
+query expect_fallback(truncateForEmptyRegexSplit)
 SELECT str_to_map('a:1,b:2,', ',', ':')
 
--- column input is also handled via the codegen dispatcher
+-- column input also falls back
 statement
 CREATE TABLE test_str_to_map_legacy(s STRING, pair_delim STRING, key_value_delim STRING) USING parquet
 
@@ -40,5 +37,5 @@ INSERT INTO test_str_to_map_legacy VALUES
   ('x:1;y:2;', ';', ':'),
   (NULL, ',', ':')
 
-query
+query expect_fallback(truncateForEmptyRegexSplit)
 SELECT str_to_map(s, pair_delim, key_value_delim) FROM test_str_to_map_legacy
