@@ -50,21 +50,8 @@ import org.apache.spark.sql.types.{DecimalType, StructType}
 import org.apache.comet._
 import org.apache.comet.shims.ShimCometSparkSessionExtensions
 
-/**
- * Base class for testing. This exists in `org.apache.spark.sql` since [[SQLTestUtils]] is
- * package-private.
- */
-abstract class CometTestBase
-    extends QueryTest
-    with SQLTestUtils
-    with BeforeAndAfterEach
-    with AdaptiveSparkPlanHelper
-    with ShimCometSparkSessionExtensions
-    with ShimCometTestBase
-    with CometPlanChecker {
-  import testImplicits._
-
-  protected def shuffleManagerConfs: Map[String, String] = {
+private[sql] object CometTestShuffleManager {
+  def confs: Map[String, String] = {
     sys.env.getOrElse("COMET_SHUFFLE_MANAGER", "").toLowerCase match {
       case "uniffle" =>
         Map(
@@ -85,6 +72,23 @@ abstract class CometTestBase
           CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true")
     }
   }
+}
+
+/**
+ * Base class for testing. This exists in `org.apache.spark.sql` since [[SQLTestUtils]] is
+ * package-private.
+ */
+abstract class CometTestBase
+    extends QueryTest
+    with SQLTestUtils
+    with BeforeAndAfterEach
+    with AdaptiveSparkPlanHelper
+    with ShimCometSparkSessionExtensions
+    with ShimCometTestBase
+    with CometPlanChecker {
+  import testImplicits._
+
+  protected def shuffleManagerConfs: Map[String, String] = CometTestShuffleManager.confs
 
   protected def sparkConf: SparkConf = {
     val conf = new SparkConf()
