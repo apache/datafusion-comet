@@ -21,7 +21,7 @@ package org.apache.comet.serde
 
 import scala.jdk.CollectionConverters._
 
-import org.apache.spark.sql.catalyst.expressions.{And, Attribute, EqualNullSafe, EqualTo, Expression, GreaterThan, GreaterThanOrEqual, In, InSet, IsNaN, IsNotNull, IsNull, LessThan, LessThanOrEqual, Literal, Not, Or}
+import org.apache.spark.sql.catalyst.expressions.{And, Attribute, BinaryExpression, EqualNullSafe, EqualTo, Expression, GreaterThan, GreaterThanOrEqual, In, InSet, IsNaN, IsNotNull, IsNull, LessThan, LessThanOrEqual, Literal, Not, Or}
 import org.apache.spark.sql.types.BooleanType
 
 import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
@@ -34,8 +34,10 @@ object CometNot extends CometExpressionSerde[Not] {
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
 
+    import ComparisonUtils.hasCollatedOperand
+
     expr.child match {
-      case inner: EqualTo if !ComparisonUtils.hasCollatedOperand(inner.left, inner.right) =>
+      case inner: EqualTo if !hasCollatedOperand(inner.left, inner.right) =>
         createBinaryExpr(
           inner,
           inner.left,
@@ -43,7 +45,7 @@ object CometNot extends CometExpressionSerde[Not] {
           inputs,
           binding,
           (builder, binaryExpr) => builder.setNeq(binaryExpr))
-      case inner: EqualNullSafe if !ComparisonUtils.hasCollatedOperand(inner.left, inner.right) =>
+      case inner: EqualNullSafe if !hasCollatedOperand(inner.left, inner.right) =>
         createBinaryExpr(
           inner,
           inner.left,
@@ -51,7 +53,7 @@ object CometNot extends CometExpressionSerde[Not] {
           inputs,
           binding,
           (builder, binaryExpr) => builder.setNeqNullSafe(binaryExpr))
-      case inner: In if !ComparisonUtils.hasCollatedOperand(inner.value +: inner.list) =>
+      case inner: In if !hasCollatedOperand((inner.value +: inner.list): _*) =>
         ComparisonUtils.in(inner, inner.value, inner.list, inputs, binding, negate = true)
       case _ =>
         // Includes the collated variants of EqualTo / EqualNullSafe / In above: fall through so
@@ -109,9 +111,7 @@ object CometOr extends CometExpressionSerde[Or] {
   }
 }
 
-object CometEqualTo extends CometExpressionSerde[EqualTo] {
-  override def getSupportLevel(expr: EqualTo): SupportLevel =
-    ComparisonUtils.collationSupportLevel(expr.left, expr.right)
+object CometEqualTo extends CollationAwareBinaryPredicate[EqualTo] {
   override def convert(
       expr: EqualTo,
       inputs: Seq[Attribute],
@@ -126,9 +126,7 @@ object CometEqualTo extends CometExpressionSerde[EqualTo] {
   }
 }
 
-object CometEqualNullSafe extends CometExpressionSerde[EqualNullSafe] {
-  override def getSupportLevel(expr: EqualNullSafe): SupportLevel =
-    ComparisonUtils.collationSupportLevel(expr.left, expr.right)
+object CometEqualNullSafe extends CollationAwareBinaryPredicate[EqualNullSafe] {
   override def convert(
       expr: EqualNullSafe,
       inputs: Seq[Attribute],
@@ -143,9 +141,7 @@ object CometEqualNullSafe extends CometExpressionSerde[EqualNullSafe] {
   }
 }
 
-object CometGreaterThan extends CometExpressionSerde[GreaterThan] {
-  override def getSupportLevel(expr: GreaterThan): SupportLevel =
-    ComparisonUtils.collationSupportLevel(expr.left, expr.right)
+object CometGreaterThan extends CollationAwareBinaryPredicate[GreaterThan] {
   override def convert(
       expr: GreaterThan,
       inputs: Seq[Attribute],
@@ -160,9 +156,7 @@ object CometGreaterThan extends CometExpressionSerde[GreaterThan] {
   }
 }
 
-object CometGreaterThanOrEqual extends CometExpressionSerde[GreaterThanOrEqual] {
-  override def getSupportLevel(expr: GreaterThanOrEqual): SupportLevel =
-    ComparisonUtils.collationSupportLevel(expr.left, expr.right)
+object CometGreaterThanOrEqual extends CollationAwareBinaryPredicate[GreaterThanOrEqual] {
   override def convert(
       expr: GreaterThanOrEqual,
       inputs: Seq[Attribute],
@@ -177,9 +171,7 @@ object CometGreaterThanOrEqual extends CometExpressionSerde[GreaterThanOrEqual] 
   }
 }
 
-object CometLessThan extends CometExpressionSerde[LessThan] {
-  override def getSupportLevel(expr: LessThan): SupportLevel =
-    ComparisonUtils.collationSupportLevel(expr.left, expr.right)
+object CometLessThan extends CollationAwareBinaryPredicate[LessThan] {
   override def convert(
       expr: LessThan,
       inputs: Seq[Attribute],
@@ -194,9 +186,7 @@ object CometLessThan extends CometExpressionSerde[LessThan] {
   }
 }
 
-object CometLessThanOrEqual extends CometExpressionSerde[LessThanOrEqual] {
-  override def getSupportLevel(expr: LessThanOrEqual): SupportLevel =
-    ComparisonUtils.collationSupportLevel(expr.left, expr.right)
+object CometLessThanOrEqual extends CollationAwareBinaryPredicate[LessThanOrEqual] {
   override def convert(
       expr: LessThanOrEqual,
       inputs: Seq[Attribute],
@@ -253,13 +243,8 @@ object CometIsNaN extends CometExpressionSerde[IsNaN] {
 
 object CometIn extends CometExpressionSerde[In] {
 
-  override def getSupportLevel(expr: In): SupportLevel = {
-    if (ComparisonUtils.hasCollatedOperand(expr.value +: expr.list)) {
-      Unsupported(Some(ComparisonUtils.nonDefaultCollationReason("In")))
-    } else {
-      Compatible()
-    }
-  }
+  override def getSupportLevel(expr: In): SupportLevel =
+    ComparisonUtils.collationSupportLevel("In", (expr.value +: expr.list): _*)
 
   override def convert(
       expr: In,
@@ -271,13 +256,8 @@ object CometIn extends CometExpressionSerde[In] {
 
 object CometInSet extends CometExpressionSerde[InSet] {
 
-  override def getSupportLevel(expr: InSet): SupportLevel = {
-    if (ComparisonUtils.hasCollatedOperand(expr.child)) {
-      Unsupported(Some(ComparisonUtils.nonDefaultCollationReason("InSet")))
-    } else {
-      Compatible()
-    }
-  }
+  override def getSupportLevel(expr: InSet): SupportLevel =
+    ComparisonUtils.collationSupportLevel("InSet", expr.child)
 
   override def convert(
       expr: InSet,
@@ -291,6 +271,16 @@ object CometInSet extends CometExpressionSerde[InSet] {
     // We do Spark `InSet` optimization in native (DataFusion) side.
     ComparisonUtils.in(expr, expr.child, list, inputs, binding, negate = false)
   }
+}
+
+/**
+ * Mixin for serdes of binary predicates whose native kernel compares raw bytes: any operand
+ * carrying a non-UTF8_BINARY collation must fall back to Spark, since byte-wise semantics diverge
+ * from Spark's collation-aware evaluation.
+ */
+trait CollationAwareBinaryPredicate[T <: BinaryExpression] extends CometExpressionSerde[T] {
+  override def getSupportLevel(expr: T): SupportLevel =
+    ComparisonUtils.collationSupportLevel(expr.prettyName, expr.left, expr.right)
 }
 
 object ComparisonUtils {
@@ -308,14 +298,8 @@ object ComparisonUtils {
   def hasCollatedOperand(operands: Expression*): Boolean =
     operands.exists(op => hasNonDefaultStringCollation(op.dataType))
 
-  def hasCollatedOperand(operands: Iterable[Expression]): Boolean =
-    operands.exists(op => hasNonDefaultStringCollation(op.dataType))
-
-  def collationSupportLevel(
-      left: Expression,
-      right: Expression,
-      exprName: String = "BinaryComparison"): SupportLevel =
-    if (hasCollatedOperand(left, right)) {
+  def collationSupportLevel(exprName: String, operands: Expression*): SupportLevel =
+    if (hasCollatedOperand(operands: _*)) {
       Unsupported(Some(nonDefaultCollationReason(exprName)))
     } else {
       Compatible()

@@ -312,34 +312,22 @@ object CometLike extends CometExpressionSerde[Like] {
 }
 
 /**
- * Serdes for `Contains` / `StartsWith` / `EndsWith` that guard on non-UTF8_BINARY collation and
- * otherwise delegate to the generic `contains` / `starts_with` / `ends_with` scalar-function
+ * Serdes for `Contains` / `StartsWith` / `EndsWith` that reject non-UTF8_BINARY collated operands
+ * and otherwise delegate to the generic `contains` / `starts_with` / `ends_with` scalar-function
  * bridge. The native kernels compare raw bytes and cannot honour case- or accent-insensitive
  * collations, so a collated operand must fall back to Spark.
  */
-object CometContains extends CometExpressionSerde[Contains] {
-  override def getSupportLevel(expr: Contains): SupportLevel =
-    ComparisonUtils.collationSupportLevel(expr.left, expr.right, "Contains")
+object CometContains
+    extends CometScalarFunction[Contains]("contains")
+    with CollationAwareBinaryPredicate[Contains]
 
-  override def convert(expr: Contains, inputs: Seq[Attribute], binding: Boolean): Option[Expr] =
-    CometScalarFunction[Contains]("contains").convert(expr, inputs, binding)
-}
+object CometStartsWith
+    extends CometScalarFunction[StartsWith]("starts_with")
+    with CollationAwareBinaryPredicate[StartsWith]
 
-object CometStartsWith extends CometExpressionSerde[StartsWith] {
-  override def getSupportLevel(expr: StartsWith): SupportLevel =
-    ComparisonUtils.collationSupportLevel(expr.left, expr.right, "StartsWith")
-
-  override def convert(expr: StartsWith, inputs: Seq[Attribute], binding: Boolean): Option[Expr] =
-    CometScalarFunction[StartsWith]("starts_with").convert(expr, inputs, binding)
-}
-
-object CometEndsWith extends CometExpressionSerde[EndsWith] {
-  override def getSupportLevel(expr: EndsWith): SupportLevel =
-    ComparisonUtils.collationSupportLevel(expr.left, expr.right, "EndsWith")
-
-  override def convert(expr: EndsWith, inputs: Seq[Attribute], binding: Boolean): Option[Expr] =
-    CometScalarFunction[EndsWith]("ends_with").convert(expr, inputs, binding)
-}
+object CometEndsWith
+    extends CometScalarFunction[EndsWith]("ends_with")
+    with CollationAwareBinaryPredicate[EndsWith]
 
 /**
  * `rlike` runs Spark's own implementation through the codegen dispatcher by default, for
