@@ -97,12 +97,12 @@ SELECT id, CAST(s AS STRING COLLATE UTF8_LCASE) != 'A' FROM test_collated_predic
 query expect_fallback(non-UTF8_BINARY collated operands)
 SELECT id, CAST(s AS STRING COLLATE UTF8_LCASE) <> 'A' FROM test_collated_predicates ORDER BY id
 
--- Null-safe equality: <=> treats two NULLs as equal.
+-- Null-safe equality: <=> treats two NULLs as equal. Note that `x <=> NULL` is folded by
+-- Spark's `NullPropagation` to `IsNull(x)` -- which routes through a different serde -- so we
+-- test the meaningful case here: a non-NULL RHS with the collated column, where the row's own
+-- NULLs (id=7) still exercise NULL propagation through the predicate.
 query expect_fallback(non-UTF8_BINARY collated operands)
 SELECT id, CAST(s AS STRING COLLATE UTF8_LCASE) <=> 'A' FROM test_collated_predicates ORDER BY id
-
-query expect_fallback(non-UTF8_BINARY collated operands)
-SELECT id, CAST(s AS STRING COLLATE UTF8_LCASE) <=> CAST(NULL AS STRING COLLATE UTF8_LCASE) FROM test_collated_predicates ORDER BY id
 
 -- ---------- Ordering ------------------------------------------------------
 
@@ -154,8 +154,8 @@ SELECT id, CAST(s AS STRING COLLATE UTF8_LCASE) LIKE '%LLO' FROM test_collated_p
 query expect_fallback(non-UTF8_BINARY collated operands)
 SELECT id FROM test_collated_predicates WHERE CAST(s AS STRING COLLATE UTF8_LCASE) LIKE 'H%' ORDER BY id
 
-query expect_fallback(non-UTF8_BINARY collated operands)
-SELECT id FROM test_collated_predicates WHERE CAST(s AS STRING COLLATE UNICODE_CI) LIKE 'h%' ORDER BY id
+-- Spark 4.0 restricts LIKE / Contains / StartsWith / EndsWith to `StringTypeNonCSAICollation`,
+-- which analyzes-out UNICODE_CI at planning time, so we cover only UTF8_LCASE for these.
 
 -- ---------- Contains / StartsWith / EndsWith -------------------------------
 
@@ -173,10 +173,10 @@ query expect_fallback(non-UTF8_BINARY collated operands)
 SELECT id FROM test_collated_predicates WHERE contains(CAST(s AS STRING COLLATE UTF8_LCASE), 'ELL') ORDER BY id
 
 query expect_fallback(non-UTF8_BINARY collated operands)
-SELECT id FROM test_collated_predicates WHERE startswith(CAST(s AS STRING COLLATE UNICODE_CI), 'h') ORDER BY id
+SELECT id FROM test_collated_predicates WHERE startswith(CAST(s AS STRING COLLATE UTF8_LCASE), 'HE') ORDER BY id
 
 query expect_fallback(non-UTF8_BINARY collated operands)
-SELECT id FROM test_collated_predicates WHERE endswith(CAST(s AS STRING COLLATE UNICODE_CI), 'O') ORDER BY id
+SELECT id FROM test_collated_predicates WHERE endswith(CAST(s AS STRING COLLATE UTF8_LCASE), 'O') ORDER BY id
 
 -- ---------- Nested-collated types ------------------------------------------
 
@@ -189,16 +189,8 @@ SELECT id, array(CAST(s AS STRING COLLATE UTF8_LCASE)) = array('A' COLLATE UTF8_
 query expect_fallback(non-UTF8_BINARY collated operands)
 SELECT id, struct(CAST(s AS STRING COLLATE UTF8_LCASE)) = struct('A' COLLATE UTF8_LCASE) FROM test_collated_predicates ORDER BY id
 
--- ---------- NULL propagation ------------------------------------------------
-
-query expect_fallback(non-UTF8_BINARY collated operands)
-SELECT id, CAST(s AS STRING COLLATE UTF8_LCASE) = CAST(NULL AS STRING COLLATE UTF8_LCASE) FROM test_collated_predicates ORDER BY id
-
-query expect_fallback(non-UTF8_BINARY collated operands)
-SELECT id, CAST(NULL AS STRING COLLATE UTF8_LCASE) IN ('A', 'B') FROM test_collated_predicates ORDER BY id
-
-query expect_fallback(non-UTF8_BINARY collated operands)
-SELECT id, CAST(s AS STRING COLLATE UTF8_LCASE) LIKE CAST(NULL AS STRING COLLATE UTF8_LCASE) FROM test_collated_predicates ORDER BY id
-
-query expect_fallback(non-UTF8_BINARY collated operands)
-SELECT id, contains(CAST(s AS STRING COLLATE UTF8_LCASE), CAST(NULL AS STRING COLLATE UTF8_LCASE)) FROM test_collated_predicates ORDER BY id
+-- NOTE: NULL literal operands are omitted intentionally. Spark's `NullPropagation` rewrites
+-- `x = NULL` to `Literal(null)`, `x <=> NULL` to `IsNull(x)`, `NULL IN (...)` to
+-- `Literal(null)`, etc., so the predicate serdes never see them. NULL-in-data coverage is
+-- exercised on every query above via the (7, NULL) row: Spark returns NULL for those rows and
+-- the fallback-answer comparison would catch a divergence.
