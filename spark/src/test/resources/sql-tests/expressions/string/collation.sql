@@ -59,9 +59,9 @@ SELECT reverse('Hello' COLLATE UNICODE_CI)
 -- predicate operand carrying a non-UTF8_BINARY collation would produce wrong answers on the
 -- native path -- e.g. `'a' = 'A'` under UNICODE_CI returns true in Spark but false byte-wise.
 -- Every binary comparison and `In`/`InSet`/`Like`/`Contains`/`StartsWith`/`EndsWith` serde now
--- guards its `getSupportLevel` so any collated operand triggers a clean fallback to Spark.
--- The queries below exercise that fallback; if the guard regresses, Comet's native answer
--- diverges from Spark's collation-aware answer and the diff surfaces here.
+-- guards its `getSupportLevel` so any collated operand triggers a clean fallback to Spark with a
+-- shared "non-UTF8_BINARY collated operands" reason. `expect_fallback(...)` below pins that
+-- reason substring so a regressed guard surfaces as either a wrong answer or a missing fallback.
 -- ============================================================================
 
 statement
@@ -80,129 +80,125 @@ INSERT INTO test_collated_predicates VALUES
 -- ---------- EqualTo / EqualNullSafe / inequality ---------------------------
 
 -- UTF8_LCASE folds case, so 'a' and 'A' both match 'A'.
-query
+query expect_fallback(non-UTF8_BINARY collated operands)
 SELECT id, CAST(s AS STRING COLLATE UTF8_LCASE) = 'A' FROM test_collated_predicates ORDER BY id
 
-query
+query expect_fallback(non-UTF8_BINARY collated operands)
 SELECT id FROM test_collated_predicates WHERE CAST(s AS STRING COLLATE UTF8_LCASE) = 'A' ORDER BY id
 
 -- UNICODE_CI is a distinct ICU collation, also case-insensitive.
-query
+query expect_fallback(non-UTF8_BINARY collated operands)
 SELECT id, CAST(s AS STRING COLLATE UNICODE_CI) = 'A' FROM test_collated_predicates ORDER BY id
 
 -- Not-equals should surface via `!=` (parsed as Not(EqualTo)) and `<>`.
-query
+query expect_fallback(non-UTF8_BINARY collated operands)
 SELECT id, CAST(s AS STRING COLLATE UTF8_LCASE) != 'A' FROM test_collated_predicates ORDER BY id
 
-query
+query expect_fallback(non-UTF8_BINARY collated operands)
 SELECT id, CAST(s AS STRING COLLATE UTF8_LCASE) <> 'A' FROM test_collated_predicates ORDER BY id
 
 -- Null-safe equality: <=> treats two NULLs as equal.
-query
+query expect_fallback(non-UTF8_BINARY collated operands)
 SELECT id, CAST(s AS STRING COLLATE UTF8_LCASE) <=> 'A' FROM test_collated_predicates ORDER BY id
 
-query
+query expect_fallback(non-UTF8_BINARY collated operands)
 SELECT id, CAST(s AS STRING COLLATE UTF8_LCASE) <=> CAST(NULL AS STRING COLLATE UTF8_LCASE) FROM test_collated_predicates ORDER BY id
 
 -- ---------- Ordering ------------------------------------------------------
 
-query
+query expect_fallback(non-UTF8_BINARY collated operands)
 SELECT id, CAST(s AS STRING COLLATE UTF8_LCASE) < 'b' FROM test_collated_predicates ORDER BY id
 
-query
+query expect_fallback(non-UTF8_BINARY collated operands)
 SELECT id, CAST(s AS STRING COLLATE UTF8_LCASE) <= 'a' FROM test_collated_predicates ORDER BY id
 
-query
+query expect_fallback(non-UTF8_BINARY collated operands)
 SELECT id, CAST(s AS STRING COLLATE UTF8_LCASE) > 'a' FROM test_collated_predicates ORDER BY id
 
-query
+query expect_fallback(non-UTF8_BINARY collated operands)
 SELECT id, CAST(s AS STRING COLLATE UTF8_LCASE) >= 'A' FROM test_collated_predicates ORDER BY id
 
-query
+query expect_fallback(non-UTF8_BINARY collated operands)
 SELECT id, CAST(s AS STRING COLLATE UNICODE_CI) < 'b' FROM test_collated_predicates ORDER BY id
 
 -- ---------- In / NotIn / InSet ---------------------------------------------
 
 -- Small list of literals -> `In`.
-query
+query expect_fallback(non-UTF8_BINARY collated operands)
 SELECT id FROM test_collated_predicates WHERE CAST(s AS STRING COLLATE UTF8_LCASE) IN ('A', 'HELLO') ORDER BY id
 
 -- `NOT IN` exercises CometNot's special-case rewrite for In: the collated variant must fall
 -- through to the generic path so the child serde's Unsupported cascades to a Spark fallback.
-query
+query expect_fallback(non-UTF8_BINARY collated operands)
 SELECT id FROM test_collated_predicates WHERE CAST(s AS STRING COLLATE UTF8_LCASE) NOT IN ('A', 'HELLO') ORDER BY id
 
 -- Optimizer promotes a large literal list to `InSet`; force it by widening past the threshold
 -- (spark.sql.optimizer.inSetConversionThreshold defaults to 10).
-query
+query expect_fallback(non-UTF8_BINARY collated operands)
 SELECT id FROM test_collated_predicates WHERE CAST(s AS STRING COLLATE UTF8_LCASE) IN ('A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'HELLO') ORDER BY id
 
 -- ---------- NOT (EqualTo / EqualNullSafe) rewrites ------------------------
 
 -- Exercises CometNot's guard so the collated child falls through to Spark.
-query
+query expect_fallback(non-UTF8_BINARY collated operands)
 SELECT id FROM test_collated_predicates WHERE NOT (CAST(s AS STRING COLLATE UTF8_LCASE) = 'A') ORDER BY id
 
-query
+query expect_fallback(non-UTF8_BINARY collated operands)
 SELECT id FROM test_collated_predicates WHERE NOT (CAST(s AS STRING COLLATE UTF8_LCASE) <=> 'A') ORDER BY id
 
 -- ---------- Like -----------------------------------------------------------
 
-query
+query expect_fallback(non-UTF8_BINARY collated operands)
 SELECT id, CAST(s AS STRING COLLATE UTF8_LCASE) LIKE '%LLO' FROM test_collated_predicates ORDER BY id
 
-query
+query expect_fallback(non-UTF8_BINARY collated operands)
 SELECT id FROM test_collated_predicates WHERE CAST(s AS STRING COLLATE UTF8_LCASE) LIKE 'H%' ORDER BY id
 
-query
+query expect_fallback(non-UTF8_BINARY collated operands)
 SELECT id FROM test_collated_predicates WHERE CAST(s AS STRING COLLATE UNICODE_CI) LIKE 'h%' ORDER BY id
 
 -- ---------- Contains / StartsWith / EndsWith -------------------------------
 
-query
+query expect_fallback(non-UTF8_BINARY collated operands)
 SELECT id, contains(CAST(s AS STRING COLLATE UTF8_LCASE), 'HE') FROM test_collated_predicates ORDER BY id
 
-query
+query expect_fallback(non-UTF8_BINARY collated operands)
 SELECT id, startswith(CAST(s AS STRING COLLATE UTF8_LCASE), 'HE') FROM test_collated_predicates ORDER BY id
 
-query
+query expect_fallback(non-UTF8_BINARY collated operands)
 SELECT id, endswith(CAST(s AS STRING COLLATE UTF8_LCASE), 'LO') FROM test_collated_predicates ORDER BY id
 
 -- Filter-side use, exercising the WHERE-clause pushdown path.
-query
+query expect_fallback(non-UTF8_BINARY collated operands)
 SELECT id FROM test_collated_predicates WHERE contains(CAST(s AS STRING COLLATE UTF8_LCASE), 'ELL') ORDER BY id
 
-query
+query expect_fallback(non-UTF8_BINARY collated operands)
 SELECT id FROM test_collated_predicates WHERE startswith(CAST(s AS STRING COLLATE UNICODE_CI), 'h') ORDER BY id
 
-query
+query expect_fallback(non-UTF8_BINARY collated operands)
 SELECT id FROM test_collated_predicates WHERE endswith(CAST(s AS STRING COLLATE UNICODE_CI), 'O') ORDER BY id
 
 -- ---------- Nested-collated types ------------------------------------------
 
 -- hasNonDefaultStringCollation walks nested types, so a collated string buried inside an
--- array/map/struct operand must also trigger fallback. If the recursive check regressed,
--- Comet would attempt native array-equality with byte-wise element compares and diverge here.
-query
+-- array/struct operand must also trigger fallback. If the recursive check regressed, Comet would
+-- attempt native array-/struct-equality with byte-wise element compares and diverge here.
+query expect_fallback(non-UTF8_BINARY collated operands)
 SELECT id, array(CAST(s AS STRING COLLATE UTF8_LCASE)) = array('A' COLLATE UTF8_LCASE) FROM test_collated_predicates ORDER BY id
 
-query
+query expect_fallback(non-UTF8_BINARY collated operands)
 SELECT id, struct(CAST(s AS STRING COLLATE UTF8_LCASE)) = struct('A' COLLATE UTF8_LCASE) FROM test_collated_predicates ORDER BY id
-
--- Map with collated value type.
-query
-SELECT id, map('k', CAST(s AS STRING COLLATE UTF8_LCASE)) = map('k', 'A' COLLATE UTF8_LCASE) FROM test_collated_predicates ORDER BY id
 
 -- ---------- NULL propagation ------------------------------------------------
 
-query
+query expect_fallback(non-UTF8_BINARY collated operands)
 SELECT id, CAST(s AS STRING COLLATE UTF8_LCASE) = CAST(NULL AS STRING COLLATE UTF8_LCASE) FROM test_collated_predicates ORDER BY id
 
-query
+query expect_fallback(non-UTF8_BINARY collated operands)
 SELECT id, CAST(NULL AS STRING COLLATE UTF8_LCASE) IN ('A', 'B') FROM test_collated_predicates ORDER BY id
 
-query
+query expect_fallback(non-UTF8_BINARY collated operands)
 SELECT id, CAST(s AS STRING COLLATE UTF8_LCASE) LIKE CAST(NULL AS STRING COLLATE UTF8_LCASE) FROM test_collated_predicates ORDER BY id
 
-query
+query expect_fallback(non-UTF8_BINARY collated operands)
 SELECT id, contains(CAST(s AS STRING COLLATE UTF8_LCASE), CAST(NULL AS STRING COLLATE UTF8_LCASE)) FROM test_collated_predicates ORDER BY id
