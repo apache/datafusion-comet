@@ -114,6 +114,7 @@ jobs:
       spark_3_5:    ${{ steps.compute.outputs.spark_3_5 }}
       spark_4_0:    ${{ steps.compute.outputs.spark_4_0 }}
       spark_4_1:    ${{ steps.compute.outputs.spark_4_1 }}
+      spark_4_2:    ${{ steps.compute.outputs.spark_4_2 }}
       iceberg_1_8:  ${{ steps.compute.outputs.iceberg_1_8 }}
       iceberg_1_9:  ${{ steps.compute.outputs.iceberg_1_9 }}
       iceberg_1_10: ${{ steps.compute.outputs.iceberg_1_10 }}
@@ -261,6 +262,23 @@ jobs:
     with:
       spark-short: '4.1'
       spark-full: '4.1.2'
+      java: 17
+
+  spark_4_2:
+    name: Spark SQL Tests (Spark 4.2)
+    needs: changes
+    # Main-only by default; PRs need the `run-spark-4.2-tests` label. Spark 4.2
+    # support is still experimental, so keep it off the default PR path.
+    if: |
+      needs.changes.outputs.spark_4_2 == 'true' &&
+      (github.event_name == 'push' ||
+       github.event_name == 'workflow_dispatch' ||
+       (github.event_name == 'pull_request' &&
+        contains(github.event.pull_request.labels.*.name, 'run-spark-4.2-tests')))
+    uses: ./.github/workflows/spark_sql_test_reusable.yml
+    with:
+      spark-short: '4.2'
+      spark-full: '4.2.0'
       java: 17
 
   iceberg_1_8:
