@@ -21,28 +21,28 @@
 -- ConfigMatrix: spark.comet.exec.shuffle.mode=native,jvm
 
 statement
-CREATE TABLE test_time_shuffle(hours int, minutes int, secs decimal(16,6)) USING parquet
+CREATE TABLE test_make_time_shuffle(hours int, minutes int, secs decimal(16,6)) USING parquet
 
 statement
-INSERT INTO test_time_shuffle VALUES (12, 30, 45.123456), (0, 0, 0.0), (23, 59, 59.999999), (1, 2, 3.5),
+INSERT INTO test_make_time_shuffle VALUES (12, 30, 45.123456), (0, 0, 0.0), (23, 59, 59.999999), (1, 2, 3.5),
     (NULL, 0, 0.0), (NULL, NULL, NULL)
 
 query
-SELECT /*+ REPARTITION(3) */ make_time(hours, minutes, secs) AS t FROM test_time_shuffle
+SELECT /*+ REPARTITION(3) */ make_time(hours, minutes, secs) AS t FROM test_make_time_shuffle
 
 query
-SELECT /*+ REPARTITION(3) */ hours, make_time(hours, minutes, secs) AS t, secs FROM test_time_shuffle
+SELECT /*+ REPARTITION(3) */ hours, make_time(hours, minutes, secs) AS t, secs FROM test_make_time_shuffle
 
 query
-SELECT /*+ REPARTITION(3) */ named_struct('t', make_time(hours, minutes, secs)) AS s FROM test_time_shuffle
+SELECT /*+ REPARTITION(3) */ named_struct('t', make_time(hours, minutes, secs)) AS s FROM test_make_time_shuffle
 
 query
-SELECT /*+ REPARTITION(3) */ array(make_time(hours, minutes, secs)) AS arr FROM test_time_shuffle
+SELECT /*+ REPARTITION(3) */ array(make_time(hours, minutes, secs)) AS arr FROM test_make_time_shuffle
 
 query
 SELECT /*+ REPARTITION(3) */
     array(make_time(hours, minutes, secs), make_time(0, 0, 0), CAST(NULL AS TIME)) AS arr
-FROM test_time_shuffle
+FROM test_make_time_shuffle
 
 query
 SELECT /*+ REPARTITION(3) */
@@ -50,15 +50,15 @@ SELECT /*+ REPARTITION(3) */
         WHEN hours IS NULL THEN CAST(array() AS ARRAY<TIME>)
         ELSE array(make_time(hours, minutes, secs), make_time(23, 59, 59.999999))
     END AS arr
-FROM test_time_shuffle
+FROM test_make_time_shuffle
 
 query
-SELECT /*+ REPARTITION(3) */ map(make_time(hours, minutes, secs), hours) AS m FROM test_time_shuffle
+SELECT /*+ REPARTITION(3) */ map(make_time(hours, minutes, secs), hours) AS m FROM test_make_time_shuffle
 WHERE hours IS NOT NULL AND minutes IS NOT NULL AND secs IS NOT NULL
 
 query
 SELECT /*+ REPARTITION(3, t) */ t
 FROM (
     SELECT make_time(hours, minutes, secs) AS t
-    FROM test_time_shuffle
+    FROM test_make_time_shuffle
 )

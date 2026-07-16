@@ -17,18 +17,18 @@
 
 -- MinSparkVersion: 4.1
 -- Config: spark.sql.timeType.enabled=true
--- Config: spark.comet.exec.shuffle.mode=jvm
+-- Config: spark.comet.exec.shuffle.mode=native
 
 statement
-CREATE TABLE test_time_range_shuffle_jvm(hours int, minutes int, secs decimal(16,6)) USING parquet
+CREATE TABLE test_make_time_range_shuffle_native(hours int, minutes int, secs decimal(16,6)) USING parquet
 
 statement
-INSERT INTO test_time_range_shuffle_jvm VALUES
+INSERT INTO test_make_time_range_shuffle_native VALUES
     (12, 30, 45.123456), (0, 0, 0.0), (23, 59, 59.999999), (NULL, NULL, NULL)
 
-query
+query expect_fallback(unsupported range partitioning data type for native shuffle)
 SELECT /*+ REPARTITION_BY_RANGE(3, t) */ t
 FROM (
     SELECT make_time(hours, minutes, secs) AS t
-    FROM test_time_range_shuffle_jvm
+    FROM test_make_time_range_shuffle_native
 )
