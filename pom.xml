@@ -732,7 +732,7 @@ under the License.
     </profile>
 
     <profile>
-      <!-- Spark 4.2 preview support, targeting the 4.2.0-preview4 release. -->
+      <!-- Experimental Spark 4.2 support, targeting the 4.2.0 release. -->
       <id>spark-4.2</id>
       <properties>
         <scala.version>2.13.18</scala.version>
