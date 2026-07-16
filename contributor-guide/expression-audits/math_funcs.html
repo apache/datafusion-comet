@@ -696,6 +696,13 @@ under the License.
 <li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">IntegralDivide(left,</span> <span class="pre">right,</span> <span class="pre">evalMode)</span></code>. Non-decimal operands are cast to <code class="docutils literal notranslate"><span class="pre">DecimalType(19,</span> <span class="pre">0)</span></code>; result is recomputed per <code class="docutils literal notranslate"><span class="pre">IntegralDivide.resultDecimalType</span></code>, wrapped in <code class="docutils literal notranslate"><span class="pre">CheckOverflow</span></code>, then cast to <code class="docutils literal notranslate"><span class="pre">Long</span></code>. ANSI overflow for <code class="docutils literal notranslate"><span class="pre">Long.MinValue</span> <span class="pre">div</span> <span class="pre">-1</span></code> and decimal-overflow ANSI cases are covered by existing tests.</p></li>
 </ul>
 </section>
+<section id="decimalrescalecheckoverflow-internal">
+<h2>DecimalRescaleCheckOverflow (internal)<a class="headerlink" href="#decimalrescalecheckoverflow-internal" title="Link to this heading">#</a></h2>
+<p>Internal fused expression that rescales a Decimal128 value (changing scale) and checks output precision in one pass, replacing the <code class="docutils literal notranslate"><span class="pre">CheckOverflow(Cast(expr,</span> <span class="pre">Decimal128(p,</span> <span class="pre">s)))</span></code> pattern used by decimal-to-decimal casts. Native impl: <code class="docutils literal notranslate"><span class="pre">math_funcs/internal/decimal_rescale_check.rs</span></code>.</p>
+<ul class="simple">
+<li><p>Performance (tuned 2026-07-15, PR #4938): the legacy path ran <code class="docutils literal notranslate"><span class="pre">null_if_overflow_precision</span></code> (a second full pass that allocates a new array) on every batch to turn overflow sentinels into nulls, even when nothing overflowed. Now that pass runs only when a sentinel is present (<code class="docutils literal notranslate"><span class="pre">contains(&amp;i128::MAX)</span></code>, short-circuiting), so the common no-overflow case skips the allocation. 8 to 26% faster on no-overflow shapes; overflow and ANSI shapes unchanged. Benchmark: <code class="docutils literal notranslate"><span class="pre">benches/decimal_rescale.rs</span></code>.</p></li>
+</ul>
+</section>
 <section id="e">
 <h2>e<a class="headerlink" href="#e" title="Link to this heading">#</a></h2>
 <ul class="simple">
@@ -1004,6 +1011,7 @@ under the License.
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#csc">csc</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#degrees">degrees</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#div">div</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#decimalrescalecheckoverflow-internal">DecimalRescaleCheckOverflow (internal)</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#e">e</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#exp">exp</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#expm1">expm1</a></li>
