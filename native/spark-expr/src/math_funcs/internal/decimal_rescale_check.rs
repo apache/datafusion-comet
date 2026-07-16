@@ -200,7 +200,7 @@ impl PhysicalExpr for DecimalRescaleCheckOverflow {
                 let result = if !fail_on_error && result.values().contains(&i128::MAX) {
                     // The rescale pass writes i128::MAX as an overflow sentinel for values that
                     // do not fit the output precision. Only when a sentinel is present do we need
-                    // the extra null-masking pass (which allocates a new array); `any`
+                    // the extra null-masking pass (which allocates a new array); `contains`
                     // short-circuits at the first sentinel, so the common no-overflow case skips
                     // that allocation entirely. ANSI mode raises on overflow and never produces a
                     // sentinel, so it also skips this pass.
@@ -360,6 +360,29 @@ mod tests {
         assert!(arr.is_null(1)); // 10000 > 9999 (max for precision 4) -> null
         assert!(arr.is_null(2)); // input null stays null
         assert_eq!(arr.value(3), 250);
+    }
+
+    #[test]
+    fn test_all_values_overflow_legacy() {
+        // Every value overflows, so the sentinel sits at index 0: `contains` finds it immediately
+        // and the masking pass nulls the whole array.
+        let batch = make_batch(vec![Some(10_000), Some(20_000), Some(30_000)], 10, 2);
+        let result = eval_expr(&batch, 2, 4, 2, false).unwrap();
+        let arr = result.as_primitive::<Decimal128Type>();
+        assert!(arr.is_null(0)); // all > 9999 (max for precision 4) -> null
+        assert!(arr.is_null(1));
+        assert!(arr.is_null(2));
+    }
+
+    #[test]
+    fn test_precision_boundary_legacy() {
+        // Pins the exact bound the overflow predicate turns on: 10^p - 1 fits, 10^p overflows.
+        // Output precision 4, scale 0: 9999 (= 10^4 - 1) fits, 10000 (= 10^4) does not.
+        let batch = make_batch(vec![Some(9999), Some(10_000)], 10, 0);
+        let result = eval_expr(&batch, 0, 4, 0, false).unwrap();
+        let arr = result.as_primitive::<Decimal128Type>();
+        assert_eq!(arr.value(0), 9999); // fits precision 4
+        assert!(arr.is_null(1)); // overflows precision 4 -> null
     }
 
     #[test]
