@@ -371,9 +371,14 @@ case class CometExecRule(session: SparkSession)
         op match {
           case _: CometPlan | _: AQEShuffleReadExec | _: BroadcastExchangeExec |
               _: BroadcastQueryStageExec | _: AdaptiveSparkPlanExec | _: ExecutedCommandExec |
-              _: V2CommandExec =>
+              _: V2CommandExec | _: WriteFilesExec =>
             // Some execs should never be replaced. We include
-            // these cases specially here so we do not add a misleading 'info' message
+            // these cases specially here so we do not add a misleading 'info' message.
+            // WriteFilesExec is always wrapped by DataWritingCommandExec (via Spark's V1Writes
+            // rule); the parent case converts the whole write to CometNativeWriteExec and
+            // unwraps WriteFilesExec inside convertToComet. Tagging WriteFilesExec here would
+            // produce a spurious "WriteFilesExec is not supported" fallback reason (and a
+            // warning when COMET_LOG_FALLBACK_REASONS=true) even when the write is fully native.
             op
           case _ =>
             // The operator was not converted to a Comet plan. Possible reasons for this happening:
@@ -729,14 +734,25 @@ case class CometExecRule(session: SparkSession)
    * Lift informational (non-fallback) messages tagged on an operator and its expressions onto the
    * converted Comet plan node so they appear in verbose extended explain output. Expression-level
    * hints would otherwise be invisible because explain only traverses plan nodes, not
-   * expressions.
+   * expressions. `CODEGEN_DISPATCH_EXPRS` names across the tree are aggregated into one combined
+   * info line.
    */
   private def rollUpInfoMessages(op: SparkPlan, exec: SparkPlan): Unit = {
-    val fromOp = op.getTagValue(CometExplainInfo.EXTENSION_INFO).getOrElse(Set.empty[String])
-    val fromExprs = op.expressions
-      .flatMap(_.collect { case e: Expression => e })
-      .flatMap(_.getTagValue(CometExplainInfo.EXTENSION_INFO).getOrElse(Set.empty[String]))
-    (fromOp ++ fromExprs).foreach(msg => withInfo(exec, msg))
+    val allExprs = op.expressions.flatMap(_.collect { case e: Expression => e })
+
+    val infos =
+      op.getTagValue(CometExplainInfo.EXTENSION_INFO).getOrElse(Set.empty[String]) ++
+        allExprs.flatMap(_.getTagValue(CometExplainInfo.EXTENSION_INFO)).flatten
+    infos.foreach(msg => withInfo(exec, msg))
+
+    val routedNames = allExprs
+      .flatMap(_.getTagValue(CometExplainInfo.CODEGEN_DISPATCH_EXPRS))
+      .flatten
+      .distinct
+      .sorted
+    if (routedNames.nonEmpty) {
+      withInfo(exec, s"JVM codegen dispatcher: ${routedNames.mkString(", ")}")
+    }
   }
 
   private def isOperatorEnabled(
