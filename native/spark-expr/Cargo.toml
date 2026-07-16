@@ -133,6 +133,10 @@ name = "array_size"
 harness = false
 
 [[bench]]
+name = "regexp_extract"
+harness = false
+
+[[bench]]
 name = "parse_url"
 harness = false
 
