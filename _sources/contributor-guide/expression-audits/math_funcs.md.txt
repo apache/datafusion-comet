@@ -41,6 +41,12 @@
 
 - Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): `Divide(left, right, evalMode)`. Non-ANSI mode wraps the divisor in `If(EqualTo(right, 0), null, right)` so DataFusion never throws. Decimal output is wrapped in `CheckOverflow(failOnError = ANSI)`; ANSI surfaces `NUMERIC_VALUE_OUT_OF_RANGE`, non-ANSI returns NULL.
 
+## CheckOverflow (internal)
+
+Internal decimal wrapper emitted around every decimal `+ - * /`, `sum`, and `avg` result to null out (non-ANSI) or raise on (ANSI) values that exceed the declared precision. Native impl: `math_funcs/internal/checkoverflow.rs`.
+
+- Performance (tuned 2026-07-15, PR #4937): both the ANSI and non-ANSI paths share a no-overflow fast path built on `is_valid_decimal_precision`, a small inlined bounds check scanned with `all` (short-circuits at the first overflow). When nothing overflows (the common shape) the input buffers are reused via `to_data()` (cheap Arc metadata clone) instead of allocating through `null_if_overflow_precision` (non-ANSI) or running the heavier per-value `validate_decimal_precision` (ANSI). The ANSI path only falls back to `validate_decimal_precision` when an overflow is present, to build the precise Spark error. ~10% faster on the no-overflow shape, ~17% with nulls, and ~69% faster for ANSI no-overflow (down to parity with non-ANSI); overflow shapes unchanged. Benchmark: `benches/check_overflow.rs`.
+
 ## abs
 
 - Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): `Abs(child, failOnError)` over `NumericType` plus the two interval types. `failOnError` (ANSI) is propagated to the native `abs` UDF, which throws `ARITHMETIC_OVERFLOW` on `Int.MinValue` / `Long.MinValue` / Decimal MIN. `DayTimeIntervalType` and `YearMonthIntervalType` fall back to Spark. Spark 4.0 / 4.1 do the `NullIntolerant` -> `nullIntolerant: Boolean` refactor; behaviour unchanged.

@@ -581,6 +581,13 @@ under the License.
 <li><p>Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): <code class="docutils literal notranslate"><span class="pre">Divide(left,</span> <span class="pre">right,</span> <span class="pre">evalMode)</span></code>. Non-ANSI mode wraps the divisor in <code class="docutils literal notranslate"><span class="pre">If(EqualTo(right,</span> <span class="pre">0),</span> <span class="pre">null,</span> <span class="pre">right)</span></code> so DataFusion never throws. Decimal output is wrapped in <code class="docutils literal notranslate"><span class="pre">CheckOverflow(failOnError</span> <span class="pre">=</span> <span class="pre">ANSI)</span></code>; ANSI surfaces <code class="docutils literal notranslate"><span class="pre">NUMERIC_VALUE_OUT_OF_RANGE</span></code>, non-ANSI returns NULL.</p></li>
 </ul>
 </section>
+<section id="checkoverflow-internal">
+<h2>CheckOverflow (internal)<a class="headerlink" href="#checkoverflow-internal" title="Link to this heading">#</a></h2>
+<p>Internal decimal wrapper emitted around every decimal <code class="docutils literal notranslate"><span class="pre">+</span> <span class="pre">-</span> <span class="pre">*</span> <span class="pre">/</span></code>, <code class="docutils literal notranslate"><span class="pre">sum</span></code>, and <code class="docutils literal notranslate"><span class="pre">avg</span></code> result to null out (non-ANSI) or raise on (ANSI) values that exceed the declared precision. Native impl: <code class="docutils literal notranslate"><span class="pre">math_funcs/internal/checkoverflow.rs</span></code>.</p>
+<ul class="simple">
+<li><p>Performance (tuned 2026-07-15, PR #4937): both the ANSI and non-ANSI paths share a no-overflow fast path built on <code class="docutils literal notranslate"><span class="pre">is_valid_decimal_precision</span></code>, a small inlined bounds check scanned with <code class="docutils literal notranslate"><span class="pre">all</span></code> (short-circuits at the first overflow). When nothing overflows (the common shape) the input buffers are reused via <code class="docutils literal notranslate"><span class="pre">to_data()</span></code> (cheap Arc metadata clone) instead of allocating through <code class="docutils literal notranslate"><span class="pre">null_if_overflow_precision</span></code> (non-ANSI) or running the heavier per-value <code class="docutils literal notranslate"><span class="pre">validate_decimal_precision</span></code> (ANSI). The ANSI path only falls back to <code class="docutils literal notranslate"><span class="pre">validate_decimal_precision</span></code> when an overflow is present, to build the precise Spark error. ~10% faster on the no-overflow shape, ~17% with nulls, and ~69% faster for ANSI no-overflow (down to parity with non-ANSI); overflow shapes unchanged. Benchmark: <code class="docutils literal notranslate"><span class="pre">benches/check_overflow.rs</span></code>.</p></li>
+</ul>
+</section>
 <section id="abs">
 <h2>abs<a class="headerlink" href="#abs" title="Link to this heading">#</a></h2>
 <ul class="simple">
@@ -978,6 +985,7 @@ under the License.
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#id3"><code class="docutils literal notranslate"><span class="pre">+</span></code></a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#id4"><code class="docutils literal notranslate"><span class="pre">-</span></code></a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#id5"><code class="docutils literal notranslate"><span class="pre">/</span></code></a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#checkoverflow-internal">CheckOverflow (internal)</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#abs">abs</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#acos">acos</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#acosh">acosh</a></li>
