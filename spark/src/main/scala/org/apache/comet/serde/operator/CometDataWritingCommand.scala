@@ -203,7 +203,7 @@ object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec
           throw new SparkException(s"Could not instantiate FileCommitProtocol: ${e.getMessage}")
       }
 
-    CometNativeWriteExec(nativeOp, childPlan, outputPath, committer, jobId)
+    CometNativeWriteExec(nativeOp, childPlan, outputPath, cmd.mode, committer, jobId)
   }
 
   private def parseCompressionCodec(cmd: InsertIntoHadoopFsRelationCommand) = {
