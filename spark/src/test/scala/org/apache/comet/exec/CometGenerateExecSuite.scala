@@ -232,4 +232,158 @@ class CometGenerateExecSuite extends CometTestBase {
     }
   }
 
+  test("posexplode with simple array") {
+    withSQLConf(
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_EXPLODE_ENABLED.key -> "true") {
+      val df = Seq((1, Array(10, 20, 30)), (2, Array(40, 50)), (3, Array(60)))
+        .toDF("id", "arr")
+        .selectExpr("id", "posexplode(arr) as (pos, value)")
+      checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  test("posexplode with empty array") {
+    withSQLConf(
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_EXPLODE_ENABLED.key -> "true") {
+      val df = Seq((1, Array(1, 2)), (2, Array.empty[Int]), (3, Array(3)))
+        .toDF("id", "arr")
+        .selectExpr("id", "posexplode(arr) as (pos, value)")
+      checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  test("posexplode with null array") {
+    withSQLConf(
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_EXPLODE_ENABLED.key -> "true") {
+      val df = Seq((1, Some(Array(1, 2))), (2, None), (3, Some(Array(3))))
+        .toDF("id", "arr")
+        .selectExpr("id", "posexplode(arr) as (pos, value)")
+      checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  test("posexplode_outer with simple array") {
+    withSQLConf(
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
+      CometConf.getOperatorAllowIncompatConfigKey(classOf[GenerateExec]) -> "true",
+      CometConf.COMET_EXEC_EXPLODE_ENABLED.key -> "true") {
+      val df = Seq((1, Array(10, 20, 30)), (2, Array(40, 50)), (3, Array(60)))
+        .toDF("id", "arr")
+        .selectExpr("id", "posexplode_outer(arr) as (pos, value)")
+      checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  test("posexplode with array of strings") {
+    withSQLConf(
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_EXPLODE_ENABLED.key -> "true") {
+      val df = Seq((1, Array("a", "b", "c")), (2, Array("d", "e")), (3, Array("f")))
+        .toDF("id", "arr")
+        .selectExpr("id", "posexplode(arr) as (pos, value)")
+      checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  test("posexplode with nullable elements") {
+    withSQLConf(
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_EXPLODE_ENABLED.key -> "true") {
+      val df = Seq(
+        (1, Array[Option[Int]](Some(1), None, Some(3))),
+        (2, Array[Option[Int]](None, Some(5))),
+        (3, Array[Option[Int]](Some(6))))
+        .toDF("id", "arr")
+        .selectExpr("id", "posexplode(arr) as (pos, value)")
+      checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  test("posexplode with multiple projected columns") {
+    withSQLConf(
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_EXPLODE_ENABLED.key -> "true") {
+      val df =
+        Seq((1, "A", Array(10, 20, 30)), (2, "B", Array(40, 50)), (3, "C", Array(60)))
+          .toDF("id", "name", "arr")
+          .selectExpr("id", "name", "posexplode(arr) as (pos, value)")
+      checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  test("posexplode with map input falls back") {
+    withSQLConf(
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_EXPLODE_ENABLED.key -> "true") {
+      val df = Seq((1, Map("a" -> 1, "b" -> 2)), (2, Map("c" -> 3)))
+        .toDF("id", "map")
+        .selectExpr("id", "posexplode(map) as (pos, key, value)")
+      checkSparkAnswerAndFallbackReason(
+        df,
+        "Comet only supports explode/explode_outer for arrays, not maps")
+    }
+  }
+
+  test("posexplode with array of structs") {
+    withSQLConf(
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_EXPLODE_ENABLED.key -> "true") {
+      val df = Seq(
+        (1, Array((10, "a"), (20, "b"))),
+        (2, Array((30, "c"))),
+        (3, Array.empty[(Int, String)]))
+        .toDF("id", "arr")
+        .selectExpr("id", "posexplode(arr) as (pos, value)")
+        .selectExpr("id", "pos", "value._1 as v1", "value._2 as v2")
+      checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  test("posexplode in lateral view") {
+    withSQLConf(
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_EXPLODE_ENABLED.key -> "true") {
+      withTempView("t") {
+        Seq((1, Array(10, 20, 30)), (2, Array(40, 50)), (3, Array(60)))
+          .toDF("id", "arr")
+          .createOrReplaceTempView("t")
+        val df =
+          sql("SELECT t.id, p.pos, p.col FROM t LATERAL VIEW posexplode(t.arr) p AS pos, col")
+        checkSparkAnswerAndOperator(df)
+      }
+    }
+  }
+
+  test("posexplode of literal array") {
+    withSQLConf(
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_EXPLODE_ENABLED.key -> "true") {
+      val df = Seq(1, 2, 3)
+        .toDF("id")
+        .selectExpr("id", "posexplode(array(100, 200, 300)) as (pos, value)")
+      checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  test("posexplode across batch boundary with small batch size") {
+    // Force ScanExec to emit multiple small batches so that UnnestExec sees the parallel
+    // positions/values lists across batch boundaries. Element values are non-trivial so wrong
+    // alignment between pos and value would be visible in the answer.
+    withSQLConf(
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_EXPLODE_ENABLED.key -> "true",
+      CometConf.COMET_BATCH_SIZE.key -> "4") {
+      val rows = (1 to 12).map { i =>
+        (i, (0 until (i % 5 + 1)).map(j => i * 100 + j).toArray)
+      }
+      val df = rows
+        .toDF("id", "arr")
+        .selectExpr("id", "posexplode(arr) as (pos, value)")
+      checkSparkAnswerAndOperator(df)
+    }
+  }
+
 }

@@ -28,8 +28,8 @@ use arrow::array::{
     builder::{
         ArrayBuilder, BinaryBuilder, BinaryDictionaryBuilder, BooleanBuilder, Date32Builder,
         Decimal128Builder, Float32Builder, Float64Builder, Int16Builder, Int32Builder,
-        Int64Builder, Int8Builder, ListBuilder, MapBuilder, StringBuilder, StringDictionaryBuilder,
-        StructBuilder, TimestampMicrosecondBuilder,
+        Int64Builder, Int8Builder, ListBuilder, MapBuilder, NullBuilder, StringBuilder,
+        StringDictionaryBuilder, StructBuilder, TimestampMicrosecondBuilder,
     },
     types::Int32Type,
     Array, ArrayRef, RecordBatch, RecordBatchOptions,
@@ -266,6 +266,10 @@ pub(super) fn append_field(
         DataType::Date32 => {
             append_field_to_builder!(Date32Builder, |builder: &mut Date32Builder| builder
                 .append_value(row.get_date(idx)));
+        }
+        DataType::Null => {
+            let field_builder = get_field_builder!(struct_builder, NullBuilder, idx);
+            field_builder.append_null();
         }
         DataType::Timestamp(TimeUnit::Microsecond, _) => {
             append_field_to_builder!(
@@ -1148,6 +1152,12 @@ fn append_columns(
                     .append_value(row.get_date(idx))
             );
         }
+        DataType::Null => {
+            let null_builder = downcast_builder_ref!(NullBuilder, builder);
+            for _ in row_start..row_end {
+                null_builder.append_null();
+            }
+        }
         DataType::Timestamp(TimeUnit::Microsecond, _) => {
             append_column_to_builder!(
                 TimestampMicrosecondBuilder,
@@ -1252,6 +1262,7 @@ fn make_builders(
             }
         }
         DataType::Date32 => Box::new(Date32Builder::with_capacity(row_num)),
+        DataType::Null => Box::new(NullBuilder::new()),
         DataType::Timestamp(TimeUnit::Microsecond, _) => {
             Box::new(TimestampMicrosecondBuilder::with_capacity(row_num).with_data_type(dt.clone()))
         }
@@ -1310,7 +1321,7 @@ pub fn process_sorted_row_partition(
     // inside the loop within the method across batches.
     initial_checksum: Option<u32>,
     codec: &CompressionCodec,
-) -> Result<(i64, Option<u32>), CometError> {
+) -> Result<(i64, Option<u32>, i64), CometError> {
     // The current row number we are reading
     let mut current_row = 0;
     // Total number of bytes written
@@ -1339,6 +1350,9 @@ pub fn process_sorted_row_partition(
 
     // Reusable buffer for serialized batch data
     let mut frozen: Vec<u8> = Vec::new();
+
+    // Single ipc_time accumulates encode + compression time across all batches.
+    let ipc_time = Time::default();
 
     while current_row < row_num {
         let n = std::cmp::min(batch_size, row_num - current_row);
@@ -1371,8 +1385,6 @@ pub fn process_sorted_row_partition(
         frozen.clear();
         let mut cursor = Cursor::new(&mut frozen);
 
-        // we do not collect metrics in Native_writeSortedFileNative
-        let ipc_time = Time::default();
         let block_writer = ShuffleBlockWriter::try_new(batch.schema().as_ref(), codec.clone())?;
         written += block_writer.write_batch(&batch, &mut cursor, &ipc_time)?;
 
@@ -1384,7 +1396,11 @@ pub fn process_sorted_row_partition(
         current_row += n;
     }
 
-    Ok((written as i64, current_checksum.map(|c| c.finalize())))
+    Ok((
+        written as i64,
+        current_checksum.map(|c| c.finalize()),
+        ipc_time.value() as i64,
+    ))
 }
 
 fn builder_to_array(
@@ -1492,5 +1508,32 @@ mod test {
         let struct_array = struct_builder.finish();
         assert_eq!(struct_array.len(), 1);
         assert!(struct_array.is_null(0));
+    }
+
+    // Spark's `UnsafeRow.getUTF8String` performs no UTF-8 validation, and
+    // `cast(BinaryType -> StringType)` is a zero-copy reinterpret -- so a StringType field can
+    // hold arbitrary non-UTF-8 bytes. `get_string` must not panic on those; it should decode
+    // lossily, matching Spark treating the bytes as opaque.
+    #[test]
+    fn get_string_tolerates_non_utf8_bytes() {
+        // One string field. Row layout: 8-byte null bitset + an 8-byte (offset<<32 | len) slot,
+        // then the variable-length region. 8-byte aligned to match a real Spark UnsafeRow.
+        #[repr(align(8))]
+        struct Aligned([u8; 24]);
+        let mut data = Aligned([0u8; 24]);
+        // Invalid UTF-8 bytes at offset 16: 0xFF, 0xFE, then ASCII 'A'.
+        data.0[16] = 0xFF;
+        data.0[17] = 0xFE;
+        data.0[18] = b'A';
+        // Field 0 slot: offset = 16, len = 3.
+        let offset_and_len: i64 = (16i64 << 32) | 3;
+        data.0[8..16].copy_from_slice(&offset_and_len.to_ne_bytes());
+
+        let mut row = SparkUnsafeRow::new_with_num_fields(1);
+        row.point_to_slice(&data.0);
+
+        // Strict `from_utf8(..).unwrap()` panics here; lossy decode replaces each invalid byte
+        // with U+FFFD. `&*` works whether get_string returns `&str` or `Cow<str>`.
+        assert_eq!(&*row.get_string(0), "\u{FFFD}\u{FFFD}A");
     }
 }

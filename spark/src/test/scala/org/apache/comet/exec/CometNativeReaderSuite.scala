@@ -24,16 +24,17 @@ import org.scalatest.Tag
 
 import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.fs.Path
-import org.apache.parquet.hadoop.ParquetWriter
+import org.apache.parquet.hadoop.{ParquetFileReader, ParquetWriter}
 import org.apache.parquet.hadoop.api.WriteSupport
 import org.apache.parquet.hadoop.api.WriteSupport.WriteContext
 import org.apache.parquet.io.api.RecordConsumer
 import org.apache.parquet.schema.MessageTypeParser
 import org.apache.spark.sql.{CometTestBase, Row}
+import org.apache.spark.sql.comet.CometNativeScanExec
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions.{array, col}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{IntegerType, StringType, StructType}
+import org.apache.spark.sql.types.{IntegerType, LongType, NullType, StringType, StructType}
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.isSpark41Plus
@@ -42,17 +43,15 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
 
   override protected def test(testName: String, testTags: Tag*)(testFun: => Any)(implicit
       pos: Position): Unit = {
-    Seq(CometConf.SCAN_NATIVE_DATAFUSION, CometConf.SCAN_NATIVE_ICEBERG_COMPAT).foreach(scan =>
-      super.test(s"$testName - $scan", testTags: _*) {
-        withSQLConf(
-          CometConf.COMET_EXEC_ENABLED.key -> "true",
-          SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
-          CometConf.COMET_ENABLED.key -> "true",
-          CometConf.COMET_EXPLAIN_FALLBACK_ENABLED.key -> "false",
-          CometConf.COMET_NATIVE_SCAN_IMPL.key -> scan) {
-          testFun
-        }
-      })
+    super.test(testName, testTags: _*) {
+      withSQLConf(
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXPLAIN_FALLBACK_ENABLED.key -> "false") {
+        testFun
+      }
+    }
   }
 
   test("native reader case sensitivity") {
@@ -389,7 +388,6 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
   }
 
   test("native reader - select struct field with user defined schema") {
-    assume(!isSpark41Plus, "https://github.com/apache/datafusion-comet/issues/4098")
     // extract existing A column
     var readSchema = new StructType().add(
       "c0",
@@ -685,6 +683,107 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
     }
   }
 
+  test("issue #4136: struct with all requested fields missing in file") {
+    // SPARK-53535 (Spark 4.1) added LEGACY_PARQUET_RETURN_NULL_STRUCT_IF_ALL_FIELDS_MISSING.
+    // With the new default (false), Spark's vectorized reader appends a "marker" leaf field to
+    // the Parquet read schema so it can distinguish a null parent row from a non-null parent
+    // whose requested fields are all missing from the file, then truncates the marker out of
+    // the ColumnarBatch. Comet's native scans don't implement this, so they conflate the two
+    // cases and return Row(null) for non-null parents.
+    assume(
+      isSpark41Plus,
+      "LEGACY_PARQUET_RETURN_NULL_STRUCT_IF_ALL_FIELDS_MISSING was introduced in Spark 4.1")
+
+    val tableSchema = new StructType().add(
+      "_1",
+      new StructType()
+        .add("_1", IntegerType)
+        .add("_2", StringType),
+      nullable = true)
+
+    // Read schema requests _3, _4 — fields that don't exist in the file's _1 struct.
+    val readSchema = new StructType().add(
+      "_1",
+      new StructType()
+        .add("_3", IntegerType, nullable = true)
+        .add("_4", LongType, nullable = true),
+      nullable = true)
+
+    val data = java.util.Arrays.asList(
+      Row(Row(1, "a")), // non-null parent, requested fields missing in file
+      Row(Row(2, null)), // non-null parent, requested fields missing in file
+      Row(null) // null parent
+    )
+
+    withTempPath { path =>
+      spark
+        .createDataFrame(data, tableSchema)
+        .write
+        .parquet(path.getCanonicalPath)
+
+      // Mirror the toggles in Spark's `vectorized reader: missing all struct fields` test in
+      // ParquetIOSuite, including off-heap on/off and the explicit nested-column vectorized
+      // reader flag. We've seen CI fail on the off-heap branch when the on-heap branch passes.
+      for {
+        offheapEnabled <- Seq("true", "false")
+        legacy <- Seq("true", "false")
+      } withSQLConf(
+        "spark.sql.parquet.enableNestedColumnVectorizedReader" -> "true",
+        "spark.sql.legacy.parquet.returnNullStructIfAllFieldsMissing" -> legacy,
+        "spark.sql.columnVector.offheap.enabled" -> offheapEnabled) {
+        val df = spark.read.schema(readSchema).parquet(path.getCanonicalPath)
+        checkSparkAnswer(df)
+      }
+    }
+  }
+
+  test("issue #4136: struct with only NullType fields in file (SPARK-54220)") {
+    // The upstream SPARK-54220 test writes `Tuple1((null, null))` which is inferred as a struct
+    // of NullType fields on disk; reading with a schema that asks for Int/String on top of
+    // NullType fails at parquet decode time because Spark encodes NullType as
+    // `BOOLEAN + LogicalType::Unknown` but parquet-rs only accepts `INT32 + Unknown`. See
+    // #4199 for the upstream compatibility gap.
+    assume(
+      false,
+      "Skipped until parquet-rs accepts BOOLEAN + Unknown for NullType " +
+        "(https://github.com/apache/datafusion-comet/issues/4199)")
+
+    val tableSchema = new StructType().add(
+      "_1",
+      new StructType()
+        .add("_1", NullType)
+        .add("_2", NullType),
+      nullable = true)
+
+    val readSchema = new StructType().add(
+      "_1",
+      new StructType()
+        .add("_3", IntegerType, nullable = true)
+        .add("_4", StringType, nullable = true),
+      nullable = true)
+
+    val data =
+      java.util.Arrays.asList(Row(Row(null, null)), Row(Row(null, null)), Row(null))
+
+    withTempPath { path =>
+      spark
+        .createDataFrame(data, tableSchema)
+        .write
+        .parquet(path.getCanonicalPath)
+
+      for {
+        offheapEnabled <- Seq("true", "false")
+        legacy <- Seq("true", "false")
+      } withSQLConf(
+        "spark.sql.parquet.enableNestedColumnVectorizedReader" -> "true",
+        "spark.sql.legacy.parquet.returnNullStructIfAllFieldsMissing" -> legacy,
+        "spark.sql.columnVector.offheap.enabled" -> offheapEnabled) {
+        val df = spark.read.schema(readSchema).parquet(path.getCanonicalPath)
+        checkSparkAnswer(df)
+      }
+    }
+  }
+
   /** Write a Parquet file using a raw RecordConsumer for full schema control. */
   private def writeDirect(
       path: String,
@@ -700,6 +799,83 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
     val writer = new Builder().build()
     try recordWriters.foreach(writer.write)
     finally writer.close()
+  }
+
+  test("native scan does not duplicate a row group split by byte range") {
+    // Mirrors the native Iceberg scan duplication bug (#4590): a single-row-group Parquet
+    // file split into many sub-row-group byte ranges must still return each row once.
+    withTempPath { path =>
+      // One row group, one matching row. payload pads the file so it spans many splits.
+      spark
+        .sql("SELECT CAST(0 AS INT) AS id, repeat('x', 4096) AS payload")
+        .coalesce(1)
+        .write
+        .mode("overwrite")
+        .parquet(path.toString)
+
+      withSQLConf(
+        // Force Spark to split the single file into many sub-row-group byte ranges.
+        SQLConf.FILES_MAX_PARTITION_BYTES.key -> "64",
+        SQLConf.FILES_OPEN_COST_IN_BYTES.key -> "64") {
+        // Guard the scenario: without multiple splits the test proves nothing about
+        // midpoint-vs-overlap row group assignment.
+        val numParts = spark.read.parquet(path.toString).select("id").rdd.getNumPartitions
+        assert(numParts > 1, s"expected the file to be split into >1 partition, got $numParts")
+
+        val df = spark.read.parquet(path.toString).where("id = 0").select("id")
+        val rows = df.collect()
+        assert(rows.length == 1, s"Expected 1 row, got ${rows.length}: ${rows.mkString(", ")}")
+      }
+    }
+  }
+
+  test("row-group statistics pruning fires for native Parquet scan dataFilters") {
+    // Regression test for the identity-cast pruning gap. DataFusion's default
+    // PhysicalExprAdapter inserts a CastExpr around Column refs whenever the logical
+    // and physical Arrow Fields differ at all, including metadata or nullability with
+    // identical data types. Comet then translates that CastExpr into a Spark Cast,
+    // which DataFusion's pruning-predicate analyzer cannot peel back to a column,
+    // so build_pruning_predicates returns None and no row groups are pruned. The
+    // fix skips the wrap when source and target types are equal.
+    withTempPath { dir =>
+      withSQLConf(SQLConf.LEAF_NODE_DEFAULT_PARALLELISM.key -> "1") {
+        spark
+          .range(0, 1000)
+          .toDF("c1")
+          .repartition(1)
+          .write
+          .option("parquet.block.size", "1024")
+          .format("parquet")
+          .save(dir.toString)
+
+        val parquetFile = dir
+          .listFiles()
+          .find(_.getName.endsWith(".parquet"))
+          .getOrElse(fail("No parquet file was written"))
+        val reader = ParquetFileReader.open(
+          org.apache.parquet.hadoop.util.HadoopInputFile
+            .fromPath(new Path(parquetFile.getAbsolutePath), spark.sessionState.newHadoopConf()))
+        val numRowGroups =
+          try reader.getRowGroups.size()
+          finally reader.close()
+        assert(numRowGroups > 1, s"Test setup needs >1 row groups, got $numRowGroups")
+
+        val df = spark.read.parquet(dir.toString).where("c1 > 500")
+        val (_, cometPlan) = checkSparkAnswerAndOperator(df)
+        val nativeScans = cometPlan.collect { case n: CometNativeScanExec => n }
+        assert(nativeScans.nonEmpty, "Expected a CometNativeScanExec")
+        val metrics = nativeScans.head.metrics
+        val pruned = metrics("row_groups_pruned_statistics").value
+        val matched = metrics("row_groups_matched_statistics").value
+        assert(
+          pruned + matched == numRowGroups,
+          s"pruned ($pruned) + matched ($matched) should equal numRowGroups ($numRowGroups)")
+        assert(
+          pruned > 0,
+          "Row-group statistics pruning did not fire " +
+            s"(pruned=$pruned, matched=$matched of $numRowGroups total)")
+      }
+    }
   }
 }
 

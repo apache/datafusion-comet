@@ -21,21 +21,12 @@ package org.apache.comet.objectstore
 
 import java.net.URI
 
-import scala.collection.mutable
-
-import org.scalatest.BeforeAndAfterEach
 import org.scalatest.funsuite.AnyFunSuite
 import org.scalatest.matchers.should.Matchers
 
 import org.apache.hadoop.conf.Configuration
 
-import org.apache.comet.rules.CometScanRule
-
-class NativeConfigSuite extends AnyFunSuite with Matchers with BeforeAndAfterEach {
-
-  override protected def beforeEach(): Unit = {
-    CometScanRule.configValidityMap.clear()
-  }
+class NativeConfigSuite extends AnyFunSuite with Matchers {
 
   test("extractObjectStoreOptions - multiple cloud provider configurations") {
     val hadoopConf = new Configuration()
@@ -80,60 +71,41 @@ class NativeConfigSuite extends AnyFunSuite with Matchers with BeforeAndAfterEac
     assert(unsupportedOptions.isEmpty, "Unsupported scheme should return empty options")
   }
 
-  test("validate object store config - no provider") {
+  test("extractObjectStoreOptions - ABFS forwards Hadoop fs.azure.* auth keys") {
+    // Hadoop ABFS authentication (account keys, OAuth client credentials, Workload
+    // Identity / MSI token providers, SAS tokens) all live under fs.azure.*, not
+    // fs.abfs.*. Earlier versions of NativeConfig only forwarded fs.abfs.* for abfs[s]
+    // schemes, which silently dropped every real credential. Verify the abfs[s] prefix
+    // list now includes fs.azure.*.
     val hadoopConf = new Configuration()
-    validate(hadoopConf)
-  }
+    hadoopConf.set("fs.azure.account.auth.type.myacct.dfs.core.windows.net", "OAuth")
+    hadoopConf.set(
+      "fs.azure.account.oauth.provider.type.myacct.dfs.core.windows.net",
+      "org.apache.hadoop.fs.azurebfs.oauth2.WorkloadIdentityTokenProvider")
+    hadoopConf.set("fs.azure.account.oauth2.client.id.myacct.dfs.core.windows.net", "client-123")
+    hadoopConf.set("fs.azure.account.oauth2.msi.tenant.myacct.dfs.core.windows.net", "tenant-abc")
+    hadoopConf.set(
+      "fs.azure.account.oauth2.token.file.myacct.dfs.core.windows.net",
+      "/var/run/secrets/azure/tokens/azure-identity-token")
 
-  test("validate object store config - valid providers") {
-    val hadoopConf = new Configuration()
-    val provider1 = "com.amazonaws.auth.EnvironmentVariableCredentialsProvider"
-    val provider2 = "com.amazonaws.auth.WebIdentityTokenCredentialsProvider"
-    hadoopConf.set("fs.s3a.aws.credentials.provider", Seq(provider1, provider2).mkString(","))
-    validate(hadoopConf)
-  }
-
-  test("validate object store config - invalid provider") {
-    val hadoopConf = new Configuration()
-    hadoopConf.set("fs.s3a.aws.credentials.provider", "invalid")
-    val fallbackReasons = validate(hadoopConf)
-    val expectedError = "Unsupported credential provider: invalid"
-    assert(fallbackReasons.exists(_.contains(expectedError)))
-  }
-
-  test("validate object store config - mixed anonymous providers") {
-    val hadoopConf = new Configuration()
-    val provider1 = "com.amazonaws.auth.AnonymousAWSCredentials"
-    val provider2 = "software.amazon.awssdk.auth.credentials.AnonymousCredentialsProvider"
-    hadoopConf.set("fs.s3a.aws.credentials.provider", Seq(provider1, provider2).mkString(","))
-    val fallbackReasons = validate(hadoopConf)
-    val expectedError =
-      "Anonymous credential provider cannot be mixed with other credential providers"
-    assert(fallbackReasons.exists(_.contains(expectedError)))
-  }
-
-  test("validity cache") {
-    val hadoopConf = new Configuration()
-    val provider1 = "com.amazonaws.auth.AnonymousAWSCredentials"
-    val provider2 = "software.amazon.awssdk.auth.credentials.AnonymousCredentialsProvider"
-    hadoopConf.set("fs.s3a.aws.credentials.provider", Seq(provider1, provider2).mkString(","))
-
-    assert(CometScanRule.configValidityMap.isEmpty)
-    for (_ <- 0 until 5) {
-      assert(validate(hadoopConf).nonEmpty)
-      assert(CometScanRule.configValidityMap.size == 1)
+    Seq(
+      "abfs://data@myacct.dfs.core.windows.net/path/file.parquet",
+      "abfss://data@myacct.dfs.core.windows.net/path/file.parquet").foreach { path =>
+      val opts = NativeConfig.extractObjectStoreOptions(hadoopConf, new URI(path))
+      assert(
+        opts("fs.azure.account.oauth2.client.id.myacct.dfs.core.windows.net") == "client-123",
+        s"client id should be forwarded for $path")
+      assert(
+        opts("fs.azure.account.oauth2.msi.tenant.myacct.dfs.core.windows.net") == "tenant-abc",
+        s"tenant id should be forwarded for $path")
+      assert(
+        opts("fs.azure.account.oauth2.token.file.myacct.dfs.core.windows.net") ==
+          "/var/run/secrets/azure/tokens/azure-identity-token",
+        s"federated token file should be forwarded for $path")
+      assert(
+        opts("fs.azure.account.oauth.provider.type.myacct.dfs.core.windows.net") ==
+          "org.apache.hadoop.fs.azurebfs.oauth2.WorkloadIdentityTokenProvider",
+        s"oauth provider type should be forwarded for $path")
     }
-
-    // set the same providers but in a different order
-    hadoopConf.set("fs.s3a.aws.credentials.provider", Seq(provider2, provider1).mkString(","))
-    assert(validate(hadoopConf).nonEmpty)
-    assert(CometScanRule.configValidityMap.size == 2)
-  }
-
-  private def validate(hadoopConf: Configuration): Set[String] = {
-    val path = "s3a://path/to/file.parquet"
-    val fallbackReasons = mutable.ListBuffer[String]()
-    CometScanRule.validateObjectStoreConfig(path, hadoopConf, fallbackReasons)
-    fallbackReasons.toSet
   }
 }

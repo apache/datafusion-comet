@@ -21,6 +21,26 @@ under the License.
 
 The following benchmarks were performed on an EKS cluster (`r6i.24xlarge` instances with EBS storage) with data stored in S3.
 
+## Benchmark Results
+
+Total time to run all queries (lower is better).
+
+![](../../_static/images/benchmark-results/0.16.0/tpch_allqueries_with_tuned.png)
+
+The following charts are based on the tuned run using hash join.
+
+Per-query breakdown showing the relative performance of Spark and Comet.
+
+![](../../_static/images/benchmark-results/0.16.0/tpch_queries_compare.png)
+
+How much Comet accelerates each query in relative terms.
+
+![](../../_static/images/benchmark-results/0.16.0/tpch_queries_speedup_rel.png)
+
+How much Comet accelerates each query in absolute terms.
+
+![](../../_static/images/benchmark-results/0.16.0/tpch_queries_speedup_abs.png)
+
 ## Configuration
 
 Common:
@@ -51,35 +71,9 @@ spark.memory.offHeap.enabled=true
 spark.memory.offHeap.size=32G
 ```
 
-Comet (Tuned):
+### Comet (Tuned)
 
 ```properties
-spark.executor.memory=32G
-spark.executor.memoryOverhead=10G
-spark.memory.offHeap.enabled=true
-spark.memory.offHeap.size=32G
 spark.comet.exec.replaceSortMergeJoin=true
 spark.comet.memoryPool.fraction=0.8
 ```
-
-## Benchmark Results
-
-The following chart shows benchmark results comparing Spark to Comet, both with Comet's default settings, and with Hash Join enabled in Comet.
-
-Comet's Hash Join does not support spilling yet, so it isn't suitable for all workloads.
-
-![](../../_static/images/benchmark-results/0.15.0/tpch_allqueries_with_tuned.png)
-
-## Comet (with Hash Join enabled)
-
-Here is a breakdown showing relative performance of Spark and Comet for each query.
-
-![](../../_static/images/benchmark-results/0.15.0/tpch_queries_compare.png)
-
-The following chart shows how much Comet currently accelerates each query from the benchmark in relative terms.
-
-![](../../_static/images/benchmark-results/0.15.0/tpch_queries_speedup_rel.png)
-
-The following chart shows how much Comet currently accelerates each query from the benchmark in absolute terms.
-
-![](../../_static/images/benchmark-results/0.15.0/tpch_queries_speedup_abs.png)

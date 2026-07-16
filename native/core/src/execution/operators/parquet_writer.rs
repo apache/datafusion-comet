@@ -18,7 +18,6 @@
 //! Parquet writer operator for writing RecordBatches to Parquet files
 
 use std::{
-    any::Any,
     collections::HashMap,
     fmt,
     fmt::{Debug, Formatter},
@@ -404,10 +403,6 @@ impl DisplayAs for ParquetWriterExec {
 
 #[async_trait]
 impl ExecutionPlan for ParquetWriterExec {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn name(&self) -> &str {
         "ParquetWriterExec"
     }
@@ -556,10 +551,11 @@ impl ExecutionPlan for ParquetWriterExec {
             bytes_written.add(file_size as usize);
             rows_written.add(total_rows as usize);
 
-            // Log metadata for debugging
-            eprintln!(
+            log::debug!(
                 "Wrote Parquet file: path={}, size={}, rows={}",
-                part_file, file_size, total_rows
+                part_file,
+                file_size,
+                total_rows
             );
 
             // Return empty stream to indicate completion

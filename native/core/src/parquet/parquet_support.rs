@@ -38,6 +38,7 @@ use datafusion_comet_spark_expr::EvalMode;
 use log::debug;
 use object_store::path::Path;
 use object_store::{parse_url, ObjectStore};
+use parquet::arrow::PARQUET_FIELD_ID_META_KEY;
 use std::collections::HashMap;
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -73,12 +74,31 @@ pub struct SparkParquetOptions {
     pub allow_incompat: bool,
     /// Support casting unsigned ints to signed ints (used by Parquet SchemaAdapter)
     pub allow_cast_unsigned_ints: bool,
-    /// Whether to always represent decimals using 128 bits. If false, the native reader may represent decimals using 32 or 64 bits, depending on the precision.
-    pub use_decimal_128: bool,
     /// Whether to read dates/timestamps that were written in the legacy hybrid Julian + Gregorian calendar as it is. If false, throw exceptions instead. If the spark type is TimestampNTZ, this should be true.
     pub use_legacy_date_timestamp_or_ntz: bool,
     // Whether schema field names are case sensitive
     pub case_sensitive: bool,
+    /// SPARK-53535 (Spark 4.1+): when reading a struct whose requested fields are all
+    /// missing in the Parquet file, true returns the entire struct as null (pre-4.1
+    /// legacy behavior); false preserves the parent struct's nullness from the file
+    /// so non-null parents return a struct of all-null fields.
+    pub return_null_struct_if_all_fields_missing: bool,
+    /// When true, resolve fields by parquet.field.id metadata instead of name
+    /// (mirrors Spark's `spark.sql.parquet.fieldId.read.enabled`). Only takes effect
+    /// when both physical and logical fields actually carry IDs.
+    pub use_field_id: bool,
+    /// When false (Spark's default), reading a file that has no field ids while the
+    /// requested schema does carry ids raises a runtime error rather than silently
+    /// producing nulls (mirrors `spark.sql.parquet.fieldId.read.ignoreMissing`).
+    pub ignore_missing_field_id: bool,
+    /// Whether type promotion (schema evolution) is allowed, e.g. INT32 -> INT64,
+    /// FLOAT -> DOUBLE. Mirrors spark.comet.schemaEvolution.enabled.
+    pub allow_type_promotion: bool,
+    /// When true, reading a Parquet TimestampLTZ column as TimestampNTZ is
+    /// permitted (Spark 4.0+, SPARK-47447); when false, it is rejected
+    /// (Spark 3.x, SPARK-36182). Mirrors Comet's per-Spark-version constant
+    /// in ShimCometConf.
+    pub allow_timestamp_ltz_to_ntz: bool,
 }
 
 impl SparkParquetOptions {
@@ -88,9 +108,13 @@ impl SparkParquetOptions {
             timezone: timezone.to_string(),
             allow_incompat,
             allow_cast_unsigned_ints: false,
-            use_decimal_128: false,
             use_legacy_date_timestamp_or_ntz: false,
             case_sensitive: false,
+            return_null_struct_if_all_fields_missing: true,
+            use_field_id: false,
+            ignore_missing_field_id: false,
+            allow_type_promotion: false,
+            allow_timestamp_ltz_to_ntz: false,
         }
     }
 
@@ -100,9 +124,13 @@ impl SparkParquetOptions {
             timezone: "".to_string(),
             allow_incompat,
             allow_cast_unsigned_ints: false,
-            use_decimal_128: false,
             use_legacy_date_timestamp_or_ntz: false,
             case_sensitive: false,
+            return_null_struct_if_all_fields_missing: true,
+            use_field_id: false,
+            ignore_missing_field_id: false,
+            allow_type_promotion: false,
+            allow_timestamp_ltz_to_ntz: false,
         }
     }
 }
@@ -233,6 +261,14 @@ fn parquet_convert_array(
     }
 }
 
+/// Read the Parquet field id stored under arrow-rs's `PARQUET_FIELD_ID_META_KEY`.
+fn field_id(field: &arrow::datatypes::Field) -> Option<i32> {
+    field
+        .metadata()
+        .get(PARQUET_FIELD_ID_META_KEY)
+        .and_then(|v| v.parse::<i32>().ok())
+}
+
 /// Cast between struct types based on logic in
 /// `org.apache.spark.sql.catalyst.expressions.Cast#castStruct`.
 fn parquet_convert_struct_to_struct(
@@ -243,49 +279,75 @@ fn parquet_convert_struct_to_struct(
 ) -> DataFusionResult<ArrayRef> {
     match (from_type, to_type) {
         (DataType::Struct(from_fields), DataType::Struct(to_fields)) => {
-            // if dest and target schemas has any column in common
-            let mut field_overlap = false;
-            // TODO some of this logic may be specific to converting Parquet to Spark
+            // Match `from` (file) fields to `to` (logical) fields. Mirrors Spark's
+            // `clipParquetGroupFields`: when the logical struct carries Parquet field IDs
+            // anywhere, ID-bearing logical fields match ONLY by ID; non-ID-bearing fields
+            // fall back to name match. When no logical field carries an ID, fall back to
+            // name match across the board.
+            let should_match_by_id =
+                parquet_options.use_field_id && to_fields.iter().any(|f| field_id(f).is_some());
+
+            let from_id_to_index: HashMap<i32, usize> = if should_match_by_id {
+                let mut map = HashMap::new();
+                for (i, field) in from_fields.iter().enumerate() {
+                    if let Some(id) = field_id(field) {
+                        map.entry(id).or_insert(i);
+                    }
+                }
+                map
+            } else {
+                HashMap::new()
+            };
+
+            let normalize_name = |name: &str| -> String {
+                if parquet_options.case_sensitive {
+                    name.to_string()
+                } else {
+                    name.to_lowercase()
+                }
+            };
             let mut field_name_to_index_map = HashMap::new();
             for (i, field) in from_fields.iter().enumerate() {
-                if parquet_options.case_sensitive {
-                    field_name_to_index_map.insert(field.name().clone(), i);
-                } else {
-                    field_name_to_index_map.insert(field.name().to_lowercase(), i);
-                }
+                field_name_to_index_map.insert(normalize_name(field.name()), i);
             }
             assert_eq!(field_name_to_index_map.len(), from_fields.len());
+
+            let mut field_overlap = false;
             let mut cast_fields: Vec<ArrayRef> = Vec::with_capacity(to_fields.len());
-            for i in 0..to_fields.len() {
-                // Fields in the to_type schema may not exist in the from_type schema
-                // i.e. the required schema may have fields that the file does not
-                // have
-                let key = if parquet_options.case_sensitive {
-                    to_fields[i].name().clone()
-                } else {
-                    to_fields[i].name().to_lowercase()
+            for to_field in to_fields.iter() {
+                let from_index = match (should_match_by_id, field_id(to_field)) {
+                    // Spark treats a missing ID match as a missing column rather than
+                    // falling back to name match.
+                    (true, Some(id)) => from_id_to_index.get(&id).copied(),
+                    _ => field_name_to_index_map
+                        .get(&normalize_name(to_field.name()))
+                        .copied(),
                 };
-                if field_name_to_index_map.contains_key(&key) {
-                    let from_index = field_name_to_index_map[&key];
-                    let cast_field = parquet_convert_array(
+
+                if let Some(from_index) = from_index {
+                    cast_fields.push(parquet_convert_array(
                         Arc::clone(array.column(from_index)),
-                        to_fields[i].data_type(),
+                        to_field.data_type(),
                         parquet_options,
-                    )?;
-                    cast_fields.push(cast_field);
+                    )?);
                     field_overlap = true;
                 } else {
-                    cast_fields.push(new_null_array(to_fields[i].data_type(), array.len()));
+                    cast_fields.push(new_null_array(to_field.data_type(), array.len()));
                 }
             }
 
-            // If target schema doesn't contain any of the existing fields
-            // mark such a column in array as NULL
-            let nulls = if field_overlap {
-                array.nulls().cloned()
-            } else {
-                Some(NullBuffer::new_null(array.len()))
-            };
+            // When the file's struct contains none of the requested fields, the
+            // returned validity buffer depends on Spark's
+            // `spark.sql.legacy.parquet.returnNullStructIfAllFieldsMissing` (SPARK-53535,
+            // Spark 4.1+). Legacy mode marks the whole column null; the new default
+            // preserves the file's parent-row nullness so non-null parents materialize
+            // as a struct of all-null fields.
+            let nulls =
+                if !field_overlap && parquet_options.return_null_struct_if_all_fields_missing {
+                    Some(NullBuffer::new_null(array.len()))
+                } else {
+                    array.nulls().cloned()
+                };
 
             Ok(Arc::new(StructArray::new(
                 to_fields.clone(),
@@ -372,22 +434,9 @@ pub fn is_hdfs_scheme(url: &Url, object_store_configs: &HashMap<String, String>)
     }
 }
 
-// Creates an HDFS object store from a URL using the native HDFS implementation
-#[cfg(all(feature = "hdfs", not(feature = "hdfs-opendal")))]
-fn create_hdfs_object_store(
-    url: &Url,
-) -> Result<(Box<dyn ObjectStore>, Path), object_store::Error> {
-    match datafusion_comet_objectstore_hdfs::object_store::hdfs::HadoopFileSystem::new(url.as_ref())
-    {
-        Some(object_store) => {
-            let path = object_store.get_path(url.as_str());
-            Ok((Box::new(object_store), path))
-        }
-        _ => Err(object_store::Error::Generic {
-            store: "HadoopFileSystem",
-            source: "Could not create hdfs object store".into(),
-        }),
-    }
+/// Check if the scheme is an Azure ABFS URL.
+fn is_azure_scheme(scheme: &str) -> bool {
+    matches!(scheme, "abfs" | "abfss")
 }
 
 // Creates an OpenDAL HDFS Operator from a URL with optional configuration
@@ -437,7 +486,7 @@ fn get_name_node_uri(url: &Url) -> Result<String, object_store::Error> {
 }
 
 // Stub implementation when HDFS support is not enabled
-#[cfg(all(not(feature = "hdfs"), not(feature = "hdfs-opendal")))]
+#[cfg(not(feature = "hdfs-opendal"))]
 fn create_hdfs_object_store(
     _url: &Url,
 ) -> Result<(Box<dyn ObjectStore>, Path), object_store::Error> {
@@ -544,6 +593,8 @@ pub(crate) fn prepare_object_store_with_configs(
                 create_hdfs_object_store(&url)
             } else if scheme == "s3" {
                 objectstore::s3::create_store(&url, object_store_configs, Duration::from_secs(300))
+            } else if is_azure_scheme(scheme) {
+                objectstore::azure::create_store(&url, object_store_configs)
             } else {
                 parse_url(&url)
             }
@@ -564,39 +615,24 @@ pub(crate) fn prepare_object_store_with_configs(
 
 #[cfg(test)]
 mod tests {
-    #[cfg(any(
-        all(not(feature = "hdfs"), not(feature = "hdfs-opendal")),
-        feature = "hdfs"
-    ))]
+    #[cfg(not(feature = "hdfs-opendal"))]
     use datafusion::execution::object_store::ObjectStoreUrl;
-    #[cfg(any(
-        all(not(feature = "hdfs"), not(feature = "hdfs-opendal")),
-        feature = "hdfs"
-    ))]
+    #[cfg(not(feature = "hdfs-opendal"))]
     use datafusion::execution::runtime_env::RuntimeEnv;
-    #[cfg(any(
-        all(not(feature = "hdfs"), not(feature = "hdfs-opendal")),
-        feature = "hdfs"
-    ))]
+    #[cfg(not(feature = "hdfs-opendal"))]
     use object_store::path::Path;
-    #[cfg(any(
-        all(not(feature = "hdfs"), not(feature = "hdfs-opendal")),
-        feature = "hdfs"
-    ))]
+    #[cfg(not(feature = "hdfs-opendal"))]
     use std::sync::Arc;
-    #[cfg(any(
-        all(not(feature = "hdfs"), not(feature = "hdfs-opendal")),
-        feature = "hdfs"
-    ))]
+    #[cfg(not(feature = "hdfs-opendal"))]
     use url::Url;
 
-    #[cfg(all(not(feature = "hdfs"), not(feature = "hdfs-opendal")))]
+    #[cfg(not(feature = "hdfs-opendal"))]
     use crate::execution::operators::ExecutionError;
-    #[cfg(all(not(feature = "hdfs"), not(feature = "hdfs-opendal")))]
+    #[cfg(not(feature = "hdfs-opendal"))]
     use std::collections::HashMap;
 
     /// Parses the url, registers the object store, and returns a tuple of the object store url and object store path
-    #[cfg(all(not(feature = "hdfs"), not(feature = "hdfs-opendal")))]
+    #[cfg(not(feature = "hdfs-opendal"))]
     pub(crate) fn prepare_object_store(
         runtime_env: Arc<RuntimeEnv>,
         url: String,
@@ -605,18 +641,7 @@ mod tests {
         prepare_object_store_with_configs(runtime_env, url, &HashMap::new())
     }
 
-    /// Parses the url, registers the object store, and returns a tuple of the object store url and object store path
-    #[cfg(feature = "hdfs")]
-    pub(crate) fn prepare_object_store(
-        runtime_env: Arc<RuntimeEnv>,
-        url: String,
-    ) -> Result<(ObjectStoreUrl, Path), crate::execution::operators::ExecutionError> {
-        use crate::parquet::parquet_support::prepare_object_store_with_configs;
-        use std::collections::HashMap;
-        prepare_object_store_with_configs(runtime_env, url, &HashMap::new())
-    }
-
-    #[cfg(all(not(feature = "hdfs"), not(feature = "hdfs-opendal")))]
+    #[cfg(not(feature = "hdfs-opendal"))]
     #[test]
     fn test_prepare_object_store() {
         use crate::execution::operators::ExecutionError;
@@ -657,24 +682,5 @@ mod tests {
                 }
             }
         }
-    }
-
-    #[test]
-    #[cfg(feature = "hdfs")]
-    fn test_prepare_object_store() {
-        // we use a local file system url instead of an hdfs url because the latter requires
-        // a running namenode
-        let hdfs_url = "file:///comet/spark-warehouse/part-00000.snappy.parquet";
-        let expected: (ObjectStoreUrl, Path) = (
-            ObjectStoreUrl::parse("file://").unwrap(),
-            Path::from("/comet/spark-warehouse/part-00000.snappy.parquet"),
-        );
-
-        let url = &Url::parse(hdfs_url).unwrap();
-        let res = prepare_object_store(Arc::new(RuntimeEnv::default()), url.to_string());
-
-        let res = res.unwrap();
-        assert_eq!(res.0, expected.0);
-        assert_eq!(res.1, expected.1);
     }
 }

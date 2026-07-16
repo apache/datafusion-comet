@@ -19,4 +19,4 @@ under the License.
 
 # Apache DataFusion Comet Changelog
 
-Comprehensive changelogs for each release are available [here](dev/changelog).
+Comprehensive changelogs for each release are available [here](docs/source/changelog).

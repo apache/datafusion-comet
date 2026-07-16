@@ -46,9 +46,7 @@ class CometNativeColumnarToRowSuite extends CometTestBase with AdaptiveSparkPlan
   override protected def test(testName: String, testTags: Tag*)(testFun: => Any)(implicit
       pos: Position): Unit = {
     super.test(testName, testTags: _*) {
-      withSQLConf(
-        CometConf.COMET_NATIVE_COLUMNAR_TO_ROW_ENABLED.key -> "true",
-        CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_AUTO) {
+      withSQLConf(CometConf.COMET_NATIVE_COLUMNAR_TO_ROW_ENABLED.key -> "true") {
         testFun
       }
     }
@@ -494,9 +492,12 @@ class CometNativeColumnarToRowSuite extends CometTestBase with AdaptiveSparkPlan
       InternalRow(i, UTF8String.fromString(s"value_$i"))
     }
 
-    // Create batches using rowToArrowBatchIter which handles shading internally
+    // Each emitted batch needs independent Arrow buffers so the test can hold rows from
+    // earlier batches while later batches are consumed.
+    val allocator =
+      org.apache.comet.CometArrowAllocator.newChildAllocator("c2r-test", 0, Long.MaxValue)
     val batchIter = CometArrowConverters
-      .rowToArrowBatchIter(rows.iterator, schema, rowsPerBatch, "UTC", null)
+      .rowToArrowBatchIter(rows.iterator, schema, rowsPerBatch, "UTC", allocator)
 
     val converter = new NativeColumnarToRowConverter(schema, rowsPerBatch)
     try {
@@ -531,6 +532,7 @@ class CometNativeColumnarToRowSuite extends CometTestBase with AdaptiveSparkPlan
           "reused UnsafeRow object.")
     } finally {
       converter.close()
+      allocator.close()
     }
   }
 

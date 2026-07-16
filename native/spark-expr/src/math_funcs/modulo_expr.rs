@@ -16,7 +16,7 @@
 // under the License.
 
 use crate::{create_comet_physical_fun, IfExpr};
-use crate::{divide_by_zero_error, Cast, EvalMode, SparkCastOptions};
+use crate::{remainder_by_zero_error, Cast, EvalMode, SparkCastOptions};
 use arrow::compute::kernels::numeric::rem;
 use arrow::datatypes::*;
 use datafusion::common::{exec_err, internal_err, DataFusionError, Result, ScalarValue};
@@ -56,8 +56,8 @@ pub fn spark_modulo(args: &[ColumnarValue], fail_on_error: bool) -> Result<Colum
     match apply(lhs, rhs, rem) {
         Ok(result) => Ok(result),
         Err(e) if e.to_string().contains("Divide by zero") && fail_on_error => {
-            // Return Spark-compliant divide by zero error.
-            Err(divide_by_zero_error().into())
+            // Return Spark-compliant remainder by zero error.
+            Err(remainder_by_zero_error().into())
         }
         Err(e) => Err(e),
     }
@@ -245,7 +245,7 @@ mod tests {
                     assert!(
                         error
                             .to_string()
-                            .contains("[DIVIDE_BY_ZERO] Division by zero"),
+                            .contains("[REMAINDER_BY_ZERO] Remainder by zero"),
                         "Error message did not match. Actual message: {error}"
                     );
                 }

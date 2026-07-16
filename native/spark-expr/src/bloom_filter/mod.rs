@@ -20,6 +20,7 @@ mod bit;
 
 mod spark_bit_array;
 mod spark_bloom_filter;
+pub use spark_bloom_filter::SparkBloomFilterVersion;
 
 pub mod bloom_filter_agg;
 pub use bloom_filter_might_contain::BloomFilterMightContain;

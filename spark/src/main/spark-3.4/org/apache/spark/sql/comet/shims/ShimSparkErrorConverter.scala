@@ -78,11 +78,7 @@ trait ShimSparkErrorConverter {
         Some(QueryExecutionErrors.divideByZeroError(sqlCtx(context)))
 
       case "RemainderByZero" =>
-        Some(
-          new SparkException(
-            errorClass = "REMAINDER_BY_ZERO",
-            messageParameters = params.map { case (k, v) => (k, v.toString) },
-            cause = null))
+        Some(QueryExecutionErrors.divideByZeroError(sqlCtx(context)))
 
       case "IntervalDividedByZero" =>
         Some(QueryExecutionErrors.intervalDividedByZeroError(sqlCtx(context)))
@@ -293,6 +289,26 @@ trait ShimSparkErrorConverter {
             params("requiredFieldName").toString,
             params("matchedOrcFields").toString))
 
+      case "DuplicateFieldByFieldId" =>
+        // Mirror Spark's `ParquetReadSupport.matchIdField` which calls
+        // `foundDuplicateFieldInFieldIdLookupModeError` when more than one Parquet field
+        // shares an id requested by the read schema.
+        Some(
+          QueryExecutionErrors.foundDuplicateFieldInFieldIdLookupModeError(
+            params("requiredId").toString.toInt,
+            params("matchedFields").toString))
+
+      case "ParquetMissingFieldIds" =>
+        // Mirror Spark's `ParquetReadSupport.inferSchema`, which throws a plain
+        // `RuntimeException` (not a SparkException) when the read schema requests field
+        // ids and the file carries none.
+        Some(
+          new RuntimeException(
+            "Spark read schema expects field Ids, but Parquet file schema doesn't " +
+              "contain any field Ids. Please remove the field ids from Spark schema or " +
+              "ignore missing ids by setting " +
+              "`spark.sql.parquet.fieldId.read.ignoreMissing = true`"))
+
       case "ParquetSchemaConvert" =>
         // Mirror Spark's FileScanRDD: wrap the SchemaColumnConvertNotSupportedException
         // in a SparkException whose message is "Parquet column cannot be converted in
@@ -324,6 +340,16 @@ trait ShimSparkErrorConverter {
         Some(
           QueryExecutionErrors.readCurrentFileNotFoundError(
             new FileNotFoundException(s"File $path does not exist")))
+
+      case "CannotReadFile" =>
+        // A per-file read failure of a readable-but-broken file (corrupt/truncated parquet,
+        // object_store, IO) classified by typed DataFusionError variant on the native side. Wrap
+        // in the FAILED_READ_FILE SparkException Spark itself produces when its own parquet reader
+        // fails. (A genuinely-missing file is "FileNotFound" above.) `filePath` is filled by
+        // SparkErrorConverter from the per-task file list when the native error carried none.
+        val message = params.get("message").map(_.toString).getOrElse("")
+        val filePath = params.get("filePath").map(_.toString).getOrElse("")
+        Some(QueryExecutionErrors.cannotReadFilesError(new SparkException(message), filePath))
 
       case _ =>
         None

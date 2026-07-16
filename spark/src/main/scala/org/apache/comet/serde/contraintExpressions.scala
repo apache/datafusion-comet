@@ -19,11 +19,11 @@
 
 package org.apache.comet.serde
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, KnownFloatingPointNormalized}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, KnownFloatingPointNormalized, KnownNullable}
 import org.apache.spark.sql.catalyst.optimizer.NormalizeNaNAndZero
 
-import org.apache.comet.CometSparkSessionExtensions.withInfo
-import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithInfo, serializeDataType}
+import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
+import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithFallbackReason, serializeDataType}
 
 object CometKnownFloatingPointNormalized
     extends CometExpressionSerde[KnownFloatingPointNormalized] {
@@ -50,7 +50,7 @@ object CometKnownFloatingPointNormalized
 
     val dataType = serializeDataType(wrapped.dataType)
     if (dataType.isEmpty) {
-      withInfo(wrapped, s"Unsupported datatype ${wrapped.dataType}")
+      withFallbackReason(wrapped, s"Unsupported datatype ${wrapped.dataType}")
       return None
     }
     val ex = exprToProtoInternal(wrapped, inputs, binding)
@@ -61,6 +61,22 @@ object CometKnownFloatingPointNormalized
         .setDatatype(dataType.get)
       ExprOuterClass.Expr.newBuilder().setNormalizeNanAndZero(builder).build()
     }
-    optExprWithInfo(optExpr, expr, wrapped)
+    optExprWithFallbackReason(optExpr, expr, wrapped)
+  }
+}
+
+/**
+ * `KnownNullable` is a tagging expression that only marks its child as nullable; it is a runtime
+ * no-op (`eval` returns the child's value unchanged). Spark's time-window resolution wraps window
+ * bounds in `KnownNullable`, so supporting it lets those grouping queries run natively. We simply
+ * serialize the child and drop the tag.
+ */
+object CometKnownNullable extends CometExpressionSerde[KnownNullable] {
+  override def convert(
+      expr: KnownNullable,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val optExpr = exprToProtoInternal(expr.child, inputs, binding)
+    optExprWithFallbackReason(optExpr, expr, expr.child)
   }
 }

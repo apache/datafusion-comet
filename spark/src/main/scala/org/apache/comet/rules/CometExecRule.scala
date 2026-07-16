@@ -23,15 +23,17 @@ import scala.collection.mutable.ListBuffer
 
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.expressions.{Divide, DoubleLiteral, EqualNullSafe, EqualTo, Expression, FloatLiteral, GreaterThan, GreaterThanOrEqual, KnownFloatingPointNormalized, LessThan, LessThanOrEqual, NamedExpression, Remainder}
+import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateMode, Final, Partial, PartialMerge}
 import org.apache.spark.sql.catalyst.optimizer.NormalizeNaNAndZero
 import org.apache.spark.sql.catalyst.rules.Rule
+import org.apache.spark.sql.catalyst.trees.TreeNodeTag
 import org.apache.spark.sql.catalyst.util.sideBySide
 import org.apache.spark.sql.comet._
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometNativeShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffleReadExec, BroadcastQueryStageExec, ShuffleQueryStageExec}
-import org.apache.spark.sql.execution.aggregate.{HashAggregateExec, ObjectHashAggregateExec}
+import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, HashAggregateExec, ObjectHashAggregateExec}
 import org.apache.spark.sql.execution.command.{DataWritingCommandExec, ExecutedCommandExec}
 import org.apache.spark.sql.execution.datasources.WriteFilesExec
 import org.apache.spark.sql.execution.datasources.csv.CSVFileFormat
@@ -42,7 +44,7 @@ import org.apache.spark.sql.execution.datasources.v2.csv.CSVScan
 import org.apache.spark.sql.execution.datasources.v2.json.JsonScan
 import org.apache.spark.sql.execution.datasources.v2.parquet.ParquetScan
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ReusedExchangeExec, ShuffleExchangeExec}
-import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, ShuffledHashJoinExec, SortMergeJoinExec}
+import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, BroadcastNestedLoopJoinExec, ShuffledHashJoinExec, SortMergeJoinExec}
 import org.apache.spark.sql.execution.window.WindowExec
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
@@ -53,9 +55,17 @@ import org.apache.comet.CometSparkSessionExtensions._
 import org.apache.comet.rules.CometExecRule.allExecs
 import org.apache.comet.serde._
 import org.apache.comet.serde.operator._
-import org.apache.comet.shims.ShimSubqueryBroadcast
+import org.apache.comet.shims.{ShimCometStreaming, ShimSubqueryBroadcast}
 
 object CometExecRule {
+
+  /**
+   * Tag applied to Partial-mode aggregate operators that must NOT be converted to Comet because
+   * the corresponding Final-mode aggregate cannot be converted, and the aggregate functions have
+   * incompatible intermediate buffer formats between Spark and Comet.
+   */
+  val COMET_UNSAFE_PARTIAL: TreeNodeTag[String] =
+    TreeNodeTag[String]("comet.unsafePartialAgg")
 
   /**
    * Fully native operators.
@@ -71,6 +81,7 @@ object CometExecRule {
       classOf[HashAggregateExec] -> CometHashAggregateExec,
       classOf[ObjectHashAggregateExec] -> CometObjectHashAggregateExec,
       classOf[BroadcastHashJoinExec] -> CometBroadcastHashJoinExec,
+      classOf[BroadcastNestedLoopJoinExec] -> CometBroadcastNestedLoopJoinExec,
       classOf[ShuffledHashJoinExec] -> CometHashJoinExec,
       classOf[SortMergeJoinExec] -> CometSortMergeJoinExec,
       classOf[SortExec] -> CometSortExec,
@@ -177,9 +188,6 @@ case class CometExecRule(session: SparkSession)
       case s: ShuffleExchangeExec =>
         CometShuffleExchangeExec.shuffleSupported(s) match {
           case Some(CometNativeShuffle) =>
-            // Switch to use Decimal128 regardless of precision, since Arrow native execution
-            // doesn't support Decimal32 and Decimal64 yet.
-            conf.setConfString(CometConf.COMET_USE_DECIMAL_128.key, "true")
             CometShuffleExchangeExec(s, shuffleType = CometNativeShuffle)
           case Some(CometColumnarShuffle) =>
             CometShuffleExchangeExec(s, shuffleType = CometColumnarShuffle)
@@ -257,9 +265,10 @@ case class CometExecRule(session: SparkSession)
   // spotless:on
   private def transform(plan: SparkPlan): SparkPlan = {
     def convertNode(op: SparkPlan): SparkPlan = op match {
-      // Fully native scan for V1
-      case scan: CometScanExec if scan.scanImpl == CometConf.SCAN_NATIVE_DATAFUSION =>
-        convertToComet(scan, CometNativeScan).getOrElse(scan)
+      // Fully native scan for V1. CometScanExec must always convert to a native scan; the JVM
+      // fallback path has been removed. If conversion fails, fall back to the original Spark scan.
+      case scan: CometScanExec =>
+        convertToComet(scan, CometNativeScan).getOrElse(scan.wrapped)
 
       // Fully native Iceberg scan for V2 (iceberg-rust path)
       // Only handle scans with native metadata; other scans fall through to isCometScan
@@ -320,8 +329,8 @@ case class CometExecRule(session: SparkSession)
           } else {
             // copy fallback reasons to the original plan
             newPlan
-              .getTagValue(CometExplainInfo.EXTENSION_INFO)
-              .foreach(reasons => withInfos(plan, reasons))
+              .getTagValue(CometExplainInfo.FALLBACK_REASONS)
+              .foreach(reasons => withFallbackReasons(plan, reasons))
             // return the original plan
             plan
           }
@@ -362,9 +371,14 @@ case class CometExecRule(session: SparkSession)
         op match {
           case _: CometPlan | _: AQEShuffleReadExec | _: BroadcastExchangeExec |
               _: BroadcastQueryStageExec | _: AdaptiveSparkPlanExec | _: ExecutedCommandExec |
-              _: V2CommandExec =>
+              _: V2CommandExec | _: WriteFilesExec =>
             // Some execs should never be replaced. We include
-            // these cases specially here so we do not add a misleading 'info' message
+            // these cases specially here so we do not add a misleading 'info' message.
+            // WriteFilesExec is always wrapped by DataWritingCommandExec (via Spark's V1Writes
+            // rule); the parent case converts the whole write to CometNativeWriteExec and
+            // unwraps WriteFilesExec inside convertToComet. Tagging WriteFilesExec here would
+            // produce a spurious "WriteFilesExec is not supported" fallback reason (and a
+            // warning when COMET_LOG_FALLBACK_REASONS=true) even when the write is fully native.
             op
           case _ =>
             // The operator was not converted to a Comet plan. Possible reasons for this happening:
@@ -374,8 +388,8 @@ case class CometExecRule(session: SparkSession)
             //    reasons.
             // 3. The operator has children that could not be converted, so execution
             //    has already fallen back to Spark.
-            if (op.children.forall(_.isInstanceOf[CometNativeExec]) && !hasExplainInfo(op)) {
-              withInfo(op, s"${op.nodeName} is not supported")
+            if (op.children.forall(_.isInstanceOf[CometNativeExec]) && !hasFallbackReason(op)) {
+              withFallbackReason(op, s"${op.nodeName} is not supported")
             } else {
               op
             }
@@ -411,61 +425,70 @@ case class CometExecRule(session: SparkSession)
    * BroadcastQueryStageExec.
    */
   private def convertSubqueryBroadcasts(plan: SparkPlan): SparkPlan = {
+    // CometIcebergNativeScanExec.runtimeFilters is a top-level constructor field visible to
+    // productIterator, so transformExpressionsUp rewrites it directly. The wrapped @transient
+    // originalPlan still holds the pre-rewrite runtimeFilters; we don't sync it here because
+    // CometIcebergNativeScanExec.serializedPartitionData rebuilds originalPlan from the
+    // top-level runtimeFilters at serialization time (single source of truth).
     plan.transformExpressionsUp { case inSub: InSubqueryExec =>
-      inSub.plan match {
-        case sub: SubqueryBroadcastExec =>
-          sub.child match {
-            case b: BroadcastExchangeExec =>
-              // The BroadcastExchangeExec child is CometNativeColumnarToRowExec wrapping
-              // a Comet plan. Strip the row transition to get the columnar Comet plan.
-              val cometChild = b.child match {
-                case c2r: CometNativeColumnarToRowExec => c2r.child
-                case other => other
-              }
-              if (cometChild.isInstanceOf[CometNativeExec]) {
-                logInfo(
-                  "Converting SubqueryBroadcastExec to " +
-                    "CometSubqueryBroadcastExec for DPP exchange reuse")
-                val cometBroadcast = CometBroadcastExchangeExec(b, b.output, b.mode, cometChild)
-                val cometSub = CometSubqueryBroadcastExec(
-                  sub.name,
-                  getSubqueryBroadcastExecIndices(sub),
-                  sub.buildKeys,
-                  cometBroadcast)
-                inSub.withNewPlan(cometSub)
-              } else {
-                inSub
-              }
-            case _ => inSub
-          }
-        case sab: SubqueryAdaptiveBroadcastExec if isSpark35Plus =>
-          // Wrap SABs to prevent Spark's PlanAdaptiveDynamicPruningFilters from
-          // converting them to Literal.TrueLiteral. Spark's rule pattern-matches for
-          // BroadcastHashJoinExec, which Comet replaced with CometBroadcastHashJoinExec.
-          // Without wrapping, DPP is disabled for both Comet native scans and non-Comet
-          // scans (e.g., V2 BatchScan). CometPlanAdaptiveDynamicPruningFilters
-          // (queryStageOptimizerRule, 3.5+) unwraps and converts them later.
-          //
-          // On Spark 3.4, injectQueryStageOptimizerRule is unavailable. The isSpark35Plus
-          // guard leaves SABs unwrapped; CometSpark34AqeDppFallbackRule then tags the
-          // matching BHJ's build broadcast so Spark's rule can match it natively.
-          assert(
-            sab.buildKeys.nonEmpty,
-            s"SubqueryAdaptiveBroadcastExec '${sab.name}' has empty buildKeys")
-          logInfo(
-            s"Wrapping SubqueryAdaptiveBroadcastExec '${sab.name}' in " +
-              "CometSubqueryAdaptiveBroadcastExec to preserve AQE DPP")
-          val indices = getSubqueryBroadcastIndices(sab)
-          val wrapped = CometSubqueryAdaptiveBroadcastExec(
-            sab.name,
-            indices,
-            sab.onlyInBroadcast,
-            sab.buildPlan,
-            sab.buildKeys,
-            sab.child)
-          inSub.withNewPlan(wrapped)
-        case _ => inSub
-      }
+      rewriteInSubqueryPlan(inSub)
+    }
+  }
+
+  private def rewriteInSubqueryPlan(inSub: InSubqueryExec): Expression = {
+    inSub.plan match {
+      case sub: SubqueryBroadcastExec =>
+        sub.child match {
+          case b: BroadcastExchangeExec =>
+            // The BroadcastExchangeExec child is CometNativeColumnarToRowExec wrapping
+            // a Comet plan. Strip the row transition to get the columnar Comet plan.
+            val cometChild = b.child match {
+              case c2r: CometNativeColumnarToRowExec => c2r.child
+              case other => other
+            }
+            if (cometChild.isInstanceOf[CometNativeExec]) {
+              logInfo(
+                "Converting SubqueryBroadcastExec to " +
+                  "CometSubqueryBroadcastExec for DPP exchange reuse")
+              val cometBroadcast = CometBroadcastExchangeExec(b, b.output, b.mode, cometChild)
+              val cometSub = CometSubqueryBroadcastExec(
+                sub.name,
+                getSubqueryBroadcastExecIndices(sub),
+                sub.buildKeys,
+                cometBroadcast)
+              inSub.withNewPlan(cometSub)
+            } else {
+              inSub
+            }
+          case _ => inSub
+        }
+      case sab: SubqueryAdaptiveBroadcastExec if isSpark35Plus =>
+        // Wrap SABs to prevent Spark's PlanAdaptiveDynamicPruningFilters from
+        // converting them to Literal.TrueLiteral. Spark's rule pattern-matches for
+        // BroadcastHashJoinExec, which Comet replaced with CometBroadcastHashJoinExec.
+        // Without wrapping, DPP is disabled for both Comet native scans and non-Comet
+        // scans (e.g., V2 BatchScan). CometPlanAdaptiveDynamicPruningFilters
+        // (queryStageOptimizerRule, 3.5+) unwraps and converts them later.
+        //
+        // On Spark 3.4, injectQueryStageOptimizerRule is unavailable. The isSpark35Plus
+        // guard leaves SABs unwrapped; CometSpark34AqeDppFallbackRule then tags the
+        // matching BHJ's build broadcast so Spark's rule can match it natively.
+        assert(
+          sab.buildKeys.nonEmpty,
+          s"SubqueryAdaptiveBroadcastExec '${sab.name}' has empty buildKeys")
+        logInfo(
+          s"Wrapping SubqueryAdaptiveBroadcastExec '${sab.name}' in " +
+            "CometSubqueryAdaptiveBroadcastExec to preserve AQE DPP")
+        val indices = getSubqueryBroadcastIndices(sab)
+        val wrapped = CometSubqueryAdaptiveBroadcastExec(
+          sab.name,
+          indices,
+          sab.onlyInBroadcast,
+          sab.buildPlan,
+          sab.buildKeys,
+          sab.child)
+        inSub.withNewPlan(wrapped)
+      case _ => inSub
     }
   }
 
@@ -536,6 +559,10 @@ case class CometExecRule(session: SparkSession)
     // We shouldn't transform Spark query plan if Comet is not loaded.
     if (!isCometLoaded(conf)) return plan
 
+    // Comet does not support structured streaming. Fall back to Spark for any plan that
+    // belongs to a streaming query (detected via StreamSourceAwareSparkPlan.getStream).
+    if (ShimCometStreaming.isStreamingPlan(plan)) return plan
+
     if (!CometConf.COMET_EXEC_ENABLED.get(conf)) {
       // Comet exec is disabled, but for Spark shuffle, we still can use Comet columnar shuffle
       if (isCometShuffleEnabled(conf)) {
@@ -554,13 +581,19 @@ case class CometExecRule(session: SparkSession)
         normalizedPlan
       }
 
+      // Tag Partial aggregates that must not be converted to Comet because the
+      // corresponding Final aggregate cannot be converted and the intermediate buffer
+      // formats are incompatible. This runs before transform() so the tags are checked
+      // during the bottom-up conversion. Tags persist through AQE stage creation.
+      tagUnsafePartialAggregates(planWithJoinRewritten)
+
       var newPlan = transform(planWithJoinRewritten)
 
       // if the plan cannot be run fully natively then explain why (when appropriate
       // config is enabled)
       if (CometConf.COMET_EXPLAIN_FALLBACK_ENABLED.get()) {
         val info = new ExtendedExplainInfo()
-        if (info.extensionInfo(newPlan).nonEmpty) {
+        if (info.fallbackReasons(newPlan).nonEmpty) {
           logWarning(
             "Comet cannot execute some parts of this plan natively " +
               s"(set ${CometConf.COMET_EXPLAIN_FALLBACK_ENABLED.key}=false " +
@@ -666,7 +699,9 @@ case class CometExecRule(session: SparkSession)
           case other => Seq(other)
         }
         if (!dataProducingChildren.forall(_.isInstanceOf[CometNativeExec])) {
-          withInfo(op, "Cannot perform native operation because input is not in Arrow format")
+          withFallbackReason(
+            op,
+            "Cannot perform native operation because input is not in Arrow format")
           return None
         }
       }
@@ -677,14 +712,47 @@ case class CometExecRule(session: SparkSession)
         childOp.foreach(builder.addChildren)
         return serde
           .convert(op, builder, childOp: _*)
-          .map(nativeOp => serde.createExec(nativeOp, op))
+          .map { nativeOp =>
+            val exec = serde.createExec(nativeOp, op)
+            rollUpInfoMessages(op, exec)
+            exec
+          }
       } else {
         return serde
           .convert(op, builder)
-          .map(nativeOp => serde.createExec(nativeOp, op))
+          .map { nativeOp =>
+            val exec = serde.createExec(nativeOp, op)
+            rollUpInfoMessages(op, exec)
+            exec
+          }
       }
     }
     None
+  }
+
+  /**
+   * Lift informational (non-fallback) messages tagged on an operator and its expressions onto the
+   * converted Comet plan node so they appear in verbose extended explain output. Expression-level
+   * hints would otherwise be invisible because explain only traverses plan nodes, not
+   * expressions. `CODEGEN_DISPATCH_EXPRS` names across the tree are aggregated into one combined
+   * info line.
+   */
+  private def rollUpInfoMessages(op: SparkPlan, exec: SparkPlan): Unit = {
+    val allExprs = op.expressions.flatMap(_.collect { case e: Expression => e })
+
+    val infos =
+      op.getTagValue(CometExplainInfo.EXTENSION_INFO).getOrElse(Set.empty[String]) ++
+        allExprs.flatMap(_.getTagValue(CometExplainInfo.EXTENSION_INFO)).flatten
+    infos.foreach(msg => withInfo(exec, msg))
+
+    val routedNames = allExprs
+      .flatMap(_.getTagValue(CometExplainInfo.CODEGEN_DISPATCH_EXPRS))
+      .flatten
+      .distinct
+      .sorted
+    if (routedNames.nonEmpty) {
+      withInfo(exec, s"JVM codegen dispatcher: ${routedNames.mkString(", ")}")
+    }
   }
 
   private def isOperatorEnabled(
@@ -694,7 +762,7 @@ case class CometExecRule(session: SparkSession)
     if (handler.enabledConfig.forall(_.get(op.conf))) {
       handler.getSupportLevel(op) match {
         case Unsupported(notes) =>
-          withInfo(op, notes.getOrElse(""))
+          withFallbackReason(op, notes.getOrElse(""))
           false
         case Incompatible(notes) =>
           val allowIncompat = CometConf.isOperatorAllowIncompat(opName)
@@ -708,21 +776,21 @@ case class CometExecRule(session: SparkSession)
             true
           } else {
             val optionalNotes = notes.map(str => s" ($str)").getOrElse("")
-            withInfo(
+            withFallbackReason(
               op,
               s"$opName is not fully compatible with Spark$optionalNotes. " +
                 s"To enable it anyway, set $incompatConf=true. " +
                 s"${CometConf.COMPAT_GUIDE}.")
             false
           }
-        case Compatible(notes) =>
+        case Compatible(notes, _) =>
           if (notes.isDefined) {
             logWarning(s"Comet supports $opName but has notes: ${notes.get}")
           }
           true
       }
     } else {
-      withInfo(
+      withFallbackReason(
         op,
         s"Native support for operator $opName is disabled. " +
           s"Set ${handler.enabledConfig.get.key}=true to enable it.")
@@ -771,6 +839,141 @@ case class CometExecRule(session: SparkSession)
       val simpleClassName = Utils.getSimpleName(op.getClass)
       val nodeName = simpleClassName.replaceAll("Exec$", "")
       COMET_SPARK_TO_ARROW_SUPPORTED_OPERATOR_LIST.get(conf).contains(nodeName)
+    }
+  }
+
+  /**
+   * Walk the plan to find Final-mode aggregates that cannot be converted to Comet. For each such
+   * Final, if the aggregate functions have incompatible intermediate buffer formats, tag the
+   * corresponding Partial-mode aggregate so it will also be skipped during conversion.
+   *
+   * This prevents the crash described in issue #1389 where a Comet Partial produces intermediate
+   * data in a format that the Spark Final cannot interpret.
+   */
+  private def tagUnsafePartialAggregates(plan: SparkPlan): Unit = {
+    plan.foreach {
+      case agg: BaseAggregateExec =>
+        // A single-mode Final that consumes an incompatible intermediate buffer and cannot itself
+        // be converted to Comet must not sit above a Comet aggregate that produces that buffer,
+        // otherwise Spark's Final would try to read a Comet-encoded buffer and crash. Tagging the
+        // bottom Partial so it falls back is enough: once it is Spark, the missingCometProducer
+        // guard in CometBaseAggregate.doConvert cascades the fallback up through any intermediate
+        // PartialMerge stages of a distinct-aggregate rewrite. See issues #1389 and #4813.
+        val modes = agg.aggregateExpressions.map(_.mode).distinct
+        if (modes == Seq(Final) &&
+          !QueryPlanSerde.allAggsSupportMixedExecution(agg.aggregateExpressions) &&
+          !canAggregateBeConverted(agg, Final)) {
+          findPartialAggInPlan(agg.child).foreach { partial =>
+            // Only tag if the Partial would otherwise have been converted. If the Partial itself
+            // cannot be converted (e.g. an incompatible input type or a map-typed grouping key),
+            // there is no buffer-format mismatch to guard against, and tagging would mask the
+            // natural, more specific fallback reason.
+            if (canAggregateBeConverted(partial, Partial)) {
+              partial.setTagValue(
+                CometExecRule.COMET_UNSAFE_PARTIAL,
+                "Partial aggregate disabled: corresponding final aggregate " +
+                  "cannot be converted to Comet and intermediate buffer formats are incompatible")
+            }
+          }
+        }
+      case _ =>
+    }
+  }
+
+  /**
+   * Look for the bottom Partial-mode aggregate that feeds into the given plan (the child of a
+   * Final). Walks through exchanges and AQE stages, and continues down through intermediate
+   * aggregate stages whose modes are all Partial / PartialMerge - these are the PartialMerge (and
+   * mixed Partial/PartialMerge) stages that Spark's distinct-aggregate rewrite inserts between
+   * the Partial and the Final. Stops at anything else. Requires `aggregateExpressions.nonEmpty`
+   * so that group-by-only dedup stages are traversed rather than mistaken for the partial.
+   */
+  private def findPartialAggInPlan(plan: SparkPlan): Option[BaseAggregateExec] = plan match {
+    case agg: BaseAggregateExec
+        if agg.aggregateExpressions.nonEmpty &&
+          agg.aggregateExpressions.forall(e => e.mode == Partial) =>
+      Some(agg)
+    case agg: BaseAggregateExec
+        if agg.aggregateExpressions.forall(e => e.mode == Partial || e.mode == PartialMerge) =>
+      // Intermediate PartialMerge / mixed stage of a distinct-aggregate rewrite, or a group-by
+      // only dedup stage; keep walking down towards the bottom Partial.
+      findPartialAggInPlan(agg.child)
+    case a: AQEShuffleReadExec => findPartialAggInPlan(a.child)
+    case s: ShuffleQueryStageExec => findPartialAggInPlan(s.plan)
+    case e: ShuffleExchangeExec => findPartialAggInPlan(e.child)
+    case other =>
+      logDebug(s"findPartialAggInPlan: stopping at ${other.nodeName}; not a known passthrough")
+      None
+  }
+
+  /**
+   * Conservative check for whether an aggregate could be converted to Comet. Checks operator
+   * enablement, grouping expressions, aggregate expressions, and result expressions.
+   * Intentionally skips the sparkFinalMode / child-native checks since those depend on
+   * transformation state.
+   *
+   * WARNING: this intentionally mirrors the predicate checks in `CometBaseAggregate.doConvert`
+   * (operators.scala). Any change to the convertibility rules there must be reflected here or
+   * this tagging pass will drift and either crash (missed tag) or over-disable (spurious tag). A
+   * shared predicate helper would be preferable.
+   */
+  private def canAggregateBeConverted(
+      agg: BaseAggregateExec,
+      expectedMode: AggregateMode): Boolean = {
+    val handler = allExecs.get(agg.getClass)
+    if (handler.isEmpty) return false
+    val serde = handler.get.asInstanceOf[CometOperatorSerde[SparkPlan]]
+    if (!isOperatorEnabled(serde, agg.asInstanceOf[SparkPlan])) return false
+
+    // ObjectHashAggregate has an extra shuffle-enabled guard in its convert method
+    agg match {
+      case _: ObjectHashAggregateExec if !isCometShuffleEnabled(agg.conf) => return false
+      case _ =>
+    }
+
+    val aggregateExpressions = agg.aggregateExpressions
+    val groupingExpressions = agg.groupingExpressions
+
+    if (groupingExpressions.isEmpty && aggregateExpressions.isEmpty) return false
+
+    if (groupingExpressions.exists(e =>
+        SupportLevel.containsType(e.dataType, classOf[MapType]))) {
+      return false
+    }
+
+    if (!groupingExpressions.forall(e =>
+        QueryPlanSerde.exprToProto(e, agg.child.output).isDefined)) {
+      return false
+    }
+
+    if (aggregateExpressions.isEmpty) {
+      // Result expressions always checked when there are no aggregate expressions
+      val attributes =
+        groupingExpressions.map(_.toAttribute) ++ agg.aggregateAttributes
+      return agg.resultExpressions.forall(e =>
+        QueryPlanSerde.exprToProto(e, attributes).isDefined)
+    }
+
+    val modes = aggregateExpressions.map(_.mode).distinct
+    if (modes.size != 1 || modes.head != expectedMode) return false
+
+    // In Final mode, exprToProto resolves against the child's output; in Partial/non-Final mode
+    // it must bind to input attributes. This mirrors the `binding` calculation in
+    // `CometBaseAggregate.doConvert`.
+    val binding = expectedMode != Final
+    if (!aggregateExpressions.forall(e =>
+        QueryPlanSerde.aggExprToProto(e, agg.child.output, binding, agg.conf).isDefined)) {
+      return false
+    }
+
+    // doConvert only checks resultExpressions in Final mode when aggregate expressions exist
+    // (Partial emits the buffer directly). Mirror that here to avoid false negatives.
+    if (expectedMode == Final) {
+      val attributes =
+        groupingExpressions.map(_.toAttribute) ++ agg.aggregateAttributes
+      agg.resultExpressions.forall(e => QueryPlanSerde.exprToProto(e, attributes).isDefined)
+    } else {
+      true
     }
   }
 

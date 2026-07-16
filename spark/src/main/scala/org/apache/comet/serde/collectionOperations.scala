@@ -19,19 +19,34 @@
 
 package org.apache.comet.serde
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Reverse}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, Reverse, Shuffle}
 import org.apache.spark.sql.types.ArrayType
 
+import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 import org.apache.comet.serde.ExprOuterClass.Expr
+import org.apache.comet.serde.QueryPlanSerde.exprToProtoInternal
+import org.apache.comet.shims.CometTypeShim
 
-object CometReverse extends CometScalarFunction[Reverse]("reverse") {
+object CometReverse
+    extends CometScalarFunction[Reverse]("reverse")
+    with CometTypeShim
+    with CodegenDispatchFallback {
+
+  // Spark 4.0 widens the string branch of Reverse to accept collated strings and propagates the
+  // collation through dataType. The native reverse UDF reverses code units and produces UTF8
+  // (UTF8_BINARY semantics), so a non-default collation diverges from Spark.
+  private val collationReason =
+    "reverse does not support non-UTF8_BINARY collations " +
+      "(https://github.com/apache/datafusion-comet/issues/2190)"
 
   override def getIncompatibleReasons(): Seq[String] =
-    CometArrayReverse.getIncompatibleReasons()
+    CometArrayReverse.getIncompatibleReasons() :+ collationReason
 
   override def getSupportLevel(expr: Reverse): SupportLevel = {
     if (expr.child.dataType.isInstanceOf[ArrayType]) {
       CometArrayReverse.getSupportLevel(expr)
+    } else if (hasNonDefaultStringCollation(expr.child.dataType)) {
+      Incompatible(Some(collationReason))
     } else {
       Compatible()
     }
@@ -42,6 +57,34 @@ object CometReverse extends CometScalarFunction[Reverse]("reverse") {
       CometArrayReverse.convert(expr, inputs, binding)
     } else {
       super.convert(expr, inputs, binding)
+    }
+  }
+}
+
+object CometShuffle extends CometExpressionSerde[Shuffle] with ArraysBase {
+
+  // Comet reproduces Spark's random permutation exactly: the resolved seed is combined with the
+  // partition index and drives the same MersenneTwister-based inside-out Fisher-Yates shuffle as
+  // org.apache.spark.sql.catalyst.util.RandomIndicesGenerator, so results match Spark bit for bit.
+  override def getSupportLevel(expr: Shuffle): SupportLevel = childTypesSupportLevel(expr)
+
+  override def convert(expr: Shuffle, inputs: Seq[Attribute], binding: Boolean): Option[Expr] = {
+    // In a resolved plan `randomSeed` is always defined (resolution requires it). Guard anyway.
+    expr.randomSeed match {
+      case Some(seed) =>
+        exprToProtoInternal(expr.child, inputs, binding).map { child =>
+          ExprOuterClass.Expr
+            .newBuilder()
+            .setShuffle(
+              ExprOuterClass.Shuffle
+                .newBuilder()
+                .setChild(child)
+                .setSeed(seed))
+            .build()
+        }
+      case None =>
+        withFallbackReason(expr, "shuffle requires a resolved random seed")
+        None
     }
   }
 }

@@ -25,7 +25,10 @@ Before you start, have a look through [these slides](https://docs.google.com/pre
 
 ## Finding an Expression to Add
 
-You may have a specific expression in mind that you'd like to add, but if not, you can review the [expression coverage document](spark_expressions_support.md) to see which expressions are not yet supported.
+You may have a specific expression in mind that you'd like to add, but if not, you can review [Supported Spark Expressions](../user-guide/latest/expressions.md) in the user guide to see which expressions are not yet supported. For deep-dive audit notes on expressions that are already supported, see the [Expression Audits](expression-audits/index.md) section.
+
+When you add or change an expression, update its status in
+[Supported Spark Expressions](../user-guide/latest/expressions.md).
 
 ## Implementing the Expression
 
@@ -253,7 +256,7 @@ In addition to `getSupportLevel`, which governs runtime planning decisions, the 
 - `getIncompatibleReasons(): Seq[String]` - Reasons the expression may produce different results than Spark.
 - `getUnsupportedReasons(): Seq[String]` - Reasons the expression, or certain usages of it, may not be supported by Comet.
 
-These methods do not affect runtime behavior. They are called by `GenerateDocs` (`spark/src/main/scala/org/apache/comet/GenerateDocs.scala`) when building the user-facing Compatibility Guide pages under `docs/source/user-guide/latest/compatibility/expressions/` (for example, `math.md`, `datetime.md`, `array.md`, `aggregate.md`, `struct.md`). Each reason is rendered as a bullet in the corresponding page.
+These methods do not affect runtime behavior. They are called by `GenerateDocs` (`spark/src/main/scala/org/apache/comet/GenerateDocs.scala`) when building the user-facing Compatibility Guide pages. The Markdown templates live in `docs/source/user-guide/latest/compatibility/expressions/_category_template/` (for example, `math.md`, `datetime.md`, `array.md`, `aggregate.md`, `struct.md`); `docs/build.sh` copies them into per-Spark-version subdirectories (`spark-3.4/`, `spark-3.5/`, `spark-4.0/`, `spark-4.1/`) and runs `GenerateDocs` once per profile, so the published page reflects the expressions registered for that Spark version. Each reason is rendered as a bullet in the corresponding page.
 
 Key differences from `getSupportLevel`:
 
@@ -474,6 +477,23 @@ pub fn spark_ceil(
     // Implementation
 }
 ```
+
+#### Producing strings from arbitrary bytes
+
+Spark's `StringType` may contain bytes that are not valid UTF-8 (Spark stores them verbatim), but
+Arrow's string arrays must be valid UTF-8. Any native code that turns arbitrary bytes into a string
+must therefore **decode** them, not reinterpret them. Building a Rust `String`/`&str` from non-UTF-8
+bytes is undefined behaviour, and an Arrow string array that holds invalid UTF-8 is unsound for the
+downstream kernels that read it via `StringArray::value` (which assumes the UTF-8 invariant).
+
+Use `datafusion_comet_common::decode_utf8_spark_lossy` (defined in `native/common/src/utils.rs`). It
+replaces each ill-formed sequence with `U+FFFD` exactly as the JVM's `new String(bytes, UTF_8)` does,
+so Comet's rendered output matches Spark (including the surrogate-range cases where
+`str::from_utf8_lossy` would differ). This is the decoder used by both `CAST(binary AS string)` and
+the native columnar shuffle. See the
+[strings with non-UTF-8 bytes](../user-guide/latest/compatibility/index.md) note in the
+compatibility guide for the user-visible behavior, including the cases where decoding diverges from
+Spark.
 
 ### API Differences Between Spark Versions
 

@@ -45,11 +45,6 @@ pub(crate) fn update_comet_metric(
 pub(crate) fn to_native_metric_node(
     spark_plan: &Arc<SparkPlan>,
 ) -> Result<NativeMetricNode, CometError> {
-    let mut native_metric_node = NativeMetricNode {
-        metrics: HashMap::new(),
-        children: Vec::new(),
-    };
-
     let node_metrics = if spark_plan.additional_native_plans.is_empty() {
         spark_plan.native_plan.metrics()
     } else {
@@ -68,21 +63,64 @@ pub(crate) fn to_native_metric_node(
         Some(metrics.aggregate_by_name())
     };
 
-    // add metrics
+    let children = spark_plan.children();
+    let mut native_metric_node = NativeMetricNode {
+        // Most operator metric maps are well under 20 entries (e.g. hash-join: 9,
+        // native-scan: ~20). Pre-sizing to 16 avoids the default-capacity rehash.
+        metrics: HashMap::with_capacity(16),
+        children: Vec::with_capacity(children.len()),
+    };
+
+    // Aggregate metrics by name using DataFusion's aggregate_by_name(), which
+    // correctly handles duplicate metric names (e.g. BaselineMetrics registered
+    // by both FileStream and ParquetMorselizer on the same ExecutionPlanMetricsSet).
+    // The additional_native_plans branch below already does this.
     node_metrics
         .unwrap_or_default()
+        .aggregate_by_name()
         .iter()
-        .map(|m| m.value())
-        .map(|m| (m.name(), m.as_usize() as i64))
-        .for_each(|(name, value)| {
-            native_metric_node.metrics.insert(name.to_string(), value);
-        });
+        .for_each(|m| insert_metric_value(&mut native_metric_node.metrics, m.value()));
 
-    // add children
-    for child_plan in spark_plan.children() {
+    for child_plan in children {
         let child_node = to_native_metric_node(child_plan)?;
         native_metric_node.children.push(child_node);
     }
 
     Ok(native_metric_node)
+}
+
+/// Expand a `MetricValue` into one or more `(name, i64)` entries.
+///
+/// `MetricValue::as_usize()` returns `0` for `PruningMetrics` and `Ratio` (DF 54.0
+/// reserves their aggregation to `MetricsSet`); without expanding them every parquet
+/// scan metric of those types surfaces as `0` on the Spark side. Scala-side metrics
+/// that aren't declared by `nativeScanMetrics` are silently dropped, so the Spark
+/// layer controls what's visible.
+fn insert_metric_value(metrics: &mut HashMap<String, i64>, value: &MetricValue) {
+    match value {
+        MetricValue::PruningMetrics {
+            name,
+            pruning_metrics,
+        } => {
+            let pruned = name.as_ref();
+            let matched = pruned.replace("pruned", "matched");
+            metrics.insert(pruned.to_string(), pruning_metrics.pruned() as i64);
+            if matched != pruned {
+                metrics.insert(matched, pruning_metrics.matched() as i64);
+            }
+        }
+        MetricValue::Ratio {
+            name,
+            ratio_metrics,
+        } => {
+            // Spark's SQLMetric has no ratio type, so we expose numerator and
+            // denominator separately and let the Scala side pick what to surface.
+            let base = name.as_ref();
+            metrics.insert(format!("{base}_part"), ratio_metrics.part() as i64);
+            metrics.insert(format!("{base}_total"), ratio_metrics.total() as i64);
+        }
+        _ => {
+            metrics.insert(value.name().to_string(), value.as_usize() as i64);
+        }
+    }
 }

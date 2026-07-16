@@ -125,6 +125,13 @@ docker build --no-cache \
 # Clean previous Java build
 pushd $COMET_HOME_DIR && ./mvnw clean && popd
 
+# Clean previous native build. This is required because spark/pom.xml has
+# unconditional resource entries that bundle libcomet.dylib from
+# native/target/{x86_64,aarch64}-apple-darwin/release. If a release manager
+# previously cross-compiled those targets locally, stale dylibs would leak
+# into the release jars. See https://github.com/apache/datafusion-comet/issues/2232
+pushd $COMET_HOME_DIR/native && cargo clean && popd
+
 # Run the builder container for each architecture. The entrypoint script will build the binaries
 
 # AMD64
@@ -162,7 +169,7 @@ fi
 echo "Building binaries completed"
 echo "Copying to java build directories"
 
-JVM_TARGET_DIR=$COMET_HOME_DIR/common/target/classes/org/apache/comet
+JVM_TARGET_DIR=$COMET_HOME_DIR/spark/target/classes/org/apache/comet
 mkdir -p $JVM_TARGET_DIR
 
 mkdir -p $JVM_TARGET_DIR/linux/amd64
@@ -202,7 +209,10 @@ LOCAL_REPO=$(mktemp -d /tmp/comet-staging-repo-XXXXX)
 ./mvnw  "-Dmaven.repo.local=${LOCAL_REPO}" -P spark-3.4 -P scala-2.13  -DskipTests install
 ./mvnw  "-Dmaven.repo.local=${LOCAL_REPO}" -P spark-3.5 -P scala-2.12  -DskipTests install
 ./mvnw  "-Dmaven.repo.local=${LOCAL_REPO}" -P spark-3.5 -P scala-2.13  -DskipTests install
-./mvnw  "-Dmaven.repo.local=${LOCAL_REPO}" -P spark-4.0 -P scala-2.13  -DskipTests install
+# The spark-4.x profiles pin their own Scala 2.13.x patch versions to match the
+# corresponding Spark release, so the scala-2.13 profile is not used here.
+./mvnw  "-Dmaven.repo.local=${LOCAL_REPO}" -P spark-4.0                 -DskipTests install
+./mvnw  "-Dmaven.repo.local=${LOCAL_REPO}" -P spark-4.1                 -DskipTests install
 
 echo "Installed to local repo: ${LOCAL_REPO}"
 

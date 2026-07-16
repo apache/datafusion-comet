@@ -103,6 +103,34 @@ object CometDatetimeExpressionBenchmark extends CometBenchmarkBase {
     }
   }
 
+  def toTimeBenchmark(values: Int): Unit = {
+    withTempPath { dir =>
+      withTempTable("parquetV1Table") {
+        prepareTable(
+          dir,
+          spark.sql(
+            s"select concat(cast(abs(value) % 24 as string), ':', lpad(cast(abs(value) % 60 as string), 2, '0'), ':', lpad(cast(abs(value) % 60 as string), 2, '0')) as s FROM $tbl"))
+        val name = "to_time"
+        val query = "select to_time(s) from parquetV1Table"
+        runExpressionBenchmark(name, values, query)
+      }
+    }
+  }
+
+  def makeTimeBenchmark(values: Int): Unit = {
+    withTempPath { dir =>
+      withTempTable("parquetV1Table") {
+        prepareTable(
+          dir,
+          spark.sql(
+            s"select cast(abs(value) % 24 as int) as h, cast(abs(value) % 60 as int) as m, cast(abs(value) % 60 as decimal(16,6)) as s FROM $tbl"))
+        val name = "make_time"
+        val query = "select make_time(h, m, s) from parquetV1Table"
+        runExpressionBenchmark(name, values, query)
+      }
+    }
+  }
+
   override def runCometBenchmark(mainArgs: Array[String]): Unit = {
     val values = 1024 * 1024;
 
@@ -128,6 +156,15 @@ object CometDatetimeExpressionBenchmark extends CometBenchmarkBase {
         runBenchmarkWithTable("TimestampTrunc", values) { v =>
           timestampTruncExprBenchmark(v)
         }
+      }
+    }
+
+    withSQLConf("spark.sql.timeType.enabled" -> "true") {
+      runBenchmarkWithTable("ToTime", values) { v =>
+        toTimeBenchmark(v)
+      }
+      runBenchmarkWithTable("MakeTime", values) { v =>
+        makeTimeBenchmark(v)
       }
     }
   }
