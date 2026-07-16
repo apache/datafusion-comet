@@ -19,7 +19,7 @@
 
 package org.apache.comet.serde
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Base64, BitLength, Cast, Concat, ConcatWs, Elt, Empty2Null, Expression, FindInSet, FormatNumber, FormatString, GetJsonObject, InitCap, Left, Length, Levenshtein, Like, Literal, Lower, Mask, OctetLength, Overlay, RegExpExtract, RegExpExtractAll, RegExpInStr, RegExpReplace, Right, RLike, SoundEx, StringLocate, StringLPad, StringRepeat, StringReplace, StringRPad, StringSplit, StringTranslate, Substring, SubstringIndex, ToCharacter, ToNumber, TryToNumber, UnBase64, Upper}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, Base64, BitLength, Cast, Concat, ConcatWs, Contains, Elt, Empty2Null, EndsWith, Expression, FindInSet, FormatNumber, FormatString, GetJsonObject, InitCap, Left, Length, Levenshtein, Like, Literal, Lower, Mask, OctetLength, Overlay, RegExpExtract, RegExpExtractAll, RegExpInStr, RegExpReplace, Right, RLike, SoundEx, StartsWith, StringLocate, StringLPad, StringRepeat, StringReplace, StringRPad, StringSplit, StringTranslate, Substring, SubstringIndex, ToCharacter, ToNumber, TryToNumber, UnBase64, Upper}
 import org.apache.spark.sql.types.{BinaryType, DataTypes, LongType, StringType}
 
 import org.apache.comet.CometConf
@@ -291,10 +291,12 @@ object CometConcatWs extends CometExpressionSerde[ConcatWs] {
 object CometLike extends CometExpressionSerde[Like] {
 
   override def getSupportLevel(expr: Like): SupportLevel = {
-    if (expr.escapeChar == '\\') {
-      Compatible()
-    } else {
+    if (ComparisonUtils.hasCollatedOperand(expr.left, expr.right)) {
+      Unsupported(Some(ComparisonUtils.nonDefaultCollationReason("Like")))
+    } else if (expr.escapeChar != '\\') {
       Unsupported(Some(s"custom escape character ${expr.escapeChar} not supported in LIKE"))
+    } else {
+      Compatible()
     }
   }
 
@@ -307,6 +309,36 @@ object CometLike extends CometExpressionSerde[Like] {
       binding,
       (builder, binaryExpr) => builder.setLike(binaryExpr))
   }
+}
+
+/**
+ * Serdes for `Contains` / `StartsWith` / `EndsWith` that guard on non-UTF8_BINARY collation and
+ * otherwise delegate to the generic `contains` / `starts_with` / `ends_with` scalar-function
+ * bridge. The native kernels compare raw bytes and cannot honour case- or accent-insensitive
+ * collations, so a collated operand must fall back to Spark.
+ */
+object CometContains extends CometExpressionSerde[Contains] {
+  override def getSupportLevel(expr: Contains): SupportLevel =
+    ComparisonUtils.collationSupportLevel(expr.left, expr.right, "Contains")
+
+  override def convert(expr: Contains, inputs: Seq[Attribute], binding: Boolean): Option[Expr] =
+    CometScalarFunction[Contains]("contains").convert(expr, inputs, binding)
+}
+
+object CometStartsWith extends CometExpressionSerde[StartsWith] {
+  override def getSupportLevel(expr: StartsWith): SupportLevel =
+    ComparisonUtils.collationSupportLevel(expr.left, expr.right, "StartsWith")
+
+  override def convert(expr: StartsWith, inputs: Seq[Attribute], binding: Boolean): Option[Expr] =
+    CometScalarFunction[StartsWith]("starts_with").convert(expr, inputs, binding)
+}
+
+object CometEndsWith extends CometExpressionSerde[EndsWith] {
+  override def getSupportLevel(expr: EndsWith): SupportLevel =
+    ComparisonUtils.collationSupportLevel(expr.left, expr.right, "EndsWith")
+
+  override def convert(expr: EndsWith, inputs: Seq[Attribute], binding: Boolean): Option[Expr] =
+    CometScalarFunction[EndsWith]("ends_with").convert(expr, inputs, binding)
 }
 
 /**

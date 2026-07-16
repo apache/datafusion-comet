@@ -311,9 +311,12 @@ object ComparisonUtils {
   def hasCollatedOperand(operands: Iterable[Expression]): Boolean =
     operands.exists(op => hasNonDefaultStringCollation(op.dataType))
 
-  def collationSupportLevel(left: Expression, right: Expression): SupportLevel =
+  def collationSupportLevel(
+      left: Expression,
+      right: Expression,
+      exprName: String = "BinaryComparison"): SupportLevel =
     if (hasCollatedOperand(left, right)) {
-      Unsupported(Some(nonDefaultCollationReason("BinaryComparison")))
+      Unsupported(Some(nonDefaultCollationReason(exprName)))
     } else {
       Compatible()
     }

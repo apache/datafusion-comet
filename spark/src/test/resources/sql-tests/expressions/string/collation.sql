@@ -51,3 +51,158 @@ SELECT concat('Hello' COLLATE UNICODE_CI, 'World' COLLATE UNICODE_CI)
 
 query
 SELECT reverse('Hello' COLLATE UNICODE_CI)
+
+-- ============================================================================
+-- Predicate fallback for non-UTF8_BINARY collated operands.
+--
+-- Comet's native equality/ordering/hashing/substring kernels compare raw UTF-8 bytes, so any
+-- predicate operand carrying a non-UTF8_BINARY collation would produce wrong answers on the
+-- native path -- e.g. `'a' = 'A'` under UNICODE_CI returns true in Spark but false byte-wise.
+-- Every binary comparison and `In`/`InSet`/`Like`/`Contains`/`StartsWith`/`EndsWith` serde now
+-- guards its `getSupportLevel` so any collated operand triggers a clean fallback to Spark.
+-- The queries below exercise that fallback; if the guard regresses, Comet's native answer
+-- diverges from Spark's collation-aware answer and the diff surfaces here.
+-- ============================================================================
+
+statement
+CREATE TABLE test_collated_predicates(id INT, s STRING) USING parquet
+
+statement
+INSERT INTO test_collated_predicates VALUES
+  (1, 'a'),
+  (2, 'A'),
+  (3, 'hello'),
+  (4, 'HELLO'),
+  (5, 'World'),
+  (6, 'b'),
+  (7, NULL)
+
+-- ---------- EqualTo / EqualNullSafe / inequality ---------------------------
+
+-- UTF8_LCASE folds case, so 'a' and 'A' both match 'A'.
+query
+SELECT id, CAST(s AS STRING COLLATE UTF8_LCASE) = 'A' FROM test_collated_predicates ORDER BY id
+
+query
+SELECT id FROM test_collated_predicates WHERE CAST(s AS STRING COLLATE UTF8_LCASE) = 'A' ORDER BY id
+
+-- UNICODE_CI is a distinct ICU collation, also case-insensitive.
+query
+SELECT id, CAST(s AS STRING COLLATE UNICODE_CI) = 'A' FROM test_collated_predicates ORDER BY id
+
+-- Not-equals should surface via `!=` (parsed as Not(EqualTo)) and `<>`.
+query
+SELECT id, CAST(s AS STRING COLLATE UTF8_LCASE) != 'A' FROM test_collated_predicates ORDER BY id
+
+query
+SELECT id, CAST(s AS STRING COLLATE UTF8_LCASE) <> 'A' FROM test_collated_predicates ORDER BY id
+
+-- Null-safe equality: <=> treats two NULLs as equal.
+query
+SELECT id, CAST(s AS STRING COLLATE UTF8_LCASE) <=> 'A' FROM test_collated_predicates ORDER BY id
+
+query
+SELECT id, CAST(s AS STRING COLLATE UTF8_LCASE) <=> CAST(NULL AS STRING COLLATE UTF8_LCASE) FROM test_collated_predicates ORDER BY id
+
+-- ---------- Ordering ------------------------------------------------------
+
+query
+SELECT id, CAST(s AS STRING COLLATE UTF8_LCASE) < 'b' FROM test_collated_predicates ORDER BY id
+
+query
+SELECT id, CAST(s AS STRING COLLATE UTF8_LCASE) <= 'a' FROM test_collated_predicates ORDER BY id
+
+query
+SELECT id, CAST(s AS STRING COLLATE UTF8_LCASE) > 'a' FROM test_collated_predicates ORDER BY id
+
+query
+SELECT id, CAST(s AS STRING COLLATE UTF8_LCASE) >= 'A' FROM test_collated_predicates ORDER BY id
+
+query
+SELECT id, CAST(s AS STRING COLLATE UNICODE_CI) < 'b' FROM test_collated_predicates ORDER BY id
+
+-- ---------- In / NotIn / InSet ---------------------------------------------
+
+-- Small list of literals -> `In`.
+query
+SELECT id FROM test_collated_predicates WHERE CAST(s AS STRING COLLATE UTF8_LCASE) IN ('A', 'HELLO') ORDER BY id
+
+-- `NOT IN` exercises CometNot's special-case rewrite for In: the collated variant must fall
+-- through to the generic path so the child serde's Unsupported cascades to a Spark fallback.
+query
+SELECT id FROM test_collated_predicates WHERE CAST(s AS STRING COLLATE UTF8_LCASE) NOT IN ('A', 'HELLO') ORDER BY id
+
+-- Optimizer promotes a large literal list to `InSet`; force it by widening past the threshold
+-- (spark.sql.optimizer.inSetConversionThreshold defaults to 10).
+query
+SELECT id FROM test_collated_predicates WHERE CAST(s AS STRING COLLATE UTF8_LCASE) IN ('A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'HELLO') ORDER BY id
+
+-- ---------- NOT (EqualTo / EqualNullSafe) rewrites ------------------------
+
+-- Exercises CometNot's guard so the collated child falls through to Spark.
+query
+SELECT id FROM test_collated_predicates WHERE NOT (CAST(s AS STRING COLLATE UTF8_LCASE) = 'A') ORDER BY id
+
+query
+SELECT id FROM test_collated_predicates WHERE NOT (CAST(s AS STRING COLLATE UTF8_LCASE) <=> 'A') ORDER BY id
+
+-- ---------- Like -----------------------------------------------------------
+
+query
+SELECT id, CAST(s AS STRING COLLATE UTF8_LCASE) LIKE '%LLO' FROM test_collated_predicates ORDER BY id
+
+query
+SELECT id FROM test_collated_predicates WHERE CAST(s AS STRING COLLATE UTF8_LCASE) LIKE 'H%' ORDER BY id
+
+query
+SELECT id FROM test_collated_predicates WHERE CAST(s AS STRING COLLATE UNICODE_CI) LIKE 'h%' ORDER BY id
+
+-- ---------- Contains / StartsWith / EndsWith -------------------------------
+
+query
+SELECT id, contains(CAST(s AS STRING COLLATE UTF8_LCASE), 'HE') FROM test_collated_predicates ORDER BY id
+
+query
+SELECT id, startswith(CAST(s AS STRING COLLATE UTF8_LCASE), 'HE') FROM test_collated_predicates ORDER BY id
+
+query
+SELECT id, endswith(CAST(s AS STRING COLLATE UTF8_LCASE), 'LO') FROM test_collated_predicates ORDER BY id
+
+-- Filter-side use, exercising the WHERE-clause pushdown path.
+query
+SELECT id FROM test_collated_predicates WHERE contains(CAST(s AS STRING COLLATE UTF8_LCASE), 'ELL') ORDER BY id
+
+query
+SELECT id FROM test_collated_predicates WHERE startswith(CAST(s AS STRING COLLATE UNICODE_CI), 'h') ORDER BY id
+
+query
+SELECT id FROM test_collated_predicates WHERE endswith(CAST(s AS STRING COLLATE UNICODE_CI), 'O') ORDER BY id
+
+-- ---------- Nested-collated types ------------------------------------------
+
+-- hasNonDefaultStringCollation walks nested types, so a collated string buried inside an
+-- array/map/struct operand must also trigger fallback. If the recursive check regressed,
+-- Comet would attempt native array-equality with byte-wise element compares and diverge here.
+query
+SELECT id, array(CAST(s AS STRING COLLATE UTF8_LCASE)) = array('A' COLLATE UTF8_LCASE) FROM test_collated_predicates ORDER BY id
+
+query
+SELECT id, struct(CAST(s AS STRING COLLATE UTF8_LCASE)) = struct('A' COLLATE UTF8_LCASE) FROM test_collated_predicates ORDER BY id
+
+-- Map with collated value type.
+query
+SELECT id, map('k', CAST(s AS STRING COLLATE UTF8_LCASE)) = map('k', 'A' COLLATE UTF8_LCASE) FROM test_collated_predicates ORDER BY id
+
+-- ---------- NULL propagation ------------------------------------------------
+
+query
+SELECT id, CAST(s AS STRING COLLATE UTF8_LCASE) = CAST(NULL AS STRING COLLATE UTF8_LCASE) FROM test_collated_predicates ORDER BY id
+
+query
+SELECT id, CAST(NULL AS STRING COLLATE UTF8_LCASE) IN ('A', 'B') FROM test_collated_predicates ORDER BY id
+
+query
+SELECT id, CAST(s AS STRING COLLATE UTF8_LCASE) LIKE CAST(NULL AS STRING COLLATE UTF8_LCASE) FROM test_collated_predicates ORDER BY id
+
+query
+SELECT id, contains(CAST(s AS STRING COLLATE UTF8_LCASE), CAST(NULL AS STRING COLLATE UTF8_LCASE)) FROM test_collated_predicates ORDER BY id
