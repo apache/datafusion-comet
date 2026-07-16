@@ -737,7 +737,7 @@ under the License.
       <properties>
         <scala.version>2.13.18</scala.version>
         <scala.binary.version>2.13</scala.binary.version>
-        <spark.version>4.2.0-preview4</spark.version>
+        <spark.version>4.2.0</spark.version>
         <spark.version.short>4.2</spark.version.short>
         <parquet.version>1.17.0</parquet.version>
         <semanticdb.version>4.13.6</semanticdb.version>
@@ -1249,6 +1249,15 @@ under the License.
                         <ignoreClass>com.google.thirdparty.publicsuffix.TrieParser</ignoreClass>
                         <ignoreClass>com.google.thirdparty.publicsuffix.PublicSuffixPatterns</ignoreClass>
                         <ignoreClass>com.google.thirdparty.publicsuffix.PublicSuffixType</ignoreClass>
+                      </ignoreClasses>
+                    </dependency>
+                    <dependency>
+                      <groupId>org.apache.datasketches</groupId>
+                      <artifactId>datasketches-memory</artifactId>
+                      <ignoreClasses>
+                        <!-- Spark 4.2.0 bundles its own copy of this class in spark-catalyst,
+                             which collides with the transitive datasketches-memory jar. -->
+                        <ignoreClass>org.apache.datasketches.memory.internal.ResourceImpl</ignoreClass>
                       </ignoreClasses>
                     </dependency>
                   </dependencies>
