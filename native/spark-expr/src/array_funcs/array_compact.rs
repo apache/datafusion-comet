@@ -33,7 +33,6 @@ use datafusion::common::{exec_err, utils::take_function_args, Result};
 use datafusion::logical_expr::{
     ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, TypeSignature, Volatility,
 };
-use std::any::Any;
 use std::sync::Arc;
 
 #[derive(Debug, PartialEq, Eq, Hash)]
@@ -56,10 +55,6 @@ impl SparkArrayCompact {
 }
 
 impl ScalarUDFImpl for SparkArrayCompact {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn name(&self) -> &str {
         "spark_array_compact"
     }

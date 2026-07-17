@@ -40,7 +40,7 @@ use crate::utils::{array_with_timezone, cast_timestamp_to_ntz, timestamp_ntz_to_
 use crate::EvalMode::Legacy;
 use crate::{cast_whole_num_to_binary, BinaryOutputStyle};
 use crate::{EvalMode, SparkError};
-use arrow::array::builder::StringBuilder;
+use arrow::array::builder::{GenericStringBuilder, StringBuilder};
 use arrow::array::{
     new_null_array, BinaryBuilder, DictionaryArray, GenericByteArray, ListArray, MapArray,
     StringArray, StructArray,
@@ -50,8 +50,8 @@ use arrow::datatypes::{Field, Fields, GenericBinaryType};
 use arrow::error::ArrowError;
 use arrow::{
     array::{
-        cast::AsArray, types::Int32Type, Array, ArrayRef, GenericStringArray, Int16Array,
-        Int32Array, Int64Array, Int8Array, OffsetSizeTrait, PrimitiveArray,
+        cast::AsArray, types::Int32Type, Array, ArrayRef, Int16Array, Int32Array, Int64Array,
+        Int8Array, OffsetSizeTrait, PrimitiveArray,
     },
     compute::{cast_with_options, take, CastOptions},
     record_batch::RecordBatch,
@@ -62,8 +62,9 @@ use base64::Engine;
 use datafusion::common::{internal_err, DataFusionError, Result as DataFusionResult, ScalarValue};
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::ColumnarValue;
+use datafusion_comet_common::decode_utf8_spark_lossy;
+use std::borrow::Cow;
 use std::{
-    any::Any,
     fmt::{Debug, Display, Formatter},
     hash::Hash,
     sync::Arc,
@@ -530,11 +531,10 @@ fn cast_struct_to_struct(
                         ColumnarValue::from(from_field),
                         to.data_type(),
                         cast_options,
-                    )
-                    .unwrap();
-                    cast_result.to_array(array_length).unwrap()
+                    )?;
+                    cast_result.to_array(array_length)
                 })
-                .collect();
+                .collect::<DataFusionResult<Vec<_>>>()?;
 
             Ok(Arc::new(StructArray::new(
                 to_fields.clone(),
@@ -734,16 +734,12 @@ impl Display for Cast {
         write!(
             f,
             "Cast [data_type: {}, timezone: {}, child: {}, eval_mode: {:?}]",
-            self.data_type, self.cast_options.timezone, self.child, &self.cast_options.eval_mode
+            self.data_type, self.cast_options.timezone, self.child, self.cast_options.eval_mode
         )
     }
 }
 
 impl PhysicalExpr for Cast {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn fmt_sql(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         Display::fmt(self, f)
     }
@@ -807,21 +803,22 @@ fn cast_binary_to_string<O: OffsetSizeTrait>(
         .downcast_ref::<GenericByteArray<GenericBinaryType<O>>>()
         .unwrap();
 
-    fn binary_formatter(value: &[u8], spark_cast_options: &SparkCastOptions) -> String {
-        match spark_cast_options.binary_output_style {
-            Some(s) => spark_binary_formatter(value, s),
-            None => cast_binary_formatter(value),
+    // Build with a GenericStringBuilder and append &str straight from the decoder's Cow so the
+    // common valid-UTF-8 cast path copies the bytes once (into the Arrow value buffer) instead of
+    // twice (an owned String, then a copy into the buffer).
+    let mut builder = GenericStringBuilder::<O>::new();
+    for value in input.iter() {
+        match value {
+            Some(value) => match spark_cast_options.binary_output_style {
+                // ToPrettyString styles (Spark 4.0+) build owned strings, which is unavoidable.
+                Some(s) => builder.append_value(spark_binary_formatter(value, s)),
+                // Default CAST(binary AS string): borrows in the valid path, appends once.
+                None => builder.append_value(cast_binary_formatter(value)),
+            },
+            None => builder.append_null(),
         }
     }
-
-    let output_array = input
-        .iter()
-        .map(|value| match value {
-            Some(value) => Ok(Some(binary_formatter(value, spark_cast_options))),
-            _ => Ok(None),
-        })
-        .collect::<Result<GenericStringArray<O>, ArrowError>>()?;
-    Ok(Arc::new(output_array))
+    Ok(Arc::new(builder.finish()))
 }
 
 /// This function mimics the [BinaryFormatter]: https://github.com/apache/spark/blob/v4.0.0/sql/catalyst/src/main/scala/org/apache/spark/sql/catalyst/expressions/ToStringBase.scala#L449-L468
@@ -830,7 +827,10 @@ fn cast_binary_to_string<O: OffsetSizeTrait>(
 /// Before Spark 4.0.0, the default is SPACE_DELIMITED_UPPERCASE_HEX
 fn spark_binary_formatter(value: &[u8], binary_output_style: BinaryOutputStyle) -> String {
     match binary_output_style {
-        BinaryOutputStyle::Utf8 => String::from_utf8(value.to_vec()).unwrap(),
+        // Spark's UTF8 BinaryFormatter renders via `UTF8String.fromBytes(bytes).toString`, i.e.
+        // `new String(bytes, UTF_8)`. Route through the shared JVM-compatible decoder so invalid
+        // bytes become U+FFFD (matching Spark) instead of panicking on non-UTF-8 input (#4488).
+        BinaryOutputStyle::Utf8 => decode_utf8_spark_lossy(value).into_owned(),
         BinaryOutputStyle::Basic => {
             format!(
                 "{:?}",
@@ -859,20 +859,81 @@ fn spark_binary_formatter(value: &[u8], binary_output_style: BinaryOutputStyle) 
     }
 }
 
-fn cast_binary_formatter(value: &[u8]) -> String {
-    match String::from_utf8(value.to_vec()) {
-        Ok(value) => value,
-        Err(_) => unsafe { String::from_utf8_unchecked(value.to_vec()) },
-    }
+fn cast_binary_formatter(value: &[u8]) -> Cow<'_, str> {
+    // CAST(binary AS string) reinterprets the bytes as UTF-8, like Spark's UTF8String.fromBytes.
+    // Spark keeps the raw bytes, but Arrow's Utf8 type requires valid UTF-8, and building a String
+    // from non-UTF-8 bytes is undefined behaviour (#4488). Decode JVM-compatibly-lossily instead:
+    // `decode_utf8_spark_lossy` replaces ill-formed sequences with U+FFFD exactly as Spark's
+    // `new String(bytes, UTF_8)` does (the same decoder Comet's native shuffle uses, #4521). The
+    // result is memory-safe valid UTF-8, never feeds invalid bytes into downstream native string
+    // kernels, and matches Spark's rendered output byte-for-byte. It diverges from Spark for
+    // operations that read the underlying bytes rather than the rendered text: byte-level round-trips
+    // such as CAST(CAST(x AS string) AS binary) (Spark still has the original bytes), and value
+    // identity, since every ill-formed sequence decodes to the same U+FFFD and so two strings that
+    // differ in Spark can compare equal in Comet. Both are documented in the compatibility guide and
+    // tracked by #4764. Returning `Cow` lets the valid path borrow so the caller appends without an
+    // intermediate allocation.
+    decode_utf8_spark_lossy(value)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::{ListArray, NullArray, StringArray};
+    use arrow::array::{BinaryArray, ListArray, NullArray, StringArray};
     use arrow::buffer::OffsetBuffer;
     use arrow::datatypes::TimestampMicrosecondType;
     use arrow::datatypes::{Field, Fields};
+
+    #[test]
+    fn test_cast_binary_to_string_replaces_invalid_utf8_jvm_compatibly() {
+        // Invalid bytes are replaced with U+FFFD instead of reinterpreted as an invalid `str`,
+        // and the granularity matches the JVM: the surrogate-range sequence [ED A0 80] collapses
+        // to a single U+FFFD (Rust's `from_utf8_lossy` would emit three). Valid UTF-8 ("abc") is
+        // preserved exactly and NULL stays NULL.
+        let input = BinaryArray::from_opt_vec(vec![
+            Some(&[0xFFu8, 0xFE][..]),
+            None,
+            Some("abc".as_bytes()),
+            Some(&[0xEDu8, 0xA0, 0x80][..]),
+        ]);
+        // binary_output_style defaults to None, i.e. the plain (non-ToPrettyString) cast path.
+        let cast_options = SparkCastOptions::new(EvalMode::Legacy, "UTC", false);
+
+        let result = cast_binary_to_string::<i32>(&input, &cast_options).unwrap();
+
+        let strings = result.as_string::<i32>();
+        assert_eq!(strings.len(), 4);
+        assert_eq!(strings.value(0), "\u{FFFD}\u{FFFD}");
+        assert!(strings.is_null(1));
+        assert_eq!(strings.value(2), "abc");
+        assert_eq!(strings.value(3), "\u{FFFD}");
+    }
+
+    #[test]
+    fn test_cast_binary_to_string_utf8_output_style_replaces_invalid_utf8() {
+        // Spark's `binaryOutputStyle=UTF8` (Spark 4.0+) ToPrettyString formatter renders binary via
+        // `new String(bytes, UTF_8)`. Previously this arm called `String::from_utf8(..).unwrap()`,
+        // which panicked the executor on non-UTF-8 input. It must now decode JVM-compatibly-lossily,
+        // matching the default cast path's replacement behavior.
+        let input = BinaryArray::from_opt_vec(vec![
+            Some(&[0xFFu8, 0xFE][..]),
+            None,
+            Some("abc".as_bytes()),
+            Some(&[0xEDu8, 0xA0, 0x80][..]),
+        ]);
+        let mut cast_options = SparkCastOptions::new(EvalMode::Legacy, "UTC", false);
+        cast_options.binary_output_style = Some(BinaryOutputStyle::Utf8);
+
+        let result = cast_binary_to_string::<i32>(&input, &cast_options).unwrap();
+
+        let strings = result.as_string::<i32>();
+        assert_eq!(strings.len(), 4);
+        assert_eq!(strings.value(0), "\u{FFFD}\u{FFFD}");
+        assert!(strings.is_null(1));
+        assert_eq!(strings.value(2), "abc");
+        assert_eq!(strings.value(3), "\u{FFFD}");
+    }
+
     #[test]
     fn test_cast_unsupported_timestamp_to_date() {
         // Since datafusion uses chrono::Datetime internally not all dates representable by TimestampMicrosecondType are supported
@@ -959,6 +1020,38 @@ mod tests {
         } else {
             unreachable!()
         }
+    }
+
+    #[test]
+    fn test_cast_nested_struct_to_struct_ansi_overflow_returns_error() {
+        let inner_values: ArrayRef = Arc::new(Int64Array::from(vec![Some(1), Some(128), None]));
+        let from_nested_fields =
+            Fields::from(vec![Field::new("long_value", DataType::Int64, true)]);
+        let nested: ArrayRef = Arc::new(StructArray::new(
+            from_nested_fields.clone(),
+            vec![inner_values],
+            None,
+        ));
+        let from_fields = Fields::from(vec![Field::new(
+            "nested",
+            DataType::Struct(from_nested_fields),
+            true,
+        )]);
+        let outer: ArrayRef = Arc::new(StructArray::new(from_fields, vec![nested], None));
+
+        let to_nested_fields = Fields::from(vec![Field::new("byte_value", DataType::Int8, true)]);
+        let to_fields = Fields::from(vec![Field::new(
+            "renamed_nested",
+            DataType::Struct(to_nested_fields),
+            true,
+        )]);
+        let result = spark_cast(
+            ColumnarValue::Array(outer),
+            &DataType::Struct(to_fields),
+            &SparkCastOptions::new(EvalMode::Ansi, "UTC", false),
+        );
+
+        assert!(result.is_err());
     }
 
     #[test]

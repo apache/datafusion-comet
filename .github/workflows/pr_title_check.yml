@@ -27,9 +27,9 @@ on:
 
 jobs:
   check-pr-title:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-slim
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Check PR title
         env:
           PR_TITLE: ${{ github.event.pull_request.title }}

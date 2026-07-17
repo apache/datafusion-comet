@@ -30,7 +30,7 @@ import org.apache.spark.sql.execution.exchange.ShuffleExchangeExec
 import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.CometConf
-import org.apache.comet.CometSparkSessionExtensions.{hasExplainInfo, withInfo}
+import org.apache.comet.CometSparkSessionExtensions.{hasFallbackReason, withFallbackReason}
 
 /**
  * Pins the sticky-fallback invariant for Comet shuffle decisions: `shuffleSupported` must return
@@ -43,14 +43,14 @@ import org.apache.comet.CometSparkSessionExtensions.{hasExplainInfo, withInfo}
  * at initial planning and then convert to Comet at stage prep, producing plan-shape
  * inconsistencies across the two passes (suspected mechanism behind #3949).
  *
- * The coordinator tags the node with `withInfos` only on total fallback and short-circuits via
- * `hasExplainInfo` on subsequent passes.
+ * The coordinator tags the node with `withFallbackReasons` only on total fallback and
+ * short-circuits via `hasFallbackReason` on subsequent passes.
  */
 class CometShuffleFallbackStickinessSuite extends CometTestBase {
 
   test("shuffleSupported returns None when the shuffle already carries explain info") {
     val shuffle = ShuffleExchangeExec(SinglePartition, SyntheticLeaf(Nil))
-    withInfo(shuffle, "pretend prior pass decided Spark fallback")
+    withFallbackReason(shuffle, "pretend prior pass decided Spark fallback")
 
     assert(
       CometShuffleExchangeExec.shuffleSupported(shuffle).isEmpty,
@@ -109,7 +109,7 @@ class CometShuffleFallbackStickinessSuite extends CometTestBase {
         // Pass 1: real DPP subtree visible. Returns None AND tags the shuffle.
         val first = CometShuffleExchangeExec.shuffleSupported(shuffle)
         assert(first.isEmpty, "initial pass must fall back (DPP visible)")
-        assert(hasExplainInfo(shuffle), "fallback reason must be tagged on the shuffle")
+        assert(hasFallbackReason(shuffle), "fallback reason must be tagged on the shuffle")
 
         // Pass 2 simulates AQE stage-prep: replace the child with an opaque leaf that hides
         // the DPP subtree from tree walks. A naive `.exists`-based check would flip to "convert"

@@ -24,6 +24,7 @@ import java.util.Locale
 
 import scala.jdk.CollectionConverters._
 
+import org.apache.parquet.hadoop.ParquetOutputFormat
 import org.apache.spark.SparkException
 import org.apache.spark.sql.comet.{CometNativeExec, CometNativeWriteExec}
 import org.apache.spark.sql.execution.command.DataWritingCommandExec
@@ -32,7 +33,7 @@ import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
 import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.{CometConf, ConfigEntry}
-import org.apache.comet.CometSparkSessionExtensions.withInfo
+import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 import org.apache.comet.objectstore.NativeConfig
 import org.apache.comet.serde.{CometOperatorSerde, Incompatible, OperatorOuterClass, SupportLevel, Unsupported}
 import org.apache.comet.serde.OperatorOuterClass.Operator
@@ -44,7 +45,8 @@ import org.apache.comet.serde.QueryPlanSerde.serializeDataType
  */
 object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec] {
 
-  private val supportedCompressionCodes = Set("none", "snappy", "lz4", "zstd")
+  private val supportedCompressionCodes =
+    Set("none", "uncompressed", "snappy", "lz4", "zstd", "gzip")
 
   override def enabledConfig: Option[ConfigEntry[Boolean]] =
     Some(CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED)
@@ -96,7 +98,6 @@ object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec
       val scanOp = OperatorOuterClass.Scan
         .newBuilder()
         .setSource(cmd.query.nodeName)
-        .setArrowFfiSafe(false)
 
       // Add fields from the query output schema
       val scanTypes = cmd.query.output.flatMap { attr =>
@@ -104,7 +105,7 @@ object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec
       }
 
       if (scanTypes.length != cmd.query.output.length) {
-        withInfo(op, "Cannot serialize data types for native write")
+        withFallbackReason(op, "Cannot serialize data types for native write")
         return None
       }
 
@@ -122,9 +123,10 @@ object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec
         case "snappy" => OperatorOuterClass.CompressionCodec.Snappy
         case "lz4" => OperatorOuterClass.CompressionCodec.Lz4
         case "zstd" => OperatorOuterClass.CompressionCodec.Zstd
-        case "none" => OperatorOuterClass.CompressionCodec.None
+        case "gzip" => OperatorOuterClass.CompressionCodec.Gzip
+        case "none" | "uncompressed" => OperatorOuterClass.CompressionCodec.None
         case other =>
-          withInfo(op, s"Unsupported compression codec: $other")
+          withFallbackReason(op, s"Unsupported compression codec: $other")
           return None
       }
 
@@ -157,7 +159,7 @@ object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec
       Some(writerOperator)
     } catch {
       case e: Exception =>
-        withInfo(
+        withFallbackReason(
           op,
           "Failed to convert DataWritingCommandExec to native execution: " +
             s"${e.getMessage}")
@@ -201,13 +203,17 @@ object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec
           throw new SparkException(s"Could not instantiate FileCommitProtocol: ${e.getMessage}")
       }
 
-    CometNativeWriteExec(nativeOp, childPlan, outputPath, committer, jobId)
+    CometNativeWriteExec(nativeOp, childPlan, outputPath, cmd.mode, committer, jobId)
   }
 
   private def parseCompressionCodec(cmd: InsertIntoHadoopFsRelationCommand) = {
+    // `compression`, `parquet.compression` (i.e., ParquetOutputFormat.COMPRESSION), and
+    // `spark.sql.parquet.compression.codec` are in order of precedence from highest to
+    // lowest, matching Spark's own ParquetOptions.compressionCodecClassName.
     cmd.options
+      .get("compression")
+      .orElse(cmd.options.get(ParquetOutputFormat.COMPRESSION))
       .getOrElse(
-        "compression",
         SQLConf.get.getConfString(
           SQLConf.PARQUET_COMPRESSION.key,
           SQLConf.PARQUET_COMPRESSION.defaultValueString))

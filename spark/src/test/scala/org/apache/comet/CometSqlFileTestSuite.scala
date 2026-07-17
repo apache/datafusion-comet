@@ -21,22 +21,11 @@ package org.apache.comet
 
 import java.io.File
 
-import org.scalactic.source.Position
-import org.scalatest.Tag
-
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
+import org.apache.spark.sql.internal.SQLConf
 
 class CometSqlFileTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
-
-  override protected def test(testName: String, testTags: Tag*)(testFun: => Any)(implicit
-      pos: Position): Unit = {
-    super.test(testName, testTags: _*) {
-      withSQLConf(CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_AUTO) {
-        testFun
-      }
-    }
-  }
 
   /** Check if the current Spark version meets a minimum version requirement. */
   private def meetsMinSparkVersion(minVersion: String): Boolean = {
@@ -44,6 +33,31 @@ class CometSqlFileTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     val required = minVersion.split("[.-]").take(2).map(_.toInt)
     (current(0) > required(0)) ||
     (current(0) == required(0) && current(1) >= required(1))
+  }
+
+  /**
+   * Check if the current Spark version is at or below a maximum version. Used by paired fixtures
+   * where each version range has its own expected error class or output format.
+   */
+  private def meetsMaxSparkVersion(maxVersion: String): Boolean = {
+    val current = org.apache.spark.SPARK_VERSION.split("[.-]").take(2).map(_.toInt)
+    val ceiling = maxVersion.split("[.-]").take(2).map(_.toInt)
+    (current(0) < ceiling(0)) ||
+    (current(0) == ceiling(0) && current(1) <= ceiling(1))
+  }
+
+  /**
+   * Build a human-readable reason string describing why a fixture is skipped on the current Spark
+   * version. Returns None when both constraints are satisfied.
+   */
+  private def skipReason(parsed: SqlTestFile): Option[String] = {
+    val minViolation = parsed.minSparkVersion.filter(!meetsMinSparkVersion(_))
+    val maxViolation = parsed.maxSparkVersion.filter(!meetsMaxSparkVersion(_))
+    (minViolation, maxViolation) match {
+      case (Some(m), _) => Some(s"requires Spark >= $m")
+      case (_, Some(m)) => Some(s"requires Spark <= $m")
+      case _ => None
+    }
   }
 
   private val testResourceDir = {
@@ -77,8 +91,44 @@ class CometSqlFileTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     "spark.sql.optimizer.excludedRules" ->
       "org.apache.spark.sql.catalyst.optimizer.ConstantFolding")
 
+  // Most SQL fixtures here predate Spark 4 ANSI default and expect non-ANSI semantics
+  // (silent overflow/null on bad input). Individual files can opt in via their own
+  // --CONFIG line, which appears later in the pair list and wins.
+  private val ansiDisabled = Seq(SQLConf.ANSI_ENABLED.key -> "false")
+
+  /**
+   * Pin the sentinel-query convention for fixtures that route an `expect_error` through the
+   * codegen dispatcher. See [[ExpectError]] for the failure mode this guards against.
+   */
+  private def requireSentinelForCodegenExpectError(
+      relativePath: String,
+      file: SqlTestFile): Unit = {
+    val codegenFlagOn = file.configs.exists { case (k, v) =>
+      k == CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key && v.equalsIgnoreCase("true")
+    }
+    if (!codegenFlagOn) return
+    val hasExpectError = file.records.exists {
+      case SqlQuery(_, _: ExpectError, _) => true
+      case _ => false
+    }
+    if (!hasExpectError) return
+    val hasSentinel = file.records.exists {
+      case SqlQuery(_, CheckCoverageAndAnswer, _) => true
+      case _ => false
+    }
+    assert(
+      hasSentinel,
+      s"SQL fixture $relativePath combines `expect_error` with " +
+        s"${CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key}=true but is missing a non-error " +
+        "sentinel query. Without one, a silent dispatcher fallback to Spark would let the " +
+        "`expect_error` queries pass vacuously (Spark raises the same error on the fallback " +
+        "path). Add at least one `query` over valid input so `checkSparkAnswerAndOperator` " +
+        "fails if the expression did not execute natively.")
+  }
+
   private def runTestFile(relativePath: String, file: SqlTestFile): Unit = {
-    val allConfigs = file.configs ++ constantFoldingExcluded
+    requireSentinelForCodegenExpectError(relativePath, file)
+    val allConfigs = ansiDisabled ++ file.configs ++ constantFoldingExcluded
     withSQLConf(allConfigs: _*) {
       withTable(file.tables: _*) {
         file.records.foreach {
@@ -139,17 +189,18 @@ class CometSqlFileTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     val parsed = SqlFileTestParser.parse(file)
     val combinations = configMatrix(parsed.configMatrix)
 
-    // Skip tests that require a newer Spark version
-    val skip = parsed.minSparkVersion.exists(!meetsMinSparkVersion(_))
+    // Skip tests that fall outside the file's declared Spark version range.
+    val skip = skipReason(parsed)
 
     if (combinations.size <= 1) {
       // No matrix or single combination
       test(s"sql-file: $relativePath") {
-        if (skip) {
-          logInfo(s"SKIPPED (requires Spark ${parsed.minSparkVersion.get}): $relativePath")
-        } else {
-          val effectiveConfigs = parsed.configs ++ combinations.headOption.getOrElse(Seq.empty)
-          runTestFile(relativePath, parsed.copy(configs = effectiveConfigs))
+        skip match {
+          case Some(reason) =>
+            logInfo(s"SKIPPED ($reason): $relativePath")
+          case None =>
+            val effectiveConfigs = parsed.configs ++ combinations.headOption.getOrElse(Seq.empty)
+            runTestFile(relativePath, parsed.copy(configs = effectiveConfigs))
         }
       }
     } else {
@@ -157,10 +208,11 @@ class CometSqlFileTestSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       combinations.foreach { matrixConfigs =>
         val label = matrixConfigs.map { case (k, v) => s"$k=$v" }.mkString(", ")
         test(s"sql-file: $relativePath [$label]") {
-          if (skip) {
-            logInfo(s"SKIPPED (requires Spark ${parsed.minSparkVersion.get}): $relativePath")
-          } else {
-            runTestFile(relativePath, parsed.copy(configs = parsed.configs ++ matrixConfigs))
+          skip match {
+            case Some(reason) =>
+              logInfo(s"SKIPPED ($reason): $relativePath")
+            case None =>
+              runTestFile(relativePath, parsed.copy(configs = parsed.configs ++ matrixConfigs))
           }
         }
       }

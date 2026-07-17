@@ -19,9 +19,17 @@
 
 package org.apache.comet
 
+import org.apache.spark.SparkConf
+import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DecimalType, IntegerType, LongType}
 
 class CometFuzzMathSuite extends CometFuzzTestBase {
+
+  // The integer-math fuzz tests intentionally cover overflowing inputs; under Spark 4's
+  // default ANSI mode those would throw rather than produce a result for both Spark and
+  // Comet to compare against. Pin ANSI off so the parity comparison can run.
+  override protected def sparkConf: SparkConf =
+    super.sparkConf.set(SQLConf.ANSI_ENABLED.key, "false")
 
   for (op <- Seq("+", "-", "*", "/", "div")) {
     test(s"integer math: $op") {

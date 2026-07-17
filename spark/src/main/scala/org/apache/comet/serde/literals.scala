@@ -29,10 +29,10 @@ import org.apache.spark.unsafe.types.UTF8String
 
 import com.google.protobuf.ByteString
 
-import org.apache.comet.CometSparkSessionExtensions.withInfo
+import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 import org.apache.comet.DataTypeSupport.isComplexType
 import org.apache.comet.serde.{CometExpressionSerde, Compatible, ExprOuterClass, LiteralOuterClass, SupportLevel, Unsupported}
-import org.apache.comet.serde.QueryPlanSerde.{serializeDataType, supportedDataType}
+import org.apache.comet.serde.QueryPlanSerde.{isTimeType, serializeDataType, supportedDataType}
 import org.apache.comet.serde.Types.ListLiteral
 
 object CometLiteral extends CometExpressionSerde[Literal] with Logging {
@@ -80,6 +80,8 @@ object CometLiteral extends CometExpressionSerde[Literal] with Logging {
         case _: IntegerType | _: DateType => exprBuilder.setIntVal(value.asInstanceOf[Int])
         case _: LongType | _: TimestampType | _: TimestampNTZType =>
           exprBuilder.setLongVal(value.asInstanceOf[Long])
+        case dt if isTimeType(dt) =>
+          exprBuilder.setLongVal(value.asInstanceOf[Long])
         case _: FloatType => exprBuilder.setFloatVal(value.asInstanceOf[Float])
         case _: DoubleType => exprBuilder.setDoubleVal(value.asInstanceOf[Double])
         case _: StringType =>
@@ -99,7 +101,7 @@ object CometLiteral extends CometExpressionSerde[Literal] with Logging {
           exprBuilder.setListVal(listLiteralBuilder.build())
           exprBuilder.setDatatype(serializeDataType(dataType).get)
         case dt =>
-          withInfo(expr, s"Unexpected datatype '$dt' for literal value '$value'")
+          withFallbackReason(expr, s"Unexpected datatype '$dt' for literal value '$value'")
           return None
       }
     }
@@ -115,7 +117,7 @@ object CometLiteral extends CometExpressionSerde[Literal] with Logging {
           .setLiteral(exprBuilder)
           .build())
     } else {
-      withInfo(expr, s"Unsupported datatype $dataType")
+      withFallbackReason(expr, s"Unsupported datatype $dataType")
       None
     }
 

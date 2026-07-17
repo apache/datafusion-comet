@@ -38,7 +38,6 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.DecimalType
 
 import org.apache.comet.CometConf
-import org.apache.comet.CometConf.{SCAN_NATIVE_DATAFUSION, SCAN_NATIVE_ICEBERG_COMPAT}
 import org.apache.comet.CometSparkSessionExtensions
 
 trait CometBenchmarkBase
@@ -52,6 +51,15 @@ trait CometBenchmarkBase
       .set("spark.master", "local[1]")
       .setIfMissing("spark.driver.memory", "3g")
       .setIfMissing("spark.executor.memory", "3g")
+      // Use Comet's shuffle manager so operators that require Comet shuffle can
+      // run natively, notably aggregates planned as ObjectHashAggregate such as
+      // percentile and approx_percentile. `spark.shuffle.manager` is static and
+      // must be set before the context starts. CometShuffleManager falls back to
+      // Spark's shuffle when Comet is disabled, so the Spark baseline cases are
+      // unaffected.
+      .set(
+        "spark.shuffle.manager",
+        "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
 
     val sparkSession = SparkSession.builder
       .config(conf)
@@ -125,7 +133,8 @@ trait CometBenchmarkBase
     val cometExecConfigs = Map(
       CometConf.COMET_ENABLED.key -> "true",
       CometConf.COMET_EXEC_ENABLED.key -> "true",
-      "spark.sql.optimizer.constantFolding.enabled" -> "false") ++ extraCometConfigs
+      "spark.sql.optimizer.excludedRules" ->
+        "org.apache.spark.sql.catalyst.optimizer.ConstantFolding") ++ extraCometConfigs
 
     // Check that the plan is fully Comet native before running the benchmark
     withSQLConf(cometExecConfigs.toSeq: _*) {
@@ -172,15 +181,12 @@ trait CometBenchmarkBase
       }
     }
 
-    for (scanImpl <- Seq(SCAN_NATIVE_DATAFUSION, SCAN_NATIVE_ICEBERG_COMPAT)) {
-      benchmark.addCase(s"SQL Parquet - Comet ($scanImpl)$suffix") { _ =>
-        withSQLConf(
-          (extraConf ++ Map(
-            CometConf.COMET_ENABLED.key -> "true",
-            CometConf.COMET_EXEC_ENABLED.key -> "true",
-            CometConf.COMET_NATIVE_SCAN_IMPL.key -> scanImpl)).toSeq: _*) {
-          spark.sql(query).noop()
-        }
+    benchmark.addCase(s"SQL Parquet - Comet$suffix") { _ =>
+      withSQLConf(
+        (extraConf ++ Map(
+          CometConf.COMET_ENABLED.key -> "true",
+          CometConf.COMET_EXEC_ENABLED.key -> "true")).toSeq: _*) {
+        spark.sql(query).noop()
       }
     }
   }

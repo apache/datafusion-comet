@@ -60,9 +60,7 @@ class CometExecSuite extends CometTestBase {
   override protected def test(testName: String, testTags: Tag*)(testFun: => Any)(implicit
       pos: Position): Unit = {
     super.test(testName, testTags: _*) {
-      withSQLConf(
-        CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
-        CometConf.COMET_NATIVE_SCAN_IMPL.key -> CometConf.SCAN_AUTO) {
+      withSQLConf(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true") {
         testFun
       }
     }
@@ -2211,6 +2209,48 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
+  // Regression test for https://github.com/apache/datafusion-comet/issues/4787
+  // A scalar subquery inside a RepartitionByExpression (DISTRIBUTE BY) lives in the shuffle's
+  // partitioning expressions, not the native child subtree, so it must be registered separately
+  // for the native shuffle writer to resolve it.
+  test("scalar subquery in repartition") {
+    withParquetTable((0 until 10).map(i => (i, i)), "t") {
+      val df = sql("SELECT * FROM t DISTRIBUTE BY (_1 + (SELECT max(_2) FROM t))")
+      checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  // Same as above but forces a non-native shuffle child (CometSparkToColumnarExec) by disabling
+  // the native scan and routing the parquet read through Spark-to-Arrow conversion. This exercises
+  // the prepareShuffleDependency convenience-overload path, which builds its own NativeExecContext.
+  test("scalar subquery in repartition over non-native child") {
+    withSQLConf(
+      CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "false",
+      CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.key -> "true",
+      CometConf.COMET_SPARK_TO_ARROW_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_SHUFFLE_MODE.key -> "native") {
+      withParquetTable((0 until 10).map(i => (i, i)), "t") {
+        val df = sql("SELECT * FROM t DISTRIBUTE BY (_1 + (SELECT max(_2) FROM t))")
+        checkSparkAnswer(df)
+      }
+    }
+  }
+
+  // Columnar shuffle computes partition keys on the JVM (UnsafeProjection / partitionIdExpression),
+  // so the partitioning subquery resolves via updateResult with no native Subquery serialization.
+  // This confirms the "Subquery N not found" crash is specific to the native shuffle path.
+  test("scalar subquery in repartition (columnar shuffle)") {
+    withSQLConf(
+      CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
+      withParquetTable((0 until 10).map(i => (i, i)), "t") {
+        val df = sql("SELECT * FROM t DISTRIBUTE BY (_1 + (SELECT max(_2) FROM t))")
+        checkSparkAnswer(df)
+      }
+    }
+  }
+
   // Regression test for https://github.com/apache/datafusion-comet/issues/4042
   // SPARK-43402 (Spark 4.0+) pushes scalar subqueries into FileSourceScanExec.dataFilters.
   // CometReuseSubquery re-applies subquery deduplication after Comet node conversions, and
@@ -2269,50 +2309,41 @@ class CometExecSuite extends CometTestBase {
   }
 
   test("Comet native metrics: scan") {
-    Seq(CometConf.SCAN_NATIVE_DATAFUSION, CometConf.SCAN_NATIVE_ICEBERG_COMPAT).foreach {
-      scanMode =>
-        withSQLConf(
-          CometConf.COMET_EXEC_ENABLED.key -> "true",
-          CometConf.COMET_NATIVE_SCAN_IMPL.key -> scanMode) {
-          withTempDir { dir =>
-            val path = new Path(dir.toURI.toString, "native-scan.parquet")
-            makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = true, 10000)
-            withParquetTable(path.toString, "tbl") {
-              val df = sql("SELECT * FROM tbl")
-              df.collect()
+    withSQLConf(CometConf.COMET_EXEC_ENABLED.key -> "true") {
+      withTempDir { dir =>
+        val path = new Path(dir.toURI.toString, "native-scan.parquet")
+        makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = true, 10000)
+        withParquetTable(path.toString, "tbl") {
+          val df = sql("SELECT * FROM tbl")
+          df.collect()
 
-              val scan = find(df.queryExecution.executedPlan)(s =>
-                s.isInstanceOf[CometScanExec] || s.isInstanceOf[CometNativeScanExec])
-              assert(scan.isDefined, s"Expected to find a Comet scan node for $scanMode")
-              val metrics = scan.get.metrics
+          val scan = find(df.queryExecution.executedPlan)(s =>
+            s.isInstanceOf[CometScanExec] || s.isInstanceOf[CometNativeScanExec])
+          assert(scan.isDefined, "Expected to find a Comet scan node")
+          val metrics = scan.get.metrics
 
-              assert(
-                metrics.contains("time_elapsed_scanning_total"),
-                s"[$scanMode] Missing time_elapsed_scanning_total. Available: ${metrics.keys}")
-              assert(metrics.contains("bytes_scanned"))
-              assert(metrics.contains("output_rows"))
-              assert(metrics.contains("time_elapsed_opening"))
-              assert(metrics.contains("time_elapsed_processing"))
-              assert(metrics.contains("time_elapsed_scanning_until_data"))
-              assert(
-                metrics("time_elapsed_scanning_total").value > 0,
-                s"[$scanMode] time_elapsed_scanning_total should be > 0")
-              assert(
-                metrics("bytes_scanned").value > 0,
-                s"[$scanMode] bytes_scanned should be > 0")
-              assert(metrics("output_rows").value > 0, s"[$scanMode] output_rows should be > 0")
-              assert(
-                metrics("time_elapsed_opening").value > 0,
-                s"[$scanMode] time_elapsed_opening should be > 0")
-              assert(
-                metrics("time_elapsed_processing").value > 0,
-                s"[$scanMode] time_elapsed_processing should be > 0")
-              assert(
-                metrics("time_elapsed_scanning_until_data").value > 0,
-                s"[$scanMode] time_elapsed_scanning_until_data should be > 0")
-            }
-          }
+          assert(
+            metrics.contains("time_elapsed_scanning_total"),
+            s"Missing time_elapsed_scanning_total. Available: ${metrics.keys}")
+          assert(metrics.contains("bytes_scanned"))
+          assert(metrics.contains("output_rows"))
+          assert(metrics.contains("time_elapsed_opening"))
+          assert(metrics.contains("time_elapsed_processing"))
+          assert(metrics.contains("time_elapsed_scanning_until_data"))
+          assert(
+            metrics("time_elapsed_scanning_total").value > 0,
+            "time_elapsed_scanning_total should be > 0")
+          assert(metrics("bytes_scanned").value > 0, "bytes_scanned should be > 0")
+          assert(metrics("output_rows").value > 0, "output_rows should be > 0")
+          assert(metrics("time_elapsed_opening").value > 0, "time_elapsed_opening should be > 0")
+          assert(
+            metrics("time_elapsed_processing").value > 0,
+            "time_elapsed_processing should be > 0")
+          assert(
+            metrics("time_elapsed_scanning_until_data").value > 0,
+            "time_elapsed_scanning_until_data should be > 0")
         }
+      }
     }
   }
 
@@ -3605,6 +3636,8 @@ class CometExecSuite extends CometTestBase {
           "struct(id)").foreach { valueType =>
           {
             withSQLConf(
+              // cast(id as tinyint) overflows for id >= 128, which throws under ANSI
+              SQLConf.ANSI_ENABLED.key -> "false",
               SQLConf.USE_V1_SOURCE_LIST.key -> v1List,
               CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "false",
               CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.key -> "true",
@@ -3716,6 +3749,45 @@ class CometExecSuite extends CometTestBase {
         val table = spark.read.parquet(filename)
         table.createOrReplaceTempView("t1")
         checkSparkAnswer(sql("SELECT * FROM t1"))
+      }
+    }
+  }
+
+  test("SparkToColumnar preserves row count for zero-column input batches (df.count())") {
+    // Regression test: when spark.comet.scan is disabled but convert.parquet is enabled,
+    // Spark's count-from-metadata optimization emits ColumnarBatches with numRows > 0 and
+    // numCols == 0. SparkColumnarArrowReader used to derive the Arrow row count from
+    // per-column writes only, silently producing zero-row Arrow batches in this case and
+    // making df.count() return 0.
+    withSQLConf(
+      SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+      CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "false",
+      CometConf.COMET_SPARK_TO_ARROW_ENABLED.key -> "true",
+      CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.key -> "true") {
+      withTempPath { dir =>
+        val expected = 10000L
+        spark
+          .range(expected)
+          .selectExpr("id as key", "id % 8 as value")
+          .toDF("key", "value")
+          .write
+          .parquet(dir.toString)
+
+        val df = spark.read.parquet(dir.toString)
+        // Materialize the count query explicitly so we can inspect the plan
+        // that runs — Dataset.count() executes groupBy().count() internally
+        // but doesn't expose that plan
+        val countDf = df.groupBy().count()
+        assert(
+          countDf.collect().head.getLong(0) == expected,
+          "df.count() should match number of written rows")
+
+        // Ensure this test actually exercises the SparkColumnarArrowReader code path
+        // guarded by the fix, so future regressions are caught.
+        val sparkToColumnar = collect(countDf.queryExecution.executedPlan) {
+          case s: CometSparkToColumnarExec => s
+        }
+        assert(sparkToColumnar.nonEmpty, "Expected CometSparkToColumnarExec in the executed plan")
       }
     }
   }
@@ -3934,6 +4006,60 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
+  test("CometLocalTableScanExec handles NullType column") {
+    withSQLConf(CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+      val df = spark.sql("SELECT * FROM VALUES ('a', null), ('b', null) AS t(x, y)")
+      checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  test("CometLocalTableScanExec handles NullType nested in struct/array/map") {
+    withSQLConf(CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+      checkSparkAnswerAndOperator(
+        spark.sql("SELECT named_struct('a', 1, 'b', null) AS s, array(null, null) AS a, " +
+          "map('k', null) AS m FROM VALUES (1), (2) AS t(id)"))
+    }
+  }
+
+  test("CometLocalTableScanExec falls back when schema contains TimeType") {
+    assume(
+      org.apache.comet.CometSparkSessionExtensions.isSpark41Plus,
+      "TimeType requires Spark 4.1+")
+    // spark.sql.timeType.enabled defaults to Utils.isTesting; enable explicitly so the
+    // row encoder accepts TIME (matches Spark's own TimeFunctionsSuiteBase setup).
+    withSQLConf(
+      "spark.sql.timeType.enabled" -> "true",
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+      // VALUES folds to a LocalRelation, exercising the CometLocalTableScanExec convert
+      // path; the TimeType column should drive the schema-level fallback.
+      val df = spark.sql("SELECT * FROM VALUES (TIME '12:34:56'), (TIME '01:02:03') AS t(c)")
+      checkSparkAnswer(df)
+    }
+  }
+
+  test("CometLocalTableScanExec does not leak Arrow buffers (project consumer)") {
+    // Forces a CometNativeExec consumer over an ArrowArrayStream input. The producer must not
+    // leak the Arrow buffers it allocates per batch; if it does, the BaseAllocator
+    // leak detector fires inside the task completion listener.
+    withSQLConf(CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+      val session = spark
+      import session.implicits._
+      val df = Seq((1, 2), (2, 2), (3, 4)).toDF("a", "b")
+      checkSparkAnswer(df.select($"a" + 1))
+    }
+  }
+
+  test("CometLocalTableScanExec does not leak Arrow buffers (collect_list)") {
+    // Mirrors DataFrameAggregateSuite "collect functions" which is the test that
+    // surfaced the leak in CI.
+    withSQLConf(CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+      val session = spark
+      import session.implicits._
+      val df = Seq((1, 2), (2, 2), (3, 4)).toDF("a", "b")
+      checkSparkAnswer(df.select(collect_list($"a"), collect_list($"b")))
+    }
+  }
+
   test("Native_datafusion reports correct files and bytes scanned") {
     val inputFiles = 2
 
@@ -3943,8 +4069,7 @@ class CometExecSuite extends CometTestBase {
 
       withSQLConf(
         CometConf.COMET_ENABLED.key -> "true",
-        CometConf.COMET_EXEC_ENABLED.key -> "true",
-        CometConf.COMET_NATIVE_SCAN_IMPL.key -> "native_datafusion") {
+        CometConf.COMET_EXEC_ENABLED.key -> "true") {
         val df = spark.read.parquet(path)
 
         // Trigger two different actions to ensure metrics are not duplicated
@@ -3965,6 +4090,79 @@ class CometExecSuite extends CometTestBase {
         assert(
           numFiles == inputFiles,
           s"Expected exactly $inputFiles files to be scanned, but got metrics reporting $numFiles")
+      }
+    }
+  }
+
+  test("native parquet read failure surfaces as FAILED_READ_FILE with the file path") {
+    withTempDir { dir =>
+      val path = new Path(dir.toURI.toString, "corrupt.parquet")
+      makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = false, 1000)
+      // Corrupt column/page data in the middle of the file while leaving the footer intact, so
+      // Spark's JVM-side footer pre-check passes during planning and the native DataFusion reader
+      // fails during execution -- the path CometExecIterator must wrap as FAILED_READ_FILE.
+      val f = new java.io.File(new java.net.URI(path.toString))
+      val raf = new java.io.RandomAccessFile(f, "rw")
+      val len = raf.length()
+      raf.seek(8) // after the "PAR1" magic header, before the footer
+      raf.write(Array.fill[Byte](math.min(2048, (len / 2).toInt))(0xff.toByte))
+      raf.close()
+
+      withSQLConf(CometConf.COMET_ENABLED.key -> "true") {
+        val e = intercept[Throwable] {
+          spark.read.parquet(path.toString).collect()
+        }
+        // Spark reports its own per-file read failures as FAILED_READ_FILE carrying the path.
+        // Comet's native scan must do the same instead of leaking a raw CometNativeException.
+        val messages = Iterator
+          .iterate(e: Throwable)(_.getCause)
+          .takeWhile(_ != null)
+          .map(t => s"${t.getClass.getName}: ${t.getMessage}")
+          .toList
+        val chain = messages.mkString("\n  ")
+        // `cannotReadFilesError` is the FAILED_READ_FILE path. Its message is version-stable
+        // ("Encountered error while reading file ..."); only Spark 4.x prepends the
+        // `[FAILED_READ_FILE.NO_HINT]` error-class tag, so assert on the stable substring.
+        assert(
+          messages.exists(m => m.contains("Encountered error while reading file")),
+          s"Expected a FAILED_READ_FILE (cannotReadFilesError) in the cause chain, but got:\n  $chain")
+        assert(
+          messages.exists(m => m.contains("corrupt.parquet")),
+          s"Expected the offending file path in the cause chain, but got:\n  $chain")
+      }
+    }
+  }
+
+  test("native parquet read of a missing file surfaces readCurrentFileNotFoundError") {
+    withTempDir { dir =>
+      val path = new Path(dir.toURI.toString, "missing.parquet")
+      makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = false, 1000)
+      val f = new java.io.File(new java.net.URI(path.toString))
+
+      withSQLConf(CometConf.COMET_ENABLED.key -> "true") {
+        // Read the schema (footer) while the file exists, then delete it so it is MISSING at
+        // execution time -- mirroring a file vacuumed/removed between planning and the scan
+        // (e.g. Delta's CDC-after-VACUUM read). A missing file is distinct from a corrupt one:
+        // Spark surfaces it as `readCurrentFileNotFoundError` ("It is possible the underlying
+        // files have been updated."), NOT `cannotReadFilesError`/`FAILED_READ_FILE`. Comet's
+        // native scan must classify the object_store NotFound the same way.
+        val df = spark.read.parquet(path.toString)
+        df.queryExecution.executedPlan // force planning (footer read) before deletion
+        assert(f.delete(), s"failed to delete $f")
+
+        val e = intercept[Throwable] {
+          df.collect()
+        }
+        val messages = Iterator
+          .iterate(e: Throwable)(_.getCause)
+          .takeWhile(_ != null)
+          .map(t => s"${t.getClass.getName}: ${t.getMessage}")
+          .toList
+        val chain = messages.mkString("\n  ")
+        assert(
+          messages.exists(m =>
+            m.contains("It is possible the underlying files have been updated")),
+          s"Expected readCurrentFileNotFoundError for a missing file, but got:\n  $chain")
       }
     }
   }

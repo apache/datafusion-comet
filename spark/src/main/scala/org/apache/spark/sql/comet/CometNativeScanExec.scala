@@ -19,8 +19,6 @@
 
 package org.apache.spark.sql.comet
 
-import scala.reflect.ClassTag
-
 import org.apache.spark.{Partition, TaskContext}
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.SparkSession
@@ -39,7 +37,7 @@ import org.apache.spark.util.collection._
 
 import com.google.common.base.Objects
 
-import org.apache.comet.parquet.{CometParquetFileFormat, CometParquetUtils}
+import org.apache.comet.parquet.CometParquetUtils
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.QueryPlanSerde.exprToProto
 
@@ -73,7 +71,8 @@ case class CometNativeScanExec(
     sourceKey: String) // Key for PlanDataInjector to match common+partition data at runtime
     extends CometLeafExec
     with DataSourceScanExec
-    with ShimStreamSourceAwareSparkPlan {
+    with ShimStreamSourceAwareSparkPlan
+    with CometScanWithPlanData {
 
   override lazy val metadata: Map[String, String] =
     if (originalPlan != null) originalPlan.metadata else Map.empty
@@ -156,11 +155,12 @@ case class CometNativeScanExec(
    * all files for all partitions in the driver, we serialize only common metadata (once) and each
    * partition's files (lazily, as tasks are scheduled).
    */
-  @transient private lazy val serializedPartitionData: (Array[Byte], Array[Array[Byte]]) = {
+  @transient private lazy val serializedPartitionData
+      : (Array[Byte], Array[Array[Byte]], Array[Seq[String]]) = {
     // Outer partitionFilters (wrapper) DPP is resolved by Spark's standard
     // prepare -> waitForSubqueries lifecycle, triggered explicitly via
     // CometLeafExec.ensureSubqueriesResolved called from
-    // CometNativeExec.findAllPlanData before commonData is read.
+    // PlanDataInjector.findAllPlanData before commonData is read.
     //
     // Inner scan.partitionFilters holds a SEPARATE InSubqueryExec instance that
     // Spark's expressions walk does not see (scan is @transient and not a sibling
@@ -227,12 +227,19 @@ case class CometNativeScanExec(
       partitionNativeScan.toByteArray
     }.toArray
 
-    (commonBytes, perPartitionBytes)
+    // File paths per partition -- threaded through CometExecRDD to CometExecIterator so a native
+    // CannotReadFile error that lacks a path (corrupt/truncated parquet) can be surfaced as
+    // FAILED_READ_FILE naming the actual file (see SparkErrorConverter.convertToSparkException).
+    val perPartitionPaths = filePartitions.map(_.files.map(_.filePath.toString).toSeq).toArray
+
+    (commonBytes, perPartitionBytes, perPartitionPaths)
   }
 
   def commonData: Array[Byte] = serializedPartitionData._1
 
   def perPartitionData: Array[Array[Byte]] = serializedPartitionData._2
+
+  def perPartitionFilePaths: Array[Seq[String]] = serializedPartitionData._3
 
   override def doExecuteColumnar(): RDD[ColumnarBatch] = {
     val nativeMetrics = CometMetricNode.fromCometPlan(this)
@@ -261,7 +268,8 @@ case class CometNativeScanExec(
       nativeMetrics,
       Seq.empty,
       broadcastedHadoopConfForEncryption,
-      encryptedFilePaths) {
+      encryptedFilePaths,
+      perPartitionFilePaths = perPartitionFilePaths) {
       override def compute(split: Partition, context: TaskContext): Iterator[ColumnarBatch] = {
         val res = super.compute(split, context)
 
@@ -334,13 +342,8 @@ case class CometNativeScanExec(
       "pruningTime")
 
   override lazy val metrics: Map[String, SQLMetric] = {
-    val nativeMetrics = CometMetricNode.nativeScanMetrics(session.sparkContext)
-    // Map native metric names to Spark metric names
-    val withAlias = nativeMetrics.get("output_rows") match {
-      case Some(metric) => nativeMetrics + ("numOutputRows" -> metric)
-      case None => nativeMetrics
-    }
-    withAlias ++ scan.metrics.filterKeys(driverMetricKeys)
+    CometMetricNode.nativeScanMetrics(session.sparkContext) ++
+      scan.metrics.filter { case (k, _) => driverMetricKeys.contains(k) }
   }
 
   /**
@@ -355,17 +358,6 @@ object CometNativeScanExec {
       scanExec: FileSourceScanExec,
       session: SparkSession,
       scan: CometScanExec): CometNativeScanExec = {
-    // TreeNode.mapProductIterator is protected method.
-    def mapProductIterator[B: ClassTag](product: Product, f: Any => B): Array[B] = {
-      val arr = Array.ofDim[B](product.productArity)
-      var i = 0
-      while (i < arr.length) {
-        arr(i) = f(product.productElement(i))
-        i += 1
-      }
-      arr
-    }
-
     // Generate unique key for this scan so PlanDataInjector can match common+partition data.
     // Multiple scans of same table with different projections/filters get different keys.
     val common = nativeOp.getNativeScan.getCommon
@@ -378,31 +370,18 @@ object CometNativeScanExec {
     val hashCode = keyComponents.mkString("|").hashCode
     val sourceKey = s"${source}_${hashCode}"
 
-    // Replacing the relation in FileSourceScanExec by `copy` seems causing some issues
-    // on other Spark distributions if FileSourceScanExec constructor is changed.
-    // Using `makeCopy` to avoid the issue.
-    // https://github.com/apache/arrow-datafusion-comet/issues/190
-    def transform(arg: Any): AnyRef = arg match {
-      case _: HadoopFsRelation =>
-        scanExec.relation.copy(fileFormat = new CometParquetFileFormat(session))(session)
-      case other: AnyRef => other
-      case null => null
-    }
-
-    val newArgs = mapProductIterator(scanExec, transform)
-    val wrapped = scanExec.makeCopy(newArgs).asInstanceOf[FileSourceScanExec]
     val batchScanExec = CometNativeScanExec(
       nativeOp,
-      wrapped.relation,
-      wrapped.output,
-      wrapped.requiredSchema,
-      wrapped.partitionFilters,
-      wrapped.optionalBucketSet,
-      wrapped.optionalNumCoalescedBuckets,
-      wrapped.dataFilters,
-      wrapped.tableIdentifier,
-      wrapped.disableBucketedScan,
-      wrapped,
+      scanExec.relation,
+      scanExec.output,
+      scanExec.requiredSchema,
+      scanExec.partitionFilters,
+      scanExec.optionalBucketSet,
+      scanExec.optionalNumCoalescedBuckets,
+      scanExec.dataFilters,
+      scanExec.tableIdentifier,
+      scanExec.disableBucketedScan,
+      scanExec,
       SerializedPlan(None),
       scan,
       sourceKey)

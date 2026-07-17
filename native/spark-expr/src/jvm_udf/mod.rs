@@ -15,7 +15,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::any::Any;
 use std::fmt::{Display, Formatter};
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
@@ -31,7 +30,7 @@ use datafusion::physical_expr::PhysicalExpr;
 
 use datafusion_comet_jni_bridge::errors::{CometError, ExecutionError};
 use datafusion_comet_jni_bridge::JVMClasses;
-use jni::objects::{JObject, JValue};
+use jni::objects::{Global, JObject, JValue};
 
 /// A scalar expression that delegates evaluation to a JVM-side `CometUDF` via JNI.
 /// The JVM class named by `class_name` must implement `org.apache.comet.udf.CometUDF`.
@@ -41,6 +40,14 @@ pub struct JvmScalarUdfExpr {
     args: Vec<Arc<dyn PhysicalExpr>>,
     return_type: DataType,
     return_nullable: bool,
+    /// Captured at `createPlan` time and threaded here by the planner. Passed through the
+    /// JNI bridge so `CometUdfBridge.evaluate` can install it as the Tokio worker's
+    /// thread-local `TaskContext`. Without this, partition-sensitive built-ins inside a UDF
+    /// tree (`Rand`, `Uuid`, `MonotonicallyIncreasingID`, user code reading
+    /// `TaskContext.get()`) see `null` and seed / branch incorrectly. `None` when no driving
+    /// Spark task is available; the bridge then leaves whatever `TaskContext.get()` already
+    /// returns in place.
+    task_context: Option<Arc<Global<JObject<'static>>>>,
 }
 
 impl JvmScalarUdfExpr {
@@ -49,12 +56,18 @@ impl JvmScalarUdfExpr {
         args: Vec<Arc<dyn PhysicalExpr>>,
         return_type: DataType,
         return_nullable: bool,
+        task_context: Option<Arc<Global<JObject<'static>>>>,
     ) -> Self {
+        debug_assert!(
+            !class_name.is_empty(),
+            "JvmScalarUdfExpr requires a non-empty class name"
+        );
         Self {
             class_name,
             args,
             return_type,
             return_nullable,
+            task_context,
         }
     }
 }
@@ -93,10 +106,6 @@ impl PartialEq for JvmScalarUdfExpr {
 impl Eq for JvmScalarUdfExpr {}
 
 impl PhysicalExpr for JvmScalarUdfExpr {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn fmt_sql(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         Display::fmt(self, f)
     }
@@ -110,10 +119,10 @@ impl PhysicalExpr for JvmScalarUdfExpr {
     }
 
     fn evaluate(&self, batch: &RecordBatch) -> DFResult<ColumnarValue> {
-        // Step 1: evaluate child expressions to get Arrow arrays. Scalar children
-        // (e.g. literal patterns) are sent as length-1 vectors rather than expanded
-        // to batch-row count, so the JVM bridge does not pay an O(rows) copy for
-        // values that never vary across the batch.
+        // Scalar children (e.g. literal patterns) are sent as length-1 vectors rather than
+        // expanded to batch-row count, so the JVM bridge does not pay an O(rows) copy for
+        // values that never vary across the batch. The JVM side gets `numRows` directly via
+        // the bridge so it doesn't need the scalar to carry batch length.
         let arrays: Vec<ArrayRef> = self
             .args
             .iter()
@@ -123,7 +132,6 @@ impl PhysicalExpr for JvmScalarUdfExpr {
             })
             .collect::<DFResult<_>>()?;
 
-        // Step 2: allocate FFI structs on the Rust heap and collect their raw pointers.
         // The JVM writes into the out_array/out_schema slots and reads from the in_ slots.
         let in_ffi_arrays: Vec<Box<FFI_ArrowArray>> = arrays
             .iter()
@@ -147,7 +155,13 @@ impl PhysicalExpr for JvmScalarUdfExpr {
             .map(|b| b.as_ref() as *const FFI_ArrowSchema as i64)
             .collect();
 
-        // Allocate output FFI slots.
+        debug_assert!(!self.class_name.is_empty(), "class_name must not be empty");
+        debug_assert_eq!(
+            in_arr_ptrs.len(),
+            in_sch_ptrs.len(),
+            "input array and schema pointer counts must match"
+        );
+
         let mut out_array = Box::new(FFI_ArrowArray::empty());
         let mut out_schema = Box::new(FFI_ArrowSchema::empty());
         let out_arr_ptr = out_array.as_mut() as *mut FFI_ArrowArray as i64;
@@ -156,7 +170,6 @@ impl PhysicalExpr for JvmScalarUdfExpr {
         let class_name = self.class_name.clone();
         let n_args = arrays.len();
 
-        // Step 3: attach a JNI env for this thread and call the static bridge method.
         JVMClasses::with_env(|env| {
             let bridge = JVMClasses::get().comet_udf_bridge.as_ref().ok_or_else(|| {
                 CometError::from(ExecutionError::GeneralError(
@@ -166,12 +179,10 @@ impl PhysicalExpr for JvmScalarUdfExpr {
                 ))
             })?;
 
-            // Build the JVM String for the class name.
             let jclass_name = env
                 .new_string(&class_name)
                 .map_err(|e| CometError::JNI { source: e })?;
 
-            // Build the long[] arrays for input pointers.
             let in_arr_java = env
                 .new_long_array(n_args)
                 .map_err(|e| CometError::JNI { source: e })?;
@@ -186,7 +197,15 @@ impl PhysicalExpr for JvmScalarUdfExpr {
                 .set_region(env, 0, &in_sch_ptrs)
                 .map_err(|e| CometError::JNI { source: e })?;
 
-            // Call CometUdfBridge.evaluate(String, long[], long[], long, long)
+            // Resolve the TaskContext reference once before building the arg array so the
+            // borrow lives until `call_static_method_unchecked` returns. When no TaskContext
+            // was propagated, pass a null object so the bridge's null-guard leaves the thread-
+            // local alone.
+            let null_task_context = JObject::null();
+            let task_context_ref: &JObject = match &self.task_context {
+                Some(gref) => gref.as_obj(),
+                None => &null_task_context,
+            };
             let ret = unsafe {
                 env.call_static_method_unchecked(
                     &bridge.class,
@@ -198,6 +217,8 @@ impl PhysicalExpr for JvmScalarUdfExpr {
                         JValue::Object(JObject::from(in_sch_java).as_ref()).as_jni(),
                         JValue::Long(out_arr_ptr).as_jni(),
                         JValue::Long(out_sch_ptr).as_jni(),
+                        JValue::Int(batch.num_rows() as i32).as_jni(),
+                        JValue::Object(task_context_ref).as_jni(),
                     ],
                 )
             };
@@ -210,7 +231,6 @@ impl PhysicalExpr for JvmScalarUdfExpr {
             Ok(())
         })?;
 
-        // Step 4: import the result from the FFI slots filled by the JVM.
         // SAFETY: `*out_array` moves the FFI_ArrowArray out of the Box (the heap
         // allocation is freed by the move), and `from_ffi` wraps it in an Arc that
         // keeps the JVM-installed release callback alive until the resulting
@@ -234,6 +254,7 @@ impl PhysicalExpr for JvmScalarUdfExpr {
             children,
             self.return_type.clone(),
             self.return_nullable,
+            self.task_context.clone(),
         )))
     }
 }

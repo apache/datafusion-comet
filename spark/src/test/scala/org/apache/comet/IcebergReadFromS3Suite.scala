@@ -29,21 +29,13 @@ class IcebergReadFromS3Suite extends CometS3TestBase with RESTCatalogHelper {
 
   override protected val testBucketName = "test-iceberg-bucket"
 
-  private def icebergAvailable: Boolean = {
-    try {
-      Class.forName("org.apache.iceberg.catalog.Catalog")
-      true
-    } catch {
-      case _: ClassNotFoundException => false
-    }
-  }
-
   override protected def sparkConf: SparkConf = {
     val conf = super.sparkConf
 
     conf.set("spark.sql.catalog.s3_catalog", "org.apache.iceberg.spark.SparkCatalog")
     conf.set("spark.sql.catalog.s3_catalog.type", "hadoop")
     conf.set("spark.sql.catalog.s3_catalog.warehouse", s"s3a://$testBucketName/warehouse")
+    applyS3CatalogProps(conf, "s3_catalog")
 
     conf.set(CometConf.COMET_ENABLED.key, "true")
     conf.set(CometConf.COMET_EXEC_ENABLED.key, "true")
@@ -237,6 +229,7 @@ class IcebergReadFromS3Suite extends CometS3TestBase with RESTCatalogHelper {
       "s3.access-key-id" -> "WRONG_ACCESS_KEY",
       "s3.secret-access-key" -> "WRONG_SECRET_KEY",
       "s3.endpoint" -> minioContainer.getS3URL,
+      "s3.region" -> "us-east-1",
       "s3.path-style-access" -> "true")
     val warehouse = s"s3a://$testBucketName/warehouse-bad-creds"
 
@@ -269,6 +262,7 @@ class IcebergReadFromS3Suite extends CometS3TestBase with RESTCatalogHelper {
       "s3.access-key-id" -> userName,
       "s3.secret-access-key" -> password,
       "s3.endpoint" -> minioContainer.getS3URL,
+      "s3.region" -> "us-east-1",
       "s3.path-style-access" -> "true")
     val warehouse = s"s3a://$testBucketName/warehouse-vending"
 

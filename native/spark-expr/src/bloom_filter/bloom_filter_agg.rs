@@ -17,7 +17,7 @@
 
 use arrow::datatypes::{Field, FieldRef};
 use datafusion::{arrow::datatypes::DataType, logical_expr::Volatility};
-use std::{any::Any, sync::Arc};
+use std::sync::Arc;
 
 use crate::bloom_filter::spark_bloom_filter;
 use crate::bloom_filter::spark_bloom_filter::{SparkBloomFilter, SparkBloomFilterVersion};
@@ -25,7 +25,7 @@ use crate::bloom_filter::spark_bloom_filter::{SparkBloomFilter, SparkBloomFilter
 use arrow::array::ArrayRef;
 use arrow::array::BinaryArray;
 use datafusion::common::{downcast_value, ScalarValue};
-use datafusion::error::Result;
+use datafusion::error::{DataFusionError, Result};
 use datafusion::logical_expr::function::{AccumulatorArgs, StateFieldsArgs};
 use datafusion::logical_expr::{AggregateUDFImpl, Signature};
 use datafusion::physical_expr::expressions::Literal;
@@ -45,7 +45,7 @@ pub struct BloomFilterAgg {
 
 #[inline]
 fn extract_i32_from_literal(expr: Arc<dyn PhysicalExpr>) -> i32 {
-    match expr.as_any().downcast_ref::<Literal>().unwrap().value() {
+    match (*expr).downcast_ref::<Literal>().unwrap().value() {
         ScalarValue::Int64(scalar_value) => scalar_value.unwrap() as i32,
         _ => {
             unreachable!()
@@ -81,10 +81,6 @@ impl BloomFilterAgg {
 }
 
 impl AggregateUDFImpl for BloomFilterAgg {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn name(&self) -> &str {
         "bloom_filter_agg"
     }
@@ -141,8 +137,16 @@ impl Accumulator for SparkBloomFilter {
                 ScalarValue::Utf8(Some(value)) => {
                     self.put_binary(value.as_bytes());
                 }
-                _ => {
-                    unreachable!()
+                // Spark's BloomFilterAggregate.update ignores null inputs.
+                ScalarValue::Int8(None)
+                | ScalarValue::Int16(None)
+                | ScalarValue::Int32(None)
+                | ScalarValue::Int64(None)
+                | ScalarValue::Utf8(None) => {}
+                other => {
+                    return Err(DataFusionError::Internal(format!(
+                        "bloom_filter_agg received an unsupported input type: {other:?}"
+                    )));
                 }
             }
             Ok(())
@@ -150,6 +154,13 @@ impl Accumulator for SparkBloomFilter {
     }
 
     fn evaluate(&mut self) -> Result<ScalarValue> {
+        // Spark's BloomFilterAggregate.eval returns NULL when no bit is set,
+        // i.e. the aggregate saw no non-null input. Mirror that here so an
+        // empty-input bloom_filter_agg yields NULL rather than a serialized
+        // empty filter.
+        if self.cardinality() == 0 {
+            return Ok(ScalarValue::Binary(None));
+        }
         Ok(ScalarValue::Binary(Some(self.spark_serialization())))
     }
 
@@ -173,7 +184,34 @@ impl Accumulator for SparkBloomFilter {
         );
         assert_eq!(states[0].len(), 1);
         let state_sv = downcast_value!(states[0], BinaryArray);
-        self.merge_filter(state_sv.value_data());
-        Ok(())
+        self.merge_filter(state_sv.value_data())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Spark's BloomFilterAggregate.eval returns NULL when the filter saw no
+    /// non-null input (cardinality 0); an untouched accumulator must match.
+    #[test]
+    fn evaluate_empty_filter_yields_null() {
+        let num_bits = 1024;
+        let num_hash = spark_bloom_filter::optimal_num_hash_functions(100, num_bits);
+        let mut acc = SparkBloomFilter::new(SparkBloomFilterVersion::V1, num_hash, num_bits, 0);
+        assert_eq!(acc.evaluate().unwrap(), ScalarValue::Binary(None));
+    }
+
+    /// A filter with at least one set bit serializes to a non-null binary.
+    #[test]
+    fn evaluate_non_empty_filter_yields_binary() {
+        let num_bits = 1024;
+        let num_hash = spark_bloom_filter::optimal_num_hash_functions(100, num_bits);
+        let mut acc = SparkBloomFilter::new(SparkBloomFilterVersion::V1, num_hash, num_bits, 0);
+        acc.put_long(42);
+        assert!(matches!(
+            acc.evaluate().unwrap(),
+            ScalarValue::Binary(Some(_))
+        ));
     }
 }

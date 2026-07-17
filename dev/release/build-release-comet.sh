@@ -125,7 +125,7 @@ docker build --no-cache \
 # Clean previous Java build
 pushd $COMET_HOME_DIR && ./mvnw clean && popd
 
-# Clean previous native build. This is required because common/pom.xml has
+# Clean previous native build. This is required because spark/pom.xml has
 # unconditional resource entries that bundle libcomet.dylib from
 # native/target/{x86_64,aarch64}-apple-darwin/release. If a release manager
 # previously cross-compiled those targets locally, stale dylibs would leak
@@ -169,7 +169,7 @@ fi
 echo "Building binaries completed"
 echo "Copying to java build directories"
 
-JVM_TARGET_DIR=$COMET_HOME_DIR/common/target/classes/org/apache/comet
+JVM_TARGET_DIR=$COMET_HOME_DIR/spark/target/classes/org/apache/comet
 mkdir -p $JVM_TARGET_DIR
 
 mkdir -p $JVM_TARGET_DIR/linux/amd64

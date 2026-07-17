@@ -32,11 +32,13 @@ import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
 class CometMathExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("abs") {
-    val df = createTestData(generateNegativeZero = false)
-    df.createOrReplaceTempView("tbl")
-    for (field <- df.schema.fields) {
-      val col = field.name
-      checkSparkAnswerAndOperator(s"SELECT $col, abs($col) FROM tbl ORDER BY $col")
+    withSQLConf(SQLConf.ANSI_ENABLED.key -> "false") {
+      val df = createTestData(generateNegativeZero = false)
+      df.createOrReplaceTempView("tbl")
+      for (field <- df.schema.fields) {
+        val col = field.name
+        checkSparkAnswerAndOperator(s"SELECT $col, abs($col) FROM tbl ORDER BY $col")
+      }
     }
   }
 

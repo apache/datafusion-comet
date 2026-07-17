@@ -24,10 +24,12 @@ INSERT INTO test_map_from_entries VALUES (array(struct('a', 1), struct('b', 2), 
 query
 SELECT map_from_entries(entries) FROM test_map_from_entries
 
-query expect_fallback(Using BinaryType as Map keys is not allowed in map_from_entries)
+-- BinaryType key/value: the native map path is Incompatible, so the expression is routed
+-- through the JVM codegen dispatcher and still executes natively with Spark-matching results.
+query
 SELECT map_from_entries(array(struct(cast('x' as binary), 10)))
 
-query expect_fallback(Using BinaryType as Map values is not allowed in map_from_entries)
+query
 SELECT map_from_entries(array(struct(10, cast('x' as binary))))
 
 -- literal arguments

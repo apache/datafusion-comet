@@ -74,8 +74,6 @@ pub struct SparkParquetOptions {
     pub allow_incompat: bool,
     /// Support casting unsigned ints to signed ints (used by Parquet SchemaAdapter)
     pub allow_cast_unsigned_ints: bool,
-    /// Whether to always represent decimals using 128 bits. If false, the native reader may represent decimals using 32 or 64 bits, depending on the precision.
-    pub use_decimal_128: bool,
     /// Whether to read dates/timestamps that were written in the legacy hybrid Julian + Gregorian calendar as it is. If false, throw exceptions instead. If the spark type is TimestampNTZ, this should be true.
     pub use_legacy_date_timestamp_or_ntz: bool,
     // Whether schema field names are case sensitive
@@ -93,6 +91,14 @@ pub struct SparkParquetOptions {
     /// requested schema does carry ids raises a runtime error rather than silently
     /// producing nulls (mirrors `spark.sql.parquet.fieldId.read.ignoreMissing`).
     pub ignore_missing_field_id: bool,
+    /// Whether type promotion (schema evolution) is allowed, e.g. INT32 -> INT64,
+    /// FLOAT -> DOUBLE. Mirrors spark.comet.schemaEvolution.enabled.
+    pub allow_type_promotion: bool,
+    /// When true, reading a Parquet TimestampLTZ column as TimestampNTZ is
+    /// permitted (Spark 4.0+, SPARK-47447); when false, it is rejected
+    /// (Spark 3.x, SPARK-36182). Mirrors Comet's per-Spark-version constant
+    /// in ShimCometConf.
+    pub allow_timestamp_ltz_to_ntz: bool,
 }
 
 impl SparkParquetOptions {
@@ -102,12 +108,13 @@ impl SparkParquetOptions {
             timezone: timezone.to_string(),
             allow_incompat,
             allow_cast_unsigned_ints: false,
-            use_decimal_128: false,
             use_legacy_date_timestamp_or_ntz: false,
             case_sensitive: false,
             return_null_struct_if_all_fields_missing: true,
             use_field_id: false,
             ignore_missing_field_id: false,
+            allow_type_promotion: false,
+            allow_timestamp_ltz_to_ntz: false,
         }
     }
 
@@ -117,12 +124,13 @@ impl SparkParquetOptions {
             timezone: "".to_string(),
             allow_incompat,
             allow_cast_unsigned_ints: false,
-            use_decimal_128: false,
             use_legacy_date_timestamp_or_ntz: false,
             case_sensitive: false,
             return_null_struct_if_all_fields_missing: true,
             use_field_id: false,
             ignore_missing_field_id: false,
+            allow_type_promotion: false,
+            allow_timestamp_ltz_to_ntz: false,
         }
     }
 }
@@ -426,22 +434,9 @@ pub fn is_hdfs_scheme(url: &Url, object_store_configs: &HashMap<String, String>)
     }
 }
 
-// Creates an HDFS object store from a URL using the native HDFS implementation
-#[cfg(all(feature = "hdfs", not(feature = "hdfs-opendal")))]
-fn create_hdfs_object_store(
-    url: &Url,
-) -> Result<(Box<dyn ObjectStore>, Path), object_store::Error> {
-    match datafusion_comet_objectstore_hdfs::object_store::hdfs::HadoopFileSystem::new(url.as_ref())
-    {
-        Some(object_store) => {
-            let path = object_store.get_path(url.as_str());
-            Ok((Box::new(object_store), path))
-        }
-        _ => Err(object_store::Error::Generic {
-            store: "HadoopFileSystem",
-            source: "Could not create hdfs object store".into(),
-        }),
-    }
+/// Check if the scheme is an Azure ABFS URL.
+fn is_azure_scheme(scheme: &str) -> bool {
+    matches!(scheme, "abfs" | "abfss")
 }
 
 // Creates an OpenDAL HDFS Operator from a URL with optional configuration
@@ -491,7 +486,7 @@ fn get_name_node_uri(url: &Url) -> Result<String, object_store::Error> {
 }
 
 // Stub implementation when HDFS support is not enabled
-#[cfg(all(not(feature = "hdfs"), not(feature = "hdfs-opendal")))]
+#[cfg(not(feature = "hdfs-opendal"))]
 fn create_hdfs_object_store(
     _url: &Url,
 ) -> Result<(Box<dyn ObjectStore>, Path), object_store::Error> {
@@ -598,6 +593,8 @@ pub(crate) fn prepare_object_store_with_configs(
                 create_hdfs_object_store(&url)
             } else if scheme == "s3" {
                 objectstore::s3::create_store(&url, object_store_configs, Duration::from_secs(300))
+            } else if is_azure_scheme(scheme) {
+                objectstore::azure::create_store(&url, object_store_configs)
             } else {
                 parse_url(&url)
             }
@@ -618,39 +615,24 @@ pub(crate) fn prepare_object_store_with_configs(
 
 #[cfg(test)]
 mod tests {
-    #[cfg(any(
-        all(not(feature = "hdfs"), not(feature = "hdfs-opendal")),
-        feature = "hdfs"
-    ))]
+    #[cfg(not(feature = "hdfs-opendal"))]
     use datafusion::execution::object_store::ObjectStoreUrl;
-    #[cfg(any(
-        all(not(feature = "hdfs"), not(feature = "hdfs-opendal")),
-        feature = "hdfs"
-    ))]
+    #[cfg(not(feature = "hdfs-opendal"))]
     use datafusion::execution::runtime_env::RuntimeEnv;
-    #[cfg(any(
-        all(not(feature = "hdfs"), not(feature = "hdfs-opendal")),
-        feature = "hdfs"
-    ))]
+    #[cfg(not(feature = "hdfs-opendal"))]
     use object_store::path::Path;
-    #[cfg(any(
-        all(not(feature = "hdfs"), not(feature = "hdfs-opendal")),
-        feature = "hdfs"
-    ))]
+    #[cfg(not(feature = "hdfs-opendal"))]
     use std::sync::Arc;
-    #[cfg(any(
-        all(not(feature = "hdfs"), not(feature = "hdfs-opendal")),
-        feature = "hdfs"
-    ))]
+    #[cfg(not(feature = "hdfs-opendal"))]
     use url::Url;
 
-    #[cfg(all(not(feature = "hdfs"), not(feature = "hdfs-opendal")))]
+    #[cfg(not(feature = "hdfs-opendal"))]
     use crate::execution::operators::ExecutionError;
-    #[cfg(all(not(feature = "hdfs"), not(feature = "hdfs-opendal")))]
+    #[cfg(not(feature = "hdfs-opendal"))]
     use std::collections::HashMap;
 
     /// Parses the url, registers the object store, and returns a tuple of the object store url and object store path
-    #[cfg(all(not(feature = "hdfs"), not(feature = "hdfs-opendal")))]
+    #[cfg(not(feature = "hdfs-opendal"))]
     pub(crate) fn prepare_object_store(
         runtime_env: Arc<RuntimeEnv>,
         url: String,
@@ -659,18 +641,7 @@ mod tests {
         prepare_object_store_with_configs(runtime_env, url, &HashMap::new())
     }
 
-    /// Parses the url, registers the object store, and returns a tuple of the object store url and object store path
-    #[cfg(feature = "hdfs")]
-    pub(crate) fn prepare_object_store(
-        runtime_env: Arc<RuntimeEnv>,
-        url: String,
-    ) -> Result<(ObjectStoreUrl, Path), crate::execution::operators::ExecutionError> {
-        use crate::parquet::parquet_support::prepare_object_store_with_configs;
-        use std::collections::HashMap;
-        prepare_object_store_with_configs(runtime_env, url, &HashMap::new())
-    }
-
-    #[cfg(all(not(feature = "hdfs"), not(feature = "hdfs-opendal")))]
+    #[cfg(not(feature = "hdfs-opendal"))]
     #[test]
     fn test_prepare_object_store() {
         use crate::execution::operators::ExecutionError;
@@ -711,24 +682,5 @@ mod tests {
                 }
             }
         }
-    }
-
-    #[test]
-    #[cfg(feature = "hdfs")]
-    fn test_prepare_object_store() {
-        // we use a local file system url instead of an hdfs url because the latter requires
-        // a running namenode
-        let hdfs_url = "file:///comet/spark-warehouse/part-00000.snappy.parquet";
-        let expected: (ObjectStoreUrl, Path) = (
-            ObjectStoreUrl::parse("file://").unwrap(),
-            Path::from("/comet/spark-warehouse/part-00000.snappy.parquet"),
-        );
-
-        let url = &Url::parse(hdfs_url).unwrap();
-        let res = prepare_object_store(Arc::new(RuntimeEnv::default()), url.to_string());
-
-        let res = res.unwrap();
-        assert_eq!(res.0, expected.0);
-        assert_eq!(res.1, expected.1);
     }
 }

@@ -28,7 +28,6 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.BinaryType
 
 import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
-import org.apache.comet.serde.CometMapFromEntries
 import org.apache.comet.testing.{DataGenOptions, ParquetGenerator, SchemaGenOptions}
 
 class CometMapExpressionSuite extends CometTestBase {
@@ -126,34 +125,47 @@ class CometMapExpressionSuite extends CometTestBase {
     }
   }
 
-  test("fallback for size with map input") {
+  test("size with map input") {
     withTempDir { dir =>
       withTempView("t1") {
         val path = new Path(dir.toURI.toString, "test.parquet")
         makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = true, 100)
         spark.read.parquet(path.toString).createOrReplaceTempView("t1")
 
-        // Use column references in maps to avoid constant folding
-        checkSparkAnswerAndFallbackReason(
-          sql("SELECT size(case when _2 < 0 then map(_8, _9) else map() end) from t1"),
-          "size does not support map inputs")
+        checkSparkAnswer(
+          sql("SELECT size(case when _2 < 0 then map(_8, _9) else map() end) from t1"))
       }
     }
   }
 
-  // fails with "map is not supported"
-  ignore("size with map input") {
-    withTempDir { dir =>
-      withTempView("t1") {
-        val path = new Path(dir.toURI.toString, "test.parquet")
-        makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = true, 100)
-        spark.read.parquet(path.toString).createOrReplaceTempView("t1")
+  test("size with map input - v2 reader") {
+    withTempPath { dir =>
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        val df = spark
+          .range(100)
+          .select(
+            col("id"),
+            when(col("id") > 1, map(col("id"), col("id"))).alias("map1"),
+            when(col("id") > 5, map(col("id"), col("id"))).alias("map2"))
+        df.write.parquet(dir.toString())
+      }
 
-        // Use column references in maps to avoid constant folding
-        checkSparkAnswerAndOperator(
-          sql("SELECT size(map(_8, _9, _10, _11)) from t1 where _8 is not null"))
-        checkSparkAnswerAndOperator(
-          sql("SELECT size(case when _2 < 0 then map(_8, _9) else map() end) from t1"))
+      Seq("", "parquet").foreach { v1List =>
+        withSQLConf(SQLConf.USE_V1_SOURCE_LIST.key -> v1List) {
+          val df = spark.read.parquet(dir.toString())
+          df.createOrReplaceTempView("t1")
+          if (v1List.isEmpty) {
+            checkSparkAnswer(df.select(size(col("map1"))))
+            checkSparkAnswer(df.select(size(col("map2"))))
+            checkSparkAnswer(
+              sql("SELECT size(CASE WHEN id < 50 THEN map1 ELSE map2 END) FROM t1"))
+          } else {
+            checkSparkAnswerAndOperator(df.select(size(col("map1"))))
+            checkSparkAnswerAndOperator(df.select(size(col("map2"))))
+            checkSparkAnswerAndOperator(
+              sql("SELECT size(CASE WHEN id < 50 THEN map1 ELSE map2 END) FROM t1"))
+          }
+        }
       }
     }
   }
@@ -234,18 +246,15 @@ class CometMapExpressionSuite extends CometTestBase {
     }
   }
 
-  test("map_from_entries - fallback for binary type") {
-    def fallbackReason(reason: String) = reason
+  test("map_from_entries - binary type routes through codegen dispatcher") {
     val table = "t2"
     withTable(table) {
       sql(
         s"create table $table using parquet as select cast(array() as array<binary>) as c1 from range(10)")
-      checkSparkAnswerAndFallbackReason(
-        sql(s"select map_from_entries(array(struct(c1, 0))) from $table"),
-        fallbackReason(CometMapFromEntries.keyUnsupportedReason))
-      checkSparkAnswerAndFallbackReason(
-        sql(s"select map_from_entries(array(struct(0, c1))) from $table"),
-        fallbackReason(CometMapFromEntries.valueUnsupportedReason))
+      checkSparkAnswerAndOperator(
+        sql(s"select map_from_entries(array(struct(c1, 0))) from $table"))
+      checkSparkAnswerAndOperator(
+        sql(s"select map_from_entries(array(struct(0, c1))) from $table"))
     }
   }
 
