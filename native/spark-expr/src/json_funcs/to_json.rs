@@ -241,7 +241,7 @@ fn struct_to_json(
                 .expect("string array");
             let prefix = format!("\"{}\":", escape_string(f.name()));
             let style = match value_type(f.data_type()) {
-                DataType::Utf8 | DataType::LargeUtf8 => FieldStyle::Quoted,
+                DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View => FieldStyle::Quoted,
                 _ if never_renders_special_float(f.data_type()) => FieldStyle::Raw,
                 _ => FieldStyle::MaybeQuoted,
             };
@@ -250,12 +250,21 @@ fn struct_to_json(
         .collect();
 
     // size the output buffer from the rendered columns so that it does not have to grow:
-    // the braces of each row, plus every field's `,"name":` and its (possibly quoted) value
+    // the braces of each row, plus every field's `,"name":` and its (possibly quoted) value.
+    // The values length is taken from the offsets so a sliced input does not over-allocate.
     let num_rows = array.len();
     let data_capacity = 2 * num_rows
         + fields
             .iter()
-            .map(|(values, prefix, _)| values.value_data().len() + num_rows * (prefix.len() + 3))
+            .map(|(values, prefix, _)| {
+                let offsets = values.value_offsets();
+                let bytes = if offsets.is_empty() {
+                    0
+                } else {
+                    (offsets[offsets.len() - 1] - offsets[0]) as usize
+                };
+                bytes + num_rows * (prefix.len() + 3)
+            })
             .sum::<usize>();
 
     // build the JSON string containing entries in the format `"field_name":field_value`,
@@ -397,6 +406,114 @@ mod test {
         assert_eq!(r#"{"a":{"a":true}}"#, json.value(1));
         assert_eq!(r#"{"a":{"a":false,"b":2147483647}}"#, json.value(2));
         assert_eq!(r#"{"a":{"a":false,"b":-2147483648}}"#, json.value(3));
+        Ok(())
+    }
+
+    #[test]
+    fn test_float_nan_and_infinity_quoted() -> Result<()> {
+        use arrow::array::Float64Array;
+        let floats: ArrayRef = Arc::new(Float64Array::from(vec![
+            Some(1.5),
+            Some(f64::NAN),
+            Some(f64::INFINITY),
+            Some(f64::NEG_INFINITY),
+        ]));
+        let struct_array = StructArray::from(vec![(
+            Arc::new(Field::new("a", DataType::Float64, true)),
+            floats,
+        )]);
+        let json = struct_to_json(&struct_array, "UTC", true)?;
+        let json = json
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .expect("string array");
+        assert_eq!(r#"{"a":1.5}"#, json.value(0));
+        assert_eq!(r#"{"a":"NaN"}"#, json.value(1));
+        assert_eq!(r#"{"a":"Infinity"}"#, json.value(2));
+        assert_eq!(r#"{"a":"-Infinity"}"#, json.value(3));
+        Ok(())
+    }
+
+    #[test]
+    fn test_string_value_is_escaped() -> Result<()> {
+        let strings: ArrayRef = Arc::new(StringArray::from(vec![
+            Some(r#"a"b"#),
+            Some("line1\nline2"),
+            Some("tab\tsep"),
+            Some("back\\slash"),
+        ]));
+        let struct_array = StructArray::from(vec![(
+            Arc::new(Field::new("s", DataType::Utf8, true)),
+            strings,
+        )]);
+        let json = struct_to_json(&struct_array, "UTC", true)?;
+        let json = json
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .expect("string array");
+        assert_eq!(r#"{"s":"a\"b"}"#, json.value(0));
+        assert_eq!(r#"{"s":"line1\nline2"}"#, json.value(1));
+        assert_eq!(r#"{"s":"tab\tsep"}"#, json.value(2));
+        assert_eq!(r#"{"s":"back\\slash"}"#, json.value(3));
+        Ok(())
+    }
+
+    #[test]
+    fn test_string_value_unicode_passthrough() -> Result<()> {
+        // Non-ASCII characters that do not need escaping should pass through unchanged.
+        let strings: ArrayRef =
+            Arc::new(StringArray::from(vec![Some("日本語"), Some("émoji 🚀")]));
+        let struct_array = StructArray::from(vec![(
+            Arc::new(Field::new("s", DataType::Utf8, true)),
+            strings,
+        )]);
+        let json = struct_to_json(&struct_array, "UTC", true)?;
+        let json = json
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .expect("string array");
+        assert_eq!(r#"{"s":"日本語"}"#, json.value(0));
+        assert_eq!("{\"s\":\"émoji 🚀\"}", json.value(1));
+        Ok(())
+    }
+
+    #[test]
+    fn test_ignore_null_fields_false_keeps_nulls() -> Result<()> {
+        let ints: ArrayRef = create_ints();
+        let struct_array = StructArray::from(vec![(
+            Arc::new(Field::new("b", DataType::Int32, true)),
+            ints,
+        )]);
+        let json = struct_to_json(&struct_array, "UTC", false)?;
+        let json = json
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .expect("string array");
+        assert_eq!(r#"{"b":123}"#, json.value(0));
+        assert_eq!(r#"{"b":null}"#, json.value(1));
+        assert_eq!(r#"{"b":2147483647}"#, json.value(2));
+        assert_eq!(r#"{"b":-2147483648}"#, json.value(3));
+        Ok(())
+    }
+
+    #[test]
+    fn test_utf8_view_field_is_quoted() -> Result<()> {
+        use arrow::array::StringViewArray;
+        let strings: ArrayRef = Arc::new(StringViewArray::from(vec![
+            Some("hello"),
+            Some("wo\"rld"),
+        ]));
+        let struct_array = StructArray::from(vec![(
+            Arc::new(Field::new("s", DataType::Utf8View, true)),
+            strings,
+        )]);
+        let json = struct_to_json(&struct_array, "UTC", true)?;
+        let json = json
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .expect("string array");
+        assert_eq!(r#"{"s":"hello"}"#, json.value(0));
+        assert_eq!(r#"{"s":"wo\"rld"}"#, json.value(1));
         Ok(())
     }
 
