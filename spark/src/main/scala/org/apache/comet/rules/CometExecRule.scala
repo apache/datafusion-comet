@@ -878,6 +878,11 @@ case class CometExecRule(session: SparkSession)
         // (issue #4724), so a fully-native pipeline crashes. Force the whole chain to fall back to
         // Spark by tagging the feeding pure-Partial; the PartialMerge/Final stages then fall back
         // via the buffer-source check in doConvert.
+        //
+        // This block is intentionally separate from the tagging block just above: that one only
+        // fires when the Final itself cannot be converted, but `canAggregateBeConverted` skips
+        // the child-native check, so an all-native distinct `collect_list` chain converts its
+        // Final and slips past the earlier tagging pass. This block catches that case.
         if (agg.aggregateExpressions.exists(_.mode == PartialMerge) &&
           QueryPlanSerde.hasNativeArrayBufferAgg(agg.aggregateExpressions)) {
           findPartialAggInPlan(agg.child).foreach { partial =>

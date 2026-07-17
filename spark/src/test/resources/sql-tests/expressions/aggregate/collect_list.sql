@@ -403,3 +403,35 @@ INSERT INTO cl_src_17641 VALUES ('1', 2), (NULL, 2), ('1', 4)
 
 query
 SELECT sort_array(collect_list(a)), sort_array(collect_list(b)) FROM cl_src_17641
+
+-- ============================================================
+-- FILTER (WHERE ...): only rows that pass the predicate are collected.
+-- The Spark analyzer routes this through `applyIgnoreNulls`, which the
+-- collect_list serde handler is expected to accept as long as ignoreNulls
+-- remains at its default (true on 3.4-4.1; explicit on 4.2).
+-- ============================================================
+
+query
+SELECT
+  grp,
+  sort_array(collect_list(i) FILTER (WHERE i > 1))
+FROM cl_src_int
+GROUP BY grp
+ORDER BY grp
+
+-- ============================================================
+-- Map input: exercises make_all_fields_nullable's Map arm. sort_array
+-- cannot order a MapType, so we use spark_answer_only and pin the size.
+-- ============================================================
+
+statement
+CREATE TABLE cl_src_map(m map<string, int>) USING parquet
+
+statement
+INSERT INTO cl_src_map VALUES
+  (map('a', 1)),
+  (map('b', 2, 'c', 3)),
+  (NULL)
+
+query spark_answer_only
+SELECT size(collect_list(m)) FROM cl_src_map

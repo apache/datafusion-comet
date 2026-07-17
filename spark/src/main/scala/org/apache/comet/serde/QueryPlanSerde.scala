@@ -441,13 +441,16 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
   }
 
   /**
-   * Returns true if any aggregate function produces a native intermediate buffer whose Arrow type
-   * (e.g. ArrayType for CollectList/CollectSet) differs from the BinaryType that Spark declares
-   * for its serialized TypedImperativeAggregate buffer. Comet cannot interpret Spark's Binary
-   * buffer for these functions, and cannot yet represent the buffer consistently across the
-   * intermediate PartialMerge stages of a multi-stage aggregate (issue #4724). Such aggregates
-   * are therefore only safe to run natively when every stage runs in Comet and there are at most
-   * two stages (Partial + Final).
+   * Returns true if any aggregate is CollectList/CollectSet. These produce a native ArrayType
+   * intermediate buffer while Spark declares BinaryType for its serialized
+   * TypedImperativeAggregate buffer, so Comet cannot interpret Spark's Binary buffer, and Comet
+   * cannot yet represent this buffer consistently across the intermediate PartialMerge stages of
+   * a multi-stage aggregate (issue #4724). These aggregates are therefore only safe to run
+   * natively when every stage runs in Comet and there are at most two stages (Partial + Final).
+   *
+   * Percentile has a similar Array-shaped intermediate buffer (see `adjustOutputForNativeState`)
+   * but is not matched here: it already passes through the general mixed-execution guard, so this
+   * check is scoped narrowly to the collect functions.
    */
   def hasNativeArrayBufferAgg(aggExprs: Seq[AggregateExpression]): Boolean = {
     aggExprs.exists(_.aggregateFunction match {
