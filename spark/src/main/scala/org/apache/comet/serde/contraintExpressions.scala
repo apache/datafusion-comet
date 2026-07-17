@@ -22,11 +22,27 @@ package org.apache.comet.serde
 import org.apache.spark.sql.catalyst.expressions.{Attribute, KnownFloatingPointNormalized, KnownNullable}
 import org.apache.spark.sql.catalyst.optimizer.NormalizeNaNAndZero
 
-import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithFallbackReason, serializeDataType}
 
 object CometKnownFloatingPointNormalized
     extends CometExpressionSerde[KnownFloatingPointNormalized] {
+
+  override def getSupportLevel(expr: KnownFloatingPointNormalized): SupportLevel = {
+    expr.child match {
+      case normalized: NormalizeNaNAndZero =>
+        val wrapped = normalized.child
+        if (serializeDataType(wrapped.dataType).isDefined) {
+          Compatible()
+        } else {
+          Unsupported(Some(s"Unsupported datatype ${wrapped.dataType}"))
+        }
+      case _ =>
+        // Nested normalization (array / struct / map). KnownFloatingPointNormalized is a runtime
+        // no-op tag, so defer to the child's serde: convert serializes the child directly and
+        // falls back gracefully if it is unsupported.
+        Compatible()
+    }
+  }
 
   override def convert(
       expr: KnownFloatingPointNormalized,
@@ -36,18 +52,15 @@ object CometKnownFloatingPointNormalized
     expr.child match {
       case normalize: NormalizeNaNAndZero =>
         // Scalar float/double normalization: unwrap and emit the native NormalizeNaNAndZero node.
+        // getSupportLevel has already verified the datatype is serializable.
         val wrapped = normalize.child
-        val dataType = serializeDataType(wrapped.dataType)
-        if (dataType.isEmpty) {
-          withFallbackReason(wrapped, s"Unsupported datatype ${wrapped.dataType}")
-          return None
-        }
+        val dataType = serializeDataType(wrapped.dataType).get
         val ex = exprToProtoInternal(wrapped, inputs, binding)
         val optExpr = ex.map { child =>
           val builder = ExprOuterClass.NormalizeNaNAndZero
             .newBuilder()
             .setChild(child)
-            .setDatatype(dataType.get)
+            .setDatatype(dataType)
           ExprOuterClass.Expr.newBuilder().setNormalizeNanAndZero(builder).build()
         }
         optExprWithFallbackReason(optExpr, expr, wrapped)
