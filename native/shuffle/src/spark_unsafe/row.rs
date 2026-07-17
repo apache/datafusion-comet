@@ -607,26 +607,43 @@ fn append_list_column_batch(
     // Helper macro for primitive element types - gets builder fresh each iteration
     // to avoid borrow conflicts with list_builder.append()
     macro_rules! process_primitive_lists {
-        ($builder_type:ty, $append_fn:ident) => {{
-            for i in row_start..row_end {
-                read_row_at!(row, row_addresses_ptr, row_sizes_ptr, i);
-
-                if row.is_null_at(column_idx) {
-                    list_builder.append_null();
-                } else {
-                    let array = row.get_array(column_idx);
-                    // Get values builder fresh each iteration to avoid borrow conflict
-                    let values_builder = list_builder
-                        .values()
-                        .as_any_mut()
-                        .downcast_mut::<$builder_type>()
-                        .expect(stringify!($builder_type));
-                    array.$append_fn::<true>(values_builder);
-                    list_builder.append(true);
-                }
+    // No extra args
+    ($builder_type:ty, $append_fn:ident) => {{
+        for i in row_start..row_end {
+            read_row_at!(row, row_addresses_ptr, row_sizes_ptr, i);
+            if row.is_null_at(column_idx) {
+                list_builder.append_null();
+            } else {
+                let array = row.get_array(column_idx);
+                let values_builder = list_builder
+                    .values()
+                    .as_any_mut()
+                    .downcast_mut::<$builder_type>()
+                    .expect(stringify!($builder_type));
+                array.$append_fn::<true>(values_builder);
+                list_builder.append(true);
             }
-        }};
-    }
+        }
+    }};
+    // Extra args — for timestamps (timezone) and others
+    ($builder_type:ty, $append_fn:ident, $($extra:expr),*) => {{
+        for i in row_start..row_end {
+            read_row_at!(row, row_addresses_ptr, row_sizes_ptr, i);
+            if row.is_null_at(column_idx) {
+                list_builder.append_null();
+            } else {
+                let array = row.get_array(column_idx);
+                let values_builder = list_builder
+                    .values()
+                    .as_any_mut()
+                    .downcast_mut::<$builder_type>()
+                    .expect(stringify!($builder_type));
+                array.$append_fn::<true>(values_builder, $($extra),*);
+                list_builder.append(true);
+            }
+        }
+    }};
+}
 
     match element_type {
         DataType::Boolean => {
@@ -653,8 +670,12 @@ fn append_list_column_batch(
         DataType::Date32 => {
             process_primitive_lists!(Date32Builder, append_dates_to_builder);
         }
-        DataType::Timestamp(TimeUnit::Microsecond, _) => {
-            process_primitive_lists!(TimestampMicrosecondBuilder, append_timestamps_to_builder);
+        DataType::Timestamp(TimeUnit::Microsecond, tz) => {
+            process_primitive_lists!(
+                TimestampMicrosecondBuilder,
+                append_timestamps_to_builder,
+                tz.clone()
+            );
         }
         // For complex element types, fall back to per-row dispatch
         _ => {
