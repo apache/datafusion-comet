@@ -158,10 +158,12 @@ macro_rules! cast_float_to_string {
                 const UPPER_SCIENTIFIC_BOUND: $type = 10000000.0;
 
                 // Values are formatted straight into the builder, so no intermediate String
-                // is allocated per row.
+                // is allocated per row. Capacity hint matches arrow-rs's own AVERAGE_STRING_LENGTH
+                // (16 bytes / value) so typical fractional and scientific outputs like
+                // "1234.5678" or "-1.4E-45" do not force a mid-loop grow.
                 let mut builder = GenericStringBuilder::<OffsetSize>::with_capacity(
                     array.len(),
-                    array.len() * 8,
+                    array.len() * 16,
                 );
                 // Reused across rows by the scientific-notation path, which has to inspect
                 // the formatted text before emitting it.
