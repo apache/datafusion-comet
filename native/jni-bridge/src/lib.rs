@@ -240,7 +240,7 @@ pub struct JVMClasses<'a> {
     pub comet_udf_bridge: Option<CometUdfBridge<'a>>,
     /// JNI handles for the CometS3CredentialDispatcher SPI and the CometS3Credentials POJO.
     pub comet_s3_credential_dispatcher: CometS3CredentialDispatcher<'a>,
-    /// TODO: add comment
+    /// JNI handles for the ShufflePartitionPusher callback used by RSS shuffle writers.
     pub shuffle_partition_pusher: ShufflePartitionPusher<'a>,
 }
 

@@ -1366,9 +1366,9 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createRssPartitionPus
     pusher: JObject,
 ) -> jlong {
     try_unwrap_or_throw(&e, |env| {
-        let rss_partition_pusher = Box::new(
-            RssPartitionPusher::try_new(Arc::new(jni_new_global_ref!(env, pusher)?)).unwrap(),
-        );
+        let rss_partition_pusher = Box::new(RssPartitionPusher::try_new(Arc::new(
+            jni_new_global_ref!(env, pusher)?,
+        ))?);
 
         Ok(Box::into_raw(rss_partition_pusher) as i64)
     })

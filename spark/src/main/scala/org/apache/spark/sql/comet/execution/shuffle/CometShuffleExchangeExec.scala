@@ -561,7 +561,7 @@ object CometShuffleExchangeExec
       return reasons.toSeq
     }
 
-    // TODO: code factor
+    // Uniffle shuffle manager currently does not support JVM columnar shuffle.
     if (conf.contains("spark.shuffle.manager") &&
       conf.getConfString("spark.shuffle.manager") ==
         "org.apache.spark.sql.comet.uniffle.CometUniffleShuffleManager") {

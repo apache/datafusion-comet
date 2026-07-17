@@ -116,7 +116,7 @@ case class CometUniffleShuffleWriter[K, V, C](
         length,
         System.currentTimeMillis)
     super.processShuffleBlockInfos(shuffleBlockInfos)
-    // fast fail or resend data// fast fail or resend data
+    // Fast fail or resend data
     super.checkDataIfAnyFailure()
     length
   }

@@ -636,9 +636,9 @@ jobs:
 
       - name: Install Uniffle
         run: |
-          wget "https://www.apache.org/dyn/closer.lua/uniffle/${UNIFFLE_VERSION}/apache-uniffle-${UNIFFLE_VERSION}-bin.tar.gz?action=download" \
+          wget "https://archive.apache.org/dist/uniffle/${UNIFFLE_VERSION}/apache-uniffle-${UNIFFLE_VERSION}-bin.tar.gz" \
             -O "/opt/apache-uniffle-${UNIFFLE_VERSION}-bin.tar.gz"
-          wget "https://www.apache.org/dyn/closer.lua/hadoop/common/hadoop-${HADOOP_VERSION}/hadoop-${HADOOP_VERSION}.tar.gz?action=download" \
+          wget "https://archive.apache.org/dist/hadoop/common/hadoop-${HADOOP_VERSION}/hadoop-${HADOOP_VERSION}.tar.gz" \
             -O "/opt/hadoop-${HADOOP_VERSION}.tar.gz"
           mkdir /opt/uniffle
           tar xzf "/opt/apache-uniffle-${UNIFFLE_VERSION}-bin.tar.gz" \
