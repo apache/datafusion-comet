@@ -27,7 +27,10 @@ use crate::execution::operators::IcebergScanExec;
 use crate::execution::{
     expressions::list_positions::ListPositionsExpr,
     expressions::subquery::Subquery,
-    operators::{ExecutionError, ExpandExec, ParquetWriterExec, ScanExec, ShuffleScanExec},
+    operators::{
+        ExecutionError, ExpandExec, ParquetCompression, ParquetWriterExec, ScanExec,
+        ShuffleScanExec,
+    },
     planner::expression_registry::ExpressionRegistry,
     planner::operator_registry::OperatorRegistry,
     serde::to_arrow_datatype,
@@ -1703,10 +1706,11 @@ impl PhysicalPlanner {
                     self.create_plan(&children[0], inputs, partition_count)?;
 
                 let codec = match writer.compression.try_into() {
-                    Ok(SparkCompressionCodec::None) => Ok(CompressionCodec::None),
-                    Ok(SparkCompressionCodec::Snappy) => Ok(CompressionCodec::Snappy),
-                    Ok(SparkCompressionCodec::Zstd) => Ok(CompressionCodec::Zstd(3)),
-                    Ok(SparkCompressionCodec::Lz4) => Ok(CompressionCodec::Lz4Frame),
+                    Ok(SparkCompressionCodec::None) => Ok(ParquetCompression::None),
+                    Ok(SparkCompressionCodec::Snappy) => Ok(ParquetCompression::Snappy),
+                    Ok(SparkCompressionCodec::Zstd) => Ok(ParquetCompression::Zstd(3)),
+                    Ok(SparkCompressionCodec::Lz4) => Ok(ParquetCompression::Lz4),
+                    Ok(SparkCompressionCodec::Gzip) => Ok(ParquetCompression::Gzip),
                     _ => Err(GeneralError(format!(
                         "Unsupported parquet compression codec: {:?}",
                         writer.compression

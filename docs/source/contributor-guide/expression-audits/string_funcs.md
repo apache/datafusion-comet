@@ -111,7 +111,7 @@
 ## left
 
 - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
-- Spark 3.5.8 (audited 2026-05-27): baseline. `RuntimeReplaceable` with `replacement = Substring(str, Literal(1), len)`; accepts `StringType` or `BinaryType` plus `IntegerType`. Comet serde rewrites to a `Substring` proto with `start=1, len=lenValue`. `getSupportLevel` declares `Unsupported` for non-literal `len` so the dispatcher falls back uniformly.
+- Spark 3.5.8 (audited 2026-05-27): baseline. `RuntimeReplaceable` with `replacement = Substring(str, Literal(1), len)`; accepts `StringType` or `BinaryType` plus `IntegerType`. Comet serde serialises `expr.replacement`, routing through `SparkSubstring` — so non-literal `len` is supported.
 - Spark 4.0.1 (audited 2026-05-27): `inputTypes` widened with `StringTypeWithCollation`; behaviour unchanged for `UTF8_BINARY`. Non-default collations not honoured by Comet (https://github.com/apache/datafusion-comet/issues/4496).
 
 ## len
@@ -174,7 +174,7 @@
 ## right
 
 - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
-- Spark 3.5.8 (audited 2026-05-27): baseline. `RuntimeReplaceable` with `replacement = If(IsNull(str), null, If(len <= 0, "", Substring(str, -len, len)))`; accepts `StringType` plus `IntegerType`. Comet serde rewrites positive `len` to a `Substring` proto with `start=-len, len=len`; for `len <= 0` it builds an `If(IsNull(str), null, "")` proto chain to preserve NULL propagation. `getSupportLevel` declares `Unsupported` for non-literal `len` so the dispatcher falls back uniformly.
+- Spark 3.5.8 (audited 2026-05-27): baseline. `RuntimeReplaceable` with `replacement = If(IsNull(str), null, If(len <= 0, "", Substring(str, -len, len)))`; accepts `StringType` plus `IntegerType`. Comet serde serialises `expr.replacement`, so NULL propagation for `len <= 0` and non-literal `len` are handled by the replacement tree itself.
 - Spark 4.0.1 (audited 2026-05-27): `inputTypes` widened with collation; uses `UnaryMinus(len, failOnError = false)` to avoid integer-overflow exceptions on `len = Int.MinValue`. Semantics unchanged for `UTF8_BINARY`. Non-default collations not honoured by Comet (https://github.com/apache/datafusion-comet/issues/4496).
 
 ## rpad
@@ -217,8 +217,8 @@
 ## substring
 
 - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
-- Spark 3.5.8 (audited 2026-05-27): baseline. `TernaryExpression`; two-arg form defaults `len = Integer.MAX_VALUE`; supports `StringType` and `BinaryType`. Comet serializes to a dedicated `Substring` proto. `getSupportLevel` declares `Unsupported` when either `pos` or `len` is not a `Literal` so the dispatcher falls back uniformly.
-- Spark 4.0.1 (audited 2026-05-27): `inputTypes` widened with `StringTypeWithCollation`; semantics unchanged for `UTF8_BINARY`. Native `SubstringExpr` implements Spark's negative-start clamping and is exercised against ASCII, multibyte UTF-8, emoji, decomposed and Telugu inputs. Non-default collations not honoured by Comet (https://github.com/apache/datafusion-comet/issues/4496).
+- Spark 3.5.8 (audited 2026-05-27): baseline. `TernaryExpression`; two-arg form defaults `len = Integer.MAX_VALUE`; supports `StringType` and `BinaryType`. Comet routes through the `datafusion-spark` `SparkSubstring` UDF (registered as `substring`), which accepts non-literal `pos`/`len` and Utf8/Utf8View/Binary/LargeBinary/BinaryView inputs.
+- Spark 4.0.1 (audited 2026-05-27): `inputTypes` widened with `StringTypeWithCollation`; semantics unchanged for `UTF8_BINARY`. `SparkSubstring` implements Spark's 1-indexed, negative-start, and negative-length clamping. Non-default collations not honoured by Comet (https://github.com/apache/datafusion-comet/issues/4496).
 
 ## substring_index
 
