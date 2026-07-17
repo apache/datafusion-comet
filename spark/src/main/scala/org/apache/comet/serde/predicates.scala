@@ -241,10 +241,13 @@ object CometIsNaN extends CometExpressionSerde[IsNaN] {
   }
 }
 
-object CometIn extends CometExpressionSerde[In] {
+object CometIn extends CometExpressionSerde[In] with CodegenDispatchFallback {
 
   override def getSupportLevel(expr: In): SupportLevel =
     ComparisonUtils.collationSupportLevel("In", (expr.value +: expr.list): _*)
+
+  override def getUnsupportedReasons(): Seq[String] =
+    Seq(ComparisonUtils.nonDefaultCollationDocReason)
 
   override def convert(
       expr: In,
@@ -254,10 +257,13 @@ object CometIn extends CometExpressionSerde[In] {
   }
 }
 
-object CometInSet extends CometExpressionSerde[InSet] {
+object CometInSet extends CometExpressionSerde[InSet] with CodegenDispatchFallback {
 
   override def getSupportLevel(expr: InSet): SupportLevel =
     ComparisonUtils.collationSupportLevel("InSet", expr.child)
+
+  override def getUnsupportedReasons(): Seq[String] =
+    Seq(ComparisonUtils.nonDefaultCollationDocReason)
 
   override def convert(
       expr: InSet,
@@ -275,12 +281,19 @@ object CometInSet extends CometExpressionSerde[InSet] {
 
 /**
  * Mixin for serdes of binary predicates whose native kernel compares raw bytes: any operand
- * carrying a non-UTF8_BINARY collation must fall back to Spark, since byte-wise semantics diverge
- * from Spark's collation-aware evaluation.
+ * carrying a non-UTF8_BINARY collation is unsupported natively. Mixing in
+ * `CodegenDispatchFallback` routes these through the JVM codegen dispatcher (Spark's own
+ * `doGenCode`), so the collation-aware evaluation runs inline in the Comet pipeline instead of
+ * falling the whole operator back to Spark.
  */
-trait CollationAwareBinaryPredicate[T <: BinaryExpression] extends CometExpressionSerde[T] {
+trait CollationAwareBinaryPredicate[T <: BinaryExpression]
+    extends CometExpressionSerde[T]
+    with CodegenDispatchFallback {
   override def getSupportLevel(expr: T): SupportLevel =
     ComparisonUtils.collationSupportLevel(expr.prettyName, expr.left, expr.right)
+
+  override def getUnsupportedReasons(): Seq[String] =
+    Seq(ComparisonUtils.nonDefaultCollationDocReason)
 }
 
 object ComparisonUtils {
@@ -288,12 +301,19 @@ object ComparisonUtils {
   // Comet's native equality/ordering/hashing compare raw bytes, so any predicate operand carrying
   // a non-UTF8_BINARY collation (Spark 4+) would produce wrong answers on the native path — e.g.
   // `'a' = 'A'` under `UNICODE_CI` returns true in Spark but false byte-wise. Every binary
-  // comparison and `In`/`InSet` serde routes its `getSupportLevel` through here so that any
-  // collated operand triggers a clean fallback to Spark. `hasNonDefaultStringCollation` walks
-  // nested types too, so collated strings inside array/map/struct operands are also caught.
+  // comparison and `In`/`InSet` serde routes its `getSupportLevel` through here, marking the case
+  // `Unsupported`; `CodegenDispatchFallback` then routes those cases through Spark's own
+  // `doGenCode` inside the Comet pipeline. `hasNonDefaultStringCollation` walks nested types too,
+  // so collated strings inside array/map/struct operands are also caught.
   def nonDefaultCollationReason(exprName: String): String =
     s"$exprName does not support non-UTF8_BINARY collated operands; " +
       "native comparison is byte-wise and cannot honour collation semantics."
+
+  // Doc-friendly variant of `nonDefaultCollationReason` for `getUnsupportedReasons`. The compat
+  // guide already scopes the reason to a specific expression, so no per-expr name is needed.
+  val nonDefaultCollationDocReason: String =
+    "Non-UTF8_BINARY collated operands are routed through the JVM codegen dispatcher " +
+      "(Spark's own `doGenCode`) because native comparison is byte-wise."
 
   def hasCollatedOperand(operands: Expression*): Boolean =
     operands.exists(op => hasNonDefaultStringCollation(op.dataType))

@@ -288,7 +288,13 @@ object CometConcatWs extends CometExpressionSerde[ConcatWs] {
   }
 }
 
-object CometLike extends CometExpressionSerde[Like] {
+object CometLike extends CometExpressionSerde[Like] with CodegenDispatchFallback {
+
+  private val customEscapeReason =
+    "LIKE with a custom escape character (only `\\` is supported natively)"
+
+  override def getUnsupportedReasons(): Seq[String] =
+    Seq(customEscapeReason, ComparisonUtils.nonDefaultCollationDocReason)
 
   override def getSupportLevel(expr: Like): SupportLevel = {
     if (ComparisonUtils.hasCollatedOperand(expr.left, expr.right)) {
