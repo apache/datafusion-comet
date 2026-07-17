@@ -858,8 +858,11 @@ object CometCollectSet extends CometAggregateExpressionSerde[CollectSet] {
       " `spark.comet.expression.CollectSet.allowIncompatible=true` is set.")
 
   override def getSupportLevel(expr: CollectSet): SupportLevel = {
-    // The native path always drops null inputs. Spark 4.2 adds `RESPECT NULLS`
-    // (`ignoreNulls = false`), which keeps nulls, so fall back there.
+    // The native path always drops null inputs. Spark 4.2 added an `ignoreNulls` field to
+    // CollectSet that `RESPECT NULLS` sets to false, preserving nulls in the result; Comet
+    // cannot match that, so fall back. This branch is only reachable on Spark 4.2+: on 3.4
+    // through 4.1 the field does not exist, `RESPECT NULLS`/`IGNORE NULLS` are rejected at
+    // analysis time, and CometCollectShim.ignoreNulls hardcodes true, making this a no-op.
     if (!CometCollectShim.ignoreNulls(expr)) {
       Unsupported(Some("collect_set with RESPECT NULLS (ignoreNulls = false) is not supported"))
     } else {
@@ -907,7 +910,11 @@ object CometCollectList extends CometAggregateExpressionSerde[CollectList] {
 
   override def getSupportLevel(expr: CollectList): SupportLevel = {
     // The native path delegates to SparkCollectList, which always drops null inputs. Spark 4.2
-    // adds `RESPECT NULLS` (`ignoreNulls = false`), which keeps nulls, so fall back there.
+    // added an `ignoreNulls` field to CollectList that `RESPECT NULLS` sets to false, preserving
+    // nulls in the result; Comet cannot match that, so fall back. This branch is only reachable
+    // on Spark 4.2+: on 3.4 through 4.1 the field does not exist, `RESPECT NULLS`/`IGNORE NULLS`
+    // are rejected at analysis time, and CometCollectShim.ignoreNulls hardcodes true, making this
+    // a no-op.
     if (!CometCollectShim.ignoreNulls(expr)) {
       Unsupported(Some("collect_list with RESPECT NULLS (ignoreNulls = false) is not supported"))
     } else {
