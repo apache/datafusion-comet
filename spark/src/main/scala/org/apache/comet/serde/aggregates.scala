@@ -31,7 +31,7 @@ import org.apache.comet.CometConf.COMET_EXEC_STRICT_FLOATING_POINT
 import org.apache.comet.CometSparkSessionExtensions.{isSpark41Plus, withFallbackReason}
 import org.apache.comet.expressions.CometEvalMode
 import org.apache.comet.serde.QueryPlanSerde.{evalModeToProto, exprToProto, serializeDataType}
-import org.apache.comet.shims.CometEvalModeUtil
+import org.apache.comet.shims.{CometEvalModeUtil, CometTypeShim}
 
 object CometMin extends CometAggregateExpressionSerde[Min] {
 
@@ -897,7 +897,7 @@ object CometCollectSet extends CometAggregateExpressionSerde[CollectSet] {
   }
 }
 
-object AggSerde {
+object AggSerde extends CometTypeShim {
   import org.apache.spark.sql.types._
 
   def minMaxDataTypeSupported(dt: DataType): Boolean = {
@@ -907,6 +907,7 @@ object AggSerde {
       case FloatType | DoubleType => true
       case _: DecimalType => true
       case DateType | TimestampType => true
+      case dt if isTimeType(dt) => true
       case _ => false
     }
   }
