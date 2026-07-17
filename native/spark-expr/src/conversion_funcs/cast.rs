@@ -798,28 +798,18 @@ const UPPER_HEX_DIGITS: [u8; 16] = *b"0123456789ABCDEF";
 /// Writes `byte` as two uppercase hex digits.
 #[inline]
 fn write_upper_hex<W: Write>(out: &mut W, byte: u8) -> std::fmt::Result {
-    out.write_char(UPPER_HEX_DIGITS[(byte >> 4) as usize] as char)?;
-    out.write_char(UPPER_HEX_DIGITS[(byte & 0x0f) as usize] as char)
+    let buf = [
+        UPPER_HEX_DIGITS[(byte >> 4) as usize],
+        UPPER_HEX_DIGITS[(byte & 0x0f) as usize],
+    ];
+    // SAFETY: both bytes come from the ASCII UPPER_HEX_DIGITS table, so `buf` is valid UTF-8.
+    out.write_str(unsafe { std::str::from_utf8_unchecked(&buf) })
 }
 
 /// Writes `byte` reinterpreted as a signed decimal, as Spark does when printing a byte array.
 #[inline]
 fn write_i8<W: Write>(out: &mut W, byte: u8) -> std::fmt::Result {
-    // Widened to `i16` so that negating `i8::MIN` does not overflow.
-    let value = i8::from_ne_bytes([byte]) as i16;
-    let magnitude = if value < 0 {
-        out.write_char('-')?;
-        -value
-    } else {
-        value
-    };
-    if magnitude >= 100 {
-        out.write_char((b'0' + (magnitude / 100) as u8) as char)?;
-    }
-    if magnitude >= 10 {
-        out.write_char((b'0' + (magnitude / 10 % 10) as u8) as char)?;
-    }
-    out.write_char((b'0' + (magnitude % 10) as u8) as char)
+    write!(out, "{}", byte as i8)
 }
 
 /// Writes the bytes of `value` between square brackets, encoded with `encode` and joined by
@@ -859,13 +849,14 @@ fn cast_binary_to_string<O: OffsetSizeTrait>(
     let num_rows = input.len();
     let offsets = input.value_offsets();
     let value_bytes = offsets[num_rows].as_usize() - offsets[0].as_usize();
-    // Upper bound on the encoded length so the value buffer is allocated once. Base64 rounds up
-    // to a multiple of four per row, hence the extra `num_rows` slack. The default and UTF8 paths
-    // decode JVM-compatibly-lossily, which can expand each byte to a 3-byte U+FFFD replacement.
+    // Upper bound on the encoded length so the value buffer is allocated once. For the
+    // JVM-lossy UTF-8 decoder path, valid UTF-8 sits at 1x; the builder grows on the rare
+    // invalid byte that expands to U+FFFD. Base64 rounds up to a full 4-char group via
+    // div_ceil, which already covers the group padding.
     let capacity = match spark_cast_options.binary_output_style {
-        None | Some(BinaryOutputStyle::Utf8) => 3 * value_bytes,
+        None | Some(BinaryOutputStyle::Utf8) => value_bytes,
         Some(BinaryOutputStyle::Basic) => 6 * value_bytes + 2 * num_rows,
-        Some(BinaryOutputStyle::Base64) => 4 * value_bytes.div_ceil(3) + num_rows,
+        Some(BinaryOutputStyle::Base64) => 4 * value_bytes.div_ceil(3),
         Some(BinaryOutputStyle::Hex) => 2 * value_bytes,
         Some(BinaryOutputStyle::HexDiscrete) => 3 * value_bytes + 2 * num_rows,
     };
@@ -875,6 +866,9 @@ fn cast_binary_to_string<O: OffsetSizeTrait>(
     let mut base64_buffer = String::new();
     for value in input.iter() {
         let Some(value) = value else {
+            // The previous iteration always finalized its row with `append_value("")`, so no
+            // bytes are pending in the builder here; a future edit that adds a `continue` or
+            // an early return inside the match below would break that invariant.
             builder.append_null();
             continue;
         };
