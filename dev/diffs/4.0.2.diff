@@ -2135,7 +2135,7 @@ index a3cfdc5a240..3793b6191bf 100644
        })
        checkAnswer(distinctWithId, Seq(Row(1, 0), Row(1, 0)))
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala
-index 272be70f9fe..4a175083adf 100644
+index 272be70f9fe..0c38d555aaf 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/adaptive/AdaptiveQueryExecSuite.scala
 @@ -28,12 +28,14 @@ import org.apache.spark.SparkException
@@ -2452,7 +2452,15 @@ index 272be70f9fe..4a175083adf 100644
        }.size == 1)
        checkAnswer(ds, testData)
      }
-@@ -2150,7 +2187,8 @@ class AdaptiveQueryExecSuite
+@@ -2023,6 +2060,7 @@ class AdaptiveQueryExecSuite
+       df.collect()
+       assert(collect(df.queryExecution.executedPlan) {
+         case u: UnionExec => u
++        case u: CometUnionExec => u
+       }.size == numUnion)
+       assert(collect(df.queryExecution.executedPlan) {
+         case r: AQEShuffleReadExec => r
+@@ -2150,7 +2188,8 @@ class AdaptiveQueryExecSuite
      }
    }
  
@@ -2462,7 +2470,7 @@ index 272be70f9fe..4a175083adf 100644
      withTempView("t1", "t2") {
        def checkJoinStrategy(shouldShuffleHashJoin: Boolean): Unit = {
          Seq("100", "100000").foreach { size =>
-@@ -2236,7 +2274,8 @@ class AdaptiveQueryExecSuite
+@@ -2236,7 +2275,8 @@ class AdaptiveQueryExecSuite
      }
    }
  
@@ -2472,7 +2480,7 @@ index 272be70f9fe..4a175083adf 100644
      withTempView("v") {
        withSQLConf(
          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
-@@ -2335,7 +2374,7 @@ class AdaptiveQueryExecSuite
+@@ -2335,7 +2375,7 @@ class AdaptiveQueryExecSuite
                runAdaptiveAndVerifyResult(s"SELECT $repartition key1 FROM skewData1 " +
                  s"JOIN skewData2 ON key1 = key2 GROUP BY key1")
              val shuffles1 = collect(adaptive1) {
@@ -2481,7 +2489,7 @@ index 272be70f9fe..4a175083adf 100644
              }
              assert(shuffles1.size == 3)
              // shuffles1.head is the top-level shuffle under the Aggregate operator
-@@ -2348,7 +2387,7 @@ class AdaptiveQueryExecSuite
+@@ -2348,7 +2388,7 @@ class AdaptiveQueryExecSuite
                runAdaptiveAndVerifyResult(s"SELECT $repartition key1 FROM skewData1 " +
                  s"JOIN skewData2 ON key1 = key2")
              val shuffles2 = collect(adaptive2) {
@@ -2490,7 +2498,7 @@ index 272be70f9fe..4a175083adf 100644
              }
              if (hasRequiredDistribution) {
                assert(shuffles2.size == 3)
-@@ -2382,7 +2421,8 @@ class AdaptiveQueryExecSuite
+@@ -2382,7 +2422,8 @@ class AdaptiveQueryExecSuite
      }
    }
  
@@ -2500,7 +2508,7 @@ index 272be70f9fe..4a175083adf 100644
      CostEvaluator.instantiate(
        classOf[SimpleShuffleSortCostEvaluator].getCanonicalName, spark.sparkContext.getConf)
      intercept[IllegalArgumentException] {
-@@ -2548,6 +2588,7 @@ class AdaptiveQueryExecSuite
+@@ -2548,6 +2589,7 @@ class AdaptiveQueryExecSuite
            val (_, adaptive) = runAdaptiveAndVerifyResult(query)
            assert(adaptive.collect {
              case sort: SortExec => sort
@@ -2508,7 +2516,7 @@ index 272be70f9fe..4a175083adf 100644
            }.size == 1)
            val read = collect(adaptive) {
              case read: AQEShuffleReadExec => read
-@@ -2565,7 +2606,8 @@ class AdaptiveQueryExecSuite
+@@ -2565,7 +2607,8 @@ class AdaptiveQueryExecSuite
      }
    }
  
@@ -2518,7 +2526,7 @@ index 272be70f9fe..4a175083adf 100644
      withTempView("v") {
        withSQLConf(
          SQLConf.ADAPTIVE_OPTIMIZE_SKEWS_IN_REBALANCE_PARTITIONS_ENABLED.key -> "true",
-@@ -2677,7 +2719,7 @@ class AdaptiveQueryExecSuite
+@@ -2677,7 +2720,7 @@ class AdaptiveQueryExecSuite
            runAdaptiveAndVerifyResult("SELECT key1 FROM skewData1 JOIN skewData2 ON key1 = key2 " +
              "JOIN skewData3 ON value2 = value3")
          val shuffles1 = collect(adaptive1) {
@@ -2527,7 +2535,7 @@ index 272be70f9fe..4a175083adf 100644
          }
          assert(shuffles1.size == 4)
          val smj1 = findTopLevelSortMergeJoin(adaptive1)
-@@ -2688,7 +2730,7 @@ class AdaptiveQueryExecSuite
+@@ -2688,7 +2731,7 @@ class AdaptiveQueryExecSuite
            runAdaptiveAndVerifyResult("SELECT key1 FROM skewData1 JOIN skewData2 ON key1 = key2 " +
              "JOIN skewData3 ON value1 = value3")
          val shuffles2 = collect(adaptive2) {
@@ -2536,7 +2544,7 @@ index 272be70f9fe..4a175083adf 100644
          }
          assert(shuffles2.size == 4)
          val smj2 = findTopLevelSortMergeJoin(adaptive2)
-@@ -2946,6 +2988,7 @@ class AdaptiveQueryExecSuite
+@@ -2946,6 +2989,7 @@ class AdaptiveQueryExecSuite
          }.size == (if (firstAccess) 1 else 0))
          assert(collect(initialExecutedPlan) {
            case s: SortExec => s
@@ -2544,7 +2552,7 @@ index 272be70f9fe..4a175083adf 100644
          }.size == (if (firstAccess) 2 else 0))
          assert(collect(initialExecutedPlan) {
            case i: InMemoryTableScanLike => i
-@@ -2958,6 +3001,7 @@ class AdaptiveQueryExecSuite
+@@ -2958,6 +3002,7 @@ class AdaptiveQueryExecSuite
          }.isEmpty)
          assert(collect(finalExecutedPlan) {
            case s: SortExec => s
@@ -2552,7 +2560,7 @@ index 272be70f9fe..4a175083adf 100644
          }.isEmpty)
          assert(collect(initialExecutedPlan) {
            case i: InMemoryTableScanLike => i
-@@ -3039,7 +3083,8 @@ class AdaptiveQueryExecSuite
+@@ -3039,7 +3084,8 @@ class AdaptiveQueryExecSuite
      }
    }
  
@@ -2562,7 +2570,7 @@ index 272be70f9fe..4a175083adf 100644
      val emptyDf = spark.range(1).where("false")
      val aggDf1 = emptyDf.agg(sum("id").as("id")).withColumn("name", lit("df1"))
      val aggDf2 = emptyDf.agg(sum("id").as("id")).withColumn("name", lit("df2"))
-@@ -3129,7 +3174,8 @@ class AdaptiveQueryExecSuite
+@@ -3129,7 +3175,8 @@ class AdaptiveQueryExecSuite
  
        val plan = df.queryExecution.executedPlan.asInstanceOf[AdaptiveSparkPlanExec]
        assert(plan.inputPlan.isInstanceOf[TakeOrderedAndProjectExec])

@@ -84,12 +84,12 @@ trait CometAggregateExpressionSerde[T <: AggregateFunction] {
   /**
    * Whether this aggregate's intermediate buffer format is compatible between Spark and Comet for
    * the given function instance, making it safe to run the Partial in one engine and the Final in
-   * the other. Aggregates with simple single-value buffers (MIN, MAX, bitwise) are always safe;
+   * the other. Aggregates with simple single-value buffers (MIN, MAX, COUNT, bitwise) are safe;
    * SUM and non-decimal AVG match Spark's buffer and are safe except where noted per instance
-   * (e.g. TRY-mode SUM uses a Comet-internal flag column). COUNT is intentionally excluded
-   * despite a matching buffer: mixed COUNT partial/final regressed AQE's
-   * PropagateEmptyRelationAfterAQE pattern (which matches BaseAggregateExec only) and the Spark
-   * 4.0 count-bug decorrelation for correlated IN subqueries.
+   * (e.g. TRY-mode SUM uses a Comet-internal flag column). Mixed COUNT was previously excluded
+   * because of two Spark 4.0 regressions: AQE's `PropagateEmptyRelationAfterAQE` and the
+   * count-bug decorrelation for correlated IN subqueries. Both are fixed upstream in
+   * `CometBroadcastExchangeExec` canonicalization, so COUNT is again safe by default.
    */
   def supportsMixedPartialFinal(fn: T): Boolean = false
 
