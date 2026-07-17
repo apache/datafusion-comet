@@ -1893,10 +1893,10 @@ fn date_parser(date_str: &str, eval_mode: EvalMode) -> SparkResult<Option<i32>> 
     }
 
     // Fast path for the canonical `yyyy-mm-dd` form. A 4-digit year is always inside the
-    // range checked below, so the only way this can fail is an invalid calendar date, which
-    // is a null in every eval mode rather than an ANSI error. Any other shape (including a
-    // leading sign, which makes the first byte a non-digit) falls through to the general
-    // parser below.
+    // range checked below, so the only way this can fail is an invalid calendar date. Comet
+    // already returns null for that in every eval mode (the caller maps Ok(None) to null),
+    // matching what the general parser does here. Any other shape (including a leading sign,
+    // which makes the first byte a non-digit) falls through to the general parser below.
     let trimmed = &bytes[j..str_end_trimmed];
     if trimmed.len() == 10 && trimmed[4] == b'-' && trimmed[7] == b'-' {
         if let (Some(year), Some(month), Some(day)) = (
@@ -1972,7 +1972,13 @@ fn date_parser(date_str: &str, eval_mode: EvalMode) -> SparkResult<Option<i32>> 
         date_segments[1] as i64,
         date_segments[2] as i64,
     )
-    .map(|days| days as i32))
+    .map(|days| {
+        debug_assert!(
+            i32::try_from(days).is_ok(),
+            "epoch day {days} out of i32 range for year {year}"
+        );
+        days as i32
+    }))
 }
 
 #[cfg(test)]
@@ -2770,6 +2776,27 @@ mod tests {
                 assert_eq!(date_parser(date, *eval_mode).unwrap(), None);
             }
         }
+
+        // Canonical `yyyy-mm-dd` shape with invalid calendar dates exercises the fast path,
+        // which returns Ok(None) in every eval mode (see comment near ymd_to_epoch_day).
+        for date in &[
+            "2020-02-30",
+            "2021-02-29",
+            "2020-13-01",
+            "2020-00-15",
+            "2020-04-31",
+            "2020-01-00",
+        ] {
+            for eval_mode in &[EvalMode::Legacy, EvalMode::Try, EvalMode::Ansi] {
+                assert_eq!(date_parser(date, *eval_mode).unwrap(), None);
+            }
+        }
+
+        // Valid leap day flows through the fast path.
+        assert_eq!(
+            date_parser("2020-02-29", EvalMode::Legacy).unwrap(),
+            Some(18321)
+        );
     }
 
     #[test]
