@@ -139,7 +139,3 @@ harness = false
 [[bench]]
 name = "to_json"
 harness = false
-
-[[bench]]
-name = "cast_string_to_decimal"
-harness = false

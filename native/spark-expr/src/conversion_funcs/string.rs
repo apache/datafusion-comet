@@ -480,13 +480,10 @@ const POW10_I128: [i128; 39] = {
     table
 };
 
-/// `10^exp`, using the precomputed table for the range that fits in an `i128`.
+/// `10^exp`, or `None` when the exponent overflows an `i128` (exp >= 39).
 #[inline]
-fn pow10_i128(exp: u32) -> i128 {
-    match POW10_I128.get(exp as usize) {
-        Some(v) => *v,
-        None => 10_i128.pow(exp),
-    }
+fn pow10_i128(exp: u32) -> Option<i128> {
+    POW10_I128.get(exp as usize).copied()
 }
 
 /// Accumulate an ASCII-digit slice into an `i128`, returning `None` on overflow.
@@ -596,7 +593,8 @@ fn parse_string_to_decimal(input_str: &str, precision: u8, scale: i8) -> SparkRe
         if scale_adjustment > 38 {
             return Ok(None);
         }
-        mantissa.checked_mul(pow10_i128(scale_adjustment as u32))
+        // Bounded above, so pow10_i128 always returns Some.
+        mantissa.checked_mul(pow10_i128(scale_adjustment as u32).unwrap())
     } else {
         // Need to divide (decrease scale)
         let abs_scale_adjustment = (-scale_adjustment) as u32;
@@ -604,7 +602,8 @@ fn parse_string_to_decimal(input_str: &str, precision: u8, scale: i8) -> SparkRe
             return Ok(Some(0));
         }
 
-        let divisor = pow10_i128(abs_scale_adjustment);
+        // Bounded above, so pow10_i128 always returns Some.
+        let divisor = pow10_i128(abs_scale_adjustment).unwrap();
         let quotient_opt = mantissa.checked_div(divisor);
         // Check if divisor is 0
         if quotient_opt.is_none() {
@@ -731,9 +730,11 @@ fn parse_decimal_str(
     let fractional_value = digits_to_i128(fractional_part)
         .ok_or_else(|| invalid_decimal_cast(original_str, precision, scale))?;
 
-    // Combine: value = integral * 10^fractional_scale + fractional
-    let mantissa = integral_value
-        .checked_mul(pow10_i128(fractional_scale as u32))
+    // Combine: value = integral * 10^fractional_scale + fractional.
+    // A fractional_scale beyond 38 cannot fit in an i128, so pow10_i128 returns None and this
+    // maps to the invalid-decimal error path instead of panicking.
+    let mantissa = pow10_i128(fractional_scale as u32)
+        .and_then(|p| integral_value.checked_mul(p))
         .and_then(|v| v.checked_add(fractional_value))
         .ok_or_else(|| invalid_decimal_cast(original_str, precision, scale))?;
 
@@ -2039,6 +2040,37 @@ mod tests {
             EvalMode::Ansi => parse_string_to_i8_ansi(str),
             EvalMode::Try => parse_string_to_i8_try(str),
         }
+    }
+
+    #[test]
+    fn test_digits_to_i128_boundary() {
+        // 38 nines is under i128::MAX (~1.7e38 vs 9.99e37); the head-only path parses it.
+        let d38 = "9".repeat(38);
+        assert_eq!(
+            digits_to_i128(d38.as_bytes()),
+            Some(99_999_999_999_999_999_999_999_999_999_999_999_999_i128)
+        );
+        // 39 nines overflows i128 in the tail-checked step.
+        let d39 = "9".repeat(39);
+        assert_eq!(digits_to_i128(d39.as_bytes()), None);
+        // 40 characters that reduce to a small value once the leading zero(s) are seen: the
+        // head-only accumulator must not lose bits on 38 zeros followed by two digits.
+        let z38_plus = format!("{}42", "0".repeat(38));
+        assert_eq!(digits_to_i128(z38_plus.as_bytes()), Some(42));
+    }
+
+    #[test]
+    fn test_parse_string_to_decimal_boundary() {
+        // 38-digit integral parses (fits i128).
+        let s38 = "9".repeat(38);
+        assert!(parse_string_to_decimal(&s38, 38, 0).unwrap().is_some());
+        // 39-digit integral overflows i128, so returns the invalid_decimal_cast error.
+        let s39 = "9".repeat(39);
+        assert!(parse_string_to_decimal(&s39, 38, 0).is_err());
+        // Very long fractional part now returns Err via the invalid_decimal_cast path instead
+        // of panicking on 10_i128.pow(fractional_scale).
+        let over_long = format!("0.{}", "0".repeat(40));
+        assert!(parse_string_to_decimal(&over_long, 38, 10).is_err());
     }
 
     #[test]
