@@ -1498,11 +1498,24 @@ mod tests {
 
         // values needing more than one 64-bit digit group
         assert_eq!(fmt(10_000_000_000_000_000_000, 0), "10000000000000000000");
+        // 10^19 + 5: the lower group is 0000000000000000005 and its leading zeros are load-bearing
+        // (the render_digits comment "emitting its leading zeroes is correct" applies here).
+        assert_eq!(fmt(10_000_000_000_000_000_005, 0), "10000000000000000005");
         assert_eq!(fmt(i128::MAX, 0), i128::MAX.to_string());
         assert_eq!(fmt(i128::MIN, 0), i128::MIN.to_string());
         assert_eq!(
             fmt(99_999_999_999_999_999_999_999_999_999_999_999_999, 10),
             "9999999999999999999999999999.9999999999"
+        );
+        // multi-group coefficient in scientific notation, both signs, so the sign push and
+        // the &coeff[..1] / &coeff[1..] split are covered on a value that spans two groups.
+        assert_eq!(
+            fmt(i128::MAX, 45),
+            "1.70141183460469231731687303715884105727E-7"
+        );
+        assert_eq!(
+            fmt(-i128::MAX, 45),
+            "-1.70141183460469231731687303715884105727E-7"
         );
     }
 }
