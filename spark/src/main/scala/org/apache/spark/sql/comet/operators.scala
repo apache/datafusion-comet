@@ -2060,7 +2060,7 @@ trait CometHashJoin {
           if (!CometConf.COMET_EXEC_EXISTENCE_JOIN_ENABLED.get(join.conf)) {
             withFallbackReason(
               join,
-              "Existence join support is experimental. Set " +
+              "Existence join support is highly experimental. Set " +
                 s"${CometConf.COMET_EXEC_EXISTENCE_JOIN_ENABLED.key}=true to enable.")
             return None
           }
@@ -2572,7 +2572,7 @@ object CometSortMergeJoinExec extends CometOperatorSerde[SortMergeJoinExec] {
           if (!CometConf.COMET_EXEC_EXISTENCE_JOIN_ENABLED.get(join.conf)) {
             withFallbackReason(
               join,
-              "Existence join support is experimental. Set " +
+              "Existence join support is highly experimental. Set " +
                 s"${CometConf.COMET_EXEC_EXISTENCE_JOIN_ENABLED.key}=true to enable.")
             return None
           }
