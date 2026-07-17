@@ -55,6 +55,7 @@ message Operator {
     CsvScan csv_scan = 115;
     ShuffleScan shuffle_scan = 116;
     BroadcastNestedLoopJoin broadcast_nested_loop_join = 117;
+    LanceScan lance_scan = 118;
   }
 }
 
@@ -224,6 +225,53 @@ message IcebergScan {
 
   // Single partition's file scan tasks
   repeated IcebergFileScanTask file_scan_tasks = 2;
+}
+
+// Common data shared by all partitions for native Lance scans.
+message LanceScanCommon {
+  // Stable key for matching this scan during per-partition data injection.
+  string scan_id = 1;
+
+  // Schema Spark requested from the Lance scan.
+  repeated SparkStructField required_schema = 2;
+
+  // Informational class name of Lance's native scan plan object.
+  string native_scan_plan_class = 3;
+
+  // Lance dataset location and version resolved during Spark-side planning.
+  string dataset_uri = 4;
+  int64 resolved_version = 5;
+
+  // Storage options captured by Lance Spark planning.
+  map<string, string> storage_options = 6;
+
+  // Schema after projection pruning, as planned by Lance Spark.
+  repeated SparkStructField projected_schema = 7;
+
+  // Optional pushdowns captured by Lance Spark planning.
+  optional string filter_sql = 8;
+  optional int64 limit = 9;
+  optional int64 offset = 10;
+
+  // Preferred native batch size.
+  uint32 batch_size = 11;
+
+  // Version of the Lance Spark native scan descriptor contract.
+  uint32 descriptor_version = 12;
+}
+
+// Per-partition Lance scan split.
+message LanceScanPartition {
+  uint32 partition_index = 1;
+  repeated uint32 fragment_ids = 2;
+}
+
+message LanceScan {
+  // Common data shared across partitions.
+  LanceScanCommon common = 1;
+
+  // Single partition's scan data, injected at execution time.
+  LanceScanPartition partition = 2;
 }
 
 // Helper message for deduplicating field ID lists

@@ -30,8 +30,8 @@ readme = "README.md"
 license = "Apache-2.0"
 edition = "2021"
 
-# Comet uses the same minimum Rust version as DataFusion
-rust-version = "1.88"
+# Comet native follows the highest MSRV required by its native dependencies.
+rust-version = "1.92"
 
 [workspace.dependencies]
 arrow = { version = "58.3.0", features = ["prettyprint", "ffi", "chrono-tz"] }
@@ -61,6 +61,7 @@ aws-credential-types = "1.2.13"
 iceberg = { git = "https://github.com/apache/iceberg-rust", rev = "ff678ca" }
 iceberg-storage-opendal = { git = "https://github.com/apache/iceberg-rust", rev = "ff678ca", features = ["opendal-memory", "opendal-fs", "opendal-s3", "opendal-gcs", "opendal-oss", "opendal-azdls"] }
 reqsign-core = "3"
+lance = { git = "https://github.com/lance-format/lance", rev = "c7c5626d4e830b46c239b5bf4e2a17e32ab901b8", default-features = false }
 
 [profile.release]
 debug = true

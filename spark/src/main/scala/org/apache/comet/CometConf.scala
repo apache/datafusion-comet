@@ -121,6 +121,14 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(true)
 
+  val COMET_LANCE_NATIVE_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.scan.lanceNative.enabled")
+      .category(CATEGORY_SCAN)
+      .doc("Whether to enable native Lance table scans through the optional contrib-lance " +
+        "integration. This is an experimental scaffold and is disabled by default.")
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_ICEBERG_DATA_FILE_CONCURRENCY_LIMIT: ConfigEntry[Int] =
     conf("spark.comet.scan.icebergNative.dataFileConcurrencyLimit")
       .category(CATEGORY_SCAN)

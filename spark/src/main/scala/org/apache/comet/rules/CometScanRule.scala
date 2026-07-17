@@ -294,6 +294,7 @@ case class CometScanRule(session: SparkSession)
   }
 
   private def transformV2Scan(scanExec: BatchScanExec): SparkPlan = {
+    lazy val contribPlan = CometScanContrib.tryTransform(scanExec)
 
     scanExec.scan match {
       case scan: CSVScan if COMET_CSV_V2_NATIVE_ENABLED.get() =>
@@ -336,6 +337,9 @@ case class CometScanRule(session: SparkSession)
         } else {
           withFallbackReasons(scanExec, fallbackReasons.toSet)
         }
+
+      case _ if contribPlan.isDefined =>
+        contribPlan.get
 
       // Iceberg scan - detected by class name. SparkStagedScan covers reads issued by
       // RewriteDataFiles (and similar maintenance actions) where the planner has already
@@ -408,7 +412,8 @@ case class CometScanRule(session: SparkSession)
 
             val effectiveUri = new java.net.URI(effectiveLocation)
 
-            val hadoopS3Options = NativeConfig.extractObjectStoreOptions(hadoopConf, effectiveUri)
+            val hadoopS3Options =
+              NativeConfig.extractObjectStoreOptions(hadoopConf, effectiveUri)
 
             val hadoopDerivedProperties =
               CometIcebergNativeScan.hadoopToIcebergS3Properties(hadoopS3Options)
@@ -462,20 +467,21 @@ case class CometScanRule(session: SparkSession)
 
         // Check Iceberg table format version
 
-        val formatVersionSupported = IcebergReflection.getFormatVersion(metadata.table) match {
-          case Some(formatVersion) =>
-            if (formatVersion > 2) {
-              fallbackReasons += "Iceberg table format version " +
-                s"$formatVersion is not supported. " +
-                "Comet only supports Iceberg table format V1 and V2"
+        val formatVersionSupported =
+          IcebergReflection.getFormatVersion(metadata.table) match {
+            case Some(formatVersion) =>
+              if (formatVersion > 2) {
+                fallbackReasons += "Iceberg table format version " +
+                  s"$formatVersion is not supported. " +
+                  "Comet only supports Iceberg table format V1 and V2"
+                false
+              } else {
+                true
+              }
+            case None =>
+              fallbackReasons += "Could not verify Iceberg table format version"
               false
-            } else {
-              true
-            }
-          case None =>
-            fallbackReasons += "Could not verify Iceberg table format version"
-            false
-        }
+          }
 
         // Single-pass validation of all FileScanTasks
         val taskValidation =
