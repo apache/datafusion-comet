@@ -2699,7 +2699,7 @@ class CometIcebergNativeSuite
   }
 
   test("REST catalog with native Iceberg scan") {
-    assume(!isSpark42Plus, "https://github.com/apache/datafusion-comet/issues/4142")
+    assume(!isSpark42Plus, "https://github.com/apache/datafusion-comet/issues/4969")
     assume(icebergAvailable, "Iceberg not available in classpath")
 
     withRESTCatalog { (restUri, _, warehouseDir) =>

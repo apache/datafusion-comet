@@ -392,7 +392,7 @@ index 085dbcd8046..3090d321b6c 100644
  
        withTempView("t0", "t1", "t2") {
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/DataFrameAggregateSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/DataFrameAggregateSuite.scala
-index 5b8154d2900..632274c7fc8 100644
+index 5b8154d2900..f35da2951af 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/DataFrameAggregateSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/DataFrameAggregateSuite.scala
 @@ -30,8 +30,9 @@ import org.apache.spark.sql.catalyst.util.AUTO_GENERATED_ALIAS
@@ -406,7 +406,18 @@ index 5b8154d2900..632274c7fc8 100644
  import org.apache.spark.sql.expressions.Window
  import org.apache.spark.sql.functions._
  import org.apache.spark.sql.internal.SQLConf
-@@ -932,7 +933,9 @@ class DataFrameAggregateSuite extends SharedSparkSession
+@@ -667,7 +668,9 @@ class DataFrameAggregateSuite extends SharedSparkSession
+       df.selectExpr("sort_array(collect_set(b) RESPECT NULLS)"), Seq(Row(Seq(null, 2))))
+   }
+ 
+-  test("SPARK-57298: collect_set normalizes NaN and -0.0 for floating-point types") {
++  test("SPARK-57298: collect_set normalizes NaN and -0.0 for floating-point types",
++    // Comet's native collect_set does not yet normalize NaN / -0.0.
++    IgnoreComet("https://github.com/apache/datafusion-comet/issues/4966")) {
+     checkAnswer(
+       sql("SELECT collect_set(v) FROM VALUES (double('NaN')), (double('NaN')) AS t(v)"),
+       Row(Seq(Double.NaN)))
+@@ -932,7 +935,9 @@ class DataFrameAggregateSuite extends SharedSparkSession
              case _ => false
            }.isDefined)
          } else {
@@ -417,7 +428,7 @@ index 5b8154d2900..632274c7fc8 100644
          }
  
          // test case for ObjectHashAggregate and SortAggregate
-@@ -996,7 +999,7 @@ class DataFrameAggregateSuite extends SharedSparkSession
+@@ -996,7 +1001,7 @@ class DataFrameAggregateSuite extends SharedSparkSession
        assert(objHashAggPlans.nonEmpty)
  
        val exchangePlans = collect(aggPlan) {
@@ -2044,6 +2055,31 @@ index b167dd13dcb..b2b6b88ce66 100644
          try {
            spark.range(1).foreach { _ =>
              columnarToRowExec.canonicalized
+diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/UnionCodegenSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/UnionCodegenSuite.scala
+index 835c55fe4c4..57cce5f6b03 100644
+--- a/sql/core/src/test/scala/org/apache/spark/sql/execution/UnionCodegenSuite.scala
++++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/UnionCodegenSuite.scala
+@@ -20,7 +20,7 @@ package org.apache.spark.sql.execution
+ import java.util.concurrent.{CountDownLatch, Executors, TimeUnit}
+ 
+ import org.apache.spark.SparkConf
+-import org.apache.spark.sql.{DataFrame, QueryTest, Row}
++import org.apache.spark.sql.{DataFrame, IgnoreComet, QueryTest, Row}
+ import org.apache.spark.sql.functions._
+ import org.apache.spark.sql.internal.SQLConf
+ import org.apache.spark.sql.test.SharedSparkSession
+@@ -605,7 +605,10 @@ class UnionCodegenSuite extends QueryTest with SharedSparkSession {
+     }
+   }
+ 
+-  test("SPARK-56482: partitioning-aware union falls back to non-codegen") {
++  test("SPARK-56482: partitioning-aware union falls back to non-codegen",
++    // Comet replaces Spark's UnionExec with CometUnionExec, so the executed plan does not
++    // expose a UnionExec for this WSCG-internal assertion to inspect.
++    IgnoreComet("https://github.com/apache/datafusion-comet/issues/4965")) {
+     // After repartition, both children expose a `HashPartitioning` on the same key,
+     // so `UnionExec.outputPartitioning` is non-Unknown and the codegen path is denied.
+     // AQE is disabled here so the executedPlan exposes the UnionExec directly
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/WholeStageCodegenSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/WholeStageCodegenSuite.scala
 index d70bd715879..074a9fa29d9 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/WholeStageCodegenSuite.scala
@@ -3276,6 +3312,80 @@ index b8f3ea3c6f3..bbd44221288 100644
      withTempPath { workDir =>
        val workDirPath = workDir.getAbsolutePath
        val input = spark.range(5).toDF("id")
+diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/metric/MetricsFailureInjectionSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/metric/MetricsFailureInjectionSuite.scala
+index 2ae2ea6339f..30c8959a057 100644
+--- a/sql/core/src/test/scala/org/apache/spark/sql/execution/metric/MetricsFailureInjectionSuite.scala
++++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/metric/MetricsFailureInjectionSuite.scala
+@@ -19,7 +19,7 @@ package org.apache.spark.sql.execution.metric
+ import scala.util.Random
+ 
+ import org.apache.spark.internal.config
+-import org.apache.spark.sql.{Column, Dataset}
++import org.apache.spark.sql.{Column, Dataset, IgnoreCometSuite}
+ import org.apache.spark.sql.execution.adaptive.{AQETestHelper, DisableAdaptiveExecutionSuite}
+ import org.apache.spark.sql.functions.udf
+ import org.apache.spark.sql.internal.SQLConf
+@@ -29,7 +29,10 @@ class MetricsFailureInjectionSuite
+   extends SharedSparkSession
+   with SQLMetricsTestUtils
+   // Need to control AQE per-test to ensure expected plan shapes.
+-  with DisableAdaptiveExecutionSuite {
++  with DisableAdaptiveExecutionSuite
++  // Comet replaces Spark operators with native equivalents, so the SQL Last Attempt Metric
++  // is not propagated through the plan. See https://github.com/apache/datafusion-comet/issues/4963
++  with IgnoreCometSuite {
+ 
+   import testImplicits._
+ 
+diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/metric/SQLLastAttemptMetricIntegrationSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/metric/SQLLastAttemptMetricIntegrationSuite.scala
+index 2e7af075a3e..b8fa7d35783 100644
+--- a/sql/core/src/test/scala/org/apache/spark/sql/execution/metric/SQLLastAttemptMetricIntegrationSuite.scala
++++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/metric/SQLLastAttemptMetricIntegrationSuite.scala
+@@ -17,7 +17,7 @@
+ package org.apache.spark.sql.execution.metric
+ 
+ import org.apache.spark.internal.config
+-import org.apache.spark.sql.Column
++import org.apache.spark.sql.{Column, IgnoreComet}
+ import org.apache.spark.sql.catalyst.expressions.Literal
+ import org.apache.spark.sql.catalyst.optimizer.BuildRight
+ import org.apache.spark.sql.catalyst.plans.RightOuter
+@@ -255,7 +255,10 @@ class SQLLastAttemptMetricIntegrationSuite
+     logInfo(slam.logAccumulatorState)
+   }
+ 
+-  test("dataset updates") {
++  test("dataset updates",
++    // Comet replaces Spark operators with native equivalents, so the SQL Last Attempt Metric
++    // is not propagated through the plan.
++    IgnoreComet("https://github.com/apache/datafusion-comet/issues/4963")) {
+     val slam1 = SQLLastAttemptMetrics.createMetric(spark.sparkContext, "SLAM1")
+     val df1 = spark.range(10).filter(Column(incrementMetric(slam1)))
+ 
+diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/metric/SQLLastAttemptMetricPlanShapesSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/metric/SQLLastAttemptMetricPlanShapesSuite.scala
+index ea8d9568f7e..34b9c2eef01 100644
+--- a/sql/core/src/test/scala/org/apache/spark/sql/execution/metric/SQLLastAttemptMetricPlanShapesSuite.scala
++++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/metric/SQLLastAttemptMetricPlanShapesSuite.scala
+@@ -22,6 +22,7 @@ import scala.util.Random
+ import org.scalatest.Tag
+ 
+ import org.apache.spark.internal.config
++import org.apache.spark.sql.IgnoreCometSuite
+ import org.apache.spark.sql.execution.{CollectLimitExec, RDDScanExec, SparkPlan}
+ import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanHelper, AQETestHelper, DisableAdaptiveExecutionSuite}
+ import org.apache.spark.sql.execution.columnar.InMemoryTableScanExec
+@@ -34,7 +35,10 @@ class SQLLastAttemptMetricPlanShapesSuite
+   extends SharedSparkSession
+   with SQLMetricsTestUtils
+   // Need to control AQE per-test to ensure expected plan shapes.
+-  with DisableAdaptiveExecutionSuite {
++  with DisableAdaptiveExecutionSuite
++  // Comet replaces Spark operators with native equivalents, so the SQL Last Attempt Metric
++  // is not propagated through the plan. See https://github.com/apache/datafusion-comet/issues/4963
++  with IgnoreCometSuite {
+ 
+   import testImplicits._
+ 
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/metric/SQLMetricsSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/metric/SQLMetricsSuite.scala
 index 16cde3ef2c5..cfc26410733 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/metric/SQLMetricsSuite.scala
@@ -3438,6 +3548,58 @@ index 65009a2c1c6..09c53621daf 100644
    before {
      StateStore.stop()
      require(!StateStore.isMaintenanceRunning)
+diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/window/SegmentTreeWindowMetricsSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/window/SegmentTreeWindowMetricsSuite.scala
+index 5c3edb7e06c..f6accc654cd 100644
+--- a/sql/core/src/test/scala/org/apache/spark/sql/execution/window/SegmentTreeWindowMetricsSuite.scala
++++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/window/SegmentTreeWindowMetricsSuite.scala
+@@ -17,7 +17,7 @@
+ 
+ package org.apache.spark.sql.execution.window
+ 
+-import org.apache.spark.sql.QueryTest
++import org.apache.spark.sql.{IgnoreCometSuite, QueryTest}
+ import org.apache.spark.sql.execution.SparkPlanInfo
+ import org.apache.spark.sql.execution.metric.SQLMetricsTestUtils
+ import org.apache.spark.sql.execution.ui.SparkPlanGraph
+@@ -31,8 +31,11 @@ import org.apache.spark.sql.test.SharedSparkSession
+  * segtree path bumps `numSegmentTreeFrames`; fallback path bumps
+  * `numSegmentTreeFallbackFrames`; feature-flag off leaves both at 0.
+  */
++// Comet replaces Spark's WindowExec with CometWindowExec, which has no segment-tree window
++// optimization and therefore does not expose the segment-tree frame metrics this suite reads.
++// See https://github.com/apache/datafusion-comet/issues/4964
+ class SegmentTreeWindowMetricsSuite
+-    extends QueryTest with SharedSparkSession with SQLMetricsTestUtils {
++    extends QueryTest with SharedSparkSession with SQLMetricsTestUtils with IgnoreCometSuite {
+ 
+   import testImplicits._
+ 
+diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/window/WindowSegmentTreeAllowlistSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/window/WindowSegmentTreeAllowlistSuite.scala
+index d3da8e40c85..505f48092ea 100644
+--- a/sql/core/src/test/scala/org/apache/spark/sql/execution/window/WindowSegmentTreeAllowlistSuite.scala
++++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/window/WindowSegmentTreeAllowlistSuite.scala
+@@ -17,7 +17,7 @@
+ 
+ package org.apache.spark.sql.execution.window
+ 
+-import org.apache.spark.sql.{DataFrame, QueryTest}
++import org.apache.spark.sql.{DataFrame, IgnoreCometSuite, QueryTest}
+ import org.apache.spark.sql.execution.SparkPlanInfo
+ import org.apache.spark.sql.execution.metric.SQLMetricsTestUtils
+ import org.apache.spark.sql.execution.ui.SparkPlanGraph
+@@ -35,8 +35,11 @@ import org.apache.spark.sql.test.SharedSparkSession
+  * Eligibility gating only; exhaustive equivalence lives in
+  * [[SegmentTreeWindowFunctionSuite]].
+  */
++// Comet replaces Spark's WindowExec with CometWindowExec, which has no segment-tree window
++// optimization and therefore does not expose the segment-tree frame metrics this suite reads.
++// See https://github.com/apache/datafusion-comet/issues/4964
+ class WindowSegmentTreeAllowlistSuite
+-    extends QueryTest with SharedSparkSession with SQLMetricsTestUtils {
++    extends QueryTest with SharedSparkSession with SQLMetricsTestUtils with IgnoreCometSuite {
+ 
+   import testImplicits._
+ 
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/sources/BucketedReadSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/sources/BucketedReadSuite.scala
 index 452b7b9dedb..b2a73a8b772 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/sources/BucketedReadSuite.scala
