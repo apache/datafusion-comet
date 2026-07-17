@@ -119,6 +119,12 @@ Internal decimal wrapper emitted around every decimal `+ - * /`, `sum`, and `avg
 
 - Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): `IntegralDivide(left, right, evalMode)`. Non-decimal operands are cast to `DecimalType(19, 0)`; result is recomputed per `IntegralDivide.resultDecimalType`, wrapped in `CheckOverflow`, then cast to `Long`. ANSI overflow for `Long.MinValue div -1` and decimal-overflow ANSI cases are covered by existing tests.
 
+## DecimalRescaleCheckOverflow (internal)
+
+Internal fused expression that rescales a Decimal128 value (changing scale) and checks output precision in one pass, replacing the `CheckOverflow(Cast(expr, Decimal128(p, s)))` pattern used by decimal-to-decimal casts. Native impl: `math_funcs/internal/decimal_rescale_check.rs`.
+
+- Performance (tuned 2026-07-15, PR #4938): the legacy path ran `null_if_overflow_precision` (a second full pass that allocates a new array) on every batch to turn overflow sentinels into nulls, even when nothing overflowed. Now that pass runs only when a sentinel is present (`contains(&i128::MAX)`, short-circuiting), so the common no-overflow case skips the allocation. 8 to 26% faster on no-overflow shapes; overflow and ANSI shapes unchanged. Benchmark: `benches/decimal_rescale.rs`.
+
 ## e
 
 - Foldable; rewritten to a literal by ConstantFolding (like `pi`).
