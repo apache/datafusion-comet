@@ -136,7 +136,8 @@ private[codegen] object CometBatchKernelCodegenInput {
           if cls == classOf[BigIntVector] ||
             cls == classOf[TimeStampMicroVector] ||
             cls == classOf[TimeStampMicroTZVector] ||
-            cls == classOf[TimeNanoVector] =>
+            cls == classOf[TimeNanoVector] ||
+            cls == classOf[DurationVector] =>
         s"      case $ord: return this.col$ord.getLong(this.rowIdx);"
     }
     val floatCases = withOrd.collect {

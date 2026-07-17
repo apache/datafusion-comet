@@ -89,9 +89,23 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim with Come
     case DateType | TimestampType | TimestampNTZType => true
     case _: YearMonthIntervalType | _: DayTimeIntervalType => true
     case dt if isTimeType(dt) => true
-    case ArrayType(inner, _) => isSupportedDataType(inner)
-    case st: StructType => st.fields.forall(f => isSupportedDataType(f.dataType))
-    case mt: MapType => isSupportedDataType(mt.keyType) && isSupportedDataType(mt.valueType)
+    // Nested containers: TIME is only accepted at the top level for now; the array/struct/map
+    // getters do not yet route TIME to `getLong`, so nested `TIME` inputs would crash mid-compile.
+    // Restricting here lets `canHandle` return a reason and the operator fall back to Spark.
+    case ArrayType(inner, _) => !containsTimeType(inner) && isSupportedDataType(inner)
+    case st: StructType =>
+      st.fields.forall(f => !containsTimeType(f.dataType) && isSupportedDataType(f.dataType))
+    case mt: MapType =>
+      !containsTimeType(mt.keyType) && !containsTimeType(mt.valueType) &&
+      isSupportedDataType(mt.keyType) && isSupportedDataType(mt.valueType)
+    case _ => false
+  }
+
+  private def containsTimeType(dt: DataType): Boolean = dt match {
+    case _ if isTimeType(dt) => true
+    case ArrayType(inner, _) => containsTimeType(inner)
+    case st: StructType => st.fields.exists(f => containsTimeType(f.dataType))
+    case mt: MapType => containsTimeType(mt.keyType) || containsTimeType(mt.valueType)
     case _ => false
   }
 

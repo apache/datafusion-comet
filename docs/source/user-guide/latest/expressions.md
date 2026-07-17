@@ -284,7 +284,7 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `timestamp_millis` | ✅ |  |
 | `timestamp_seconds` | ✅ |  |
 | `to_date` | ✅ | Rewrites to `Cast` (or `Cast(GetTimestamp)` with a format) before Comet sees the plan |
-| `to_time` | ✅ | Spark 4.1+ |
+| `to_time` | ✅ | Spark 4.1+; default-format form only (`to_time(str)`). A non-default `fmt` argument falls back to Spark. |
 | `to_timestamp` | ✅ | Rewrites to `Cast` (or `GetTimestamp` with a format) before Comet sees the plan |
 | `to_timestamp_ltz` | ✅ | Rewrites to `to_timestamp` (`TimestampType`) |
 | `to_timestamp_ntz` | ✅ | Rewrites to `to_timestamp` (`TimestampNTZType`) |
@@ -294,7 +294,7 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `try_make_interval` | 🔜 | Produces legacy CalendarInterval; tracked by [#4540](https://github.com/apache/datafusion-comet/issues/4540) |
 | `try_make_timestamp` | ✅ |  |
 | `try_to_date` | 🔜 | Rewrites to `Cast`/`GetTimestamp` but currently falls back; tracked by [#4556](https://github.com/apache/datafusion-comet/issues/4556) |
-| `try_to_time` | ✅ | Spark 4.1+ |
+| `try_to_time` | ✅ | Spark 4.1+; default-format form only (`try_to_time(str)`). A non-default `fmt` argument falls back to Spark. |
 | `try_to_timestamp` | 🔜 | Rewrites to `Cast`/`GetTimestamp` but currently falls back; tracked by [#4556](https://github.com/apache/datafusion-comet/issues/4556) |
 | `unix_date` | ✅ |  |
 | `unix_micros` | ✅ |  |
