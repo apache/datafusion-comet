@@ -331,7 +331,11 @@ macro_rules! cast_float_to_int16_down {
                     )
                 })
             })?,
-            _ => cast_array.unary::<_, $dest_arrow_type>(|value| (value as i32) as $rust_dest_type),
+            _ => cast_array.unary::<_, $dest_arrow_type>(|value| {
+                // `unary` runs the op on null slots too; the saturating `as`-cast chain here
+                // is infallible for any bit pattern (including NaN and infinities).
+                (value as i32) as $rust_dest_type
+            }),
         };
         Ok(Arc::new(output_array) as ArrayRef)
     }};
@@ -370,7 +374,11 @@ macro_rules! cast_float_to_int32_up {
                 }
                 Ok(value as $rust_dest_type)
             })?,
-            _ => cast_array.unary::<_, $dest_arrow_type>(|value| value as $rust_dest_type),
+            _ => cast_array.unary::<_, $dest_arrow_type>(|value| {
+                // `unary` runs the op on null slots too; the saturating `as`-cast is
+                // infallible for any bit pattern.
+                value as $rust_dest_type
+            }),
         };
         Ok(Arc::new(output_array) as ArrayRef)
     }};
@@ -426,6 +434,9 @@ macro_rules! cast_decimal_to_int16_down {
                 })
             })?,
             _ => cast_array.unary::<_, $dest_arrow_type>(|value| {
+                // `unary` runs the op on null slots too; `value / divisor` cannot panic
+                // because divisor = 10^scale is always positive (the only i128 division
+                // panic is i128::MIN / -1).
                 ((value / divisor) as i32) as $rust_dest_type
             }),
         };
@@ -471,7 +482,11 @@ macro_rules! cast_decimal_to_int32_up {
                 Ok(truncated as $rust_dest_type)
             })?,
             _ => cast_array
-                .unary::<_, $dest_arrow_type>(|value| (value / divisor) as $rust_dest_type),
+                .unary::<_, $dest_arrow_type>(|value| {
+                    // `unary` runs the op on null slots too; `value / divisor` cannot panic
+                    // because divisor = 10^scale is always positive.
+                    (value / divisor) as $rust_dest_type
+                }),
         };
         Ok(Arc::new(output_array) as ArrayRef)
     }};
@@ -1108,11 +1123,17 @@ mod tests {
     #[test]
     fn test_cast_float64_to_int8_legacy_wraps() {
         // Spark narrows float -> Int (truncate) -> Byte (wrap). 300.7 -> 300 -> 44; -1.9 -> -1.
+        // 3e9 and +inf overflow i32 first (Rust saturates `as i32` to i32::MAX = 0x7FFF_FFFF),
+        // then narrowing to i8 truncates the low byte to 0xFF = -1. This pins the
+        // saturate-then-narrow path so it does not silently drift if `as i32` is refactored.
         let a: ArrayRef = Arc::new(Float64Array::from(vec![
             Some(300.7),
             Some(-1.9),
             None,
             Some(42.0),
+            Some(3e9),
+            Some(f64::INFINITY),
+            Some(f64::NEG_INFINITY),
         ]));
         let r = spark_cast_nonintegral_numeric_to_integral(
             &a,
@@ -1126,6 +1147,9 @@ mod tests {
         assert_eq!(d.value(1), -1);
         assert!(d.is_null(2));
         assert_eq!(d.value(3), 42);
+        assert_eq!(d.value(4), -1); // 3e9 -> i32::MAX -> -1 as i8
+        assert_eq!(d.value(5), -1); // +inf -> i32::MAX -> -1 as i8
+        assert_eq!(d.value(6), 0); // -inf -> i32::MIN -> 0 as i8
     }
 
     #[test]
