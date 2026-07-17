@@ -41,6 +41,12 @@
 
 - Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): `Divide(left, right, evalMode)`. Non-ANSI mode wraps the divisor in `If(EqualTo(right, 0), null, right)` so DataFusion never throws. Decimal output is wrapped in `CheckOverflow(failOnError = ANSI)`; ANSI surfaces `NUMERIC_VALUE_OUT_OF_RANGE`, non-ANSI returns NULL.
 
+## CheckOverflow (internal)
+
+Internal decimal wrapper emitted around every decimal `+ - * /`, `sum`, and `avg` result to null out (non-ANSI) or raise on (ANSI) values that exceed the declared precision. Native impl: `math_funcs/internal/checkoverflow.rs`.
+
+- Performance (tuned 2026-07-15, PR #4937): both the ANSI and non-ANSI paths share a no-overflow fast path built on `is_valid_decimal_precision`, a small inlined bounds check scanned with `all` (short-circuits at the first overflow). When nothing overflows (the common shape) the input buffers are reused via `to_data()` (cheap Arc metadata clone) instead of allocating through `null_if_overflow_precision` (non-ANSI) or running the heavier per-value `validate_decimal_precision` (ANSI). The ANSI path only falls back to `validate_decimal_precision` when an overflow is present, to build the precise Spark error. ~10% faster on the no-overflow shape, ~17% with nulls, and ~69% faster for ANSI no-overflow (down to parity with non-ANSI); overflow shapes unchanged. Benchmark: `benches/check_overflow.rs`.
+
 ## abs
 
 - Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): `Abs(child, failOnError)` over `NumericType` plus the two interval types. `failOnError` (ANSI) is propagated to the native `abs` UDF, which throws `ARITHMETIC_OVERFLOW` on `Int.MinValue` / `Long.MinValue` / Decimal MIN. `DayTimeIntervalType` and `YearMonthIntervalType` fall back to Spark. Spark 4.0 / 4.1 do the `NullIntolerant` -> `nullIntolerant: Boolean` refactor; behaviour unchanged.
@@ -112,6 +118,12 @@
 ## div
 
 - Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): `IntegralDivide(left, right, evalMode)`. Non-decimal operands are cast to `DecimalType(19, 0)`; result is recomputed per `IntegralDivide.resultDecimalType`, wrapped in `CheckOverflow`, then cast to `Long`. ANSI overflow for `Long.MinValue div -1` and decimal-overflow ANSI cases are covered by existing tests.
+
+## DecimalRescaleCheckOverflow (internal)
+
+Internal fused expression that rescales a Decimal128 value (changing scale) and checks output precision in one pass, replacing the `CheckOverflow(Cast(expr, Decimal128(p, s)))` pattern used by decimal-to-decimal casts. Native impl: `math_funcs/internal/decimal_rescale_check.rs`.
+
+- Performance (tuned 2026-07-15, PR #4938): the legacy path ran `null_if_overflow_precision` (a second full pass that allocates a new array) on every batch to turn overflow sentinels into nulls, even when nothing overflowed. Now that pass runs only when a sentinel is present (`contains(&i128::MAX)`, short-circuiting), so the common no-overflow case skips the allocation. 8 to 26% faster on no-overflow shapes; overflow and ANSI shapes unchanged. Benchmark: `benches/decimal_rescale.rs`.
 
 ## e
 

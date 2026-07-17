@@ -15,29 +15,20 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- ConfigMatrix: spark.sql.legacy.sizeOfNull=true,false
+-- MinSparkVersion: 4.1
+-- Config: spark.sql.timeType.enabled=true
+-- Config: spark.comet.exec.shuffle.mode=jvm
 
 statement
-CREATE TABLE test_size(arr array<int>, m map<string, int>) USING parquet
+CREATE TABLE test_make_time_range_shuffle_jvm(hours int, minutes int, secs decimal(16,6)) USING parquet
 
 statement
-INSERT INTO test_size VALUES (array(1, 2, 3), map('a', 1, 'b', 2)), (array(), map()), (NULL, NULL)
+INSERT INTO test_make_time_range_shuffle_jvm VALUES
+    (12, 30, 45.123456), (0, 0, 0.0), (23, 59, 59.999999), (NULL, NULL, NULL)
 
 query
-SELECT size(arr), size(m) FROM test_size
-
--- literal array arguments
-query
-SELECT size(array(1, 2, 3)), size(array()), size(cast(NULL as array<int>))
-
--- literal map via CreateMap (falls back: Comet has no CreateMap serde;
--- cast(NULL as map) avoids CreateMap and goes through CometLiteral instead)
-query spark_answer_only
-SELECT size(map('a', 1, 'b', 2)), size(map())
-
-query
-SELECT size(cast(NULL as map<string,int>))
-
--- cardinality is a SQL alias for size
-query
-SELECT cardinality(arr), cardinality(m) FROM test_size
+SELECT /*+ REPARTITION_BY_RANGE(3, t) */ t
+FROM (
+    SELECT make_time(hours, minutes, secs) AS t
+    FROM test_make_time_range_shuffle_jvm
+)
