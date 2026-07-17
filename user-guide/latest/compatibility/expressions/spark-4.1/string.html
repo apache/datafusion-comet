@@ -766,6 +766,20 @@ under the License.
 <li><p>CONCAT supports only string input parameters</p></li>
 </ul>
 </section>
+<section id="contains">
+<h2>Contains<a class="headerlink" href="#contains" title="Link to this heading">#</a></h2>
+<p>The following cases have no native implementation and always run in the JVM using Spark’s code-generated implementation (inside the Comet pipeline):</p>
+<ul class="simple">
+<li><p>Non-UTF8_BINARY collated operands are routed through the JVM codegen dispatcher (Spark’s own <code class="docutils literal notranslate"><span class="pre">doGenCode</span></code>) because native comparison is byte-wise.</p></li>
+</ul>
+</section>
+<section id="endswith">
+<h2>EndsWith<a class="headerlink" href="#endswith" title="Link to this heading">#</a></h2>
+<p>The following cases have no native implementation and always run in the JVM using Spark’s code-generated implementation (inside the Comet pipeline):</p>
+<ul class="simple">
+<li><p>Non-UTF8_BINARY collated operands are routed through the JVM codegen dispatcher (Spark’s own <code class="docutils literal notranslate"><span class="pre">doGenCode</span></code>) because native comparison is byte-wise.</p></li>
+</ul>
+</section>
 <section id="getjsonobject">
 <h2>GetJsonObject<a class="headerlink" href="#getjsonobject" title="Link to this heading">#</a></h2>
 <p>By default, <code class="docutils literal notranslate"><span class="pre">GetJsonObject</span></code> is evaluated in the JVM using Spark’s own code-generated implementation (run inside the Comet pipeline), which matches Spark exactly. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.GetJsonObject.allowIncompatible=true</span></code> to opt into Comet’s native implementation instead, which has the following differences from Spark:</p>
@@ -785,6 +799,14 @@ under the License.
 <p>The following cases are not supported by Comet and always fall back to Spark, regardless of any <code class="docutils literal notranslate"><span class="pre">allowIncompatible</span></code> setting:</p>
 <ul class="simple">
 <li><p><code class="docutils literal notranslate"><span class="pre">BinaryType</span></code> input is not supported</p></li>
+</ul>
+</section>
+<section id="like">
+<h2>Like<a class="headerlink" href="#like" title="Link to this heading">#</a></h2>
+<p>The following cases have no native implementation and always run in the JVM using Spark’s code-generated implementation (inside the Comet pipeline):</p>
+<ul class="simple">
+<li><p>LIKE with a custom escape character (only <code class="docutils literal notranslate"><span class="pre">\</span></code> is supported natively)</p></li>
+<li><p>Non-UTF8_BINARY collated operands are routed through the JVM codegen dispatcher (Spark’s own <code class="docutils literal notranslate"><span class="pre">doGenCode</span></code>) because native comparison is byte-wise.</p></li>
 </ul>
 </section>
 <section id="lower">
@@ -821,6 +843,13 @@ under the License.
 <ul class="simple">
 <li><p>native reverse does not support arrays whose element type contains binary, struct, or map</p></li>
 <li><p>reverse does not support non-UTF8_BINARY collations (https://github.com/apache/datafusion-comet/issues/2190)</p></li>
+</ul>
+</section>
+<section id="startswith">
+<h2>StartsWith<a class="headerlink" href="#startswith" title="Link to this heading">#</a></h2>
+<p>The following cases have no native implementation and always run in the JVM using Spark’s code-generated implementation (inside the Comet pipeline):</p>
+<ul class="simple">
+<li><p>Non-UTF8_BINARY collated operands are routed through the JVM codegen dispatcher (Spark’s own <code class="docutils literal notranslate"><span class="pre">doGenCode</span></code>) because native comparison is byte-wise.</p></li>
 </ul>
 </section>
 <section id="stringlpad">
@@ -926,14 +955,18 @@ under the License.
     <ul class="visible nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#bitlength">BitLength</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#concat">Concat</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#contains">Contains</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#endswith">EndsWith</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#getjsonobject">GetJsonObject</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#initcap">InitCap</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#length">Length</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#like">Like</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#lower">Lower</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#octetlength">OctetLength</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#rlike">RLike</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#regexpreplace">RegExpReplace</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#reverse">Reverse</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#startswith">StartsWith</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#stringlpad">StringLPad</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#stringrpad">StringRPad</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#stringrepeat">StringRepeat</a></li>

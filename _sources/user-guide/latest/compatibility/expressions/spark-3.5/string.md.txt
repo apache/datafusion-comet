@@ -37,6 +37,18 @@ The following cases have no native implementation and always run in the JVM usin
 
 - CONCAT supports only string input parameters
 
+## Contains
+
+The following cases have no native implementation and always run in the JVM using Spark's code-generated implementation (inside the Comet pipeline):
+
+- Non-UTF8_BINARY collated operands are routed through the JVM codegen dispatcher (Spark's own `doGenCode`) because native comparison is byte-wise.
+
+## EndsWith
+
+The following cases have no native implementation and always run in the JVM using Spark's code-generated implementation (inside the Comet pipeline):
+
+- Non-UTF8_BINARY collated operands are routed through the JVM codegen dispatcher (Spark's own `doGenCode`) because native comparison is byte-wise.
+
 ## GetJsonObject
 
 By default, `GetJsonObject` is evaluated in the JVM using Spark's own code-generated implementation (run inside the Comet pipeline), which matches Spark exactly. Set `spark.comet.expression.GetJsonObject.allowIncompatible=true` to opt into Comet's native implementation instead, which has the following differences from Spark:
@@ -54,6 +66,13 @@ By default, `InitCap` is evaluated in the JVM using Spark's own code-generated i
 The following cases are not supported by Comet and always fall back to Spark, regardless of any `allowIncompatible` setting:
 
 - `BinaryType` input is not supported
+
+## Like
+
+The following cases have no native implementation and always run in the JVM using Spark's code-generated implementation (inside the Comet pipeline):
+
+- LIKE with a custom escape character (only `\` is supported natively)
+- Non-UTF8_BINARY collated operands are routed through the JVM codegen dispatcher (Spark's own `doGenCode`) because native comparison is byte-wise.
 
 ## Lower
 
@@ -85,6 +104,12 @@ By default, `Reverse` is evaluated in the JVM using Spark's own code-generated i
 
 - native reverse does not support arrays whose element type contains binary, struct, or map
 - reverse does not support non-UTF8_BINARY collations (https://github.com/apache/datafusion-comet/issues/2190)
+
+## StartsWith
+
+The following cases have no native implementation and always run in the JVM using Spark's code-generated implementation (inside the Comet pipeline):
+
+- Non-UTF8_BINARY collated operands are routed through the JVM codegen dispatcher (Spark's own `doGenCode`) because native comparison is byte-wise.
 
 ## StringLPad
 

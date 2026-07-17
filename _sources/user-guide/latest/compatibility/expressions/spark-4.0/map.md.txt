@@ -58,7 +58,7 @@ The following cases are not supported by Comet and always fall back to Spark, re
 
 ## StringToMap
 
-The following incompatibilities cause `StringToMap` to fall back to Spark by default. Set `spark.comet.expression.StringToMap.allowIncompatible=true` to enable Comet acceleration despite these differences.
+By default, `StringToMap` is evaluated in the JVM using Spark's own code-generated implementation (run inside the Comet pipeline), which matches Spark exactly. Set `spark.comet.expression.StringToMap.allowIncompatible=true` to opt into Comet's native implementation instead, which has the following differences from Spark:
 
 - `spark.sql.legacy.truncateForEmptyRegexSplit` is enabled, so trailing empty split entries may differ from Spark.
 - `str_to_map` does not support non-UTF8_BINARY collations on the input string or delimiters.
