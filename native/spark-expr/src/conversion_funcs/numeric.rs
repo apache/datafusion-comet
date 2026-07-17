@@ -665,14 +665,17 @@ where
 {
     let multiplier = 10_i128.pow(scale as u32);
 
+    // Single spelling of the "does this value fit at the target precision after scaling" check,
+    // shared between the vectorized pass and the ANSI rescan below.
+    let fits = |v: i128| -> Option<i128> {
+        v.checked_mul(multiplier)
+            .filter(|scaled| is_validate_decimal_precision(*scaled, precision))
+    };
+
     // Single vectorized pass: a value that overflows the multiply or does not fit the output
     // precision maps to null. `unary_opt` only applies the closure to non-null slots and carries
     // the input null buffer over, replacing the per-element builder loop without a second pass.
-    let result: Decimal128Array = array.unary_opt::<_, Decimal128Type>(|v| {
-        let v: i128 = v.into();
-        v.checked_mul(multiplier)
-            .filter(|scaled| is_validate_decimal_precision(*scaled, precision))
-    });
+    let result: Decimal128Array = array.unary_opt::<_, Decimal128Type>(|v| fits(v.into()));
 
     // ANSI must raise on out-of-range values instead of nulling them. `unary_opt` only nulls
     // non-null inputs that overflow, so a null count beyond the input's signals an overflow to
@@ -682,11 +685,7 @@ where
         for i in 0..array.len() {
             if !array.is_null(i) {
                 let v: i128 = array.value(i).into();
-                let overflows = v
-                    .checked_mul(multiplier)
-                    .map(|scaled| !is_validate_decimal_precision(scaled, precision))
-                    .unwrap_or(true);
-                if overflows {
+                if fits(v).is_none() {
                     return Err(SparkError::NumericValueOutOfRange {
                         value: v.to_string(),
                         precision,
@@ -1157,7 +1156,7 @@ mod tests {
     #[test]
     fn test_cast_int_to_decimal128_overflow_legacy_nulls() {
         // 1000 * 10^2 = 100000 does not fit precision 3 -> null (legacy). Valid values and the
-        // input null are preserved, exercising the vectorized sentinel + masking path.
+        // input null are preserved, exercising the vectorized null-on-overflow path.
         let array: ArrayRef = Arc::new(Int32Array::from(vec![Some(9), Some(1000), None, Some(-9)]));
         let result = cast_int_to_decimal128(
             &array,
@@ -1174,6 +1173,27 @@ mod tests {
         assert!(d.is_null(2)); // input null preserved
         assert_eq!(d.value(3), -900);
         assert_eq!(d.data_type(), &DataType::Decimal128(3, 2));
+    }
+
+    #[test]
+    fn test_cast_int_to_decimal128_overflow_try_nulls() {
+        // Try shares the Legacy null-on-overflow branch but is a distinct enum arm; assert it
+        // explicitly so a future refactor cannot regress it silently.
+        let array: ArrayRef = Arc::new(Int32Array::from(vec![Some(9), Some(1000), None, Some(-9)]));
+        let result = cast_int_to_decimal128(
+            &array,
+            EvalMode::Try,
+            &DataType::Int32,
+            &DataType::Decimal128(3, 2),
+            3,
+            2,
+        )
+        .unwrap();
+        let d = result.as_primitive::<Decimal128Type>();
+        assert_eq!(d.value(0), 900);
+        assert!(d.is_null(1));
+        assert!(d.is_null(2));
+        assert_eq!(d.value(3), -900);
     }
 
     #[test]
