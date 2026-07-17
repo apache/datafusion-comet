@@ -32,6 +32,9 @@ updates:
       - dependency-name: "datafusion*"
         update-types: ["version-update:semver-major"]
     groups:
+      codeql-actions:
+        patterns:
+          - "github/codeql-action/*"
       proto:
         applies-to: version-updates
         patterns:
