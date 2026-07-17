@@ -21,7 +21,6 @@ use chrono::{
     DateTime, Datelike, Duration, LocalResult, NaiveDate, NaiveDateTime, TimeZone, Timelike, Utc,
 };
 
-use std::borrow::Cow;
 use std::sync::Arc;
 
 use arrow::array::{
@@ -339,18 +338,13 @@ const DATE_TRUNC_FORMATS: [(&str, DateTruncFn); 8] = [
 
 /// Resolve a `date_trunc` format string to the corresponding truncation function.
 ///
-/// The format is matched case-insensitively. Every supported format is ASCII, so ASCII input can
-/// be compared in place, leaving the per-row format column path allocation-free. Non-ASCII input
-/// still needs full Unicode case folding to fold the same way Spark does.
+/// Every supported format is ASCII, so `eq_ignore_ascii_case` on the input as-is is exactly
+/// what Spark does: a non-ASCII input cannot match any ASCII table entry after ASCII case
+/// folding, and Spark also only recognizes those ASCII literals. This is allocation-free.
 fn date_trunc_fn_for_format(format: &str) -> Result<DateTruncFn, SparkError> {
-    let key: Cow<str> = if format.is_ascii() {
-        Cow::Borrowed(format)
-    } else {
-        Cow::Owned(format.to_uppercase())
-    };
     DATE_TRUNC_FORMATS
         .iter()
-        .find(|(name, _)| name.eq_ignore_ascii_case(&key))
+        .find(|(name, _)| name.eq_ignore_ascii_case(format))
         .map(|(_, trunc_fn)| *trunc_fn)
         .ok_or_else(|| {
             SparkError::Internal(format!(
@@ -584,25 +578,79 @@ fn naive_to_micros(dt: NaiveDateTime) -> i64 {
     dt.and_utc().timestamp_micros()
 }
 
+/// Truncates a `NaiveDateTime`, returning `None` if the result is out of range.
+type NtzTruncFn = fn(NaiveDateTime) -> Option<NaiveDateTime>;
+
+/// Truncates a `DateTime<Tz>`, returning `None` if the result is out of range.
+type TzTruncFn = fn(DateTime<Tz>) -> Option<DateTime<Tz>>;
+
+/// The `timestamp_trunc` formats Spark accepts for the NTZ path, and the truncation each one
+/// selects. All entries are ASCII, so `eq_ignore_ascii_case` on the raw input matches Spark
+/// without allocating.
+const TIMESTAMP_TRUNC_FORMATS_NTZ: [(&str, NtzTruncFn); 15] = [
+    ("YEAR", trunc_date_to_year),
+    ("YYYY", trunc_date_to_year),
+    ("YY", trunc_date_to_year),
+    ("QUARTER", trunc_date_to_quarter),
+    ("MONTH", trunc_date_to_month),
+    ("MON", trunc_date_to_month),
+    ("MM", trunc_date_to_month),
+    ("WEEK", trunc_date_to_week),
+    ("DAY", trunc_date_to_day),
+    ("DD", trunc_date_to_day),
+    ("HOUR", trunc_date_to_hour),
+    ("MINUTE", trunc_date_to_minute),
+    ("SECOND", trunc_date_to_second),
+    ("MILLISECOND", trunc_date_to_ms),
+    ("MICROSECOND", trunc_date_to_microsec),
+];
+
+/// Same formats as `TIMESTAMP_TRUNC_FORMATS_NTZ`, monomorphized for the timezone-aware path.
+const TIMESTAMP_TRUNC_FORMATS_TZ: [(&str, TzTruncFn); 15] = [
+    ("YEAR", trunc_date_to_year),
+    ("YYYY", trunc_date_to_year),
+    ("YY", trunc_date_to_year),
+    ("QUARTER", trunc_date_to_quarter),
+    ("MONTH", trunc_date_to_month),
+    ("MON", trunc_date_to_month),
+    ("MM", trunc_date_to_month),
+    ("WEEK", trunc_date_to_week),
+    ("DAY", trunc_date_to_day),
+    ("DD", trunc_date_to_day),
+    ("HOUR", trunc_date_to_hour),
+    ("MINUTE", trunc_date_to_minute),
+    ("SECOND", trunc_date_to_second),
+    ("MILLISECOND", trunc_date_to_ms),
+    ("MICROSECOND", trunc_date_to_microsec),
+];
+
 /// Resolve a truncation format string to the corresponding NaiveDateTime truncation function.
-fn ntz_trunc_fn_for_format(
-    format: &str,
-) -> Result<fn(NaiveDateTime) -> Option<NaiveDateTime>, SparkError> {
-    match format.to_uppercase().as_str() {
-        "YEAR" | "YYYY" | "YY" => Ok(trunc_date_to_year),
-        "QUARTER" => Ok(trunc_date_to_quarter),
-        "MONTH" | "MON" | "MM" => Ok(trunc_date_to_month),
-        "WEEK" => Ok(trunc_date_to_week),
-        "DAY" | "DD" => Ok(trunc_date_to_day),
-        "HOUR" => Ok(trunc_date_to_hour),
-        "MINUTE" => Ok(trunc_date_to_minute),
-        "SECOND" => Ok(trunc_date_to_second),
-        "MILLISECOND" => Ok(trunc_date_to_ms),
-        "MICROSECOND" => Ok(trunc_date_to_microsec),
-        _ => Err(SparkError::Internal(format!(
-            "Unsupported format: {format:?} for function 'timestamp_trunc'"
-        ))),
-    }
+///
+/// All supported formats are ASCII, so `eq_ignore_ascii_case` on the input as-is is exactly what
+/// Spark does and allocation-free.
+fn ntz_trunc_fn_for_format(format: &str) -> Result<NtzTruncFn, SparkError> {
+    TIMESTAMP_TRUNC_FORMATS_NTZ
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case(format))
+        .map(|(_, trunc_fn)| *trunc_fn)
+        .ok_or_else(|| {
+            SparkError::Internal(format!(
+                "Unsupported format: {format:?} for function 'timestamp_trunc'"
+            ))
+        })
+}
+
+/// Timezone-aware sibling of `ntz_trunc_fn_for_format`.
+fn tz_trunc_fn_for_format(format: &str) -> Result<TzTruncFn, SparkError> {
+    TIMESTAMP_TRUNC_FORMATS_TZ
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case(format))
+        .map(|(_, trunc_fn)| *trunc_fn)
+        .ok_or_else(|| {
+            SparkError::Internal(format!(
+                "Unsupported format: {format:?} for function 'timestamp_trunc'"
+            ))
+        })
 }
 
 /// Truncate a TimestampNTZ array without any timezone conversion.
@@ -671,61 +719,10 @@ where
             timestamp_trunc_ntz(array, format)
         }
         DataType::Timestamp(TimeUnit::Microsecond, Some(tz)) => {
-            match format.to_uppercase().as_str() {
-                "YEAR" | "YYYY" | "YY" => {
-                    as_timestamp_tz_with_op::<&PrimitiveArray<T>, T, _>(iter, builder, tz, |dt| {
-                        as_micros_from_unix_epoch_utc(trunc_date_to_year(dt))
-                    })
-                }
-                "QUARTER" => {
-                    as_timestamp_tz_with_op::<&PrimitiveArray<T>, T, _>(iter, builder, tz, |dt| {
-                        as_micros_from_unix_epoch_utc(trunc_date_to_quarter(dt))
-                    })
-                }
-                "MONTH" | "MON" | "MM" => {
-                    as_timestamp_tz_with_op::<&PrimitiveArray<T>, T, _>(iter, builder, tz, |dt| {
-                        as_micros_from_unix_epoch_utc(trunc_date_to_month(dt))
-                    })
-                }
-                "WEEK" => {
-                    as_timestamp_tz_with_op::<&PrimitiveArray<T>, T, _>(iter, builder, tz, |dt| {
-                        as_micros_from_unix_epoch_utc(trunc_date_to_week(dt))
-                    })
-                }
-                "DAY" | "DD" => {
-                    as_timestamp_tz_with_op::<&PrimitiveArray<T>, T, _>(iter, builder, tz, |dt| {
-                        as_micros_from_unix_epoch_utc(trunc_date_to_day(dt))
-                    })
-                }
-                "HOUR" => {
-                    as_timestamp_tz_with_op::<&PrimitiveArray<T>, T, _>(iter, builder, tz, |dt| {
-                        as_micros_from_unix_epoch_utc(trunc_date_to_hour(dt))
-                    })
-                }
-                "MINUTE" => {
-                    as_timestamp_tz_with_op::<&PrimitiveArray<T>, T, _>(iter, builder, tz, |dt| {
-                        as_micros_from_unix_epoch_utc(trunc_date_to_minute(dt))
-                    })
-                }
-                "SECOND" => {
-                    as_timestamp_tz_with_op::<&PrimitiveArray<T>, T, _>(iter, builder, tz, |dt| {
-                        as_micros_from_unix_epoch_utc(trunc_date_to_second(dt))
-                    })
-                }
-                "MILLISECOND" => {
-                    as_timestamp_tz_with_op::<&PrimitiveArray<T>, T, _>(iter, builder, tz, |dt| {
-                        as_micros_from_unix_epoch_utc(trunc_date_to_ms(dt))
-                    })
-                }
-                "MICROSECOND" => {
-                    as_timestamp_tz_with_op::<&PrimitiveArray<T>, T, _>(iter, builder, tz, |dt| {
-                        as_micros_from_unix_epoch_utc(trunc_date_to_microsec(dt))
-                    })
-                }
-                _ => Err(SparkError::Internal(format!(
-                    "Unsupported format: {format:?} for function 'timestamp_trunc'"
-                ))),
-            }
+            let trunc_fn = tz_trunc_fn_for_format(&format)?;
+            as_timestamp_tz_with_op::<&PrimitiveArray<T>, T, _>(iter, builder, tz, |dt| {
+                as_micros_from_unix_epoch_utc(trunc_fn(dt))
+            })
         }
         dt => return_compute_error_with!(
             "Unsupported input type '{:?}' for function 'timestamp_trunc'",
@@ -829,63 +826,10 @@ macro_rules! timestamp_trunc_array_fmt_helper {
             DataType::Timestamp(TimeUnit::Microsecond, Some(tz_str)) => {
                 let tz: Tz = tz_str.parse()?;
                 for (index, val) in iter.enumerate() {
-                    let op_result = match $formats.value(index).to_uppercase().as_str() {
-                        "YEAR" | "YYYY" | "YY" => {
-                            as_timestamp_tz_with_op_single::<T, _>(val, &mut builder, &tz, |dt| {
-                                as_micros_from_unix_epoch_utc(trunc_date_to_year(dt))
-                            })
-                        }
-                        "QUARTER" => {
-                            as_timestamp_tz_with_op_single::<T, _>(val, &mut builder, &tz, |dt| {
-                                as_micros_from_unix_epoch_utc(trunc_date_to_quarter(dt))
-                            })
-                        }
-                        "MONTH" | "MON" | "MM" => {
-                            as_timestamp_tz_with_op_single::<T, _>(val, &mut builder, &tz, |dt| {
-                                as_micros_from_unix_epoch_utc(trunc_date_to_month(dt))
-                            })
-                        }
-                        "WEEK" => {
-                            as_timestamp_tz_with_op_single::<T, _>(val, &mut builder, &tz, |dt| {
-                                as_micros_from_unix_epoch_utc(trunc_date_to_week(dt))
-                            })
-                        }
-                        "DAY" | "DD" => {
-                            as_timestamp_tz_with_op_single::<T, _>(val, &mut builder, &tz, |dt| {
-                                as_micros_from_unix_epoch_utc(trunc_date_to_day(dt))
-                            })
-                        }
-                        "HOUR" => {
-                            as_timestamp_tz_with_op_single::<T, _>(val, &mut builder, &tz, |dt| {
-                                as_micros_from_unix_epoch_utc(trunc_date_to_hour(dt))
-                            })
-                        }
-                        "MINUTE" => {
-                            as_timestamp_tz_with_op_single::<T, _>(val, &mut builder, &tz, |dt| {
-                                as_micros_from_unix_epoch_utc(trunc_date_to_minute(dt))
-                            })
-                        }
-                        "SECOND" => {
-                            as_timestamp_tz_with_op_single::<T, _>(val, &mut builder, &tz, |dt| {
-                                as_micros_from_unix_epoch_utc(trunc_date_to_second(dt))
-                            })
-                        }
-                        "MILLISECOND" => {
-                            as_timestamp_tz_with_op_single::<T, _>(val, &mut builder, &tz, |dt| {
-                                as_micros_from_unix_epoch_utc(trunc_date_to_ms(dt))
-                            })
-                        }
-                        "MICROSECOND" => {
-                            as_timestamp_tz_with_op_single::<T, _>(val, &mut builder, &tz, |dt| {
-                                as_micros_from_unix_epoch_utc(trunc_date_to_microsec(dt))
-                            })
-                        }
-                        _ => Err(SparkError::Internal(format!(
-                            "Unsupported format: {:?} for function 'timestamp_trunc'",
-                            $formats.value(index)
-                        ))),
-                    };
-                    op_result?
+                    let trunc_fn = tz_trunc_fn_for_format($formats.value(index))?;
+                    as_timestamp_tz_with_op_single::<T, _>(val, &mut builder, &tz, |dt| {
+                        as_micros_from_unix_epoch_utc(trunc_fn(dt))
+                    })?;
                 }
                 Ok(builder.finish().with_timezone(tz_str.as_ref()))
             }
