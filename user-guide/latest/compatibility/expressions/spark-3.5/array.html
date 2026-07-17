@@ -778,13 +778,6 @@ under the License.
 <li><p>Not all input data types are supported; falls back to Spark for unsupported types</p></li>
 </ul>
 </section>
-<section id="size">
-<h2>Size<a class="headerlink" href="#size" title="Link to this heading">#</a></h2>
-<p>The following cases are not supported by Comet and always fall back to Spark, regardless of any <code class="docutils literal notranslate"><span class="pre">allowIncompatible</span></code> setting:</p>
-<ul class="simple">
-<li><p>Only supports <code class="docutils literal notranslate"><span class="pre">ArrayType</span></code> input; <code class="docutils literal notranslate"><span class="pre">MapType</span></code> input is not supported</p></li>
-</ul>
-</section>
 <section id="sortarray">
 <h2>SortArray<a class="headerlink" href="#sortarray" title="Link to this heading">#</a></h2>
 <p>By default, <code class="docutils literal notranslate"><span class="pre">SortArray</span></code> is evaluated in the JVM using Spark’s own code-generated implementation (run inside the Comet pipeline), which matches Spark exactly. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.SortArray.allowIncompatible=true</span></code> to opt into Comet’s native implementation instead, which has the following differences from Spark:</p>
@@ -846,7 +839,6 @@ under the License.
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#arrayintersect">ArrayIntersect</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#arrayjoin">ArrayJoin</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#arrayszip">ArraysZip</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#size">Size</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#sortarray">SortArray</a></li>
 </ul>
   </nav></div>
