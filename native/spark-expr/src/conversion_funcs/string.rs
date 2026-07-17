@@ -261,6 +261,8 @@ where
 /// never turns a whitespace character into a non-whitespace one, or vice versa.
 #[inline]
 fn parse_utf8_to_boolean(value: &str) -> Option<bool> {
+    // TODO(#4959): Spark's UTF8String.trimAll also strips ISO control bytes
+    // (0x00-0x08, 0x0E-0x1F, 0x7F); str::trim only strips Unicode whitespace.
     let trimmed = value.trim();
     match trimmed.len() {
         1 => match trimmed.as_bytes()[0] {
@@ -2042,6 +2044,10 @@ mod tests {
             "off",
             "úñî",
             "ｔｒｕｅ",
+            // Non-ASCII inputs at exactly the target byte length must not match
+            // via `eq_ignore_ascii_case` (2 bytes: "no" arm; 4 bytes: "true" arm).
+            "ñ",
+            "trñ",
         ] {
             assert_eq!(parse_utf8_to_boolean(invalid), None, "{invalid}");
         }
