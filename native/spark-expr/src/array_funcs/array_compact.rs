@@ -118,20 +118,21 @@ fn compact_list<OffsetSize: OffsetSizeTrait>(
 
     let values = list_array.values();
 
-    // logical_nulls() (not nulls()) is used so a NullArray, whose elements are
-    // all logically null, is correctly reported as fully null. NullArray::nulls()
-    // returns None, which would make is_null() report false for every element.
-    let value_nulls = values.logical_nulls();
-
-    // Fast path: array_compact only removes null elements. When the values buffer
-    // has no null elements there is nothing to remove, so every row is returned
-    // unchanged and the result is bit-identical to the input (same offsets, values,
-    // and row null buffer). This skips the per-element MutableArrayData::extend
-    // loop below and reuses the input buffers without copying. The null-containing
-    // path is left untouched, so shapes with dense element nulls do not regress.
-    if value_nulls.as_ref().map(|n| n.null_count()).unwrap_or(0) == 0 {
+    // Fast path: array_compact only removes null elements. When the values buffer has no
+    // logical nulls there is nothing to remove, so every row is returned unchanged and the
+    // result is bit-identical to the input (same offsets, values, and row null buffer).
+    // logical_null_count() (not null_count) is used so a NullArray, whose elements are all
+    // logically null, is counted correctly; NullArray::nulls() is None. It is also
+    // allocation-free for the Dictionary/Run/Null overrides, while logical_nulls() would
+    // materialize a fresh bitmap on exactly this path.
+    if values.logical_null_count() == 0 {
         return Ok(Arc::new(list_array.clone()));
     }
+
+    // logical_nulls() (not nulls()) is used below so a NullArray values child, whose
+    // elements are all logically null, is reported correctly. NullArray::nulls() returns
+    // None, which would make is_null() report false for every element.
+    let value_nulls = values.logical_nulls();
 
     let original_data = values.to_data();
     let mut offsets = Vec::<OffsetSize>::with_capacity(list_array.len() + 1);
@@ -255,5 +256,30 @@ mod tests {
         let input = i32_list(vec![Some(vec![None, None]), Some(vec![None])]);
         let out = compact_list::<i32>(&input).unwrap();
         assert_eq!(read(&out), vec![Some(vec![]), Some(vec![])]);
+    }
+
+    #[test]
+    fn null_array_values_child_all_rows_empty() {
+        // DataFusion's make_array(NULL) produces a List<Null> whose values child is a
+        // NullArray. NullArray::nulls() is None yet every element is logically null, so
+        // this path must not take the "no logical nulls" fast branch and must compact
+        // every row to empty.
+        use arrow::array::NullArray;
+
+        let null_values = Arc::new(NullArray::new(3)) as ArrayRef;
+        let null_field = Arc::new(arrow::datatypes::Field::new("item", DataType::Null, true));
+        let input = GenericListArray::<i32>::new(
+            null_field,
+            OffsetBuffer::new(vec![0, 2, 2, 3].into()),
+            null_values,
+            None,
+        );
+        let out = compact_list::<i32>(&input).unwrap();
+        let list = out.as_any().downcast_ref::<ListArray>().unwrap();
+        assert_eq!(list.len(), 3);
+        for i in 0..3 {
+            assert!(!list.is_null(i));
+            assert_eq!(list.value_length(i), 0);
+        }
     }
 }
