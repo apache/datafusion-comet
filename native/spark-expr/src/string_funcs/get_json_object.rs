@@ -357,10 +357,14 @@ impl<'de> Visitor<'de> for SegmentVisitor<'_> {
         };
 
         let mut found = None;
-        // Every entry is visited so that a duplicated key resolves to its last
-        // occurrence, as it would in a parsed object.
+        // The first occurrence of a duplicated key wins, matching Spark: once a
+        // key matches, its value is locked in (even if the subpath misses) and
+        // later occurrences are skipped. Every entry is still visited so that
+        // malformed trailing content is rejected as a full parse would.
+        let mut matched_once = false;
         while let Some(matched) = map.next_key_seed(KeySeed(name))? {
-            if matched {
+            if matched && !matched_once {
+                matched_once = true;
                 found = map.next_value_seed(PathSeed {
                     segments: &self.segments[1..],
                 })?;
@@ -581,14 +585,31 @@ mod tests {
     }
 
     #[test]
-    fn test_duplicate_key_last_wins() {
-        // Every entry is visited, so a duplicated key resolves to its last
-        // occurrence, matching serde_json's preserve_order overwrite behavior.
+    fn test_duplicate_key_first_wins() {
+        // The first occurrence of a duplicated key wins, matching Spark.
         let path = parse_json_path("$.a").unwrap();
         assert_eq!(
             evaluate_path(r#"{"a":1,"a":2}"#, &path),
-            Some("2".to_string())
+            Some("1".to_string())
         );
+    }
+
+    #[test]
+    fn test_duplicate_key_first_wins_nested() {
+        // First-wins also applies when recursing into the matched value.
+        let path = parse_json_path("$.a.b").unwrap();
+        assert_eq!(
+            evaluate_path(r#"{"a":{"b":1},"a":{"b":2}}"#, &path),
+            Some("1".to_string())
+        );
+    }
+
+    #[test]
+    fn test_duplicate_key_first_match_locks_value() {
+        // Once the first "a" matches, its value is locked in: a subpath miss
+        // yields null and the second "a" is never consulted, matching Spark.
+        let path = parse_json_path("$.a.b").unwrap();
+        assert_eq!(evaluate_path(r#"{"a":{"x":1},"a":{"b":2}}"#, &path), None);
     }
 
     #[test]
