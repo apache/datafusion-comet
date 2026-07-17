@@ -28,7 +28,7 @@ import org.apache.spark.sql.catalyst.expressions.codegen._
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
-import org.apache.comet.shims.CometExprTraitShim
+import org.apache.comet.shims.{CometExprTraitShim, CometTypeShim}
 
 /**
  * Compiles a bound [[Expression]] plus an Arrow input schema into a [[CometBatchKernel]] that
@@ -49,7 +49,7 @@ import org.apache.comet.shims.CometExprTraitShim
  * The generated kernel is the `InternalRow` that Spark's `BoundReference.genCode` reads from. See
  * [[generateSource]] for how the wiring is set up.
  */
-object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
+object CometBatchKernelCodegen extends Logging with CometExprTraitShim with CometTypeShim {
 
   /**
    * Resolve an Arrow vector class by simple name through the codegen object's own classloader.
@@ -69,6 +69,7 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
     case "DateDayVector" => classOf[DateDayVector]
     case "TimeStampMicroVector" => classOf[TimeStampMicroVector]
     case "TimeStampMicroTZVector" => classOf[TimeStampMicroTZVector]
+    case "TimeNanoVector" => classOf[TimeNanoVector]
     case "VarCharVector" => classOf[VarCharVector]
     case "VarBinaryVector" => classOf[VarBinaryVector]
     case "IntervalYearVector" => classOf[IntervalYearVector]
@@ -87,9 +88,24 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
     case _: StringType | _: BinaryType => true
     case DateType | TimestampType | TimestampNTZType => true
     case _: YearMonthIntervalType | _: DayTimeIntervalType => true
-    case ArrayType(inner, _) => isSupportedDataType(inner)
-    case st: StructType => st.fields.forall(f => isSupportedDataType(f.dataType))
-    case mt: MapType => isSupportedDataType(mt.keyType) && isSupportedDataType(mt.valueType)
+    case dt if isTimeType(dt) => true
+    // Nested containers: TIME is only accepted at the top level for now; the array/struct/map
+    // getters do not yet route TIME to `getLong`, so nested `TIME` inputs would crash mid-compile.
+    // Restricting here lets `canHandle` return a reason and the operator fall back to Spark.
+    case ArrayType(inner, _) => !containsTimeType(inner) && isSupportedDataType(inner)
+    case st: StructType =>
+      st.fields.forall(f => !containsTimeType(f.dataType) && isSupportedDataType(f.dataType))
+    case mt: MapType =>
+      !containsTimeType(mt.keyType) && !containsTimeType(mt.valueType) &&
+      isSupportedDataType(mt.keyType) && isSupportedDataType(mt.valueType)
+    case _ => false
+  }
+
+  private def containsTimeType(dt: DataType): Boolean = dt match {
+    case _ if isTimeType(dt) => true
+    case ArrayType(inner, _) => containsTimeType(inner)
+    case st: StructType => st.fields.exists(f => containsTimeType(f.dataType))
+    case mt: MapType => containsTimeType(mt.keyType) || containsTimeType(mt.valueType)
     case _ => false
   }
 

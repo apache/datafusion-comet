@@ -238,7 +238,7 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `convert_timezone` | ✅ | Routes through the JVM codegen dispatcher by default (handles all timezone forms); the native path is opt-in via allowIncompatible ([details](compatibility/expressions/datetime.md)) |
 | `curdate` | ✅ | Constant-folded to a literal (alias of `current_date`) |
 | `current_date` | ✅ | Constant-folded to a literal before Comet sees the plan |
-| `current_time` | 🔜 | Blocked on Spark 4.1 TIME type support ([#4288](https://github.com/apache/datafusion-comet/issues/4288)) |
+| `current_time` | ✅ | Constant-folded to a literal before Comet sees the plan (Spark 4.1+) |
 | `current_timestamp` | ✅ | Constant-folded to a literal before Comet sees the plan |
 | `current_timezone` | ✅ |  |
 | `date_add` | ✅ |  |
@@ -265,7 +265,7 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `make_date` | ✅ |  |
 | `make_dt_interval` | ✅ |  |
 | `make_interval` | 🔜 | Produces legacy CalendarInterval; tracked by [#4540](https://github.com/apache/datafusion-comet/issues/4540) |
-| `make_time` | 🔜 | Spark 4.1 TIME type; tracked by [#4288](https://github.com/apache/datafusion-comet/issues/4288) |
+| `make_time` | ✅ | Spark 4.1+ |
 | `make_timestamp` | ✅ |  |
 | `make_timestamp_ltz` | ✅ | 2-arg TIME form falls back |
 | `make_timestamp_ntz` | ✅ | 2-arg TIME form falls back |
@@ -279,13 +279,13 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `quarter` | ✅ |  |
 | `second` | ✅ |  |
 | `session_window` | 🔜 | Batch session-window grouping falls back (`UpdatingSessionsExec` is not yet native); tracked by [#4785](https://github.com/apache/datafusion-comet/issues/4785) |
-| `time_diff` | 🔜 | Spark 4.1 TIME type; tracked by [#4288](https://github.com/apache/datafusion-comet/issues/4288) |
-| `time_trunc` | 🔜 | Spark 4.1 TIME type; tracked by [#4288](https://github.com/apache/datafusion-comet/issues/4288) |
+| `time_diff` | ✅ | Spark 4.1+; routes through the JVM codegen dispatcher |
+| `time_trunc` | ✅ | Spark 4.1+; routes through the JVM codegen dispatcher |
 | `timestamp_micros` | ✅ |  |
 | `timestamp_millis` | ✅ |  |
 | `timestamp_seconds` | ✅ |  |
 | `to_date` | ✅ | Rewrites to `Cast` (or `Cast(GetTimestamp)` with a format) before Comet sees the plan |
-| `to_time` | 🔜 | Spark 4.1 TIME type; tracked by [#4288](https://github.com/apache/datafusion-comet/issues/4288) |
+| `to_time` | ✅ | Spark 4.1+; default-format form only (`to_time(str)`). A non-default `fmt` argument falls back to Spark. |
 | `to_timestamp` | ✅ | Rewrites to `Cast` (or `GetTimestamp` with a format) before Comet sees the plan |
 | `to_timestamp_ltz` | ✅ | Rewrites to `to_timestamp` (`TimestampType`) |
 | `to_timestamp_ntz` | ✅ | Rewrites to `to_timestamp` (`TimestampNTZType`) |
@@ -295,7 +295,7 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `try_make_interval` | 🔜 | Produces legacy CalendarInterval; tracked by [#4540](https://github.com/apache/datafusion-comet/issues/4540) |
 | `try_make_timestamp` | ✅ |  |
 | `try_to_date` | 🔜 | Rewrites to `Cast`/`GetTimestamp` but currently falls back; tracked by [#4556](https://github.com/apache/datafusion-comet/issues/4556) |
-| `try_to_time` | 🔜 | Spark 4.1 TIME type; tracked by [#4288](https://github.com/apache/datafusion-comet/issues/4288) |
+| `try_to_time` | ✅ | Spark 4.1+; default-format form only (`try_to_time(str)`). A non-default `fmt` argument falls back to Spark. |
 | `try_to_timestamp` | 🔜 | Rewrites to `Cast`/`GetTimestamp` but currently falls back; tracked by [#4556](https://github.com/apache/datafusion-comet/issues/4556) |
 | `unix_date` | ✅ |  |
 | `unix_micros` | ✅ |  |

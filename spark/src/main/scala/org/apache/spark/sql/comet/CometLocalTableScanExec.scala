@@ -119,8 +119,8 @@ object CometLocalTableScanExec extends CometSink[LocalTableScanExec] with DataTy
     CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED)
 
   // ArrowWriter (used by RowArrowReader) handles NullType via Utils.toArrowType + NullWriter;
-  // other types off DataTypeSupport's allow list (TimeType, intervals, ...) have no ArrowWriter
-  // coverage and must fall back to Spark.
+  // TimeType routes through the new TimeNanoWriter. Other types off DataTypeSupport's allow list
+  // (intervals, ...) have no ArrowWriter coverage and must fall back to Spark.
   override def isTypeSupported(
       dt: DataType,
       name: String,

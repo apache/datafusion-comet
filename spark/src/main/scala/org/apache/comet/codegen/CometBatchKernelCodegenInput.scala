@@ -62,7 +62,8 @@ private[codegen] object CometBatchKernelCodegenInput {
     classOf[Float8Vector],
     classOf[DateDayVector],
     classOf[TimeStampMicroVector],
-    classOf[TimeStampMicroTZVector])
+    classOf[TimeStampMicroTZVector],
+    classOf[TimeNanoVector])
   private val cometPlainVectorName: String = classOf[CometPlainVector].getName
 
   /** Emit kernel typed-vector field declarations for every level of every input column. */
@@ -134,7 +135,9 @@ private[codegen] object CometBatchKernelCodegenInput {
       case (ArrowColumnSpec(cls, _), ord)
           if cls == classOf[BigIntVector] ||
             cls == classOf[TimeStampMicroVector] ||
-            cls == classOf[TimeStampMicroTZVector] =>
+            cls == classOf[TimeStampMicroTZVector] ||
+            cls == classOf[TimeNanoVector] ||
+            cls == classOf[DurationVector] =>
         s"      case $ord: return this.col$ord.getLong(this.rowIdx);"
     }
     val floatCases = withOrd.collect {
