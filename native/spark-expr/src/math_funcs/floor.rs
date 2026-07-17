@@ -70,7 +70,7 @@ pub fn spark_floor(
             ScalarValue::Decimal128(a, _, input_scale) if *input_scale > 0 => {
                 let f = decimal_floor_f(*input_scale);
                 let (precision, scale) = get_precision_scale(data_type);
-                make_decimal_scalar(a, precision, scale, &f)
+                make_decimal_scalar(a, precision, scale, f)
             }
             _ => Err(DataFusionError::Internal(format!(
                 "Unsupported data type {:?} for function floor",

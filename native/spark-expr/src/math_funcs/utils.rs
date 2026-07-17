@@ -134,7 +134,7 @@ pub(crate) fn make_decimal_scalar(
     a: &Option<i128>,
     precision: u8,
     scale: i8,
-    f: &dyn Fn(i128) -> i128,
+    f: impl Fn(i128) -> i128,
 ) -> Result<ColumnarValue, DataFusionError> {
     let result = ScalarValue::Decimal128(a.map(f), precision, scale);
     Ok(ColumnarValue::Scalar(result))
@@ -143,11 +143,11 @@ pub(crate) fn make_decimal_scalar(
 /// Generic over the operation so that it is monomorphized into the element loop rather than
 /// called through a vtable for every value.
 #[inline]
-pub(crate) fn make_decimal_array<F: Fn(i128) -> i128>(
+pub(crate) fn make_decimal_array(
     array: &ArrayRef,
     precision: u8,
     scale: i8,
-    f: F,
+    f: impl Fn(i128) -> i128,
 ) -> Result<ColumnarValue, DataFusionError> {
     let array = array.as_primitive::<Decimal128Type>();
     let result: Decimal128Array = arrow::compute::kernels::arity::unary(array, f);
