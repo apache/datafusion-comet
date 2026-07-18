@@ -18,7 +18,7 @@
 -- Tests for try_to_date, try_to_timestamp, and try_make_timestamp.
 -- These RuntimeReplaceable functions rewrite to Cast/GetTimestamp/MakeTimestamp(failOnError=false)
 -- and return NULL on invalid input instead of throwing.
--- try_to_date and try_make_timestamp are only available in Spark 4.1+, so gate the file.
+-- try_to_date is only available in Spark 4.1+, so gate the file.
 -- MinSparkVersion: 4.1
 -- Config: spark.sql.session.timeZone=UTC
 
