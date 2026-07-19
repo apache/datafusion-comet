@@ -133,7 +133,15 @@ name = "array_size"
 harness = false
 
 [[bench]]
+name = "regexp_extract"
+harness = false
+
+[[bench]]
 name = "parse_url"
+harness = false
+
+[[bench]]
+name = "get_json_object"
 harness = false
 
 [[bench]]
@@ -146,4 +154,16 @@ harness = false
 
 [[bench]]
 name = "to_json"
+harness = false
+
+[[bench]]
+name = "cast_float_to_decimal"
+harness = false
+
+[[bench]]
+name = "decimal_rescale"
+harness = false
+
+[[bench]]
+name = "check_overflow"
 harness = false

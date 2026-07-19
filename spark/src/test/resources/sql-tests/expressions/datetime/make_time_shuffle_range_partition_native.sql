@@ -15,18 +15,20 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- MinSparkVersion: 4.0
+-- MinSparkVersion: 4.1
+-- Config: spark.sql.timeType.enabled=true
+-- Config: spark.comet.exec.shuffle.mode=native
 
--- Spark 4.0+ applies collation-aware delimiter matching in str_to_map.
+statement
+CREATE TABLE test_make_time_range_shuffle_native(hours int, minutes int, secs decimal(16,6)) USING parquet
 
--- collated input string
-query
-SELECT str_to_map('a:1,b:2' COLLATE UTF8_LCASE, ',', ':')
+statement
+INSERT INTO test_make_time_range_shuffle_native VALUES
+    (12, 30, 45.123456), (0, 0, 0.0), (23, 59, 59.999999), (NULL, NULL, NULL)
 
--- collated pair delimiter
-query
-SELECT str_to_map('aX1,bX2', 'x' COLLATE UTF8_LCASE, ':')
-
--- collated key-value delimiter
-query
-SELECT str_to_map('aX1,bX2', ',', 'x' COLLATE UTF8_LCASE)
+query expect_fallback(unsupported range partitioning data type for native shuffle)
+SELECT /*+ REPARTITION_BY_RANGE(3, t) */ t
+FROM (
+    SELECT make_time(hours, minutes, secs) AS t
+    FROM test_make_time_range_shuffle_native
+)

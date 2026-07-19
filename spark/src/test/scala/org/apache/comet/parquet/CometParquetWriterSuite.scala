@@ -21,9 +21,13 @@ package org.apache.comet.parquet
 
 import java.io.File
 
+import scala.jdk.CollectionConverters._
 import scala.util.{Random, Using}
 
 import org.apache.hadoop.fs.{FileSystem, Path}
+import org.apache.parquet.hadoop.ParquetFileReader
+import org.apache.parquet.hadoop.metadata.CompressionCodecName
+import org.apache.parquet.hadoop.util.HadoopInputFile
 import org.apache.spark.sql.{AnalysisException, CometTestBase, DataFrame, Row, SaveMode}
 import org.apache.spark.sql.comet.{CometBatchScanExec, CometNativeScanExec, CometNativeWriteExec, CometScanExec}
 import org.apache.spark.sql.execution.{FileSourceScanExec, QueryExecution, SparkPlan}
@@ -32,6 +36,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.StructType
 
 import org.apache.comet.CometConf
+import org.apache.comet.CometSparkSessionExtensions.isSpark35Plus
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator, SchemaGenOptions}
 
 class CometParquetWriterSuite extends CometTestBase {
@@ -135,6 +140,100 @@ class CometParquetWriterSuite extends CometTestBase {
           }
         })
       }
+    }
+  }
+
+  test("parquet write with each supported compression codec") {
+    Seq("none", "uncompressed", "snappy", "lz4", "zstd", "gzip").foreach { codec =>
+      withTempPath { dir =>
+        val outputPath = new File(dir, s"output_$codec.parquet").getAbsolutePath
+        val df = spark.range(0, 100).selectExpr("id", "cast(id as string) as name")
+
+        withSQLConf(
+          CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED.key -> "true",
+          CometConf.getOperatorAllowIncompatConfigKey(classOf[DataWritingCommandExec]) -> "true",
+          CometConf.COMET_EXEC_ENABLED.key -> "true",
+          SQLConf.PARQUET_COMPRESSION.key -> codec) {
+
+          val plan = captureWritePlan(path => df.write.parquet(path), outputPath)
+          assertHasCometNativeWriteExec(plan)
+        }
+
+        checkAnswer(spark.read.parquet(outputPath), df.collect())
+        assertParquetCodec(outputPath, expectedCodecName(codec))
+      }
+    }
+  }
+
+  test("parquet write honors parquet.compression option over SQLConf default") {
+    withTempPath { dir =>
+      val outputPath = new File(dir, "output.parquet").getAbsolutePath
+      val df = spark.range(0, 100).selectExpr("id", "cast(id as string) as name")
+
+      withSQLConf(
+        CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED.key -> "true",
+        CometConf.getOperatorAllowIncompatConfigKey(classOf[DataWritingCommandExec]) -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        SQLConf.PARQUET_COMPRESSION.key -> "snappy") {
+
+        val plan = captureWritePlan(
+          path => df.write.option("parquet.compression", "gzip").parquet(path),
+          outputPath)
+        assertHasCometNativeWriteExec(plan)
+      }
+
+      checkAnswer(spark.read.parquet(outputPath), df.collect())
+      assertParquetCodec(outputPath, CompressionCodecName.GZIP)
+    }
+  }
+
+  test("parquet write honors compression option over parquet.compression and SQLConf") {
+    // Precedence, highest to lowest, matches Spark's ParquetOptions:
+    //   `compression` write option > `parquet.compression` write option > spark.sql.parquet.compression.codec
+    // Use a distinct wrong codec at each lower layer so any leak surfaces as a codec mismatch.
+    withTempPath { dir =>
+      val outputPath = new File(dir, "output.parquet").getAbsolutePath
+      val df = spark.range(0, 100).selectExpr("id", "cast(id as string) as name")
+
+      withSQLConf(
+        CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED.key -> "true",
+        CometConf.getOperatorAllowIncompatConfigKey(classOf[DataWritingCommandExec]) -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        SQLConf.PARQUET_COMPRESSION.key -> "zstd") {
+
+        val plan = captureWritePlan(
+          path =>
+            df.write
+              .option("compression", "gzip")
+              .option("parquet.compression", "snappy")
+              .parquet(path),
+          outputPath)
+        assertHasCometNativeWriteExec(plan)
+      }
+
+      checkAnswer(spark.read.parquet(outputPath), df.collect())
+      assertParquetCodec(outputPath, CompressionCodecName.GZIP)
+    }
+  }
+
+  test("parquet write with unsupported compression codec falls back to Spark") {
+    assume(isSpark35Plus, "lz4_raw was added in Spark 3.5")
+    withTempPath { dir =>
+      val outputPath = new File(dir, "output.parquet").getAbsolutePath
+      val df = spark.range(0, 100).selectExpr("id", "cast(id as string) as name")
+
+      withSQLConf(
+        CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED.key -> "true",
+        CometConf.getOperatorAllowIncompatConfigKey(classOf[DataWritingCommandExec]) -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        SQLConf.PARQUET_COMPRESSION.key -> "lz4_raw") {
+
+        val plan = captureWritePlan(path => df.write.parquet(path), outputPath)
+        assertNoCometNativeWriteExec(plan)
+      }
+
+      checkAnswer(spark.read.parquet(outputPath), df.collect())
+      assertParquetCodec(outputPath, CompressionCodecName.LZ4_RAW)
     }
   }
 
@@ -671,6 +770,22 @@ class CometParquetWriterSuite extends CometTestBase {
       s"Expected exactly one CometNativeWriteExec in the plan, but found $nativeWriteCount:\n${plan.treeString}")
   }
 
+  private def assertNoCometNativeWriteExec(plan: SparkPlan): Unit = {
+    val hasNativeWrite = plan.exists {
+      case _: CometNativeWriteExec => true
+      case d: DataWritingCommandExec =>
+        d.child.exists {
+          case _: CometNativeWriteExec => true
+          case _ => false
+        }
+      case _ => false
+    }
+
+    assert(
+      !hasNativeWrite,
+      s"Expected no CometNativeWriteExec in the plan, but found one:\n${plan.treeString}")
+  }
+
   private def writeWithCometNativeWriteExec(
       inputPath: String,
       outputPath: String,
@@ -702,6 +817,40 @@ class CometParquetWriterSuite extends CometTestBase {
     val cometRows = readCometRows(outputPath)
     val schema = spark.read.parquet(outputPath).schema
     compareRows(schema, sparkRows, cometRows)
+  }
+
+  private def expectedCodecName(sparkCodec: String): CompressionCodecName = sparkCodec match {
+    case "none" | "uncompressed" => CompressionCodecName.UNCOMPRESSED
+    case "snappy" => CompressionCodecName.SNAPPY
+    case "lz4" => CompressionCodecName.LZ4
+    case "zstd" => CompressionCodecName.ZSTD
+    case "gzip" => CompressionCodecName.GZIP
+    case other => fail(s"unexpected codec: $other")
+  }
+
+  /**
+   * Asserts that every column chunk in every part file under `outputPath` reports `expected` as
+   * its compression codec. Reading the data back is not enough on its own: a Parquet reader
+   * honors whatever the footer says, so a write that silently ignored the requested codec would
+   * still round-trip.
+   */
+  private def assertParquetCodec(outputPath: String, expected: CompressionCodecName): Unit = {
+    val conf = spark.sparkContext.hadoopConfiguration
+    val partFiles = new File(outputPath).listFiles().filter(_.getName.startsWith("part-"))
+    assert(partFiles.nonEmpty, s"No part files found under $outputPath")
+
+    partFiles.foreach { partFile =>
+      val inputFile = HadoopInputFile.fromPath(new Path(partFile.getAbsolutePath), conf)
+      Using.resource(ParquetFileReader.open(inputFile)) { reader =>
+        val codecs = reader.getFooter.getBlocks.asScala
+          .flatMap(_.getColumns.asScala)
+          .map(_.getCodec)
+          .toSet
+        assert(
+          codecs == Set(expected),
+          s"Expected all column chunks in ${partFile.getName} to use $expected, found $codecs")
+      }
+    }
   }
 
   private def writeComplexTypeData(

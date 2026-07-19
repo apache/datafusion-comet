@@ -36,7 +36,7 @@ publish = false
 
 [dependencies]
 arrow = { workspace = true }
-parquet = { workspace = true, default-features = false, features = ["experimental", "arrow"] }
+parquet = { workspace = true, default-features = false, features = ["experimental", "arrow", "snap", "lz4", "zstd", "flate2-zlib-rs"] }
 futures = { workspace = true }
 mimalloc = { version = "*", default-features = false, optional = true }
 tikv-jemallocator = { version = "0.6.1", optional = true, features = ["disable_initial_exec_tls"] }

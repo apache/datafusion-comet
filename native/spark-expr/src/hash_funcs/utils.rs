@@ -380,6 +380,10 @@ macro_rules! hash_list_with_primitive_elements {
                 let elem_array = $values.as_any().downcast_ref::<TimestampMicrosecondArray>().unwrap();
                 $crate::hash_list_primitive!(offsets: $offsets, $list_array, elem_array, $hashes_buffer, $hash_method, |v: i64| v.to_le_bytes());
             }
+            DataType::Time64(TimeUnit::Nanosecond) => {
+                let elem_array = $values.as_any().downcast_ref::<Time64NanosecondArray>().unwrap();
+                $crate::hash_list_primitive!(offsets: $offsets, $list_array, elem_array, $hashes_buffer, $hash_method, |v: i64| v.to_le_bytes());
+            }
             _ => {
                 // Fall back to recursive approach for complex element types
                 $crate::hash_list_array!($list_array_type, $fallback_offset_type, $col, $hashes_buffer, $recursive_hash_method);
@@ -469,6 +473,10 @@ macro_rules! hash_list_with_primitive_elements {
             }
             DataType::Timestamp(TimeUnit::Microsecond, _) => {
                 let elem_array = $values.as_any().downcast_ref::<TimestampMicrosecondArray>().unwrap();
+                $crate::hash_list_primitive!(fixed_size: $list_size, $list_array, elem_array, $hashes_buffer, $hash_method, |v: i64| v.to_le_bytes());
+            }
+            DataType::Time64(TimeUnit::Nanosecond) => {
+                let elem_array = $values.as_any().downcast_ref::<Time64NanosecondArray>().unwrap();
                 $crate::hash_list_primitive!(fixed_size: $list_size, $list_array, elem_array, $hashes_buffer, $hash_method, |v: i64| v.to_le_bytes());
             }
             _ => {
@@ -683,6 +691,15 @@ macro_rules! create_hashes_internal {
                 DataType::Date64 => {
                     $crate::hash_array_primitive!(
                         Date64Array,
+                        col,
+                        i64,
+                        $hashes_buffer,
+                        $hash_method
+                    );
+                }
+                DataType::Time64(TimeUnit::Nanosecond) => {
+                    $crate::hash_array_primitive!(
+                        Time64NanosecondArray,
                         col,
                         i64,
                         $hashes_buffer,
