@@ -2762,9 +2762,7 @@ impl PhysicalPlanner {
                 .first()
                 .map(|s| s.expr.data_type(&input_schema))
                 .transpose()
-                .map_err(|e| {
-                    GeneralError(format!("Failed to resolve ORDER BY type: {e}"))
-                })?
+                .map_err(|e| GeneralError(format!("Failed to resolve ORDER BY type: {e}")))?
         } else {
             None
         };
@@ -2871,10 +2869,8 @@ impl PhysicalPlanner {
                             Some(lit) => numeric_literal_to_scalar(lit)?,
                             None => ScalarValue::Int64(Some(offset.offset)),
                         };
-                        let scalar = coerce_range_offset_for_order_by(
-                            raw,
-                            range_order_by_type.as_ref(),
-                        )?;
+                        let scalar =
+                            coerce_range_offset_for_order_by(raw, range_order_by_type.as_ref())?;
                         WindowFrameBound::Following(scalar)
                     }
                     WindowFrameUnits::Groups => {
@@ -3434,9 +3430,9 @@ fn coerce_range_offset_for_order_by(
         return Ok(scalar);
     };
     match (dt, &scalar) {
-        (DataType::Date32, ScalarValue::Int32(Some(v))) => Ok(ScalarValue::IntervalDayTime(
-            Some(IntervalDayTime::new(*v, 0)),
-        )),
+        (DataType::Date32, ScalarValue::Int32(Some(v))) => Ok(ScalarValue::IntervalDayTime(Some(
+            IntervalDayTime::new(*v, 0),
+        ))),
         (DataType::Date32, ScalarValue::Int64(Some(v))) => {
             let days = i32::try_from(*v).map_err(|_| {
                 GeneralError(format!(
