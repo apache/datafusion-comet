@@ -3559,9 +3559,9 @@ fn partition_value_to_literal(
         Some(Value::TimestampVal(v)) => iceberg::spec::Literal::timestamp(*v),
         Some(Value::TimestampTzVal(v)) => iceberg::spec::Literal::timestamptz(*v),
         Some(Value::StringVal(s)) => iceberg::spec::Literal::string(s.clone()),
-        Some(Value::DecimalVal(d)) => iceberg::spec::Literal::decimal(decimal_bytes_to_i128(
-            &d.unscaled,
-        )?),
+        Some(Value::DecimalVal(d)) => {
+            iceberg::spec::Literal::decimal(decimal_bytes_to_i128(&d.unscaled)?)
+        }
         Some(Value::UuidVal(bytes)) => {
             if bytes.len() != 16 {
                 return Err(GeneralError(format!(
@@ -4169,7 +4169,10 @@ fn iceberg_predicate_to_predicate(
         Node::Or(o) => {
             // Dropping a disjunct would strengthen the predicate and wrongly prune; require both.
             let left = o.left.as_deref().and_then(iceberg_predicate_to_predicate)?;
-            let right = o.right.as_deref().and_then(iceberg_predicate_to_predicate)?;
+            let right = o
+                .right
+                .as_deref()
+                .and_then(iceberg_predicate_to_predicate)?;
             Some(left.or(right))
         }
         Node::Not(child) => iceberg_predicate_to_predicate(child).map(|p| !p),
@@ -4198,10 +4201,7 @@ fn iceberg_literal_to_datum(lit: &spark_operator::IcebergLiteral) -> Option<iceb
         Value::TimestampVal(v) => Some(iceberg::spec::Datum::timestamp_micros(*v)),
         Value::TimestampTzVal(v) => Some(iceberg::spec::Datum::timestamptz_micros(*v)),
         Value::StringVal(v) => Some(iceberg::spec::Datum::string(v.clone())),
-        Value::DecimalVal(_)
-        | Value::UuidVal(_)
-        | Value::FixedVal(_)
-        | Value::BinaryVal(_) => None,
+        Value::DecimalVal(_) | Value::UuidVal(_) | Value::FixedVal(_) | Value::BinaryVal(_) => None,
     }
 }
 

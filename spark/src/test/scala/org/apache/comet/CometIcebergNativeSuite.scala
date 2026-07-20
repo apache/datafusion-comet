@@ -3140,7 +3140,7 @@ class CometIcebergNativeSuite
           s"expected multiple tasks to carry a residual, got $tasksWithResidual")
         assert(
           residuals.size == 1,
-          s"expected the shared non-partition residual to dedup to 1 pool entry across " +
+          "expected the shared non-partition residual to dedup to 1 pool entry across " +
             s"$tasksWithResidual task references, got ${residuals.size}")
 
         spark.sql("DROP TABLE test_cat.db.residual_dedup_test")
