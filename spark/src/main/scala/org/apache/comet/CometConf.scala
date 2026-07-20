@@ -372,8 +372,9 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
-  val COMET_REPLACE_SMJ: ConfigEntry[Boolean] =
-    conf(s"$COMET_EXEC_CONFIG_PREFIX.replaceSortMergeJoin")
+  val COMET_FORCE_SHJ: ConfigEntry[Boolean] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.forceShuffleHashJoin.enabled")
+      .withAlternative(s"$COMET_EXEC_CONFIG_PREFIX.replaceSortMergeJoin")
       .category(CATEGORY_EXEC)
       .doc("Experimental feature to force Spark to replace SortMergeJoin with ShuffledHashJoin " +
         s"for improved performance. This feature is not stable yet. $TUNING_GUIDE.")
@@ -1072,7 +1073,8 @@ private class TypedConfigBuilder[T](
       parent._doc,
       parent._category,
       parent._public,
-      parent._version)
+      parent._version,
+      parent._alternatives)
     CometConf.register(conf)
     conf
   }
@@ -1088,7 +1090,9 @@ private class TypedConfigBuilder[T](
       parent._doc,
       parent._category,
       parent._public,
-      parent._version)
+      parent._version,
+      None,
+      parent._alternatives)
     CometConf.register(conf)
     conf
   }
@@ -1118,7 +1122,8 @@ private class TypedConfigBuilder[T](
       parent._category,
       parent._public,
       parent._version,
-      Some(envVar))
+      Some(envVar),
+      parent._alternatives)
     CometConf.register(conf)
     conf
   }
@@ -1131,7 +1136,8 @@ abstract class ConfigEntry[T](
     val doc: String,
     val category: String,
     val isPublic: Boolean,
-    val version: String) {
+    val version: String,
+    val alternatives: Seq[String] = Nil) {
 
   /**
    * Retrieves the config value from the given [[SQLConf]].
@@ -1169,8 +1175,17 @@ private[comet] class ConfigEntryWithDefault[T](
     category: String,
     isPublic: Boolean,
     version: String,
-    _envVar: Option[String] = None)
-    extends ConfigEntry(key, valueConverter, stringConverter, doc, category, isPublic, version) {
+    _envVar: Option[String] = None,
+    _alternatives: Seq[String] = Nil)
+    extends ConfigEntry(
+      key,
+      valueConverter,
+      stringConverter,
+      doc,
+      category,
+      isPublic,
+      version,
+      _alternatives) {
   override def defaultValue: Option[T] = Some(_defaultValue)
 
   override def defaultValueString: String = stringConverter(_defaultValue)
@@ -1178,7 +1193,7 @@ private[comet] class ConfigEntryWithDefault[T](
   override def envVar: Option[String] = _envVar
 
   def get(conf: SQLConf): T = {
-    val tmp = conf.getConfString(key, null)
+    val tmp = CometConfDeprecations.readWithAlternatives(conf, key, alternatives)
     if (tmp == null) {
       _defaultValue
     } else {
@@ -1194,7 +1209,8 @@ private[comet] class OptionalConfigEntry[T](
     doc: String,
     category: String,
     isPublic: Boolean,
-    version: String)
+    version: String,
+    _alternatives: Seq[String] = Nil)
     extends ConfigEntry[Option[T]](
       key,
       s => Some(rawValueConverter(s)),
@@ -1202,12 +1218,14 @@ private[comet] class OptionalConfigEntry[T](
       doc,
       category,
       isPublic,
-      version) {
+      version,
+      _alternatives) {
 
   override def defaultValueString: String = ConfigEntry.UNDEFINED
 
   override def get(conf: SQLConf): Option[T] = {
-    Option(conf.getConfString(key, null)).map(rawValueConverter)
+    Option(CometConfDeprecations.readWithAlternatives(conf, key, alternatives))
+      .map(rawValueConverter)
   }
 }
 
@@ -1219,9 +1237,20 @@ private[comet] case class ConfigBuilder(key: String) {
   var _doc = ""
   var _version = ""
   var _category = ""
+  var _alternatives: Seq[String] = Nil
 
   def internal(): ConfigBuilder = {
     _public = false
+    this
+  }
+
+  /**
+   * Registers deprecated config keys that Comet will read as fall-backs when the primary `key` is
+   * unset. Reading a value from an alternative logs a one-time deprecation warning pointing users
+   * at the current `key`. Alternatives are checked in the order provided.
+   */
+  def withAlternative(alt: String, more: String*): ConfigBuilder = {
+    _alternatives = alt +: more
     this
   }
 
@@ -1271,4 +1300,35 @@ private[comet] case class ConfigBuilder(key: String) {
 
 private object ConfigEntry {
   val UNDEFINED = "<undefined>"
+}
+
+private object CometConfDeprecations extends org.apache.spark.internal.Logging {
+
+  private val warned = java.util.concurrent.ConcurrentHashMap.newKeySet[String]()
+
+  /**
+   * Reads the config value for `key`, falling back to each key in `alternatives` (in order) when
+   * the primary key is unset. When the value comes from an alternative, logs a deprecation
+   * warning once per JVM per alternative key.
+   *
+   * @return
+   *   the resolved string value, or `null` if neither the primary key nor any alternative is set.
+   */
+  def readWithAlternatives(conf: SQLConf, key: String, alternatives: Seq[String]): String = {
+    val primary = conf.getConfString(key, null)
+    if (primary != null) return primary
+    if (alternatives.isEmpty) return null
+    val it = alternatives.iterator
+    while (it.hasNext) {
+      val alt = it.next()
+      val v = conf.getConfString(alt, null)
+      if (v != null) {
+        if (warned.add(alt)) {
+          logWarning(s"Comet configuration '$alt' is deprecated; use '$key' instead.")
+        }
+        return v
+      }
+    }
+    null
+  }
 }
