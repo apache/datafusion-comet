@@ -120,7 +120,7 @@ extract_date_part!(SparkSecond, "second", Second);
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::{ArrayRef, Int32Array, TimestampMicrosecondArray};
+    use arrow::array::{ArrayRef, Int32Array, Time64NanosecondArray, TimestampMicrosecondArray};
     use arrow::datatypes::{Field, TimeUnit};
     use datafusion::config::ConfigOptions;
     use std::sync::Arc;
@@ -255,5 +255,16 @@ mod tests {
             .unwrap()
             .value(key);
         assert_eq!(extracted, 18);
+    }
+
+    #[test]
+    fn time64_extracts_hour_without_timezone_conversion() {
+        let nanos = 12 * 60 * 60 * 1_000_000_000;
+        let array = Arc::new(Time64NanosecondArray::from(vec![Some(nanos)])) as ArrayRef;
+
+        for timezone in ["UTC", "America/Los_Angeles", "Asia/Tokyo"] {
+            let udf = SparkHour::new(timezone.to_string());
+            assert_eq!(invoke(&udf, Arc::clone(&array)), 12);
+        }
     }
 }

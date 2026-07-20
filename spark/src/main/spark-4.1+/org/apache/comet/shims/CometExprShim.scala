@@ -24,9 +24,10 @@ import org.apache.spark.sql.catalyst.expressions.aggregate.Sum
 import org.apache.spark.sql.catalyst.expressions.objects.{Invoke, StaticInvoke}
 import org.apache.spark.sql.catalyst.util.DateTimeUtils
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.TimeType
+import org.apache.spark.sql.types.{IntegerType, TimeType}
 
 import org.apache.comet.expressions.CometEvalMode
+import org.apache.comet.serde.ExprOuterClass
 import org.apache.comet.serde.ExprOuterClass.{BinaryOutputStyle, Expr}
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithFallbackReason, scalarFunctionExprToProtoWithReturnType}
 
@@ -56,6 +57,27 @@ trait CometExprShim extends Spark4xCometExprShim {
       inputs: Seq[Attribute],
       binding: Boolean): Option[Expr] = {
     expr match {
+      case s: StaticInvoke
+          if s.staticObject == classOf[DateTimeUtils.type] &&
+            s.functionName == "getHoursOfTime" &&
+            s.arguments.size == 1 &&
+            s.dataType == IntegerType &&
+            s.arguments.head.dataType.isInstanceOf[TimeType] =>
+        val child = s.arguments.head
+        val childExpr = exprToProtoInternal(child, inputs, binding)
+
+        val optExpr = childExpr.map { childProto =>
+          val builder = ExprOuterClass.Hour.newBuilder()
+          builder.setChild(childProto)
+          builder.setTimezone("UTC")
+
+          Expr
+            .newBuilder()
+            .setHour(builder)
+            .build()
+        }
+
+        optExprWithFallbackReason(optExpr, s, child)
       case s: StaticInvoke
           if s.staticObject == classOf[DateTimeUtils.type] &&
             s.functionName == "makeTime" &&
