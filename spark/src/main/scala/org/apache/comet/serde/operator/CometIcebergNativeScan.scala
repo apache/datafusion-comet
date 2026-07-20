@@ -19,8 +19,10 @@
 
 package org.apache.comet.serde.operator
 
+import java.math.BigDecimal
+import java.nio.ByteBuffer
 import java.nio.charset.StandardCharsets.UTF_8
-import java.util.Base64
+import java.util.{Base64, UUID}
 
 import scala.collection.mutable
 import scala.jdk.CollectionConverters._
@@ -63,7 +65,6 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
       val GT = "GT"
       val GT_EQ = "GT_EQ"
       val IN = "IN"
-      val NOT_IN = "NOT_IN"
     }
 
     // Iceberg expression class name suffixes
@@ -74,6 +75,15 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
       val NOT = "Not"
     }
   }
+
+  /** Iceberg binary comparison operation names mapped to their IcebergPredicate operator. */
+  private val binaryOps: Map[String, OperatorOuterClass.IcebergPredicateOperator] = Map(
+    Constants.Operations.EQ -> OperatorOuterClass.IcebergPredicateOperator.Eq,
+    Constants.Operations.NOT_EQ -> OperatorOuterClass.IcebergPredicateOperator.NotEq,
+    Constants.Operations.LT -> OperatorOuterClass.IcebergPredicateOperator.LessThan,
+    Constants.Operations.LT_EQ -> OperatorOuterClass.IcebergPredicateOperator.LessThanOrEq,
+    Constants.Operations.GT -> OperatorOuterClass.IcebergPredicateOperator.GreaterThan,
+    Constants.Operations.GT_EQ -> OperatorOuterClass.IcebergPredicateOperator.GreaterThanOrEq)
 
   /**
    * Wraps an Iceberg partition value (a typed primitive) in a PartitionValue. The value encoding
@@ -122,8 +132,8 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
 
         case d if d.startsWith("decimal(") =>
           val bigDecimal = value match {
-            case bd: java.math.BigDecimal => bd
-            case _ => new java.math.BigDecimal(value.toString)
+            case bd: BigDecimal => bd
+            case _ => new BigDecimal(value.toString)
           }
           builder.setDecimalVal(
             OperatorOuterClass.IcebergDecimal
@@ -178,15 +188,15 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
         case "uuid" =>
           // UUID as bytes (16 bytes) or string
           val uuidBytes = value match {
-            case uuid: java.util.UUID =>
-              val bb = java.nio.ByteBuffer.wrap(new Array[Byte](16))
+            case uuid: UUID =>
+              val bb = ByteBuffer.wrap(new Array[Byte](16))
               bb.putLong(uuid.getMostSignificantBits)
               bb.putLong(uuid.getLeastSignificantBits)
               bb.array()
             case _ =>
               // Parse UUID string and convert to bytes
-              val uuid = java.util.UUID.fromString(value.toString)
-              val bb = java.nio.ByteBuffer.wrap(new Array[Byte](16))
+              val uuid = UUID.fromString(value.toString)
+              val bb = ByteBuffer.wrap(new Array[Byte](16))
               bb.putLong(uuid.getMostSignificantBits)
               bb.putLong(uuid.getLeastSignificantBits)
               bb.array()
@@ -564,48 +574,8 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
             case IS_NULL => Some(unaryPredicate(columnName, IcebergPredicateOperator.IsNull))
             case IS_NOT_NULL | NOT_NULL =>
               Some(unaryPredicate(columnName, IcebergPredicateOperator.NotNull))
-            case EQ =>
-              binaryPredicate(
-                exprClass,
-                icebergExpr,
-                columnName,
-                attribute,
-                IcebergPredicateOperator.Eq)
-            case NOT_EQ =>
-              binaryPredicate(
-                exprClass,
-                icebergExpr,
-                columnName,
-                attribute,
-                IcebergPredicateOperator.NotEq)
-            case LT =>
-              binaryPredicate(
-                exprClass,
-                icebergExpr,
-                columnName,
-                attribute,
-                IcebergPredicateOperator.LessThan)
-            case LT_EQ =>
-              binaryPredicate(
-                exprClass,
-                icebergExpr,
-                columnName,
-                attribute,
-                IcebergPredicateOperator.LessThanOrEq)
-            case GT =>
-              binaryPredicate(
-                exprClass,
-                icebergExpr,
-                columnName,
-                attribute,
-                IcebergPredicateOperator.GreaterThan)
-            case GT_EQ =>
-              binaryPredicate(
-                exprClass,
-                icebergExpr,
-                columnName,
-                attribute,
-                IcebergPredicateOperator.GreaterThanOrEq)
+            case op if binaryOps.contains(op) =>
+              binaryPredicate(exprClass, icebergExpr, columnName, attribute, binaryOps(op))
             case IN => setPredicate(exprClass, icebergExpr, columnName, attribute)
             // NOT_IN is inherently unprunable from column stats, so it is not pushed.
             case _ => None
@@ -636,7 +606,13 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
         None
       }
     } catch {
-      case _: Exception =>
+      // Reflection over Iceberg's expression classes can fail on an unexpected shape (e.g. an
+      // Iceberg version change). A residual is only a pruning hint, so skip pushdown rather than
+      // fail the scan, but log it: a persistent warning here signals a real API drift to fix.
+      case e: Exception =>
+        logWarning(
+          "Skipping Iceberg residual pushdown; could not convert expression: " +
+            s"${e.getMessage}")
         None
     }
   }
@@ -687,11 +663,13 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
         .newBuilder()
         .setColumn(column)
         .setOp(OperatorOuterClass.IcebergPredicateOperator.In)
-      // Sort literals so an IN list Iceberg happens to iterate in a different order per file still
-      // deduplicates in the residual pool.
+      // Sort literals so an IN list that Iceberg happens to iterate in a different order per file
+      // still deduplicates in the residual pool. Encode each key once (sortBy re-invokes its key
+      // function per comparison).
       protoLiterals.flatten
-        .sortBy(lit => Base64.getEncoder.encodeToString(lit.toByteArray))
-        .foreach(setBuilder.addValues)
+        .map(lit => (Base64.getEncoder.encodeToString(lit.toByteArray), lit))
+        .sortBy(_._1)
+        .foreach { case (_, lit) => setBuilder.addValues(lit) }
       Some(OperatorOuterClass.IcebergPredicate.newBuilder().setSet(setBuilder).build())
     }
   }

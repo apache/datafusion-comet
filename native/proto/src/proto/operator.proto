@@ -184,6 +184,10 @@ message IcebergLiteral {
   }
 }
 
+// A decimal literal. `scale`/`precision` let the native side build a self-typed Datum for
+// predicate pushdown (iceberg-rust's Datum is self-typed); partition-value decode reads only
+// `unscaled`. Predicate decimal pushdown is deferred (iceberg-rust page-index gap), so today only
+// `unscaled` is consumed.
 message IcebergDecimal {
   bytes unscaled = 1;   // unscaled value, two's-complement big-endian
   int32 precision = 2;
