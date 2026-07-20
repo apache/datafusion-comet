@@ -2056,14 +2056,7 @@ trait CometHashJoin {
         case FullOuter => JoinType.FullOuter
         case LeftSemi => JoinType.LeftSemi
         case LeftAnti => JoinType.LeftAnti
-        case ExistenceJoin(_) =>
-          if (!CometConf.COMET_EXEC_EXISTENCE_JOIN_ENABLED.get(join.conf)) {
-            withFallbackReason(
-              join,
-              "Existence join support is highly experimental. Set " +
-                s"${CometConf.COMET_EXEC_EXISTENCE_JOIN_ENABLED.key}=true to enable.")
-            return None
-          }
+        case ExistenceJoin(_) if CometConf.COMET_EXEC_EXISTENCE_JOIN_ENABLED.get(join.conf) =>
           JoinType.Existence
         case _ =>
           // Spark doesn't support other join types
@@ -2568,14 +2561,7 @@ object CometSortMergeJoinExec extends CometOperatorSerde[SortMergeJoinExec] {
         case FullOuter => JoinType.FullOuter
         case LeftSemi => JoinType.LeftSemi
         case LeftAnti => JoinType.LeftAnti
-        case ExistenceJoin(_) =>
-          if (!CometConf.COMET_EXEC_EXISTENCE_JOIN_ENABLED.get(join.conf)) {
-            withFallbackReason(
-              join,
-              "Existence join support is highly experimental. Set " +
-                s"${CometConf.COMET_EXEC_EXISTENCE_JOIN_ENABLED.key}=true to enable.")
-            return None
-          }
+        case ExistenceJoin(_) if CometConf.COMET_EXEC_EXISTENCE_JOIN_ENABLED.get(join.conf) =>
           JoinType.Existence
         case _ =>
           // Spark doesn't support other join types
