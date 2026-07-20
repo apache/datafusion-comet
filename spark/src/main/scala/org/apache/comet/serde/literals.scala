@@ -57,6 +57,7 @@ object CometLiteral extends CometExpressionSerde[Literal] with Logging {
       Compatible(None)
     } else {
       dataType match {
+      // Keep YearMonthIntervalType out of QueryPlanSerde.supportedDataType, which gates broader native paths.
         case _: YearMonthIntervalType => Compatible(None)
         case _ => Unsupported(Some(s"Unsupported data type $dataType"))
       }
