@@ -40,9 +40,11 @@ broadest (the prefix) to narrowest (the specific setting).
 - **Segment casing.** Multi-word segments use `camelCase`, not dot- or kebab-separated.
   Prefer `spark.comet.foo.maxThreadNum` over `spark.comet.foo.max.thread.num` or
   `spark.comet.foo.max-thread-num`.
-- **Boolean suffix.** Boolean flags end in `.enabled`. Prefer
-  `spark.comet.foo.bar.enabled` over `spark.comet.foo.barEnabled` or a bare
-  `spark.comet.foo.bar` that happens to be boolean.
+- **Boolean suffix.** Descriptor-form boolean flags that gate a subsystem or feature end
+  in `.enabled` — for example `spark.comet.debug.enabled`, `spark.comet.metrics.enabled`,
+  `spark.comet.parquet.rowFilterPushdown.enabled`. Action-form flags whose name is itself
+  a verb (`force...`, `allow...`) can omit `.enabled` because the verb already encodes
+  the action — for example `spark.comet.exec.forceShuffledHashJoin`.
 - **Acronyms.** Treat acronyms consistently as `UDF`, `SHJ`, `SMJ`, `IO` — either all-caps
   or camelCase, but do not mix within one key (`pyarrowUdf` and `scalaUDF` in the same
   cluster is a red flag).
@@ -57,7 +59,7 @@ Examples:
 | Key                                             | Symbol                      |
 | ----------------------------------------------- | --------------------------- |
 | `spark.comet.enabled`                           | `COMET_ENABLED`             |
-| `spark.comet.exec.forceShuffleHashJoin.enabled` | `COMET_FORCE_SHJ`           |
+| `spark.comet.exec.forceShuffledHashJoin`        | `COMET_FORCE_SHJ`           |
 | `spark.comet.parquet.rowFilterPushdown.enabled` | `COMET_ROW_FILTER_PUSHDOWN` |
 
 The symbol name is what appears in code; the key is what appears in user configuration.
@@ -82,7 +84,7 @@ deprecated alias:
 
 ```scala
 val COMET_FORCE_SHJ: ConfigEntry[Boolean] =
-  conf(s"$COMET_EXEC_CONFIG_PREFIX.forceShuffleHashJoin.enabled")
+  conf(s"$COMET_EXEC_CONFIG_PREFIX.forceShuffledHashJoin")
     .withAlternative(s"$COMET_EXEC_CONFIG_PREFIX.replaceSortMergeJoin")
     .category(CATEGORY_EXEC)
     .doc("...")

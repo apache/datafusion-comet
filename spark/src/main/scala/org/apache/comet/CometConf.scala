@@ -373,7 +373,7 @@ object CometConf extends ShimCometConf {
       .createWithDefault(false)
 
   val COMET_FORCE_SHJ: ConfigEntry[Boolean] =
-    conf(s"$COMET_EXEC_CONFIG_PREFIX.forceShuffleHashJoin.enabled")
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.forceShuffledHashJoin")
       .withAlternative(s"$COMET_EXEC_CONFIG_PREFIX.replaceSortMergeJoin")
       .category(CATEGORY_EXEC)
       .doc("Experimental feature to force Spark to replace SortMergeJoin with ShuffledHashJoin " +
