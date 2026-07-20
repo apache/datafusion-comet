@@ -456,6 +456,7 @@ under the License.
 </ul>
 </details></li>
 <li class="toctree-l1"><a class="reference internal" href="spark_configs_support.html">Supported Spark Configurations</a></li>
+<li class="toctree-l1"><a class="reference internal" href="config_conventions.html">Configuration Conventions</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Project Mechanics</span></p>
 <ul class="nav bd-sidenav">
@@ -663,7 +664,7 @@ In order to start local Apache Spark cluster on <code class="docutils literal no
 <span class="w">    </span>--conf<span class="w"> </span>spark.comet.enabled<span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="se">\</span>
 <span class="w">    </span>--conf<span class="w"> </span>spark.comet.exec.shuffle.enableFastEncoding<span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="se">\</span>
 <span class="w">    </span>--conf<span class="w"> </span>spark.comet.exec.shuffle.fallbackToColumnar<span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="se">\</span>
-<span class="w">    </span>--conf<span class="w"> </span>spark.comet.exec.replaceSortMergeJoin<span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--conf<span class="w"> </span>spark.comet.exec.forceShuffledHashJoin<span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="se">\</span>
 <span class="w">    </span>--conf<span class="w"> </span>spark.comet.expression.allowIncompatible<span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="se">\</span>
 <span class="w">    </span><span class="nv">$DF_BENCH</span>/runners/datafusion-comet/tpcbench.py<span class="w"> </span><span class="se">\</span>
 <span class="w">    </span>--benchmark<span class="w"> </span>tpch<span class="w"> </span><span class="se">\</span>

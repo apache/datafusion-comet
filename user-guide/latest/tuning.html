@@ -822,7 +822,7 @@ and sorting on floating-point data can be enabled by setting <code class="docuti
 to configure Comet to convert <code class="docutils literal notranslate"><span class="pre">SortMergeJoin</span></code> to <code class="docutils literal notranslate"><span class="pre">ShuffledHashJoin</span></code>. Comet does not yet provide spill-to-disk for
 <code class="docutils literal notranslate"><span class="pre">ShuffledHashJoin</span></code> so this could result in OOM. Also, <code class="docutils literal notranslate"><span class="pre">SortMergeJoin</span></code> may still be faster in some cases. It is best
 to test with both for your specific workloads.</p>
-<p>To configure Comet to convert <code class="docutils literal notranslate"><span class="pre">SortMergeJoin</span></code> to <code class="docutils literal notranslate"><span class="pre">ShuffledHashJoin</span></code>, set <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.replaceSortMergeJoin=true</span></code>.</p>
+<p>To configure Comet to convert <code class="docutils literal notranslate"><span class="pre">SortMergeJoin</span></code> to <code class="docutils literal notranslate"><span class="pre">ShuffledHashJoin</span></code>, set <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.forceShuffledHashJoin=true</span></code>.</p>
 </section>
 <section id="shuffle">
 <h2>Shuffle<a class="headerlink" href="#shuffle" title="Link to this heading">#</a></h2>
