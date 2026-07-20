@@ -308,6 +308,54 @@ class CometExecRuleSuite extends CometTestBase {
     }
   }
 
+  test("CometExecRule should allow approx_count_distinct mixed Comet partial and Spark final") {
+    withTempView("test_data") {
+      createTestDataFrame.createOrReplaceTempView("test_data")
+
+      // approx_count_distinct stores its registers in Spark's identical packed-Long buffer, so
+      // it is mixed-safe: the Comet partial can feed a Spark final.
+      val sparkPlan =
+        createSparkPlan(
+          spark,
+          "SELECT approx_count_distinct(id) FROM test_data GROUP BY (id % 3)")
+
+      val originalHashAggCount = countOperators(sparkPlan, classOf[HashAggregateExec])
+      assert(originalHashAggCount == 2)
+
+      withSQLConf(
+        CometConf.COMET_ENABLE_FINAL_HASH_AGGREGATE.key -> "false",
+        CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+        val transformedPlan = applyCometExecRule(sparkPlan)
+
+        assert(countOperators(transformedPlan, classOf[HashAggregateExec]) == 1) // final only
+        assert(countOperators(transformedPlan, classOf[CometHashAggregateExec]) == 1) // partial
+      }
+    }
+  }
+
+  test("CometExecRule should allow approx_count_distinct mixed Spark partial and Comet final") {
+    withTempView("test_data") {
+      createTestDataFrame.createOrReplaceTempView("test_data")
+
+      val sparkPlan =
+        createSparkPlan(
+          spark,
+          "SELECT approx_count_distinct(id) FROM test_data GROUP BY (id % 3)")
+
+      val originalHashAggCount = countOperators(sparkPlan, classOf[HashAggregateExec])
+      assert(originalHashAggCount == 2)
+
+      withSQLConf(
+        CometConf.COMET_ENABLE_PARTIAL_HASH_AGGREGATE.key -> "false",
+        CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+        val transformedPlan = applyCometExecRule(sparkPlan)
+
+        assert(countOperators(transformedPlan, classOf[HashAggregateExec]) == 1) // partial only
+        assert(countOperators(transformedPlan, classOf[CometHashAggregateExec]) == 1) // final
+      }
+    }
+  }
+
   test("CometExecRule should not convert hash aggregate when grouping key contains map type") {
     // Spark 3.4/3.5 reject `array<map<...>>` as a grouping key in the analyzer (not orderable),
     // so the plan never reaches CometExecRule on those versions. The guard we're exercising

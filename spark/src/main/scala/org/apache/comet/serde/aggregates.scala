@@ -825,18 +825,30 @@ object CometCollectSet extends CometAggregateExpressionSerde[CollectSet] {
 
 object CometApproxCountDistinct extends CometAggregateExpressionSerde[HyperLogLogPlusPlus] {
 
-  override def supportsMixedPartialFinal: Boolean = false
+  // The register buffer uses Spark's identical packed-`Long` layout (`numWords` `Long` columns),
+  // matching Spark's `aggBufferSchema`, so a Comet partial and Spark final (or the reverse) can
+  // be mixed in one plan.
+  override def supportsMixedPartialFinal: Boolean = true
 
   // Types that Comet's native `xxhash64` hashes identically to Spark's `XxHash64Function`.
+  // `StringType` here is the default UTF8_BINARY collation; a collated `StringType(collationId)`
+  // falls through to the `case _` because Spark hashes those via the collation sort key.
+  // `DecimalType` is limited to precision <= 18, since Spark hashes wider decimals through
+  // `BigDecimal` (two's-complement big-endian bytes), which the native `i128` path does not match.
   private def hashableType(dt: DataType): Boolean = dt match {
     case BooleanType => true
     case ByteType | ShortType | IntegerType | LongType => true
     case FloatType | DoubleType => true
-    case _: DecimalType => true
+    case d: DecimalType if d.precision <= 18 => true
     case DateType | TimestampType | TimestampNTZType => true
     case StringType | BinaryType => true
     case _ => false
   }
+
+  override def getUnsupportedReasons(): Seq[String] = Seq(
+    "Input type must be boolean, integral, floating-point, decimal, date/time, string, or binary",
+    "`DecimalType` with precision > 18 is not supported",
+    "Collated (non-UTF8_BINARY) strings are not supported")
 
   override def getSupportLevel(expr: HyperLogLogPlusPlus): SupportLevel = {
     if (!hashableType(expr.child.dataType)) {

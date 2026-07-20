@@ -108,6 +108,33 @@ query
 SELECT approx_count_distinct(i) FROM acd_types WHERE i IS NULL
 
 -- ============================================================
+-- Decimal precision boundary: <= 18 hashes via the unscaled long (native),
+-- > 18 hashes via BigDecimal in Spark, which the native path does not match (fallback)
+-- ============================================================
+
+statement
+CREATE TABLE acd_dec18(d decimal(18,4)) USING parquet
+
+statement
+INSERT INTO acd_dec18
+SELECT CAST(id AS decimal(18,4)) + 0.0001 FROM range(20000)
+
+-- decimal precision 18 (the boundary): runs natively and matches Spark
+query
+SELECT approx_count_distinct(d) FROM acd_dec18
+
+statement
+CREATE TABLE acd_dec38(d decimal(38,4)) USING parquet
+
+statement
+INSERT INTO acd_dec38
+SELECT CAST(id AS decimal(38,4)) + 0.0001 FROM range(20000)
+
+-- decimal precision > 18: Spark hashes via BigDecimal, so Comet must fall back
+query expect_fallback(Unsupported input data type)
+SELECT approx_count_distinct(d) FROM acd_dec38
+
+-- ============================================================
 -- Float/double normalization: -0.0 == 0.0 and all NaN are equal
 -- ============================================================
 

@@ -25,6 +25,7 @@
 
 use crate::agg_funcs::hll_plus_plus_const::{BIAS_DATA, RAW_ESTIMATE_DATA, THRESHOLDS};
 use crate::hash_funcs::create_xxhash64_hashes;
+use crate::math_funcs::internal::normalize_float;
 use arrow::array::{
     Array, ArrayRef, AsArray, BooleanArray, Float32Array, Float64Array, Int64Array,
 };
@@ -60,7 +61,7 @@ pub fn hllpp_precision(relative_sd: f64) -> i32 {
 }
 
 /// Spark-compatible `approx_count_distinct` aggregate.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct HllPlusPlus {
     name: String,
     signature: Signature,
@@ -68,17 +69,12 @@ pub struct HllPlusPlus {
     p: usize,
 }
 
-impl std::hash::Hash for HllPlusPlus {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.name.hash(state);
-        self.signature.hash(state);
-        self.p.hash(state);
-    }
-}
-
 impl HllPlusPlus {
     pub fn new(p: i32) -> Self {
-        assert!(p >= 4, "HLL++ requires at least 4 bits of precision");
+        assert!(
+            p >= 4,
+            "Spark's HyperLogLogPlusPlusHelper requires p >= 4 (relativeSD <= 39%)"
+        );
         Self {
             name: "approx_count_distinct".to_string(),
             signature: Signature::any(1, Volatility::Immutable),
@@ -130,35 +126,28 @@ impl AggregateUDFImpl for HllPlusPlus {
 fn normalize_floats(array: &ArrayRef) -> ArrayRef {
     match array.data_type() {
         DataType::Float32 => {
-            let normalized: Float32Array = array.as_primitive::<Float32Type>().unary(|v| {
-                if v.is_nan() {
-                    f32::NAN
-                } else {
-                    v + 0.0
-                }
-            });
+            let normalized: Float32Array =
+                array.as_primitive::<Float32Type>().unary(normalize_float);
             Arc::new(normalized)
         }
         DataType::Float64 => {
-            let normalized: Float64Array = array.as_primitive::<Float64Type>().unary(|v| {
-                if v.is_nan() {
-                    f64::NAN
-                } else {
-                    v + 0.0
-                }
-            });
+            let normalized: Float64Array =
+                array.as_primitive::<Float64Type>().unary(normalize_float);
             Arc::new(normalized)
         }
         _ => Arc::clone(array),
     }
 }
 
-/// Hash a value column with Spark's `XxHash64` (seed 42), normalizing floats first.
-fn hash_values(array: &ArrayRef) -> Result<Vec<u64>> {
+/// Hash a value column with Spark's `XxHash64` (seed 42), normalizing floats first, reusing
+/// `buf` as scratch to avoid a per-batch allocation. The buffer is re-seeded (not just cleared)
+/// because `create_xxhash64_hashes` folds each value into the existing seed.
+fn hash_values_into(array: &ArrayRef, buf: &mut Vec<u64>) -> Result<()> {
     let normalized = normalize_floats(array);
-    let mut hashes = vec![HASH_SEED; normalized.len()];
-    create_xxhash64_hashes(&[normalized], &mut hashes)?;
-    Ok(hashes)
+    buf.clear();
+    buf.resize(normalized.len(), HASH_SEED);
+    create_xxhash64_hashes(&[normalized], buf)?;
+    Ok(())
 }
 
 /// Update the packed register buffer from a hashed value. Mirrors `HyperLogLogPlusPlusHelper.update`.
@@ -211,6 +200,8 @@ fn alpha_m2(p: usize, m: f64) -> f64 {
 
 /// Estimate the bias using KNN interpolation over Spark's appendix tables.
 fn estimate_bias(p: usize, e: f64) -> f64 {
+    // The appendix tables are indexed by `p - 4` and only cover 4 <= p <= 18.
+    debug_assert!((4..19).contains(&p));
     let estimates = RAW_ESTIMATE_DATA[p - 4];
     let biases = BIAS_DATA[p - 4];
     let num_estimates = estimates.len();
@@ -250,6 +241,8 @@ fn query(p: usize, words: &[i64]) -> i64 {
         let word = word as u64;
         let mut i = 0;
         let mut shift = 0;
+        // Register iteration order matches Spark so the float summation into `z_inverse` stays
+        // bit-identical; do not reorder this into an iterator chain.
         while idx < m_usize && i < REGISTERS_PER_WORD {
             let m_idx = (word >> shift) & REGISTER_WORD_MASK;
             z_inverse += 1.0 / ((1u64 << m_idx) as f64);
@@ -263,10 +256,15 @@ fn query(p: usize, words: &[i64]) -> i64 {
     }
 
     let e = alpha_m2(p, m) / z_inverse;
-    let e_bias_corrected = if p < 19 && e < 5.0 * m {
-        e - estimate_bias(p, e)
-    } else {
-        e
+    // Bias correction runs a binary search plus KNN interpolation over the appendix tables.
+    // Compute it lazily so small-cardinality groups that take the linear-counting branch below
+    // do not pay for interpolation whose result is discarded.
+    let e_bias_corrected = || {
+        if p < 19 && e < 5.0 * m {
+            e - estimate_bias(p, e)
+        } else {
+            e
+        }
     };
 
     let estimate = if v > 0.0 {
@@ -275,10 +273,10 @@ fn query(p: usize, words: &[i64]) -> i64 {
         if (p < 19 && h <= THRESHOLDS[p - 4]) || e <= 2.5 * m {
             h
         } else {
-            e_bias_corrected
+            e_bias_corrected()
         }
     } else {
-        e_bias_corrected
+        e_bias_corrected()
     };
 
     // Match Java's Math.round: floor(x + 0.5).
@@ -290,6 +288,8 @@ fn query(p: usize, words: &[i64]) -> i64 {
 struct HllPlusPlusAccumulator {
     p: usize,
     words: Vec<i64>,
+    /// Scratch buffer reused across batches to avoid a per-batch hash allocation.
+    hash_buf: Vec<u64>,
 }
 
 impl HllPlusPlusAccumulator {
@@ -297,6 +297,7 @@ impl HllPlusPlusAccumulator {
         Self {
             p,
             words: vec![0i64; num_words(p)],
+            hash_buf: Vec::new(),
         }
     }
 }
@@ -304,12 +305,12 @@ impl HllPlusPlusAccumulator {
 impl Accumulator for HllPlusPlusAccumulator {
     fn update_batch(&mut self, values: &[ArrayRef]) -> Result<()> {
         let array = &values[0];
-        let hashes = hash_values(array)?;
-        for (i, &hash) in hashes.iter().enumerate() {
+        hash_values_into(array, &mut self.hash_buf)?;
+        for i in 0..array.len() {
             if array.is_null(i) {
                 continue;
             }
-            update_word(&mut self.words, self.p, hash);
+            update_word(&mut self.words, self.p, self.hash_buf[i]);
         }
         Ok(())
     }
@@ -344,7 +345,9 @@ impl Accumulator for HllPlusPlusAccumulator {
     }
 
     fn size(&self) -> usize {
-        std::mem::size_of_val(self) + self.words.capacity() * std::mem::size_of::<i64>()
+        std::mem::size_of_val(self)
+            + self.words.capacity() * std::mem::size_of::<i64>()
+            + self.hash_buf.capacity() * std::mem::size_of::<u64>()
     }
 }
 
@@ -353,18 +356,19 @@ impl Accumulator for HllPlusPlusAccumulator {
 #[derive(Debug)]
 struct HllPlusPlusGroupsAccumulator {
     p: usize,
-    m: usize,
     num_words: usize,
     words: Vec<i64>,
+    /// Scratch buffer reused across batches to avoid a per-batch hash allocation.
+    hash_buf: Vec<u64>,
 }
 
 impl HllPlusPlusGroupsAccumulator {
     fn new(p: usize) -> Self {
         Self {
             p,
-            m: 1usize << p,
             num_words: num_words(p),
             words: Vec::new(),
+            hash_buf: Vec::new(),
         }
     }
 
@@ -401,7 +405,7 @@ impl GroupsAccumulator for HllPlusPlusGroupsAccumulator {
         self.resize(total_num_groups);
         let p = self.p;
         let array = &values[0];
-        let hashes = hash_values(array)?;
+        hash_values_into(array, &mut self.hash_buf)?;
         for (i, &group_index) in group_indices.iter().enumerate() {
             if let Some(filter) = opt_filter {
                 if !filter.is_valid(i) || !filter.value(i) {
@@ -411,7 +415,8 @@ impl GroupsAccumulator for HllPlusPlusGroupsAccumulator {
             if array.is_null(i) {
                 continue;
             }
-            update_word(self.group_slice(group_index), p, hashes[i]);
+            let hash = self.hash_buf[i];
+            update_word(self.group_slice(group_index), p, hash);
         }
         Ok(())
     }
@@ -424,7 +429,7 @@ impl GroupsAccumulator for HllPlusPlusGroupsAccumulator {
         total_num_groups: usize,
     ) -> Result<()> {
         self.resize(total_num_groups);
-        let m = self.m;
+        let m = 1usize << self.p;
         let nw = self.num_words;
         let cols: Vec<&Int64Array> = values
             .iter()
@@ -463,7 +468,9 @@ impl GroupsAccumulator for HllPlusPlusGroupsAccumulator {
     }
 
     fn size(&self) -> usize {
-        std::mem::size_of_val(self) + self.words.capacity() * std::mem::size_of::<i64>()
+        std::mem::size_of_val(self)
+            + self.words.capacity() * std::mem::size_of::<i64>()
+            + self.hash_buf.capacity() * std::mem::size_of::<u64>()
     }
 }
 
