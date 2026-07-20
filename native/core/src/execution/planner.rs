@@ -3674,35 +3674,52 @@ fn parse_file_scan_tasks_from_common(
         })
         .collect();
 
+    // Flat pool of unique delete files. A delete file applies to many data files under Iceberg's
+    // default partition delete granularity, so DeleteFileList entries reference this pool by index
+    // rather than embedding copies.
+    let delete_file_pool: Vec<iceberg::scan::FileScanTaskDeleteFile> = proto_common
+        .delete_file_pool
+        .iter()
+        .map(|del| {
+            let file_type = match del.content_type.as_str() {
+                "POSITION_DELETES" => iceberg::spec::DataContentType::PositionDeletes,
+                "EQUALITY_DELETES" => iceberg::spec::DataContentType::EqualityDeletes,
+                other => {
+                    return Err(GeneralError(format!(
+                        "Invalid delete content type '{}'",
+                        other
+                    )))
+                }
+            };
+
+            Ok(iceberg::scan::FileScanTaskDeleteFile {
+                file_path: del.file_path.clone(),
+                file_type,
+                // Not serialized; filled in by IcebergScanExec::fill_delete_file_sizes.
+                file_size_in_bytes: 0,
+                partition_spec_id: del.partition_spec_id,
+                equality_ids: if del.equality_ids.is_empty() {
+                    None
+                } else {
+                    Some(del.equality_ids.clone())
+                },
+            })
+        })
+        .collect::<Result<Vec<_>, ExecutionError>>()?;
+
     let delete_files_cache: Vec<Vec<iceberg::scan::FileScanTaskDeleteFile>> = proto_common
         .delete_files_pool
         .iter()
         .map(|list| {
-            list.delete_files
+            list.delete_file_indices
                 .iter()
-                .map(|del| {
-                    let file_type = match del.content_type.as_str() {
-                        "POSITION_DELETES" => iceberg::spec::DataContentType::PositionDeletes,
-                        "EQUALITY_DELETES" => iceberg::spec::DataContentType::EqualityDeletes,
-                        other => {
-                            return Err(GeneralError(format!(
-                                "Invalid delete content type '{}'",
-                                other
-                            )))
-                        }
-                    };
-
-                    Ok(iceberg::scan::FileScanTaskDeleteFile {
-                        file_path: del.file_path.clone(),
-                        file_type,
-                        // Not serialized; filled in by IcebergScanExec::fill_delete_file_sizes.
-                        file_size_in_bytes: 0,
-                        partition_spec_id: del.partition_spec_id,
-                        equality_ids: if del.equality_ids.is_empty() {
-                            None
-                        } else {
-                            Some(del.equality_ids.clone())
-                        },
+                .map(|&idx| {
+                    delete_file_pool.get(idx as usize).cloned().ok_or_else(|| {
+                        GeneralError(format!(
+                            "Invalid delete_file_index: {} (pool size: {})",
+                            idx,
+                            delete_file_pool.len()
+                        ))
                     })
                 })
                 .collect::<Result<Vec<_>, ExecutionError>>()

@@ -727,8 +727,13 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
     val nameMappingToPoolIndex = mutable.HashMap[String, Int]()
     val projectFieldIdsToPoolIndex = mutable.HashMap[Seq[Int], Int]()
     val partitionDataToPoolIndex = mutable.HashMap[String, Int]()
+    // Individual delete files are interned into a flat pool keyed by path (a delete file's path is
+    // its identity); deleteFilesToPoolIndex then dedups the per-task sets as lists of indices into
+    // that pool. One delete file applies to many data files under Iceberg's default partition
+    // delete granularity, so interning avoids re-serializing it once per referencing FileScanTask.
+    val deleteFileToPoolIndex = mutable.HashMap[String, Int]()
     val deleteFilesToPoolIndex =
-      mutable.HashMap[Seq[OperatorOuterClass.IcebergDeleteFile], Int]()
+      mutable.HashMap[Seq[Int], Int]()
     val residualToPoolIndex = mutable.HashMap[Option[Expr], Int]()
 
     val perPartitionBuilders = mutable.ArrayBuffer[OperatorOuterClass.IcebergScan]()
@@ -907,11 +912,21 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
                 val deleteFilesList =
                   extractDeleteFilesList(task, contentFileClass, fileScanTaskClass)
                 if (deleteFilesList.nonEmpty) {
+                  // Intern each delete file into the flat pool, then dedup this task's set as the
+                  // resulting list of pool indices.
+                  val deleteFileIndices = deleteFilesList.map { df =>
+                    deleteFileToPoolIndex.getOrElseUpdate(
+                      df.getFilePath, {
+                        val idx = deleteFileToPoolIndex.size
+                        commonBuilder.addDeleteFilePool(df)
+                        idx
+                      })
+                  }
                   val deleteFilesIdx = deleteFilesToPoolIndex.getOrElseUpdate(
-                    deleteFilesList, {
+                    deleteFileIndices, {
                       val idx = deleteFilesToPoolIndex.size
                       val listBuilder = OperatorOuterClass.DeleteFileList.newBuilder()
-                      deleteFilesList.foreach(df => listBuilder.addDeleteFiles(df))
+                      deleteFileIndices.foreach(idx => listBuilder.addDeleteFileIndices(idx))
                       commonBuilder.addDeleteFilesPool(listBuilder.build())
                       idx
                     })
@@ -996,6 +1011,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
       nameMappingToPoolIndex.size,
       projectFieldIdsToPoolIndex.size,
       partitionDataToPoolIndex.size,
+      deleteFileToPoolIndex.size,
       deleteFilesToPoolIndex.size,
       residualToPoolIndex.size)
 

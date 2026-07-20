@@ -216,6 +216,12 @@ message IcebergScanCommon {
   // isolated provider instances. Empty string when the table has no catalog identity (e.g.
   // HadoopTables loaded by raw path).
   string catalog_name = 13;
+
+  // Flat pool of unique delete files, referenced by index from DeleteFileList. Iceberg's default
+  // partition delete granularity has one delete file apply to many data files, so interning each
+  // delete file here (rather than embedding copies per delete_files_pool set) keeps the broadcast
+  // common message from growing with the number of references.
+  repeated IcebergDeleteFile delete_file_pool = 14;
 }
 
 message IcebergScan {
@@ -233,7 +239,8 @@ message ProjectFieldIdList {
 
 // Helper message for deduplicating delete file lists
 message DeleteFileList {
-  repeated IcebergDeleteFile delete_files = 1;
+  // Indices into IcebergScanCommon.delete_file_pool
+  repeated uint32 delete_file_indices = 1;
 }
 
 // Iceberg FileScanTask containing data file, delete files, and residual filter

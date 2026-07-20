@@ -21,6 +21,7 @@ package org.apache.comet
 
 import java.io.File
 import java.net.URI
+import java.nio.charset.StandardCharsets.UTF_8
 
 import scala.collection.mutable
 import scala.jdk.CollectionConverters._
@@ -39,6 +40,7 @@ import org.apache.spark.sql.types.{StringType, TimestampType}
 
 import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus, isSpark42Plus}
 import org.apache.comet.iceberg.RESTCatalogHelper
+import org.apache.comet.serde.OperatorOuterClass
 import org.apache.comet.testing.{FuzzDataGenerator, SchemaGenOptions}
 
 /**
@@ -94,6 +96,24 @@ class CometIcebergNativeSuite
       collectIcebergNativeScans(cometPlan).isEmpty,
       s"Expected fallback to Spark ($reason) but found a CometIcebergNativeScanExec. " +
         s"Plan:\n$cometPlan")
+  }
+
+  /** Counts non-overlapping occurrences of `needle` within `haystack`. */
+  private def countByteOccurrences(haystack: Array[Byte], needle: Array[Byte]): Int = {
+    require(needle.nonEmpty, "needle must be non-empty")
+    var count = 0
+    var i = 0
+    while (i <= haystack.length - needle.length) {
+      var j = 0
+      while (j < needle.length && haystack(i + j) == needle(j)) j += 1
+      if (j == needle.length) {
+        count += 1
+        i += needle.length
+      } else {
+        i += 1
+      }
+    }
+    count
   }
 
   test("create and query simple Iceberg table with Hadoop catalog") {
@@ -571,6 +591,94 @@ class CometIcebergNativeSuite
         checkIcebergNativeScan("SELECT * FROM test_cat.db.positional_delete_test ORDER BY id")
 
         spark.sql("DROP TABLE test_cat.db.positional_delete_test")
+      }
+    }
+  }
+
+  // Under Iceberg's default partition delete granularity, one position-delete file applies to every
+  // data file in the partition with a compatible sequence number (DeleteFileIndex.forDataFile).
+  // Interleaving inserts and deletes staggers data-file sequence numbers, so each FileScanTask sees
+  // a different subset of the same delete files. A shared delete file must be serialized once in
+  // the broadcast IcebergScanCommon, not once per referencing set: duplicating it is quadratic in
+  // the number of delete commits and can overflow protobuf's 2 GiB message limit
+  // (getSerializedSize() returns int, so it wraps to a negative array length).
+  test("delete file pool does not duplicate shared delete files (serde size)") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        spark.sql("""
+          CREATE TABLE test_cat.db.delete_pool_test (id INT, name STRING)
+          USING iceberg
+          TBLPROPERTIES (
+            'write.delete.mode' = 'merge-on-read',
+            'write.merge.mode' = 'merge-on-read',
+            'write.delete.granularity' = 'partition'
+          )
+        """)
+
+        // Interleave inserts and deletes. Each INSERT lands a data file at an increasing sequence
+        // number; each DELETE lands one partition-granularity position-delete file that references
+        // (and applies to) every prior data file still holding a matching row. Data file written in
+        // round r therefore sees delete files from rounds r..N-1, a distinct set per data file.
+        val rounds = 5
+        for (r <- 0 until rounds) {
+          val base = r * 100
+          val values = (1 to 50).map(i => s"(${base + i}, 'n${base + i}')").mkString(", ")
+          spark.sql(s"INSERT INTO test_cat.db.delete_pool_test VALUES $values")
+          // Delete one still-present row from every batch inserted so far so this delete file
+          // references multiple data files (partition granularity) and applies to all of them. The
+          // per-round offset (r + 2) is unique, so no row is deleted twice (which would make the
+          // delete match only the newest batch and defeat the staggering).
+          val ids = (0 to r).map(b => b * 100 + (r + 2)).mkString(", ")
+          spark.sql(s"DELETE FROM test_cat.db.delete_pool_test WHERE id IN ($ids)")
+        }
+
+        val (_, cometPlan) =
+          checkSparkAnswer("SELECT * FROM test_cat.db.delete_pool_test ORDER BY id")
+        val scans = collectIcebergNativeScans(cometPlan)
+        assert(scans.length == 1, s"expected one native scan, got ${scans.length}\n$cometPlan")
+
+        val commonBytes = scans.head.commonData
+        val common = OperatorOuterClass.IcebergScanCommon.parseFrom(commonBytes)
+
+        val distinctPaths =
+          common.getDeleteFilePoolList.asScala.map(_.getFilePath).toSeq
+        val totalReferences =
+          common.getDeleteFilesPoolList.asScala.map(_.getDeleteFileIndicesCount).sum
+
+        // Guard against a vacuous pass: we must actually exercise the shared-delete-file case
+        // (more references than distinct files, i.e. at least one file shared across tasks).
+        assert(
+          distinctPaths.size >= 2 && totalReferences > distinctPaths.size,
+          s"test setup produced too few shared delete files: ${distinctPaths.size} files, " +
+            s"$totalReferences references")
+
+        // Count raw-byte occurrences of each path so the check is agnostic to how the pool is
+        // structured (set-of-copies before the fix, flat index pool after).
+        val duplicated = distinctPaths
+          .map(p => p -> countByteOccurrences(commonBytes, p.getBytes(UTF_8)))
+          .filter(_._2 > 1)
+
+        logInfo(
+          s"IcebergScanCommon = ${commonBytes.length} bytes, " +
+            s"${distinctPaths.size} distinct delete files, " +
+            s"$totalReferences delete-file references")
+
+        assert(
+          duplicated.isEmpty,
+          s"delete files serialized more than once in IcebergScanCommon " +
+            s"(${commonBytes.length} bytes): " +
+            duplicated.map { case (p, c) => s"$p x$c" }.mkString(", "))
+
+        spark.sql("DROP TABLE test_cat.db.delete_pool_test")
       }
     }
   }
