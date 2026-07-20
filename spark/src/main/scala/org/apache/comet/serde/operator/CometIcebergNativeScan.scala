@@ -19,6 +19,8 @@
 
 package org.apache.comet.serde.operator
 
+import java.nio.charset.StandardCharsets.UTF_8
+
 import scala.collection.mutable
 import scala.jdk.CollectionConverters._
 
@@ -1027,16 +1029,67 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
       }
     }
 
-    val partitionDataPoolBytes = commonBuilder.getPartitionDataPoolList.asScala
-      .map(_.getSerializedSize)
-      .sum
+    // Per-pool byte sizes to diagnose an oversized common message. Sizes sum as Long because a
+    // single pool at or past protobuf's 2 GiB message limit overflows the int getSerializedSize,
+    // and the logging runs before toByteArray so the breakdown survives even if that allocation
+    // fails. String pools carry JSON, whose serialized size is its UTF-8 length.
+    def sumSizes(sizes: Iterator[Int]): Long = sizes.map(_.toLong).sum
+    def sumStrBytes(strings: mutable.Buffer[String]): Long =
+      strings.iterator.map(_.getBytes(UTF_8).length.toLong).sum
+    val commonPoolBytes: Seq[(String, Int, Long)] = Seq(
+      (
+        "schema",
+        commonBuilder.getSchemaPoolCount,
+        sumStrBytes(commonBuilder.getSchemaPoolList.asScala)),
+      (
+        "partition_type",
+        commonBuilder.getPartitionTypePoolCount,
+        sumStrBytes(commonBuilder.getPartitionTypePoolList.asScala)),
+      (
+        "partition_spec",
+        commonBuilder.getPartitionSpecPoolCount,
+        sumStrBytes(commonBuilder.getPartitionSpecPoolList.asScala)),
+      (
+        "name_mapping",
+        commonBuilder.getNameMappingPoolCount,
+        sumStrBytes(commonBuilder.getNameMappingPoolList.asScala)),
+      (
+        "project_field_ids",
+        commonBuilder.getProjectFieldIdsPoolCount,
+        sumSizes(
+          commonBuilder.getProjectFieldIdsPoolList.asScala.iterator.map(_.getSerializedSize))),
+      (
+        "partition_data",
+        commonBuilder.getPartitionDataPoolCount,
+        sumSizes(
+          commonBuilder.getPartitionDataPoolList.asScala.iterator.map(_.getSerializedSize))),
+      (
+        "delete_file",
+        commonBuilder.getDeleteFilePoolCount,
+        sumSizes(commonBuilder.getDeleteFilePoolList.asScala.iterator.map(_.getSerializedSize))),
+      (
+        "delete_files_set",
+        commonBuilder.getDeleteFilesPoolCount,
+        sumSizes(commonBuilder.getDeleteFilesPoolList.asScala.iterator.map(_.getSerializedSize))),
+      (
+        "residual",
+        commonBuilder.getResidualPoolCount,
+        sumSizes(commonBuilder.getResidualPoolList.asScala.iterator.map(_.getSerializedSize))))
+
+    val perPartitionSizes = perPartitionBuilders.map(_.getSerializedSize.toLong)
+    val perPartitionTotal = perPartitionSizes.sum
+    val perPartitionMax = if (perPartitionSizes.isEmpty) 0L else perPartitionSizes.max
 
     logInfo(s"IcebergScan: $totalTasks tasks, ${allPoolSizes.size} pools ($avgDedup% avg dedup)")
-    if (partitionDataToPoolIndex.nonEmpty) {
-      logInfo(
-        s"  Partition data pool: ${partitionDataToPoolIndex.size} unique values, " +
-          s"$partitionDataPoolBytes bytes (protobuf)")
-    }
+    logInfo(
+      "  Common pools (unique/bytes): " +
+        commonPoolBytes
+          .map { case (name, count, bytes) => s"$name=$count/$bytes" }
+          .mkString(", ") +
+        s"; total=${commonPoolBytes.map(_._3).sum} bytes")
+    logInfo(
+      s"  Per-partition messages: ${perPartitionBuilders.size}, " +
+        s"total=$perPartitionTotal bytes, max=$perPartitionMax bytes")
 
     val commonBytes = commonBuilder.build().toByteArray
     val perPartitionBytes = perPartitionBuilders.map(_.toByteArray).toArray

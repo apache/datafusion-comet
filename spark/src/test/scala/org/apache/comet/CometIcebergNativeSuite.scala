@@ -674,7 +674,7 @@ class CometIcebergNativeSuite
 
         assert(
           duplicated.isEmpty,
-          s"delete files serialized more than once in IcebergScanCommon " +
+          "delete files serialized more than once in IcebergScanCommon " +
             s"(${commonBytes.length} bytes): " +
             duplicated.map { case (p, c) => s"$p x$c" }.mkString(", "))
 
