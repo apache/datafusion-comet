@@ -16,6 +16,7 @@
 -- under the License.
 
 -- Config: spark.comet.exec.localTableScan.enabled=true
+-- Config: spark.comet.exec.shuffle.mode=native
 
 query
 SELECT * FROM VALUES
@@ -24,3 +25,15 @@ SELECT * FROM VALUES
   (make_interval(0, -1, 0, 1, 0, 0, -1)),
   (CAST(NULL AS INTERVAL))
 AS test_calendar_interval(i)
+
+-- Native shuffle materializes ARRAY<INTERVAL>; transform consumes its child interval vector
+-- through the JVM codegen dispatcher.
+query
+SELECT transform(a, x -> x)
+FROM (
+  SELECT * FROM VALUES
+    (1, array(make_interval(1, 2), CAST(NULL AS INTERVAL))),
+    (2, array(make_interval(0, -1, 0, 1, 0, 0, -1)))
+  AS t(id, a)
+  DISTRIBUTE BY id
+)
