@@ -596,8 +596,8 @@ private[codegen] object CometBatchKernelCodegenInput extends CometTypeShim {
     case ByteType => s"getByte($idx)"
     case ShortType => s"getShort($idx)"
     case IntegerType | DateType => s"getInt($idx)"
-    case LongType | TimestampType | TimestampNTZType | _: DayTimeIntervalType =>
-      s"getLong($idx)"
+    case LongType | TimestampType | TimestampNTZType | _: DayTimeIntervalType => s"getLong($idx)"
+    case dt if isTimeType(dt) => s"getLong($idx)"
     case FloatType => s"getFloat($idx)"
     case DoubleType => s"getDouble($idx)"
     case d: DecimalType => s"getDecimal($idx, ${d.precision}, ${d.scale})"
@@ -911,7 +911,8 @@ private[codegen] object CometBatchKernelCodegenInput extends CometTypeShim {
       case (f, fi)
           if f.sparkType == LongType || f.sparkType == TimestampType ||
             f.sparkType == TimestampNTZType ||
-            f.sparkType.isInstanceOf[DayTimeIntervalType] =>
+            f.sparkType.isInstanceOf[DayTimeIntervalType] ||
+            isTimeType(f.sparkType) =>
         fieldReadScalar(fi, f.sparkType, f.nullable)
     }
     val floatCases =
