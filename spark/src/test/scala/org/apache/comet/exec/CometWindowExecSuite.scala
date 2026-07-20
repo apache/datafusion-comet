@@ -46,7 +46,7 @@ class CometWindowExecSuite extends CometTestBase {
       pos: Position): Unit = {
     super.test(testName, testTags: _*) {
       withSQLConf(
-        CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+        CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
         CometConf.COMET_EXEC_WINDOW_ENABLED.key -> "true",
         "spark.comet.operator.WindowExec.allowIncompatible" -> "true",
         "spark.comet.explainFallback.enabled" -> "true",
@@ -120,7 +120,7 @@ class CometWindowExecSuite extends CometTestBase {
   test("lead/lag should return the default value if the offset row does not exist") {
     withSQLConf(
       CometConf.COMET_ENABLED.key -> "true",
-      CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
       CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
       checkSparkAnswerAndOperator(sql("""
                              |SELECT
@@ -342,7 +342,7 @@ class CometWindowExecSuite extends CometTestBase {
   test("Windows support") {
     Seq("true", "false").foreach(aqeEnabled =>
       withSQLConf(
-        CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+        CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqeEnabled) {
         withParquetTable((0 until 10).map(i => (i, 10 - i)), "t1") { // TODO: test nulls
           val aggregateFunctions =

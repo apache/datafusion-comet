@@ -146,8 +146,8 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         StructField("v", IntegerType, nullable = false)))
     val rows = (0 until 1000).map(i => Row(if (i % 2 == 0) Row(i.toLong) else null, i))
     withSQLConf(
-      CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
-      CometConf.COMET_EXEC_SHUFFLE_WITH_HASH_PARTITIONING_ENABLED.key -> "true") {
+      CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_SHUFFLE_NATIVE_HASH_PARTITIONING_ENABLED.key -> "true") {
       val df = spark
         .createDataFrame(spark.sparkContext.parallelize(rows), schema)
         .repartition(4, col("v")) // materialize the typed struct through a Comet shuffle
@@ -2039,7 +2039,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       SQLConf.COALESCE_PARTITIONS_ENABLED.key -> "true",
       CometConf.COMET_ENABLED.key -> "true",
       CometConf.COMET_EXEC_ENABLED.key -> "true",
-      CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "false",
+      CometConf.COMET_SHUFFLE_ENABLED.key -> "false",
       EXTENDED_EXPLAIN_PROVIDERS_KEY -> "org.apache.comet.ExtendedExplainInfo") {
       val table = "test"
       withTable(table) {
@@ -2061,7 +2061,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               "extractintervalmonths is not supported")),
           (
             s"SELECT sum(c0), sum(c2) from $table group by c1",
-            Set("Comet shuffle is not enabled: spark.comet.exec.shuffle.enabled is not enabled")),
+            Set("Comet shuffle is not enabled: spark.comet.shuffle.enabled is not enabled")),
           (
             "SELECT A.c1, A.sum_c0, A.sum_c2, B.casted from "
               + s"(SELECT c1, sum(c0) as sum_c0, sum(c2) as sum_c2 from $table group by c1) as A, "
@@ -2069,7 +2069,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               + "where A.c1 = B.c1 ",
             Set(
               "Cast from CalendarIntervalType to StringType is not supported",
-              "Comet shuffle is not enabled: spark.comet.exec.shuffle.enabled is not enabled")),
+              "Comet shuffle is not enabled: spark.comet.shuffle.enabled is not enabled")),
           (s"select * from $table LIMIT 10 OFFSET 3", Set("Comet shuffle is not enabled")))
           .foreach(test => {
             val qry = test._1

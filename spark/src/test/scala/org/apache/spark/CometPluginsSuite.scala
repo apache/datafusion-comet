@@ -142,7 +142,7 @@ class CometPluginsDefaultSuite extends CometTestBase {
     conf.set("spark.executor.memoryOverheadFactor", "0.5")
     conf.set("spark.plugins", "org.apache.spark.CometPlugin")
     conf.set("spark.comet.enabled", "true")
-    conf.set("spark.comet.exec.shuffle.enabled", "true")
+    conf.set("spark.comet.shuffle.enabled", "true")
     conf.set("spark.comet.exec.onHeap.enabled", "true")
     conf
   }
@@ -171,7 +171,7 @@ class CometPluginsNonOverrideSuite extends CometTestBase {
     conf.set("spark.executor.memoryOverheadFactor", "0.5")
     conf.set("spark.plugins", "org.apache.spark.CometPlugin")
     conf.set("spark.comet.enabled", "true")
-    conf.set("spark.comet.exec.shuffle.enabled", "false")
+    conf.set("spark.comet.shuffle.enabled", "false")
     conf.set("spark.comet.exec.enabled", "false")
     conf.set("spark.comet.exec.onHeap.enabled", "true")
     conf
@@ -200,7 +200,7 @@ class CometPluginsUnifiedModeOverrideSuite extends CometTestBase {
     conf.set("spark.comet.enabled", "true")
     conf.set("spark.memory.offHeap.enabled", "true")
     conf.set("spark.memory.offHeap.size", "2G")
-    conf.set("spark.comet.exec.shuffle.enabled", "true")
+    conf.set("spark.comet.shuffle.enabled", "true")
     conf.set("spark.comet.exec.enabled", "true")
     conf.set("spark.comet.memory.overhead.factor", "0.5")
     conf

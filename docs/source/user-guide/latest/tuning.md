@@ -129,12 +129,12 @@ To enable Comet shuffle, set the following configuration in your Spark configura
 
 ```
 spark.shuffle.manager=org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager
-spark.comet.exec.shuffle.enabled=true
+spark.comet.shuffle.enabled=true
 ```
 
 `spark.shuffle.manager` is a Spark static configuration which cannot be changed at runtime.
 It must be set before the Spark context is created. You can enable or disable Comet shuffle
-at runtime by setting `spark.comet.exec.shuffle.enabled` to `true` or `false`.
+at runtime by setting `spark.comet.shuffle.enabled` to `true` or `false`.
 Once it is disabled, Comet will fall back to the default Spark shuffle manager.
 
 ### Shuffle Implementations
@@ -158,7 +158,7 @@ By default, Comet will convert a Spark `ShuffleExchangeExec` to columnar shuffle
 non-Comet (Spark) plan. The benefit is that the next query stage can start as native Comet execution, since the
 shuffle output is already in Arrow format. The cost is a row to columnar conversion at the shuffle boundary on the
 write side. To restrict columnar shuffle to cases where the child is already a Comet plan, set
-`spark.comet.exec.shuffle.convertFromSparkPlan.enabled=false`. Shuffles whose child is a Spark plan will then be left
+`spark.comet.shuffle.convertFromSparkPlan.enabled=false`. Shuffles whose child is a Spark plan will then be left
 as native Spark shuffles, which avoids the row to columnar conversion but means the downstream stage will also start
 on Spark.
 
@@ -177,7 +177,7 @@ Each revert is logged at `INFO` level on the driver as `Reverting Comet columnar
 <parent> and <child>`, which lets you correlate any unexpected behavior with this optimization.
 
 This optimization is enabled by default and can be disabled by setting
-`spark.comet.exec.shuffle.revertRedundantColumnar.enabled=false`, in which case Comet will keep the columnar shuffle
+`spark.comet.shuffle.revertRedundantColumnar.enabled=false`, in which case Comet will keep the columnar shuffle
 even when both its parent and child are non-Comet operators.
 
 ### Shuffle Compression

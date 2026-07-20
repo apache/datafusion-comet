@@ -221,7 +221,7 @@ class CometNativeShuffleWriter[K, V](
     shuffleWriterBuilder.setOutputIndexFile(indexFile)
 
     if (SparkEnv.get.conf.getBoolean("spark.shuffle.compress", true)) {
-      val codec = CometConf.COMET_EXEC_SHUFFLE_COMPRESSION_CODEC.get() match {
+      val codec = CometConf.COMET_SHUFFLE_COMPRESSION_CODEC.get() match {
         case "zstd" => CompressionCodec.Zstd
         case "lz4" => CompressionCodec.Lz4
         case "snappy" => CompressionCodec.Snappy
@@ -231,10 +231,9 @@ class CometNativeShuffleWriter[K, V](
     } else {
       shuffleWriterBuilder.setCodec(CompressionCodec.None)
     }
-    shuffleWriterBuilder.setCompressionLevel(
-      CometConf.COMET_EXEC_SHUFFLE_COMPRESSION_ZSTD_LEVEL.get)
+    shuffleWriterBuilder.setCompressionLevel(CometConf.COMET_SHUFFLE_COMPRESSION_ZSTD_LEVEL.get)
     shuffleWriterBuilder.setWriteBufferSize(
-      CometConf.COMET_SHUFFLE_WRITE_BUFFER_SIZE.get().min(Int.MaxValue).toInt)
+      CometConf.COMET_SHUFFLE_NATIVE_WRITE_BUFFER_SIZE.get().min(Int.MaxValue).toInt)
 
     outputPartitioning match {
       case p if isSinglePartitioning(p) =>
@@ -329,7 +328,7 @@ class CometNativeShuffleWriter[K, V](
         val partitioning = PartitioningOuterClass.RoundRobinPartition.newBuilder()
         partitioning.setNumPartitions(outputPartitioning.numPartitions)
         partitioning.setMaxHashColumns(
-          CometConf.COMET_EXEC_SHUFFLE_WITH_ROUND_ROBIN_PARTITIONING_MAX_HASH_COLUMNS.get())
+          CometConf.COMET_SHUFFLE_NATIVE_ROUND_ROBIN_PARTITIONING_MAX_HASH_COLUMNS.get())
 
         val partitioningBuilder = PartitioningOuterClass.Partitioning.newBuilder()
         shuffleWriterBuilder.setPartitioning(

@@ -132,12 +132,12 @@ object CometSparkSessionExtensions extends Logging {
       return false
     }
 
-    if (COMET_EXEC_SHUFFLE_ENABLED.get(conf) && !isCometShuffleManagerEnabled(conf)) {
+    if (COMET_SHUFFLE_ENABLED.get(conf) && !isCometShuffleManagerEnabled(conf)) {
       logWarning(
         "Comet extension is disabled because spark.shuffle.manager is not set to " +
           "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager. " +
           "Comet provides limited benefit without its shuffle manager. " +
-          s"Set ${COMET_EXEC_SHUFFLE_ENABLED.key}=false to keep Comet enabled with " +
+          s"Set ${COMET_SHUFFLE_ENABLED.key}=false to keep Comet enabled with " +
           "Spark's default shuffle manager.")
       return false
     }
@@ -172,11 +172,11 @@ object CometSparkSessionExtensions extends Logging {
   }
 
   // Check whether Comet shuffle is enabled:
-  // 1. `COMET_EXEC_SHUFFLE_ENABLED` is true
+  // 1. `COMET_SHUFFLE_ENABLED` is true
   // 2. `spark.shuffle.manager` is set to `CometShuffleManager`
   // 3. Off-heap memory is enabled || Spark/Comet unit testing
   def isCometShuffleEnabled(conf: SQLConf): Boolean =
-    COMET_EXEC_SHUFFLE_ENABLED.get(conf) && isCometShuffleManagerEnabled(conf)
+    COMET_SHUFFLE_ENABLED.get(conf) && isCometShuffleManagerEnabled(conf)
 
   def isCometShuffleManagerEnabled(conf: SQLConf): Boolean = {
     conf.contains("spark.shuffle.manager") && conf.getConfString("spark.shuffle.manager") ==
@@ -210,7 +210,7 @@ object CometSparkSessionExtensions extends Logging {
    */
   def shouldOverrideMemoryConf(conf: SparkConf): Boolean = {
     val cometEnabled = getBooleanConf(conf, CometConf.COMET_ENABLED)
-    val cometShuffleEnabled = getBooleanConf(conf, CometConf.COMET_EXEC_SHUFFLE_ENABLED)
+    val cometShuffleEnabled = getBooleanConf(conf, CometConf.COMET_SHUFFLE_ENABLED)
     val cometExecEnabled = getBooleanConf(conf, CometConf.COMET_EXEC_ENABLED)
     val offHeapMode = CometSparkSessionExtensions.isOffHeapEnabled(conf)
     cometEnabled && (cometShuffleEnabled || cometExecEnabled) && !offHeapMode
@@ -253,7 +253,7 @@ object CometSparkSessionExtensions extends Logging {
 
     val cometMemoryOverhead = getCometMemoryOverheadInMiB(sparkConf)
 
-    val overheadFactor = COMET_ONHEAP_SHUFFLE_MEMORY_FACTOR.get(conf)
+    val overheadFactor = COMET_SHUFFLE_COLUMNAR_MEMORY_FACTOR.get(conf)
 
     val shuffleMemorySize = (overheadFactor * cometMemoryOverhead).toLong
     if (shuffleMemorySize > cometMemoryOverhead) {

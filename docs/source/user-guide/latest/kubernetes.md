@@ -79,8 +79,8 @@ spec:
     "spark.plugins": "org.apache.spark.CometPlugin"
     "spark.comet.enabled": "true"
     "spark.comet.exec.enabled": "true"
-    "spark.comet.exec.shuffle.enabled": "true"
-    "spark.comet.exec.shuffle.mode": "auto"
+    "spark.comet.shuffle.enabled": "true"
+    "spark.comet.shuffle.mode": "auto"
     "spark.shuffle.manager": "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager"
   sparkVersion: 4.1.2
   driver:

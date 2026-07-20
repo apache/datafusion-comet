@@ -31,7 +31,7 @@ class CometSparkSessionExtensionsSuite extends CometTestBase {
     val conf = new SQLConf
     // Disable Comet shuffle so this test can focus on other checks without needing
     // spark.shuffle.manager to be set.
-    conf.setConfString(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key, "false")
+    conf.setConfString(CometConf.COMET_SHUFFLE_ENABLED.key, "false")
 
     conf.setConfString(CometConf.COMET_ENABLED.key, "false")
     assert(!isCometLoaded(conf))
@@ -61,11 +61,11 @@ class CometSparkSessionExtensionsSuite extends CometTestBase {
     assert(!isCometLoaded(conf))
 
     // Opt out: shuffle.enabled=false. Comet should load (assumes native lib is available).
-    conf.setConfString(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key, "false")
+    conf.setConfString(CometConf.COMET_SHUFFLE_ENABLED.key, "false")
     assert(isCometLoaded(conf))
 
     // shuffle.enabled=true with the Comet shuffle manager registered: Comet should load.
-    conf.setConfString(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key, "true")
+    conf.setConfString(CometConf.COMET_SHUFFLE_ENABLED.key, "true")
     conf.setConfString(
       "spark.shuffle.manager",
       "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
@@ -123,7 +123,7 @@ class CometSparkSessionExtensionsSuite extends CometTestBase {
     val conf = new SparkConf()
 
     val sqlConf = new SQLConf
-    sqlConf.setConfString(CometConf.COMET_ONHEAP_SHUFFLE_MEMORY_FACTOR.key, "0.2")
+    sqlConf.setConfString(CometConf.COMET_SHUFFLE_COLUMNAR_MEMORY_FACTOR.key, "0.2")
 
     // Minimum Comet memory overhead is 384MB
     assert(

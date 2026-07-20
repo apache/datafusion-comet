@@ -47,7 +47,7 @@ object CometExecBenchmark extends CometBenchmarkBase {
         "spark.shuffle.manager",
         "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
       .set("spark.comet.columnar.shuffle.async.thread.num", "7")
-      .set("spark.comet.columnar.shuffle.spill.threshold", "30000")
+      .set("spark.comet.shuffle.columnar.spillThreshold", "30000")
 
     val sparkSession = SparkSession.builder
       .config(conf)
@@ -126,7 +126,7 @@ object CometExecBenchmark extends CometBenchmarkBase {
           withSQLConf(
             CometConf.COMET_ENABLED.key -> "true",
             CometConf.COMET_EXEC_ENABLED.key -> "true",
-            CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+            CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
             CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
             spark.sql(
               "SELECT (SELECT max(col1) AS parquetV1Table FROM parquetV1Table) AS a, " +
