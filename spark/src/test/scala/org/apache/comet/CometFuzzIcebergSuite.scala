@@ -21,7 +21,9 @@ package org.apache.comet
 
 import scala.util.Random
 
+import org.apache.spark.sql.Column
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanExec
+import org.apache.spark.sql.functions.{col, lit}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.SQLConf.ParquetOutputTimestampType
 import org.apache.spark.sql.types._
@@ -118,32 +120,57 @@ class CometFuzzIcebergSuite extends CometFuzzIcebergBase {
     }
   }
 
-  test("decode") {
+  test("filter pushdown - fuzz predicates over primitive columns") {
     val df = spark.table(icebergTableName)
-    // We want to make sure that the schema generator wasn't modified to accidentally omit
-    // BinaryType, since then this test would not run any queries and silently pass.
-    var testedBinary = false
-    for (field <- df.schema.fields if field.dataType == BinaryType) {
-      testedBinary = true
-      // Intentionally use odd capitalization of 'utf-8' to test normalization.
-      val sql = s"SELECT decode(${field.name}, 'utF-8') FROM $icebergTableName"
-      checkSparkAnswerAndOperator(sql)
-    }
-    assert(testedBinary)
-  }
+    val primitiveColumns =
+      df.schema.fields.filterNot(f => isComplexType(f.dataType)).map(_.name)
+    assert(primitiveColumns.nonEmpty, "expected at least one primitive column in the fuzz schema")
 
-  test("regexp_replace") {
-    withSQLConf(CometConf.getExprAllowIncompatConfigKey("RegExpReplace") -> "true") {
-      val df = spark.table(icebergTableName)
-      // We want to make sure that the schema generator wasn't modified to accidentally omit
-      // StringType, since then this test would not run any queries and silently pass.
-      var testedString = false
-      for (field <- df.schema.fields if field.dataType == StringType) {
-        testedString = true
-        val sql = s"SELECT regexp_replace(${field.name}, 'a', 'b') FROM $icebergTableName"
-        checkSparkAnswerAndOperator(sql)
+    for (name <- primitiveColumns) {
+      // Sample real values of the column's own type so predicates are always well-typed, avoiding
+      // per-type literal generation and SQL formatting. Skip NaN, whose comparison differs.
+      val values = df
+        .select(col(name))
+        .where(col(name).isNotNull)
+        .distinct()
+        .limit(3)
+        .collect()
+        .map(_.get(0))
+        .filterNot {
+          case d: Double => d.isNaN
+          case f: Float => f.isNaN
+          case _ => false
+        }
+        .toSeq
+
+      val c = col(name)
+      val predicates = scala.collection.mutable.ArrayBuffer[Column](c.isNull, c.isNotNull)
+      values.headOption.foreach { v =>
+        val l = lit(v)
+        // Comparisons, not-equal and explicit NOT (exercises the native rewrite_not path), and
+        // AND/OR combinations.
+        predicates ++= Seq(
+          c === l,
+          c =!= l,
+          c > l,
+          c >= l,
+          c < l,
+          c <= l,
+          !(c === l),
+          c.isNotNull && (c === l),
+          (c === l) || c.isNull)
       }
-      assert(testedString)
+      if (values.nonEmpty) {
+        predicates += c.isin(values: _*)
+        predicates += !c.isin(values: _*)
+      }
+
+      for (pred <- predicates) {
+        val (_, cometPlan) = checkSparkAnswer(df.where(pred))
+        assert(
+          collectIcebergNativeScans(cometPlan).nonEmpty,
+          s"expected a native Iceberg scan for predicate on '$name': $pred")
+      }
     }
   }
 

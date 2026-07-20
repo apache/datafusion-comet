@@ -667,11 +667,6 @@ class CometIcebergNativeSuite
           .map(p => p -> countByteOccurrences(commonBytes, p.getBytes(UTF_8)))
           .filter(_._2 > 1)
 
-        logInfo(
-          s"IcebergScanCommon = ${commonBytes.length} bytes, " +
-            s"${distinctPaths.size} distinct delete files, " +
-            s"$totalReferences delete-file references")
-
         assert(
           duplicated.isEmpty,
           "delete files serialized more than once in IcebergScanCommon " +
@@ -3084,6 +3079,71 @@ class CometIcebergNativeSuite
         """)
 
         spark.sql("DROP TABLE test_cat.db.geolocation_trips")
+      }
+    }
+  }
+
+  // A large static filter on a non-partition column gives every file the identical residual, so
+  // the residual pool must collapse to a single entry. Residuals serialize as IcebergPredicate
+  // without expr_id/query_context, so structurally-equal residuals dedup; a regression that
+  // reintroduced per-node identity metadata would make the pool grow with the task count and could
+  // overflow the broadcast IcebergScanCommon.
+  test("residual pool dedups a shared non-partition filter to one entry") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        spark.sql("""
+          CREATE TABLE test_cat.db.residual_dedup_test (id INT, region STRING, payload STRING)
+          USING iceberg
+          PARTITIONED BY (region)
+          TBLPROPERTIES ('format-version' = '2')
+        """)
+
+        // One data file per region, so the scan yields many FileScanTasks. The filter below is on
+        // payload, a non-partition column, so each task's residual is the identical full IN.
+        val values = (0 until 40)
+          .flatMap(r => (0 until 25).map(i => s"($i, 'r$r', 'p$i')"))
+          .mkString(", ")
+        spark.sql(s"INSERT INTO test_cat.db.residual_dedup_test VALUES $values")
+
+        val inList = (0 until 200).map(i => s"'p$i'").mkString(", ")
+        val (_, cometPlan) = checkSparkAnswer(
+          "SELECT * FROM test_cat.db.residual_dedup_test " +
+            s"WHERE payload IN ($inList) ORDER BY id, region")
+        val scans = collectIcebergNativeScans(cometPlan)
+        assert(scans.length == 1, s"expected one native scan, got ${scans.length}\n$cometPlan")
+
+        val common = OperatorOuterClass.IcebergScanCommon.parseFrom(scans.head.commonData)
+        val residuals = common.getResidualPoolList.asScala.toSeq
+
+        // Count how many FileScanTasks reference a residual across all partitions. Every task here
+        // carries the same IN predicate, so a correct pool holds one entry shared by all of them.
+        val tasksWithResidual = scans.head.perPartitionData.map { bytes =>
+          OperatorOuterClass.IcebergScan
+            .parseFrom(bytes)
+            .getFileScanTasksList
+            .asScala
+            .count(_.hasResidualIdx)
+        }.sum
+
+        // Guard against a vacuous pass: the dedup is only meaningful if many tasks share the entry.
+        assert(
+          tasksWithResidual > 1,
+          s"expected multiple tasks to carry a residual, got $tasksWithResidual")
+        assert(
+          residuals.size == 1,
+          s"expected the shared non-partition residual to dedup to 1 pool entry across " +
+            s"$tasksWithResidual task references, got ${residuals.size}")
+
+        spark.sql("DROP TABLE test_cat.db.residual_dedup_test")
       }
     }
   }

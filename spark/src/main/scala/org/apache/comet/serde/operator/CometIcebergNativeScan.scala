@@ -20,6 +20,7 @@
 package org.apache.comet.serde.operator
 
 import java.nio.charset.StandardCharsets.UTF_8
+import java.util.Base64
 
 import scala.collection.mutable
 import scala.jdk.CollectionConverters._
@@ -34,12 +35,13 @@ import org.apache.spark.sql.comet.shims.ShimDataSourceRDDPartition
 import org.apache.spark.sql.execution.datasources.v2.{BatchScanExec, DataSourceRDD, DataSourceRDDPartition}
 import org.apache.spark.sql.types._
 
+import com.google.protobuf.ByteString
+
 import org.apache.comet.{CometConf, ConfigEntry}
 import org.apache.comet.iceberg.{CometIcebergNativeScanMetadata, IcebergReflection}
 import org.apache.comet.serde.{CometOperatorSerde, OperatorOuterClass}
-import org.apache.comet.serde.ExprOuterClass.Expr
 import org.apache.comet.serde.OperatorOuterClass.{Operator, SparkStructField}
-import org.apache.comet.serde.QueryPlanSerde.{exprToProto, serializeDataType}
+import org.apache.comet.serde.QueryPlanSerde.serializeDataType
 
 object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] with Logging {
 
@@ -74,21 +76,33 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
   }
 
   /**
-   * Converts an Iceberg partition value to protobuf format. Protobuf is less verbose than JSON.
-   * The following types are also serialized as integer values instead of as strings - Timestamps,
-   * Dates, Decimals, FieldIDs
+   * Wraps an Iceberg partition value (a typed primitive) in a PartitionValue. The value encoding
+   * is shared with predicate literals via [[icebergLiteralToProto]].
    */
   private def partitionValueToProto(
       fieldId: Int,
       fieldTypeStr: String,
-      value: Any): OperatorOuterClass.PartitionValue = {
-    val builder = OperatorOuterClass.PartitionValue.newBuilder()
-    builder.setFieldId(fieldId)
+      value: Any): OperatorOuterClass.PartitionValue =
+    OperatorOuterClass.PartitionValue
+      .newBuilder()
+      .setFieldId(fieldId)
+      .setLiteral(icebergLiteralToProto(fieldTypeStr, value))
+      .build()
+
+  /**
+   * Converts an Iceberg primitive value to a typed IcebergLiteral, keyed on the Iceberg type
+   * name. Protobuf is less verbose than JSON; timestamps/dates/decimals are serialized as their
+   * integer or byte encodings rather than strings. Shared by partition values and predicate
+   * literals.
+   */
+  private def icebergLiteralToProto(
+      fieldTypeStr: String,
+      value: Any): OperatorOuterClass.IcebergLiteral = {
+    val builder = OperatorOuterClass.IcebergLiteral.newBuilder()
 
     if (value == null) {
       builder.setIsNull(true)
     } else {
-      builder.setIsNull(false)
       fieldTypeStr match {
         case t if t.startsWith("timestamp") =>
           val micros = value match {
@@ -107,13 +121,17 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
           builder.setDateVal(days)
 
         case d if d.startsWith("decimal(") =>
-          // Serialize as unscaled BigInteger bytes
           val bigDecimal = value match {
             case bd: java.math.BigDecimal => bd
             case _ => new java.math.BigDecimal(value.toString)
           }
-          val unscaledBytes = bigDecimal.unscaledValue().toByteArray
-          builder.setDecimalVal(com.google.protobuf.ByteString.copyFrom(unscaledBytes))
+          builder.setDecimalVal(
+            OperatorOuterClass.IcebergDecimal
+              .newBuilder()
+              .setUnscaled(ByteString.copyFrom(bigDecimal.unscaledValue().toByteArray))
+              .setPrecision(bigDecimal.precision())
+              .setScale(bigDecimal.scale())
+              .build())
 
         case "string" =>
           builder.setStringVal(value.toString)
@@ -173,7 +191,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
               bb.putLong(uuid.getLeastSignificantBits)
               bb.array()
           }
-          builder.setUuidVal(com.google.protobuf.ByteString.copyFrom(uuidBytes))
+          builder.setUuidVal(ByteString.copyFrom(uuidBytes))
 
         case t if t.startsWith("fixed[") || t.startsWith("binary") =>
           val bytes = value match {
@@ -181,9 +199,9 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
             case _ => value.toString.getBytes("UTF-8")
           }
           if (t.startsWith("fixed")) {
-            builder.setFixedVal(com.google.protobuf.ByteString.copyFrom(bytes))
+            builder.setFixedVal(ByteString.copyFrom(bytes))
           } else {
-            builder.setBinaryVal(com.google.protobuf.ByteString.copyFrom(bytes))
+            builder.setBinaryVal(ByteString.copyFrom(bytes))
           }
 
         // Fallback: infer type from Java type ?
@@ -201,24 +219,6 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
     }
 
     builder.build()
-  }
-
-  /**
-   * Helper to extract a literal from an Iceberg expression and build a binary predicate.
-   */
-  private def buildBinaryPredicate(
-      exprClass: Class[_],
-      icebergExpr: Any,
-      attribute: Attribute,
-      builder: (Expression, Expression) => Expression): Option[Expression] = {
-    try {
-      val literalMethod = exprClass.getMethod("literal")
-      val literal = literalMethod.invoke(icebergExpr)
-      val value = convertIcebergLiteral(literal, attribute.dataType)
-      Some(builder(attribute, value))
-    } catch {
-      case _: Exception => None
-    }
   }
 
   /**
@@ -464,7 +464,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
 
             // Deduplicate by protobuf bytes (use Base64 string as key)
             val partitionDataBytes = partitionDataProto.toByteArray
-            val partitionDataKey = java.util.Base64.getEncoder.encodeToString(partitionDataBytes)
+            val partitionDataKey = Base64.getEncoder.encodeToString(partitionDataBytes)
 
             val partitionDataIdx = partitionDataToPoolIndex.getOrElseUpdate(
               partitionDataKey, {
@@ -534,111 +534,104 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
   }
 
   /**
-   * Converts Iceberg Expression objects to Spark Catalyst expressions.
+   * Converts an Iceberg residual Expression into an IcebergPredicate for native row-group
+   * pruning.
    *
-   * This is used to extract per-file residual expressions from Iceberg FileScanTasks. Residuals
-   * are created by Iceberg's ResidualEvaluator through partial evaluation of scan filters against
-   * each file's partition data. These residuals enable row-group level filtering in the Parquet
-   * reader.
-   *
-   * The conversion uses reflection because Iceberg expressions are not directly accessible from
-   * Spark's classpath during query planning.
+   * Residuals come from Iceberg's ResidualEvaluator (partial evaluation of the scan filter
+   * against each file's partition data). This is only a pruning hint: the CometFilter above the
+   * scan enforces correctness, so any node or literal we cannot represent yields None (no
+   * pushdown). Uses reflection because Iceberg's expression classes are not on Spark's classpath
+   * at planning time; residuals are unbound predicates carrying a NamedReference (column name)
+   * and a literal.
    */
-  def convertIcebergExpression(icebergExpr: Any, output: Seq[Attribute]): Option[Expression] = {
+  def icebergExprToProto(
+      icebergExpr: Any,
+      output: Seq[Attribute]): Option[OperatorOuterClass.IcebergPredicate] = {
     try {
       val exprClass = icebergExpr.getClass
       val attributeMap = output.map(attr => attr.name -> attr).toMap
 
-      // Check for UnboundPredicate
       if (exprClass.getName.endsWith(Constants.ExpressionTypes.UNBOUND_PREDICATE)) {
-        val opMethod = exprClass.getMethod("op")
-        val termMethod = exprClass.getMethod("term")
-        val operation = opMethod.invoke(icebergExpr)
-        val term = termMethod.invoke(icebergExpr)
+        val operation = exprClass.getMethod("op").invoke(icebergExpr).toString
+        val term = exprClass.getMethod("term").invoke(icebergExpr)
+        val ref = term.getClass.getMethod("ref").invoke(term)
+        val columnName = ref.getClass.getMethod("name").invoke(ref).asInstanceOf[String]
 
-        // Get column name from term
-        val refMethod = term.getClass.getMethod("ref")
-        val ref = refMethod.invoke(term)
-        val nameMethod = ref.getClass.getMethod("name")
-        val columnName = nameMethod.invoke(ref).asInstanceOf[String]
-
-        val attr = attributeMap.get(columnName)
-
-        val opName = operation.toString
-
-        attr.flatMap { attribute =>
-          opName match {
-            case Constants.Operations.IS_NULL =>
-              Some(IsNull(attribute))
-
-            case Constants.Operations.IS_NOT_NULL | Constants.Operations.NOT_NULL =>
-              Some(IsNotNull(attribute))
-
-            case Constants.Operations.EQ =>
-              buildBinaryPredicate(exprClass, icebergExpr, attribute, EqualTo)
-
-            case Constants.Operations.NOT_EQ =>
-              buildBinaryPredicate(
+        attributeMap.get(columnName).flatMap { attribute =>
+          import Constants.Operations._
+          import OperatorOuterClass.IcebergPredicateOperator
+          operation match {
+            case IS_NULL => Some(unaryPredicate(columnName, IcebergPredicateOperator.IsNull))
+            case IS_NOT_NULL | NOT_NULL =>
+              Some(unaryPredicate(columnName, IcebergPredicateOperator.NotNull))
+            case EQ =>
+              binaryPredicate(
                 exprClass,
                 icebergExpr,
+                columnName,
                 attribute,
-                (a, v) => Not(EqualTo(a, v)))
-
-            case Constants.Operations.LT =>
-              buildBinaryPredicate(exprClass, icebergExpr, attribute, LessThan)
-
-            case Constants.Operations.LT_EQ =>
-              buildBinaryPredicate(exprClass, icebergExpr, attribute, LessThanOrEqual)
-
-            case Constants.Operations.GT =>
-              buildBinaryPredicate(exprClass, icebergExpr, attribute, GreaterThan)
-
-            case Constants.Operations.GT_EQ =>
-              buildBinaryPredicate(exprClass, icebergExpr, attribute, GreaterThanOrEqual)
-
-            case Constants.Operations.IN =>
-              val literalsMethod = exprClass.getMethod("literals")
-              val literals = literalsMethod.invoke(icebergExpr).asInstanceOf[java.util.List[_]]
-              val values =
-                literals.asScala.map(lit => convertIcebergLiteral(lit, attribute.dataType))
-              Some(In(attribute, values.toSeq))
-
-            case Constants.Operations.NOT_IN =>
-              val literalsMethod = exprClass.getMethod("literals")
-              val literals = literalsMethod.invoke(icebergExpr).asInstanceOf[java.util.List[_]]
-              val values =
-                literals.asScala.map(lit => convertIcebergLiteral(lit, attribute.dataType))
-              Some(Not(In(attribute, values.toSeq)))
-
-            case _ =>
-              None
+                IcebergPredicateOperator.Eq)
+            case NOT_EQ =>
+              binaryPredicate(
+                exprClass,
+                icebergExpr,
+                columnName,
+                attribute,
+                IcebergPredicateOperator.NotEq)
+            case LT =>
+              binaryPredicate(
+                exprClass,
+                icebergExpr,
+                columnName,
+                attribute,
+                IcebergPredicateOperator.LessThan)
+            case LT_EQ =>
+              binaryPredicate(
+                exprClass,
+                icebergExpr,
+                columnName,
+                attribute,
+                IcebergPredicateOperator.LessThanOrEq)
+            case GT =>
+              binaryPredicate(
+                exprClass,
+                icebergExpr,
+                columnName,
+                attribute,
+                IcebergPredicateOperator.GreaterThan)
+            case GT_EQ =>
+              binaryPredicate(
+                exprClass,
+                icebergExpr,
+                columnName,
+                attribute,
+                IcebergPredicateOperator.GreaterThanOrEq)
+            case IN => setPredicate(exprClass, icebergExpr, columnName, attribute)
+            // NOT_IN is inherently unprunable from column stats, so it is not pushed.
+            case _ => None
           }
         }
       } else if (exprClass.getName.endsWith(Constants.ExpressionTypes.AND)) {
-        val leftMethod = exprClass.getMethod("left")
-        val rightMethod = exprClass.getMethod("right")
-        val left = leftMethod.invoke(icebergExpr)
-        val right = rightMethod.invoke(icebergExpr)
-
-        (convertIcebergExpression(left, output), convertIcebergExpression(right, output)) match {
-          case (Some(l), Some(r)) => Some(And(l, r))
-          case _ => None
+        val left = icebergExprToProto(exprClass.getMethod("left").invoke(icebergExpr), output)
+        val right = icebergExprToProto(exprClass.getMethod("right").invoke(icebergExpr), output)
+        (left, right) match {
+          // Dropping a conjunct only weakens the pruning predicate, so keep any convertible side.
+          case (Some(l), Some(r)) => Some(logicalPredicate(isAnd = true, l, r))
+          case (Some(p), None) => Some(p)
+          case (None, Some(p)) => Some(p)
+          case (None, None) => None
         }
       } else if (exprClass.getName.endsWith(Constants.ExpressionTypes.OR)) {
-        val leftMethod = exprClass.getMethod("left")
-        val rightMethod = exprClass.getMethod("right")
-        val left = leftMethod.invoke(icebergExpr)
-        val right = rightMethod.invoke(icebergExpr)
-
-        (convertIcebergExpression(left, output), convertIcebergExpression(right, output)) match {
-          case (Some(l), Some(r)) => Some(Or(l, r))
+        val left = icebergExprToProto(exprClass.getMethod("left").invoke(icebergExpr), output)
+        val right = icebergExprToProto(exprClass.getMethod("right").invoke(icebergExpr), output)
+        // Dropping a disjunct would strengthen the predicate and wrongly prune, so require both.
+        (left, right) match {
+          case (Some(l), Some(r)) => Some(logicalPredicate(isAnd = false, l, r))
           case _ => None
         }
       } else if (exprClass.getName.endsWith(Constants.ExpressionTypes.NOT)) {
-        val childMethod = exprClass.getMethod("child")
-        val child = childMethod.invoke(icebergExpr)
-
-        convertIcebergExpression(child, output).map(Not)
+        val child = exprClass.getMethod("child").invoke(icebergExpr)
+        icebergExprToProto(child, output).map(notPredicate)
       } else {
         None
       }
@@ -648,23 +641,113 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
     }
   }
 
-  /**
-   * Converts an Iceberg Literal to a Spark Literal
-   */
-  private def convertIcebergLiteral(icebergLiteral: Any, sparkType: DataType): Literal = {
-    // Load Literal interface to get value() method (use interface to avoid package-private issues)
-    val literalClass = IcebergReflection.loadClass(IcebergReflection.ClassNames.LITERAL)
-    val valueMethod = literalClass.getMethod("value")
-    val value = valueMethod.invoke(icebergLiteral)
+  private def unaryPredicate(
+      column: String,
+      op: OperatorOuterClass.IcebergPredicateOperator): OperatorOuterClass.IcebergPredicate =
+    OperatorOuterClass.IcebergPredicate
+      .newBuilder()
+      .setUnary(OperatorOuterClass.IcebergUnaryPredicate.newBuilder().setColumn(column).setOp(op))
+      .build()
 
-    // Convert Java types to Spark internal types
-    val sparkValue = (value, sparkType) match {
-      case (s: String, _: StringType) =>
-        org.apache.spark.unsafe.types.UTF8String.fromString(s)
-      case (v, _) => v
+  private def binaryPredicate(
+      exprClass: Class[_],
+      icebergExpr: Any,
+      column: String,
+      attribute: Attribute,
+      op: OperatorOuterClass.IcebergPredicateOperator)
+      : Option[OperatorOuterClass.IcebergPredicate] = {
+    val literal = exprClass.getMethod("literal").invoke(icebergExpr)
+    predicateLiteralToProto(attribute.dataType, icebergLiteralValue(literal)).map { lit =>
+      OperatorOuterClass.IcebergPredicate
+        .newBuilder()
+        .setBinary(
+          OperatorOuterClass.IcebergBinaryPredicate
+            .newBuilder()
+            .setColumn(column)
+            .setOp(op)
+            .setValue(lit))
+        .build()
     }
+  }
 
-    Literal(sparkValue, sparkType)
+  private def setPredicate(
+      exprClass: Class[_],
+      icebergExpr: Any,
+      column: String,
+      attribute: Attribute): Option[OperatorOuterClass.IcebergPredicate] = {
+    val literals =
+      exprClass.getMethod("literals").invoke(icebergExpr).asInstanceOf[java.util.List[_]]
+    val protoLiterals =
+      literals.asScala.map(l =>
+        predicateLiteralToProto(attribute.dataType, icebergLiteralValue(l)))
+    if (protoLiterals.isEmpty || protoLiterals.exists(_.isEmpty)) {
+      None
+    } else {
+      val setBuilder = OperatorOuterClass.IcebergSetPredicate
+        .newBuilder()
+        .setColumn(column)
+        .setOp(OperatorOuterClass.IcebergPredicateOperator.In)
+      // Sort literals so an IN list Iceberg happens to iterate in a different order per file still
+      // deduplicates in the residual pool.
+      protoLiterals.flatten
+        .sortBy(lit => Base64.getEncoder.encodeToString(lit.toByteArray))
+        .foreach(setBuilder.addValues)
+      Some(OperatorOuterClass.IcebergPredicate.newBuilder().setSet(setBuilder).build())
+    }
+  }
+
+  private def logicalPredicate(
+      isAnd: Boolean,
+      left: OperatorOuterClass.IcebergPredicate,
+      right: OperatorOuterClass.IcebergPredicate): OperatorOuterClass.IcebergPredicate = {
+    val logical = OperatorOuterClass.IcebergLogicalPredicate
+      .newBuilder()
+      .setLeft(left)
+      .setRight(right)
+    val builder = OperatorOuterClass.IcebergPredicate.newBuilder()
+    if (isAnd) builder.setAnd(logical) else builder.setOr(logical)
+    builder.build()
+  }
+
+  private def notPredicate(
+      child: OperatorOuterClass.IcebergPredicate): OperatorOuterClass.IcebergPredicate =
+    OperatorOuterClass.IcebergPredicate.newBuilder().setNot(child).build()
+
+  /** Extracts the raw Java value from an Iceberg Literal via reflection. */
+  private def icebergLiteralValue(icebergLiteral: Any): Any = {
+    val literalClass = IcebergReflection.loadClass(IcebergReflection.ClassNames.LITERAL)
+    literalClass.getMethod("value").invoke(icebergLiteral)
+  }
+
+  /**
+   * Builds a predicate literal from its Iceberg value and the column's Spark type. Returns None
+   * for null (IS NULL is a separate op) and for types not pushed for pruning (byte-array-backed
+   * types, which iceberg-rust cannot use in the page index yet, and anything unmapped), so the
+   * predicate degrades to no pushdown rather than an incorrect one.
+   */
+  private def predicateLiteralToProto(
+      sparkType: DataType,
+      value: Any): Option[OperatorOuterClass.IcebergLiteral] = {
+    if (value == null) {
+      return None
+    }
+    val builder = OperatorOuterClass.IcebergLiteral.newBuilder()
+    sparkType match {
+      case _: BooleanType => builder.setBoolVal(value.asInstanceOf[java.lang.Boolean])
+      case _: IntegerType => builder.setIntVal(value.asInstanceOf[java.lang.Number].intValue())
+      case _: LongType => builder.setLongVal(value.asInstanceOf[java.lang.Number].longValue())
+      case _: FloatType => builder.setFloatVal(value.asInstanceOf[java.lang.Number].floatValue())
+      case _: DoubleType =>
+        builder.setDoubleVal(value.asInstanceOf[java.lang.Number].doubleValue())
+      case _: DateType => builder.setDateVal(value.asInstanceOf[java.lang.Number].intValue())
+      case _: StringType => builder.setStringVal(value.toString)
+      case _: TimestampType =>
+        builder.setTimestampTzVal(value.asInstanceOf[java.lang.Number].longValue())
+      case _: TimestampNTZType =>
+        builder.setTimestampVal(value.asInstanceOf[java.lang.Number].longValue())
+      case _ => return None
+    }
+    Some(builder.build())
   }
 
   /**
@@ -749,7 +832,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
     val deleteFileToPoolIndex = mutable.HashMap[String, Int]()
     val deleteFilesToPoolIndex =
       mutable.HashMap[Seq[Int], Int]()
-    val residualToPoolIndex = mutable.HashMap[Option[Expr], Int]()
+    val residualToPoolIndex = mutable.HashMap[OperatorOuterClass.IcebergPredicate, Int]()
 
     val perPartitionBuilders = mutable.ArrayBuffer[OperatorOuterClass.IcebergScan]()
 
@@ -950,11 +1033,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
 
                 val residualExprOpt =
                   try {
-                    val residualExpr = residualMethod.invoke(task)
-                    val catalystExpr = convertIcebergExpression(residualExpr, output)
-                    catalystExpr.flatMap { expr =>
-                      exprToProto(expr, output, binding = false)
-                    }
+                    icebergExprToProto(residualMethod.invoke(task), output)
                   } catch {
                     case e: Exception =>
                       logWarning(
@@ -963,11 +1042,11 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
                       None
                   }
 
-                residualExprOpt.foreach { residualExpr =>
+                residualExprOpt.foreach { residual =>
                   val residualIdx = residualToPoolIndex.getOrElseUpdate(
-                    Some(residualExpr), {
+                    residual, {
                       val idx = residualToPoolIndex.size
-                      commonBuilder.addResidualPool(residualExpr)
+                      commonBuilder.addResidualPool(residual)
                       idx
                     })
                   taskBuilder.setResidualIdx(residualIdx)
