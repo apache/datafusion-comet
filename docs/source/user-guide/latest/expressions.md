@@ -186,10 +186,10 @@ The tables below list every Spark built-in expression with its current status.
 | Function | Status | Notes |
 | --- | --- | --- |
 | `array_size` | ✅ |  |
-| `cardinality` | ✅ | MapType input falls back |
+| `cardinality` | ✅ |  |
 | `concat` | ✅ | Binary/array children fall back |
 | `reverse` | ✅ | Binary-element arrays fall back (Incompatible) ([details](compatibility/expressions/array.md)) |
-| `size` | ✅ | MapType input falls back |
+| `size` | ✅ |  |
 
 ---
 
