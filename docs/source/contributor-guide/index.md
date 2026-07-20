@@ -79,6 +79,7 @@ Iceberg Spark Tests <iceberg-spark-tests.md>
 
 Debugging Guide <debugging>
 Benchmarking Guide <benchmarking>
+Optimizing Scalar Expressions <optimizing_expressions>
 Profiling <profiling>
 Tracing <tracing>
 ```

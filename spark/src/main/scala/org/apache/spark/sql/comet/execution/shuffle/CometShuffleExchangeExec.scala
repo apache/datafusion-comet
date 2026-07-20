@@ -397,6 +397,8 @@ object CometShuffleExchangeExec
         // Decimals with precision > 18 require Java BigDecimal conversion before hashing
         // d.precision <= 18
         true
+      case dt if isTimeType(dt) =>
+        true
       case _ =>
         false
     }
@@ -411,6 +413,8 @@ object CometShuffleExchangeExec
       case _: BooleanType | _: ByteType | _: ShortType | _: IntegerType | _: LongType |
           _: FloatType | _: DoubleType | _: StringType | _: BinaryType | _: TimestampType |
           _: TimestampNTZType | _: DecimalType | _: DateType | _: NullType =>
+        true
+      case dt if isTimeType(dt) =>
         true
       case StructType(fields) =>
         fields.nonEmpty && fields.forall(f => supportedSerializableDataType(f.dataType))
@@ -534,6 +538,8 @@ object CometShuffleExchangeExec
       case _: BooleanType | _: ByteType | _: ShortType | _: IntegerType | _: LongType |
           _: FloatType | _: DoubleType | _: StringType | _: BinaryType | _: TimestampType |
           _: TimestampNTZType | _: DecimalType | _: DateType | _: NullType =>
+        true
+      case dt if isTimeType(dt) =>
         true
       case StructType(fields) =>
         fields.nonEmpty && fields.forall(f => supportedSerializableDataType(f.dataType)) &&

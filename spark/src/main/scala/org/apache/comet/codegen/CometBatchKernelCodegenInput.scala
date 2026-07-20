@@ -27,6 +27,7 @@ import org.apache.spark.sql.catalyst.expressions.{BoundReference, Expression}
 import org.apache.spark.sql.types._
 
 import org.apache.comet.codegen.CometBatchKernelCodegen.{ArrayColumnSpec, ArrowColumnSpec, MapColumnSpec, ScalarColumnSpec, StructColumnSpec}
+import org.apache.comet.shims.CometTypeShim
 import org.apache.comet.vector.CometPlainVector
 
 /**
@@ -44,7 +45,7 @@ import org.apache.comet.vector.CometPlainVector
  * stashing references in an `OpenHashSet`) get distinct identities, and JIT escape analysis
  * usually scalarizes the allocation when the value is consumed locally.
  */
-private[codegen] object CometBatchKernelCodegenInput {
+private[codegen] object CometBatchKernelCodegenInput extends CometTypeShim {
 
   /**
    * Primitive Arrow vector classes wrapped in [[CometPlainVector]] at input-cast time so per-row
@@ -62,6 +63,7 @@ private[codegen] object CometBatchKernelCodegenInput {
     classOf[Float8Vector],
     classOf[DateDayVector],
     classOf[DurationVector],
+    classOf[TimeNanoVector],
     classOf[TimeStampMicroVector],
     classOf[TimeStampMicroTZVector])
   private val cometPlainVectorName: String = classOf[CometPlainVector].getName
@@ -135,6 +137,7 @@ private[codegen] object CometBatchKernelCodegenInput {
       case (ArrowColumnSpec(cls, _), ord)
           if cls == classOf[BigIntVector] ||
             cls == classOf[DurationVector] ||
+            cls == classOf[TimeNanoVector] ||
             cls == classOf[TimeStampMicroVector] ||
             cls == classOf[TimeStampMicroTZVector] =>
         s"      case $ord: return this.col$ord.getLong(this.rowIdx);"
@@ -595,6 +598,7 @@ private[codegen] object CometBatchKernelCodegenInput {
     case IntegerType | DateType => s"getInt($idx)"
     case LongType | TimestampType | TimestampNTZType | _: DayTimeIntervalType =>
       s"getLong($idx)"
+    case dt if isTimeType(dt) => s"getLong($idx)"
     case FloatType => s"getFloat($idx)"
     case DoubleType => s"getDouble($idx)"
     case d: DecimalType => s"getDecimal($idx, ${d.precision}, ${d.scale})"
@@ -696,6 +700,11 @@ private[codegen] object CometBatchKernelCodegenInput {
            |        return $childField.getInt(startIndex + i);
            |      }""".stripMargin
       case LongType | TimestampType | TimestampNTZType | _: DayTimeIntervalType =>
+        s"""      @Override
+           |      public long getLong(int i) {
+           |        return $childField.getLong(startIndex + i);
+           |      }""".stripMargin
+      case dt if isTimeType(dt) =>
         s"""      @Override
            |      public long getLong(int i) {
            |        return $childField.getLong(startIndex + i);
@@ -850,6 +859,8 @@ private[codegen] object CometBatchKernelCodegenInput {
           s"        case $fi: return ${path}_f$fi.getInt(this.rowIdx);"
         case LongType | TimestampType | TimestampNTZType | _: DayTimeIntervalType =>
           s"        case $fi: return ${path}_f$fi.getLong(this.rowIdx);"
+        case dt if isTimeType(dt) =>
+          s"        case $fi: return ${path}_f$fi.getLong(this.rowIdx);"
         case FloatType =>
           s"        case $fi: return ${path}_f$fi.getFloat(this.rowIdx);"
         case DoubleType =>
@@ -901,7 +912,8 @@ private[codegen] object CometBatchKernelCodegenInput {
       case (f, fi)
           if f.sparkType == LongType || f.sparkType == TimestampType ||
             f.sparkType == TimestampNTZType ||
-            f.sparkType.isInstanceOf[DayTimeIntervalType] =>
+            f.sparkType.isInstanceOf[DayTimeIntervalType] ||
+            isTimeType(f.sparkType) =>
         fieldReadScalar(fi, f.sparkType, f.nullable)
     }
     val floatCases =
