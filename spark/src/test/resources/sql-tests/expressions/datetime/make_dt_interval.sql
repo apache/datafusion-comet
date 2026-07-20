@@ -15,6 +15,9 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
+-- Config: spark.comet.exec.localTableScan.enabled=true
+-- Config: spark.comet.exec.shuffle.mode=native
+
 -- Routes make_dt_interval through the codegen dispatcher; produces DayTimeIntervalType.
 
 statement
@@ -33,6 +36,19 @@ SELECT make_dt_interval(1, 2, 3, 4.5), make_dt_interval(0, 0, 0, 0)
 -- default arguments
 query
 SELECT make_dt_interval(1), make_dt_interval(1, 2), make_dt_interval()
+
+-- nested interval output through LocalTableScan and codegen dispatch
+query
+SELECT transform(a, x -> x) AS result
+FROM VALUES
+  (array(make_dt_interval(1, 2, 3, 4.5), CAST(NULL AS INTERVAL DAY TO SECOND)))
+AS t(a)
+
+-- interval output through native shuffle
+query
+SELECT d, h, mi, s, make_dt_interval(d, h, mi, s) AS i
+FROM test_mdi
+DISTRIBUTE BY d
 
 -- overflow: days * MICROS_PER_DAY exceeds the int64 microsecond range. makeDayTimeInterval throws
 -- unconditionally (not ANSI-gated); this confirms the dispatched codegen path propagates Spark's

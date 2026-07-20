@@ -31,7 +31,7 @@ import org.apache.spark.sql.comet.execution.arrow.{CometArrowStream, CometNative
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution.{LeafExecNode, LocalTableScanExec}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
-import org.apache.spark.sql.types.{DataType, NullType}
+import org.apache.spark.sql.types.{DataType, DayTimeIntervalType, NullType, YearMonthIntervalType}
 
 import com.google.common.base.Objects
 
@@ -118,14 +118,13 @@ object CometLocalTableScanExec extends CometSink[LocalTableScanExec] with DataTy
   override def enabledConfig: Option[ConfigEntry[Boolean]] = Some(
     CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED)
 
-  // ArrowWriter (used by RowArrowReader) handles NullType via Utils.toArrowType + NullWriter;
-  // other types off DataTypeSupport's allow list (TimeType, intervals, ...) have no ArrowWriter
-  // coverage and must fall back to Spark.
+  // ArrowWriter (used by RowArrowReader) handles these types even though the shared scan allow
+  // list does not. Keep this local so interval file scans remain unsupported.
   override def isTypeSupported(
       dt: DataType,
       name: String,
       fallbackReasons: ListBuffer[String]): Boolean = dt match {
-    case _: NullType => true
+    case _: NullType | _: YearMonthIntervalType | _: DayTimeIntervalType => true
     case _ => super.isTypeSupported(dt, name, fallbackReasons)
   }
 
