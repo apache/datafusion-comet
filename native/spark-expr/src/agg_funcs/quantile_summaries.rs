@@ -114,6 +114,7 @@ impl QuantileSummaries {
         sorted.sort_unstable_by(|a, b| a.total_cmp(b));
 
         let mut new_samples = std::mem::take(&mut self.sampled_buffer);
+        new_samples.clear();
         new_samples.reserve(self.sampled.len() + sorted.len());
         let mut sample_idx = 0usize;
         let mut ops_idx = 0usize;
@@ -225,6 +226,7 @@ impl QuantileSummaries {
         let additional_other_delta = (2.0 * self.relative_error * self.count as f64).floor() as i64;
 
         let mut merged_sampled = std::mem::take(&mut self.sampled_buffer);
+        merged_sampled.clear();
         merged_sampled.reserve(self.sampled.len() + other.sampled.len());
         let mut self_idx = 0usize;
         let mut other_idx = 0usize;
@@ -457,13 +459,19 @@ mod tests {
     }
 
     #[test]
-    fn merge_is_within_bound() {
+    fn repeated_merges_are_within_bound() {
         let left: Vec<f64> = (1..=5000).map(|i| i as f64).collect();
-        let right: Vec<f64> = (5001..=10000).map(|i| i as f64).collect();
+        let middle: Vec<f64> = (5001..=10000).map(|i| i as f64).collect();
+        let right: Vec<f64> = (10001..=15000).map(|i| i as f64).collect();
         let mut merged = summary_of(&left);
-        let b = summary_of(&right);
-        merged.merge(&b);
-        let mut all: Vec<f64> = left.iter().chain(right.iter()).cloned().collect();
+        merged.merge(&summary_of(&middle));
+        merged.merge(&summary_of(&right));
+        let mut all: Vec<f64> = left
+            .iter()
+            .chain(middle.iter())
+            .chain(right.iter())
+            .cloned()
+            .collect();
         all.sort_by(|x, y| x.total_cmp(y));
         let got = merged.query(&[0.5]).unwrap()[0];
         let exact = exact_percentile(&all, 0.5);
