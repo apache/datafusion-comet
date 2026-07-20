@@ -706,6 +706,19 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
    * Called after doPrepare() has resolved DPP subqueries. Builds pools and per-partition data in
    * one pass from the DPP-filtered partitions.
    *
+   * The result splits into a common block plus one block per Spark partition. The common block
+   * holds everything shared across partitions and is broadcast once per executor in the stage
+   * task binary; each per-partition block ships with its task. Protobuf serializes by value and
+   * shares nothing between repeated fields, so shared values (schemas, specs, partition data,
+   * residuals, delete files) are interned into pools in the common block and referenced by index.
+   * Pooling also keeps a message under protobuf's 2 GiB limit (getSerializedSize returns int and
+   * wraps past it), which matters for anything that scales with the number of tasks.
+   *
+   * Delete files use two levels: a flat pool of unique files, plus a per-task list of indices
+   * into it. One delete file applies to many data files under Iceberg's default partition delete
+   * granularity, so this stores each file once and references it many times, as Iceberg's own
+   * DeleteFileIndex does.
+   *
    * @param scanExec
    *   The BatchScanExec whose inputRDD contains the DPP-filtered partitions
    * @param output
