@@ -31,3 +31,11 @@ INSERT INTO test_time_extract VALUES
 query
 SELECT hour(make_time(hours, minutes, secs))
 FROM test_time_extract
+
+query
+SELECT minute(make_time(hours, minutes, secs))
+FROM test_time_extract
+
+query
+SELECT second(make_time(hours, minutes, secs))
+FROM test_time_extract

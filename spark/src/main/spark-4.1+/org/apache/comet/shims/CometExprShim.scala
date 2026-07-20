@@ -65,7 +65,6 @@ trait CometExprShim extends Spark4xCometExprShim {
             s.arguments.head.dataType.isInstanceOf[TimeType] =>
         val child = s.arguments.head
         val childExpr = exprToProtoInternal(child, inputs, binding)
-
         val optExpr = childExpr.map { childProto =>
           val builder = ExprOuterClass.Hour.newBuilder()
           builder.setChild(childProto)
@@ -76,8 +75,48 @@ trait CometExprShim extends Spark4xCometExprShim {
             .setHour(builder)
             .build()
         }
-
         optExprWithFallbackReason(optExpr, s, child)
+
+      case s: StaticInvoke
+          if s.staticObject == classOf[DateTimeUtils.type] &&
+            s.functionName == "getMinutesOfTime" &&
+            s.arguments.size == 1 &&
+            s.dataType == IntegerType &&
+            s.arguments.head.dataType.isInstanceOf[TimeType] =>
+        val child = s.arguments.head
+        val childExpr = exprToProtoInternal(child, inputs, binding)
+        val optExpr = childExpr.map { childProto =>
+          val builder = ExprOuterClass.Minute.newBuilder()
+          builder.setChild(childProto)
+          builder.setTimezone("UTC")
+
+          Expr
+            .newBuilder()
+            .setMinute(builder)
+            .build()
+        }
+        optExprWithFallbackReason(optExpr, s, child)
+
+      case s: StaticInvoke
+          if s.staticObject == classOf[DateTimeUtils.type] &&
+            s.functionName == "getSecondsOfTime" &&
+            s.arguments.size == 1 &&
+            s.dataType == IntegerType &&
+            s.arguments.head.dataType.isInstanceOf[TimeType] =>
+        val child = s.arguments.head
+        val childExpr = exprToProtoInternal(child, inputs, binding)
+        val optExpr = childExpr.map { childProto =>
+          val builder = ExprOuterClass.Second.newBuilder()
+          builder.setChild(childProto)
+          builder.setTimezone("UTC")
+
+          Expr
+            .newBuilder()
+            .setSecond(builder)
+            .build()
+        }
+        optExprWithFallbackReason(optExpr, s, child)
+
       case s: StaticInvoke
           if s.staticObject == classOf[DateTimeUtils.type] &&
             s.functionName == "makeTime" &&
