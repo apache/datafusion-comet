@@ -47,74 +47,33 @@ trait CometExprShim extends Spark4xCometExprShim {
     }
   }
 
-  // Spark 4.1 introduced TimeType and the make_time / to_time / try_to_time functions.
-  // Their planner forms differ from the shared 4.x patterns (DateTimeUtils.makeTime
-  // StaticInvoke and ToTimeParser Invoke / TryEval(Invoke)), so they live here rather
-  // than in the shared Spark4xCometExprShim parent trait. Spark 4.0 lacks TimeType, which
-  // is why this shim is shared by 4.1 and later rather than all 4.x.
+  private val integralTimePartMethods =
+    Set("getHoursOfTime", "getMinutesOfTime", "getSecondsOfTime")
+
+  // Spark 4.1 introduced TimeType and its extraction, make_time, to_time, and try_to_time
+  // expressions. Their planner forms differ from the shared 4.x patterns (DateTimeUtils
+  // StaticInvoke and ToTimeParser Invoke / TryEval(Invoke)), so they live here rather than in the
+  // shared Spark4xCometExprShim parent trait. Spark 4.0 lacks TimeType, which is why this shim is
+  // shared by 4.1 and later rather than all 4.x.
   override def sparkVersionSpecificExprToProtoInternal(
       expr: Expression,
       inputs: Seq[Attribute],
       binding: Boolean): Option[Expr] = {
+
     expr match {
       case s: StaticInvoke
           if s.staticObject == classOf[DateTimeUtils.type] &&
-            s.functionName == "getHoursOfTime" &&
+            integralTimePartMethods.contains(s.functionName) &&
             s.arguments.size == 1 &&
             s.dataType == IntegerType &&
             s.arguments.head.dataType.isInstanceOf[TimeType] =>
         val child = s.arguments.head
         val childExpr = exprToProtoInternal(child, inputs, binding)
+
         val optExpr = childExpr.map { childProto =>
-          val builder = ExprOuterClass.Hour.newBuilder()
-          builder.setChild(childProto)
-          builder.setTimezone("UTC")
-
-          Expr
-            .newBuilder()
-            .setHour(builder)
-            .build()
+          timePartToProto(s.functionName, childProto)
         }
-        optExprWithFallbackReason(optExpr, s, child)
 
-      case s: StaticInvoke
-          if s.staticObject == classOf[DateTimeUtils.type] &&
-            s.functionName == "getMinutesOfTime" &&
-            s.arguments.size == 1 &&
-            s.dataType == IntegerType &&
-            s.arguments.head.dataType.isInstanceOf[TimeType] =>
-        val child = s.arguments.head
-        val childExpr = exprToProtoInternal(child, inputs, binding)
-        val optExpr = childExpr.map { childProto =>
-          val builder = ExprOuterClass.Minute.newBuilder()
-          builder.setChild(childProto)
-          builder.setTimezone("UTC")
-
-          Expr
-            .newBuilder()
-            .setMinute(builder)
-            .build()
-        }
-        optExprWithFallbackReason(optExpr, s, child)
-
-      case s: StaticInvoke
-          if s.staticObject == classOf[DateTimeUtils.type] &&
-            s.functionName == "getSecondsOfTime" &&
-            s.arguments.size == 1 &&
-            s.dataType == IntegerType &&
-            s.arguments.head.dataType.isInstanceOf[TimeType] =>
-        val child = s.arguments.head
-        val childExpr = exprToProtoInternal(child, inputs, binding)
-        val optExpr = childExpr.map { childProto =>
-          val builder = ExprOuterClass.Second.newBuilder()
-          builder.setChild(childProto)
-          builder.setTimezone("UTC")
-
-          Expr
-            .newBuilder()
-            .setSecond(builder)
-            .build()
-        }
         optExprWithFallbackReason(optExpr, s, child)
 
       case s: StaticInvoke
@@ -156,6 +115,31 @@ trait CometExprShim extends Spark4xCometExprShim {
         }
 
       case _ => super.sparkVersionSpecificExprToProtoInternal(expr, inputs, binding)
+    }
+  }
+
+  private def timePartToProto(functionName: String, childProto: Expr): Expr = {
+    functionName match {
+      case "getHoursOfTime" =>
+        val builder = ExprOuterClass.Hour.newBuilder()
+        builder.setChild(childProto)
+        builder.setTimezone("UTC")
+        Expr.newBuilder().setHour(builder).build()
+
+      case "getMinutesOfTime" =>
+        val builder = ExprOuterClass.Minute.newBuilder()
+        builder.setChild(childProto)
+        builder.setTimezone("UTC")
+        Expr.newBuilder().setMinute(builder).build()
+
+      case "getSecondsOfTime" =>
+        val builder = ExprOuterClass.Second.newBuilder()
+        builder.setChild(childProto)
+        builder.setTimezone("UTC")
+        Expr.newBuilder().setSecond(builder).build()
+
+      case other =>
+        throw new IllegalArgumentException(s"Unsupported integral TimeType part: $other")
     }
   }
 }

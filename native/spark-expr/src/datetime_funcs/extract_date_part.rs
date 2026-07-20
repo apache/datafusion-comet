@@ -258,13 +258,23 @@ mod tests {
     }
 
     #[test]
-    fn time64_extracts_hour_without_timezone_conversion() {
-        let nanos = 12 * 60 * 60 * 1_000_000_000;
+    fn time64_extracts_time_parts_without_timezone_conversion() {
+        let nanos = (12 * 60 * 60 + 30 * 60 + 45) * 1_000_000_000;
         let array = Arc::new(Time64NanosecondArray::from(vec![Some(nanos)])) as ArrayRef;
 
         for timezone in ["UTC", "America/Los_Angeles", "Asia/Tokyo"] {
-            let udf = SparkHour::new(timezone.to_string());
-            assert_eq!(invoke(&udf, Arc::clone(&array)), 12);
+            assert_eq!(
+                invoke(&SparkHour::new(timezone.to_string()), Arc::clone(&array)),
+                12
+            );
+            assert_eq!(
+                invoke(&SparkMinute::new(timezone.to_string()), Arc::clone(&array)),
+                30
+            );
+            assert_eq!(
+                invoke(&SparkSecond::new(timezone.to_string()), Arc::clone(&array)),
+                45
+            );
         }
     }
 }
