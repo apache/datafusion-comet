@@ -156,52 +156,6 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
-  val COMET_PARQUET_PARALLEL_IO_ENABLED: ConfigEntry[Boolean] =
-    conf("spark.comet.parquet.read.parallel.io.enabled")
-      .category(CATEGORY_PARQUET)
-      .doc(
-        "Whether to enable Comet's parallel reader for Parquet files. The parallel reader reads " +
-          "ranges of consecutive data in a  file in parallel. It is faster for large files and " +
-          "row groups but uses more resources.")
-      .booleanConf
-      .createWithDefault(true)
-
-  val COMET_PARQUET_PARALLEL_IO_THREADS: ConfigEntry[Int] =
-    conf("spark.comet.parquet.read.parallel.io.thread-pool.size")
-      .category(CATEGORY_PARQUET)
-      .doc("The maximum number of parallel threads the parallel reader will use in a single " +
-        "executor. For executors configured with a smaller number of cores, use a smaller number.")
-      .intConf
-      .createWithDefault(16)
-
-  val COMET_IO_MERGE_RANGES: ConfigEntry[Boolean] =
-    conf("spark.comet.parquet.read.io.mergeRanges")
-      .category(CATEGORY_PARQUET)
-      .doc(
-        "When enabled the parallel reader will try to merge ranges of data that are separated " +
-          "by less than `comet.parquet.read.io.mergeRanges.delta` bytes. Longer continuous reads " +
-          "are faster on cloud storage.")
-      .booleanConf
-      .createWithDefault(true)
-
-  val COMET_IO_MERGE_RANGES_DELTA: ConfigEntry[Int] =
-    conf("spark.comet.parquet.read.io.mergeRanges.delta")
-      .category(CATEGORY_PARQUET)
-      .doc("The delta in bytes between consecutive read ranges below which the parallel reader " +
-        "will try to merge the ranges. The default is 8MB.")
-      .intConf
-      .createWithDefault(1 << 23) // 8 MB
-
-  val COMET_IO_ADJUST_READRANGE_SKEW: ConfigEntry[Boolean] =
-    conf("spark.comet.parquet.read.io.adjust.readRange.skew")
-      .category(CATEGORY_PARQUET)
-      .doc("In the parallel reader, if the read ranges submitted are skewed in sizes, this " +
-        "option will cause the reader to break up larger read ranges into smaller ranges to " +
-        "reduce the skew. This will result in a slightly larger number of connections opened to " +
-        "the file system but may give improved performance.")
-      .booleanConf
-      .createWithDefault(false)
-
   val COMET_CONVERT_FROM_PARQUET_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.convert.parquet.enabled")
       .category(CATEGORY_EXEC)
