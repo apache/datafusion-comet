@@ -27,11 +27,10 @@ import scala.jdk.CollectionConverters._
 import org.apache.hadoop.fs.Path
 import org.apache.hadoop.mapreduce.Job
 import org.apache.hadoop.mapreduce.lib.output.FileOutputFormat
+import org.apache.parquet.hadoop.ParquetOutputFormat
 import org.apache.spark.internal.io.FileCommitProtocol
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.util.CaseInsensitiveMap
-import org.apache.parquet.hadoop.ParquetOutputFormat
-import org.apache.spark.SparkException
 import org.apache.spark.sql.comet.{CometNativeExec, CometNativeWriteExec}
 import org.apache.spark.sql.execution.command.DataWritingCommandExec
 import org.apache.spark.sql.execution.datasources.{InsertIntoHadoopFsRelationCommand, WriteFilesExec}
@@ -214,7 +213,7 @@ object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec
       outputWriterFactory = outputWriterFactory,
       jobTrackerID = CometNativeWriteExec.newJobTrackerID())
 
-    CometNativeWriteExec(nativeOp, childPlan, outputPath, commitProtocol)
+    CometNativeWriteExec(nativeOp, childPlan, outputPath, cmd.mode, commitProtocol)
   }
 
   private def parseCompressionCodec(cmd: InsertIntoHadoopFsRelationCommand) = {

@@ -22,6 +22,7 @@ package org.apache.spark.sql.comet
 import java.util.Date
 
 import org.apache.hadoop.conf.Configuration
+import org.apache.hadoop.fs.Path
 import org.apache.hadoop.mapreduce.{Job, TaskAttemptContext, TaskAttemptID, TaskID, TaskType}
 import org.apache.hadoop.mapreduce.task.TaskAttemptContextImpl
 import org.apache.spark.TaskContext
@@ -76,6 +77,8 @@ object CometNativeWriteExec {
  *   The child operator providing the data to write
  * @param outputPath
  *   The final output directory for the write
+ * @param mode
+ *   The Spark SaveMode governing target-exists behavior
  * @param commitProtocol
  *   Spark file commit protocol state
  */
@@ -83,6 +86,7 @@ case class CometNativeWriteExec(
     nativeOp: Operator,
     child: SparkPlan,
     outputPath: String,
+    mode: SaveMode,
     commitProtocol: CommitProtocolConfig)
     extends CometNativeExec
     with UnaryExecNode {
@@ -116,6 +120,11 @@ case class CometNativeWriteExec(
   }
 
   private def executeWriteAndCommit(): Unit = {
+    if (!prepareOutputPathForMode()) {
+      logInfo(s"Skipping insertion into $outputPath - already exists (SaveMode.$mode)")
+      return
+    }
+
     val jobContext = createJobContext(commitProtocol)
 
     // Match Spark's FileFormatWriter lifecycle: setupJob is outside the try block because it
@@ -296,7 +305,6 @@ case class CometNativeWriteExec(
     Job.getInstance(new Configuration(protocol.serializableHadoopConf.value))
   }
 
-  /** Create a TaskAttemptContext matching Spark's FileFormatWriter task ID setup. */
   /**
    * Applies SaveMode semantics to the output path before the write starts. Returns `true` when
    * the write should proceed and `false` when it should be skipped (Ignore + existing target).
@@ -307,7 +315,7 @@ case class CometNativeWriteExec(
    */
   private def prepareOutputPathForMode(): Boolean = {
     val path = new Path(outputPath)
-    val hadoopConf = sparkContext.hadoopConfiguration
+    val hadoopConf = commitProtocol.serializableHadoopConf.value
     val fs = path.getFileSystem(hadoopConf)
     val qualifiedOutputPath = path.makeQualified(fs.getUri, fs.getWorkingDirectory)
 
@@ -321,11 +329,7 @@ case class CometNativeWriteExec(
         true
       case SaveMode.Overwrite =>
         if (fs.exists(qualifiedOutputPath)) {
-          val deleted = committer match {
-            case Some(c) => c.deleteWithJob(fs, qualifiedOutputPath, true)
-            case None => fs.delete(qualifiedOutputPath, true)
-          }
-          if (!deleted) {
+          if (!commitProtocol.committer.deleteWithJob(fs, qualifiedOutputPath, true)) {
             throw QueryExecutionErrors.cannotClearOutputDirectoryError(qualifiedOutputPath)
           }
         }

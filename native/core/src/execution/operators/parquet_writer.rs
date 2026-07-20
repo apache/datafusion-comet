@@ -456,7 +456,7 @@ impl ExecutionPlan for ParquetWriterExec {
         let input = self.input.execute(partition, context)?;
         let input_schema = self.input.schema();
         let part_file = self.task_output_path.clone();
-        let compression = self.compression_to_parquet()?;
+        let compression = self.compression.to_parquet()?;
         let column_names = self.column_names.clone();
 
         assert_eq!(input_schema.fields().len(), column_names.len());
