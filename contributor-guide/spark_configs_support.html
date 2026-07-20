@@ -567,10 +567,10 @@ config and always defers to Spark.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">spark.sql.legacy.timeParserPolicy</span></code></p>
 <ul>
 <li><p>Default: <code class="docutils literal notranslate"><span class="pre">EXCEPTION</span></code></p></li>
-<li><p>Status: Falls back (see notes)</p></li>
-<li><p>Affected expressions: <code class="docutils literal notranslate"><span class="pre">date_format</span></code>, <code class="docutils literal notranslate"><span class="pre">from_unixtime</span></code>, <code class="docutils literal notranslate"><span class="pre">unix_timestamp</span></code>, <code class="docutils literal notranslate"><span class="pre">to_unix_timestamp</span></code>, <code class="docutils literal notranslate"><span class="pre">to_timestamp</span></code>, <code class="docutils literal notranslate"><span class="pre">to_timestamp_ntz</span></code>, <code class="docutils literal notranslate"><span class="pre">to_date</span></code>, <code class="docutils literal notranslate"><span class="pre">try_to_timestamp</span></code> (Spark 4+)</p></li>
-<li><p>Spark versions checked: 3.4.3, 3.5.8, 4.0.1</p></li>
-<li><p>Date: 2026-05-02</p></li>
+<li><p>Status: Partial (see notes)</p></li>
+<li><p>Affected expressions: <code class="docutils literal notranslate"><span class="pre">date_format</span></code>, <code class="docutils literal notranslate"><span class="pre">from_unixtime</span></code>, <code class="docutils literal notranslate"><span class="pre">unix_timestamp</span></code>, <code class="docutils literal notranslate"><span class="pre">to_unix_timestamp</span></code>, <code class="docutils literal notranslate"><span class="pre">to_timestamp</span></code>, <code class="docutils literal notranslate"><span class="pre">to_timestamp_ntz</span></code>, <code class="docutils literal notranslate"><span class="pre">to_date</span></code>, <code class="docutils literal notranslate"><span class="pre">try_to_date</span></code> (Spark 4.1+), <code class="docutils literal notranslate"><span class="pre">try_to_timestamp</span></code> (Spark 3.4+)</p></li>
+<li><p>Spark versions checked: 3.4.3, 3.5.8, 4.0.1, 4.1.2</p></li>
+<li><p>Date: 2026-07-18</p></li>
 </ul>
 </li>
 </ul>
@@ -606,26 +606,35 @@ across Spark 3.4, 3.5, 4.0, and 4.1. Three expression classes mix in
 </ul>
 <p><code class="docutils literal notranslate"><span class="pre">Cast</span></code> between strings and date / timestamp also reads the policy via the default
 formatters but is tested separately by <code class="docutils literal notranslate"><span class="pre">CometCastSuite</span></code> and is out of scope here.</p>
-<p><strong>Comet status.</strong> None of the listed expressions consult <code class="docutils literal notranslate"><span class="pre">legacyTimeParserPolicy</span></code> in
-their Comet serde. The native implementations of <code class="docutils literal notranslate"><span class="pre">date_format</span></code>, <code class="docutils literal notranslate"><span class="pre">from_unixtime</span></code>, and
-<code class="docutils literal notranslate"><span class="pre">unix_timestamp</span></code> use a fixed strftime-style mapping that does not vary with policy;
-the remaining four (<code class="docutils literal notranslate"><span class="pre">to_unix_timestamp</span></code>, <code class="docutils literal notranslate"><span class="pre">to_timestamp</span></code>, <code class="docutils literal notranslate"><span class="pre">to_date</span></code>,
-<code class="docutils literal notranslate"><span class="pre">try_to_timestamp</span></code>) have no native implementation and fall back to Spark. Today this
-works because:</p>
+<p><strong>Comet status.</strong> None of the native implementations consult
+<code class="docutils literal notranslate"><span class="pre">legacyTimeParserPolicy</span></code> directly. Comet instead uses native implementations only for
+policy-independent cases and routes policy-sensitive expressions through Spark’s own
+expression code via the Arrow-direct codegen dispatcher. In particular,
+<code class="docutils literal notranslate"><span class="pre">to_timestamp</span></code>, <code class="docutils literal notranslate"><span class="pre">to_timestamp_ntz</span></code>, <code class="docutils literal notranslate"><span class="pre">to_date</span></code>, <code class="docutils literal notranslate"><span class="pre">try_to_date</span></code>, and
+<code class="docutils literal notranslate"><span class="pre">try_to_timestamp</span></code> are rewritten by Spark to <code class="docutils literal notranslate"><span class="pre">Cast</span></code> or <code class="docutils literal notranslate"><span class="pre">GetTimestamp</span></code> before Comet
+sees the plan. Supported casts run natively, while <code class="docutils literal notranslate"><span class="pre">GetTimestamp</span></code> runs through the
+codegen dispatcher and therefore preserves Spark’s selected parser policy inside the
+Comet pipeline. Other affected expressions use a mixture of native, codegen-dispatch,
+and fallback paths:</p>
 <ul class="simple">
 <li><p><code class="docutils literal notranslate"><span class="pre">date_format</span></code> is <code class="docutils literal notranslate"><span class="pre">Compatible</span></code> only for a small whitelist of formats under UTC; the
-whitelisted formats happen to produce identical output under all three policies.</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">from_unixtime</span></code> is marked <code class="docutils literal notranslate"><span class="pre">Incompatible</span></code> and falls back unless
-<code class="docutils literal notranslate"><span class="pre">spark.comet.expression.FromUnixTime.allowIncompatible=true</span></code> is set.</p></li>
+whitelisted formats happen to produce identical output under all three policies.
+Other formats route through the codegen dispatcher.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">from_unixtime</span></code> uses the native implementation for its default format when
+<code class="docutils literal notranslate"><span class="pre">spark.comet.expression.FromUnixTime.allowIncompatible=true</span></code> is set; otherwise
+it routes through the codegen dispatcher.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">unix_timestamp(&lt;timestamp_or_date&gt;)</span></code> does not call the formatter at all; the
 string-input overload falls back.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">to_unix_timestamp</span></code> routes through the codegen dispatcher.</p></li>
 </ul>
 <p>If a Comet contributor adds native string-format parsing or extends the date_format
 whitelist, this audit should be revisited and the policy must be honored explicitly.</p>
 <p><strong>Test coverage.</strong> <code class="docutils literal notranslate"><span class="pre">spark/src/test/resources/sql-tests/expressions/datetime/</span></code>:</p>
 <ul class="simple">
-<li><p>One ConfigMatrix file per expression covering convergent inputs under
-<code class="docutils literal notranslate"><span class="pre">LEGACY,CORRECTED,EXCEPTION</span></code> (<code class="docutils literal notranslate"><span class="pre">*_time_parser_policy.sql</span></code>).</p></li>
+<li><p>One ConfigMatrix file per originally audited expression covering convergent
+inputs under <code class="docutils literal notranslate"><span class="pre">LEGACY,CORRECTED,EXCEPTION</span></code> (<code class="docutils literal notranslate"><span class="pre">*_time_parser_policy.sql</span></code>).
+<code class="docutils literal notranslate"><span class="pre">try_to_date</span></code>, added in Spark 4.1, has native-coverage tests in
+<code class="docutils literal notranslate"><span class="pre">try_datetime.sql</span></code> but has not yet been added to the parser-policy matrix.</p></li>
 <li><p>Per-policy files locking in divergent behavior:</p>
 <ul>
 <li><p><code class="docutils literal notranslate"><span class="pre">_legacy.sql</span></code> – lenient inputs (single-digit fields, out-of-range values,
@@ -639,9 +648,10 @@ creation.</p></li>
 </li>
 </ul>
 <p><strong>Findings.</strong> All 42 generated test cases pass on Spark 3.4.3, 3.5.8, and 4.0.1. No
-Comet bugs were uncovered by the audit. The tests use <code class="docutils literal notranslate"><span class="pre">query</span> <span class="pre">spark_answer_only</span></code> so
-that result-correctness is enforced regardless of whether Comet runs the expression
-natively or falls back.</p>
+Comet bugs were uncovered by the original audit. The <code class="docutils literal notranslate"><span class="pre">try_to_timestamp</span></code> policy tests
+use the default <code class="docutils literal notranslate"><span class="pre">query</span></code> mode to enforce both result correctness and execution within
+the Comet pipeline. Tests for expressions with known fallback paths continue to use
+<code class="docutils literal notranslate"><span class="pre">query</span> <span class="pre">spark_answer_only</span></code>.</p>
 </section>
 </section>
 </section>

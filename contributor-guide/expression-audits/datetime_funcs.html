@@ -647,6 +647,18 @@ under the License.
 <li><p>Rewrites to <code class="docutils literal notranslate"><span class="pre">MakeTimestamp(failOnError</span> <span class="pre">=</span> <span class="pre">false)</span></code> and runs through the codegen dispatcher (<code class="docutils literal notranslate"><span class="pre">CometMakeTimestamp</span></code>), so invalid inputs return NULL to match Spark.</p></li>
 </ul>
 </section>
+<section id="try-to-date">
+<h2>try_to_date<a class="headerlink" href="#try-to-date" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>Spark 4.1+. Rewrites to <code class="docutils literal notranslate"><span class="pre">Cast(...,</span> <span class="pre">EvalMode.LEGACY)</span></code> (no format, native) or <code class="docutils literal notranslate"><span class="pre">Cast(GetTimestamp(...,</span> <span class="pre">failOnError</span> <span class="pre">=</span> <span class="pre">false))</span></code> (with format, via the codegen dispatcher) before Comet sees the plan. In non-ANSI mode the rewritten tree is identical to <code class="docutils literal notranslate"><span class="pre">to_date</span></code>; invalid inputs return NULL to match Spark.</p></li>
+</ul>
+</section>
+<section id="try-to-timestamp">
+<h2>try_to_timestamp<a class="headerlink" href="#try-to-timestamp" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>Rewrites to <code class="docutils literal notranslate"><span class="pre">Cast(...,</span> <span class="pre">EvalMode.LEGACY)</span></code> (no format, native) or <code class="docutils literal notranslate"><span class="pre">GetTimestamp(...,</span> <span class="pre">failOnError</span> <span class="pre">=</span> <span class="pre">false)</span></code> (with format, via the codegen dispatcher) before Comet sees the plan. In non-ANSI mode the rewritten tree is identical to <code class="docutils literal notranslate"><span class="pre">to_timestamp</span></code>; invalid inputs return NULL to match Spark.</p></li>
+</ul>
+</section>
 </section>
 
 
@@ -711,6 +723,8 @@ under the License.
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#to-timestamp-ntz">to_timestamp_ntz</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#to-utc-timestamp">to_utc_timestamp</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#try-make-timestamp">try_make_timestamp</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#try-to-date">try_to_date</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#try-to-timestamp">try_to_timestamp</a></li>
 </ul>
   </nav></div>
 

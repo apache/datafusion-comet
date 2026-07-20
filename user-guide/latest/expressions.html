@@ -1609,16 +1609,16 @@ expressions. The following function families are <strong>not currently planned</
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">try_to_date</span></code></p></td>
-<td><p>🔜</p></td>
-<td><p>Rewrites to <code class="docutils literal notranslate"><span class="pre">Cast</span></code>/<code class="docutils literal notranslate"><span class="pre">GetTimestamp</span></code> but currently falls back; tracked by <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4556">#4556</a></p></td>
+<td><p>✅</p></td>
+<td><p>Rewrites to <code class="docutils literal notranslate"><span class="pre">Cast</span></code>/<code class="docutils literal notranslate"><span class="pre">GetTimestamp</span></code> before Comet sees the plan; same support as <code class="docutils literal notranslate"><span class="pre">to_date</span></code></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">try_to_time</span></code></p></td>
 <td><p>🔜</p></td>
 <td><p>Spark 4.1 TIME type; tracked by <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4288">#4288</a></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">try_to_timestamp</span></code></p></td>
-<td><p>🔜</p></td>
-<td><p>Rewrites to <code class="docutils literal notranslate"><span class="pre">Cast</span></code>/<code class="docutils literal notranslate"><span class="pre">GetTimestamp</span></code> but currently falls back; tracked by <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4556">#4556</a></p></td>
+<td><p>✅</p></td>
+<td><p>Rewrites to <code class="docutils literal notranslate"><span class="pre">Cast</span></code>/<code class="docutils literal notranslate"><span class="pre">GetTimestamp</span></code> before Comet sees the plan; same support as <code class="docutils literal notranslate"><span class="pre">to_timestamp</span></code></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">unix_date</span></code></p></td>
 <td><p>✅</p></td>
