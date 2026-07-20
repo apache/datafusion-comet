@@ -87,14 +87,22 @@ fn extract_array<O: OffsetSizeTrait>(
     group_idx: usize,
 ) -> ArrayRef {
     let mut builder = StringBuilder::with_capacity(array.len(), array.value_data().len());
+    // Reuse a single set of capture locations across every row. `Regex::captures`
+    // allocates a fresh location buffer on each call; `captures_read` fills this
+    // preallocated buffer in place, so the per-row heap allocation is paid only once.
+    let mut locations = regex.capture_locations();
     for i in 0..array.len() {
         if array.is_null(i) {
             builder.append_null();
         } else {
-            let extracted = match regex.captures(array.value(i)) {
-                Some(caps) => caps.get(group_idx).map(|m| m.as_str()).unwrap_or(""),
-                None => "",
-            };
+            let value = array.value(i);
+            // `captures_read` returns `Some` iff the pattern matched; `locations.get`
+            // is `None` when the requested group did not participate in the match,
+            // matching the previous `caps.get(group_idx)` behavior (empty string).
+            let extracted = regex
+                .captures_read(&mut locations, value)
+                .and_then(|_| locations.get(group_idx))
+                .map_or("", |(start, end)| &value[start..end]);
             builder.append_value(extracted);
         }
     }
