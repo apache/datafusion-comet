@@ -192,6 +192,6 @@ Selection logic in `CometShuffleManager.shouldBypassMergeSort()`:
 | ----------------------------------------------- | ----------------------------------- |
 | `spark.comet.columnar.shuffle.async.enabled`    | Enable async spill writes           |
 | `spark.comet.columnar.shuffle.async.thread.num` | Threads per writer for async        |
-| `spark.comet.shuffle.jvm.batchSize`        | Rows per Arrow batch                |
-| `spark.comet.shuffle.jvm.spillThreshold`   | Row count threshold for spill       |
+| `spark.comet.shuffle.jvm.batchSize`             | Rows per Arrow batch                |
+| `spark.comet.shuffle.jvm.spillThreshold`        | Row count threshold for spill       |
 | `spark.comet.shuffle.compression.codec`         | Compression codec (zstd, lz4, etc.) |
