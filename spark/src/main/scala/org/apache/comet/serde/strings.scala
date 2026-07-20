@@ -19,12 +19,10 @@
 
 package org.apache.comet.serde
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Base64, BitLength, Cast, Concat, ConcatWs, Elt, Empty2Null, Expression, FindInSet, FormatNumber, FormatString, GetJsonObject, If, InitCap, IsNull, Left, Length, Levenshtein, Like, Literal, Lower, Mask, OctetLength, Overlay, RegExpExtract, RegExpExtractAll, RegExpInStr, RegExpReplace, Right, RLike, SoundEx, StringLocate, StringLPad, StringRepeat, StringReplace, StringRPad, StringSplit, StringTranslate, Substring, SubstringIndex, ToCharacter, ToNumber, TryToNumber, UnBase64, Upper}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, Base64, BitLength, Cast, Concat, ConcatWs, Contains, Elt, Empty2Null, EndsWith, Expression, FindInSet, FormatNumber, FormatString, GetJsonObject, InitCap, Left, Length, Levenshtein, Like, Literal, Lower, Mask, OctetLength, Overlay, RegExpExtract, RegExpExtractAll, RegExpInStr, RegExpReplace, Right, RLike, SoundEx, StartsWith, StringLocate, StringLPad, StringRepeat, StringReplace, StringRPad, StringSplit, StringTranslate, Substring, SubstringIndex, ToCharacter, ToNumber, TryToNumber, UnBase64, Upper}
 import org.apache.spark.sql.types.{BinaryType, DataTypes, LongType, StringType}
-import org.apache.spark.unsafe.types.UTF8String
 
 import org.apache.comet.CometConf
-import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 import org.apache.comet.serde.ExprOuterClass.Expr
 import org.apache.comet.serde.QueryPlanSerde.{createBinaryExpr, exprToProtoInternal, optExprWithFallbackReason, scalarFunctionExprToProto, scalarFunctionExprToProtoWithReturnType}
 import org.apache.comet.shims.CometTypeShim
@@ -185,36 +183,7 @@ object CometStringReplace
   }
 }
 
-object CometSubstring extends CometExpressionSerde[Substring] {
-
-  override def getSupportLevel(expr: Substring): SupportLevel = (expr.pos, expr.len) match {
-    case (_: Literal, _: Literal) => Compatible()
-    case _ => Unsupported(Some("Substring pos and len must be literals"))
-  }
-
-  override def convert(
-      expr: Substring,
-      inputs: Seq[Attribute],
-      binding: Boolean): Option[Expr] = {
-    (expr.pos, expr.len) match {
-      case (Literal(pos, _), Literal(len, _)) =>
-        exprToProtoInternal(expr.str, inputs, binding) match {
-          case Some(strExpr) =>
-            val builder = ExprOuterClass.Substring.newBuilder()
-            builder.setChild(strExpr)
-            builder.setStart(pos.asInstanceOf[Int])
-            builder.setLen(len.asInstanceOf[Int])
-            Some(ExprOuterClass.Expr.newBuilder().setSubstring(builder).build())
-          case None =>
-            withFallbackReason(expr, expr.str)
-            None
-        }
-      case _ =>
-        // Unreachable: getSupportLevel gates non-literal pos/len.
-        None
-    }
-  }
-}
+object CometSubstring extends CometScalarFunction[Substring]("substring")
 
 object CometSubstringIndex extends CometExpressionSerde[SubstringIndex] {
 
@@ -234,88 +203,30 @@ object CometSubstringIndex extends CometExpressionSerde[SubstringIndex] {
 
 object CometLeft extends CometExpressionSerde[Left] {
 
-  override def getUnsupportedReasons(): Seq[String] = Seq(
-    "Only supports `BinaryType` and `StringType` input",
-    "The length argument must be a literal value")
+  override def convert(expr: Left, inputs: Seq[Attribute], binding: Boolean): Option[Expr] =
+    // Left is RuntimeReplaceable; its `replacement` is `Substring(str, Literal(1), len)`,
+    // which routes through CometSubstring -> DataFusion's SparkSubstring UDF and handles
+    // non-literal `len`, len <= 0, len > length(str), NULL propagation, and BinaryType input.
+    exprToProtoInternal(expr.replacement, inputs, binding)
 
-  override def convert(expr: Left, inputs: Seq[Attribute], binding: Boolean): Option[Expr] = {
-    expr.len match {
-      case Literal(lenValue, _) =>
-        exprToProtoInternal(expr.str, inputs, binding) match {
-          case Some(strExpr) =>
-            val builder = ExprOuterClass.Substring.newBuilder()
-            builder.setChild(strExpr)
-            builder.setStart(1)
-            builder.setLen(lenValue.asInstanceOf[Int])
-            Some(ExprOuterClass.Expr.newBuilder().setSubstring(builder).build())
-          case None =>
-            withFallbackReason(expr, expr.str)
-            None
-        }
-      case _ =>
-        // Unreachable: getSupportLevel gates a non-literal length.
-        None
-    }
-  }
-
-  override def getSupportLevel(expr: Left): SupportLevel = {
-    expr.str.dataType match {
-      case _: BinaryType | _: StringType =>
-        expr.len match {
-          case _: Literal => Compatible()
-          case _ => Unsupported(Some("LEFT len must be a literal"))
-        }
-      case _ => Unsupported(Some(s"LEFT does not support ${expr.str.dataType}"))
-    }
+  override def getSupportLevel(expr: Left): SupportLevel = expr.str.dataType match {
+    case _: BinaryType | _: StringType => Compatible()
+    case dt => Unsupported(Some(s"LEFT does not support $dt"))
   }
 }
 
 object CometRight extends CometExpressionSerde[Right] {
 
-  override def convert(expr: Right, inputs: Seq[Attribute], binding: Boolean): Option[Expr] = {
-    expr.len match {
-      case Literal(lenValue, _) =>
-        val lenInt = lenValue.asInstanceOf[Int]
-        if (lenInt <= 0) {
-          // Match Spark's behavior: If(IsNull(str), NULL, "")
-          // This ensures NULL propagation: RIGHT(NULL, 0) -> NULL, RIGHT("hello", 0) -> ""
-          val isNullExpr = IsNull(expr.str)
-          val nullLiteral = Literal.create(null, StringType)
-          val emptyStringLiteral = Literal(UTF8String.EMPTY_UTF8, StringType)
-          val ifExpr = If(isNullExpr, nullLiteral, emptyStringLiteral)
+  override def convert(expr: Right, inputs: Seq[Attribute], binding: Boolean): Option[Expr] =
+    // Right is RuntimeReplaceable; its `replacement` is
+    //   If(IsNull(str), NULL, If(len <= 0, "", Substring(str, -len, len)))
+    // Serializing that tree preserves Spark's NULL-propagation for len <= 0 (RIGHT(NULL, 0)
+    // must return NULL, not "") and routes the substring path through SparkSubstring.
+    exprToProtoInternal(expr.replacement, inputs, binding)
 
-          // Serialize the If expression using existing infrastructure
-          exprToProtoInternal(ifExpr, inputs, binding)
-        } else {
-          exprToProtoInternal(expr.str, inputs, binding) match {
-            case Some(strExpr) =>
-              val builder = ExprOuterClass.Substring.newBuilder()
-              builder.setChild(strExpr)
-              builder.setStart(-lenInt)
-              builder.setLen(lenInt)
-              Some(ExprOuterClass.Expr.newBuilder().setSubstring(builder).build())
-            case None =>
-              withFallbackReason(expr, expr.str)
-              None
-          }
-        }
-      case _ =>
-        // Unreachable: getSupportLevel gates a non-literal length.
-        None
-    }
-  }
-
-  override def getUnsupportedReasons(): Seq[String] = Seq("Only supports `StringType` input")
-
-  override def getSupportLevel(expr: Right): SupportLevel = {
-    expr.str.dataType match {
-      case _: StringType =>
-        expr.len match {
-          case _: Literal => Compatible()
-          case _ => Unsupported(Some("RIGHT len must be a literal"))
-        }
-      case _ => Unsupported(Some(s"RIGHT does not support ${expr.str.dataType}"))
-    }
+  override def getSupportLevel(expr: Right): SupportLevel = expr.str.dataType match {
+    case _: StringType => Compatible()
+    case dt => Unsupported(Some(s"RIGHT does not support $dt"))
   }
 }
 
@@ -377,13 +288,21 @@ object CometConcatWs extends CometExpressionSerde[ConcatWs] {
   }
 }
 
-object CometLike extends CometExpressionSerde[Like] {
+object CometLike extends CometExpressionSerde[Like] with CodegenDispatchFallback {
+
+  private val customEscapeReason =
+    "LIKE with a custom escape character (only `\\` is supported natively)"
+
+  override def getUnsupportedReasons(): Seq[String] =
+    Seq(customEscapeReason, ComparisonUtils.nonDefaultCollationDocReason)
 
   override def getSupportLevel(expr: Like): SupportLevel = {
-    if (expr.escapeChar == '\\') {
-      Compatible()
-    } else {
+    if (ComparisonUtils.hasCollatedOperand(expr.left, expr.right)) {
+      Unsupported(Some(ComparisonUtils.nonDefaultCollationReason("Like")))
+    } else if (expr.escapeChar != '\\') {
       Unsupported(Some(s"custom escape character ${expr.escapeChar} not supported in LIKE"))
+    } else {
+      Compatible()
     }
   }
 
@@ -397,6 +316,24 @@ object CometLike extends CometExpressionSerde[Like] {
       (builder, binaryExpr) => builder.setLike(binaryExpr))
   }
 }
+
+/**
+ * Serdes for `Contains` / `StartsWith` / `EndsWith` that reject non-UTF8_BINARY collated operands
+ * and otherwise delegate to the generic `contains` / `starts_with` / `ends_with` scalar-function
+ * bridge. The native kernels compare raw bytes and cannot honour case- or accent-insensitive
+ * collations, so a collated operand must fall back to Spark.
+ */
+object CometContains
+    extends CometScalarFunction[Contains]("contains")
+    with CollationAwareBinaryPredicate[Contains]
+
+object CometStartsWith
+    extends CometScalarFunction[StartsWith]("starts_with")
+    with CollationAwareBinaryPredicate[StartsWith]
+
+object CometEndsWith
+    extends CometScalarFunction[EndsWith]("ends_with")
+    with CollationAwareBinaryPredicate[EndsWith]
 
 /**
  * `rlike` runs Spark's own implementation through the codegen dispatcher by default, for

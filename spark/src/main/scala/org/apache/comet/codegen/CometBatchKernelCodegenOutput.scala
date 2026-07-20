@@ -31,13 +31,14 @@ import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.types._
 
 import org.apache.comet.CometArrowAllocator
+import org.apache.comet.shims.CometTypeShim
 
 /**
  * Output-side emitters for the codegen kernel: [[allocateOutput]], [[emitOutputWriter]]
  * (top-level write entry), [[emitWrite]] (recursive per-type write), the output vector-class
  * lookup. Paired with [[CometBatchKernelCodegenInput]] on the read side.
  */
-private[codegen] object CometBatchKernelCodegenOutput {
+private[codegen] object CometBatchKernelCodegenOutput extends CometTypeShim {
 
   /**
    * Spark `DataType` to an Arrow `Field` with names Comet expects on FFI export. Spark's
@@ -169,6 +170,7 @@ private[codegen] object CometBatchKernelCodegenOutput {
     case _: StringType => classOf[VarCharVector].getName
     case BinaryType => classOf[VarBinaryVector].getName
     case DateType => classOf[DateDayVector].getName
+    case dt if isTimeType(dt) => classOf[TimeNanoVector].getName
     case TimestampType => classOf[TimeStampMicroTZVector].getName
     case TimestampNTZType => classOf[TimeStampMicroVector].getName
     case _: YearMonthIntervalType => classOf[IntervalYearVector].getName
@@ -225,6 +227,9 @@ private[codegen] object CometBatchKernelCodegenOutput {
         s"""org.apache.spark.unsafe.types.CalendarInterval $interval = $source;
            |$targetVec.$set($idx, $interval.months, $interval.days,
            |    java.lang.Math.multiplyExact($interval.microseconds, 1000L));""".stripMargin)
+    case dt if isTimeType(dt) =>
+      val set = if (nested) "setSafe" else "set"
+      OutputEmit("", s"$targetVec.$set($idx, $source);")
     case dt: DecimalType =>
       // DecimalOutputShortFastPath: precision <= 18 fits in a signed long, so pass the unscaled
       // value to `setSafe(int, long)` and skip the BigDecimal allocation.
@@ -408,6 +413,7 @@ private[codegen] object CometBatchKernelCodegenOutput {
       case IntegerType | DateType => s"$target.getInt($idx)"
       case LongType | TimestampType | TimestampNTZType => s"$target.getLong($idx)"
       case CalendarIntervalType => s"$target.getInterval($idx)"
+      case dt if isTimeType(dt) => s"$target.getLong($idx)"
       case FloatType => s"$target.getFloat($idx)"
       case DoubleType => s"$target.getDouble($idx)"
       case dt: DecimalType => s"$target.getDecimal($idx, ${dt.precision}, ${dt.scale})"
