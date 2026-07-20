@@ -40,8 +40,9 @@ private[codegen] object CometSpecializedGettersDispatch {
       case BooleanType => java.lang.Boolean.valueOf(g.getBoolean(ordinal))
       case ByteType => java.lang.Byte.valueOf(g.getByte(ordinal))
       case ShortType => java.lang.Short.valueOf(g.getShort(ordinal))
-      case IntegerType | DateType => java.lang.Integer.valueOf(g.getInt(ordinal))
-      case LongType | TimestampType | TimestampNTZType =>
+      case IntegerType | DateType | _: YearMonthIntervalType =>
+        java.lang.Integer.valueOf(g.getInt(ordinal))
+      case LongType | TimestampType | TimestampNTZType | _: DayTimeIntervalType =>
         java.lang.Long.valueOf(g.getLong(ordinal))
       case FloatType => java.lang.Float.valueOf(g.getFloat(ordinal))
       case DoubleType => java.lang.Double.valueOf(g.getDouble(ordinal))

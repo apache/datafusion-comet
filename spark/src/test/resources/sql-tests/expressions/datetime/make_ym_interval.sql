@@ -15,6 +15,9 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
+-- Config: spark.comet.exec.localTableScan.enabled=true
+-- Config: spark.comet.exec.shuffle.mode=native
+
 -- Routes make_ym_interval through the codegen dispatcher; produces YearMonthIntervalType.
 
 statement
@@ -33,6 +36,19 @@ SELECT make_ym_interval(1, 2), make_ym_interval(0, 0), make_ym_interval(-5, 11)
 -- default arguments
 query
 SELECT make_ym_interval(3), make_ym_interval()
+
+-- nested interval output through LocalTableScan and codegen dispatch
+query
+SELECT transform(a, x -> x) AS result
+FROM VALUES
+  (array(make_ym_interval(1, 2), CAST(NULL AS INTERVAL YEAR TO MONTH)))
+AS t(a)
+
+-- interval output through native shuffle
+query
+SELECT y, m, make_ym_interval(y, m) AS i
+FROM test_myi
+DISTRIBUTE BY y
 
 -- overflow: years * 12 exceeds Int range. makeYearMonthInterval throws unconditionally (not
 -- ANSI-gated); this confirms the dispatched codegen path propagates Spark's exception. The
