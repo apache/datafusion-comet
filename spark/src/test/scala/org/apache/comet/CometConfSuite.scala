@@ -129,17 +129,17 @@ class CometConfSuite extends AnyFunSuite {
     assert(!CometConf.COMET_SHUFFLE_ENABLED.get(conf))
   }
 
-  test("COMET_SHUFFLE_COLUMNAR_SPILL_THRESHOLD reads the deprecated dots-in-segment key") {
+  test("COMET_SHUFFLE_JVM_SPILL_THRESHOLD reads the deprecated dots-in-segment key") {
     val conf = new SQLConf
     conf.setConfString("spark.comet.columnar.shuffle.spill.threshold", "12345")
 
-    assert(CometConf.COMET_SHUFFLE_COLUMNAR_SPILL_THRESHOLD.get(conf) == 12345)
+    assert(CometConf.COMET_SHUFFLE_JVM_SPILL_THRESHOLD.get(conf) == 12345)
   }
 
-  test("COMET_SHUFFLE_COLUMNAR_PREFER_DICTIONARY_RATIO reads the deprecated top-level key") {
+  test("COMET_SHUFFLE_JVM_PREFER_DICTIONARY_RATIO reads the deprecated top-level key") {
     val conf = new SQLConf
     conf.setConfString("spark.comet.shuffle.preferDictionary.ratio", "3.5")
 
-    assert(CometConf.COMET_SHUFFLE_COLUMNAR_PREFER_DICTIONARY_RATIO.get(conf) == 3.5)
+    assert(CometConf.COMET_SHUFFLE_JVM_PREFER_DICTIONARY_RATIO.get(conf) == 3.5)
   }
 }

@@ -128,7 +128,7 @@ public final class CometShuffleExternalSorterSync
     this.numPartitions = numPartitions;
     this.schema = schema;
     this.numElementsForSpillThreshold =
-        (int) CometConf$.MODULE$.COMET_SHUFFLE_COLUMNAR_SPILL_THRESHOLD().get();
+        (int) CometConf$.MODULE$.COMET_SHUFFLE_JVM_SPILL_THRESHOLD().get();
     this.writeMetrics = writeMetrics;
 
     this.peakMemoryUsedBytes = getMemoryUsage();
@@ -141,7 +141,7 @@ public final class CometShuffleExternalSorterSync
     this.tracingEnabled = (boolean) CometConf$.MODULE$.COMET_TRACING_ENABLED().get();
 
     this.preferDictionaryRatio =
-        (double) CometConf$.MODULE$.COMET_SHUFFLE_COLUMNAR_PREFER_DICTIONARY_RATIO().get();
+        (double) CometConf$.MODULE$.COMET_SHUFFLE_JVM_PREFER_DICTIONARY_RATIO().get();
 
     this.activeSpillSorter = createSpillSorter();
   }

@@ -123,7 +123,7 @@ class CometSparkSessionExtensionsSuite extends CometTestBase {
     val conf = new SparkConf()
 
     val sqlConf = new SQLConf
-    sqlConf.setConfString(CometConf.COMET_SHUFFLE_COLUMNAR_MEMORY_FACTOR.key, "0.2")
+    sqlConf.setConfString(CometConf.COMET_SHUFFLE_JVM_MEMORY_FACTOR.key, "0.2")
 
     // Minimum Comet memory overhead is 384MB
     assert(

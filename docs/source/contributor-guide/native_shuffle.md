@@ -255,7 +255,7 @@ independently compressed, allowing parallel decompression during reads.
 | `spark.comet.shuffle.compression.codec`      | `zstd`  | Compression codec                        |
 | `spark.comet.shuffle.compression.zstd.level` | `1`     | Zstd compression level                   |
 | `spark.comet.shuffle.write.buffer.size`      | `1MB`   | Write buffer size                        |
-| `spark.comet.shuffle.columnar.batchSize`     | `8192`  | Target rows per batch                    |
+| `spark.comet.shuffle.jvm.batchSize`     | `8192`  | Target rows per batch                    |
 
 ## Comparison with JVM Shuffle
 

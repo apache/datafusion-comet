@@ -253,7 +253,7 @@ object CometSparkSessionExtensions extends Logging {
 
     val cometMemoryOverhead = getCometMemoryOverheadInMiB(sparkConf)
 
-    val overheadFactor = COMET_SHUFFLE_COLUMNAR_MEMORY_FACTOR.get(conf)
+    val overheadFactor = COMET_SHUFFLE_JVM_MEMORY_FACTOR.get(conf)
 
     val shuffleMemorySize = (overheadFactor * cometMemoryOverhead).toLong
     if (shuffleMemorySize > cometMemoryOverhead) {

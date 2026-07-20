@@ -503,12 +503,12 @@ object CometConf extends ShimCometConf {
       .createWithDefault(100)
   }
 
-  val COMET_SHUFFLE_COLUMNAR_SPILL_THRESHOLD: ConfigEntry[Int] =
-    conf("spark.comet.shuffle.columnar.spillThreshold")
+  val COMET_SHUFFLE_JVM_SPILL_THRESHOLD: ConfigEntry[Int] =
+    conf("spark.comet.shuffle.jvm.spillThreshold")
       .withAlternative("spark.comet.columnar.shuffle.spill.threshold")
       .category(CATEGORY_SHUFFLE)
       .doc(
-        "Number of rows to be spilled used for Comet columnar shuffle. " +
+        "Number of rows to be spilled used for Comet JVM (columnar) shuffle. " +
           "For every configured number of rows, a new spill file will be created. " +
           "Higher value means more memory requirement to buffer shuffle data before " +
           "flushing to disk. As Comet uses columnar shuffle which is columnar format, " +
@@ -518,12 +518,12 @@ object CometConf extends ShimCometConf {
       .intConf
       .createWithDefault(Int.MaxValue)
 
-  val COMET_SHUFFLE_COLUMNAR_MEMORY_FACTOR: ConfigEntry[Double] =
-    conf("spark.comet.shuffle.columnar.memoryFactor")
+  val COMET_SHUFFLE_JVM_MEMORY_FACTOR: ConfigEntry[Double] =
+    conf("spark.comet.shuffle.jvm.memoryFactor")
       .withAlternative("spark.comet.columnar.shuffle.memory.factor")
       .category(CATEGORY_TESTING)
-      .doc("Fraction of Comet memory to be allocated per executor process for columnar shuffle " +
-        s"when running in on-heap mode. $TUNING_GUIDE.")
+      .doc("Fraction of Comet memory to be allocated per executor process for JVM (columnar) " +
+        s"shuffle when running in on-heap mode. $TUNING_GUIDE.")
       .doubleConf
       .checkValue(
         factor => factor > 0,
@@ -537,8 +537,8 @@ object CometConf extends ShimCometConf {
     .checkValue(v => v > 0, "Batch size must be positive")
     .createWithDefault(8192)
 
-  val COMET_SHUFFLE_COLUMNAR_BATCH_SIZE: ConfigEntry[Int] =
-    conf("spark.comet.shuffle.columnar.batchSize")
+  val COMET_SHUFFLE_JVM_BATCH_SIZE: ConfigEntry[Int] =
+    conf("spark.comet.shuffle.jvm.batchSize")
       .withAlternative("spark.comet.columnar.shuffle.batch.size")
       .category(CATEGORY_SHUFFLE)
       .doc("Batch size when writing out sorted spill files on the native side. Note that " +
@@ -562,8 +562,8 @@ object CometConf extends ShimCometConf {
       .checkValue(v => v > 0, "Write buffer size must be positive")
       .createWithDefault(1)
 
-  val COMET_SHUFFLE_COLUMNAR_PREFER_DICTIONARY_RATIO: ConfigEntry[Double] = conf(
-    "spark.comet.shuffle.columnar.preferDictionary.ratio")
+  val COMET_SHUFFLE_JVM_PREFER_DICTIONARY_RATIO: ConfigEntry[Double] = conf(
+    "spark.comet.shuffle.jvm.preferDictionary.ratio")
     .withAlternative("spark.comet.shuffle.preferDictionary.ratio")
     .category(CATEGORY_SHUFFLE)
     .doc(

@@ -54,7 +54,7 @@ object CometShuffleBenchmark extends CometBenchmarkBase {
         "spark.shuffle.manager",
         "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
       .set("spark.comet.columnar.shuffle.async.thread.num", "7")
-      .set("spark.comet.shuffle.columnar.spillThreshold", "30000")
+      .set("spark.comet.shuffle.jvm.spillThreshold", "30000")
 
     val sparkSession = SparkSession.builder
       .config(conf)
@@ -108,7 +108,7 @@ object CometShuffleBenchmark extends CometBenchmarkBase {
             CometConf.COMET_ENABLED.key -> "true",
             CometConf.COMET_EXEC_ENABLED.key -> "true",
             CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
-            CometConf.COMET_SHUFFLE_COLUMNAR_PREFER_DICTIONARY_RATIO.key -> "1.0",
+            CometConf.COMET_SHUFFLE_JVM_PREFER_DICTIONARY_RATIO.key -> "1.0",
             CometConf.COMET_SHUFFLE_MODE.key -> "jvm",
             CometConf.COMET_COLUMNAR_SHUFFLE_ASYNC_ENABLED.key -> "false") {
             spark
@@ -165,7 +165,7 @@ object CometShuffleBenchmark extends CometBenchmarkBase {
             CometConf.COMET_ENABLED.key -> "true",
             CometConf.COMET_EXEC_ENABLED.key -> "true",
             CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
-            CometConf.COMET_SHUFFLE_COLUMNAR_PREFER_DICTIONARY_RATIO.key -> "1.0",
+            CometConf.COMET_SHUFFLE_JVM_PREFER_DICTIONARY_RATIO.key -> "1.0",
             CometConf.COMET_SHUFFLE_MODE.key -> "jvm",
             CometConf.COMET_COLUMNAR_SHUFFLE_ASYNC_ENABLED.key -> "false") {
             spark
@@ -220,7 +220,7 @@ object CometShuffleBenchmark extends CometBenchmarkBase {
             CometConf.COMET_ENABLED.key -> "true",
             CometConf.COMET_EXEC_ENABLED.key -> "true",
             CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
-            CometConf.COMET_SHUFFLE_COLUMNAR_PREFER_DICTIONARY_RATIO.key -> "1.0",
+            CometConf.COMET_SHUFFLE_JVM_PREFER_DICTIONARY_RATIO.key -> "1.0",
             CometConf.COMET_SHUFFLE_MODE.key -> "jvm",
             CometConf.COMET_COLUMNAR_SHUFFLE_ASYNC_ENABLED.key -> "false") {
             spark
@@ -235,7 +235,7 @@ object CometShuffleBenchmark extends CometBenchmarkBase {
             CometConf.COMET_ENABLED.key -> "true",
             CometConf.COMET_EXEC_ENABLED.key -> "true",
             CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
-            CometConf.COMET_SHUFFLE_COLUMNAR_PREFER_DICTIONARY_RATIO.key -> "2.0",
+            CometConf.COMET_SHUFFLE_JVM_PREFER_DICTIONARY_RATIO.key -> "2.0",
             CometConf.COMET_SHUFFLE_MODE.key -> "jvm",
             CometConf.COMET_COLUMNAR_SHUFFLE_ASYNC_ENABLED.key -> "false") {
             spark
@@ -250,7 +250,7 @@ object CometShuffleBenchmark extends CometBenchmarkBase {
             CometConf.COMET_ENABLED.key -> "true",
             CometConf.COMET_EXEC_ENABLED.key -> "true",
             CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
-            CometConf.COMET_SHUFFLE_COLUMNAR_PREFER_DICTIONARY_RATIO.key -> "1000000000.0",
+            CometConf.COMET_SHUFFLE_JVM_PREFER_DICTIONARY_RATIO.key -> "1000000000.0",
             CometConf.COMET_SHUFFLE_MODE.key -> "jvm",
             CometConf.COMET_COLUMNAR_SHUFFLE_ASYNC_ENABLED.key -> "false") {
             spark

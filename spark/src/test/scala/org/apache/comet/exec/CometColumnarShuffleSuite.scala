@@ -57,7 +57,7 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
     super.test(testName, testTags: _*) {
       withSQLConf(
         CometConf.COMET_COLUMNAR_SHUFFLE_ASYNC_ENABLED.key -> asyncShuffleEnable.toString,
-        CometConf.COMET_SHUFFLE_COLUMNAR_SPILL_THRESHOLD.key -> numElementsForceSpillThreshold.toString,
+        CometConf.COMET_SHUFFLE_JVM_SPILL_THRESHOLD.key -> numElementsForceSpillThreshold.toString,
         CometConf.COMET_EXEC_ENABLED.key -> "true",
         CometConf.COMET_SHUFFLE_MODE.key -> "jvm",
         CometConf.COMET_SHUFFLE_ENABLED.key -> "true") {
@@ -108,7 +108,7 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
   test("columnar shuffle on nested struct including nulls") {
     Seq(10, 201).foreach { numPartitions =>
       Seq("1.0", "10.0").foreach { ratio =>
-        withSQLConf(CometConf.COMET_SHUFFLE_COLUMNAR_PREFER_DICTIONARY_RATIO.key -> ratio) {
+        withSQLConf(CometConf.COMET_SHUFFLE_JVM_PREFER_DICTIONARY_RATIO.key -> ratio) {
           withParquetTable(
             (0 until 50).map(i =>
               (i, Seq((i + 1, i.toString), null, (i + 3, (i + 3).toString)), i + 1)),
@@ -128,7 +128,7 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
   test("columnar shuffle on struct including nulls") {
     Seq(10, 201).foreach { numPartitions =>
       Seq("1.0", "10.0").foreach { ratio =>
-        withSQLConf(CometConf.COMET_SHUFFLE_COLUMNAR_PREFER_DICTIONARY_RATIO.key -> ratio) {
+        withSQLConf(CometConf.COMET_SHUFFLE_JVM_PREFER_DICTIONARY_RATIO.key -> ratio) {
           val data: Seq[(Int, (Int, String))] =
             Seq((1, (0, "1")), (2, (3, "3")), (3, null))
           withParquetTable(data, "tbl") {
@@ -154,7 +154,7 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
         Seq("1.0", "10.0").foreach { ratio =>
           withSQLConf(
             CometConf.COMET_EXEC_ENABLED.key -> execEnabled,
-            CometConf.COMET_SHUFFLE_COLUMNAR_PREFER_DICTIONARY_RATIO.key -> ratio) {
+            CometConf.COMET_SHUFFLE_JVM_PREFER_DICTIONARY_RATIO.key -> ratio) {
             withParquetTable((0 until 50).map(i => (Map(Seq(i, i + 1) -> i), i + 1)), "tbl") {
               val df = sql("SELECT * FROM tbl")
                 .filter($"_2" > 10)
@@ -202,7 +202,7 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
         Seq("1.0", "10.0").foreach { ratio =>
           withSQLConf(
             CometConf.COMET_EXEC_ENABLED.key -> execEnabled,
-            CometConf.COMET_SHUFFLE_COLUMNAR_PREFER_DICTIONARY_RATIO.key -> ratio) {
+            CometConf.COMET_SHUFFLE_JVM_PREFER_DICTIONARY_RATIO.key -> ratio) {
             withParquetTable(
               (0 until 50).map(i => ((Seq(Map(1 -> i)), Map(2 -> i), Map(3 -> i)), i + 1)),
               "tbl") {
@@ -305,7 +305,7 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
   def columnarShuffleOnMapTest[K: TypeTag](num: Int, keys: Seq[K]): Unit = {
     Seq(10, 201).foreach { numPartitions =>
       Seq("1.0", "10.0").foreach { ratio =>
-        withSQLConf(CometConf.COMET_SHUFFLE_COLUMNAR_PREFER_DICTIONARY_RATIO.key -> ratio) {
+        withSQLConf(CometConf.COMET_SHUFFLE_JVM_PREFER_DICTIONARY_RATIO.key -> ratio) {
           withParquetTable(genTuples(num, keys), "tbl") {
             repartitionAndSort(numPartitions)
           }
@@ -370,7 +370,7 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
 
     Seq(10, 201).foreach { numPartitions =>
       Seq("1.0", "10.0").foreach { ratio =>
-        withSQLConf(CometConf.COMET_SHUFFLE_COLUMNAR_PREFER_DICTIONARY_RATIO.key -> ratio) {
+        withSQLConf(CometConf.COMET_SHUFFLE_JVM_PREFER_DICTIONARY_RATIO.key -> ratio) {
           withParquetTable(
             (0 until 50).map(i =>
               (
@@ -402,7 +402,7 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
     Seq("false", "true").foreach { _ =>
       Seq(10, 201).foreach { numPartitions =>
         Seq("1.0", "10.0").foreach { ratio =>
-          withSQLConf(CometConf.COMET_SHUFFLE_COLUMNAR_PREFER_DICTIONARY_RATIO.key -> ratio) {
+          withSQLConf(CometConf.COMET_SHUFFLE_JVM_PREFER_DICTIONARY_RATIO.key -> ratio) {
             withParquetTable(
               (0 until 50).map(i => (Seq(Seq(i + 1), Seq(i + 2), Seq(i + 3)), i + 1)),
               "tbl") {
@@ -422,7 +422,7 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
   test("columnar shuffle on nested struct") {
     Seq(10, 201).foreach { numPartitions =>
       Seq("1.0", "10.0").foreach { ratio =>
-        withSQLConf(CometConf.COMET_SHUFFLE_COLUMNAR_PREFER_DICTIONARY_RATIO.key -> ratio) {
+        withSQLConf(CometConf.COMET_SHUFFLE_JVM_PREFER_DICTIONARY_RATIO.key -> ratio) {
           withParquetTable(
             (0 until 50).map(i =>
               ((i, 2.toString, (i + 1).toLong, (3.toString, i + 1, (i + 2).toLong)), i + 1)),
@@ -444,8 +444,8 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
       withSQLConf(
         SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
         CometConf.COMET_BATCH_SIZE.key -> "10",
-        CometConf.COMET_SHUFFLE_COLUMNAR_PREFER_DICTIONARY_RATIO.key -> "1.1",
-        CometConf.COMET_SHUFFLE_COLUMNAR_SPILL_THRESHOLD.key -> "1000000000") {
+        CometConf.COMET_SHUFFLE_JVM_PREFER_DICTIONARY_RATIO.key -> "1.1",
+        CometConf.COMET_SHUFFLE_JVM_SPILL_THRESHOLD.key -> "1000000000") {
         val table1 = (0 until 1000)
           .map(i => (111111.toString, 2222222.toString, 3333333.toString, i.toLong))
           .toDF("a", "b", "c", "d")
@@ -466,7 +466,7 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
 
   test("fix: Dictionary field should have distinct dict_id") {
     Seq(10, 201).foreach { numPartitions =>
-      withSQLConf(CometConf.COMET_SHUFFLE_COLUMNAR_PREFER_DICTIONARY_RATIO.key -> "2.0") {
+      withSQLConf(CometConf.COMET_SHUFFLE_JVM_PREFER_DICTIONARY_RATIO.key -> "2.0") {
         withParquetTable(
           (0 until 10000).map(i => (1.toString, 2.toString, (i + 1).toLong)),
           "tbl") {
@@ -483,7 +483,7 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
 
   test("dictionary shuffle") {
     Seq(10, 201).foreach { numPartitions =>
-      withSQLConf(CometConf.COMET_SHUFFLE_COLUMNAR_PREFER_DICTIONARY_RATIO.key -> "2.0") {
+      withSQLConf(CometConf.COMET_SHUFFLE_JVM_PREFER_DICTIONARY_RATIO.key -> "2.0") {
         withParquetTable((0 until 10000).map(i => (1.toString, (i + 1).toLong)), "tbl") {
           assert(
             sql("SELECT * FROM tbl").repartition(numPartitions, $"_1").count() == sql(
@@ -498,8 +498,7 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
 
   test("dictionary shuffle: fallback to string") {
     Seq(10, 201).foreach { numPartitions =>
-      withSQLConf(
-        CometConf.COMET_SHUFFLE_COLUMNAR_PREFER_DICTIONARY_RATIO.key -> "1000000000.0") {
+      withSQLConf(CometConf.COMET_SHUFFLE_JVM_PREFER_DICTIONARY_RATIO.key -> "1000000000.0") {
         withParquetTable((0 until 10000).map(i => (1.toString, (i + 1).toLong)), "tbl") {
           assert(
             sql("SELECT * FROM tbl").repartition(numPartitions, $"_1").count() == sql(

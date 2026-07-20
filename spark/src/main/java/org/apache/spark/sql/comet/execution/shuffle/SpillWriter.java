@@ -196,7 +196,7 @@ public abstract class SpillWriter {
     long currentChecksum = checksumEnabled ? checksum : 0L;
 
     long start = System.nanoTime();
-    int batchSize = (int) CometConf.COMET_SHUFFLE_COLUMNAR_BATCH_SIZE().get();
+    int batchSize = (int) CometConf.COMET_SHUFFLE_JVM_BATCH_SIZE().get();
     long[] results =
         nativeLib.writeSortedFileNative(
             addresses,

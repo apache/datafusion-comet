@@ -95,7 +95,7 @@ public class CometShuffleBlockIterator implements Closeable {
               + bytesToRead
               + " exceeds maximum of "
               + Integer.MAX_VALUE
-              + ". Try reducing spark.comet.shuffle.columnar.batchSize.");
+              + ". Try reducing spark.comet.shuffle.jvm.batchSize.");
     }
 
     currentBlockLength = (int) bytesToRead;
