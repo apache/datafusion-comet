@@ -28,10 +28,12 @@ import org.apache.spark.TaskContext
 import org.apache.spark.internal.io.{FileCommitProtocol, FileNameSpec, SparkHadoopWriterUtils}
 import org.apache.spark.internal.io.FileCommitProtocol.TaskCommitMessage
 import org.apache.spark.rdd.RDD
+import org.apache.spark.sql.SaveMode
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.comet.CometNativeWriteExec.CommitProtocolConfig
 import org.apache.spark.sql.comet.execution.arrow.CometArrowStream
 import org.apache.spark.sql.comet.util.{Utils => CometUtils}
+import org.apache.spark.sql.errors.{QueryCompilationErrors, QueryExecutionErrors}
 import org.apache.spark.sql.execution.{SparkPlan, UnaryExecNode}
 import org.apache.spark.sql.execution.datasources.OutputWriterFactory
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
@@ -295,6 +297,45 @@ case class CometNativeWriteExec(
   }
 
   /** Create a TaskAttemptContext matching Spark's FileFormatWriter task ID setup. */
+  /**
+   * Applies SaveMode semantics to the output path before the write starts. Returns `true` when
+   * the write should proceed and `false` when it should be skipped (Ignore + existing target).
+   * For ErrorIfExists throws when the target already exists. For Overwrite deletes the target so
+   * the writer can produce a clean directory. Ported from Spark's
+   * InsertIntoHadoopFsRelationCommand.run() doInsertion logic, minus the partition/catalog paths
+   * that Comet does not support.
+   */
+  private def prepareOutputPathForMode(): Boolean = {
+    val path = new Path(outputPath)
+    val hadoopConf = sparkContext.hadoopConfiguration
+    val fs = path.getFileSystem(hadoopConf)
+    val qualifiedOutputPath = path.makeQualified(fs.getUri, fs.getWorkingDirectory)
+
+    mode match {
+      case SaveMode.Append =>
+        true
+      case SaveMode.ErrorIfExists =>
+        if (fs.exists(qualifiedOutputPath)) {
+          throw QueryCompilationErrors.outputPathAlreadyExistsError(qualifiedOutputPath)
+        }
+        true
+      case SaveMode.Overwrite =>
+        if (fs.exists(qualifiedOutputPath)) {
+          val deleted = committer match {
+            case Some(c) => c.deleteWithJob(fs, qualifiedOutputPath, true)
+            case None => fs.delete(qualifiedOutputPath, true)
+          }
+          if (!deleted) {
+            throw QueryExecutionErrors.cannotClearOutputDirectoryError(qualifiedOutputPath)
+          }
+        }
+        true
+      case SaveMode.Ignore =>
+        !fs.exists(qualifiedOutputPath)
+    }
+  }
+
+  /** Create a TaskAttemptContext for a specific task */
   private def createTaskContext(
       protocol: CommitProtocolConfig,
       sparkStageId: Int,

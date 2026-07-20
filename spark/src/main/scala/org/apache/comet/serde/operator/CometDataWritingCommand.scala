@@ -30,6 +30,8 @@ import org.apache.hadoop.mapreduce.lib.output.FileOutputFormat
 import org.apache.spark.internal.io.FileCommitProtocol
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.util.CaseInsensitiveMap
+import org.apache.parquet.hadoop.ParquetOutputFormat
+import org.apache.spark.SparkException
 import org.apache.spark.sql.comet.{CometNativeExec, CometNativeWriteExec}
 import org.apache.spark.sql.execution.command.DataWritingCommandExec
 import org.apache.spark.sql.execution.datasources.{InsertIntoHadoopFsRelationCommand, WriteFilesExec}
@@ -50,7 +52,8 @@ import org.apache.comet.serde.QueryPlanSerde.serializeDataType
  */
 object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec] {
 
-  private val supportedCompressionCodes = Set("none", "snappy", "lz4", "zstd")
+  private val supportedCompressionCodes =
+    Set("none", "uncompressed", "snappy", "lz4", "zstd", "gzip")
 
   override def enabledConfig: Option[ConfigEntry[Boolean]] =
     Some(CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED)
@@ -127,7 +130,8 @@ object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec
         case "snappy" => OperatorOuterClass.CompressionCodec.Snappy
         case "lz4" => OperatorOuterClass.CompressionCodec.Lz4
         case "zstd" => OperatorOuterClass.CompressionCodec.Zstd
-        case "none" => OperatorOuterClass.CompressionCodec.None
+        case "gzip" => OperatorOuterClass.CompressionCodec.Gzip
+        case "none" | "uncompressed" => OperatorOuterClass.CompressionCodec.None
         case other =>
           withFallbackReason(op, s"Unsupported compression codec: $other")
           return None
@@ -214,9 +218,13 @@ object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec
   }
 
   private def parseCompressionCodec(cmd: InsertIntoHadoopFsRelationCommand) = {
+    // `compression`, `parquet.compression` (i.e., ParquetOutputFormat.COMPRESSION), and
+    // `spark.sql.parquet.compression.codec` are in order of precedence from highest to
+    // lowest, matching Spark's own ParquetOptions.compressionCodecClassName.
     cmd.options
+      .get("compression")
+      .orElse(cmd.options.get(ParquetOutputFormat.COMPRESSION))
       .getOrElse(
-        "compression",
         SQLConf.get.getConfString(
           SQLConf.PARQUET_COMPRESSION.key,
           SQLConf.PARQUET_COMPRESSION.defaultValueString))
