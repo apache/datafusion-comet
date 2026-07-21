@@ -19,7 +19,6 @@
 
 package org.apache.spark.sql.comet.uniffle
 
-import java.nio.{ByteBuffer, ByteOrder}
 import java.util
 import java.util.{Collections, Optional}
 import java.util.function.Supplier
@@ -27,7 +26,6 @@ import java.util.function.Supplier
 import org.apache.hadoop.conf.Configuration
 import org.apache.spark.{InterruptibleIterator, TaskContext}
 import org.apache.spark.executor.ShuffleReadMetrics
-import org.apache.spark.internal.Logging
 import org.apache.spark.shuffle.{RssShuffleHandle, RssSparkConfig}
 import org.apache.spark.shuffle.reader.RssShuffleReader
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleDependency
@@ -35,7 +33,6 @@ import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.util.CompletionIterator
 import org.apache.uniffle.client.api.{ShuffleManagerClient, ShuffleReadClient}
 import org.apache.uniffle.client.factory.ShuffleClientFactory
-import org.apache.uniffle.client.response.ShuffleBlock
 import org.apache.uniffle.common.{ShuffleDataDistributionType, ShuffleServerInfo}
 import org.apache.uniffle.common.compression.Codec
 import org.apache.uniffle.common.config.RssConf
@@ -89,7 +86,8 @@ class CometUniffleShuffleReader[K, C](
     val nativeLib = new Native()
     val nativeUtil = new NativeUtil()
 
-    val shuffleBlockIterator = new CometUniffleShuffleBlockIterator()
+    val shuffleBlockIterator =
+      new CometUniffleShuffleBlockIterator(startPartition, endPartition, createShuffleReadClient)
 
     context.addTaskCompletionListener[Unit] { _ =>
       shuffleBlockIterator.close()
@@ -237,131 +235,6 @@ class CometUniffleShuffleReader[K, C](
   }
 
   override def readAsShuffleBlockIterator(): CometShuffleBlockIterator = {
-    new CometUniffleShuffleBlockIterator()
-  }
-
-  class CometUniffleShuffleBlockIterator extends CometShuffleBlockIterator with Logging {
-    private var currentPartition: Int = startPartition
-    private var current: ByteBuffer = _
-    private var currentShuffleReadClient: ShuffleReadClient = createShuffleReadClient(
-      currentPartition)
-
-    private val headerBuf = ByteBuffer.allocate(16).order(ByteOrder.LITTLE_ENDIAN)
-    private val INITIAL_BUFFER_SIZE = 128 * 1024
-    private var dataBuf = ByteBuffer.allocateDirect(INITIAL_BUFFER_SIZE)
-    private var currentBlockLength = 0
-
-    var currentBatchFieldCount: Int = _
-
-    override def hasNext: Int = {
-      if (current == null || !current.hasRemaining) {
-        val nextBlock = nextShuffleBlock()
-        if (nextBlock.isEmpty) {
-          return -1
-        }
-        current = nextBlock.get
-      }
-
-      val oldLimit = current.limit()
-      try {
-        current.limit(current.position() + headerBuf.capacity())
-        headerBuf.clear()
-        headerBuf.put(current)
-        headerBuf.flip()
-      } finally {
-        current.limit(oldLimit)
-      }
-
-      val compressedLength = headerBuf.getLong
-      currentBatchFieldCount = headerBuf.getLong.toInt
-
-      // Subtract 8 because compressedLength includes the 8-byte field count we already read
-      val bytesToRead = compressedLength - 8
-      if (bytesToRead > Integer.MAX_VALUE) {
-        throw new IllegalStateException(
-          "Native shuffle block size of " + bytesToRead + " exceeds maximum of "
-            + Integer.MAX_VALUE + ". Try reducing spark.comet.columnar.shuffle.batch.size.")
-      }
-      currentBlockLength = bytesToRead.toInt
-
-      if (dataBuf.capacity < currentBlockLength) {
-        val newCapacity = Math.min(bytesToRead * 2L, Integer.MAX_VALUE).toInt
-        dataBuf = ByteBuffer.allocateDirect(newCapacity)
-      }
-      dataBuf.clear
-      dataBuf.limit(currentBlockLength)
-
-      while (dataBuf.hasRemaining) {
-        if (!current.hasRemaining) {
-          val nextBlock = nextShuffleBlock()
-          if (nextBlock.isEmpty) {
-            throw new IllegalStateException(
-              "Unexpected end of shuffle data while reading block of length " + currentBlockLength)
-          }
-          current = nextBlock.get
-        }
-        val readLimit = dataBuf.remaining()
-        var oldLimit = -1
-        try {
-          if (readLimit < current.remaining()) {
-            oldLimit = current.limit()
-            current.limit(current.position() + readLimit)
-          }
-          dataBuf.put(current)
-        } finally {
-          if (oldLimit != -1) {
-            current.limit(oldLimit)
-          }
-        }
-      }
-
-      currentBlockLength
-    }
-
-    private def nextShuffleBlock(): Option[ByteBuffer] = {
-      val shuffleBlock: ShuffleBlock = if (currentShuffleReadClient != null) {
-        currentShuffleReadClient.readShuffleBlockData
-      } else {
-        null
-      }
-      val rawData = if (shuffleBlock != null) {
-        shuffleBlock.getByteBuffer
-      } else {
-        null
-      }
-      if (rawData == null) {
-        if (currentShuffleReadClient != null) {
-          currentShuffleReadClient.checkProcessedBlockIds()
-          currentShuffleReadClient.logStatics()
-          currentShuffleReadClient.close()
-          currentShuffleReadClient = null
-        }
-        currentPartition += 1
-        if (currentPartition >= endPartition) {
-          return None
-        }
-
-        currentShuffleReadClient = createShuffleReadClient(currentPartition)
-        return nextShuffleBlock()
-      }
-      Some(rawData)
-    }
-
-    override def getBuffer: ByteBuffer = dataBuf
-
-    override def getCurrentBlockLength: Int = currentBlockLength
-
-    override def close(): Unit = {
-      if (current != null) {
-        current = null
-      }
-      if (dataBuf != null) {
-        dataBuf = ByteBuffer.allocateDirect(INITIAL_BUFFER_SIZE)
-      }
-      if (currentShuffleReadClient != null) {
-        currentShuffleReadClient.close()
-        currentShuffleReadClient = null
-      }
-    }
+    new CometUniffleShuffleBlockIterator(startPartition, endPartition, createShuffleReadClient)
   }
 }
