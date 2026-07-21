@@ -474,7 +474,7 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
       val unlimited = spillCountWithMaxBufferBytes("0")
       assert(
         limited > unlimited,
-        s"a 64k maxBufferBytes limit must spill more than the default of 0 " +
+        "a 64k maxBufferBytes limit must spill more than the default of 0 " +
           s"(got $limited vs $unlimited)")
     }
   }
