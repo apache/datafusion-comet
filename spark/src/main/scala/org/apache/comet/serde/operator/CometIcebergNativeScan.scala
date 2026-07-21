@@ -550,13 +550,15 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
    * Residuals come from Iceberg's ResidualEvaluator (partial evaluation of the scan filter
    * against each file's partition data). This is only a pruning hint: the CometFilter above the
    * scan enforces correctness, so any node or literal we cannot represent yields None (no
-   * pushdown). Uses reflection because Iceberg's expression classes are not on Spark's classpath
-   * at planning time; residuals are unbound predicates carrying a NamedReference (column name)
-   * and a literal.
+   * pushdown). Predicates over `pageIndexUnsupportedColumns` also yield None (iceberg-rust cannot
+   * use those columns in the page index). Uses reflection because Iceberg's expression classes
+   * are not on Spark's classpath at planning time; residuals are unbound predicates carrying a
+   * NamedReference (column name) and a literal.
    */
   def icebergExprToProto(
       icebergExpr: Any,
-      output: Seq[Attribute]): Option[OperatorOuterClass.IcebergPredicate] = {
+      output: Seq[Attribute],
+      pageIndexUnsupportedColumns: Set[String]): Option[OperatorOuterClass.IcebergPredicate] = {
     try {
       val exprClass = icebergExpr.getClass
       val attributeMap = output.map(attr => attr.name -> attr).toMap
@@ -570,30 +572,49 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
         attributeMap.get(columnName).flatMap { attribute =>
           import Constants.Operations._
           import OperatorOuterClass.IcebergPredicateOperator
-          operation match {
-            case IS_NULL => Some(unaryPredicate(columnName, IcebergPredicateOperator.IsNull))
-            case IS_NOT_NULL | NOT_NULL =>
-              Some(unaryPredicate(columnName, IcebergPredicateOperator.NotNull))
-            case op if binaryOps.contains(op) =>
-              binaryPredicate(exprClass, icebergExpr, columnName, attribute, binaryOps(op))
-            case IN => setPredicate(exprClass, icebergExpr, columnName, attribute)
-            // NOT_IN is inherently unprunable from column stats, so it is not pushed.
-            case _ => None
+          if (pageIndexUnsupportedColumns.contains(columnName)) {
+            // Any predicate on this column, including a unary IS [NOT] NULL, would reach the page
+            // index and fail, so drop the whole predicate; the post-scan CometFilter enforces it.
+            None
+          } else {
+            operation match {
+              case IS_NULL => Some(unaryPredicate(columnName, IcebergPredicateOperator.IsNull))
+              case IS_NOT_NULL | NOT_NULL =>
+                Some(unaryPredicate(columnName, IcebergPredicateOperator.NotNull))
+              case op if binaryOps.contains(op) =>
+                binaryPredicate(exprClass, icebergExpr, columnName, attribute, binaryOps(op))
+              case IN => setPredicate(exprClass, icebergExpr, columnName, attribute)
+              // NOT_IN is inherently unprunable from column stats, so it is not pushed.
+              case _ => None
+            }
           }
         }
       } else if (exprClass.getName.endsWith(Constants.ExpressionTypes.AND)) {
-        val left = icebergExprToProto(exprClass.getMethod("left").invoke(icebergExpr), output)
-        val right = icebergExprToProto(exprClass.getMethod("right").invoke(icebergExpr), output)
+        val left = icebergExprToProto(
+          exprClass.getMethod("left").invoke(icebergExpr),
+          output,
+          pageIndexUnsupportedColumns)
+        val right = icebergExprToProto(
+          exprClass.getMethod("right").invoke(icebergExpr),
+          output,
+          pageIndexUnsupportedColumns)
         (left, right) match {
-          // Dropping a conjunct only weakens the pruning predicate, so keep any convertible side.
+          // Push the residual only if it converts whole. Dropping a conjunct is safe in positive
+          // position but strengthens the predicate under a NOT (De Morgan), which would wrongly
+          // prune, and tracking polarity across arbitrary nesting is error prone. So an
+          // unconvertible conjunct elides the whole residual; the post-scan CometFilter is exact.
           case (Some(l), Some(r)) => Some(logicalPredicate(isAnd = true, l, r))
-          case (Some(p), None) => Some(p)
-          case (None, Some(p)) => Some(p)
-          case (None, None) => None
+          case _ => None
         }
       } else if (exprClass.getName.endsWith(Constants.ExpressionTypes.OR)) {
-        val left = icebergExprToProto(exprClass.getMethod("left").invoke(icebergExpr), output)
-        val right = icebergExprToProto(exprClass.getMethod("right").invoke(icebergExpr), output)
+        val left = icebergExprToProto(
+          exprClass.getMethod("left").invoke(icebergExpr),
+          output,
+          pageIndexUnsupportedColumns)
+        val right = icebergExprToProto(
+          exprClass.getMethod("right").invoke(icebergExpr),
+          output,
+          pageIndexUnsupportedColumns)
         // Dropping a disjunct would strengthen the predicate and wrongly prune, so require both.
         (left, right) match {
           case (Some(l), Some(r)) => Some(logicalPredicate(isAnd = false, l, r))
@@ -601,7 +622,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
         }
       } else if (exprClass.getName.endsWith(Constants.ExpressionTypes.NOT)) {
         val child = exprClass.getMethod("child").invoke(icebergExpr)
-        icebergExprToProto(child, output).map(notPredicate)
+        icebergExprToProto(child, output, pageIndexUnsupportedColumns).map(notPredicate)
       } else {
         None
       }
@@ -699,9 +720,10 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
 
   /**
    * Builds a predicate literal from its Iceberg value and the column's Spark type. Returns None
-   * for null (IS NULL is a separate op) and for types not pushed for pruning (byte-array-backed
-   * types, which iceberg-rust cannot use in the page index yet, and anything unmapped), so the
-   * predicate degrades to no pushdown rather than an incorrect one.
+   * for null (IS NULL is a separate op) and for Spark types this serde does not map to an
+   * IcebergLiteral (e.g. binary), so the predicate degrades to no pushdown rather than an
+   * incorrect one. Columns backed by Parquet FIXED_LEN_BYTE_ARRAY (decimal/uuid/fixed) are
+   * dropped earlier by the column gate in icebergExprToProto and never reach here.
    */
   private def predicateLiteralToProto(
       sparkType: DataType,
@@ -811,6 +833,11 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
     val deleteFilesToPoolIndex =
       mutable.HashMap[Seq[Int], Int]()
     val residualToPoolIndex = mutable.HashMap[OperatorOuterClass.IcebergPredicate, Int]()
+    // Columns whose Iceberg type iceberg-rust cannot use for page-index pruning; residual
+    // predicates over them are dropped (see icebergExprToProto). Computed once from the full table
+    // schema so a filter column projected out of the scan output is still recognized.
+    val pageIndexUnsupportedColumns =
+      IcebergReflection.pageIndexUnsupportedColumns(metadata.tableSchema)
 
     val perPartitionBuilders = mutable.ArrayBuffer[OperatorOuterClass.IcebergScan]()
 
@@ -1011,7 +1038,10 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
 
                 val residualExprOpt =
                   try {
-                    icebergExprToProto(residualMethod.invoke(task), output)
+                    icebergExprToProto(
+                      residualMethod.invoke(task),
+                      output,
+                      pageIndexUnsupportedColumns)
                   } catch {
                     case e: Exception =>
                       logWarning(

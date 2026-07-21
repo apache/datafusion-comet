@@ -604,6 +604,11 @@ class CometIcebergNativeSuite
   // (getSerializedSize() returns int, so it wraps to a negative array length).
   test("delete file pool does not duplicate shared delete files (serde size)") {
     assume(icebergAvailable, "Iceberg not available in classpath")
+    // Reading scan.commonData forces Iceberg planning (ParallelIterable), which on older Iceberg
+    // leaves a prefetched manifest stream open that Spark's DebugFilesystem flags at teardown.
+    assume(
+      icebergVersionAtLeast(1, 8),
+      "ParallelIterable leaks manifest streams on older Iceberg")
 
     withTempIcebergDir { warehouseDir =>
       withSQLConf(
@@ -2645,6 +2650,235 @@ class CometIcebergNativeSuite
     }
   }
 
+  // Reproducer for the iceberg-rust FIXED_LEN_BYTE_ARRAY page-index gap (comet#4982), mirroring
+  // Iceberg's TestSparkReaderWithBloomFilter: a table with decimal columns (stored as
+  // FIXED_LEN_BYTE_ARRAY), bloom filters, tiny row groups (so Parquet writes a page index), and a
+  // wide AND filter that includes decimal equalities. Getting this to fail lets us instrument why a
+  // predicate reaches iceberg-rust's PageIndexEvaluator on a decimal column.
+  test("filter on a table with a decimal column does not fail the native scan") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        spark.sql("""
+          CREATE TABLE test_cat.db.decimal_filter_test (
+            id INT,
+            id_long BIGINT,
+            id_double DOUBLE,
+            id_float FLOAT,
+            id_string STRING,
+            id_boolean BOOLEAN,
+            id_date DATE,
+            id_int_decimal DECIMAL(8, 2),
+            id_long_decimal DECIMAL(14, 2),
+            id_fixed_decimal DECIMAL(31, 2)
+          ) USING iceberg
+          TBLPROPERTIES (
+            'format-version' = '2',
+            'write.parquet.row-group-size-bytes' = '100',
+            'write.parquet.bloom-filter-enabled.column.id' = 'true',
+            'write.parquet.bloom-filter-enabled.column.id_long' = 'true',
+            'write.parquet.bloom-filter-enabled.column.id_double' = 'true',
+            'write.parquet.bloom-filter-enabled.column.id_float' = 'true',
+            'write.parquet.bloom-filter-enabled.column.id_string' = 'true',
+            'write.parquet.bloom-filter-enabled.column.id_boolean' = 'true',
+            'write.parquet.bloom-filter-enabled.column.id_date' = 'true',
+            'write.parquet.bloom-filter-enabled.column.id_int_decimal' = 'true',
+            'write.parquet.bloom-filter-enabled.column.id_long_decimal' = 'true',
+            'write.parquet.bloom-filter-enabled.column.id_fixed_decimal' = 'true'
+          )
+        """)
+
+        // 300 rows (ids 30..329), matching the Iceberg test's value formulas.
+        spark.sql("""
+          INSERT INTO test_cat.db.decimal_filter_test
+          SELECT
+            CAST(id AS INT),
+            CAST(id + 1000 AS BIGINT),
+            CAST(id + 10000 AS DOUBLE),
+            CAST(id + 100000 AS FLOAT),
+            CONCAT('BINARY_', CAST(id AS STRING)),
+            true,
+            DATE '2021-09-05',
+            CAST(77.77 AS DECIMAL(8, 2)),
+            CAST(88.88 AS DECIMAL(14, 2)),
+            CAST(99.99 AS DECIMAL(31, 2))
+          FROM range(30, 330)
+        """)
+
+        checkIcebergNativeScan(
+          "SELECT * FROM test_cat.db.decimal_filter_test WHERE id = 30 AND id_long = 1030 " +
+            "AND id_double = 10030.0 AND id_float = 100030.0 AND id_string = 'BINARY_30' " +
+            "AND id_boolean = true AND id_date = '2021-09-05' AND id_int_decimal = 77.77 " +
+            "AND id_long_decimal = 88.88 AND id_fixed_decimal = 99.99")
+
+        spark.sql("DROP TABLE test_cat.db.decimal_filter_test")
+      }
+    }
+  }
+
+  // Iceberg stores uuid as Parquet FIXED_LEN_BYTE_ARRAY(16), the same physical layout as decimal
+  // and fixed. iceberg-rust's page-index evaluator does not support FIXED_LEN_BYTE_ARRAY, so a
+  // predicate pushed over such a column fails the native scan during page-index pruning. The scan
+  // must drop the residual and stay native, leaving the filter to the post-scan CometFilter.
+  // The trigger is IS NOT NULL (a unary predicate): it binds without a literal and reaches the
+  // page-index read. An equality would push a string literal that iceberg-rust cannot bind to a
+  // UUID field (Datum bind does not coerce), dropping the whole residual before any page probe.
+  test("filter on a table with a uuid column does not fail the native scan") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        import org.apache.iceberg.catalog.TableIdentifier
+        import org.apache.iceberg.spark.SparkCatalog
+        import org.apache.iceberg.types.Types
+        import org.apache.iceberg.{PartitionSpec, Schema}
+
+        val sparkCatalog = spark.sessionState.catalogManager
+          .catalog("test_cat")
+          .asInstanceOf[SparkCatalog]
+
+        spark.sql("CREATE NAMESPACE IF NOT EXISTS test_cat.db")
+
+        // uuid is not expressible via Spark SQL CREATE TABLE, so build the table with the Iceberg
+        // API. A tiny row-group size forces multiple row groups, so Parquet writes a column index
+        // for the uuid column that the pushed predicate then probes.
+        val schema = new Schema(
+          Types.NestedField.required(1, "id", Types.IntegerType.get()),
+          Types.NestedField.optional(2, "u", Types.UUIDType.get()))
+        val tableIdent = TableIdentifier.of("db", "uuid_filter_test")
+        val props = new java.util.HashMap[String, String]()
+        props.put("format-version", "2")
+        props.put("write.parquet.row-group-size-bytes", "100")
+        sparkCatalog.icebergCatalog
+          .createTable(tableIdent, schema, PartitionSpec.unpartitioned(), props)
+
+        spark.sql("""
+          INSERT INTO test_cat.db.uuid_filter_test
+          SELECT CAST(id AS INT), 'a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11'
+          FROM range(30, 330)
+        """)
+
+        checkIcebergNativeScan(
+          "SELECT * FROM test_cat.db.uuid_filter_test WHERE id = 30 AND u IS NOT NULL")
+
+        spark.sql("DROP TABLE test_cat.db.uuid_filter_test")
+      }
+    }
+  }
+
+  // Iceberg stores fixed[N] as Parquet FIXED_LEN_BYTE_ARRAY(N). As with uuid and decimal,
+  // iceberg-rust's page-index evaluator does not support that physical type, so the IS NOT NULL
+  // pushed over the fixed column (added by Iceberg for any filtered column) would fail the native
+  // scan. The residual must be dropped so the scan stays native and CometFilter enforces the filter.
+  test("filter on a table with a fixed column does not fail the native scan") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        import org.apache.iceberg.catalog.TableIdentifier
+        import org.apache.iceberg.spark.SparkCatalog
+        import org.apache.iceberg.types.Types
+        import org.apache.iceberg.{PartitionSpec, Schema}
+
+        val sparkCatalog = spark.sessionState.catalogManager
+          .catalog("test_cat")
+          .asInstanceOf[SparkCatalog]
+
+        spark.sql("CREATE NAMESPACE IF NOT EXISTS test_cat.db")
+
+        val schema = new Schema(
+          Types.NestedField.required(1, "id", Types.IntegerType.get()),
+          Types.NestedField.optional(2, "f", Types.FixedType.ofLength(16)))
+        val tableIdent = TableIdentifier.of("db", "fixed_filter_test")
+        val props = new java.util.HashMap[String, String]()
+        props.put("format-version", "2")
+        props.put("write.parquet.row-group-size-bytes", "100")
+        sparkCatalog.icebergCatalog
+          .createTable(tableIdent, schema, PartitionSpec.unpartitioned(), props)
+
+        spark.sql("""
+          INSERT INTO test_cat.db.fixed_filter_test
+          SELECT CAST(id AS INT), X'00112233445566778899aabbccddeeff'
+          FROM range(30, 330)
+        """)
+
+        checkIcebergNativeScan(
+          "SELECT * FROM test_cat.db.fixed_filter_test WHERE id = 30 AND f IS NOT NULL")
+
+        spark.sql("DROP TABLE test_cat.db.fixed_filter_test")
+      }
+    }
+  }
+
+  // A residual can arrive as NOT over an AND that mixes a supported conjunct with an unsupported
+  // (FIXED_LEN_BYTE_ARRAY) one. Dropping only the unsupported conjunct is safe in positive
+  // position (it weakens the pruning predicate), but under a NOT it strengthens it: NOT(id < 200
+  // AND d = 100.00) is really id >= 200 OR d != 100.00, yet dropping the decimal conjunct and
+  // negating leaves id >= 200, which prunes pages holding id < 200 rows that satisfy the filter
+  // via d != 100.00. The residual must not be pushed partially in that case. This asserts results
+  // match Spark; d is stored as decimal so its predicate is dropped by the page-index gate.
+  test("NOT over a partially supported AND does not drop rows") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        spark.sql("""
+          CREATE TABLE test_cat.db.not_partial_residual_test (
+            id INT,
+            d DECIMAL(10, 2)
+          ) USING iceberg
+          TBLPROPERTIES (
+            'format-version' = '2',
+            'write.parquet.row-group-size-bytes' = '100'
+          )
+        """)
+
+        // id ascending so row groups hold contiguous id ranges; a stronger id >= 200 pushed
+        // predicate would prune the id < 200 groups entirely.
+        spark.sql("""
+          INSERT INTO test_cat.db.not_partial_residual_test
+          SELECT CAST(id AS INT), CAST(id AS DECIMAL(10, 2))
+          FROM range(30, 330)
+        """)
+
+        checkIcebergNativeScan(
+          "SELECT * FROM test_cat.db.not_partial_residual_test " +
+            "WHERE NOT(id < 200 AND d = 100.00)")
+
+        spark.sql("DROP TABLE test_cat.db.not_partial_residual_test")
+      }
+    }
+  }
+
   // Regression test for https://github.com/apache/datafusion-comet/issues/3856
   // Fixed in https://github.com/apache/iceberg-rust/pull/2301
   test("migration - INT96 timestamp") {
@@ -3090,6 +3324,11 @@ class CometIcebergNativeSuite
   // overflow the broadcast IcebergScanCommon.
   test("residual pool dedups a shared non-partition filter to one entry") {
     assume(icebergAvailable, "Iceberg not available in classpath")
+    // Reading scan.commonData forces Iceberg planning (ParallelIterable), which on older Iceberg
+    // leaves a prefetched manifest stream open that Spark's DebugFilesystem flags at teardown.
+    assume(
+      icebergVersionAtLeast(1, 8),
+      "ParallelIterable leaks manifest streams on older Iceberg")
 
     withTempIcebergDir { warehouseDir =>
       withSQLConf(

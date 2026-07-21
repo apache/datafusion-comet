@@ -675,6 +675,38 @@ object IcebergReflection extends Logging {
   }
 
   /**
+   * Top-level column names whose Iceberg type is stored as Parquet FIXED_LEN_BYTE_ARRAY (decimal,
+   * uuid, fixed). iceberg-rust's page-index evaluator rejects that physical column-index type
+   * (page_index_evaluator.rs), so any residual predicate over such a column fails the native scan
+   * during pruning, including the IS NOT NULL that Iceberg adds for every filtered column.
+   * Callers must not push predicates on these columns. Extend this set as Iceberg adds
+   * FIXED_LEN_BYTE_ARRAY types (e.g. geometry).
+   */
+  def pageIndexUnsupportedColumns(schema: Any): Set[String] = {
+    import scala.jdk.CollectionConverters._
+    try {
+      val columns = schema.getClass
+        .getMethod("columns")
+        .invoke(schema)
+        .asInstanceOf[java.util.List[_]]
+      columns.asScala.flatMap { column =>
+        val name = column.getClass.getMethod("name").invoke(column).asInstanceOf[String]
+        val typeStr = column.getClass.getMethod("type").invoke(column).toString
+        if (typeStr.startsWith("decimal(") || typeStr == "uuid" || typeStr.startsWith("fixed[")) {
+          Some(name)
+        } else {
+          None
+        }
+      }.toSet
+    } catch {
+      case e: Exception =>
+        logWarning(
+          s"Failed to inspect schema for page-index-unsupported columns: ${e.getMessage}")
+        Set.empty[String]
+    }
+  }
+
+  /**
    * Validates partition column types for compatibility with iceberg-rust.
    *
    * iceberg-rust's Literal::try_from_json() has incomplete type support: - Binary/fixed types:
