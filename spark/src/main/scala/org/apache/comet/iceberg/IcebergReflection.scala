@@ -19,6 +19,8 @@
 
 package org.apache.comet.iceberg
 
+import java.util.Locale
+
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.SparkSession
 
@@ -78,6 +80,7 @@ object IcebergReflection extends Logging {
    */
   object FileFormats {
     val PARQUET = "PARQUET"
+    val PUFFIN = "PUFFIN"
   }
 
   /**
@@ -154,21 +157,6 @@ object IcebergReflection extends Logging {
     try {
       val contentFileClass = loadClass(ClassNames.CONTENT_FILE)
       extractFileLocation(contentFileClass, file)
-    } catch {
-      case _: Exception => None
-    }
-  }
-
-  /** The file format of a ContentFile (data or delete file), e.g. "PARQUET", "AVRO", "ORC". */
-  def getFileFormat(file: Any): Option[String] = {
-    try {
-      // Resolve format() on the public ContentFile interface. Iceberg's concrete file impls are
-      // package-private, so a method resolved on the concrete class throws IllegalAccessException
-      // when invoked.
-      // TODO callers in a loop (e.g. validateIcebergFileScanTasks) already hold a cached
-      // contentFileClass; add an overload that takes it to avoid reloading per file.
-      val contentFileClass = loadClass(ClassNames.CONTENT_FILE)
-      Some(contentFileClass.getMethod("format").invoke(file).toString)
     } catch {
       case _: Exception => None
     }
@@ -736,54 +724,48 @@ object IcebergReflection extends Logging {
     unsupportedTypes.toList
   }
 
-  // ============================================================================
-  // Iceberg V3 Feature Detection
-  // ============================================================================
+  private val UnsupportedV3Types: Set[String] =
+    Set("timestamp_ns", "timestamptz_ns", "variant", "geometry", "geography")
 
-  /** V3-only types not yet supported by Comet. */
-  object V3Types {
-    val TIMESTAMP_NS = "timestamp_ns"
-    val TIMESTAMPTZ_NS = "timestamptz_ns"
-    val VARIANT = "variant"
-    val GEOMETRY = "geometry"
-    val GEOGRAPHY = "geography"
+  def findUnsupportedV3Types(schema: Any): Set[String] =
+    findUnsupportedIcebergTypes(schema, UnsupportedV3Types)
 
-    val UNSUPPORTED_V3_TYPES: Set[String] =
-      Set(TIMESTAMP_NS, TIMESTAMPTZ_NS, VARIANT, GEOMETRY, GEOGRAPHY)
-  }
-
-  /** V3 Deletion Vector content type. */
-  object V3ContentTypes {
-    val DELETION_VECTOR = "DELETION_VECTOR"
-  }
-
-  /** Checks if any delete files use Deletion Vectors (V3 feature). */
-  def hasDeletionVectors(deleteFiles: java.util.List[_]): Boolean = {
-    import scala.jdk.CollectionConverters._
-
-    try {
-      // scalastyle:off classforname
-      val contentFileClass = Class.forName(ClassNames.CONTENT_FILE)
-      // scalastyle:on classforname
-      val contentMethod = contentFileClass.getMethod("content")
-
-      deleteFiles.asScala.exists { deleteFile =>
-        try {
-          contentMethod.invoke(deleteFile).toString == V3ContentTypes.DELETION_VECTOR
-        } catch {
-          case _: Exception => false
-        }
-      }
-    } catch {
-      case _: Exception => false
-    }
-  }
-
-  /** Finds V3-only types in a schema not yet supported by Comet. */
-  def findUnsupportedV3Types(schema: Any): Set[String] = {
+  private def findUnsupportedIcebergTypes(
+      schema: Any,
+      unsupportedTypeNames: Set[String]): Set[String] = {
     import scala.jdk.CollectionConverters._
 
     val unsupportedTypes = scala.collection.mutable.Set[String]()
+
+    def recordType(icebergType: Any): Unit = {
+      val typeStr = icebergType.toString.toLowerCase(Locale.ROOT)
+      unsupportedTypeNames.foreach { typeName =>
+        if (typeStr == typeName || typeStr.startsWith(s"$typeName(")) {
+          unsupportedTypes += typeName
+        }
+      }
+    }
+
+    def visitType(icebergType: Any): Unit = {
+      recordType(icebergType)
+
+      val typeClass = icebergType.getClass
+      val simpleName = typeClass.getSimpleName
+
+      if (simpleName.contains("StructType")) {
+        val fieldsMethod = typeClass.getMethod("fields")
+        val fields = fieldsMethod.invoke(icebergType).asInstanceOf[java.util.List[_]]
+        fields.asScala.foreach { field =>
+          val fieldType = field.getClass.getMethod("type").invoke(field)
+          visitType(fieldType)
+        }
+      } else if (simpleName.contains("ListType")) {
+        visitType(typeClass.getMethod("elementType").invoke(icebergType))
+      } else if (simpleName.contains("MapType")) {
+        visitType(typeClass.getMethod("keyType").invoke(icebergType))
+        visitType(typeClass.getMethod("valueType").invoke(icebergType))
+      }
+    }
 
     try {
       val columnsMethod = schema.getClass.getMethod("columns")
@@ -791,19 +773,9 @@ object IcebergReflection extends Logging {
 
       columns.asScala.foreach { column =>
         try {
-          val typeMethod = column.getClass.getMethod("type")
-          val icebergType = typeMethod.invoke(column)
-          val typeStr = icebergType.toString.toLowerCase(java.util.Locale.ROOT)
-
-          V3Types.UNSUPPORTED_V3_TYPES.foreach { v3Type =>
-            if (typeStr == v3Type || typeStr.startsWith(s"$v3Type(")) {
-              unsupportedTypes += v3Type
-            }
-          }
-
-          checkNestedTypesForV3(icebergType, unsupportedTypes)
+          visitType(column.getClass.getMethod("type").invoke(column))
         } catch {
-          case _: Exception => // Skip columns where we can't determine type
+          case _: Exception =>
         }
       }
     } catch {
@@ -812,171 +784,6 @@ object IcebergReflection extends Logging {
     }
 
     unsupportedTypes.toSet
-  }
-
-  /** Recursively checks nested types for V3-only types. */
-  private def checkNestedTypesForV3(
-      icebergType: Any,
-      unsupportedTypes: scala.collection.mutable.Set[String]): Unit = {
-    import scala.jdk.CollectionConverters._
-
-    try {
-      val typeClass = icebergType.getClass
-
-      if (typeClass.getSimpleName.contains("StructType")) {
-        try {
-          val fieldsMethod = typeClass.getMethod("fields")
-          val fields = fieldsMethod.invoke(icebergType).asInstanceOf[java.util.List[_]]
-
-          fields.asScala.foreach { field =>
-            try {
-              val fieldTypeMethod = field.getClass.getMethod("type")
-              val fieldType = fieldTypeMethod.invoke(field)
-              val typeStr = fieldType.toString.toLowerCase(java.util.Locale.ROOT)
-
-              V3Types.UNSUPPORTED_V3_TYPES.foreach { v3Type =>
-                if (typeStr == v3Type || typeStr.startsWith(s"$v3Type(")) {
-                  unsupportedTypes += v3Type
-                }
-              }
-
-              checkNestedTypesForV3(fieldType, unsupportedTypes)
-            } catch {
-              case _: Exception =>
-            }
-          }
-        } catch {
-          case _: Exception =>
-        }
-      }
-
-      if (typeClass.getSimpleName.contains("ListType")) {
-        try {
-          val elementTypeMethod = typeClass.getMethod("elementType")
-          val elementType = elementTypeMethod.invoke(icebergType)
-          val typeStr = elementType.toString.toLowerCase(java.util.Locale.ROOT)
-
-          V3Types.UNSUPPORTED_V3_TYPES.foreach { v3Type =>
-            if (typeStr == v3Type || typeStr.startsWith(s"$v3Type(")) {
-              unsupportedTypes += v3Type
-            }
-          }
-
-          checkNestedTypesForV3(elementType, unsupportedTypes)
-        } catch {
-          case _: Exception =>
-        }
-      }
-
-      if (typeClass.getSimpleName.contains("MapType")) {
-        try {
-          val keyTypeMethod = typeClass.getMethod("keyType")
-          val valueTypeMethod = typeClass.getMethod("valueType")
-          val keyType = keyTypeMethod.invoke(icebergType)
-          val valueType = valueTypeMethod.invoke(icebergType)
-
-          Seq(keyType, valueType).foreach { mapType =>
-            val typeStr = mapType.toString.toLowerCase(java.util.Locale.ROOT)
-            V3Types.UNSUPPORTED_V3_TYPES.foreach { v3Type =>
-              if (typeStr == v3Type || typeStr.startsWith(s"$v3Type(")) {
-                unsupportedTypes += v3Type
-              }
-            }
-            checkNestedTypesForV3(mapType, unsupportedTypes)
-          }
-        } catch {
-          case _: Exception =>
-        }
-      }
-    } catch {
-      case _: Exception =>
-    }
-  }
-
-  /** Checks if table has encryption configured (V3 feature). */
-  def hasEncryption(table: Any): Boolean = {
-    import scala.jdk.CollectionConverters._
-
-    try {
-      getTableProperties(table).exists { props =>
-        props.asScala.keys.exists { key =>
-          key.startsWith("encryption.") || key.startsWith("kms.")
-        }
-      }
-    } catch {
-      case _: Exception => false
-    }
-  }
-
-  /** Checks if schema has default column values (V3 feature). */
-  def hasDefaultColumnValues(schema: Any): Boolean = {
-    import scala.jdk.CollectionConverters._
-
-    try {
-      val columnsMethod = schema.getClass.getMethod("columns")
-      val columns = columnsMethod.invoke(schema).asInstanceOf[java.util.List[_]]
-
-      columns.asScala.exists { column =>
-        try {
-          hasFieldDefault(column) || hasNestedDefaults(column)
-        } catch {
-          case _: Exception => false
-        }
-      }
-    } catch {
-      case _: Exception => false
-    }
-  }
-
-  /** Checks if a field has initial-default or write-default set. */
-  private def hasFieldDefault(field: Any): Boolean = {
-    try {
-      val fieldClass = field.getClass
-
-      val hasInitialDefault =
-        try {
-          val initialDefaultMethod = fieldClass.getMethod("initialDefault")
-          initialDefaultMethod.invoke(field) != null
-        } catch {
-          case _: NoSuchMethodException => false
-        }
-
-      val hasWriteDefault =
-        try {
-          val writeDefaultMethod = fieldClass.getMethod("writeDefault")
-          writeDefaultMethod.invoke(field) != null
-        } catch {
-          case _: NoSuchMethodException => false
-        }
-
-      hasInitialDefault || hasWriteDefault
-    } catch {
-      case _: Exception => false
-    }
-  }
-
-  /** Recursively checks nested struct fields for defaults. */
-  private def hasNestedDefaults(field: Any): Boolean = {
-    import scala.jdk.CollectionConverters._
-
-    try {
-      val typeMethod = field.getClass.getMethod("type")
-      val fieldType = typeMethod.invoke(field)
-      val typeClass = fieldType.getClass
-
-      if (typeClass.getSimpleName.contains("StructType")) {
-        val fieldsMethod = typeClass.getMethod("fields")
-        val nestedFields = fieldsMethod.invoke(fieldType).asInstanceOf[java.util.List[_]]
-
-        nestedFields.asScala.exists { nestedField =>
-          hasFieldDefault(nestedField) || hasNestedDefaults(nestedField)
-        }
-      } else {
-        false
-      }
-    } catch {
-      case _: Exception => false
-    }
   }
 }
 

@@ -293,6 +293,69 @@ class CometIcebergNativeSuite
     }
   }
 
+  test("V3 table - initial defaults are applied for missing columns") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    assume(icebergVersionAtLeast(1, 11), "Iceberg V3 default values require Iceberg 1.11+")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.v3_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.v3_cat.type" -> "hadoop",
+        "spark.sql.catalog.v3_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true",
+        SQLConf.CODEGEN_FACTORY_MODE.key -> "NO_CODEGEN",
+        SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "false") {
+
+        import org.apache.iceberg.catalog.TableIdentifier
+        import org.apache.iceberg.expressions.Literal
+        import org.apache.iceberg.spark.SparkCatalog
+        import org.apache.iceberg.types.Types
+
+        val sparkCatalog = spark.sessionState.catalogManager
+          .catalog("v3_cat")
+          .asInstanceOf[SparkCatalog]
+
+        spark.sql("CREATE NAMESPACE IF NOT EXISTS v3_cat.db")
+
+        spark.sql("""
+          CREATE TABLE v3_cat.db.v3_initial_defaults (
+            id INT,
+            name STRING
+          ) USING iceberg
+          TBLPROPERTIES ('format-version' = '3')
+        """)
+
+        val tableIdent = TableIdentifier.of("db", "v3_initial_defaults")
+        val table = sparkCatalog.icebergCatalog.loadTable(tableIdent)
+        val record: org.apache.iceberg.data.Record =
+          org.apache.iceberg.data.GenericRecord.create(table.schema())
+        record.setField("id", Int.box(1))
+        record.setField("name", "Alice")
+        val out = table
+          .io()
+          .newOutputFile(
+            new File(warehouseDir, s"v3-initial-defaults-${System.nanoTime()}.parquet").toString)
+        val dataFile = org.apache.iceberg.data.CometDataFiles
+          .write(table, out, null, java.util.Collections.singletonList(record))
+
+        table.newAppend().appendFile(dataFile).commit()
+
+        table
+          .updateSchema()
+          .addColumn("status", Types.StringType.get(), Literal.of("active"))
+          .commit()
+
+        spark.sql("REFRESH TABLE v3_cat.db.v3_initial_defaults")
+
+        checkIcebergNativeScan("SELECT id, name, status FROM v3_cat.db.v3_initial_defaults")
+
+        spark.sql("DROP TABLE v3_cat.db.v3_initial_defaults")
+      }
+    }
+  }
+
   test("V3 table - partitioned table with date transform") {
     assume(icebergAvailable, "Iceberg not available in classpath")
 
