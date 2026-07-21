@@ -126,13 +126,14 @@ class CometUniffleShuffleBlockIterator(
       }
       currentPartition += 1
       if (currentPartition >= endPartition) {
-        return None
+        None
+      } else {
+        currentShuffleReadClient = createShuffleReadClient(currentPartition)
+        nextShuffleBlock()
       }
-
-      currentShuffleReadClient = createShuffleReadClient(currentPartition)
-      return nextShuffleBlock()
+    } else {
+      Some(rawData)
     }
-    Some(rawData)
   }
 
   override def getBuffer: ByteBuffer = dataBuf
