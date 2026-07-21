@@ -24,7 +24,7 @@ import org.apache.spark.sql.catalyst.expressions.aggregate.Sum
 import org.apache.spark.sql.catalyst.expressions.objects.{Invoke, StaticInvoke}
 import org.apache.spark.sql.catalyst.util.DateTimeUtils
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{IntegerType, TimeType}
+import org.apache.spark.sql.types.{DecimalType, IntegerType, TimeType}
 
 import org.apache.comet.expressions.CometEvalMode
 import org.apache.comet.serde.ExprOuterClass
@@ -75,6 +75,21 @@ trait CometExprShim extends Spark4xCometExprShim {
         }
 
         optExprWithFallbackReason(optExpr, s, child)
+
+      case s: StaticInvoke
+          if s.staticObject == classOf[DateTimeUtils.type] &&
+            s.functionName == "getSecondsOfTimeWithFraction" &&
+            s.arguments.size == 2 &&
+            s.dataType == DecimalType(8, 6) &&
+            s.arguments.head.dataType.isInstanceOf[TimeType] &&
+            isValidTimePrecision(s.arguments(1)) =>
+        val childExprs = s.arguments.map(exprToProtoInternal(_, inputs, binding))
+        val optExpr = scalarFunctionExprToProtoWithReturnType(
+          "second_with_fraction",
+          s.dataType,
+          false,
+          childExprs: _*)
+        optExprWithFallbackReason(optExpr, s, s.arguments: _*)
 
       case s: StaticInvoke
           if s.staticObject == classOf[DateTimeUtils.type] &&
@@ -141,6 +156,12 @@ trait CometExprShim extends Spark4xCometExprShim {
       case other =>
         throw new IllegalArgumentException(s"Unsupported integral TimeType part: $other")
     }
+  }
+
+  private def isValidTimePrecision(expr: Expression): Boolean = expr match {
+    case Literal(precision: Int, IntegerType) =>
+      precision >= TimeType.MIN_PRECISION && precision <= TimeType.MAX_PRECISION
+    case _ => false
   }
 }
 

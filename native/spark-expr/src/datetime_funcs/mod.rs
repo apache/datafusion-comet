@@ -35,7 +35,7 @@ pub use date_trunc::SparkDateTrunc;
 pub use day_month_name::{spark_day_name, spark_month_name};
 pub use extract_date_part::SparkHour;
 pub use extract_date_part::SparkMinute;
-pub use extract_date_part::SparkSecond;
+pub use extract_date_part::{SparkSecond, SparkSecondWithFraction};
 pub use hours::SparkHoursTransform;
 pub use make_date::SparkMakeDate;
 pub use make_time::SparkMakeTime;

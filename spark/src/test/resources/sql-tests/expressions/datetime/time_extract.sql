@@ -39,3 +39,11 @@ FROM test_time_extract
 query
 SELECT second(make_time(hours, minutes, secs))
 FROM test_time_extract
+
+query
+SELECT extract(SECOND FROM make_time(hours, minutes, secs))
+FROM test_time_extract
+
+query
+SELECT date_part('SECOND', make_time(hours, minutes, secs))
+FROM test_time_extract
