@@ -4694,6 +4694,7 @@ class CometIcebergNativeSuite
   }
 
   test("CometScanRule should report unsupported metadata columns") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
     withTempIcebergDir { warehouseDir =>
       withSQLConf(
         "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",

@@ -119,7 +119,7 @@ to configure Comet to convert `SortMergeJoin` to `ShuffledHashJoin`. Comet does 
 `ShuffledHashJoin` so this could result in OOM. Also, `SortMergeJoin` may still be faster in some cases. It is best
 to test with both for your specific workloads.
 
-To configure Comet to convert `SortMergeJoin` to `ShuffledHashJoin`, set `spark.comet.exec.replaceSortMergeJoin=true`.
+To configure Comet to convert `SortMergeJoin` to `ShuffledHashJoin`, set `spark.comet.exec.forceShuffledHashJoin=true`.
 
 ## Shuffle
 
