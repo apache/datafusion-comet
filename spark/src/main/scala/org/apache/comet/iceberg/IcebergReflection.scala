@@ -51,6 +51,7 @@ object IcebergReflection extends Logging {
     val UNBOUND_PREDICATE = "org.apache.iceberg.expressions.UnboundPredicate"
     val SPARK_BATCH_QUERY_SCAN = "org.apache.iceberg.spark.source.SparkBatchQueryScan"
     val SPARK_STAGED_SCAN = "org.apache.iceberg.spark.source.SparkStagedScan"
+    val SPARK_SCHEMA_UTIL = "org.apache.iceberg.spark.SparkSchemaUtil"
   }
 
   /**
@@ -734,6 +735,56 @@ object IcebergReflection extends Logging {
     }
 
     unsupportedTypes.toList
+  }
+
+  /**
+   * Returns the names of schema columns (including nested struct/list/map fields) that declare a
+   * V3 initial-default value. iceberg-rust does not synthesize default values for columns absent
+   * from a data file, so reads projecting such columns must fall back. Throws on reflection
+   * failure so the caller can fall back rather than risk a native crash.
+   */
+  def columnsWithInitialDefault(schema: Any): List[String] = {
+    import scala.jdk.CollectionConverters._
+    val columns =
+      schema.getClass.getMethod("columns").invoke(schema).asInstanceOf[java.util.List[_]]
+    columns.asScala.flatMap(walkFieldForDefault).toList
+  }
+
+  private def walkFieldForDefault(field: Any): List[String] = {
+    import scala.jdk.CollectionConverters._
+    val name = field.getClass.getMethod("name").invoke(field).asInstanceOf[String]
+    val here =
+      if (field.getClass.getMethod("initialDefault").invoke(field) != null) List(name) else Nil
+    val fieldType = field.getClass.getMethod("type").invoke(field)
+    val nested =
+      if (fieldType.getClass.getMethod("isNestedType").invoke(fieldType).asInstanceOf[Boolean]) {
+        val nestedType = fieldType.getClass.getMethod("asNestedType").invoke(fieldType)
+        val fields =
+          nestedType.getClass
+            .getMethod("fields")
+            .invoke(nestedType)
+            .asInstanceOf[java.util.List[_]]
+        fields.asScala.flatMap(walkFieldForDefault).toList
+      } else {
+        Nil
+      }
+    here ++ nested
+  }
+
+  /**
+   * Converts an Iceberg `Schema` to the Spark `StructType` it reads as, via
+   * `SparkSchemaUtil.convert`. Comet serializes the whole table/scan schema to native (not just
+   * projected columns), so callers use this to run the schema through Comet's existing type
+   * allow-list and fall back if any column is a type the native reader does not support (e.g.
+   * variant). Throws on reflection failure so the caller can fall back.
+   */
+  def toSparkSchema(schema: Any): org.apache.spark.sql.types.StructType = {
+    val sparkSchemaUtil = loadClass(ClassNames.SPARK_SCHEMA_UTIL)
+    val schemaClass = loadClass(ClassNames.SCHEMA)
+    val convert = sparkSchemaUtil.getMethod("convert", schemaClass)
+    convert
+      .invoke(null, schema.asInstanceOf[AnyRef])
+      .asInstanceOf[org.apache.spark.sql.types.StructType]
   }
 }
 

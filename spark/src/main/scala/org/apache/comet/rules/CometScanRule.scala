@@ -462,12 +462,18 @@ case class CometScanRule(session: SparkSession)
 
         // Check Iceberg table format version
 
-        val formatVersionSupported = IcebergReflection.getFormatVersion(metadata.table) match {
-          case Some(formatVersion) =>
-            if (formatVersion > 2) {
+        // V3 adds column types iceberg-rust cannot read (variant, geometry, geography, unknown)
+        // and column default values; those are handled by the allow-list and default-value checks
+        // below, which fall back per-table. This gate only bounds the format version. Deletion
+        // vectors (a V3 delete feature) are handled by the delete-file gate, which still falls back
+        // for non-Parquet (Puffin) deletes since native deletion-vector reads are not yet wired.
+        val formatVersion = IcebergReflection.getFormatVersion(metadata.table)
+        val formatVersionSupported = formatVersion match {
+          case Some(v) =>
+            if (v > 3) {
               fallbackReasons += "Iceberg table format version " +
-                s"$formatVersion is not supported. " +
-                "Comet only supports Iceberg table format V1 and V2"
+                s"$v is not supported. " +
+                "Comet supports Iceberg table format V1, V2, and V3"
               false
             } else {
               true
@@ -476,6 +482,48 @@ case class CometScanRule(session: SparkSession)
             fallbackReasons += "Could not verify Iceberg table format version"
             false
         }
+
+        // Column default values are a V3 feature, so V1/V2 tables cannot have them and need no
+        // check. Only inspect V3 tables. iceberg-rust does not synthesize a V3 initial-default for
+        // a column absent from a data file, so a scan projecting such a column must fall back. A V3
+        // table implies an Iceberg version new enough to expose initialDefault(), so a reflection
+        // failure here is unexpected and also falls back rather than risk a crash.
+        val defaultValuesSupported =
+          if (!formatVersion.exists(_ >= 3)) {
+            true
+          } else {
+            try {
+              val defaulted = IcebergReflection.columnsWithInitialDefault(metadata.scanSchema)
+              if (defaulted.nonEmpty) {
+                fallbackReasons += "Iceberg column(s) with V3 default values are not yet " +
+                  s"supported by Comet's native reader: ${defaulted.mkString(", ")}"
+                false
+              } else {
+                true
+              }
+            } catch {
+              case e: Exception =>
+                fallbackReasons += "Iceberg reflection failure: could not verify V3 default " +
+                  s"values: ${e.getMessage}"
+                false
+            }
+          }
+
+        // Comet serializes the whole table/scan schema to native, not just projected columns, so a
+        // type the native reader does not support (e.g. variant) breaks the scan even when that
+        // column is not projected. The readSchema allow-list only covers projected columns, so run
+        // the same allow-list over the full schema Comet may serialize. Reflection failure also
+        // falls back.
+        val schemaTypesSupported =
+          try {
+            val fullSchema = IcebergReflection.toSparkSchema(metadata.tableSchema)
+            typeChecker.isSchemaSupported(fullSchema, fallbackReasons)
+          } catch {
+            case e: Exception =>
+              fallbackReasons += "Iceberg reflection failure: could not verify column " +
+                s"types: ${e.getMessage}"
+              false
+          }
 
         // Single-pass validation of all FileScanTasks
         val taskValidation =
@@ -713,6 +761,7 @@ case class CometScanRule(session: SparkSession)
         }
 
         if (schemaSupported && fileIOCompatible && formatVersionSupported &&
+          defaultValuesSupported && schemaTypesSupported &&
           taskValidation.allParquet && allSupportedFilesystems && partitionTypesSupported &&
           complexTypePredicatesSupported && transformFunctionsSupported &&
           deleteFileTypesSupported && dppSubqueriesSupported) {

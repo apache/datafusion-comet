@@ -283,6 +283,19 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
           case _: Exception =>
         }
 
+        // Encrypted delete files carry a plaintext StandardKeyMetadata blob (keyMetadata() is on
+        // ContentFile); forward it verbatim. Null (unencrypted) leaves the field unset.
+        try {
+          contentFileClass.getMethod("keyMetadata").invoke(deleteFile) match {
+            case buf: java.nio.ByteBuffer if buf.remaining() > 0 =>
+              deleteBuilder.setKeyMetadata(
+                com.google.protobuf.ByteString.copyFrom(buf.duplicate()))
+            case _ =>
+          }
+        } catch {
+          case _: Exception =>
+        }
+
         deleteBuilder.build()
       }.toSeq
     } catch {
@@ -770,6 +783,9 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
     val lengthMethod = contentScanTaskClass.getMethod("length")
     val residualMethod = contentScanTaskClass.getMethod("residual")
     val fileSizeInBytesMethod = contentFileClass.getMethod("fileSizeInBytes")
+    // keyMetadata() is declared on ContentFile (present across all supported Iceberg versions).
+    // For encrypted tables it returns the plaintext StandardKeyMetadata blob; null otherwise.
+    val keyMetadataMethod = contentFileClass.getMethod("keyMetadata")
     val taskSchemaMethod = fileScanTaskClass.getMethod("schema")
     val toJsonMethod = schemaParserClass.getMethod("toJson", schemaClass)
     toJsonMethod.setAccessible(true)
@@ -826,6 +842,15 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
                 val fileSizeInBytes =
                   fileSizeInBytesMethod.invoke(dataFile).asInstanceOf[Long]
                 taskBuilder.setFileSizeInBytes(fileSizeInBytes)
+
+                // Encrypted data files carry a plaintext StandardKeyMetadata blob; forward it
+                // verbatim for iceberg-rust to decode. Null (unencrypted) leaves the field unset.
+                keyMetadataMethod.invoke(dataFile) match {
+                  case buf: java.nio.ByteBuffer if buf.remaining() > 0 =>
+                    taskBuilder.setKeyMetadata(
+                      com.google.protobuf.ByteString.copyFrom(buf.duplicate()))
+                  case _ =>
+                }
 
                 val taskSchema = taskSchemaMethod.invoke(task)
 

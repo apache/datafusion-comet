@@ -3703,6 +3703,9 @@ fn parse_file_scan_tasks_from_common(
                         } else {
                             Some(del.equality_ids.clone())
                         },
+                        // Plaintext StandardKeyMetadata forwarded verbatim from the JVM; decoded by
+                        // iceberg-rust with no KMS unwrap. None for unencrypted delete files.
+                        key_metadata: del.key_metadata.clone().map(Vec::into_boxed_slice),
                     })
                 })
                 .collect::<Result<Vec<_>, ExecutionError>>()
@@ -3827,6 +3830,9 @@ fn parse_file_scan_tasks_from_common(
                 partition_spec,
                 name_mapping,
                 case_sensitive: false,
+                // Plaintext StandardKeyMetadata forwarded verbatim from the JVM; decoded by
+                // iceberg-rust with no KMS unwrap. None for unencrypted data files.
+                key_metadata: proto_task.key_metadata.clone().map(Vec::into_boxed_slice),
             })
         })
         .collect();

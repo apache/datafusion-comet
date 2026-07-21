@@ -633,6 +633,7 @@ mod tests {
     use std::io::Write;
     use std::sync::Arc;
 
+    use iceberg::encryption::StandardKeyMetadata;
     use iceberg::io::{FileIO, FileIOBuilder};
     use iceberg::scan::{FileScanTask, FileScanTaskDeleteFile};
     use iceberg::spec::{DataContentType, DataFileFormat, Schema};
@@ -660,6 +661,7 @@ mod tests {
             partition_spec: None,
             name_mapping: None,
             case_sensitive: false,
+            key_metadata: None,
         }
     }
 
@@ -670,6 +672,7 @@ mod tests {
             file_size_in_bytes: 0,
             partition_spec_id: 0,
             equality_ids: None,
+            key_metadata: None,
         }
     }
 
@@ -735,5 +738,62 @@ mod tests {
         IcebergScanExec::fill_delete_file_sizes(&mut tasks, &fs_file_io(), 4)
             .await
             .unwrap();
+    }
+
+    fn from_hex(s: &str) -> Vec<u8> {
+        assert!(s.len() % 2 == 0, "odd-length hex string");
+        (0..s.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&s[i..i + 2], 16).expect("invalid hex"))
+            .collect()
+    }
+
+    // iceberg-rust encodes and decodes its own StandardKeyMetadata identically. Confirms the API
+    // is present after the rev bump and the [version byte][Avro datum] format round-trips.
+    #[test]
+    fn standard_key_metadata_roundtrips() {
+        let key: Vec<u8> = (0u8..16).collect();
+        let aad: &[u8] = b"comet-aad-prefix";
+        let km = StandardKeyMetadata::try_new(&key)
+            .unwrap()
+            .with_aad_prefix(aad);
+
+        let encoded = km.encode().unwrap();
+        assert_eq!(encoded[0], 0x01, "expected StandardKeyMetadata V1 marker");
+
+        let decoded = StandardKeyMetadata::decode(&encoded).unwrap();
+        assert_eq!(decoded.encryption_key().as_bytes(), key.as_slice());
+        assert_eq!(decoded.aad_prefix(), Some(aad));
+    }
+
+    // Cross-language gate for the encrypted-read passthrough plan: iceberg-rust must decode the
+    // exact StandardKeyMetadata bytes that Iceberg-Java writes into a data file's key_metadata,
+    // because Comet forwards those bytes verbatim (no re-encoding, no KMS) into
+    // FileScanTask::key_metadata. These two hex strings were captured from the "JAVA key_metadata
+    // blob hex" / "JAVA plaintext DEK hex" lines printed by CometIcebergEncryptionSuite (an
+    // Iceberg-Java StandardEncryptionManager producing a real V1 blob). Regenerate if the wire
+    // format changes.
+    const JAVA_KEY_METADATA_HEX: &str =
+        "012084f49fba77f8ff1da0c115d1e46563cc0220f1d31d62b68808b469eb99fe9c57096000";
+    const JAVA_DEK_HEX: &str = "84f49fba77f8ff1da0c115d1e46563cc";
+
+    #[test]
+    fn decodes_java_produced_key_metadata() {
+        let blob = from_hex(JAVA_KEY_METADATA_HEX);
+        let expected_dek = from_hex(JAVA_DEK_HEX);
+
+        let decoded = StandardKeyMetadata::decode(&blob)
+            .expect("iceberg-rust failed to decode a Java-produced StandardKeyMetadata blob");
+        assert_eq!(
+            decoded.encryption_key().as_bytes(),
+            expected_dek.as_slice(),
+            "DEK recovered by Rust differs from the Java plaintext DEK"
+        );
+        // The Java blob carries a 16-byte AAD prefix; confirm the optional-field union decodes too.
+        assert_eq!(
+            decoded.aad_prefix().map(|a| a.len()),
+            Some(16),
+            "expected a 16-byte AAD prefix from the Java blob"
+        );
     }
 }
