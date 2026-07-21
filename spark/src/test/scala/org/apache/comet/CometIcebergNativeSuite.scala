@@ -2784,7 +2784,7 @@ class CometIcebergNativeSuite
   // Iceberg stores fixed[N] as Parquet FIXED_LEN_BYTE_ARRAY(N). As with uuid and decimal,
   // iceberg-rust's page-index evaluator does not support that physical type, so the IS NOT NULL
   // pushed over the fixed column (added by Iceberg for any filtered column) would fail the native
-  // scan. The residual must be dropped so the scan stays native and CometFilter enforces the filter.
+  // scan. The residual must be dropped so the scan stays native and CometFilter enforces it.
   test("filter on a table with a fixed column does not fail the native scan") {
     assume(icebergAvailable, "Iceberg not available in classpath")
 
