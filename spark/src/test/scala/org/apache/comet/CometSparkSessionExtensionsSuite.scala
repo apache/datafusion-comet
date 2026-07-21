@@ -69,15 +69,19 @@ class CometSparkSessionExtensionsSuite extends CometTestBase {
     conf.setConfString("spark.sql.legacy.charVarcharAsString", "FALSE")
     assert(isCometLoaded(conf))
 
-    // Enum-default configs also trigger when set to a non-default value.
-    conf.setConfString("spark.sql.legacy.timeParserPolicy", "LEGACY")
+    // Enum-default configs also trigger when set to a non-default value. Use viewSchemaCompensation
+    // as an enum-valued example (default `true`) since timeParserPolicy is handled per-expression.
+    conf.setConfString("spark.sql.legacy.viewSchemaCompensation", "false")
     assert(!isCometLoaded(conf))
-    conf.setConfString("spark.sql.legacy.timeParserPolicy", "CORRECTED")
+    conf.setConfString("spark.sql.legacy.viewSchemaCompensation", "TRUE")
     assert(isCometLoaded(conf))
 
     // Legacy configs handled per-expression (e.g. castComplexTypesToString,
-    // allowNegativeScaleOfDecimal) are NOT part of the fallback set and must not disable Comet
-    // on their own.
+    // allowNegativeScaleOfDecimal, timeParserPolicy) are NOT part of the fallback set and must not
+    // disable Comet on their own.
+    conf.setConfString("spark.sql.legacy.timeParserPolicy", "LEGACY")
+    assert(isCometLoaded(conf))
+    conf.unsetConf("spark.sql.legacy.timeParserPolicy")
     conf.setConfString("spark.sql.legacy.castComplexTypesToString.enabled", "true")
     assert(isCometLoaded(conf))
     conf.unsetConf("spark.sql.legacy.castComplexTypesToString.enabled")

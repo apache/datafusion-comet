@@ -43,7 +43,6 @@ trait ShimLegacyConfFallback {
     "spark.sql.legacy.disableMapKeyNormalization" -> "false",
     "spark.sql.legacy.setopsPrecedence.enabled" -> "false",
     "spark.sql.legacy.viewSchemaCompensation" -> "true",
-    "spark.sql.legacy.timeParserPolicy" -> "CORRECTED",
     "spark.sql.legacy.parquet.datetimeRebaseModeInRead" -> "CORRECTED",
     "spark.sql.legacy.parquet.datetimeRebaseModeInWrite" -> "CORRECTED",
     "spark.sql.legacy.parquet.int96RebaseModeInRead" -> "CORRECTED",

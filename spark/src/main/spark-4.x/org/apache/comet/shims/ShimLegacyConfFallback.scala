@@ -62,8 +62,6 @@ trait ShimLegacyConfFallback {
       SQLConf.LEGACY_SETOPS_PRECEDENCE_ENABLED.defaultValueString,
     "spark.sql.legacy.viewSchemaCompensation" ->
       SQLConf.VIEW_SCHEMA_COMPENSATION.defaultValueString,
-    "spark.sql.legacy.timeParserPolicy" ->
-      SQLConf.LEGACY_TIME_PARSER_POLICY.defaultValueString,
     "spark.sql.legacy.parquet.datetimeRebaseModeInRead" ->
       SQLConf.PARQUET_REBASE_MODE_IN_READ.defaultValueString,
     "spark.sql.legacy.parquet.datetimeRebaseModeInWrite" ->

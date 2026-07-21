@@ -111,7 +111,8 @@ semantics. Comet handles these in two ways:
 - **Per-expression**: when a legacy config affects a specific Spark expression that Comet
   supports (for example `spark.sql.legacy.castComplexTypesToString.enabled` for `Cast`,
   `spark.sql.legacy.negativeIndexInArrayInsert` for `array_insert`,
-  `spark.sql.legacy.nullInEmptyListBehavior` for `IN`), Comet's serde routes the expression
+  `spark.sql.legacy.nullInEmptyListBehavior` for `IN`, `spark.sql.legacy.timeParserPolicy`
+  for datetime parsing expressions), Comet's serde routes the expression
   through the JVM codegen dispatcher (Spark's own `doGenCode` inside the Comet kernel) or
   through a native code path that honors the flag. No session-wide fallback is triggered.
 - **Session-wide execution fallback**: when a legacy config affects execution semantics but
@@ -175,12 +176,6 @@ the legacy flag does not disable Comet for the whole session.
 | Config key                                | Comet-expected default |
 | ----------------------------------------- | ---------------------- |
 | `spark.sql.legacy.viewSchemaCompensation` | `true`                 |
-
-**Datetime parser policy**
-
-| Config key                          | Comet-expected default |
-| ----------------------------------- | ---------------------- |
-| `spark.sql.legacy.timeParserPolicy` | `CORRECTED`            |
 
 **Parquet reader/writer semantics**
 
