@@ -569,6 +569,9 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
         val ref = term.getClass.getMethod("ref").invoke(term)
         val columnName = ref.getClass.getMethod("name").invoke(ref).asInstanceOf[String]
 
+        // Iceberg names a nested reference by its dotted path ("struct.field"), which never matches
+        // a top-level scan output attribute, so a residual on a nested field drops here. That miss
+        // is also why the top-level-only pageIndexUnsupportedColumns gate below stays sound.
         attributeMap.get(columnName).flatMap { attribute =>
           import Constants.Operations._
           import OperatorOuterClass.IcebergPredicateOperator
@@ -721,9 +724,9 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
   /**
    * Builds a predicate literal from its Iceberg value and the column's Spark type. Returns None
    * for null (IS NULL is a separate op) and for Spark types this serde does not map to an
-   * IcebergLiteral (e.g. binary), so the predicate degrades to no pushdown rather than an
-   * incorrect one. Columns backed by Parquet FIXED_LEN_BYTE_ARRAY (decimal/uuid/fixed) are
-   * dropped earlier by the column gate in icebergExprToProto and never reach here.
+   * IcebergLiteral, so the predicate degrades to no pushdown rather than an incorrect one.
+   * Columns backed by Parquet FIXED_LEN_BYTE_ARRAY (decimal/uuid/fixed) or BYTE_ARRAY (binary)
+   * are dropped earlier by the column gate in icebergExprToProto and never reach here.
    */
   private def predicateLiteralToProto(
       sparkType: DataType,
@@ -734,7 +737,10 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
     val builder = OperatorOuterClass.IcebergLiteral.newBuilder()
     sparkType match {
       case _: BooleanType => builder.setBoolVal(value.asInstanceOf[java.lang.Boolean])
-      case _: IntegerType => builder.setIntVal(value.asInstanceOf[java.lang.Number].intValue())
+      // Spark byte/short map to Iceberg int (32-bit); iceberg-rust has no narrower integer type, so
+      // widening to int_val matches how it stores and prunes these columns.
+      case _: ByteType | _: ShortType | _: IntegerType =>
+        builder.setIntVal(value.asInstanceOf[java.lang.Number].intValue())
       case _: LongType => builder.setLongVal(value.asInstanceOf[java.lang.Number].longValue())
       case _: FloatType => builder.setFloatVal(value.asInstanceOf[java.lang.Number].floatValue())
       case _: DoubleType =>

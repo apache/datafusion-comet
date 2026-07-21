@@ -2832,6 +2832,51 @@ class CometIcebergNativeSuite
     }
   }
 
+  // Iceberg stores binary as Parquet BYTE_ARRAY. Unlike the FIXED_LEN_BYTE_ARRAY types above,
+  // iceberg-rust's page-index evaluator accepts BYTE_ARRAY but decodes its column-index min/max as
+  // UTF-8 (String::from_utf8(..).unwrap()), so non-UTF-8 bounds panic the native scan. The decode
+  // happens in calc_row_selection before the null-count closure runs, so even a bare IS NOT NULL
+  // (added by Iceberg for any filtered column) triggers it. Binary must therefore be gated like the
+  // FIXED_LEN_BYTE_ARRAY types: the residual is dropped and CometFilter enforces the filter.
+  test("filter on a table with a binary column does not fail the native scan") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        spark.sql("""
+          CREATE TABLE test_cat.db.binary_filter_test (
+            id INT,
+            b BINARY
+          ) USING iceberg
+          TBLPROPERTIES (
+            'format-version' = '2',
+            'write.parquet.row-group-size-bytes' = '100'
+          )
+        """)
+
+        // Prepend a 0xFF byte (never valid UTF-8) so the column-index min/max for `b` cannot decode
+        // as a UTF-8 string, which is what makes iceberg-rust's page-index evaluator panic.
+        spark.sql("""
+          INSERT INTO test_cat.db.binary_filter_test
+          SELECT CAST(id AS INT), concat(X'FF', CAST(CAST(id AS STRING) AS BINARY))
+          FROM range(30, 330)
+        """)
+
+        checkIcebergNativeScan(
+          "SELECT * FROM test_cat.db.binary_filter_test WHERE id = 30 AND b IS NOT NULL")
+
+        spark.sql("DROP TABLE test_cat.db.binary_filter_test")
+      }
+    }
+  }
+
   // A residual can arrive as NOT over an AND that mixes a supported conjunct with an unsupported
   // (FIXED_LEN_BYTE_ARRAY) one. Dropping only the unsupported conjunct is safe in positive
   // position (it weakens the pruning predicate), but under a NOT it strengthens it: NOT(id < 200

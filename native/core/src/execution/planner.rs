@@ -4092,20 +4092,9 @@ fn literal_to_array_ref(
 }
 
 // ============================================================================
-// Spark Expression to Iceberg Predicate Conversion
+// Iceberg Residual Predicate Conversion
 // ============================================================================
-//
-// Predicates are converted through Spark expressions rather than directly from
-// Iceberg Java to Iceberg Rust. This leverages Comet's existing expression
-// serialization infrastructure, which handles hundreds of expression types.
-//
-// Conversion path:
-//   Iceberg Expression (Java) -> Spark Catalyst Expression -> Protobuf -> Iceberg Predicate (Rust)
-//
-// Note: NOT IN predicates are skipped because iceberg-rust's RowGroupMetricsEvaluator::not_in()
-// always returns MIGHT_MATCH (never prunes row groups). These are handled by CometFilter post-scan.
 
-/// Converts a protobuf Spark expression to an Iceberg predicate for row-group filtering.
 /// Converts a serialized Iceberg residual predicate into an iceberg-rust `Predicate` for row-group
 /// pruning. This is only a pruning hint -- the post-scan CometFilter enforces correctness -- so any
 /// node or literal that cannot be represented degrades to `None` (no pushdown) rather than an
