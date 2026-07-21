@@ -112,7 +112,7 @@ class CometIcebergEncryptionSuite
       val (_, cometPlan) = checkSparkAnswer(s"SELECT * FROM $table ORDER BY id")
       assert(
         collect(cometPlan) { case s: CometIcebergNativeScanExec => s }.nonEmpty,
-        s"expected the encrypted read to run natively but found no CometIcebergNativeScanExec:\n" +
+        "expected the encrypted read to run natively but found no CometIcebergNativeScanExec:\n" +
           cometPlan)
 
       spark.sql(s"DROP TABLE $table")
@@ -193,7 +193,7 @@ class CometIcebergEncryptionSuite
       val (_, cometPlan) = checkSparkAnswer(s"SELECT * FROM $table ORDER BY id")
       assert(
         collect(cometPlan) { case s: CometIcebergNativeScanExec => s }.isEmpty,
-        s"expected a 256-bit encrypted table to fall back to Spark but it ran natively:\n" +
+        "expected a 256-bit encrypted table to fall back to Spark but it ran natively:\n" +
           cometPlan)
 
       spark.sql(s"DROP TABLE $table")
