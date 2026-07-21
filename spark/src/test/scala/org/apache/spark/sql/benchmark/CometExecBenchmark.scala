@@ -46,7 +46,6 @@ object CometExecBenchmark extends CometBenchmarkBase {
       .set(
         "spark.shuffle.manager",
         "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
-      .set("spark.comet.columnar.shuffle.async.thread.num", "7")
       .set("spark.comet.shuffle.jvm.spillThreshold", "30000")
 
     val sparkSession = SparkSession.builder
