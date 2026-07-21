@@ -111,7 +111,12 @@ case class CometScanRule(session: SparkSession)
         "all_entries",
         "all_manifests")
 
-      metadataTableSuffix.exists(suffix => scanExec.table.name().endsWith(suffix))
+      // Match case-insensitively: metadata tables surface lowercase via the path form
+      // (...metadata.json#all_manifests) but uppercase via the catalog-identifier form
+      // (db.table.ALL_DATA_FILES), and the latter must hit this gate too rather than fall through
+      // to reflection that fails on the metadata-table class.
+      val name = scanExec.table.name().toLowerCase(Locale.ROOT)
+      metadataTableSuffix.exists(name.endsWith)
     }
 
     val fullPlan = plan
