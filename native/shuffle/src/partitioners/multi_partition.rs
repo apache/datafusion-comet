@@ -112,6 +112,10 @@ pub(crate) struct MultiPartitionShuffleRepartitioner<T: PartitionWriter> {
     batch_size: usize,
     /// Reservation for repartitioning
     reservation: MemoryReservation,
+    /// Spill once the reservation reaches this many bytes, independently of whether the memory
+    /// pool still has capacity. Zero disables the limit, leaving pool pressure as the only
+    /// spill trigger.
+    max_buffer_bytes: usize,
     tracing_enabled: bool,
     /// Start addresses (as `usize`, since raw pointers are not `Send`) of the backing buffers
     /// currently pinned by `buffered_batches`, so the spill reservation charges each distinct
@@ -174,6 +178,7 @@ impl<T: PartitionWriter> MultiPartitionShuffleRepartitioner<T> {
         runtime: Arc<RuntimeEnv>,
         batch_size: usize,
         tracing_enabled: bool,
+        max_buffer_bytes: usize,
     ) -> datafusion::common::Result<Self> {
         let num_output_partitions = partitioning.partition_count();
         assert_ne!(
@@ -211,6 +216,7 @@ impl<T: PartitionWriter> MultiPartitionShuffleRepartitioner<T> {
             scratch,
             batch_size,
             reservation,
+            max_buffer_bytes,
             tracing_enabled,
             pinned_buffers: HashSet::new(),
         })
@@ -451,7 +457,13 @@ impl<T: PartitionWriter> MultiPartitionShuffleRepartitioner<T> {
             mem_growth += after_size.saturating_sub(before_size);
         }
 
-        if self.reservation.try_grow(mem_growth).is_err() {
+        // Spill on memory pressure, or once the buffered bytes reach the configured limit.
+        // `try_grow` is evaluated first so the reservation accounts for this batch either way.
+        // Checking after buffering lets the writer overshoot the limit by at most one batch,
+        // which is how the memory-pressure trigger already behaves.
+        if self.reservation.try_grow(mem_growth).is_err()
+            || (self.max_buffer_bytes > 0 && self.reservation.size() >= self.max_buffer_bytes)
+        {
             self.spill()?;
         }
 

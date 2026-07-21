@@ -1633,6 +1633,7 @@ impl PhysicalPlanner {
                 }?;
 
                 let write_buffer_size = writer.write_buffer_size as usize;
+                let max_buffer_bytes = writer.max_buffer_bytes as usize;
                 let shuffle_writer = Arc::new(ShuffleWriterExec::try_new(
                     writer_input,
                     partitioning,
@@ -1641,6 +1642,7 @@ impl PhysicalPlanner {
                     writer.output_index_file.clone(),
                     writer.tracing_enabled,
                     write_buffer_size,
+                    max_buffer_bytes,
                 )?);
 
                 Ok((
