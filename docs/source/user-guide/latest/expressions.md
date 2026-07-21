@@ -186,10 +186,10 @@ The tables below list every Spark built-in expression with its current status.
 | Function | Status | Notes |
 | --- | --- | --- |
 | `array_size` | ✅ |  |
-| `cardinality` | ✅ | MapType input falls back |
+| `cardinality` | ✅ |  |
 | `concat` | ✅ | Binary/array children fall back |
 | `reverse` | ✅ | Binary-element arrays fall back (Incompatible) ([details](compatibility/expressions/array.md)) |
-| `size` | ✅ | MapType input falls back |
+| `size` | ✅ |  |
 
 ---
 
@@ -294,9 +294,9 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `trunc` | ✅ |  |
 | `try_make_interval` | 🔜 | Produces legacy CalendarInterval; tracked by [#4540](https://github.com/apache/datafusion-comet/issues/4540) |
 | `try_make_timestamp` | ✅ |  |
-| `try_to_date` | 🔜 | Rewrites to `Cast`/`GetTimestamp` but currently falls back; tracked by [#4556](https://github.com/apache/datafusion-comet/issues/4556) |
+| `try_to_date` | ✅ | Rewrites to `Cast`/`GetTimestamp` before Comet sees the plan; same support as `to_date` |
 | `try_to_time` | 🔜 | Spark 4.1 TIME type; tracked by [#4288](https://github.com/apache/datafusion-comet/issues/4288) |
-| `try_to_timestamp` | 🔜 | Rewrites to `Cast`/`GetTimestamp` but currently falls back; tracked by [#4556](https://github.com/apache/datafusion-comet/issues/4556) |
+| `try_to_timestamp` | ✅ | Rewrites to `Cast`/`GetTimestamp` before Comet sees the plan; same support as `to_timestamp` |
 | `unix_date` | ✅ |  |
 | `unix_micros` | ✅ |  |
 | `unix_millis` | ✅ |  |

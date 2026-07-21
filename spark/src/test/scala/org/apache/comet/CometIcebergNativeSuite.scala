@@ -4371,6 +4371,7 @@ class CometIcebergNativeSuite
   }
 
   test("CometScanRule should report unsupported metadata columns") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
     withTempIcebergDir { warehouseDir =>
       withSQLConf(
         "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
@@ -4433,6 +4434,7 @@ class CometIcebergNativeSuite
   test("variant column filter falls back to Spark") {
     assume(isSpark40Plus, "VARIANT type requires Spark 4.0+")
     assume(icebergAvailable, "Iceberg not available in classpath")
+    assume(icebergVersionAtLeast(1, 11), "VARIANT column type requires Iceberg 1.11+")
     withTempIcebergDir { warehouseDir =>
       withSQLConf(
         "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",

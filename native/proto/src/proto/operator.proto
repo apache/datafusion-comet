@@ -327,6 +327,8 @@ enum CompressionCodec {
   Zstd = 1;
   Lz4 = 2;
   Snappy = 3;
+  // Parquet write only. The shuffle writer rejects this codec.
+  Gzip = 4;
 }
 
 message ShuffleWriter {

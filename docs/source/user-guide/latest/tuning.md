@@ -119,7 +119,7 @@ to configure Comet to convert `SortMergeJoin` to `ShuffledHashJoin`. Comet does 
 `ShuffledHashJoin` so this could result in OOM. Also, `SortMergeJoin` may still be faster in some cases. It is best
 to test with both for your specific workloads.
 
-To configure Comet to convert `SortMergeJoin` to `ShuffledHashJoin`, set `spark.comet.exec.replaceSortMergeJoin=true`.
+To configure Comet to convert `SortMergeJoin` to `ShuffledHashJoin`, set `spark.comet.exec.forceShuffledHashJoin=true`.
 
 ## Shuffle
 
@@ -185,6 +185,39 @@ even when both its parent and child are non-Comet operators.
 By default, Spark compresses shuffle files using LZ4 compression. Comet overrides this behavior with ZSTD compression.
 Compression can be disabled by setting `spark.shuffle.compress=false`, which may result in faster shuffle times in
 certain environments, such as single-node setups with fast NVMe drives, at the expense of increased disk space usage.
+
+### Parquet Native Scans
+
+Spark and DataFusion's native Parquet scans use different rules to decide which row groups belong to a
+given scan range (split). Spark assigns a row group to a split if the row group's start offset falls
+within `[split.start, split.start + split.length)`, guaranteeing that every task Spark plans reads at
+least one row group when the file layout permits. DataFusion's `prune_by_range` also checks whether a
+row group's start offset falls within the split's byte range, but because row group sizes are not aligned
+with Spark's split boundaries, the two systems can disagree on which split "owns" a given row group.
+
+When a file contains row groups whose sizes are close to `spark.sql.files.maxPartitionBytes`, this
+mismatch can leave some Comet scan tasks with no row groups to read. Those tasks still load Parquet
+metadata but return zero rows, while neighboring tasks end up reading more row groups than Spark
+intended. The overall effect is that Comet uses only a fraction of the parallelism that Spark planned
+for the scan stage, and end-to-end scan latency increases even though the total amount of data read
+is unchanged.
+
+Symptoms to look for:
+
+- A subset of scan tasks completes almost immediately and reports 0 input rows, while the remaining
+  tasks read noticeably more rows than the equivalent Spark tasks would.
+- The Comet scan stage has the same number of planned tasks as Spark but a much lower count of tasks
+  that actually do work.
+
+Workaround: lower `spark.sql.files.maxPartitionBytes` so that each split is smaller than a single row
+group. For example, if the file's row groups are around 120 MB and `spark.sql.files.maxPartitionBytes`
+is left at the 128 MB default, most splits will contain at most one row group boundary and the
+mismatch is amplified; setting `spark.sql.files.maxPartitionBytes` below 120 MB (for example, 64 MB)
+distributes row groups across more splits and reduces the number of idle tasks. Smaller values produce
+more splits overall, so some idle tasks may remain — tune the value against your file layout.
+
+See [issue #3817](https://github.com/apache/datafusion-comet/issues/3817#issuecomment-4193279630) for a
+worked example and further discussion.
 
 ## Explain Plan
 

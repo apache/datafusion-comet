@@ -27,9 +27,11 @@ import org.apache.hadoop.mapreduce.task.TaskAttemptContextImpl
 import org.apache.spark.TaskContext
 import org.apache.spark.internal.io.{FileCommitProtocol, FileNameSpec}
 import org.apache.spark.rdd.RDD
+import org.apache.spark.sql.SaveMode
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.comet.execution.arrow.CometArrowStream
 import org.apache.spark.sql.comet.util.{Utils => CometUtils}
+import org.apache.spark.sql.errors.{QueryCompilationErrors, QueryExecutionErrors}
 import org.apache.spark.sql.execution.{SparkPlan, UnaryExecNode}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.vectorized.ColumnarBatch
@@ -56,6 +58,10 @@ import org.apache.comet.serde.OperatorOuterClass.Operator
  *   The child operator providing the data to write
  * @param outputPath
  *   The path where the Parquet file will be written
+ * @param mode
+ *   The Spark SaveMode governing target-exists behavior (Append / Overwrite / ErrorIfExists /
+ *   Ignore). Comet takes over Spark's DataWritingCommandExec so we must apply these semantics
+ *   here - a direct port of Spark's InsertIntoHadoopFsRelationCommand.run() doInsertion logic.
  * @param committer
  *   FileCommitProtocol for atomic writes. If None, files are written directly.
  * @param jobTrackerID
@@ -65,6 +71,7 @@ case class CometNativeWriteExec(
     nativeOp: Operator,
     child: SparkPlan,
     outputPath: String,
+    mode: SaveMode,
     committer: Option[FileCommitProtocol] = None,
     jobTrackerID: String = Utils.createTempDir().getName)
     extends CometNativeExec
@@ -143,6 +150,17 @@ case class CometNativeWriteExec(
   }
 
   override def doExecuteColumnar(): RDD[ColumnarBatch] = {
+    // Comet replaces DataWritingCommandExec entirely, so Spark's
+    // InsertIntoHadoopFsRelationCommand.run() never runs. That method is where Spark handles
+    // SaveMode semantics (path-exists check, delete-before-Overwrite, Ignore short-circuit) -
+    // port the non-partitioned, non-catalog branch of that logic here. See Spark 3.5's
+    // InsertIntoHadoopFsRelationCommand.run doInsertion match. This runs on the driver before
+    // any executor tasks fire, mirroring where Spark does the delete.
+    if (!prepareOutputPathForMode()) {
+      logInfo(s"Skipping insertion into $outputPath - already exists (SaveMode.$mode)")
+      return sparkContext.emptyRDD[ColumnarBatch]
+    }
+
     // Get the input data from the child operator
     val childRDD = if (child.supportsColumnar) {
       child.executeColumnar()
@@ -299,6 +317,44 @@ case class CometNativeWriteExec(
     val job = Job.getInstance()
     job.setJobID(new org.apache.hadoop.mapreduce.JobID(jobTrackerID, 0))
     job
+  }
+
+  /**
+   * Applies SaveMode semantics to the output path before the write starts. Returns `true` when
+   * the write should proceed and `false` when it should be skipped (Ignore + existing target).
+   * For ErrorIfExists throws when the target already exists. For Overwrite deletes the target so
+   * the writer can produce a clean directory. Ported from Spark's
+   * InsertIntoHadoopFsRelationCommand.run() doInsertion logic, minus the partition/catalog paths
+   * that Comet does not support.
+   */
+  private def prepareOutputPathForMode(): Boolean = {
+    val path = new Path(outputPath)
+    val hadoopConf = sparkContext.hadoopConfiguration
+    val fs = path.getFileSystem(hadoopConf)
+    val qualifiedOutputPath = path.makeQualified(fs.getUri, fs.getWorkingDirectory)
+
+    mode match {
+      case SaveMode.Append =>
+        true
+      case SaveMode.ErrorIfExists =>
+        if (fs.exists(qualifiedOutputPath)) {
+          throw QueryCompilationErrors.outputPathAlreadyExistsError(qualifiedOutputPath)
+        }
+        true
+      case SaveMode.Overwrite =>
+        if (fs.exists(qualifiedOutputPath)) {
+          val deleted = committer match {
+            case Some(c) => c.deleteWithJob(fs, qualifiedOutputPath, true)
+            case None => fs.delete(qualifiedOutputPath, true)
+          }
+          if (!deleted) {
+            throw QueryExecutionErrors.cannotClearOutputDirectoryError(qualifiedOutputPath)
+          }
+        }
+        true
+      case SaveMode.Ignore =>
+        !fs.exists(qualifiedOutputPath)
+    }
   }
 
   /** Create a TaskAttemptContext for a specific task */
