@@ -363,17 +363,12 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
       }
     }
 
-    // Comet's native window planner ships RANGE frame offsets as
-    // ScalarValue::Int64, but a couple of ORDER BY types don't tolerate that:
-    //   - DATE: arrow-arith requires an Interval RHS for Date32 arithmetic,
-    //     so execution fails with
-    //       Invalid date arithmetic operation: Date32 + Int32
-    //   - DECIMAL: Spark decimal arithmetic widens precision on +/-, so the
-    //     computed boundary (e.g. Decimal(11,0)) doesn't match the current
-    //     value's precision (e.g. Decimal(10,0)) and the comparator fails
-    //     with "Uncomparable values".
-    // Fall back to Spark for those shapes. UNBOUNDED / CURRENT ROW bounds
-    // don't evaluate the offending arithmetic and stay native.
+    // The RANGE frame offset type follows Spark's WindowFrameTypeCoercion:
+    // DECIMAL ORDER BY casts the offset to the same Decimal type (handled
+    // natively), but DATE keeps the offset as IntegerType. arrow-arith
+    // rejects Date32 + Int32 (it requires an Interval RHS), so DATE ORDER BY
+    // falls back with "Invalid date arithmetic operation: Date32 + Int32".
+    // UNBOUNDED / CURRENT ROW bounds skip the arithmetic and stay native.
     f match {
       case SpecifiedWindowFrame(RangeFrame, lb, ub)
           if !lb.isInstanceOf[SpecialFrameBoundary] ||
@@ -383,11 +378,6 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
             withFallbackReason(
               windowExpr,
               "RANGE frame with explicit offset on DATE ORDER BY is not supported")
-            return None
-          case Some(_: DecimalType) =>
-            withFallbackReason(
-              windowExpr,
-              "RANGE frame with explicit offset on DECIMAL ORDER BY is not supported")
             return None
           case _ =>
         }

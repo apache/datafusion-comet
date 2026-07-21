@@ -45,7 +45,7 @@ incorrect result. When any single window expression in a `WindowExec` falls back
   support as the batch aggregates, so these fall back in both contexts.
 - `sum` or `avg` on `DECIMAL` with a sliding (non ever-expanding) frame, because the sliding path would wrap on
   overflow instead of returning Spark's `NULL`.
-- `RANGE` frame with an explicit offset when the `ORDER BY` column is `DATE` or `DECIMAL`
+- `RANGE` frame with an explicit offset when the `ORDER BY` column is `DATE`
   ([#4834](https://github.com/apache/datafusion-comet/issues/4834)).
 - `first_value` / `last_value` on a `RANGE` frame with a literal offset
   ([#4835](https://github.com/apache/datafusion-comet/issues/4835)).
@@ -54,6 +54,13 @@ incorrect result. When any single window expression in a `WindowExec` falls back
 - `GROUPS` frames ([#4836](https://github.com/apache/datafusion-comet/issues/4836)). `DISTINCT` aggregates over a
   window are not supported by Spark either.
 - Any `PARTITION BY` or `ORDER BY` expression that Comet cannot serialize.
+
+**Known differences (runs natively but may diverge from Spark on edge cases):**
+
+- `RANGE` frame boundary arithmetic on `DECIMAL` near max precision: when `current +/- offset` overflows the
+  underlying integer, DataFusion collapses the bound to the partition edge, whereas Spark evaluates the boundary
+  through normal decimal arithmetic (returning `NULL` under non-ANSI, throwing under ANSI). The two behaviors
+  agree for values away from `Decimal128` limits.
 
 `WindowGroupLimitExec` (window-based limit pushdown) is not yet supported and falls back to Spark
 ([#4837](https://github.com/apache/datafusion-comet/issues/4837)).
