@@ -64,6 +64,9 @@ message SparkPartitionedFile {
   int64 length = 3;
   int64 file_size = 4;
   repeated spark.spark_expression.Expr partition_values = 5;
+  // Milliseconds since the epoch, from Spark's PartitionedFile.modificationTime.
+  // Used with file_size to validate entries in the shared Parquet metadata cache.
+  int64 modification_time = 6;
 }
 
 // This name and the one above are not great, but they correspond to the (unfortunate) Spark names.

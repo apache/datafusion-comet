@@ -71,6 +71,7 @@ package object operator {
         .setStart(file.start)
         .setLength(file.length)
         .setFileSize(file.fileSize)
+        .setModificationTime(file.modificationTime)
       partitionBuilder.addPartitionedFile(fileBuilder.build())
     })
     partitionBuilder.build()

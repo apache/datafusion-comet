@@ -132,6 +132,35 @@ object CometConf extends ShimCometConf {
       .checkValue(v => v > 0, "Data file concurrency limit must be positive")
       .createWithDefault(1)
 
+  // Used on native side. Check spark_config.rs how the config is used
+  val COMET_METADATA_CACHE_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.scan.metadataCache.enabled")
+      .category(CATEGORY_SCAN)
+      .doc(
+        "When enabled, the native Parquet scan shares its cache of file metadata (footer and " +
+          "page index) across all tasks in an executor, so tasks reading splits of the same " +
+          "file parse the footer once. When disabled, each task keeps its own cache, which is " +
+          "discarded when the task ends. This setting is process-global: it takes effect for " +
+          "the whole executor process, and if multiple Spark sessions share an executor, the " +
+          "value from whichever task most recently planned applies.")
+      .booleanConf
+      .createWithDefault(true)
+
+  // Used on native side. Check spark_config.rs how the config is used
+  val COMET_METADATA_CACHE_MEMORY_LIMIT: ConfigEntry[Long] =
+    conf("spark.comet.scan.metadataCache.memoryLimit")
+      .category(CATEGORY_SCAN)
+      .doc(
+        "The maximum amount of memory (in bytes) used by the shared Parquet metadata cache " +
+          "for each object store within an executor. Entries are evicted least-recently-used. " +
+          "An executor reading from multiple object stores, or multiple buckets, holds a " +
+          "multiple of this limit; it does not scale with the number of task slots. This " +
+          "limit only bounds the shared cache: when " +
+          "spark.comet.scan.metadataCache.enabled=false, each task's own cache uses " +
+          "DataFusion's default limit instead.")
+      .bytesConf(ByteUnit.BYTE)
+      .createWithDefault(50L * 1024 * 1024)
+
   val COMET_CSV_V2_NATIVE_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.scan.csv.v2.enabled")
       .category(CATEGORY_TESTING)

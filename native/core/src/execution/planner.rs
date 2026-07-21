@@ -261,6 +261,12 @@ impl PhysicalPlanner {
             // Convert that to a Path object to use in the PartitionedFile.
             let path = Path::from_url_path(url.path()).map_err(|e| GeneralError(e.to_string()))?;
             partitioned_file.object_meta.location = path;
+            // Spark sends the file's modification time in milliseconds. DataFusion validates
+            // cached Parquet metadata with (size, last_modified), so this must be real for the
+            // shared metadata cache to detect an overwritten file.
+            partitioned_file.object_meta.last_modified =
+                chrono::DateTime::from_timestamp_millis(file.modification_time)
+                    .unwrap_or_else(|| chrono::DateTime::from_timestamp_nanos(0));
 
             // Process partition values
             // Create an empty input schema for partition values because they are all literals.
@@ -5441,5 +5447,29 @@ mod tests {
                 }
             }
         });
+    }
+
+    #[test]
+    fn test_partitioned_file_carries_modification_time() {
+        let session_ctx = SessionContext::new();
+        let planner = PhysicalPlanner::new(Arc::from(session_ctx), 0);
+
+        let partition = spark_operator::SparkFilePartition {
+            partitioned_file: vec![spark_operator::SparkPartitionedFile {
+                file_path: "file:///tmp/comet-test/part-0.parquet".to_string(),
+                start: 0,
+                length: 100,
+                file_size: 100,
+                partition_values: vec![],
+                modification_time: 1_700_000_000_123,
+            }],
+        };
+
+        let files = planner.get_partitioned_files(&partition).unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(
+            files[0].object_meta.last_modified.timestamp_millis(),
+            1_700_000_000_123
+        );
     }
 }

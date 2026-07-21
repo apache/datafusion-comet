@@ -103,6 +103,22 @@ Comet Performance
 
 It may be possible to reduce Comet's memory overhead by reducing batch sizes or increasing number of partitions.
 
+## Parquet Metadata Cache
+
+Comet's native Parquet scan caches each file's footer and page index so that tasks reading
+different splits of the same file, or later stages re-reading the same table, do not re-fetch
+and re-parse it. The cache is shared by all tasks in an executor process and is enabled by
+default.
+
+`spark.comet.scan.metadataCache.memoryLimit` (default 50MB) bounds, with least-recently-used
+eviction, the cache for each distinct object store an executor reads from, so an executor
+reading from several object stores, or several buckets, holds a multiple of this limit. It does
+not scale with the number of task slots, however. Entries are validated against each file's size
+and modification time (validation falls back to size alone if the source reports no modification
+time), so an overwritten file is normally re-read rather than served from the cache.
+
+Set `spark.comet.scan.metadataCache.enabled=false` to give each task its own cache instead.
+
 ## Optimizing Sorting on Floating-Point Values
 
 Sorting on floating-point data types (or complex types containing floating-point values) is not compatible with
