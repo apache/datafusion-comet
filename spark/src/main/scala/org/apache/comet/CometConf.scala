@@ -461,33 +461,15 @@ object CometConf extends ShimCometConf {
       .intConf
       .createWithDefault(1)
 
-  val COMET_COLUMNAR_SHUFFLE_ASYNC_ENABLED: ConfigEntry[Boolean] =
-    conf("spark.comet.columnar.shuffle.async.enabled")
-      .category(CATEGORY_SHUFFLE)
-      .doc("Whether to enable asynchronous shuffle for Arrow-based shuffle.")
-      .booleanConf
-      .createWithDefault(false)
-
-  val COMET_COLUMNAR_SHUFFLE_ASYNC_THREAD_NUM: ConfigEntry[Int] =
-    conf("spark.comet.columnar.shuffle.async.thread.num")
+  val COMET_COLUMNAR_SHUFFLE_MAX_WRITERS_PER_EXECUTOR: ConfigEntry[Int] = {
+    conf("spark.comet.columnar.shuffle.max.writers.per.executor")
+      .withAlternative("spark.comet.columnar.shuffle.async.max.thread.num")
       .category(CATEGORY_SHUFFLE)
       .doc(
-        "Number of threads used for Comet async columnar shuffle per shuffle task. " +
-          "Note that more threads means more memory requirement to " +
-          "buffer shuffle data before flushing to disk. Also, more threads may not always " +
-          "improve performance, and should be set based on the number of cores available.")
-      .intConf
-      .createWithDefault(3)
-
-  val COMET_COLUMNAR_SHUFFLE_ASYNC_MAX_THREAD_NUM: ConfigEntry[Int] = {
-    conf("spark.comet.columnar.shuffle.async.max.thread.num")
-      .category(CATEGORY_SHUFFLE)
-      .doc("Maximum number of threads on an executor used for Comet async columnar shuffle. " +
-        "This is the upper bound of total number of shuffle " +
-        "threads per executor. In other words, if the number of cores * the number of shuffle " +
-        "threads per task `spark.comet.columnar.shuffle.async.thread.num` is larger than " +
-        "this config. Comet will use this config as the number of shuffle threads per " +
-        "executor instead.")
+        "Maximum number of concurrent hash-based shuffle writers per executor. Comet's " +
+          "hash-based (bypass merge sort) columnar shuffle allocates one writer per partition, " +
+          "so `executor cores * numPartitions` writers can be active concurrently. When that " +
+          "product exceeds this cap, Comet falls back to sort-based shuffle to avoid OOM.")
       .intConf
       .createWithDefault(100)
   }
