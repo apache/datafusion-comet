@@ -24,8 +24,10 @@ import scala.util.Random
 import org.apache.spark.sql.Column
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanExec
 import org.apache.spark.sql.functions.{col, lit}
+import org.apache.spark.sql.types._
 
 import org.apache.comet.DataTypeSupport.isComplexType
+import org.apache.comet.serde.OperatorOuterClass
 
 class CometFuzzIcebergSuite extends CometFuzzIcebergBase {
 
@@ -166,6 +168,71 @@ class CometFuzzIcebergSuite extends CometFuzzIcebergBase {
         assert(
           collectIcebergNativeScans(cometPlan).nonEmpty,
           s"expected a native Iceberg scan for predicate on '$name': $pred")
+      }
+    }
+  }
+
+  // Asserts that predicate pushdown actually happens for the types that support it. For each
+  // primitive column it runs an equality filter and inspects the serialized IcebergScanCommon: the
+  // residual pool must be non-empty exactly when the column's type is one Comet maps to an Iceberg
+  // literal (pushable), and empty for a gated type (binary). This works because the fuzz table is
+  // unpartitioned, so Iceberg's per-file residual is the full filter rather than a partition-pruned
+  // remnant. It exists because the correctness test above cannot see pushdown at all -- results
+  // match and the scan stays native whether or not a predicate pushes, since CometFilter enforces
+  // it either way -- so only a residual-pool check catches a regression like byte/short mapping to
+  // None or binary escaping the page-index gate.
+  test("filter pushdown - residual pool reflects whether the column type is pushable") {
+    // Reading commonData forces Iceberg planning (ParallelIterable), which on older Iceberg leaves
+    // a prefetched manifest stream open that Spark's DebugFilesystem flags at teardown.
+    assume(
+      !isIcebergVersionLessThan("1.8.0"),
+      "ParallelIterable leaks manifest streams on older Iceberg")
+
+    // Types predicateLiteralToProto maps to an IcebergLiteral. Everything else present in the fuzz
+    // table (binary) is gated or unmapped and must not push.
+    def isPushable(dt: DataType): Boolean = dt match {
+      case _: BooleanType | _: ByteType | _: ShortType | _: IntegerType | _: LongType |
+          _: FloatType | _: DoubleType | _: DateType | _: StringType | _: TimestampType |
+          _: TimestampNTZType =>
+        true
+      case _ => false
+    }
+
+    val df = spark.table(icebergTableName)
+    val primitiveColumns = df.schema.fields.filterNot(f => isComplexType(f.dataType))
+    assert(primitiveColumns.nonEmpty, "expected at least one primitive column in the fuzz schema")
+
+    for (field <- primitiveColumns) {
+      val name = field.name
+      val sample = df
+        .select(col(name))
+        .where(col(name).isNotNull)
+        .limit(1)
+        .collect()
+        .headOption
+        .map(_.get(0))
+        // Skip NaN, whose equality semantics differ, so the sampled literal is well-behaved.
+        .filterNot {
+          case d: Double => d.isNaN
+          case f: Float => f.isNaN
+          case _ => false
+        }
+
+      sample.foreach { v =>
+        val (_, cometPlan) = checkSparkAnswer(df.where(col(name) === lit(v)))
+        val scans = collectIcebergNativeScans(cometPlan)
+        assert(scans.length == 1, s"expected one native scan for '$name'\n$cometPlan")
+        val common = OperatorOuterClass.IcebergScanCommon.parseFrom(scans.head.commonData)
+        val pushed = common.getResidualPoolCount > 0
+        if (isPushable(field.dataType)) {
+          assert(
+            pushed,
+            s"expected a pushed residual for pushable column '$name' (${field.dataType})")
+        } else {
+          assert(
+            !pushed,
+            s"expected no residual pushdown for gated column '$name' (${field.dataType})")
+        }
       }
     }
   }
