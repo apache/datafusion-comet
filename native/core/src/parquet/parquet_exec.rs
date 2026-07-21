@@ -17,6 +17,7 @@
 
 use crate::execution::operators::ExecutionError;
 use crate::parquet::encryption_support::{CometEncryptionConfig, ENCRYPTION_FACTORY_ID};
+use crate::parquet::metadata_cache::shared_metadata_cache;
 use crate::parquet::parquet_support::SparkParquetOptions;
 use crate::parquet::schema_adapter::SparkPhysicalExprAdapterFactory;
 use arrow::datatypes::{Field, SchemaRef};
@@ -142,16 +143,19 @@ pub(crate) fn init_datasource_exec(
         );
     }
 
-    // DataFusion's metadata-caching reader factory: loads each file's full metadata (including the
-    // page index) once into the per-task RuntimeEnv cache (bounded LRU, `metadata_cache_limit`) and
-    // reuses it across that file's row-group splits, so the opener does not re-fetch the page index.
+    // DataFusion's metadata-caching reader factory: loads each file's full metadata (including
+    // the page index) once and reuses it across that file's row-group splits, so the opener does
+    // not re-fetch the page index. The cache is shared process-wide across Spark tasks (see
+    // `metadata_cache`), falling back to the per-task `RuntimeEnv` cache when sharing is
+    // disabled.
     //
     // TODO: metadata I/O is invisible in metrics. `fetch_metadata` reads via `ObjectStore::get_ranges`,
     // bypassing the `get_bytes` path where `bytes_scanned` is counted. A byte-counting ObjectStore
     // wrapper would surface it.
     let runtime_env = session_ctx.runtime_env();
     let store = runtime_env.object_store(&object_store_url)?;
-    let metadata_cache = runtime_env.cache_manager.get_file_metadata_cache();
+    let metadata_cache = shared_metadata_cache(&object_store_url)
+        .unwrap_or_else(|| runtime_env.cache_manager.get_file_metadata_cache());
     parquet_source = parquet_source.with_parquet_file_reader_factory(Arc::new(
         CachedParquetFileReaderFactory::new(store, metadata_cache),
     ));
@@ -246,6 +250,7 @@ fn get_options(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::parquet::metadata_cache::shared_metadata_cache;
     use arrow::array::Int32Array;
     use arrow::datatypes::{DataType, Field, Schema};
     use arrow::record_batch::RecordBatch;
@@ -258,9 +263,9 @@ mod tests {
     use std::fs::File;
 
     // Regression test for #3978: the scan's reader factory must load the full
-    // Parquet metadata, including the page index, into the per-task RuntimeEnv
-    // metadata cache. The previous hand-rolled factory cached only the footer,
-    // so DataFusion re-fetched the page index on every open of the same file.
+    // Parquet metadata, including the page index, into the metadata cache. The
+    // previous hand-rolled factory cached only the footer, so DataFusion
+    // re-fetched the page index on every open of the same file.
     #[tokio::test]
     async fn caches_full_metadata_with_page_index() {
         // Write a file with a page index: page-level statistics and a small data
@@ -318,12 +323,10 @@ mod tests {
             batch.unwrap();
         }
 
-        // The per-task RuntimeEnv metadata cache must now hold this file's
-        // metadata with the page index (column + offset index) loaded.
-        let cache = session_ctx
-            .runtime_env()
-            .cache_manager
-            .get_file_metadata_cache();
+        // The shared metadata cache must now hold this file's metadata with the page index
+        // (column + offset index) loaded.
+        let cache = shared_metadata_cache(&ObjectStoreUrl::local_filesystem())
+            .expect("metadata cache sharing is enabled by default");
         let entry = cache
             .get(&location)
             .expect("file metadata should be cached");
@@ -336,6 +339,145 @@ mod tests {
         assert!(
             parquet_meta.column_index().is_some() && parquet_meta.offset_index().is_some(),
             "cached metadata must include the page index"
+        );
+    }
+
+    // Two Spark tasks on one executor are two independent SessionContexts. The second must
+    // reuse the metadata the first parsed, rather than re-fetching the footer.
+    #[tokio::test]
+    async fn shares_metadata_between_session_contexts() {
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![Arc::new(Int32Array::from((0..100).collect::<Vec<i32>>()))],
+        )
+        .unwrap();
+
+        let filename = get_temp_filename()
+            .as_path()
+            .as_os_str()
+            .to_str()
+            .unwrap()
+            .to_string();
+        let file = File::create(&filename).unwrap();
+        let mut writer = ArrowWriter::try_new(file, Arc::clone(&schema), None).unwrap();
+        writer.write(&batch).unwrap();
+        writer.close().unwrap();
+
+        let partitioned_file = PartitionedFile::from_path(filename.clone()).unwrap();
+        let location = partitioned_file.object_meta.location.clone();
+
+        for _ in 0..2 {
+            let session_ctx = Arc::new(SessionContext::new());
+            let scan = init_datasource_exec(
+                Arc::clone(&schema),
+                None,
+                None,
+                ObjectStoreUrl::local_filesystem(),
+                vec![vec![PartitionedFile::from_path(filename.clone()).unwrap()]],
+                None,
+                None,
+                None,
+                "UTC",
+                true,
+                false,
+                false,
+                false,
+                &session_ctx,
+                false,
+                false,
+                false,
+            )
+            .unwrap();
+            let mut stream = scan.execute(0, session_ctx.task_ctx()).unwrap();
+            while let Some(batch) = stream.next().await {
+                batch.unwrap();
+            }
+        }
+
+        let cache = shared_metadata_cache(&ObjectStoreUrl::local_filesystem())
+            .expect("metadata cache sharing is enabled by default");
+        let entries = cache.list_entries();
+        let entry = entries
+            .get(&location)
+            .expect("file metadata should be cached");
+        assert_eq!(
+            entry.hits, 1,
+            "the second SessionContext must hit the cache populated by the first"
+        );
+    }
+
+    // A file overwritten with the same size must not serve stale metadata. DataFusion validates
+    // cached entries against (size, last_modified), so the cached entry must be replaced.
+    #[tokio::test]
+    async fn newer_modification_time_replaces_the_cached_entry() {
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![Arc::new(Int32Array::from((0..100).collect::<Vec<i32>>()))],
+        )
+        .unwrap();
+
+        let filename = get_temp_filename()
+            .as_path()
+            .as_os_str()
+            .to_str()
+            .unwrap()
+            .to_string();
+        let file = File::create(&filename).unwrap();
+        let mut writer = ArrowWriter::try_new(file, Arc::clone(&schema), None).unwrap();
+        writer.write(&batch).unwrap();
+        writer.close().unwrap();
+
+        let mut first = PartitionedFile::from_path(filename.clone()).unwrap();
+        first.object_meta.last_modified = chrono::DateTime::from_timestamp_millis(1_000).unwrap();
+        let location = first.object_meta.location.clone();
+        let size = first.object_meta.size;
+
+        let mut second = PartitionedFile::from_path(filename.clone()).unwrap();
+        second.object_meta.last_modified = chrono::DateTime::from_timestamp_millis(2_000).unwrap();
+        assert_eq!(
+            second.object_meta.size, size,
+            "sizes must match for this test"
+        );
+
+        for pf in [first, second] {
+            let session_ctx = Arc::new(SessionContext::new());
+            let scan = init_datasource_exec(
+                Arc::clone(&schema),
+                None,
+                None,
+                ObjectStoreUrl::local_filesystem(),
+                vec![vec![pf]],
+                None,
+                None,
+                None,
+                "UTC",
+                true,
+                false,
+                false,
+                false,
+                &session_ctx,
+                false,
+                false,
+                false,
+            )
+            .unwrap();
+            let mut stream = scan.execute(0, session_ctx.task_ctx()).unwrap();
+            while let Some(batch) = stream.next().await {
+                batch.unwrap();
+            }
+        }
+
+        let cache = shared_metadata_cache(&ObjectStoreUrl::local_filesystem())
+            .expect("metadata cache sharing is enabled by default");
+        let entry = cache
+            .get(&location)
+            .expect("file metadata should be cached");
+        assert_eq!(
+            entry.meta.last_modified.timestamp_millis(),
+            2_000,
+            "the stale entry must have been replaced by a re-fetch"
         );
     }
 }
