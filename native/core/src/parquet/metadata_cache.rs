@@ -76,6 +76,14 @@ impl MetadataCacheRegistry {
     }
 
     /// Applies the Spark-provided settings. Called once per task, so it must be idempotent.
+    ///
+    /// The `config` write guard is held for the whole operation, including the loop that applies
+    /// the new limit to live caches, so that concurrent `configure` calls serialize instead of
+    /// racing: without that, two calls with different limits could write `config` in one order
+    /// and update the live caches in the other, leaving a cache on a stale limit that the
+    /// idempotency check above would then never revisit. `cache_for` only ever takes `config`
+    /// before `caches` and releases `config` first, so acquiring `caches` here while still
+    /// holding `config` preserves that same lock ordering and cannot deadlock.
     pub(crate) fn configure(&self, enabled: bool, memory_limit: usize) {
         let mut config = self.config.write().unwrap_or_else(PoisonError::into_inner);
         if config.enabled == enabled && config.memory_limit == memory_limit {
@@ -83,7 +91,6 @@ impl MetadataCacheRegistry {
         }
         config.enabled = enabled;
         config.memory_limit = memory_limit;
-        drop(config);
 
         let caches = self.caches.read().unwrap_or_else(PoisonError::into_inner);
         for cache in caches.values() {
@@ -177,5 +184,26 @@ mod tests {
         // and newly created caches pick up the configured limit
         let other = registry.cache_for(&url("s3://bucket-b")).unwrap();
         assert_eq!(other.cache_limit(), 1024);
+    }
+
+    #[test]
+    fn concurrent_cache_for_returns_the_same_instance() {
+        let registry = Arc::new(MetadataCacheRegistry::new());
+        let handles: Vec<_> = (0..8)
+            .map(|_| {
+                let registry = Arc::clone(&registry);
+                std::thread::spawn(move || registry.cache_for(&url("s3://bucket-a")).unwrap())
+            })
+            .collect();
+
+        let caches: Vec<_> = handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .collect();
+
+        let first = &caches[0];
+        for cache in &caches[1..] {
+            assert!(Arc::ptr_eq(first, cache));
+        }
     }
 }
