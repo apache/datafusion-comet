@@ -67,8 +67,8 @@ pub struct ShuffleWriterExec {
     tracing_enabled: bool,
     /// Size of the write buffer in bytes
     write_buffer_size: usize,
-    /// Maximum bytes buffered in memory before spilling; zero disables the limit
-    max_buffer_bytes: usize,
+    /// Maximum bytes buffered in memory before spilling; `None` disables the limit
+    max_buffer_bytes: Option<usize>,
 }
 
 impl ShuffleWriterExec {
@@ -82,7 +82,7 @@ impl ShuffleWriterExec {
         output_index_file: String,
         tracing_enabled: bool,
         write_buffer_size: usize,
-        max_buffer_bytes: usize,
+        max_buffer_bytes: Option<usize>,
     ) -> Result<Self> {
         let cache = Arc::new(PlanProperties::new(
             EquivalenceProperties::new(Arc::clone(&input.schema())),
@@ -206,7 +206,7 @@ async fn external_shuffle(
     codec: CompressionCodec,
     tracing_enabled: bool,
     write_buffer_size: usize,
-    max_buffer_bytes: usize,
+    max_buffer_bytes: Option<usize>,
 ) -> Result<SendableRecordBatchStream> {
     let schema = input.schema();
 
@@ -377,7 +377,7 @@ mod test {
             runtime_env,
             1024,
             false,
-            0,
+            None,
         )
         .unwrap();
 
@@ -449,7 +449,7 @@ mod test {
             runtime_env,
             batch_size,
             false,
-            0,
+            None,
         )
         .unwrap();
 
@@ -471,7 +471,7 @@ mod test {
     /// with `max_buffer_bytes`, against a memory pool large enough that `try_grow` never fails,
     /// and return how many times it spilled.
     async fn spill_count_with_max_buffer_bytes(
-        max_buffer_bytes: usize,
+        max_buffer_bytes: Option<usize>,
         num_batches: usize,
     ) -> usize {
         let batch = create_batch(1000);
@@ -522,7 +522,7 @@ mod test {
         // A limit far below what 20 batches buffer must spill, even though the pool never
         // denies an allocation. The paired zero case pins that the spills come from the new
         // limit and not from the pre-existing memory-pressure trigger.
-        let spills = spill_count_with_max_buffer_bytes(8 * 1024, 20).await;
+        let spills = spill_count_with_max_buffer_bytes(Some(8 * 1024), 20).await;
         assert!(
             spills > 0,
             "a max_buffer_bytes limit below the buffered size must trigger spilling, got {spills}"
@@ -531,11 +531,11 @@ mod test {
 
     #[tokio::test]
     #[cfg_attr(miri, ignore)] // miri can't call foreign function `ZSTD_createCCtx`
-    async fn max_buffer_bytes_zero_leaves_spilling_to_memory_pressure() {
-        let spills = spill_count_with_max_buffer_bytes(0, 20).await;
+    async fn max_buffer_bytes_none_leaves_spilling_to_memory_pressure() {
+        let spills = spill_count_with_max_buffer_bytes(None, 20).await;
         assert_eq!(
             spills, 0,
-            "max_buffer_bytes of 0 disables the limit, and this pool never denies an allocation"
+            "an unset max_buffer_bytes disables the limit, and this pool never denies an allocation"
         );
     }
 
@@ -544,7 +544,7 @@ mod test {
     fn shuffle_output_with_max_buffer_bytes(
         dir: &std::path::Path,
         tag: &str,
-        max_buffer_bytes: usize,
+        max_buffer_bytes: Option<usize>,
     ) -> Vec<String> {
         let batch = create_batch(1000);
         let batches = (0..20).map(|_| batch.clone()).collect::<Vec<_>>();
@@ -595,8 +595,8 @@ mod test {
         // End-to-end through ShuffleWriterExec: a small limit forces repeated spills, and the
         // shuffled rows must come out in the same order as an unlimited writer produces.
         let dir = tempfile::tempdir().unwrap();
-        let unlimited = shuffle_output_with_max_buffer_bytes(dir.path(), "unlimited", 0);
-        let limited = shuffle_output_with_max_buffer_bytes(dir.path(), "limited", 8 * 1024);
+        let unlimited = shuffle_output_with_max_buffer_bytes(dir.path(), "unlimited", None);
+        let limited = shuffle_output_with_max_buffer_bytes(dir.path(), "limited", Some(8 * 1024));
 
         assert_eq!(
             unlimited.len(),
@@ -687,7 +687,7 @@ mod test {
                 "/tmp/index.out".to_string(),
                 false,
                 1024 * 1024, // write_buffer_size: 1MB default
-                0,
+                None,
             )
             .unwrap();
 
@@ -747,7 +747,7 @@ mod test {
                 index_file.clone(),
                 false,
                 1024 * 1024,
-                0,
+                None,
             )
             .unwrap();
 
@@ -959,7 +959,7 @@ mod test {
             index_file.to_str().unwrap().to_string(),
             false,
             1024 * 1024,
-            0,
+            None,
         )
         .unwrap();
 
@@ -1048,7 +1048,7 @@ mod test {
             index_file.to_str().unwrap().to_string(),
             false,
             1024 * 1024,
-            0,
+            None,
         )
         .unwrap();
 

@@ -106,9 +106,9 @@ struct Args {
     #[arg(long, default_value_t = 1048576)]
     write_buffer_size: usize,
 
-    /// Maximum bytes buffered in memory before spilling (0 = spill on memory pressure only)
-    #[arg(long, default_value_t = 0)]
-    max_buffer_bytes: usize,
+    /// Maximum bytes buffered in memory before spilling (unset = spill on memory pressure only)
+    #[arg(long)]
+    max_buffer_bytes: Option<usize>,
 
     /// Limit rows processed per iteration (0 = no limit)
     #[arg(long, default_value_t = 0)]
@@ -441,7 +441,7 @@ async fn execute_shuffle_write(
     batch_size: usize,
     memory_limit: Option<usize>,
     write_buffer_size: usize,
-    max_buffer_bytes: usize,
+    max_buffer_bytes: Option<usize>,
     limit: usize,
     data_file: String,
     index_file: String,

@@ -113,9 +113,9 @@ pub(crate) struct MultiPartitionShuffleRepartitioner<T: PartitionWriter> {
     /// Reservation for repartitioning
     reservation: MemoryReservation,
     /// Spill once the reservation reaches this many bytes, independently of whether the memory
-    /// pool still has capacity. Zero disables the limit, leaving pool pressure as the only
+    /// pool still has capacity. `None` disables the limit, leaving pool pressure as the only
     /// spill trigger.
-    max_buffer_bytes: usize,
+    max_buffer_bytes: Option<usize>,
     tracing_enabled: bool,
     /// Start addresses (as `usize`, since raw pointers are not `Send`) of the backing buffers
     /// currently pinned by `buffered_batches`, so the spill reservation charges each distinct
@@ -178,7 +178,7 @@ impl<T: PartitionWriter> MultiPartitionShuffleRepartitioner<T> {
         runtime: Arc<RuntimeEnv>,
         batch_size: usize,
         tracing_enabled: bool,
-        max_buffer_bytes: usize,
+        max_buffer_bytes: Option<usize>,
     ) -> datafusion::common::Result<Self> {
         let num_output_partitions = partitioning.partition_count();
         assert_ne!(
@@ -461,7 +461,9 @@ impl<T: PartitionWriter> MultiPartitionShuffleRepartitioner<T> {
         // Checking after buffering lets the writer overshoot the limit by at most one batch,
         // which is how the memory-pressure trigger already behaves.
         if self.reservation.try_grow(mem_growth).is_err()
-            || (self.max_buffer_bytes > 0 && self.reservation.size() >= self.max_buffer_bytes)
+            || self
+                .max_buffer_bytes
+                .is_some_and(|limit| self.reservation.size() >= limit)
         {
             self.spill()?;
         }
