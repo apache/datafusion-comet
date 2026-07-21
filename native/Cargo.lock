@@ -3487,7 +3487,7 @@ dependencies = [
 [[package]]
 name = "iceberg"
 version = "0.10.0"
-source = "git+https://github.com/mbutrovich/iceberg-rust?rev=108f8d8682822738db753bb92fca1ec43cca8bf2#108f8d8682822738db753bb92fca1ec43cca8bf2"
+source = "git+https://github.com/mbutrovich/iceberg-rust?rev=e8d0c7b49b0a1c85b6bd72bf88613a6ca915c80e#e8d0c7b49b0a1c85b6bd72bf88613a6ca915c80e"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -3544,7 +3544,7 @@ dependencies = [
 [[package]]
 name = "iceberg-storage-opendal"
 version = "0.10.0"
-source = "git+https://github.com/mbutrovich/iceberg-rust?rev=108f8d8682822738db753bb92fca1ec43cca8bf2#108f8d8682822738db753bb92fca1ec43cca8bf2"
+source = "git+https://github.com/mbutrovich/iceberg-rust?rev=e8d0c7b49b0a1c85b6bd72bf88613a6ca915c80e#e8d0c7b49b0a1c85b6bd72bf88613a6ca915c80e"
 dependencies = [
  "anyhow",
  "async-trait",

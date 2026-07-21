@@ -660,6 +660,7 @@ mod tests {
             partition_spec: None,
             name_mapping: None,
             case_sensitive: false,
+            key_metadata: None,
         }
     }
 
@@ -673,6 +674,7 @@ mod tests {
             referenced_data_file: None,
             content_offset: None,
             content_size_in_bytes: None,
+            key_metadata: None,
         }
     }
 

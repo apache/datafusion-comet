@@ -3706,6 +3706,7 @@ fn parse_file_scan_tasks_from_common(
                         referenced_data_file: del.referenced_data_file.clone(),
                         content_offset: del.content_offset,
                         content_size_in_bytes: del.content_size_in_bytes,
+                        key_metadata: None,
                     })
                 })
                 .collect::<Result<Vec<_>, ExecutionError>>()
@@ -3830,6 +3831,7 @@ fn parse_file_scan_tasks_from_common(
                 partition_spec,
                 name_mapping,
                 case_sensitive: false,
+                key_metadata: None,
             })
         })
         .collect();
