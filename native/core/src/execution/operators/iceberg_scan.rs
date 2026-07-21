@@ -769,10 +769,9 @@ mod tests {
     // Cross-language gate for the encrypted-read passthrough plan: iceberg-rust must decode the
     // exact StandardKeyMetadata bytes that Iceberg-Java writes into a data file's key_metadata,
     // because Comet forwards those bytes verbatim (no re-encoding, no KMS) into
-    // FileScanTask::key_metadata. These two hex strings were captured from the "JAVA key_metadata
-    // blob hex" / "JAVA plaintext DEK hex" lines printed by CometIcebergEncryptionSuite (an
-    // Iceberg-Java StandardEncryptionManager producing a real V1 blob). Regenerate if the wire
-    // format changes.
+    // FileScanTask::key_metadata. This fixture is a real Iceberg-Java blob produced by
+    // StandardEncryptionManager. To regenerate (e.g. after a wire-format change), print the bytes
+    // from CometIcebergEncryptionSuite's plaintext-DEK test and paste them here.
     const JAVA_KEY_METADATA_HEX: &str =
         "012084f49fba77f8ff1da0c115d1e46563cc0220f1d31d62b68808b469eb99fe9c57096000";
     const JAVA_DEK_HEX: &str = "84f49fba77f8ff1da0c115d1e46563cc";

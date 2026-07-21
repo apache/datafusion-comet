@@ -24,7 +24,10 @@ import java.util.Collections
 
 import org.apache.iceberg.Files
 import org.apache.iceberg.encryption.{EncryptedKey, NativeEncryptionKeyMetadata, StandardEncryptionManager}
+import org.apache.spark.SparkConf
 import org.apache.spark.sql.CometTestBase
+import org.apache.spark.sql.comet.CometIcebergNativeScanExec
+import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 
 import org.apache.comet.iceberg.CometTestKMS
 
@@ -33,14 +36,93 @@ import org.apache.comet.iceberg.CometTestKMS
  * encryption is a V3 feature and the encryption APIs (KeyManagementClient, StandardEncryption
  * manager) are only public from Iceberg 1.11, which Comet pairs with Spark 4.1.
  */
-class CometIcebergEncryptionSuite extends CometTestBase with CometIcebergTestBase {
+class CometIcebergEncryptionSuite
+    extends CometTestBase
+    with CometIcebergTestBase
+    with AdaptiveSparkPlanHelper {
 
-  // Confirms the assumption that native encrypted reads will rely on: an Iceberg data file's
+  // A Hive catalog is required for an actual encrypted table: it is the only Iceberg catalog that
+  // wires the KMS-backed EncryptionManager in 1.11 (Hadoop/REST write plaintext). Point Iceberg's
+  // type=hive catalog at an in-memory Derby metastore so no external HMS is needed. Set at session
+  // creation because Iceberg builds its HiveConf from the Hadoop configuration, which reflects
+  // spark.hadoop.* only at context startup, not from runtime withSQLConf.
+  private val hiveWarehouse =
+    java.nio.file.Files.createTempDirectory("comet-hive-warehouse").toFile
+
+  override protected def sparkConf: SparkConf = {
+    super.sparkConf
+      .set(
+        "spark.hadoop.javax.jdo.option.ConnectionURL",
+        "jdbc:derby:memory:comet_iceberg_encryption;create=true")
+      .set("spark.hadoop.datanucleus.schema.autoCreateAll", "true")
+      .set("spark.hadoop.hive.metastore.schema.verification", "false")
+      // Hive's default metastore connection pool is BoneCP, which Spark's Hive fork does not ship
+      // (NoClassDefFoundError: com/jolbox/bonecp/BoneCPConfig). This config drives both the
+      // DataNucleus ObjectStore and the TxnHandler pool, so DBCP steers the embedded metastore off
+      // BoneCP. Mirrors Iceberg's TestHiveMetastore.initConf.
+      .set("spark.hadoop.datanucleus.connectionPoolingType", "DBCP")
+      .set("spark.hadoop.hive.in.test", "true")
+      // Skip Iceberg's HMS table lock. The embedded metastore's ACID TxnHandler rejects Iceberg's
+      // lock request ("Bug: operationType=UNSET"); disabling it uses the lock-free commit path
+      // (atomic alter-table with an expected-parameter check), which is all this single-writer test
+      // needs.
+      .set("spark.hadoop.iceberg.engine.hive.lock-enabled", "false")
+      .set("spark.hadoop.hive.metastore.warehouse.dir", hiveWarehouse.toURI.toString)
+      .set("spark.sql.catalog.hive_cat", "org.apache.iceberg.spark.SparkCatalog")
+      .set("spark.sql.catalog.hive_cat.type", "hive")
+      .set("spark.sql.catalog.hive_cat.warehouse", hiveWarehouse.toURI.toString)
+      .set("spark.sql.catalog.hive_cat.encryption.kms-impl", classOf[CometTestKMS].getName)
+  }
+
+  // End-to-end: an encrypted V3 table is read through Comet's native Iceberg scan and matches
+  // Spark. This is the guard that the encrypted path stays native; Iceberg's own TestTableEncryption
+  // (run under Comet in CI) only asserts correctness, not that the native scan was used.
+  test("encrypted V3 table is read natively and matches Spark") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    assume(icebergVersionAtLeast(1, 11), "Iceberg table encryption requires Iceberg 1.11+")
+
+    withSQLConf(
+      CometConf.COMET_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_ENABLED.key -> "true",
+      CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+      val table = "hive_cat.db.encrypted"
+      // The Hive catalog does not auto-create namespaces the way the Hadoop catalog does.
+      spark.sql("CREATE NAMESPACE IF NOT EXISTS hive_cat.db")
+      spark.sql(s"DROP TABLE IF EXISTS $table")
+      spark.sql(s"""
+        CREATE TABLE $table (id INT, name STRING, value DOUBLE) USING iceberg
+        TBLPROPERTIES ('format-version' = '3', 'encryption.key-id' = '${CometTestKMS.MasterKeyId}')
+      """)
+      spark.sql(s"""
+        INSERT INTO $table VALUES (1, 'Alice', 10.5), (2, 'Bob', 20.3), (3, 'Charlie', 30.7)
+      """)
+
+      // Guard against a silently-plaintext table (e.g. catalog not wiring encryption): a genuinely
+      // encrypted table records a plaintext DEK blob per data file in key_metadata.
+      val keyMetadatas = spark
+        .sql(s"SELECT key_metadata FROM $table.files WHERE content = 0")
+        .collect()
+        .flatMap(r => Option(r.getAs[Array[Byte]]("key_metadata")))
+      assert(
+        keyMetadatas.nonEmpty,
+        "expected encryption to populate key_metadata; the Hive catalog may not have wired the KMS")
+
+      val (_, cometPlan) = checkSparkAnswer(s"SELECT * FROM $table ORDER BY id")
+      assert(
+        collect(cometPlan) { case s: CometIcebergNativeScanExec => s }.nonEmpty,
+        s"expected the encrypted read to run natively but found no CometIcebergNativeScanExec:\n" +
+          cometPlan)
+
+      spark.sql(s"DROP TABLE $table")
+    }
+  }
+
+  // Confirms the assumption that native encrypted reads rely on: an Iceberg data file's
   // key_metadata carries a PLAINTEXT data encryption key, not a KMS-wrapped one. Iceberg mints a
   // fresh DEK per file in StandardEncryptionManager.encrypt() and records it plaintext in
-  // key_metadata (the manifest that holds it is itself encrypted). The KMS only ever wraps the KEK
-  // / manifest-list keys, never the per-file DEK. So Comet can forward these bytes straight to
-  // iceberg-rust with no native KMS.
+  // key_metadata (the manifest that holds it is itself encrypted). The KMS only wraps the KEK /
+  // manifest-list keys, never the per-file DEK. Runs without a catalog.
   test("data file key_metadata carries a plaintext DEK that round-trips") {
     assume(icebergAvailable, "Iceberg not available in classpath")
     assume(icebergVersionAtLeast(1, 11), "Iceberg table encryption requires Iceberg 1.11+")
@@ -82,15 +164,6 @@ class CometIcebergEncryptionSuite extends CometTestBase with CometIcebergTestBas
       assert(
         java.util.Arrays.equals(toArray(dek), roundTripped),
         "DEK did not survive the StandardKeyMetadata encode/parse round-trip")
-
-      println(
-        s"key_metadata blob ${blob.length} bytes, plaintext DEK ${roundTripped.length} bytes; " +
-          "no KMS needed to recover the data-file key")
-      // Emit the raw bytes so the Rust side (iceberg-rust StandardKeyMetadata::decode) can be
-      // tested against a real Java-produced blob. Paste these into the Rust cross-compat test.
-      // println (not logInfo) so the values surface in the IntelliJ test console.
-      println(s"JAVA key_metadata blob hex: ${hex(blob)}")
-      println(s"JAVA plaintext DEK hex:     ${hex(roundTripped)}")
     }
   }
 
@@ -100,6 +173,4 @@ class CometIcebergEncryptionSuite extends CometTestBase with CometIcebergTestBas
     dup.get(bytes)
     bytes
   }
-
-  private def hex(bytes: Array[Byte]): String = bytes.map(b => f"$b%02x").mkString
 }
