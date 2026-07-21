@@ -81,9 +81,12 @@ impl MetadataCacheRegistry {
     /// the new limit to live caches, so that concurrent `configure` calls serialize instead of
     /// racing: without that, two calls with different limits could write `config` in one order
     /// and update the live caches in the other, leaving a cache on a stale limit that the
-    /// idempotency check above would then never revisit. `cache_for` only ever takes `config`
-    /// before `caches` and releases `config` first, so acquiring `caches` here while still
-    /// holding `config` preserves that same lock ordering and cannot deadlock.
+    /// idempotency check above would then never revisit. `cache_for` also only ever takes
+    /// `config` before `caches`, and now holds `config` until after it has inserted a new cache,
+    /// so acquiring `caches` here while still holding `config` preserves that same lock ordering
+    /// and cannot deadlock. It does mean a concurrent `cache_for` that is still inserting a new
+    /// cache will block this call until that insert is visible, which is what stops a fresh cache
+    /// from being seeded with a limit this call is about to make stale.
     pub(crate) fn configure(&self, enabled: bool, memory_limit: usize) {
         let mut config = self.config.write().unwrap_or_else(PoisonError::into_inner);
         if config.enabled == enabled && config.memory_limit == memory_limit {
@@ -100,8 +103,18 @@ impl MetadataCacheRegistry {
 
     /// Returns the shared cache for `url`, or `None` when sharing is disabled, in which case the
     /// caller should fall back to the per-task `RuntimeEnv` cache.
+    ///
+    /// The `config` read guard is held for the whole method, including the `caches` write lock
+    /// used to insert a newly created cache, so that a concurrent `configure` cannot land between
+    /// reading `config.memory_limit` here and the insert becoming visible to `configure`'s cache
+    /// scan. Without that, `configure` could apply a new limit to every cache already in the map
+    /// and return, while this method then inserts a cache built from the limit it read before
+    /// `configure` ran, leaving that cache permanently on the stale limit and the registry's
+    /// config permanently disagreeing with it. Taking `config` first and only then `caches`
+    /// (read, then write) keeps the same `config`-before-`caches` ordering `configure` relies on,
+    /// so this cannot deadlock with it.
     pub(crate) fn cache_for(&self, url: &ObjectStoreUrl) -> Option<Arc<dyn FileMetadataCache>> {
-        let config = *self.config.read().unwrap_or_else(PoisonError::into_inner);
+        let config = self.config.read().unwrap_or_else(PoisonError::into_inner);
         if !config.enabled {
             return None;
         }
