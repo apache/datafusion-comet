@@ -70,7 +70,8 @@ The native Iceberg reader supports the following features:
 - Encrypted v3 tables using 128-bit AES-GCM data keys (requires Iceberg 1.11 or newer). Iceberg-Java
   unwraps the key envelope on the driver during planning and stores the plaintext data key in each
   file's `key_metadata`, which the native reader uses directly, so no KMS integration is needed on
-  the native side.
+  the native side. Iceberg-Java also permits 192- and 256-bit data keys; those tables fall back to
+  Spark for now (the native Parquet reader decrypts only 128-bit AES-GCM until arrow-rs 58.4).
 
 **Schema and data types:**
 
