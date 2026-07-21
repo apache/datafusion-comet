@@ -21,6 +21,8 @@ package org.apache.spark.sql.comet.uniffle
 
 import java.nio.{ByteBuffer, ByteOrder}
 
+import scala.annotation.tailrec
+
 import org.apache.spark.internal.Logging
 import org.apache.uniffle.client.api.ShuffleReadClient
 import org.apache.uniffle.client.response.ShuffleBlock
@@ -103,6 +105,7 @@ class CometUniffleShuffleBlockIterator(
     true
   }
 
+  @tailrec
   private def nextShuffleBlock(): Option[ByteBuffer] = {
     val shuffleBlock: ShuffleBlock = if (currentShuffleReadClient != null) {
       currentShuffleReadClient.readShuffleBlockData
