@@ -38,9 +38,14 @@ use std::sync::{Arc, OnceLock, PoisonError, RwLock};
 /// The cache key inside `DefaultFilesMetadataCache` is a bare `object_store::path::Path`, and
 /// `PhysicalPlanner::get_partitioned_files` builds that path from `url.path()`, which drops the
 /// bucket for `s3://bucket/key`. A single shared instance would therefore let two buckets that
-/// share a relative path collide. One cache per `scheme://host` removes that entirely. Unlike
-/// the object store cache, the key deliberately omits the credential config hash: a footer's
-/// identity does not depend on which credentials read it.
+/// share a relative path collide. One cache per `scheme://host` separates buckets on S3/GCS and
+/// separates hosts on HDFS. It does not separate ABFS containers on the same storage account:
+/// `abfss://container@account.dfs.core.windows.net/...` carries the container as URL userinfo,
+/// not host, so `prepare_object_store_with_configs` derives the same registry key, and the same
+/// `Path`, for every container on that account. Two such containers with colliding relative
+/// paths rely entirely on `(size, last_modified)` validation, below, to keep their entries
+/// apart. Unlike the object store cache, the key deliberately omits the credential config hash:
+/// a footer's identity does not depend on which credentials read it.
 ///
 /// ## Staleness
 ///

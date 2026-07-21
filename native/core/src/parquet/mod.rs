@@ -85,6 +85,15 @@ fn get_batch_context<'a>(handle: jlong) -> Result<&'a mut BatchContext, CometErr
     }
 }
 
+/// Builds `PartitionedFile`s for the `Native.initRecordBatchReader` JNI entry point. There is
+/// currently no `org.apache.comet.parquet.Native` Java class in the repo, so this path is
+/// unreachable, but it is still exported. The `PartitionedFile`s built here never have
+/// `object_meta.last_modified` set, so it defaults to the Unix epoch, and the `SessionContext`
+/// built in `Java_org_apache_comet_parquet_Native_initRecordBatchReader` never calls
+/// `configure_metadata_cache`. If this entry point is revived and its scan reaches the shared
+/// metadata cache registry through `init_datasource_exec`, every file will validate as though
+/// unmodified since the epoch, so cache validation degrades to size alone. Plumb the real file
+/// modification time through here before relying on that path again.
 fn get_file_groups_single_file(
     path: &Path,
     file_size: u64,

@@ -110,11 +110,12 @@ different splits of the same file, or later stages re-reading the same table, do
 and re-parse it. The cache is shared by all tasks in an executor process and is enabled by
 default.
 
-`spark.comet.scan.metadataCache.memoryLimit` (default 50MB) bounds the cache in each executor,
-with least-recently-used eviction. Note that this budget is per executor rather than per task,
-so it does not scale with the number of task slots. Entries are validated against each file's
-size and modification time, so an overwritten file is re-read rather than served from the
-cache.
+`spark.comet.scan.metadataCache.memoryLimit` (default 50MB) bounds, with least-recently-used
+eviction, the cache for each distinct object store an executor reads from, so an executor
+reading from several object stores, or several buckets, holds a multiple of this limit. It does
+not scale with the number of task slots, however. Entries are validated against each file's size
+and modification time (validation falls back to size alone if the source reports no modification
+time), so an overwritten file is normally re-read rather than served from the cache.
 
 Set `spark.comet.scan.metadataCache.enabled=false` to give each task its own cache instead.
 
