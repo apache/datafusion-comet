@@ -458,10 +458,11 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
           // query has to run before they are read; checkShuffleAnswer executes copies built
           // from the logical plan and leaves this one's accumulators untouched.
           shuffled.collect()
-          spillCount = find(shuffled.queryExecution.executedPlan) {
-            case _: CometShuffleExchangeExec => true
-            case _ => false
-          }.map(_.metrics("spill_count").value).get
+          // AdaptiveSparkPlanHelper's collectFirst, not TreeNode's: AdaptiveSparkPlanExec is a
+          // leaf node, so a plain tree walk stops above the exchange when AQE is on.
+          spillCount = collectFirst(shuffled.queryExecution.executedPlan) {
+            case e: CometShuffleExchangeExec => e.metrics("spill_count").value
+          }.get
         }
         spillCount
       }
