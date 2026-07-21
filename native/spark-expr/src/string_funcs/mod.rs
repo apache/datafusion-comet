@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+mod base64;
 mod contains;
 mod get_json_object;
 mod levenshtein;
@@ -22,12 +23,11 @@ mod regexp_extract;
 mod regexp_extract_all;
 mod regexp_extract_common;
 mod split;
-mod substring;
 
+pub use base64::spark_base64;
 pub use contains::SparkContains;
 pub use get_json_object::spark_get_json_object;
 pub use levenshtein::spark_levenshtein;
 pub use regexp_extract::spark_regexp_extract;
 pub use regexp_extract_all::spark_regexp_extract_all;
-pub use split::spark_split;
-pub use substring::SubstringExpr;
+pub use split::{spark_split, spark_split_sql};

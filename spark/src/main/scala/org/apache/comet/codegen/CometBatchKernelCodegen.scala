@@ -28,7 +28,7 @@ import org.apache.spark.sql.catalyst.expressions.codegen._
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
-import org.apache.comet.shims.CometExprTraitShim
+import org.apache.comet.shims.{CometExprTraitShim, CometTypeShim}
 
 /**
  * Compiles a bound [[Expression]] plus an Arrow input schema into a [[CometBatchKernel]] that
@@ -49,7 +49,7 @@ import org.apache.comet.shims.CometExprTraitShim
  * The generated kernel is the `InternalRow` that Spark's `BoundReference.genCode` reads from. See
  * [[generateSource]] for how the wiring is set up.
  */
-object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
+object CometBatchKernelCodegen extends Logging with CometExprTraitShim with CometTypeShim {
 
   /**
    * Resolve an Arrow vector class by simple name through the codegen object's own classloader.
@@ -67,10 +67,13 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
     case "Float8Vector" => classOf[Float8Vector]
     case "DecimalVector" => classOf[DecimalVector]
     case "DateDayVector" => classOf[DateDayVector]
+    case "TimeNanoVector" => classOf[TimeNanoVector]
     case "TimeStampMicroVector" => classOf[TimeStampMicroVector]
     case "TimeStampMicroTZVector" => classOf[TimeStampMicroTZVector]
     case "VarCharVector" => classOf[VarCharVector]
     case "VarBinaryVector" => classOf[VarBinaryVector]
+    case "IntervalYearVector" => classOf[IntervalYearVector]
+    case "DurationVector" => classOf[DurationVector]
     case other => throw new IllegalArgumentException(s"unknown Arrow vector class: $other")
   }
 
@@ -84,6 +87,8 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
     case _: DecimalType => true
     case _: StringType | _: BinaryType => true
     case DateType | TimestampType | TimestampNTZType => true
+    case dt if isTimeType(dt) => true
+    case _: YearMonthIntervalType | _: DayTimeIntervalType => true
     case ArrayType(inner, _) => isSupportedDataType(inner)
     case st: StructType => st.fields.forall(f => isSupportedDataType(f.dataType))
     case mt: MapType => isSupportedDataType(mt.keyType) && isSupportedDataType(mt.valueType)

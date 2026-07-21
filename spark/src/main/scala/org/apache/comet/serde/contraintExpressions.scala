@@ -19,25 +19,28 @@
 
 package org.apache.comet.serde
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, KnownFloatingPointNormalized}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, KnownFloatingPointNormalized, KnownNullable}
 import org.apache.spark.sql.catalyst.optimizer.NormalizeNaNAndZero
 
-import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithFallbackReason, serializeDataType}
 
 object CometKnownFloatingPointNormalized
     extends CometExpressionSerde[KnownFloatingPointNormalized] {
 
-  override def getUnsupportedReasons(): Seq[String] = Seq(
-    "Only supports `NormalizeNaNAndZero` child expressions")
-
   override def getSupportLevel(expr: KnownFloatingPointNormalized): SupportLevel = {
     expr.child match {
-      case _: NormalizeNaNAndZero => Compatible()
+      case normalized: NormalizeNaNAndZero =>
+        val wrapped = normalized.child
+        if (serializeDataType(wrapped.dataType).isDefined) {
+          Compatible()
+        } else {
+          Unsupported(Some(s"Unsupported datatype ${wrapped.dataType}"))
+        }
       case _ =>
-        Unsupported(
-          Some(
-            "KnownFloatingPointNormalized only supports NormalizeNaNAndZero child expressions"))
+        // Nested normalization (array / struct / map). KnownFloatingPointNormalized is a runtime
+        // no-op tag, so defer to the child's serde: convert serializes the child directly and
+        // falls back gracefully if it is unsupported.
+        Compatible()
     }
   }
 
@@ -46,21 +49,46 @@ object CometKnownFloatingPointNormalized
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
 
-    val wrapped = expr.child.asInstanceOf[NormalizeNaNAndZero].child
+    expr.child match {
+      case normalize: NormalizeNaNAndZero =>
+        // Scalar float/double normalization: unwrap and emit the native NormalizeNaNAndZero node.
+        // getSupportLevel has already verified the datatype is serializable.
+        val wrapped = normalize.child
+        val dataType = serializeDataType(wrapped.dataType).get
+        val ex = exprToProtoInternal(wrapped, inputs, binding)
+        val optExpr = ex.map { child =>
+          val builder = ExprOuterClass.NormalizeNaNAndZero
+            .newBuilder()
+            .setChild(child)
+            .setDatatype(dataType)
+          ExprOuterClass.Expr.newBuilder().setNormalizeNanAndZero(builder).build()
+        }
+        optExprWithFallbackReason(optExpr, expr, wrapped)
 
-    val dataType = serializeDataType(wrapped.dataType)
-    if (dataType.isEmpty) {
-      withFallbackReason(wrapped, s"Unsupported datatype ${wrapped.dataType}")
-      return None
+      case child =>
+        // Nested normalization (array / struct / map). Spark 4.2 normalizes the inputs to
+        // array_distinct and the array set operations by wrapping them as, e.g.,
+        // `KnownFloatingPointNormalized(ArrayTransform(arr, x -> NormalizeNaNAndZero(x)))`.
+        // `KnownFloatingPointNormalized` is a runtime no-op tag, so serialize the child directly
+        // and let its serde (e.g. the ArrayTransform codegen dispatcher) carry the normalization.
+        val optExpr = exprToProtoInternal(child, inputs, binding)
+        optExprWithFallbackReason(optExpr, expr, child)
     }
-    val ex = exprToProtoInternal(wrapped, inputs, binding)
-    val optExpr = ex.map { child =>
-      val builder = ExprOuterClass.NormalizeNaNAndZero
-        .newBuilder()
-        .setChild(child)
-        .setDatatype(dataType.get)
-      ExprOuterClass.Expr.newBuilder().setNormalizeNanAndZero(builder).build()
-    }
-    optExprWithFallbackReason(optExpr, expr, wrapped)
+  }
+}
+
+/**
+ * `KnownNullable` is a tagging expression that only marks its child as nullable; it is a runtime
+ * no-op (`eval` returns the child's value unchanged). Spark's time-window resolution wraps window
+ * bounds in `KnownNullable`, so supporting it lets those grouping queries run natively. We simply
+ * serialize the child and drop the tag.
+ */
+object CometKnownNullable extends CometExpressionSerde[KnownNullable] {
+  override def convert(
+      expr: KnownNullable,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val optExpr = exprToProtoInternal(expr.child, inputs, binding)
+    optExprWithFallbackReason(optExpr, expr, expr.child)
   }
 }

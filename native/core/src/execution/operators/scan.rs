@@ -33,7 +33,6 @@ use datafusion::{
 use futures::Stream;
 use itertools::Itertools;
 use std::{
-    any::Any,
     pin::Pin,
     sync::{Arc, Mutex},
     task::{Context, Poll},
@@ -117,16 +116,15 @@ impl ScanExec {
             // This is a unit test. Input batches are seeded via `set_input_batch`.
             return Ok(());
         }
-        let mut timer = self.baseline_metrics.elapsed_compute().timer();
 
         let mut current_batch = self.batch.try_lock().unwrap();
         if current_batch.is_none() {
+            let mut timer = self.baseline_metrics.elapsed_compute().timer();
             let next_batch =
                 ScanExec::pull_next(self.exec_context_id, self.input_source.as_ref().unwrap())?;
             *current_batch = Some(next_batch);
+            timer.stop();
         }
-
-        timer.stop();
 
         Ok(())
     }
@@ -181,10 +179,6 @@ fn schema_from_data_types(data_types: &[DataType]) -> SchemaRef {
 }
 
 impl ExecutionPlan for ScanExec {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn schema(&self) -> SchemaRef {
         Arc::clone(&self.schema)
     }

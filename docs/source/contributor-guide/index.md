@@ -79,6 +79,7 @@ Iceberg Spark Tests <iceberg-spark-tests.md>
 
 Debugging Guide <debugging>
 Benchmarking Guide <benchmarking>
+Optimizing Scalar Expressions <optimizing_expressions>
 Profiling <profiling>
 Tracing <tracing>
 ```
@@ -90,6 +91,7 @@ Tracing <tracing>
 
 Expression Audits <expression-audits/index>
 Supported Spark Configurations <spark_configs_support>
+Configuration Conventions <config_conventions>
 ```
 
 ```{toctree}

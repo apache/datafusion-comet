@@ -23,7 +23,6 @@ use datafusion::common::{utils::take_function_args, DataFusionError, Result};
 use datafusion::logical_expr::{
     ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility,
 };
-use std::any::Any;
 use std::sync::Arc;
 
 /// Spark-compatible `next_day(start_date, day_of_week)` function.
@@ -80,10 +79,6 @@ fn next_date_for_day_of_week(days: i32, weekday: Weekday) -> Option<i32> {
 }
 
 impl ScalarUDFImpl for SparkNextDay {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn name(&self) -> &str {
         "next_day"
     }

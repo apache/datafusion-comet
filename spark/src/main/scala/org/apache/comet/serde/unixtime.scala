@@ -29,12 +29,37 @@ import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithFa
 // https://github.com/apache/datafusion/issues/16594
 object CometFromUnixTime extends CometExpressionSerde[FromUnixTime] with CodegenDispatchFallback {
 
-  override def getIncompatibleReasons(): Seq[String] = Seq(
-    "Only supports the default datetime format pattern `yyyy-MM-dd HH:mm:ss`." +
-      " DataFusion's valid timestamp range differs from Spark" +
-      " (https://github.com/apache/datafusion/issues/16594)")
+  // Applies even to the default format: Comet executes natively but DataFusion's valid timestamp
+  // range differs from Spark, so results can differ outside that range.
+  private val timestampRangeReason =
+    "DataFusion's valid timestamp range differs from Spark" +
+      " (https://github.com/apache/datafusion/issues/16594)"
 
-  override def getSupportLevel(expr: FromUnixTime): SupportLevel = Incompatible(None)
+  // The native (DataFusion) path covers only the default pattern; documented as an unsupported
+  // limitation of that path rather than an incompatibility (see #4575).
+  private val formatReason =
+    "Only the default datetime format pattern `yyyy-MM-dd HH:mm:ss` is supported"
+
+  override def getIncompatibleReasons(): Seq[String] =
+    Seq(timestampRangeReason)
+
+  override def getUnsupportedReasons(): Seq[String] =
+    Seq(formatReason)
+
+  // A non-default format has no native (DataFusion) path, so it is `Unsupported`. Because
+  // `CodegenDispatchFallback` is mixed in, an `Unsupported` result still stays in the Comet
+  // pipeline via JVM codegen dispatch (Spark's own `doGenCode`) rather than falling back to Spark.
+  //
+  // Unlike the other datetime expressions, from_unixtime needs no collation guard: a collation can
+  // only appear on the format argument, and any collated format is a non-default format, which is
+  // already `Unsupported` here.
+  override def getSupportLevel(expr: FromUnixTime): SupportLevel = {
+    if (expr.format != Literal(TimestampFormatter.defaultPattern)) {
+      Unsupported(Some(formatReason))
+    } else {
+      Incompatible(Some(timestampRangeReason))
+    }
+  }
 
   override def convert(
       expr: FromUnixTime,
@@ -49,7 +74,7 @@ object CometFromUnixTime extends CometExpressionSerde[FromUnixTime] with Codegen
     val timeZone = exprToProtoInternal(Literal(expr.timeZoneId.orNull), inputs, binding)
 
     if (expr.format != Literal(TimestampFormatter.defaultPattern)) {
-      withFallbackReason(expr, "Datetime pattern format is unsupported")
+      withFallbackReason(expr, formatReason)
       None
     } else if (secExpr.isDefined && formatExpr.isDefined) {
       val timestampExpr =

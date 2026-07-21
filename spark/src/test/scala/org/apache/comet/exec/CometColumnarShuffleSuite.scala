@@ -761,6 +761,36 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
     }
   }
 
+  // Regression test for https://github.com/apache/datafusion-comet/issues/4521.
+  //
+  // Spark's `cast(BinaryType -> StringType)` is a zero-copy reinterpret (and `UnsafeRow`'s
+  // string accessor performs no UTF-8 validation), so a `StringType` column can legitimately
+  // hold arbitrary non-UTF-8 bytes that Spark treats as opaque. Comet's columnar (JVM) shuffle
+  // converts those `UnsafeRow`s to Arrow natively (`process_sorted_row_partition` -> `get_string`),
+  // which used to decode with `from_utf8(..).unwrap()` and panic on such rows. It now decodes
+  // lossily (U+FFFD replacements), matching how Spark renders the same bytes.
+  test("columnar shuffle tolerates non-UTF-8 bytes in a StringType column") {
+    withParquetTable(
+      Seq(
+        // 0xFF and 0xFE are never valid UTF-8 lead bytes; each decodes to a single U+FFFD in
+        // both Spark and Comet (so the lossy results match exactly).
+        (1, Array[Byte](0xff.toByte, 0xfe.toByte, 'A'.toByte)),
+        // 0x80 is a stray continuation byte -> one U+FFFD, followed by valid ASCII.
+        (2, Array[Byte](0x80.toByte, 'B'.toByte)),
+        // A fully valid UTF-8 row exercises the zero-cost borrow path.
+        (3, "valid".getBytes("UTF-8"))),
+      "tbl") {
+      // Disable Comet's own Cast so the `cast(binary -> string)` runs in Spark and the raw bytes
+      // reach the shuffle inside a JVM UnsafeRow. (If Comet performed the cast it would produce a
+      // pre-sanitized Arrow string array and never exercise get_string.)
+      withSQLConf(CometConf.getExprEnabledConfigKey("Cast") -> "false") {
+        val df = sql("SELECT _1, CAST(_2 AS STRING) AS s FROM tbl")
+        val shuffled = df.repartition(2, $"_1")
+        checkShuffleAnswer(shuffled, 1)
+      }
+    }
+  }
+
   /**
    * Checks that `df` produces the same answer as Spark does, and has the `expectedNum` Comet
    * exchange operators.
