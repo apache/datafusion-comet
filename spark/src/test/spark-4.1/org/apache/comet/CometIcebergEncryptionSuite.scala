@@ -47,8 +47,17 @@ class CometIcebergEncryptionSuite
   // type=hive catalog at an in-memory Derby metastore so no external HMS is needed. Set at session
   // creation because Iceberg builds its HiveConf from the Hadoop configuration, which reflects
   // spark.hadoop.* only at context startup, not from runtime withSQLConf.
-  private val hiveWarehouse =
-    java.nio.file.Files.createTempDirectory("comet-hive-warehouse").toFile
+  //
+  // lazy so the temp dir is created at session init, not at construction: CI runs tests with
+  // -DwildcardSuites, which puts ScalaTest in discovery mode and instantiates every suite before
+  // any test executes. createTempDirectory does not create its parent (java.io.tmpdir, pinned to
+  // target/tmp by the pom), which does not exist yet on a fresh checkout, so an eager val aborts
+  // discovery with NoSuchFileException. createDirectories makes the parent up front.
+  private lazy val hiveWarehouse = {
+    val base = java.nio.file.Paths.get(System.getProperty("java.io.tmpdir"))
+    java.nio.file.Files.createDirectories(base)
+    java.nio.file.Files.createTempDirectory(base, "comet-hive-warehouse").toFile
+  }
 
   override protected def sparkConf: SparkConf = {
     super.sparkConf
