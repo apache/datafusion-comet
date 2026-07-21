@@ -963,21 +963,13 @@ under the License.
 </tr>
 </thead>
 <tbody>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.columnar.shuffle.async.enabled</span></code></p></td>
-<td><p>Whether to enable asynchronous shuffle for Arrow-based shuffle.</p></td>
-<td><p>false</p></td>
-</tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.columnar.shuffle.async.max.thread.num</span></code></p></td>
-<td><p>Maximum number of threads on an executor used for Comet async columnar shuffle. This is the upper bound of total number of shuffle threads per executor. In other words, if the number of cores * the number of shuffle threads per task <code class="docutils literal notranslate"><span class="pre">spark.comet.columnar.shuffle.async.thread.num</span></code> is larger than this config. Comet will use this config as the number of shuffle threads per executor instead.</p></td>
-<td><p>100</p></td>
-</tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.columnar.shuffle.async.thread.num</span></code></p></td>
-<td><p>Number of threads used for Comet async columnar shuffle per shuffle task. Note that more threads means more memory requirement to buffer shuffle data before flushing to disk. Also, more threads may not always improve performance, and should be set based on the number of cores available.</p></td>
-<td><p>3</p></td>
-</tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.columnar.shuffle.batch.size</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.columnar.shuffle.batch.size</span></code></p></td>
 <td><p>Batch size when writing out sorted spill files on the native side. Note that this should not be larger than batch size (i.e., <code class="docutils literal notranslate"><span class="pre">spark.comet.batchSize</span></code>). Otherwise it will produce larger batches than expected in the native operator after shuffle.</p></td>
 <td><p>8192</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.columnar.shuffle.max.writers.per.executor</span></code></p></td>
+<td><p>Maximum number of concurrent hash-based shuffle writers per executor. Comet’s hash-based (bypass merge sort) columnar shuffle allocates one writer per partition, so <code class="docutils literal notranslate"><span class="pre">executor</span> <span class="pre">cores</span> <span class="pre">*</span> <span class="pre">numPartitions</span></code> writers can be active concurrently. When that product exceeds this cap, Comet falls back to sort-based shuffle to avoid OOM.</p></td>
+<td><p>100</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.shuffle.compression.codec</span></code></p></td>
 <td><p>The codec of Comet native shuffle used to compress shuffle data. lz4, zstd, and snappy are supported. Compression can be disabled by setting spark.shuffle.compress=false.</p></td>

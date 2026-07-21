@@ -780,7 +780,6 @@ to protobuf and implements the partitioning logic in native code.</p>
 <li><p><code class="docutils literal notranslate"><span class="pre">CometShuffleMemoryAllocator</span></code>: Custom allocator for off-heap memory pages</p></li>
 <li><p>Memory is allocated in pages; when allocation fails, writers spill to disk</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">CometDiskBlockWriter</span></code> coordinates spilling across all partition writers (largest first)</p></li>
-<li><p>Async spilling is supported via <code class="docutils literal notranslate"><span class="pre">ShuffleThreadPool</span></code></p></li>
 </ul>
 </section>
 <section id="configuration">
@@ -792,12 +791,6 @@ to protobuf and implements the partitioning logic in native code.</p>
 </tr>
 </thead>
 <tbody>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.columnar.shuffle.async.enabled</span></code></p></td>
-<td><p>Enable async spill writes</p></td>
-</tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.columnar.shuffle.async.thread.num</span></code></p></td>
-<td><p>Threads per writer for async</p></td>
-</tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.columnar.shuffle.batch.size</span></code></p></td>
 <td><p>Rows per Arrow batch</p></td>
 </tr>
