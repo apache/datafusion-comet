@@ -132,6 +132,29 @@ object CometConf extends ShimCometConf {
       .checkValue(v => v > 0, "Data file concurrency limit must be positive")
       .createWithDefault(1)
 
+  // Used on native side. Check spark_config.rs how the config is used
+  val COMET_METADATA_CACHE_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.scan.metadataCache.enabled")
+      .category(CATEGORY_SCAN)
+      .doc(
+        "When enabled, the native Parquet scan shares its cache of file metadata (footer and " +
+          "page index) across all tasks in an executor, so tasks reading splits of the same " +
+          "file parse the footer once. When disabled, each task keeps its own cache, which is " +
+          "discarded when the task ends.")
+      .booleanConf
+      .createWithDefault(true)
+
+  // Used on native side. Check spark_config.rs how the config is used
+  val COMET_METADATA_CACHE_MEMORY_LIMIT: ConfigEntry[Long] =
+    conf("spark.comet.scan.metadataCache.memoryLimit")
+      .category(CATEGORY_SCAN)
+      .doc(
+        "The maximum amount of memory (in bytes) used by the shared Parquet metadata cache in " +
+          "each executor. Entries are evicted least-recently-used. This budget is per executor, " +
+          "not per task.")
+      .bytesConf(ByteUnit.BYTE)
+      .createWithDefault(50L * 1024 * 1024)
+
   val COMET_CSV_V2_NATIVE_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.scan.csv.v2.enabled")
       .category(CATEGORY_TESTING)

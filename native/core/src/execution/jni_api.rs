@@ -109,10 +109,12 @@ use crate::execution::tracing::{
 use crate::execution::memory_pools::logging_pool::LoggingMemoryPool;
 use crate::execution::spark_config::{
     SparkConfig, COMET_DEBUG_ENABLED, COMET_DEBUG_MEMORY, COMET_EXPLAIN_NATIVE_ENABLED,
-    COMET_MAX_TEMP_DIRECTORY_SIZE, COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED,
-    COMET_TRACING_ENABLED, SPARK_EXECUTOR_CORES,
+    COMET_MAX_TEMP_DIRECTORY_SIZE, COMET_METADATA_CACHE_ENABLED, COMET_METADATA_CACHE_MEMORY_LIMIT,
+    COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED, COMET_TRACING_ENABLED, SPARK_EXECUTOR_CORES,
 };
 use crate::parquet::encryption_support::{CometEncryptionFactory, ENCRYPTION_FACTORY_ID};
+use crate::parquet::metadata_cache::configure_metadata_cache;
+use datafusion::execution::cache::cache_manager::DEFAULT_METADATA_CACHE_LIMIT;
 use datafusion_comet_proto::spark_operator::operator::OpStruct;
 use log::info;
 use std::sync::OnceLock;
@@ -594,6 +596,16 @@ fn prepare_datafusion_session_context(
             .set_str("datafusion.execution.parquet.pushdown_filters", "true")
             .set_str("datafusion.execution.parquet.reorder_filters", "true");
     }
+
+    // The metadata cache is process-wide rather than per-RuntimeEnv, so apply Spark's settings
+    // to the registry on every task. `configure` is idempotent.
+    configure_metadata_cache(
+        spark_config.get_bool_or(COMET_METADATA_CACHE_ENABLED, true),
+        spark_config.get_usize(
+            COMET_METADATA_CACHE_MEMORY_LIMIT,
+            DEFAULT_METADATA_CACHE_LIMIT,
+        ),
+    );
 
     let runtime = rt_config.build()?;
 
