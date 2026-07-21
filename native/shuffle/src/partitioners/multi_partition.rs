@@ -457,7 +457,6 @@ impl<T: PartitionWriter> MultiPartitionShuffleRepartitioner<T> {
             mem_growth += after_size.saturating_sub(before_size);
         }
 
-        // Spill on memory pressure, or once the buffered bytes reach the configured limit.
         // `try_grow` is evaluated first so the reservation accounts for this batch either way.
         // Checking after buffering lets the writer overshoot the limit by at most one batch,
         // which is how the memory-pressure trigger already behaves.

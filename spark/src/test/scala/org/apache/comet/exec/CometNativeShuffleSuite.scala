@@ -447,27 +447,36 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
   }
 
   test("native shuffle: maxBufferBytes triggers spilling") {
-    def spillCountWithMaxBufferBytes(maxBufferBytes: String): Long = {
-      withSQLConf(CometConf.COMET_SHUFFLE_MAX_BUFFER_BYTES.key -> maxBufferBytes) {
-        withParquetTable((0 until 20000).map(i => (i, (i + 1).toLong, s"str$i")), "tbl") {
-          val df = sql("SELECT * FROM tbl").repartition(10, $"_1")
-          val exchanges = checkCometExchange(df, 1, true)
-          checkSparkAnswer(df)
-          exchanges.map(_.metrics("spill_count").value).sum
-        }
-      }
-    }
+    withParquetTable((0 until 20000).map(i => (i, (i + 1).toLong, s"str$i")), "tbl") {
+      def spillCountWithMaxBufferBytes(maxBufferBytes: String): Long = {
+        var spillCount = 0L
+        withSQLConf(CometConf.COMET_SHUFFLE_MAX_BUFFER_BYTES.key -> maxBufferBytes) {
+          val shuffled = sql("SELECT * FROM tbl").repartition(10, $"_1")
+          checkShuffleAnswer(shuffled, 1)
 
-    // A limit far below the size of this input forces the native writer to spill, without
-    // relying on the memory pool denying an allocation. Compared against the default of 0
-    // rather than asserted to be an absolute zero, since the default path is still free to
-    // spill under memory pressure and how much of that happens depends on the pool size.
-    val limited = spillCountWithMaxBufferBytes("64k")
-    val unlimited = spillCountWithMaxBufferBytes("0")
-    assert(
-      limited > unlimited,
-      s"a 64k maxBufferBytes limit must spill more than the default of 0 " +
-        s"(got $limited vs $unlimited)")
+          // Materialize the shuffled data. The metrics live on this plan's exchange, so the
+          // query has to run before they are read; checkShuffleAnswer executes copies built
+          // from the logical plan and leaves this one's accumulators untouched.
+          shuffled.collect()
+          spillCount = find(shuffled.queryExecution.executedPlan) {
+            case _: CometShuffleExchangeExec => true
+            case _ => false
+          }.map(_.metrics("spill_count").value).get
+        }
+        spillCount
+      }
+
+      // A limit far below the size of this input forces the native writer to spill, without
+      // relying on the memory pool denying an allocation. Compared against the default of 0
+      // rather than asserted to be an absolute zero, since the default path is still free to
+      // spill under memory pressure and how much of that happens depends on the pool size.
+      val limited = spillCountWithMaxBufferBytes("64k")
+      val unlimited = spillCountWithMaxBufferBytes("0")
+      assert(
+        limited > unlimited,
+        s"a 64k maxBufferBytes limit must spill more than the default of 0 " +
+          s"(got $limited vs $unlimited)")
+    }
   }
 
   test("native shuffle: round robin partitioning") {

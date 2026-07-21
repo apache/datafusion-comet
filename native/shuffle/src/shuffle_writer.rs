@@ -539,30 +539,6 @@ mod test {
         );
     }
 
-    /// Decode every length-prefixed shuffle block in a data file, in file order, and return the
-    /// values of the single string column. See `ShuffleBlockWriter::write_batch` for the layout:
-    /// an 8-byte little-endian ipc length, then a 12-byte header that `read_ipc_compressed`
-    /// expects to start 16 bytes into the block.
-    fn read_shuffle_data_file(path: &std::path::Path) -> Vec<String> {
-        let bytes = std::fs::read(path).unwrap();
-        let mut values = vec![];
-        let mut offset = 0;
-        while offset < bytes.len() {
-            let ipc_length =
-                u64::from_le_bytes(bytes[offset..offset + 8].try_into().unwrap()) as usize;
-            let block_end = offset + 8 + ipc_length;
-            let batch = read_ipc_compressed(&bytes[offset + 16..block_end]).unwrap();
-            let column = batch
-                .column(0)
-                .as_any()
-                .downcast_ref::<StringArray>()
-                .unwrap();
-            values.extend(column.iter().map(|v| v.unwrap().to_string()));
-            offset = block_end;
-        }
-        values
-    }
-
     /// Run a shuffle end-to-end through `ShuffleWriterExec` with the given `max_buffer_bytes`
     /// and return the shuffled rows in output-file order.
     fn shuffle_output_with_max_buffer_bytes(
@@ -597,7 +573,20 @@ mod test {
         let stream = exec.execute(0, ctx.task_ctx()).unwrap();
         Runtime::new().unwrap().block_on(collect(stream)).unwrap();
 
-        read_shuffle_data_file(&data_file)
+        read_all_ipc_batches(&std::fs::read(&data_file).unwrap())
+            .iter()
+            .flat_map(|batch| {
+                let column = batch
+                    .column(0)
+                    .as_any()
+                    .downcast_ref::<StringArray>()
+                    .unwrap();
+                column
+                    .iter()
+                    .map(|v| v.unwrap().to_string())
+                    .collect::<Vec<_>>()
+            })
+            .collect()
     }
 
     #[test]
@@ -698,7 +687,7 @@ mod test {
                 "/tmp/index.out".to_string(),
                 false,
                 1024 * 1024, // write_buffer_size: 1MB default
-                0,           // max_buffer_bytes: no fixed limit
+                0,
             )
             .unwrap();
 
@@ -758,7 +747,7 @@ mod test {
                 index_file.clone(),
                 false,
                 1024 * 1024,
-                0, // max_buffer_bytes: no fixed limit
+                0,
             )
             .unwrap();
 
@@ -906,11 +895,11 @@ mod test {
         );
     }
 
-    /// Read all IPC blocks from a byte buffer written by BufBatchWriter/ShuffleBlockWriter,
-    /// returning the total number of rows.
-    fn read_all_ipc_blocks(data: &[u8]) -> usize {
+    /// Decode every IPC block in a byte buffer written by BufBatchWriter/ShuffleBlockWriter,
+    /// in file order.
+    fn read_all_ipc_batches(data: &[u8]) -> Vec<RecordBatch> {
         let mut offset = 0;
-        let mut total_rows = 0;
+        let mut batches = vec![];
         while offset < data.len() {
             // First 8 bytes are the IPC length (little-endian u64)
             let ipc_length =
@@ -921,11 +910,18 @@ mod test {
             // read_ipc_compressed expects data starting after the 16-byte header
             // (i.e., after length + field_count), at the codec tag
             let ipc_data = &data[block_start + 8..block_end];
-            let batch = read_ipc_compressed(ipc_data).unwrap();
-            total_rows += batch.num_rows();
+            batches.push(read_ipc_compressed(ipc_data).unwrap());
             offset = block_end;
         }
-        total_rows
+        batches
+    }
+
+    /// Total number of rows across all IPC blocks in a byte buffer.
+    fn read_all_ipc_blocks(data: &[u8]) -> usize {
+        read_all_ipc_batches(data)
+            .iter()
+            .map(|b| b.num_rows())
+            .sum()
     }
 
     #[test]
@@ -963,7 +959,7 @@ mod test {
             index_file.to_str().unwrap().to_string(),
             false,
             1024 * 1024,
-            0, // max_buffer_bytes: no fixed limit
+            0,
         )
         .unwrap();
 
@@ -1052,7 +1048,7 @@ mod test {
             index_file.to_str().unwrap().to_string(),
             false,
             1024 * 1024,
-            0, // max_buffer_bytes: no fixed limit
+            0,
         )
         .unwrap();
 
