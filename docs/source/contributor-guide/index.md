@@ -91,6 +91,7 @@ Tracing <tracing>
 
 Expression Audits <expression-audits/index>
 Supported Spark Configurations <spark_configs_support>
+Configuration Conventions <config_conventions>
 ```
 
 ```{toctree}
