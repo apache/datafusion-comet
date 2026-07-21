@@ -220,6 +220,22 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
   }
 
   /**
+   * An encrypted ContentFile's plaintext StandardKeyMetadata blob as a protobuf ByteString, or
+   * None for an unencrypted file (keyMetadata() returns null). `method` is the cached
+   * ContentFile.keyMetadata() accessor. A reflection failure here is intentionally not caught: by
+   * serde time the plan is already committed to the native scan, so there is no fallback, and
+   * silently dropping the key of an encrypted file would fail obscurely in the native reader.
+   */
+  private def keyMetadataBytes(
+      method: java.lang.reflect.Method,
+      contentFile: Any): Option[com.google.protobuf.ByteString] =
+    method.invoke(contentFile) match {
+      case buf: java.nio.ByteBuffer if buf.remaining() > 0 =>
+        Some(com.google.protobuf.ByteString.copyFrom(buf.duplicate()))
+      case _ => None
+    }
+
+  /**
    * Extracts delete files from an Iceberg FileScanTask as a list (for deduplication).
    *
    * Delete-file size is not serialized; the native scan stats each file for it (see
@@ -232,6 +248,8 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
       fileScanTaskClass: Class[_]): Seq[OperatorOuterClass.IcebergDeleteFile] = {
     try {
       val deleteFileClass = IcebergReflection.loadClass(IcebergReflection.ClassNames.DELETE_FILE)
+      // keyMetadata() is declared on ContentFile; present across all supported Iceberg versions.
+      val keyMetadataMethod = contentFileClass.getMethod("keyMetadata")
 
       val deletes = IcebergReflection.getDeleteFilesFromTask(task, fileScanTaskClass)
 
@@ -283,18 +301,9 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
           case _: Exception =>
         }
 
-        // Encrypted delete files carry a plaintext StandardKeyMetadata blob (keyMetadata() is on
-        // ContentFile); forward it verbatim. Null (unencrypted) leaves the field unset.
-        try {
-          contentFileClass.getMethod("keyMetadata").invoke(deleteFile) match {
-            case buf: java.nio.ByteBuffer if buf.remaining() > 0 =>
-              deleteBuilder.setKeyMetadata(
-                com.google.protobuf.ByteString.copyFrom(buf.duplicate()))
-            case _ =>
-          }
-        } catch {
-          case _: Exception =>
-        }
+        // Encrypted delete files carry a plaintext StandardKeyMetadata blob; forward it verbatim.
+        // Unencrypted delete files leave the field unset.
+        keyMetadataBytes(keyMetadataMethod, deleteFile).foreach(deleteBuilder.setKeyMetadata)
 
         deleteBuilder.build()
       }.toSeq
@@ -844,13 +853,8 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
                 taskBuilder.setFileSizeInBytes(fileSizeInBytes)
 
                 // Encrypted data files carry a plaintext StandardKeyMetadata blob; forward it
-                // verbatim for iceberg-rust to decode. Null (unencrypted) leaves the field unset.
-                keyMetadataMethod.invoke(dataFile) match {
-                  case buf: java.nio.ByteBuffer if buf.remaining() > 0 =>
-                    taskBuilder.setKeyMetadata(
-                      com.google.protobuf.ByteString.copyFrom(buf.duplicate()))
-                  case _ =>
-                }
+                // verbatim for iceberg-rust to decode. Unencrypted files leave the field unset.
+                keyMetadataBytes(keyMetadataMethod, dataFile).foreach(taskBuilder.setKeyMetadata)
 
                 val taskSchema = taskSchemaMethod.invoke(task)
 

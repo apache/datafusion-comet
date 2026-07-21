@@ -525,6 +525,25 @@ case class CometScanRule(session: SparkSession)
               false
           }
 
+        // The native Parquet reader (arrow-rs 58.3) decrypts only 128-bit AES-GCM data keys. Fall
+        // back for larger keys until arrow-rs 58.4 adds 256-bit support (arrow-rs#10349). None
+        // means the table is unencrypted. Reflection failure also falls back.
+        val encryptionKeyLengthSupported =
+          try {
+            IcebergReflection.encryptionDataKeyLength(metadata.table) match {
+              case Some(len) if len != 16 =>
+                fallbackReasons += s"Iceberg table encryption with a ${len * 8}-bit data key is " +
+                  "not yet supported by Comet's native reader (only 128-bit AES-GCM)"
+                false
+              case _ => true
+            }
+          } catch {
+            case e: Exception =>
+              fallbackReasons += "Iceberg reflection failure: could not verify encryption key " +
+                s"length: ${e.getMessage}"
+              false
+          }
+
         // Single-pass validation of all FileScanTasks
         val taskValidation =
           try {
@@ -761,7 +780,7 @@ case class CometScanRule(session: SparkSession)
         }
 
         if (schemaSupported && fileIOCompatible && formatVersionSupported &&
-          defaultValuesSupported && schemaTypesSupported &&
+          defaultValuesSupported && schemaTypesSupported && encryptionKeyLengthSupported &&
           taskValidation.allParquet && allSupportedFilesystems && partitionTypesSupported &&
           complexTypePredicatesSupported && transformFunctionsSupported &&
           deleteFileTypesSupported && dppSubqueriesSupported) {

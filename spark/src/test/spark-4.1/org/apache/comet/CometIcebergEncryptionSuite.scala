@@ -24,6 +24,7 @@ import java.util.Collections
 
 import org.apache.iceberg.Files
 import org.apache.iceberg.encryption.{EncryptedKey, NativeEncryptionKeyMetadata, StandardEncryptionManager}
+import org.apache.iceberg.util.ByteBuffers
 import org.apache.spark.SparkConf
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.comet.CometIcebergNativeScanExec
@@ -151,7 +152,7 @@ class CometIcebergEncryptionSuite
       // marker and round-trip back to the same DEK. StandardKeyMetadata.parse is package-private,
       // so reach it reflectively, but read the result through the public NativeEncryptionKeyMetadata
       // interface (the concrete class is not accessible). iceberg-rust decodes this same format.
-      val blob = toArray(keyMetadata.buffer())
+      val blob = ByteBuffers.toByteArray(keyMetadata.buffer())
       assert(blob(0) == 1, s"unexpected key_metadata version byte: ${blob(0)}")
 
       val kmClass = Class.forName("org.apache.iceberg.encryption.StandardKeyMetadata")
@@ -159,18 +160,43 @@ class CometIcebergEncryptionSuite
       parse.setAccessible(true)
       val parsed =
         parse.invoke(null, ByteBuffer.wrap(blob)).asInstanceOf[NativeEncryptionKeyMetadata]
-      val roundTripped = toArray(parsed.encryptionKey())
+      val roundTripped = ByteBuffers.toByteArray(parsed.encryptionKey())
 
       assert(
-        java.util.Arrays.equals(toArray(dek), roundTripped),
+        java.util.Arrays.equals(ByteBuffers.toByteArray(dek), roundTripped),
         "DEK did not survive the StandardKeyMetadata encode/parse round-trip")
     }
   }
 
-  private def toArray(buffer: ByteBuffer): Array[Byte] = {
-    val dup = buffer.duplicate()
-    val bytes = new Array[Byte](dup.remaining())
-    dup.get(bytes)
-    bytes
+  // The native Parquet reader (arrow-rs 58.3) decrypts only 128-bit AES-GCM keys, so a table with a
+  // larger data key must fall back to Spark and still return correct results. Flip this to a native
+  // assertion when arrow-rs 58.4 (256-bit support, arrow-rs#10349) is picked up.
+  test("encrypted V3 table with a 256-bit data key falls back to Spark") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    assume(icebergVersionAtLeast(1, 11), "Iceberg table encryption requires Iceberg 1.11+")
+
+    withSQLConf(
+      CometConf.COMET_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_ENABLED.key -> "true",
+      CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+      val table = "hive_cat.db.encrypted_256"
+      spark.sql("CREATE NAMESPACE IF NOT EXISTS hive_cat.db")
+      spark.sql(s"DROP TABLE IF EXISTS $table")
+      spark.sql(s"""
+        CREATE TABLE $table (id INT, name STRING) USING iceberg
+        TBLPROPERTIES ('format-version' = '3', 'encryption.key-id' = '${CometTestKMS.MasterKeyId}',
+          'encryption.data-key-length' = '32')
+      """)
+      spark.sql(s"INSERT INTO $table VALUES (1, 'Alice'), (2, 'Bob')")
+
+      val (_, cometPlan) = checkSparkAnswer(s"SELECT * FROM $table ORDER BY id")
+      assert(
+        collect(cometPlan) { case s: CometIcebergNativeScanExec => s }.isEmpty,
+        s"expected a 256-bit encrypted table to fall back to Spark but it ran natively:\n" +
+          cometPlan)
+
+      spark.sql(s"DROP TABLE $table")
+    }
   }
 }

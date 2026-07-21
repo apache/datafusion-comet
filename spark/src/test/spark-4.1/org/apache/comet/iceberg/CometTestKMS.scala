@@ -24,6 +24,7 @@ import java.util
 
 import org.apache.iceberg.encryption.Ciphers
 import org.apache.iceberg.encryption.KeyManagementClient
+import org.apache.iceberg.util.ByteBuffers
 
 /**
  * In-memory KMS for exercising Iceberg table encryption in tests. Iceberg instantiates this by
@@ -36,23 +37,16 @@ class CometTestKMS extends KeyManagementClient {
   override def wrapKey(key: ByteBuffer, wrappingKeyId: String): ByteBuffer = {
     val masterKey = CometTestKMS.masterKey(wrappingKeyId)
     val encryptor = new Ciphers.AesGcmEncryptor(masterKey)
-    ByteBuffer.wrap(encryptor.encrypt(toArray(key), null))
+    ByteBuffer.wrap(encryptor.encrypt(ByteBuffers.toByteArray(key), null))
   }
 
   override def unwrapKey(wrappedKey: ByteBuffer, wrappingKeyId: String): ByteBuffer = {
     val masterKey = CometTestKMS.masterKey(wrappingKeyId)
     val decryptor = new Ciphers.AesGcmDecryptor(masterKey)
-    ByteBuffer.wrap(decryptor.decrypt(toArray(wrappedKey), null))
+    ByteBuffer.wrap(decryptor.decrypt(ByteBuffers.toByteArray(wrappedKey), null))
   }
 
   override def initialize(properties: util.Map[String, String]): Unit = {}
-
-  private def toArray(buffer: ByteBuffer): Array[Byte] = {
-    val dup = buffer.duplicate()
-    val bytes = new Array[Byte](dup.remaining())
-    dup.get(bytes)
-    bytes
-  }
 }
 
 object CometTestKMS {
