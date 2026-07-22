@@ -4428,7 +4428,7 @@ class CometIcebergNativeSuite
             "SELECT * FROM test_cat.db.orc_table",
             "Comet doesn't support accelerated Iceberg ORC scans")
         } finally {
-          spark.sql(s"DROP TABLE test_cat.db.orc_table")
+          spark.sql("DROP TABLE test_cat.db.orc_table")
         }
       }
     }
