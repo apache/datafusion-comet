@@ -16,13 +16,21 @@
 // under the License.
 
 use crate::utils::array_with_timezone;
+use arrow::array::{Array, Decimal128Builder, Int32Array, Time64NanosecondArray};
 use arrow::compute::{date_part, DatePart};
 use arrow::datatypes::{DataType, TimeUnit::Microsecond};
-use datafusion::common::{internal_datafusion_err, DataFusionError};
+use datafusion::common::{
+    internal_datafusion_err, utils::take_function_args, DataFusionError, Result,
+};
 use datafusion::logical_expr::{
     ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility,
 };
-use std::fmt::Debug;
+use std::{fmt::Debug, sync::Arc};
+
+const NANOS_PER_SECOND: i64 = 1_000_000_000;
+const MICROS_PER_SECOND: i128 = 1_000_000;
+const SECOND_DECIMAL_PRECISION: u8 = 8;
+const SECOND_DECIMAL_SCALE: i8 = 6;
 
 /// Returns true when the type is a timestamp without a timezone (Spark's TimestampNTZType),
 /// including when wrapped in a dictionary. Such values store local wall-clock time and must not
@@ -117,10 +125,113 @@ extract_date_part!(SparkHour, "hour", Hour);
 extract_date_part!(SparkMinute, "minute", Minute);
 extract_date_part!(SparkSecond, "second", Second);
 
+fn second_with_fraction(nanos: i64, precision: i32) -> Result<i128> {
+    if !(0..=SECOND_DECIMAL_SCALE as i32).contains(&precision) {
+        return Err(DataFusionError::Execution(format!(
+            "second_with_fraction: precision must be between 0 and 6, found {precision}"
+        )));
+    }
+
+    let whole_seconds = (nanos / NANOS_PER_SECOND) % 60;
+    let fraction_nanos = nanos % NANOS_PER_SECOND;
+    let scale_factor: i64 = 10_i64.pow(precision as u32);
+    let fraction_digits = (fraction_nanos * scale_factor) / NANOS_PER_SECOND;
+    let output_scale_factor = 10_i128.pow((SECOND_DECIMAL_SCALE as i32 - precision) as u32);
+    let result =
+        whole_seconds as i128 * MICROS_PER_SECOND + fraction_digits as i128 * output_scale_factor;
+
+    Ok(result)
+}
+
+#[derive(Debug, PartialEq, Eq, Hash)]
+pub struct SparkSecondWithFraction {
+    signature: Signature,
+}
+
+impl SparkSecondWithFraction {
+    pub fn new() -> Self {
+        Self {
+            signature: Signature::any(2, Volatility::Immutable),
+        }
+    }
+}
+
+impl Default for SparkSecondWithFraction {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ScalarUDFImpl for SparkSecondWithFraction {
+    fn name(&self) -> &str {
+        "second_with_fraction"
+    }
+
+    fn signature(&self) -> &Signature {
+        &self.signature
+    }
+
+    fn return_type(&self, _: &[DataType]) -> Result<DataType> {
+        Ok(DataType::Decimal128(
+            SECOND_DECIMAL_PRECISION,
+            SECOND_DECIMAL_SCALE,
+        ))
+    }
+
+    fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
+        let [time, precision] = take_function_args(self.name(), args.args)?;
+
+        let num_rows = [&time, &precision]
+            .iter()
+            .find_map(|arg| match arg {
+                ColumnarValue::Array(array) => Some(array.len()),
+                ColumnarValue::Scalar(_) => None,
+            })
+            .unwrap_or(1);
+
+        let time = time.into_array(num_rows)?;
+        let precision = precision.into_array(num_rows)?;
+        let time = time
+            .as_any()
+            .downcast_ref::<Time64NanosecondArray>()
+            .ok_or_else(|| {
+                DataFusionError::Execution(
+                    "second_with_fraction: expected Time64(Nanosecond) input".to_string(),
+                )
+            })?;
+        let precision = precision
+            .as_any()
+            .downcast_ref::<Int32Array>()
+            .ok_or_else(|| {
+                DataFusionError::Execution(
+                    "second_with_fraction: expected Int32 precision".to_string(),
+                )
+            })?;
+
+        let mut result = Decimal128Builder::with_capacity(num_rows);
+
+        for index in 0..num_rows {
+            if time.is_null(index) || precision.is_null(index) {
+                result.append_null();
+            } else {
+                let value = second_with_fraction(time.value(index), precision.value(index))?;
+
+                result.append_value(value);
+            }
+        }
+
+        let result = result
+            .with_precision_and_scale(SECOND_DECIMAL_PRECISION, SECOND_DECIMAL_SCALE)?
+            .finish();
+
+        Ok(ColumnarValue::Array(Arc::new(result)))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::{ArrayRef, Int32Array, TimestampMicrosecondArray};
+    use arrow::array::{ArrayRef, Int32Array, Time64NanosecondArray, TimestampMicrosecondArray};
     use arrow::datatypes::{Field, TimeUnit};
     use datafusion::config::ConfigOptions;
     use std::sync::Arc;
@@ -255,5 +366,35 @@ mod tests {
             .unwrap()
             .value(key);
         assert_eq!(extracted, 18);
+    }
+
+    #[test]
+    fn time64_extracts_time_parts_without_timezone_conversion() {
+        let nanos = (12 * 60 * 60 + 30 * 60 + 45) * 1_000_000_000;
+        let array = Arc::new(Time64NanosecondArray::from(vec![Some(nanos)])) as ArrayRef;
+
+        for timezone in ["UTC", "America/Los_Angeles", "Asia/Tokyo"] {
+            assert_eq!(
+                invoke(&SparkHour::new(timezone.to_string()), Arc::clone(&array)),
+                12
+            );
+            assert_eq!(
+                invoke(&SparkMinute::new(timezone.to_string()), Arc::clone(&array)),
+                30
+            );
+            assert_eq!(
+                invoke(&SparkSecond::new(timezone.to_string()), Arc::clone(&array)),
+                45
+            );
+        }
+    }
+
+    #[test]
+    fn time64_extract_seconds_with_fraction() {
+        let nanos = (12 * 60 * 60 + 30 * 60 + 45) * NANOS_PER_SECOND + 123_456_000;
+
+        assert_eq!(second_with_fraction(nanos, 0).unwrap(), 45_000_000);
+        assert_eq!(second_with_fraction(nanos, 3).unwrap(), 45_123_000);
+        assert_eq!(second_with_fraction(nanos, 6).unwrap(), 45_123_456);
     }
 }

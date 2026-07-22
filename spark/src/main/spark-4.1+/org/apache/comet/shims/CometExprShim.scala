@@ -24,9 +24,10 @@ import org.apache.spark.sql.catalyst.expressions.aggregate.Sum
 import org.apache.spark.sql.catalyst.expressions.objects.{Invoke, StaticInvoke}
 import org.apache.spark.sql.catalyst.util.DateTimeUtils
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.TimeType
+import org.apache.spark.sql.types.{DecimalType, IntegerType, TimeType}
 
 import org.apache.comet.expressions.CometEvalMode
+import org.apache.comet.serde.ExprOuterClass
 import org.apache.comet.serde.ExprOuterClass.{BinaryOutputStyle, Expr}
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithFallbackReason, scalarFunctionExprToProtoWithReturnType}
 
@@ -46,16 +47,50 @@ trait CometExprShim extends Spark4xCometExprShim {
     }
   }
 
-  // Spark 4.1 introduced TimeType and the make_time / to_time / try_to_time functions.
-  // Their planner forms differ from the shared 4.x patterns (DateTimeUtils.makeTime
-  // StaticInvoke and ToTimeParser Invoke / TryEval(Invoke)), so they live here rather
-  // than in the shared Spark4xCometExprShim parent trait. Spark 4.0 lacks TimeType, which
-  // is why this shim is shared by 4.1 and later rather than all 4.x.
+  private val integralTimePartMethods =
+    Set("getHoursOfTime", "getMinutesOfTime", "getSecondsOfTime")
+
+  // Spark 4.1 introduced TimeType and its extraction, make_time, to_time, and try_to_time
+  // expressions. Their planner forms differ from the shared 4.x patterns (DateTimeUtils
+  // StaticInvoke and ToTimeParser Invoke / TryEval(Invoke)), so they live here rather than in the
+  // shared Spark4xCometExprShim parent trait. Spark 4.0 lacks TimeType, which is why this shim is
+  // shared by 4.1 and later rather than all 4.x.
   override def sparkVersionSpecificExprToProtoInternal(
       expr: Expression,
       inputs: Seq[Attribute],
       binding: Boolean): Option[Expr] = {
+
     expr match {
+      case s: StaticInvoke
+          if s.staticObject == classOf[DateTimeUtils.type] &&
+            integralTimePartMethods.contains(s.functionName) &&
+            s.arguments.size == 1 &&
+            s.dataType == IntegerType &&
+            s.arguments.head.dataType.isInstanceOf[TimeType] =>
+        val child = s.arguments.head
+        val childExpr = exprToProtoInternal(child, inputs, binding)
+
+        val optExpr = childExpr.map { childProto =>
+          timePartToProto(s.functionName, childProto)
+        }
+
+        optExprWithFallbackReason(optExpr, s, child)
+
+      case s: StaticInvoke
+          if s.staticObject == classOf[DateTimeUtils.type] &&
+            s.functionName == "getSecondsOfTimeWithFraction" &&
+            s.arguments.size == 2 &&
+            s.dataType == DecimalType(8, 6) &&
+            s.arguments.head.dataType.isInstanceOf[TimeType] &&
+            isValidTimePrecision(s.arguments(1)) =>
+        val childExprs = s.arguments.map(exprToProtoInternal(_, inputs, binding))
+        val optExpr = scalarFunctionExprToProtoWithReturnType(
+          "second_with_fraction",
+          s.dataType,
+          false,
+          childExprs: _*)
+        optExprWithFallbackReason(optExpr, s, s.arguments: _*)
+
       case s: StaticInvoke
           if s.staticObject == classOf[DateTimeUtils.type] &&
             s.functionName == "makeTime" &&
@@ -96,6 +131,37 @@ trait CometExprShim extends Spark4xCometExprShim {
 
       case _ => super.sparkVersionSpecificExprToProtoInternal(expr, inputs, binding)
     }
+  }
+
+  private def timePartToProto(functionName: String, childProto: Expr): Expr = {
+    functionName match {
+      case "getHoursOfTime" =>
+        val builder = ExprOuterClass.Hour.newBuilder()
+        builder.setChild(childProto)
+        builder.setTimezone("UTC")
+        Expr.newBuilder().setHour(builder).build()
+
+      case "getMinutesOfTime" =>
+        val builder = ExprOuterClass.Minute.newBuilder()
+        builder.setChild(childProto)
+        builder.setTimezone("UTC")
+        Expr.newBuilder().setMinute(builder).build()
+
+      case "getSecondsOfTime" =>
+        val builder = ExprOuterClass.Second.newBuilder()
+        builder.setChild(childProto)
+        builder.setTimezone("UTC")
+        Expr.newBuilder().setSecond(builder).build()
+
+      case other =>
+        throw new IllegalArgumentException(s"Unsupported integral TimeType part: $other")
+    }
+  }
+
+  private def isValidTimePrecision(expr: Expression): Boolean = expr match {
+    case Literal(precision: Int, IntegerType) =>
+      precision >= TimeType.MIN_PRECISION && precision <= TimeType.MAX_PRECISION
+    case _ => false
   }
 }
 
