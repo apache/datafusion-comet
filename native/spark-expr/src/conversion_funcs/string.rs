@@ -20,12 +20,11 @@ use arrow::array::{
     Array, ArrayRef, ArrowPrimitiveType, BooleanArray, Decimal128Builder, GenericStringArray,
     OffsetSizeTrait, PrimitiveArray, PrimitiveBuilder, StringArray,
 };
-use arrow::compute::DecimalCast;
 use arrow::datatypes::{
     i256, is_validate_decimal_precision, DataType, Date32Type, Decimal256Type, Float32Type,
     Float64Type, Int16Type, Int32Type, Int64Type, Int8Type, TimestampMicrosecondType,
 };
-use chrono::{DateTime, LocalResult, NaiveDate, NaiveTime, Offset, TimeZone, Timelike};
+use chrono::{LocalResult, NaiveDate, NaiveTime, Offset, TimeZone, Timelike};
 use num::traits::CheckedNeg;
 use num::{CheckedSub, Integer};
 use regex::Regex;
@@ -1214,6 +1213,25 @@ fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
     era * 146097 + doe - 719468
 }
 
+fn is_leap_year(year: i64) -> bool {
+    year % 4 == 0 && (year % 100 != 0 || year % 400 == 0)
+}
+
+/// Days since 1970-01-01 for a proleptic Gregorian year/month/day, or `None` when the
+/// combination is not a real calendar date. Unlike `NaiveDate::from_ymd_opt`, this accepts
+/// any year that fits in `i64`.
+fn ymd_to_epoch_day(year: i64, month: i64, day: i64) -> Option<i64> {
+    const DAYS_IN_MONTH: [i64; 12] = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let mut max_day = *DAYS_IN_MONTH.get(usize::try_from(month.checked_sub(1)?).ok()?)?;
+    if month == 2 && is_leap_year(year) {
+        max_day = 29;
+    }
+    if day < 1 || day > max_day {
+        return None;
+    }
+    Some(days_from_civil(year, month, day))
+}
+
 fn parse_timestamp_to_micros<T: TimeZone>(
     timestamp_info: &TimeStampInfo,
     tz: &T,
@@ -1279,27 +1297,11 @@ fn parse_timestamp_to_micros<T: TimeZone>(
             return Ok(None);
         }
         // Validate month and day manually for extreme years.
-        let m = timestamp_info.month;
-        let d = timestamp_info.day;
-        if !(1..=12).contains(&m) {
-            return Ok(None);
-        }
-        let max_day = match m {
-            1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
-            4 | 6 | 9 | 11 => 30,
-            2 => {
-                let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
-                if leap {
-                    29
-                } else {
-                    28
-                }
-            }
-            _ => return Ok(None),
-        };
-        if d < 1 || d > max_day {
-            return Ok(None);
-        }
+        let days =
+            match ymd_to_epoch_day(year, timestamp_info.month as i64, timestamp_info.day as i64) {
+                Some(days) => days,
+                None => return Ok(None),
+            };
         // Compute the timezone offset using epoch as a surrogate probe point.
         // Extreme-year timestamps are only valid with a UTC-like fixed offset (any DST
         // zone would overflow).  Using epoch gives us the standard offset.
@@ -1316,7 +1318,6 @@ fn parse_timestamp_to_micros<T: TimeZone>(
         // Use i128 for the intermediate multiply-by-1_000_000 step: the seconds value can be
         // just outside the i64 range while the final microseconds result is still within range
         // (e.g., Long.MinValue boundary: seconds = -9_223_372_036_855, result = i64::MIN).
-        let days = days_from_civil(year, m as i64, d as i64);
         let time_secs = timestamp_info.hour as i64 * 3600
             + timestamp_info.minute as i64 * 60
             + timestamp_info.second as i64;
@@ -1334,33 +1335,16 @@ fn parse_timestamp_to_micros<T: TimeZone>(
 
 fn local_datetime_to_micros(timestamp_info: &TimeStampInfo) -> SparkResult<Option<i64>> {
     let year = timestamp_info.year as i64;
-    let m = timestamp_info.month;
-    let d = timestamp_info.day;
 
-    if !(1..=12).contains(&m) {
-        return Ok(None);
-    }
-    let max_day = match m {
-        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31u32,
-        4 | 6 | 9 | 11 => 30,
-        2 => {
-            let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
-            if leap {
-                29
-            } else {
-                28
-            }
-        }
-        _ => return Ok(None),
+    let days = match ymd_to_epoch_day(year, timestamp_info.month as i64, timestamp_info.day as i64)
+    {
+        Some(days) => days,
+        None => return Ok(None),
     };
-    if d < 1 || d > max_day {
-        return Ok(None);
-    }
     if timestamp_info.hour >= 24 || timestamp_info.minute >= 60 || timestamp_info.second >= 60 {
         return Ok(None);
     }
 
-    let days = days_from_civil(year, m as i64, d as i64);
     let time_secs = timestamp_info.hour as i64 * 3600
         + timestamp_info.minute as i64 * 60
         + timestamp_info.second as i64;
@@ -1917,11 +1901,17 @@ fn date_parser(date_str: &str, eval_mode: EvalMode) -> SparkResult<Option<i32>> 
         byte.is_ascii_whitespace() || byte.is_ascii_control()
     }
 
+    /// Decodes a run of ASCII digits, or `None` if any byte is not a digit.
+    fn decode_digits(bytes: &[u8]) -> Option<i64> {
+        bytes.iter().try_fold(0i64, |acc, b| {
+            b.is_ascii_digit().then(|| acc * 10 + (b - b'0') as i64)
+        })
+    }
+
     fn is_valid_digits(segment: i32, digits: usize) -> bool {
-        // NaiveDate is bounded to [-262142, 262142] (6 digits). We allow up to 7 digits to support
-        // leading-zero year strings like "0002020" (= year 2020), matching Spark's
-        // isValidDigits. Values outside the bounds are caught by an explicit bounds
-        // check below.
+        // Years are bounded to [-262143, 262142] by the explicit range check below. We allow up
+        // to 7 digits to support leading-zero year strings like "0002020" (= year 2020),
+        // matching Spark's isValidDigits.
         let max_digits_year = 7;
         // year (segment 0) can be between 4 to 7 digits,
         // month and day (segment 1 and 2) can be between 1 to 2 digits
@@ -1946,12 +1936,6 @@ fn date_parser(date_str: &str, eval_mode: EvalMode) -> SparkResult<Option<i32>> 
         return return_result(date_str, eval_mode);
     }
 
-    //values of date segments year, month and day defaulting to 1
-    let mut date_segments = [1, 1, 1];
-    let mut sign = 1;
-    let mut current_segment = 0;
-    let mut current_segment_value = Wrapping(0);
-    let mut current_segment_digits = 0;
     let bytes = date_str.as_bytes();
 
     let mut j = get_trimmed_start(bytes);
@@ -1960,6 +1944,29 @@ fn date_parser(date_str: &str, eval_mode: EvalMode) -> SparkResult<Option<i32>> 
     if j == str_end_trimmed {
         return return_result(date_str, eval_mode);
     }
+
+    // Fast path for the canonical `yyyy-mm-dd` form. A 4-digit year is always inside the
+    // range checked below, so the only way this can fail is an invalid calendar date. Comet
+    // already returns null for that in every eval mode (the caller maps Ok(None) to null),
+    // matching what the general parser does here. Any other shape (including a leading sign,
+    // which makes the first byte a non-digit) falls through to the general parser below.
+    let trimmed = &bytes[j..str_end_trimmed];
+    if trimmed.len() == 10 && trimmed[4] == b'-' && trimmed[7] == b'-' {
+        if let (Some(year), Some(month), Some(day)) = (
+            decode_digits(&trimmed[..4]),
+            decode_digits(&trimmed[5..7]),
+            decode_digits(&trimmed[8..10]),
+        ) {
+            return Ok(ymd_to_epoch_day(year, month, day).map(|days| days as i32));
+        }
+    }
+
+    //values of date segments year, month and day defaulting to 1
+    let mut date_segments = [1, 1, 1];
+    let mut sign = 1;
+    let mut current_segment = 0;
+    let mut current_segment_value = Wrapping(0);
+    let mut current_segment_digits = 0;
 
     // assign a sign to the date; both '-' and '+' are accepted (Spark stringToDate line 357-360)
     if bytes[j] == b'-' {
@@ -2013,15 +2020,18 @@ fn date_parser(date_str: &str, eval_mode: EvalMode) -> SparkResult<Option<i32>> 
         return Ok(None);
     }
 
-    match NaiveDate::from_ymd_opt(year, date_segments[1] as u32, date_segments[2] as u32) {
-        Some(date) => {
-            let duration_since_epoch = date
-                .signed_duration_since(DateTime::UNIX_EPOCH.naive_utc().date())
-                .num_days();
-            Ok(Some(duration_since_epoch.to_i32().unwrap()))
-        }
-        None => Ok(None),
-    }
+    Ok(ymd_to_epoch_day(
+        year as i64,
+        date_segments[1] as i64,
+        date_segments[2] as i64,
+    )
+    .map(|days| {
+        debug_assert!(
+            i32::try_from(days).is_ok(),
+            "epoch day {days} out of i32 range for year {year}"
+        );
+        days as i32
+    }))
 }
 
 #[cfg(test)]
@@ -2850,6 +2860,27 @@ mod tests {
                 assert_eq!(date_parser(date, *eval_mode).unwrap(), None);
             }
         }
+
+        // Canonical `yyyy-mm-dd` shape with invalid calendar dates exercises the fast path,
+        // which returns Ok(None) in every eval mode (see comment near ymd_to_epoch_day).
+        for date in &[
+            "2020-02-30",
+            "2021-02-29",
+            "2020-13-01",
+            "2020-00-15",
+            "2020-04-31",
+            "2020-01-00",
+        ] {
+            for eval_mode in &[EvalMode::Legacy, EvalMode::Try, EvalMode::Ansi] {
+                assert_eq!(date_parser(date, *eval_mode).unwrap(), None);
+            }
+        }
+
+        // Valid leap day flows through the fast path.
+        assert_eq!(
+            date_parser("2020-02-29", EvalMode::Legacy).unwrap(),
+            Some(18321)
+        );
     }
 
     #[test]
