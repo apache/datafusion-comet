@@ -93,24 +93,26 @@ class CometUniffleShuffleReader[K, C](
         createShuffleReadClient,
         readMetrics)
 
-    context.addTaskCompletionListener[Unit] { _ =>
-      shuffleBlockIterator.close()
-      nativeUtil.close()
-    }
-
-    val recordIter: Iterator[(Int, ColumnarBatch)] = new Iterator[(Int, ColumnarBatch)]
-      with AutoCloseable {
+    val recordIter = new Iterator[(Int, ColumnarBatch)] with AutoCloseable {
       private var currentBatch: ColumnarBatch = null
+      private var closed = false
 
       // To avoid calling hasNext() multiple times for the same iterator,
       // we cache the result of the last hasNext() call.
       private var lastHasNext: Option[Boolean] = None
       override def hasNext: Boolean = {
+        if (closed) {
+          return false
+        }
         if (lastHasNext.isDefined) {
           return lastHasNext.get
         }
-        lastHasNext = Some(shuffleBlockIterator.hasNext != -1)
-        lastHasNext.get
+        val hasMore = shuffleBlockIterator.hasNext != -1
+        lastHasNext = Some(hasMore)
+        if (!hasMore) {
+          close()
+        }
+        hasMore
       }
 
       override def next(): (Int, ColumnarBatch) = {
@@ -120,6 +122,7 @@ class CometUniffleShuffleReader[K, C](
         lastHasNext = None
         if (currentBatch != null) {
           currentBatch.close()
+          currentBatch = null
         }
 
         val dataBuf = shuffleBlockIterator.getBuffer
@@ -145,12 +148,26 @@ class CometUniffleShuffleReader[K, C](
         (0, currentBatch)
       }
 
-      override def close(): Unit = {
-        if (currentBatch != null) {
-          currentBatch.close()
-          currentBatch = null
+      override def close(): Unit = synchronized {
+        if (!closed) {
+          closed = true
+          try {
+            if (currentBatch != null) {
+              currentBatch.close()
+              currentBatch = null
+            }
+          } finally {
+            shuffleBlockIterator.close()
+          }
         }
-        shuffleBlockIterator.close()
+      }
+    }
+
+    context.addTaskCompletionListener[Unit] { _ =>
+      try {
+        recordIter.close()
+      } finally {
+        nativeUtil.close()
       }
     }
 

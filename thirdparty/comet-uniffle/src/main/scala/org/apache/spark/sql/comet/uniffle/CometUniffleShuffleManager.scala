@@ -214,6 +214,8 @@ class CometUniffleShuffleManager(conf: SparkConf, isDriver: Boolean)
           writeMetrics = context.taskMetrics.shuffleWriteMetrics
         }
         val conf = cometRssSparkConf(sparkConf)
+        val rssTaskAttemptId =
+          getTaskAttemptIdForBlockId(context.partitionId(), context.attemptNumber())
 
         CometUniffleShuffleWriter[K, V, V](
           dependency.nativeShuffleSpec.get,
@@ -224,7 +226,7 @@ class CometUniffleShuffleManager(conf: SparkConf, isDriver: Boolean)
           rssHandle.getAppId,
           rssHandle.getShuffleId,
           taskId,
-          context.taskAttemptId,
+          rssTaskAttemptId,
           writeMetrics,
           this,
           conf,
