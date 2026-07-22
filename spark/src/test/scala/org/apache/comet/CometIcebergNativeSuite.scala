@@ -4310,8 +4310,9 @@ class CometIcebergNativeSuite
     }
   }
 
-  test("CometScanRule should report unsupported metadata columns") {
+  test("metadata columns - _pos returns row position within each file") {
     assume(icebergAvailable, "Iceberg not available in classpath")
+
     withTempIcebergDir { warehouseDir =>
       withSQLConf(
         "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
@@ -4319,24 +4320,251 @@ class CometIcebergNativeSuite
         "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
         CometConf.COMET_ENABLED.key -> "true",
         CometConf.COMET_EXEC_ENABLED.key -> "true",
-        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true",
-        CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "true") {
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
 
-        val table = "test_cat.db.test_meta_cols"
+        val table = "test_cat.db.pos_test"
+        try {
+          spark.sql(s"""
+            CREATE TABLE $table (id INT, name STRING) USING iceberg
+          """)
+
+          // coalesce(1) guarantees a single file so _pos is 0,1,2
+          spark
+            .sql("SELECT 1 as id, 'Alice' as name UNION ALL SELECT 2, 'Bob' UNION ALL SELECT 3, 'Charlie'")
+            .coalesce(1)
+            .write
+            .format("iceberg")
+            .mode("append")
+            .saveAsTable(table)
+
+          checkIcebergNativeScan(s"SELECT id, _pos FROM $table ORDER BY id")
+
+          // _pos should be 0-indexed within the single file
+          val positions = spark
+            .sql(s"SELECT _pos FROM $table ORDER BY _pos")
+            .collect()
+            .map(_.getLong(0))
+          assert(positions.toSeq == Seq(0L, 1L, 2L), s"Expected [0,1,2], got ${positions.toSeq}")
+        } finally {
+          spark.sql(s"DROP TABLE IF EXISTS $table PURGE")
+        }
+      }
+    }
+  }
+
+  test("metadata columns - _pos resets per file with multiple data files") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        val table = "test_cat.db.pos_multi_file_test"
         try {
           spark.sql(s"""
             CREATE TABLE $table (id INT, value DOUBLE) USING iceberg
+          """)
+
+          // Two coalesced inserts guarantee exactly two data files
+          spark
+            .range(1, 4)
+            .selectExpr("CAST(id AS INT)", "CAST(id * 10.0 AS DOUBLE) as value")
+            .coalesce(1)
+            .write
+            .format("iceberg")
+            .mode("append")
+            .saveAsTable(table)
+          spark
+            .range(4, 6)
+            .selectExpr("CAST(id AS INT)", "CAST(id * 10.0 AS DOUBLE) as value")
+            .coalesce(1)
+            .write
+            .format("iceberg")
+            .mode("append")
+            .saveAsTable(table)
+
+          // _pos resets to 0 at the start of each file
+          checkIcebergNativeScan(s"SELECT id, _pos, _file FROM $table ORDER BY _file, _pos")
+
+          // Verify each file starts _pos at 0
+          val rows = spark
+            .sql(s"SELECT _file, _pos FROM $table ORDER BY _file, _pos")
+            .collect()
+          val byFile = rows.groupBy(_.getString(0))
+          assert(byFile.size == 2, s"Expected 2 files, got ${byFile.size}")
+          byFile.foreach { case (file, fileRows) =>
+            val positions = fileRows.map(_.getLong(1))
+            assert(
+              positions.head == 0L,
+              s"File $file should start _pos at 0, got ${positions.head}")
+          }
+        } finally {
+          spark.sql(s"DROP TABLE IF EXISTS $table PURGE")
+        }
+      }
+    }
+  }
+
+  test("metadata columns - _spec_id returns partition spec ID") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        val table = "test_cat.db.spec_id_test"
+        try {
+          spark.sql(s"""
+            CREATE TABLE $table (id INT, category STRING, value DOUBLE)
+            USING iceberg PARTITIONED BY (category)
+          """)
+
+          spark.sql(s"""
+            INSERT INTO $table VALUES
+              (1, 'A', 10.0), (2, 'B', 20.0), (3, 'A', 30.0)
+          """)
+
+          checkIcebergNativeScan(s"SELECT id, _spec_id FROM $table ORDER BY id")
+
+          // All rows written under the initial spec should have _spec_id = 0
+          val result = spark.sql(s"SELECT DISTINCT _spec_id FROM $table").collect()
+          assert(result.length == 1)
+          assert(result(0).getInt(0) == 0)
+        } finally {
+          spark.sql(s"DROP TABLE IF EXISTS $table PURGE")
+        }
+      }
+    }
+  }
+
+  test("metadata columns - _spec_id changes after partition evolution") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        import org.apache.iceberg.catalog.TableIdentifier
+        import org.apache.iceberg.spark.SparkCatalog
+
+        val table = "test_cat.db.spec_id_evolution"
+        try {
+          spark.sql(s"""
+            CREATE TABLE $table (id INT, region STRING, category STRING)
+            USING iceberg PARTITIONED BY (region)
+          """)
+
+          // Data under spec 0
+          spark.sql(s"INSERT INTO $table VALUES (1, 'US', 'A'), (2, 'EU', 'B')")
+
+          // Evolve partition spec: add category field -> spec 1
+          val sparkCatalog = spark.sessionState.catalogManager
+            .catalog("test_cat")
+            .asInstanceOf[SparkCatalog]
+          val iceTable = sparkCatalog
+            .icebergCatalog()
+            .loadTable(TableIdentifier.of("db", "spec_id_evolution"))
+          iceTable.updateSpec().addField("category").commit()
+
+          // Data under spec 1
+          spark.sql(s"INSERT INTO $table VALUES (3, 'APAC', 'C'), (4, 'US', 'D')")
+
+          checkIcebergNativeScan(s"SELECT id, _spec_id FROM $table ORDER BY id")
+
+          // Rows 1,2 should have spec_id=0; rows 3,4 should have spec_id=1
+          val result = spark.sql(s"SELECT id, _spec_id FROM $table ORDER BY id").collect()
+          assert(result(0).getInt(1) == 0, "row 1 should have spec_id=0")
+          assert(result(1).getInt(1) == 0, "row 2 should have spec_id=0")
+          assert(result(2).getInt(1) == 1, "row 3 should have spec_id=1")
+          assert(result(3).getInt(1) == 1, "row 4 should have spec_id=1")
+        } finally {
+          spark.sql(s"DROP TABLE IF EXISTS $table PURGE")
+        }
+      }
+    }
+  }
+
+  test("metadata columns - all metadata columns together") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        val table = "test_cat.db.all_meta_cols"
+        try {
+          spark.sql(s"""
+            CREATE TABLE $table (id INT, value DOUBLE)
+            USING iceberg PARTITIONED BY (bucket(4, id))
             TBLPROPERTIES ('format-version' = '2')
           """)
 
           spark.sql(s"""
-          INSERT INTO $table
-          VALUES (1, 10.5), (2, 20.3), (3, 30.7)
-        """)
+            INSERT INTO $table VALUES (1, 10.5), (2, 20.3), (3, 30.7)
+          """)
 
-          checkSparkAnswerAndFallbackReason(
-            s"SELECT id, value, _spec_id, _pos, _file, _partition FROM $table WHERE id >= 2 ORDER BY id",
-            "Metadata column(s) _spec_id, _partition, _file, _pos is not supported")
+          // Query all supported metadata columns together
+          checkIcebergNativeScan(
+            s"SELECT id, value, _file, _pos, _spec_id, _partition FROM $table ORDER BY id")
+        } finally {
+          spark.sql(s"DROP TABLE IF EXISTS $table PURGE")
+        }
+      }
+    }
+  }
+
+  test("metadata columns - _pos with MOR deletes") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        val table = "test_cat.db.pos_delete_test"
+        try {
+          spark.sql(s"""
+            CREATE TABLE $table (id INT, name STRING) USING iceberg
+            TBLPROPERTIES (
+              'write.delete.mode' = 'merge-on-read',
+              'write.merge.mode' = 'merge-on-read'
+            )
+          """)
+
+          spark.sql(s"""
+            INSERT INTO $table VALUES
+              (1, 'Alice'), (2, 'Bob'), (3, 'Charlie'), (4, 'Diana'), (5, 'Eve')
+          """)
+
+          // Delete some rows (creates position delete files)
+          spark.sql(s"DELETE FROM $table WHERE id IN (2, 4)")
+
+          // _pos should still reflect original file positions for surviving rows
+          checkIcebergNativeScan(s"SELECT id, _pos FROM $table ORDER BY id")
         } finally {
           spark.sql(s"DROP TABLE IF EXISTS $table PURGE")
         }
@@ -4374,7 +4602,6 @@ class CometIcebergNativeSuite
   test("variant column filter falls back to Spark") {
     assume(isSpark40Plus, "VARIANT type requires Spark 4.0+")
     assume(icebergAvailable, "Iceberg not available in classpath")
-    assume(icebergVersionAtLeast(1, 11), "VARIANT column type requires Iceberg 1.11+")
     withTempIcebergDir { warehouseDir =>
       withSQLConf(
         "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
@@ -4397,6 +4624,126 @@ class CometIcebergNativeSuite
           s"SELECT id FROM $table WHERE try_variant_get(data, '$$.num', 'int') > 30 ORDER BY id",
           "the native scan does not support the VARIANT type")
         spark.sql(s"DROP TABLE $table")
+      }
+    }
+  }
+
+  test("partition evolution - _partition contains fields from all historical specs") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        import org.apache.iceberg.catalog.TableIdentifier
+        import org.apache.iceberg.spark.SparkCatalog
+
+        spark.sql("""
+          CREATE TABLE test_cat.db.part_evolution (
+            id INT, region STRING, category STRING, value DOUBLE
+          ) USING iceberg PARTITIONED BY (region)
+        """)
+
+        spark.sql("""
+          INSERT INTO test_cat.db.part_evolution VALUES
+            (1, 'US', 'A', 10.0), (2, 'EU', 'B', 20.0)
+        """)
+
+        // Add a second partition field via Iceberg Java API (partition evolution -> spec_id 1)
+        val sparkCatalog = spark.sessionState.catalogManager
+          .catalog("test_cat")
+          .asInstanceOf[SparkCatalog]
+        val table = sparkCatalog
+          .icebergCatalog()
+          .loadTable(TableIdentifier.of("db", "part_evolution"))
+        table.updateSpec().addField("category").commit()
+
+        spark.sql("""
+          INSERT INTO test_cat.db.part_evolution VALUES
+            (3, 'US', 'C', 30.0), (4, 'APAC', 'A', 40.0)
+        """)
+
+        // _partition should be a struct with BOTH region and category fields,
+        // covering all historical specs. Files written under spec 0 will have
+        // category=null in _partition; files under spec 1 have both populated.
+        checkIcebergNativeScan(
+          "SELECT id, _partition FROM test_cat.db.part_evolution ORDER BY id")
+
+        // Verify the struct fields are accessible
+        checkIcebergNativeScan(
+          "SELECT id, _partition.region, _partition.category " +
+            "FROM test_cat.db.part_evolution ORDER BY id")
+
+        // Verify correctness: old rows have null category in _partition
+        val result = spark
+          .sql("SELECT id, _partition.category " +
+            "FROM test_cat.db.part_evolution ORDER BY id")
+          .collect()
+        assert(result(0).isNullAt(1), "row 1 (spec 0) should have null _partition.category")
+        assert(result(1).isNullAt(1), "row 2 (spec 0) should have null _partition.category")
+        assert(result(2).getString(1) == "C", "row 3 (spec 1) should have category=C")
+        assert(result(3).getString(1) == "A", "row 4 (spec 1) should have category=A")
+
+        spark.sql("DROP TABLE test_cat.db.part_evolution")
+      }
+    }
+  }
+
+  test("partition evolution - _partition struct fields sorted by field_id ascending") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        import org.apache.iceberg.catalog.TableIdentifier
+        import org.apache.iceberg.spark.SparkCatalog
+
+        // Create table partitioned by region (gets lower field_id in partition spec)
+        spark.sql("""
+          CREATE TABLE test_cat.db.field_order (
+            id INT, region STRING, category STRING
+          ) USING iceberg PARTITIONED BY (region)
+        """)
+
+        spark.sql("""
+          INSERT INTO test_cat.db.field_order VALUES (1, 'US', 'A'), (2, 'EU', 'B')
+        """)
+
+        // Evolve: add category as second partition field (gets higher field_id).
+        // Without sort-by-id, spec-descending traversal would emit category before region.
+        val sparkCatalog = spark.sessionState.catalogManager
+          .catalog("test_cat")
+          .asInstanceOf[SparkCatalog]
+        val table = sparkCatalog
+          .icebergCatalog()
+          .loadTable(TableIdentifier.of("db", "field_order"))
+        table.updateSpec().addField("category").commit()
+
+        spark.sql("""
+          INSERT INTO test_cat.db.field_order VALUES (3, 'APAC', 'C'), (4, 'US', 'D')
+        """)
+
+        // Verify _partition struct field order matches Spark (sorted by field_id ascending).
+        // Spark's Java reader uses buildPartitionProjectionType which sorts by natural key order.
+        checkIcebergNativeScan("SELECT id, _partition FROM test_cat.db.field_order ORDER BY id")
+
+        // Access fields by name to confirm both are present and correctly ordered
+        checkIcebergNativeScan(
+          "SELECT id, _partition.region, _partition.category " +
+            "FROM test_cat.db.field_order ORDER BY id")
+
+        spark.sql("DROP TABLE test_cat.db.field_order")
       }
     }
   }

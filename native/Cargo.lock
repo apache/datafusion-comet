@@ -3489,7 +3489,7 @@ dependencies = [
 [[package]]
 name = "iceberg"
 version = "0.10.0"
-source = "git+https://github.com/apache/iceberg-rust?rev=e8460ee#e8460eee8725c7f66d53e26b89b3fef578f90ce5"
+source = "git+https://github.com/parthchandra/iceberg-rust?branch=metadata-columns#045a0933b2c85a5b98a9bce5df6020786c780d37"
 dependencies = [
  "aes-gcm",
  "anyhow",

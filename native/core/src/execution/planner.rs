@@ -3715,6 +3715,41 @@ fn parse_file_scan_tasks_from_common(
         })
         .collect::<Result<Vec<_>, _>>()?;
 
+    // Compute unified partition type from the partition_type_pool.
+    // Each entry is a StructType JSON with the resolved field types for one partition spec.
+    // Merge all specs into a single unified type (dedup by field_id).
+    //
+    // NOTE: The type information here comes from Iceberg Java's PartitionSpec.partitionType()
+    // (via Scala reflection). This is the same type computation as iceberg-rust's
+    // Transform::result_type() -- both implement the Iceberg spec's transform result rules.
+    // When iceberg-rust's own scan planning is used (not Comet's proto path), it computes
+    // this via compute_unified_partition_type(specs, schema) instead.
+    let unified_partition_type = {
+        let mut seen_field_ids = std::collections::HashSet::new();
+        let mut struct_fields: Vec<iceberg::spec::NestedFieldRef> = Vec::new();
+
+        for type_json in &proto_common.partition_type_pool {
+            match serde_json::from_str::<iceberg::spec::StructType>(type_json) {
+                Ok(struct_type) => {
+                    for field in struct_type.fields() {
+                        if seen_field_ids.insert(field.id) {
+                            struct_fields.push(Arc::clone(field));
+                        }
+                    }
+                }
+                Err(e) => {
+                    return Err(ExecutionError::GeneralError(format!(
+                        "Failed to deserialize partition type JSON from pool: {e}"
+                    )));
+                }
+            }
+        }
+
+        iceberg::spec::StructType::new(struct_fields)
+    };
+
+    let unified_partition_type_arc = Arc::new(unified_partition_type);
+
     let results: Result<Vec<_>, _> = proto_tasks
         .iter()
         .map(|proto_task| {
@@ -3818,6 +3853,14 @@ fn parse_file_scan_tasks_from_common(
                 .field_ids
                 .clone();
 
+            let unified_partition_type_for_task = if project_field_ids
+                .contains(&iceberg::metadata_columns::RESERVED_FIELD_ID_PARTITION)
+            {
+                Some(Arc::clone(&unified_partition_type_arc))
+            } else {
+                None
+            };
+
             Ok(iceberg::scan::FileScanTask {
                 file_size_in_bytes: proto_task.file_size_in_bytes,
                 data_file_path: proto_task.data_file_path.clone(),
@@ -3832,6 +3875,7 @@ fn parse_file_scan_tasks_from_common(
                 partition,
                 partition_spec,
                 name_mapping,
+                unified_partition_type: unified_partition_type_for_task,
                 case_sensitive: false,
                 key_metadata: None,
             })
@@ -5447,5 +5491,22 @@ mod tests {
                 }
             }
         });
+    }
+
+    #[test]
+    fn test_metadata_field_id_constants_match_iceberg_rust() {
+        // These constants are duplicated in Scala (CometIcebergNativeScan.MetadataFieldIds)
+        // as Int.MaxValue - 1 and Int.MaxValue - 5. This test ensures the Rust constants
+        // haven't drifted, which would cause a silent mismatch with the Scala side.
+        assert_eq!(
+            iceberg::metadata_columns::RESERVED_FIELD_ID_FILE,
+            i32::MAX - 1,
+            "RESERVED_FIELD_ID_FILE must be i32::MAX - 1 to match Scala MetadataFieldIds"
+        );
+        assert_eq!(
+            iceberg::metadata_columns::RESERVED_FIELD_ID_PARTITION,
+            i32::MAX - 5,
+            "RESERVED_FIELD_ID_PARTITION must be i32::MAX - 5 to match Scala MetadataFieldIds"
+        );
     }
 }
