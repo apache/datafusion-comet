@@ -1146,6 +1146,37 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
     }
   }
 
+  // Local table scan carries non-null array child fields (an in-memory Seq encodes
+  // containsNull=false) into native kernels that promise nullable elements. ConvertToLocalRelation
+  // must be disabled or the optimizer folds the expression at plan time and nothing runs natively.
+  // https://github.com/apache/datafusion-comet/issues/4789
+  private def withLocalTableScanNoFold(f: => Unit): Unit = {
+    withSQLConf(
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
+      "spark.sql.optimizer.excludedRules" ->
+        "org.apache.spark.sql.catalyst.optimizer.ConvertToLocalRelation") {
+      f
+    }
+  }
+
+  test("slice on non-null element array from local table scan (#4789)") {
+    withLocalTableScanNoFold {
+      import testImplicits._
+      val df = Seq(Seq(1, 2, 3), Seq(4, 5)).toDF("x")
+      checkSparkAnswerAndOperator(df.selectExpr("slice(x, 2, 2)"))
+    }
+  }
+
+  test("array_insert on non-null element array from local table scan (#4789)") {
+    assume(isSpark35Plus)
+    withLocalTableScanNoFold {
+      import testImplicits._
+      val df = Seq(Seq(1, 2, 3), Seq(4, 5)).toDF("x")
+      // SPARK-41233 array prepend lowers to array_insert at position 1
+      checkSparkAnswerAndOperator(df.selectExpr("array_insert(x, 1, 0)"))
+    }
+  }
+
   // https://issues.apache.org/jira/browse/SPARK-55747
   test("(ansi) GetArrayItem on null array from split()") {
     withSQLConf(

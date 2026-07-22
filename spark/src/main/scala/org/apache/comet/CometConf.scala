@@ -552,6 +552,19 @@ object CometConf extends ShimCometConf {
     .doubleConf
     .createWithDefault(1.0)
 
+  val COMET_SHUFFLE_MAX_BUFFER_BYTES: ConfigEntry[Long] =
+    conf("spark.comet.shuffle.maxBufferBytes")
+      .category(CATEGORY_SHUFFLE)
+      .doc(
+        "Maximum number of bytes that the native shuffle writer will buffer in memory " +
+          "before spilling to disk. The default of 0 disables this limit, in which case " +
+          "spilling is triggered only when the memory pool denies an allocation. Setting a " +
+          "limit caps the writer's memory footprint independently of the size of the memory " +
+          "pool, at the cost of more frequent spilling.")
+      .bytesConf(ByteUnit.BYTE)
+      .checkValue(v => v >= 0, "Must not be negative")
+      .createWithDefault(0)
+
   val COMET_DEBUG_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.debug.enabled")
       .category(CATEGORY_EXEC)
@@ -690,17 +703,6 @@ object CometConf extends ShimCometConf {
         "written to the Proleptic Gregorian calendar and will not be rebased.")
       .booleanConf
       .createWithDefault(false)
-
-  val COMET_USE_LAZY_MATERIALIZATION: ConfigEntry[Boolean] = conf(
-    "spark.comet.use.lazyMaterialization")
-    .internal()
-    .category(CATEGORY_PARQUET)
-    .doc(
-      "Whether to enable lazy materialization for Comet. When this is turned on, Comet will " +
-        "read Parquet data source lazily for string and binary columns. For filter operations, " +
-        "lazy materialization will improve read performance by skipping unused pages.")
-    .booleanConf
-    .createWithDefault(true)
 
   val COMET_ENABLE_PARTIAL_HASH_AGGREGATE: ConfigEntry[Boolean] =
     conf("spark.comet.testing.aggregate.partialMode.enabled")
