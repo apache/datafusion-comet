@@ -34,6 +34,11 @@
 - Spark 3.5.8 (audited 2026-05-26): identical to 3.4.3.
 - Spark 4.0.1 (audited 2026-05-26): identical to 3.4.3.
 
+## approx_percentile
+
+- Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-07-02): `ApproximatePercentile(child, percentageExpression, accuracyExpression)` is a `TypedImperativeAggregate` backed by a Greenwald-Khanna `PercentileDigest` quantile summary with relative error `1.0 / accuracy`. `child` accepts `NumericType`, `DateType`, `TimestampType`, `TimestampNTZType`, and interval types (all cast to `double` internally); `percentage` is a single literal or literal array in `[0.0, 1.0]`; `accuracy` is a positive literal (default 10000). NULL inputs are skipped; an empty or all-null group returns NULL. `approx_percentile` is a SQL alias for the primary function name `percentile_approx`.
+- `CometApproxPercentile` maps the byte, short, int, long, float, and double input forms to a native Greenwald-Khanna quantile summary port with the same insert/compress/merge/query algorithm and relative error, casting the result back to the input type. `percentage` and `accuracy` must be foldable literals, matching Spark. Date, timestamp, interval, and decimal inputs fall back to Spark.
+
 ## avg
 
 - Spark 3.4.3 (2026-05-26)

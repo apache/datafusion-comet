@@ -22,7 +22,8 @@ use crate::partitioners::{
     EmptySchemaShufflePartitioner, MultiPartitionShuffleRepartitioner, ShufflePartitioner,
     SinglePartitionShufflePartitioner,
 };
-use crate::{CometPartitioning, CompressionCodec};
+use crate::writers::LocalPartitionWriter;
+use crate::{CometPartitioning, CompressionCodec, ShuffleBlockWriter};
 use async_trait::async_trait;
 use datafusion::common::exec_datafusion_err;
 use datafusion::physical_expr::{EquivalenceProperties, Partitioning};
@@ -66,6 +67,8 @@ pub struct ShuffleWriterExec {
     tracing_enabled: bool,
     /// Size of the write buffer in bytes
     write_buffer_size: usize,
+    /// Maximum bytes buffered in memory before spilling; `None` disables the limit
+    max_buffer_bytes: Option<usize>,
 }
 
 impl ShuffleWriterExec {
@@ -79,6 +82,7 @@ impl ShuffleWriterExec {
         output_index_file: String,
         tracing_enabled: bool,
         write_buffer_size: usize,
+        max_buffer_bytes: Option<usize>,
     ) -> Result<Self> {
         let cache = Arc::new(PlanProperties::new(
             EquivalenceProperties::new(Arc::clone(&input.schema())),
@@ -97,6 +101,7 @@ impl ShuffleWriterExec {
             codec,
             tracing_enabled,
             write_buffer_size,
+            max_buffer_bytes,
         })
     }
 }
@@ -152,6 +157,7 @@ impl ExecutionPlan for ShuffleWriterExec {
                 self.output_index_file.clone(),
                 self.tracing_enabled,
                 self.write_buffer_size,
+                self.max_buffer_bytes,
             )?)),
             _ => panic!("ShuffleWriterExec wrong number of children"),
         }
@@ -181,6 +187,7 @@ impl ExecutionPlan for ShuffleWriterExec {
                 self.codec.clone(),
                 self.tracing_enabled,
                 self.write_buffer_size,
+                self.max_buffer_bytes,
             ))
             .try_flatten(),
         )))
@@ -199,42 +206,45 @@ async fn external_shuffle(
     codec: CompressionCodec,
     tracing_enabled: bool,
     write_buffer_size: usize,
+    max_buffer_bytes: Option<usize>,
 ) -> Result<SendableRecordBatchStream> {
     let schema = input.schema();
+
+    let shuffle_block_writer = ShuffleBlockWriter::try_new(schema.as_ref(), codec.clone())?;
+    let local_partition_writer = LocalPartitionWriter::try_new(
+        output_data_file,
+        output_index_file,
+        shuffle_block_writer,
+        partitioning.partition_count(),
+        context.session_config().batch_size(),
+        write_buffer_size,
+        context.runtime_env(),
+    )?;
 
     let mut repartitioner: Box<dyn ShufflePartitioner> = match &partitioning {
         _ if schema.fields().is_empty() => {
             log::debug!("found empty schema, overriding {partitioning:?} partitioning with EmptySchemaShufflePartitioner");
             Box::new(EmptySchemaShufflePartitioner::try_new(
-                output_data_file,
-                output_index_file,
+                local_partition_writer,
                 Arc::clone(&schema),
                 partitioning.partition_count(),
                 metrics,
-                codec,
             )?)
         }
         any if any.partition_count() == 1 => Box::new(SinglePartitionShufflePartitioner::try_new(
-            output_data_file,
-            output_index_file,
-            Arc::clone(&schema),
+            local_partition_writer,
             metrics,
             context.session_config().batch_size(),
-            codec,
-            write_buffer_size,
         )?),
         _ => Box::new(MultiPartitionShuffleRepartitioner::try_new(
             partition,
-            output_data_file,
-            output_index_file,
-            Arc::clone(&schema),
+            local_partition_writer,
             partitioning,
             metrics,
             context.runtime_env(),
             context.session_config().batch_size(),
-            codec,
             tracing_enabled,
-            write_buffer_size,
+            max_buffer_bytes,
         )?),
     };
 
@@ -346,38 +356,48 @@ mod test {
         let num_partitions = 2;
         let runtime_env = create_runtime(memory_limit);
         let metrics_set = ExecutionPlanMetricsSet::new();
-        let mut repartitioner = MultiPartitionShuffleRepartitioner::try_new(
-            0,
+        let shuffle_block_writer =
+            ShuffleBlockWriter::try_new(batch.schema().as_ref(), CompressionCodec::Lz4Frame)
+                .unwrap();
+        let local_partition_writer = LocalPartitionWriter::try_new(
             "/tmp/data.out".to_string(),
             "/tmp/index.out".to_string(),
-            batch.schema(),
+            shuffle_block_writer,
+            num_partitions,
+            1024,
+            1024 * 1024, // write_buffer_size: 1MB default
+            Arc::clone(&runtime_env),
+        )
+        .unwrap();
+        let mut repartitioner = MultiPartitionShuffleRepartitioner::try_new(
+            0,
+            local_partition_writer,
             CometPartitioning::Hash(vec![Arc::new(Column::new("a", 0))], num_partitions),
             ShufflePartitionerMetrics::new(&metrics_set, 0),
             runtime_env,
             1024,
-            CompressionCodec::Lz4Frame,
             false,
-            1024 * 1024, // write_buffer_size: 1MB default
+            None,
         )
         .unwrap();
 
         repartitioner.insert_batch(batch.clone()).await.unwrap();
 
         {
-            let partition_writers = repartitioner.partition_writers();
-            assert_eq!(partition_writers.len(), 2);
+            let spill_writers = repartitioner.partition_writer().get_spill_writers();
+            assert_eq!(spill_writers.len(), 2);
 
-            assert!(!partition_writers[0].has_spill_file());
-            assert!(!partition_writers[1].has_spill_file());
+            assert!(!spill_writers[0].has_spill_file());
+            assert!(!spill_writers[1].has_spill_file());
         }
 
         repartitioner.spill().unwrap();
 
         // after spill, there should be spill files
         {
-            let partition_writers = repartitioner.partition_writers();
-            assert!(partition_writers[0].has_spill_file());
-            assert!(partition_writers[1].has_spill_file());
+            let spill_writers = repartitioner.partition_writer().get_spill_writers();
+            assert!(spill_writers[0].has_spill_file());
+            assert!(spill_writers[1].has_spill_file());
         }
 
         // insert another batch after spilling
@@ -409,18 +429,27 @@ mod test {
         let data_size = metrics.data_size.clone();
         let spill_count = metrics.spill_count.clone();
         let dir = tempfile::tempdir().unwrap();
-        let mut repartitioner = MultiPartitionShuffleRepartitioner::try_new(
-            0,
+        let shuffle_block_writer =
+            ShuffleBlockWriter::try_new(schema.as_ref(), CompressionCodec::Lz4Frame).unwrap();
+        let local_partition_writer = LocalPartitionWriter::try_new(
             dir.path().join("data.out").to_str().unwrap().to_string(),
             dir.path().join("index.out").to_str().unwrap().to_string(),
-            backing.schema(),
+            shuffle_block_writer,
+            num_partitions,
+            1024,
+            1024 * 1024, // write_buffer_size: 1MB default
+            Arc::clone(&runtime_env),
+        )
+        .unwrap();
+        let mut repartitioner = MultiPartitionShuffleRepartitioner::try_new(
+            0,
+            local_partition_writer,
             CometPartitioning::Hash(vec![Arc::new(Column::new("a", 0))], num_partitions),
             metrics,
             runtime_env,
             batch_size,
-            CompressionCodec::Lz4Frame,
             false,
-            1024 * 1024,
+            None,
         )
         .unwrap();
 
@@ -435,6 +464,148 @@ mod test {
             spill_count.value(),
             0,
             "one buffer under the memory limit must not spill once per chunk"
+        );
+    }
+
+    /// Buffer `num_batches` batches through a `MultiPartitionShuffleRepartitioner` configured
+    /// with `max_buffer_bytes`, against a memory pool large enough that `try_grow` never fails,
+    /// and return how many times it spilled.
+    async fn spill_count_with_max_buffer_bytes(
+        max_buffer_bytes: Option<usize>,
+        num_batches: usize,
+    ) -> usize {
+        let batch = create_batch(1000);
+        let num_partitions = 4;
+        // Far larger than anything these batches can reserve, so pool pressure never triggers
+        // a spill and any spill observed must come from the max_buffer_bytes limit.
+        let runtime_env = create_runtime(1024 * 1024 * 1024);
+        let metrics_set = ExecutionPlanMetricsSet::new();
+        let metrics = ShufflePartitionerMetrics::new(&metrics_set, 0);
+        let spill_count = metrics.spill_count.clone();
+        let dir = tempfile::tempdir().unwrap();
+        let shuffle_block_writer =
+            ShuffleBlockWriter::try_new(batch.schema().as_ref(), CompressionCodec::Lz4Frame)
+                .unwrap();
+        let local_partition_writer = LocalPartitionWriter::try_new(
+            dir.path().join("data.out").to_str().unwrap().to_string(),
+            dir.path().join("index.out").to_str().unwrap().to_string(),
+            shuffle_block_writer,
+            num_partitions,
+            1024,
+            1024 * 1024,
+            Arc::clone(&runtime_env),
+        )
+        .unwrap();
+        let mut repartitioner = MultiPartitionShuffleRepartitioner::try_new(
+            0,
+            local_partition_writer,
+            CometPartitioning::Hash(vec![Arc::new(Column::new("a", 0))], num_partitions),
+            metrics,
+            runtime_env,
+            1024,
+            false,
+            max_buffer_bytes,
+        )
+        .unwrap();
+
+        for _ in 0..num_batches {
+            repartitioner.insert_batch(batch.clone()).await.unwrap();
+        }
+        repartitioner.shuffle_write().unwrap();
+
+        spill_count.value()
+    }
+
+    #[tokio::test]
+    #[cfg_attr(miri, ignore)] // miri can't call foreign function `ZSTD_createCCtx`
+    async fn max_buffer_bytes_triggers_spill_without_memory_pressure() {
+        // A limit far below what 20 batches buffer must spill, even though the pool never
+        // denies an allocation. The paired zero case pins that the spills come from the new
+        // limit and not from the pre-existing memory-pressure trigger.
+        let spills = spill_count_with_max_buffer_bytes(Some(8 * 1024), 20).await;
+        assert!(
+            spills > 0,
+            "a max_buffer_bytes limit below the buffered size must trigger spilling, got {spills}"
+        );
+    }
+
+    #[tokio::test]
+    #[cfg_attr(miri, ignore)] // miri can't call foreign function `ZSTD_createCCtx`
+    async fn max_buffer_bytes_none_leaves_spilling_to_memory_pressure() {
+        let spills = spill_count_with_max_buffer_bytes(None, 20).await;
+        assert_eq!(
+            spills, 0,
+            "an unset max_buffer_bytes disables the limit, and this pool never denies an allocation"
+        );
+    }
+
+    /// Run a shuffle end-to-end through `ShuffleWriterExec` with the given `max_buffer_bytes`
+    /// and return the shuffled rows in output-file order.
+    fn shuffle_output_with_max_buffer_bytes(
+        dir: &std::path::Path,
+        tag: &str,
+        max_buffer_bytes: Option<usize>,
+    ) -> Vec<String> {
+        let batch = create_batch(1000);
+        let batches = (0..20).map(|_| batch.clone()).collect::<Vec<_>>();
+        let data_file = dir.join(format!("{tag}_data.out"));
+        let index_file = dir.join(format!("{tag}_index.out"));
+
+        let exec = ShuffleWriterExec::try_new(
+            Arc::new(DataSourceExec::new(Arc::new(
+                MemorySourceConfig::try_new(std::slice::from_ref(&batches), batch.schema(), None)
+                    .unwrap(),
+            ))),
+            CometPartitioning::Hash(vec![Arc::new(Column::new("a", 0))], 16),
+            CompressionCodec::Zstd(1),
+            data_file.to_str().unwrap().to_string(),
+            index_file.to_str().unwrap().to_string(),
+            false,
+            1024 * 1024,
+            max_buffer_bytes,
+        )
+        .unwrap();
+
+        // Large enough that the pool never denies an allocation, so only max_buffer_bytes
+        // decides whether this run spills.
+        let runtime_env = create_runtime(1024 * 1024 * 1024);
+        let ctx = SessionContext::new_with_config_rt(SessionConfig::new(), runtime_env);
+        let stream = exec.execute(0, ctx.task_ctx()).unwrap();
+        Runtime::new().unwrap().block_on(collect(stream)).unwrap();
+
+        read_all_ipc_batches(&std::fs::read(&data_file).unwrap())
+            .iter()
+            .flat_map(|batch| {
+                let column = batch
+                    .column(0)
+                    .as_any()
+                    .downcast_ref::<StringArray>()
+                    .unwrap();
+                column
+                    .iter()
+                    .map(|v| v.unwrap().to_string())
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)] // miri can't call foreign function `ZSTD_createCCtx`
+    fn max_buffer_bytes_preserves_output() {
+        // End-to-end through ShuffleWriterExec: a small limit forces repeated spills, and the
+        // shuffled rows must come out in the same order as an unlimited writer produces.
+        let dir = tempfile::tempdir().unwrap();
+        let unlimited = shuffle_output_with_max_buffer_bytes(dir.path(), "unlimited", None);
+        let limited = shuffle_output_with_max_buffer_bytes(dir.path(), "limited", Some(8 * 1024));
+
+        assert_eq!(
+            unlimited.len(),
+            20 * 1000,
+            "every input row must be written"
+        );
+        assert_eq!(
+            limited, unlimited,
+            "spilling on the max_buffer_bytes limit must not change the shuffled output"
         );
     }
 
@@ -516,6 +687,7 @@ mod test {
                 "/tmp/index.out".to_string(),
                 false,
                 1024 * 1024, // write_buffer_size: 1MB default
+                None,
             )
             .unwrap();
 
@@ -575,6 +747,7 @@ mod test {
                 index_file.clone(),
                 false,
                 1024 * 1024,
+                None,
             )
             .unwrap();
 
@@ -722,11 +895,11 @@ mod test {
         );
     }
 
-    /// Read all IPC blocks from a byte buffer written by BufBatchWriter/ShuffleBlockWriter,
-    /// returning the total number of rows.
-    fn read_all_ipc_blocks(data: &[u8]) -> usize {
+    /// Decode every IPC block in a byte buffer written by BufBatchWriter/ShuffleBlockWriter,
+    /// in file order.
+    fn read_all_ipc_batches(data: &[u8]) -> Vec<RecordBatch> {
         let mut offset = 0;
-        let mut total_rows = 0;
+        let mut batches = vec![];
         while offset < data.len() {
             // First 8 bytes are the IPC length (little-endian u64)
             let ipc_length =
@@ -737,11 +910,18 @@ mod test {
             // read_ipc_compressed expects data starting after the 16-byte header
             // (i.e., after length + field_count), at the codec tag
             let ipc_data = &data[block_start + 8..block_end];
-            let batch = read_ipc_compressed(ipc_data).unwrap();
-            total_rows += batch.num_rows();
+            batches.push(read_ipc_compressed(ipc_data).unwrap());
             offset = block_end;
         }
-        total_rows
+        batches
+    }
+
+    /// Total number of rows across all IPC blocks in a byte buffer.
+    fn read_all_ipc_blocks(data: &[u8]) -> usize {
+        read_all_ipc_batches(data)
+            .iter()
+            .map(|b| b.num_rows())
+            .sum()
     }
 
     #[test]
@@ -779,6 +959,7 @@ mod test {
             index_file.to_str().unwrap().to_string(),
             false,
             1024 * 1024,
+            None,
         )
         .unwrap();
 
@@ -867,6 +1048,7 @@ mod test {
             index_file.to_str().unwrap().to_string(),
             false,
             1024 * 1024,
+            None,
         )
         .unwrap();
 

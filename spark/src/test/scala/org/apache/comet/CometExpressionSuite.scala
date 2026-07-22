@@ -25,8 +25,8 @@ import scala.util.Random
 
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.{Column, CometTestBase, DataFrame, Row}
-import org.apache.spark.sql.catalyst.expressions.{Alias, Cast, FromUnixTime, Literal, StructsToJson, TruncDate, TruncTimestamp}
-import org.apache.spark.sql.catalyst.optimizer.SimplifyExtractValueOps
+import org.apache.spark.sql.catalyst.expressions.{Alias, AttributeReference, Cast, FromUnixTime, KnownFloatingPointNormalized, Literal, StructsToJson, TruncDate, TruncTimestamp}
+import org.apache.spark.sql.catalyst.optimizer.{NormalizeNaNAndZero, SimplifyExtractValueOps}
 import org.apache.spark.sql.comet.CometProjectExec
 import org.apache.spark.sql.execution.{ProjectExec, SparkPlan}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
@@ -36,6 +36,7 @@ import org.apache.spark.sql.internal.SQLConf.SESSION_LOCAL_TIMEZONE
 import org.apache.spark.sql.types._
 
 import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, isSpark41Plus, isSpark42Plus}
+import org.apache.comet.serde.{CometAttributeReference, CometKnownFloatingPointNormalized, Unsupported}
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
 
 class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
@@ -1050,6 +1051,18 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("misc scalar serdes report static unsupported cases via getSupportLevel") {
+    val intervalAttr = AttributeReference("interval_attr", CalendarIntervalType)()
+
+    assert(
+      CometAttributeReference.getSupportLevel(intervalAttr) ==
+        Unsupported(Some("unsupported datatype: CalendarIntervalType")))
+    assert(
+      CometKnownFloatingPointNormalized.getSupportLevel(
+        KnownFloatingPointNormalized(NormalizeNaNAndZero(intervalAttr))) ==
+        Unsupported(Some("Unsupported datatype CalendarIntervalType")))
+  }
+
   test("rlike with non-scalar pattern runs via codegen dispatcher") {
     val table = "rlike_non_scalar"
     withTable(table) {
@@ -1860,6 +1873,13 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             // After fixing these issues, change checkSparkAnswer to checkSparkAnswerAndOperator
             checkSparkAnswer(s"SELECT from_unixtime(_5, 'yyyy') FROM $table $where")
             checkSparkAnswer(s"SELECT from_unixtime(_8, 'yyyy') FROM $table $where")
+            // A non-default format is Unsupported (no native DataFusion path), but at the default
+            // allowIncompatible=false it stays a Comet operator via CodegenDispatchFallback
+            // (Spark's own codegen) rather than falling back to Spark. See #4575.
+            withSQLConf(
+              CometConf.getExprAllowIncompatConfigKey(classOf[FromUnixTime]) -> "false") {
+              checkSparkAnswerAndOperator(s"SELECT from_unixtime(_5, 'yyyy') FROM $table $where")
+            }
             withSQLConf(SESSION_LOCAL_TIMEZONE.key -> "Asia/Kathmandu") {
               checkSparkAnswerAndOperator(s"SELECT from_unixtime(_5) FROM $table $where")
               checkSparkAnswerAndOperator(s"SELECT from_unixtime(_8) FROM $table $where")
@@ -3271,6 +3291,43 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       // by Spark -- it stays intact as a single deeply-nested predicate, so exercise that path
       // directly.
       checkSparkAnswerAndOperator(spark.table("tbl").where(orChain))
+    }
+  }
+
+  test("deep bitwise And/Or/Xor chains do not overflow the protobuf recursion limit") {
+    // Same protobuf-recursion-limit concern as the AND/OR case, for the (always-integral,
+    // exactly associative) bitwise operators: a left-deep chain of N serializes N levels deep
+    // and overflows the default limit (100) when re-parsed. Comet rebalances them.
+    val n = 200
+    withParquetTable((0 until 100).map(i => (i, i.toLong)), "tbl") {
+      // Column-based operands (mix the column with a distinct literal) so the chain isn't
+      // constant-folded away before serialization. The `col("_1") + lit(i)` leaves are
+      // intentionally cheap `Add`s: they take the non-rebalanced serde (under default ANSI on
+      // Spark 4.0 they aren't in the rebalanced integral+LEGACY path), but the values stay small
+      // so nothing overflows/throws -- the deep BITWISE chain built from them is what's under test.
+      val terms = (1 to n).map(i => col("_1") + lit(i))
+      checkSparkAnswerAndOperator(
+        spark.table("tbl").select(terms.reduce((a, b) => a.bitwiseAND(b)).as("a")))
+      checkSparkAnswerAndOperator(
+        spark.table("tbl").select(terms.reduce((a, b) => a.bitwiseOR(b)).as("o")))
+      checkSparkAnswerAndOperator(
+        spark.table("tbl").select(terms.reduce((a, b) => a.bitwiseXOR(b)).as("x")))
+    }
+  }
+
+  test("deep integral Add/Multiply chains do not overflow the protobuf recursion limit") {
+    // Integral + non-ANSI (LEGACY, wrapping) Add/Multiply are exactly associative, so Comet
+    // rebalances the deep chain. (ANSI/TRY, float, and decimal are intentionally NOT rebalanced
+    // -- their result or overflow behaviour depends on grouping -- so force non-ANSI here.)
+    val n = 200
+    withSQLConf(SQLConf.ANSI_ENABLED.key -> "false") {
+      withParquetTable((0 until 100).map(i => (i, i.toLong)), "tbl") {
+        val terms = (1 to n).map(i => col("_1") + lit(i))
+        checkSparkAnswerAndOperator(spark.table("tbl").select(terms.reduce(_ + _).as("a")))
+        // Wrapping (mod 2^32) multiply: the product overflows Int but wraps identically in
+        // Spark and Comet, so the rebalanced grouping yields the same value.
+        checkSparkAnswerAndOperator(spark.table("tbl").select(terms.reduce(_ * _).as("m")))
+      }
     }
   }
 

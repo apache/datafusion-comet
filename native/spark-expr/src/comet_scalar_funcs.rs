@@ -26,8 +26,8 @@ use crate::{
     spark_ceil, spark_day_name, spark_decimal_div, spark_decimal_integral_div, spark_floor,
     spark_isnan, spark_lpad, spark_make_decimal, spark_month_name, spark_read_side_padding,
     spark_round, spark_rpad, spark_to_time, spark_unhex, spark_unscaled_value, EvalMode,
-    SparkArrayCompact, SparkArrayPositionFunc, SparkArraySlice, SparkArraysOverlap, SparkContains,
-    SparkDateDiff, SparkDateFromUnixDate, SparkDateTrunc, SparkMakeDate, SparkMakeTime,
+    SparkArrayPositionFunc, SparkArraySlice, SparkArraysOverlap, SparkContains, SparkDateDiff,
+    SparkDateFromUnixDate, SparkDateTrunc, SparkFlatten, SparkMakeDate, SparkMakeTime,
     SparkNextDay, SparkSecondsToTimestamp, SparkSizeFunc,
 };
 use arrow::datatypes::DataType;
@@ -224,6 +224,7 @@ pub fn create_comet_physical_fun_with_eval_mode(
         "to_time" => {
             make_comet_scalar_udf!("to_time", spark_to_time, without data_type, fail_on_error)
         }
+        "flatten" => Ok(Arc::new(ScalarUDF::new_from_impl(SparkFlatten::new()))),
         // make_date and next_day must be constructed with the ANSI flag (fail_on_error) so they
         // throw on invalid input under ANSI rather than returning NULL.
         "make_date" => Ok(Arc::new(ScalarUDF::new_from_impl(SparkMakeDate::new(
@@ -242,7 +243,6 @@ pub fn create_comet_physical_fun_with_eval_mode(
 
 fn all_scalar_functions() -> Vec<Arc<ScalarUDF>> {
     vec![
-        Arc::new(ScalarUDF::new_from_impl(SparkArrayCompact::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkArrayPositionFunc::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkArraySlice::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkArraysOverlap::default())),
@@ -250,6 +250,7 @@ fn all_scalar_functions() -> Vec<Arc<ScalarUDF>> {
         Arc::new(ScalarUDF::new_from_impl(SparkDateDiff::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkDateFromUnixDate::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkDateTrunc::default())),
+        Arc::new(ScalarUDF::new_from_impl(SparkFlatten::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkMakeDate::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkMakeTime::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkNextDay::default())),

@@ -26,6 +26,7 @@ import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution.SparkPlan
 import org.apache.spark.sql.execution.adaptive.ShuffleQueryStageExec
 import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
+import org.apache.spark.sql.types.DataType
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
@@ -41,6 +42,13 @@ import org.apache.comet.serde.QueryPlanSerde.{serializeDataType, supportedDataTy
 abstract class CometSink[T <: SparkPlan] extends CometOperatorSerde[T] {
 
   override def enabledConfig: Option[ConfigEntry[Boolean]] = None
+
+  /**
+   * The data type to declare for a scan output field. Overridden by sinks whose source carries
+   * non-null nested child fields that must be widened to match the planned kernel output types
+   * (see [[org.apache.spark.sql.comet.CometLocalTableScanExec]] and issue #4789).
+   */
+  protected def scanFieldType(dt: DataType): DataType = dt
 
   override def convert(
       op: T,
@@ -64,7 +72,7 @@ abstract class CometSink[T <: SparkPlan] extends CometOperatorSerde[T] {
     }
 
     val scanTypes = op.output.flatten { attr =>
-      serializeDataType(attr.dataType)
+      serializeDataType(scanFieldType(attr.dataType))
     }
 
     if (scanTypes.length == op.output.length) {
