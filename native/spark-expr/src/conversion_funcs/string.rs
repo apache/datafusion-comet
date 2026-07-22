@@ -469,6 +469,68 @@ fn normalize_fullwidth_digits(s: &str) -> String {
     unsafe { String::from_utf8_unchecked(out) }
 }
 
+/// Powers of ten that fit in an `i128` (`10^0` through `10^38`).
+const POW10_I128: [i128; 39] = {
+    let mut table = [1i128; 39];
+    let mut i = 1;
+    while i < 39 {
+        table[i] = table[i - 1] * 10;
+        i += 1;
+    }
+    table
+};
+
+/// `10^exp`, or `None` when the exponent overflows an `i128` (exp >= 39).
+#[inline]
+fn pow10_i128(exp: u32) -> Option<i128> {
+    POW10_I128.get(exp as usize).copied()
+}
+
+/// Accumulate an ASCII-digit slice into an `i128`, returning `None` on overflow.
+///
+/// The first 38 digits always fit (`i128::MAX` is ~1.7e38), so only the digits past
+/// them need the per-digit overflow checks.
+#[inline]
+fn digits_to_i128(digits: &[u8]) -> Option<i128> {
+    let (head, tail) = digits.split_at(digits.len().min(38));
+    let mut value: i128 = 0;
+    for &d in head {
+        value = value * 10 + (d - b'0') as i128;
+    }
+    for &d in tail {
+        value = value.checked_mul(10)?.checked_add((d - b'0') as i128)?;
+    }
+    Some(value)
+}
+
+/// Values that Spark parses as NULL rather than as a decimal, matched case-insensitively.
+const SPECIAL_DECIMAL_VALUES: [&str; 7] = [
+    "inf",
+    "+inf",
+    "-inf",
+    "infinity",
+    "+infinity",
+    "-infinity",
+    "nan",
+];
+
+/// True if `trimmed` is one of [`SPECIAL_DECIMAL_VALUES`].
+#[inline]
+fn is_special_value(trimmed: &str) -> bool {
+    // Every special value starts with `i`/`n`, or with a sign followed by `i`, so
+    // ordinary numeric input is ruled out after inspecting a single byte.
+    let bytes = trimmed.as_bytes();
+    let plausible = match bytes.first() {
+        Some(b'i' | b'I' | b'n' | b'N') => true,
+        Some(b'+' | b'-') => matches!(bytes.get(1), Some(b'i' | b'I')),
+        _ => false,
+    };
+    plausible
+        && SPECIAL_DECIMAL_VALUES
+            .iter()
+            .any(|v| trimmed.eq_ignore_ascii_case(v))
+}
+
 /// Parse a decimal string into mantissa and scale
 /// e.g., "123.45" -> (12345, 2), "-0.001" -> (-1, 3) , 0e50 -> (0,50) etc
 /// Parse a string to decimal following Spark's behavior
@@ -494,25 +556,18 @@ fn parse_string_to_decimal(input_str: &str, precision: u8, scale: i8) -> SparkRe
     // Normalize fullwidth digits to ASCII. Fast path skips the allocation for
     // pure-ASCII strings, which is the common case.
     let normalized;
-    let trimmed = if trimmed.bytes().any(|b| b > 0x7F) {
+    let trimmed = if trimmed.is_ascii() {
+        trimmed
+    } else {
         normalized = normalize_fullwidth_digits(trimmed);
         normalized.as_str()
-    } else {
-        trimmed
     };
 
     if trimmed.is_empty() {
         return Ok(None);
     }
     // Handle special values (inf, nan, etc.)
-    if trimmed.eq_ignore_ascii_case("inf")
-        || trimmed.eq_ignore_ascii_case("+inf")
-        || trimmed.eq_ignore_ascii_case("infinity")
-        || trimmed.eq_ignore_ascii_case("+infinity")
-        || trimmed.eq_ignore_ascii_case("-inf")
-        || trimmed.eq_ignore_ascii_case("-infinity")
-        || trimmed.eq_ignore_ascii_case("nan")
-    {
+    if is_special_value(trimmed) {
         return Ok(None);
     }
 
@@ -538,7 +593,8 @@ fn parse_string_to_decimal(input_str: &str, precision: u8, scale: i8) -> SparkRe
         if scale_adjustment > 38 {
             return Ok(None);
         }
-        mantissa.checked_mul(10_i128.pow(scale_adjustment as u32))
+        // Bounded above, so pow10_i128 always returns Some.
+        mantissa.checked_mul(pow10_i128(scale_adjustment as u32).unwrap())
     } else {
         // Need to divide (decrease scale)
         let abs_scale_adjustment = (-scale_adjustment) as u32;
@@ -546,7 +602,8 @@ fn parse_string_to_decimal(input_str: &str, precision: u8, scale: i8) -> SparkRe
             return Ok(Some(0));
         }
 
-        let divisor = 10_i128.pow(abs_scale_adjustment);
+        // Bounded above, so pow10_i128 always returns Some.
+        let divisor = pow10_i128(abs_scale_adjustment).unwrap();
         let quotient_opt = mantissa.checked_div(divisor);
         // Check if divisor is 0
         if quotient_opt.is_none() {
@@ -609,79 +666,75 @@ fn parse_decimal_str(
     precision: u8,
     scale: i8,
 ) -> SparkResult<(i128, i32)> {
-    if s.is_empty() {
-        return Err(invalid_decimal_cast(original_str, precision, scale));
-    }
+    let bytes = s.as_bytes();
 
-    let (mantissa_str, exponent) = if let Some(e_pos) = s.find(|c| ['e', 'E'].contains(&c)) {
-        let mantissa_part = &s[..e_pos];
-        let exponent_part = &s[e_pos + 1..];
-        // Parse exponent
-        let exp: i32 = exponent_part
-            .parse()
-            .map_err(|_| invalid_decimal_cast(original_str, precision, scale))?;
-
-        (mantissa_part, exp)
-    } else {
-        (s, 0)
-    };
-
-    let negative = mantissa_str.starts_with('-');
-    let mantissa_str = if negative || mantissa_str.starts_with('+') {
-        &mantissa_str[1..]
-    } else {
-        mantissa_str
-    };
-
-    if mantissa_str.starts_with('+') || mantissa_str.starts_with('-') {
-        return Err(invalid_decimal_cast(original_str, precision, scale));
-    }
-
-    let (integral_part, fractional_part) = match mantissa_str.find('.') {
-        Some(dot_pos) => {
-            if mantissa_str[dot_pos + 1..].contains('.') {
-                return Err(invalid_decimal_cast(original_str, precision, scale));
-            }
-            (&mantissa_str[..dot_pos], &mantissa_str[dot_pos + 1..])
+    let mut pos = 0;
+    let negative = match bytes.first() {
+        Some(b'-') => {
+            pos = 1;
+            true
         }
-        None => (mantissa_str, ""),
+        Some(b'+') => {
+            pos = 1;
+            false
+        }
+        _ => false,
+    };
+
+    // Single validating pass over the mantissa: ASCII digits with at most one `.`,
+    // ending at the optional exponent marker. It also locates the integral/fractional
+    // split and the start of the exponent. `.`, `e` and `E` are ASCII, so scanning
+    // bytes can never land inside a multi-byte character and every index taken here is
+    // on a char boundary.
+    let digits_start = pos;
+    let mut dot_pos = None;
+    let mut exp_pos = None;
+    while pos < bytes.len() {
+        match bytes[pos] {
+            b'0'..=b'9' => pos += 1,
+            b'.' if dot_pos.is_none() => {
+                dot_pos = Some(pos);
+                pos += 1;
+            }
+            b'e' | b'E' => {
+                exp_pos = Some(pos);
+                break;
+            }
+            _ => return Err(invalid_decimal_cast(original_str, precision, scale)),
+        }
+    }
+
+    let exponent: i32 = match exp_pos {
+        Some(e_pos) => s[e_pos + 1..]
+            .parse()
+            .map_err(|_| invalid_decimal_cast(original_str, precision, scale))?,
+        None => 0,
+    };
+
+    // An empty integral part is valid (e.g. ".5" or "-.7e9"), as is an empty
+    // fractional part, but they cannot both be empty.
+    let mantissa_end = exp_pos.unwrap_or(pos);
+    let (integral_part, fractional_part): (&[u8], &[u8]) = match dot_pos {
+        Some(dot) => (&bytes[digits_start..dot], &bytes[dot + 1..mantissa_end]),
+        None => (&bytes[digits_start..mantissa_end], &[]),
     };
 
     if integral_part.is_empty() && fractional_part.is_empty() {
         return Err(invalid_decimal_cast(original_str, precision, scale));
     }
 
-    if !integral_part.is_empty() && !integral_part.bytes().all(|b| b.is_ascii_digit()) {
-        return Err(invalid_decimal_cast(original_str, precision, scale));
-    }
+    let integral_value = digits_to_i128(integral_part)
+        .ok_or_else(|| invalid_decimal_cast(original_str, precision, scale))?;
 
-    if !fractional_part.is_empty() && !fractional_part.bytes().all(|b| b.is_ascii_digit()) {
-        return Err(invalid_decimal_cast(original_str, precision, scale));
-    }
-
-    // Parse integral part
-    let integral_value: i128 = if integral_part.is_empty() {
-        // Empty integral part is valid (e.g., ".5" or "-.7e9")
-        0
-    } else {
-        integral_part
-            .parse()
-            .map_err(|_| invalid_decimal_cast(original_str, precision, scale))?
-    };
-
-    // Parse fractional part
     let fractional_scale = fractional_part.len() as i32;
-    let fractional_value: i128 = if fractional_part.is_empty() {
-        0
-    } else {
-        fractional_part
-            .parse()
-            .map_err(|_| invalid_decimal_cast(original_str, precision, scale))?
-    };
+    let fractional_value = digits_to_i128(fractional_part)
+        .ok_or_else(|| invalid_decimal_cast(original_str, precision, scale))?;
 
-    // Combine: value = integral * 10^fractional_scale + fractional
-    let mantissa = integral_value
-        .checked_mul(10_i128.pow(fractional_scale as u32))
+    // Combine: value = integral * 10^fractional_scale + fractional.
+    // A fractional_scale beyond 38 cannot fit in an i128, so pow10_i128 returns None and this
+    // maps to the invalid-decimal error path instead of panicking.
+    let mantissa = pow10_i128(fractional_scale as u32)
+        .and_then(|p| integral_value.checked_mul(p))
         .and_then(|v| v.checked_add(fractional_value))
         .ok_or_else(|| invalid_decimal_cast(original_str, precision, scale))?;
 
@@ -1987,6 +2040,37 @@ mod tests {
             EvalMode::Ansi => parse_string_to_i8_ansi(str),
             EvalMode::Try => parse_string_to_i8_try(str),
         }
+    }
+
+    #[test]
+    fn test_digits_to_i128_boundary() {
+        // 38 nines is under i128::MAX (~1.7e38 vs 9.99e37); the head-only path parses it.
+        let d38 = "9".repeat(38);
+        assert_eq!(
+            digits_to_i128(d38.as_bytes()),
+            Some(99_999_999_999_999_999_999_999_999_999_999_999_999_i128)
+        );
+        // 39 nines overflows i128 in the tail-checked step.
+        let d39 = "9".repeat(39);
+        assert_eq!(digits_to_i128(d39.as_bytes()), None);
+        // 40 characters that reduce to a small value once the leading zero(s) are seen: the
+        // head-only accumulator must not lose bits on 38 zeros followed by two digits.
+        let z38_plus = format!("{}42", "0".repeat(38));
+        assert_eq!(digits_to_i128(z38_plus.as_bytes()), Some(42));
+    }
+
+    #[test]
+    fn test_parse_string_to_decimal_boundary() {
+        // 38-digit integral parses (fits i128).
+        let s38 = "9".repeat(38);
+        assert!(parse_string_to_decimal(&s38, 38, 0).unwrap().is_some());
+        // 39-digit integral overflows i128, so returns the invalid_decimal_cast error.
+        let s39 = "9".repeat(39);
+        assert!(parse_string_to_decimal(&s39, 38, 0).is_err());
+        // Very long fractional part now returns Err via the invalid_decimal_cast path instead
+        // of panicking on 10_i128.pow(fractional_scale).
+        let over_long = format!("0.{}", "0".repeat(40));
+        assert!(parse_string_to_decimal(&over_long, 38, 10).is_err());
     }
 
     #[test]
