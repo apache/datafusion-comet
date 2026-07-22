@@ -19,6 +19,7 @@
 
 package org.apache.comet
 
+import java.io.File
 import java.nio.ByteBuffer
 import java.util.Collections
 
@@ -56,7 +57,18 @@ class CometIcebergEncryptionSuite
   private lazy val hiveWarehouse = {
     val base = java.nio.file.Paths.get(System.getProperty("java.io.tmpdir"))
     java.nio.file.Files.createDirectories(base)
-    java.nio.file.Files.createTempDirectory(base, "comet-hive-warehouse").toFile
+    val dir = java.nio.file.Files.createTempDirectory(base, "comet-hive-warehouse").toFile
+    createdWarehouse = dir
+    dir
+  }
+
+  // Captured on init rather than read from the lazy val so a run that never touched it (all tests
+  // skipped) creates nothing to delete.
+  private var createdWarehouse: File = _
+
+  override protected def afterAll(): Unit = {
+    try if (createdWarehouse != null) deleteRecursively(createdWarehouse)
+    finally super.afterAll()
   }
 
   override protected def sparkConf: SparkConf = {
