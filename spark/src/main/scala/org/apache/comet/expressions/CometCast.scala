@@ -44,10 +44,21 @@ object CometCast
   private[comet] val legacyCastComplexTypesToStringReason: String =
     "spark.sql.legacy.castComplexTypesToString.enabled=true is not supported natively"
 
+  private[comet] val nonDefaultTimeParserPolicyReason: String =
+    "spark.sql.legacy.timeParserPolicy is set to a non-CORRECTED value; the native " +
+      "string-to-datetime parser only implements CORRECTED semantics"
+
   private def legacyCastComplexTypesToString: Boolean =
     SQLConf.get
       .getConfString("spark.sql.legacy.castComplexTypesToString.enabled", "false")
       .toBoolean
+
+  // Non-CORRECTED policies (LEGACY, EXCEPTION) change string-to-date/timestamp parsing behavior in
+  // ways the native cast kernel does not replicate.
+  private def isNonDefaultTimeParserPolicy: Boolean =
+    !SQLConf.get
+      .getConfString("spark.sql.legacy.timeParserPolicy", "CORRECTED")
+      .equalsIgnoreCase("CORRECTED")
 
   def supportedTypes: Seq[DataType] =
     Seq(
@@ -264,6 +275,9 @@ object CometCast
         Compatible()
       case _: DecimalType =>
         Compatible()
+      case DataTypes.DateType | DataTypes.TimestampType | _: TimestampNTZType
+          if isNonDefaultTimeParserPolicy =>
+        Incompatible(Some(nonDefaultTimeParserPolicyReason))
       case DataTypes.DateType =>
         // https://github.com/apache/datafusion-comet/issues/327
         Compatible(Some("Only supports years between 262143 BC and 262142 AD"))

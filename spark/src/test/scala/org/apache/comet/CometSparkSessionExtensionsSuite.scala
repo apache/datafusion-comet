@@ -89,6 +89,15 @@ class CometSparkSessionExtensionsSuite extends CometTestBase {
     assert(isCometLoaded(conf))
     conf.unsetConf("spark.sql.legacy.allowNegativeScaleOfDecimal")
 
+    // Parquet legacy configs are checked per-scan by CometScanRule, not session-wide, so setting
+    // them here must NOT disable Comet for the whole session.
+    conf.setConfString("spark.sql.parquet.datetimeRebaseModeInRead", "LEGACY")
+    assert(isCometLoaded(conf))
+    conf.unsetConf("spark.sql.parquet.datetimeRebaseModeInRead")
+    conf.setConfString("spark.sql.legacy.parquet.datetimeRebaseModeInRead", "LEGACY")
+    assert(isCometLoaded(conf))
+    conf.unsetConf("spark.sql.legacy.parquet.datetimeRebaseModeInRead")
+
     // Opt-out: users can keep Comet enabled by disabling the fallback (compatibility not
     // guaranteed).
     conf.setConfString("spark.sql.legacy.charVarcharAsString", "true")

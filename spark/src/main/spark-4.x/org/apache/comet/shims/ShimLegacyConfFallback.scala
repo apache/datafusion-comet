@@ -27,9 +27,14 @@ import org.apache.spark.sql.internal.SQLConf
  * the hardcoded counterpart.
  *
  * Every key returned here uses the `spark.sql.legacy.*` name that the check compares against.
- * When a legacy key was removed in Spark 4 (the four parquet rebase aliases), we still ship the
- * legacy key -> Spark 4 non-legacy default; on Spark 4 the check is effectively inert because
- * `SQLConf.set` rejects removed keys, but the entry is kept so 3.x behaviour is consistent.
+ * When a legacy key was removed in Spark 4, we still ship the legacy key -> Spark 4 non-legacy
+ * default; on Spark 4 the check is effectively inert because `SQLConf.set` rejects removed keys,
+ * but the entry is kept so 3.x behaviour is consistent.
+ *
+ * Parquet-specific legacy configs (`spark.sql.(legacy.)?parquet.*RebaseMode*`,
+ * `spark.sql.legacy.parquet.nanosAsLong`) are intentionally NOT in this session-wide set. They
+ * are checked per-scan in [[org.apache.comet.rules.CometScanRule.parquetFallbackReason]] and only
+ * fall back the scan they affect, so non-Parquet queries in the same session stay on Comet.
  *
  * Note: `ConfigEntry` itself is `private[spark]`, so we never spell the type — every value below
  * is a direct method call on a `SQLConf` val, and the compiler resolves `defaultValueString`
@@ -62,16 +67,6 @@ trait ShimLegacyConfFallback {
       SQLConf.LEGACY_SETOPS_PRECEDENCE_ENABLED.defaultValueString,
     "spark.sql.legacy.viewSchemaCompensation" ->
       SQLConf.VIEW_SCHEMA_COMPENSATION.defaultValueString,
-    "spark.sql.legacy.parquet.datetimeRebaseModeInRead" ->
-      SQLConf.PARQUET_REBASE_MODE_IN_READ.defaultValueString,
-    "spark.sql.legacy.parquet.datetimeRebaseModeInWrite" ->
-      SQLConf.PARQUET_REBASE_MODE_IN_WRITE.defaultValueString,
-    "spark.sql.legacy.parquet.int96RebaseModeInRead" ->
-      SQLConf.PARQUET_INT96_REBASE_MODE_IN_READ.defaultValueString,
-    "spark.sql.legacy.parquet.int96RebaseModeInWrite" ->
-      SQLConf.PARQUET_INT96_REBASE_MODE_IN_WRITE.defaultValueString,
-    "spark.sql.legacy.parquet.nanosAsLong" ->
-      SQLConf.LEGACY_PARQUET_NANOS_AS_LONG.defaultValueString,
     "spark.sql.legacy.readFileSourceTableCacheIgnoreOptions" ->
       SQLConf.READ_FILE_SOURCE_TABLE_CACHE_IGNORE_OPTIONS.defaultValueString)
 }

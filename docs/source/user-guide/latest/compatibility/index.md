@@ -177,15 +177,24 @@ the legacy flag does not disable Comet for the whole session.
 | ----------------------------------------- | ---------------------- |
 | `spark.sql.legacy.viewSchemaCompensation` | `true`                 |
 
-**Parquet reader/writer semantics**
+**Parquet reader semantics (per-scan, not session-wide)**
 
-| Config key                                           | Comet-expected default |
-| ---------------------------------------------------- | ---------------------- |
-| `spark.sql.legacy.parquet.datetimeRebaseModeInRead`  | `CORRECTED`            |
-| `spark.sql.legacy.parquet.datetimeRebaseModeInWrite` | `CORRECTED`            |
-| `spark.sql.legacy.parquet.int96RebaseModeInRead`     | `CORRECTED`            |
-| `spark.sql.legacy.parquet.int96RebaseModeInWrite`    | `CORRECTED`            |
-| `spark.sql.legacy.parquet.nanosAsLong`               | `false`                |
+Parquet legacy read configs affect how bytes on disk map to Spark rows, so a single non-default
+value would only ever change results for queries that read Parquet files. Instead of disabling
+Comet for the whole session, `CometScanRule` checks these keys per scan and falls back the
+individual scan to Spark. Non-Parquet queries in the same session continue to run on Comet.
+
+Both the primary name and the `spark.sql.legacy.*` alias are monitored (Spark's `SQLConf.contains`
+does NOT follow `withAlternative` links). Write-side rebase configs are intentionally not part
+of this check: they only affect writes and would not change scan output.
+
+| Config key                                          | Comet-expected default |
+| --------------------------------------------------- | ---------------------- |
+| `spark.sql.parquet.datetimeRebaseModeInRead`        | `CORRECTED`            |
+| `spark.sql.legacy.parquet.datetimeRebaseModeInRead` | `CORRECTED`            |
+| `spark.sql.parquet.int96RebaseModeInRead`           | `CORRECTED`            |
+| `spark.sql.legacy.parquet.int96RebaseModeInRead`    | `CORRECTED`            |
+| `spark.sql.legacy.parquet.nanosAsLong`              | `false`                |
 
 **Cached-plan behavior on file-source scans**
 

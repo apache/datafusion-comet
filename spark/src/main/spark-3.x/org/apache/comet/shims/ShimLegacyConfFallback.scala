@@ -27,6 +27,11 @@ package org.apache.comet.shims
  * fallback rule is "when a legacy key is set to something other than the Spark 4 default, disable
  * Comet". This keeps 3.x and 4.x behaviourally aligned even though 3.x can't derive the defaults
  * live. See the 4.x shim for the reference-derived variant.
+ *
+ * Parquet-specific legacy configs (`spark.sql.(legacy.)?parquet.*RebaseMode*`,
+ * `spark.sql.legacy.parquet.nanosAsLong`) are intentionally NOT in this session-wide set. They
+ * are checked per-scan in [[org.apache.comet.rules.CometScanRule.parquetFallbackReason]] and only
+ * fall back the scan they affect, so non-Parquet queries in the same session stay on Comet.
  */
 trait ShimLegacyConfFallback {
 
@@ -43,10 +48,5 @@ trait ShimLegacyConfFallback {
     "spark.sql.legacy.disableMapKeyNormalization" -> "false",
     "spark.sql.legacy.setopsPrecedence.enabled" -> "false",
     "spark.sql.legacy.viewSchemaCompensation" -> "true",
-    "spark.sql.legacy.parquet.datetimeRebaseModeInRead" -> "CORRECTED",
-    "spark.sql.legacy.parquet.datetimeRebaseModeInWrite" -> "CORRECTED",
-    "spark.sql.legacy.parquet.int96RebaseModeInRead" -> "CORRECTED",
-    "spark.sql.legacy.parquet.int96RebaseModeInWrite" -> "CORRECTED",
-    "spark.sql.legacy.parquet.nanosAsLong" -> "false",
     "spark.sql.legacy.readFileSourceTableCacheIgnoreOptions" -> "false")
 }

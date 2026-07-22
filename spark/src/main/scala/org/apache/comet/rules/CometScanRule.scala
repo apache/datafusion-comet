@@ -204,6 +204,12 @@ case class CometScanRule(session: SparkSession)
         s"Native Parquet scan requires ${COMET_EXEC_ENABLED.key} to be enabled")
       return None
     }
+    CometScanRule.parquetFallbackReason(conf) match {
+      case Some(reason) =>
+        withFallbackReason(scanExec, reason)
+        return None
+      case None =>
+    }
     // Comet's native readers go through object_store, which only understands a fixed set of URL
     // schemes. A custom Hadoop FileSystem (e.g. registered via spark.hadoop.fs.<scheme>.impl) would
     // surface at execution time as `Generic URL error: Unable to recognise URL "..."`. Decline here
@@ -843,6 +849,40 @@ object CometScanRule extends Logging {
    */
   val SKIP_COMET_SCAN_TAG: org.apache.spark.sql.catalyst.trees.TreeNodeTag[Unit] =
     org.apache.spark.sql.catalyst.trees.TreeNodeTag[Unit]("comet.skipCometScan")
+
+  /**
+   * Parquet legacy configs that change how bytes on disk map to Spark rows/values. Set to a
+   * non-CORRECTED / non-false value, the native Parquet reader would silently return different
+   * results than Spark for the affected files. Comet monitors both the primary key
+   * (`spark.sql.parquet.*RebaseMode*`, Spark 3.2+) and its `spark.sql.legacy.*` alias since
+   * `SQLConf.contains` does NOT follow `withAlternative` links. Write-side rebase configs are
+   * intentionally omitted -- they only affect writes and shouldn't disqualify a scan.
+   */
+  private val parquetReadFallbackDefaults: Map[String, String] = Map(
+    "spark.sql.parquet.datetimeRebaseModeInRead" -> "CORRECTED",
+    "spark.sql.legacy.parquet.datetimeRebaseModeInRead" -> "CORRECTED",
+    "spark.sql.parquet.int96RebaseModeInRead" -> "CORRECTED",
+    "spark.sql.legacy.parquet.int96RebaseModeInRead" -> "CORRECTED",
+    "spark.sql.legacy.parquet.nanosAsLong" -> "false")
+
+  /**
+   * Returns a fallback reason when any monitored Parquet legacy config is explicitly set to a
+   * non-default value, or `None` otherwise. Called by [[nativeScan]] so the fallback only fires
+   * for the parquet scan it affects, not the whole session.
+   */
+  private[rules] def parquetFallbackReason(
+      conf: org.apache.spark.sql.internal.SQLConf): Option[String] = {
+    val triggered = parquetReadFallbackDefaults.collect {
+      case (key, safeDefault)
+          if conf.contains(key) && !conf.getConfString(key).equalsIgnoreCase(safeDefault) =>
+        key
+    }.toSeq.sorted
+    if (triggered.isEmpty) None
+    else
+      Some(
+        "Native Parquet scan does not implement the legacy semantics requested by " +
+          s"${triggered.mkString(", ")}; falling back to Spark for this scan.")
+  }
 
   /**
    * Single-pass validation of Iceberg FileScanTasks.
