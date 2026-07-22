@@ -691,17 +691,6 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
-  val COMET_USE_LAZY_MATERIALIZATION: ConfigEntry[Boolean] = conf(
-    "spark.comet.use.lazyMaterialization")
-    .internal()
-    .category(CATEGORY_PARQUET)
-    .doc(
-      "Whether to enable lazy materialization for Comet. When this is turned on, Comet will " +
-        "read Parquet data source lazily for string and binary columns. For filter operations, " +
-        "lazy materialization will improve read performance by skipping unused pages.")
-    .booleanConf
-    .createWithDefault(true)
-
   val COMET_ENABLE_PARTIAL_HASH_AGGREGATE: ConfigEntry[Boolean] =
     conf("spark.comet.testing.aggregate.partialMode.enabled")
       .internal()
