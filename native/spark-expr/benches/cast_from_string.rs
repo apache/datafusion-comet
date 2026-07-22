@@ -20,6 +20,8 @@ use arrow::datatypes::{DataType, Field, Schema};
 use criterion::{criterion_group, criterion_main, Criterion};
 use datafusion::physical_expr::{expressions::Column, PhysicalExpr};
 use datafusion_comet_spark_expr::{Cast, EvalMode, SparkCastOptions};
+use rand::rngs::StdRng;
+use rand::{RngExt, SeedableRng};
 use std::sync::Arc;
 
 fn criterion_benchmark(c: &mut Criterion) {
@@ -113,22 +115,22 @@ fn criterion_benchmark(c: &mut Criterion) {
         (EvalMode::Try, "try"),
     ] {
         let spark_cast_options = SparkCastOptions::new(mode, "", false);
-        let cast_to_decimal_38_10 = Cast::new(
-            expr.clone(),
-            DataType::Decimal128(38, 10),
-            spark_cast_options,
-            None,
-            None,
-        );
-
         let mut group = c.benchmark_group(format!("cast_string_to_decimal/{}", mode_name));
-        group.bench_function("decimal_38_10", |b| {
-            b.iter(|| {
-                cast_to_decimal_38_10
-                    .evaluate(&decimal_string_batch)
-                    .unwrap()
+        for (data_type, name) in [
+            (DataType::Decimal128(38, 10), "decimal_38_10"),
+            (DataType::Decimal128(18, 2), "decimal_18_2"),
+        ] {
+            let cast = Cast::new(
+                expr.clone(),
+                data_type,
+                spark_cast_options.clone(),
+                None,
+                None,
+            );
+            group.bench_function(name, |b| {
+                b.iter(|| cast.evaluate(&decimal_string_batch).unwrap());
             });
-        });
+        }
         group.finish();
     }
 }
@@ -184,8 +186,9 @@ fn create_decimal_string_batch() -> RecordBatch {
 /// Create batch with decimal strings for string-to-decimal cast perf evaluation
 fn create_decimal_cast_string_batch() -> RecordBatch {
     let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Utf8, true)]));
+    let mut rng = StdRng::seed_from_u64(42);
     let mut b = StringBuilder::new();
-    for i in 0..1000 {
+    for i in 0..8192 {
         if i % 10 == 0 {
             b.append_null();
         } else {
@@ -193,30 +196,32 @@ fn create_decimal_cast_string_batch() -> RecordBatch {
             match i % 5 {
                 0 => {
                     // gen simple decimals (ex :  "123.45"
-                    let int_part: u32 = rand::random::<u32>() % 1000000;
-                    let dec_part: u32 = rand::random::<u32>() % 100000;
+                    let int_part = rng.random_range(0..1_000_000u32);
+                    let dec_part = rng.random_range(0..100_000u32);
                     b.append_value(format!("{}.{}", int_part, dec_part));
                 }
                 1 => {
                     // gen scientific notation like "123e5"
-                    let mantissa: u32 = rand::random::<u32>() % 1000;
-                    let exp: i8 = (rand::random::<i8>() % 10).abs();
-                    b.append_value(format!("{}.{}E{}", mantissa / 100, mantissa % 100, exp));
+                    b.append_value(format!(
+                        "{}.{}E{}",
+                        rng.random_range(0..10u32),
+                        rng.random_range(0..100u32),
+                        rng.random_range(0..10u32)
+                    ));
                 }
                 2 => {
                     // Negative numbers
-                    let int_part: u32 = rand::random::<u32>() % 1000000;
-                    let dec_part: u32 = rand::random::<u32>() % 100000;
+                    let int_part = rng.random_range(0..1_000_000u32);
+                    let dec_part = rng.random_range(0..100_000u32);
                     b.append_value(format!("-{}.{}", int_part, dec_part));
                 }
                 3 => {
                     // Ints only
-                    let val: i32 = rand::random::<i32>() % 1000000;
-                    b.append_value(format!("{}", val));
+                    b.append_value(format!("{}", rng.random_range(-1_000_000..1_000_000i32)));
                 }
                 _ => {
                     // Small decimals (ex : 0.001)
-                    let dec_part: u32 = rand::random::<u32>() % 100000;
+                    let dec_part = rng.random_range(0..100_000u32);
                     b.append_value(format!("0.{:05}", dec_part));
                 }
             }

@@ -37,9 +37,9 @@
 
 ## array_compact
 
-- Spark 3.4.3 (audited 2026-05-27): `RuntimeReplaceable` -> `ArrayFilter(arr, IsNotNull(lambda))`. Comet receives the rewritten form, dispatches through `CometArrayFilter`, which delegates back to `CometArrayCompact.convert` for the actual proto emission. The native path uses Comet's `spark_array_compact` UDF rather than DataFusion's `array_remove_all` because DataFusion 53 changed `array_remove_all`'s NULL semantics.
+- Spark 3.4.3 (audited 2026-05-27): `RuntimeReplaceable` -> `ArrayFilter(arr, IsNotNull(lambda))`. Comet receives the rewritten form, dispatches through `CometArrayFilter`, which emits a call to DataFusion's built-in `array_compact` (from `datafusion-functions-nested`) via `CometScalarFunction("array_compact")`.
 - Spark 3.5.8 (audited 2026-05-27): identical to 3.4.3.
-- Spark 4.0.1 (audited 2026-05-27): the replacement is wrapped in `KnownNotContainsNull(...)` (analysis-only hint, no semantic change).
+- Spark 4.0.1 (audited 2026-05-27): the replacement is wrapped in `KnownNotContainsNull(...)`. The 4.x `Spark4xCometExprShim` strips the wrapper and emits the same `array_compact` call.
 - Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
 
 ## array_contains
@@ -128,7 +128,7 @@
 ## array_repeat
 
 - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
-- Spark 3.5.8 (audited 2026-05-27): baseline. `ArrayRepeat(left, right) extends BinaryExpression with ExpectsInputTypes`; `inputTypes = Seq(AnyDataType, IntegerType)`. NULL count yields NULL; count <= 0 yields empty array; count > `MAX_ROUNDED_ARRAY_LENGTH` throws at runtime. Comet wraps the call in `CaseWhen(IsNotNull(right), array_repeat(...), null)`.
+- Spark 3.5.8 (audited 2026-05-27): baseline. `ArrayRepeat(left, right) extends BinaryExpression with ExpectsInputTypes`; `inputTypes = Seq(AnyDataType, IntegerType)`. NULL count yields NULL; count <= 0 yields empty array; count > `MAX_ROUNDED_ARRAY_LENGTH` throws at runtime. Wired as `CometScalarFunction("array_repeat")` against `datafusion-spark`'s `SparkArrayRepeat`, which returns NULL for NULL count and repeats NULL elements (matching Spark).
 - Spark 4.0.1 (audited 2026-05-27): error message uses `createArrayWithElementsExceedLimitError(prettyName, count)`; semantics unchanged.
 - Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
 
