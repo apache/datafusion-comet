@@ -141,12 +141,9 @@ class CometUniffleShuffleBlockIterator(
   override def getCurrentBlockLength: Int = currentBlockLength
 
   override def close(): Unit = {
-    if (current != null) {
-      current = null
-    }
-    if (dataBuf != null) {
-      dataBuf = ByteBuffer.allocateDirect(INITIAL_BUFFER_SIZE)
-    }
+    current = null
+    dataBuf = null
+    currentBlockLength = 0
     if (currentShuffleReadClient != null) {
       currentShuffleReadClient.close()
       currentShuffleReadClient = null

@@ -110,6 +110,9 @@ class CometUniffleShuffleReader[K, C](
       }
 
       override def next(): (Int, ColumnarBatch) = {
+        if (!hasNext) {
+          throw new NoSuchElementException
+        }
         lastHasNext = None
         if (currentBatch != null) {
           currentBatch.close()
