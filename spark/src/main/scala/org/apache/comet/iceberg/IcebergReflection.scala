@@ -19,6 +19,8 @@
 
 package org.apache.comet.iceberg
 
+import java.util.Locale
+
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.SparkSession
 
@@ -78,6 +80,7 @@ object IcebergReflection extends Logging {
    */
   object FileFormats {
     val PARQUET = "PARQUET"
+    val PUFFIN = "PUFFIN"
   }
 
   /**
@@ -154,21 +157,6 @@ object IcebergReflection extends Logging {
     try {
       val contentFileClass = loadClass(ClassNames.CONTENT_FILE)
       extractFileLocation(contentFileClass, file)
-    } catch {
-      case _: Exception => None
-    }
-  }
-
-  /** The file format of a ContentFile (data or delete file), e.g. "PARQUET", "AVRO", "ORC". */
-  def getFileFormat(file: Any): Option[String] = {
-    try {
-      // Resolve format() on the public ContentFile interface. Iceberg's concrete file impls are
-      // package-private, so a method resolved on the concrete class throws IllegalAccessException
-      // when invoked.
-      // TODO callers in a loop (e.g. validateIcebergFileScanTasks) already hold a cached
-      // contentFileClass; add an overload that takes it to avoid reloading per file.
-      val contentFileClass = loadClass(ClassNames.CONTENT_FILE)
-      Some(contentFileClass.getMethod("format").invoke(file).toString)
     } catch {
       case _: Exception => None
     }
@@ -734,6 +722,68 @@ object IcebergReflection extends Logging {
     }
 
     unsupportedTypes.toList
+  }
+
+  private val UnsupportedV3Types: Set[String] =
+    Set("timestamp_ns", "timestamptz_ns", "variant", "geometry", "geography")
+
+  def findUnsupportedV3Types(schema: Any): Set[String] =
+    findUnsupportedIcebergTypes(schema, UnsupportedV3Types)
+
+  private def findUnsupportedIcebergTypes(
+      schema: Any,
+      unsupportedTypeNames: Set[String]): Set[String] = {
+    import scala.jdk.CollectionConverters._
+
+    val unsupportedTypes = scala.collection.mutable.Set[String]()
+
+    def recordType(icebergType: Any): Unit = {
+      val typeStr = icebergType.toString.toLowerCase(Locale.ROOT)
+      unsupportedTypeNames.foreach { typeName =>
+        if (typeStr == typeName || typeStr.startsWith(s"$typeName(")) {
+          unsupportedTypes += typeName
+        }
+      }
+    }
+
+    def visitType(icebergType: Any): Unit = {
+      recordType(icebergType)
+
+      val typeClass = icebergType.getClass
+      val simpleName = typeClass.getSimpleName
+
+      if (simpleName.contains("StructType")) {
+        val fieldsMethod = typeClass.getMethod("fields")
+        val fields = fieldsMethod.invoke(icebergType).asInstanceOf[java.util.List[_]]
+        fields.asScala.foreach { field =>
+          val fieldType = field.getClass.getMethod("type").invoke(field)
+          visitType(fieldType)
+        }
+      } else if (simpleName.contains("ListType")) {
+        visitType(typeClass.getMethod("elementType").invoke(icebergType))
+      } else if (simpleName.contains("MapType")) {
+        visitType(typeClass.getMethod("keyType").invoke(icebergType))
+        visitType(typeClass.getMethod("valueType").invoke(icebergType))
+      }
+    }
+
+    try {
+      val columnsMethod = schema.getClass.getMethod("columns")
+      val columns = columnsMethod.invoke(schema).asInstanceOf[java.util.List[_]]
+
+      columns.asScala.foreach { column =>
+        try {
+          visitType(column.getClass.getMethod("type").invoke(column))
+        } catch {
+          case _: Exception =>
+        }
+      }
+    } catch {
+      case e: Exception =>
+        logWarning(s"Failed to scan schema for V3 types: ${e.getMessage}")
+    }
+
+    unsupportedTypes.toSet
   }
 }
 

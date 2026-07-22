@@ -464,10 +464,10 @@ case class CometScanRule(session: SparkSession)
 
         val formatVersionSupported = IcebergReflection.getFormatVersion(metadata.table) match {
           case Some(formatVersion) =>
-            if (formatVersion > 2) {
+            if (formatVersion > 3) {
               fallbackReasons += "Iceberg table format version " +
                 s"$formatVersion is not supported. " +
-                "Comet only supports Iceberg table format V1 and V2"
+                "Comet supports Iceberg table format V1, V2, and V3"
               false
             } else {
               true
@@ -597,30 +597,44 @@ case class CometScanRule(session: SparkSession)
             true
         }
 
+        val encryptedFilesSupported = {
+          if (taskValidation.hasEncryptedFiles) {
+            fallbackReasons += "Iceberg encrypted data/delete files are not yet supported"
+            false
+          } else {
+            true
+          }
+        }
+
         // Check for unsupported struct types in delete files
         val deleteFileTypesSupported = {
           var hasUnsupportedDeletes = false
 
           try {
+            if (taskValidation.hasPuffinDeleteFiles) {
+              hasUnsupportedDeletes = true
+              fallbackReasons +=
+                "Iceberg deletion vectors are not yet supported by iceberg-rust. " +
+                  "Puffin delete files must fall back to Spark."
+            }
+
+            if (taskValidation.unsupportedDeleteFormats.nonEmpty) {
+              hasUnsupportedDeletes = true
+              val unsupportedFormats = taskValidation.unsupportedDeleteFormats.toSeq.sorted
+              fallbackReasons +=
+                "Delete file formats not supported by iceberg-rust: " +
+                  s"${unsupportedFormats.mkString(", ")}. " +
+                  "Only Parquet delete files can be applied natively."
+            }
+
+            if (taskValidation.hasUnknownDeleteFileFormat) {
+              hasUnsupportedDeletes = true
+              fallbackReasons += "Could not determine Iceberg delete file format"
+            }
+
             if (!taskValidation.deleteFiles.isEmpty) {
               val historicSchemas = IcebergReflection.getAllSchemas(metadata.table)
               taskValidation.deleteFiles.asScala.foreach { deleteFile =>
-                // iceberg-rust only reads Parquet delete files. Avro/ORC positional or
-                // equality deletes must be applied by Spark.
-                IcebergReflection.getFileFormat(deleteFile) match {
-                  case Some(fmt) if fmt.equalsIgnoreCase(IcebergReflection.FileFormats.PARQUET) =>
-                  case Some(fmt) =>
-                    hasUnsupportedDeletes = true
-                    fallbackReasons +=
-                      s"Delete file format '$fmt' is not supported by iceberg-rust. " +
-                        "Only Parquet delete files can be applied natively."
-                  case None =>
-                    hasUnsupportedDeletes = true
-                    logWarning(
-                      "Could not determine Iceberg delete file format; falling back to Spark")
-                    fallbackReasons += "Could not determine Iceberg delete file format"
-                }
-
                 val equalityFieldIds = IcebergReflection.getEqualityFieldIds(deleteFile)
 
                 if (!equalityFieldIds.isEmpty) {
@@ -675,18 +689,35 @@ case class CometScanRule(session: SparkSession)
           !hasUnsupportedDeletes
         }
 
+        val v3FeaturesSupported = IcebergReflection.getFormatVersion(metadata.table) match {
+          case Some(formatVersion) if formatVersion >= 3 =>
+            var allV3FeaturesSupported = true
+
+            try {
+              val unsupportedTypes = IcebergReflection.findUnsupportedV3Types(metadata.scanSchema)
+              if (unsupportedTypes.nonEmpty) {
+                fallbackReasons += "Iceberg V3 types not yet supported: " +
+                  s"${unsupportedTypes.mkString(", ")}. " +
+                  "Tables with these types will fall back to Spark"
+                allV3FeaturesSupported = false
+              }
+            } catch {
+              case e: Exception =>
+                fallbackReasons += "Iceberg reflection failure: Could not check for " +
+                  s"V3 types: ${e.getMessage}"
+                allV3FeaturesSupported = false
+            }
+
+            allV3FeaturesSupported
+          case _ => true
+        }
+
         // Check that all DPP subqueries use InSubqueryExec which we know how to handle.
-        // Future Spark versions might introduce new subquery types we haven't tested.
         val dppSubqueriesSupported = {
           val unsupportedSubqueries = scanExec.runtimeFilters.collect {
             case DynamicPruningExpression(e) if !e.isInstanceOf[InSubqueryExec] =>
               e.getClass.getSimpleName
           }
-          // Check for multi-index DPP which we don't support yet.
-          // SPARK-46946 changed SubqueryAdaptiveBroadcastExec from index: Int to indices: Seq[Int]
-          // as a preparatory refactor for future features (Null Safe Equality DPP, multiple
-          // equality predicates). Currently indices always has one element, but future Spark
-          // versions might use multiple indices.
           val multiIndexDpp = scanExec.runtimeFilters.exists {
             case DynamicPruningExpression(e: InSubqueryExec) =>
               e.plan match {
@@ -702,7 +733,6 @@ case class CometScanRule(session: SparkSession)
                 "CometIcebergNativeScanExec only supports InSubqueryExec for DPP"
             false
           } else if (multiIndexDpp) {
-            // See SPARK-46946 for context on multi-index DPP
             fallbackReasons +=
               "Multi-index DPP (indices.length > 1) is not yet supported. " +
                 "See SPARK-46946 for context."
@@ -714,8 +744,8 @@ case class CometScanRule(session: SparkSession)
 
         if (schemaSupported && fileIOCompatible && formatVersionSupported &&
           taskValidation.allParquet && allSupportedFilesystems && partitionTypesSupported &&
-          complexTypePredicatesSupported && transformFunctionsSupported &&
-          deleteFileTypesSupported && dppSubqueriesSupported) {
+          complexTypePredicatesSupported && transformFunctionsSupported && encryptedFilesSupported &&
+          deleteFileTypesSupported && v3FeaturesSupported && dppSubqueriesSupported) {
           CometBatchScanExec(
             scanExec.clone().asInstanceOf[BatchScanExec],
             runtimeFilters = scanExec.runtimeFilters,
@@ -867,6 +897,12 @@ object CometScanRule extends Logging {
     val residualMethod = contentScanTaskClass.getMethod("residual")
     val deletesMethod = fileScanTaskClass.getMethod("deletes")
     val termMethod = unboundPredicateClass.getMethod("term")
+    val keyMetadataMethod =
+      try {
+        Some(contentFileClass.getMethod("keyMetadata"))
+      } catch {
+        case _: NoSuchMethodException => None
+      }
 
     val supportedSchemes =
       Set("file", "s3", "s3a", "gs", "gcs", "oss", "abfss", "abfs", "wasbs", "wasb")
@@ -875,14 +911,30 @@ object CometScanRule extends Logging {
     val unsupportedSchemes = mutable.Set[String]()
     var nonIdentityTransform: Option[String] = None
     val deleteFiles = new java.util.ArrayList[Any]()
+    val unsupportedDeleteFormats = mutable.Set[String]()
+    var hasPuffinDeleteFiles = false
+    var hasUnknownDeleteFileFormat = false
+    var hasEncryptedFiles = false
+
+    def hasKeyMetadata(file: Any): Boolean =
+      keyMetadataMethod.exists { method =>
+        try {
+          method.invoke(file) != null
+        } catch {
+          case _: Exception => true
+        }
+      }
 
     tasks.asScala.foreach { task =>
       val dataFile = fileMethod.invoke(task)
 
       // File format check
-      val fileFormat = formatMethod.invoke(dataFile).toString
+      val fileFormat = formatMethod.invoke(dataFile).toString.toUpperCase(Locale.ROOT)
       if (fileFormat != IcebergReflection.FileFormats.PARQUET) {
         allParquet = false
+      }
+      if (hasKeyMetadata(dataFile)) {
+        hasEncryptedFiles = true
       }
 
       // Filesystem scheme check for data file
@@ -927,6 +979,22 @@ object CometScanRule extends Logging {
           deleteFiles.addAll(deletes)
 
           deletes.asScala.foreach { deleteFile =>
+            try {
+              val deleteFormat =
+                formatMethod.invoke(deleteFile).toString.toUpperCase(Locale.ROOT)
+              if (deleteFormat == IcebergReflection.FileFormats.PUFFIN) {
+                hasPuffinDeleteFiles = true
+              } else if (deleteFormat != IcebergReflection.FileFormats.PARQUET) {
+                unsupportedDeleteFormats += deleteFormat
+              }
+            } catch {
+              case _: Exception => hasUnknownDeleteFileFormat = true
+            }
+
+            if (hasKeyMetadata(deleteFile)) {
+              hasEncryptedFiles = true
+            }
+
             IcebergReflection.extractFileLocation(contentFileClass, deleteFile).foreach {
               deletePath =>
                 try {
@@ -950,7 +1018,11 @@ object CometScanRule extends Logging {
       allParquet,
       unsupportedSchemes.toSet,
       nonIdentityTransform,
-      deleteFiles)
+      deleteFiles,
+      unsupportedDeleteFormats.toSet,
+      hasPuffinDeleteFiles,
+      hasUnknownDeleteFileFormat,
+      hasEncryptedFiles)
   }
 }
 
@@ -961,4 +1033,8 @@ case class IcebergTaskValidationResult(
     allParquet: Boolean,
     unsupportedSchemes: Set[String],
     nonIdentityTransform: Option[String],
-    deleteFiles: java.util.List[_])
+    deleteFiles: java.util.List[_],
+    unsupportedDeleteFormats: Set[String],
+    hasPuffinDeleteFiles: Boolean,
+    hasUnknownDeleteFileFormat: Boolean,
+    hasEncryptedFiles: Boolean)
