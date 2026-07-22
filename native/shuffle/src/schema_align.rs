@@ -307,28 +307,27 @@ mod tests {
         batches
     }
 
-    /// `width_bucket`: catalyst declares `Int64`, DataFusion produces `Int32`. A top-level cast.
+    /// `width_bucket`: since DataFusion 54.1.0 (apache/datafusion#23087) `SparkWidthBucket`
+    /// returns `Int64`, matching the `Int64` catalyst declares. The former Int32->Int64 drift is
+    /// gone, so the writer sees identical types and `try_new_or_passthrough` hands the child back
+    /// unwrapped. This passthrough assertion records that the width_bucket workaround has retired.
     #[tokio::test]
-    async fn aligns_width_bucket_int32_to_int64() {
-        let child_schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
+    async fn width_bucket_no_longer_drifts() {
+        let child_schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int64, false)]));
         let batch = RecordBatch::try_new(
             child_schema,
-            vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
+            vec![Arc::new(Int64Array::from(vec![1, 2, 3]))],
         )
         .unwrap();
         let expected = Arc::new(Schema::new(vec![Field::new("a", DataType::Int64, false)]));
 
+        let child = memory_child(batch);
         let aligned =
-            SchemaAlignExec::try_new_or_passthrough(memory_child(batch), &expected).unwrap();
-        assert_eq!(aligned.schema().field(0).data_type(), &DataType::Int64);
-
-        let out = collect_one_partition(aligned).await;
-        let col = out[0]
-            .column(0)
-            .as_any()
-            .downcast_ref::<Int64Array>()
-            .unwrap();
-        assert_eq!(col.values(), &[1, 2, 3]);
+            SchemaAlignExec::try_new_or_passthrough(Arc::clone(&child), &expected).unwrap();
+        assert!(
+            Arc::ptr_eq(&child, &aligned),
+            "identical schemas must pass through without a SchemaAlignExec wrapper"
+        );
     }
 
     /// `date_trunc`: catalyst declares `Timestamp(us, "UTC")`, DataFusion produces `Timestamp(us)`
