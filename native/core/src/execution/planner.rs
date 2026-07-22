@@ -4814,7 +4814,6 @@ mod tests {
 
     #[test]
     fn test_array_repeat() {
-        // Use built-in ArrayRepeat, not SparkArrayRepeat (see jni_api.rs comment)
         let session_ctx = SessionContext::new();
         let task_ctx = session_ctx.task_ctx();
         let planner = PhysicalPlanner::new(Arc::from(session_ctx), 0);
