@@ -135,8 +135,7 @@ public final class CometShuffleExternalSorter implements CometShuffleChecksumSup
     this.partitionChecksums = createPartitionChecksums(numPartitions, conf);
     this.checksumAlgorithm = getChecksumAlgorithm(conf);
     this.compressionCodec = CometConf$.MODULE$.COMET_SHUFFLE_COMPRESSION_CODEC().get();
-    this.compressionLevel =
-        (int) CometConf$.MODULE$.COMET_SHUFFLE_COMPRESSION_ZSTD_LEVEL().get();
+    this.compressionLevel = (int) CometConf$.MODULE$.COMET_SHUFFLE_COMPRESSION_ZSTD_LEVEL().get();
 
     this.initialSize = initialSize;
     this.tracingEnabled = (boolean) CometConf$.MODULE$.COMET_TRACING_ENABLED().get();
