@@ -83,9 +83,22 @@ case object CometPlanAdaptiveDynamicPruningFilters
           if icebergScan.runtimeFilters.exists(hasCometSAB) =>
         logDebug("Converting AQE DPP for CometIcebergNativeScanExec")
         convertIcebergScanDPP(icebergScan, plan)
+      // Comet scans whose DPP filters live in a @transient field (the contrib's
+      // CometDeltaNativeScanExec). transformExpressions/makeCopy can't rewrite
+      // them, and a rewritten copy is orphaned when the enclosing native block
+      // is rebuilt (#3510). The scan's `withDynamicPruningFilters` installs the
+      // rewrite in place and returns `this`, so it lands on the executing
+      // instance.
+      case p: CometScanWithPlanData if p.dynamicPruningFilters.exists(hasCometSAB) =>
+        logDebug(s"Converting AQE DPP for ${p.getClass.getSimpleName} in place")
+        p.withDynamicPruningFilters(p.dynamicPruningFilters.map(f => convertFilter(f, plan)))
       case p: SparkPlan
           if !p.isInstanceOf[CometNativeScanExec]
             && !p.isInstanceOf[CometIcebergNativeScanExec]
+            // Contrib trait scans handle their own DPP in the arm above. Exclude them here too so
+            // a trait scan with a wrapped SAB but empty `dynamicPruningFilters` isn't misrouted to
+            // the non-Comet path (which mutates expressions in place via makeCopy).
+            && !p.isInstanceOf[CometScanWithPlanData]
             && hasWrappedSAB(p) =>
         logDebug(s"Converting AQE DPP for non-Comet node: ${p.nodeName}")
         convertNonCometNodeDPP(p, plan)

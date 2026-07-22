@@ -22,7 +22,7 @@ package org.apache.comet.serde
 import scala.annotation.tailrec
 import scala.jdk.CollectionConverters._
 
-import org.apache.spark.sql.catalyst.expressions.{And, ArrayAggregate, ArrayAppend, ArrayContains, ArrayExcept, ArrayExists, ArrayFilter, ArrayForAll, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayMin, ArrayPosition, ArrayRemove, ArrayRepeat, ArraySort, ArraysOverlap, ArraysZip, ArrayTransform, ArrayUnion, Attribute, Cast, CreateArray, ElementAt, EmptyRow, Expression, Flatten, GetArrayItem, IsNotNull, Literal, Reverse, Sequence, Size, Slice, SortArray, ZipWith}
+import org.apache.spark.sql.catalyst.expressions.{And, ArrayAggregate, ArrayAppend, ArrayContains, ArrayExcept, ArrayExists, ArrayFilter, ArrayForAll, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayMin, ArrayPosition, ArrayRemove, ArrayRepeat, ArraySort, ArraysOverlap, ArraysZip, ArrayTransform, ArrayUnion, Attribute, Cast, CreateArray, ElementAt, EmptyRow, Expression, Flatten, GetArrayItem, IsNotNull, LambdaFunction, Literal, NamedLambdaVariable, Reverse, Sequence, Size, Slice, SortArray, ZipWith}
 import org.apache.spark.sql.catalyst.util.GenericArrayData
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
@@ -120,21 +120,13 @@ object CometSortArray extends CometExpressionSerde[SortArray] with CodegenDispat
     "When `" + CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key + "=true`, sorting on" +
       " floating-point types is not 100% compatible with Spark")
 
-  override def getUnsupportedReasons(): Seq[String] = Seq(
-    "Nested arrays with `Struct` or `Null` child values are not supported natively")
-
-  private def supportedSortArrayElementType(
-      dt: DataType,
-      nestedInArray: Boolean = false): Boolean = {
+  private def supportedSortArrayElementType(dt: DataType): Boolean = {
     dt match {
-      // DataFusion's array_sort compares nested arrays through Arrow's rank kernel.
-      // That kernel does not support Struct or Null child values,
-      // so array<array<struct<...>>> and array<array<null>> would fail at runtime.
-      case _: NullType if !nestedInArray =>
+      case _: NullType =>
         true
       case ArrayType(elementType, _) =>
-        supportedSortArrayElementType(elementType, nestedInArray = true)
-      case StructType(fields) if !nestedInArray =>
+        supportedSortArrayElementType(elementType)
+      case StructType(fields) =>
         fields.forall(f => supportedSortArrayElementType(f.dataType))
       case _ =>
         supportedScalarSortElementType(dt)
@@ -729,10 +721,12 @@ object CometArrayFilter extends CometExpressionSerde[ArrayFilter] {
       expr: ArrayFilter,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    expr.function.children.headOption match {
-      case Some(_: IsNotNull) =>
-        // Fast path: `array_compact` lowers to `filter(arr, x -> x is not null)`. Use the native
-        // array_compact serde to avoid the per-batch JNI cost of the codegen dispatcher.
+    expr.function match {
+      case LambdaFunction(IsNotNull(v: NamedLambdaVariable), Seq(lambdaVar), _)
+          if v.exprId == lambdaVar.exprId =>
+        // Fast path: Catalyst desugars `array_compact` to `filter(arr, x -> x IS NOT NULL)`, so
+        // restore the native serde here (avoids per-batch JNI). Guard requires the IsNotNull
+        // operand to be the lambda variable itself, not a captured column (#4830).
         CometArrayCompact.convert(expr, inputs, binding)
       case _ =>
         // General lambda: run Spark's own evaluation through the codegen dispatcher so the result
@@ -745,15 +739,11 @@ object CometArrayFilter extends CometExpressionSerde[ArrayFilter] {
 
 object CometSize extends CometExpressionSerde[Size] {
 
-  override def getUnsupportedReasons(): Seq[String] = Seq(
-    "Only supports `ArrayType` input; `MapType` input is not supported")
-
   override def getSupportLevel(expr: Size): SupportLevel = {
     expr.child.dataType match {
       case _: ArrayType => Compatible()
-      case _: MapType => Unsupported(Some("size does not support map inputs"))
+      case _: MapType => Compatible()
       case other =>
-        // this should be unreachable because Spark only supports map and array inputs
         Unsupported(Some(s"Unsupported child data type: $other"))
     }
   }

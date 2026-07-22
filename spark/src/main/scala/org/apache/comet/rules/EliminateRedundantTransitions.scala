@@ -22,13 +22,17 @@ package org.apache.comet.rules
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.util.sideBySide
-import org.apache.spark.sql.comet.{CometCollectLimitExec, CometColumnarToRowExec, CometNativeColumnarToRowExec, CometNativeWriteExec, CometPlan, CometSparkToColumnarExec}
+import org.apache.spark.sql.comet.{CometCollectLimitExec, CometColumnarToRowExec, CometMapInBatchExec, CometNativeColumnarToRowExec, CometNativeWriteExec, CometPlan, CometSparkToColumnarExec}
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometShuffleExchangeExec}
+import org.apache.spark.sql.comet.shims.{MapInBatchInfo, ShimCometMapInBatch}
 import org.apache.spark.sql.execution.{ColumnarToRowExec, RowToColumnarExec, SparkPlan}
 import org.apache.spark.sql.execution.adaptive.QueryStageExec
 import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
 
 import org.apache.comet.CometConf
+import org.apache.comet.CometSparkSessionExtensions.withInfo
+import org.apache.comet.serde.NativeOptIn
+import org.apache.comet.shims.ShimSQLConf
 
 // This rule is responsible for eliminating redundant transitions between row-based and
 // columnar-based operators for Comet. Currently, three potential redundant transitions are:
@@ -51,7 +55,10 @@ import org.apache.comet.CometConf
 // various reasons) or Spark requests row-based output such as a `collect` call. Spark will adds
 // another `ColumnarToRowExec` on top of `CometSparkToColumnarExec`. In this case, the pair could
 // be removed.
-case class EliminateRedundantTransitions(session: SparkSession) extends Rule[SparkPlan] {
+case class EliminateRedundantTransitions(session: SparkSession)
+    extends Rule[SparkPlan]
+    with ShimCometMapInBatch
+    with ShimSQLConf {
 
   private lazy val showTransformations = CometConf.COMET_EXPLAIN_TRANSFORMATIONS.get()
 
@@ -98,6 +105,38 @@ case class EliminateRedundantTransitions(session: SparkSession) extends Rule[Spa
       case CometNativeColumnarToRowExec(sparkToColumnar: CometSparkToColumnarExec) =>
         sparkToColumnar.child
       case CometSparkToColumnarExec(child: CometSparkToColumnarExec) => child
+      // Replace MapInBatchExec (PythonMapInArrowExec / MapInArrowExec / MapInPandasExec) that has
+      // a ColumnarToRow child with CometMapInBatchExec, eliminating the input and output
+      // UnsafeProjection copies and keeping the stage columnar. The matchers are
+      // version-shimmed: Spark 3.4 / 3.5 return None (they lack the required APIs) and Spark
+      // 4.1+ matches the renamed `MapInArrowExec`.
+      //
+      // Falls back to vanilla Spark when `spark.sql.execution.arrow.useLargeVarTypes` is enabled:
+      // CometArrowPythonRunnerBase.copyVector does raw `setBytes` on each Arrow buffer, but Comet's
+      // source string/binary vectors always use 4-byte offsets while the destination root is
+      // allocated with 8-byte offsets when this conf is on. The buffer counts match but the
+      // offset width does not, so a direct memcpy would corrupt the offsets.
+      //
+      // `EligibleMapInBatch` matches whenever the operator would run natively if the feature were
+      // enabled. When it is disabled (the default) we leave the vanilla Spark operator in place
+      // but annotate it with a non-fallback `[COMET-INFO]` hint so the user knows the native path
+      // exists behind a config flag.
+      case p @ EligibleMapInBatch(info, columnarChild) =>
+        if (CometConf.COMET_PYARROW_UDF_ENABLED.get()) {
+          CometMapInBatchExec(
+            info.func,
+            info.output,
+            columnarChild,
+            info.isBarrier,
+            info.pythonEvalType)
+        } else {
+          withInfo(
+            p,
+            NativeOptIn.message(
+              "PyArrow UDFs (mapInArrow/mapInPandas)",
+              CometConf.COMET_PYARROW_UDF_ENABLED.key))
+        }
+
       // Spark adds `RowToColumnar` under Comet columnar shuffle. But it's redundant as the
       // shuffle takes row-based input.
       case s @ CometShuffleExchangeExec(
@@ -127,6 +166,48 @@ case class EliminateRedundantTransitions(session: SparkSession) extends Rule[Spa
       case c: QueryStageExec => hasCometNativeChild(c.plan)
       case c: ReusedExchangeExec => hasCometNativeChild(c.child)
       case _ => op.exists(_.isInstanceOf[CometPlan])
+    }
+  }
+
+  /**
+   * If the given plan is a Comet ColumnarToRow transition, returns the columnar child the Python
+   * UDF operator can consume directly. By the time this rule runs the earlier
+   * `hasCometNativeChild` arm has already rewritten any `ColumnarToRowExec` over a Comet columnar
+   * source to one of the Comet variants, so vanilla `ColumnarToRowExec` cannot reach here on a
+   * Comet-driven plan and is intentionally not handled.
+   */
+  private def extractColumnarChild(plan: SparkPlan): Option[SparkPlan] = plan match {
+    case CometColumnarToRowExec(child) => Some(child)
+    case CometNativeColumnarToRowExec(child) => Some(child)
+    // Chained `mapInArrow(udf1).mapInArrow(udf2)`: by the time the outer operator is visited
+    // (transformUp is bottom-up) the inner one has already become a `CometMapInBatchExec`, which
+    // is itself columnar. There is no row transition between them to strip, so consume its
+    // columnar output directly. Its flattened output vectors are `CometVector`s, exactly what
+    // `CometMapInBatchExec`'s input path expects.
+    case child: CometMapInBatchExec => Some(child)
+    case _ => None
+  }
+
+  /**
+   * Matches the plans that could run natively as `CometMapInBatchExec`, independent of whether
+   * the `spark.comet.exec.pyarrowUdf.enabled` feature flag is set. The `transformUp` arm reads
+   * that flag to decide between rewriting the operator and merely annotating it with an opt-in
+   * hint. Single extractor so the matchers run once per visited plan. Returns `(info,
+   * columnarChild)` where `columnarChild` is the Comet columnar producer that
+   * `CometMapInBatchExec` will consume directly. Returns `None` (and the arm misses) when
+   * `useLargeVarTypes` forces the fallback, when the plan is not one of the version-shimmed
+   * MapInArrow / MapInPandas operators, or when the child is not a Comet columnar-to-row
+   * transition we can strip.
+   */
+  private object EligibleMapInBatch {
+    def unapply(plan: SparkPlan): Option[(MapInBatchInfo, SparkPlan)] = {
+      if (arrowUseLargeVarTypes(plan.conf)) {
+        None
+      } else {
+        matchMapInArrow(plan)
+          .orElse(matchMapInPandas(plan))
+          .flatMap(info => extractColumnarChild(info.child).map(child => (info, child)))
+      }
     }
   }
 

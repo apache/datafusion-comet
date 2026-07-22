@@ -23,7 +23,7 @@ import scala.collection.mutable.ListBuffer
 
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.expressions.{Divide, DoubleLiteral, EqualNullSafe, EqualTo, Expression, FloatLiteral, GreaterThan, GreaterThanOrEqual, KnownFloatingPointNormalized, LessThan, LessThanOrEqual, NamedExpression, Remainder}
-import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateMode, Final, Partial}
+import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateMode, Final, Partial, PartialMerge}
 import org.apache.spark.sql.catalyst.optimizer.NormalizeNaNAndZero
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.trees.TreeNodeTag
@@ -371,9 +371,14 @@ case class CometExecRule(session: SparkSession)
         op match {
           case _: CometPlan | _: AQEShuffleReadExec | _: BroadcastExchangeExec |
               _: BroadcastQueryStageExec | _: AdaptiveSparkPlanExec | _: ExecutedCommandExec |
-              _: V2CommandExec =>
+              _: V2CommandExec | _: WriteFilesExec =>
             // Some execs should never be replaced. We include
-            // these cases specially here so we do not add a misleading 'info' message
+            // these cases specially here so we do not add a misleading 'info' message.
+            // WriteFilesExec is always wrapped by DataWritingCommandExec (via Spark's V1Writes
+            // rule); the parent case converts the whole write to CometNativeWriteExec and
+            // unwraps WriteFilesExec inside convertToComet. Tagging WriteFilesExec here would
+            // produce a spurious "WriteFilesExec is not supported" fallback reason (and a
+            // warning when COMET_LOG_FALLBACK_REASONS=true) even when the write is fully native.
             op
           case _ =>
             // The operator was not converted to a Comet plan. Possible reasons for this happening:
@@ -568,7 +573,7 @@ case class CometExecRule(session: SparkSession)
     } else {
       val normalizedPlan = normalizePlan(plan)
 
-      val planWithJoinRewritten = if (CometConf.COMET_REPLACE_SMJ.get()) {
+      val planWithJoinRewritten = if (CometConf.COMET_FORCE_SHJ.get()) {
         normalizedPlan.transformUp { case p =>
           RewriteJoin.rewrite(p)
         }
@@ -729,14 +734,25 @@ case class CometExecRule(session: SparkSession)
    * Lift informational (non-fallback) messages tagged on an operator and its expressions onto the
    * converted Comet plan node so they appear in verbose extended explain output. Expression-level
    * hints would otherwise be invisible because explain only traverses plan nodes, not
-   * expressions.
+   * expressions. `CODEGEN_DISPATCH_EXPRS` names across the tree are aggregated into one combined
+   * info line.
    */
   private def rollUpInfoMessages(op: SparkPlan, exec: SparkPlan): Unit = {
-    val fromOp = op.getTagValue(CometExplainInfo.EXTENSION_INFO).getOrElse(Set.empty[String])
-    val fromExprs = op.expressions
-      .flatMap(_.collect { case e: Expression => e })
-      .flatMap(_.getTagValue(CometExplainInfo.EXTENSION_INFO).getOrElse(Set.empty[String]))
-    (fromOp ++ fromExprs).foreach(msg => withInfo(exec, msg))
+    val allExprs = op.expressions.flatMap(_.collect { case e: Expression => e })
+
+    val infos =
+      op.getTagValue(CometExplainInfo.EXTENSION_INFO).getOrElse(Set.empty[String]) ++
+        allExprs.flatMap(_.getTagValue(CometExplainInfo.EXTENSION_INFO)).flatten
+    infos.foreach(msg => withInfo(exec, msg))
+
+    val routedNames = allExprs
+      .flatMap(_.getTagValue(CometExplainInfo.CODEGEN_DISPATCH_EXPRS))
+      .flatten
+      .distinct
+      .sorted
+    if (routedNames.nonEmpty) {
+      withInfo(exec, s"JVM codegen dispatcher: ${routedNames.mkString(", ")}")
+    }
   }
 
   private def isOperatorEnabled(
@@ -837,19 +853,21 @@ case class CometExecRule(session: SparkSession)
   private def tagUnsafePartialAggregates(plan: SparkPlan): Unit = {
     plan.foreach {
       case agg: BaseAggregateExec =>
-        // Only consider single-mode Final aggregates. Multi-mode Finals come from Spark's
-        // distinct-aggregate rewrite, where the Comet partial (if any) feeds into a Spark
-        // PartialMerge rather than directly into a Final, which is a different code path
-        // than the Comet-Partial → Spark-Final crash scenario from issue #1389.
+        // A single-mode Final that consumes an incompatible intermediate buffer and cannot itself
+        // be converted to Comet must not sit above a Comet aggregate that produces that buffer,
+        // otherwise Spark's Final would try to read a Comet-encoded buffer and crash. Tagging the
+        // bottom Partial so it falls back is enough: once it is Spark, the missingCometProducer
+        // guard in CometBaseAggregate.doConvert cascades the fallback up through any intermediate
+        // PartialMerge stages of a distinct-aggregate rewrite. See issues #1389 and #4813.
         val modes = agg.aggregateExpressions.map(_.mode).distinct
         if (modes == Seq(Final) &&
           !QueryPlanSerde.allAggsSupportMixedExecution(agg.aggregateExpressions) &&
           !canAggregateBeConverted(agg, Final)) {
           findPartialAggInPlan(agg.child).foreach { partial =>
-            // Only tag if the Partial would otherwise have been converted. If the Partial
-            // itself cannot be converted (e.g. the aggregate function is incompatible for the
-            // input type), there is no buffer-format mismatch to guard against, and tagging
-            // would mask the natural, more specific fallback reason.
+            // Only tag if the Partial would otherwise have been converted. If the Partial itself
+            // cannot be converted (e.g. an incompatible input type or a map-typed grouping key),
+            // there is no buffer-format mismatch to guard against, and tagging would mask the
+            // natural, more specific fallback reason.
             if (canAggregateBeConverted(partial, Partial)) {
               partial.setTagValue(
                 CometExecRule.COMET_UNSAFE_PARTIAL,
@@ -860,6 +878,32 @@ case class CometExecRule(session: SparkSession)
         }
       case _ =>
     }
+  }
+
+  /**
+   * Look for the bottom Partial-mode aggregate that feeds into the given plan (the child of a
+   * Final). Walks through exchanges and AQE stages, and continues down through intermediate
+   * aggregate stages whose modes are all Partial / PartialMerge - these are the PartialMerge (and
+   * mixed Partial/PartialMerge) stages that Spark's distinct-aggregate rewrite inserts between
+   * the Partial and the Final. Stops at anything else. Requires `aggregateExpressions.nonEmpty`
+   * so that group-by-only dedup stages are traversed rather than mistaken for the partial.
+   */
+  private def findPartialAggInPlan(plan: SparkPlan): Option[BaseAggregateExec] = plan match {
+    case agg: BaseAggregateExec
+        if agg.aggregateExpressions.nonEmpty &&
+          agg.aggregateExpressions.forall(e => e.mode == Partial) =>
+      Some(agg)
+    case agg: BaseAggregateExec
+        if agg.aggregateExpressions.forall(e => e.mode == Partial || e.mode == PartialMerge) =>
+      // Intermediate PartialMerge / mixed stage of a distinct-aggregate rewrite, or a group-by
+      // only dedup stage; keep walking down towards the bottom Partial.
+      findPartialAggInPlan(agg.child)
+    case a: AQEShuffleReadExec => findPartialAggInPlan(a.child)
+    case s: ShuffleQueryStageExec => findPartialAggInPlan(s.plan)
+    case e: ShuffleExchangeExec => findPartialAggInPlan(e.child)
+    case other =>
+      logDebug(s"findPartialAggInPlan: stopping at ${other.nodeName}; not a known passthrough")
+      None
   }
 
   /**
@@ -931,27 +975,6 @@ case class CometExecRule(session: SparkSession)
     } else {
       true
     }
-  }
-
-  /**
-   * Look for a Partial-mode aggregate that feeds directly into the given plan (the child of a
-   * Final). Walks through exchanges and AQE stages only, stopping at anything else including
-   * other aggregate stages. This avoids tagging unrelated Partials found deeper in the plan (e.g.
-   * the non-distinct Partial in a distinct-aggregate rewrite, which is separated from the Final
-   * by intermediate PartialMerge stages). Requires `aggregateExpressions.nonEmpty` so that
-   * group-by-only dedup stages are not mistaken for the partial we want to tag.
-   */
-  private def findPartialAggInPlan(plan: SparkPlan): Option[BaseAggregateExec] = plan match {
-    case agg: BaseAggregateExec
-        if agg.aggregateExpressions.nonEmpty &&
-          agg.aggregateExpressions.forall(e => e.mode == Partial) =>
-      Some(agg)
-    case a: AQEShuffleReadExec => findPartialAggInPlan(a.child)
-    case s: ShuffleQueryStageExec => findPartialAggInPlan(s.plan)
-    case e: ShuffleExchangeExec => findPartialAggInPlan(e.child)
-    case other =>
-      logDebug(s"findPartialAggInPlan: stopping at ${other.nodeName}; not a known passthrough")
-      None
   }
 
 }

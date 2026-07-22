@@ -75,7 +75,31 @@ object CometMapExtract extends CometExpressionSerde[GetMapValue] {
   }
 }
 
+private object MapKeyDedupPolicySupport {
+  val incompatibleReason: String =
+    s"`${SQLConf.MAP_KEY_DEDUP_POLICY.key}` is set to " +
+      s"`${SQLConf.MapKeyDedupPolicy.LAST_WIN}`; Comet's native map construction " +
+      "does not implement LAST_WIN dedup semantics."
+
+  def isLastWin: Boolean =
+    SQLConf.get
+      .getConf(SQLConf.MAP_KEY_DEDUP_POLICY)
+      .toString
+      .equalsIgnoreCase(SQLConf.MapKeyDedupPolicy.LAST_WIN.toString)
+}
+
 object CometMapFromArrays extends CometExpressionSerde[MapFromArrays] {
+
+  override def getIncompatibleReasons(): Seq[String] =
+    Seq(MapKeyDedupPolicySupport.incompatibleReason)
+
+  override def getSupportLevel(expr: MapFromArrays): SupportLevel = {
+    if (MapKeyDedupPolicySupport.isLastWin) {
+      Incompatible(Some(MapKeyDedupPolicySupport.incompatibleReason))
+    } else {
+      Compatible(None)
+    }
+  }
 
   override def convert(
       expr: MapFromArrays,
@@ -127,25 +151,32 @@ object CometMapFromEntries
     "`BinaryType` is not supported as a map value in `map_from_entries`"
 
   override def getIncompatibleReasons(): Seq[String] =
-    Seq(keyUnsupportedReason, valueUnsupportedReason)
+    Seq(keyUnsupportedReason, valueUnsupportedReason, MapKeyDedupPolicySupport.incompatibleReason)
 
   override def getSupportLevel(expr: MapFromEntries): SupportLevel = {
     if (SupportLevel.containsType(expr.dataType.keyType, classOf[BinaryType])) {
-      return Incompatible(Some(keyUnsupportedReason))
+      Incompatible(Some(keyUnsupportedReason))
+    } else if (SupportLevel.containsType(expr.dataType.valueType, classOf[BinaryType])) {
+      Incompatible(Some(valueUnsupportedReason))
+    } else if (MapKeyDedupPolicySupport.isLastWin) {
+      Incompatible(Some(MapKeyDedupPolicySupport.incompatibleReason))
+    } else {
+      Compatible(None)
     }
-    if (SupportLevel.containsType(expr.dataType.valueType, classOf[BinaryType])) {
-      return Incompatible(Some(valueUnsupportedReason))
-    }
-    Compatible(None)
   }
 }
 
-object CometStrToMap extends CometScalarFunction[StringToMap]("str_to_map") with CometTypeShim {
+object CometStrToMap
+    extends CometScalarFunction[StringToMap]("str_to_map")
+    with CometTypeShim
+    with CodegenDispatchFallback {
 
   // Spark 4.1.1+ honours spark.sql.legacy.truncateForEmptyRegexSplit by truncating trailing
   // empty entries from the split result. Comet's native str_to_map always behaves as if the flag
-  // were false, so it is incompatible when legacy truncation is enabled. Read by string key so it
-  // resolves on older Spark versions where the config is not registered.
+  // were false. When the flag is true, mark this Incompatible so the CodegenDispatchFallback
+  // trait routes the expression through the JVM codegen dispatcher (Spark's own doGenCode inside
+  // the Comet kernel) rather than falling the entire projection back to Spark. Read by string
+  // key so it resolves on older Spark versions where the config is not registered.
   private val legacyTruncateConfig = "spark.sql.legacy.truncateForEmptyRegexSplit"
 
   private val legacyTruncateReason =

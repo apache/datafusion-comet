@@ -25,8 +25,8 @@ import scala.util.Random
 
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.{Column, CometTestBase, DataFrame, Row}
-import org.apache.spark.sql.catalyst.expressions.{Alias, Cast, FromUnixTime, Literal, StructsToJson, TruncDate, TruncTimestamp}
-import org.apache.spark.sql.catalyst.optimizer.SimplifyExtractValueOps
+import org.apache.spark.sql.catalyst.expressions.{Alias, AttributeReference, Cast, FromUnixTime, KnownFloatingPointNormalized, Literal, StructsToJson, TruncDate, TruncTimestamp}
+import org.apache.spark.sql.catalyst.optimizer.{NormalizeNaNAndZero, SimplifyExtractValueOps}
 import org.apache.spark.sql.comet.CometProjectExec
 import org.apache.spark.sql.execution.{ProjectExec, SparkPlan}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
@@ -36,6 +36,7 @@ import org.apache.spark.sql.internal.SQLConf.SESSION_LOCAL_TIMEZONE
 import org.apache.spark.sql.types._
 
 import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, isSpark41Plus, isSpark42Plus}
+import org.apache.comet.serde.{CometAttributeReference, CometKnownFloatingPointNormalized, Unsupported}
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
 
 class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
@@ -1050,6 +1051,18 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("misc scalar serdes report static unsupported cases via getSupportLevel") {
+    val intervalAttr = AttributeReference("interval_attr", CalendarIntervalType)()
+
+    assert(
+      CometAttributeReference.getSupportLevel(intervalAttr) ==
+        Unsupported(Some("unsupported datatype: CalendarIntervalType")))
+    assert(
+      CometKnownFloatingPointNormalized.getSupportLevel(
+        KnownFloatingPointNormalized(NormalizeNaNAndZero(intervalAttr))) ==
+        Unsupported(Some("Unsupported datatype CalendarIntervalType")))
+  }
+
   test("rlike with non-scalar pattern runs via codegen dispatcher") {
     val table = "rlike_non_scalar"
     withTable(table) {
@@ -1860,6 +1873,13 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             // After fixing these issues, change checkSparkAnswer to checkSparkAnswerAndOperator
             checkSparkAnswer(s"SELECT from_unixtime(_5, 'yyyy') FROM $table $where")
             checkSparkAnswer(s"SELECT from_unixtime(_8, 'yyyy') FROM $table $where")
+            // A non-default format is Unsupported (no native DataFusion path), but at the default
+            // allowIncompatible=false it stays a Comet operator via CodegenDispatchFallback
+            // (Spark's own codegen) rather than falling back to Spark. See #4575.
+            withSQLConf(
+              CometConf.getExprAllowIncompatConfigKey(classOf[FromUnixTime]) -> "false") {
+              checkSparkAnswerAndOperator(s"SELECT from_unixtime(_5, 'yyyy') FROM $table $where")
+            }
             withSQLConf(SESSION_LOCAL_TIMEZONE.key -> "Asia/Kathmandu") {
               checkSparkAnswerAndOperator(s"SELECT from_unixtime(_5) FROM $table $where")
               checkSparkAnswerAndOperator(s"SELECT from_unixtime(_8) FROM $table $where")
