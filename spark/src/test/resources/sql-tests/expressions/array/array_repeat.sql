@@ -15,10 +15,7 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- ============================================================
 -- Mixed-column table covers per-type element with parameterized count.
--- ============================================================
-
 statement
 CREATE TABLE test_array_repeat(
   byte_v tinyint,
@@ -46,10 +43,7 @@ INSERT INTO test_array_repeat VALUES
   (CAST(1 AS TINYINT), CAST(1 AS SMALLINT), 1, 1, CAST(-0.0 AS FLOAT), CAST(0.0 AS DOUBLE), CAST(1 AS DECIMAL(38, 0)), true, NULL, NULL, DATE '2000-01-01', TIMESTAMP '2000-01-01 00:00:00', array(7), -1),
   (NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL)
 
--- ============================================================
--- Per-type column repeated with a column count
--- ============================================================
-
+-- per-type column repeated with a column count
 query
 SELECT array_repeat(byte_v, cnt) FROM test_array_repeat
 
@@ -89,11 +83,8 @@ SELECT array_repeat(ts_v, cnt) FROM test_array_repeat
 query
 SELECT array_repeat(arr_v, cnt) FROM test_array_repeat
 
--- ============================================================
--- column + literal counts: verify count edge cases
--- (NULL → row NULL, 0 / negative → empty array, large positive → array of N).
--- ============================================================
-
+-- column element + literal count: exercise count edge cases
+-- (NULL -> row NULL, 0 / negative -> empty array, positive -> array of N)
 query
 SELECT array_repeat(int_v, 3) FROM test_array_repeat
 
@@ -106,17 +97,14 @@ SELECT array_repeat(int_v, -5) FROM test_array_repeat
 query
 SELECT array_repeat(int_v, CAST(NULL AS INT)) FROM test_array_repeat
 
--- ============================================================
 -- literal element + column count
--- ============================================================
-
 query
 SELECT array_repeat(42, cnt) FROM test_array_repeat
 
 query
 SELECT array_repeat('hello', cnt) FROM test_array_repeat
 
--- NULL element repeated count times — result is array of NULLs (NOT a NULL row)
+-- NULL element repeated count times -- result is array of NULLs, not a NULL row
 query
 SELECT array_repeat(CAST(NULL AS INT), cnt) FROM test_array_repeat
 

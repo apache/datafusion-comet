@@ -55,23 +55,16 @@ INSERT INTO test_array_compact VALUES
     array(array(1, NULL, 3), NULL, array(4, 5)),
     array(named_struct('a', 1, 'b', 'x'), NULL, named_struct('a', 2, 'b', 'y'))
   ),
-  (array(), array(), array(), array(), array(), array(), array(), array(), array(), array(), array(), array(), array(), array()),
+  (
+    array(), array(), array(), array(), array(), array(), array(),
+    array(), array(), array(), array(), array(), array(), array()
+  ),
   (NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
   (
-    array(NULL, NULL),
-    array(NULL, NULL),
-    array(NULL, NULL),
-    array(NULL, NULL),
-    array(NULL, NULL),
-    array(NULL, NULL),
-    array(NULL, NULL),
-    array(NULL, NULL),
-    array(NULL, NULL),
-    array(NULL, NULL),
-    array(NULL, NULL),
-    array(NULL, NULL),
-    array(NULL, NULL),
-    array(NULL, NULL)
+    array(NULL, NULL), array(NULL, NULL), array(NULL, NULL), array(NULL, NULL),
+    array(NULL, NULL), array(NULL, NULL), array(NULL, NULL), array(NULL, NULL),
+    array(NULL, NULL), array(NULL, NULL), array(NULL, NULL), array(NULL, NULL),
+    array(NULL, NULL), array(NULL, NULL)
   ),
   (
     array(1, 2, 3),
@@ -134,11 +127,8 @@ SELECT array_compact(nested) FROM test_array_compact
 query
 SELECT array_compact(structs) FROM test_array_compact
 
--- ============================================================
--- Literal arguments (CometSqlFileTestSuite disables constant folding,
--- so literal-only queries also exercise the native eval path)
--- ============================================================
-
+-- literal arguments (CometSqlFileTestSuite disables constant folding, so
+-- literal-only queries still exercise the native eval path)
 query
 SELECT array_compact(array(1, NULL, 2, NULL, 3))
 
