@@ -450,7 +450,7 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
     withParquetTable((0 until 20000).map(i => (i, (i + 1).toLong, s"str$i")), "tbl") {
       def spillCountWithMaxBufferBytes(maxBufferBytes: String): Long = {
         var spillCount = 0L
-        withSQLConf(CometConf.COMET_SHUFFLE_MAX_BUFFER_BYTES.key -> maxBufferBytes) {
+        withSQLConf(CometConf.COMET_SHUFFLE_NATIVE_MAX_BUFFER_BYTES.key -> maxBufferBytes) {
           val shuffled = sql("SELECT * FROM tbl").repartition(10, $"_1")
           checkShuffleAnswer(shuffled, 1)
 

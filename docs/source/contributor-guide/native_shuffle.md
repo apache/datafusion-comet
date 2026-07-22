@@ -221,7 +221,7 @@ Native shuffle uses DataFusion's memory management with spilling support:
 
 - **Memory pool**: Tracks memory usage across the shuffle operation.
 - **Spill triggers**: Partitions spill to disk when the memory pool denies an allocation, or
-  when the buffered bytes reach `spark.comet.shuffle.maxBufferBytes`. That config defaults to
+  when the buffered bytes reach `spark.comet.shuffle.native.maxBufferBytes`. That config defaults to
   0, which disables the fixed limit and leaves memory pressure as the only trigger.
 - **Per-partition spilling**: Each partition has its own spill file. Multiple spills for a
   partition are concatenated when writing the final output.

@@ -570,8 +570,8 @@ object CometConf extends ShimCometConf {
     .doubleConf
     .createWithDefault(1.0)
 
-  val COMET_SHUFFLE_MAX_BUFFER_BYTES: ConfigEntry[Long] =
-    conf("spark.comet.shuffle.maxBufferBytes")
+  val COMET_SHUFFLE_NATIVE_MAX_BUFFER_BYTES: ConfigEntry[Long] =
+    conf("spark.comet.shuffle.native.maxBufferBytes")
       .category(CATEGORY_SHUFFLE)
       .doc(
         "Maximum number of bytes that the native shuffle writer will buffer in memory " +
