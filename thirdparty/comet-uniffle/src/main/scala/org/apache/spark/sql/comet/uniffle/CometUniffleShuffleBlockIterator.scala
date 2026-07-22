@@ -23,6 +23,7 @@ import java.nio.{ByteBuffer, ByteOrder}
 
 import scala.annotation.tailrec
 
+import org.apache.spark.executor.ShuffleReadMetrics
 import org.apache.spark.internal.Logging
 import org.apache.uniffle.client.api.ShuffleReadClient
 import org.apache.uniffle.client.response.ShuffleBlock
@@ -32,7 +33,8 @@ import org.apache.comet.shuffle.CometShuffleBlockIterator
 class CometUniffleShuffleBlockIterator(
     startPartition: Int,
     endPartition: Int,
-    createShuffleReadClient: Int => ShuffleReadClient)
+    createShuffleReadClient: Int => ShuffleReadClient,
+    readMetrics: ShuffleReadMetrics)
     extends CometShuffleBlockIterator
     with Logging {
   private var currentPartition: Int = startPartition
@@ -107,6 +109,7 @@ class CometUniffleShuffleBlockIterator(
 
   @tailrec
   private def nextShuffleBlock(): Option[ByteBuffer] = {
+    val fetchStartTime = System.currentTimeMillis()
     val shuffleBlock: ShuffleBlock = if (currentShuffleReadClient != null) {
       currentShuffleReadClient.readShuffleBlockData
     } else {
@@ -126,12 +129,16 @@ class CometUniffleShuffleBlockIterator(
       }
       currentPartition += 1
       if (currentPartition >= endPartition) {
+        readMetrics.incFetchWaitTime(System.currentTimeMillis() - fetchStartTime)
         None
       } else {
         currentShuffleReadClient = createShuffleReadClient(currentPartition)
+        readMetrics.incFetchWaitTime(System.currentTimeMillis() - fetchStartTime)
         nextShuffleBlock()
       }
     } else {
+      readMetrics.incRemoteBytesRead(rawData.remaining().toLong)
+      readMetrics.incFetchWaitTime(System.currentTimeMillis() - fetchStartTime)
       Some(rawData)
     }
   }

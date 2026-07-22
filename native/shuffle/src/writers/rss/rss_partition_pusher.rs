@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use datafusion_comet_jni_bridge::{jni_call, JVMClasses};
+use datafusion_comet_jni_bridge::{errors::CometError, jni_call, JVMClasses};
 use jni::objects::{Global, JObject};
 use std::io::Write;
 use std::sync::Arc;
@@ -53,7 +53,9 @@ impl RssPartitionPusher {
     pub fn push_partition_data(&mut self, buf: &[u8]) -> datafusion::common::Result<i32> {
         let length = buf.len() as i32;
         JVMClasses::with_env(|env| {
-            let jbytes = env.byte_array_from_slice(buf).unwrap();
+            let jbytes = env
+                .byte_array_from_slice(buf)
+                .map_err(|e| CometError::JNI { source: e })?;
             let length: i32 = unsafe {
                 jni_call!(env,
                     shuffle_partition_pusher(self.jobject.as_ref()).push_partition_data(self.pid, &jbytes, length) -> i32)?

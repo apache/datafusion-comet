@@ -87,7 +87,11 @@ class CometUniffleShuffleReader[K, C](
     val nativeUtil = new NativeUtil()
 
     val shuffleBlockIterator =
-      new CometUniffleShuffleBlockIterator(startPartition, endPartition, createShuffleReadClient)
+      new CometUniffleShuffleBlockIterator(
+        startPartition,
+        endPartition,
+        createShuffleReadClient,
+        readMetrics)
 
     context.addTaskCompletionListener[Unit] { _ =>
       shuffleBlockIterator.close()
@@ -238,6 +242,10 @@ class CometUniffleShuffleReader[K, C](
   }
 
   override def readAsShuffleBlockIterator(): CometShuffleBlockIterator = {
-    new CometUniffleShuffleBlockIterator(startPartition, endPartition, createShuffleReadClient)
+    new CometUniffleShuffleBlockIterator(
+      startPartition,
+      endPartition,
+      createShuffleReadClient,
+      readMetrics)
   }
 }
