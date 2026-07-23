@@ -70,15 +70,18 @@ pub struct ShuffleBlockWriter {
     codec: CompressionCodec,
     header_bytes: Vec<u8>,
     schema: SchemaRef,
-    /// Pre-encoded Arrow IPC schema message, written at the start of every block. Only used when
-    /// the schema has no dictionary types.
-    schema_message: Vec<u8>,
-    /// Whether the schema contains any dictionary types (see [`Self::encode_ipc_stream`]).
-    has_dictionaries: bool,
+    /// Pre-encoded Arrow IPC schema message, written verbatim at the start of every block.
+    ///
+    /// `None` indicates the schema contains dictionary types, whose dictionary-id bookkeeping ties
+    /// schema and batch encoding together, so the schema cannot be reused across blocks and
+    /// [`Self::encode_ipc_stream`] falls back to `StreamWriter`.
+    schema_message: Option<Vec<u8>>,
 }
 
 impl ShuffleBlockWriter {
     pub fn try_new(schema: &Schema, codec: CompressionCodec) -> Result<Self> {
+        // Header layout: 8-byte block length placeholder + 8-byte field count (usize) + 4-byte
+        // codec tag = 20 bytes.
         let mut header_bytes = Vec::with_capacity(20);
 
         // leave space for compressed message length (filled in per block by write_batch)
@@ -97,42 +100,48 @@ impl ShuffleBlockWriter {
         };
         header_bytes.extend_from_slice(codec_header);
 
-        // Pre-encode the IPC schema message once so it does not have to be re-serialized per block.
-        let options = IpcWriteOptions::default();
-        let data_gen = IpcDataGenerator::default();
-        let mut dictionary_tracker = DictionaryTracker::new(true);
-        let encoded_schema = data_gen.schema_to_bytes_with_dictionary_tracker(
-            schema,
-            &mut dictionary_tracker,
-            &options,
-        );
-        let mut schema_message = Vec::new();
-        write_message(&mut schema_message, encoded_schema, &options)?;
-
         let has_dictionaries = schema
             .fields()
             .iter()
             .any(|f| contains_dictionary(f.data_type()));
+
+        // For dictionary-free schemas, pre-encode the IPC schema message once so it does not have
+        // to be re-serialized per block. Dictionary schemas use the `StreamWriter` fallback and
+        // leave this `None`.
+        let schema_message = if has_dictionaries {
+            None
+        } else {
+            let options = IpcWriteOptions::default();
+            let data_gen = IpcDataGenerator::default();
+            let mut dictionary_tracker = DictionaryTracker::new(true);
+            let encoded_schema = data_gen.schema_to_bytes_with_dictionary_tracker(
+                schema,
+                &mut dictionary_tracker,
+                &options,
+            );
+            let mut buf = Vec::new();
+            write_message(&mut buf, encoded_schema, &options)?;
+            Some(buf)
+        };
 
         Ok(Self {
             codec,
             header_bytes,
             schema: Arc::new(schema.clone()),
             schema_message,
-            has_dictionaries,
         })
     }
 
     /// Serialize `batch` as a standalone Arrow IPC stream into `out`.
     fn encode_ipc_stream<W: Write>(&self, batch: &RecordBatch, out: &mut W) -> Result<()> {
-        if self.has_dictionaries {
+        let Some(schema_message) = &self.schema_message else {
             // Dictionary encoding requires the schema and record batch to share a dictionary
             // tracker, so `StreamWriter` (which re-encodes the schema per block) is used here.
             let mut stream_writer = StreamWriter::try_new(out, &self.schema)?;
             stream_writer.write(batch)?;
             stream_writer.finish()?;
             return Ok(());
-        }
+        };
 
         // Fast path: reuse the pre-encoded schema message and write the record batch manually.
         let options = IpcWriteOptions::default();
@@ -147,7 +156,7 @@ impl ShuffleBlockWriter {
         )?;
         debug_assert!(encoded_dictionaries.is_empty());
 
-        out.write_all(&self.schema_message)?;
+        out.write_all(schema_message)?;
         write_message(&mut *out, encoded_batch, &options)?;
         out.write_all(&IPC_EOS)?;
         Ok(())
