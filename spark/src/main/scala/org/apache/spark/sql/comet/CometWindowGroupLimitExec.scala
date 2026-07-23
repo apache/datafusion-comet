@@ -35,10 +35,11 @@ import org.apache.comet.serde.QueryPlanSerde.exprToProto
 import org.apache.comet.shims.ShimCometWindowGroupLimit
 
 /**
- * Serde for Spark's `WindowGroupLimitExec` (Spark 3.5+, SPARK-37099). Handles the ROW_NUMBER
- * pushdown case with a non-empty PARTITION BY only -- that maps directly onto DataFusion's
- * `PartitionedTopKExec`. RANK / DENSE_RANK and empty PARTITION BY are rejected here and fall back
- * to Spark; add a native implementation before enabling them.
+ * Serde for Spark's `WindowGroupLimitExec` (Spark 3.5+, SPARK-37099). Handles the ROW_NUMBER and
+ * RANK pushdown cases with a non-empty PARTITION BY -- ROW_NUMBER maps onto DataFusion's
+ * `PartitionedTopKExec`, RANK maps onto Comet's streaming `PartitionedRankLimitExec`. DENSE_RANK
+ * and empty PARTITION BY are rejected here and fall back to Spark; add a native implementation
+ * before enabling them.
  *
  * The Scala type parameter is `SparkPlan` (not `WindowGroupLimitExec`) so this file stays
  * compilable against Spark 3.4, where the exec class does not exist. Field extraction is
@@ -60,16 +61,13 @@ object CometWindowGroupLimitExec extends CometOperatorSerde[SparkPlan] {
       return None
     }
 
-    // The DataFusion `PartitionedTopKExec` requires a non-empty partition prefix and only
-    // handles ROW_NUMBER. RANK / DENSE_RANK ties and global (no-partition) top-K need either a
-    // custom Comet operator or extended DataFusion support and are out of scope here.
-    fields.rankLikeKind match {
-      case RowNumberKind => // supported
-      case RankKind =>
-        withFallbackReason(op, "WindowGroupLimit: RANK not yet supported (only ROW_NUMBER)")
-        return None
+    // DENSE_RANK and empty (global) PARTITION BY are still Spark-only. RANK is native via the
+    // streaming operator, which relies on the Spark-injected `[partition, order]` sort.
+    val rankType = fields.rankLikeKind match {
+      case RowNumberKind => OperatorOuterClass.WindowGroupLimit.RankType.ROW_NUMBER
+      case RankKind => OperatorOuterClass.WindowGroupLimit.RankType.RANK
       case DenseRankKind =>
-        withFallbackReason(op, "WindowGroupLimit: DENSE_RANK not yet supported (only ROW_NUMBER)")
+        withFallbackReason(op, "WindowGroupLimit: DENSE_RANK not yet supported")
         return None
     }
     if (fields.partitionSpec.isEmpty) {
@@ -92,6 +90,7 @@ object CometWindowGroupLimitExec extends CometOperatorSerde[SparkPlan] {
       val wglBuilder = OperatorOuterClass.WindowGroupLimit
         .newBuilder()
         .setLimit(fields.limit)
+        .setRankType(rankType)
       wglBuilder.addAllPartitionByList(partitionExprs.map(_.get).asJava)
       wglBuilder.addAllOrderByList(orderExprs.map(_.get).asJava)
       Some(builder.setWindowGroupLimit(wglBuilder).build())

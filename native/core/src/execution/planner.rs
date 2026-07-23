@@ -24,6 +24,7 @@ pub mod operator_registry;
 use crate::execution::operators::init_csv_datasource_exec;
 use crate::execution::operators::AlignedArrowStreamReader;
 use crate::execution::operators::IcebergScanExec;
+use crate::execution::operators::PartitionedRankLimitExec;
 use crate::execution::{
     expressions::list_positions::ListPositionsExpr,
     expressions::subquery::Subquery,
@@ -125,7 +126,8 @@ use datafusion_comet_proto::{
     },
     spark_operator::{
         self, lower_window_frame_bound::LowerFrameBoundStruct, operator::OpStruct,
-        upper_window_frame_bound::UpperFrameBoundStruct, AggregateMode as ProtoAggregateMode,
+        upper_window_frame_bound::UpperFrameBoundStruct,
+        window_group_limit::RankType as ProtoRankType, AggregateMode as ProtoAggregateMode,
         BuildSide, CompressionCodec as SparkCompressionCodec, JoinType, Operator, WindowFrameType,
     },
     spark_partitioning::{partitioning::PartitioningStruct, Partitioning as SparkPartitioning},
@@ -2141,13 +2143,17 @@ impl PhysicalPlanner {
                 ))
             }
             OpStruct::WindowGroupLimit(wgl) => {
-                // Comet only serializes the ROW_NUMBER pushdown case with a non-empty
-                // PARTITION BY (see CometWindowGroupLimitExec.convert). RANK / DENSE_RANK and
-                // empty PARTITION BY fall back to Spark, so the proto here is guaranteed to
-                // have a non-empty partition_by_list. Route to DataFusion's
-                // `PartitionedTopKExec`, which maintains one bounded heap per distinct
-                // partition key and emits the top `limit` rows per partition — exactly the
-                // semantics of Spark's SimpleLimitIterator over a partition-sorted stream.
+                // Comet serializes the ROW_NUMBER and RANK pushdown cases with a non-empty
+                // PARTITION BY (see CometWindowGroupLimitExec.convert). DENSE_RANK and empty
+                // PARTITION BY still fall back to Spark, so the proto here is guaranteed to
+                // have a non-empty partition_by_list. Route:
+                //   * ROW_NUMBER -> DataFusion's `PartitionedTopKExec`, which maintains one
+                //     bounded heap per distinct partition key and emits the top `limit` rows
+                //     per partition — matches Spark's SimpleLimitIterator.
+                //   * RANK -> Comet's streaming `PartitionedRankLimitExec`, which relies on
+                //     the Spark-injected sort of `[partition_keys, order_keys]` and retains
+                //     all rows tied at the K-th ORDER BY value — matches Spark's
+                //     RankLimitIterator (`hasNext = rank < limit && input.hasNext`).
                 assert_eq!(children.len(), 1);
                 let (scans, shuffle_scans, child) =
                     self.create_plan(&children[0], inputs, partition_count)?;
@@ -2156,17 +2162,30 @@ impl PhysicalPlanner {
                 if wgl.partition_by_list.is_empty() {
                     return Err(GeneralError(
                         "WindowGroupLimit with empty partition_by_list should have fallen back \
-                         to Spark; native path only supports the partitioned ROW_NUMBER top-K"
+                         to Spark; native path only supports the partitioned top-K case"
+                            .to_string(),
+                    ));
+                }
+
+                let rank_type = ProtoRankType::try_from(wgl.rank_type).map_err(|_| {
+                    GeneralError(format!(
+                        "Unsupported WindowGroupLimit rank_type: {}",
+                        wgl.rank_type
+                    ))
+                })?;
+                if rank_type == ProtoRankType::DenseRank {
+                    return Err(GeneralError(
+                        "WindowGroupLimit with DENSE_RANK should have fallen back to Spark; \
+                         native path does not implement DENSE_RANK yet"
                             .to_string(),
                     ));
                 }
 
                 // Partition keys arrive as bare exprs (no direction). Spark's WGL requires the
-                // child to be sorted by partition-keys ASCENDING then by order-by keys, and
-                // PartitionedTopKExec expects `[partition_keys, order_keys]` as a single
-                // LexOrdering. Materialize partition keys with SortOptions matching Spark's
-                // `SortOrder(_, Ascending)` (ascending, nulls_first) so the row-encoding used
-                // for per-partition equality inside PartitionedTopKExec matches.
+                // child to be sorted by partition-keys ASCENDING then by order-by keys, so
+                // materialize partition keys with SortOptions matching Spark's
+                // `SortOrder(_, Ascending)` (ascending, nulls_first) and concatenate with the
+                // ORDER BY exprs into a single LexOrdering `[partition_keys, order_keys]`.
                 let partition_prefix_len = wgl.partition_by_list.len();
                 let partition_sort_options = SortOptions {
                     descending: false,
@@ -2190,12 +2209,21 @@ impl PhysicalPlanner {
                 })?;
 
                 let fetch = wgl.limit as usize;
-                let topk: Arc<dyn ExecutionPlan> = Arc::new(PartitionedTopKExec::try_new(
-                    Arc::clone(&child.native_plan),
-                    ordering,
-                    partition_prefix_len,
-                    fetch,
-                )?);
+                let topk: Arc<dyn ExecutionPlan> = match rank_type {
+                    ProtoRankType::RowNumber => Arc::new(PartitionedTopKExec::try_new(
+                        Arc::clone(&child.native_plan),
+                        ordering,
+                        partition_prefix_len,
+                        fetch,
+                    )?),
+                    ProtoRankType::Rank => Arc::new(PartitionedRankLimitExec::try_new(
+                        Arc::clone(&child.native_plan),
+                        ordering,
+                        partition_prefix_len,
+                        fetch,
+                    )?),
+                    ProtoRankType::DenseRank => unreachable!("guarded above"),
+                };
 
                 Ok((
                     scans,

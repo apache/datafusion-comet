@@ -11,11 +11,11 @@ CometNativeColumnarToRow
          :     :     :     +- Project
          :     :     :        +- Filter
          :     :     :           +- Window
-         :     :     :              +-  WindowGroupLimit [COMET: WindowGroupLimit: RANK not yet supported (only ROW_NUMBER)]
+         :     :     :              +-  WindowGroupLimit [COMET: WindowGroupLimit: empty PARTITION BY not yet supported (global top-K)]
          :     :     :                 +- CometNativeColumnarToRow
          :     :     :                    +- CometSort
          :     :     :                       +- CometColumnarExchange
-         :     :     :                          +-  WindowGroupLimit [COMET: WindowGroupLimit: RANK not yet supported (only ROW_NUMBER)]
+         :     :     :                          +-  WindowGroupLimit [COMET: WindowGroupLimit: empty PARTITION BY not yet supported (global top-K)]
          :     :     :                             +- CometNativeColumnarToRow
          :     :     :                                +- CometSort
          :     :     :                                   +- CometFilter
@@ -38,11 +38,11 @@ CometNativeColumnarToRow
          :     :           +- Project
          :     :              +- Filter
          :     :                 +- Window
-         :     :                    +-  WindowGroupLimit [COMET: WindowGroupLimit: RANK not yet supported (only ROW_NUMBER)]
+         :     :                    +-  WindowGroupLimit [COMET: WindowGroupLimit: empty PARTITION BY not yet supported (global top-K)]
          :     :                       +- CometNativeColumnarToRow
          :     :                          +- CometSort
          :     :                             +- CometColumnarExchange
-         :     :                                +-  WindowGroupLimit [COMET: WindowGroupLimit: RANK not yet supported (only ROW_NUMBER)]
+         :     :                                +-  WindowGroupLimit [COMET: WindowGroupLimit: empty PARTITION BY not yet supported (global top-K)]
          :     :                                   +- CometNativeColumnarToRow
          :     :                                      +- CometSort
          :     :                                         +- CometFilter
