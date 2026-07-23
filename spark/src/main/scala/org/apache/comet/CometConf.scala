@@ -461,33 +461,15 @@ object CometConf extends ShimCometConf {
       .intConf
       .createWithDefault(1)
 
-  val COMET_COLUMNAR_SHUFFLE_ASYNC_ENABLED: ConfigEntry[Boolean] =
-    conf("spark.comet.columnar.shuffle.async.enabled")
-      .category(CATEGORY_SHUFFLE)
-      .doc("Whether to enable asynchronous shuffle for Arrow-based shuffle.")
-      .booleanConf
-      .createWithDefault(false)
-
-  val COMET_COLUMNAR_SHUFFLE_ASYNC_THREAD_NUM: ConfigEntry[Int] =
-    conf("spark.comet.columnar.shuffle.async.thread.num")
+  val COMET_COLUMNAR_SHUFFLE_MAX_WRITERS_PER_EXECUTOR: ConfigEntry[Int] = {
+    conf("spark.comet.columnar.shuffle.max.writers.per.executor")
+      .withAlternative("spark.comet.columnar.shuffle.async.max.thread.num")
       .category(CATEGORY_SHUFFLE)
       .doc(
-        "Number of threads used for Comet async columnar shuffle per shuffle task. " +
-          "Note that more threads means more memory requirement to " +
-          "buffer shuffle data before flushing to disk. Also, more threads may not always " +
-          "improve performance, and should be set based on the number of cores available.")
-      .intConf
-      .createWithDefault(3)
-
-  val COMET_COLUMNAR_SHUFFLE_ASYNC_MAX_THREAD_NUM: ConfigEntry[Int] = {
-    conf("spark.comet.columnar.shuffle.async.max.thread.num")
-      .category(CATEGORY_SHUFFLE)
-      .doc("Maximum number of threads on an executor used for Comet async columnar shuffle. " +
-        "This is the upper bound of total number of shuffle " +
-        "threads per executor. In other words, if the number of cores * the number of shuffle " +
-        "threads per task `spark.comet.columnar.shuffle.async.thread.num` is larger than " +
-        "this config. Comet will use this config as the number of shuffle threads per " +
-        "executor instead.")
+        "Maximum number of concurrent hash-based shuffle writers per executor. Comet's " +
+          "hash-based (bypass merge sort) columnar shuffle allocates one writer per partition, " +
+          "so `executor cores * numPartitions` writers can be active concurrently. When that " +
+          "product exceeds this cap, Comet falls back to sort-based shuffle to avoid OOM.")
       .intConf
       .createWithDefault(100)
   }
@@ -569,6 +551,19 @@ object CometConf extends ShimCometConf {
         "avoid regressions in join strategy.")
     .doubleConf
     .createWithDefault(1.0)
+
+  val COMET_SHUFFLE_MAX_BUFFER_BYTES: ConfigEntry[Long] =
+    conf("spark.comet.shuffle.maxBufferBytes")
+      .category(CATEGORY_SHUFFLE)
+      .doc(
+        "Maximum number of bytes that the native shuffle writer will buffer in memory " +
+          "before spilling to disk. The default of 0 disables this limit, in which case " +
+          "spilling is triggered only when the memory pool denies an allocation. Setting a " +
+          "limit caps the writer's memory footprint independently of the size of the memory " +
+          "pool, at the cost of more frequent spilling.")
+      .bytesConf(ByteUnit.BYTE)
+      .checkValue(v => v >= 0, "Must not be negative")
+      .createWithDefault(0)
 
   val COMET_DEBUG_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.debug.enabled")
@@ -708,17 +703,6 @@ object CometConf extends ShimCometConf {
         "written to the Proleptic Gregorian calendar and will not be rebased.")
       .booleanConf
       .createWithDefault(false)
-
-  val COMET_USE_LAZY_MATERIALIZATION: ConfigEntry[Boolean] = conf(
-    "spark.comet.use.lazyMaterialization")
-    .internal()
-    .category(CATEGORY_PARQUET)
-    .doc(
-      "Whether to enable lazy materialization for Comet. When this is turned on, Comet will " +
-        "read Parquet data source lazily for string and binary columns. For filter operations, " +
-        "lazy materialization will improve read performance by skipping unused pages.")
-    .booleanConf
-    .createWithDefault(true)
 
   val COMET_ENABLE_PARTIAL_HASH_AGGREGATE: ConfigEntry[Boolean] =
     conf("spark.comet.testing.aggregate.partialMode.enabled")
