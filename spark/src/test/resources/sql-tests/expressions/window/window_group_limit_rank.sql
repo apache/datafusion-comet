@@ -332,3 +332,63 @@ SELECT category, item, total FROM (
     GROUP BY category, item
   ) agg
 ) t WHERE rk <= 2 ORDER BY category NULLS LAST, rk, total DESC NULLS LAST, item
+
+
+-- ================================================================================
+-- Global RANK top-K (empty PARTITION BY) -- routes through Comet's streaming
+-- `PartitionedRankLimitExec` with `partition_prefix_len == 0`. State never resets
+-- across the DF partition; Spark's WGL Partial phase runs per input partition and
+-- the Final phase runs after a SinglePartition shuffle. Distilled from TPC-DS q44
+-- (`rank() over (order by rank_col asc) rnk ... where rnk < 11`).
+-- ================================================================================
+
+-- q44 shape: global RANK ASC, filter `rnk < 11`.
+query
+SELECT part, ord FROM (
+  SELECT part, ord,
+         RANK() OVER (ORDER BY ord ASC NULLS LAST) AS rnk
+  FROM test_rank
+) t WHERE rnk < 4 ORDER BY rnk, ord ASC NULLS LAST
+
+-- Global RANK DESC with ties at the top: `rk <= 1` returns EVERY row tied at
+-- the max, `rk <= 2` also returns them (rank 2 is skipped because two ties push it
+-- out).
+query
+SELECT part, ord FROM (
+  SELECT part, ord,
+         RANK() OVER (ORDER BY ord DESC NULLS LAST) AS rk
+  FROM test_rank
+) t WHERE rk <= 1 ORDER BY rk, ord DESC NULLS LAST, part NULLS LAST
+
+query
+SELECT part, ord FROM (
+  SELECT part, ord,
+         RANK() OVER (ORDER BY ord DESC NULLS LAST) AS rk
+  FROM test_rank
+) t WHERE rk <= 2 ORDER BY rk, ord DESC NULLS LAST, part NULLS LAST
+
+-- Global RANK with `<` filter form.
+query
+SELECT part, ord FROM (
+  SELECT part, ord,
+         RANK() OVER (ORDER BY ord DESC NULLS LAST) AS rk
+  FROM test_rank
+) t WHERE rk < 3 ORDER BY rk, ord DESC NULLS LAST, part NULLS LAST
+
+-- Global RANK with outer LIMIT (q44 uses `LIMIT 100` on the outer query).
+query
+SELECT part, ord, rk FROM (
+  SELECT part, ord,
+         RANK() OVER (ORDER BY ord DESC NULLS LAST) AS rk
+  FROM test_rank
+) t WHERE rk <= 3 ORDER BY rk, ord DESC NULLS LAST, part NULLS LAST LIMIT 5
+
+-- Global ROW_NUMBER without PARTITION BY should route to LocalLimitExec (Spark
+-- rewrites this pattern to plain Limit under low thresholds, but the WGL path is
+-- exercised at threshold=1000).
+query
+SELECT part, ord FROM (
+  SELECT part, ord,
+         ROW_NUMBER() OVER (ORDER BY ord DESC NULLS LAST, part) AS rn
+  FROM test_rank
+) t WHERE rn <= 3 ORDER BY rn

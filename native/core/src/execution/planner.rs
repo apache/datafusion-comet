@@ -2143,29 +2143,24 @@ impl PhysicalPlanner {
                 ))
             }
             OpStruct::WindowGroupLimit(wgl) => {
-                // Comet serializes the ROW_NUMBER and RANK pushdown cases with a non-empty
-                // PARTITION BY (see CometWindowGroupLimitExec.convert). DENSE_RANK and empty
-                // PARTITION BY still fall back to Spark, so the proto here is guaranteed to
-                // have a non-empty partition_by_list. Route:
-                //   * ROW_NUMBER -> DataFusion's `PartitionedTopKExec`, which maintains one
-                //     bounded heap per distinct partition key and emits the top `limit` rows
-                //     per partition — matches Spark's SimpleLimitIterator.
-                //   * RANK -> Comet's streaming `PartitionedRankLimitExec`, which relies on
-                //     the Spark-injected sort of `[partition_keys, order_keys]` and retains
-                //     all rows tied at the K-th ORDER BY value — matches Spark's
-                //     RankLimitIterator (`hasNext = rank < limit && input.hasNext`).
+                // Comet serializes the ROW_NUMBER and RANK cases here (DENSE_RANK still
+                // falls back on the Scala side). Route:
+                //   * ROW_NUMBER + non-empty PARTITION BY -> DataFusion's `PartitionedTopKExec`
+                //     (heap-based per-partition top-K; matches Spark's SimpleLimitIterator).
+                //   * ROW_NUMBER + empty PARTITION BY -> `LocalLimitExec`. Spark's WGL requires
+                //     the child to be sorted by ORDER BY, so `first K rows per input partition`
+                //     IS the global RANK top-K (Partial phase); the Final phase runs on the
+                //     single-partition post-shuffle stream and stays correct.
+                //   * RANK (empty or non-empty PARTITION BY) -> Comet's streaming
+                //     `PartitionedRankLimitExec`. Relies on the Spark-injected sort of
+                //     `[partition_keys, order_keys]` and retains all rows tied at the K-th
+                //     ORDER BY value — matches Spark's RankLimitIterator (`hasNext = rank <
+                //     limit && input.hasNext`). `partition_prefix_len == 0` degenerates to
+                //     one big partition per DF input partition.
                 assert_eq!(children.len(), 1);
                 let (scans, shuffle_scans, child) =
                     self.create_plan(&children[0], inputs, partition_count)?;
                 let input_schema = child.schema();
-
-                if wgl.partition_by_list.is_empty() {
-                    return Err(GeneralError(
-                        "WindowGroupLimit with empty partition_by_list should have fallen back \
-                         to Spark; native path only supports the partitioned top-K case"
-                            .to_string(),
-                    ));
-                }
 
                 let rank_type = ProtoRankType::try_from(wgl.rank_type).map_err(|_| {
                     GeneralError(format!(
@@ -2181,12 +2176,31 @@ impl PhysicalPlanner {
                     ));
                 }
 
+                let partition_prefix_len = wgl.partition_by_list.len();
+                let fetch = wgl.limit as usize;
+
+                // Fast path: ROW_NUMBER without PARTITION BY collapses to `first K rows per
+                // input DF partition`, which is exactly what `LocalLimitExec` does. No
+                // row-encoding overhead, no ORDER BY tie detection needed.
+                if partition_prefix_len == 0 && rank_type == ProtoRankType::RowNumber {
+                    let topk: Arc<dyn ExecutionPlan> =
+                        Arc::new(LocalLimitExec::new(Arc::clone(&child.native_plan), fetch));
+                    return Ok((
+                        scans,
+                        shuffle_scans,
+                        Arc::new(SparkPlan::new(
+                            spark_plan.plan_id,
+                            topk,
+                            vec![Arc::clone(&child)],
+                        )),
+                    ));
+                }
+
                 // Partition keys arrive as bare exprs (no direction). Spark's WGL requires the
                 // child to be sorted by partition-keys ASCENDING then by order-by keys, so
                 // materialize partition keys with SortOptions matching Spark's
                 // `SortOrder(_, Ascending)` (ascending, nulls_first) and concatenate with the
                 // ORDER BY exprs into a single LexOrdering `[partition_keys, order_keys]`.
-                let partition_prefix_len = wgl.partition_by_list.len();
                 let partition_sort_options = SortOptions {
                     descending: false,
                     nulls_first: true,
@@ -2208,14 +2222,16 @@ impl PhysicalPlanner {
                     GeneralError("WindowGroupLimit produced empty LexOrdering".to_string())
                 })?;
 
-                let fetch = wgl.limit as usize;
                 let topk: Arc<dyn ExecutionPlan> = match rank_type {
-                    ProtoRankType::RowNumber => Arc::new(PartitionedTopKExec::try_new(
-                        Arc::clone(&child.native_plan),
-                        ordering,
-                        partition_prefix_len,
-                        fetch,
-                    )?),
+                    ProtoRankType::RowNumber => {
+                        // Non-empty partition prefix (the empty case is handled above).
+                        Arc::new(PartitionedTopKExec::try_new(
+                            Arc::clone(&child.native_plan),
+                            ordering,
+                            partition_prefix_len,
+                            fetch,
+                        )?)
+                    }
                     ProtoRankType::Rank => Arc::new(PartitionedRankLimitExec::try_new(
                         Arc::clone(&child.native_plan),
                         ordering,

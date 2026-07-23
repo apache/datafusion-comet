@@ -54,6 +54,12 @@ use futures::{Stream, StreamExt};
 /// than declaring a hard ordering requirement here that would trigger a second
 /// DataFusion-side sort.
 ///
+/// When `partition_prefix_len == 0` there is no PARTITION BY (global top-K):
+/// state accumulates across all rows in the DF partition and never resets,
+/// so each DF input partition produces its own local RANK top-K (matching
+/// Spark's Partial WGL semantics; the Final WGL then runs on the merged
+/// single-partition stream downstream).
+///
 /// # Semantics
 /// Row-by-row, we maintain per-partition state: `rank` (0-indexed rank of the
 /// last emitted row) and `count` (total rows seen in the partition). On each
@@ -72,6 +78,7 @@ pub struct PartitionedRankLimitExec {
     /// Full sort expression `[partition_keys..., order_keys...]`.
     expr: LexOrdering,
     /// Leading count of expressions in `expr` that form the partition key.
+    /// Zero means "no PARTITION BY" (global top-K within each input partition).
     partition_prefix_len: usize,
     /// `K` in "top-K per partition".
     fetch: usize,
@@ -85,10 +92,6 @@ impl PartitionedRankLimitExec {
         partition_prefix_len: usize,
         fetch: usize,
     ) -> Result<Self> {
-        assert!(
-            partition_prefix_len > 0,
-            "PartitionedRankLimitExec requires a non-empty partition prefix"
-        );
         assert!(
             partition_prefix_len < expr.len(),
             "PartitionedRankLimitExec requires at least one ORDER BY expression after the partition prefix"
@@ -193,25 +196,29 @@ impl ExecutionPlan for PartitionedRankLimitExec {
         let input = self.input.execute(partition, context)?;
         let schema = input.schema();
 
-        // Two independent RowConverters: one for the partition prefix (used
-        // only for equality against the previous row) and one for the ORDER BY
-        // suffix (used to detect a rank-changing tie boundary).
-        let partition_sort_fields =
-            build_sort_fields(&self.expr[..self.partition_prefix_len], &schema)?;
+        // Order-by suffix drives tie detection; always required.
         let order_sort_fields =
             build_sort_fields(&self.expr[self.partition_prefix_len..], &schema)?;
-
-        let partition_converter = RowConverter::new(partition_sort_fields)?;
         let order_converter = RowConverter::new(order_sort_fields)?;
-
-        let partition_exprs: Vec<Arc<dyn PhysicalExpr>> = self.expr[..self.partition_prefix_len]
-            .iter()
-            .map(|e| Arc::clone(&e.expr))
-            .collect();
         let order_exprs: Vec<Arc<dyn PhysicalExpr>> = self.expr[self.partition_prefix_len..]
             .iter()
             .map(|e| Arc::clone(&e.expr))
             .collect();
+
+        // Partition prefix is optional: `PARTITION BY` may be empty, in which
+        // case state accumulates across every row in the DF partition.
+        let (partition_converter, partition_exprs) = if self.partition_prefix_len == 0 {
+            (None, Vec::new())
+        } else {
+            let partition_sort_fields =
+                build_sort_fields(&self.expr[..self.partition_prefix_len], &schema)?;
+            let converter = RowConverter::new(partition_sort_fields)?;
+            let exprs: Vec<Arc<dyn PhysicalExpr>> = self.expr[..self.partition_prefix_len]
+                .iter()
+                .map(|e| Arc::clone(&e.expr))
+                .collect();
+            (Some(converter), exprs)
+        };
 
         Ok(Box::pin(RankLimitStream {
             input,
@@ -225,6 +232,7 @@ impl ExecutionPlan for PartitionedRankLimitExec {
             prev_order: None,
             rank: 0,
             count: 0,
+            started: false,
         }))
     }
 }
@@ -247,8 +255,10 @@ fn build_sort_fields(
 struct RankLimitStream {
     input: SendableRecordBatchStream,
     schema: SchemaRef,
-    partition_converter: RowConverter,
+    /// `None` when there is no PARTITION BY (global top-K per DF input partition).
+    partition_converter: Option<RowConverter>,
     order_converter: RowConverter,
+    /// Empty when `partition_converter` is `None`.
     partition_exprs: Vec<Arc<dyn PhysicalExpr>>,
     order_exprs: Vec<Arc<dyn PhysicalExpr>>,
     limit: usize,
@@ -261,6 +271,9 @@ struct RankLimitStream {
     rank: u64,
     /// Total rows seen in the current partition (also 0-indexed cursor).
     count: u64,
+    /// Whether any row has been observed yet. Only used when there is no
+    /// PARTITION BY: on the first row we still need to initialize state.
+    started: bool,
 }
 
 impl RankLimitStream {
@@ -270,32 +283,47 @@ impl RankLimitStream {
             return Ok(batch.clone());
         }
 
-        let partition_cols: Vec<ArrayRef> = self
-            .partition_exprs
-            .iter()
-            .map(|e| e.evaluate(batch).and_then(|v| v.into_array(num_rows)))
-            .collect::<Result<_>>()?;
+        let partition_rows = match &self.partition_converter {
+            Some(converter) => {
+                let partition_cols: Vec<ArrayRef> = self
+                    .partition_exprs
+                    .iter()
+                    .map(|e| e.evaluate(batch).and_then(|v| v.into_array(num_rows)))
+                    .collect::<Result<_>>()?;
+                Some(converter.convert_columns(&partition_cols)?)
+            }
+            None => None,
+        };
+
         let order_cols: Vec<ArrayRef> = self
             .order_exprs
             .iter()
             .map(|e| e.evaluate(batch).and_then(|v| v.into_array(num_rows)))
             .collect::<Result<_>>()?;
-
-        let partition_rows = self.partition_converter.convert_columns(&partition_cols)?;
         let order_rows = self.order_converter.convert_columns(&order_cols)?;
 
         let mut keep: Vec<u32> = Vec::with_capacity(num_rows);
         for i in 0..num_rows {
-            let p_row = partition_rows.row(i);
             let o_row = order_rows.row(i);
 
-            let same_partition = matches!(&self.prev_partition, Some(prev) if prev.row() == p_row);
+            let same_partition = match &partition_rows {
+                Some(pr) => {
+                    let p_row = pr.row(i);
+                    matches!(&self.prev_partition, Some(prev) if prev.row() == p_row)
+                }
+                // No PARTITION BY: state accumulates across every row, resetting
+                // only on the very first row of the stream.
+                None => self.started,
+            };
             if !same_partition {
-                self.prev_partition = Some(p_row.owned());
+                if let Some(pr) = &partition_rows {
+                    self.prev_partition = Some(pr.row(i).owned());
+                }
                 self.prev_order = None;
                 self.rank = 0;
                 self.count = 0;
             }
+            self.started = true;
 
             let this_rank: u64 = match &self.prev_order {
                 None => 0,
