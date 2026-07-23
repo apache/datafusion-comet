@@ -398,7 +398,7 @@ expression-level). The `outer` variants are wired but marked `Incompatible`; the
 | Function | Status | Notes |
 | --- | --- | --- |
 | `%` | ✅ |  |
-| `*` | ✅ | Interval multiplication falls back |
+| `*` | ✅ | YearMonth interval multiplication routes through the JVM codegen dispatcher; DayTime/Calendar interval forms fall back |
 | `+` | ✅ |  |
 | `-` | ✅ |  |
 | `/` | ✅ |  |

@@ -80,13 +80,13 @@ the tables below and may be reconsidered based on demand:
 
 ## Interval
 
-Interval types fall back to Spark today. Native acceleration is tracked by
+Calendar interval types fall back to Spark today. Native acceleration is tracked by
 [#4540](https://github.com/apache/datafusion-comet/issues/4540).
 
 | Type                    | Status | Notes             |
 | ----------------------- | ------ | ----------------- |
-| `YearMonthIntervalType` | 🔜     | Tracked by #4540. |
-| `DayTimeIntervalType`   | 🔜     | Tracked by #4540. |
+| `YearMonthIntervalType` | ✅     |                   |
+| `DayTimeIntervalType`   | ✅     |                   |
 | `CalendarIntervalType`  | 🔜     | Tracked by #4540. |
 
 ## Complex

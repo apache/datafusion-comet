@@ -24,7 +24,7 @@ import java.lang
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Literal}
 import org.apache.spark.sql.catalyst.util.ArrayData
-import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType, DateType, Decimal, DecimalType, DoubleType, FloatType, IntegerType, LongType, NullType, ShortType, StringType, TimestampNTZType, TimestampType}
+import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType, DateType, Decimal, DecimalType, DoubleType, FloatType, IntegerType, LongType, NullType, ShortType, StringType, TimestampNTZType, TimestampType, YearMonthIntervalType}
 import org.apache.spark.unsafe.types.UTF8String
 
 import com.google.protobuf.ByteString
@@ -41,22 +41,27 @@ object CometLiteral extends CometExpressionSerde[Literal] with Logging {
     "Not all data types are supported for literal values")
 
   override def getSupportLevel(expr: Literal): SupportLevel = {
-
+    val dataType = expr.dataType
     if (supportedDataType(
-        expr.dataType,
+        dataType,
         allowComplex = expr.value == null ||
 
           // Nested literal support for native reader
           // can be tracked https://github.com/apache/datafusion-comet/issues/1937
-          (expr.dataType
+          (dataType
             .isInstanceOf[ArrayType] && (!isComplexType(
-            expr.dataType.asInstanceOf[ArrayType].elementType) || expr.dataType
+            dataType.asInstanceOf[ArrayType].elementType) || dataType
             .asInstanceOf[ArrayType]
             .elementType
             .isInstanceOf[ArrayType])))) {
       Compatible(None)
     } else {
-      Unsupported(Some(s"Unsupported data type ${expr.dataType}"))
+      dataType match {
+        // Keep YearMonthIntervalType out of QueryPlanSerde.supportedDataType, which gates broader
+        // native paths.
+        case _: YearMonthIntervalType => Compatible(None)
+        case _ => Unsupported(Some(s"Unsupported data type $dataType"))
+      }
     }
   }
 
@@ -77,7 +82,8 @@ object CometLiteral extends CometExpressionSerde[Literal] with Logging {
         case _: BooleanType => exprBuilder.setBoolVal(value.asInstanceOf[Boolean])
         case _: ByteType => exprBuilder.setByteVal(value.asInstanceOf[Byte])
         case _: ShortType => exprBuilder.setShortVal(value.asInstanceOf[Short])
-        case _: IntegerType | _: DateType => exprBuilder.setIntVal(value.asInstanceOf[Int])
+        case _: IntegerType | _: DateType | _: YearMonthIntervalType =>
+          exprBuilder.setIntVal(value.asInstanceOf[Int])
         case _: LongType | _: TimestampType | _: TimestampNTZType =>
           exprBuilder.setLongVal(value.asInstanceOf[Long])
         case dt if isTimeType(dt) =>
@@ -150,7 +156,7 @@ object CometLiteral extends CometExpressionSerde[Literal] with Logging {
             else null.asInstanceOf[Integer])
           listLiteralBuilder.addNullMask(casted != null)
         })
-      case IntegerType | DateType =>
+      case IntegerType | DateType | _: YearMonthIntervalType =>
         array.foreach(v => {
           val casted = v.asInstanceOf[Integer]
           listLiteralBuilder.addIntValues(casted)
