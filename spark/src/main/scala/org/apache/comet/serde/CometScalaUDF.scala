@@ -22,7 +22,7 @@ package org.apache.comet.serde
 import java.util.Locale
 
 import org.apache.spark.SparkEnv
-import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference, AttributeSeq, BindReferences, Expression, Literal, RuntimeReplaceable, ScalaUDF}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference, AttributeSeq, BindReferences, Expression, Literal, PlanExpression, RuntimeReplaceable, ScalaUDF}
 import org.apache.spark.sql.types.BinaryType
 
 import org.apache.comet.CometConf
@@ -102,6 +102,22 @@ object CometScalaUDF extends CometExpressionSerde[ScalaUDF] {
     val target = expr match {
       case rr: RuntimeReplaceable => rr.replacement
       case other => other
+    }
+
+    // A subquery inside the dispatched tree cannot be evaluated in the kernel. The bound tree is
+    // closure-serialized into arg 0 here at plan time, before the enclosing operator's
+    // `waitForSubqueries` populates the subquery result at execution, so the kernel would
+    // deserialize an unpopulated subquery and its `eval` would throw "Subquery ... has not
+    // finished". Refuse so the operator falls back cleanly. Match the catalyst base
+    // `PlanExpression` (rather than the narrower `ExecSubqueryExpression`) so every subquery form
+    // is caught. (A subquery that is a *sibling* of the dispatched node, e.g.
+    // `dispatched(x) + (SELECT ...)`, is unaffected: it is evaluated natively, never in this tree.)
+    if (target.exists(_.isInstanceOf[PlanExpression[_]])) {
+      withFallbackReason(
+        expr,
+        "codegen dispatch: a subquery inside the dispatched expression is not supported " +
+          "(its result is not populated at plan-time serialization)")
+      return None
     }
 
     // Bind against only the AttributeReferences the tree actually reads, so ordinals align with

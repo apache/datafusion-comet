@@ -348,6 +348,22 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(true)
 
+  val COMET_EXEC_JVM_DETOUR_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.exec.jvmDetour.enabled")
+      .category(CATEGORY_EXEC)
+      .doc("Experimental. When a projection or filter contains an expression with no native " +
+        "translation, evaluate just that subtree in the JVM via Comet's Arrow-direct codegen " +
+        "dispatcher (Spark's own `doGenCode`/`eval` run inside the Comet pipeline) instead of " +
+        "falling the whole operator back to Spark. Only the argument columns of the detoured " +
+        "subtree cross to the JVM over Arrow FFI, so the pipeline above and below stays native. " +
+        "Requires " + COMET_SCALA_UDF_CODEGEN_ENABLED.key + "=true. In a filter predicate the " +
+        "detoured subexpression is evaluated for all rows, the same as any native Comet " +
+        "predicate; under ANSI mode this can differ from Spark's per-row AND/OR short-circuit " +
+        "(e.g. a subexpression that raises, guarded by a preceding conjunct). Disabled by " +
+        "default while the feature is stabilized.")
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_EXEC_SHUFFLE_WITH_HASH_PARTITIONING_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.native.shuffle.partitioning.hash.enabled")
       .category(CATEGORY_SHUFFLE)

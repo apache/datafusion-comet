@@ -1012,7 +1012,8 @@ object CometProjectExec extends CometOperatorSerde[ProjectExec] {
       op: ProjectExec,
       builder: Operator.Builder,
       childOp: Operator*): Option[OperatorOuterClass.Operator] = {
-    val exprs = op.projectList.map(exprToProto(_, op.child.output))
+    val exprs =
+      QueryPlanSerde.withJvmDetour(op.projectList.map(exprToProto(_, op.child.output)))
 
     if (exprs.forall(_.isDefined) && childOp.nonEmpty) {
       val projectBuilder = OperatorOuterClass.Projection
@@ -1072,7 +1073,7 @@ object CometFilterExec extends CometOperatorSerde[FilterExec] {
       op: FilterExec,
       builder: Operator.Builder,
       childOp: OperatorOuterClass.Operator*): Option[OperatorOuterClass.Operator] = {
-    val cond = exprToProto(op.condition, op.child.output)
+    val cond = QueryPlanSerde.withJvmDetour(exprToProto(op.condition, op.child.output))
 
     if (cond.isDefined && childOp.nonEmpty) {
       val filterBuilder = OperatorOuterClass.Filter

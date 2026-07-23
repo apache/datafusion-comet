@@ -36,6 +36,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
 import org.apache.comet.CometConf
+import org.apache.comet.CometExplainInfo
 import org.apache.comet.CometSparkSessionExtensions.{withFallbackReason, withInfo}
 import org.apache.comet.expressions._
 import org.apache.comet.parquet.CometParquetUtils
@@ -49,6 +50,44 @@ import org.apache.comet.shims.{CometExprShim, CometTypeShim}
  * An utility object for query plan and expression serialization.
  */
 object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
+
+  /**
+   * True while serializing an expression context (a projection or a filter predicate) where a
+   * last-resort JVM expression detour is permitted. Set by [[withJvmDetour]] around the bodies of
+   * `CometProjectExec.convert` / `CometFilterExec.convert`. Scoping the detour this way keeps it
+   * out of join keys, sort keys, aggregate/group expressions, and partitioning expressions until
+   * those contexts are benchmarked, without threading a flag through every serde method.
+   *
+   * A plain (non-inheritable) `ThreadLocal`, deliberately NOT `scala.util.DynamicVariable`: that
+   * is backed by an `InheritableThreadLocal`, so any thread spawned while a `withJvmDetour` scope
+   * is active would copy `true` at construction and never restore it, leaking the detour into
+   * unrelated serde contexts (join/sort/aggregate/partitioning) on that child thread. Serde runs
+   * synchronously on the planning thread, so a non-inheritable thread-local with save/restore is
+   * both correct and leak-free.
+   */
+  private val jvmDetourContext: ThreadLocal[Boolean] = ThreadLocal.withInitial(() => false)
+
+  /**
+   * Evaluate `body` with the JVM expression detour permitted for any [[exprToProto]] calls made
+   * within it. Used by the projection and filter operator serdes; see [[jvmDetourContext]].
+   */
+  def withJvmDetour[T](body: => T): T = {
+    val previous = jvmDetourContext.get()
+    jvmDetourContext.set(true)
+    try body
+    finally jvmDetourContext.set(previous)
+  }
+
+  /**
+   * True when the last-resort JVM expression detour may fire for the node currently being
+   * serialized: we are inside a detour-eligible context ([[jvmDetourContext]]) and the feature is
+   * enabled via [[CometConf.COMET_EXEC_JVM_DETOUR_ENABLED]]. The dispatcher's own gate
+   * ([[CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED]]) and plan-time eligibility
+   * (`CometBatchKernelCodegen.canHandle`) are enforced inside
+   * `CometScalaUDF.emitJvmCodegenDispatch`.
+   */
+  private def jvmDetourAllowed: Boolean =
+    jvmDetourContext.get() && CometConf.COMET_EXEC_JVM_DETOUR_ENABLED.get()
 
   private[comet] val arrayExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
     // ArrayAppend is a concrete expression only on Spark 3.x. Spark 4.0+ marks it
@@ -874,6 +913,33 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
               None
           }
       })
+      .orElse {
+        // Last-resort JVM expression detour. Any `None` above — no registered handler, an
+        // `Unsupported`/opt-out `Incompatible` support level, or a handler whose `convert`
+        // returned `None` — means this node has no native translation. Inside a detour-eligible
+        // context (projection / filter, see `jvmDetourAllowed`) retry the *outermost* unsupported
+        // node as a JVM detour: `emitJvmCodegenDispatch` ships its argument columns over Arrow FFI
+        // and evaluates it with Spark's own codegen inside the Comet pipeline, so the operator —
+        // and the native island around it — stays native. Supported ancestors keep converting
+        // natively and reference this detour's output. If the detour cannot fire (feature off,
+        // dispatcher off, or `CometBatchKernelCodegen.canHandle` rejects the tree), `None`
+        // propagates unchanged and the operator falls back exactly as before.
+        if (jvmDetourAllowed) {
+          CometScalaUDF.emitJvmCodegenDispatch(expr, inputs, binding).map { proto =>
+            // A successful detour accelerates this node, so it is not a fallback. The conversion
+            // chain above already recorded a fallback reason (this hook runs last, unlike the
+            // `CodegenDispatchFallback` path which records a reason only when dispatch fails).
+            // Clear that reason so the node carries only the `withInfo` tag, preserving the
+            // `withInfo`-xor-`withFallbackReason` invariant the rest of the serde upholds and
+            // keeping a detoured sibling out of an operator-level fallback rollup.
+            expr.unsetTagValue(CometExplainInfo.FALLBACK_REASONS)
+            withInfo(expr, "Expression evaluated in the JVM via the codegen dispatcher")
+            proto
+          }
+        } else {
+          None
+        }
+      }
       .map { protoExpr =>
         // Attach QueryContext and expr_id to the expression
         val builder = protoExpr.toBuilder
