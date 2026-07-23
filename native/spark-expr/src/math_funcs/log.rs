@@ -94,9 +94,24 @@ pub fn spark_log(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusionErro
                         val_arr.data_type()
                     ))
                 })?;
+            // `base` is constant, so a non-positive base makes the whole result
+            // null; hoist that check and `ln(base)` out of the per-element loop.
+            if base <= 0.0 {
+                let result = Float64Array::new_null(val_arr.len());
+                return Ok(ColumnarValue::Array(Arc::new(result)));
+            }
+            let ln_base = base.ln();
             let result: Float64Array = values
                 .iter()
-                .map(|v| v.and_then(|value| compute(base, value)))
+                .map(|v| {
+                    v.and_then(|value| {
+                        if value <= 0.0 {
+                            None
+                        } else {
+                            Some(value.ln() / ln_base)
+                        }
+                    })
+                })
                 .collect();
             Ok(ColumnarValue::Array(Arc::new(result)))
         }
@@ -122,9 +137,24 @@ pub fn spark_log(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusionErro
                         base_arr.data_type()
                     ))
                 })?;
+            // `value` is constant, so a non-positive value makes the whole result
+            // null; hoist that check and `ln(value)` out of the per-element loop.
+            if value <= 0.0 {
+                let result = Float64Array::new_null(base_arr.len());
+                return Ok(ColumnarValue::Array(Arc::new(result)));
+            }
+            let ln_value = value.ln();
             let result: Float64Array = bases
                 .iter()
-                .map(|b| b.and_then(|base| compute(base, value)))
+                .map(|b| {
+                    b.and_then(|base| {
+                        if base <= 0.0 {
+                            None
+                        } else {
+                            Some(ln_value / base.ln())
+                        }
+                    })
+                })
                 .collect();
             Ok(ColumnarValue::Array(Arc::new(result)))
         }
