@@ -19,7 +19,10 @@
 
 package org.apache.comet.rules
 
+import java.lang.{Boolean => JBoolean}
 import java.net.URI
+import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
 
 import scala.collection.mutable
 import scala.collection.mutable.ListBuffer
@@ -40,7 +43,7 @@ import org.apache.spark.sql.execution.datasources.v2.csv.CSVScan
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
-import org.apache.comet.{CometConf, DataTypeSupport}
+import org.apache.comet.{CometConf, DataTypeSupport, NativeBase}
 import org.apache.comet.CometConf._
 import org.apache.comet.CometSparkSessionExtensions.{isCometLoaded, isSpark35Plus, withFallbackReason, withFallbackReasons}
 import org.apache.comet.DataTypeSupport.isComplexType
@@ -85,12 +88,10 @@ case class CometScanRule(session: SparkSession)
       case _ => false
     }
 
-    def hasMetadataCol(plan: SparkPlan): Boolean = {
-      plan.expressions.exists(_.exists {
-        case a: Attribute =>
-          a.isMetadataCol
-        case _ => false
-      })
+    def metadataCols(plan: SparkPlan): Seq[String] = {
+      plan.expressions.collect {
+        case a: Attribute if a.isMetadataCol => a.name
+      }
     }
 
     def isIcebergMetadataTable(scanExec: BatchScanExec): Boolean = {
@@ -124,8 +125,10 @@ case class CometScanRule(session: SparkSession)
       case scan if !CometConf.COMET_NATIVE_SCAN_ENABLED.get(conf) =>
         withFallbackReason(scan, "Comet Scan is not enabled")
 
-      case scan if hasMetadataCol(scan) =>
-        withFallbackReason(scan, "Metadata column is not supported")
+      case scan if metadataCols(scan).nonEmpty =>
+        withFallbackReason(
+          scan,
+          s"Metadata column(s) ${metadataCols(scan).mkString(", ")} is not supported")
 
       // data source V1
       case scanExec: FileSourceScanExec =>
@@ -199,6 +202,47 @@ case class CometScanRule(session: SparkSession)
       withFallbackReason(
         scanExec,
         s"Native Parquet scan requires ${COMET_EXEC_ENABLED.key} to be enabled")
+      return None
+    }
+    // Comet's native readers go through object_store, which only understands a fixed set of URL
+    // schemes. A custom Hadoop FileSystem (e.g. registered via spark.hadoop.fs.<scheme>.impl) would
+    // surface at execution time as `Generic URL error: Unable to recognise URL "..."`. Decline here
+    // so Spark's reader -- which goes through the Hadoop FS API and can resolve custom schemes --
+    // handles the scan. Whether object_store recognizes a scheme is answered by the native layer
+    // itself (`NativeBase.isObjectStoreSchemeSupported`) rather than a hardcoded list, so the
+    // planner can't drift from object_store's actual support.
+    //
+    // EXCEPT schemes the user routes through libhdfs via `spark.hadoop.fs.comet.libhdfs.schemes`
+    // (e.g. `hdfs`, or a test `fake`): those ARE natively readable through the libhdfs object_store
+    // bridge, so they must NOT be declined here (regression guarded by
+    // ParquetReadFromFakeHadoopFsSuite).
+    //
+    // The default mirrors the native side: when the config is unset, `is_hdfs_scheme`
+    // (native/core/src/parquet/parquet_support.rs) treats `hdfs` as natively readable, and
+    // `create_hdfs_object_store` is in the default build (`default = ["hdfs-opendal"]`). If we
+    // defaulted to an empty set here, a plain `hdfs://` V1 scan would be declined and fall back to
+    // Spark even though native can read it -- a silent regression for HDFS users in the default
+    // configuration. So default to `Set("hdfs")` to stay in lockstep with the native default.
+    val libhdfsSchemes: Set[String] = COMET_LIBHDFS_SCHEMES.get() match {
+      case Some(s) =>
+        s.split(",").map(_.trim.toLowerCase(Locale.ROOT)).filter(_.nonEmpty).toSet
+      case None => Set("hdfs")
+    }
+    val unsupportedFsSchemes = r.location.rootPaths
+      .map(_.toUri)
+      .filter { uri =>
+        val sch = uri.getScheme
+        sch != null && {
+          val sl = sch.toLowerCase(Locale.ROOT)
+          !libhdfsSchemes.contains(sl) && !CometScanRule.isNativelyReadableScheme(uri)
+        }
+      }
+      .map(_.getScheme.toLowerCase(Locale.ROOT))
+      .toSet
+    if (unsupportedFsSchemes.nonEmpty) {
+      withFallbackReason(
+        scanExec,
+        s"Unsupported filesystem schemes: ${unsupportedFsSchemes.mkString(", ")}")
       return None
     }
     // Disabling the vectorized reader opts into parquet-mr's permissive behavior
@@ -559,15 +603,44 @@ case class CometScanRule(session: SparkSession)
 
           try {
             if (!taskValidation.deleteFiles.isEmpty) {
+              val historicSchemas = IcebergReflection.getAllSchemas(metadata.table)
               taskValidation.deleteFiles.asScala.foreach { deleteFile =>
+                // iceberg-rust only reads Parquet delete files. Avro/ORC positional or
+                // equality deletes must be applied by Spark.
+                IcebergReflection.getFileFormat(deleteFile) match {
+                  case Some(fmt) if fmt.equalsIgnoreCase(IcebergReflection.FileFormats.PARQUET) =>
+                  case Some(fmt) =>
+                    hasUnsupportedDeletes = true
+                    fallbackReasons +=
+                      s"Delete file format '$fmt' is not supported by iceberg-rust. " +
+                        "Only Parquet delete files can be applied natively."
+                  case None =>
+                    hasUnsupportedDeletes = true
+                    logWarning(
+                      "Could not determine Iceberg delete file format; falling back to Spark")
+                    fallbackReasons += "Could not determine Iceberg delete file format"
+                }
+
                 val equalityFieldIds = IcebergReflection.getEqualityFieldIds(deleteFile)
 
                 if (!equalityFieldIds.isEmpty) {
-                  // Look up field types
                   equalityFieldIds.asScala.foreach { fieldId =>
-                    val fieldInfo = IcebergReflection.getFieldInfo(
-                      metadata.scanSchema,
-                      fieldId.asInstanceOf[Int])
+                    val fid = fieldId.asInstanceOf[Int]
+                    // Resolve against the current schema, then the table's schema history: an
+                    // equality delete may be keyed on a column that has since been dropped, which
+                    // the serde must still put in the task schema to apply the delete natively.
+                    val inCurrentSchema =
+                      IcebergReflection.getFieldInfo(metadata.tableSchema, fid)
+                    val fieldInfo = inCurrentSchema.orElse(
+                      historicSchemas.iterator
+                        .flatMap(s => IcebergReflection.getFieldInfo(s, fid))
+                        .toSeq
+                        .headOption)
+                    if (inCurrentSchema.isEmpty && fieldInfo.isDefined) {
+                      logDebug(
+                        s"Iceberg equality-delete field id $fid is absent from the current table " +
+                          "schema; resolved from schema history (likely a dropped column)")
+                    }
                     fieldInfo match {
                       case Some((fieldName, fieldType)) =>
                         if (fieldType.contains("struct")) {
@@ -579,6 +652,13 @@ case class CometScanRule(session: SparkSession)
                               "require datum conversion support that is not yet implemented."
                         }
                       case None =>
+                        hasUnsupportedDeletes = true
+                        logWarning(
+                          s"Iceberg equality-delete field id $fid unresolvable in the table " +
+                            "schema or its history; falling back to Spark")
+                        fallbackReasons +=
+                          s"Equality delete references field id $fid which cannot be resolved " +
+                            "in the table schema or its history"
                     }
                   }
                 }
@@ -727,6 +807,33 @@ case class CometScanTypeChecker() extends DataTypeSupport with CometTypeShim {
 }
 
 object CometScanRule extends Logging {
+
+  // Per-scheme memo of `NativeBase.isObjectStoreSchemeSupported`. The answer depends only on the
+  // URL scheme, so we cache by scheme and never re-cross the JNI boundary for a repeated scheme.
+  private val schemeSupportCache =
+    new ConcurrentHashMap[String, JBoolean]()
+
+  /**
+   * True when Comet's native object_store layer recognizes this URI's scheme (so the scan is
+   * natively readable). Delegates to the native layer -- the source of truth -- instead of a
+   * hardcoded scheme list. On any failure to consult native (e.g. the library isn't loaded on
+   * this JVM, or predates this method) we assume the scheme IS supported: the scheme gate is an
+   * early-fallback optimization, and a build without a working native library can't run Comet's
+   * native scan anyway, so declining here would only over-restrict.
+   */
+  private[rules] def isNativelyReadableScheme(uri: URI): Boolean = {
+    val scheme = uri.getScheme
+    if (scheme == null) return true
+    schemeSupportCache
+      .computeIfAbsent(
+        scheme.toLowerCase(Locale.ROOT),
+        _ =>
+          try JBoolean.valueOf(NativeBase.isObjectStoreSchemeSupported(uri.toString))
+          catch {
+            case _: Throwable => JBoolean.TRUE
+          })
+      .booleanValue()
+  }
 
   /**
    * Tag set on a scan (`FileSourceScanExec` or `BatchScanExec`) that should be left as a plain

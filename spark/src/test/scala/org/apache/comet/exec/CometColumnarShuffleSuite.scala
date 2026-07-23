@@ -50,13 +50,10 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
       .set(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key, adaptiveExecutionEnabled.toString)
   }
 
-  protected val asyncShuffleEnable: Boolean
-
   override protected def test(testName: String, testTags: Tag*)(testFun: => Any)(implicit
       pos: Position): Unit = {
     super.test(testName, testTags: _*) {
       withSQLConf(
-        CometConf.COMET_COLUMNAR_SHUFFLE_ASYNC_ENABLED.key -> asyncShuffleEnable.toString,
         CometConf.COMET_COLUMNAR_SHUFFLE_SPILL_THRESHOLD.key -> numElementsForceSpillThreshold.toString,
         CometConf.COMET_EXEC_ENABLED.key -> "true",
         CometConf.COMET_SHUFFLE_MODE.key -> "jvm",
@@ -761,6 +758,36 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
     }
   }
 
+  // Regression test for https://github.com/apache/datafusion-comet/issues/4521.
+  //
+  // Spark's `cast(BinaryType -> StringType)` is a zero-copy reinterpret (and `UnsafeRow`'s
+  // string accessor performs no UTF-8 validation), so a `StringType` column can legitimately
+  // hold arbitrary non-UTF-8 bytes that Spark treats as opaque. Comet's columnar (JVM) shuffle
+  // converts those `UnsafeRow`s to Arrow natively (`process_sorted_row_partition` -> `get_string`),
+  // which used to decode with `from_utf8(..).unwrap()` and panic on such rows. It now decodes
+  // lossily (U+FFFD replacements), matching how Spark renders the same bytes.
+  test("columnar shuffle tolerates non-UTF-8 bytes in a StringType column") {
+    withParquetTable(
+      Seq(
+        // 0xFF and 0xFE are never valid UTF-8 lead bytes; each decodes to a single U+FFFD in
+        // both Spark and Comet (so the lossy results match exactly).
+        (1, Array[Byte](0xff.toByte, 0xfe.toByte, 'A'.toByte)),
+        // 0x80 is a stray continuation byte -> one U+FFFD, followed by valid ASCII.
+        (2, Array[Byte](0x80.toByte, 'B'.toByte)),
+        // A fully valid UTF-8 row exercises the zero-cost borrow path.
+        (3, "valid".getBytes("UTF-8"))),
+      "tbl") {
+      // Disable Comet's own Cast so the `cast(binary -> string)` runs in Spark and the raw bytes
+      // reach the shuffle inside a JVM UnsafeRow. (If Comet performed the cast it would produce a
+      // pre-sanitized Arrow string array and never exercise get_string.)
+      withSQLConf(CometConf.getExprEnabledConfigKey("Cast") -> "false") {
+        val df = sql("SELECT _1, CAST(_2 AS STRING) AS s FROM tbl")
+        val shuffled = df.repartition(2, $"_1")
+        checkShuffleAnswer(shuffled, 1)
+      }
+    }
+  }
+
   /**
    * Checks that `df` produces the same answer as Spark does, and has the `expectedNum` Comet
    * exchange operators.
@@ -771,15 +798,7 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
   }
 }
 
-class CometAsyncShuffleSuite extends CometColumnarShuffleSuite {
-  override protected val asyncShuffleEnable: Boolean = true
-
-  protected val adaptiveExecutionEnabled: Boolean = true
-}
-
 class CometShuffleSuite extends CometColumnarShuffleSuite {
-  override protected val asyncShuffleEnable: Boolean = false
-
   protected val adaptiveExecutionEnabled: Boolean = true
 
   import testImplicits._
@@ -831,8 +850,6 @@ class CometShuffleSuite extends CometColumnarShuffleSuite {
 }
 
 class DisableAQECometShuffleSuite extends CometColumnarShuffleSuite {
-  override protected val asyncShuffleEnable: Boolean = false
-
   protected val adaptiveExecutionEnabled: Boolean = false
 
   import testImplicits._
@@ -862,12 +879,6 @@ class DisableAQECometShuffleSuite extends CometColumnarShuffleSuite {
   }
 }
 
-class DisableAQECometAsyncShuffleSuite extends CometColumnarShuffleSuite {
-  override protected val asyncShuffleEnable: Boolean = true
-
-  protected val adaptiveExecutionEnabled: Boolean = false
-}
-
 class CometShuffleEncryptionSuite extends CometTestBase {
 
   import testImplicits._
@@ -880,23 +891,20 @@ class CometShuffleEncryptionSuite extends CometTestBase {
   test("comet columnar shuffle with encryption") {
     Seq(10, 201).foreach { numPartitions =>
       Seq(true, false).foreach { dictionaryEnabled =>
-        Seq(true, false).foreach { asyncEnabled =>
-          withTempDir { dir =>
-            val path = new Path(dir.toURI.toString, "test.parquet")
-            makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = dictionaryEnabled, 1000)
+        withTempDir { dir =>
+          val path = new Path(dir.toURI.toString, "test.parquet")
+          makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = dictionaryEnabled, 1000)
 
-            (1 until 10).map(i => $"_$i").foreach { col =>
-              withSQLConf(
-                CometConf.COMET_EXEC_ENABLED.key -> "true",
-                CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
-                CometConf.COMET_SHUFFLE_MODE.key -> "jvm",
-                CometConf.COMET_COLUMNAR_SHUFFLE_ASYNC_ENABLED.key -> asyncEnabled.toString) {
-                readParquetFile(path.toString) { df =>
-                  val shuffled = df
-                    .select($"_1")
-                    .repartition(numPartitions, col)
-                  checkSparkAnswer(shuffled)
-                }
+          (1 until 10).map(i => $"_$i").foreach { col =>
+            withSQLConf(
+              CometConf.COMET_EXEC_ENABLED.key -> "true",
+              CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+              CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
+              readParquetFile(path.toString) { df =>
+                val shuffled = df
+                  .select($"_1")
+                  .repartition(numPartitions, col)
+                checkSparkAnswer(shuffled)
               }
             }
           }
@@ -909,7 +917,7 @@ class CometShuffleEncryptionSuite extends CometTestBase {
 class CometShuffleManagerSuite extends CometTestBase {
 
   test("should not bypass merge sort if executor cores are too high") {
-    withSQLConf(CometConf.COMET_COLUMNAR_SHUFFLE_ASYNC_MAX_THREAD_NUM.key -> "100") {
+    withSQLConf(CometConf.COMET_COLUMNAR_SHUFFLE_MAX_WRITERS_PER_EXECUTOR.key -> "100") {
       val conf = new SparkConf()
       conf.set("spark.executor.cores", "1")
 

@@ -103,6 +103,71 @@ object CometAggregateExpressionBenchmark extends CometBenchmarkBase {
       "count_distinct_high_card",
       "SELECT COUNT(DISTINCT c_int) FROM parquetV1Table GROUP BY high_card_grp"))
 
+  // Exact percentile. Only the single-percentage, default-frequency, numeric-input form runs
+  // natively through Comet's Spark-compatible percentile UDAF; other forms fall back to Spark.
+  private val percentileAggregates = List(
+    AggExprConfig(
+      "percentile_int_median",
+      "SELECT percentile(c_int, 0.5) FROM parquetV1Table GROUP BY grp"),
+    AggExprConfig(
+      "percentile_long_median",
+      "SELECT percentile(c_long, 0.5) FROM parquetV1Table GROUP BY grp"),
+    AggExprConfig(
+      "percentile_double_median",
+      "SELECT percentile(c_double, 0.5) FROM parquetV1Table GROUP BY grp"),
+    AggExprConfig(
+      "percentile_double_p90",
+      "SELECT percentile(c_double, 0.9) FROM parquetV1Table GROUP BY grp"),
+    AggExprConfig(
+      "percentile_double_global",
+      "SELECT percentile(c_double, 0.5) FROM parquetV1Table"),
+    AggExprConfig(
+      "percentile_double_high_card",
+      "SELECT percentile(c_double, 0.5) FROM parquetV1Table GROUP BY high_card_grp"))
+
+  // approx_count_distinct (Spark's HyperLogLogPlusPlus). c_int has ~10000 distinct values.
+  private val approxCountDistinctAggregates = List(
+    AggExprConfig(
+      "approx_count_distinct_int",
+      "SELECT approx_count_distinct(c_int) FROM parquetV1Table GROUP BY grp"),
+    AggExprConfig(
+      "approx_count_distinct_string",
+      "SELECT approx_count_distinct(CAST(c_int AS STRING)) FROM parquetV1Table GROUP BY grp"),
+    AggExprConfig(
+      "approx_count_distinct_global",
+      "SELECT approx_count_distinct(c_int) FROM parquetV1Table"),
+    AggExprConfig(
+      "approx_count_distinct_high_card",
+      "SELECT approx_count_distinct(c_int) FROM parquetV1Table GROUP BY high_card_grp"))
+
+  // Approximate percentile (Greenwald-Khanna). All numeric input types and the
+  // scalar, array, and explicit-accuracy forms run natively.
+  private val approxPercentileAggregates = List(
+    AggExprConfig(
+      "approx_percentile_int_median",
+      "SELECT approx_percentile(c_int, 0.5) FROM parquetV1Table GROUP BY grp"),
+    AggExprConfig(
+      "approx_percentile_long_median",
+      "SELECT approx_percentile(c_long, 0.5) FROM parquetV1Table GROUP BY grp"),
+    AggExprConfig(
+      "approx_percentile_double_median",
+      "SELECT approx_percentile(c_double, 0.5) FROM parquetV1Table GROUP BY grp"),
+    AggExprConfig(
+      "approx_percentile_double_p90",
+      "SELECT approx_percentile(c_double, 0.9) FROM parquetV1Table GROUP BY grp"),
+    AggExprConfig(
+      "approx_percentile_double_array",
+      "SELECT approx_percentile(c_double, array(0.25, 0.5, 0.75)) FROM parquetV1Table GROUP BY grp"),
+    AggExprConfig(
+      "approx_percentile_double_accuracy",
+      "SELECT approx_percentile(c_double, 0.5, 100) FROM parquetV1Table GROUP BY grp"),
+    AggExprConfig(
+      "approx_percentile_double_global",
+      "SELECT approx_percentile(c_double, 0.5) FROM parquetV1Table"),
+    AggExprConfig(
+      "approx_percentile_double_high_card",
+      "SELECT approx_percentile(c_double, 0.5) FROM parquetV1Table GROUP BY high_card_grp"))
+
   override def runCometBenchmark(mainArgs: Array[String]): Unit = {
     val values = 1024 * 1024
 
@@ -125,7 +190,9 @@ object CometAggregateExpressionBenchmark extends CometBenchmarkBase {
             """))
 
           val allAggregates = basicAggregates ++ statisticalAggregates ++ bitwiseAggregates ++
-            multiKeyAggregates ++ multiAggregates ++ decimalAggregates ++ highCardinalityAggregates
+            multiKeyAggregates ++ multiAggregates ++ decimalAggregates ++
+            highCardinalityAggregates ++ percentileAggregates ++ approxPercentileAggregates ++
+            approxCountDistinctAggregates
 
           allAggregates.foreach { config =>
             runExpressionBenchmark(config.name, v, config.query, config.extraCometConfigs)

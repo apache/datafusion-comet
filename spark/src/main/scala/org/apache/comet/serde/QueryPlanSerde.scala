@@ -36,7 +36,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
 import org.apache.comet.CometConf
-import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
+import org.apache.comet.CometSparkSessionExtensions.{withFallbackReason, withInfo}
 import org.apache.comet.expressions._
 import org.apache.comet.parquet.CometParquetUtils
 import org.apache.comet.serde.ExprOuterClass.{AggExpr, Expr, ScalarFunc}
@@ -51,8 +51,14 @@ import org.apache.comet.shims.{CometExprShim, CometTypeShim}
 object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
 
   private[comet] val arrayExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
+    // ArrayAppend is a concrete expression only on Spark 3.x. Spark 4.0+ marks it
+    // RuntimeReplaceable and rewrites it to ArrayInsert before serde, so this entry is
+    // unreachable there and is kept solely for Spark 3.4/3.5.
     classOf[ArrayAppend] -> CometArrayAppend,
-    classOf[ArrayCompact] -> CometArrayCompact,
+    // ArrayCompact is RuntimeReplaceable in all supported Spark versions (rewritten to
+    // ArrayFilter(arr, IsNotNull(...))), so it never reaches serde directly; dispatch flows
+    // through CometArrayFilter -> CometArrayCompact -> DataFusion's array_compact. On Spark
+    // 4.0+ the rewrite is wrapped in KnownNotContainsNull, stripped by Spark4xCometExprShim.
     classOf[ArrayContains] -> CometArrayContains,
     classOf[ArrayDistinct] -> CometScalarFunction("array_distinct"),
     classOf[ArrayExcept] -> CometArrayExcept,
@@ -64,7 +70,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
     classOf[ArrayMin] -> CometArrayMin,
     classOf[ArrayPosition] -> CometArrayPosition,
     classOf[ArrayRemove] -> CometArrayRemove,
-    classOf[ArrayRepeat] -> CometArrayRepeat,
+    classOf[ArrayRepeat] -> CometScalarFunction("array_repeat"),
     classOf[Slice] -> CometSlice,
     classOf[SortArray] -> CometSortArray,
     classOf[ArraysOverlap] -> CometArraysOverlap,
@@ -81,7 +87,8 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
     classOf[ArrayAggregate] -> CometArrayAggregate,
     classOf[ArraySort] -> CometArraySort,
     classOf[ZipWith] -> CometZipWith,
-    classOf[Sequence] -> CometSequence)
+    classOf[Sequence] -> CometSequence,
+    classOf[Shuffle] -> CometShuffle)
 
   private val conditionalExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] =
     Map(classOf[CaseWhen] -> CometCaseWhen, classOf[If] -> CometIf)
@@ -134,7 +141,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       classOf[Logarithm] -> CometLogarithm,
       classOf[Multiply] -> CometMultiply,
       classOf[Pi] -> CometScalarFunction("pi"),
-      classOf[Pow] -> CometScalarFunction("pow"),
+      classOf[Pow] -> CometPow,
       classOf[Rand] -> CometRand,
       classOf[Randn] -> CometRandn,
       classOf[Remainder] -> CometRemainder,
@@ -175,7 +182,6 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       classOf[MapEntries] -> CometMapEntries,
       classOf[MapValues] -> CometMapValues,
       classOf[MapFromArrays] -> CometMapFromArrays,
-      classOf[MapContainsKey] -> CometMapContainsKey,
       classOf[MapFromEntries] -> CometMapFromEntries,
       classOf[MapConcat] -> CometMapConcat,
       classOf[StringToMap] -> CometStrToMap,
@@ -213,8 +219,8 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       classOf[Chr] -> CometScalarFunction("char"),
       classOf[ConcatWs] -> CometConcatWs,
       classOf[Concat] -> CometConcat,
-      classOf[Contains] -> CometScalarFunction("contains"),
-      classOf[EndsWith] -> CometScalarFunction("ends_with"),
+      classOf[Contains] -> CometContains,
+      classOf[EndsWith] -> CometEndsWith,
       classOf[GetJsonObject] -> CometGetJsonObject,
       classOf[InitCap] -> CometInitCap,
       classOf[Length] -> CometLength,
@@ -228,7 +234,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       classOf[RegExpReplace] -> CometRegExpReplace,
       classOf[Reverse] -> CometReverse,
       classOf[RLike] -> CometRLike,
-      classOf[StartsWith] -> CometScalarFunction("starts_with"),
+      classOf[StartsWith] -> CometStartsWith,
       classOf[StringInstr] -> CometScalarFunction("instr"),
       classOf[StringRepeat] -> CometStringRepeat,
       classOf[StringReplace] -> CometStringReplace,
@@ -252,11 +258,13 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       classOf[Overlay] -> CometOverlay,
       classOf[SoundEx] -> CometSoundEx,
       classOf[StringLocate] -> CometStringLocate,
+      classOf[Base64] -> CometBase64,
       classOf[UnBase64] -> CometUnBase64,
       classOf[ToCharacter] -> CometToCharacter,
       classOf[ToNumber] -> CometToNumber,
       classOf[TryToNumber] -> CometTryToNumber,
-      classOf[Mask] -> CometMask)
+      classOf[Mask] -> CometMask,
+      classOf[Empty2Null] -> CometEmpty2Null)
     base ++ sparkVersionSpecificStringExpressions
   }
 
@@ -291,11 +299,14 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       classOf[Hour] -> CometHour,
       classOf[MakeDate] -> CometMakeDate,
       classOf[MakeTimestamp] -> CometMakeTimestamp,
+      classOf[MakeYMInterval] -> CometMakeYMInterval,
+      classOf[MakeDTInterval] -> CometMakeDTInterval,
       classOf[MicrosToTimestamp] -> CometMicrosToTimestamp,
       classOf[MillisToTimestamp] -> CometMillisToTimestamp,
       classOf[MonthsBetween] -> CometMonthsBetween,
       classOf[Minute] -> CometMinute,
       classOf[NextDay] -> CometNextDay,
+      classOf[PreciseTimestampConversion] -> CometPreciseTimestampConversion,
       classOf[Second] -> CometSecond,
       classOf[SecondsToTimestamp] -> CometSecondsToTimestamp,
       classOf[TruncDate] -> CometTruncDate,
@@ -349,6 +360,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       classOf[CheckOverflow] -> CometCheckOverflow,
       classOf[Coalesce] -> CometCoalesce,
       classOf[KnownFloatingPointNormalized] -> CometKnownFloatingPointNormalized,
+      classOf[KnownNullable] -> CometKnownNullable,
       classOf[Literal] -> CometLiteral,
       classOf[MakeDecimal] -> CometMakeDecimal,
       classOf[MonotonicallyIncreasingID] -> CometMonotonicallyIncreasingId,
@@ -376,6 +388,8 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
    * Mapping of Spark aggregate expression class to Comet expression handler.
    */
   val aggrSerdeMap: Map[Class[_], CometAggregateExpressionSerde[_]] = Map(
+    classOf[ApproximatePercentile] -> CometApproxPercentile,
+    classOf[HyperLogLogPlusPlus] -> CometApproxCountDistinct,
     classOf[Average] -> CometAverage,
     classOf[BitAndAgg] -> CometBitAndAgg,
     classOf[BitOrAgg] -> CometBitOrAgg,
@@ -390,6 +404,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
     classOf[Last] -> CometLast,
     classOf[Max] -> CometMax,
     classOf[Min] -> CometMin,
+    classOf[Percentile] -> CometPercentile,
     classOf[StddevPop] -> CometStddevPop,
     classOf[StddevSamp] -> CometStddevSamp,
     classOf[Sum] -> CometSum,
@@ -402,15 +417,27 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
    * in the other.
    */
   def allAggsSupportMixedExecution(aggExprs: Seq[AggregateExpression]): Boolean = {
-    aggExprs.forall { aggExpr =>
-      val fn = aggExpr.aggregateFunction
-      aggrSerdeMap.get(fn.getClass) match {
-        case Some(handler) =>
-          handler
-            .asInstanceOf[CometAggregateExpressionSerde[AggregateFunction]]
-            .supportsMixedPartialFinal
-        case None => false
-      }
+    aggExprs.forall(aggExpr => supportsMixedExecution(aggExpr.aggregateFunction))
+  }
+
+  /**
+   * Returns the aggregate functions in the list whose intermediate buffer formats are not known
+   * to be compatible between Spark and Comet. These are the functions that prevent a Spark Final
+   * aggregate (without a Comet Partial) from running, since the buffer produced by one engine
+   * cannot be safely consumed by the other.
+   */
+  def aggsNotSupportingMixedExecution(
+      aggExprs: Seq[AggregateExpression]): Seq[AggregateFunction] = {
+    aggExprs.map(_.aggregateFunction).filterNot(supportsMixedExecution)
+  }
+
+  private def supportsMixedExecution(fn: AggregateFunction): Boolean = {
+    aggrSerdeMap.get(fn.getClass) match {
+      case Some(handler) =>
+        handler
+          .asInstanceOf[CometAggregateExpressionSerde[AggregateFunction]]
+          .supportsMixedPartialFinal(fn)
+      case None => false
     }
   }
 
@@ -518,6 +545,8 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       case _: MapType => 15
       case _: StructType => 16
       case dt if isTimeType(dt) => 17
+      case _: YearMonthIntervalType => 18
+      case _: DayTimeIntervalType => 19
       case dt =>
         logWarning(s"Cannot serialize Spark data type: $dt")
         return None
@@ -664,7 +693,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
                   s"${CometConf.COMPAT_GUIDE}.")
               None
             }
-          case Compatible(notes) =>
+          case Compatible(notes, _) =>
             if (notes.isDefined) {
               logWarning(s"Comet supports $fn but has notes: ${notes.get}")
             }
@@ -768,8 +797,22 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       }
       handler.getSupportLevel(expr) match {
         case Unsupported(notes) =>
-          withFallbackReason(expr, notes.getOrElse(""))
-          None
+          // `CodegenDispatchFallback` serdes have no native path for these cases either, but the
+          // dispatcher can still run Spark's own `doGenCode` inside the Comet pipeline. Try that
+          // before falling the projection back to Spark. No `[COMET-INFO]` hint here: unlike
+          // `Incompatible`, there is no native opt-in for the user to flip, so log at debug level
+          // to give anyone tracing why a projection stayed native something to go on.
+          dispatchIfFallback(handler, expr, inputs, binding)
+            .map { case (_, proto) =>
+              logDebug(
+                s"$expr has no native path (${notes.getOrElse("unsupported")}) but is routed " +
+                  "through the JVM codegen dispatcher to stay in the Comet pipeline.")
+              proto
+            }
+            .orElse {
+              withFallbackReason(expr, notes.getOrElse(""))
+              None
+            }
         case Incompatible(notes) =>
           val exprAllowIncompat = CometConf.isExprAllowIncompat(exprConfName)
           if (exprAllowIncompat) {
@@ -786,10 +829,12 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
             // pipeline) so the projection stays native while still matching Spark. Everything else
             // falls back to Spark. Falling back is also the result when the dispatcher cannot
             // handle the expression.
-            val dispatched = handler match {
-              case _: CodegenDispatchFallback =>
-                CometScalaUDF.emitJvmCodegenDispatch(expr, inputs, binding)
-              case _ => None
+            val dispatched = dispatchIfFallback(handler, expr, inputs, binding).map {
+              case (h, proto) =>
+                val key = h.nativeOptInConfigKeyOverride
+                  .getOrElse(CometConf.getExprAllowIncompatConfigKey(exprConfName))
+                withInfo(expr, NativeOptIn.message(exprConfName, key))
+                proto
             }
             dispatched.orElse {
               val optionalNotes = notes.map(str => s" ($str)").getOrElse("")
@@ -801,9 +846,12 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
               None
             }
           }
-        case Compatible(notes) =>
+        case Compatible(notes, nativeOptIn) =>
           if (notes.isDefined) {
             logWarning(s"Comet supports $expr but has notes: ${notes.get}")
+          }
+          nativeOptIn.foreach { optIn =>
+            withInfo(expr, NativeOptIn.message(exprConfName, optIn.configKey))
           }
           handler.convert(expr, inputs, binding)
       }
@@ -1027,6 +1075,23 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       case o => o
     }
 
+  }
+
+  /**
+   * If `handler` is a `CodegenDispatchFallback`, run `expr` through the JVM codegen dispatcher
+   * and return `Some((handler, proto))` on success; otherwise return `None`. Shared by the
+   * `Unsupported` and (non-opt-in) `Incompatible` arms of `exprToProtoInternal` so they don't
+   * each inline the same pattern match. Returning the matched handler lets the `Incompatible` arm
+   * reach `nativeOptInConfigKeyOverride` without re-pattern-matching the same value.
+   */
+  private def dispatchIfFallback(
+      handler: CometExpressionSerde[_],
+      expr: Expression,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[(CodegenDispatchFallback, Expr)] = handler match {
+    case h: CodegenDispatchFallback =>
+      CometScalaUDF.emitJvmCodegenDispatch(expr, inputs, binding).map(h -> _)
+    case _ => None
   }
 
   // scalastyle:off

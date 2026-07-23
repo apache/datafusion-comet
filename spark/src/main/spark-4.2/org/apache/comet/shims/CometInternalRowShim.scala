@@ -19,22 +19,19 @@
 
 package org.apache.comet.shims
 
-import org.apache.spark.unsafe.types.{GeographyVal, GeometryVal, VariantVal}
+import org.apache.spark.unsafe.types.{BinaryView, VariantVal}
 
 /**
- * Throwing defaults for Spark 4.x `SpecializedGetters` additions: `getVariant` (4.0),
- * `getGeography` and `getGeometry` (4.1). Mixed into `CometInternalRow` and `CometArrayData`.
+ * Throwing defaults for Spark 4.x `SpecializedGetters` additions: `getVariant` (4.0) and
+ * `getBinaryView` (4.2). Spark 4.2 dropped 4.1's `getGeography` / `getGeometry` in favour of the
+ * single `getBinaryView` accessor. Mixed into `CometInternalRow` and `CometArrayData`.
  */
 trait CometInternalRowShim {
   def getVariant(ordinal: Int): VariantVal =
     throw new UnsupportedOperationException(
       s"${getClass.getSimpleName}: getVariant not supported")
 
-  def getGeography(ordinal: Int): GeographyVal =
+  def getBinaryView(ordinal: Int): BinaryView =
     throw new UnsupportedOperationException(
-      s"${getClass.getSimpleName}: getGeography not supported")
-
-  def getGeometry(ordinal: Int): GeometryVal =
-    throw new UnsupportedOperationException(
-      s"${getClass.getSimpleName}: getGeometry not supported")
+      s"${getClass.getSimpleName}: getBinaryView not supported")
 }

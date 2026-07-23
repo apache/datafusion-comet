@@ -74,20 +74,53 @@ For details on per-expression and per-operator support levels, see the
 
 ## Apache Spark Version Support
 
-Each Comet release supports the **latest patch version** of every Apache Spark minor release that
-Comet targets at the time of release. The currently supported Spark versions are listed on the
-[Spark Version Compatibility](../user-guide/latest/compatibility/spark-versions.md) page.
+The currently supported Spark versions are listed on the
+[Spark Version Compatibility](../user-guide/latest/compatibility/spark-versions.md) page. Comet
+binaries are published per `(Spark minor × Scala binary version)` combination. Users must select
+the binary that matches their Spark and Scala installation.
 
-When the upstream Spark project publishes a new patch within a supported minor (for example,
-`3.5.8` → `3.5.9`), the next Comet release will pick it up. Older Spark patches within the same
-minor are not separately supported.
+### New Version Adoption
 
-Dropping support for an entire Spark minor (for example, removing Spark 3.4) is announced in the
-release notes of the **preceding** Comet minor release, giving users at least one release of
-notice before the change takes effect.
+Comet does not commit to a timeline for adopting a new Apache Spark minor release. The effort
+required varies significantly from one release to the next, so Comet will not promise a
+delivery date it cannot guarantee.
 
-Comet binaries are published per `(Spark minor × Scala binary version)` combination. Users must
-select the binary that matches their Spark and Scala installation.
+A Spark minor release becomes eligible for **supported** status only after upstream ships an
+official GA release. Comet may publish **experimental** support for a pre-GA release (a
+preview, release candidate, or snapshot) to gather feedback during development, but such
+experimental support is explicitly not a commitment: it may lag upstream, break, or be
+withdrawn at any time. Production users should target GA versions only.
+
+The mechanical stages of a bring-up and the criteria a version must meet before being promoted
+from experimental to supported are documented in the contributor guide's
+[Adding Support for a New Spark Version](../contributor-guide/adding_a_new_spark_version.md)
+page.
+
+### Support Lifetime
+
+Comet aligns its Spark support window with the upstream
+[Apache Spark versioning policy](https://spark.apache.org/versioning-policy.html). A Spark minor
+release is supported by Comet for as long as it is actively maintained by the upstream Apache
+Spark project. Once upstream ends maintenance for a Spark minor, Comet removes it in two steps:
+
+1. **Deprecation.** The next Comet minor release after upstream maintenance ends marks the Spark
+   minor as deprecated in the release notes and on the
+   [Spark Version Compatibility](../user-guide/latest/compatibility/spark-versions.md) page.
+   Comet continues to build and publish binaries for the deprecated Spark minor during this
+   release cycle.
+2. **Removal.** The following Comet minor release removes the Spark minor and stops publishing
+   binaries for it.
+
+This gives users at least one Comet minor release of prior notice before a Spark minor is
+dropped. For example, Spark 3.4 was deprecated in Comet 1.0.0 and will be removed in Comet
+1.1.0.
+
+### Patch Versions
+
+Each Comet release supports the **latest patch version** of every Apache Spark minor release
+that Comet targets at the time of release. When the upstream Spark project publishes a new patch
+within a supported minor (for example, `3.5.8` → `3.5.9`), the next Comet release will pick it
+up. Older Spark patches within the same minor are not separately supported.
 
 ## Release Cadence
 

@@ -21,7 +21,7 @@
 //! which diverges from Spark's java.net.URI (RFC 3986) on several edge cases.
 //! This module uses RFC 3986 Appendix B regex parsing to match Spark exactly.
 
-use std::any::Any;
+use std::cell::RefCell;
 use std::sync::{Arc, LazyLock};
 
 use arrow::array::{
@@ -74,16 +74,33 @@ fn extract_userinfo(authority: &str) -> Option<String> {
     authority.rfind('@').map(|pos| authority[..pos].to_string())
 }
 
+thread_local! {
+    // The query regex is derived solely from `key`, which is almost always
+    // constant across a batch (e.g. `parse_url(col, 'QUERY', 'v')`). Naive code
+    // recompiles it for every row; cache the last (key, compiled regex) pair so
+    // it is compiled once per distinct key instead. A `None` regex records that
+    // `key` failed to compile as a pattern.
+    static QUERY_KEY_REGEX: RefCell<Option<(String, Option<Regex>)>> =
+        const { RefCell::new(None) };
+}
+
 fn extract_query_value(query: &str, key: &str) -> Option<String> {
     // Spark uses Pattern.compile("(&|^)" + key + "=([^&]*)") with no escaping,
     // so the key is treated as a regex pattern.
-    let pattern = format!("(&|^){}=([^&]*)", key);
-    match Regex::new(&pattern) {
-        Ok(re) => re
-            .captures(query)
-            .and_then(|caps| caps.get(2).map(|m| m.as_str().to_string())),
-        Err(_) => None,
-    }
+    QUERY_KEY_REGEX.with(|cell| {
+        let mut slot = cell.borrow_mut();
+        // Drop the cached entry when the key changes, then (re)build lazily.
+        if slot.as_ref().map(|(k, _)| k.as_str()) != Some(key) {
+            *slot = None;
+        }
+        let (_, re) = slot.get_or_insert_with(|| {
+            let pattern = format!("(&|^){}=([^&]*)", key);
+            (key.to_string(), Regex::new(&pattern).ok())
+        });
+        let re = re.as_ref()?;
+        re.captures(query)
+            .and_then(|caps| caps.get(2).map(|m| m.as_str().to_string()))
+    })
 }
 
 fn has_invalid_uri_chars(s: &str) -> bool {
@@ -182,9 +199,6 @@ impl Default for CometParseUrl {
 }
 
 impl ScalarUDFImpl for CometParseUrl {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
     fn name(&self) -> &str {
         "parse_url"
     }
@@ -220,9 +234,6 @@ impl Default for CometTryParseUrl {
 }
 
 impl ScalarUDFImpl for CometTryParseUrl {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
     fn name(&self) -> &str {
         "try_parse_url"
     }

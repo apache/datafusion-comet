@@ -26,7 +26,6 @@ use datafusion::logical_expr::ColumnarValue;
 use datafusion::physical_expr::PhysicalExpr;
 use std::hash::Hash;
 use std::{
-    any::Any,
     fmt::{Display, Formatter},
     sync::Arc,
 };
@@ -57,10 +56,6 @@ impl NormalizeNaNAndZero {
 }
 
 impl PhysicalExpr for NormalizeNaNAndZero {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn fmt_sql(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         Display::fmt(self, f)
     }
@@ -112,7 +107,7 @@ impl PhysicalExpr for NormalizeNaNAndZero {
 /// Normalize a floating point value by converting all NaN representations to a canonical NaN
 /// and negative zero to positive zero. This is used for Spark's comparison semantics.
 #[inline]
-fn normalize_float<T: num::Float>(v: T) -> T {
+pub(crate) fn normalize_float<T: num::Float>(v: T) -> T {
     if v.is_nan() {
         T::nan()
     } else if v == T::neg_zero() {

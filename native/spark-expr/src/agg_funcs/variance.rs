@@ -26,7 +26,6 @@ use datafusion::logical_expr::{
 };
 use datafusion::physical_expr::expressions::format_state_name;
 use datafusion::physical_expr::expressions::StatsType;
-use std::any::Any;
 use std::mem::size_of;
 use std::sync::Arc;
 
@@ -72,11 +71,6 @@ impl Variance {
 }
 
 impl AggregateUDFImpl for Variance {
-    /// Return a reference to Any that can be used for downcasting
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn name(&self) -> &str {
         &self.name
     }

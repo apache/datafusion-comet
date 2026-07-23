@@ -1,12 +1,11 @@
 *.gitignore
 *.dockerignore
 .github/pull_request_template.md
+.github/workflows/README.md
 .gitmodules
 native/Cargo.lock
-native/testdata/backtrace.txt
-native/testdata/stacktrace.txt
-native/core/testdata/backtrace.txt
-native/core/testdata/stacktrace.txt
+native/jni-bridge/testdata/backtrace.txt
+native/jni-bridge/testdata/stacktrace.txt
 dev/copyright/scala-header.txt
 dev/diffs/iceberg/*.diff
 dev/release/requirements.txt

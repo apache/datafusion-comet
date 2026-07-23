@@ -31,7 +31,6 @@ use datafusion::common::ScalarValue;
 use datafusion::logical_expr::ColumnarValue;
 use datafusion::physical_expr::PhysicalExpr;
 use std::{
-    any::Any,
     fmt::{self, Display},
     hash::Hash,
     sync::Arc,
@@ -250,10 +249,6 @@ impl Display for CometCastColumnExpr {
 }
 
 impl PhysicalExpr for CometCastColumnExpr {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn data_type(&self, _input_schema: &Schema) -> DataFusionResult<DataType> {
         Ok(self.target_field.data_type().clone())
     }

@@ -21,9 +21,14 @@ package org.apache.comet.parquet
 
 import java.io.File
 
-import scala.util.Random
+import scala.jdk.CollectionConverters._
+import scala.util.{Random, Using}
 
-import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
+import org.apache.hadoop.fs.{FileSystem, Path}
+import org.apache.parquet.hadoop.ParquetFileReader
+import org.apache.parquet.hadoop.metadata.CompressionCodecName
+import org.apache.parquet.hadoop.util.HadoopInputFile
+import org.apache.spark.sql.{AnalysisException, CometTestBase, DataFrame, Row, SaveMode}
 import org.apache.spark.sql.comet.{CometBatchScanExec, CometNativeScanExec, CometNativeWriteExec, CometScanExec}
 import org.apache.spark.sql.execution.{FileSourceScanExec, QueryExecution, SparkPlan}
 import org.apache.spark.sql.execution.command.DataWritingCommandExec
@@ -31,11 +36,33 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.StructType
 
 import org.apache.comet.CometConf
+import org.apache.comet.CometSparkSessionExtensions.isSpark35Plus
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator, SchemaGenOptions}
 
 class CometParquetWriterSuite extends CometTestBase {
 
   import testImplicits._
+
+  test("partitioned write with empty string partition value") {
+    withTempPath { path =>
+      Seq(("", 1), ("a", 2))
+        .toDF("part", "value")
+        .write
+        .partitionBy("part")
+        .parquet(path.toString)
+      Using(FileSystem.get(spark.sparkContext.hadoopConfiguration)) { fs =>
+        val partitions = fs
+          .listStatus(new Path(path.toString))
+          .filter(_.isDirectory)
+          .map(_.getPath.getName)
+          .sorted
+        assert(partitions.contains("part=a"))
+        assert(!partitions.contains("part="))
+        assert(partitions.count(_.startsWith("part=__HIVE_DEFAULT_PARTITION__")) == 1)
+      }
+      checkAnswer(spark.read.parquet(path.toString), Row(1, null) :: Row(2, "a") :: Nil)
+    }
+  }
 
   test("basic parquet write") {
     withTempPath { dir =>
@@ -113,6 +140,100 @@ class CometParquetWriterSuite extends CometTestBase {
           }
         })
       }
+    }
+  }
+
+  test("parquet write with each supported compression codec") {
+    Seq("none", "uncompressed", "snappy", "lz4", "zstd", "gzip").foreach { codec =>
+      withTempPath { dir =>
+        val outputPath = new File(dir, s"output_$codec.parquet").getAbsolutePath
+        val df = spark.range(0, 100).selectExpr("id", "cast(id as string) as name")
+
+        withSQLConf(
+          CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED.key -> "true",
+          CometConf.getOperatorAllowIncompatConfigKey(classOf[DataWritingCommandExec]) -> "true",
+          CometConf.COMET_EXEC_ENABLED.key -> "true",
+          SQLConf.PARQUET_COMPRESSION.key -> codec) {
+
+          val plan = captureWritePlan(path => df.write.parquet(path), outputPath)
+          assertHasCometNativeWriteExec(plan)
+        }
+
+        checkAnswer(spark.read.parquet(outputPath), df.collect())
+        assertParquetCodec(outputPath, expectedCodecName(codec))
+      }
+    }
+  }
+
+  test("parquet write honors parquet.compression option over SQLConf default") {
+    withTempPath { dir =>
+      val outputPath = new File(dir, "output.parquet").getAbsolutePath
+      val df = spark.range(0, 100).selectExpr("id", "cast(id as string) as name")
+
+      withSQLConf(
+        CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED.key -> "true",
+        CometConf.getOperatorAllowIncompatConfigKey(classOf[DataWritingCommandExec]) -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        SQLConf.PARQUET_COMPRESSION.key -> "snappy") {
+
+        val plan = captureWritePlan(
+          path => df.write.option("parquet.compression", "gzip").parquet(path),
+          outputPath)
+        assertHasCometNativeWriteExec(plan)
+      }
+
+      checkAnswer(spark.read.parquet(outputPath), df.collect())
+      assertParquetCodec(outputPath, CompressionCodecName.GZIP)
+    }
+  }
+
+  test("parquet write honors compression option over parquet.compression and SQLConf") {
+    // Precedence, highest to lowest, matches Spark's ParquetOptions:
+    //   `compression` write option > `parquet.compression` write option > spark.sql.parquet.compression.codec
+    // Use a distinct wrong codec at each lower layer so any leak surfaces as a codec mismatch.
+    withTempPath { dir =>
+      val outputPath = new File(dir, "output.parquet").getAbsolutePath
+      val df = spark.range(0, 100).selectExpr("id", "cast(id as string) as name")
+
+      withSQLConf(
+        CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED.key -> "true",
+        CometConf.getOperatorAllowIncompatConfigKey(classOf[DataWritingCommandExec]) -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        SQLConf.PARQUET_COMPRESSION.key -> "zstd") {
+
+        val plan = captureWritePlan(
+          path =>
+            df.write
+              .option("compression", "gzip")
+              .option("parquet.compression", "snappy")
+              .parquet(path),
+          outputPath)
+        assertHasCometNativeWriteExec(plan)
+      }
+
+      checkAnswer(spark.read.parquet(outputPath), df.collect())
+      assertParquetCodec(outputPath, CompressionCodecName.GZIP)
+    }
+  }
+
+  test("parquet write with unsupported compression codec falls back to Spark") {
+    assume(isSpark35Plus, "lz4_raw was added in Spark 3.5")
+    withTempPath { dir =>
+      val outputPath = new File(dir, "output.parquet").getAbsolutePath
+      val df = spark.range(0, 100).selectExpr("id", "cast(id as string) as name")
+
+      withSQLConf(
+        CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED.key -> "true",
+        CometConf.getOperatorAllowIncompatConfigKey(classOf[DataWritingCommandExec]) -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        SQLConf.PARQUET_COMPRESSION.key -> "lz4_raw") {
+
+        val plan = captureWritePlan(path => df.write.parquet(path), outputPath)
+        assertNoCometNativeWriteExec(plan)
+      }
+
+      checkAnswer(spark.read.parquet(outputPath), df.collect())
+      assertParquetCodec(outputPath, CompressionCodecName.LZ4_RAW)
     }
   }
 
@@ -326,6 +447,210 @@ class CometParquetWriterSuite extends CometTestBase {
     }
   }
 
+  test("SaveMode.ErrorIfExists writes natively when target does not exist") {
+    withTempPath { dir =>
+      val outputPath = new File(dir, "output.parquet").getAbsolutePath
+      val sourcePath = new File(dir, "source.parquet").getAbsolutePath
+      withNativeWriter {
+        val df = materializeAsCometSource(
+          (1 to 100).map(i => (i, s"str_$i")).toDF("id", "name"),
+          sourcePath)
+        val plan =
+          captureWritePlan(p => df.write.mode(SaveMode.ErrorIfExists).parquet(p), outputPath)
+        assertHasCometNativeWriteExec(plan)
+        checkAnswer(spark.read.parquet(outputPath), df)
+      }
+    }
+  }
+
+  test("SaveMode.ErrorIfExists throws when target directory has data") {
+    withTempPath { dir =>
+      val outputPath = new File(dir, "output.parquet").getAbsolutePath
+      val original = (1 to 100).map(i => (i, s"orig_$i")).toDF("id", "name")
+      // Pre-populate target with Spark's writer so the second write hits the exists check.
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        original.write.parquet(outputPath)
+      }
+      val partFilesBefore = listPartFileNames(outputPath)
+
+      withNativeWriter {
+        val newDf = (200 to 250).map(i => (i, s"new_$i")).toDF("id", "name")
+        intercept[AnalysisException] {
+          newDf.write.mode(SaveMode.ErrorIfExists).parquet(outputPath)
+        }
+      }
+
+      // Original files must remain untouched.
+      assert(
+        listPartFileNames(outputPath) == partFilesBefore,
+        "ErrorIfExists must not modify the target when it already exists")
+      checkAnswer(spark.read.parquet(outputPath), original)
+    }
+  }
+
+  test("SaveMode.Overwrite writes natively when target does not exist") {
+    withTempPath { dir =>
+      val outputPath = new File(dir, "output.parquet").getAbsolutePath
+      val sourcePath = new File(dir, "source.parquet").getAbsolutePath
+      withNativeWriter {
+        val df = materializeAsCometSource(
+          (1 to 100).map(i => (i, s"str_$i")).toDF("id", "name"),
+          sourcePath)
+        val plan = captureWritePlan(p => df.write.mode(SaveMode.Overwrite).parquet(p), outputPath)
+        assertHasCometNativeWriteExec(plan)
+        checkAnswer(spark.read.parquet(outputPath), df)
+      }
+    }
+  }
+
+  test("SaveMode.Overwrite replaces existing parquet data") {
+    withTempPath { dir =>
+      val outputPath = new File(dir, "output.parquet").getAbsolutePath
+      val sourcePath = new File(dir, "source.parquet").getAbsolutePath
+      val original = (1 to 200).map(i => (i, s"old_$i")).toDF("id", "name")
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        original.write.parquet(outputPath)
+      }
+
+      withNativeWriter {
+        val replacement = materializeAsCometSource(
+          (1 to 50).map(i => (i, s"new_$i")).toDF("id", "name"),
+          sourcePath)
+        val plan =
+          captureWritePlan(p => replacement.write.mode(SaveMode.Overwrite).parquet(p), outputPath)
+        assertHasCometNativeWriteExec(plan)
+        checkAnswer(spark.read.parquet(outputPath), replacement)
+      }
+    }
+  }
+
+  test("SaveMode.Overwrite with empty DataFrame clears target") {
+    withTempPath { dir =>
+      val outputPath = new File(dir, "output.parquet").getAbsolutePath
+      val original = (1 to 200).map(i => (i, s"str_$i")).toDF("id", "name")
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        original.write.parquet(outputPath)
+      }
+
+      withNativeWriter {
+        // Empty inline source falls back to Spark's writer (LocalTableScan is not Comet-native);
+        // this test asserts the SaveMode.Overwrite + empty semantic, not writer identity.
+        original.limit(0).write.mode(SaveMode.Overwrite).parquet(outputPath)
+      }
+
+      // Read with explicit schema in case the write produced no part files.
+      val readback = spark.read.schema(original.schema).parquet(outputPath)
+      assert(readback.count() == 0L, "Overwrite with an empty DataFrame must yield zero rows")
+    }
+  }
+
+  test("SaveMode.Append writes natively when target does not exist") {
+    withTempPath { dir =>
+      val outputPath = new File(dir, "output.parquet").getAbsolutePath
+      val sourcePath = new File(dir, "source.parquet").getAbsolutePath
+      withNativeWriter {
+        val df = materializeAsCometSource(
+          (1 to 100).map(i => (i, s"str_$i")).toDF("id", "name"),
+          sourcePath)
+        val plan = captureWritePlan(p => df.write.mode(SaveMode.Append).parquet(p), outputPath)
+        assertHasCometNativeWriteExec(plan)
+        checkAnswer(spark.read.parquet(outputPath), df)
+      }
+    }
+  }
+
+  test("SaveMode.Append adds new files alongside existing data") {
+    withTempPath { dir =>
+      val outputPath = new File(dir, "output.parquet").getAbsolutePath
+      val sourcePath = new File(dir, "source.parquet").getAbsolutePath
+      val first = (1 to 100).map(i => (i, s"first_$i")).toDF("id", "name")
+      // Seed the target with the vanilla Spark writer so Comet's append runs against real files.
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        first.write.parquet(outputPath)
+      }
+      val filesBefore = listPartFileNames(outputPath)
+
+      withNativeWriter {
+        val second = materializeAsCometSource(
+          (101 to 150).map(i => (i, s"second_$i")).toDF("id", "name"),
+          sourcePath)
+        val plan =
+          captureWritePlan(p => second.write.mode(SaveMode.Append).parquet(p), outputPath)
+        assertHasCometNativeWriteExec(plan)
+
+        val filesAfter = listPartFileNames(outputPath)
+        assert(
+          filesAfter.size > filesBefore.size,
+          s"Append should have added new part files (before=${filesBefore.size}, " +
+            s"after=${filesAfter.size})")
+        assert(
+          filesBefore.subsetOf(filesAfter),
+          "Append must not remove the pre-existing part files")
+        checkAnswer(spark.read.parquet(outputPath), first.union(second))
+      }
+    }
+  }
+
+  test("SaveMode.Append with empty DataFrame does not lose existing data") {
+    withTempPath { dir =>
+      val outputPath = new File(dir, "output.parquet").getAbsolutePath
+      val original = (1 to 100).map(i => (i, s"str_$i")).toDF("id", "name")
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        original.write.parquet(outputPath)
+      }
+      val partFilesBefore = listPartFileNames(outputPath)
+
+      withNativeWriter {
+        val empty = original.limit(0)
+        empty.write.mode(SaveMode.Append).parquet(outputPath)
+      }
+
+      // Empty append must never lose data; may or may not create empty part files.
+      val partFilesAfter = listPartFileNames(outputPath)
+      assert(
+        partFilesBefore.subsetOf(partFilesAfter),
+        "Empty append must not delete existing part files")
+      checkAnswer(spark.read.parquet(outputPath), original)
+    }
+  }
+
+  test("SaveMode.Ignore writes natively when target does not exist") {
+    withTempPath { dir =>
+      val outputPath = new File(dir, "output.parquet").getAbsolutePath
+      val sourcePath = new File(dir, "source.parquet").getAbsolutePath
+      withNativeWriter {
+        val df = materializeAsCometSource(
+          (1 to 100).map(i => (i, s"str_$i")).toDF("id", "name"),
+          sourcePath)
+        val plan = captureWritePlan(p => df.write.mode(SaveMode.Ignore).parquet(p), outputPath)
+        assertHasCometNativeWriteExec(plan)
+        checkAnswer(spark.read.parquet(outputPath), df)
+      }
+    }
+  }
+
+  test("SaveMode.Ignore is a no-op when target has data") {
+    withTempPath { dir =>
+      val outputPath = new File(dir, "output.parquet").getAbsolutePath
+      val original = (1 to 100).map(i => (i, s"orig_$i")).toDF("id", "name")
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        original.write.parquet(outputPath)
+      }
+      val partFilesBefore = listPartFileNames(outputPath)
+
+      withNativeWriter {
+        val other = (200 to 250).map(i => (i, s"other_$i")).toDF("id", "name")
+        // InsertIntoHadoopFsRelationCommand.run() skips the write on Ignore + existing target.
+        other.write.mode(SaveMode.Ignore).parquet(outputPath)
+      }
+
+      assert(
+        listPartFileNames(outputPath) == partFilesBefore,
+        "Ignore must not add or remove files when the target already exists")
+      checkAnswer(spark.read.parquet(outputPath), original)
+    }
+  }
+
   private def createTestData(inputDir: File): String = {
     val inputPath = new File(inputDir, "input.parquet").getAbsolutePath
     val schema = FuzzDataGenerator.generateSchema(
@@ -342,6 +667,36 @@ class CometParquetWriterSuite extends CometTestBase {
       df.write.parquet(inputPath)
     }
     inputPath
+  }
+
+  private def withNativeWriter(f: => Unit): Unit = {
+    withSQLConf(
+      CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED.key -> "true",
+      CometConf.COMET_OPERATOR_DATA_WRITING_COMMAND_ALLOW_INCOMPAT.key -> "true",
+      CometConf.COMET_EXEC_ENABLED.key -> "true",
+      SQLConf.SESSION_LOCAL_TIMEZONE.key -> "America/Halifax")(f)
+  }
+
+  // Persist `df` to `sourcePath` with Comet disabled and return a DataFrame that reads it back,
+  // so the source plan is a Comet scan (satisfying CometExecRule.requiresNativeChildren).
+  private def materializeAsCometSource(df: DataFrame, sourcePath: String): DataFrame = {
+    withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+      df.write.parquet(sourcePath)
+    }
+    spark.read.parquet(sourcePath)
+  }
+
+  private def listPartFileNames(dir: String): Set[String] = {
+    val outputDir = new File(dir)
+    if (!outputDir.exists() || !outputDir.isDirectory) {
+      Set.empty
+    } else {
+      outputDir
+        .listFiles()
+        .filter(_.getName.startsWith("part-"))
+        .map(_.getName)
+        .toSet
+    }
   }
 
   /**
@@ -415,6 +770,22 @@ class CometParquetWriterSuite extends CometTestBase {
       s"Expected exactly one CometNativeWriteExec in the plan, but found $nativeWriteCount:\n${plan.treeString}")
   }
 
+  private def assertNoCometNativeWriteExec(plan: SparkPlan): Unit = {
+    val hasNativeWrite = plan.exists {
+      case _: CometNativeWriteExec => true
+      case d: DataWritingCommandExec =>
+        d.child.exists {
+          case _: CometNativeWriteExec => true
+          case _ => false
+        }
+      case _ => false
+    }
+
+    assert(
+      !hasNativeWrite,
+      s"Expected no CometNativeWriteExec in the plan, but found one:\n${plan.treeString}")
+  }
+
   private def writeWithCometNativeWriteExec(
       inputPath: String,
       outputPath: String,
@@ -446,6 +817,40 @@ class CometParquetWriterSuite extends CometTestBase {
     val cometRows = readCometRows(outputPath)
     val schema = spark.read.parquet(outputPath).schema
     compareRows(schema, sparkRows, cometRows)
+  }
+
+  private def expectedCodecName(sparkCodec: String): CompressionCodecName = sparkCodec match {
+    case "none" | "uncompressed" => CompressionCodecName.UNCOMPRESSED
+    case "snappy" => CompressionCodecName.SNAPPY
+    case "lz4" => CompressionCodecName.LZ4
+    case "zstd" => CompressionCodecName.ZSTD
+    case "gzip" => CompressionCodecName.GZIP
+    case other => fail(s"unexpected codec: $other")
+  }
+
+  /**
+   * Asserts that every column chunk in every part file under `outputPath` reports `expected` as
+   * its compression codec. Reading the data back is not enough on its own: a Parquet reader
+   * honors whatever the footer says, so a write that silently ignored the requested codec would
+   * still round-trip.
+   */
+  private def assertParquetCodec(outputPath: String, expected: CompressionCodecName): Unit = {
+    val conf = spark.sparkContext.hadoopConfiguration
+    val partFiles = new File(outputPath).listFiles().filter(_.getName.startsWith("part-"))
+    assert(partFiles.nonEmpty, s"No part files found under $outputPath")
+
+    partFiles.foreach { partFile =>
+      val inputFile = HadoopInputFile.fromPath(new Path(partFile.getAbsolutePath), conf)
+      Using.resource(ParquetFileReader.open(inputFile)) { reader =>
+        val codecs = reader.getFooter.getBlocks.asScala
+          .flatMap(_.getColumns.asScala)
+          .map(_.getCodec)
+          .toSet
+        assert(
+          codecs == Set(expected),
+          s"Expected all column chunks in ${partFile.getName} to use $expected, found $codecs")
+      }
+    }
   }
 
   private def writeComplexTypeData(

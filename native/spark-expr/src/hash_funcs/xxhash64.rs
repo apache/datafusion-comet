@@ -121,7 +121,7 @@ fn create_xxhash64_hashes_dictionary<K: ArrowDictionaryKeyType>(
 ///
 /// The number of rows to hash is determined by `hashes_buffer.len()`.
 /// `hashes_buffer` should be pre-sized appropriately
-fn create_xxhash64_hashes<'a>(
+pub(crate) fn create_xxhash64_hashes<'a>(
     arrays: &[ArrayRef],
     hashes_buffer: &'a mut [u64],
 ) -> Result<&'a mut [u64]> {

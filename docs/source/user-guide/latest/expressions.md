@@ -60,7 +60,7 @@ expressions. The following function families are **not currently planned** for n
 
 The file-metadata functions `input_file_name`, `input_file_block_start`, and `input_file_block_length` depend on scan-internal per-row file information rather than the expression layer; their support status is covered in the [scan compatibility guide](compatibility/scans.md).
 
-Note that `approx_count_distinct`, `median`, and `mode` are planned: they are mainstream (`median` and `mode` are exact aggregates). `approx_percentile` / `percentile_approx` are not currently planned because their approximate results cannot be made bit-identical to Spark.
+Note that `median` and `mode` are planned: they are mainstream exact aggregates. `approx_count_distinct` is supported because Comet ports Spark's `HyperLogLogPlusPlus` exactly, so its result is bit-identical to Spark.
 
 The tables below list every Spark built-in expression with its current status.
 
@@ -70,7 +70,8 @@ The tables below list every Spark built-in expression with its current status.
 | --- | --- | --- |
 | `any` | ✅ |  |
 | `any_value` | ✅ |  |
-| `approx_count_distinct` | 🔜 | tracking [#4098](https://github.com/apache/datafusion-comet/issues/4098) |
+| `approx_count_distinct` | ✅ |  |
+| `approx_percentile` | ✅ | Byte, short, int, long, float, and double input; other input types fall back to Spark |
 | `array_agg` | 🔜 | Array aggregate (related to `collect_list`, [#2524](https://github.com/apache/datafusion-comet/issues/2524)) |
 | `avg` | ✅ | Interval types fall back |
 | `bit_and` | ✅ |  |
@@ -88,8 +89,8 @@ The tables below list every Spark built-in expression with its current status.
 | `every` | ✅ |  |
 | `first` | ✅ |  |
 | `first_value` | ✅ |  |
-| `grouping` | 🔜 | Grouping indicator for ROLLUP/CUBE/GROUPING SETS |
-| `grouping_id` | 🔜 | Grouping indicator for ROLLUP/CUBE/GROUPING SETS |
+| `grouping` | ✅ | Grouping indicator for ROLLUP/CUBE/GROUPING SETS |
+| `grouping_id` | ✅ | Grouping indicator for ROLLUP/CUBE/GROUPING SETS |
 | `kurtosis` | 🔜 | tracking [#4098](https://github.com/apache/datafusion-comet/issues/4098) |
 | `last` | ✅ |  |
 | `last_value` | ✅ |  |
@@ -97,12 +98,12 @@ The tables below list every Spark built-in expression with its current status.
 | `max` | ✅ |  |
 | `max_by` | 🔜 | [#3841](https://github.com/apache/datafusion-comet/issues/3841) |
 | `mean` | ✅ |  |
-| `median` | 🔜 | tracking [#4098](https://github.com/apache/datafusion-comet/issues/4098) |
+| `median` | ✅ | Rewrites to `percentile(col, 0.5)` and runs natively for supported percentile inputs |
 | `min` | ✅ |  |
 | `min_by` | 🔜 | [#3841](https://github.com/apache/datafusion-comet/issues/3841) |
 | `mode` | 🔜 | [#3970](https://github.com/apache/datafusion-comet/issues/3970) |
-| `percentile` | 🔜 | [#4542](https://github.com/apache/datafusion-comet/issues/4542) |
-| `percentile_cont` | 🔜 | Percentile aggregate |
+| `percentile` | ✅ | Single literal percentage on numeric input runs natively; array of percentages and a frequency argument fall back to Spark |
+| `percentile_cont` | ✅ | Spark 4.0+ `WITHIN GROUP (ORDER BY ...)`; ascending only runs natively, `DESC` falls back to Spark |
 | `percentile_disc` | 🔜 | Percentile aggregate |
 | `regr_avgx` | ✅ | Native: Spark rewrites to `Average` (tests in [#4551](https://github.com/apache/datafusion-comet/issues/4551)) |
 | `regr_avgy` | ✅ | Native: Spark rewrites to `Average` (tests in [#4551](https://github.com/apache/datafusion-comet/issues/4551)) |
@@ -121,8 +122,8 @@ The tables below list every Spark built-in expression with its current status.
 | `stddev_samp` | ✅ |  |
 | `string_agg` | 🔜 | String aggregation (alias of `listagg`) |
 | `sum` | ✅ |  |
-| `try_avg` | 🔜 | tracking [#4098](https://github.com/apache/datafusion-comet/issues/4098) |
-| `try_sum` | 🔜 | tracking [#4098](https://github.com/apache/datafusion-comet/issues/4098) |
+| `try_avg` | ✅ | Interval types fall back |
+| `try_sum` | ✅ |  |
 | `var_pop` | ✅ |  |
 | `var_samp` | ✅ |  |
 | `variance` | ✅ |  |
@@ -145,17 +146,17 @@ The tables below list every Spark built-in expression with its current status.
 | `array_max` | ✅ | NaN ordering may differ ([details](compatibility/floating-point.md)) |
 | `array_min` | ✅ | NaN ordering may differ ([details](compatibility/floating-point.md)) |
 | `array_position` | ✅ | Binary/struct/map/null elements fall back |
-| `array_prepend` | 🔜 | Sibling of `array_append` |
+| `array_prepend` | ✅ |  |
 | `array_remove` | ✅ |  |
 | `array_repeat` | ✅ |  |
 | `array_union` | ✅ | NaN/signed-zero handling may differ ([details](compatibility/floating-point.md)) |
 | `arrays_overlap` | ✅ |  |
 | `arrays_zip` | ✅ |  |
-| `element_at` | ✅ | MapType input falls back |
+| `element_at` | ✅ |  |
 | `flatten` | ✅ | Binary/struct/map elements fall back |
 | `get` | ✅ |  |
 | `sequence` | ✅ |  |
-| `shuffle` | 🔜 | Random array shuffle |
+| `shuffle` | ✅ | Binary/struct/map elements fall back |
 | `slice` | ✅ | Native ([#4149](https://github.com/apache/datafusion-comet/issues/4149)) |
 | `sort_array` | ✅ | Nested struct/null arrays fall back |
 
@@ -185,10 +186,10 @@ The tables below list every Spark built-in expression with its current status.
 | Function | Status | Notes |
 | --- | --- | --- |
 | `array_size` | ✅ |  |
-| `cardinality` | ✅ | MapType input falls back |
+| `cardinality` | ✅ |  |
 | `concat` | ✅ | Binary/array children fall back |
 | `reverse` | ✅ | Binary-element arrays fall back (Incompatible) ([details](compatibility/expressions/array.md)) |
-| `size` | ✅ | MapType input falls back |
+| `size` | ✅ |  |
 
 ---
 
@@ -262,13 +263,13 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `last_day` | ✅ |  |
 | `localtimestamp` | ✅ |  |
 | `make_date` | ✅ |  |
-| `make_dt_interval` | 🔜 | [#4541](https://github.com/apache/datafusion-comet/issues/4541) |
+| `make_dt_interval` | ✅ |  |
 | `make_interval` | 🔜 | Produces legacy CalendarInterval; tracked by [#4540](https://github.com/apache/datafusion-comet/issues/4540) |
 | `make_time` | 🔜 | Spark 4.1 TIME type; tracked by [#4288](https://github.com/apache/datafusion-comet/issues/4288) |
 | `make_timestamp` | ✅ |  |
 | `make_timestamp_ltz` | ✅ | 2-arg TIME form falls back |
 | `make_timestamp_ntz` | ✅ | 2-arg TIME form falls back |
-| `make_ym_interval` | 🔜 | [#4541](https://github.com/apache/datafusion-comet/issues/4541) |
+| `make_ym_interval` | ✅ |  |
 | `minute` | ✅ |  |
 | `month` | ✅ |  |
 | `monthname` | ✅ | Abbreviated month name (Spark 4.0+) |
@@ -277,7 +278,7 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `now` | ✅ | Constant-folded to a literal (alias of `current_timestamp`) |
 | `quarter` | ✅ |  |
 | `second` | ✅ |  |
-| `session_window` | 🔜 | Time-window grouping; tracked by [#4553](https://github.com/apache/datafusion-comet/issues/4553) |
+| `session_window` | 🔜 | Batch session-window grouping falls back (`UpdatingSessionsExec` is not yet native); tracked by [#4785](https://github.com/apache/datafusion-comet/issues/4785) |
 | `time_diff` | 🔜 | Spark 4.1 TIME type; tracked by [#4288](https://github.com/apache/datafusion-comet/issues/4288) |
 | `time_trunc` | 🔜 | Spark 4.1 TIME type; tracked by [#4288](https://github.com/apache/datafusion-comet/issues/4288) |
 | `timestamp_micros` | ✅ |  |
@@ -293,9 +294,9 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `trunc` | ✅ |  |
 | `try_make_interval` | 🔜 | Produces legacy CalendarInterval; tracked by [#4540](https://github.com/apache/datafusion-comet/issues/4540) |
 | `try_make_timestamp` | ✅ |  |
-| `try_to_date` | 🔜 | Rewrites to `Cast`/`GetTimestamp` but currently falls back; tracked by [#4556](https://github.com/apache/datafusion-comet/issues/4556) |
+| `try_to_date` | ✅ | Rewrites to `Cast`/`GetTimestamp` before Comet sees the plan; same support as `to_date` |
 | `try_to_time` | 🔜 | Spark 4.1 TIME type; tracked by [#4288](https://github.com/apache/datafusion-comet/issues/4288) |
-| `try_to_timestamp` | 🔜 | Rewrites to `Cast`/`GetTimestamp` but currently falls back; tracked by [#4556](https://github.com/apache/datafusion-comet/issues/4556) |
+| `try_to_timestamp` | ✅ | Rewrites to `Cast`/`GetTimestamp` before Comet sees the plan; same support as `to_timestamp` |
 | `unix_date` | ✅ |  |
 | `unix_micros` | ✅ |  |
 | `unix_millis` | ✅ |  |
@@ -303,8 +304,8 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `unix_timestamp` | ✅ |  |
 | `weekday` | ✅ |  |
 | `weekofyear` | ✅ |  |
-| `window` | 🔜 | Time-window grouping; tracked by [#4553](https://github.com/apache/datafusion-comet/issues/4553) |
-| `window_time` | 🔜 | Time-window grouping; tracked by [#4553](https://github.com/apache/datafusion-comet/issues/4553) |
+| `window` | ✅ | Batch tumbling and sliding time-window grouping runs natively |
+| `window_time` | ✅ | Batch time-window grouping runs natively |
 | `year` | ✅ |  |
 
 ---
@@ -378,7 +379,7 @@ expression-level). The `outer` variants are wired but marked `Incompatible`; the
 
 | Function | Status | Notes |
 | --- | --- | --- |
-| `element_at` | ✅ | MapType input falls back |
+| `element_at` | ✅ |  |
 | `map` | ✅ | Routed through the JVM codegen dispatcher |
 | `map_concat` | ✅ |  |
 | `map_contains_key` | ✅ |  |
@@ -388,7 +389,7 @@ expression-level). The `outer` variants are wired but marked `Incompatible`; the
 | `map_keys` | ✅ |  |
 | `map_values` | ✅ |  |
 | `str_to_map` | ✅ |  |
-| `try_element_at` | ✅ | Lowers to `element_at`; array input (MapType falls back) |
+| `try_element_at` | ✅ | Lowers to `element_at` |
 
 ---
 
@@ -535,7 +536,7 @@ expression-level). The `outer` variants are wired but marked `Incompatible`; the
 | Function | Status | Notes |
 | --- | --- | --- |
 | `ascii` | ✅ |  |
-| `base64` | 🔜 | Lowers to `StaticInvoke(encode)` (not allowlisted); falls back |
+| `base64` | ✅ |  |
 | `bit_length` | ✅ |  |
 | `btrim` | ✅ |  |
 | `char` | ✅ |  |
@@ -584,7 +585,7 @@ expression-level). The `outer` variants are wired but marked `Incompatible`; the
 | `soundex` | ✅ |  |
 | `space` | ✅ |  |
 | `split` | ✅ |  |
-| `split_part` | 🔜 | Lowers to `element_at(StringSplitSQL(...))`; `StringSplitSQL` falls back ([#4561](https://github.com/apache/datafusion-comet/issues/4561)) |
+| `split_part` | ✅ | Spark 4.0+ |
 | `startswith` | ✅ |  |
 | `substr` | ✅ |  |
 | `substring` | ✅ |  |
@@ -625,24 +626,28 @@ expression-level). The `outer` variants are wired but marked `Incompatible`; the
 
 ## window_funcs
 
-Window functions run via `CometWindowExec`. Window support is disabled by default due to known
-correctness issues (tracking [#2721](https://github.com/apache/datafusion-comet/issues/2721)).
-When enabled, `lag` and `lead` are explicitly wired; aggregate window functions (`count`, `min`,
-`max`, `sum`) are also supported. Ranking functions (`rank`, `dense_rank`, `row_number`,
-`ntile`, `percent_rank`, `cume_dist`, `nth_value`) are not yet wired in the window serde and
-fall back to Spark.
+Window functions run via `CometWindowExec`, which is enabled by default.
+Aggregate window functions (`count`, `min`, `max`, `sum`, `avg`,
+`first_value`, `last_value`), ranking functions (`row_number`, `rank`,
+`dense_rank`, `percent_rank`, `cume_dist`, `ntile`), and value-shift
+functions (`lag`, `lead`, `nth_value`) are all wired in the window serde
+and execute natively. Statistical aggregates such as `stddev`, `var_pop`,
+`corr`, and `covar_pop` run natively as plain aggregations but fall back
+to Spark when used as window functions. A handful of frame shapes also
+fall back. See [window function compatibility](compatibility/operators.md)
+for the full list of supported functions, frames, and fallback cases.
 
 | Function | Status | Notes |
 | --- | --- | --- |
-| `cume_dist` | 🔜 | Window function; tracked by [#2721](https://github.com/apache/datafusion-comet/issues/2721) |
-| `dense_rank` | 🔜 | Window function; tracked by [#2721](https://github.com/apache/datafusion-comet/issues/2721) |
-| `lag` | ✅ | via `CometWindowExec` |
-| `lead` | ✅ | via `CometWindowExec` |
-| `nth_value` | 🔜 | Window function; tracked by [#2721](https://github.com/apache/datafusion-comet/issues/2721) |
-| `ntile` | 🔜 | Window function; tracked by [#2721](https://github.com/apache/datafusion-comet/issues/2721) |
-| `percent_rank` | 🔜 | Window function; tracked by [#2721](https://github.com/apache/datafusion-comet/issues/2721) |
-| `rank` | 🔜 | Window function; tracked by [#2721](https://github.com/apache/datafusion-comet/issues/2721) |
-| `row_number` | 🔜 | Window function; tracked by [#2721](https://github.com/apache/datafusion-comet/issues/2721) |
+| `cume_dist` | ✅ | via `CometWindowExec` |
+| `dense_rank` | ✅ | via `CometWindowExec` |
+| `lag` | ✅ | via `CometWindowExec`; non-literal default falls back ([#4268](https://github.com/apache/datafusion-comet/issues/4268)) |
+| `lead` | ✅ | via `CometWindowExec`; non-literal default falls back ([#4268](https://github.com/apache/datafusion-comet/issues/4268)) |
+| `nth_value` | ✅ | via `CometWindowExec` |
+| `ntile` | ✅ | via `CometWindowExec` |
+| `percent_rank` | ✅ | via `CometWindowExec` |
+| `rank` | ✅ | via `CometWindowExec` |
+| `row_number` | ✅ | via `CometWindowExec` |
 
 ---
 

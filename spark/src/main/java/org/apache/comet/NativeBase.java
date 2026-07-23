@@ -27,6 +27,7 @@ import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -49,6 +50,7 @@ public abstract class NativeBase {
   private static boolean loaded = false;
   private static volatile Throwable loadErr = null;
   private static final String searchPattern = "libcomet-";
+  private static final AtomicBoolean released = new AtomicBoolean(false);
 
   static {
     try {
@@ -293,11 +295,36 @@ public abstract class NativeBase {
    */
   static native void init(String logConfPath, String logLevel);
 
+  /** Release native resources through JNI */
+  static native void release();
+
+  /** Release native resources */
+  public static void releaseNative() throws Throwable {
+    if (!isLoaded()) {
+      return;
+    }
+
+    if (released.compareAndSet(false, true)) {
+      release();
+    }
+  }
+
   /**
    * Check if a specific feature is enabled in the native library.
    *
-   * @param featureName The name of the feature to check (e.g., "hdfs", "jemalloc", "hdfs-opendal")
+   * @param featureName The name of the feature to check (e.g., "jemalloc", "hdfs-opendal")
    * @return true if the feature is enabled, false otherwise
    */
   public static native boolean isFeatureEnabled(String featureName);
+
+  /**
+   * Check whether Comet's native object_store layer recognizes the given URL's scheme (i.e. the
+   * scan would be natively readable rather than failing at execution with "Unable to recognise
+   * URL"). This is the authoritative answer from object_store's own scheme parser, so the JVM
+   * planner never has to hardcode (and drift from) the set of supported schemes.
+   *
+   * @param url a fully-qualified URL whose scheme should be checked (e.g. "s3://bucket/path")
+   * @return true if object_store can construct a store for this scheme, false otherwise
+   */
+  public static native boolean isObjectStoreSchemeSupported(String url);
 }

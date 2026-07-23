@@ -34,7 +34,7 @@ import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ShuffleEx
 import org.apache.spark.sql.types.{DataTypes, StructField, StructType}
 
 import org.apache.comet.CometConf
-import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, isSpark42Plus}
+import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus, isSpark42Plus}
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
 
 /**
@@ -152,8 +152,8 @@ class CometExecRuleSuite extends CometTestBase {
         CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
         val transformedPlan = applyCometExecRule(sparkPlan)
 
-        // SUM has incompatible intermediate buffers, so if the final aggregate cannot
-        // be converted to Comet, neither should be
+        // COUNT is intentionally excluded from mixed execution (AQE / count-bug reasons), so if
+        // the final aggregate cannot be converted to Comet, neither should the partial.
         assert(
           countOperators(transformedPlan, classOf[HashAggregateExec]) == originalHashAggCount)
         assert(countOperators(transformedPlan, classOf[CometHashAggregateExec]) == 0)
@@ -177,7 +177,8 @@ class CometExecRuleSuite extends CometTestBase {
         CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
         val transformedPlan = applyCometExecRule(sparkPlan)
 
-        // if the partial aggregate cannot be converted to Comet, then neither should be
+        // COUNT blocks mixed execution, so if the partial cannot be converted, neither should
+        // the final.
         assert(
           countOperators(transformedPlan, classOf[HashAggregateExec]) == originalHashAggCount)
         assert(countOperators(transformedPlan, classOf[CometHashAggregateExec]) == 0)
@@ -226,6 +227,137 @@ class CometExecRuleSuite extends CometTestBase {
 
         // Safe aggregates allow mixed execution: partial stays Spark, final can be Comet
         assert(countOperators(transformedPlan, classOf[HashAggregateExec]) == 1) // partial only
+        assert(countOperators(transformedPlan, classOf[CometHashAggregateExec]) == 1) // final
+      }
+    }
+  }
+
+  test("CometExecRule should allow SUM mixed Comet partial and Spark final") {
+    withTempView("test_data") {
+      createTestDataFrame.createOrReplaceTempView("test_data")
+      val sparkPlan =
+        createSparkPlan(spark, "SELECT SUM(id) FROM test_data GROUP BY (id % 3)")
+      assert(countOperators(sparkPlan, classOf[HashAggregateExec]) == 2)
+      withSQLConf(
+        CometConf.COMET_ENABLE_FINAL_HASH_AGGREGATE.key -> "false",
+        CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+        val transformedPlan = applyCometExecRule(sparkPlan)
+        // SUM buffer matches Spark: partial converts to Comet, final stays Spark.
+        assert(countOperators(transformedPlan, classOf[HashAggregateExec]) == 1) // final
+        assert(countOperators(transformedPlan, classOf[CometHashAggregateExec]) == 1) // partial
+      }
+    }
+  }
+
+  test("CometExecRule should allow SUM mixed Spark partial and Comet final") {
+    withTempView("test_data") {
+      createTestDataFrame.createOrReplaceTempView("test_data")
+      val sparkPlan =
+        createSparkPlan(spark, "SELECT SUM(id) FROM test_data GROUP BY (id % 3)")
+      assert(countOperators(sparkPlan, classOf[HashAggregateExec]) == 2)
+      withSQLConf(
+        CometConf.COMET_ENABLE_PARTIAL_HASH_AGGREGATE.key -> "false",
+        CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+        val transformedPlan = applyCometExecRule(sparkPlan)
+        assert(countOperators(transformedPlan, classOf[HashAggregateExec]) == 1) // partial
+        assert(countOperators(transformedPlan, classOf[CometHashAggregateExec]) == 1) // final
+      }
+    }
+  }
+
+  test("CometExecRule should allow AVG mixed Comet partial and Spark final") {
+    withTempView("test_data") {
+      createTestDataFrame.createOrReplaceTempView("test_data")
+      val sparkPlan =
+        createSparkPlan(spark, "SELECT AVG(id) FROM test_data GROUP BY (id % 3)")
+      assert(countOperators(sparkPlan, classOf[HashAggregateExec]) == 2)
+      withSQLConf(
+        CometConf.COMET_ENABLE_FINAL_HASH_AGGREGATE.key -> "false",
+        CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+        val transformedPlan = applyCometExecRule(sparkPlan)
+        assert(countOperators(transformedPlan, classOf[HashAggregateExec]) == 1) // final
+        assert(countOperators(transformedPlan, classOf[CometHashAggregateExec]) == 1) // partial
+      }
+    }
+  }
+
+  test("CometExecRule should not allow try_sum mixed execution") {
+    assume(isSpark35Plus, "try_sum was added in Spark 3.5")
+    withTempView("test_data") {
+      createTestDataFrame.createOrReplaceTempView("test_data")
+      val sparkPlan =
+        createSparkPlan(spark, "SELECT try_sum(id) FROM test_data GROUP BY (id % 3)")
+      assert(countOperators(sparkPlan, classOf[HashAggregateExec]) == 2)
+      withSQLConf(
+        CometConf.COMET_ENABLE_FINAL_HASH_AGGREGATE.key -> "false",
+        CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+        val transformedPlan = applyCometExecRule(sparkPlan)
+        // TRY-mode SUM uses a Comet-internal buffer column, so mixing is unsafe:
+        // the partial must also fall back to Spark.
+        assert(countOperators(transformedPlan, classOf[HashAggregateExec]) == 2)
+        assert(countOperators(transformedPlan, classOf[CometHashAggregateExec]) == 0)
+      }
+    }
+  }
+
+  test("CometExecRule should not allow decimal AVG mixed execution") {
+    withTempView("test_data") {
+      createTestDataFrame.createOrReplaceTempView("test_data")
+      // Precision must be large enough (prec + 4 > 15) that Spark's own DecimalAggregates
+      // optimizer rule does not rewrite AVG to operate on the unscaled Long value, which would
+      // sidestep the decimal buffer path this test is meant to exercise.
+      val sparkPlan =
+        createSparkPlan(
+          spark,
+          "SELECT AVG(CAST(id AS DECIMAL(20, 2))) FROM test_data GROUP BY (id % 3)")
+      assert(countOperators(sparkPlan, classOf[HashAggregateExec]) == 2)
+      withSQLConf(
+        CometConf.COMET_ENABLE_FINAL_HASH_AGGREGATE.key -> "false",
+        CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+        val transformedPlan = applyCometExecRule(sparkPlan)
+        // Decimal AVG is deferred (its overflow path nulls count differently from Spark), so
+        // mixed execution is unsafe and the partial must also fall back to Spark.
+        assert(countOperators(transformedPlan, classOf[HashAggregateExec]) == 2)
+        assert(countOperators(transformedPlan, classOf[CometHashAggregateExec]) == 0)
+      }
+    }
+  }
+
+  test("CometExecRule should not allow decimal SUM mixed execution") {
+    withTempView("test_data") {
+      createTestDataFrame.createOrReplaceTempView("test_data")
+      // Precision must be large enough (prec + 4 > 15) that Spark's own DecimalAggregates
+      // optimizer rule does not rewrite SUM to operate on the unscaled Long value, which would
+      // sidestep the decimal buffer path this test is meant to exercise.
+      val sparkPlan =
+        createSparkPlan(
+          spark,
+          "SELECT SUM(CAST(id AS DECIMAL(20, 2))) FROM test_data GROUP BY (id % 3)")
+      assert(countOperators(sparkPlan, classOf[HashAggregateExec]) == 2)
+      withSQLConf(
+        CometConf.COMET_ENABLE_FINAL_HASH_AGGREGATE.key -> "false",
+        CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+        val transformedPlan = applyCometExecRule(sparkPlan)
+        // Decimal SUM overflow detection (ANSI throw / Legacy null) does not survive a
+        // Spark-partial / Comet-final split, so mixed execution is unsafe and the partial
+        // must also fall back to Spark.
+        assert(countOperators(transformedPlan, classOf[HashAggregateExec]) == 2)
+        assert(countOperators(transformedPlan, classOf[CometHashAggregateExec]) == 0)
+      }
+    }
+  }
+
+  test("CometExecRule should allow AVG mixed Spark partial and Comet final") {
+    withTempView("test_data") {
+      createTestDataFrame.createOrReplaceTempView("test_data")
+      val sparkPlan =
+        createSparkPlan(spark, "SELECT AVG(id) FROM test_data GROUP BY (id % 3)")
+      assert(countOperators(sparkPlan, classOf[HashAggregateExec]) == 2)
+      withSQLConf(
+        CometConf.COMET_ENABLE_PARTIAL_HASH_AGGREGATE.key -> "false",
+        CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+        val transformedPlan = applyCometExecRule(sparkPlan)
+        assert(countOperators(transformedPlan, classOf[HashAggregateExec]) == 1) // partial
         assert(countOperators(transformedPlan, classOf[CometHashAggregateExec]) == 1) // final
       }
     }
@@ -305,6 +437,106 @@ class CometExecRuleSuite extends CometTestBase {
       }
     } finally {
       spark.sessionState.functionRegistry.dropFunction(funcId)
+    }
+  }
+
+  // Regression tests for https://github.com/apache/datafusion-comet/issues/4813. An aggregate with
+  // an incompatible intermediate buffer (percentile_approx) combined with a distinct aggregate is
+  // rewritten by Spark into a multi-stage plan whose partial is separated from the final by
+  // intermediate PartialMerge stages. If part of that chain runs in Comet and part in Spark the
+  // incompatible buffer crosses the boundary and crashes, so the whole chain must fall back.
+  test(
+    "CometExecRule should not split distinct aggregate with incompatible buffer (Spark final)") {
+    withTempView("test_data") {
+      createTestDataFrame.createOrReplaceTempView("test_data")
+
+      val sparkPlan = createSparkPlan(
+        spark,
+        "SELECT percentile_approx(id, 0.5), COUNT(DISTINCT name) FROM test_data")
+
+      // The distinct rewrite produces a multi-stage ObjectHashAggregate chain.
+      assert(countOperators(sparkPlan, classOf[ObjectHashAggregateExec]) > 1)
+
+      withSQLConf(
+        CometConf.COMET_ENABLE_FINAL_HASH_AGGREGATE.key -> "false",
+        CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+        val transformedPlan = applyCometExecRule(sparkPlan)
+
+        // percentile_approx has an incompatible buffer, so with the final forced to Spark the
+        // entire partial/merge chain must also stay in Spark.
+        assert(countOperators(transformedPlan, classOf[CometHashAggregateExec]) == 0)
+      }
+    }
+  }
+
+  test(
+    "CometExecRule should not split distinct aggregate with incompatible buffer (Spark part)") {
+    withTempView("test_data") {
+      createTestDataFrame.createOrReplaceTempView("test_data")
+
+      val sparkPlan = createSparkPlan(
+        spark,
+        "SELECT percentile_approx(id, 0.5), COUNT(DISTINCT name) FROM test_data")
+
+      assert(countOperators(sparkPlan, classOf[ObjectHashAggregateExec]) > 1)
+
+      withSQLConf(
+        CometConf.COMET_ENABLE_PARTIAL_HASH_AGGREGATE.key -> "false",
+        CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+        val transformedPlan = applyCometExecRule(sparkPlan)
+
+        // With the partial/merge stages forced to Spark, no Comet aggregate may consume their
+        // incompatible buffers either.
+        assert(countOperators(transformedPlan, classOf[CometHashAggregateExec]) == 0)
+      }
+    }
+  }
+
+  test("CometExecRule should allow approx_count_distinct mixed Comet partial and Spark final") {
+    withTempView("test_data") {
+      createTestDataFrame.createOrReplaceTempView("test_data")
+
+      // approx_count_distinct stores its registers in Spark's identical packed-Long buffer, so
+      // it is mixed-safe: the Comet partial can feed a Spark final.
+      val sparkPlan =
+        createSparkPlan(
+          spark,
+          "SELECT approx_count_distinct(id) FROM test_data GROUP BY (id % 3)")
+
+      val originalHashAggCount = countOperators(sparkPlan, classOf[HashAggregateExec])
+      assert(originalHashAggCount == 2)
+
+      withSQLConf(
+        CometConf.COMET_ENABLE_FINAL_HASH_AGGREGATE.key -> "false",
+        CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+        val transformedPlan = applyCometExecRule(sparkPlan)
+
+        assert(countOperators(transformedPlan, classOf[HashAggregateExec]) == 1) // final only
+        assert(countOperators(transformedPlan, classOf[CometHashAggregateExec]) == 1) // partial
+      }
+    }
+  }
+
+  test("CometExecRule should allow approx_count_distinct mixed Spark partial and Comet final") {
+    withTempView("test_data") {
+      createTestDataFrame.createOrReplaceTempView("test_data")
+
+      val sparkPlan =
+        createSparkPlan(
+          spark,
+          "SELECT approx_count_distinct(id) FROM test_data GROUP BY (id % 3)")
+
+      val originalHashAggCount = countOperators(sparkPlan, classOf[HashAggregateExec])
+      assert(originalHashAggCount == 2)
+
+      withSQLConf(
+        CometConf.COMET_ENABLE_PARTIAL_HASH_AGGREGATE.key -> "false",
+        CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+        val transformedPlan = applyCometExecRule(sparkPlan)
+
+        assert(countOperators(transformedPlan, classOf[HashAggregateExec]) == 1) // partial only
+        assert(countOperators(transformedPlan, classOf[CometHashAggregateExec]) == 1) // final
+      }
     }
   }
 

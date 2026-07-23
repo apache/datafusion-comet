@@ -46,6 +46,6 @@ SELECT try_element_at(CAST(NULL AS ARRAY<INT>), 1)
 query ignore(Spark codegen bug with literal element_at when constant folding is disabled)
 SELECT try_element_at(array(10, 20, 30), 1), try_element_at(array(10, 20, 30), 99)
 
--- map input falls back to Spark
-query spark_answer_only
+-- map input
+query
 SELECT try_element_at(m, 'a'), try_element_at(m, 'missing') FROM test_try_element_at

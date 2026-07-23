@@ -31,13 +31,14 @@ import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.types._
 
 import org.apache.comet.CometArrowAllocator
+import org.apache.comet.shims.CometTypeShim
 
 /**
  * Output-side emitters for the codegen kernel: [[allocateOutput]], [[emitOutputWriter]]
  * (top-level write entry), [[emitWrite]] (recursive per-type write), the output vector-class
  * lookup. Paired with [[CometBatchKernelCodegenInput]] on the read side.
  */
-private[codegen] object CometBatchKernelCodegenOutput {
+private[codegen] object CometBatchKernelCodegenOutput extends CometTypeShim {
 
   /**
    * Spark `DataType` to an Arrow `Field` with names Comet expects on FFI export. Spark's
@@ -169,8 +170,11 @@ private[codegen] object CometBatchKernelCodegenOutput {
     case _: StringType => classOf[VarCharVector].getName
     case BinaryType => classOf[VarBinaryVector].getName
     case DateType => classOf[DateDayVector].getName
+    case dt if isTimeType(dt) => classOf[TimeNanoVector].getName
     case TimestampType => classOf[TimeStampMicroTZVector].getName
     case TimestampNTZType => classOf[TimeStampMicroVector].getName
+    case _: YearMonthIntervalType => classOf[IntervalYearVector].getName
+    case _: DayTimeIntervalType => classOf[DurationVector].getName
     case _: ArrayType => classOf[ListVector].getName
     case _: StructType => classOf[StructVector].getName
     case _: MapType => classOf[MapVector].getName
@@ -208,8 +212,13 @@ private[codegen] object CometBatchKernelCodegenOutput {
       val set = if (nested) "setSafe" else "set"
       OutputEmit("", s"$targetVec.$set($idx, $source ? 1 : 0);")
     case ByteType | ShortType | IntegerType | LongType | FloatType | DoubleType | DateType |
-        TimestampType | TimestampNTZType =>
+        TimestampType | TimestampNTZType | _: YearMonthIntervalType | _: DayTimeIntervalType =>
       // Spark codegen emits the matching primitive Java type; Arrow `set` overloads accept it.
+      // YearMonthIntervalType -> IntervalYearVector.set(int, int months);
+      // DayTimeIntervalType -> DurationVector.set(int, long micros).
+      val set = if (nested) "setSafe" else "set"
+      OutputEmit("", s"$targetVec.$set($idx, $source);")
+    case dt if isTimeType(dt) =>
       val set = if (nested) "setSafe" else "set"
       OutputEmit("", s"$targetVec.$set($idx, $source);")
     case dt: DecimalType =>
@@ -394,6 +403,7 @@ private[codegen] object CometBatchKernelCodegenOutput {
       case ShortType => s"$target.getShort($idx)"
       case IntegerType | DateType => s"$target.getInt($idx)"
       case LongType | TimestampType | TimestampNTZType => s"$target.getLong($idx)"
+      case dt if isTimeType(dt) => s"$target.getLong($idx)"
       case FloatType => s"$target.getFloat($idx)"
       case DoubleType => s"$target.getDouble($idx)"
       case dt: DecimalType => s"$target.getDecimal($idx, ${dt.precision}, ${dt.scale})"
