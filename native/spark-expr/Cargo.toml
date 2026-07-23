@@ -42,7 +42,6 @@ jni = "0.22.4"
 futures = { workspace = true }
 twox-hash = "2.1.2"
 rand = { workspace = true }
-hex = "0.4.3"
 base64 = "0.22.1"
 
 [dev-dependencies]
@@ -58,6 +57,10 @@ path = "src/lib.rs"
 
 [[bench]]
 name = "cast_from_string"
+harness = false
+
+[[bench]]
+name = "cast_string_to_date"
 harness = false
 
 [[bench]]
@@ -141,6 +144,10 @@ name = "parse_url"
 harness = false
 
 [[bench]]
+name = "cast_binary_to_string"
+harness = false
+
+[[bench]]
 name = "get_json_object"
 harness = false
 
@@ -154,6 +161,18 @@ harness = false
 
 [[bench]]
 name = "to_json"
+harness = false
+
+[[bench]]
+name = "cast_float_to_string"
+harness = false
+
+[[bench]]
+name = "date_trunc_array_fmt"
+harness = false
+
+[[bench]]
+name = "cast_decimal_to_string"
 harness = false
 
 [[bench]]

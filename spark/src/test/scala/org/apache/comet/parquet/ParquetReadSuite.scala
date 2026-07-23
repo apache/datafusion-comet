@@ -1290,17 +1290,14 @@ abstract class ParquetReadSuite extends CometTestBase {
             .option("parquet.enable.dictionary", enableDictionary.toString)
             .parquet(file.getCanonicalPath)
 
-          Seq(true, false).foreach { useLazyMaterialization =>
-            Seq(true, false).foreach { enableCometExec =>
-              Seq(4, 13, 4049).foreach { batchSize =>
-                withSQLConf(
-                  CometConf.COMET_BATCH_SIZE.key -> batchSize.toString,
-                  CometConf.COMET_EXEC_ENABLED.key -> enableCometExec.toString,
-                  CometConf.COMET_USE_LAZY_MATERIALIZATION.key -> useLazyMaterialization.toString) {
-                  readParquetFile(file.getCanonicalPath) { parquetDf =>
-                    actions.foreach { action =>
-                      checkAnswer(action(parquetDf), action(df))
-                    }
+          Seq(true, false).foreach { enableCometExec =>
+            Seq(4, 13, 4049).foreach { batchSize =>
+              withSQLConf(
+                CometConf.COMET_BATCH_SIZE.key -> batchSize.toString,
+                CometConf.COMET_EXEC_ENABLED.key -> enableCometExec.toString) {
+                readParquetFile(file.getCanonicalPath) { parquetDf =>
+                  actions.foreach { action =>
+                    checkAnswer(action(parquetDf), action(df))
                   }
                 }
               }
