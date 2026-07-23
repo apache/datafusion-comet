@@ -161,30 +161,90 @@ message CsvOptions {
   bool truncated_rows = 8;
 }
 
+// A typed Iceberg primitive value, shared by partition values and predicate literals. The oneof
+// case is the type tag (iceberg-rust's Datum is self-typed and Predicate::bind does not coerce, so
+// the type must be known at construction). Grows by adding a case as Iceberg adds primitives
+// (GEOMETRY/VARIANT/nanosecond timestamps); unrecognized values decode to no-op, never an error.
+message IcebergLiteral {
+  bool is_null = 1;
+  oneof value {
+    bool bool_val = 2;
+    int32 int_val = 3;
+    int64 long_val = 4;
+    float float_val = 5;
+    double double_val = 6;
+    int32 date_val = 7;            // days since epoch
+    int64 timestamp_val = 8;       // micros since epoch, no tz
+    int64 timestamp_tz_val = 9;    // micros since epoch, utc
+    string string_val = 10;
+    bytes uuid_val = 11;
+    bytes fixed_val = 12;
+    bytes binary_val = 13;
+    IcebergDecimal decimal_val = 14;
+  }
+}
+
+// A decimal literal. `scale`/`precision` let the native side build a self-typed Datum for
+// predicate pushdown (iceberg-rust's Datum is self-typed); partition-value decode reads only
+// `unscaled`. Predicate decimal pushdown is deferred (iceberg-rust page-index gap), so today only
+// `unscaled` is consumed.
+message IcebergDecimal {
+  bytes unscaled = 1;   // unscaled value, two's-complement big-endian
+  int32 precision = 2;
+  int32 scale = 3;
+}
+
 // Partition value for Iceberg partition data
 message PartitionValue {
   int32 field_id = 1;
-  oneof value {
-    int32 int_val = 2;
-    int64 long_val = 3;
-    int64 date_val = 4;           // days since epoch
-    int64 timestamp_val = 5;       // microseconds since epoch
-    int64 timestamp_tz_val = 6;    // microseconds with timezone
-    string string_val = 7;
-    double double_val = 8;
-    float float_val = 9;
-    bytes decimal_val = 10;        // unscaled BigInteger bytes
-    bool bool_val = 11;
-    bytes uuid_val = 12;
-    bytes fixed_val = 13;
-    bytes binary_val = 14;
-  }
-  bool is_null = 15;
+  IcebergLiteral literal = 2;
 }
 
 // Collection of partition values for a single partition
 message PartitionData {
   repeated PartitionValue values = 1;
+}
+
+// Iceberg residual predicate for row-group pruning, mirroring iceberg::expr::Predicate. Only a
+// pruning hint: the post-scan CometFilter enforces correctness, so an unrepresentable predicate is
+// simply omitted. Carries no expr_id/query_context (those are for native ANSI error reporting on
+// executable expressions; a residual never errors), which also lets identical residuals dedup.
+message IcebergPredicate {
+  oneof node {
+    IcebergUnaryPredicate unary = 1;   // IS_NULL / NOT_NULL / IS_NAN / NOT_NAN
+    IcebergBinaryPredicate binary = 2; // column OP literal
+    IcebergSetPredicate set = 3;       // IN only emitted; not_in is inherently unprunable from stats
+    IcebergLogicalPredicate and = 4;
+    IcebergLogicalPredicate or = 5;
+    IcebergPredicate not = 6;
+  }
+}
+
+message IcebergUnaryPredicate  { string column = 1; IcebergPredicateOperator op = 2; }
+message IcebergBinaryPredicate { string column = 1; IcebergPredicateOperator op = 2; IcebergLiteral value = 3; }
+message IcebergSetPredicate    { string column = 1; IcebergPredicateOperator op = 2; repeated IcebergLiteral values = 3; }
+message IcebergLogicalPredicate { IcebergPredicate left = 1; IcebergPredicate right = 2; }
+
+// Mirrors iceberg-rust PredicateOperator (crates/iceberg/src/expr/mod.rs) so the mapping on both
+// sides is 1:1. The driver emits a subset by design: NOT_IN never prunes from column stats
+// (inherent, matches Iceberg-Java), and IS_NAN/STARTS_WITH are not produced by the current residual
+// path. Unspecified/unrecognized decodes to no-pushdown.
+enum IcebergPredicateOperator {
+  Unspecified = 0;
+  IsNull = 1;
+  NotNull = 2;
+  IsNan = 3;
+  NotNan = 4;
+  LessThan = 5;
+  LessThanOrEq = 6;
+  GreaterThan = 7;
+  GreaterThanOrEq = 8;
+  Eq = 9;
+  NotEq = 10;
+  StartsWith = 11;
+  NotStartsWith = 12;
+  In = 13;
+  NotIn = 14;
 }
 
 // Common data shared by all partitions in split mode (sent once, captured in closure)
@@ -206,7 +266,7 @@ message IcebergScanCommon {
   repeated ProjectFieldIdList project_field_ids_pool = 8;
   repeated PartitionData partition_data_pool = 9;
   repeated DeleteFileList delete_files_pool = 10;
-  repeated spark.spark_expression.Expr residual_pool = 11;
+  repeated IcebergPredicate residual_pool = 11;
 
   // Number of data files to read concurrently within a single task
   uint32 data_file_concurrency_limit = 12;
@@ -216,6 +276,12 @@ message IcebergScanCommon {
   // isolated provider instances. Empty string when the table has no catalog identity (e.g.
   // HadoopTables loaded by raw path).
   string catalog_name = 13;
+
+  // Flat pool of unique delete files, referenced by index from DeleteFileList. Iceberg's default
+  // partition delete granularity has one delete file apply to many data files, so interning each
+  // delete file here (rather than embedding copies per delete_files_pool set) keeps the broadcast
+  // common message from growing with the number of references.
+  repeated IcebergDeleteFile delete_file_pool = 14;
 }
 
 message IcebergScan {
@@ -233,7 +299,8 @@ message ProjectFieldIdList {
 
 // Helper message for deduplicating delete file lists
 message DeleteFileList {
-  repeated IcebergDeleteFile delete_files = 1;
+  // Indices into IcebergScanCommon.delete_file_pool
+  repeated uint32 delete_file_indices = 1;
 }
 
 // Iceberg FileScanTask containing data file, delete files, and residual filter
