@@ -164,6 +164,10 @@ name = "to_json"
 harness = false
 
 [[bench]]
+name = "cast_float_to_string"
+harness = false
+
+[[bench]]
 name = "date_trunc_array_fmt"
 harness = false
 
