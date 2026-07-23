@@ -1610,26 +1610,25 @@ impl PhysicalPlanner {
                     )),
                 ))
             }
-            OpStruct::DeltaScan(scan) => {
-                // Delta Lake scan -- handled by the optional `contrib/delta/` integration.
-                // The dispatcher arm exists unconditionally so a default build that receives
-                // a Delta-shaped plan from a misconfigured driver gets a clear error instead
-                // of a "no match" decode failure.
-                #[cfg(not(feature = "contrib-delta"))]
-                {
-                    let _ = scan;
-                    Err(GeneralError(
-                        "Received a DeltaScan operator but core was built without the \
-                         `contrib-delta` Cargo feature. Rebuild with both \
-                         `-Pcontrib-delta` (Maven) and `--features contrib-delta` (Cargo) \
-                         to enable Delta Lake support."
-                            .into(),
-                    ))
-                }
+            OpStruct::ContribScan(contrib) => {
+                // Extension point for optional, out-of-tree contrib scans (Delta, Lance, ...). The
+                // concrete scan message is packed into the `ContribScan` envelope on the JVM side;
+                // here we route by `type_url` to whichever contrib was compiled in. Core names no
+                // specific contrib: the type_url match + decode lives entirely inside each
+                // contrib's gated module, so a default build carries zero contrib surface. The arm
+                // itself is unconditional so a default build that receives a contrib-shaped plan
+                // from a misconfigured driver gets a clear error instead of a "no match" decode
+                // failure.
                 #[cfg(feature = "contrib-delta")]
-                {
-                    delta_scan::plan_delta_scan(self, spark_plan, scan)
+                if let Some(result) = delta_scan::try_plan_contrib_scan(self, spark_plan, contrib) {
+                    return result;
                 }
+                Err(GeneralError(format!(
+                    "Received a contrib_scan operator (type_url: {}) but core was built without a \
+                     contrib that handles it. Rebuild with the matching contrib feature -- e.g. \
+                     `-Pcontrib-delta` (Maven) + `--features contrib-delta` (Cargo) for Delta Lake.",
+                    contrib.type_url
+                )))
             }
             OpStruct::ShuffleWriter(writer) => {
                 assert_eq!(children.len(), 1);

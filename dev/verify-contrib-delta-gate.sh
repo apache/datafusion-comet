@@ -156,7 +156,14 @@ esac
 
 hdr "Compiled classes: no contrib/delta classes in default build"
 cd "$ROOT"
-"$MVNW" -Pspark-4.1 -Djava.version=17 -Dmaven.compiler.source=17 -Dmaven.compiler.target=17 -Dmaven.gitcommitid.skip -pl spark -am test-compile -q -DskipTests=true >/dev/null 2>&1
+# `clean` is REQUIRED, not hygiene. Both leak checks below inspect `spark/target/classes`, and
+# Maven does not remove outputs that are no longer produced: after any `-Pcontrib-delta` build
+# (which every contrib developer runs), the contrib classes and -- especially --
+# `META-INF/services/**` linger there. maven-resources-plugin in particular never deletes orphaned
+# resources. Without `clean`, this gate reports a leak that is really just a stale artifact, and
+# a developer who sees one false FAIL learns to ignore the gate. Build from scratch so what we
+# find in target/classes is exactly what THIS default build produced.
+"$MVNW" -Pspark-4.1 -Djava.version=17 -Dmaven.compiler.source=17 -Dmaven.compiler.target=17 -Dmaven.gitcommitid.skip -pl spark -am clean test-compile -q -DskipTests=true >/dev/null 2>&1
 LEAK_CLASSES="$(find spark/target/classes -path '*comet/contrib*' -name '*.class' 2>/dev/null)"
 if [[ -n "$LEAK_CLASSES" ]]; then
   red "FAIL: default Maven build compiled contrib classes:"
@@ -174,7 +181,31 @@ if [[ -n "$DELTA_IMPL_LEAKS" ]]; then
   echo "$DELTA_IMPL_LEAKS"
   exit 1
 fi
-green "OK: only the always-present DeltaIntegration reflection bridge in default classes"
+green "OK: no Delta-named classes in default classes (the always-present hooks -- CometScanContrib / CometContribScanMarker -- are generic and name no contrib)"
+
+# A contrib is wired into core purely by ServiceLoader registration: core discovers
+# `CometScanContrib` (scan claim/decline) and `PlanDataInjector` (per-partition plan data)
+# implementations from `META-INF/services/**` on the classpath. That makes the presence of a
+# service file -- not the presence of a class -- the switch that actually turns a contrib on.
+# A default build must therefore ship NO contrib service files: if one leaked in (e.g. the
+# `contrib-delta` profile's add-resource execution being applied unconditionally), core would
+# try to instantiate a provider whose class isn't there. Both registries treat that as
+# non-fatal, so it would degrade to a logged warning on every query rather than a build
+# failure -- exactly the kind of silent misconfiguration this gate exists to catch.
+# Search `spark/target/classes` (always present after the build above) and filter by path,
+# rather than searching `.../META-INF/services` directly: on a correct default build that
+# directory does not exist at all, so `find` would exit non-zero and -- under `set -e` -- abort
+# the gate with no message on exactly the runs that should pass. `|| true` belts it.
+SERVICE_LEAKS="$(find spark/target/classes -path '*META-INF/services/*' \
+  \( -name 'org.apache.comet.rules.CometScanContrib' \
+     -o -name 'org.apache.spark.sql.comet.PlanDataInjector' \) \
+  2>/dev/null || true)"
+if [[ -n "$SERVICE_LEAKS" ]]; then
+  red "FAIL: default Maven build packaged contrib ServiceLoader registration file(s):"
+  echo "$SERVICE_LEAKS"
+  exit 1
+fi
+green "OK: default build registers no contrib services (empty ServiceLoader registries at runtime)"
 
 # ---- libcomet symbol/size gate -------------------------------------------
 

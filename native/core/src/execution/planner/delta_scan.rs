@@ -15,7 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! `OpStruct::DeltaScan` planner body, feature-gated behind `contrib-delta`.
+//! Delta handler for the generic `OpStruct::ContribScan` dispatcher, feature-gated behind
+//! `contrib-delta`.
 //!
 //! Thin bridge between core's plan-tree builder and the [`comet_contrib_delta`] crate. ALL
 //! Delta-specific scan planning lives in `comet_contrib_delta::planner::plan_delta_scan`; this
@@ -28,13 +29,39 @@
 use std::sync::Arc;
 
 use datafusion::arrow::datatypes::SchemaRef;
-use datafusion_comet_proto::spark_operator::{DeltaScan, Operator};
+use datafusion_comet_proto::spark_operator::{ContribScan, DeltaScan, Operator};
+use prost::Message;
 
 use crate::execution::operators::ExecutionError::GeneralError;
 use crate::execution::planner::convert_spark_types_to_arrow_schema;
 use crate::execution::planner::PhysicalPlanner;
 use crate::execution::planner::PlanCreationResult;
 use crate::execution::spark_plan::SparkPlan;
+
+/// Fully-qualified proto name of the Delta scan message (`package.Message`). The JVM packs the
+/// `DeltaScan` into the `ContribScan` envelope with a `type_url` of
+/// `type.googleapis.com/spark.spark_operator.DeltaScan`, so we recognise our messages by this
+/// suffix. Kept local to the contrib module so core's dispatcher names no Delta type.
+const DELTA_SCAN_TYPE_NAME: &str = "spark.spark_operator.DeltaScan";
+
+/// Contrib entry point for the `OpStruct::ContribScan` dispatcher. Returns `Some(result)` when the
+/// envelope carries a Delta scan this build handles, or `None` when the `type_url` belongs to some
+/// other contrib -- letting core fall through to its "no contrib handles this" error. Decoding and
+/// all Delta-specific knowledge live here, not in core's dispatcher.
+pub(crate) fn try_plan_contrib_scan(
+    planner: &PhysicalPlanner,
+    spark_plan: &Operator,
+    contrib: &ContribScan,
+) -> Option<PlanCreationResult> {
+    if !contrib.type_url.ends_with(DELTA_SCAN_TYPE_NAME) {
+        return None;
+    }
+    Some(
+        DeltaScan::decode(contrib.value.as_slice())
+            .map_err(|e| GeneralError(format!("Failed to decode DeltaScan from contrib_scan: {e}")))
+            .and_then(|scan| plan_delta_scan(planner, spark_plan, &scan)),
+    )
+}
 
 pub(crate) fn plan_delta_scan(
     // The kernel-read path doesn't need the planner (the old ParquetSource path used it to build

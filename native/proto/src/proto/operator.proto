@@ -55,11 +55,37 @@ message Operator {
     CsvScan csv_scan = 115;
     ShuffleScan shuffle_scan = 116;
     BroadcastNestedLoopJoin broadcast_nested_loop_join = 117;
-    // Delta Lake scan. Wire format used by `contrib/delta/`. Only decoded when
-    // core is built with `--features contrib-delta`; in default builds the
-    // dispatcher arm is `#[cfg]`-stubbed out so the contrib has zero runtime cost.
-    DeltaScan delta_scan = 118;
+    // Extension point for optional, out-of-tree contrib scans (Delta, Lance, ...). The concrete
+    // scan message (e.g. `DeltaScan`) is packed into this envelope on the JVM side and dispatched
+    // by `type_url` on the native side. Using a single permanent field -- rather than a new oneof
+    // variant per format -- means core's proto never has to change when a contrib is added, and
+    // avoids field-number collisions between independent contrib PRs. Only decoded when core is
+    // built with the matching contrib Cargo feature (e.g. `--features contrib-delta`); default
+    // builds reject any `contrib_scan` with a clear "not compiled in" error, so the contrib has
+    // zero runtime cost.
+    ContribScan contrib_scan = 200;
   }
+
+  // Field 118 was briefly `DeltaScan delta_scan` (an unreleased, contrib-specific oneof variant);
+  // it was replaced by the generic `contrib_scan = 200` envelope above. Reserve it so no future
+  // variant silently reuses the number.
+  reserved 118;
+}
+
+// A `google.protobuf.Any`-shaped envelope for out-of-tree contrib scan messages. Hand-rolled
+// (rather than importing the well-known `google.protobuf.Any`) so the wire format needs no
+// well-known-type import -- Comet compiles this .proto with two toolchains (Rust `prost-build`
+// and the Maven `protoc-jar` plugin) and the latter cannot reliably resolve the bundled
+// well-known types. Field layout is deliberately identical to `Any` (`type_url` + serialized
+// `value` bytes) so the JVM can populate it from a standard `Any.pack(...)` and the native side
+// routes purely on `type_url`.
+message ContribScan {
+  // Fully-qualified message type of `value`, e.g.
+  // `type.googleapis.com/spark.spark_operator.DeltaScan`. The native dispatcher matches on this to
+  // pick the contrib that decodes `value`; core itself names no contrib type.
+  string type_url = 1;
+  // The serialized contrib scan message (e.g. an encoded `DeltaScan`).
+  bytes value = 2;
 }
 
 message SparkPartitionedFile {
