@@ -880,11 +880,13 @@ object CometScanRule extends Logging {
       }
       .toSeq
       .sorted
-    if (triggered.isEmpty) None
-    else
+    if (triggered.isEmpty) {
+      None
+    } else {
       Some(
         "Native Parquet scan does not implement the legacy semantics requested by " +
           s"${triggered.mkString(", ")}; falling back to Spark for this scan.")
+    }
   }
 
   /**
