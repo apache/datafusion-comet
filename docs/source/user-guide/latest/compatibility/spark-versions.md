@@ -22,7 +22,9 @@ under the License.
 This page documents known issues and limitations specific to each supported Apache Spark version.
 
 For general compatibility information that applies across all Spark versions, see the other pages in this
-compatibility guide.
+compatibility guide. For the rule that governs how long each Spark minor is supported, see the
+[Apache Spark version support section](../../../about/versioning_policy.md#apache-spark-version-support)
+of the versioning policy.
 
 ## Spark 3.4
 
