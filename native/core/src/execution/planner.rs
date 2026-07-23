@@ -21,6 +21,7 @@ pub mod expression_registry;
 pub mod macros;
 pub mod operator_registry;
 
+use crate::execution::operators::attach_join_dynamic_filter;
 use crate::execution::operators::init_csv_datasource_exec;
 use crate::execution::operators::AlignedArrowStreamReader;
 use crate::execution::operators::IcebergScanExec;
@@ -1989,20 +1990,35 @@ impl PhysicalPlanner {
                 // (which matches DataFusion's default), and swap_inputs would turn LeftAnti
                 // into RightAnti, which DataFusion rejects with null_aware=true.
                 if join.build_side == BuildSide::BuildLeft as i32 || join.null_aware_anti_join {
+                    // Null-aware anti joins are excluded from dynamic filtering: NOT IN
+                    // semantics depend on observing build-side nulls, so probe rows must
+                    // not be pre-filtered.
+                    let mut additional_native_plans: Vec<Arc<dyn ExecutionPlan>> = vec![];
+                    let hash_join = self.apply_join_dynamic_filter(
+                        hash_join,
+                        join.dynamic_filter_enabled && !join.null_aware_anti_join,
+                        &mut additional_native_plans,
+                    )?;
                     Ok((
                         scans,
                         shuffle_scans,
-                        Arc::new(SparkPlan::new(
+                        Arc::new(SparkPlan::new_with_additional(
                             spark_plan.plan_id,
                             hash_join,
                             vec![join_params.left, join_params.right],
+                            additional_native_plans,
                         )),
                     ))
                 } else {
                     let swapped_hash_join =
                         hash_join.as_ref().swap_inputs(PartitionMode::Partitioned)?;
+                    let mut additional_native_plans: Vec<Arc<dyn ExecutionPlan>> = vec![];
+                    let swapped_hash_join = self.apply_join_dynamic_filter(
+                        swapped_hash_join,
+                        join.dynamic_filter_enabled,
+                        &mut additional_native_plans,
+                    )?;
 
-                    let mut additional_native_plans = vec![];
                     if swapped_hash_join.is::<ProjectionExec>() {
                         // a projection was added to the hash join
                         additional_native_plans.push(Arc::clone(swapped_hash_join.children()[0]));
@@ -2165,6 +2181,25 @@ impl PhysicalPlanner {
                 spark_plan.op_struct
             ))),
         }
+    }
+
+    /// When `enabled`, attaches a runtime dynamic filter to the hash join in `plan`
+    /// (which may sit under a `ProjectionExec` from `swap_inputs`) and registers the
+    /// probe-side wrapper in `additional_native_plans` so its metrics
+    /// (dynamic_filter_rows_pruned) surface on the join's SparkPlan node.
+    fn apply_join_dynamic_filter(
+        &self,
+        plan: Arc<dyn ExecutionPlan>,
+        enabled: bool,
+        additional_native_plans: &mut Vec<Arc<dyn ExecutionPlan>>,
+    ) -> Result<Arc<dyn ExecutionPlan>, ExecutionError> {
+        if !enabled {
+            return Ok(plan);
+        }
+        let session_config = self.session_ctx.copied_config();
+        let (attached, wrapper) = attach_join_dynamic_filter(plan, session_config.options())?;
+        additional_native_plans.extend(wrapper);
+        Ok(attached)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -4546,6 +4581,7 @@ mod tests {
                 condition: None,
                 build_side: 0,
                 null_aware_anti_join: false,
+                dynamic_filter_enabled: false,
             })),
         };
 

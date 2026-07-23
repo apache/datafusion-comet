@@ -335,6 +335,20 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
+  val COMET_EXEC_JOIN_DYNAMIC_FILTER_ENABLED: ConfigEntry[Boolean] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.join.dynamicFilter.enabled")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "Experimental: when enabled, Comet native hash joins apply a runtime dynamic " +
+          "filter to the probe side. After the join's build side completes, min/max bounds " +
+          "and membership predicates derived from the build keys are used to drop probe-side " +
+          "rows before the hash probe, which can significantly speed up selective joins such " +
+          "as star-schema queries. Applies to inner, left outer, left semi, and left anti " +
+          "joins. A selectivity guard disables the filter on streams where it prunes " +
+          "few rows.")
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_SCALA_UDF_CODEGEN_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.exec.scalaUDF.codegen.enabled")
       .category(CATEGORY_EXEC)

@@ -477,6 +477,10 @@ message HashJoin {
   // True for BroadcastHashJoinExec null-aware anti-joins (NOT IN subquery semantics).
   // When true, any null in the build side suppresses all left rows.
   bool null_aware_anti_join = 6;
+  // When true, attach a runtime dynamic filter to the join: after the build side
+  // completes, build-key bounds/membership predicates are applied to probe-side
+  // batches before the hash probe. See spark.comet.exec.join.dynamicFilter.enabled.
+  bool dynamic_filter_enabled = 7;
 }
 
 message SortMergeJoin {
