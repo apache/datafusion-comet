@@ -283,11 +283,13 @@ message IcebergDeleteFile {
   // Equality field IDs (empty for positional deletes)
   repeated int32 equality_ids = 4;
 
-  // Serialized StandardKeyMetadata for an encrypted delete file, from DeleteFile.keyMetadata().
-  // Absent for unencrypted tables. Decoded directly by iceberg-rust; no KMS unwrap needed.
-  // Field 8: fields 5-7 are reserved for the deletion-vector coordinates on the dv-read branch
+  // Fields 5-7 are reserved for the deletion-vector coordinates on the dv-read branch
   // (referenced_data_file / content_offset / content_size_in_bytes) so the two features can merge
   // in either order without a tag collision.
+  reserved 5, 6, 7;
+
+  // Serialized StandardKeyMetadata for an encrypted delete file, from DeleteFile.keyMetadata().
+  // Absent for unencrypted tables. Decoded directly by iceberg-rust; no KMS unwrap needed.
   optional bytes key_metadata = 8;
 }
 
