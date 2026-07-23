@@ -945,13 +945,18 @@ mod test {
             .unwrap()
         };
 
-        // Sequence: two full batches (bypass), a partial batch (buffered), then a
-        // full batch (must not bypass because the coalescer still holds buffered rows).
+        // Sequence: a full batch (bypass), an oversized batch (bypass, emitted whole),
+        // a partial batch (buffered), then a full batch (must not bypass because the
+        // coalescer still holds buffered rows).
+        //
+        // The 150-row batch is the case that distinguishes the fast path: the
+        // coalescer alone would split it into a 100-row block plus 50 buffered rows,
+        // so it can only appear as a single 150-row block when the passthrough fires.
         let inputs = vec![
-            make_batch(0, batch_size),          // rows 0..100   -> bypass
-            make_batch(batch_size, batch_size), // rows 100..200 -> bypass
-            make_batch(200, 30),                // rows 200..230 -> buffered
-            make_batch(230, batch_size),        // rows 230..330 -> coalesced with buffered 30
+            make_batch(0, batch_size),   // rows 0..100   -> bypass (100-row block)
+            make_batch(batch_size, 150), // rows 100..250 -> oversized bypass (150-row block)
+            make_batch(250, 30),         // rows 250..280 -> buffered
+            make_batch(280, batch_size), // rows 280..380 -> coalesced with buffered 30
         ];
 
         let codec = CompressionCodec::Lz4Frame;
@@ -975,16 +980,16 @@ mod test {
 
         let blocks = read_all_ipc_batches(&output);
 
-        // The two full batches are emitted verbatim as their own blocks, then the
-        // partial+full pair coalesces into a full block plus a 30-row tail block.
+        // The full and oversized batches are emitted verbatim as their own blocks,
+        // then the partial+full pair coalesces into a full block plus a 30-row tail.
         let block_rows: Vec<usize> = blocks.iter().map(|b| b.num_rows()).collect();
         assert_eq!(
             block_rows,
-            vec![100, 100, 100, 30],
+            vec![100, 150, 100, 30],
             "unexpected block boundaries"
         );
 
-        // All 330 rows must roundtrip in order (0..330).
+        // All 380 rows must roundtrip in order (0..380).
         let mut roundtripped = Vec::new();
         for block in &blocks {
             let col = block
@@ -994,7 +999,7 @@ mod test {
                 .unwrap();
             roundtripped.extend(col.values().iter().copied());
         }
-        let expected: Vec<i32> = (0..330).collect();
+        let expected: Vec<i32> = (0..380).collect();
         assert_eq!(roundtripped, expected, "rows not preserved in order");
     }
 
