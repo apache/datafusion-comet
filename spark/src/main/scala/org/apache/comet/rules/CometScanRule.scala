@@ -530,15 +530,16 @@ case class CometScanRule(session: SparkSession)
               false
           }
 
-        // The native Parquet reader (arrow-rs 58.3) decrypts only 128-bit AES-GCM data keys. Fall
-        // back for larger keys until arrow-rs 58.4 adds 256-bit support (arrow-rs#10349). None
-        // means the table is unencrypted. Reflection failure also falls back.
+        // The native Parquet reader decrypts 128-bit and 256-bit AES-GCM data keys (16- or
+        // 32-byte). 192-bit is unsupported because the underlying crypto has no AES-192-GCM. Fall
+        // back for anything else. None means the table is unencrypted. Reflection failure also
+        // falls back.
         val encryptionKeyLengthSupported =
           try {
             IcebergReflection.encryptionDataKeyLength(metadata.table) match {
-              case Some(len) if len != 16 =>
+              case Some(len) if len != 16 && len != 32 =>
                 fallbackReasons += s"Iceberg table encryption with a ${len * 8}-bit data key is " +
-                  "not yet supported by Comet's native reader (only 128-bit AES-GCM)"
+                  "not yet supported by Comet's native reader (only 128-bit and 256-bit AES-GCM)"
                 false
               case _ => true
             }

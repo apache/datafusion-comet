@@ -189,10 +189,9 @@ class CometIcebergEncryptionSuite
     }
   }
 
-  // The native Parquet reader (arrow-rs 58.3) decrypts only 128-bit AES-GCM keys, so a table with a
-  // larger data key must fall back to Spark and still return correct results. Flip this to a native
-  // assertion when arrow-rs 58.4 (256-bit support, arrow-rs#10349) is picked up.
-  test("encrypted V3 table with a 256-bit data key falls back to Spark") {
+  // A 256-bit (32-byte) AES-GCM data key is supported natively, so the read must run through Comet
+  // and match Spark.
+  test("encrypted V3 table with a 256-bit data key is read natively and matches Spark") {
     assume(icebergAvailable, "Iceberg not available in classpath")
     assume(icebergVersionAtLeast(1, 11), "Iceberg table encryption requires Iceberg 1.11+")
 
@@ -211,10 +210,49 @@ class CometIcebergEncryptionSuite
       """)
       spark.sql(s"INSERT INTO $table VALUES (1, 'Alice'), (2, 'Bob')")
 
+      val keyMetadatas = spark
+        .sql(s"SELECT key_metadata FROM $table.files WHERE content = 0")
+        .collect()
+        .flatMap(r => Option(r.getAs[Array[Byte]]("key_metadata")))
+      assert(
+        keyMetadatas.nonEmpty,
+        "expected encryption to populate key_metadata; the Hive catalog may not have wired the KMS")
+
+      val (_, cometPlan) = checkSparkAnswer(s"SELECT * FROM $table ORDER BY id")
+      assert(
+        collect(cometPlan) { case s: CometIcebergNativeScanExec => s }.nonEmpty,
+        "expected the 256-bit encrypted read to run natively but found no " +
+          s"CometIcebergNativeScanExec:\n$cometPlan")
+
+      spark.sql(s"DROP TABLE $table")
+    }
+  }
+
+  // A 192-bit data key is unsupported (no AES-192-GCM in the underlying crypto), so the table must
+  // fall back to Spark while still returning correct results.
+  test("encrypted V3 table with a 192-bit data key falls back to Spark") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    assume(icebergVersionAtLeast(1, 11), "Iceberg table encryption requires Iceberg 1.11+")
+
+    withSQLConf(
+      CometConf.COMET_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_ENABLED.key -> "true",
+      CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+      val table = "hive_cat.db.encrypted_192"
+      spark.sql("CREATE NAMESPACE IF NOT EXISTS hive_cat.db")
+      spark.sql(s"DROP TABLE IF EXISTS $table")
+      spark.sql(s"""
+        CREATE TABLE $table (id INT, name STRING) USING iceberg
+        TBLPROPERTIES ('format-version' = '3', 'encryption.key-id' = '${CometTestKMS.MasterKeyId}',
+          'encryption.data-key-length' = '24')
+      """)
+      spark.sql(s"INSERT INTO $table VALUES (1, 'Alice'), (2, 'Bob')")
+
       val (_, cometPlan) = checkSparkAnswer(s"SELECT * FROM $table ORDER BY id")
       assert(
         collect(cometPlan) { case s: CometIcebergNativeScanExec => s }.isEmpty,
-        "expected a 256-bit encrypted table to fall back to Spark but it ran natively:\n" +
+        "expected a 192-bit encrypted table to fall back to Spark but it ran natively:\n" +
           cometPlan)
 
       spark.sql(s"DROP TABLE $table")

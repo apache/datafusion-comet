@@ -790,8 +790,9 @@ object IcebergReflection extends Logging {
   /**
    * The configured AES data-key length in bytes for an encrypted table (Iceberg's
    * `encryption.data-key-length`, default 16), or None if the table is not encrypted. Comet's
-   * native Parquet reader (arrow-rs 58.3) supports only 128-bit (16-byte) keys, so callers fall
-   * back for anything else. Throws on reflection failure so the caller can fall back.
+   * native Parquet reader supports 128-bit (16-byte) and 256-bit (32-byte) keys but not 192-bit
+   * (the underlying crypto has no AES-192-GCM), so callers fall back for anything else. Throws on
+   * reflection failure so the caller can fall back.
    */
   def encryptionDataKeyLength(table: Any): Option[Int] =
     getTableProperties(table).filter(_.containsKey("encryption.key-id")).map { props =>

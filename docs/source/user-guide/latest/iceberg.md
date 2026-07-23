@@ -67,11 +67,11 @@ The native Iceberg reader supports the following features:
 
 **Encryption:**
 
-- Encrypted v3 tables using 128-bit AES-GCM data keys (requires Iceberg 1.11 or newer). Iceberg-Java
-  unwraps the key envelope on the driver during planning and stores the plaintext data key in each
-  file's `key_metadata`, which the native reader uses directly, so no KMS integration is needed on
-  the native side. Iceberg-Java also permits 192- and 256-bit data keys; those tables fall back to
-  Spark for now (the native Parquet reader decrypts only 128-bit AES-GCM until arrow-rs 58.4).
+- Encrypted v3 tables using 128-bit or 256-bit AES-GCM data keys (requires Iceberg 1.11 or newer).
+  Iceberg-Java unwraps the key envelope on the driver during planning and stores the plaintext data
+  key in each file's `key_metadata`, which the native reader uses directly, so no KMS integration is
+  needed on the native side. Iceberg-Java also permits 192-bit data keys; those tables fall back to
+  Spark (no AES-192-GCM in the underlying crypto).
 
 **Schema and data types:**
 
@@ -169,8 +169,7 @@ The following scenarios will fall back to the JVM Iceberg reader:
 - Iceberg table spec v4 or newer
 - v3 tables with columns that declare an initial default value
 - v3 column types the native reader cannot read (`variant`, `geometry`, `geography`, `unknown`)
-- Encrypted tables with data keys larger than 128-bit (256-bit support needs arrow-rs 58.4,
-  [arrow-rs#10349](https://github.com/apache/arrow-rs/issues/10349))
+- Encrypted tables with 192-bit data keys (no AES-192-GCM in the underlying crypto)
 - Deletion vectors (v3 Puffin deletes); positional and equality deletes in Parquet are supported
 - Iceberg writes (reads are accelerated, writes use Spark)
 - Tables backed by Avro or ORC data files (only Parquet is accelerated)
