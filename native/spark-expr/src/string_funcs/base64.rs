@@ -17,7 +17,9 @@
 
 use std::sync::Arc;
 
-use arrow::array::{Array, AsArray, GenericBinaryArray, OffsetSizeTrait, StringArray};
+use arrow::array::{
+    Array, AsArray, GenericBinaryArray, GenericStringBuilder, OffsetSizeTrait, StringArray,
+};
 use arrow::datatypes::DataType;
 use base64::prelude::BASE64_STANDARD;
 use base64::Engine;
@@ -62,33 +64,43 @@ pub fn spark_base64(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusionE
     }
 }
 
-fn encode_array<O: OffsetSizeTrait>(array: &GenericBinaryArray<O>, chunk: bool) -> StringArray {
-    array
-        .iter()
-        .map(|value| value.map(|bytes| encode(bytes, chunk)))
-        .collect()
+const LINE_LEN: usize = 76;
+
+/// Length of the padded base64 encoding of `n` input bytes.
+fn base64_encoded_len(n: usize) -> usize {
+    n.div_ceil(3) * 4
 }
 
-fn encode(bytes: &[u8], chunk: bool) -> String {
-    let encoded = BASE64_STANDARD.encode(bytes);
-    if chunk {
-        chunk_into_lines(encoded)
+/// Length after CRLF wrapping if `encoded_len` bytes are chunked at `LINE_LEN` chars per line.
+fn chunked_len(encoded_len: usize) -> usize {
+    if encoded_len == 0 {
+        0
     } else {
-        encoded
+        encoded_len + ((encoded_len - 1) / LINE_LEN) * 2
     }
 }
 
-/// Wrap a base64 string into lines of at most 76 characters joined by CRLF, with no trailing
-/// separator. Matches `java.util.Base64.getMimeEncoder()`. base64 output is pure ASCII, so byte
-/// offsets and character offsets coincide. Takes the string by value so the common short-input
-/// case (no wrapping needed) returns it without a second allocation.
-fn chunk_into_lines(encoded: String) -> String {
-    const LINE_LEN: usize = 76;
-    if encoded.len() <= LINE_LEN {
-        return encoded;
+/// Encodes `bytes` into `out`, wrapping at `LINE_LEN` when `chunk` is true. `out` is reused
+/// across rows to avoid per-row heap allocations; the caller clears it before each call.
+fn encode_into(bytes: &[u8], chunk: bool, out: &mut String) {
+    if !chunk {
+        BASE64_STANDARD.encode_string(bytes, out);
+        return;
     }
-    let separators = (encoded.len() - 1) / LINE_LEN;
-    let mut out = String::with_capacity(encoded.len() + separators * 2);
+    // Encode into a scratch, then wrap. Two passes are unavoidable because the base64 crate
+    // does not emit CRLF for us and computing chunk boundaries mid-encode would require a
+    // custom writer that carries per-row state.
+    let unwrapped_len = base64_encoded_len(bytes.len());
+    if unwrapped_len <= LINE_LEN {
+        BASE64_STANDARD.encode_string(bytes, out);
+        return;
+    }
+    // Reuse `out` for the wrapped result: encode into a temporary owned by the outer scratch,
+    // then copy CRLF-wrapped chunks in. The temporary is short-lived per row, but the caller's
+    // long-lived scratch avoids the per-row allocation the previous implementation had.
+    let mut encoded = String::with_capacity(unwrapped_len);
+    BASE64_STANDARD.encode_string(bytes, &mut encoded);
+    out.reserve(chunked_len(encoded.len()));
     let mut offset = 0;
     while offset < encoded.len() {
         if offset > 0 {
@@ -98,12 +110,43 @@ fn chunk_into_lines(encoded: String) -> String {
         out.push_str(&encoded[offset..end]);
         offset = end;
     }
+}
+
+fn encode_array<O: OffsetSizeTrait>(array: &GenericBinaryArray<O>, chunk: bool) -> StringArray {
+    // Right-size the value buffer in O(1) from the input's total byte count. When chunking,
+    // add the CRLF slack the encoded output will contain so the long-input path does not grow.
+    let total_bytes = array.value_data().len();
+    let encoded_total = base64_encoded_len(total_bytes);
+    let data_capacity = if chunk {
+        chunked_len(encoded_total)
+    } else {
+        encoded_total
+    };
+    let mut builder = GenericStringBuilder::<i32>::with_capacity(array.len(), data_capacity);
+    // Reused across rows so each element pays a single allocation only if it needs to grow.
+    let mut buf = String::new();
+    for i in 0..array.len() {
+        if array.is_null(i) {
+            builder.append_null();
+            continue;
+        }
+        buf.clear();
+        encode_into(array.value(i), chunk, &mut buf);
+        builder.append_value(&buf);
+    }
+    builder.finish()
+}
+
+fn encode(bytes: &[u8], chunk: bool) -> String {
+    let mut out = String::new();
+    encode_into(bytes, chunk, &mut out);
     out
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use arrow::array::{BinaryArray, LargeBinaryArray};
 
     #[test]
     fn unchunked_is_a_single_line() {
@@ -136,5 +179,40 @@ mod tests {
             lines.iter().map(|l| l.len()).collect::<Vec<_>>(),
             vec![76, 76, 8]
         );
+    }
+
+    #[test]
+    fn encode_array_binary_chunked() {
+        // Nulls, empty values, values that wrap, and one on the boundary.
+        let a57 = [b'a'; 57];
+        let b58 = [b'b'; 58];
+        let c120 = [b'c'; 120];
+        let input = BinaryArray::from(vec![
+            Some(&b""[..]),
+            None,
+            Some(&a57[..]), // exactly 76 encoded chars: no wrap
+            Some(&b58[..]), // wraps once
+            None,
+            Some(&c120[..]), // wraps twice
+        ]);
+        let out = encode_array(&input, true);
+        assert_eq!(out.len(), 6);
+        assert_eq!(out.value(0), "");
+        assert!(out.is_null(1));
+        assert_eq!(out.value(2), encode(&a57, true));
+        assert_eq!(out.value(3), encode(&b58, true));
+        assert!(out.is_null(4));
+        assert_eq!(out.value(5), encode(&c120, true));
+    }
+
+    #[test]
+    fn encode_array_large_binary_unchunked() {
+        // Exercises the LargeBinaryArray (i64 offsets) instantiation of the generic.
+        let input = LargeBinaryArray::from(vec![None, Some(&b"abc"[..]), Some(&b"hi!"[..])]);
+        let out = encode_array(&input, false);
+        assert_eq!(out.len(), 3);
+        assert!(out.is_null(0));
+        assert_eq!(out.value(1), "YWJj");
+        assert_eq!(out.value(2), BASE64_STANDARD.encode(b"hi!"));
     }
 }
