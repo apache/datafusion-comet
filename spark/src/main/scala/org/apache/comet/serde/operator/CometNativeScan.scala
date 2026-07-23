@@ -87,6 +87,19 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with Logging {
       withFallbackReason(scanExec, "Full native scan disabled because ignoreMissingFiles enabled")
     }
 
+    // The native scan serializes the full data and partition schema (not just the required
+    // columns), so every field type must be serializable. Types with no proto representation
+    // (e.g. GEOMETRY / GEOGRAPHY) would otherwise crash schema serialization; fall back instead.
+    (scanExec.relation.dataSchema.fields ++ scanExec.relation.partitionSchema.fields).foreach {
+      field =>
+        if (serializeDataType(field.dataType).isEmpty) {
+          withFallbackReason(
+            scanExec,
+            s"Native scan does not support data type ${field.dataType.simpleString} " +
+              s"in column ${field.name}")
+        }
+    }
+
     // the scan is supported if no fallback reasons were added to the node
     !hasFallbackReason(scanExec)
   }
