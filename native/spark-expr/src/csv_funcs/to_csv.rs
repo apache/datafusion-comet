@@ -147,6 +147,7 @@ pub fn to_csv_inner(
 
     let quote_char = write_options.quote.chars().next().unwrap_or('"');
     let escape_char = write_options.escape.chars().next().unwrap_or('\\');
+    let escaper = FieldEscaper::new(&write_options.delimiter, quote_char, escape_char);
     for row_idx in 0..array.len() {
         if array.is_null(row_idx) {
             builder.append_null();
@@ -178,26 +179,15 @@ pub fn to_csv_inner(
                     }
 
                     let needs_quoting = write_options.quote_all
-                        || (is_string_field
-                            && (value.contains(&write_options.delimiter)
-                                || value.contains(quote_char)
-                                || value.contains('\n')
-                                || value.contains('\r'))
-                            || value.is_empty());
-
-                    let needs_escaping = needs_quoting
-                        && (value.contains(quote_char) || value.contains(escape_char));
+                        || value.is_empty()
+                        || (is_string_field && escaper.forces_quoting(value));
 
                     if needs_quoting {
                         csv_string.push(quote_char);
-                    }
-                    if needs_escaping {
-                        escape_value(value, quote_char, escape_char, &mut csv_string);
+                        escaper.write_escaped(value, &mut csv_string);
+                        csv_string.push(quote_char);
                     } else {
                         csv_string.push_str(value);
-                    }
-                    if needs_quoting {
-                        csv_string.push(quote_char);
                     }
                 }
             }
@@ -207,12 +197,172 @@ pub fn to_csv_inner(
     Ok(Arc::new(builder.finish()))
 }
 
-#[inline]
-fn escape_value(value: &str, quote_char: char, escape_char: char, output: &mut String) {
-    for ch in value.chars() {
-        if ch == quote_char || ch == escape_char {
-            output.push(escape_char);
+/// Decides whether a CSV field must be quoted, and escapes the content of quoted fields.
+///
+/// The delimiter, quote and escape characters are fixed for a whole batch, so they are
+/// classified once up front. When the delimiter is a single ASCII byte and the quote and
+/// escape characters are both ASCII (by far the most common configuration) a value can be
+/// inspected one byte at a time: no ASCII byte can occur inside a multi-byte UTF-8 sequence,
+/// so byte equality is equivalent to character equality, and run boundaries always fall on
+/// `char` boundaries. Otherwise we fall back to substring/char searches.
+enum FieldEscaper<'a> {
+    Ascii {
+        delimiter: u8,
+        quote: u8,
+        escape: u8,
+    },
+    General {
+        delimiter: &'a str,
+        quote: char,
+        escape: char,
+    },
+}
+
+impl<'a> FieldEscaper<'a> {
+    fn new(delimiter: &'a str, quote: char, escape: char) -> Self {
+        match *delimiter.as_bytes() {
+            [d] if d.is_ascii() && quote.is_ascii() && escape.is_ascii() => Self::Ascii {
+                delimiter: d,
+                quote: quote as u8,
+                escape: escape as u8,
+            },
+            _ => Self::General {
+                delimiter,
+                quote,
+                escape,
+            },
         }
-        output.push(ch);
+    }
+
+    /// Whether `value` contains a character that forces the field to be quoted.
+    #[inline]
+    fn forces_quoting(&self, value: &str) -> bool {
+        match *self {
+            Self::Ascii {
+                delimiter, quote, ..
+            } => value
+                .as_bytes()
+                .iter()
+                .any(|&b| b == delimiter || b == quote || b == b'\n' || b == b'\r'),
+            Self::General {
+                delimiter, quote, ..
+            } => {
+                value.contains(delimiter)
+                    || value.contains(quote)
+                    || value.contains('\n')
+                    || value.contains('\r')
+            }
+        }
+    }
+
+    /// Appends `value` to `output`, prefixing every quote and escape character with the
+    /// escape character. Runs between escapes are copied in bulk rather than one character
+    /// at a time.
+    #[inline]
+    fn write_escaped(&self, value: &str, output: &mut String) {
+        let mut run_start = 0;
+        match *self {
+            Self::Ascii { quote, escape, .. } => {
+                for (i, &b) in value.as_bytes().iter().enumerate() {
+                    if b == quote || b == escape {
+                        output.push_str(&value[run_start..i]);
+                        output.push(escape as char);
+                        run_start = i;
+                    }
+                }
+            }
+            Self::General { quote, escape, .. } => {
+                for (i, ch) in value.char_indices() {
+                    if ch == quote || ch == escape {
+                        output.push_str(&value[run_start..i]);
+                        output.push(escape);
+                        run_start = i;
+                    }
+                }
+            }
+        }
+        output.push_str(&value[run_start..]);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn to_csv(values: Vec<Option<&str>>, write_options: &CsvWriteOptions) -> Vec<Option<String>> {
+        let strings: ArrayRef = Arc::new(StringArray::from(values));
+        let struct_array = StructArray::from(vec![(
+            Arc::new(arrow::datatypes::Field::new("f1", DataType::Utf8, true)),
+            strings,
+        )]);
+        let mut cast_options = SparkCastOptions::new(EvalMode::Legacy, "UTC", false);
+        cast_options.null_string = write_options.null_value.clone();
+        let result = to_csv_inner(&struct_array, &cast_options, write_options).unwrap();
+        let result = as_string_array(&result);
+        (0..result.len())
+            .map(|i| {
+                if result.is_null(i) {
+                    None
+                } else {
+                    Some(result.value(i).to_string())
+                }
+            })
+            .collect()
+    }
+
+    fn options(delimiter: &str, quote: &str, escape: &str) -> CsvWriteOptions {
+        CsvWriteOptions::new(
+            delimiter.to_string(),
+            quote.to_string(),
+            escape.to_string(),
+            "".to_string(),
+            false,
+            true,
+            true,
+        )
+    }
+
+    #[test]
+    fn test_quoting_and_escaping() {
+        let actual = to_csv(
+            vec![
+                Some("plain"),
+                Some("a,b"),
+                Some("say \"hi\""),
+                Some("back\\slash"),
+                Some("line\nbreak"),
+                Some(""),
+                None,
+            ],
+            &options(",", "\"", "\\"),
+        );
+        assert_eq!(
+            actual,
+            vec![
+                Some("plain".to_string()),
+                Some("\"a,b\"".to_string()),
+                Some("\"say \\\"hi\\\"\"".to_string()),
+                Some("back\\slash".to_string()),
+                Some("\"line\nbreak\"".to_string()),
+                Some("\"\"".to_string()),
+                Some("".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_multi_byte_quote_and_multi_char_delimiter() {
+        let actual = to_csv(
+            vec![Some("a||b"), Some("qu§ote"), Some("plain")],
+            &options("||", "§", "é"),
+        );
+        assert_eq!(
+            actual,
+            vec![
+                Some("§a||b§".to_string()),
+                Some("§qué§ote§".to_string()),
+                Some("plain".to_string()),
+            ]
+        );
     }
 }
