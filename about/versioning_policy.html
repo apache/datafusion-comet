@@ -527,17 +527,51 @@ guarantees. <code class="docutils literal notranslate"><span class="pre">Incompa
 </section>
 <section id="apache-spark-version-support">
 <h2>Apache Spark Version Support<a class="headerlink" href="#apache-spark-version-support" title="Link to this heading">#</a></h2>
-<p>Each Comet release supports the <strong>latest patch version</strong> of every Apache Spark minor release that
-Comet targets at the time of release. The currently supported Spark versions are listed on the
-<a class="reference internal" href="../user-guide/latest/compatibility/spark-versions.html"><span class="std std-doc">Spark Version Compatibility</span></a> page.</p>
-<p>When the upstream Spark project publishes a new patch within a supported minor (for example,
-<code class="docutils literal notranslate"><span class="pre">3.5.8</span></code> → <code class="docutils literal notranslate"><span class="pre">3.5.9</span></code>), the next Comet release will pick it up. Older Spark patches within the same
-minor are not separately supported.</p>
-<p>Dropping support for an entire Spark minor (for example, removing Spark 3.4) is announced in the
-release notes of the <strong>preceding</strong> Comet minor release, giving users at least one release of
-notice before the change takes effect.</p>
-<p>Comet binaries are published per <code class="docutils literal notranslate"><span class="pre">(Spark</span> <span class="pre">minor</span> <span class="pre">×</span> <span class="pre">Scala</span> <span class="pre">binary</span> <span class="pre">version)</span></code> combination. Users must
-select the binary that matches their Spark and Scala installation.</p>
+<p>The currently supported Spark versions are listed on the
+<a class="reference internal" href="../user-guide/latest/compatibility/spark-versions.html"><span class="std std-doc">Spark Version Compatibility</span></a> page. Comet
+binaries are published per <code class="docutils literal notranslate"><span class="pre">(Spark</span> <span class="pre">minor</span> <span class="pre">×</span> <span class="pre">Scala</span> <span class="pre">binary</span> <span class="pre">version)</span></code> combination. Users must select
+the binary that matches their Spark and Scala installation.</p>
+<section id="new-version-adoption">
+<h3>New Version Adoption<a class="headerlink" href="#new-version-adoption" title="Link to this heading">#</a></h3>
+<p>Comet does not commit to a timeline for adopting a new Apache Spark minor release. The effort
+required varies significantly from one release to the next, so Comet will not promise a
+delivery date it cannot guarantee.</p>
+<p>A Spark minor release becomes eligible for <strong>supported</strong> status only after upstream ships an
+official GA release. Comet may publish <strong>experimental</strong> support for a pre-GA release (a
+preview, release candidate, or snapshot) to gather feedback during development, but such
+experimental support is explicitly not a commitment: it may lag upstream, break, or be
+withdrawn at any time. Production users should target GA versions only.</p>
+<p>The mechanical stages of a bring-up and the criteria a version must meet before being promoted
+from experimental to supported are documented in the contributor guide’s
+<a class="reference internal" href="../contributor-guide/adding_a_new_spark_version.html"><span class="std std-doc">Adding Support for a New Spark Version</span></a>
+page.</p>
+</section>
+<section id="support-lifetime">
+<h3>Support Lifetime<a class="headerlink" href="#support-lifetime" title="Link to this heading">#</a></h3>
+<p>Comet aligns its Spark support window with the upstream
+<a class="reference external" href="https://spark.apache.org/versioning-policy.html">Apache Spark versioning policy</a>. A Spark minor
+release is supported by Comet for as long as it is actively maintained by the upstream Apache
+Spark project. Once upstream ends maintenance for a Spark minor, Comet removes it in two steps:</p>
+<ol class="arabic simple">
+<li><p><strong>Deprecation.</strong> The next Comet minor release after upstream maintenance ends marks the Spark
+minor as deprecated in the release notes and on the
+<a class="reference internal" href="../user-guide/latest/compatibility/spark-versions.html"><span class="std std-doc">Spark Version Compatibility</span></a> page.
+Comet continues to build and publish binaries for the deprecated Spark minor during this
+release cycle.</p></li>
+<li><p><strong>Removal.</strong> The following Comet minor release removes the Spark minor and stops publishing
+binaries for it.</p></li>
+</ol>
+<p>This gives users at least one Comet minor release of prior notice before a Spark minor is
+dropped. For example, Spark 3.4 was deprecated in Comet 1.0.0 and will be removed in Comet
+1.1.0.</p>
+</section>
+<section id="patch-versions">
+<h3>Patch Versions<a class="headerlink" href="#patch-versions" title="Link to this heading">#</a></h3>
+<p>Each Comet release supports the <strong>latest patch version</strong> of every Apache Spark minor release
+that Comet targets at the time of release. When the upstream Spark project publishes a new patch
+within a supported minor (for example, <code class="docutils literal notranslate"><span class="pre">3.5.8</span></code> → <code class="docutils literal notranslate"><span class="pre">3.5.9</span></code>), the next Comet release will pick it
+up. Older Spark patches within the same minor are not separately supported.</p>
+</section>
 </section>
 <section id="release-cadence">
 <h2>Release Cadence<a class="headerlink" href="#release-cadence" title="Link to this heading">#</a></h2>
@@ -621,7 +655,12 @@ re-evaluated and documented as part of the <code class="docutils literal notrans
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#query-result-semantics">Query Result Semantics</a></li>
 </ul>
 </li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#apache-spark-version-support">Apache Spark Version Support</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#apache-spark-version-support">Apache Spark Version Support</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#new-version-adoption">New Version Adoption</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#support-lifetime">Support Lifetime</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#patch-versions">Patch Versions</a></li>
+</ul>
+</li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#release-cadence">Release Cadence</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#native-library-coupling">Native Library Coupling</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#road-to-1-0">Road to 1.0</a></li>
