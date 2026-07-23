@@ -3913,7 +3913,7 @@ index f0f3f94b811..b7d18771314 100644
  
      spark.internalCreateDataFrame(withoutFilters.execute(), schema)
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/test/SharedSparkSession.scala b/sql/core/src/test/scala/org/apache/spark/sql/test/SharedSparkSession.scala
-index 720b13b812e..813779bd3b2 100644
+index 720b13b812e..93221ef4cf5 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/test/SharedSparkSession.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/test/SharedSparkSession.scala
 @@ -98,6 +98,21 @@ trait SharedSparkSessionBase
@@ -3931,7 +3931,7 @@ index 720b13b812e..813779bd3b2 100644
 +        .set("spark.comet.exec.enabled", "true")
 +        .set("spark.shuffle.manager",
 +          "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
-+        .set("spark.comet.exec.shuffle.enabled", "true")
++        .set("spark.comet.shuffle.enabled", "true")
 +        .set("spark.comet.memoryOverhead", "2g")
 +
 +    }
@@ -4056,7 +4056,7 @@ index b67370f6eb9..746b3974b29 100644
    override def beforeEach(): Unit = {
      super.beforeEach()
 diff --git a/sql/hive/src/test/scala/org/apache/spark/sql/hive/test/TestHive.scala b/sql/hive/src/test/scala/org/apache/spark/sql/hive/test/TestHive.scala
-index a394d0b7393..3e1f0404a37 100644
+index a394d0b7393..7056c74759c 100644
 --- a/sql/hive/src/test/scala/org/apache/spark/sql/hive/test/TestHive.scala
 +++ b/sql/hive/src/test/scala/org/apache/spark/sql/hive/test/TestHive.scala
 @@ -53,24 +53,34 @@ object TestHive
@@ -4103,7 +4103,7 @@ index a394d0b7393..3e1f0404a37 100644
 +            .set("spark.comet.exec.enabled", "true")
 +            .set("spark.shuffle.manager",
 +              "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
-+            .set("spark.comet.exec.shuffle.enabled", "true")
++            .set("spark.comet.shuffle.enabled", "true")
 +        }
 +
 +        conf
