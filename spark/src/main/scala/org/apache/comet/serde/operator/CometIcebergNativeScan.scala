@@ -239,8 +239,8 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
    * silently dropping the key of an encrypted file would fail obscurely in the native reader.
    */
   private def keyMetadataBytes(
-                                method: java.lang.reflect.Method,
-                                contentFile: Any): Option[com.google.protobuf.ByteString] =
+      method: java.lang.reflect.Method,
+      contentFile: Any): Option[com.google.protobuf.ByteString] =
     method.invoke(contentFile) match {
       case buf: java.nio.ByteBuffer if buf.remaining() > 0 =>
         Some(com.google.protobuf.ByteString.copyFrom(buf.duplicate()))
