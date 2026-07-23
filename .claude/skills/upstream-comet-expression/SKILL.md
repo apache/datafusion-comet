@@ -27,7 +27,7 @@ Upstream a native implementation of the `$ARGUMENTS` Spark expression from Comet
 
 ## Pilot reference
 
-Worked example: `date_from_unix_date`, upstreamed as [apache/datafusion#23852](https://github.com/apache/datafusion/pull/23852). The winning form was a `simplify()`-to-cast lowering (`Int32 -> Date32`), not a hand-rolled array reinterpret. See step 2 below.
+Worked example: `date_from_unix_date`, upstreamed as [apache/datafusion#23852](https://github.com/apache/datafusion/pull/23852). Its real logic (an `Int32 -> Date32` reinterpret) lives in `invoke_with_args` so Comet can consume it; a `simplify()`-to-cast is layered on top only as an optional DataFusion optimization. See step 2 for why `invoke_with_args` cannot be a stub.
 
 ## 1. Confirm it is a good upstream candidate
 
@@ -59,7 +59,7 @@ grep -rln "fn name" ~/git/apache/datafusion/datafusion/spark/src/function/<categ
 Concrete idiom differences the pilot surfaced, in order of likelihood to bite:
 
 - **`ScalarUDFImpl` trait shape drifts.** E.g. `as_any` was removed from the trait in datafusion#20812. Older code (including Comet's own historical ports and stale sample snippets) still implements it; current code must not, and doesn't need the `use std::any::Any;` import either. Always match what the sibling function in the *current* checkout does, not what a search result or memory suggests.
-- **Prefer `simplify()`-to-casts over hand-rolled array kernels when the semantics allow it.** If the transform is expressible as one or more `cast_to()` calls (e.g. `Int32 -> Date32`, both physically `i32`), implement `simplify()` returning `ExprSimplifyResult::Simplified(...)` and leave `invoke_with_args` as an `internal_err!(...)` stub that's never reached, mirroring `unix.rs`'s `SparkUnixDate::simplify`. Only fall back to a real `invoke_with_args` array-reinterpret when the value needs an actual per-row transform the cast machinery can't express.
+- **The real implementation MUST live in `invoke_with_args`. `simplify()` is an optional optimization, never a substitute.** This is the single most important lesson from the pilot, because it is a trap. Some upstream functions (e.g. `unix.rs`'s `SparkUnixDate`) implement only `simplify()` to lower to casts and leave `invoke_with_args` as an `internal_err!(...)` stub. That works for pure DataFusion SQL, where the logical `SimplifyExpressions` rule rewrites the call before physical planning so `invoke_with_args` is never reached. **It does not work for Comet.** Comet builds physical `ScalarFunctionExpr` nodes directly from protobuf and calls `invoke_with_args`; it never runs the logical simplify pass. A `simplify()`-only function therefore errors at runtime the moment Comet invokes it, which defeats the entire purpose of upstreaming (step 8's re-wire). So: put the actual per-value logic (e.g. the `Int32 -> Date32` array/scalar reinterpret, since both are physically `i32`) in `invoke_with_args`. You MAY additionally implement `simplify()` to give DataFusion's optimizer a cast to fold, but only as a layer on top of a working `invoke_with_args`. If a reviewer objects to carrying both, drop `simplify()` and keep the real `invoke_with_args`, never the reverse.
 - **Signature choice is per-input-type, not one-size-fits-all.** Native-typed inputs (e.g. `Int32`) use `Signature::exact(vec![DataType::Int32], ...)`. Date-class inputs use `Signature::coercible` with `TypeSignatureClass::Native(logical_date())`, as `unix_date` does. Pick by matching a same-category sibling with the same input type, not by habit.
 - **Return type: use `return_field_from_args` when nullability or the return type depends on the arguments.** A fixed return type can stay in `return_type` (as the pilot's `Date32` does), but functions whose output nullability tracks the input, or whose type depends on argument types, implement `return_field_from_args` returning a `FieldRef`, as `unix.rs` does. Match the sibling that has the same shape.
 - Use `datafusion_common` / `datafusion_expr` crate paths directly (this crate does not re-export through a Comet-style shim layer).
@@ -104,6 +104,8 @@ Add `datafusion/sqllogictest/test_files/spark/<category>/<name>.slt`, following 
 - Include a NULL case.
 - Wrap in ANSI-mode variants only if behavior actually differs under ANSI; don't add ANSI wrapping reflexively.
 - Use `query D` for a `Date32` result column (match the result-type letter to the function's return type).
+
+The sqllogictest suite runs through DataFusion's SQL optimizer, so if you also implemented `simplify()` (step 2) it shadows `invoke_with_args` and the SLT never exercises the physical path Comet uses. Add a Rust `#[cfg(test)]` unit test in the function's module that calls `invoke_with_args` directly on both an array and a scalar, so that path is actually covered.
 
 Run:
 
