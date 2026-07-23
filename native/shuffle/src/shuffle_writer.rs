@@ -231,10 +231,10 @@ async fn external_shuffle(
                 metrics,
             )?)
         }
-        any if any.partition_count() == 1 => Box::new(SinglePartitionShufflePartitioner::try_new(
+        any if any.partition_count() == 1 => Box::new(SinglePartitionShufflePartitioner::new(
             local_partition_writer,
             metrics,
-        )?),
+        )),
         _ => Box::new(MultiPartitionShuffleRepartitioner::try_new(
             partition,
             local_partition_writer,
@@ -1044,7 +1044,7 @@ mod test {
         .unwrap();
 
         let metrics = ShufflePartitionerMetrics::new(&ExecutionPlanMetricsSet::new(), 0);
-        let mut partitioner = SinglePartitionShufflePartitioner::try_new(writer, metrics).unwrap();
+        let mut partitioner = SinglePartitionShufflePartitioner::new(writer, metrics);
 
         // A mix of sub-batch-size batches and one larger-than-batch-size batch.
         partitioner.insert_batch(make_batch(0, 30)).await.unwrap(); // rows 0..30
@@ -1064,15 +1064,20 @@ mod test {
             "unexpected block sizes"
         );
 
-        let mut roundtripped = Vec::new();
-        for block in &blocks {
-            let col = block
-                .column(0)
-                .as_any()
-                .downcast_ref::<Int32Array>()
-                .unwrap();
-            roundtripped.extend(col.values().iter().copied());
-        }
+        let roundtripped: Vec<i32> = blocks
+            .iter()
+            .flat_map(|block| {
+                block
+                    .column(0)
+                    .as_any()
+                    .downcast_ref::<Int32Array>()
+                    .unwrap()
+                    .values()
+                    .iter()
+                    .copied()
+                    .collect::<Vec<_>>()
+            })
+            .collect();
         let expected: Vec<i32> = (0..350).collect();
         assert_eq!(roundtripped, expected, "rows not preserved in order");
     }

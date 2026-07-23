@@ -36,14 +36,11 @@ pub(crate) struct SinglePartitionShufflePartitioner<T: PartitionWriter> {
 }
 
 impl<T: PartitionWriter> SinglePartitionShufflePartitioner<T> {
-    pub(crate) fn try_new(
-        partition_writer: T,
-        metrics: ShufflePartitionerMetrics,
-    ) -> datafusion::common::Result<Self> {
-        Ok(Self {
+    pub(crate) fn new(partition_writer: T, metrics: ShufflePartitionerMetrics) -> Self {
+        Self {
             partition_writer,
             metrics,
-        })
+        }
     }
 }
 
