@@ -196,25 +196,19 @@ impl ExecutionPlan for PartitionedRankLimitExec {
         // Two independent RowConverters: one for the partition prefix (used
         // only for equality against the previous row) and one for the ORDER BY
         // suffix (used to detect a rank-changing tie boundary).
-        let partition_sort_fields = build_sort_fields(
-            &self.expr[..self.partition_prefix_len],
-            &schema,
-        )?;
-        let order_sort_fields = build_sort_fields(
-            &self.expr[self.partition_prefix_len..],
-            &schema,
-        )?;
+        let partition_sort_fields =
+            build_sort_fields(&self.expr[..self.partition_prefix_len], &schema)?;
+        let order_sort_fields =
+            build_sort_fields(&self.expr[self.partition_prefix_len..], &schema)?;
 
         let partition_converter = RowConverter::new(partition_sort_fields)?;
         let order_converter = RowConverter::new(order_sort_fields)?;
 
-        let partition_exprs: Vec<Arc<dyn PhysicalExpr>> = self.expr
-            [..self.partition_prefix_len]
+        let partition_exprs: Vec<Arc<dyn PhysicalExpr>> = self.expr[..self.partition_prefix_len]
             .iter()
             .map(|e| Arc::clone(&e.expr))
             .collect();
-        let order_exprs: Vec<Arc<dyn PhysicalExpr>> = self.expr
-            [self.partition_prefix_len..]
+        let order_exprs: Vec<Arc<dyn PhysicalExpr>> = self.expr[self.partition_prefix_len..]
             .iter()
             .map(|e| Arc::clone(&e.expr))
             .collect();
