@@ -72,7 +72,7 @@ trait CometIcebergTestBase {
     finally deleteRecursively(dir)
   }
 
-  private def deleteRecursively(file: File): Unit = {
+  protected def deleteRecursively(file: File): Unit = {
     if (file.isDirectory) file.listFiles().foreach(deleteRecursively)
     file.delete()
   }

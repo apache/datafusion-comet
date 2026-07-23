@@ -318,6 +318,11 @@ message IcebergFileScanTask {
   // Total file size from the manifest entry, used to skip stat/HEAD calls
   uint64 file_size_in_bytes = 5;
 
+  // Serialized StandardKeyMetadata (plaintext DEK + AAD prefix) for an encrypted data file, taken
+  // verbatim from Iceberg's DataFile.keyMetadata(). Absent for unencrypted tables. iceberg-rust
+  // decodes this directly; no KMS unwrap is needed on the native side.
+  optional bytes key_metadata = 6;
+
   // Indices into IcebergScan deduplication pools
   uint32 schema_idx = 15;
   optional uint32 partition_type_idx = 16;
@@ -344,6 +349,15 @@ message IcebergDeleteFile {
 
   // Equality field IDs (empty for positional deletes)
   repeated int32 equality_ids = 4;
+
+  // Fields 5-7 are reserved for the deletion-vector coordinates on the dv-read branch
+  // (referenced_data_file / content_offset / content_size_in_bytes) so the two features can merge
+  // in either order without a tag collision.
+  reserved 5, 6, 7;
+
+  // Serialized StandardKeyMetadata for an encrypted delete file, from DeleteFile.keyMetadata().
+  // Absent for unencrypted tables. Decoded directly by iceberg-rust; no KMS unwrap needed.
+  optional bytes key_metadata = 8;
 }
 
 message Projection {
