@@ -30,7 +30,7 @@ use std::fmt::Debug;
 use std::hash::{Hash, Hasher};
 
 use arrow::array::{ArrayRef, BooleanArray};
-use arrow::datatypes::{DataType, FieldRef};
+use arrow::datatypes::{DataType, Field, FieldRef};
 use datafusion::common::Result;
 use datafusion::logical_expr::function::AccumulatorArgs;
 use datafusion::logical_expr::function::StateFieldsArgs;
@@ -40,6 +40,8 @@ use datafusion::logical_expr::{
 };
 use datafusion::physical_expr::aggregate::AggregateFunctionExpr;
 use datafusion::scalar::ScalarValue;
+
+use crate::execution::spark_aggregate_state::PartialMergeStateDecoder;
 
 /// An AggregateUDF wrapper that gives merge semantics in Partial mode.
 ///
@@ -60,6 +62,10 @@ pub struct MergeAsPartialUDF {
     cached_state_fields: Vec<FieldRef>,
     /// Cached signature that accepts state field types.
     signature: Signature,
+    /// Override argument fields used only when constructing the inner accumulator.
+    accumulator_expr_fields: Option<Vec<FieldRef>>,
+    /// Decoder for Spark JVM state, or pass-through for native-compatible state.
+    state_decoder: PartialMergeStateDecoder,
     /// Name for this wrapper.
     name: String,
 }
@@ -83,6 +89,9 @@ impl MergeAsPartialUDF {
         let name = format!("merge_as_partial_{}", inner_expr.name());
         let return_type = inner_expr.field().data_type().clone();
         let cached_state_fields = inner_expr.state_fields()?;
+        let accumulator_expr_fields =
+            Self::accumulator_expr_fields(inner_expr, &cached_state_fields);
+        let state_decoder = PartialMergeStateDecoder::new(inner_expr, &cached_state_fields);
 
         // Use a permissive signature since we accept state field types which
         // vary per aggregate function.
@@ -93,8 +102,43 @@ impl MergeAsPartialUDF {
             return_type,
             cached_state_fields,
             signature,
+            accumulator_expr_fields,
+            state_decoder,
             name,
         })
+    }
+
+    fn accumulator_expr_fields(
+        inner_expr: &AggregateFunctionExpr,
+        state_fields: &[FieldRef],
+    ) -> Option<Vec<FieldRef>> {
+        // Spark collect_list/collect_set use a single list state field but their accumulator
+        // constructors expect the original scalar input type. MergeAsPartial receives state-typed
+        // input columns, so passing those fields through would make the collect accumulator think
+        // it is aggregating arrays and create nested list state (List(List(T))).
+        match (inner_expr.fun().name(), state_fields) {
+            ("collect_list" | "collect_set", [state_field]) => match state_field.data_type() {
+                DataType::List(item_field) => Some(vec![Field::new(
+                    item_field.name(),
+                    item_field.data_type().clone(),
+                    item_field.is_nullable(),
+                )
+                .into()]),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    fn inner_accumulator_args<'a>(&'a self, args: AccumulatorArgs<'a>) -> AccumulatorArgs<'a> {
+        let expr_fields = self
+            .accumulator_expr_fields
+            .as_deref()
+            .unwrap_or(args.expr_fields);
+        AccumulatorArgs {
+            expr_fields,
+            ..args
+        }
     }
 }
 
@@ -120,27 +164,30 @@ impl AggregateUDFImpl for MergeAsPartialUDF {
     }
 
     fn accumulator(&self, args: AccumulatorArgs) -> Result<Box<dyn Accumulator>> {
-        // args.exprs are state-typed (match this wrapper's signature), not the
-        // inner aggregate's original inputs. Safe for built-ins (SUM/COUNT/
-        // MIN/MAX/AVG) which build accumulators from return_type; aggregates
-        // that inspect args.exprs types would need reconsideration.
-        let inner_acc = self.inner_udf.accumulator(args)?;
-        Ok(Box::new(MergeAsPartialAccumulator { inner: inner_acc }))
+        let inner_acc = self
+            .inner_udf
+            .accumulator(self.inner_accumulator_args(args))?;
+        Ok(Box::new(MergeAsPartialAccumulator {
+            inner: inner_acc,
+            state_decoder: self.state_decoder.clone(),
+        }))
     }
 
     fn groups_accumulator_supported(&self, args: AccumulatorArgs) -> bool {
-        // See `accumulator`: args.exprs are state-typed.
-        self.inner_udf.groups_accumulator_supported(args)
+        self.inner_udf
+            .groups_accumulator_supported(self.inner_accumulator_args(args))
     }
 
     fn create_groups_accumulator(
         &self,
         args: AccumulatorArgs,
     ) -> Result<Box<dyn GroupsAccumulator>> {
-        // See `accumulator`: args.exprs are state-typed.
-        let inner_acc = self.inner_udf.create_groups_accumulator(args)?;
+        let inner_acc = self
+            .inner_udf
+            .create_groups_accumulator(self.inner_accumulator_args(args))?;
         Ok(Box::new(MergeAsPartialGroupsAccumulator {
             inner: inner_acc,
+            state_decoder: self.state_decoder.clone(),
         }))
     }
 
@@ -160,6 +207,7 @@ impl AggregateUDFImpl for MergeAsPartialUDF {
 /// Accumulator wrapper that redirects update_batch to merge_batch.
 struct MergeAsPartialAccumulator {
     inner: Box<dyn Accumulator>,
+    state_decoder: PartialMergeStateDecoder,
 }
 
 impl Debug for MergeAsPartialAccumulator {
@@ -171,11 +219,13 @@ impl Debug for MergeAsPartialAccumulator {
 impl Accumulator for MergeAsPartialAccumulator {
     fn update_batch(&mut self, values: &[ArrayRef]) -> Result<()> {
         // Redirect update to merge — this is the key trick.
-        self.inner.merge_batch(values)
+        let decoded = self.state_decoder.decode(values)?;
+        self.inner.merge_batch(decoded.as_ref())
     }
 
     fn merge_batch(&mut self, states: &[ArrayRef]) -> Result<()> {
-        self.inner.merge_batch(states)
+        let decoded = self.state_decoder.decode(states)?;
+        self.inner.merge_batch(decoded.as_ref())
     }
 
     fn evaluate(&mut self) -> Result<ScalarValue> {
@@ -194,6 +244,7 @@ impl Accumulator for MergeAsPartialAccumulator {
 /// GroupsAccumulator wrapper that redirects update_batch to merge_batch.
 struct MergeAsPartialGroupsAccumulator {
     inner: Box<dyn GroupsAccumulator>,
+    state_decoder: PartialMergeStateDecoder,
 }
 
 impl Debug for MergeAsPartialGroupsAccumulator {
@@ -211,8 +262,13 @@ impl GroupsAccumulator for MergeAsPartialGroupsAccumulator {
         total_num_groups: usize,
     ) -> Result<()> {
         // Redirect update to merge — this is the key trick.
-        self.inner
-            .merge_batch(values, group_indices, opt_filter, total_num_groups)
+        let decoded = self.state_decoder.decode(values)?;
+        self.inner.merge_batch(
+            decoded.as_ref(),
+            group_indices,
+            opt_filter,
+            total_num_groups,
+        )
     }
 
     fn merge_batch(
@@ -222,8 +278,13 @@ impl GroupsAccumulator for MergeAsPartialGroupsAccumulator {
         opt_filter: Option<&BooleanArray>,
         total_num_groups: usize,
     ) -> Result<()> {
-        self.inner
-            .merge_batch(values, group_indices, opt_filter, total_num_groups)
+        let decoded = self.state_decoder.decode(values)?;
+        self.inner.merge_batch(
+            decoded.as_ref(),
+            group_indices,
+            opt_filter,
+            total_num_groups,
+        )
     }
 
     fn evaluate(&mut self, emit_to: EmitTo) -> Result<ArrayRef> {

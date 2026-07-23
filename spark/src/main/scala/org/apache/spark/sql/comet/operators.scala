@@ -33,7 +33,7 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Ascending, Attribute, AttributeSet, Expression, ExpressionSet, Generator, NamedExpression, SortOrder}
-import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, AggregateMode, CollectSet, Final, First, Last, Partial, PartialMerge, Percentile}
+import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, AggregateMode, CollectList, CollectSet, Final, First, Last, Partial, PartialMerge, Percentile}
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide}
 import org.apache.spark.sql.catalyst.plans._
 import org.apache.spark.sql.catalyst.plans.physical._
@@ -1610,17 +1610,18 @@ trait CometBaseAggregate {
     val modes = aggregate.aggregateExpressions.map(_.mode).distinct
     val modeSet = modes.toSet
     val hasPartialMerge = modeSet.contains(PartialMerge)
+    val cometPartialAgg = findCometPartialAgg(aggregate.child)
     // In distinct aggregates there can be a combination of modes.
     // We support {Partial, PartialMerge} mix; other combinations are rejected.
     val multiMode = modes.size > 1 && modeSet != Set(Partial, PartialMerge)
-    // An aggregate that consumes intermediate buffers (Final, or the PartialMerge stages of a
-    // distinct-aggregate rewrite) must have a Comet aggregate producing those buffers below it.
-    // Otherwise Comet would try to read a Spark partial's buffer, which is only safe when every
-    // aggregate has a buffer format compatible between Spark and Comet. This guards the
-    // Spark-Partial to Comet-Merge direction; the Comet-Partial to Spark-Final direction is
-    // guarded by the COMET_UNSAFE_PARTIAL tagging pass in CometExecRule. See issues #1389, #4813.
-    val consumesBuffers = modes.contains(Final) || modes.contains(PartialMerge)
-    val missingCometProducer = consumesBuffers && findCometPartialAgg(aggregate.child).isEmpty
+    // For a final mode HashAggregate, we only need to transform the HashAggregate
+    // if there is Comet partial aggregation, unless all aggregates have compatible
+    // intermediate buffer formats (safe for mixed Spark/Comet execution).
+    val sparkFinalMode = modes.contains(Final) && cometPartialAgg.isEmpty
+    // For PartialMerge, the child aggregate may still be Spark/JVM even when this node's direct
+    // child is a Comet shuffle. In that case Spark's intermediate buffers must be compatible with
+    // the native merge accumulator state expected by Comet.
+    val sparkPartialMergeMode = hasPartialMerge && cometPartialAgg.isEmpty
 
     if (multiMode) {
       withFallbackReason(
@@ -1629,7 +1630,7 @@ trait CometBaseAggregate {
       return None
     }
 
-    if (missingCometProducer) {
+    if (sparkFinalMode) {
       val incompatibleAggs =
         QueryPlanSerde.aggsNotSupportingMixedExecution(aggregate.aggregateExpressions)
       if (incompatibleAggs.nonEmpty) {
@@ -1639,6 +1640,22 @@ trait CometBaseAggregate {
           "Comet aggregate that merges intermediate buffers requires a Comet child aggregate " +
             "when the intermediate buffer formats are incompatible with Spark. " +
             s"Incompatible aggregate function(s): $names")
+        return None
+      }
+    }
+
+    if (sparkPartialMergeMode) {
+      val hasUnsupportedAgg = aggregate.aggregateExpressions.exists { aggExpr =>
+        aggExpr.mode == PartialMerge &&
+        !QueryPlanSerde.allAggsSupportMixedExecution(Seq(aggExpr)) &&
+        !aggExpr.aggregateFunction.isInstanceOf[CollectList] &&
+        !aggExpr.aggregateFunction.isInstanceOf[CollectSet]
+      }
+      if (hasUnsupportedAgg) {
+        withFallbackReason(
+          aggregate,
+          "Spark PartialMerge aggregate without Comet Partial requires compatible " +
+            "intermediate buffer formats")
         return None
       }
     }
@@ -2025,6 +2042,48 @@ object CometObjectHashAggregateExec
       op.child.output,
       op.child,
       SerializedPlan(None))
+  }
+
+  /**
+   * For intermediate aggregates containing TypedImperativeAggregate functions (like CollectSet or
+   * CollectList), Spark declares buffer columns as BinaryType because it serializes the JVM
+   * state. Native Comet keeps the actual state type instead: ArrayType(elementType) with
+   * containsNull true for CollectSet/CollectList. Rewrite the Spark-side output attributes for
+   * Partial, PartialMerge, and mixed {Partial, PartialMerge} stages so shuffle and downstream
+   * native aggregate stages see the schema that native execution really produces.
+   *
+   * Final aggregates output user-visible values rather than intermediate state, so their Spark
+   * result schema is left unchanged.
+   */
+  private def adjustOutputForNativeState(op: ObjectHashAggregateExec): Seq[Attribute] = {
+    val modes = op.aggregateExpressions.map(_.mode).distinct
+    if (modes.exists(mode => mode != Partial && mode != PartialMerge)) {
+      return op.output
+    }
+
+    val numGrouping = op.groupingExpressions.length
+    val output = op.output.toArray
+
+    var bufferIdx = numGrouping
+    for (aggExpr <- op.aggregateExpressions) {
+      val aggFunc = aggExpr.aggregateFunction
+      val bufferAttrs = aggFunc.aggBufferAttributes
+      aggFunc match {
+        case _: CollectSet | _: CollectList =>
+          val elementType = aggFunc.children.head.dataType
+          val nativeStateType = ArrayType(elementType, containsNull = true)
+          output(bufferIdx) = output(bufferIdx).withDataType(nativeStateType)
+        case _: Percentile =>
+          // DataFusion's percentile_cont keeps all values in a List<Float64> partial state.
+          // Comet casts the child to double, so the native state is ArrayType(DoubleType).
+          val nativeStateType = ArrayType(DoubleType, containsNull = true)
+          output(bufferIdx) = output(bufferIdx).withDataType(nativeStateType)
+        case _ =>
+      }
+      bufferIdx += bufferAttrs.length
+    }
+
+    output.toSeq
   }
 }
 

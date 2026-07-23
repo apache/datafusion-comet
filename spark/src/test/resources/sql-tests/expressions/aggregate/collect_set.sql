@@ -292,6 +292,15 @@ query
 SELECT grp, sort_array(collect_set(DISTINCT i)) FROM cs_src_int GROUP BY grp ORDER BY grp
 
 -- ============================================================
+-- PartialMerge: collect_set combined with a distinct aggregate
+-- exercises native intermediate ArrayType state through shuffle
+-- ============================================================
+
+query
+SELECT grp, count(DISTINCT a), sort_array(collect_set(b))
+FROM cs_src_multi GROUP BY grp ORDER BY grp
+
+-- ============================================================
 -- HAVING clause with collect_set
 -- ============================================================
 

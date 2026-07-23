@@ -148,7 +148,8 @@ message AggExpr {
     BloomFilterAgg bloomFilterAgg = 16;
     CollectSet collectSet = 17;
     Percentile percentile = 18;
-    ApproxPercentile approxPercentile = 19;
+    CollectList collectList = 19;
+    ApproxPercentile approxPercentile = 20;
   }
 
   // Optional filter expression for SQL FILTER (WHERE ...) clause.
@@ -292,6 +293,11 @@ enum BloomFilterVersion {
 }
 
 message CollectSet {
+  Expr child = 1;
+  DataType datatype = 2;
+}
+
+message CollectList {
   Expr child = 1;
   DataType datatype = 2;
 }
