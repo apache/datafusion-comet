@@ -57,7 +57,8 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
     classOf[ArrayAppend] -> CometArrayAppend,
     // ArrayCompact is RuntimeReplaceable in all supported Spark versions (rewritten to
     // ArrayFilter(arr, IsNotNull(...))), so it never reaches serde directly; dispatch flows
-    // through CometArrayFilter -> CometArrayCompact instead. No direct registration here.
+    // through CometArrayFilter -> CometArrayCompact -> DataFusion's array_compact. On Spark
+    // 4.0+ the rewrite is wrapped in KnownNotContainsNull, stripped by Spark4xCometExprShim.
     classOf[ArrayContains] -> CometArrayContains,
     classOf[ArrayDistinct] -> CometScalarFunction("array_distinct"),
     classOf[ArrayExcept] -> CometArrayExcept,
@@ -69,7 +70,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
     classOf[ArrayMin] -> CometArrayMin,
     classOf[ArrayPosition] -> CometArrayPosition,
     classOf[ArrayRemove] -> CometArrayRemove,
-    classOf[ArrayRepeat] -> CometArrayRepeat,
+    classOf[ArrayRepeat] -> CometScalarFunction("array_repeat"),
     classOf[Slice] -> CometSlice,
     classOf[SortArray] -> CometSortArray,
     classOf[ArraysOverlap] -> CometArraysOverlap,
@@ -218,8 +219,8 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       classOf[Chr] -> CometScalarFunction("char"),
       classOf[ConcatWs] -> CometConcatWs,
       classOf[Concat] -> CometConcat,
-      classOf[Contains] -> CometScalarFunction("contains"),
-      classOf[EndsWith] -> CometScalarFunction("ends_with"),
+      classOf[Contains] -> CometContains,
+      classOf[EndsWith] -> CometEndsWith,
       classOf[GetJsonObject] -> CometGetJsonObject,
       classOf[InitCap] -> CometInitCap,
       classOf[Length] -> CometLength,
@@ -233,7 +234,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       classOf[RegExpReplace] -> CometRegExpReplace,
       classOf[Reverse] -> CometReverse,
       classOf[RLike] -> CometRLike,
-      classOf[StartsWith] -> CometScalarFunction("starts_with"),
+      classOf[StartsWith] -> CometStartsWith,
       classOf[StringInstr] -> CometScalarFunction("instr"),
       classOf[StringRepeat] -> CometStringRepeat,
       classOf[StringReplace] -> CometStringReplace,
@@ -388,6 +389,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
    */
   val aggrSerdeMap: Map[Class[_], CometAggregateExpressionSerde[_]] = Map(
     classOf[ApproximatePercentile] -> CometApproxPercentile,
+    classOf[HyperLogLogPlusPlus] -> CometApproxCountDistinct,
     classOf[Average] -> CometAverage,
     classOf[BitAndAgg] -> CometBitAndAgg,
     classOf[BitOrAgg] -> CometBitOrAgg,
