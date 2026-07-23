@@ -4104,7 +4104,7 @@ fn literal_to_array_ref(
 fn iceberg_predicate_to_predicate(
     proto: &spark_operator::IcebergPredicate,
 ) -> Option<iceberg::expr::Predicate> {
-    use iceberg::expr::Reference;
+    use iceberg::expr::{Predicate, Reference};
     use spark_operator::iceberg_predicate::Node;
     use spark_operator::IcebergPredicateOperator as Op;
 
@@ -4147,26 +4147,50 @@ fn iceberg_predicate_to_predicate(
                 .collect::<Option<Vec<_>>>()?;
             Some(column.is_in(datums))
         }
+        // And/Or are whole-or-nothing: both children must convert. Dropping a child is unsafe.
+        // A dropped disjunct strengthens an Or directly; a dropped conjunct is safe for a bare And
+        // but not under a NOT, where De Morgan turns And into Or (`NOT(A AND B)` = `NOT A OR NOT B`)
+        // and dropping strengthens it, wrongly pruning row groups. Since Not is only pushed to
+        // negation-normal form after decode (rewrite_not below), the Not(And(..)) shape does reach
+        // here, so the And arm cannot assume positive position. Degrading to no-pushdown is always
+        // safe; the post-scan CometFilter is exact. See `combine_logical` for the parity invariant.
         Node::And(l) => {
-            // Dropping a conjunct only weakens the pruning predicate, so a missing side is safe.
             let left = l.left.as_deref().and_then(iceberg_predicate_to_predicate);
             let right = l.right.as_deref().and_then(iceberg_predicate_to_predicate);
-            match (left, right) {
-                (Some(l), Some(r)) => Some(l.and(r)),
-                (Some(p), None) | (None, Some(p)) => Some(p),
-                (None, None) => None,
-            }
+            combine_logical(left, right, Predicate::and)
         }
         Node::Or(o) => {
-            // Dropping a disjunct would strengthen the predicate and wrongly prune; require both.
-            let left = o.left.as_deref().and_then(iceberg_predicate_to_predicate)?;
-            let right = o
-                .right
-                .as_deref()
-                .and_then(iceberg_predicate_to_predicate)?;
-            Some(left.or(right))
+            let left = o.left.as_deref().and_then(iceberg_predicate_to_predicate);
+            let right = o.right.as_deref().and_then(iceberg_predicate_to_predicate);
+            combine_logical(left, right, Predicate::or)
         }
         Node::Not(child) => iceberg_predicate_to_predicate(child).map(|p| !p),
+    }
+}
+
+/// Combines the two children of a logical residual node (And/Or), returning `None` unless both
+/// converted. A missing child is not expected: the Scala serde emits a logical node only when both
+/// children convert, and Rust decodes every node it emits, so both sides always convert for a
+/// well-formed residual. A `None` here therefore means the two serde paths have diverged (e.g. a
+/// new `IcebergLiteral` variant on the serialize side without a matching decode arm), so it trips a
+/// debug-only assertion and degrades to no-pushdown in release. See [`iceberg_predicate_to_predicate`]
+/// for why a partial logical node must never be pushed.
+fn combine_logical(
+    left: Option<iceberg::expr::Predicate>,
+    right: Option<iceberg::expr::Predicate>,
+    combine: fn(iceberg::expr::Predicate, iceberg::expr::Predicate) -> iceberg::expr::Predicate,
+) -> Option<iceberg::expr::Predicate> {
+    match (left, right) {
+        (Some(l), Some(r)) => Some(combine(l, r)),
+        _ => {
+            debug_assert!(
+                false,
+                "Iceberg residual logical node with an unconvertible child: the Scala serde emits \
+                 both children and Rust decodes every node it emits, so the two serde paths have \
+                 diverged"
+            );
+            None
+        }
     }
 }
 

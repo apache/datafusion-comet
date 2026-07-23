@@ -2924,6 +2924,50 @@ class CometIcebergNativeSuite
     }
   }
 
+  // Companion to the partial-AND test above: here both conjuncts are pushable (both int), so the
+  // whole residual is pushed as NOT(a < 200 AND b > 100). rewrite_not on the native side turns that
+  // into a >= 200 OR b <= 100 (negation-normal form), exercising the both-convert-under-NOT path
+  // that the partial-AND elision test cannot reach. Asserts results match Spark.
+  test("NOT over a fully supported AND does not drop rows") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        spark.sql("""
+          CREATE TABLE test_cat.db.not_full_residual_test (
+            a INT,
+            b INT
+          ) USING iceberg
+          TBLPROPERTIES (
+            'format-version' = '2',
+            'write.parquet.row-group-size-bytes' = '100'
+          )
+        """)
+
+        // a ascending so row groups hold contiguous a ranges; a stronger a >= 200 pushed
+        // predicate (from dropping the b conjunct under the NOT) would prune the a < 200 groups.
+        spark.sql("""
+          INSERT INTO test_cat.db.not_full_residual_test
+          SELECT CAST(id AS INT), CAST(id AS INT)
+          FROM range(30, 330)
+        """)
+
+        checkIcebergNativeScan(
+          "SELECT * FROM test_cat.db.not_full_residual_test " +
+            "WHERE NOT(a < 200 AND b > 100)")
+
+        spark.sql("DROP TABLE test_cat.db.not_full_residual_test")
+      }
+    }
+  }
+
   // Regression test for https://github.com/apache/datafusion-comet/issues/3856
   // Fixed in https://github.com/apache/iceberg-rust/pull/2301
   test("migration - INT96 timestamp") {
