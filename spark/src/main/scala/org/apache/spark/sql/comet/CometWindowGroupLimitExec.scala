@@ -35,11 +35,12 @@ import org.apache.comet.serde.QueryPlanSerde.exprToProto
 import org.apache.comet.shims.ShimCometWindowGroupLimit
 
 /**
- * Serde for Spark's `WindowGroupLimitExec` (Spark 3.5+, SPARK-37099). Handles the ROW_NUMBER and
- * RANK pushdown cases with a non-empty PARTITION BY -- ROW_NUMBER maps onto DataFusion's
- * `PartitionedTopKExec`, RANK maps onto Comet's streaming `PartitionedRankLimitExec`. DENSE_RANK
- * and empty PARTITION BY are rejected here and fall back to Spark; add a native implementation
- * before enabling them.
+ * Serde for Spark's `WindowGroupLimitExec` (Spark 3.5+, SPARK-37099). Handles ROW_NUMBER and RANK
+ * natively -- ROW_NUMBER with a non-empty PARTITION BY maps onto DataFusion's
+ * `PartitionedTopKExec`, ROW_NUMBER without PARTITION BY collapses to a `LocalLimitExec` over the
+ * Spark-sorted child, and RANK (partitioned or global) maps onto Comet's streaming
+ * `PartitionedRankLimitExec`. DENSE_RANK still falls back to Spark until we implement it
+ * natively.
  *
  * The Scala type parameter is `SparkPlan` (not `WindowGroupLimitExec`) so this file stays
  * compilable against Spark 3.4, where the exec class does not exist. Field extraction is
@@ -61,20 +62,13 @@ object CometWindowGroupLimitExec extends CometOperatorSerde[SparkPlan] {
       return None
     }
 
-    // DENSE_RANK and empty (global) PARTITION BY are still Spark-only. RANK is native via the
-    // streaming operator, which relies on the Spark-injected `[partition, order]` sort.
+    // DENSE_RANK is still Spark-only. ROW_NUMBER and RANK cover partitioned and global cases.
     val rankType = fields.rankLikeKind match {
       case RowNumberKind => OperatorOuterClass.WindowGroupLimit.RankType.ROW_NUMBER
       case RankKind => OperatorOuterClass.WindowGroupLimit.RankType.RANK
       case DenseRankKind =>
         withFallbackReason(op, "WindowGroupLimit: DENSE_RANK not yet supported")
         return None
-    }
-    if (fields.partitionSpec.isEmpty) {
-      withFallbackReason(
-        op,
-        "WindowGroupLimit: empty PARTITION BY not yet supported (global top-K)")
-      return None
     }
     if (fields.limit <= 0) {
       // Spark's optimizer collapses limit <= 0 to an empty LocalRelation, but guard anyway.
