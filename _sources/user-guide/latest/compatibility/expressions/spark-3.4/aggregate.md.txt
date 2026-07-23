@@ -47,6 +47,14 @@ The following differences from Spark are always present and do not require any a
 
 - This function is not deterministic. Results may not match Spark.
 
+## HyperLogLogPlusPlus
+
+The following cases are not supported by Comet and always fall back to Spark, regardless of any `allowIncompatible` setting:
+
+- Input type must be boolean, integral, floating-point, decimal, date/time, string, or binary
+- `DecimalType` with precision > 18 is not supported
+- Collated (non-UTF8_BINARY) strings are not supported
+
 ## Last
 
 The following differences from Spark are always present and do not require any additional configuration:

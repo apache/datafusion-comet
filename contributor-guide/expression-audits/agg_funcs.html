@@ -552,6 +552,15 @@ under the License.
 <blockquote>
 <div><p>Audit notes for expressions in this category that have been audited. Absence of an entry means the expression has not been audited yet, not that it is unsupported. See the user guide <a class="reference internal" href="../../user-guide/latest/expressions.html"><span class="std std-doc">Spark Expression Support</span></a> for current support status.</p>
 </div></blockquote>
+<section id="approx-count-distinct">
+<h2>approx_count_distinct<a class="headerlink" href="#approx-count-distinct" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>Spark 3.4.3 (2026-07-03): registered as <code class="docutils literal notranslate"><span class="pre">expression[HyperLogLogPlusPlus](&quot;approx_count_distinct&quot;)</span></code>, an <code class="docutils literal notranslate"><span class="pre">ImperativeAggregate</span></code> that hashes each non-null input with <code class="docutils literal notranslate"><span class="pre">XxHash64</span></code> (seed 42, floats normalized via <code class="docutils literal notranslate"><span class="pre">NormalizeNaNAndZero</span></code>) and keeps a HyperLogLog++ register buffer of <code class="docutils literal notranslate"><span class="pre">numWords</span></code> <code class="docutils literal notranslate"><span class="pre">Long</span></code>s (10 six-bit registers per word). The cardinality is estimated with linear counting for small inputs and bias-corrected HLL otherwise. Comet ports <code class="docutils literal notranslate"><span class="pre">HyperLogLogPlusPlusHelper</span></code> exactly, including the bias-correction tables, reuses Comet’s Spark-compatible <code class="docutils literal notranslate"><span class="pre">xxhash64</span></code> for hashing, and stores the register buffer in Spark’s identical packed-<code class="docutils literal notranslate"><span class="pre">Long</span></code> layout, so results are bit-identical to Spark and the partial-aggregation state matches Spark’s <code class="docutils literal notranslate"><span class="pre">aggBufferSchema</span></code> (enabling mixed Comet/Spark partial and final aggregation). <code class="docutils literal notranslate"><span class="pre">relativeSD</span></code> (default 0.05) sets the precision <code class="docutils literal notranslate"><span class="pre">p</span></code>. Comet supports the input types its <code class="docutils literal notranslate"><span class="pre">xxhash64</span></code> hashes identically to Spark: boolean, integral, floating-point, <code class="docutils literal notranslate"><span class="pre">DecimalType</span></code> with precision &lt;= 18, date/time, default-collation (UTF8_BINARY) string, and binary. Wider decimals (hashed through <code class="docutils literal notranslate"><span class="pre">BigDecimal</span></code>) and collated strings (hashed via the collation sort key) fall back to Spark.</p></li>
+<li><p>Spark 3.5.8 (2026-07-03): algorithm and tables identical to 3.4.3.</p></li>
+<li><p>Spark 4.0.1 (2026-07-03): <code class="docutils literal notranslate"><span class="pre">HyperLogLogPlusPlusHelper</span></code> moved to <code class="docutils literal notranslate"><span class="pre">catalyst.util</span></code> and <code class="docutils literal notranslate"><span class="pre">XxHash64Function.hash</span></code> gained collation parameters, but for the default <code class="docutils literal notranslate"><span class="pre">UTF8_BINARY</span></code> collation and non-string types the hash value is unchanged, so results match 3.4.3.</p></li>
+<li><p>Spark 4.1.1 (2026-07-03): identical to 4.0.1.</p></li>
+</ul>
+</section>
 <section id="any">
 <h2>any<a class="headerlink" href="#any" title="Link to this heading">#</a></h2>
 <ul class="simple">
@@ -651,6 +660,7 @@ under the License.
   </div>
   <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="visible nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#approx-count-distinct">approx_count_distinct</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#any">any</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#approx-percentile">approx_percentile</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#avg">avg</a></li>

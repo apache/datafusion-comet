@@ -472,6 +472,7 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.expression.CovPopulation.enabled` | Enable Comet acceleration for `CovPopulation` | true |
 | `spark.comet.expression.CovSample.enabled` | Enable Comet acceleration for `CovSample` | true |
 | `spark.comet.expression.First.enabled` | Enable Comet acceleration for `First` | true |
+| `spark.comet.expression.HyperLogLogPlusPlus.enabled` | Enable Comet acceleration for `HyperLogLogPlusPlus` | true |
 | `spark.comet.expression.Last.enabled` | Enable Comet acceleration for `Last` | true |
 | `spark.comet.expression.Max.enabled` | Enable Comet acceleration for `Max` | true |
 | `spark.comet.expression.Min.enabled` | Enable Comet acceleration for `Min` | true |

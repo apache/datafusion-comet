@@ -789,7 +789,7 @@ expressions. The following function families are <strong>not currently planned</
 <li><p><strong>Miscellaneous niche</strong> (<code class="docutils literal notranslate"><span class="pre">histogram_numeric</span></code>, <code class="docutils literal notranslate"><span class="pre">version</span></code>, <code class="docutils literal notranslate"><span class="pre">sentences</span></code>, <code class="docutils literal notranslate"><span class="pre">quote</span></code>): low-value or specialized functions with little benefit from native acceleration.</p></li>
 </ul>
 <p>The file-metadata functions <code class="docutils literal notranslate"><span class="pre">input_file_name</span></code>, <code class="docutils literal notranslate"><span class="pre">input_file_block_start</span></code>, and <code class="docutils literal notranslate"><span class="pre">input_file_block_length</span></code> depend on scan-internal per-row file information rather than the expression layer; their support status is covered in the <a class="reference internal" href="compatibility/scans.html"><span class="std std-doc">scan compatibility guide</span></a>.</p>
-<p>Note that <code class="docutils literal notranslate"><span class="pre">approx_count_distinct</span></code>, <code class="docutils literal notranslate"><span class="pre">median</span></code>, and <code class="docutils literal notranslate"><span class="pre">mode</span></code> are planned: they are mainstream (<code class="docutils literal notranslate"><span class="pre">median</span></code> and <code class="docutils literal notranslate"><span class="pre">mode</span></code> are exact aggregates).</p>
+<p>Note that <code class="docutils literal notranslate"><span class="pre">median</span></code> and <code class="docutils literal notranslate"><span class="pre">mode</span></code> are planned: they are mainstream exact aggregates. <code class="docutils literal notranslate"><span class="pre">approx_count_distinct</span></code> is supported because Comet ports Spark’s <code class="docutils literal notranslate"><span class="pre">HyperLogLogPlusPlus</span></code> exactly, so its result is bit-identical to Spark.</p>
 <p>The tables below list every Spark built-in expression with its current status.</p>
 </section>
 <section id="agg-funcs">
@@ -811,8 +811,8 @@ expressions. The following function families are <strong>not currently planned</
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">approx_count_distinct</span></code></p></td>
-<td><p>🔜</p></td>
-<td><p>tracking <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4098">#4098</a></p></td>
+<td><p>✅</p></td>
+<td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">approx_percentile</span></code></p></td>
 <td><p>✅</p></td>

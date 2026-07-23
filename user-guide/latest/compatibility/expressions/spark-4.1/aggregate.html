@@ -778,6 +778,15 @@ under the License.
 <li><p>This function is not deterministic. Results may not match Spark.</p></li>
 </ul>
 </section>
+<section id="hyperloglogplusplus">
+<h2>HyperLogLogPlusPlus<a class="headerlink" href="#hyperloglogplusplus" title="Link to this heading">#</a></h2>
+<p>The following cases are not supported by Comet and always fall back to Spark, regardless of any <code class="docutils literal notranslate"><span class="pre">allowIncompatible</span></code> setting:</p>
+<ul class="simple">
+<li><p>Input type must be boolean, integral, floating-point, decimal, date/time, string, or binary</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">DecimalType</span></code> with precision &gt; 18 is not supported</p></li>
+<li><p>Collated (non-UTF8_BINARY) strings are not supported</p></li>
+</ul>
+</section>
 <section id="last">
 <h2>Last<a class="headerlink" href="#last" title="Link to this heading">#</a></h2>
 <p>The following differences from Spark are always present and do not require any additional configuration:</p>
@@ -850,6 +859,7 @@ under the License.
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#average">Average</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#collectset">CollectSet</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#first">First</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#hyperloglogplusplus">HyperLogLogPlusPlus</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#last">Last</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#percentile">Percentile</a></li>
 </ul>
