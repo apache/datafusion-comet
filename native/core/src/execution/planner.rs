@@ -127,8 +127,8 @@ use datafusion_comet_proto::{
     spark_operator::{
         self, lower_window_frame_bound::LowerFrameBoundStruct, operator::OpStruct,
         upper_window_frame_bound::UpperFrameBoundStruct,
-        window_group_limit::RankType as ProtoRankType, AggregateMode as ProtoAggregateMode,
-        BuildSide, CompressionCodec as SparkCompressionCodec, JoinType, Operator, WindowFrameType,
+        AggregateMode as ProtoAggregateMode, BuildSide,
+        CompressionCodec as SparkCompressionCodec, JoinType, Operator, WindowFrameType,
     },
     spark_partitioning::{partitioning::PartitioningStruct, Partitioning as SparkPartitioning},
 };
@@ -2144,7 +2144,10 @@ impl PhysicalPlanner {
             }
             OpStruct::WindowGroupLimit(wgl) => {
                 // Comet serializes the ROW_NUMBER and RANK cases here (DENSE_RANK still
-                // falls back on the Scala side). Route:
+                // falls back on the Scala side). The `built_in_window_function` field is a
+                // `ScalarFunc` expression whose `func` name selects the rank semantics,
+                // matching how `WindowExec` encodes its own `built_in_window_function`.
+                // Route:
                 //   * ROW_NUMBER + non-empty PARTITION BY -> DataFusion's `PartitionedTopKExec`
                 //     (heap-based per-partition top-K; matches Spark's SimpleLimitIterator).
                 //   * ROW_NUMBER + empty PARTITION BY -> `LocalLimitExec`. Spark's WGL requires
@@ -2162,19 +2165,37 @@ impl PhysicalPlanner {
                     self.create_plan(&children[0], inputs, partition_count)?;
                 let input_schema = child.schema();
 
-                let rank_type = ProtoRankType::try_from(wgl.rank_type).map_err(|_| {
-                    GeneralError(format!(
-                        "Unsupported WindowGroupLimit rank_type: {}",
-                        wgl.rank_type
-                    ))
-                })?;
-                if rank_type == ProtoRankType::DenseRank {
-                    return Err(GeneralError(
-                        "WindowGroupLimit with DENSE_RANK should have fallen back to Spark; \
-                         native path does not implement DENSE_RANK yet"
-                            .to_string(),
-                    ));
+                let rank_func_name = wgl
+                    .built_in_window_function
+                    .as_ref()
+                    .and_then(|e| e.expr_struct.as_ref())
+                    .and_then(|s| match s {
+                        ExprStruct::ScalarFunc(f) => Some(f.func.as_str()),
+                        _ => None,
+                    })
+                    .ok_or_else(|| {
+                        GeneralError(
+                            "WindowGroupLimit is missing built_in_window_function (expected a \
+                             ScalarFunc named row_number/rank/dense_rank)"
+                                .to_string(),
+                        )
+                    })?;
+                match rank_func_name {
+                    "row_number" | "rank" => {}
+                    "dense_rank" => {
+                        return Err(GeneralError(
+                            "WindowGroupLimit with dense_rank should have fallen back to Spark; \
+                             native path does not implement DENSE_RANK yet"
+                                .to_string(),
+                        ));
+                    }
+                    other => {
+                        return Err(GeneralError(format!(
+                            "Unsupported WindowGroupLimit rank function: {other}"
+                        )));
+                    }
                 }
+                let is_row_number = rank_func_name == "row_number";
 
                 let partition_prefix_len = wgl.partition_by_list.len();
                 let fetch = wgl.limit as usize;
@@ -2182,7 +2203,7 @@ impl PhysicalPlanner {
                 // Fast path: ROW_NUMBER without PARTITION BY collapses to `first K rows per
                 // input DF partition`, which is exactly what `LocalLimitExec` does. No
                 // row-encoding overhead, no ORDER BY tie detection needed.
-                if partition_prefix_len == 0 && rank_type == ProtoRankType::RowNumber {
+                if partition_prefix_len == 0 && is_row_number {
                     let topk: Arc<dyn ExecutionPlan> =
                         Arc::new(LocalLimitExec::new(Arc::clone(&child.native_plan), fetch));
                     return Ok((
@@ -2222,23 +2243,21 @@ impl PhysicalPlanner {
                     GeneralError("WindowGroupLimit produced empty LexOrdering".to_string())
                 })?;
 
-                let topk: Arc<dyn ExecutionPlan> = match rank_type {
-                    ProtoRankType::RowNumber => {
-                        // Non-empty partition prefix (the empty case is handled above).
-                        Arc::new(PartitionedTopKExec::try_new(
-                            Arc::clone(&child.native_plan),
-                            ordering,
-                            partition_prefix_len,
-                            fetch,
-                        )?)
-                    }
-                    ProtoRankType::Rank => Arc::new(PartitionedRankLimitExec::try_new(
+                let topk: Arc<dyn ExecutionPlan> = if is_row_number {
+                    // Non-empty partition prefix (the empty case is handled above).
+                    Arc::new(PartitionedTopKExec::try_new(
                         Arc::clone(&child.native_plan),
                         ordering,
                         partition_prefix_len,
                         fetch,
-                    )?),
-                    ProtoRankType::DenseRank => unreachable!("guarded above"),
+                    )?)
+                } else {
+                    Arc::new(PartitionedRankLimitExec::try_new(
+                        Arc::clone(&child.native_plan),
+                        ordering,
+                        partition_prefix_len,
+                        fetch,
+                    )?)
                 };
 
                 Ok((

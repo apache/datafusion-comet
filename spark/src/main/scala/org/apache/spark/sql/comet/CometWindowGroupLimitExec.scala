@@ -31,7 +31,7 @@ import org.apache.comet.{CometConf, ConfigEntry}
 import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 import org.apache.comet.serde.{CometOperatorSerde, OperatorOuterClass}
 import org.apache.comet.serde.OperatorOuterClass.Operator
-import org.apache.comet.serde.QueryPlanSerde.exprToProto
+import org.apache.comet.serde.QueryPlanSerde.{exprToProto, scalarFunctionExprToProto}
 import org.apache.comet.shims.ShimCometWindowGroupLimit
 
 /**
@@ -63,9 +63,12 @@ object CometWindowGroupLimitExec extends CometOperatorSerde[SparkPlan] {
     }
 
     // DENSE_RANK is still Spark-only. ROW_NUMBER and RANK cover partitioned and global cases.
-    val rankType = fields.rankLikeKind match {
-      case RowNumberKind => OperatorOuterClass.WindowGroupLimit.RankType.ROW_NUMBER
-      case RankKind => OperatorOuterClass.WindowGroupLimit.RankType.RANK
+    // Encode the rank-like function the same way CometWindowExec does (`ScalarFunc` with a
+    // canonical function name) so both operators share `WindowExpr.built_in_window_function`
+    // semantics on the wire and the same `scalarFunctionExprToProto` helper.
+    val rankFuncName = fields.rankLikeKind match {
+      case RowNumberKind => "row_number"
+      case RankKind => "rank"
       case DenseRankKind =>
         withFallbackReason(op, "WindowGroupLimit: DENSE_RANK not yet supported")
         return None
@@ -79,12 +82,14 @@ object CometWindowGroupLimitExec extends CometOperatorSerde[SparkPlan] {
     val childOutput = op.children.head.output
     val partitionExprs = fields.partitionSpec.map(exprToProto(_, childOutput))
     val orderExprs = fields.orderSpec.map(exprToProto(_, childOutput))
+    val rankFuncExpr = scalarFunctionExprToProto(rankFuncName)
 
-    if (partitionExprs.forall(_.isDefined) && orderExprs.forall(_.isDefined)) {
+    if (partitionExprs.forall(_.isDefined) && orderExprs.forall(_.isDefined) &&
+      rankFuncExpr.isDefined) {
       val wglBuilder = OperatorOuterClass.WindowGroupLimit
         .newBuilder()
         .setLimit(fields.limit)
-        .setRankType(rankType)
+        .setBuiltInWindowFunction(rankFuncExpr.get)
       wglBuilder.addAllPartitionByList(partitionExprs.map(_.get).asJava)
       wglBuilder.addAllOrderByList(orderExprs.map(_.get).asJava)
       Some(builder.setWindowGroupLimit(wglBuilder).build())
