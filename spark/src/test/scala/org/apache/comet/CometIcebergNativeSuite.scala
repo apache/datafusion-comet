@@ -4400,4 +4400,37 @@ class CometIcebergNativeSuite
       }
     }
   }
+
+  test("Iceberg table with ORC data file format falls back to Spark") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        try {
+          spark.sql("""
+             CREATE TABLE test_cat.db.orc_table(
+                id INT,
+                name STRING
+             )
+             USING iceberg
+             TBLPROPERTIES('write.format.default' = 'orc')
+          """)
+
+          spark.sql("""INSERT INTO test_cat.db.orc_table VALUES (1, 'Alice'), (2, 'Bob')""")
+
+          checkIcebergNativeScanFallback(
+            "SELECT * FROM test_cat.db.orc_table",
+            "Comet doesn't support accelerated Iceberg ORC scans")
+        } finally {
+          spark.sql("DROP TABLE test_cat.db.orc_table")
+        }
+      }
+    }
+  }
 }
