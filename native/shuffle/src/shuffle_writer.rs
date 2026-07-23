@@ -234,7 +234,6 @@ async fn external_shuffle(
         any if any.partition_count() == 1 => Box::new(SinglePartitionShufflePartitioner::try_new(
             local_partition_writer,
             metrics,
-            context.session_config().batch_size(),
         )?),
         _ => Box::new(MultiPartitionShuffleRepartitioner::try_new(
             partition,
@@ -1000,6 +999,81 @@ mod test {
             roundtripped.extend(col.values().iter().copied());
         }
         let expected: Vec<i32> = (0..380).collect();
+        assert_eq!(roundtripped, expected, "rows not preserved in order");
+    }
+
+    /// The single-partition partitioner streams batches straight to the writer's
+    /// `BatchCoalescer` without any concat/buffer layer of its own. Feeding batches
+    /// of varying sizes must still produce `batch_size`-row IPC blocks (plus a tail)
+    /// with every row roundtripping in order.
+    #[tokio::test]
+    #[cfg_attr(miri, ignore)]
+    async fn single_partition_coalesces_to_batch_size_in_order() {
+        use crate::metrics::ShufflePartitionerMetrics;
+        use crate::partitioners::ShufflePartitioner;
+        use arrow::array::Int32Array;
+        use std::fs;
+
+        let schema = Arc::new(Schema::new(vec![Field::new("v", DataType::Int32, false)]));
+        let batch_size = 100;
+
+        let make_batch = |start: i32, len: i32| {
+            let values: Vec<i32> = (start..start + len).collect();
+            RecordBatch::try_new(
+                Arc::clone(&schema),
+                vec![Arc::new(Int32Array::from(values)) as Arc<dyn Array>],
+            )
+            .unwrap()
+        };
+
+        let dir = tempfile::tempdir().unwrap();
+        let data_file = dir.path().join("data.out").to_str().unwrap().to_string();
+        let index_file = dir.path().join("index.out").to_str().unwrap().to_string();
+
+        let block_writer =
+            ShuffleBlockWriter::try_new(schema.as_ref(), CompressionCodec::Lz4Frame).unwrap();
+        let writer = LocalPartitionWriter::try_new(
+            data_file.clone(),
+            index_file,
+            block_writer,
+            1, // single partition
+            batch_size,
+            1024 * 1024,
+            create_runtime(10 * 1024 * 1024),
+        )
+        .unwrap();
+
+        let metrics = ShufflePartitionerMetrics::new(&ExecutionPlanMetricsSet::new(), 0);
+        let mut partitioner = SinglePartitionShufflePartitioner::try_new(writer, metrics).unwrap();
+
+        // A mix of sub-batch-size batches and one larger-than-batch-size batch.
+        partitioner.insert_batch(make_batch(0, 30)).await.unwrap(); // rows 0..30
+        partitioner.insert_batch(make_batch(30, 30)).await.unwrap(); // rows 30..60
+        partitioner.insert_batch(make_batch(60, 250)).await.unwrap(); // rows 60..310
+        partitioner.insert_batch(make_batch(310, 40)).await.unwrap(); // rows 310..350
+        partitioner.shuffle_write().unwrap();
+
+        let data = fs::read(&data_file).unwrap();
+        let blocks = read_all_ipc_batches(&data);
+
+        // 350 rows coalesced into 100-row blocks plus a 50-row tail.
+        let block_rows: Vec<usize> = blocks.iter().map(|b| b.num_rows()).collect();
+        assert_eq!(
+            block_rows,
+            vec![100, 100, 100, 50],
+            "unexpected block sizes"
+        );
+
+        let mut roundtripped = Vec::new();
+        for block in &blocks {
+            let col = block
+                .column(0)
+                .as_any()
+                .downcast_ref::<Int32Array>()
+                .unwrap();
+            roundtripped.extend(col.values().iter().copied());
+        }
+        let expected: Vec<i32> = (0..350).collect();
         assert_eq!(roundtripped, expected, "rows not preserved in order");
     }
 
