@@ -27,7 +27,10 @@ use crate::execution::operators::IcebergScanExec;
 use crate::execution::{
     expressions::list_positions::ListPositionsExpr,
     expressions::subquery::Subquery,
-    operators::{ExecutionError, ExpandExec, ParquetWriterExec, ScanExec, ShuffleScanExec},
+    operators::{
+        ExecutionError, ExpandExec, ParquetCompression, ParquetWriterExec, ScanExec,
+        ShuffleScanExec,
+    },
     planner::expression_registry::ExpressionRegistry,
     planner::operator_registry::OperatorRegistry,
     serde::to_arrow_datatype,
@@ -129,8 +132,8 @@ use datafusion_comet_proto::{
 use datafusion_comet_spark_expr::{
     jvm_udf::JvmScalarUdfExpr, ApproxPercentile, ArrayInsert, Avg, AvgDecimal, Cast, CheckOverflow,
     Correlation, Covariance, CreateNamedStruct, DecimalRescaleCheckOverflow, GetArrayStructFields,
-    GetStructField, IfExpr, ListExtract, NormalizeNaNAndZero, SparkCastOptions, Stddev, SumDecimal,
-    ToJson, UnboundColumn, Variance, WideDecimalBinaryExpr, WideDecimalOp,
+    GetStructField, HllPlusPlus, IfExpr, ListExtract, NormalizeNaNAndZero, SparkCastOptions,
+    Stddev, SumDecimal, ToJson, UnboundColumn, Variance, WideDecimalBinaryExpr, WideDecimalOp,
 };
 use itertools::Itertools;
 use jni::objects::{Global, JObject};
@@ -1630,6 +1633,10 @@ impl PhysicalPlanner {
                 }?;
 
                 let write_buffer_size = writer.write_buffer_size as usize;
+                // Zero on the wire means the limit is disabled; normalize it here so the writer
+                // only ever sees a real limit or none at all.
+                let max_buffer_bytes =
+                    (writer.max_buffer_bytes > 0).then_some(writer.max_buffer_bytes as usize);
                 let shuffle_writer = Arc::new(ShuffleWriterExec::try_new(
                     writer_input,
                     partitioning,
@@ -1638,6 +1645,7 @@ impl PhysicalPlanner {
                     writer.output_index_file.clone(),
                     writer.tracing_enabled,
                     write_buffer_size,
+                    max_buffer_bytes,
                 )?);
 
                 Ok((
@@ -1656,10 +1664,11 @@ impl PhysicalPlanner {
                     self.create_plan(&children[0], inputs, partition_count)?;
 
                 let codec = match writer.compression.try_into() {
-                    Ok(SparkCompressionCodec::None) => Ok(CompressionCodec::None),
-                    Ok(SparkCompressionCodec::Snappy) => Ok(CompressionCodec::Snappy),
-                    Ok(SparkCompressionCodec::Zstd) => Ok(CompressionCodec::Zstd(3)),
-                    Ok(SparkCompressionCodec::Lz4) => Ok(CompressionCodec::Lz4Frame),
+                    Ok(SparkCompressionCodec::None) => Ok(ParquetCompression::None),
+                    Ok(SparkCompressionCodec::Snappy) => Ok(ParquetCompression::Snappy),
+                    Ok(SparkCompressionCodec::Zstd) => Ok(ParquetCompression::Zstd(3)),
+                    Ok(SparkCompressionCodec::Lz4) => Ok(ParquetCompression::Lz4),
+                    Ok(SparkCompressionCodec::Gzip) => Ok(ParquetCompression::Gzip),
                     _ => Err(GeneralError(format!(
                         "Unsupported parquet compression codec: {:?}",
                         writer.compression
@@ -2664,6 +2673,11 @@ impl PhysicalPlanner {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
                 let func = AggregateUDF::new_from_impl(SparkCollectSet::new());
                 Self::create_aggr_func_expr("collect_set", schema, vec![child], func)
+            }
+            AggExprStruct::Hllpp(expr) => {
+                let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
+                let func = AggregateUDF::new_from_impl(HllPlusPlus::new(expr.precision));
+                Self::create_aggr_func_expr("approx_count_distinct", schema, vec![child], func)
             }
         }
     }
@@ -3699,6 +3713,7 @@ fn parse_file_scan_tasks_from_common(
                         } else {
                             Some(del.equality_ids.clone())
                         },
+                        key_metadata: None,
                     })
                 })
                 .collect::<Result<Vec<_>, ExecutionError>>()
@@ -3823,6 +3838,7 @@ fn parse_file_scan_tasks_from_common(
                 partition_spec,
                 name_mapping,
                 case_sensitive: false,
+                key_metadata: None,
             })
         })
         .collect();
@@ -4803,7 +4819,6 @@ mod tests {
 
     #[test]
     fn test_array_repeat() {
-        // Use built-in ArrayRepeat, not SparkArrayRepeat (see jni_api.rs comment)
         let session_ctx = SessionContext::new();
         let task_ctx = session_ctx.task_ctx();
         let planner = PhysicalPlanner::new(Arc::from(session_ctx), 0);

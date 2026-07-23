@@ -23,13 +23,12 @@ import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.expressions.json.{JsonExpressionUtils, StructsToJsonEvaluator}
 import org.apache.spark.sql.catalyst.expressions.objects.{Invoke, StaticInvoke}
 import org.apache.spark.sql.catalyst.expressions.url.ParseUrlEvaluator
-import org.apache.spark.sql.types.ArrayType
 
 import org.apache.comet.CometExplainInfo
 import org.apache.comet.expressions.CometEvalMode
 import org.apache.comet.serde.{CometExpressionSerde, CometMapSort, CometToPrettyString, CometWidthBucket}
 import org.apache.comet.serde.ExprOuterClass.Expr
-import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithFallbackReason, scalarFunctionExprToProtoWithReturnType}
+import org.apache.comet.serde.QueryPlanSerde.exprToProtoInternal
 
 /**
  * Shared trait body for the Spark 4.x `CometExprShim` traits (4.0/4.1/4.2). Holds the parts that
@@ -64,28 +63,9 @@ trait Spark4xCometExprShim extends CometExprShim4x {
 
       case knc: KnownNotContainsNull =>
         // On Spark 4.0+, array_compact rewrites to KnownNotContainsNull(ArrayFilter(IsNotNull)).
-        // Strip the wrapper and serialize the inner ArrayFilter as spark_array_compact. The
-        // guard requires the IsNotNull operand to be the lambda's own variable (matched by
-        // exprId to handle nested-lambda shadowing), not a captured column (#4830).
-        knc.child match {
-          case filter: ArrayFilter =>
-            filter.function match {
-              case LambdaFunction(IsNotNull(v: NamedLambdaVariable), Seq(lambdaVar), _)
-                  if v.exprId == lambdaVar.exprId =>
-                val arrayChild = filter.left
-                val elementType = arrayChild.dataType.asInstanceOf[ArrayType].elementType
-                val arrayExprProto = exprToProtoInternal(arrayChild, inputs, binding)
-                val returnType = ArrayType(elementType)
-                val scalarExpr = scalarFunctionExprToProtoWithReturnType(
-                  "spark_array_compact",
-                  returnType,
-                  false,
-                  arrayExprProto)
-                optExprWithFallbackReason(scalarExpr, knc, arrayChild)
-              case _ => exprToProtoInternal(knc.child, inputs, binding)
-            }
-          case _ => exprToProtoInternal(knc.child, inputs, binding)
-        }
+        // Strip the wrapper and recurse; CometArrayFilter's fast path detects the
+        // `x -> x IS NOT NULL` lambda and dispatches to CometArrayCompact.
+        exprToProtoInternal(knc.child, inputs, binding)
 
       // On Spark 4.0+, RuntimeReplaceable expressions (StructsToJson, ParseUrl) become
       // Invoke(Literal(Evaluator), "evaluate", ...). Reconstruct the original expression and
