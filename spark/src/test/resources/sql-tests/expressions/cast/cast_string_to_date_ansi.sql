@@ -15,67 +15,14 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- ANSI mode: cast(string as date) must raise CAST_INVALID_INPUT for malformed input.
--- See https://github.com/apache/datafusion-comet/issues/5012 for the case where a string
--- with the shape of a date but no matching calendar date returned NULL instead.
+-- ANSI mode: cast(string as date) must raise CAST_INVALID_INPUT for a string that has the
+-- shape of a date but names no real calendar date, rather than returning NULL.
+-- See https://github.com/apache/datafusion-comet/issues/5012.
+--
+-- Per-string parity with Spark is covered by CometCastSuite "cast StringType to DateType";
+-- this fixture covers the plan shapes that suite does not exercise.
 
 -- Config: spark.sql.ansi.enabled=true
-
--- ============================================================================
--- Structurally malformed strings
--- ============================================================================
-
-query expect_error(CAST_INVALID_INPUT)
-SELECT cast('abc' as date)
-
-query expect_error(CAST_INVALID_INPUT)
-SELECT cast('' as date)
-
-query expect_error(CAST_INVALID_INPUT)
-SELECT cast('2020-010-01' as date)
-
--- ============================================================================
--- Canonical yyyy-mm-dd shape that is not a real calendar date
--- ============================================================================
-
-query expect_error(CAST_INVALID_INPUT)
-SELECT cast('2016-13-01' as date)
-
-query expect_error(CAST_INVALID_INPUT)
-SELECT cast('2016-02-30' as date)
-
-query expect_error(CAST_INVALID_INPUT)
-SELECT cast('2016-01-32' as date)
-
-query expect_error(CAST_INVALID_INPUT)
-SELECT cast('2021-02-29' as date)
-
-query expect_error(CAST_INVALID_INPUT)
-SELECT cast('2020-00-15' as date)
-
-query expect_error(CAST_INVALID_INPUT)
-SELECT cast('2020-01-00' as date)
-
--- ============================================================================
--- Same invalid calendar dates in non-canonical shapes
--- ============================================================================
-
-query expect_error(CAST_INVALID_INPUT)
-SELECT cast('2020-2-30' as date)
-
-query expect_error(CAST_INVALID_INPUT)
-SELECT cast('2020-13-1' as date)
-
-query expect_error(CAST_INVALID_INPUT)
-SELECT cast('2020-02-30T' as date)
-
--- to_date goes through the same cast
-query expect_error(CAST_INVALID_INPUT)
-SELECT to_date('2016-13-01')
-
--- ============================================================================
--- Filtering on the cast must not silently drop rows Spark fails on
--- ============================================================================
 
 statement
 CREATE TABLE test_ansi_date_str(s string) USING parquet
@@ -83,23 +30,23 @@ CREATE TABLE test_ansi_date_str(s string) USING parquet
 statement
 INSERT INTO test_ansi_date_str VALUES ('2016-13-01'), ('2016-02-30'), ('2016-01-01')
 
+-- cast over a column projection
 query expect_error(CAST_INVALID_INPUT)
 SELECT cast(s as date) FROM test_ansi_date_str
 
+-- cast inside a filter predicate must not silently drop the rows Spark fails on
 query expect_error(CAST_INVALID_INPUT)
 SELECT count(*) FROM test_ansi_date_str WHERE cast(s as date) > date'2000-01-01'
 
--- ============================================================================
--- try_cast still returns NULL under ANSI, and valid input still casts.
--- These non-error queries are the sentinel proving the casts above ran natively
--- rather than falling back to Spark.
--- ============================================================================
+-- to_date routes through the same cast
+query expect_error(CAST_INVALID_INPUT)
+SELECT to_date(s) FROM test_ansi_date_str
 
+-- try_cast still returns NULL under ANSI, and valid input still casts. These non-error
+-- queries are the sentinel proving the casts above ran natively rather than falling back
+-- to Spark, which would make every expect_error above pass vacuously.
 query
 SELECT try_cast(s as date) FROM test_ansi_date_str
 
 query
-SELECT cast('2016-01-01' as date), cast('2020-02-29' as date), cast('2020-1-1' as date)
-
-query
-SELECT cast('262142-01-01' as date), cast('-262143-12-31' as date)
+SELECT cast(s as date) FROM test_ansi_date_str WHERE s = '2016-01-01'
