@@ -389,6 +389,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
    */
   val aggrSerdeMap: Map[Class[_], CometAggregateExpressionSerde[_]] = Map(
     classOf[ApproximatePercentile] -> CometApproxPercentile,
+    classOf[HyperLogLogPlusPlus] -> CometApproxCountDistinct,
     classOf[Average] -> CometAverage,
     classOf[BitAndAgg] -> CometBitAndAgg,
     classOf[BitOrAgg] -> CometBitOrAgg,
