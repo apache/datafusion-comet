@@ -872,11 +872,14 @@ object CometScanRule extends Logging {
    */
   private[rules] def parquetFallbackReason(
       conf: org.apache.spark.sql.internal.SQLConf): Option[String] = {
-    val triggered = parquetReadFallbackDefaults.collect {
-      case (key, safeDefault)
-          if conf.contains(key) && !conf.getConfString(key).equalsIgnoreCase(safeDefault) =>
-        key
-    }.toSeq.sorted
+    val triggered = parquetReadFallbackDefaults
+      .collect {
+        case (key, safeDefault)
+            if conf.contains(key) && !conf.getConfString(key).equalsIgnoreCase(safeDefault) =>
+          key
+      }
+      .toSeq
+      .sorted
     if (triggered.isEmpty) None
     else
       Some(
