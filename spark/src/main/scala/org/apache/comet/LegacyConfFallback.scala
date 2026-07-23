@@ -44,19 +44,17 @@ import org.apache.comet.shims.ShimLegacyConfFallback
 private[comet] object LegacyConfFallback extends ShimLegacyConfFallback {
 
   /**
-   * Map of legacy config key -> case-insensitive Spark default value. A config triggers the
-   * fallback when it is present in the session conf AND its value is not equal (case-insensitive)
-   * to the default recorded here.
+   * Keys in [[legacyConfDefaults]] whose value on `conf` differs (case-insensitive) from the
+   * recorded Spark default. Returned sorted so the warning message is deterministic.
    */
-  val executionAffectingDefaults: Map[String, String] = legacyConfDefaults
-
-  /** Keys in [[executionAffectingDefaults]] that are set to a non-default value on `conf`. */
-  def triggeredConfigs(conf: SQLConf): Iterable[String] = {
-    executionAffectingDefaults.iterator.collect {
-      case (key, safeDefault)
-          if conf.contains(key) &&
-            !conf.getConfString(key).equalsIgnoreCase(safeDefault) =>
-        key
-    }.toSeq
+  def triggeredConfigs(conf: SQLConf): Seq[String] = {
+    legacyConfDefaults
+      .collect {
+        case (key, safeDefault)
+            if !conf.getConfString(key, safeDefault).equalsIgnoreCase(safeDefault) =>
+          key
+      }
+      .toSeq
+      .sorted
   }
 }

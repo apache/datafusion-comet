@@ -160,7 +160,7 @@ object CometSparkSessionExtensions extends Logging {
     if (COMET_LEGACY_CONF_FALLBACK_ENABLED.get(conf)) {
       val triggered = LegacyConfFallback.triggeredConfigs(conf)
       if (triggered.nonEmpty) {
-        val keys = triggered.toSeq.sorted.mkString(", ")
+        val keys = triggered.mkString(", ")
         logWarning(
           "Comet extension is disabled because the following execution-affecting " +
             s"spark.sql.legacy.* configs are set to non-default values: $keys. Comet does not " +

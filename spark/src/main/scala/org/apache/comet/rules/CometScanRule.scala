@@ -875,7 +875,7 @@ object CometScanRule extends Logging {
     val triggered = parquetReadFallbackDefaults
       .collect {
         case (key, safeDefault)
-            if conf.contains(key) && !conf.getConfString(key).equalsIgnoreCase(safeDefault) =>
+            if !conf.getConfString(key, safeDefault).equalsIgnoreCase(safeDefault) =>
           key
       }
       .toSeq
