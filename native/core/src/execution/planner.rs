@@ -1635,6 +1635,10 @@ impl PhysicalPlanner {
                 }?;
 
                 let write_buffer_size = writer.write_buffer_size as usize;
+                // Zero on the wire means the limit is disabled; normalize it here so the writer
+                // only ever sees a real limit or none at all.
+                let max_buffer_bytes =
+                    (writer.max_buffer_bytes > 0).then_some(writer.max_buffer_bytes as usize);
                 let shuffle_writer = Arc::new(ShuffleWriterExec::try_new(
                     writer_input,
                     partitioning,
@@ -1643,6 +1647,7 @@ impl PhysicalPlanner {
                     writer.output_index_file.clone(),
                     writer.tracing_enabled,
                     write_buffer_size,
+                    max_buffer_bytes,
                 )?);
 
                 Ok((
@@ -3756,6 +3761,7 @@ fn parse_file_scan_tasks_from_common(
                         } else {
                             Some(del.equality_ids.clone())
                         },
+                        key_metadata: None,
                     })
                 })
                 .collect::<Result<Vec<_>, ExecutionError>>()
@@ -3880,6 +3886,7 @@ fn parse_file_scan_tasks_from_common(
                 partition_spec,
                 name_mapping,
                 case_sensitive: false,
+                key_metadata: None,
             })
         })
         .collect();
@@ -4860,7 +4867,6 @@ mod tests {
 
     #[test]
     fn test_array_repeat() {
-        // Use built-in ArrayRepeat, not SparkArrayRepeat (see jni_api.rs comment)
         let session_ctx = SessionContext::new();
         let task_ctx = session_ctx.task_ctx();
         let planner = PhysicalPlanner::new(Arc::from(session_ctx), 0);
