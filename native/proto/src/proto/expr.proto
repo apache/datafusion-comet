@@ -286,9 +286,9 @@ message CollectSet {
 message ListAgg {
   Expr child = 1;
   // Literal delimiter expression. NULL delimiter is normalized to empty string
-  // by Spark's semantics.
+  // by Spark's semantics. The result type is always Utf8 (Spark StringType), so
+  // no datatype field is needed.
   Expr delimiter = 2;
-  DataType datatype = 3;
 }
 
 enum EvalMode {

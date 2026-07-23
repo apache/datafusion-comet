@@ -62,6 +62,16 @@ INSERT INTO la_bin VALUES
   (X'DEAD', 'g1'), (X'BEEF', 'g1'), (NULL, 'g1'),
   (X'CAFE', 'g2')
 
+-- Identical values per group so the concatenation is order-independent and the
+-- multi-partition merge below stays deterministic.
+statement
+CREATE TABLE la_mp(v string, grp string) USING parquet
+
+statement
+INSERT INTO la_mp VALUES
+  ('a', 'g1'), ('a', 'g1'), ('a', 'g1'),
+  ('b', 'g2'), ('b', 'g2')
+
 -- ============================================================
 -- Basic: literal delimiter, sort the group so results are
 -- deterministic across shuffles.
@@ -155,3 +165,19 @@ SELECT grp, listagg(v) FROM la_bin GROUP BY grp ORDER BY grp
 
 query expect_fallback(Unsupported child data type: BinaryType)
 SELECT grp, listagg(v, X'42') FROM la_bin GROUP BY grp ORDER BY grp
+
+-- Note on collations: a non-default string collation is not testable at the
+-- `listagg` level here. Comet's Parquet scan rejects a collated-string schema
+-- (`Unsupported schema ... StringType(UTF8_LCASE)`) before the aggregate is
+-- considered, so the whole plan falls back to Spark and `CometListAgg`'s
+-- collation guard is never reached. The guard is kept as defense-in-depth.
+
+-- ============================================================
+-- Multi-partition merge: force a round-robin repartition so each
+-- group is split across partitions and merged in the final
+-- aggregate. Values are identical within each group, so the
+-- result is deterministic regardless of merge order.
+-- ============================================================
+
+query
+SELECT grp, listagg(v, ',') FROM (SELECT /*+ REPARTITION(4) */ * FROM la_mp) GROUP BY grp ORDER BY grp

@@ -45,7 +45,7 @@
 - Spark 3.5.8 (audited 2026-07-03): does not exist.
 - Spark 4.0.1 (audited 2026-07-03): `ListAgg(child, delimiter, orderExpressions)` in `aggregate/collect.scala`. Accepts `StringType` or `BinaryType` inputs; result type matches child. Skips nulls; empty or all-null groups return `NULL`. A `NULL` delimiter is treated as an empty string. `CometListAgg` maps only the simple form: `StringType` child with a literal `StringType`/`NullType` delimiter and no `WITHIN GROUP`. `BinaryType` inputs, `WITHIN GROUP (ORDER BY ...)`, non-literal delimiters, and non-default collations fall back to Spark. `DISTINCT` falls back because Comet rejects multi-column distinct aggregates (`ListAgg` has two children).
 - Spark 4.1.1 (audited 2026-07-03): byte-identical to 4.0.1.
-- Native accumulator (`SparkListAgg`) returns `Utf8` but keeps its intermediate state as `Binary`, matching Spark's `TypedImperativeAggregate` buffer schema so the Comet shuffle layer does not insert a `Utf8` → `Binary` cast the merge side cannot read back.
+- Native accumulator (`SparkListAgg`) returns `Utf8` and carries its intermediate state as `Utf8`. Partial and final always run in the same engine (`supportsMixedPartialFinal` is false), so no cross-engine buffer-schema matching is required. A `GroupsAccumulator` fast path is provided for grouped aggregation.
 
 ## median
 

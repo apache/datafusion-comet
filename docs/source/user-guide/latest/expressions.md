@@ -93,7 +93,7 @@ The tables below list every Spark built-in expression with its current status.
 | `kurtosis` | 🔜 | tracking [#4098](https://github.com/apache/datafusion-comet/issues/4098) |
 | `last` | ✅ |  |
 | `last_value` | ✅ |  |
-| `listagg` | ✅ | Spark 4.0+. `StringType` input with a literal delimiter; `WITHIN GROUP (ORDER BY ...)` and `BinaryType` inputs fall back to Spark. |
+| `listagg` | ✅ | Spark 4.0+. `StringType` input with a literal delimiter; `WITHIN GROUP (ORDER BY ...)` and `BinaryType` inputs fall back to Spark. Without `WITHIN GROUP`, concatenation order is the (non-deterministic) group arrival order, matching Spark. |
 | `max` | ✅ |  |
 | `max_by` | 🔜 | [#3841](https://github.com/apache/datafusion-comet/issues/3841) |
 | `mean` | ✅ |  |

@@ -25,7 +25,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{NullType, StringType}
 
 import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
-import org.apache.comet.serde.QueryPlanSerde.{exprToProto, hasNonDefaultStringCollation, serializeDataType}
+import org.apache.comet.serde.QueryPlanSerde.{exprToProto, hasNonDefaultStringCollation}
 
 /**
  * Spark 4.0+ `LISTAGG` / `STRING_AGG`.
@@ -40,19 +40,21 @@ object CometListAgg extends CometAggregateExpressionSerde[ListAgg] {
   private val withinGroupReason = "`WITHIN GROUP (ORDER BY ...)` is not supported."
   private val nonFoldableDelimiterReason = "Non-literal delimiters are not supported."
   private val collationReason = "Non-default string collations are not supported."
-  private val distinctReason =
-    "`DISTINCT` falls back to Spark because Comet rejects multi-column distinct aggregates."
 
-  override def getUnsupportedReasons(): Seq[String] = Seq(
-    binaryChildReason,
-    withinGroupReason,
-    nonFoldableDelimiterReason,
-    collationReason,
-    distinctReason)
+  // Note: DISTINCT is not listed here. It never reaches this serde: Comet's aggregate
+  // dispatcher rejects multi-column distinct aggregates earlier in `aggExprToProto`, which
+  // emits its own fallback reason.
+  override def getUnsupportedReasons(): Seq[String] =
+    Seq(binaryChildReason, withinGroupReason, nonFoldableDelimiterReason, collationReason)
 
   override def getSupportLevel(expr: ListAgg): SupportLevel = {
     // Spark's analyzer already enforces `delimiter.foldable`, so this only ever rejects
     // non-string / non-null delimiter types.
+    //
+    // The collation guards below are defense-in-depth: today a collated-string column falls
+    // back earlier at the Comet scan (which rejects a `StringType(<collation>)` schema), so
+    // this branch is not reachable via a query. It keeps `listagg` correct if Comet later
+    // gains collated-scan support.
     expr.child.dataType match {
       case _: StringType if hasNonDefaultStringCollation(expr.child.dataType) =>
         Unsupported(Some(collationReason))
@@ -84,21 +86,16 @@ object CometListAgg extends CometAggregateExpressionSerde[ListAgg] {
       conf: SQLConf): Option[ExprOuterClass.AggExpr] = {
     val childExpr = exprToProto(expr.child, inputs, binding)
     val delimiterExpr = exprToProto(expr.delimiter, inputs, binding)
-    val dataType = serializeDataType(expr.dataType)
 
-    if (childExpr.isDefined && delimiterExpr.isDefined && dataType.isDefined) {
+    if (childExpr.isDefined && delimiterExpr.isDefined) {
       val builder = ExprOuterClass.ListAgg.newBuilder()
       builder.setChild(childExpr.get)
       builder.setDelimiter(delimiterExpr.get)
-      builder.setDatatype(dataType.get)
       Some(
         ExprOuterClass.AggExpr
           .newBuilder()
           .setListAgg(builder)
           .build())
-    } else if (dataType.isEmpty) {
-      withFallbackReason(aggExpr, s"datatype ${expr.dataType} is not supported", expr.child)
-      None
     } else {
       withFallbackReason(aggExpr, expr.child, expr.delimiter)
       None
