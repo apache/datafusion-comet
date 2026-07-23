@@ -28,8 +28,9 @@ import org.apache.spark.sql.execution.ScalarSubquery
 import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.util.SerializableConfiguration
 
-import org.apache.comet.{CometExecIterator, CometRuntimeException, CometShuffleBlockIterator}
+import org.apache.comet.{CometExecIterator, CometRuntimeException}
 import org.apache.comet.serde.OperatorOuterClass
+import org.apache.comet.shuffle.CometShuffleBlockIterator
 
 /**
  * Partition that carries per-partition planning data, avoiding closure capture of all partitions.

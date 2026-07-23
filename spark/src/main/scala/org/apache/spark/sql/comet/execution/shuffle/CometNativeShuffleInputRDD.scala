@@ -24,7 +24,7 @@ import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.comet.CometExecRDD
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
-import org.apache.comet.CometShuffleBlockIterator
+import org.apache.comet.shuffle.CometShuffleBlockIterator
 
 /**
  * Thin scheduling-anchor RDD for the native-shuffle path. Declares `OneToOneDependency` on each

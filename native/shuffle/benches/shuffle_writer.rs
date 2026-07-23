@@ -30,7 +30,8 @@ use datafusion::{
     prelude::SessionContext,
 };
 use datafusion_comet_shuffle::{
-    CometPartitioning, CompressionCodec, ShuffleBlockWriter, ShuffleWriterExec,
+    CometPartitioning, CompressionCodec, ShuffleBlockWriter, ShufflePartitionWriter,
+    ShuffleWriterExec,
 };
 use itertools::Itertools;
 use std::io::Cursor;
@@ -149,8 +150,10 @@ fn create_shuffle_writer_exec(
         ))),
         partitioning,
         compression_codec,
-        "/tmp/data.out".to_string(),
-        "/tmp/index.out".to_string(),
+        ShufflePartitionWriter::Local {
+            output_data_file: "/tmp/data.out".to_string(),
+            output_index_file: "/tmp/index.out".to_string(),
+        },
         false,
         1024 * 1024,
         None,

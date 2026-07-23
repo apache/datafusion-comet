@@ -44,6 +44,10 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
   protected val adaptiveExecutionEnabled: Boolean
   protected val numElementsForceSpillThreshold: Int = 10
 
+  override protected def shuffleManagerConfs: Map[String, String] = Map(
+    "spark.shuffle.manager" -> "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager",
+    CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true")
+
   override protected def sparkConf: SparkConf = {
     val conf = super.sparkConf
     conf

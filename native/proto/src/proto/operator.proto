@@ -407,8 +407,7 @@ enum CompressionCodec {
 
 message ShuffleWriter {
   spark.spark_partitioning.Partitioning partitioning = 1;
-  string output_data_file = 3;
-  string output_index_file = 4;
+  spark.spark_partitioning.PartitionWriter partition_writer = 2;
   CompressionCodec codec = 5;
   int32 compression_level = 6;
   bool tracing_enabled = 7;

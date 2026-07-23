@@ -36,6 +36,7 @@ import org.apache.comet.Tracing.withTrace
 import org.apache.comet.exceptions.CometQueryExecutionException
 import org.apache.comet.parquet.CometFileKeyUnwrapper
 import org.apache.comet.serde.Config.ConfigMap
+import org.apache.comet.shuffle.CometShuffleBlockIterator
 import org.apache.comet.vector.NativeUtil
 
 /**

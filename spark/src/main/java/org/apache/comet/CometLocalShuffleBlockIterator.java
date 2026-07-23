@@ -28,6 +28,8 @@ import java.nio.ByteOrder;
 import java.nio.channels.Channels;
 import java.nio.channels.ReadableByteChannel;
 
+import org.apache.comet.shuffle.CometShuffleBlockIterator;
+
 /**
  * Provides raw compressed shuffle blocks to native code via JNI.
  *
@@ -39,7 +41,7 @@ import java.nio.channels.ReadableByteChannel;
  * Native code must fully consume it (via read_ipc_compressed which allocates new memory for the
  * decompressed data) before pulling the next block.
  */
-public class CometShuffleBlockIterator implements Closeable {
+public class CometLocalShuffleBlockIterator implements CometShuffleBlockIterator, Closeable {
 
   private static final int INITIAL_BUFFER_SIZE = 128 * 1024;
 
@@ -50,7 +52,7 @@ public class CometShuffleBlockIterator implements Closeable {
   private boolean closed = false;
   private int currentBlockLength = 0;
 
-  public CometShuffleBlockIterator(InputStream in) {
+  public CometLocalShuffleBlockIterator(InputStream in) {
     this.inputStream = in;
     this.channel = Channels.newChannel(in);
   }
