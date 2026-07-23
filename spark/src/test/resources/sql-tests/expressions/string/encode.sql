@@ -44,6 +44,11 @@ SELECT encode('hello', 'utf-8'), encode('', 'utf-8'), encode(CAST(NULL AS STRING
 query
 SELECT encode('café', 'utf-8'), encode('日本語', 'utf-8')
 
+-- Spark replaces malformed UTF-8 before encoding, but Comet's cast lowering preserves the raw
+-- bytes. Keep the divergence captured until native string ingress has a consistent UTF-8 policy.
+query ignore(https://github.com/apache/datafusion-comet/issues/4764)
+SELECT encode(CAST(X'FF' AS STRING), 'utf-8')
+
 -- non-UTF-8 falls back to Spark JVM
 statement
 CREATE TABLE test_encode_charset_safe(s string) USING parquet

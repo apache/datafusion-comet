@@ -668,8 +668,9 @@ trait CommonStringExprs {
     charset match {
       case Literal(str, DataTypes.StringType)
           if str != null && str.toString.toLowerCase(Locale.ROOT) == "utf-8" =>
-        // encode(col, 'utf-8') is byte-equivalent to cast(string AS binary)
-        // because Spark's UTF8String already holds valid UTF-8 bytes.
+        // For valid UTF-8, encode(col, 'utf-8') is byte-equivalent to cast(string AS binary).
+        // Spark StringType can also hold malformed UTF-8 bytes; Spark replaces those bytes during
+        // encode, while the cast preserves them. This limitation is tracked by #4764.
         val strExpr = exprToProtoInternal(value, inputs, binding)
         if (strExpr.isDefined) {
           CometCast.castToProto(

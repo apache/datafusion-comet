@@ -549,7 +549,7 @@ expression-level). The `outer` variants are wired but marked `Incompatible`; the
 | `contains` | ✅ |  |
 | `decode` | ✅ |  |
 | `elt` | ✅ |  |
-| `encode` | ✅ |  |
+| `encode` | ✅ | UTF-8 only; malformed UTF-8 input can differ from Spark ([#4764](https://github.com/apache/datafusion-comet/issues/4764)) |
 | `endswith` | ✅ |  |
 | `find_in_set` | ✅ |  |
 | `format_number` | ✅ |  |

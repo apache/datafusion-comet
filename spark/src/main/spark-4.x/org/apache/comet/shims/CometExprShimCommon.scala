@@ -21,8 +21,6 @@ package org.apache.comet.shims
 
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.expressions.objects.StaticInvoke
-import org.apache.spark.sql.internal.types.StringTypeWithCollation
-import org.apache.spark.sql.types.{BinaryType, BooleanType}
 
 import org.apache.comet.serde.CommonStringExprs
 import org.apache.comet.serde.ExprOuterClass.Expr
@@ -34,20 +32,16 @@ trait CometExprShimCommon extends CommonStringExprs {
       inputs: Seq[Attribute],
       binding: Boolean): Option[Expr] = {
     expr match {
-      // encode(str, 'utf-8') -> cast(string AS binary) — Arrow's Utf8->Binary
-      // is a zero-copy reinterpret, matching Spark's UTF8String.getBytes() exactly.
+      // For valid UTF-8, encode(str, 'utf-8') -> cast(string AS binary) is a zero-copy
+      // reinterpret. Malformed UTF-8 differs as described in CommonStringExprs.stringEncode.
       case s: StaticInvoke
           if s.staticObject == classOf[Encode] &&
-            s.dataType.isInstanceOf[BinaryType] &&
-            s.functionName == "encode" &&
-            s.arguments.size == 4 &&
-            s.inputTypes == Seq(
-              StringTypeWithCollation(supportsTrimCollation = true),
-              StringTypeWithCollation(supportsTrimCollation = true),
-              BooleanType,
-              BooleanType) =>
-        val Seq(value, charset, _, _) = s.arguments
-        stringEncode(expr, charset, value, inputs, binding)
+            s.functionName == "encode" =>
+        s.arguments match {
+          case value +: charset +: _ =>
+            stringEncode(expr, charset, value, inputs, binding)
+          case _ => None
+        }
 
       case _ => None
     }
