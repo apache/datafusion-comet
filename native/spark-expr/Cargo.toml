@@ -42,7 +42,6 @@ jni = "0.22.4"
 futures = { workspace = true }
 twox-hash = "2.1.2"
 rand = { workspace = true }
-hex = "0.4.3"
 base64 = "0.22.1"
 
 [dev-dependencies]
@@ -58,6 +57,10 @@ path = "src/lib.rs"
 
 [[bench]]
 name = "cast_from_string"
+harness = false
+
+[[bench]]
+name = "cast_string_to_date"
 harness = false
 
 [[bench]]
@@ -133,7 +136,27 @@ name = "array_size"
 harness = false
 
 [[bench]]
+name = "regexp_extract"
+harness = false
+
+[[bench]]
 name = "parse_url"
+harness = false
+
+[[bench]]
+name = "cast_binary_to_string"
+harness = false
+
+[[bench]]
+name = "get_json_object"
+harness = false
+
+[[bench]]
+name = "arrays_overlap"
+harness = false
+
+[[bench]]
+name = "checked_arithmetic"
 harness = false
 
 [[bench]]
@@ -142,4 +165,28 @@ harness = false
 
 [[bench]]
 name = "cast_float_to_string"
+harness = false
+
+[[bench]]
+name = "date_trunc_array_fmt"
+harness = false
+
+[[bench]]
+name = "cast_decimal_to_string"
+harness = false
+
+[[bench]]
+name = "cast_float_to_decimal"
+harness = false
+
+[[bench]]
+name = "decimal_rescale"
+harness = false
+
+[[bench]]
+name = "check_overflow"
+harness = false
+
+[[bench]]
+name = "unscaled_value"
 harness = false

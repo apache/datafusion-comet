@@ -224,6 +224,11 @@ object CometExplainInfo {
   val FALLBACK_REASONS = new TreeNodeTag[Set[String]]("CometFallbackReasons")
   val EXTENSION_INFO = new TreeNodeTag[Set[String]]("CometExtensionInfo")
 
+  // Expression names the serde routed through the JVM codegen dispatcher. Rolled up per
+  // operator by `CometExecRule.rollUpInfoMessages` into one combined `[COMET-INFO: ...]`.
+  val CODEGEN_DISPATCH_EXPRS =
+    new TreeNodeTag[Set[String]]("CometCodegenDispatchExprs")
+
   def getActualPlan(node: TreeNode[_]): TreeNode[_] = {
     node match {
       case p: AdaptiveSparkPlanExec => getActualPlan(p.executedPlan)
