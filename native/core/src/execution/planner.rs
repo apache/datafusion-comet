@@ -365,6 +365,9 @@ impl PhysicalPlanner {
                         DataType::Time64(TimeUnit::Nanosecond) => {
                             ScalarValue::Time64Nanosecond(None)
                         }
+                        DataType::Duration(TimeUnit::Microsecond) => {
+                            ScalarValue::DurationMicrosecond(None)
+                        }
                         dt => {
                             return Err(GeneralError(format!("{dt:?} is not supported in Comet")))
                         }
@@ -391,9 +394,12 @@ impl PhysicalPlanner {
                             DataType::Timestamp(TimeUnit::Microsecond, Some(tz)) => {
                                 ScalarValue::TimestampMicrosecond(Some(*value), Some(tz))
                             }
+                            DataType::Duration(TimeUnit::Microsecond) => {
+                                ScalarValue::DurationMicrosecond(Some(*value))
+                            }
                             dt => {
                                 return Err(GeneralError(format!(
-                                    "Expected either 'Int64' or 'Timestamp' for LongVal, but found {dt:?}"
+                                    "Expected 'Int64', 'Timestamp', or 'Duration(Microsecond)' for LongVal, but found {dt:?}"
                                 )))
                             }
                         },

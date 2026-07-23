@@ -401,7 +401,7 @@ expression-level). The `outer` variants are wired but marked `Incompatible`; the
 | `*` | ✅ | Interval multiplication falls back |
 | `+` | ✅ |  |
 | `-` | ✅ |  |
-| `/` | ✅ |  |
+| `/` | ✅ | DayTime interval division routes through the JVM codegen dispatcher; YearMonth and Calendar interval division fall back |
 | `abs` | ✅ | Interval types fall back |
 | `acos` | ✅ |  |
 | `acosh` | ✅ |  |

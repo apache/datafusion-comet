@@ -285,6 +285,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       classOf[ConvertTimezone] -> CometConvertTimezone,
       classOf[DateAdd] -> CometDateAdd,
       classOf[DateDiff] -> CometDateDiff,
+      classOf[DivideDTInterval] -> CometDivideDTInterval,
       classOf[DateFormatClass] -> CometDateFormat,
       classOf[DateFromUnixDate] -> CometDateFromUnixDate,
       classOf[Days] -> CometDays,
