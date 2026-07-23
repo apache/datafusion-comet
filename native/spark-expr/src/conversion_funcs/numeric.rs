@@ -20,7 +20,7 @@ use crate::conversion_funcs::utils::MICROS_PER_SECOND;
 use crate::{EvalMode, SparkError, SparkResult};
 use arrow::array::{
     Array, ArrayRef, AsArray, BooleanBuilder, Decimal128Array, Decimal128Builder, Float32Array,
-    Float64Array, GenericStringArray, Int16Array, Int32Array, Int64Array, Int8Array,
+    Float64Array, GenericStringBuilder, Int16Array, Int32Array, Int64Array, Int8Array,
     OffsetSizeTrait, PrimitiveArray, StringBuilder, TimestampMicrosecondBuilder,
 };
 use arrow::datatypes::{
@@ -142,6 +142,8 @@ macro_rules! cast_float_to_string {
         ) -> SparkResult<ArrayRef>
         where
             OffsetSize: OffsetSizeTrait, {
+                use std::fmt::Write;
+
                 let array = from.as_any().downcast_ref::<$output_type>().unwrap();
 
                 // If the absolute number is less than 10,000,000 and greater or equal than 0.001, the
@@ -155,53 +157,67 @@ macro_rules! cast_float_to_string {
                 const LOWER_SCIENTIFIC_BOUND: $type = 0.001;
                 const UPPER_SCIENTIFIC_BOUND: $type = 10000000.0;
 
-                let output_array = array
-                    .iter()
-                    .map(|value| match value {
-                        Some(value) if value == <$type>::INFINITY => Ok(Some("Infinity".to_string())),
-                        Some(value) if value == <$type>::NEG_INFINITY => Ok(Some("-Infinity".to_string())),
-                        Some(value)
-                            if (value.abs() < UPPER_SCIENTIFIC_BOUND
-                                && value.abs() >= LOWER_SCIENTIFIC_BOUND)
-                                || value.abs() == 0.0 =>
-                        {
-                            let trailing_zero = if value.fract() == 0.0 { ".0" } else { "" };
+                // Values are formatted straight into the builder, so no intermediate String
+                // is allocated per row. Capacity hint matches arrow-rs's own AVERAGE_STRING_LENGTH
+                // (16 bytes / value) so typical fractional and scientific outputs like
+                // "1234.5678" or "-1.4E-45" do not force a mid-loop grow.
+                let mut builder = GenericStringBuilder::<OffsetSize>::with_capacity(
+                    array.len(),
+                    array.len() * 16,
+                );
+                // Reused across rows by the scientific-notation path, which has to inspect
+                // the formatted text before emitting it.
+                let mut scratch = String::with_capacity(32);
 
-                            Ok(Some(format!("{value}{trailing_zero}")))
+                for value in array.iter() {
+                    let Some(value) = value else {
+                        builder.append_null();
+                        continue;
+                    };
+                    let abs = value.abs();
+                    if (LOWER_SCIENTIFIC_BOUND..UPPER_SCIENTIFIC_BOUND).contains(&abs)
+                        || abs == 0.0
+                    {
+                        let _ = write!(builder, "{value}");
+                        if value.fract() == 0.0 {
+                            // Spark always renders a fractional digit; Rust omits it.
+                            let _ = builder.write_str(".0");
                         }
-                        Some(value)
-                            if value.abs() >= UPPER_SCIENTIFIC_BOUND
-                                || value.abs() < LOWER_SCIENTIFIC_BOUND =>
-                        {
-                            // Spark uses Java's Float.MIN_VALUE / Double.MIN_VALUE strings for
-                            // the smallest subnormal values; Rust's formatter rounds them more.
-                            if value.abs().to_bits() == 1 {
-                                let sign = if value.is_sign_negative() { "-" } else { "" };
-                                Ok(Some(format!("{sign}{}", $min_value)))
-                            } else {
-                                let formatted = format!("{value:E}");
-
-                                if formatted.contains(".") {
-                                    Ok(Some(formatted))
-                                } else {
-                                    // `formatted` is already in scientific notation and can be split up by E
-                                    // in order to add the missing trailing 0 which gets removed for numbers with a fraction of 0.0
-                                    let prepare_number: Vec<&str> = formatted.split("E").collect();
-
-                                    let coefficient = prepare_number[0];
-
-                                    let exponent = prepare_number[1];
-
-                                    Ok(Some(format!("{coefficient}.0E{exponent}")))
-                                }
+                        builder.append_value("");
+                    } else if !value.is_finite() {
+                        // NaN and the infinities are excluded by the range check above.
+                        builder.append_value(if value.is_nan() {
+                            "NaN"
+                        } else if value.is_sign_positive() {
+                            "Infinity"
+                        } else {
+                            "-Infinity"
+                        });
+                    } else if abs.to_bits() == 1 {
+                        // Java's Double.toString / Float.toString are not shortest-roundtrip
+                        // and render the smallest subnormals with more digits than Rust does.
+                        builder.append_value(if value.is_sign_negative() {
+                            concat!("-", $min_value)
+                        } else {
+                            $min_value
+                        });
+                    } else {
+                        scratch.clear();
+                        let _ = write!(scratch, "{value:E}");
+                        match scratch.split_once('E') {
+                            Some((coefficient, exponent)) if !coefficient.contains('.') => {
+                                // Spark keeps the fractional digit Rust drops from a whole
+                                // coefficient.
+                                let _ = builder.write_str(coefficient);
+                                let _ = builder.write_str(".0E");
+                                builder.append_value(exponent);
                             }
+                            _ => builder.append_value(&scratch),
                         }
-                        Some(value) => Ok(Some(value.to_string())),
-                        _ => Ok(None),
-                    })
-                    .collect::<Result<GenericStringArray<OffsetSize>, SparkError>>()?;
+                    }
+                }
 
-                Ok(Arc::new(output_array))
+                Ok(Arc::new(builder.finish()))
             }
 
         cast::<$offset_type>($from, $eval_mode)
@@ -528,14 +544,15 @@ pub(crate) fn cast_decimal128_to_utf8(array: &ArrayRef, scale: i8) -> SparkResul
         .downcast_ref::<Decimal128Array>()
         .expect("Expected a Decimal128Array");
     let mut builder = StringBuilder::with_capacity(decimal_array.len(), decimal_array.len() * 16);
-    // Reuse a single String buffer across rows to avoid one allocation per value.
-    let mut buf = String::with_capacity(40);
+    // Reuse the output and digit buffers across rows to keep the loop allocation-free.
+    let mut buf = String::with_capacity(48);
+    let mut digits = [0u8; MAX_COEFF_DIGITS];
     for opt_val in decimal_array.iter() {
         match opt_val {
             None => builder.append_null(),
             Some(unscaled) => {
                 buf.clear();
-                decimal128_to_java_string(unscaled, scale, &mut buf);
+                decimal128_to_java_string(unscaled, scale, &mut digits, &mut buf);
                 builder.append_value(&buf);
             }
         }
@@ -543,42 +560,95 @@ pub(crate) fn cast_decimal128_to_utf8(array: &ArrayRef, scale: i8) -> SparkResul
     Ok(Arc::new(builder.finish()))
 }
 
+/// The largest power of ten that fits in a `u64`.
+const POW10_19: u128 = 10_000_000_000_000_000_000;
+
+/// Digits in the largest `u128`, which bounds the coefficient of any Decimal128.
+const MAX_COEFF_DIGITS: usize = 39;
+
+/// Renders the base-10 digits of `value` into `buf`, returning them without leading zeroes
+/// (except for `value == 0`, which renders as `"0"`).
+fn render_digits(mut value: u128, buf: &mut [u8; MAX_COEFF_DIGITS]) -> &str {
+    let mut pos = buf.len();
+
+    // Peel off 19 digits at a time so that all but the final group is produced with 64-bit
+    // arithmetic, which is much cheaper than repeated 128-bit division. Every group taken here
+    // has a non-zero quotient above it, so emitting its leading zeroes is correct.
+    while value >= POW10_19 {
+        let mut group = (value % POW10_19) as u64;
+        value /= POW10_19;
+        for _ in 0..19 {
+            pos -= 1;
+            buf[pos] = b'0' + (group % 10) as u8;
+            group /= 10;
+        }
+    }
+
+    let mut rest = value as u64;
+    loop {
+        pos -= 1;
+        buf[pos] = b'0' + (rest % 10) as u8;
+        rest /= 10;
+        if rest == 0 {
+            break;
+        }
+    }
+
+    // Only ASCII digits were written above.
+    std::str::from_utf8(&buf[pos..]).expect("ascii digits")
+}
+
 /// Formats a Decimal128 unscaled value into `out` matching Java's BigDecimal.toString():
 /// - Plain notation when scale >= 0 and adjusted_exponent >= -6
 /// - Scientific notation otherwise
 ///
 /// adjusted_exponent = -scale + (numDigits - 1)
-fn decimal128_to_java_string(unscaled: i128, scale: i8, out: &mut String) {
+///
+/// `digits` is scratch space for the coefficient; the caller reuses one buffer across rows.
+fn decimal128_to_java_string(
+    unscaled: i128,
+    scale: i8,
+    digits: &mut [u8; MAX_COEFF_DIGITS],
+    out: &mut String,
+) {
     use std::fmt::Write;
-    let negative = unscaled < 0;
-    let sign = if negative { "-" } else { "" };
-    let coeff = unscaled.unsigned_abs().to_string();
-    let num_digits = coeff.len() as i64;
-    let adj_exp = -(scale as i64) + (num_digits - 1);
+    let coeff = render_digits(unscaled.unsigned_abs(), digits);
+    let num_digits = coeff.len();
+    let adj_exp = -(scale as i64) + (num_digits as i64 - 1);
+
+    if unscaled < 0 {
+        out.push('-');
+    }
 
     if scale >= 0 && adj_exp >= -6 {
-        let scale_u = scale as usize;
-        let num_digits_u = num_digits as usize;
-        if scale_u == 0 {
-            write!(out, "{sign}{coeff}").unwrap();
-        } else if num_digits_u > scale_u {
-            let (int_part, frac_part) = coeff.split_at(num_digits_u - scale_u);
-            write!(out, "{sign}{int_part}.{frac_part}").unwrap();
+        let scale = scale as usize;
+        if scale == 0 {
+            out.push_str(coeff);
+        } else if num_digits > scale {
+            let (int_part, frac_part) = coeff.split_at(num_digits - scale);
+            out.push_str(int_part);
+            out.push('.');
+            out.push_str(frac_part);
         } else {
-            let leading = scale_u - num_digits_u;
-            write!(out, "{sign}0.{}{coeff}", "0".repeat(leading)).unwrap();
+            out.push_str("0.");
+            for _ in 0..scale - num_digits {
+                out.push('0');
+            }
+            out.push_str(coeff);
         }
     } else {
         if num_digits > 1 {
-            write!(out, "{sign}{}.{}", &coeff[..1], &coeff[1..]).unwrap();
+            out.push_str(&coeff[..1]);
+            out.push('.');
+            out.push_str(&coeff[1..]);
         } else {
-            write!(out, "{sign}{coeff}").unwrap();
+            out.push_str(coeff);
         }
+        out.push('E');
         if adj_exp > 0 {
-            write!(out, "E+{adj_exp}").unwrap();
-        } else {
-            write!(out, "E{adj_exp}").unwrap();
+            out.push('+');
         }
+        write!(out, "{adj_exp}").unwrap();
     }
 }
 
@@ -777,40 +847,45 @@ where
     <T as ArrowPrimitiveType>::Native: AsPrimitive<f64>,
 {
     let input = array.as_any().downcast_ref::<PrimitiveArray<T>>().unwrap();
-    let mut cast_array = PrimitiveArray::<Decimal128Type>::builder(input.len());
-
     let mul = 10_f64.powi(scale as i32);
 
-    for i in 0..input.len() {
-        if input.is_null(i) {
-            cast_array.append_null();
-            continue;
-        }
+    // Single vectorized pass: a value with no in-range integer form (NaN / infinity) or that
+    // does not fit the output precision maps to null. `unary_opt` only applies the closure to
+    // non-null slots and carries the input null buffer over, so it replaces the per-element
+    // builder loop without a second pass.
+    let result: Decimal128Array = input.unary_opt::<_, Decimal128Type>(|v| {
+        let f: f64 = v.as_();
+        (f * mul)
+            .round()
+            .to_i128()
+            .filter(|x| is_validate_decimal_precision(*x, precision))
+    });
 
-        let input_value = input.value(i).as_();
-        if let Some(v) = (input_value * mul).round().to_i128() {
-            if is_validate_decimal_precision(v, precision) {
-                cast_array.append_value(v);
-                continue;
+    // ANSI must raise on out-of-range values instead of nulling them. `unary_opt` only nulls
+    // non-null inputs that overflow, so a null count beyond the input's signals an overflow to
+    // report. This check is O(1); the element-wise rescan runs only on the rare error path and
+    // reports the first offending value with Spark's exact error.
+    if eval_mode == EvalMode::Ansi && result.null_count() > input.null_count() {
+        for i in 0..input.len() {
+            if !input.is_null(i) {
+                let input_value: f64 = input.value(i).as_();
+                let fits = (input_value * mul)
+                    .round()
+                    .to_i128()
+                    .map(|x| is_validate_decimal_precision(x, precision))
+                    .unwrap_or(false);
+                if !fits {
+                    return Err(SparkError::NumericValueOutOfRange {
+                        value: input_value.to_string(),
+                        precision,
+                        scale,
+                    });
+                }
             }
-        };
-
-        if eval_mode == EvalMode::Ansi {
-            return Err(SparkError::NumericValueOutOfRange {
-                value: input_value.to_string(),
-                precision,
-                scale,
-            });
         }
-        cast_array.append_null();
     }
 
-    let res = Arc::new(
-        cast_array
-            .with_precision_and_scale(precision, scale)?
-            .finish(),
-    ) as ArrayRef;
-    Ok(res)
+    Ok(Arc::new(result.with_precision_and_scale(precision, scale)?))
 }
 
 pub(crate) fn spark_cast_nonintegral_numeric_to_integral(
@@ -1361,6 +1436,93 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
+    fn test_cast_float_to_decimal_no_overflow_fast_path() {
+        // All values fit precision 10, scale 2, so the vectorized fast path is taken and the
+        // input null is preserved.
+        let a: ArrayRef = Arc::new(Float64Array::from(vec![
+            Some(42.0),
+            Some(-1.5),
+            None,
+            Some(0.0),
+        ]));
+        let b =
+            cast_floating_point_to_decimal128::<Float64Type>(&a, 10, 2, EvalMode::Legacy).unwrap();
+        let d = b.as_primitive::<Decimal128Type>();
+        assert_eq!(d.value(0), 4200); // 42.00
+        assert_eq!(d.value(1), -150); // -1.50
+        assert!(d.is_null(2));
+        assert_eq!(d.value(3), 0);
+        assert_eq!(d.data_type(), &DataType::Decimal128(10, 2));
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn test_cast_float_to_decimal_ansi_no_overflow() {
+        let a: ArrayRef = Arc::new(Float64Array::from(vec![Some(42.0), None, Some(-1.5)]));
+        let b =
+            cast_floating_point_to_decimal128::<Float64Type>(&a, 10, 2, EvalMode::Ansi).unwrap();
+        let d = b.as_primitive::<Decimal128Type>();
+        assert_eq!(d.value(0), 4200);
+        assert!(d.is_null(1));
+        assert_eq!(d.value(2), -150);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn test_cast_float_to_decimal_ansi_overflow_errors() {
+        // Precision overflow: 4242.42 * 10^2 = 424242 does not fit precision 4. Two overflow
+        // rows with distinct string forms pin that the rescan reports the *first* offender.
+        let a: ArrayRef = Arc::new(Float64Array::from(vec![
+            Some(1.0),
+            Some(4242.42),
+            Some(9999.99),
+        ]));
+        match cast_floating_point_to_decimal128::<Float64Type>(&a, 4, 2, EvalMode::Ansi) {
+            Err(SparkError::NumericValueOutOfRange {
+                value,
+                precision,
+                scale,
+            }) => {
+                assert_eq!(value, "4242.42");
+                assert_eq!(precision, 4);
+                assert_eq!(scale, 2);
+            }
+            other => panic!("expected NumericValueOutOfRange, got {other:?}"),
+        }
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn test_cast_float_to_decimal_ansi_nan_errors() {
+        // NaN / infinity have no in-range integer form: `to_i128()` returns `None`, so the
+        // closure nulls the slot and the rescan must recompute `fits == false` and raise.
+        // This is a distinct path from finite precision overflow — assert both here to lock
+        // the reported value string.
+        let a: ArrayRef = Arc::new(Float64Array::from(vec![Some(1.0), Some(f64::NAN)]));
+        match cast_floating_point_to_decimal128::<Float64Type>(&a, 10, 2, EvalMode::Ansi) {
+            Err(SparkError::NumericValueOutOfRange {
+                value,
+                precision,
+                scale,
+            }) => {
+                assert_eq!(value, "NaN");
+                assert_eq!(precision, 10);
+                assert_eq!(scale, 2);
+            }
+            other => panic!("expected NumericValueOutOfRange, got {other:?}"),
+        }
+
+        let a: ArrayRef = Arc::new(Float64Array::from(vec![Some(f64::INFINITY)]));
+        match cast_floating_point_to_decimal128::<Float64Type>(&a, 10, 2, EvalMode::Ansi) {
+            Err(SparkError::NumericValueOutOfRange { value, .. }) => {
+                assert_eq!(value, "inf");
+            }
+            other => panic!("expected NumericValueOutOfRange, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn test_cast_decimal_to_timestamp() {
         let timezones: [Option<Arc<str>>; 3] = [
             Some(Arc::from("UTC")),
@@ -1473,7 +1635,7 @@ mod tests {
     fn test_decimal128_to_java_string() {
         fn fmt(unscaled: i128, scale: i8) -> String {
             let mut buf = String::new();
-            decimal128_to_java_string(unscaled, scale, &mut buf);
+            decimal128_to_java_string(unscaled, scale, &mut [0u8; MAX_COEFF_DIGITS], &mut buf);
             buf
         }
         // scale >= 0, adj_exp >= -6 → plain notation
@@ -1497,5 +1659,27 @@ mod tests {
         assert_eq!(fmt(1, -2), "1E+2");
         assert_eq!(fmt(123, -2), "1.23E+4");
         assert_eq!(fmt(-123, -2), "-1.23E+4");
+
+        // values needing more than one 64-bit digit group
+        assert_eq!(fmt(10_000_000_000_000_000_000, 0), "10000000000000000000");
+        // 10^19 + 5: the lower group is 0000000000000000005 and its leading zeros are load-bearing
+        // (the render_digits comment "emitting its leading zeroes is correct" applies here).
+        assert_eq!(fmt(10_000_000_000_000_000_005, 0), "10000000000000000005");
+        assert_eq!(fmt(i128::MAX, 0), i128::MAX.to_string());
+        assert_eq!(fmt(i128::MIN, 0), i128::MIN.to_string());
+        assert_eq!(
+            fmt(99_999_999_999_999_999_999_999_999_999_999_999_999, 10),
+            "9999999999999999999999999999.9999999999"
+        );
+        // multi-group coefficient in scientific notation, both signs, so the sign push and
+        // the &coeff[..1] / &coeff[1..] split are covered on a value that spans two groups.
+        assert_eq!(
+            fmt(i128::MAX, 45),
+            "1.70141183460469231731687303715884105727E-7"
+        );
+        assert_eq!(
+            fmt(-i128::MAX, 45),
+            "-1.70141183460469231731687303715884105727E-7"
+        );
     }
 }

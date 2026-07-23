@@ -50,13 +50,10 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
       .set(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key, adaptiveExecutionEnabled.toString)
   }
 
-  protected val asyncShuffleEnable: Boolean
-
   override protected def test(testName: String, testTags: Tag*)(testFun: => Any)(implicit
       pos: Position): Unit = {
     super.test(testName, testTags: _*) {
       withSQLConf(
-        CometConf.COMET_COLUMNAR_SHUFFLE_ASYNC_ENABLED.key -> asyncShuffleEnable.toString,
         CometConf.COMET_COLUMNAR_SHUFFLE_SPILL_THRESHOLD.key -> numElementsForceSpillThreshold.toString,
         CometConf.COMET_EXEC_ENABLED.key -> "true",
         CometConf.COMET_SHUFFLE_MODE.key -> "jvm",
@@ -801,15 +798,7 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
   }
 }
 
-class CometAsyncShuffleSuite extends CometColumnarShuffleSuite {
-  override protected val asyncShuffleEnable: Boolean = true
-
-  protected val adaptiveExecutionEnabled: Boolean = true
-}
-
 class CometShuffleSuite extends CometColumnarShuffleSuite {
-  override protected val asyncShuffleEnable: Boolean = false
-
   protected val adaptiveExecutionEnabled: Boolean = true
 
   import testImplicits._
@@ -861,8 +850,6 @@ class CometShuffleSuite extends CometColumnarShuffleSuite {
 }
 
 class DisableAQECometShuffleSuite extends CometColumnarShuffleSuite {
-  override protected val asyncShuffleEnable: Boolean = false
-
   protected val adaptiveExecutionEnabled: Boolean = false
 
   import testImplicits._
@@ -892,12 +879,6 @@ class DisableAQECometShuffleSuite extends CometColumnarShuffleSuite {
   }
 }
 
-class DisableAQECometAsyncShuffleSuite extends CometColumnarShuffleSuite {
-  override protected val asyncShuffleEnable: Boolean = true
-
-  protected val adaptiveExecutionEnabled: Boolean = false
-}
-
 class CometShuffleEncryptionSuite extends CometTestBase {
 
   import testImplicits._
@@ -910,23 +891,20 @@ class CometShuffleEncryptionSuite extends CometTestBase {
   test("comet columnar shuffle with encryption") {
     Seq(10, 201).foreach { numPartitions =>
       Seq(true, false).foreach { dictionaryEnabled =>
-        Seq(true, false).foreach { asyncEnabled =>
-          withTempDir { dir =>
-            val path = new Path(dir.toURI.toString, "test.parquet")
-            makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = dictionaryEnabled, 1000)
+        withTempDir { dir =>
+          val path = new Path(dir.toURI.toString, "test.parquet")
+          makeParquetFileAllPrimitiveTypes(path, dictionaryEnabled = dictionaryEnabled, 1000)
 
-            (1 until 10).map(i => $"_$i").foreach { col =>
-              withSQLConf(
-                CometConf.COMET_EXEC_ENABLED.key -> "true",
-                CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
-                CometConf.COMET_SHUFFLE_MODE.key -> "jvm",
-                CometConf.COMET_COLUMNAR_SHUFFLE_ASYNC_ENABLED.key -> asyncEnabled.toString) {
-                readParquetFile(path.toString) { df =>
-                  val shuffled = df
-                    .select($"_1")
-                    .repartition(numPartitions, col)
-                  checkSparkAnswer(shuffled)
-                }
+          (1 until 10).map(i => $"_$i").foreach { col =>
+            withSQLConf(
+              CometConf.COMET_EXEC_ENABLED.key -> "true",
+              CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+              CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
+              readParquetFile(path.toString) { df =>
+                val shuffled = df
+                  .select($"_1")
+                  .repartition(numPartitions, col)
+                checkSparkAnswer(shuffled)
               }
             }
           }
@@ -939,7 +917,7 @@ class CometShuffleEncryptionSuite extends CometTestBase {
 class CometShuffleManagerSuite extends CometTestBase {
 
   test("should not bypass merge sort if executor cores are too high") {
-    withSQLConf(CometConf.COMET_COLUMNAR_SHUFFLE_ASYNC_MAX_THREAD_NUM.key -> "100") {
+    withSQLConf(CometConf.COMET_COLUMNAR_SHUFFLE_MAX_WRITERS_PER_EXECUTOR.key -> "100") {
       val conf = new SparkConf()
       conf.set("spark.executor.cores", "1")
 
