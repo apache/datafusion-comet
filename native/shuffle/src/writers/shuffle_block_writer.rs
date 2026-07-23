@@ -21,6 +21,7 @@ use arrow::ipc::writer::{
     write_message, CompressionContext, DictionaryTracker, IpcDataGenerator, IpcWriteOptions,
     StreamWriter,
 };
+use arrow::ipc::MetadataVersion;
 use datafusion::common::DataFusionError;
 use datafusion::error::Result;
 use datafusion::physical_plan::metrics::Time;
@@ -28,7 +29,10 @@ use std::io::{Seek, SeekFrom, Write};
 use std::sync::Arc;
 
 /// Arrow IPC stream end-of-stream marker: the continuation marker (`0xFFFFFFFF`) followed by a
-/// zero message length, matching what `StreamWriter::finish` emits for metadata version V5.
+/// zero message length. This is what `StreamWriter::finish` emits for metadata version V5 with
+/// non-legacy framing; a V4-legacy stream would instead emit four zero bytes with no continuation
+/// marker. The fast path pins its `IpcWriteOptions` to V5 (see [`ShuffleBlockWriter::try_new`]), so
+/// this constant is valid; if that assumption ever changes, this must be revisited.
 const IPC_EOS: [u8; 8] = [0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00];
 
 /// Compression algorithm applied to shuffle IPC blocks.
@@ -40,21 +44,17 @@ pub enum CompressionCodec {
     Snappy,
 }
 
-/// Returns true if `data_type` is, or nests, a dictionary type.
-fn contains_dictionary(data_type: &DataType) -> bool {
-    match data_type {
-        DataType::Dictionary(_, _) => true,
-        DataType::List(f)
-        | DataType::LargeList(f)
-        | DataType::FixedSizeList(f, _)
-        | DataType::Map(f, _)
-        | DataType::RunEndEncoded(_, f) => contains_dictionary(f.data_type()),
-        DataType::Struct(fields) => fields.iter().any(|f| contains_dictionary(f.data_type())),
-        DataType::Union(fields, _) => fields
-            .iter()
-            .any(|(_, f)| contains_dictionary(f.data_type())),
-        _ => false,
-    }
+/// How a writer encodes the Arrow IPC schema at the start of each block. The two arms are mutually
+/// exclusive by schema shape, decided once in [`ShuffleBlockWriter::try_new`], so the retained
+/// state never carries both a pre-encoded message and a schema at the same time.
+#[derive(Clone)]
+enum SchemaEncoding {
+    /// Dictionary-free schema: the IPC schema message, pre-encoded once, is written verbatim at the
+    /// start of every block instead of being re-serialized per block.
+    Precoded(Vec<u8>),
+    /// Schema containing dictionary types: the schema and record batch must share a dictionary
+    /// tracker, so each block is encoded with `StreamWriter`, which re-serializes the schema.
+    Fallback(SchemaRef),
 }
 
 /// Writes a record batch as a length-prefixed, compressed Arrow IPC block.
@@ -69,13 +69,10 @@ fn contains_dictionary(data_type: &DataType) -> bool {
 pub struct ShuffleBlockWriter {
     codec: CompressionCodec,
     header_bytes: Vec<u8>,
-    schema: SchemaRef,
-    /// Pre-encoded Arrow IPC schema message, written verbatim at the start of every block.
-    ///
-    /// `None` indicates the schema contains dictionary types, whose dictionary-id bookkeeping ties
-    /// schema and batch encoding together, so the schema cannot be reused across blocks and
-    /// [`Self::encode_ipc_stream`] falls back to `StreamWriter`.
-    schema_message: Option<Vec<u8>>,
+    /// IPC options shared by the schema and record-batch encoders so the two can never diverge;
+    /// pinned to metadata version V5, which [`IPC_EOS`] depends on.
+    write_options: IpcWriteOptions,
+    schema_encoding: SchemaEncoding,
 }
 
 impl ShuffleBlockWriter {
@@ -100,64 +97,72 @@ impl ShuffleBlockWriter {
         };
         header_bytes.extend_from_slice(codec_header);
 
+        // Shuffle blocks are always written with metadata version V5. Pin it explicitly rather than
+        // relying on `IpcWriteOptions::default`, because IPC_EOS is only the correct end-of-stream
+        // marker for V5. Alignment 64 and non-legacy framing match the arrow defaults.
+        let write_options = IpcWriteOptions::try_new(64, false, MetadataVersion::V5)?;
+
+        // `flattened_fields` walks the full nested field tree, so this catches dictionary types
+        // nested under any container arrow itself recurses into when emitting dictionaries.
         let has_dictionaries = schema
-            .fields()
+            .flattened_fields()
             .iter()
-            .any(|f| contains_dictionary(f.data_type()));
+            .any(|f| matches!(f.data_type(), DataType::Dictionary(_, _)));
 
         // For dictionary-free schemas, pre-encode the IPC schema message once so it does not have
-        // to be re-serialized per block. Dictionary schemas use the `StreamWriter` fallback and
-        // leave this `None`.
-        let schema_message = if has_dictionaries {
-            None
+        // to be re-serialized per block. Dictionary schemas use the `StreamWriter` fallback.
+        let schema_encoding = if has_dictionaries {
+            SchemaEncoding::Fallback(Arc::new(schema.clone()))
         } else {
-            let options = IpcWriteOptions::default();
             let data_gen = IpcDataGenerator::default();
             let mut dictionary_tracker = DictionaryTracker::new(true);
             let encoded_schema = data_gen.schema_to_bytes_with_dictionary_tracker(
                 schema,
                 &mut dictionary_tracker,
-                &options,
+                &write_options,
             );
             let mut buf = Vec::new();
-            write_message(&mut buf, encoded_schema, &options)?;
-            Some(buf)
+            write_message(&mut buf, encoded_schema, &write_options)?;
+            SchemaEncoding::Precoded(buf)
         };
 
         Ok(Self {
             codec,
             header_bytes,
-            schema: Arc::new(schema.clone()),
-            schema_message,
+            write_options,
+            schema_encoding,
         })
     }
 
     /// Serialize `batch` as a standalone Arrow IPC stream into `out`.
     fn encode_ipc_stream<W: Write>(&self, batch: &RecordBatch, out: &mut W) -> Result<()> {
-        let Some(schema_message) = &self.schema_message else {
-            // Dictionary encoding requires the schema and record batch to share a dictionary
-            // tracker, so `StreamWriter` (which re-encodes the schema per block) is used here.
-            let mut stream_writer = StreamWriter::try_new(out, &self.schema)?;
-            stream_writer.write(batch)?;
-            stream_writer.finish()?;
-            return Ok(());
+        let schema_message = match &self.schema_encoding {
+            SchemaEncoding::Fallback(schema) => {
+                // Dictionary encoding requires the schema and record batch to share a dictionary
+                // tracker, so `StreamWriter` (which re-encodes the schema per block) is used here.
+                let mut stream_writer =
+                    StreamWriter::try_new_with_options(out, schema, self.write_options.clone())?;
+                stream_writer.write(batch)?;
+                stream_writer.finish()?;
+                return Ok(());
+            }
+            SchemaEncoding::Precoded(schema_message) => schema_message,
         };
 
         // Fast path: reuse the pre-encoded schema message and write the record batch manually.
-        let options = IpcWriteOptions::default();
         let data_gen = IpcDataGenerator::default();
         let mut dictionary_tracker = DictionaryTracker::new(true);
         let mut compression_context = CompressionContext::default();
         let (encoded_dictionaries, encoded_batch) = data_gen.encode(
             batch,
             &mut dictionary_tracker,
-            &options,
+            &self.write_options,
             &mut compression_context,
         )?;
         debug_assert!(encoded_dictionaries.is_empty());
 
         out.write_all(schema_message)?;
-        write_message(&mut *out, encoded_batch, &options)?;
+        write_message(&mut *out, encoded_batch, &self.write_options)?;
         out.write_all(&IPC_EOS)?;
         Ok(())
     }
