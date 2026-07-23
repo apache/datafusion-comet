@@ -571,8 +571,8 @@ significant family of Spark expressions in one effort.</p>
 <h2>Dynamic Partition Pruning<a class="headerlink" href="#dynamic-partition-pruning" title="Link to this heading">#</a></h2>
 <p>Native Parquet scans (<code class="docutils literal notranslate"><span class="pre">CometNativeScanExec</span></code>) support Dynamic Partition Pruning (DPP) both with and without
 Adaptive Query Execution. Non-AQE DPP landed in <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/4011">#4011</a> and AQE DPP with broadcast reuse landed in <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/4112">#4112</a>.
-Iceberg native scans currently support non-AQE DPP only (<a class="reference external" href="https://github.com/apache/datafusion-comet/pull/3349">#3349</a>, <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/3511">#3511</a>); extending broadcast reuse to AQE
-DPP for Iceberg is tracked at <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/3510">#3510</a>.</p>
+Iceberg native scans support non-AQE DPP (<a class="reference external" href="https://github.com/apache/datafusion-comet/pull/3349">#3349</a>, <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/3511">#3511</a>) and, on Spark 3.5+, AQE DPP with broadcast reuse
+(<a class="reference external" href="https://github.com/apache/datafusion-comet/pull/4215">#4215</a>); on Spark 3.4 Iceberg AQE DPP falls back to Spark without reuse.</p>
 </section>
 <section id="tpc-h-and-tpc-ds-performance">
 <h2>TPC-H and TPC-DS Performance<a class="headerlink" href="#tpc-h-and-tpc-ds-performance" title="Link to this heading">#</a></h2>

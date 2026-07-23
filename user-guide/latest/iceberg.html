@@ -747,7 +747,7 @@ under the License.
 then serialized to Comet’s native execution engine (see
 <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/2528">PR #2528</a>).</p>
 <p>The example below uses Spark’s package downloader to retrieve Comet 1.0.0-SNAPSHOT and Iceberg
-1.8.1, but Comet has been tested with Iceberg 1.5, 1.7, 1.8, 1.9, and 1.10. The native Iceberg
+1.8.1, but Comet has been tested with Iceberg 1.5, 1.7, 1.8, 1.9, 1.10, and 1.11. The native Iceberg
 reader is enabled by default. To disable it, set <code class="docutils literal notranslate"><span class="pre">spark.comet.scan.icebergNative.enabled=false</span></code>.</p>
 <p>The example uses the Spark 3.5 / Scala 2.12 build of Comet; substitute the Comet artifact
 matching your Spark and Scala versions (Comet also ships Spark 3.5 / Scala 2.13 and Spark
@@ -779,7 +779,15 @@ values between 2 and 8 based on your workload.</p>
 <p>The native Iceberg reader supports the following features:</p>
 <p><strong>Table specifications:</strong></p>
 <ul class="simple">
-<li><p>Iceberg table spec v1 and v2 (v3 will fall back to Spark)</p></li>
+<li><p>Iceberg table spec v1, v2, and v3</p></li>
+</ul>
+<p><strong>Encryption:</strong></p>
+<ul class="simple">
+<li><p>Encrypted v3 tables using 128-bit or 256-bit AES-GCM data keys (requires Iceberg 1.11 or newer).
+Iceberg-Java unwraps the key envelope on the driver during planning and stores the plaintext data
+key in each file’s <code class="docutils literal notranslate"><span class="pre">key_metadata</span></code>, which the native reader uses directly, so no KMS integration is
+needed on the native side. Iceberg-Java also permits 192-bit data keys; those tables fall back to
+Spark (no AES-192-GCM in the underlying crypto).</p></li>
 </ul>
 <p><strong>Schema and data types:</strong></p>
 <ul class="simple">
@@ -867,17 +875,19 @@ configure Spark to use a REST catalog with Comet’s native Iceberg scan:</p>
 </section>
 <section id="current-limitations">
 <h3>Current limitations<a class="headerlink" href="#current-limitations" title="Link to this heading">#</a></h3>
-<p>The following scenarios will fall back to Spark’s native Iceberg reader:</p>
+<p>The following scenarios will fall back to the JVM Iceberg reader:</p>
 <ul class="simple">
-<li><p>Iceberg table spec v3 scans</p></li>
+<li><p>Iceberg table spec v4 or newer</p></li>
+<li><p>v3 tables with columns that declare an initial default value</p></li>
+<li><p>v3 column types the native reader cannot read (<code class="docutils literal notranslate"><span class="pre">variant</span></code>, <code class="docutils literal notranslate"><span class="pre">geometry</span></code>, <code class="docutils literal notranslate"><span class="pre">geography</span></code>, <code class="docutils literal notranslate"><span class="pre">unknown</span></code>)</p></li>
+<li><p>Encrypted tables with 192-bit data keys (no AES-192-GCM in the underlying crypto)</p></li>
+<li><p>Deletion vectors (v3 Puffin deletes); positional and equality deletes in Parquet are supported</p></li>
 <li><p>Iceberg writes (reads are accelerated, writes use Spark)</p></li>
 <li><p>Tables backed by Avro or ORC data files (only Parquet is accelerated)</p></li>
 <li><p>Tables partitioned on <code class="docutils literal notranslate"><span class="pre">BINARY</span></code> or <code class="docutils literal notranslate"><span class="pre">DECIMAL</span></code> (with precision &gt;28) columns</p></li>
 <li><p>Scans with residual filters using <code class="docutils literal notranslate"><span class="pre">truncate</span></code>, <code class="docutils literal notranslate"><span class="pre">bucket</span></code>, <code class="docutils literal notranslate"><span class="pre">year</span></code>, <code class="docutils literal notranslate"><span class="pre">month</span></code>, <code class="docutils literal notranslate"><span class="pre">day</span></code>, or <code class="docutils literal notranslate"><span class="pre">hour</span></code>
 transform functions (partition pruning still works, but row-level filtering of these
 transforms falls back)</p></li>
-<li><p>Dynamic Partition Pruning under Adaptive Query Execution (non-AQE DPP is supported);
-see <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/3510">#3510</a></p></li>
 </ul>
 </section>
 <section id="iceberg-udfs">

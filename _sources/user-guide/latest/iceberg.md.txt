@@ -26,7 +26,7 @@ then serialized to Comet's native execution engine (see
 [PR #2528](https://github.com/apache/datafusion-comet/pull/2528)).
 
 The example below uses Spark's package downloader to retrieve Comet 1.0.0-SNAPSHOT and Iceberg
-1.8.1, but Comet has been tested with Iceberg 1.5, 1.7, 1.8, 1.9, and 1.10. The native Iceberg
+1.8.1, but Comet has been tested with Iceberg 1.5, 1.7, 1.8, 1.9, 1.10, and 1.11. The native Iceberg
 reader is enabled by default. To disable it, set `spark.comet.scan.icebergNative.enabled=false`.
 
 The example uses the Spark 3.5 / Scala 2.12 build of Comet; substitute the Comet artifact
@@ -63,7 +63,15 @@ The native Iceberg reader supports the following features:
 
 **Table specifications:**
 
-- Iceberg table spec v1 and v2 (v3 will fall back to Spark)
+- Iceberg table spec v1, v2, and v3
+
+**Encryption:**
+
+- Encrypted v3 tables using 128-bit or 256-bit AES-GCM data keys (requires Iceberg 1.11 or newer).
+  Iceberg-Java unwraps the key envelope on the driver during planning and stores the plaintext data
+  key in each file's `key_metadata`, which the native reader uses directly, so no KMS integration is
+  needed on the native side. Iceberg-Java also permits 192-bit data keys; those tables fall back to
+  Spark (no AES-192-GCM in the underlying crypto).
 
 **Schema and data types:**
 
@@ -156,17 +164,19 @@ These `s3.*` storage properties are not specific to the Hive catalog shown here.
 
 ### Current limitations
 
-The following scenarios will fall back to Spark's native Iceberg reader:
+The following scenarios will fall back to the JVM Iceberg reader:
 
-- Iceberg table spec v3 scans
+- Iceberg table spec v4 or newer
+- v3 tables with columns that declare an initial default value
+- v3 column types the native reader cannot read (`variant`, `geometry`, `geography`, `unknown`)
+- Encrypted tables with 192-bit data keys (no AES-192-GCM in the underlying crypto)
+- Deletion vectors (v3 Puffin deletes); positional and equality deletes in Parquet are supported
 - Iceberg writes (reads are accelerated, writes use Spark)
 - Tables backed by Avro or ORC data files (only Parquet is accelerated)
 - Tables partitioned on `BINARY` or `DECIMAL` (with precision >28) columns
 - Scans with residual filters using `truncate`, `bucket`, `year`, `month`, `day`, or `hour`
   transform functions (partition pruning still works, but row-level filtering of these
   transforms falls back)
-- Dynamic Partition Pruning under Adaptive Query Execution (non-AQE DPP is supported);
-  see [#3510](https://github.com/apache/datafusion-comet/issues/3510)
 
 ### Iceberg UDFs
 
