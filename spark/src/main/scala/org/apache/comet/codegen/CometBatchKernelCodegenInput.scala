@@ -62,6 +62,7 @@ private[codegen] object CometBatchKernelCodegenInput extends CometTypeShim {
     classOf[Float4Vector],
     classOf[Float8Vector],
     classOf[DateDayVector],
+    classOf[DurationVector],
     classOf[TimeNanoVector],
     classOf[TimeStampMicroVector],
     classOf[TimeStampMicroTZVector],
@@ -138,6 +139,7 @@ private[codegen] object CometBatchKernelCodegenInput extends CometTypeShim {
     val longCases = withOrd.collect {
       case (ArrowColumnSpec(cls, _), ord)
           if cls == classOf[BigIntVector] ||
+            cls == classOf[DurationVector] ||
             cls == classOf[TimeNanoVector] ||
             cls == classOf[TimeStampMicroVector] ||
             cls == classOf[TimeStampMicroTZVector] ||
@@ -915,9 +917,10 @@ private[codegen] object CometBatchKernelCodegenInput extends CometTypeShim {
     val longCases = scalarOrd.collect {
       case (f, fi)
           if f.sparkType == LongType || f.sparkType == TimestampType ||
-            f.sparkType == TimestampNTZType || isTimeType(f.sparkType) ||
-            f.sparkType.isInstanceOf[DayTimeIntervalType] =>
-        fieldReadScalar(fi, LongType, f.nullable)
+            f.sparkType == TimestampNTZType ||
+            f.sparkType.isInstanceOf[DayTimeIntervalType] ||
+            isTimeType(f.sparkType) =>
+        fieldReadScalar(fi, f.sparkType, f.nullable)
     }
     val floatCases =
       scalarOrd.collect {

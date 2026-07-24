@@ -219,8 +219,8 @@ class CometScalaUDFCodegen extends CometUDF with Logging {
       StructColumnSpec(nullable = true, fieldSpecs)
     case _: BitVector | _: TinyIntVector | _: SmallIntVector | _: IntVector | _: BigIntVector |
         _: Float4Vector | _: Float8Vector | _: DecimalVector | _: VarCharVector |
-        _: VarBinaryVector | _: DateDayVector | _: TimeStampMicroVector |
-        _: TimeStampMicroTZVector | _: IntervalYearVector | _: DurationVector =>
+        _: VarBinaryVector | _: DateDayVector | _: DurationVector | _: TimeStampMicroVector |
+        _: TimeStampMicroTZVector | _: IntervalYearVector =>
       ScalarColumnSpec(v.getClass.asInstanceOf[Class[_ <: ValueVector]], nullable = true)
     case other =>
       throw new UnsupportedOperationException(

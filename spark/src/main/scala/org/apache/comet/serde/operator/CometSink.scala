@@ -53,6 +53,13 @@ abstract class CometSink[T <: SparkPlan] extends CometOperatorSerde[T] {
     case _ => supportedDataType(dt)
   }
 
+  /**
+   * The data type to declare for a scan output field. Overridden by sinks whose source carries
+   * non-null nested child fields that must be widened to match the planned kernel output types
+   * (see [[org.apache.spark.sql.comet.CometLocalTableScanExec]] and issue #4789).
+   */
+  protected def scanFieldType(dt: DataType): DataType = dt
+
   override def convert(
       op: T,
       builder: Operator.Builder,
@@ -74,7 +81,7 @@ abstract class CometSink[T <: SparkPlan] extends CometOperatorSerde[T] {
     }
 
     val scanTypes = op.output.flatten { attr =>
-      serializeDataType(attr.dataType)
+      serializeDataType(scanFieldType(attr.dataType))
     }
 
     if (scanTypes.length == op.output.length) {

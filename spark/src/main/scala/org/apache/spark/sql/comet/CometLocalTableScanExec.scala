@@ -31,7 +31,7 @@ import org.apache.spark.sql.comet.execution.arrow.{CometArrowStream, CometNative
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution.{LeafExecNode, LocalTableScanExec}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
-import org.apache.spark.sql.types.{DataType, DayTimeIntervalType, NullType, YearMonthIntervalType}
+import org.apache.spark.sql.types.{DataType, NullType, StructType, DayTimeIntervalType, YearMonthIntervalType}
 
 import com.google.common.base.Objects
 
@@ -76,7 +76,15 @@ case class CometLocalTableScanExec(
       consume: (String, BufferAllocator => ArrowReader) => Iterator[T]): RDD[T] = {
     val numOutputRows = longMetric("numOutputRows")
     val maxRecordsPerBatch = CometConf.COMET_BATCH_SIZE.get(conf)
-    val sparkSchema = originalPlan.schema
+    // Normalize nested child-field nullability. An in-memory Seq/Map encodes array elements and
+    // map values as non-null (containsNull=false / valueContainsNull=false), but Comet expression
+    // serdes promise nullable children, so feeding a non-null child from the local scan into a
+    // native kernel fails the planned-vs-actual type assertion (issue #4789). Widening children to
+    // nullable is always safe: the row data contains no nulls, and Arrow map keys stay non-null via
+    // Utils.toArrowField. This must agree with the widened scan schema declared in
+    // CometLocalTableScanExec.scanFieldType so the native ScanExec does not cast the batch back.
+    val sparkSchema =
+      StructType(originalPlan.schema.map(f => f.copy(dataType = f.dataType.asNullable)))
     rdd.mapPartitionsInternal { rowIter =>
       val arrowSchema = Utils.toArrowSchema(sparkSchema, CometArrowStream.NATIVE_TIMEZONE)
       consume(
@@ -118,8 +126,14 @@ object CometLocalTableScanExec extends CometSink[LocalTableScanExec] with DataTy
   override def enabledConfig: Option[ConfigEntry[Boolean]] = Some(
     CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED)
 
-  // ArrowWriter (used by RowArrowReader) handles these types even though the shared scan allow
-  // list does not. Keep this local so interval file scans remain unsupported.
+  // Widen nested child-field nullability in the declared scan schema so it matches both the widened
+  // Arrow batch produced by CometLocalTableScanExec and the nullable children promised by
+  // downstream expression serdes (issue #4789).
+  override protected def scanFieldType(dt: DataType): DataType = dt.asNullable
+
+  // ArrowWriter (used by RowArrowReader) handles NullType via Utils.toArrowType + NullWriter;
+  // other types off DataTypeSupport's allow list (TimeType, intervals, ...) have no ArrowWriter
+  // coverage and must fall back to Spark.
   override def isTypeSupported(
       dt: DataType,
       name: String,
