@@ -37,7 +37,8 @@ import org.apache.spark.{SparkEnv, SparkException}
 import org.apache.spark.internal.Logging
 import org.apache.spark.io.CompressionCodec
 import org.apache.spark.sql.catalyst.expressions.Attribute
-import org.apache.spark.sql.comet.execution.arrow.ArrowReaderIterator
+import org.apache.spark.sql.comet.execution.arrow.{ArrowReaderIterator, ConstantColumnVectors}
+import org.apache.spark.sql.execution.vectorized.ConstantColumnVector
 import org.apache.spark.sql.types._
 import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.util.io.{ChunkedByteBuffer, ChunkedByteBufferOutputStream}
@@ -397,6 +398,7 @@ object Utils extends CometTypeShim with Logging {
   def getBatchFieldVectors(
       batch: ColumnarBatch): (Seq[FieldVector], Option[DictionaryProvider]) = {
     var provider: Option[DictionaryProvider] = None
+    val rows = batch.numRows()
     val fieldVectors = (0 until batch.numCols()).map { index =>
       batch.column(index) match {
         case a: CometVector =>
@@ -408,6 +410,18 @@ object Utils extends CometTypeShim with Logging {
           }
 
           getFieldVector(valueVector, "serialize")
+
+        case cv: ConstantColumnVector =>
+          // Spark wraps file-source partition columns and other per-batch constants in
+          // `ConstantColumnVector`. Materialise to an Arrow vector so the serialisation path
+          // doesn't reject the batch. "UTC" is intentional -- see `ConstantColumnVectors`.
+          ConstantColumnVectors.materialize(
+            cv,
+            cv.dataType(),
+            rows,
+            s"_const_$index",
+            org.apache.comet.CometArrowAllocator,
+            "UTC")
 
         case c =>
           throw new SparkException(
