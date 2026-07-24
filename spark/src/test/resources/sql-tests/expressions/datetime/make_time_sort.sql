@@ -28,7 +28,8 @@ INSERT INTO test_make_time_sort VALUES
     (3, 23, 59, 59.999999),
     (4, 1, 2, 3.500000),
     (5, 0, 0, 0.000001),
-    (6, NULL, NULL, NULL)
+    (6, NULL, NULL, NULL),
+    (7, 0, 0, 0.000000)
 
 query
 SELECT id, t
@@ -45,3 +46,27 @@ FROM (
     FROM test_make_time_sort
 )
 SORT BY t DESC NULLS LAST
+
+query
+SELECT id, t
+FROM (
+    SELECT id, make_time(hours, minutes, secs) AS t
+    FROM test_make_time_sort
+)
+SORT BY t ASC NULLS LAST
+
+query
+SELECT id, t
+FROM (
+    SELECT id, make_time(hours, minutes, secs) AS t
+    FROM test_make_time_sort
+)
+SORT BY t DESC NULLS FIRST
+
+query
+SELECT id, t
+FROM (
+    SELECT id, make_time(hours, minutes, secs) AS t
+    FROM test_make_time_sort
+)
+SORT BY t ASC NULLS LAST, id DESC
