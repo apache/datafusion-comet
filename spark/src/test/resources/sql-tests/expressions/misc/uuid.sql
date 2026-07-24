@@ -30,14 +30,7 @@ INSERT INTO test_uuid VALUES (1), (2), (3), (4), (5)
 query
 SELECT length(uuid()) FROM test_uuid
 
--- matches the RFC 4122 version 4 layout (version nibble 4, variant nibble 8/9/a/b), lowercase hex
+-- matches the RFC 4122 version 4 layout (version nibble 4, variant nibble 8/9/a/b), lowercase hex.
+-- This regex subsumes the length, alphabet, version, and variant checks.
 query
 SELECT uuid() RLIKE '^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$' FROM test_uuid
-
--- version nibble is always '4'
-query
-SELECT substring(uuid(), 15, 1) FROM test_uuid
-
--- variant nibble is one of 8, 9, a, b
-query
-SELECT substring(uuid(), 20, 1) RLIKE '^[89ab]$' FROM test_uuid

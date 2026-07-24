@@ -15,8 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::nondetermenistic_funcs::shuffle::SparkMersenneTwister;
-use arrow::array::{RecordBatch, StringArray};
+use crate::nondetermenistic_funcs::internal::mersenne::SparkMersenneTwister;
+use arrow::array::{RecordBatch, StringBuilder};
 use arrow::datatypes::{DataType, Schema};
 use datafusion::common::Result;
 use datafusion::logical_expr::ColumnarValue;
@@ -24,22 +24,16 @@ use datafusion::physical_expr::PhysicalExpr;
 use std::fmt::{Display, Formatter};
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex};
+use uuid::Uuid;
 
-/// Draw one RFC 4122 version 4 UUID string from the generator, matching
+/// Draw one RFC 4122 version 4 UUID from the generator, matching
 /// `org.apache.spark.sql.catalyst.util.RandomUUIDGenerator.getNextUUID`: two
 /// `nextLong()` draws with the version (4) and variant (10) bits masked in.
-fn next_uuid_string(rng: &mut SparkMersenneTwister) -> String {
+/// `Uuid`'s canonical lowercase hyphenated form matches `java.util.UUID.toString()`.
+fn next_uuid(rng: &mut SparkMersenneTwister) -> Uuid {
     let most = (rng.next_long() as u64 & 0xFFFF_FFFF_FFFF_0FFF) | 0x0000_0000_0000_4000;
     let least = (rng.next_long() as u64 | 0x8000_0000_0000_0000) & 0xBFFF_FFFF_FFFF_FFFF;
-    // Matches `java.util.UUID.toString()`: lowercase, zero-padded, hyphenated.
-    format!(
-        "{:08x}-{:04x}-{:04x}-{:04x}-{:012x}",
-        (most >> 32) & 0xFFFF_FFFF,
-        (most >> 16) & 0xFFFF,
-        most & 0xFFFF,
-        (least >> 48) & 0xFFFF,
-        least & 0xFFFF_FFFF_FFFF,
-    )
+    Uuid::from_u64_pair(most, least)
 }
 
 /// Physical expression for Spark's `uuid()`. Like `ShuffleExpr`, the generator
@@ -98,8 +92,15 @@ impl PhysicalExpr for UuidExpr {
         let mut state = self.state_holder.lock().unwrap();
         let rng = state.get_or_insert_with(|| SparkMersenneTwister::new(self.seed));
 
-        let result: StringArray = (0..num_rows).map(|_| Some(next_uuid_string(rng))).collect();
-        Ok(ColumnarValue::Array(Arc::new(result)))
+        // Each canonical UUID is exactly 36 bytes, so pre-size both builder buffers and encode
+        // into a reused stack buffer to avoid a per-row heap allocation.
+        const LEN: usize = uuid::fmt::Hyphenated::LENGTH;
+        let mut builder = StringBuilder::with_capacity(num_rows, num_rows * LEN);
+        let mut buf = [0u8; LEN];
+        for _ in 0..num_rows {
+            builder.append_value(next_uuid(rng).hyphenated().encode_lower(&mut buf));
+        }
+        Ok(ColumnarValue::Array(Arc::new(builder.finish())))
     }
 
     fn children(&self) -> Vec<&Arc<dyn PhysicalExpr>> {
@@ -121,7 +122,7 @@ impl PhysicalExpr for UuidExpr {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::{Array, RecordBatchOptions};
+    use arrow::array::{Array, RecordBatchOptions, StringArray};
 
     fn empty_batch(num_rows: usize) -> RecordBatch {
         RecordBatch::try_new_with_options(
@@ -132,31 +133,29 @@ mod tests {
         .unwrap()
     }
 
-    fn eval_uuids(seed: i64, num_rows: usize) -> Vec<String> {
-        let batch = empty_batch(num_rows);
-        let expr = UuidExpr::new(seed);
-        let result = expr.evaluate(&batch).unwrap().into_array(num_rows).unwrap();
-        let arr = result.as_any().downcast_ref::<StringArray>().unwrap();
+    fn collect_uuids(expr: &UuidExpr, batch: &RecordBatch) -> Vec<String> {
+        let arr = expr
+            .evaluate(batch)
+            .unwrap()
+            .into_array(batch.num_rows())
+            .unwrap();
+        let arr = arr.as_any().downcast_ref::<StringArray>().unwrap();
         (0..arr.len()).map(|i| arr.value(i).to_string()).collect()
     }
 
+    fn eval_uuids(seed: i64, num_rows: usize) -> Vec<String> {
+        collect_uuids(&UuidExpr::new(seed), &empty_batch(num_rows))
+    }
+
     #[test]
-    fn test_uuid_format_and_version() {
+    fn test_uuid_version_and_variant_bits() {
+        // The RNG and the version/variant masking are ours; the canonical string layout is
+        // guaranteed by the `uuid` crate. Assert the RFC 4122 v4 bits our masking sets, at their
+        // fixed positions in `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`.
         for uuid in eval_uuids(42, 20) {
-            // Canonical 8-4-4-4-12 lowercase hex.
-            assert_eq!(uuid.len(), 36);
-            let parts: Vec<&str> = uuid.split('-').collect();
-            assert_eq!(
-                parts.iter().map(|p| p.len()).collect::<Vec<_>>(),
-                vec![8, 4, 4, 4, 12]
-            );
-            assert!(uuid
-                .chars()
-                .all(|c| c == '-' || c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
-            // Version 4: first nibble of the third group.
-            assert_eq!(parts[2].as_bytes()[0], b'4');
-            // Variant 10xx: first nibble of the fourth group is 8, 9, a, or b.
-            assert!(matches!(parts[3].as_bytes()[0], b'8' | b'9' | b'a' | b'b'));
+            let bytes = uuid.as_bytes();
+            assert_eq!(bytes[14], b'4'); // version nibble
+            assert!(matches!(bytes[19], b'8' | b'9' | b'a' | b'b')); // variant nibble
         }
     }
 
@@ -175,10 +174,7 @@ mod tests {
         let expr = UuidExpr::new(7);
         let mut streamed = Vec::new();
         for n in [3usize, 4usize] {
-            let batch = empty_batch(n);
-            let arr = expr.evaluate(&batch).unwrap().into_array(n).unwrap();
-            let arr = arr.as_any().downcast_ref::<StringArray>().unwrap();
-            streamed.extend((0..arr.len()).map(|i| arr.value(i).to_string()));
+            streamed.extend(collect_uuids(&expr, &empty_batch(n)));
         }
         assert_eq!(streamed, eval_uuids(7, 7));
         // All distinct.
