@@ -80,7 +80,7 @@ abstract class CometTestBase
     conf.set(CometConf.COMET_ENABLED.key, "true")
     conf.set(CometConf.COMET_ONHEAP_ENABLED.key, "true")
     conf.set(CometConf.COMET_EXEC_ENABLED.key, "true")
-    conf.set(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key, "true")
+    conf.set(CometConf.COMET_SHUFFLE_ENABLED.key, "true")
     conf.set(CometConf.COMET_SPARK_TO_ARROW_ENABLED.key, "true")
     conf.set(CometConf.COMET_NATIVE_SCAN_ENABLED.key, "true")
     conf.set(CometConf.COMET_PARQUET_UNSIGNED_SMALL_INT_CHECK.key, "false")
@@ -1171,7 +1171,7 @@ abstract class CometTestBase
       df: DataFrame,
       cometExchangeNum: Int,
       native: Boolean): Seq[CometShuffleExchangeExec] = {
-    if (CometConf.COMET_EXEC_SHUFFLE_ENABLED.get()) {
+    if (CometConf.COMET_SHUFFLE_ENABLED.get()) {
       val sparkPlan = stripAQEPlan(df.queryExecution.executedPlan)
 
       val cometShuffleExecs = sparkPlan.collect { case b: CometShuffleExchangeExec => b }

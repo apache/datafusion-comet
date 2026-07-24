@@ -185,7 +185,7 @@ on the unoptimized path.
   Comet operator and the Python UDF, you need Comet's native shuffle for the optimization to
   apply. Set `spark.shuffle.manager` to
   `org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager` and enable
-  `spark.comet.exec.shuffle.enabled=true` at session startup. With a vanilla Spark `Exchange`
+  `spark.comet.shuffle.enabled=true` at session startup. With a vanilla Spark `Exchange`
   in the plan the data leaves the shuffle as rows and the optimization cannot fire.
 - Spark 4.0 or newer is required. On Spark 3.4 and 3.5 the optimization is a no-op even when
   enabled; vanilla `PythonMapInArrowExec` / `MapInPandasExec` handle the operation. The Spark 3.5

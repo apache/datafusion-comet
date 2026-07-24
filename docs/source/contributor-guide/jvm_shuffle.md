@@ -40,7 +40,7 @@ The JVM shuffle is selected via `CometShuffleDependency.shuffleType`.
 
 JVM shuffle (`CometColumnarExchange`) is used instead of native shuffle (`CometExchange`) in the following cases:
 
-1. **Shuffle mode is explicitly set to "jvm"**: When `spark.comet.exec.shuffle.mode` is set to `jvm`.
+1. **Shuffle mode is explicitly set to "jvm"**: When `spark.comet.shuffle.mode` is set to `jvm`.
 
 2. **Child plan is not a Comet native operator**: When the child plan is a Spark row-based operator
    (not a `CometPlan`), JVM shuffle is the only option since native shuffle requires columnar input
@@ -187,8 +187,8 @@ Selection logic in `CometShuffleManager.shouldBypassMergeSort()`:
 
 ## Configuration
 
-| Config                                         | Description                         |
-| ---------------------------------------------- | ----------------------------------- |
-| `spark.comet.columnar.shuffle.batch.size`      | Rows per Arrow batch                |
-| `spark.comet.columnar.shuffle.spill.threshold` | Row count threshold for spill       |
-| `spark.comet.exec.shuffle.compression.codec`   | Compression codec (zstd, lz4, etc.) |
+| Config                                   | Description                         |
+| ---------------------------------------- | ----------------------------------- |
+| `spark.comet.shuffle.jvm.batchSize`      | Rows per Arrow batch                |
+| `spark.comet.shuffle.jvm.spillThreshold` | Row count threshold for spill       |
+| `spark.comet.shuffle.compression.codec`  | Compression codec (zstd, lz4, etc.) |

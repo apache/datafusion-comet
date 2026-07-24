@@ -52,7 +52,7 @@ $SPARK_HOME/bin/spark-submit \
   --conf spark.eventLog.enabled=true \
   --conf spark.eventLog.dir="$EVENT_LOG_DIR" \
   --conf spark.comet.enabled=false \
-  --conf spark.comet.exec.shuffle.enabled=false \
+  --conf spark.comet.shuffle.enabled=false \
   "$SCRIPT_DIR/run_benchmark.py" \
   --data "$DATA_PATH" \
   --mode spark
@@ -76,7 +76,7 @@ $SPARK_HOME/bin/spark-submit \
   --conf spark.comet.logFallbackReasons.enabled=true \
   --conf spark.comet.explainFallback.enabled=true \
   --conf spark.comet.shuffle.mode=jvm \
-  --conf spark.comet.exec.shuffle.mode=jvm \
+  --conf spark.comet.shuffle.mode=jvm \
   --conf spark.comet.exec.replaceSortMergeJoin=true \
   --conf spark.shuffle.manager=org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager \
   --conf spark.sql.extensions=org.apache.comet.CometSparkSessionExtensions \
@@ -103,7 +103,7 @@ $SPARK_HOME/bin/spark-submit \
   --conf spark.comet.parquet.write.enabled=true \
   --conf spark.comet.logFallbackReasons.enabled=true \
   --conf spark.comet.explainFallback.enabled=true \
-  --conf spark.comet.exec.shuffle.mode=native \
+  --conf spark.comet.shuffle.mode=native \
   --conf spark.comet.exec.replaceSortMergeJoin=true \
   --conf spark.shuffle.manager=org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager \
   --conf spark.sql.extensions=org.apache.comet.CometSparkSessionExtensions \

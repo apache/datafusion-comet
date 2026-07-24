@@ -172,7 +172,7 @@ class CometTPCDSQueryTestSuite extends QueryTest with TPCDSBase with CometSQLQue
     CometConf.COMET_ENABLED.key -> "true",
     CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "true",
     CometConf.COMET_EXEC_ENABLED.key -> "true",
-    CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true")
+    CometConf.COMET_SHUFFLE_ENABLED.key -> "true")
 
   val sortMergeJoinConf: Map[String, String] = Map(
     SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",

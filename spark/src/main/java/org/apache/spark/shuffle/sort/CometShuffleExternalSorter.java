@@ -128,21 +128,20 @@ public final class CometShuffleExternalSorter implements CometShuffleChecksumSup
     this.numPartitions = numPartitions;
     this.schema = schema;
     this.numElementsForSpillThreshold =
-        (int) CometConf$.MODULE$.COMET_COLUMNAR_SHUFFLE_SPILL_THRESHOLD().get();
+        (int) CometConf$.MODULE$.COMET_SHUFFLE_JVM_SPILL_THRESHOLD().get();
     this.writeMetrics = writeMetrics;
 
     this.peakMemoryUsedBytes = getMemoryUsage();
     this.partitionChecksums = createPartitionChecksums(numPartitions, conf);
     this.checksumAlgorithm = getChecksumAlgorithm(conf);
-    this.compressionCodec = CometConf$.MODULE$.COMET_EXEC_SHUFFLE_COMPRESSION_CODEC().get();
-    this.compressionLevel =
-        (int) CometConf$.MODULE$.COMET_EXEC_SHUFFLE_COMPRESSION_ZSTD_LEVEL().get();
+    this.compressionCodec = CometConf$.MODULE$.COMET_SHUFFLE_COMPRESSION_CODEC().get();
+    this.compressionLevel = (int) CometConf$.MODULE$.COMET_SHUFFLE_COMPRESSION_ZSTD_LEVEL().get();
 
     this.initialSize = initialSize;
     this.tracingEnabled = (boolean) CometConf$.MODULE$.COMET_TRACING_ENABLED().get();
 
     this.preferDictionaryRatio =
-        (double) CometConf$.MODULE$.COMET_SHUFFLE_PREFER_DICTIONARY_RATIO().get();
+        (double) CometConf$.MODULE$.COMET_SHUFFLE_JVM_PREFER_DICTIONARY_RATIO().get();
 
     this.activeSpillSorter = createSpillSorter();
   }

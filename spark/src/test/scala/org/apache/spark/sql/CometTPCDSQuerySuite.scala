@@ -186,7 +186,7 @@ class CometTPCDSQuerySuite
     conf.set(CometConf.COMET_ENABLED.key, "true")
     conf.set(CometConf.COMET_EXEC_ENABLED.key, "true")
     conf.set(CometConf.COMET_NATIVE_SCAN_ENABLED.key, "true")
-    conf.set(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key, "true")
+    conf.set(CometConf.COMET_SHUFFLE_ENABLED.key, "true")
     conf.set(CometConf.COMET_ONHEAP_MEMORY_OVERHEAD.key, "15g")
     conf.set(CometConf.COMET_EXPLAIN_TRANSFORMATIONS.key, "true")
     conf.set("spark.sql.adaptive.coalescePartitions.enabled", "true")

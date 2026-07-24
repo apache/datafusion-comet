@@ -38,7 +38,7 @@ class CometJoinSuite extends CometTestBase {
   override protected def test(testName: String, testTags: Tag*)(testFun: => Any)(implicit
       pos: Position): Unit = {
     super.test(testName, testTags: _*) {
-      withSQLConf(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true") {
+      withSQLConf(CometConf.COMET_SHUFFLE_ENABLED.key -> "true") {
         testFun
       }
     }

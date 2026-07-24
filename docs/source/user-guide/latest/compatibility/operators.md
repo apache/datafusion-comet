@@ -62,7 +62,7 @@ incorrect result. When any single window expression in a `WindowExec` falls back
 
 Comet's native shuffle implementation of round-robin partitioning (`df.repartition(n)`) is not compatible with
 Spark's implementation and is disabled by default. It can be enabled by setting
-`spark.comet.native.shuffle.partitioning.roundrobin.enabled=true`.
+`spark.comet.shuffle.native.partitioning.roundrobin.enabled=true`.
 
 **Why the incompatibility exists:**
 

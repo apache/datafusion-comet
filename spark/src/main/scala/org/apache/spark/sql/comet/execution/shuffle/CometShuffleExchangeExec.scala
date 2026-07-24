@@ -50,7 +50,7 @@ import org.apache.spark.util.random.XORShiftRandom
 import com.google.common.base.Objects
 
 import org.apache.comet.{CometConf, CometExplainInfo}
-import org.apache.comet.CometConf.{COMET_EXEC_SHUFFLE_ENABLED, COMET_SHUFFLE_MODE}
+import org.apache.comet.CometConf.{COMET_SHUFFLE_ENABLED, COMET_SHUFFLE_MODE}
 import org.apache.comet.CometSparkSessionExtensions.{hasFallbackReason, isCometShuffleManagerEnabled, withFallbackReasons}
 import org.apache.comet.serde.{Compatible, OperatorOuterClass, QueryPlanSerde, SupportLevel, Unsupported}
 import org.apache.comet.serde.operator.CometSink
@@ -350,11 +350,11 @@ object CometShuffleExchangeExec
     }
 
     if (!isCometPlan(s.child) &&
-      !CometConf.COMET_EXEC_SHUFFLE_CONVERT_FROM_SPARK_PLAN_ENABLED.get(s.conf)) {
+      !CometConf.COMET_SHUFFLE_CONVERT_FROM_SPARK_PLAN_ENABLED.get(s.conf)) {
       withFallbackReasons(
         s,
         Set(
-          s"${CometConf.COMET_EXEC_SHUFFLE_CONVERT_FROM_SPARK_PLAN_ENABLED.key} is disabled " +
+          s"${CometConf.COMET_SHUFFLE_CONVERT_FROM_SPARK_PLAN_ENABLED.key} is disabled " +
             "and child is not a Comet plan"))
       return None
     }
@@ -445,9 +445,9 @@ object CometShuffleExchangeExec
     val partitioning = s.outputPartitioning
     partitioning match {
       case HashPartitioning(expressions, _) =>
-        if (!CometConf.COMET_EXEC_SHUFFLE_WITH_HASH_PARTITIONING_ENABLED.get(conf)) {
+        if (!CometConf.COMET_SHUFFLE_NATIVE_HASH_PARTITIONING_ENABLED.get(conf)) {
           reasons +=
-            s"${CometConf.COMET_EXEC_SHUFFLE_WITH_HASH_PARTITIONING_ENABLED.key} is disabled"
+            s"${CometConf.COMET_SHUFFLE_NATIVE_HASH_PARTITIONING_ENABLED.key} is disabled"
         }
         for (expr <- expressions) {
           if (QueryPlanSerde.exprToProto(expr, inputs).isEmpty) {
@@ -484,9 +484,9 @@ object CometShuffleExchangeExec
             false
         }
 
-        if (!CometConf.COMET_EXEC_SHUFFLE_WITH_RANGE_PARTITIONING_ENABLED.get(conf)) {
+        if (!CometConf.COMET_SHUFFLE_NATIVE_RANGE_PARTITIONING_ENABLED.get(conf)) {
           reasons +=
-            s"${CometConf.COMET_EXEC_SHUFFLE_WITH_RANGE_PARTITIONING_ENABLED.key} is disabled"
+            s"${CometConf.COMET_SHUFFLE_NATIVE_RANGE_PARTITIONING_ENABLED.key} is disabled"
           return reasons.toSeq
         }
         for (o <- orderings) {
@@ -511,7 +511,7 @@ object CometShuffleExchangeExec
           }
         }
       case RoundRobinPartitioning(_) =>
-        val config = CometConf.COMET_EXEC_SHUFFLE_WITH_ROUND_ROBIN_PARTITIONING_ENABLED
+        val config = CometConf.COMET_SHUFFLE_NATIVE_ROUND_ROBIN_PARTITIONING_ENABLED
         if (!config.get(conf)) {
           reasons += s"${config.key} is disabled"
         }
@@ -666,8 +666,8 @@ object CometShuffleExchangeExec
    * tag the node.
    */
   private def isCometShuffleEnabledReason(op: SparkPlan): Option[String] = {
-    if (!COMET_EXEC_SHUFFLE_ENABLED.get(op.conf)) {
-      Some(s"Comet shuffle is not enabled: ${COMET_EXEC_SHUFFLE_ENABLED.key} is not enabled")
+    if (!COMET_SHUFFLE_ENABLED.get(op.conf)) {
+      Some(s"Comet shuffle is not enabled: ${COMET_SHUFFLE_ENABLED.key} is not enabled")
     } else if (!isCometShuffleManagerEnabled(op.conf)) {
       Some(s"spark.shuffle.manager is not set to ${classOf[CometShuffleManager].getName}")
     } else {
