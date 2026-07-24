@@ -619,15 +619,17 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
-  val COMET_LOG_FALLBACK_REASONS: ConfigEntry[Boolean] =
-    conf("spark.comet.logFallbackReasons.enabled")
+  val COMET_EXPLAIN_FALLBACK_LOG_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.explain.fallback.log.enabled")
+      .withAlternative("spark.comet.logFallbackReasons.enabled")
       .category(CATEGORY_EXEC_EXPLAIN)
       .doc("When this setting is enabled, Comet will log warnings for all fallback reasons.")
       .booleanConf
       .createWithEnvVarOrDefault("ENABLE_COMET_LOG_FALLBACK_REASONS", false)
 
   val COMET_EXPLAIN_FALLBACK_ENABLED: ConfigEntry[Boolean] =
-    conf("spark.comet.explainFallback.enabled")
+    conf("spark.comet.explain.fallback.enabled")
+      .withAlternative("spark.comet.explainFallback.enabled")
       .category(CATEGORY_EXEC_EXPLAIN)
       .doc(
         "When this setting is enabled, Comet will provide logging explaining the reason(s) " +
@@ -637,7 +639,8 @@ object CometConf extends ShimCometConf {
       .createWithDefault(false)
 
   val COMET_EXPLAIN_CODEGEN_ENABLED: ConfigEntry[Boolean] =
-    conf("spark.comet.explainCodegen.enabled")
+    conf("spark.comet.explain.codegen.enabled")
+      .withAlternative("spark.comet.explainCodegen.enabled")
       .category(CATEGORY_EXEC_EXPLAIN)
       .doc("When enabled, Comet annotates the surrounding Comet operator with a `[COMET-INFO: " +
         "JVM codegen dispatcher: <names>]` segment listing every expression it routed through " +

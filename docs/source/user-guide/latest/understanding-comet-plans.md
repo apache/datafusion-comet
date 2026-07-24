@@ -87,29 +87,29 @@ incompatibility details.
 Comet provides five configs for understanding what is happening in a plan.
 They serve different purposes and produce output in different places.
 
-| Config                                   | Output destination                 | What you see                                                                                                                                                              |
-| ---------------------------------------- | ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `spark.comet.explainFallback.enabled`    | Driver log (only when fallback)    | A WARN with the list of reasons each query stage could not run in Comet.                                                                                                  |
-| `spark.comet.logFallbackReasons.enabled` | Driver log                         | One WARN per fallback reason as it is encountered, without surrounding plan context.                                                                                      |
-| `spark.comet.explainCodegen.enabled`     | `ExtendedExplainInfo` / SQL UI     | A single `[COMET-INFO: JVM codegen dispatcher: <name1>, <name2>, ...]` segment naming each expression on the operator that was routed through the JVM codegen dispatcher. |
-| `spark.comet.explain.format`             | Spark SQL UI (Spark 4.0 and newer) | Annotated plan or fallback-reason list, depending on `verbose` (default) or `fallback` value.                                                                             |
-| `spark.comet.explain.native.enabled`     | Executor logs, per task            | The DataFusion plan with metrics, useful for inspecting Rust execution.                                                                                                   |
+| Config                                    | Output destination                 | What you see                                                                                                                                                              |
+| ----------------------------------------- | ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `spark.comet.explain.fallback.enabled`    | Driver log (only when fallback)    | A WARN with the list of reasons each query stage could not run in Comet.                                                                                                  |
+| `spark.comet.explain.fallback.log.enabled`| Driver log                         | One WARN per fallback reason as it is encountered, without surrounding plan context.                                                                                      |
+| `spark.comet.explain.codegen.enabled`     | `ExtendedExplainInfo` / SQL UI     | A single `[COMET-INFO: JVM codegen dispatcher: <name1>, <name2>, ...]` segment naming each expression on the operator that was routed through the JVM codegen dispatcher. |
+| `spark.comet.explain.format`              | Spark SQL UI (Spark 4.0 and newer) | Annotated plan or fallback-reason list, depending on `verbose` (default) or `fallback` value.                                                                             |
+| `spark.comet.explain.native.enabled`      | Executor logs, per task            | The DataFusion plan with metrics, useful for inspecting Rust execution.                                                                                                   |
 
-### `spark.comet.explainFallback.enabled`
+### `spark.comet.explain.fallback.enabled`
 
 Logs a single WARN listing the reasons each query stage could not be executed
 in Comet. Nothing is logged when the entire stage runs in Comet. Useful as a
 low-noise check that fallback is or is not happening.
 
-### `spark.comet.logFallbackReasons.enabled`
+### `spark.comet.explain.fallback.log.enabled`
 
 Logs every fallback reason as it is encountered, one WARN per reason. Use this
 when you want to see all reasons, including ones that
-`spark.comet.explainFallback.enabled` may aggregate or omit. The output does
+`spark.comet.explain.fallback.enabled` may aggregate or omit. The output does
 not include the surrounding plan, so it is best for accumulating diagnostics
 across many queries.
 
-### `spark.comet.explainCodegen.enabled`
+### `spark.comet.explain.codegen.enabled`
 
 Disabled by default. When enabled, Comet annotates the surrounding Comet
 operator (`CometProject`, `CometFilter`, etc.) with a single combined
@@ -130,7 +130,7 @@ Example:
 
 ```scala
 spark.conf.set("spark.comet.exec.scalaUDF.codegen.enabled", "true")
-spark.conf.set("spark.comet.explainCodegen.enabled", "true")
+spark.conf.set("spark.comet.explain.codegen.enabled", "true")
 
 val df = spark.sql("SELECT hypot(a, b), levenshtein(s1, s2) FROM t")
 println(new org.apache.comet.ExtendedExplainInfo()

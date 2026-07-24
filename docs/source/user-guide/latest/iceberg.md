@@ -43,7 +43,7 @@ $SPARK_HOME/bin/spark-shell \
     --conf spark.sql.catalog.spark_catalog.warehouse=/tmp/warehouse \
     --conf spark.plugins=org.apache.spark.CometPlugin \
     --conf spark.shuffle.manager=org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager \
-    --conf spark.comet.explainFallback.enabled=true \
+    --conf spark.comet.explain.fallback.enabled=true \
     --conf spark.memory.offHeap.enabled=true \
     --conf spark.memory.offHeap.size=2g
 ```
@@ -128,7 +128,7 @@ $SPARK_HOME/bin/spark-shell \
     --conf spark.sql.catalog.rest_cat.warehouse=/tmp/warehouse \
     --conf spark.plugins=org.apache.spark.CometPlugin \
     --conf spark.shuffle.manager=org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager \
-    --conf spark.comet.explainFallback.enabled=true \
+    --conf spark.comet.explain.fallback.enabled=true \
     --conf spark.memory.offHeap.enabled=true \
     --conf spark.memory.offHeap.size=2g
 ```
