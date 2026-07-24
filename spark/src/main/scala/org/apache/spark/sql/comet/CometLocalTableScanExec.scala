@@ -31,7 +31,7 @@ import org.apache.spark.sql.comet.execution.arrow.{CometArrowStream, CometNative
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution.{LeafExecNode, LocalTableScanExec}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
-import org.apache.spark.sql.types.{DataType, NullType, StructType, DayTimeIntervalType, YearMonthIntervalType}
+import org.apache.spark.sql.types.{DataType, DayTimeIntervalType, NullType, StructType, YearMonthIntervalType}
 
 import com.google.common.base.Objects
 
