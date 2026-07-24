@@ -15,30 +15,16 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! PoC of vectorization execution through JNI to Rust.
-pub mod columnar_to_row;
-pub mod expressions;
-pub mod jni_api;
-pub(crate) mod merge_as_partial;
-pub(crate) mod metrics;
-pub mod operators;
-pub(crate) mod planner;
-pub mod serde;
-pub use datafusion_comet_shuffle as shuffle;
-pub(crate) mod sort;
-pub(crate) mod spark_plan;
-pub use datafusion_comet_spark_expr::timezone;
-pub mod lambda;
-mod memory_pools;
-pub(crate) mod spark_config;
-pub(crate) mod tracing;
-pub(crate) mod utils;
+use datafusion::common::DataFusionError;
+use datafusion::execution::FunctionRegistry;
+use datafusion::logical_expr::HigherOrderUDF;
+use std::sync::Arc;
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn it_works() {
-        let result = 2 + 2;
-        assert_eq!(result, 4);
-    }
+pub fn create_comet_hof_func(
+    func_name: &str,
+    registry: &dyn FunctionRegistry,
+) -> Result<Arc<HigherOrderUDF>, DataFusionError> {
+    registry.higher_order_function(func_name).map_err(|e| {
+        DataFusionError::Execution(format!("HOF {func_name} not found in the registry: {e}"))
+    })
 }

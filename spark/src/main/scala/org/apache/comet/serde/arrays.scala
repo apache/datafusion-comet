@@ -663,9 +663,32 @@ object CometFlatten extends CometExpressionSerde[Flatten] with ArraysBase {
   }
 }
 
-object CometArrayFilter extends CometExpressionSerde[ArrayFilter] {
+object CometArrayFilter extends CometHighOrderFunction[ArrayFilter]("array_filter") {
 
-  override def getSupportLevel(expr: ArrayFilter): SupportLevel = Compatible()
+  private val UNARY_FUNCTION_EXPECTED =
+    "The array_filter function in DataFusion is limited to one lambda parameter"
+
+  override def getUnsupportedReasons(): Seq[String] = Seq(UNARY_FUNCTION_EXPECTED)
+
+  private def isUnaryLambdaFunction(expr: ArrayFilter): Boolean = {
+    expr.function match {
+      case function: LambdaFunction =>
+        function.arguments.length == 1
+      case _ =>
+        false
+    }
+  }
+
+  override def getSupportLevel(expr: ArrayFilter): SupportLevel = {
+    if (!isUnaryLambdaFunction(expr)) {
+      if (CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.get()) {
+        return Compatible()
+      } else {
+        return Unsupported(Some(UNARY_FUNCTION_EXPECTED))
+      }
+    }
+    super.getSupportLevel(expr)
+  }
 
   override def convert(
       expr: ArrayFilter,
@@ -678,11 +701,10 @@ object CometArrayFilter extends CometExpressionSerde[ArrayFilter] {
         // restore the native serde here (avoids per-batch JNI). Guard requires the IsNotNull
         // operand to be the lambda variable itself, not a captured column (#4830).
         CometArrayCompact.convert(expr, inputs, binding)
-      case _ =>
-        // General lambda: run Spark's own evaluation through the codegen dispatcher so the result
-        // matches Spark exactly, like the other higher-order functions (`transform`, `exists`).
-        // Falls back to Spark when the dispatcher is disabled.
+      case _ if !isUnaryLambdaFunction(expr) =>
         CometScalaUDF.emitJvmCodegenDispatch(expr, inputs, binding)
+      case _ =>
+        super.convert(expr, inputs, binding)
     }
   }
 }
