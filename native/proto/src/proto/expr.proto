@@ -149,6 +149,7 @@ message AggExpr {
     CollectSet collectSet = 17;
     Percentile percentile = 18;
     ApproxPercentile approxPercentile = 19;
+    HllPlusPlus hllpp = 20;
   }
 
   // Optional filter expression for SQL FILTER (WHERE ...) clause.
@@ -294,6 +295,13 @@ enum BloomFilterVersion {
 message CollectSet {
   Expr child = 1;
   DataType datatype = 2;
+}
+
+// approx_count_distinct (Spark's HyperLogLogPlusPlus)
+message HllPlusPlus {
+  Expr child = 1;
+  // Number of addressing bits, computed from relativeSD to match Spark.
+  int32 precision = 2;
 }
 
 enum EvalMode {

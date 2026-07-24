@@ -62,6 +62,7 @@ private[codegen] object CometBatchKernelCodegenInput extends CometTypeShim {
     classOf[Float4Vector],
     classOf[Float8Vector],
     classOf[DateDayVector],
+    classOf[DurationVector],
     classOf[TimeNanoVector],
     classOf[TimeStampMicroVector],
     classOf[TimeStampMicroTZVector])
@@ -135,6 +136,7 @@ private[codegen] object CometBatchKernelCodegenInput extends CometTypeShim {
     val longCases = withOrd.collect {
       case (ArrowColumnSpec(cls, _), ord)
           if cls == classOf[BigIntVector] ||
+            cls == classOf[DurationVector] ||
             cls == classOf[TimeNanoVector] ||
             cls == classOf[TimeStampMicroVector] ||
             cls == classOf[TimeStampMicroTZVector] =>
@@ -594,7 +596,8 @@ private[codegen] object CometBatchKernelCodegenInput extends CometTypeShim {
     case ByteType => s"getByte($idx)"
     case ShortType => s"getShort($idx)"
     case IntegerType | DateType => s"getInt($idx)"
-    case LongType | TimestampType | TimestampNTZType => s"getLong($idx)"
+    case LongType | TimestampType | TimestampNTZType | _: DayTimeIntervalType =>
+      s"getLong($idx)"
     case dt if isTimeType(dt) => s"getLong($idx)"
     case FloatType => s"getFloat($idx)"
     case DoubleType => s"getDouble($idx)"
@@ -696,7 +699,7 @@ private[codegen] object CometBatchKernelCodegenInput extends CometTypeShim {
            |      public int getInt(int i) {
            |        return $childField.getInt(startIndex + i);
            |      }""".stripMargin
-      case LongType | TimestampType | TimestampNTZType =>
+      case LongType | TimestampType | TimestampNTZType | _: DayTimeIntervalType =>
         s"""      @Override
            |      public long getLong(int i) {
            |        return $childField.getLong(startIndex + i);
@@ -854,7 +857,7 @@ private[codegen] object CometBatchKernelCodegenInput extends CometTypeShim {
           s"        case $fi: return ${path}_f$fi.getShort(this.rowIdx);"
         case IntegerType | DateType =>
           s"        case $fi: return ${path}_f$fi.getInt(this.rowIdx);"
-        case LongType | TimestampType | TimestampNTZType =>
+        case LongType | TimestampType | TimestampNTZType | _: DayTimeIntervalType =>
           s"        case $fi: return ${path}_f$fi.getLong(this.rowIdx);"
         case dt if isTimeType(dt) =>
           s"        case $fi: return ${path}_f$fi.getLong(this.rowIdx);"
@@ -908,8 +911,10 @@ private[codegen] object CometBatchKernelCodegenInput extends CometTypeShim {
     val longCases = scalarOrd.collect {
       case (f, fi)
           if f.sparkType == LongType || f.sparkType == TimestampType ||
-            f.sparkType == TimestampNTZType || isTimeType(f.sparkType) =>
-        fieldReadScalar(fi, LongType, f.nullable)
+            f.sparkType == TimestampNTZType ||
+            f.sparkType.isInstanceOf[DayTimeIntervalType] ||
+            isTimeType(f.sparkType) =>
+        fieldReadScalar(fi, f.sparkType, f.nullable)
     }
     val floatCases =
       scalarOrd.collect {

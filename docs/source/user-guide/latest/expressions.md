@@ -60,7 +60,7 @@ expressions. The following function families are **not currently planned** for n
 
 The file-metadata functions `input_file_name`, `input_file_block_start`, and `input_file_block_length` depend on scan-internal per-row file information rather than the expression layer; their support status is covered in the [scan compatibility guide](compatibility/scans.md).
 
-Note that `approx_count_distinct`, `median`, and `mode` are planned: they are mainstream (`median` and `mode` are exact aggregates).
+Note that `median` and `mode` are planned: they are mainstream exact aggregates. `approx_count_distinct` is supported because Comet ports Spark's `HyperLogLogPlusPlus` exactly, so its result is bit-identical to Spark.
 
 The tables below list every Spark built-in expression with its current status.
 
@@ -70,7 +70,7 @@ The tables below list every Spark built-in expression with its current status.
 | --- | --- | --- |
 | `any` | ✅ |  |
 | `any_value` | ✅ |  |
-| `approx_count_distinct` | 🔜 | tracking [#4098](https://github.com/apache/datafusion-comet/issues/4098) |
+| `approx_count_distinct` | ✅ |  |
 | `approx_percentile` | ✅ | Byte, short, int, long, float, and double input; other input types fall back to Spark |
 | `array_agg` | 🔜 | Array aggregate (related to `collect_list`, [#2524](https://github.com/apache/datafusion-comet/issues/2524)) |
 | `avg` | ✅ | Interval types fall back |
@@ -294,9 +294,9 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `trunc` | ✅ |  |
 | `try_make_interval` | 🔜 | Produces legacy CalendarInterval; tracked by [#4540](https://github.com/apache/datafusion-comet/issues/4540) |
 | `try_make_timestamp` | ✅ |  |
-| `try_to_date` | 🔜 | Rewrites to `Cast`/`GetTimestamp` but currently falls back; tracked by [#4556](https://github.com/apache/datafusion-comet/issues/4556) |
+| `try_to_date` | ✅ | Rewrites to `Cast`/`GetTimestamp` before Comet sees the plan; same support as `to_date` |
 | `try_to_time` | 🔜 | Spark 4.1 TIME type; tracked by [#4288](https://github.com/apache/datafusion-comet/issues/4288) |
-| `try_to_timestamp` | 🔜 | Rewrites to `Cast`/`GetTimestamp` but currently falls back; tracked by [#4556](https://github.com/apache/datafusion-comet/issues/4556) |
+| `try_to_timestamp` | ✅ | Rewrites to `Cast`/`GetTimestamp` before Comet sees the plan; same support as `to_timestamp` |
 | `unix_date` | ✅ |  |
 | `unix_micros` | ✅ |  |
 | `unix_millis` | ✅ |  |
