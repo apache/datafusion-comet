@@ -29,7 +29,7 @@ use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::ColumnarValue;
 use std::any::Any;
 use std::borrow::Cow;
-use std::fmt::{Debug, Display, Formatter};
+use std::fmt::{Debug, Display, Formatter, Write};
 use std::hash::Hash;
 use std::sync::Arc;
 
@@ -187,85 +187,137 @@ fn escape_string(input: &str) -> Cow<'_, str> {
     Cow::Owned(escaped)
 }
 
+/// How the rendered value of a column has to be written into the JSON output.
+enum FieldStyle {
+    /// String column: always quoted.
+    Quoted,
+    /// The rendering may be `NaN` / `Infinity`, which Spark writes as a quoted string.
+    MaybeQuoted,
+    /// The rendering is always written verbatim.
+    Raw,
+}
+
+/// Peels off a dictionary encoding to get at the type the values are rendered from.
+fn value_type(data_type: &DataType) -> &DataType {
+    match data_type {
+        DataType::Dictionary(_, dt) => dt.as_ref(),
+        dt => dt,
+    }
+}
+
+/// True for types whose string rendering can never be `NaN` or `Infinity`, so the
+/// per-value check for those spellings can be skipped entirely.
+fn never_renders_special_float(data_type: &DataType) -> bool {
+    let data_type = value_type(data_type);
+    data_type.is_null()
+        || data_type.is_integer()
+        || data_type.is_decimal()
+        || data_type.is_temporal()
+        || matches!(data_type, DataType::Boolean)
+}
+
 fn struct_to_json(
     array: &StructArray,
     timezone: &str,
     ignore_null_fields: bool,
 ) -> Result<ArrayRef> {
-    // get field names and escape any quotes
-    let field_names: Vec<String> = array
-        .fields()
-        .iter()
-        .map(|f| escape_string(f.name().as_str()).into_owned())
-        .collect();
-    // determine which fields need to have their values quoted
-    let is_string: Vec<bool> = array
-        .fields()
-        .iter()
-        .map(|f| match f.data_type() {
-            DataType::Utf8 | DataType::LargeUtf8 => true,
-            DataType::Dictionary(_, dt) => {
-                matches!(dt.as_ref(), DataType::Utf8 | DataType::LargeUtf8)
-            }
-            _ => false,
-        })
-        .collect();
     // create JSON string representation of each column
     let string_arrays: Vec<ArrayRef> = array
         .columns()
         .iter()
         .map(|arr| array_to_json_string(arr, timezone, ignore_null_fields))
         .collect::<Result<Vec<_>>>()?;
-    let string_arrays: Vec<&StringArray> = string_arrays
+
+    // pre-render `"field_name":` so that each field costs a single copy rather than one
+    // per punctuation character, and decide up front how its values have to be written
+    let fields: Vec<(&StringArray, String, FieldStyle)> = array
+        .fields()
         .iter()
-        .map(|arr| {
-            arr.as_any()
+        .zip(string_arrays.iter())
+        .map(|(f, values)| {
+            let values = values
+                .as_any()
                 .downcast_ref::<StringArray>()
-                .expect("string array")
+                .expect("string array");
+            let prefix = format!("\"{}\":", escape_string(f.name()));
+            let style = match value_type(f.data_type()) {
+                DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View => FieldStyle::Quoted,
+                _ if never_renders_special_float(f.data_type()) => FieldStyle::Raw,
+                _ => FieldStyle::MaybeQuoted,
+            };
+            (values, prefix, style)
         })
         .collect();
-    // build the JSON string containing entries in the format `"field_name":field_value`
-    let mut builder = StringBuilder::with_capacity(array.len(), array.len() * 16);
-    let mut json = String::with_capacity(array.len() * 16);
-    for row_index in 0..array.len() {
+
+    // size the output buffer from the rendered columns so that it does not have to grow:
+    // the braces of each row, plus every field's `,"name":` and its (possibly quoted) value.
+    // The values length is taken from the offsets so a sliced input does not over-allocate.
+    let num_rows = array.len();
+    let data_capacity = 2 * num_rows
+        + fields
+            .iter()
+            .map(|(values, prefix, _)| {
+                let offsets = values.value_offsets();
+                let bytes = if offsets.is_empty() {
+                    0
+                } else {
+                    (offsets[offsets.len() - 1] - offsets[0]) as usize
+                };
+                bytes + num_rows * (prefix.len() + 3)
+            })
+            .sum::<usize>();
+
+    // build the JSON string containing entries in the format `"field_name":field_value`,
+    // writing straight into the builder rather than staging each row in a temporary
+    let mut builder = StringBuilder::with_capacity(num_rows, data_capacity);
+    for row_index in 0..num_rows {
         if array.is_null(row_index) {
             builder.append_null();
-        } else {
-            json.clear();
-            let mut any_fields_written = false;
-            json.push('{');
-            for col_index in 0..string_arrays.len() {
-                let is_null = string_arrays[col_index].is_null(row_index);
-                if is_null && ignore_null_fields {
-                    continue;
-                }
-                if any_fields_written {
-                    json.push(',');
-                }
-                // quoted field name
-                json.push('"');
-                json.push_str(&field_names[col_index]);
-                json.push_str("\":");
-                if is_null {
-                    json.push_str("null");
-                } else {
-                    // value
-                    let string_value = string_arrays[col_index].value(row_index);
-                    if is_string[col_index] || is_infinity(string_value) || is_nan(string_value) {
-                        json.push('"');
-                        json.push_str(escape_string(string_value).as_ref());
-                        json.push('"');
-                    } else {
-                        json.push_str(string_value);
-                    }
-                }
-                any_fields_written = true;
-            }
-            json.push('}');
-            builder.append_value(&json);
+            continue;
         }
+        let mut any_fields_written = false;
+        append(&mut builder, "{");
+        for (values, prefix, style) in &fields {
+            let is_null = values.is_null(row_index);
+            if is_null && ignore_null_fields {
+                continue;
+            }
+            if any_fields_written {
+                append(&mut builder, ",");
+            }
+            any_fields_written = true;
+            append(&mut builder, prefix);
+            if is_null {
+                append(&mut builder, "null");
+                continue;
+            }
+            let string_value = values.value(row_index);
+            match style {
+                FieldStyle::Quoted => {
+                    append(&mut builder, "\"");
+                    append(&mut builder, escape_string(string_value).as_ref());
+                    append(&mut builder, "\"");
+                }
+                // the special float spellings contain nothing that needs escaping
+                FieldStyle::MaybeQuoted if is_infinity(string_value) || is_nan(string_value) => {
+                    append(&mut builder, "\"");
+                    append(&mut builder, string_value);
+                    append(&mut builder, "\"");
+                }
+                _ => append(&mut builder, string_value),
+            }
+        }
+        append(&mut builder, "}");
+        // finalizes the value accumulated by the `append` calls above
+        builder.append_value("");
     }
     Ok(Arc::new(builder.finish()))
+}
+
+/// Appends to the value currently being built. The builder's `Write` impl is infallible.
+#[inline]
+fn append(builder: &mut StringBuilder, s: &str) {
+    let _ = builder.write_str(s);
 }
 
 fn is_infinity(input: &str) -> bool {
@@ -354,6 +406,114 @@ mod test {
         assert_eq!(r#"{"a":{"a":true}}"#, json.value(1));
         assert_eq!(r#"{"a":{"a":false,"b":2147483647}}"#, json.value(2));
         assert_eq!(r#"{"a":{"a":false,"b":-2147483648}}"#, json.value(3));
+        Ok(())
+    }
+
+    #[test]
+    fn test_float_nan_and_infinity_quoted() -> Result<()> {
+        use arrow::array::Float64Array;
+        let floats: ArrayRef = Arc::new(Float64Array::from(vec![
+            Some(1.5),
+            Some(f64::NAN),
+            Some(f64::INFINITY),
+            Some(f64::NEG_INFINITY),
+        ]));
+        let struct_array = StructArray::from(vec![(
+            Arc::new(Field::new("a", DataType::Float64, true)),
+            floats,
+        )]);
+        let json = struct_to_json(&struct_array, "UTC", true)?;
+        let json = json
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .expect("string array");
+        assert_eq!(r#"{"a":1.5}"#, json.value(0));
+        assert_eq!(r#"{"a":"NaN"}"#, json.value(1));
+        assert_eq!(r#"{"a":"Infinity"}"#, json.value(2));
+        assert_eq!(r#"{"a":"-Infinity"}"#, json.value(3));
+        Ok(())
+    }
+
+    #[test]
+    fn test_string_value_is_escaped() -> Result<()> {
+        let strings: ArrayRef = Arc::new(StringArray::from(vec![
+            Some(r#"a"b"#),
+            Some("line1\nline2"),
+            Some("tab\tsep"),
+            Some("back\\slash"),
+        ]));
+        let struct_array = StructArray::from(vec![(
+            Arc::new(Field::new("s", DataType::Utf8, true)),
+            strings,
+        )]);
+        let json = struct_to_json(&struct_array, "UTC", true)?;
+        let json = json
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .expect("string array");
+        assert_eq!(r#"{"s":"a\"b"}"#, json.value(0));
+        assert_eq!(r#"{"s":"line1\nline2"}"#, json.value(1));
+        assert_eq!(r#"{"s":"tab\tsep"}"#, json.value(2));
+        assert_eq!(r#"{"s":"back\\slash"}"#, json.value(3));
+        Ok(())
+    }
+
+    #[test]
+    fn test_string_value_unicode_passthrough() -> Result<()> {
+        // Non-ASCII characters that do not need escaping should pass through unchanged.
+        let strings: ArrayRef =
+            Arc::new(StringArray::from(vec![Some("日本語"), Some("émoji 🚀")]));
+        let struct_array = StructArray::from(vec![(
+            Arc::new(Field::new("s", DataType::Utf8, true)),
+            strings,
+        )]);
+        let json = struct_to_json(&struct_array, "UTC", true)?;
+        let json = json
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .expect("string array");
+        assert_eq!(r#"{"s":"日本語"}"#, json.value(0));
+        assert_eq!("{\"s\":\"émoji 🚀\"}", json.value(1));
+        Ok(())
+    }
+
+    #[test]
+    fn test_ignore_null_fields_false_keeps_nulls() -> Result<()> {
+        let ints: ArrayRef = create_ints();
+        let struct_array = StructArray::from(vec![(
+            Arc::new(Field::new("b", DataType::Int32, true)),
+            ints,
+        )]);
+        let json = struct_to_json(&struct_array, "UTC", false)?;
+        let json = json
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .expect("string array");
+        assert_eq!(r#"{"b":123}"#, json.value(0));
+        assert_eq!(r#"{"b":null}"#, json.value(1));
+        assert_eq!(r#"{"b":2147483647}"#, json.value(2));
+        assert_eq!(r#"{"b":-2147483648}"#, json.value(3));
+        Ok(())
+    }
+
+    #[test]
+    fn test_utf8_view_field_is_quoted() -> Result<()> {
+        use arrow::array::StringViewArray;
+        let strings: ArrayRef = Arc::new(StringViewArray::from(vec![
+            Some("hello"),
+            Some("wo\"rld"),
+        ]));
+        let struct_array = StructArray::from(vec![(
+            Arc::new(Field::new("s", DataType::Utf8View, true)),
+            strings,
+        )]);
+        let json = struct_to_json(&struct_array, "UTC", true)?;
+        let json = json
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .expect("string array");
+        assert_eq!(r#"{"s":"hello"}"#, json.value(0));
+        assert_eq!(r#"{"s":"wo\"rld"}"#, json.value(1));
         Ok(())
     }
 
