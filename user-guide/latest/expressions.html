@@ -776,6 +776,33 @@ for how Comet chooses.</p>
 </table>
 </div>
 </section>
+<section id="implementation-legend">
+<h2>Implementation legend<a class="headerlink" href="#implementation-legend" title="Link to this heading">#</a></h2>
+<p>The <strong>Implementation</strong> column records how Comet executes each expression when it is not falling back to Spark:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Implementation</p></th>
+<th class="head"><p>Meaning</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Native</p></td>
+<td><p>Comet’s Rust engine evaluates the expression end to end.</p></td>
+</tr>
+<tr class="row-odd"><td><p>Codegen dispatch</p></td>
+<td><p>Spark’s own generated JVM code is evaluated inside the Comet pipeline. Used when a byte-exact match to Spark matters more than the native speedup, or when no native path exists.</p></td>
+</tr>
+<tr class="row-even"><td><p>Hybrid</p></td>
+<td><p>Both paths exist. Comet picks between them based on input, and the user can override with <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.EXPRNAME.allowIncompatible=true</span></code> — see <a class="reference internal" href="compatibility/index.html#native-and-codegen-dispatch-implementations"><span class="std std-ref">Native and codegen-dispatch implementations</span></a>.</p></td>
+</tr>
+<tr class="row-odd"><td><p>—</p></td>
+<td><p>No direct wire-up: the row is either planned, is rewritten to another expression before Comet sees it (for example <code class="docutils literal notranslate"><span class="pre">to_date</span></code> → <code class="docutils literal notranslate"><span class="pre">Cast</span></code>), or is handled at the operator level rather than the expression level (for example <code class="docutils literal notranslate"><span class="pre">explode</span></code>, window functions).</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>The Implementation column is auto-generated from the serde definitions in <code class="docutils literal notranslate"><span class="pre">QueryPlanSerde</span></code>; do not edit it by hand.</p>
+</section>
 <section id="not-currently-planned">
 <h2>Not currently planned<a class="headerlink" href="#not-currently-planned" title="Link to this heading">#</a></h2>
 <p>Comet focuses acceleration on mainstream relational, string, datetime, math, and collection
@@ -798,244 +825,304 @@ expressions. The following function families are <strong>not currently planned</
 <thead>
 <tr class="row-odd"><th class="head"><p>Function</p></th>
 <th class="head"><p>Status</p></th>
+<th class="head"><p>Implementation</p></th>
 <th class="head"><p>Notes</p></th>
 </tr>
 </thead>
 <tbody>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">any</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>—</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">any_value</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>—</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">approx_count_distinct</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">approx_percentile</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p>Byte, short, int, long, float, and double input; other input types fall back to Spark</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">array_agg</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p>Alias for <code class="docutils literal notranslate"><span class="pre">collect_list</span></code></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">avg</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p>Interval types fall back</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">bit_and</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">bit_or</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">bit_xor</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">bool_and</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>—</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">bool_or</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>—</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">collect_list</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">collect_set</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">corr</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">count</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">count_if</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>—</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">covar_pop</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">covar_samp</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">every</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>—</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">first</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">first_value</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">grouping</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>—</p></td>
 <td><p>Grouping indicator for ROLLUP/CUBE/GROUPING SETS</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">grouping_id</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>—</p></td>
 <td><p>Grouping indicator for ROLLUP/CUBE/GROUPING SETS</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">kurtosis</span></code></p></td>
 <td><p>🔜</p></td>
+<td><p>—</p></td>
 <td><p>tracking <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4098">#4098</a></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">last</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">last_value</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">listagg</span></code></p></td>
 <td><p>🔜</p></td>
+<td><p>—</p></td>
 <td><p>String aggregation</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">max</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">max_by</span></code></p></td>
 <td><p>🔜</p></td>
+<td><p>—</p></td>
 <td><p><a class="reference external" href="https://github.com/apache/datafusion-comet/issues/3841">#3841</a></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">mean</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">median</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>—</p></td>
 <td><p>Rewrites to <code class="docutils literal notranslate"><span class="pre">percentile(col,</span> <span class="pre">0.5)</span></code> and runs natively for supported percentile inputs</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">min</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">min_by</span></code></p></td>
 <td><p>🔜</p></td>
+<td><p>—</p></td>
 <td><p><a class="reference external" href="https://github.com/apache/datafusion-comet/issues/3841">#3841</a></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">mode</span></code></p></td>
 <td><p>🔜</p></td>
+<td><p>—</p></td>
 <td><p><a class="reference external" href="https://github.com/apache/datafusion-comet/issues/3970">#3970</a></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">percentile</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p>Single literal percentage on numeric input runs natively; array of percentages and a frequency argument fall back to Spark</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">percentile_cont</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>—</p></td>
 <td><p>Spark 4.0+ <code class="docutils literal notranslate"><span class="pre">WITHIN</span> <span class="pre">GROUP</span> <span class="pre">(ORDER</span> <span class="pre">BY</span> <span class="pre">...)</span></code>; ascending only runs natively, <code class="docutils literal notranslate"><span class="pre">DESC</span></code> falls back to Spark</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">percentile_disc</span></code></p></td>
 <td><p>🔜</p></td>
+<td><p>—</p></td>
 <td><p>Percentile aggregate</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">regr_avgx</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>—</p></td>
 <td><p>Native: Spark rewrites to <code class="docutils literal notranslate"><span class="pre">Average</span></code> (tests in <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4551">#4551</a>)</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">regr_avgy</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>—</p></td>
 <td><p>Native: Spark rewrites to <code class="docutils literal notranslate"><span class="pre">Average</span></code> (tests in <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4551">#4551</a>)</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">regr_count</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>—</p></td>
 <td><p>Native: Spark rewrites to <code class="docutils literal notranslate"><span class="pre">Count</span></code> (tests in <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4551">#4551</a>)</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">regr_intercept</span></code></p></td>
 <td><p>🔜</p></td>
+<td><p>—</p></td>
 <td><p>Falls back; can reuse <code class="docutils literal notranslate"><span class="pre">covar_pop</span></code>/<code class="docutils literal notranslate"><span class="pre">var_pop</span></code> accumulators (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4552">#4552</a>)</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">regr_r2</span></code></p></td>
 <td><p>🔜</p></td>
+<td><p>—</p></td>
 <td><p>Falls back; can reuse the <code class="docutils literal notranslate"><span class="pre">corr</span></code> accumulator (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4552">#4552</a>)</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">regr_slope</span></code></p></td>
 <td><p>🔜</p></td>
+<td><p>—</p></td>
 <td><p>Falls back; can reuse <code class="docutils literal notranslate"><span class="pre">covar_pop</span></code>/<code class="docutils literal notranslate"><span class="pre">var_pop</span></code> accumulators (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4552">#4552</a>)</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">regr_sxx</span></code></p></td>
 <td><p>🔜</p></td>
+<td><p>—</p></td>
 <td><p>Falls back; can reuse <code class="docutils literal notranslate"><span class="pre">var_pop</span></code> accumulator (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4552">#4552</a>)</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">regr_sxy</span></code></p></td>
 <td><p>🔜</p></td>
+<td><p>—</p></td>
 <td><p>Falls back; can reuse <code class="docutils literal notranslate"><span class="pre">covar_pop</span></code> accumulator (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4552">#4552</a>)</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">regr_syy</span></code></p></td>
 <td><p>🔜</p></td>
+<td><p>—</p></td>
 <td><p>Falls back; can reuse <code class="docutils literal notranslate"><span class="pre">var_pop</span></code> accumulator (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4552">#4552</a>)</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">skewness</span></code></p></td>
 <td><p>🔜</p></td>
+<td><p>—</p></td>
 <td><p>tracking <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4098">#4098</a></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">some</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>—</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">std</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">stddev</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">stddev_pop</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">stddev_samp</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">string_agg</span></code></p></td>
 <td><p>🔜</p></td>
+<td><p>—</p></td>
 <td><p>String aggregation (alias of <code class="docutils literal notranslate"><span class="pre">listagg</span></code>)</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">sum</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">try_avg</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>—</p></td>
 <td><p>Interval types fall back</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">try_sum</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>—</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">var_pop</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">var_samp</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">variance</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 </tbody>
@@ -1049,108 +1136,134 @@ expressions. The following function families are <strong>not currently planned</
 <thead>
 <tr class="row-odd"><th class="head"><p>Function</p></th>
 <th class="head"><p>Status</p></th>
+<th class="head"><p>Implementation</p></th>
 <th class="head"><p>Notes</p></th>
 </tr>
 </thead>
 <tbody>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">array</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">array_append</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">array_compact</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>—</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">array_contains</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p>NaN/signed-zero handling may differ (<a class="reference internal" href="compatibility/floating-point.html"><span class="std std-doc">details</span></a>)</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">array_distinct</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p>NaN/signed-zero handling may differ (<a class="reference internal" href="compatibility/floating-point.html"><span class="std std-doc">details</span></a>)</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">array_except</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Hybrid</p></td>
 <td><p>Routes through the JVM codegen dispatcher by default; the incompatible native path is opt-in via allowIncompatible (<a class="reference internal" href="#compatibility/expressions/array.md"><span class="xref myst">details</span></a>)</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">array_insert</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">array_intersect</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Hybrid</p></td>
 <td><p>Routes through the JVM codegen dispatcher by default; the incompatible native path is opt-in via allowIncompatible (<a class="reference internal" href="#compatibility/expressions/array.md"><span class="xref myst">details</span></a>)</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">array_join</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Hybrid</p></td>
 <td><p>Routes through the JVM codegen dispatcher by default; the incompatible native path is opt-in via allowIncompatible (<a class="reference internal" href="#compatibility/expressions/array.md"><span class="xref myst">details</span></a>)</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">array_max</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p>NaN ordering may differ (<a class="reference internal" href="compatibility/floating-point.html"><span class="std std-doc">details</span></a>)</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">array_min</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p>NaN ordering may differ (<a class="reference internal" href="compatibility/floating-point.html"><span class="std std-doc">details</span></a>)</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">array_position</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p>Binary/struct/map/null elements fall back</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">array_prepend</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>—</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">array_remove</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">array_repeat</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">array_union</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p>NaN/signed-zero handling may differ (<a class="reference internal" href="compatibility/floating-point.html"><span class="std std-doc">details</span></a>)</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">arrays_overlap</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">arrays_zip</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">element_at</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">flatten</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p>Binary/struct/map elements fall back</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">get</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>—</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">sequence</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Codegen dispatch</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">shuffle</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p>Binary/struct/map elements fall back</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">slice</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p>Native (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4149">#4149</a>)</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">sort_array</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Hybrid</p></td>
 <td><p>Nested struct/null arrays fall back</p></td>
 </tr>
 </tbody>
@@ -1164,56 +1277,69 @@ expressions. The following function families are <strong>not currently planned</
 <thead>
 <tr class="row-odd"><th class="head"><p>Function</p></th>
 <th class="head"><p>Status</p></th>
+<th class="head"><p>Implementation</p></th>
 <th class="head"><p>Notes</p></th>
 </tr>
 </thead>
 <tbody>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">&amp;</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">&lt;&lt;</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">&gt;&gt;</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">&gt;&gt;&gt;</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p>Operator alias for <code class="docutils literal notranslate"><span class="pre">shiftrightunsigned</span></code> (Spark 4.0+)</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">^</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">bit_count</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">bit_get</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">getbit</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">shiftright</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">shiftrightunsigned</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">|</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">~</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 </tbody>
@@ -1227,28 +1353,34 @@ expressions. The following function families are <strong>not currently planned</
 <thead>
 <tr class="row-odd"><th class="head"><p>Function</p></th>
 <th class="head"><p>Status</p></th>
+<th class="head"><p>Implementation</p></th>
 <th class="head"><p>Notes</p></th>
 </tr>
 </thead>
 <tbody>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">array_size</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>—</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">cardinality</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">concat</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Hybrid</p></td>
 <td><p>Binary/array children fall back</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">reverse</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Hybrid</p></td>
 <td><p>Binary-element arrays fall back (Incompatible) (<a class="reference internal" href="#compatibility/expressions/array.md"><span class="xref myst">details</span></a>)</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">size</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 </tbody>
@@ -1262,48 +1394,59 @@ expressions. The following function families are <strong>not currently planned</
 <thead>
 <tr class="row-odd"><th class="head"><p>Function</p></th>
 <th class="head"><p>Status</p></th>
+<th class="head"><p>Implementation</p></th>
 <th class="head"><p>Notes</p></th>
 </tr>
 </thead>
 <tbody>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">coalesce</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">if</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ifnull</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>—</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">nanvl</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Codegen dispatch</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">nullif</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>—</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">nullifzero</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>—</p></td>
 <td><p>Lowers to <code class="docutils literal notranslate"><span class="pre">if</span></code>/<code class="docutils literal notranslate"><span class="pre">=</span></code> (Spark 4.0+)</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">nvl</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>—</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">nvl2</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>—</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">when</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">zeroifnull</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>—</p></td>
 <td><p>Lowers to <code class="docutils literal notranslate"><span class="pre">coalesce</span></code> (Spark 4.0+)</p></td>
 </tr>
 </tbody>
@@ -1318,12 +1461,14 @@ expressions. The following function families are <strong>not currently planned</
 <thead>
 <tr class="row-odd"><th class="head"><p>Function</p></th>
 <th class="head"><p>Status</p></th>
+<th class="head"><p>Implementation</p></th>
 <th class="head"><p>Notes</p></th>
 </tr>
 </thead>
 <tbody>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">cast</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p>Some casts fall back; float-to-decimal is opt-in (<a class="reference internal" href="#compatibility/expressions/cast.md"><span class="xref myst">details</span></a>)</p></td>
 </tr>
 </tbody>
@@ -1337,20 +1482,24 @@ expressions. The following function families are <strong>not currently planned</
 <thead>
 <tr class="row-odd"><th class="head"><p>Function</p></th>
 <th class="head"><p>Status</p></th>
+<th class="head"><p>Implementation</p></th>
 <th class="head"><p>Notes</p></th>
 </tr>
 </thead>
 <tbody>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">from_csv</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Codegen dispatch</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">schema_of_csv</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Codegen dispatch</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">to_csv</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 </tbody>
@@ -1364,300 +1513,374 @@ expressions. The following function families are <strong>not currently planned</
 <thead>
 <tr class="row-odd"><th class="head"><p>Function</p></th>
 <th class="head"><p>Status</p></th>
+<th class="head"><p>Implementation</p></th>
 <th class="head"><p>Notes</p></th>
 </tr>
 </thead>
 <tbody>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">add_months</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Codegen dispatch</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">convert_timezone</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Hybrid</p></td>
 <td><p>Routes through the JVM codegen dispatcher by default (handles all timezone forms); the native path is opt-in via allowIncompatible (<a class="reference internal" href="#compatibility/expressions/datetime.md"><span class="xref myst">details</span></a>)</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">curdate</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>—</p></td>
 <td><p>Constant-folded to a literal (alias of <code class="docutils literal notranslate"><span class="pre">current_date</span></code>)</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">current_date</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>—</p></td>
 <td><p>Constant-folded to a literal before Comet sees the plan</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">current_time</span></code></p></td>
 <td><p>🔜</p></td>
+<td><p>—</p></td>
 <td><p>Blocked on Spark 4.1 TIME type support (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4288">#4288</a>)</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">current_timestamp</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>—</p></td>
 <td><p>Constant-folded to a literal before Comet sees the plan</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">current_timezone</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>—</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">date_add</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">date_diff</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">date_format</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Hybrid</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">date_from_unix_date</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">date_part</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>—</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">date_sub</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">date_trunc</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Hybrid</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">dateadd</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">datediff</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">datepart</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>—</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">day</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">dayname</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>—</p></td>
 <td><p>Abbreviated day name (Spark 4.0+)</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">dayofmonth</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">dayofweek</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">dayofyear</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">extract</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>—</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">from_unixtime</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Hybrid</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">from_utc_timestamp</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Hybrid</p></td>
 <td><p>Routes through the JVM codegen dispatcher by default (handles all timezone forms); the native path is opt-in via allowIncompatible (<a class="reference internal" href="#compatibility/expressions/datetime.md"><span class="xref myst">details</span></a>)</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">hour</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>—</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">last_day</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">localtimestamp</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>—</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">make_date</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">make_dt_interval</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Codegen dispatch</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">make_interval</span></code></p></td>
 <td><p>🔜</p></td>
+<td><p>—</p></td>
 <td><p>Produces legacy CalendarInterval; tracked by <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4540">#4540</a></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">make_time</span></code></p></td>
 <td><p>🔜</p></td>
+<td><p>—</p></td>
 <td><p>Spark 4.1 TIME type; tracked by <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4288">#4288</a></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">make_timestamp</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>—</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">make_timestamp_ltz</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>—</p></td>
 <td><p>2-arg TIME form falls back</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">make_timestamp_ntz</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>—</p></td>
 <td><p>2-arg TIME form falls back</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">make_ym_interval</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Codegen dispatch</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">minute</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>—</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">month</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">monthname</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>—</p></td>
 <td><p>Abbreviated month name (Spark 4.0+)</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">months_between</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Codegen dispatch</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">next_day</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">now</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>—</p></td>
 <td><p>Constant-folded to a literal (alias of <code class="docutils literal notranslate"><span class="pre">current_timestamp</span></code>)</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">quarter</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">second</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>—</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">session_window</span></code></p></td>
 <td><p>🔜</p></td>
+<td><p>—</p></td>
 <td><p>Batch session-window grouping falls back (<code class="docutils literal notranslate"><span class="pre">UpdatingSessionsExec</span></code> is not yet native); tracked by <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4785">#4785</a></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">time_diff</span></code></p></td>
 <td><p>🔜</p></td>
+<td><p>—</p></td>
 <td><p>Spark 4.1 TIME type; tracked by <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4288">#4288</a></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">time_trunc</span></code></p></td>
 <td><p>🔜</p></td>
+<td><p>—</p></td>
 <td><p>Spark 4.1 TIME type; tracked by <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4288">#4288</a></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">timestamp_micros</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Codegen dispatch</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">timestamp_millis</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Codegen dispatch</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">timestamp_seconds</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">to_date</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>—</p></td>
 <td><p>Rewrites to <code class="docutils literal notranslate"><span class="pre">Cast</span></code> (or <code class="docutils literal notranslate"><span class="pre">Cast(GetTimestamp)</span></code> with a format) before Comet sees the plan</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">to_time</span></code></p></td>
 <td><p>🔜</p></td>
+<td><p>—</p></td>
 <td><p>Spark 4.1 TIME type; tracked by <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4288">#4288</a></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">to_timestamp</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>—</p></td>
 <td><p>Rewrites to <code class="docutils literal notranslate"><span class="pre">Cast</span></code> (or <code class="docutils literal notranslate"><span class="pre">GetTimestamp</span></code> with a format) before Comet sees the plan</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">to_timestamp_ltz</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>—</p></td>
 <td><p>Rewrites to <code class="docutils literal notranslate"><span class="pre">to_timestamp</span></code> (<code class="docutils literal notranslate"><span class="pre">TimestampType</span></code>)</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">to_timestamp_ntz</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>—</p></td>
 <td><p>Rewrites to <code class="docutils literal notranslate"><span class="pre">to_timestamp</span></code> (<code class="docutils literal notranslate"><span class="pre">TimestampNTZType</span></code>)</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">to_unix_timestamp</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Hybrid</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">to_utc_timestamp</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Hybrid</p></td>
 <td><p>Routes through the JVM codegen dispatcher by default (handles all timezone forms); the native path is opt-in via allowIncompatible (<a class="reference internal" href="#compatibility/expressions/datetime.md"><span class="xref myst">details</span></a>)</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">trunc</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Hybrid</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">try_make_interval</span></code></p></td>
 <td><p>🔜</p></td>
+<td><p>—</p></td>
 <td><p>Produces legacy CalendarInterval; tracked by <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4540">#4540</a></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">try_make_timestamp</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>—</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">try_to_date</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>—</p></td>
 <td><p>Rewrites to <code class="docutils literal notranslate"><span class="pre">Cast</span></code>/<code class="docutils literal notranslate"><span class="pre">GetTimestamp</span></code> before Comet sees the plan; same support as <code class="docutils literal notranslate"><span class="pre">to_date</span></code></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">try_to_time</span></code></p></td>
 <td><p>🔜</p></td>
+<td><p>—</p></td>
 <td><p>Spark 4.1 TIME type; tracked by <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4288">#4288</a></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">try_to_timestamp</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>—</p></td>
 <td><p>Rewrites to <code class="docutils literal notranslate"><span class="pre">Cast</span></code>/<code class="docutils literal notranslate"><span class="pre">GetTimestamp</span></code> before Comet sees the plan; same support as <code class="docutils literal notranslate"><span class="pre">to_timestamp</span></code></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">unix_date</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">unix_micros</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Codegen dispatch</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">unix_millis</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Codegen dispatch</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">unix_seconds</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Codegen dispatch</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">unix_timestamp</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">weekday</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">weekofyear</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">window</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>—</p></td>
 <td><p>Batch tumbling and sliding time-window grouping runs natively</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">window_time</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>—</p></td>
 <td><p>Batch time-window grouping runs natively</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">year</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 </tbody>
@@ -1674,36 +1897,44 @@ expression-level). The <code class="docutils literal notranslate"><span class="p
 <thead>
 <tr class="row-odd"><th class="head"><p>Function</p></th>
 <th class="head"><p>Status</p></th>
+<th class="head"><p>Implementation</p></th>
 <th class="head"><p>Notes</p></th>
 </tr>
 </thead>
 <tbody>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">explode</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>—</p></td>
 <td><p>via <code class="docutils literal notranslate"><span class="pre">CometExplodeExec</span></code></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">explode_outer</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>—</p></td>
 <td><p>outer=true falls back (Incompatible) (<a class="reference internal" href="../../contributor-guide/expression-audits/generator_funcs.html#explode-outer"><span class="std std-ref">audit</span></a>)</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">inline</span></code></p></td>
 <td><p>🔜</p></td>
+<td><p>—</p></td>
 <td><p>Operator-level generator (like <code class="docutils literal notranslate"><span class="pre">explode</span></code>)</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">inline_outer</span></code></p></td>
 <td><p>🔜</p></td>
+<td><p>—</p></td>
 <td><p>Operator-level generator (like <code class="docutils literal notranslate"><span class="pre">explode</span></code>)</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">posexplode</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>—</p></td>
 <td><p>via <code class="docutils literal notranslate"><span class="pre">CometExplodeExec</span></code></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">posexplode_outer</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>—</p></td>
 <td><p>outer=true falls back (Incompatible) (<a class="reference internal" href="../../contributor-guide/expression-audits/generator_funcs.html#posexplode-outer"><span class="std std-ref">audit</span></a>)</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">stack</span></code></p></td>
 <td><p>🔜</p></td>
+<td><p>—</p></td>
 <td><p>Operator-level generator</p></td>
 </tr>
 </tbody>
@@ -1717,36 +1948,44 @@ expression-level). The <code class="docutils literal notranslate"><span class="p
 <thead>
 <tr class="row-odd"><th class="head"><p>Function</p></th>
 <th class="head"><p>Status</p></th>
+<th class="head"><p>Implementation</p></th>
 <th class="head"><p>Notes</p></th>
 </tr>
 </thead>
 <tbody>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">crc32</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">hash</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">md5</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">sha</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">sha1</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">sha2</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">xxhash64</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 </tbody>
@@ -1760,36 +1999,44 @@ expression-level). The <code class="docutils literal notranslate"><span class="p
 <thead>
 <tr class="row-odd"><th class="head"><p>Function</p></th>
 <th class="head"><p>Status</p></th>
+<th class="head"><p>Implementation</p></th>
 <th class="head"><p>Notes</p></th>
 </tr>
 </thead>
 <tbody>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">from_json</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Hybrid</p></td>
 <td><p>Falls back by default; opt-in via allowIncompatible (<a class="reference internal" href="../../contributor-guide/expression-audits/json_funcs.html#from-json"><span class="std std-ref">audit</span></a>)</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">get_json_object</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Hybrid</p></td>
 <td><p>Some inputs need allowIncompatible (<a class="reference internal" href="../../contributor-guide/expression-audits/json_funcs.html#get-json-object"><span class="std std-ref">audit</span></a>)</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">json_array_length</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Hybrid</p></td>
 <td><p>Single-quoted/trailing JSON needs allowIncompatible (<a class="reference internal" href="../../contributor-guide/expression-audits/json_funcs.html#json-array-length"><span class="std std-ref">audit</span></a>)</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">json_object_keys</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Codegen dispatch</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">json_tuple</span></code></p></td>
 <td><p>🔜</p></td>
+<td><p>—</p></td>
 <td><p><a class="reference external" href="https://github.com/apache/datafusion-comet/issues/3160">#3160</a></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">schema_of_json</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Codegen dispatch</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">to_json</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Hybrid</p></td>
 <td><p>Options and map/array inputs fall back (<a class="reference internal" href="../../contributor-guide/expression-audits/json_funcs.html#to-json"><span class="std std-ref">audit</span></a>)</p></td>
 </tr>
 </tbody>
@@ -1803,56 +2050,69 @@ expression-level). The <code class="docutils literal notranslate"><span class="p
 <thead>
 <tr class="row-odd"><th class="head"><p>Function</p></th>
 <th class="head"><p>Status</p></th>
+<th class="head"><p>Implementation</p></th>
 <th class="head"><p>Notes</p></th>
 </tr>
 </thead>
 <tbody>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">aggregate</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Codegen dispatch</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">array_sort</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Codegen dispatch</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">exists</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Codegen dispatch</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">filter</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p>General lambda routed through the JVM codegen dispatcher; the <code class="docutils literal notranslate"><span class="pre">array_compact</span></code> form runs natively</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">forall</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Codegen dispatch</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">map_filter</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Codegen dispatch</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">map_zip_with</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Codegen dispatch</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">reduce</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Codegen dispatch</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">transform</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Codegen dispatch</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">transform_keys</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Codegen dispatch</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">transform_values</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Codegen dispatch</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">zip_with</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Codegen dispatch</p></td>
 <td><p></p></td>
 </tr>
 </tbody>
@@ -1866,52 +2126,64 @@ expression-level). The <code class="docutils literal notranslate"><span class="p
 <thead>
 <tr class="row-odd"><th class="head"><p>Function</p></th>
 <th class="head"><p>Status</p></th>
+<th class="head"><p>Implementation</p></th>
 <th class="head"><p>Notes</p></th>
 </tr>
 </thead>
 <tbody>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">element_at</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">map</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Codegen dispatch</p></td>
 <td><p>Routed through the JVM codegen dispatcher</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">map_concat</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Codegen dispatch</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">map_contains_key</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>—</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">map_entries</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">map_from_arrays</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">map_from_entries</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Hybrid</p></td>
 <td><p>BinaryType key/value falls back (Incompatible) (<a class="reference internal" href="#compatibility/expressions/map.md"><span class="xref myst">details</span></a>)</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">map_keys</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">map_values</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">str_to_map</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Hybrid</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">try_element_at</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>—</p></td>
 <td><p>Lowers to <code class="docutils literal notranslate"><span class="pre">element_at</span></code></p></td>
 </tr>
 </tbody>
@@ -1925,288 +2197,359 @@ expression-level). The <code class="docutils literal notranslate"><span class="p
 <thead>
 <tr class="row-odd"><th class="head"><p>Function</p></th>
 <th class="head"><p>Status</p></th>
+<th class="head"><p>Implementation</p></th>
 <th class="head"><p>Notes</p></th>
 </tr>
 </thead>
 <tbody>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">%</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">*</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p>Interval multiplication falls back</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">+</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">-</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">/</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">abs</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p>Interval types fall back</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">acos</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">acosh</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">asin</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">asinh</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">atan</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">atan2</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">atanh</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">bin</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">bround</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Codegen dispatch</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">cbrt</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ceil</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>—</p></td>
 <td><p>Two-arg form falls back</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ceiling</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>—</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">conv</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Codegen dispatch</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">cos</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">cosh</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">cot</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">csc</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">degrees</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">div</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">e</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>—</p></td>
 <td><p>Folds to a literal (like <code class="docutils literal notranslate"><span class="pre">pi</span></code>)</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">exp</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">expm1</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">factorial</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">floor</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>—</p></td>
 <td><p>Two-arg form falls back</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">greatest</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">hex</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">hypot</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Codegen dispatch</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">least</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ln</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">log</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">log10</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">log1p</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Codegen dispatch</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">log2</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">mod</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">negative</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">pi</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">pmod</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Codegen dispatch</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">positive</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Codegen dispatch</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">pow</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">power</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">radians</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">rand</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">randn</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">random</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p>Alias for <code class="docutils literal notranslate"><span class="pre">rand</span></code> (Spark 4.0+); seed must be a literal</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">randstr</span></code></p></td>
 <td><p>🔜</p></td>
+<td><p>—</p></td>
 <td><p>Random string (Spark 4.0+)</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">rint</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">round</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p>Float/double inputs fall back</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">sec</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">shiftleft</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">sign</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">signum</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">sin</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">sinh</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">sqrt</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">tan</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">tanh</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">try_add</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>—</p></td>
 <td><p>Datetime/interval form falls back</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">try_divide</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>—</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">try_mod</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>—</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">try_multiply</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>—</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">try_subtract</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>—</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">unhex</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">uniform</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>—</p></td>
 <td><p>Constant-folded; literal arguments only (Spark 4.0+)</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">width_bucket</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Codegen dispatch</p></td>
 <td><p></p></td>
 </tr>
 </tbody>
@@ -2220,112 +2563,139 @@ expression-level). The <code class="docutils literal notranslate"><span class="p
 <thead>
 <tr class="row-odd"><th class="head"><p>Function</p></th>
 <th class="head"><p>Status</p></th>
+<th class="head"><p>Implementation</p></th>
 <th class="head"><p>Notes</p></th>
 </tr>
 </thead>
 <tbody>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">aes_decrypt</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>—</p></td>
 <td><p>Routed through the JVM codegen dispatcher</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">aes_encrypt</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>—</p></td>
 <td><p>Routed through the JVM codegen dispatcher; nondeterministic IV by default</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">assert_true</span></code></p></td>
 <td><p>🔜</p></td>
+<td><p>—</p></td>
 <td><p>Lowers to <code class="docutils literal notranslate"><span class="pre">RaiseError</span></code>, which falls back</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">current_catalog</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>—</p></td>
 <td><p>Resolved to a literal by the analyzer (<code class="docutils literal notranslate"><span class="pre">ReplaceCurrentLike</span></code>)</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">current_database</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>—</p></td>
 <td><p>Resolved to a literal by the analyzer (<code class="docutils literal notranslate"><span class="pre">ReplaceCurrentLike</span></code>)</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">current_schema</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>—</p></td>
 <td><p>Alias of <code class="docutils literal notranslate"><span class="pre">current_database</span></code>; resolved to a literal by the analyzer</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">current_user</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>—</p></td>
 <td><p>Resolved to a literal by the analyzer; same as <code class="docutils literal notranslate"><span class="pre">user</span></code></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">equal_null</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>—</p></td>
 <td><p>Lowers to <code class="docutils literal notranslate"><span class="pre">&lt;=&gt;</span></code> (<code class="docutils literal notranslate"><span class="pre">EqualNullSafe</span></code>)</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">is_variant_null</span></code></p></td>
 <td><p>🔜</p></td>
+<td><p>—</p></td>
 <td><p>tracking <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4098">#4098</a></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">monotonically_increasing_id</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">parse_json</span></code></p></td>
 <td><p>🔜</p></td>
+<td><p>—</p></td>
 <td><p>tracking <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4098">#4098</a></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">raise_error</span></code></p></td>
 <td><p>🔜</p></td>
+<td><p>—</p></td>
 <td><p>Raises a runtime error</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">rand</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p>Seed must be a literal</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">randn</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p>Seed must be a literal</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">schema_of_variant</span></code></p></td>
 <td><p>🔜</p></td>
+<td><p>—</p></td>
 <td><p>tracking <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4098">#4098</a></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">schema_of_variant_agg</span></code></p></td>
 <td><p>🔜</p></td>
+<td><p>—</p></td>
 <td><p>tracking <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4098">#4098</a></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">session_user</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>—</p></td>
 <td><p>Alias of <code class="docutils literal notranslate"><span class="pre">current_user</span></code>; resolved to a literal by the analyzer</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark_partition_id</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">to_variant_object</span></code></p></td>
 <td><p>🔜</p></td>
+<td><p>—</p></td>
 <td><p>tracking <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4098">#4098</a></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">try_aes_decrypt</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>—</p></td>
 <td><p>Routed through the JVM codegen dispatcher</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">try_parse_json</span></code></p></td>
 <td><p>🔜</p></td>
+<td><p>—</p></td>
 <td><p>tracking <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4098">#4098</a></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">try_variant_get</span></code></p></td>
 <td><p>🔜</p></td>
+<td><p>—</p></td>
 <td><p>tracking <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4098">#4098</a></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">typeof</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>—</p></td>
 <td><p>Foldable; resolved to a literal before Comet sees the plan</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">user</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>—</p></td>
 <td><p>Resolved to a literal by the Spark analyzer before reaching Comet</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">uuid</span></code></p></td>
 <td><p>🔜</p></td>
+<td><p>—</p></td>
 <td><p>Nondeterministic random UUID</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">variant_get</span></code></p></td>
 <td><p>🔜</p></td>
+<td><p>—</p></td>
 <td><p>tracking <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4098">#4098</a></p></td>
 </tr>
 </tbody>
@@ -2339,92 +2709,114 @@ expression-level). The <code class="docutils literal notranslate"><span class="p
 <thead>
 <tr class="row-odd"><th class="head"><p>Function</p></th>
 <th class="head"><p>Status</p></th>
+<th class="head"><p>Implementation</p></th>
 <th class="head"><p>Notes</p></th>
 </tr>
 </thead>
 <tbody>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">!</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">&lt;</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Hybrid</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">&lt;=</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Hybrid</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">&lt;=&gt;</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Hybrid</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">=</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Hybrid</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">==</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Hybrid</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">&gt;</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Hybrid</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">&gt;=</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Hybrid</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">and</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">between</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>—</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ilike</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>—</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">in</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Hybrid</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">isnan</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">isnotnull</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">isnull</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">like</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Hybrid</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">not</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">or</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">regexp</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Hybrid</p></td>
 <td><p>Falls back by default; opt-in via allowIncompatible (<a class="reference internal" href="compatibility/regex.html"><span class="std std-doc">details</span></a>)</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">regexp_like</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Hybrid</p></td>
 <td><p>Falls back by default; opt-in via allowIncompatible (<a class="reference internal" href="compatibility/regex.html"><span class="std std-doc">details</span></a>)</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">rlike</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Hybrid</p></td>
 <td><p>Falls back by default; opt-in via allowIncompatible (<a class="reference internal" href="compatibility/regex.html"><span class="std std-doc">details</span></a>)</p></td>
 </tr>
 </tbody>
@@ -2438,272 +2830,339 @@ expression-level). The <code class="docutils literal notranslate"><span class="p
 <thead>
 <tr class="row-odd"><th class="head"><p>Function</p></th>
 <th class="head"><p>Status</p></th>
+<th class="head"><p>Implementation</p></th>
 <th class="head"><p>Notes</p></th>
 </tr>
 </thead>
 <tbody>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ascii</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">base64</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">bit_length</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">btrim</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>—</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">char</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">char_length</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">character_length</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">chr</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">collate</span></code></p></td>
 <td><p>🔜</p></td>
+<td><p>—</p></td>
 <td><p>Spark collation (umbrella <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/2190">#2190</a>)</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">collation</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>—</p></td>
 <td><p>Constant-folded to a literal (Spark 4.0+)</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">concat_ws</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">contains</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>—</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">decode</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>—</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">elt</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Codegen dispatch</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">encode</span></code></p></td>
 <td><p>🔜</p></td>
+<td><p>—</p></td>
 <td><p>Lowers to <code class="docutils literal notranslate"><span class="pre">StaticInvoke(encode)</span></code> (not allowlisted); falls back</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">endswith</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>—</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">find_in_set</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Codegen dispatch</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">format_number</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Codegen dispatch</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">format_string</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Codegen dispatch</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">initcap</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Hybrid</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">instr</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">lcase</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Hybrid</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">left</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">len</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">length</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">levenshtein</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">locate</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Codegen dispatch</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">lower</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Hybrid</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">lpad</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>—</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ltrim</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">luhn_check</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>—</p></td>
 <td><p>Native via <code class="docutils literal notranslate"><span class="pre">StaticInvoke</span></code> (tests: luhn_check.sql)</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">mask</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>—</p></td>
 <td><p>Routed through the JVM codegen dispatcher</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">octet_length</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">overlay</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Codegen dispatch</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">position</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Codegen dispatch</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">printf</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Codegen dispatch</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">regexp_count</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>—</p></td>
 <td><p>Runs natively (rewrites to <code class="docutils literal notranslate"><span class="pre">size(regexp_extract_all(...))</span></code>)</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">regexp_extract</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">regexp_extract_all</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">regexp_instr</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Codegen dispatch</p></td>
 <td><p>Routed through the JVM codegen dispatcher</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">regexp_replace</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Hybrid</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">regexp_substr</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>—</p></td>
 <td><p>Runs natively (rewrites to <code class="docutils literal notranslate"><span class="pre">nullif(regexp_extract(...),</span> <span class="pre">'')</span></code>)</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">repeat</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">replace</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Hybrid</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">right</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">rpad</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>—</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">rtrim</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">soundex</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">space</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">split</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Hybrid</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">split_part</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>—</p></td>
 <td><p>Spark 4.0+</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">startswith</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>—</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">substr</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">substring</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">substring_index</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">to_binary</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>—</p></td>
 <td><p>Hex form accelerated; other formats fall back</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">to_char</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>—</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">to_number</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Codegen dispatch</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">to_varchar</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>—</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">translate</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p>Falls back by default; opt-in via allowIncompatible (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4463">#4463</a>)</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">trim</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">try_to_binary</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>—</p></td>
 <td><p>Runs natively (rewrites to <code class="docutils literal notranslate"><span class="pre">try_eval(to_binary(...))</span></code>)</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">try_to_number</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Codegen dispatch</p></td>
 <td><p>Routed through the JVM codegen dispatcher</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ucase</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Hybrid</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">unbase64</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Codegen dispatch</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">upper</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Hybrid</p></td>
 <td><p></p></td>
 </tr>
 </tbody>
@@ -2717,16 +3176,19 @@ expression-level). The <code class="docutils literal notranslate"><span class="p
 <thead>
 <tr class="row-odd"><th class="head"><p>Function</p></th>
 <th class="head"><p>Status</p></th>
+<th class="head"><p>Implementation</p></th>
 <th class="head"><p>Notes</p></th>
 </tr>
 </thead>
 <tbody>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">named_struct</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p>Duplicate field names fall back</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">struct</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 </tbody>
@@ -2740,24 +3202,29 @@ expression-level). The <code class="docutils literal notranslate"><span class="p
 <thead>
 <tr class="row-odd"><th class="head"><p>Function</p></th>
 <th class="head"><p>Status</p></th>
+<th class="head"><p>Implementation</p></th>
 <th class="head"><p>Notes</p></th>
 </tr>
 </thead>
 <tbody>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">parse_url</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Native</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">try_url_decode</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>—</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">url_decode</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>—</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">url_encode</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>—</p></td>
 <td><p></p></td>
 </tr>
 </tbody>
@@ -2781,44 +3248,54 @@ for the full list of supported functions, frames, and fallback cases.</p>
 <thead>
 <tr class="row-odd"><th class="head"><p>Function</p></th>
 <th class="head"><p>Status</p></th>
+<th class="head"><p>Implementation</p></th>
 <th class="head"><p>Notes</p></th>
 </tr>
 </thead>
 <tbody>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">cume_dist</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>—</p></td>
 <td><p>via <code class="docutils literal notranslate"><span class="pre">CometWindowExec</span></code></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">dense_rank</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>—</p></td>
 <td><p>via <code class="docutils literal notranslate"><span class="pre">CometWindowExec</span></code></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">lag</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>—</p></td>
 <td><p>via <code class="docutils literal notranslate"><span class="pre">CometWindowExec</span></code>; non-literal default falls back (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4268">#4268</a>)</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">lead</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>—</p></td>
 <td><p>via <code class="docutils literal notranslate"><span class="pre">CometWindowExec</span></code>; non-literal default falls back (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4268">#4268</a>)</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">nth_value</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>—</p></td>
 <td><p>via <code class="docutils literal notranslate"><span class="pre">CometWindowExec</span></code></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ntile</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>—</p></td>
 <td><p>via <code class="docutils literal notranslate"><span class="pre">CometWindowExec</span></code></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">percent_rank</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>—</p></td>
 <td><p>via <code class="docutils literal notranslate"><span class="pre">CometWindowExec</span></code></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">rank</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>—</p></td>
 <td><p>via <code class="docutils literal notranslate"><span class="pre">CometWindowExec</span></code></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">row_number</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>—</p></td>
 <td><p>via <code class="docutils literal notranslate"><span class="pre">CometWindowExec</span></code></p></td>
 </tr>
 </tbody>
@@ -2832,56 +3309,69 @@ for the full list of supported functions, frames, and fallback cases.</p>
 <thead>
 <tr class="row-odd"><th class="head"><p>Function</p></th>
 <th class="head"><p>Status</p></th>
+<th class="head"><p>Implementation</p></th>
 <th class="head"><p>Notes</p></th>
 </tr>
 </thead>
 <tbody>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">from_xml</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>—</p></td>
 <td><p>Spark 4.0+</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">schema_of_xml</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>—</p></td>
 <td><p>Spark 4.0+</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">to_xml</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>—</p></td>
 <td><p>Spark 4.0+</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">xpath</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Codegen dispatch</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">xpath_boolean</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Codegen dispatch</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">xpath_double</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Codegen dispatch</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">xpath_float</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Codegen dispatch</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">xpath_int</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Codegen dispatch</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">xpath_long</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Codegen dispatch</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">xpath_number</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Codegen dispatch</p></td>
 <td><p>Alias of <code class="docutils literal notranslate"><span class="pre">xpath_double</span></code></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">xpath_short</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Codegen dispatch</p></td>
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">xpath_string</span></code></p></td>
 <td><p>✅</p></td>
+<td><p>Codegen dispatch</p></td>
 <td><p></p></td>
 </tr>
 </tbody>
@@ -2958,6 +3448,7 @@ for the full list of supported functions, frames, and fallback cases.</p>
   <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="visible nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#status-legend">Status legend</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#implementation-legend">Implementation legend</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#not-currently-planned">Not currently planned</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#agg-funcs">agg_funcs</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#array-funcs">array_funcs</a></li>

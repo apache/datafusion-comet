@@ -651,7 +651,8 @@ to the release branch (documentation, version bump, changelog) go through pull r
 <h3>Generate Release Documentation<a class="headerlink" href="#generate-release-documentation" title="Link to this heading">#</a></h3>
 <p>The docs on <code class="docutils literal notranslate"><span class="pre">main</span></code> contain only template markers; CI fills them at publish time. A release branch instead
 commits the generated content so the archived docs for the release render real tables. Run the script to
-generate the config reference and the per-Spark-version compatibility pages and freeze them onto the branch:</p>
+generate the config reference, refresh the Implementation column of the Spark Expression Support page, and
+produce the per-Spark-version compatibility pages, freezing them onto the branch:</p>
 <div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>./dev/generate-release-docs.sh
 git<span class="w"> </span>add<span class="w"> </span>docs/source/user-guide/latest/
 git<span class="w"> </span>commit<span class="w"> </span>-m<span class="w"> </span><span class="s2">&quot;Generate docs for 0.13.0 release&quot;</span>
