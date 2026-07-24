@@ -82,18 +82,13 @@ object CometExistenceJoinBenchmark extends CometBenchmarkBase {
           "SELECT count(*) FROM probe p " +
             "WHERE p.region = 'US' OR EXISTS (SELECT 1 FROM build b WHERE b.k = p.k)"
 
-        withSQLConf(
-          CometConf.COMET_ENABLED.key -> "true",
-          CometConf.COMET_EXEC_ENABLED.key -> "true") {
-          spark.sql(query).explain()
-        }
-
         runBenchmark("ExistenceJoin - BroadcastHashJoin") {
           runExpressionBenchmark(
             "exists OR predicate (BHJ)",
             probeRows,
             query,
             Map(
+              CometConf.COMET_EXEC_EXISTENCE_JOIN_ENABLED.key -> "true",
               SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "10MB",
               SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "10MB"))
         }
@@ -104,6 +99,7 @@ object CometExistenceJoinBenchmark extends CometBenchmarkBase {
             probeRows,
             query,
             Map(
+              CometConf.COMET_EXEC_EXISTENCE_JOIN_ENABLED.key -> "true",
               SQLConf.PREFER_SORTMERGEJOIN.key -> "false",
               "spark.sql.join.forceApplyShuffledHashJoin" -> "true",
               SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
@@ -116,6 +112,7 @@ object CometExistenceJoinBenchmark extends CometBenchmarkBase {
             probeRows,
             query,
             Map(
+              CometConf.COMET_EXEC_EXISTENCE_JOIN_ENABLED.key -> "true",
               SQLConf.PREFER_SORTMERGEJOIN.key -> "true",
               SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
               SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1"))
