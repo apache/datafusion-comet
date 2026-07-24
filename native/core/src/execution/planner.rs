@@ -391,9 +391,12 @@ impl PhysicalPlanner {
                             DataType::Timestamp(TimeUnit::Microsecond, Some(tz)) => {
                                 ScalarValue::TimestampMicrosecond(Some(*value), Some(tz))
                             }
+                            DataType::Time64(TimeUnit::Nanosecond) => {
+                                ScalarValue::Time64Nanosecond(Some(*value))
+                            }
                             dt => {
                                 return Err(GeneralError(format!(
-                                    "Expected either 'Int64' or 'Timestamp' for LongVal, but found {dt:?}"
+                                    "Expected 'Int64', 'Timestamp', or 'Time64(Nanosecond)' for LongVal, but found {dt:?}"
                                 )))
                             }
                         },
@@ -4352,6 +4355,7 @@ mod tests {
     };
     use arrow::datatypes::{DataType, Field, FieldRef, Fields, Schema};
     use datafusion::catalog::memory::DataSourceExec;
+    use datafusion::common::ScalarValue;
     use datafusion::config::TableParquetOptions;
     use datafusion::datasource::listing::PartitionedFile;
     use datafusion::datasource::object_store::ObjectStoreUrl;
@@ -4382,6 +4386,33 @@ mod tests {
         spark_operator::{operator::OpStruct, Operator},
     };
     use datafusion_comet_spark_expr::EvalMode;
+
+    #[test]
+    fn create_time64_nanosecond_literal() {
+        let nanos = 45_296_123_456_000;
+        let expr = Expr {
+            expr_struct: Some(Literal(spark_expression::Literal {
+                value: Some(literal::Value::LongVal(nanos)),
+                datatype: Some(spark_expression::DataType {
+                    type_id: 17,
+                    type_info: None,
+                }),
+                is_null: false,
+            })),
+            query_context: None,
+            expr_id: None,
+        };
+
+        let planner = PhysicalPlanner::default();
+        let physical_expr = planner
+            .create_expr(&expr, Arc::new(Schema::empty()))
+            .unwrap();
+        let literal = physical_expr
+            .downcast_ref::<datafusion::physical_expr::expressions::Literal>()
+            .unwrap();
+
+        assert_eq!(literal.value(), &ScalarValue::Time64Nanosecond(Some(nanos)));
+    }
 
     #[test]
     fn test_unpack_dictionary_primitive() {

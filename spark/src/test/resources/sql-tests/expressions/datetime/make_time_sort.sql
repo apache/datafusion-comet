@@ -70,3 +70,12 @@ FROM (
     FROM test_make_time_sort
 )
 SORT BY t ASC NULLS LAST, id DESC
+
+query
+SELECT id, t
+FROM (
+    SELECT id, make_time(hours, minutes, secs) AS t
+    FROM test_make_time_sort
+)
+WHERE t >= TIME '12:30:45.123456'
+SORT BY t ASC
