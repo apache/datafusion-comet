@@ -206,14 +206,6 @@ object CometAbs extends CometExpressionSerde[Abs] with MathExprBase {
 
 object CometPow extends CometExpressionSerde[Pow] {
 
-  // https://github.com/apache/datafusion/issues/22598
-  val unsupportedReason: String = "Power has correctness issues"
-
-  override def getUnsupportedReasons(): Seq[String] = Seq(unsupportedReason)
-
-  override def getSupportLevel(expr: Pow): SupportLevel =
-    Unsupported(Some(unsupportedReason))
-
   override def convert(
       expr: Pow,
       inputs: Seq[Attribute],

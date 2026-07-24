@@ -22,6 +22,7 @@ use crate::math_funcs::abs::abs;
 use crate::math_funcs::checked_arithmetic::{checked_add, checked_div, checked_mul, checked_sub};
 use crate::math_funcs::log::spark_log;
 use crate::math_funcs::modulo_expr::spark_modulo;
+use crate::math_funcs::pow::spark_pow;
 use crate::{
     spark_ceil, spark_day_name, spark_decimal_div, spark_decimal_integral_div, spark_floor,
     spark_isnan, spark_lpad, spark_make_decimal, spark_month_name, spark_read_side_padding,
@@ -192,6 +193,10 @@ pub fn create_comet_physical_fun_with_eval_mode(
         "spark_log" => {
             let func = Arc::new(spark_log);
             make_comet_scalar_udf!("spark_log", func, without data_type)
+        }
+        "pow" => {
+            let func = Arc::new(spark_pow);
+            make_comet_scalar_udf!("pow", func, without data_type)
         }
         "base64" => {
             let func = Arc::new(crate::string_funcs::spark_base64);
