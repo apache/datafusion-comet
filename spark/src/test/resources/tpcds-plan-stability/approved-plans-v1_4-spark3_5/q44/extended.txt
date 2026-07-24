@@ -1,64 +1,59 @@
-TakeOrderedAndProject
-+- Project
-   +- BroadcastHashJoin
-      :- Project
-      :  +- BroadcastHashJoin
-      :     :- Project
-      :     :  +- SortMergeJoin
-      :     :     :- Sort
-      :     :     :  +- Project
-      :     :     :     +- Filter
-      :     :     :        +- Window
-      :     :     :           +-  WindowGroupLimit [COMET: WindowGroupLimit is not supported]
-      :     :     :              +- CometNativeColumnarToRow
-      :     :     :                 +- CometSort
-      :     :     :                    +- CometColumnarExchange
-      :     :     :                       +-  WindowGroupLimit [COMET: WindowGroupLimit is not supported]
-      :     :     :                          +- CometNativeColumnarToRow
-      :     :     :                             +- CometSort
-      :     :     :                                +- CometFilter
-      :     :     :                                   :  +- Subquery
-      :     :     :                                   :     +- CometNativeColumnarToRow
-      :     :     :                                   :        +- CometHashAggregate
-      :     :     :                                   :           +- CometExchange
-      :     :     :                                   :              +- CometHashAggregate
-      :     :     :                                   :                 +- CometProject
-      :     :     :                                   :                    +- CometFilter
-      :     :     :                                   :                       +- CometNativeScan parquet spark_catalog.default.store_sales
-      :     :     :                                   +- CometHashAggregate
-      :     :     :                                      +- CometExchange
-      :     :     :                                         +- CometHashAggregate
-      :     :     :                                            +- CometProject
-      :     :     :                                               +- CometFilter
-      :     :     :                                                  +- CometNativeScan parquet spark_catalog.default.store_sales
-      :     :     +- Sort
-      :     :        +- Project
-      :     :           +- Filter
-      :     :              +- Window
-      :     :                 +-  WindowGroupLimit [COMET: WindowGroupLimit is not supported]
-      :     :                    +- CometNativeColumnarToRow
-      :     :                       +- CometSort
-      :     :                          +- CometColumnarExchange
-      :     :                             +-  WindowGroupLimit [COMET: WindowGroupLimit is not supported]
-      :     :                                +- CometNativeColumnarToRow
-      :     :                                   +- CometSort
-      :     :                                      +- CometFilter
-      :     :                                         :  +- ReusedSubquery
-      :     :                                         +- CometHashAggregate
-      :     :                                            +- CometExchange
-      :     :                                               +- CometHashAggregate
-      :     :                                                  +- CometProject
-      :     :                                                     +- CometFilter
-      :     :                                                        +- CometNativeScan parquet spark_catalog.default.store_sales
-      :     +- BroadcastExchange
-      :        +- CometNativeColumnarToRow
-      :           +- CometProject
-      :              +- CometFilter
-      :                 +- CometNativeScan parquet spark_catalog.default.item
-      +- BroadcastExchange
-         +- CometNativeColumnarToRow
+CometNativeColumnarToRow
++- CometTakeOrderedAndProject
+   +- CometProject
+      +- CometBroadcastHashJoin
+         :- CometProject
+         :  +- CometBroadcastHashJoin
+         :     :- CometProject
+         :     :  +- CometSortMergeJoin
+         :     :     :- CometSort
+         :     :     :  +- CometProject
+         :     :     :     +- CometFilter
+         :     :     :        +- CometWindowExec
+         :     :     :           +- CometWindowGroupLimitExec
+         :     :     :              +- CometSort
+         :     :     :                 +- CometExchange
+         :     :     :                    +- CometWindowGroupLimitExec
+         :     :     :                       +- CometSort
+         :     :     :                          +- CometFilter
+         :     :     :                             :  +- Subquery
+         :     :     :                             :     +- CometNativeColumnarToRow
+         :     :     :                             :        +- CometHashAggregate
+         :     :     :                             :           +- CometExchange
+         :     :     :                             :              +- CometHashAggregate
+         :     :     :                             :                 +- CometProject
+         :     :     :                             :                    +- CometFilter
+         :     :     :                             :                       +- CometNativeScan parquet spark_catalog.default.store_sales
+         :     :     :                             +- CometHashAggregate
+         :     :     :                                +- CometExchange
+         :     :     :                                   +- CometHashAggregate
+         :     :     :                                      +- CometProject
+         :     :     :                                         +- CometFilter
+         :     :     :                                            +- CometNativeScan parquet spark_catalog.default.store_sales
+         :     :     +- CometSort
+         :     :        +- CometProject
+         :     :           +- CometFilter
+         :     :              +- CometWindowExec
+         :     :                 +- CometWindowGroupLimitExec
+         :     :                    +- CometSort
+         :     :                       +- CometExchange
+         :     :                          +- CometWindowGroupLimitExec
+         :     :                             +- CometSort
+         :     :                                +- CometFilter
+         :     :                                   :  +- ReusedSubquery
+         :     :                                   +- CometHashAggregate
+         :     :                                      +- CometExchange
+         :     :                                         +- CometHashAggregate
+         :     :                                            +- CometProject
+         :     :                                               +- CometFilter
+         :     :                                                  +- CometNativeScan parquet spark_catalog.default.store_sales
+         :     +- CometBroadcastExchange
+         :        +- CometProject
+         :           +- CometFilter
+         :              +- CometNativeScan parquet spark_catalog.default.item
+         +- CometBroadcastExchange
             +- CometProject
                +- CometFilter
                   +- CometNativeScan parquet spark_catalog.default.item
 
-Comet accelerated 32 out of 55 eligible operators (58%). Final plan contains 7 transitions between Spark and Comet.
+Comet accelerated 53 out of 55 eligible operators (96%). Final plan contains 2 transitions between Spark and Comet.

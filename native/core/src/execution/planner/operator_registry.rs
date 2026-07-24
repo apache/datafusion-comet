@@ -152,5 +152,6 @@ fn get_operator_type(spark_operator: &Operator) -> Option<OperatorType> {
         OpStruct::CsvScan(_) => Some(OperatorType::CsvScan),
         OpStruct::ShuffleScan(_) => None, // Not yet in OperatorType enum
         OpStruct::BroadcastNestedLoopJoin(_) => None,
+        OpStruct::WindowGroupLimit(_) => None, // Not yet in OperatorType enum
     }
 }

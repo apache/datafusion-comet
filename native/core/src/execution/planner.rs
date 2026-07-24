@@ -24,6 +24,7 @@ pub mod operator_registry;
 use crate::execution::operators::init_csv_datasource_exec;
 use crate::execution::operators::AlignedArrowStreamReader;
 use crate::execution::operators::IcebergScanExec;
+use crate::execution::operators::{PartitionedRankLimitExec, WindowFnKind};
 use crate::execution::{
     expressions::list_positions::ListPositionsExpr,
     expressions::subquery::Subquery,
@@ -46,6 +47,7 @@ use datafusion::functions_aggregate::min_max::max_udaf;
 use datafusion::functions_aggregate::min_max::min_udaf;
 use datafusion::functions_aggregate::sum::sum_udaf;
 use datafusion::physical_expr::aggregate::{AggregateExprBuilder, AggregateFunctionExpr};
+use datafusion::physical_plan::sorts::partitioned_topk::PartitionedTopKExec;
 use datafusion::physical_plan::windows::{BoundedWindowAggExec, WindowAggExec};
 use datafusion::physical_plan::InputOrderMode;
 use datafusion::{
@@ -2137,6 +2139,151 @@ impl PhysicalPlanner {
                     scans,
                     shuffle_scans,
                     Arc::new(SparkPlan::new(spark_plan.plan_id, final_plan, vec![child])),
+                ))
+            }
+            OpStruct::WindowGroupLimit(wgl) => {
+                // Comet serializes the ROW_NUMBER and RANK cases here (DENSE_RANK still
+                // falls back on the Scala side). The `built_in_window_function` field is a
+                // `ScalarFunc` expression whose `func` name selects the rank semantics,
+                // matching how `WindowExec` encodes its own `built_in_window_function`.
+                // Route:
+                //   * ROW_NUMBER + non-empty PARTITION BY -> DataFusion's `PartitionedTopKExec`
+                //     (heap-based per-partition top-K; matches Spark's SimpleLimitIterator).
+                //   * ROW_NUMBER + empty PARTITION BY -> `LocalLimitExec`. Spark's WGL requires
+                //     the child to be sorted by ORDER BY, so `first K rows per input partition`
+                //     IS the global RANK top-K (Partial phase); the Final phase runs on the
+                //     single-partition post-shuffle stream and stays correct.
+                //   * RANK (empty or non-empty PARTITION BY) -> Comet's streaming
+                //     `PartitionedRankLimitExec`. Relies on the Spark-injected sort of
+                //     `[partition_keys, order_keys]` and retains all rows tied at the K-th
+                //     ORDER BY value — matches Spark's RankLimitIterator (`hasNext = rank <
+                //     limit && input.hasNext`). `partition_prefix_len == 0` degenerates to
+                //     one big partition per DF input partition.
+                assert_eq!(children.len(), 1);
+                let (scans, shuffle_scans, child) =
+                    self.create_plan(&children[0], inputs, partition_count)?;
+                let input_schema = child.schema();
+
+                let rank_func_name = wgl
+                    .built_in_window_function
+                    .as_ref()
+                    .and_then(|e| e.expr_struct.as_ref())
+                    .and_then(|s| match s {
+                        ExprStruct::ScalarFunc(f) => Some(f.func.as_str()),
+                        _ => None,
+                    })
+                    .ok_or_else(|| {
+                        GeneralError(
+                            "WindowGroupLimit is missing built_in_window_function (expected a \
+                             ScalarFunc named row_number/rank/dense_rank)"
+                                .to_string(),
+                        )
+                    })?;
+                match rank_func_name {
+                    "row_number" | "rank" => {}
+                    "dense_rank" => {
+                        return Err(GeneralError(
+                            "WindowGroupLimit with dense_rank should have fallen back to Spark; \
+                             native path does not implement DENSE_RANK yet"
+                                .to_string(),
+                        ));
+                    }
+                    other => {
+                        return Err(GeneralError(format!(
+                            "Unsupported WindowGroupLimit rank function: {other}"
+                        )));
+                    }
+                }
+                let is_row_number = rank_func_name == "row_number";
+
+                let partition_prefix_len = wgl.partition_by_list.len();
+                let fetch = wgl.limit as usize;
+
+                // Fast path: ROW_NUMBER without PARTITION BY collapses to `first K rows per
+                // input DF partition`, which is exactly what `LocalLimitExec` does. No
+                // row-encoding overhead, no ORDER BY tie detection needed.
+                if partition_prefix_len == 0 && is_row_number {
+                    let topk: Arc<dyn ExecutionPlan> =
+                        Arc::new(LocalLimitExec::new(Arc::clone(&child.native_plan), fetch));
+                    return Ok((
+                        scans,
+                        shuffle_scans,
+                        Arc::new(SparkPlan::new(
+                            spark_plan.plan_id,
+                            topk,
+                            vec![Arc::clone(&child)],
+                        )),
+                    ));
+                }
+
+                // Partition keys arrive as bare exprs (no direction). Spark's WGL requires the
+                // child to be sorted by partition-keys ASCENDING then by order-by keys, so
+                // materialize partition keys with SortOptions matching Spark's
+                // `SortOrder(_, Ascending)` (ascending, nulls_first) and concatenate with the
+                // ORDER BY exprs into a single LexOrdering `[partition_keys, order_keys]`.
+                let partition_sort_options = SortOptions {
+                    descending: false,
+                    nulls_first: true,
+                };
+                let mut sort_exprs: Vec<PhysicalSortExpr> =
+                    Vec::with_capacity(partition_prefix_len + wgl.order_by_list.len());
+                for expr in &wgl.partition_by_list {
+                    let phys = self.create_expr(expr, Arc::clone(&input_schema))?;
+                    sort_exprs.push(PhysicalSortExpr {
+                        expr: phys,
+                        options: partition_sort_options,
+                    });
+                }
+                for expr in &wgl.order_by_list {
+                    sort_exprs.push(self.create_sort_expr(expr, Arc::clone(&input_schema))?);
+                }
+
+                let ordering = LexOrdering::new(sort_exprs).ok_or_else(|| {
+                    GeneralError("WindowGroupLimit produced empty LexOrdering".to_string())
+                })?;
+
+                // `LexOrdering::new` deduplicates by underlying `PhysicalExpr`, so if a
+                // PARTITION BY column also appears in ORDER BY (e.g. `PARTITION BY t2c
+                // ORDER BY t2c`, produced by SPARK-46526-shaped scalar-subquery rewrites)
+                // the ORDER BY suffix collapses away. `PartitionedTopKExec::execute` in
+                // DF 54.1.0 panics on an empty ORDER BY suffix, so any WGL whose effective
+                // ORDER BY is fully covered by PARTITION BY routes to Comet's streaming
+                // operator instead, which handles the tie-everything degenerate case.
+                let effective_order_by_len = ordering.len().saturating_sub(partition_prefix_len);
+                let kind = if is_row_number {
+                    WindowFnKind::RowNumber
+                } else {
+                    WindowFnKind::Rank
+                };
+
+                let topk: Arc<dyn ExecutionPlan> = if is_row_number && effective_order_by_len > 0 {
+                    // Common fast path: heap-based per-partition top-K.
+                    Arc::new(PartitionedTopKExec::try_new(
+                        Arc::clone(&child.native_plan),
+                        ordering,
+                        partition_prefix_len,
+                        fetch,
+                    )?)
+                } else {
+                    // Streaming operator handles: any RANK, plus ROW_NUMBER with an
+                    // empty effective ORDER BY suffix.
+                    Arc::new(PartitionedRankLimitExec::try_new(
+                        Arc::clone(&child.native_plan),
+                        ordering,
+                        partition_prefix_len,
+                        fetch,
+                        kind,
+                    )?)
+                };
+
+                Ok((
+                    scans,
+                    shuffle_scans,
+                    Arc::new(SparkPlan::new(
+                        spark_plan.plan_id,
+                        topk,
+                        vec![Arc::clone(&child)],
+                    )),
                 ))
             }
             OpStruct::ShuffleScan(scan) => {
