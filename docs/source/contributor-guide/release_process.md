@@ -128,7 +128,8 @@ All release branches stay protected, including older ones, so released code cann
 
 The docs on `main` contain only template markers; CI fills them at publish time. A release branch instead
 commits the generated content so the archived docs for the release render real tables. Run the script to
-generate the config reference and the per-Spark-version compatibility pages and freeze them onto the branch:
+generate the config reference, refresh the Implementation column of the Spark Expression Support page, and
+produce the per-Spark-version compatibility pages, freezing them onto the branch:
 
 ```shell
 ./dev/generate-release-docs.sh
