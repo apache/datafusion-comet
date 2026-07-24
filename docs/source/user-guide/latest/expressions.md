@@ -226,7 +226,7 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | --- | --- | --- |
 | `from_csv` | ✅ |  |
 | `schema_of_csv` | ✅ |  |
-| `to_csv` | ✅ |  |
+| `to_csv` | ✅ | Runs through the JVM codegen dispatcher by default; the native path is opt-in via allowIncompatible |
 
 ---
 
@@ -594,7 +594,7 @@ expression-level). The `outer` variants are wired but marked `Incompatible`; the
 | `to_char` | ✅ |  |
 | `to_number` | ✅ |  |
 | `to_varchar` | ✅ |  |
-| `translate` | ✅ | Falls back by default; opt-in via allowIncompatible ([#4463](https://github.com/apache/datafusion-comet/issues/4463)) |
+| `translate` | ✅ | Runs through the JVM codegen dispatcher by default; the native path (grapheme vs code-point differences) is opt-in via allowIncompatible ([#4463](https://github.com/apache/datafusion-comet/issues/4463)) |
 | `trim` | ✅ |  |
 | `try_to_binary` | ✅ | Runs natively (rewrites to `try_eval(to_binary(...))`) |
 | `try_to_number` | ✅ | Routed through the JVM codegen dispatcher |
