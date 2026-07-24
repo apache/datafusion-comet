@@ -67,6 +67,12 @@ The following cases are not supported by Comet and always fall back to Spark, re
 
 - `BinaryType` input is not supported
 
+## Levenshtein
+
+The following cases are not supported by Comet and always fall back to Spark, regardless of any `allowIncompatible` setting:
+
+- Non-default collation (non-UTF8_BINARY) is not supported
+
 ## Like
 
 The following cases have no native implementation and always run in the JVM using Spark's code-generated implementation (inside the Comet pipeline):

@@ -801,6 +801,13 @@ under the License.
 <li><p><code class="docutils literal notranslate"><span class="pre">BinaryType</span></code> input is not supported</p></li>
 </ul>
 </section>
+<section id="levenshtein">
+<h2>Levenshtein<a class="headerlink" href="#levenshtein" title="Link to this heading">#</a></h2>
+<p>The following cases are not supported by Comet and always fall back to Spark, regardless of any <code class="docutils literal notranslate"><span class="pre">allowIncompatible</span></code> setting:</p>
+<ul class="simple">
+<li><p>Non-default collation (non-UTF8_BINARY) is not supported</p></li>
+</ul>
+</section>
 <section id="like">
 <h2>Like<a class="headerlink" href="#like" title="Link to this heading">#</a></h2>
 <p>The following cases have no native implementation and always run in the JVM using Spark’s code-generated implementation (inside the Comet pipeline):</p>
@@ -960,6 +967,7 @@ under the License.
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#getjsonobject">GetJsonObject</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#initcap">InitCap</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#length">Length</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#levenshtein">Levenshtein</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#like">Like</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#lower">Lower</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#octetlength">OctetLength</a></li>
