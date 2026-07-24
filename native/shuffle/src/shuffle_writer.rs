@@ -231,11 +231,10 @@ async fn external_shuffle(
                 metrics,
             )?)
         }
-        any if any.partition_count() == 1 => Box::new(SinglePartitionShufflePartitioner::try_new(
+        any if any.partition_count() == 1 => Box::new(SinglePartitionShufflePartitioner::new(
             local_partition_writer,
             metrics,
-            context.session_config().batch_size(),
-        )?),
+        )),
         _ => Box::new(MultiPartitionShuffleRepartitioner::try_new(
             partition,
             local_partition_writer,
@@ -999,6 +998,90 @@ mod test {
                 .unwrap();
             roundtripped.extend(col.values().iter().copied());
         }
+        let expected: Vec<i32> = (0..380).collect();
+        assert_eq!(roundtripped, expected, "rows not preserved in order");
+    }
+
+    /// The single-partition partitioner streams batches straight to the writer's
+    /// `BatchCoalescer` without any concat/buffer layer of its own. A `>= batch_size`
+    /// batch landing on an empty buffer is passed through as a single (possibly oversized)
+    /// block, while smaller batches are coalesced up to `batch_size`. Every row must
+    /// roundtrip in order regardless of how the input is chunked.
+    #[tokio::test]
+    #[cfg_attr(miri, ignore)]
+    async fn single_partition_passthrough_oversized_and_coalesces_small() {
+        use crate::metrics::ShufflePartitionerMetrics;
+        use crate::partitioners::ShufflePartitioner;
+        use arrow::array::Int32Array;
+        use std::fs;
+
+        let schema = Arc::new(Schema::new(vec![Field::new("v", DataType::Int32, false)]));
+        let batch_size = 100;
+
+        let make_batch = |start: i32, len: i32| {
+            let values: Vec<i32> = (start..start + len).collect();
+            RecordBatch::try_new(
+                Arc::clone(&schema),
+                vec![Arc::new(Int32Array::from(values)) as Arc<dyn Array>],
+            )
+            .unwrap()
+        };
+
+        let dir = tempfile::tempdir().unwrap();
+        let data_file = dir.path().join("data.out").to_str().unwrap().to_string();
+        let index_file = dir.path().join("index.out").to_str().unwrap().to_string();
+
+        let block_writer =
+            ShuffleBlockWriter::try_new(schema.as_ref(), CompressionCodec::Lz4Frame).unwrap();
+        let writer = LocalPartitionWriter::try_new(
+            data_file.clone(),
+            index_file,
+            block_writer,
+            1, // single partition
+            batch_size,
+            1024 * 1024,
+            create_runtime(10 * 1024 * 1024),
+        )
+        .unwrap();
+
+        let metrics = ShufflePartitionerMetrics::new(&ExecutionPlanMetricsSet::new(), 0);
+        let mut partitioner = SinglePartitionShufflePartitioner::new(writer, metrics);
+
+        // Lead with a larger-than-batch-size batch on an empty buffer: this is the
+        // case that distinguishes the coalescer bypass from plain coalescing. Without
+        // the passthrough the coalescer would split the 250-row batch into 100/100/50;
+        // it can only appear as a single 250-row block when the bypass fires.
+        partitioner.insert_batch(make_batch(0, 250)).await.unwrap(); // rows 0..250 -> 250 block (passthrough)
+        partitioner.insert_batch(make_batch(250, 30)).await.unwrap(); // rows 250..280 -> buffered
+        partitioner
+            .insert_batch(make_batch(280, 100))
+            .await
+            .unwrap(); // rows 280..380 -> coalesced with buffered 30
+        partitioner.shuffle_write().unwrap();
+
+        let data = fs::read(&data_file).unwrap();
+        let blocks = read_all_ipc_batches(&data);
+
+        // The oversized batch passes through as one 250-row block; the 30 buffered rows
+        // then coalesce with the following 100-row batch into a 100-row block plus a
+        // 30-row tail.
+        let block_rows: Vec<usize> = blocks.iter().map(|b| b.num_rows()).collect();
+        assert_eq!(block_rows, vec![250, 100, 30], "unexpected block sizes");
+
+        let roundtripped: Vec<i32> = blocks
+            .iter()
+            .flat_map(|block| {
+                block
+                    .column(0)
+                    .as_any()
+                    .downcast_ref::<Int32Array>()
+                    .unwrap()
+                    .values()
+                    .iter()
+                    .copied()
+                    .collect::<Vec<_>>()
+            })
+            .collect();
         let expected: Vec<i32> = (0..380).collect();
         assert_eq!(roundtripped, expected, "rows not preserved in order");
     }

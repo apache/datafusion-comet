@@ -193,8 +193,10 @@ For range partitioning:
 
 ### Single Partition
 
-The simplest case: all rows go to partition 0. Uses `SinglePartitionShufflePartitioner` which
-simply concatenates batches to reach the configured batch size.
+The simplest case: all rows go to partition 0. Uses `SinglePartitionShufflePartitioner`, which
+streams each batch straight to the writer, whose `BatchCoalescer` combines small batches up to the
+configured batch size. Batches already at least that size pass through unchanged, so a large input
+batch is written as a single block that may exceed the batch size.
 
 ### Round Robin Partitioning
 

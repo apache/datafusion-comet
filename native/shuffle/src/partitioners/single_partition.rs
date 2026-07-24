@@ -19,66 +19,31 @@ use crate::metrics::ShufflePartitionerMetrics;
 use crate::partitioners::ShufflePartitioner;
 use crate::writers::PartitionWriter;
 use arrow::array::RecordBatch;
-use datafusion::common::DataFusionError;
 use std::iter;
 use tokio::time::Instant;
 
-/// A partitioner that writes all shuffle data to a single file and a single index file
+/// A partitioner that writes all shuffle data to a single file and a single index file.
+///
+/// Batches are streamed straight to the long-lived `BufBatchWriter` inside the
+/// [`PartitionWriter`], whose internal `BatchCoalescer` combines sub-`batch_size` batches
+/// into `batch_size`-row IPC blocks across calls. A batch that is already `>= batch_size`
+/// and lands on an empty coalescer buffer is passed through and written verbatim as a
+/// single block, which may exceed `batch_size` (see the `BatchCoalescer` bypass in
+/// `BufBatchWriter`). Block boundaries therefore depend on how the input is chunked, but
+/// every row is written exactly once in order. The partitioner does no buffering or
+/// concatenation of its own; doing so would copy every row an extra time before the
+/// coalescer handled it.
 pub(crate) struct SinglePartitionShufflePartitioner<T: PartitionWriter> {
     partition_writer: T,
-    /// Batches that are smaller than the batch size and to be concatenated
-    buffered_batches: Vec<RecordBatch>,
-    /// Number of rows in the concatenating batches
-    num_buffered_rows: usize,
     /// Metrics for the repartitioner
     metrics: ShufflePartitionerMetrics,
-    /// The configured batch size
-    batch_size: usize,
 }
 
 impl<T: PartitionWriter> SinglePartitionShufflePartitioner<T> {
-    pub(crate) fn try_new(
-        partition_writer: T,
-        metrics: ShufflePartitionerMetrics,
-        batch_size: usize,
-    ) -> datafusion::common::Result<Self> {
-        Ok(Self {
+    pub(crate) fn new(partition_writer: T, metrics: ShufflePartitionerMetrics) -> Self {
+        Self {
             partition_writer,
-            buffered_batches: vec![],
-            num_buffered_rows: 0,
             metrics,
-            batch_size,
-        })
-    }
-
-    /// Add a batch to the buffer of the partitioner, these buffered batches will be concatenated
-    /// and written to the output data file when the number of rows in the buffer reaches the batch size.
-    fn add_buffered_batch(&mut self, batch: RecordBatch) {
-        self.num_buffered_rows += batch.num_rows();
-        self.buffered_batches.push(batch);
-    }
-
-    /// Consumes buffered batches and return a concatenated batch if successful
-    fn concat_buffered_batches(&mut self) -> datafusion::common::Result<Option<RecordBatch>> {
-        if self.buffered_batches.is_empty() {
-            Ok(None)
-        } else if self.buffered_batches.len() == 1 {
-            let batch = self.buffered_batches.remove(0);
-            self.num_buffered_rows = 0;
-            Ok(Some(batch))
-        } else {
-            let schema = &self.buffered_batches[0].schema();
-            match arrow::compute::concat_batches(schema, self.buffered_batches.iter()) {
-                Ok(concatenated) => {
-                    self.buffered_batches.clear();
-                    self.num_buffered_rows = 0;
-                    Ok(Some(concatenated))
-                }
-                Err(e) => Err(DataFusionError::ArrowError(
-                    Box::from(e),
-                    Some(DataFusionError::get_back_trace()),
-                )),
-            }
         }
     }
 }
@@ -93,26 +58,9 @@ impl<T: PartitionWriter> ShufflePartitioner for SinglePartitionShufflePartitione
             self.metrics.data_size.add(batch.get_array_memory_size());
             self.metrics.baseline.record_output(num_rows);
 
-            if num_rows >= self.batch_size || num_rows + self.num_buffered_rows > self.batch_size {
-                let concatenated_batch = self.concat_buffered_batches()?;
-
-                // Write the concatenated buffered batch
-                if let Some(batch) = concatenated_batch {
-                    self.partition_writer
-                        .write(0, &mut iter::once(Ok(batch)), &self.metrics)?;
-                }
-
-                if num_rows >= self.batch_size {
-                    // Write the new batch
-                    self.partition_writer
-                        .write(0, &mut iter::once(Ok(batch)), &self.metrics)?;
-                } else {
-                    // Add the new batch to the buffer
-                    self.add_buffered_batch(batch);
-                }
-            } else {
-                self.add_buffered_batch(batch);
-            }
+            // Stream directly to the writer; its BatchCoalescer handles batching to batch_size.
+            self.partition_writer
+                .write(0, &mut iter::once(Ok(batch)), &self.metrics)?;
         }
 
         self.metrics.input_batches.add(1);
@@ -125,13 +73,6 @@ impl<T: PartitionWriter> ShufflePartitioner for SinglePartitionShufflePartitione
 
     fn shuffle_write(&mut self) -> datafusion::common::Result<()> {
         let start_time = Instant::now();
-        let concatenated_batch = self.concat_buffered_batches()?;
-
-        // Write the concatenated buffered batch
-        if let Some(batch) = concatenated_batch {
-            self.partition_writer
-                .write(0, &mut iter::once(Ok(batch)), &self.metrics)?;
-        }
 
         self.partition_writer
             .finish_partition(0, &mut iter::empty(), &self.metrics)?;
