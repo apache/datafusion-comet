@@ -28,7 +28,7 @@ import org.apache.spark.sql.execution.SparkPlan
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.execution.window.WindowExec
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{DataType, DateType, Decimal, DecimalType, DoubleType, LongType, NumericType}
+import org.apache.spark.sql.types.{DataType, Decimal, DecimalType, DoubleType, LongType, NumericType}
 
 import com.google.common.base.Objects
 
@@ -364,26 +364,19 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
     }
 
     // Comet's native window planner ships RANGE frame offsets as
-    // ScalarValue::Int64, but a couple of ORDER BY types don't tolerate that:
-    //   - DATE: arrow-arith requires an Interval RHS for Date32 arithmetic,
-    //     so execution fails with
-    //       Invalid date arithmetic operation: Date32 + Int32
-    //   - DECIMAL: Spark decimal arithmetic widens precision on +/-, so the
-    //     computed boundary (e.g. Decimal(11,0)) doesn't match the current
-    //     value's precision (e.g. Decimal(10,0)) and the comparator fails
-    //     with "Uncomparable values".
-    // Fall back to Spark for those shapes. UNBOUNDED / CURRENT ROW bounds
-    // don't evaluate the offending arithmetic and stay native.
+    // ScalarValue::Int64, which the DECIMAL comparator can't handle: Spark
+    // decimal arithmetic widens precision on +/-, so the computed boundary
+    // (e.g. Decimal(11,0)) doesn't match the current value's precision
+    // (e.g. Decimal(10,0)) and the comparator fails with "Uncomparable
+    // values". Fall back for DECIMAL until the native side normalizes
+    // precision. DATE is now handled natively by wrapping the offset as
+    // IntervalDayTime in the planner. UNBOUNDED / CURRENT ROW bounds don't
+    // evaluate the offending arithmetic and stay native regardless.
     f match {
       case SpecifiedWindowFrame(RangeFrame, lb, ub)
           if !lb.isInstanceOf[SpecialFrameBoundary] ||
             !ub.isInstanceOf[SpecialFrameBoundary] =>
         windowExpr.windowSpec.orderSpec.headOption.map(_.dataType) match {
-          case Some(DateType) =>
-            withFallbackReason(
-              windowExpr,
-              "RANGE frame with explicit offset on DATE ORDER BY is not supported")
-            return None
           case Some(_: DecimalType) =>
             withFallbackReason(
               windowExpr,
