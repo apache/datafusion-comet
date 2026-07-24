@@ -44,9 +44,12 @@ FROM VALUES
   (array(make_dt_interval(1, 2, 3, 4.5), CAST(NULL AS INTERVAL DAY TO SECOND)))
 AS t(a)
 
--- interval output through native shuffle
+-- top-level, struct, and map interval output through native shuffle
 query
-SELECT d, h, mi, s, make_dt_interval(d, h, mi, s) AS i
+SELECT d, h, mi, s,
+  make_dt_interval(d, h, mi, s) AS i,
+  named_struct('i', make_dt_interval(d, h, mi, s)) AS st,
+  map('i', make_dt_interval(d, h, mi, s)) AS m
 FROM test_mdi
 DISTRIBUTE BY d
 
