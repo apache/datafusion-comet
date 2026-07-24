@@ -16,6 +16,7 @@
 -- under the License.
 
 -- Higher-order function exists. Runs through Comet's codegen dispatcher.
+-- ConfigMatrix: spark.sql.legacy.followThreeValuedLogicInArrayExists=false,true
 
 statement
 CREATE TABLE test_exists(a array<int>, threshold int) USING parquet
@@ -25,6 +26,7 @@ INSERT INTO test_exists VALUES
   (array(1, 2, 3), 2),
   (array(-5, 5), 0),
   (array(0), 0),
+  (array(1, NULL, 3), 10),
   (array(), 0),
   (NULL, NULL)
 
@@ -39,6 +41,14 @@ SELECT exists(a, x -> x > threshold) FROM test_exists
 -- predicate that can be null (array with nulls)
 query
 SELECT exists(array(1, NULL, 3), x -> x > 2)
+
+-- no match with a null predicate result: NULL in three-valued mode, otherwise false
+query
+SELECT exists(array(1, NULL, 3), x -> x > 10)
+
+-- every predicate result is null: NULL in three-valued mode, otherwise false
+query
+SELECT exists(array(1, 2, 3), x -> CAST(NULL AS BOOLEAN))
 
 -- all literals
 query
