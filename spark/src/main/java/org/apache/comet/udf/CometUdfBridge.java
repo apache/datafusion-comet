@@ -19,16 +19,26 @@
 
 package org.apache.comet.udf;
 
+import java.io.IOException;
 import java.util.concurrent.ConcurrentHashMap;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import org.apache.arrow.c.ArrowArray;
 import org.apache.arrow.c.ArrowSchema;
 import org.apache.arrow.c.Data;
+import org.apache.arrow.memory.AllocationListener;
+import org.apache.arrow.memory.AllocationOutcome;
 import org.apache.arrow.memory.BufferAllocator;
+import org.apache.arrow.memory.OutOfMemoryException;
 import org.apache.arrow.vector.FieldVector;
 import org.apache.arrow.vector.ValueVector;
 import org.apache.spark.TaskContext;
 import org.apache.spark.comet.CometTaskContextShim;
+import org.apache.spark.memory.MemoryConsumer;
+import org.apache.spark.memory.MemoryMode;
+import org.apache.spark.memory.TaskMemoryManager;
 import org.apache.spark.util.TaskCompletionListener;
 
 /**
@@ -43,14 +53,12 @@ import org.apache.spark.util.TaskCompletionListener;
  *       name.
  *   <li>A {@link CometUDF} instance is visible only within the Spark task attempt that instantiated
  *       it. Two task attempts observing the same class name receive distinct instances.
- *   <li>At any instant at most one thread is inside {@code evaluate()} for a given {@code
- *       taskAttemptId}. This follows from Spark executing one native future per partition and Tokio
- *       polling one future per worker at a time.
- *   <li>All instances for a task are dropped by the {@link TaskCompletionListener} registered on
- *       the first cache miss for that task. No cache entry outlives its task.
- *   <li>When {@code taskContext} is {@code null} (unit tests, direct native driver) the fallback
- *       key {@code -1L} is used; that bucket is never evicted because no task-completion event will
- *       fire.
+ *   <li>Calls for a task may arrive concurrently from different Tokio workers. Implementations with
+ *       mutable state are responsible for synchronizing {@code evaluate()}.
+ *   <li>All instances for a task are dropped by the {@link TaskCompletionListener} registered by
+ *       {@link #registerTask(TaskContext)}. No UDF instance outlives its task.
+ *   <li>When {@code taskContext} is {@code null} (unit tests, direct native driver), instances live
+ *       in a process-lifetime fallback cache because no task-completion event will fire.
  * </ol>
  *
  * <p>Keying by {@code taskAttemptId} rather than by thread keeps the cache correct under Tokio
@@ -60,17 +68,33 @@ import org.apache.spark.util.TaskCompletionListener;
  */
 public class CometUdfBridge {
 
+  private static final Logger LOG = LoggerFactory.getLogger(CometUdfBridge.class);
+
+  private static final BufferAllocator ROOT_ALLOCATOR =
+      org.apache.comet.package$.MODULE$.CometArrowAllocator();
+
   /**
-   * Task-scoped cache of {@link CometUDF} instances. Outer map keys are Spark task attempt IDs (or
-   * {@code -1L} when no {@link TaskContext} is available). Inner maps hold one instance per UDF
-   * class name for the task's lifetime. Entries are removed by the {@link TaskCompletionListener}
-   * registered on the first cache miss per task.
+   * Task-scoped UDF instances and output allocator. Entries are removed after task completion and
+   * after any Arrow buffers still exported through FFI have been released.
    */
-  private static final ConcurrentHashMap<Long, ConcurrentHashMap<String, CometUDF>> INSTANCES =
+  private static final ConcurrentHashMap<Long, TaskState> TASKS = new ConcurrentHashMap<>();
+
+  /** Calls without a Spark task retain the existing process-lifetime fallback behavior. */
+  private static final ConcurrentHashMap<String, CometUDF> NO_TASK_INSTANCES =
       new ConcurrentHashMap<>();
 
-  /** Sentinel key for calls that carry no {@link TaskContext} (unit tests, direct driver). */
-  private static final long NO_TASK_ID = -1L;
+  /**
+   * Registers task-scoped UDF state before native execution starts.
+   *
+   * <p>{@code CometExecIterator} calls this before registering its own completion listener. Spark
+   * runs completion listeners in reverse registration order, so the native plan releases exported
+   * Arrow buffers before this state attempts to close its child allocator.
+   */
+  public static void registerTask(TaskContext taskContext) {
+    if (taskContext != null) {
+      taskState(taskContext);
+    }
+  }
 
   /**
    * Called from native via JNI.
@@ -146,28 +170,9 @@ public class CometUdfBridge {
       long outSchemaPtr,
       int numRows,
       TaskContext taskContext) {
-    long taskAttemptId = (taskContext != null) ? taskContext.taskAttemptId() : NO_TASK_ID;
-
+    TaskState state = taskContext == null ? null : taskState(taskContext);
     ConcurrentHashMap<String, CometUDF> perTask =
-        INSTANCES.computeIfAbsent(
-            taskAttemptId,
-            id -> {
-              ConcurrentHashMap<String, CometUDF> fresh = new ConcurrentHashMap<>();
-              if (taskContext != null) {
-                // computeIfAbsent runs this lambda at most once per key, so the listener is
-                // registered exactly once per task attempt.
-                taskContext.addTaskCompletionListener(
-                    (TaskCompletionListener)
-                        ctx -> {
-                          ConcurrentHashMap<String, CometUDF> removed = INSTANCES.remove(id);
-                          assert removed != null
-                              : "task-completion listener fired but cache already removed "
-                                  + "entry for task "
-                                  + id;
-                        });
-              }
-              return fresh;
-            });
+        state == null ? NO_TASK_INSTANCES : state.instances;
     assert perTask != null : "per-task cache must be non-null after computeIfAbsent";
 
     CometUDF udf =
@@ -189,7 +194,7 @@ public class CometUdfBridge {
             });
     assert udf != null : "reflective instantiation returned null for " + udfClassName;
 
-    BufferAllocator allocator = org.apache.comet.package$.MODULE$.CometArrowAllocator();
+    BufferAllocator outputAllocator = state == null ? ROOT_ALLOCATOR : state.allocator();
 
     ValueVector[] inputs = new ValueVector[inputArrayPtrs.length];
     ValueVector result = null;
@@ -197,10 +202,12 @@ public class CometUdfBridge {
       for (int i = 0; i < inputArrayPtrs.length; i++) {
         ArrowArray inArr = ArrowArray.wrap(inputArrayPtrs[i]);
         ArrowSchema inSch = ArrowSchema.wrap(inputSchemaPtrs[i]);
-        inputs[i] = Data.importVector(allocator, inArr, inSch, null);
+        // Imported native buffers are already owned/accounted by native execution. Keep them on
+        // the root allocator so the output listener does not charge them a second time.
+        inputs[i] = Data.importVector(ROOT_ALLOCATOR, inArr, inSch, null);
       }
 
-      result = udf.evaluate(inputs, numRows);
+      result = udf.evaluate(outputAllocator, inputs, numRows);
       if (!(result instanceof FieldVector)) {
         throw new RuntimeException(
             "CometUDF.evaluate() must return a FieldVector, got: " + result.getClass().getName());
@@ -214,7 +221,7 @@ public class CometUdfBridge {
       }
       ArrowArray outArr = ArrowArray.wrap(outArrayPtr);
       ArrowSchema outSch = ArrowSchema.wrap(outSchemaPtr);
-      Data.exportVector(allocator, (FieldVector) result, null, outArr, outSch);
+      Data.exportVector(outputAllocator, (FieldVector) result, null, outArr, outSch);
     } finally {
       for (ValueVector v : inputs) {
         if (v != null) {
@@ -232,6 +239,149 @@ public class CometUdfBridge {
           // do not mask the original throwable
         }
       }
+    }
+  }
+
+  /** Visible to the focused allocator test in this package. */
+  static BufferAllocator taskAllocator(TaskContext taskContext) {
+    return taskState(taskContext).allocator();
+  }
+
+  /** Visible to the focused allocator test in this package. */
+  static int taskStateCount() {
+    return TASKS.size();
+  }
+
+  private static TaskState taskState(TaskContext taskContext) {
+    long taskAttemptId = taskContext.taskAttemptId();
+    return TASKS.computeIfAbsent(
+        taskAttemptId,
+        id -> {
+          TaskState state = new TaskState(id, CometTaskContextShim.taskMemoryManager(taskContext));
+          taskContext.addTaskCompletionListener(
+              (TaskCompletionListener) ignored -> state.taskCompleted());
+          return state;
+        });
+  }
+
+  /** Per-task Arrow listener and non-spillable Spark memory consumer. */
+  private static final class TaskState implements AllocationListener {
+    private final long taskAttemptId;
+    private final TaskMemoryConsumer consumer;
+    private final ConcurrentHashMap<String, CometUDF> instances = new ConcurrentHashMap<>();
+
+    private BufferAllocator allocator;
+    private boolean completed;
+    private boolean closed;
+
+    private TaskState(long taskAttemptId, TaskMemoryManager taskMemoryManager) {
+      this.taskAttemptId = taskAttemptId;
+      this.consumer =
+          taskMemoryManager.getTungstenMemoryMode() == MemoryMode.OFF_HEAP
+              ? new TaskMemoryConsumer(taskMemoryManager)
+              : null;
+    }
+
+    private synchronized BufferAllocator allocator() {
+      if (completed) {
+        throw new IllegalStateException(
+            "Cannot allocate JVM UDF memory after task " + taskAttemptId + " completed");
+      }
+      if (allocator == null) {
+        allocator =
+            ROOT_ALLOCATOR.newChildAllocator(
+                "comet-udf-task-" + taskAttemptId, this, 0L, Long.MAX_VALUE);
+      }
+      return allocator;
+    }
+
+    @Override
+    public synchronized void onPreAllocation(long size) {
+      if (completed) {
+        throw new OutOfMemoryException(
+            "Cannot allocate " + size + " JVM UDF bytes after task completion");
+      }
+      if (consumer != null) {
+        long acquired = consumer.acquireMemory(size);
+        if (acquired < size) {
+          if (acquired > 0) {
+            consumer.freeMemory(acquired);
+          }
+          throw new OutOfMemoryException(
+              "Failed to acquire " + size + " JVM UDF bytes from Spark TaskMemoryManager");
+        }
+      }
+    }
+
+    @Override
+    public synchronized boolean onFailedAllocation(long size, AllocationOutcome outcome) {
+      if (!completed && consumer != null) {
+        consumer.freeMemory(size);
+      }
+      return false;
+    }
+
+    @Override
+    public void onRelease(long size) {
+      BufferAllocator toClose = null;
+      synchronized (this) {
+        if (!completed && consumer != null) {
+          consumer.freeMemory(size);
+        } else if (completed && allocator.getAllocatedMemory() == 0 && !closed) {
+          closed = true;
+          toClose = allocator;
+        }
+      }
+      if (toClose != null) {
+        close(toClose);
+      }
+    }
+
+    private void taskCompleted() {
+      BufferAllocator toClose = null;
+      boolean removeOnly = false;
+      synchronized (this) {
+        completed = true;
+        instances.clear();
+        if (consumer != null && consumer.getUsed() > 0) {
+          // Spark discards all remaining task accounting immediately after completion listeners.
+          // Release it here; later FFI callbacks only drive allocator cleanup.
+          consumer.freeMemory(consumer.getUsed());
+        }
+        if ((allocator == null || allocator.getAllocatedMemory() == 0) && !closed) {
+          closed = true;
+          toClose = allocator;
+          removeOnly = allocator == null;
+        }
+      }
+      if (toClose != null) {
+        close(toClose);
+      } else if (removeOnly) {
+        TASKS.remove(taskAttemptId, this);
+      }
+    }
+
+    private void close(BufferAllocator allocator) {
+      try {
+        allocator.close();
+      } catch (RuntimeException e) {
+        // AllocationListener.onRelease must not throw. Preserve the original task outcome and
+        // leave an actionable leak report instead.
+        LOG.warn("JVM UDF allocator for task {} failed to close cleanly", taskAttemptId, e);
+      } finally {
+        TASKS.remove(taskAttemptId, this);
+      }
+    }
+  }
+
+  private static final class TaskMemoryConsumer extends MemoryConsumer {
+    private TaskMemoryConsumer(TaskMemoryManager taskMemoryManager) {
+      super(taskMemoryManager, 0L, MemoryMode.OFF_HEAP);
+    }
+
+    @Override
+    public long spill(long size, MemoryConsumer trigger) throws IOException {
+      return 0L;
     }
   }
 }

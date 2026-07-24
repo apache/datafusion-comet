@@ -19,6 +19,7 @@
 
 package org.apache.comet.udf
 
+import org.apache.arrow.memory.BufferAllocator
 import org.apache.arrow.vector.ValueVector
 
 /**
@@ -28,6 +29,8 @@ import org.apache.arrow.vector.ValueVector
  *   - Vector arguments arrive at the row count of the current batch.
  *   - Scalar (literal-folded) arguments arrive as length-1 vectors and must be read at index 0.
  *   - The returned vector's length must match `numRows`.
+ *   - Returned vectors and temporary buffers must use `allocator`. In off-heap mode, allocations
+ *     are charged to the current Spark task.
  *
  * `numRows` mirrors DataFusion's `ScalarFunctionArgs.number_rows` and is the batch row count.
  * UDFs that always have at least one batch-length input can read length from it and ignore
@@ -39,10 +42,20 @@ import org.apache.arrow.vector.ValueVector
  * state in fields (counters, compiled patterns, scratch buffers); instances are dropped at task
  * completion. Do not hold state that must persist across tasks.
  *
- * At most one thread calls `evaluate` on a given instance at a time: Spark runs one native future
- * per partition and Tokio polls one future per worker, so the per-task instance is never touched
- * concurrently even if the task's future migrates between Tokio workers across batches.
+ * Native execution may call `evaluate` concurrently from multiple Tokio workers within one task.
+ * Implementations with mutable state must synchronize access.
  */
 trait CometUDF {
-  def evaluate(inputs: Array[ValueVector], numRows: Int): ValueVector
+
+  /**
+   * Legacy entry point retained for implementations compiled against earlier Comet releases. New
+   * implementations should override the allocator-aware overload below.
+   */
+  def evaluate(inputs: Array[ValueVector], numRows: Int): ValueVector =
+    throw new UnsupportedOperationException("CometUDF.evaluate is not implemented")
+
+  def evaluate(
+      allocator: BufferAllocator,
+      inputs: Array[ValueVector],
+      numRows: Int): ValueVector = evaluate(inputs, numRows)
 }
