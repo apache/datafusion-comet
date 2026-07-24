@@ -677,6 +677,42 @@ object IcebergReflection extends Logging {
   }
 
   /**
+   * Top-level column names whose Iceberg type iceberg-rust's page-index evaluator cannot prune
+   * over, so callers must not push a residual predicate on them, not even the IS NOT NULL that
+   * Iceberg adds for every filtered column. Two physical layouts fail (page_index_evaluator.rs):
+   *   - FIXED_LEN_BYTE_ARRAY (decimal, uuid, fixed): rejected outright as an unsupported index
+   *     type, which fails the native scan.
+   *   - BYTE_ARRAY backing a binary column: the evaluator decodes column-index min/max as UTF-8
+   *     (String::from_utf8(..).unwrap()) before the predicate closure runs, so non-UTF-8 bounds
+   *     panic the native scan even for a bare IS [NOT] NULL. Extend this set as Iceberg adds
+   *     types with either layout (e.g. geometry).
+   */
+  def pageIndexUnsupportedColumns(schema: Any): Set[String] = {
+    import scala.jdk.CollectionConverters._
+    try {
+      val columns = schema.getClass
+        .getMethod("columns")
+        .invoke(schema)
+        .asInstanceOf[java.util.List[_]]
+      columns.asScala.flatMap { column =>
+        val name = column.getClass.getMethod("name").invoke(column).asInstanceOf[String]
+        val typeStr = column.getClass.getMethod("type").invoke(column).toString
+        if (typeStr.startsWith("decimal(") || typeStr == "uuid" || typeStr.startsWith("fixed[") ||
+          typeStr == "binary") {
+          Some(name)
+        } else {
+          None
+        }
+      }.toSet
+    } catch {
+      case e: Exception =>
+        logWarning(
+          s"Failed to inspect schema for page-index-unsupported columns: ${e.getMessage}")
+        Set.empty[String]
+    }
+  }
+
+  /**
    * Validates partition column types for compatibility with iceberg-rust.
    *
    * iceberg-rust's Literal::try_from_json() has incomplete type support: - Binary/fixed types:
@@ -739,13 +775,6 @@ object IcebergReflection extends Logging {
   }
 
   /**
-   * True if the table has table-level encryption configured. Encrypted Parquet footers cannot be
-   * read by Comet's native reader, so such tables must fall back to Spark.
-   */
-  def hasTableEncryption(table: Any): Boolean =
-    getTableProperties(table).exists(_.containsKey("encryption.key-id"))
-
-  /**
    * Returns the names of schema columns (including nested struct/list/map fields) that declare a
    * V3 initial-default value. iceberg-rust does not synthesize default values for columns absent
    * from a data file, so reads projecting such columns must fall back. Throws on reflection
@@ -794,6 +823,18 @@ object IcebergReflection extends Logging {
       .invoke(null, schema.asInstanceOf[AnyRef])
       .asInstanceOf[org.apache.spark.sql.types.StructType]
   }
+
+  /**
+   * The configured AES data-key length in bytes for an encrypted table (Iceberg's
+   * `encryption.data-key-length`, default 16), or None if the table is not encrypted. Comet's
+   * native Parquet reader supports 128-bit (16-byte) and 256-bit (32-byte) keys but not 192-bit
+   * (the underlying crypto has no AES-192-GCM), so callers fall back for anything else. Throws on
+   * reflection failure so the caller can fall back.
+   */
+  def encryptionDataKeyLength(table: Any): Option[Int] =
+    getTableProperties(table).filter(_.containsKey("encryption.key-id")).map { props =>
+      Option(props.get("encryption.data-key-length")).map(_.toInt).getOrElse(16)
+    }
 }
 
 /**

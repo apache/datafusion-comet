@@ -50,6 +50,18 @@ runs:
         cd native
         cargo build --release
 
+    # Evaluate hashFiles now, on the clean checkout, and reuse the result in the
+    # cache key below. The cache step's inputs are re-evaluated when its post
+    # (cache-save) phase runs, and by then the test run has left trees under the
+    # workspace (e.g. the Hive-catalog warehouse from CometIcebergEncryptionSuite)
+    # that make a fresh '**/pom.xml' walk throw "Fail to hash files under
+    # directory". A precomputed string keeps the save phase from re-walking them.
+    - name: Compute Maven cache key
+      id: maven-cache-key
+      if: ${{ runner.os != 'macOS' }}
+      shell: bash
+      run: echo "hash=${{ hashFiles('**/pom.xml') }}" >> "$GITHUB_OUTPUT"
+
     - name: Cache Maven dependencies
       # TODO: remove next line after working again
       #  temporarily work around https://github.com/actions/runner-images/issues/13341
@@ -60,7 +72,7 @@ runs:
         path: |
           ~/.m2/repository
           /root/.m2/repository
-        key: ${{ runner.os }}-java-maven-${{ hashFiles('**/pom.xml') }}
+        key: ${{ runner.os }}-java-maven-${{ steps.maven-cache-key.outputs.hash }}
         restore-keys: |
           ${{ runner.os }}-java-maven-
 
