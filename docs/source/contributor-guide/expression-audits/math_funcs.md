@@ -188,6 +188,11 @@ Internal fused expression that rescales a Decimal128 value (changing scale) and 
 
 - Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-05-27): `LeafMathExpression(math.Pi, "PI")`; foldable, so Spark `ConstantFolding` rewrites it to a `Literal` before Comet sees the plan. The `CometScalarFunction("pi")` registration is exercised only when `ConstantFolding` is excluded.
 
+## pmod
+
+- Spark 3.4.3, 3.5.8, 4.0.1 (audited 2026-07-24): `Pmod(left, right, evalMode)` signature identical across these versions. `CometPmod` serializes to the `MathExpr pmod` proto (mirroring `Remainder`), carrying the eval mode. The native `spark_pmod` UDF computes `((left % right) + right) % right`; non-ANSI returns NULL on a zero divisor, ANSI raises `DIVIDE_BY_ZERO`. All numeric input types are supported, including decimal (wide decimals use a Decimal256 intermediate, matching modulo).
+- Spark 4.1.1 (audited 2026-07-24): constructor changed to `Pmod(left, right, evalContext: NumericEvalContext)`, but `BinaryArithmetic.evalMode` is still available so no shim is needed. The ANSI zero-divisor error changed to `REMAINDER_BY_ZERO`; Comet's native error is `RemainderByZero`, which matches.
+
 ## positive
 
 - Spark 3.4.3, 3.5.8 (audited 2026-05-27): `UnaryPositive(child)` is a regular expression. There is no Comet serde for `UnaryPositive`, so projections containing `+col` silently disable Comet for the projection on 3.4/3.5.

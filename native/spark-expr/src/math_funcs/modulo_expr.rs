@@ -17,7 +17,11 @@
 
 use crate::{create_comet_physical_fun, IfExpr};
 use crate::{remainder_by_zero_error, Cast, EvalMode, SparkCastOptions};
-use arrow::compute::kernels::numeric::rem;
+use arrow::array::{new_null_array, ArrayRef, Scalar};
+use arrow::compute::kernels::cast::cast;
+use arrow::compute::kernels::cmp::{eq, lt};
+use arrow::compute::kernels::numeric::{add, rem};
+use arrow::compute::kernels::zip::zip;
 use arrow::datatypes::*;
 use datafusion::common::{exec_err, internal_err, DataFusionError, Result, ScalarValue};
 use datafusion::config::ConfigOptions;
@@ -136,6 +140,70 @@ pub fn create_modulo_expr(
     }
 }
 
+/// Computes `left % right` with Spark-compliant divide-by-zero handling.
+/// In ANSI mode (`fail_on_error`), a zero divisor raises Spark's remainder-by-zero error.
+/// In legacy mode, zero divisors are replaced with `NULL` before the remainder is computed, so
+/// those rows return `NULL` while the rest compute normally.
+fn try_rem(left: &ArrayRef, right: &ArrayRef, fail_on_error: bool) -> Result<ArrayRef> {
+    if fail_on_error {
+        match rem(left, right) {
+            Ok(result) => Ok(result),
+            Err(e) if e.to_string().contains("Divide by zero") => {
+                Err(remainder_by_zero_error().into())
+            }
+            Err(e) => Err(e.into()),
+        }
+    } else {
+        let zero = Scalar::new(ScalarValue::new_zero(right.data_type())?.to_array()?);
+        let null = Scalar::new(new_null_array(right.data_type(), 1));
+        let is_zero = eq(right, &zero)?;
+        let safe_right = zip(&is_zero, &null, right)?;
+        Ok(rem(left, &safe_right)?)
+    }
+}
+
+/// Spark-compliant `pmod` (positive modulo) function. Returns a non-negative remainder when the
+/// divisor is positive, matching Spark's `MathUtils.pmod`. If `fail_on_error` is true (ANSI mode)
+/// then a zero divisor raises an error, otherwise those rows return `NULL`.
+///
+/// The result is computed as `((left % right) + right) % right`, adding the divisor back only where
+/// the plain remainder is negative and taking the remainder a second time to normalise the
+/// negative-divisor case. `data_type` is Spark's declared result type: Arrow's decimal arithmetic
+/// can widen the precision or scale of the intermediates, so the final result is cast back to it.
+/// The final value always fits in `data_type`, so the cast is lossless.
+pub fn spark_pmod(
+    args: &[ColumnarValue],
+    data_type: &DataType,
+    fail_on_error: bool,
+) -> Result<ColumnarValue> {
+    if args.len() != 2 {
+        return exec_err!("pmod expects exactly two arguments");
+    }
+
+    let args = ColumnarValue::values_to_arrays(args)?;
+    let left = &args[0];
+    let right = &args[1];
+
+    let remainder = try_rem(left, right, fail_on_error)?;
+    // Zero arrays are built from the operand types they are compared/combined with so that Arrow's
+    // decimal kernels see matching scales.
+    let remainder_zero =
+        ScalarValue::new_zero(remainder.data_type())?.to_array_of_size(remainder.len())?;
+    let right_zero = ScalarValue::new_zero(right.data_type())?.to_array_of_size(right.len())?;
+    // Where the remainder is negative, add the divisor back to make it non-negative; elsewhere add
+    // zero (a no-op).
+    let negative = lt(&remainder, &remainder_zero)?;
+    let addend = zip(&negative, right, &right_zero)?;
+    let shifted = add(&addend, &remainder)?;
+    let result = try_rem(&shifted, right, fail_on_error)?;
+
+    if result.data_type() == data_type {
+        Ok(ColumnarValue::Array(result))
+    } else {
+        Ok(ColumnarValue::Array(cast(&result, data_type)?))
+    }
+}
+
 fn null_if_zero_primitive(
     expression: Arc<dyn PhysicalExpr>,
     input_schema: &Schema,
@@ -206,6 +274,85 @@ fn create_modulo_scalar_function(
     Ok(Arc::new(ScalarFunctionExpr::new(
         func_name,
         modulo_expr,
+        vec![left, right],
+        Arc::new(Field::new(func_name, data_type.clone(), true)),
+        Arc::new(ConfigOptions::default()),
+    )))
+}
+
+/// Builds the physical expression for Spark's `pmod`. Zero-divisor handling lives inside the
+/// `spark_pmod` kernel, so the operands are passed through unchanged (no null-if-zero wrapping is
+/// needed, unlike modulo). As with modulo, when the decimal operands are wide enough that the
+/// intermediate `(remainder + divisor)` could exceed `Decimal128`'s maximum precision, both operands
+/// are promoted to `Decimal256` and the result is cast back.
+pub fn create_pmod_expr(
+    left: Arc<dyn PhysicalExpr>,
+    right: Arc<dyn PhysicalExpr>,
+    data_type: DataType,
+    input_schema: SchemaRef,
+    fail_on_error: bool,
+    registry: &dyn FunctionRegistry,
+) -> Result<Arc<dyn PhysicalExpr>, DataFusionError> {
+    match (
+        left.data_type(&input_schema),
+        right.data_type(&input_schema),
+    ) {
+        (Ok(DataType::Decimal128(p1, s1)), Ok(DataType::Decimal128(p2, s2)))
+            if max(s1, s2) as u8 + max(p1 - s1 as u8, p2 - s2 as u8) > DECIMAL128_MAX_PRECISION =>
+        {
+            let left_256 = Arc::new(Cast::new(
+                left,
+                DataType::Decimal256(p1, s1),
+                SparkCastOptions::new_without_timezone(EvalMode::Legacy, false),
+                None,
+                None,
+            ));
+            let right_256 = Arc::new(Cast::new(
+                right,
+                DataType::Decimal256(p2, s2),
+                SparkCastOptions::new_without_timezone(EvalMode::Legacy, false),
+                None,
+                None,
+            ));
+
+            // Operating on Decimal256 inputs, the kernel returns Decimal256.
+            let decimal256_return_type = match &data_type {
+                DataType::Decimal128(p, s) => DataType::Decimal256(*p, *s),
+                other => other.clone(),
+            };
+            let pmod_scalar_func = create_pmod_scalar_function(
+                left_256,
+                right_256,
+                &decimal256_return_type,
+                registry,
+                fail_on_error,
+            )?;
+
+            Ok(Arc::new(Cast::new(
+                pmod_scalar_func,
+                data_type,
+                SparkCastOptions::new_without_timezone(EvalMode::Legacy, false),
+                None,
+                None,
+            )))
+        }
+        _ => create_pmod_scalar_function(left, right, &data_type, registry, fail_on_error),
+    }
+}
+
+fn create_pmod_scalar_function(
+    left: Arc<dyn PhysicalExpr>,
+    right: Arc<dyn PhysicalExpr>,
+    data_type: &DataType,
+    registry: &dyn FunctionRegistry,
+    fail_on_error: bool,
+) -> Result<Arc<dyn PhysicalExpr>, DataFusionError> {
+    let func_name = "spark_pmod";
+    let pmod_expr =
+        create_comet_physical_fun(func_name, data_type.clone(), registry, Some(fail_on_error))?;
+    Ok(Arc::new(ScalarFunctionExpr::new(
+        func_name,
+        pmod_expr,
         vec![left, right],
         Arc::new(Field::new(func_name, data_type.clone(), true)),
         Arc::new(ConfigOptions::default()),
@@ -439,6 +586,119 @@ mod tests {
             // Expected result in non-ANSI mode.
             let expected_result = Arc::new(Int32Array::from(vec![None, None]));
             verify_result(modulo_expr, batch, fail_on_error, Some(expected_result));
+        })
+    }
+
+    #[test]
+    fn test_pmod_basic_int() {
+        with_fail_on_error(|fail_on_error| {
+            let schema = Arc::new(Schema::new(vec![
+                Field::new("a", DataType::Int32, false),
+                Field::new("b", DataType::Int32, false),
+            ]));
+
+            // Cover the sign combinations: the result takes the sign of the divisor, matching
+            // Spark's MathUtils.pmod.
+            let a_array = Arc::new(Int32Array::from(vec![7, -7, 7, -7, i32::MIN]));
+            let b_array = Arc::new(Int32Array::from(vec![3, 3, -3, -3, 3]));
+            let batch = RecordBatch::try_new(Arc::clone(&schema), vec![a_array, b_array]).unwrap();
+
+            let session_ctx = SessionContext::new();
+            let pmod_expr = create_pmod_expr(
+                Arc::new(Column::new("a", 0)),
+                Arc::new(Column::new("b", 1)),
+                DataType::Int32,
+                schema,
+                fail_on_error,
+                &session_ctx.state(),
+            )
+            .unwrap();
+
+            let should_fail = false;
+            // pmod adds the divisor back only when the plain remainder is negative:
+            //   7 pmod  3 =  1   (7 % 3 = 1, already >= 0)
+            //  -7 pmod  3 =  2   (-7 % 3 = -1, then -1 + 3 = 2)
+            //   7 pmod -3 =  1   (7 % -3 = 1, already >= 0)
+            //  -7 pmod -3 = -1   (-7 % -3 = -1, then (-1 + -3) % -3 = -1)
+            //  i32::MIN pmod 3 = 1   (no overflow)
+            let expected_result = Arc::new(Int32Array::from(vec![1, 2, 1, -1, 1]));
+            verify_result(pmod_expr, batch, should_fail, Some(expected_result));
+        })
+    }
+
+    #[test]
+    fn test_pmod_divide_by_zero_int() {
+        with_fail_on_error(|fail_on_error| {
+            let schema = Arc::new(Schema::new(vec![
+                Field::new("a", DataType::Int32, false),
+                Field::new("b", DataType::Int32, false),
+            ]));
+
+            let a_array = Arc::new(Int32Array::from(vec![7]));
+            let b_array = Arc::new(Int32Array::from(vec![0]));
+            let batch = RecordBatch::try_new(Arc::clone(&schema), vec![a_array, b_array]).unwrap();
+
+            let session_ctx = SessionContext::new();
+            let pmod_expr = create_pmod_expr(
+                Arc::new(Column::new("a", 0)),
+                Arc::new(Column::new("b", 1)),
+                DataType::Int32,
+                schema,
+                fail_on_error,
+                &session_ctx.state(),
+            )
+            .unwrap();
+
+            // ANSI mode errors on a zero divisor; legacy mode returns NULL.
+            let expected_result = Arc::new(Int32Array::from(vec![None]));
+            verify_result(pmod_expr, batch, fail_on_error, Some(expected_result));
+        })
+    }
+
+    #[test]
+    fn test_pmod_basic_decimal() {
+        with_fail_on_error(|fail_on_error| {
+            let schema = Arc::new(Schema::new(vec![
+                Field::new("a", DataType::Decimal128(18, 4), false),
+                Field::new("b", DataType::Decimal128(18, 4), false),
+            ]));
+
+            // 7.5, -7.5 at scale 4
+            let mut a_builder =
+                Decimal128Builder::with_capacity(2).with_data_type(DataType::Decimal128(18, 4));
+            a_builder.append_value(75000);
+            a_builder.append_value(-75000);
+            let a_array: ArrayRef = Arc::new(a_builder.finish());
+
+            // 3.0, 3.0 at scale 4
+            let mut b_builder =
+                Decimal128Builder::with_capacity(2).with_data_type(DataType::Decimal128(18, 4));
+            b_builder.append_value(30000);
+            b_builder.append_value(30000);
+            let b_array: ArrayRef = Arc::new(b_builder.finish());
+
+            let batch = RecordBatch::try_new(Arc::clone(&schema), vec![a_array, b_array]).unwrap();
+
+            let session_ctx = SessionContext::new();
+            let pmod_expr = create_pmod_expr(
+                Arc::new(Column::new("a", 0)),
+                Arc::new(Column::new("b", 1)),
+                DataType::Decimal128(18, 4),
+                schema,
+                fail_on_error,
+                &session_ctx.state(),
+            )
+            .unwrap();
+
+            let should_fail = false;
+            //  7.5 pmod 3.0 = 1.5  -> 15000
+            // -7.5 pmod 3.0 = 1.5  -> 15000 (non-negative because divisor is positive)
+            let expected_result = Arc::new(
+                Decimal128Array::from(vec![Some(15000), Some(15000)])
+                    .with_precision_and_scale(18, 4)
+                    .unwrap(),
+            );
+            verify_result(pmod_expr, batch, should_fail, Some(expected_result));
         })
     }
 }

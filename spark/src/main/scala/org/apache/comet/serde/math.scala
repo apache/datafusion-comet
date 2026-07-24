@@ -282,7 +282,23 @@ object CometConv extends CometCodegenDispatch[Conv]
 
 object CometLog1p extends CometCodegenDispatch[Log1p]
 
-object CometPmod extends CometCodegenDispatch[Pmod]
+object CometPmod extends CometExpressionSerde[Pmod] with MathBase {
+
+  override def convert(
+      expr: Pmod,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    createMathExpression(
+      expr,
+      expr.left,
+      expr.right,
+      inputs,
+      binding,
+      expr.dataType,
+      expr.evalMode,
+      (builder, mathExpr) => builder.setPmod(mathExpr))
+  }
+}
 
 object CometWidthBucket extends CometCodegenDispatch[WidthBucket]
 

@@ -92,6 +92,7 @@ message Expr {
     JvmScalarUdf jvm_scalar_udf = 70;
     PreciseTimestampConversion precise_timestamp_conversion = 71;
     Shuffle shuffle = 72;
+    MathExpr pmod = 73;
   }
 
   reserved 20;
