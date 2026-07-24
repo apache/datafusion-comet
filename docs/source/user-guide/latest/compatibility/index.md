@@ -112,9 +112,11 @@ semantics. Comet handles these in two ways:
   supports (for example `spark.sql.legacy.castComplexTypesToString.enabled` for `Cast`,
   `spark.sql.legacy.negativeIndexInArrayInsert` for `array_insert`,
   `spark.sql.legacy.nullInEmptyListBehavior` for `IN`, `spark.sql.legacy.timeParserPolicy`
-  for datetime parsing expressions), Comet's serde routes the expression
-  through the JVM codegen dispatcher (Spark's own `doGenCode` inside the Comet kernel) or
-  through a native code path that honors the flag. No session-wide fallback is triggered.
+  for datetime parsing expressions, `spark.sql.legacy.sizeOfNull` for `size`/`cardinality`,
+  `spark.sql.legacy.followThreeValuedLogicInArrayExists` for `exists`), Comet's serde routes
+  the expression through the JVM codegen dispatcher (Spark's own `doGenCode` inside the Comet
+  kernel) or through a native code path that honors the flag. No session-wide fallback is
+  triggered.
 - **Session-wide execution fallback**: when a legacy config affects execution semantics but
   is consumed by an analyzer/optimizer rule, a data-source reader/writer, or a type-system
   utility (rather than a specific Comet-supported expression), Comet cannot fix the divergence

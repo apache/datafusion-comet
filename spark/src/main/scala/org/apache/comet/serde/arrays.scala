@@ -761,6 +761,10 @@ object CometArrayFilter extends CometExpressionSerde[ArrayFilter] {
   }
 }
 
+// `spark.sql.legacy.sizeOfNull` (default `true`, effective value `LEGACY_SIZE_OF_NULL &&
+// !ANSI_ENABLED`) is captured by Spark's `Size` constructor into the `legacySizeOfNull` field.
+// `convert` below reads that field and bakes the correct literal (`-1` or `null`) into the
+// CaseWhen's else branch, so both semantics run natively without a fallback.
 object CometSize extends CometExpressionSerde[Size] {
 
   override def getSupportLevel(expr: Size): SupportLevel = {
@@ -943,6 +947,10 @@ trait ArraysBase {
 
 object CometArrayTransform extends CometCodegenDispatch[ArrayTransform]
 
+// `spark.sql.legacy.followThreeValuedLogicInArrayExists` (default `true`) is captured by
+// Spark's `ArrayExists` constructor into the `followThreeValuedLogic` field. Routing through
+// codegen dispatch runs Spark's own `doGenCode`, which closes over that field, so both flag
+// values produce Spark-exact results without a per-serde gate.
 object CometArrayExists extends CometCodegenDispatch[ArrayExists]
 
 object CometArrayForAll extends CometCodegenDispatch[ArrayForAll]
