@@ -254,15 +254,15 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `current_time` | 🔜 | — | Blocked on Spark 4.1 TIME type support ([#4288](https://github.com/apache/datafusion-comet/issues/4288)) |
 | `current_timestamp` | ✅ | — | Constant-folded to a literal before Comet sees the plan |
 | `current_timezone` | ✅ | — |  |
-| `date_add` | ✅ | Native |  |
-| `date_diff` | ✅ | Native |  |
+| `date_add` | ✅ | Native | The 2-argument form is native; the `date_add(UNIT, n, ts)` form parses to `timestampadd` and runs through codegen dispatch |
+| `date_diff` | ✅ | Native | The 2-argument form is native; the `date_diff(UNIT, start, end)` form parses to `timestampdiff` and runs through codegen dispatch |
 | `date_format` | ✅ | Hybrid |  |
 | `date_from_unix_date` | ✅ | Native |  |
 | `date_part` | ✅ | — |  |
 | `date_sub` | ✅ | Native |  |
 | `date_trunc` | ✅ | Hybrid |  |
-| `dateadd` | ✅ | Native |  |
-| `datediff` | ✅ | Native |  |
+| `dateadd` | ✅ | Native | The 2-argument form is native; the `dateadd(UNIT, n, ts)` form parses to `timestampadd` and runs through codegen dispatch |
+| `datediff` | ✅ | Native | The 2-argument form is native; the `datediff(UNIT, start, end)` form parses to `timestampdiff` and runs through codegen dispatch |
 | `datepart` | ✅ | — |  |
 | `day` | ✅ | Native |  |
 | `dayname` | ✅ | — | Abbreviated day name (Spark 4.0+) |
@@ -294,9 +294,12 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `session_window` | 🔜 | — | Batch session-window grouping falls back (`UpdatingSessionsExec` is not yet native); tracked by [#4785](https://github.com/apache/datafusion-comet/issues/4785) |
 | `time_diff` | 🔜 | — | Spark 4.1 TIME type; tracked by [#4288](https://github.com/apache/datafusion-comet/issues/4288) |
 | `time_trunc` | 🔜 | — | Spark 4.1 TIME type; tracked by [#4288](https://github.com/apache/datafusion-comet/issues/4288) |
+| `timediff` | ✅ | — | Spark 4.0+ grammar alias that parses to `timestampdiff`; runs through codegen dispatch |
 | `timestamp_micros` | ✅ | Codegen dispatch |  |
 | `timestamp_millis` | ✅ | Codegen dispatch |  |
 | `timestamp_seconds` | ✅ | Native |  |
+| `timestampadd` | ✅ | — | Reached through the grammar rather than the function registry; runs through codegen dispatch |
+| `timestampdiff` | ✅ | — | Reached through the grammar rather than the function registry; runs through codegen dispatch |
 | `to_date` | ✅ | — | Rewrites to `Cast` (or `Cast(GetTimestamp)` with a format) before Comet sees the plan |
 | `to_time` | 🔜 | — | Spark 4.1 TIME type; tracked by [#4288](https://github.com/apache/datafusion-comet/issues/4288) |
 | `to_timestamp` | ✅ | — | Rewrites to `Cast` (or `GetTimestamp` with a format) before Comet sees the plan |
