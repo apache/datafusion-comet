@@ -37,10 +37,38 @@ import org.apache.spark.sql.types._
 
 import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, isSpark41Plus, isSpark42Plus}
 import org.apache.comet.serde.{CometAttributeReference, CometKnownFloatingPointNormalized, Unsupported}
+import org.apache.comet.serde.QueryPlanSerde.supportedDataType
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
 
 class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   import testImplicits._
+
+  test("supportedDataType applies capabilities recursively") {
+    Seq[DataType](YearMonthIntervalType(), DayTimeIntervalType()).foreach { interval =>
+      val nested = StructType(
+        Seq(StructField(
+          "i",
+          ArrayType(MapType(StringType, interval, valueContainsNull = true), containsNull = true),
+          nullable = true)))
+
+      assert(!supportedDataType(nested, allowComplex = true))
+      assert(!supportedDataType(nested, allowIntervals = true))
+      assert(supportedDataType(nested, allowComplex = true, allowIntervals = true))
+    }
+
+    val duplicateFields = ArrayType(
+      StructType(Seq(StructField("i", IntegerType), StructField("i", IntegerType))),
+      containsNull = true)
+    assert(supportedDataType(duplicateFields, allowComplex = true))
+    assert(
+      !supportedDataType(
+        duplicateFields,
+        allowComplex = true,
+        allowDuplicateStructFieldNames = false))
+
+    assert(supportedDataType(StringType, allowAnyStringType = false))
+    assert(!supportedDataType(CharType(1), allowAnyStringType = false))
+  }
 
   val ARITHMETIC_OVERFLOW_EXCEPTION_MSG =
     """[ARITHMETIC_OVERFLOW] integer overflow. If necessary set "spark.sql.ansi.enabled" to "false" to bypass this error"""
