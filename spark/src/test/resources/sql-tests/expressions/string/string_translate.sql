@@ -15,11 +15,11 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- translate is gated as Incompatible by default. DataFusion's translate iterates over Unicode
--- graphemes (Spark uses code points) and substitutes U+0000 instead of treating it as a deletion
--- sentinel, so the native path silently diverges from Spark for combining-mark inputs and for
--- to=NUL. These default-config tests assert that the expression falls back cleanly to Spark.
--- See string_translate_enabled.sql for the opt-in native path.
+-- translate runs through the codegen dispatcher by default so results match Spark exactly. The
+-- native path diverges from Spark (DataFusion iterates over Unicode graphemes where Spark uses code
+-- points, and substitutes U+0000 instead of treating it as a deletion sentinel), so it is opt-in
+-- via spark.comet.expression.StringTranslate.allowIncompatible. See string_translate_enabled.sql
+-- for the opt-in native path.
 
 statement
 CREATE TABLE test_translate(s string, from_str string, to_str string) USING parquet
@@ -27,17 +27,17 @@ CREATE TABLE test_translate(s string, from_str string, to_str string) USING parq
 statement
 INSERT INTO test_translate VALUES ('hello', 'el', 'ip'), ('hello', 'aeiou', '12345'), ('', 'a', 'b'), (NULL, 'a', 'b'), ('hello', '', ''), ('abc', 'abc', 'x')
 
-query expect_fallback(is not fully compatible with Spark)
+query
 SELECT translate(s, from_str, to_str) FROM test_translate
 
 -- column + literal + literal
-query expect_fallback(is not fully compatible with Spark)
+query
 SELECT translate(s, 'el', 'ip') FROM test_translate
 
 -- literal + column + column
-query expect_fallback(is not fully compatible with Spark)
+query
 SELECT translate('hello', from_str, to_str) FROM test_translate
 
 -- literal + literal + literal
-query expect_fallback(is not fully compatible with Spark)
+query
 SELECT translate('hello', 'el', 'ip'), translate('hello', 'aeiou', '12345'), translate('', 'a', 'b'), translate(NULL, 'a', 'b')
