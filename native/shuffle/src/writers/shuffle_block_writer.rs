@@ -47,11 +47,16 @@ pub enum CompressionCodec {
 /// How a writer encodes the Arrow IPC schema at the start of each block. The two arms are mutually
 /// exclusive by schema shape, decided once in [`ShuffleBlockWriter::try_new`], so the retained
 /// state never carries both a pre-encoded message and a schema at the same time.
+///
+/// Both arms hold their payload behind an `Arc` because a `ShuffleBlockWriter` is cloned once per
+/// output partition (see `LocalPartitionWriter`), and a shuffle can request millions of partitions.
+/// Deep-copying the pre-encoded schema per clone would allocate gigabytes for a large partition
+/// count; sharing it makes cloning O(1).
 #[derive(Clone)]
 enum SchemaEncoding {
     /// Dictionary-free schema: the IPC schema message, pre-encoded once, is written verbatim at the
     /// start of every block instead of being re-serialized per block.
-    Precoded(Vec<u8>),
+    Precoded(Arc<[u8]>),
     /// Schema containing dictionary types: the schema and record batch must share a dictionary
     /// tracker, so each block is encoded with `StreamWriter`, which re-serializes the schema.
     Fallback(SchemaRef),
@@ -68,7 +73,9 @@ enum SchemaEncoding {
 #[derive(Clone)]
 pub struct ShuffleBlockWriter {
     codec: CompressionCodec,
-    header_bytes: Vec<u8>,
+    /// Shared behind an `Arc` so cloning the writer per output partition stays O(1); see the note
+    /// on [`SchemaEncoding`].
+    header_bytes: Arc<[u8]>,
     /// IPC options shared by the schema and record-batch encoders so the two can never diverge;
     /// pinned to metadata version V5, which [`IPC_EOS`] depends on.
     write_options: IpcWriteOptions,
@@ -123,12 +130,12 @@ impl ShuffleBlockWriter {
             );
             let mut buf = Vec::new();
             write_message(&mut buf, encoded_schema, &write_options)?;
-            SchemaEncoding::Precoded(buf)
+            SchemaEncoding::Precoded(Arc::from(buf))
         };
 
         Ok(Self {
             codec,
-            header_bytes,
+            header_bytes: Arc::from(header_bytes),
             write_options,
             schema_encoding,
         })
@@ -228,5 +235,39 @@ impl ShuffleBlockWriter {
         timer.stop();
 
         Ok((end_pos - start_pos) as usize)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arrow::datatypes::{DataType, Field};
+
+    /// A `ShuffleBlockWriter` is cloned once per output partition (see `LocalPartitionWriter`), and
+    /// a shuffle can request millions of partitions (e.g. the SPARK-48037 test uses more than 16
+    /// million). Cloning must share the immutable header and pre-encoded schema buffers rather than
+    /// deep-copying them; otherwise a large partition count allocates gigabytes and stalls the
+    /// executor.
+    #[test]
+    fn clone_shares_buffers() {
+        let schema = Schema::new(vec![
+            Field::new("a", DataType::Int64, false),
+            Field::new("b", DataType::Int64, false),
+        ]);
+        let writer = ShuffleBlockWriter::try_new(&schema, CompressionCodec::None).unwrap();
+        let cloned = writer.clone();
+
+        assert!(
+            Arc::ptr_eq(&writer.header_bytes, &cloned.header_bytes),
+            "header bytes should be shared across clones, not deep-copied"
+        );
+
+        match (&writer.schema_encoding, &cloned.schema_encoding) {
+            (SchemaEncoding::Precoded(a), SchemaEncoding::Precoded(b)) => assert!(
+                Arc::ptr_eq(a, b),
+                "pre-encoded schema should be shared across clones, not deep-copied"
+            ),
+            _ => panic!("dictionary-free schema should use the pre-encoded fast path"),
+        }
     }
 }
