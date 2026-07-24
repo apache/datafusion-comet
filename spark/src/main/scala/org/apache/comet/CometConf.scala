@@ -215,6 +215,13 @@ object CometConf extends ShimCometConf {
     createExecEnabledConfig("broadcastNestedLoopJoin", defaultValue = true)
   val COMET_EXEC_SORT_MERGE_JOIN_ENABLED: ConfigEntry[Boolean] =
     createExecEnabledConfig("sortMergeJoin", defaultValue = true)
+  val COMET_EXEC_EXISTENCE_JOIN_ENABLED: ConfigEntry[Boolean] =
+    createExecEnabledConfig(
+      "existenceJoin",
+      defaultValue = false,
+      notes = Some(
+        "This enables native ExistenceJoin support (EXISTS/NOT EXISTS combined with OR). " +
+          "This is highly experimental and disabled by default"))
   val COMET_EXEC_AGGREGATE_ENABLED: ConfigEntry[Boolean] =
     createExecEnabledConfig("aggregate", defaultValue = true)
   val COMET_EXEC_COLLECT_LIMIT_ENABLED: ConfigEntry[Boolean] =

@@ -500,6 +500,7 @@ enum JoinType {
   FullOuter = 3;
   LeftSemi = 4;
   LeftAnti = 5;
+  Existence = 6;
 }
 
 enum BuildSide {
