@@ -273,9 +273,9 @@ object CometSparkSessionExtensions extends Logging {
   /**
    * Record a fallback reason on a `TreeNode` (a Spark operator or expression) explaining why
    * Comet cannot accelerate it. Reasons recorded here are surfaced in extended explain output
-   * (see `ExtendedExplainInfo`) and, when `COMET_LOG_FALLBACK_REASONS` is enabled, logged as
-   * warnings. The reasons are also rolled up from child nodes so that the operator that remains
-   * in the Spark plan carries the reasons from its converted-away subtree.
+   * (see `ExtendedExplainInfo`) and, when `COMET_EXPLAIN_FALLBACK_LOG_ENABLED` is enabled, logged
+   * as warnings. The reasons are also rolled up from child nodes so that the operator that
+   * remains in the Spark plan carries the reasons from its converted-away subtree.
    *
    * Call this in any code path where Comet decides not to convert a given node - serde `convert`
    * methods returning `None`, unsupported data types, disabled configs, etc. Do not use this for
@@ -311,8 +311,8 @@ object CometSparkSessionExtensions extends Logging {
    * contract.
    *
    * Reasons are accumulated (never overwritten) on the node's `FALLBACK_REASONS` tag and are
-   * surfaced in extended explain output. When `COMET_LOG_FALLBACK_REASONS` is enabled, each new
-   * reason is also emitted as a warning.
+   * surfaced in extended explain output. When `COMET_EXPLAIN_FALLBACK_LOG_ENABLED` is enabled,
+   * each new reason is also emitted as a warning.
    *
    * @param node
    *   The Spark operator or expression that is falling back to Spark.
@@ -327,7 +327,7 @@ object CometSparkSessionExtensions extends Logging {
    *   `node` with fallback reasons attached (as a side effect on its tag map).
    */
   def withFallbackReasons[T <: TreeNode[_]](node: T, info: Set[String], exprs: T*): T = {
-    if (CometConf.COMET_LOG_FALLBACK_REASONS.get()) {
+    if (CometConf.COMET_EXPLAIN_FALLBACK_LOG_ENABLED.get()) {
       for (reason <- info) {
         logWarning(s"Comet cannot accelerate ${node.getClass.getSimpleName} because: $reason")
       }

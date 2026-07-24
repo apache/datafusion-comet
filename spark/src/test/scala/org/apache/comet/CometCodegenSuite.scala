@@ -131,7 +131,7 @@ class CometCodegenSuite
     }
   }
 
-  test("explainCodegen.enabled surfaces routed expressions in COMET-INFO") {
+  test("explain.codegen.enabled surfaces routed expressions in COMET-INFO") {
     // With the opt-in flag on, `hypot` and `nanvl` (both `CometCodegenDispatch`) roll up
     // into one `[COMET-INFO: JVM codegen dispatcher: hypot, nanvl]` line on the
     // `CometProject`. With the flag off (default), no such line appears.

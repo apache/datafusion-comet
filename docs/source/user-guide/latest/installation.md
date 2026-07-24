@@ -124,7 +124,7 @@ $SPARK_HOME/bin/spark-shell \
     --conf spark.executor.extraClassPath=$COMET_JAR \
     --conf spark.plugins=org.apache.spark.CometPlugin \
     --conf spark.shuffle.manager=org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager \
-    --conf spark.comet.explainFallback.enabled=true \
+    --conf spark.comet.explain.fallback.enabled=true \
     --conf spark.memory.offHeap.enabled=true \
     --conf spark.memory.offHeap.size=4g
 ```
@@ -141,7 +141,7 @@ Comet will log output similar to:
 
 ```shell
 INFO core/src/lib.rs: Comet native library version $COMET_VERSION initialized
-WARN CometExecRule: Comet cannot execute some parts of this plan natively (set spark.comet.explainFallback.enabled=false to disable this logging):
+WARN CometExecRule: Comet cannot execute some parts of this plan natively (set spark.comet.explain.fallback.enabled=false to disable this logging):
   Execute InsertIntoHadoopFsRelationCommand [COMET: Native support for operator DataWritingCommandExec is disabled. Set spark.comet.parquet.write.enabled=true to enable it.]
 +- WriteFiles
    +-  LocalTableScan [COMET: Native support for operator LocalTableScanExec is disabled. Set spark.comet.exec.localTableScan.enabled=true to enable it.]
