@@ -87,6 +87,23 @@ under the License.
       <artifactId>junit-4-13_${scala.binary.version}</artifactId>
       <scope>test</scope>
     </dependency>
+    <!-- Used by CometDeltaReadSuite to exercise Comet's native scan of Delta Lake tables.
+         Version/artifact are set per Spark profile in the root pom (delta-spark for Delta >= 3.0,
+         delta-core for Delta < 3.0). The suite self-cancels when the resolved Delta version cannot
+         support Tier 0 detection. -->
+    <dependency>
+      <groupId>io.delta</groupId>
+      <artifactId>${delta.artifact.name}_${scala.binary.version}</artifactId>
+      <version>${delta.version}</version>
+      <scope>test</scope>
+    </dependency>
+    <!-- Guava's failureaccess is needed on the test classpath when the Delta catalog initializes. -->
+    <dependency>
+      <groupId>com.google.guava</groupId>
+      <artifactId>failureaccess</artifactId>
+      <version>1.0.2</version>
+      <scope>test</scope>
+    </dependency>
     <dependency>
       <groupId>org.apache.spark</groupId>
       <artifactId>spark-core_${scala.binary.version}</artifactId>
