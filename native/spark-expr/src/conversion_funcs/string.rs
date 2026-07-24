@@ -1909,9 +1909,8 @@ fn date_parser(date_str: &str, eval_mode: EvalMode) -> SparkResult<Option<i32>> 
     }
 
     fn is_valid_digits(segment: i32, digits: usize) -> bool {
-        // Years are bounded to [-262143, 262142] by the explicit range check below. We allow up
-        // to 7 digits to support leading-zero year strings like "0002020" (= year 2020),
-        // matching Spark's isValidDigits.
+        // Years are bounded by `resolve_epoch_day` below. We allow up to 7 digits to support
+        // leading-zero year strings like "0002020" (= year 2020), matching Spark's isValidDigits.
         let max_digits_year = 7;
         // year (segment 0) can be between 4 to 7 digits,
         // month and day (segment 1 and 2) can be between 1 to 2 digits
@@ -1930,6 +1929,35 @@ fn date_parser(date_str: &str, eval_mode: EvalMode) -> SparkResult<Option<i32>> 
             Ok(None)
         }
     }
+
+    /// Turns parsed year/month/day segments into an epoch day. Shared by both parsing paths so
+    /// that the decision of what a segment triple *means* lives in exactly one place.
+    fn resolve_epoch_day(
+        year: i64,
+        month: i64,
+        day: i64,
+        date_str: &str,
+        eval_mode: EvalMode,
+    ) -> SparkResult<Option<i32>> {
+        // Spark builds a `LocalDate` and narrows its epoch day to an `Int`, so an invalid
+        // calendar date or an epoch day that overflows `i32` both yield `None` there, which
+        // `stringToDateAnsi` turns into CAST_INVALID_INPUT.
+        let Some(days) = ymd_to_epoch_day(year, month, day).and_then(|d| i32::try_from(d).ok())
+        else {
+            return return_result(date_str, eval_mode);
+        };
+        // Spark accepts years beyond what chrono can represent, and downstream date kernels
+        // cannot handle those values, so Comet keeps returning null for them in every eval mode
+        // rather than raising. This is a Comet limitation, not a malformed input.
+        //
+        // The bound is chrono's representable year range: `NaiveDate::MIN` is `-262143-01-01`
+        // and `NaiveDate::MAX` is `262142-12-31`
+        // (https://docs.rs/chrono/latest/chrono/naive/struct.NaiveDate.html#associatedconstant.MIN).
+        if !(-262143..=262142).contains(&year) {
+            return Ok(None);
+        }
+        Ok(Some(days))
+    }
     // end local functions
 
     if date_str.is_empty() {
@@ -1945,11 +1973,9 @@ fn date_parser(date_str: &str, eval_mode: EvalMode) -> SparkResult<Option<i32>> 
         return return_result(date_str, eval_mode);
     }
 
-    // Fast path for the canonical `yyyy-mm-dd` form. A 4-digit year is always inside the
-    // range checked below, so the only way this can fail is an invalid calendar date. Comet
-    // already returns null for that in every eval mode (the caller maps Ok(None) to null),
-    // matching what the general parser does here. Any other shape (including a leading sign,
-    // which makes the first byte a non-digit) falls through to the general parser below.
+    // Fast path for the canonical `yyyy-mm-dd` form, which only skips the byte-scanning loop
+    // below. Any other shape (including a leading sign, which makes the first byte a
+    // non-digit) falls through to the general parser.
     let trimmed = &bytes[j..str_end_trimmed];
     if trimmed.len() == 10 && trimmed[4] == b'-' && trimmed[7] == b'-' {
         if let (Some(year), Some(month), Some(day)) = (
@@ -1957,7 +1983,7 @@ fn date_parser(date_str: &str, eval_mode: EvalMode) -> SparkResult<Option<i32>> 
             decode_digits(&trimmed[5..7]),
             decode_digits(&trimmed[8..10]),
         ) {
-            return Ok(ymd_to_epoch_day(year, month, day).map(|days| days as i32));
+            return resolve_epoch_day(year, month, day, date_str, eval_mode);
         }
     }
 
@@ -2014,24 +2040,13 @@ fn date_parser(date_str: &str, eval_mode: EvalMode) -> SparkResult<Option<i32>> 
 
     date_segments[current_segment as usize] = current_segment_value.0;
 
-    // Reject out-of-range years explicitly
-    let year = sign * date_segments[0];
-    if !(-262143..=262142).contains(&year) {
-        return Ok(None);
-    }
-
-    Ok(ymd_to_epoch_day(
-        year as i64,
+    resolve_epoch_day(
+        (sign * date_segments[0]) as i64,
         date_segments[1] as i64,
         date_segments[2] as i64,
+        date_str,
+        eval_mode,
     )
-    .map(|days| {
-        debug_assert!(
-            i32::try_from(days).is_ok(),
-            "epoch day {days} out of i32 range for year {year}"
-        );
-        days as i32
-    }))
 }
 
 #[cfg(test)]
@@ -2798,6 +2813,30 @@ mod tests {
         );
     }
 
+    /// Asserts every date parses to null in legacy and try mode. When `expect_ansi_error` is set,
+    /// ANSI mode must raise CAST_INVALID_INPUT; otherwise ANSI mode must also return null.
+    fn assert_dates(dates: &[&str], expect_ansi_error: bool) {
+        for &date in dates {
+            for eval_mode in [EvalMode::Legacy, EvalMode::Try, EvalMode::Ansi] {
+                if expect_ansi_error && eval_mode == EvalMode::Ansi {
+                    assert!(date_parser(date, eval_mode).is_err(), "{date}");
+                } else {
+                    assert_eq!(date_parser(date, eval_mode).unwrap(), None, "{date}");
+                }
+            }
+        }
+    }
+
+    /// Malformed input: null in legacy and try mode, CAST_INVALID_INPUT in ANSI mode.
+    fn assert_null_or_ansi_error(dates: &[&str]) {
+        assert_dates(dates, true);
+    }
+
+    /// Input Spark parses successfully but Comet cannot represent: null in every eval mode.
+    fn assert_null_in_all_modes(dates: &[&str]) {
+        assert_dates(dates, false);
+    }
+
     #[test]
     fn date_parser_test() {
         for date in &[
@@ -2818,7 +2857,7 @@ mod tests {
         }
 
         //dates in invalid formats
-        for date in &[
+        assert_null_or_ansi_error(&[
             "abc",
             "",
             "not_a_date",
@@ -2832,12 +2871,7 @@ mod tests {
             "2020-10-010T",
             "--262143-12-31",
             "--262143-12-31 ",
-        ] {
-            for eval_mode in &[EvalMode::Legacy, EvalMode::Try] {
-                assert_eq!(date_parser(date, *eval_mode).unwrap(), None);
-            }
-            assert!(date_parser(date, EvalMode::Ansi).is_err());
-        }
+        ]);
 
         for date in &["-3638-5"] {
             for eval_mode in &[EvalMode::Legacy, EvalMode::Try, EvalMode::Ansi] {
@@ -2845,9 +2879,9 @@ mod tests {
             }
         }
 
-        //Naive Date only supports years 262142 AD to 262143 BC
-        //returns None for dates out of range supported by Naive Date.
-        for date in &[
+        //Naive Date only supports years 262142 AD to 262143 BC. Spark parses these fine, so
+        //they are a Comet limitation rather than malformed input and stay null in ANSI mode.
+        assert_null_in_all_modes(&[
             "-262144-1-1",
             "262143-01-1",
             "262143-1-1",
@@ -2855,26 +2889,25 @@ mod tests {
             "262143-01-01T ",
             "262143-1-01T 1234",
             "-0973250",
-        ] {
-            for eval_mode in &[EvalMode::Legacy, EvalMode::Try, EvalMode::Ansi] {
-                assert_eq!(date_parser(date, *eval_mode).unwrap(), None);
-            }
-        }
+        ]);
 
-        // Canonical `yyyy-mm-dd` shape with invalid calendar dates exercises the fast path,
-        // which returns Ok(None) in every eval mode (see comment near ymd_to_epoch_day).
-        for date in &[
+        //years whose epoch day overflows i32 are rejected by Spark too (localDateToDays uses
+        //Math.toIntExact), so ANSI mode must raise rather than return null
+        assert_null_or_ansi_error(&["9999999-01-01", "-9999999-01-01"]);
+
+        // Canonical `yyyy-mm-dd` shape with invalid calendar dates exercises the fast path.
+        // Spark's LocalDate.of rejects these, so ANSI mode must raise (issue #5012).
+        assert_null_or_ansi_error(&[
             "2020-02-30",
             "2021-02-29",
             "2020-13-01",
             "2020-00-15",
             "2020-04-31",
             "2020-01-00",
-        ] {
-            for eval_mode in &[EvalMode::Legacy, EvalMode::Try, EvalMode::Ansi] {
-                assert_eq!(date_parser(date, *eval_mode).unwrap(), None);
-            }
-        }
+        ]);
+
+        // Same invalid calendar dates in non-canonical shapes take the general parser path.
+        assert_null_or_ansi_error(&["2020-2-30", "2020-13-1", "2020-4-31 ", "2020-02-30T"]);
 
         // Valid leap day flows through the fast path.
         assert_eq!(
