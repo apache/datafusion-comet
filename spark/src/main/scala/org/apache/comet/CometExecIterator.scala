@@ -36,6 +36,7 @@ import org.apache.comet.Tracing.withTrace
 import org.apache.comet.exceptions.CometQueryExecutionException
 import org.apache.comet.parquet.CometFileKeyUnwrapper
 import org.apache.comet.serde.Config.ConfigMap
+import org.apache.comet.udf.CometUdfBridge
 import org.apache.comet.vector.NativeUtil
 
 /**
@@ -80,9 +81,14 @@ class CometExecIterator(
   private val memoryMXBean = ManagementFactory.getMemoryMXBean
   private val nativeLib = new Native()
   private val nativeUtil = new NativeUtil()
-  private val taskAttemptId = TaskContext.get().taskAttemptId
-  private val taskCPUs = TaskContext.get().cpus()
+  private val taskContext = TaskContext.get()
+  private val taskAttemptId = taskContext.taskAttemptId()
+  private val taskCPUs = taskContext.cpus()
   private val cometTaskMemoryManager = new CometTaskMemoryManager(id, taskAttemptId)
+
+  // Register before this iterator's completion listener so Spark's LIFO cleanup releases the
+  // native plan and its exported UDF buffers before the task-scoped Arrow allocator closes.
+  CometUdfBridge.registerTask(taskContext)
 
   private val plan = {
     val conf = SparkEnv.get.conf
@@ -126,7 +132,7 @@ class CometExecIterator(
       keyUnwrapper,
       // Propagated to Tokio workers running JVM UDFs so they see this Spark task's
       // TaskContext. See CometUdfBridge.evaluate.
-      TaskContext.get())
+      taskContext)
   }
 
   private var nextBatch: Option[ColumnarBatch] = None
@@ -136,7 +142,7 @@ class CometExecIterator(
 
   // Register a task completion listener to ensure native resources are released
   // when the task is done.
-  TaskContext.get().addTaskCompletionListener[Unit] { _ =>
+  taskContext.addTaskCompletionListener[Unit] { _ =>
     this.close()
   }
 

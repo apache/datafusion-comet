@@ -19,6 +19,7 @@
 
 package org.apache.comet.codegen
 
+import org.apache.arrow.memory.BufferAllocator
 import org.apache.arrow.vector._
 import org.apache.arrow.vector.complex.{ListVector, MapVector, StructVector}
 import org.apache.arrow.vector.types.pojo.Field
@@ -179,8 +180,12 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim with Come
    * Allocate an Arrow output vector from a pre-built `Field`. Forwards to
    * [[CometBatchKernelCodegenOutput.allocateOutput]].
    */
-  def allocateOutput(field: Field, numRows: Int, estimatedBytes: Int): FieldVector =
-    CometBatchKernelCodegenOutput.allocateOutput(field, numRows, estimatedBytes)
+  def allocateOutput(
+      allocator: BufferAllocator,
+      field: Field,
+      numRows: Int,
+      estimatedBytes: Int): FieldVector =
+    CometBatchKernelCodegenOutput.allocateOutput(allocator, field, numRows, estimatedBytes)
 
   /**
    * Spark `DataType` to an Arrow `Field`, resolving mismatches between Arrow Java's default field
