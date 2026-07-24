@@ -44,9 +44,12 @@ FROM VALUES
   (array(make_ym_interval(1, 2), CAST(NULL AS INTERVAL YEAR TO MONTH)))
 AS t(a)
 
--- interval output through native shuffle
+-- top-level, struct, and map interval output through native shuffle
 query
-SELECT y, m, make_ym_interval(y, m) AS i
+SELECT y, m,
+  make_ym_interval(y, m) AS i,
+  named_struct('i', make_ym_interval(y, m)) AS s,
+  map('i', make_ym_interval(y, m)) AS m
 FROM test_myi
 DISTRIBUTE BY y
 
