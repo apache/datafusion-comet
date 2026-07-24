@@ -114,6 +114,8 @@ object Utils extends CometTypeShim with Logging {
     case yi: ArrowType.Interval if yi.getUnit == IntervalUnit.YEAR_MONTH =>
       YearMonthIntervalType()
     case di: ArrowType.Interval if di.getUnit == IntervalUnit.DAY_TIME => DayTimeIntervalType()
+    case ci: ArrowType.Interval if ci.getUnit == IntervalUnit.MONTH_DAY_NANO =>
+      CalendarIntervalType
     case d: ArrowType.Duration if d.getUnit == TimeUnit.MICROSECOND => DayTimeIntervalType()
     case t: ArrowType.Time if t.getUnit == TimeUnit.NANOSECOND && t.getBitWidth == 64 =>
       // scalastyle:off classforname
@@ -162,6 +164,7 @@ object Utils extends CometTypeShim with Logging {
       // Spark stores DayTimeIntervalType as microseconds in an int64, matching Arrow
       // Duration(Microsecond) rather than the lossy Interval(DayTime) {days, millis} layout.
       case _: DayTimeIntervalType => new ArrowType.Duration(TimeUnit.MICROSECOND)
+      case CalendarIntervalType => new ArrowType.Interval(IntervalUnit.MONTH_DAY_NANO)
       case _ =>
         throw new UnsupportedOperationException(
           s"Unsupported data type: [${dt.getClass.getName}] ${dt.catalogString}")
