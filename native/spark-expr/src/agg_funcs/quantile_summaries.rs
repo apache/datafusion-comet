@@ -49,6 +49,8 @@ pub struct QuantileSummaries {
     compress_threshold: usize,
     relative_error: f64,
     sampled: Vec<Stats>,
+    /// Scratch space alternated with `sampled` by flush, compress, and merge.
+    sampled_buffer: Vec<Stats>,
     count: i64,
     compressed: bool,
     head_sampled: Vec<f64>,
@@ -65,6 +67,7 @@ impl QuantileSummaries {
             compress_threshold,
             relative_error,
             sampled: Vec::new(),
+            sampled_buffer: Vec::new(),
             count: 0,
             compressed: true,
             head_sampled: Vec::new(),
@@ -78,6 +81,7 @@ impl QuantileSummaries {
     /// Heap bytes held by this summary (excluding the struct itself).
     pub fn heap_size(&self) -> usize {
         self.sampled.capacity() * std::mem::size_of::<Stats>()
+            + self.sampled_buffer.capacity() * std::mem::size_of::<Stats>()
             + self.head_sampled.capacity() * std::mem::size_of::<f64>()
     }
 
@@ -109,7 +113,9 @@ impl QuantileSummaries {
         // irrelevant; `total_cmp` gives a deterministic total order.
         sorted.sort_unstable_by(|a, b| a.total_cmp(b));
 
-        let mut new_samples: Vec<Stats> = Vec::with_capacity(self.sampled.len() + sorted.len());
+        let mut new_samples = std::mem::take(&mut self.sampled_buffer);
+        new_samples.clear();
+        new_samples.reserve(self.sampled.len() + sorted.len());
         let mut sample_idx = 0usize;
         let mut ops_idx = 0usize;
         while ops_idx < sorted.len() {
@@ -141,7 +147,11 @@ impl QuantileSummaries {
             new_samples.push(self.sampled[sample_idx]);
             sample_idx += 1;
         }
-        self.sampled = new_samples;
+        let mut old_samples = std::mem::replace(&mut self.sampled, new_samples);
+        old_samples.clear();
+        self.sampled_buffer = old_samples;
+        sorted.clear();
+        self.head_sampled = sorted;
         self.count = current_count;
     }
 
@@ -155,17 +165,22 @@ impl QuantileSummaries {
         }
         self.with_head_buffer_inserted();
         let merge_threshold = 2.0 * self.relative_error * self.count as f64;
-        self.sampled = Self::compress_immut(&self.sampled, merge_threshold);
+        let mut compressed = std::mem::take(&mut self.sampled_buffer);
+        Self::compress_immut(&self.sampled, merge_threshold, &mut compressed);
+        let mut old_samples = std::mem::replace(&mut self.sampled, compressed);
+        old_samples.clear();
+        self.sampled_buffer = old_samples;
         self.compressed = true;
     }
 
-    fn compress_immut(current_samples: &[Stats], merge_threshold: f64) -> Vec<Stats> {
+    fn compress_immut(current_samples: &[Stats], merge_threshold: f64, res: &mut Vec<Stats>) {
+        res.clear();
+        res.reserve(current_samples.len());
         if current_samples.is_empty() {
-            return Vec::new();
+            return;
         }
         // Spark prepends into a `ListBuffer`; we push in the same order and
         // reverse once, which yields an identical sequence.
-        let mut res: Vec<Stats> = Vec::with_capacity(current_samples.len());
         let mut head = current_samples[current_samples.len() - 1];
         // Traverse backward from size-2 down to index 1 (index 0 is preserved
         // separately so the minimum is always kept).
@@ -186,17 +201,23 @@ impl QuantileSummaries {
             res.push(curr_head);
         }
         res.reverse();
-        res
     }
 
-    pub fn merge(&self, other: &QuantileSummaries) -> QuantileSummaries {
+    pub fn merge(&mut self, other: &QuantileSummaries) {
         debug_assert!(self.head_sampled.is_empty(), "compress before merge");
         debug_assert!(other.head_sampled.is_empty(), "compress before merge");
         if other.count == 0 {
-            return self.clone();
+            return;
         }
         if self.count == 0 {
-            return other.clone();
+            self.compress_threshold = other.compress_threshold;
+            self.relative_error = other.relative_error;
+            self.sampled.clear();
+            self.sampled.extend_from_slice(&other.sampled);
+            self.count = other.count;
+            self.compressed = other.compressed;
+            self.head_sampled.clear();
+            return;
         }
         let merged_relative_error = self.relative_error.max(other.relative_error);
         let merged_count = self.count + other.count;
@@ -204,8 +225,9 @@ impl QuantileSummaries {
             (2.0 * other.relative_error * other.count as f64).floor() as i64;
         let additional_other_delta = (2.0 * self.relative_error * self.count as f64).floor() as i64;
 
-        let mut merged_sampled: Vec<Stats> =
-            Vec::with_capacity(self.sampled.len() + other.sampled.len());
+        let mut merged_sampled = std::mem::take(&mut self.sampled_buffer);
+        merged_sampled.clear();
+        merged_sampled.reserve(self.sampled.len() + other.sampled.len());
         let mut self_idx = 0usize;
         let mut other_idx = 0usize;
         while self_idx < self.sampled.len() && other_idx < other.sampled.len() {
@@ -243,18 +265,19 @@ impl QuantileSummaries {
             merged_sampled.push(other.sampled[other_idx]);
             other_idx += 1;
         }
-        let comp = Self::compress_immut(
+        let mut compressed = std::mem::take(&mut self.sampled);
+        Self::compress_immut(
             &merged_sampled,
             2.0 * merged_relative_error * merged_count as f64,
+            &mut compressed,
         );
-        QuantileSummaries {
-            compress_threshold: other.compress_threshold,
-            relative_error: merged_relative_error,
-            sampled: comp,
-            count: merged_count,
-            compressed: true,
-            head_sampled: Vec::new(),
-        }
+        merged_sampled.clear();
+        self.compress_threshold = other.compress_threshold;
+        self.relative_error = merged_relative_error;
+        self.sampled = compressed;
+        self.sampled_buffer = merged_sampled;
+        self.count = merged_count;
+        self.compressed = true;
     }
 
     pub fn query(&self, percentiles: &[f64]) -> Option<Vec<f64>> {
@@ -359,6 +382,7 @@ impl QuantileSummaries {
             compress_threshold,
             relative_error,
             sampled,
+            sampled_buffer: Vec::new(),
             count,
             compressed: true,
             head_sampled: Vec::new(),
@@ -435,17 +459,54 @@ mod tests {
     }
 
     #[test]
-    fn merge_is_within_bound() {
+    fn repeated_merges_are_within_bound() {
         let left: Vec<f64> = (1..=5000).map(|i| i as f64).collect();
-        let right: Vec<f64> = (5001..=10000).map(|i| i as f64).collect();
-        let a = summary_of(&left);
-        let b = summary_of(&right);
-        let merged = a.merge(&b);
-        let mut all: Vec<f64> = left.iter().chain(right.iter()).cloned().collect();
+        let middle: Vec<f64> = (5001..=10000).map(|i| i as f64).collect();
+        let right: Vec<f64> = (10001..=15000).map(|i| i as f64).collect();
+        let mut merged = summary_of(&left);
+        merged.merge(&summary_of(&middle));
+        merged.merge(&summary_of(&right));
+        let mut all: Vec<f64> = left
+            .iter()
+            .chain(middle.iter())
+            .chain(right.iter())
+            .cloned()
+            .collect();
         all.sort_by(|x, y| x.total_cmp(y));
         let got = merged.query(&[0.5]).unwrap()[0];
         let exact = exact_percentile(&all, 0.5);
         assert!((got - exact).abs() <= EPS * all.len() as f64 + 1.0);
+    }
+
+    #[test]
+    fn flush_and_merge_reuse_sampled_buffers() {
+        let mut summary = summary_of(&(1..=100).map(|i| i as f64).collect::<Vec<_>>());
+        summary.insert(50.5);
+        summary
+            .sampled_buffer
+            .reserve(summary.sampled.len() + summary.head_sampled.len());
+        let sampled_ptr = summary.sampled.as_ptr();
+        let buffer_ptr = summary.sampled_buffer.as_ptr();
+
+        summary.with_head_buffer_inserted();
+
+        assert_eq!(summary.sampled.as_ptr(), buffer_ptr);
+        assert_eq!(summary.sampled_buffer.as_ptr(), sampled_ptr);
+
+        summary.compress();
+        let other = summary_of(&(101..=200).map(|i| i as f64).collect::<Vec<_>>());
+        let merged_len = summary.sampled.len() + other.sampled.len();
+        summary
+            .sampled
+            .reserve(merged_len.saturating_sub(summary.sampled.len()));
+        summary.sampled_buffer.reserve(merged_len);
+        let sampled_ptr = summary.sampled.as_ptr();
+        let buffer_ptr = summary.sampled_buffer.as_ptr();
+
+        summary.merge(&other);
+
+        assert_eq!(summary.sampled.as_ptr(), sampled_ptr);
+        assert_eq!(summary.sampled_buffer.as_ptr(), buffer_ptr);
     }
 
     #[test]

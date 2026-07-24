@@ -206,11 +206,10 @@ impl Accumulator for ApproxPercentileAccumulator {
                 digests.value(i),
             );
             if self.summary.count() == 0 {
-                // Empty self: `merge` would return a clone of the (potentially
-                // large) peer, so move the owned peer in and skip the clone.
+                // Move the already-owned first digest into the accumulator.
                 self.summary = peer;
             } else {
-                self.summary = self.summary.merge(&peer);
+                self.summary.merge(&peer);
             }
         }
         Ok(())
