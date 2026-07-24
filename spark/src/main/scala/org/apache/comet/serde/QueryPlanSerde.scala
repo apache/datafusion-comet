@@ -504,21 +504,38 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
     }
   }
 
-  def supportedDataType(dt: DataType, allowComplex: Boolean = false): Boolean = dt match {
-    case _: ByteType | _: ShortType | _: IntegerType | _: LongType | _: FloatType |
-        _: DoubleType | _: StringType | _: BinaryType | _: TimestampType | _: TimestampNTZType |
-        _: DecimalType | _: DateType | _: BooleanType | _: NullType =>
-      true
-    case dt if isTimeType(dt) =>
-      true
-    case s: StructType if allowComplex =>
-      s.fields.nonEmpty && s.fields.map(_.dataType).forall(supportedDataType(_, allowComplex))
-    case a: ArrayType if allowComplex =>
-      supportedDataType(a.elementType, allowComplex)
-    case m: MapType if allowComplex =>
-      supportedDataType(m.keyType, allowComplex) && supportedDataType(m.valueType, allowComplex)
-    case _ =>
-      false
+  def supportedDataType(
+      dt: DataType,
+      allowComplex: Boolean = false,
+      allowIntervals: Boolean = false,
+      allowTimeType: Boolean = true,
+      allowAnyStringType: Boolean = true,
+      allowDuplicateStructFieldNames: Boolean = true): Boolean = {
+    def supported(dt: DataType): Boolean = dt match {
+      case _: ByteType | _: ShortType | _: IntegerType | _: LongType | _: FloatType |
+          _: DoubleType | _: BinaryType | _: TimestampType | _: TimestampNTZType |
+          _: DecimalType | _: DateType | _: BooleanType | _: NullType =>
+        true
+      case st: StringType if allowAnyStringType || st == StringType =>
+        true
+      case _: YearMonthIntervalType | _: DayTimeIntervalType if allowIntervals =>
+        true
+      case dt if allowTimeType && isTimeType(dt) =>
+        true
+      case s: StructType if allowComplex =>
+        s.fields.nonEmpty &&
+        (allowDuplicateStructFieldNames ||
+          s.fields.map(_.name).distinct.length == s.fields.length) &&
+        s.fields.forall(f => supported(f.dataType))
+      case a: ArrayType if allowComplex =>
+        supported(a.elementType)
+      case m: MapType if allowComplex =>
+        supported(m.keyType) && supported(m.valueType)
+      case _ =>
+        false
+    }
+
+    supported(dt)
   }
 
   /**

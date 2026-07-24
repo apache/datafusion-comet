@@ -31,13 +31,14 @@ import org.apache.spark.sql.comet.execution.arrow.{CometArrowStream, CometNative
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution.{LeafExecNode, LocalTableScanExec}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
-import org.apache.spark.sql.types.{DataType, NullType, StructType}
+import org.apache.spark.sql.types.{DataType, StructType}
 
 import com.google.common.base.Objects
 
 import org.apache.comet.{CometConf, ConfigEntry, DataTypeSupport}
 import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 import org.apache.comet.serde.OperatorOuterClass.Operator
+import org.apache.comet.serde.QueryPlanSerde.supportedDataType
 import org.apache.comet.serde.operator.CometSink
 
 case class CometLocalTableScanExec(
@@ -131,15 +132,20 @@ object CometLocalTableScanExec extends CometSink[LocalTableScanExec] with DataTy
   // downstream expression serdes (issue #4789).
   override protected def scanFieldType(dt: DataType): DataType = dt.asNullable
 
-  // ArrowWriter (used by RowArrowReader) handles NullType via Utils.toArrowType + NullWriter;
-  // other types off DataTypeSupport's allow list (TimeType, intervals, ...) have no ArrowWriter
-  // coverage and must fall back to Spark.
+  // RowArrowReader handles NullType and intervals, but not TimeType. Non-default string collations
+  // remain unsupported here, matching DataTypeSupport's existing local-scan boundary.
   override def isTypeSupported(
       dt: DataType,
       name: String,
-      fallbackReasons: ListBuffer[String]): Boolean = dt match {
-    case _: NullType => true
-    case _ => super.isTypeSupported(dt, name, fallbackReasons)
+      fallbackReasons: ListBuffer[String]): Boolean = {
+    val supported = supportedDataType(
+      dt,
+      allowComplex = true,
+      allowIntervals = true,
+      allowTimeType = false,
+      allowAnyStringType = false)
+    if (!supported) super.isTypeSupported(dt, name, fallbackReasons)
+    supported
   }
 
   override def convert(

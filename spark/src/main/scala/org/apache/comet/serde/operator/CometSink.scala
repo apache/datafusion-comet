@@ -54,8 +54,8 @@ abstract class CometSink[T <: SparkPlan] extends CometOperatorSerde[T] {
       op: T,
       builder: Operator.Builder,
       childOp: OperatorOuterClass.Operator*): Option[OperatorOuterClass.Operator] = {
-    val supportedTypes =
-      op.output.forall(a => supportedDataType(a.dataType, allowComplex = true))
+    val supportedTypes = op.output.forall(a =>
+      supportedDataType(a.dataType, allowComplex = true, allowIntervals = true))
 
     if (!supportedTypes) {
       withFallbackReason(op, "Unsupported data type")
@@ -123,8 +123,8 @@ object CometExchangeSink extends CometSink[SparkPlan] {
   private def convertToShuffleScan(
       op: SparkPlan,
       builder: Operator.Builder): Option[OperatorOuterClass.Operator] = {
-    val supportedTypes =
-      op.output.forall(a => supportedDataType(a.dataType, allowComplex = true))
+    val supportedTypes = op.output.forall(a =>
+      supportedDataType(a.dataType, allowComplex = true, allowIntervals = true))
 
     if (!supportedTypes) {
       withFallbackReason(op, "Unsupported data type for shuffle direct read")
