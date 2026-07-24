@@ -41,7 +41,7 @@ import org.apache.spark.sql.execution.adaptive.ShuffleQueryStageExec
 import org.apache.spark.sql.execution.exchange.{ENSURE_REQUIREMENTS, ShuffleExchangeExec, ShuffleExchangeLike, ShuffleOrigin}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics, SQLShuffleReadMetricsReporter, SQLShuffleWriteMetricsReporter}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType, DataType, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, MapType, NullType, ShortType, StringType, StructField, StructType, TimestampNTZType, TimestampType}
+import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType, DataType, DateType, DayTimeIntervalType, DecimalType, DoubleType, FloatType, IntegerType, LongType, MapType, NullType, ShortType, StringType, StructField, StructType, TimestampNTZType, TimestampType, YearMonthIntervalType}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.util.MutablePair
 import org.apache.spark.util.collection.unsafe.sort.{PrefixComparators, RecordComparator}
@@ -412,7 +412,8 @@ object CometShuffleExchangeExec
     def supportedSerializableDataType(dt: DataType): Boolean = dt match {
       case _: BooleanType | _: ByteType | _: ShortType | _: IntegerType | _: LongType |
           _: FloatType | _: DoubleType | _: StringType | _: BinaryType | _: TimestampType |
-          _: TimestampNTZType | _: DecimalType | _: DateType | _: NullType =>
+          _: TimestampNTZType | _: DecimalType | _: DateType | _: NullType |
+          _: YearMonthIntervalType | _: DayTimeIntervalType =>
         true
       case dt if isTimeType(dt) =>
         true
