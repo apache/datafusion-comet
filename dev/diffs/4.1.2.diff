@@ -392,7 +392,7 @@ index 0d807aeae4d..6d7744e771b 100644
  
        withTempView("t0", "t1", "t2") {
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/DataFrameAggregateSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/DataFrameAggregateSuite.scala
-index bfe15b33768..31f8ba4b876 100644
+index bfe15b33768..13aeb3f6610 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/DataFrameAggregateSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/DataFrameAggregateSuite.scala
 @@ -30,8 +30,9 @@ import org.apache.spark.sql.catalyst.util.AUTO_GENERATED_ALIAS
@@ -417,7 +417,13 @@ index bfe15b33768..31f8ba4b876 100644
          }
  
          // test case for ObjectHashAggregate and SortAggregate
-@@ -856,7 +859,7 @@ class DataFrameAggregateSuite extends QueryTest
+@@ -851,12 +854,12 @@ class DataFrameAggregateSuite extends QueryTest
+       assert(sortAggPlans.isEmpty)
+ 
+       val objHashAggPlans = collect(aggPlan) {
+-        case objHashAgg: ObjectHashAggregateExec => objHashAgg
++        case objHashAgg @ (_: ObjectHashAggregateExec | _: CometHashAggregateExec) => objHashAgg
+       }
        assert(objHashAggPlans.nonEmpty)
  
        val exchangePlans = collect(aggPlan) {
