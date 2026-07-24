@@ -132,8 +132,8 @@ use datafusion_comet_proto::{
 use datafusion_comet_spark_expr::{
     jvm_udf::JvmScalarUdfExpr, ApproxPercentile, ArrayInsert, Avg, AvgDecimal, Cast, CheckOverflow,
     Correlation, Covariance, CreateNamedStruct, DecimalRescaleCheckOverflow, GetArrayStructFields,
-    GetStructField, IfExpr, ListExtract, NormalizeNaNAndZero, SparkCastOptions, Stddev, SumDecimal,
-    ToJson, UnboundColumn, Variance, WideDecimalBinaryExpr, WideDecimalOp,
+    GetStructField, HllPlusPlus, IfExpr, ListExtract, NormalizeNaNAndZero, SparkCastOptions,
+    Stddev, SumDecimal, ToJson, UnboundColumn, Variance, WideDecimalBinaryExpr, WideDecimalOp,
 };
 use itertools::Itertools;
 use jni::objects::{Global, JObject};
@@ -1636,6 +1636,10 @@ impl PhysicalPlanner {
                 }?;
 
                 let write_buffer_size = writer.write_buffer_size as usize;
+                // Zero on the wire means the limit is disabled; normalize it here so the writer
+                // only ever sees a real limit or none at all.
+                let max_buffer_bytes =
+                    (writer.max_buffer_bytes > 0).then_some(writer.max_buffer_bytes as usize);
                 let shuffle_writer = Arc::new(ShuffleWriterExec::try_new(
                     writer_input,
                     partitioning,
@@ -1644,6 +1648,7 @@ impl PhysicalPlanner {
                     writer.output_index_file.clone(),
                     writer.tracing_enabled,
                     write_buffer_size,
+                    max_buffer_bytes,
                 )?);
 
                 Ok((
@@ -2672,6 +2677,11 @@ impl PhysicalPlanner {
                 let func = AggregateUDF::new_from_impl(SparkCollectSet::new());
                 Self::create_aggr_func_expr("collect_set", schema, vec![child], func)
             }
+            AggExprStruct::Hllpp(expr) => {
+                let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
+                let func = AggregateUDF::new_from_impl(HllPlusPlus::new(expr.precision));
+                Self::create_aggr_func_expr("approx_count_distinct", schema, vec![child], func)
+            }
         }
     }
 
@@ -3540,59 +3550,32 @@ fn align_shuffle_writer_input(
 fn partition_value_to_literal(
     proto_value: &spark_operator::PartitionValue,
 ) -> Result<Option<iceberg::spec::Literal>, ExecutionError> {
-    use spark_operator::partition_value::Value;
+    use spark_operator::iceberg_literal::Value;
 
-    if proto_value.is_null {
+    let Some(lit) = proto_value.literal.as_ref() else {
+        return Err(GeneralError(
+            "PartitionValue has no literal set".to_string(),
+        ));
+    };
+
+    if lit.is_null {
         return Ok(None);
     }
 
-    let literal = match &proto_value.value {
+    let literal = match &lit.value {
+        Some(Value::BoolVal(v)) => iceberg::spec::Literal::bool(*v),
         Some(Value::IntVal(v)) => iceberg::spec::Literal::int(*v),
         Some(Value::LongVal(v)) => iceberg::spec::Literal::long(*v),
-        Some(Value::DateVal(v)) => {
-            // Convert i64 to i32 for date (days since epoch)
-            let days = (*v)
-                .try_into()
-                .map_err(|_| GeneralError(format!("Date value out of range: {}", v)))?;
-            iceberg::spec::Literal::date(days)
-        }
+        Some(Value::FloatVal(v)) => iceberg::spec::Literal::float(*v),
+        Some(Value::DoubleVal(v)) => iceberg::spec::Literal::double(*v),
+        Some(Value::DateVal(v)) => iceberg::spec::Literal::date(*v),
         Some(Value::TimestampVal(v)) => iceberg::spec::Literal::timestamp(*v),
         Some(Value::TimestampTzVal(v)) => iceberg::spec::Literal::timestamptz(*v),
         Some(Value::StringVal(s)) => iceberg::spec::Literal::string(s.clone()),
-        Some(Value::DoubleVal(v)) => iceberg::spec::Literal::double(*v),
-        Some(Value::FloatVal(v)) => iceberg::spec::Literal::float(*v),
-        Some(Value::DecimalVal(bytes)) => {
-            // Deserialize unscaled BigInteger bytes to i128
-            // BigInteger is serialized as signed big-endian bytes
-            if bytes.len() > 16 {
-                return Err(GeneralError(format!(
-                    "Decimal bytes too large: {} bytes (max 16 for i128)",
-                    bytes.len()
-                )));
-            }
-
-            // Convert big-endian bytes to i128
-            let mut buf = [0u8; 16];
-            let offset = 16 - bytes.len();
-            buf[offset..].copy_from_slice(bytes);
-
-            // Handle sign extension for negative numbers
-            let value = if !bytes.is_empty() && (bytes[0] & 0x80) != 0 {
-                // Negative number - sign extend
-                for byte in buf.iter_mut().take(offset) {
-                    *byte = 0xFF;
-                }
-                i128::from_be_bytes(buf)
-            } else {
-                // Positive number
-                i128::from_be_bytes(buf)
-            };
-
-            iceberg::spec::Literal::decimal(value)
+        Some(Value::DecimalVal(d)) => {
+            iceberg::spec::Literal::decimal(decimal_bytes_to_i128(&d.unscaled)?)
         }
-        Some(Value::BoolVal(v)) => iceberg::spec::Literal::bool(*v),
         Some(Value::UuidVal(bytes)) => {
-            // Deserialize UUID from 16 bytes
             if bytes.len() != 16 {
                 return Err(GeneralError(format!(
                     "Invalid UUID bytes length: {} (expected 16)",
@@ -3607,12 +3590,32 @@ fn partition_value_to_literal(
         Some(Value::BinaryVal(bytes)) => iceberg::spec::Literal::binary(bytes.to_vec()),
         None => {
             return Err(GeneralError(
-                "PartitionValue has no value set and is_null is false".to_string(),
+                "IcebergLiteral has no value set and is_null is false".to_string(),
             ));
         }
     };
 
     Ok(Some(literal))
+}
+
+/// Decodes an unscaled decimal (two's-complement big-endian) into i128.
+fn decimal_bytes_to_i128(bytes: &[u8]) -> Result<i128, ExecutionError> {
+    if bytes.len() > 16 {
+        return Err(GeneralError(format!(
+            "Decimal bytes too large: {} bytes (max 16 for i128)",
+            bytes.len()
+        )));
+    }
+    let mut buf = [0u8; 16];
+    let offset = 16 - bytes.len();
+    buf[offset..].copy_from_slice(bytes);
+    // Sign-extend negative values.
+    if !bytes.is_empty() && (bytes[0] & 0x80) != 0 {
+        for byte in buf.iter_mut().take(offset) {
+            *byte = 0xFF;
+        }
+    }
+    Ok(i128::from_be_bytes(buf))
 }
 
 /// Converts a protobuf PartitionData to an iceberg Struct.
@@ -3677,35 +3680,55 @@ fn parse_file_scan_tasks_from_common(
         })
         .collect();
 
+    // Flat pool of unique delete files. A delete file applies to many data files under Iceberg's
+    // default partition delete granularity, so DeleteFileList entries reference this pool by index
+    // rather than embedding copies.
+    let delete_file_pool: Vec<iceberg::scan::FileScanTaskDeleteFile> = proto_common
+        .delete_file_pool
+        .iter()
+        .map(|del| {
+            let file_type = match del.content_type.as_str() {
+                "POSITION_DELETES" => iceberg::spec::DataContentType::PositionDeletes,
+                "EQUALITY_DELETES" => iceberg::spec::DataContentType::EqualityDeletes,
+                other => {
+                    return Err(GeneralError(format!(
+                        "Invalid delete content type '{}'",
+                        other
+                    )))
+                }
+            };
+
+            Ok(iceberg::scan::FileScanTaskDeleteFile {
+                file_path: del.file_path.clone(),
+                file_type,
+                // Not serialized; filled in by IcebergScanExec::fill_delete_file_sizes.
+                file_size_in_bytes: 0,
+                partition_spec_id: del.partition_spec_id,
+                equality_ids: if del.equality_ids.is_empty() {
+                    None
+                } else {
+                    Some(del.equality_ids.clone())
+                },
+                // Plaintext StandardKeyMetadata forwarded verbatim from the JVM; decoded by
+                // iceberg-rust with no KMS unwrap. None for unencrypted delete files.
+                key_metadata: del.key_metadata.clone().map(Vec::into_boxed_slice),
+            })
+        })
+        .collect::<Result<Vec<_>, ExecutionError>>()?;
+
     let delete_files_cache: Vec<Vec<iceberg::scan::FileScanTaskDeleteFile>> = proto_common
         .delete_files_pool
         .iter()
         .map(|list| {
-            list.delete_files
+            list.delete_file_indices
                 .iter()
-                .map(|del| {
-                    let file_type = match del.content_type.as_str() {
-                        "POSITION_DELETES" => iceberg::spec::DataContentType::PositionDeletes,
-                        "EQUALITY_DELETES" => iceberg::spec::DataContentType::EqualityDeletes,
-                        other => {
-                            return Err(GeneralError(format!(
-                                "Invalid delete content type '{}'",
-                                other
-                            )))
-                        }
-                    };
-
-                    Ok(iceberg::scan::FileScanTaskDeleteFile {
-                        file_path: del.file_path.clone(),
-                        file_type,
-                        // Not serialized; filled in by IcebergScanExec::fill_delete_file_sizes.
-                        file_size_in_bytes: 0,
-                        partition_spec_id: del.partition_spec_id,
-                        equality_ids: if del.equality_ids.is_empty() {
-                            None
-                        } else {
-                            Some(del.equality_ids.clone())
-                        },
+                .map(|&idx| {
+                    delete_file_pool.get(idx as usize).cloned().ok_or_else(|| {
+                        GeneralError(format!(
+                            "Invalid delete_file_index: {} (pool size: {})",
+                            idx,
+                            delete_file_pool.len()
+                        ))
                     })
                 })
                 .collect::<Result<Vec<_>, ExecutionError>>()
@@ -3748,14 +3771,15 @@ fn parse_file_scan_tasks_from_common(
                 proto_common
                     .residual_pool
                     .get(idx as usize)
-                    .and_then(convert_spark_expr_to_predicate)
+                    .and_then(iceberg_predicate_to_predicate)
                     .and_then(|pred| {
                         // The residual predicate only drives row-group pruning; the post-scan
                         // filter still enforces correctness. iceberg-rust cannot bind a datum
                         // whose type has no conversion to the column type, so on a bind failure
-                        // we skip pushdown rather than fail the scan, mirroring the NOT IN
-                        // handling above.
-                        match pred.bind(Arc::clone(&schema_ref), true) {
+                        // we skip pushdown rather than fail the scan.
+                        // rewrite_not first: iceberg-rust's scan evaluators require negation-normal
+                        // form and reject a bare NOT (e.g. from a `NOT (a = b)` residual).
+                        match pred.rewrite_not().bind(Arc::clone(&schema_ref), true) {
                             Ok(bound) => Some(bound),
                             Err(e) => {
                                 log::warn!("Skipping Iceberg predicate pushdown; bind failed: {e}");
@@ -3830,6 +3854,9 @@ fn parse_file_scan_tasks_from_common(
                 partition_spec,
                 name_mapping,
                 case_sensitive: false,
+                // Plaintext StandardKeyMetadata forwarded verbatim from the JVM; decoded by
+                // iceberg-rust with no KMS unwrap. None for unencrypted data files.
+                key_metadata: proto_task.key_metadata.clone().map(Vec::into_boxed_slice),
             })
         })
         .collect();
@@ -4084,246 +4111,129 @@ fn literal_to_array_ref(
 }
 
 // ============================================================================
-// Spark Expression to Iceberg Predicate Conversion
+// Iceberg Residual Predicate Conversion
 // ============================================================================
-//
-// Predicates are converted through Spark expressions rather than directly from
-// Iceberg Java to Iceberg Rust. This leverages Comet's existing expression
-// serialization infrastructure, which handles hundreds of expression types.
-//
-// Conversion path:
-//   Iceberg Expression (Java) -> Spark Catalyst Expression -> Protobuf -> Iceberg Predicate (Rust)
-//
-// Note: NOT IN predicates are skipped because iceberg-rust's RowGroupMetricsEvaluator::not_in()
-// always returns MIGHT_MATCH (never prunes row groups). These are handled by CometFilter post-scan.
 
-/// Converts a protobuf Spark expression to an Iceberg predicate for row-group filtering.
-fn convert_spark_expr_to_predicate(
-    expr: &spark_expression::Expr,
+/// Converts a serialized Iceberg residual predicate into an iceberg-rust `Predicate` for row-group
+/// pruning. This is only a pruning hint -- the post-scan CometFilter enforces correctness -- so any
+/// node or literal that cannot be represented degrades to `None` (no pushdown) rather than an
+/// error. Mirrors the proto 1:1 onto iceberg-rust's `Reference` builders.
+fn iceberg_predicate_to_predicate(
+    proto: &spark_operator::IcebergPredicate,
 ) -> Option<iceberg::expr::Predicate> {
-    use spark_expression::expr::ExprStruct;
+    use iceberg::expr::{Predicate, Reference};
+    use spark_operator::iceberg_predicate::Node;
+    use spark_operator::IcebergPredicateOperator as Op;
 
-    match &expr.expr_struct {
-        Some(ExprStruct::Eq(binary)) => convert_binary_to_predicate(
-            &binary.left,
-            &binary.right,
-            iceberg::expr::PredicateOperator::Eq,
-        ),
-        Some(ExprStruct::Neq(binary)) => convert_binary_to_predicate(
-            &binary.left,
-            &binary.right,
-            iceberg::expr::PredicateOperator::NotEq,
-        ),
-        Some(ExprStruct::Lt(binary)) => convert_binary_to_predicate(
-            &binary.left,
-            &binary.right,
-            iceberg::expr::PredicateOperator::LessThan,
-        ),
-        Some(ExprStruct::LtEq(binary)) => convert_binary_to_predicate(
-            &binary.left,
-            &binary.right,
-            iceberg::expr::PredicateOperator::LessThanOrEq,
-        ),
-        Some(ExprStruct::Gt(binary)) => convert_binary_to_predicate(
-            &binary.left,
-            &binary.right,
-            iceberg::expr::PredicateOperator::GreaterThan,
-        ),
-        Some(ExprStruct::GtEq(binary)) => convert_binary_to_predicate(
-            &binary.left,
-            &binary.right,
-            iceberg::expr::PredicateOperator::GreaterThanOrEq,
-        ),
-        Some(ExprStruct::IsNull(unary)) => {
-            if let Some(ref child) = unary.child {
-                extract_column_reference(child).map(|column| {
-                    iceberg::expr::Predicate::Unary(iceberg::expr::UnaryExpression::new(
-                        iceberg::expr::PredicateOperator::IsNull,
-                        iceberg::expr::Reference::new(column),
-                    ))
-                })
-            } else {
-                None
-            }
-        }
-        Some(ExprStruct::IsNotNull(unary)) => {
-            if let Some(ref child) = unary.child {
-                extract_column_reference(child).map(|column| {
-                    iceberg::expr::Predicate::Unary(iceberg::expr::UnaryExpression::new(
-                        iceberg::expr::PredicateOperator::NotNull,
-                        iceberg::expr::Reference::new(column),
-                    ))
-                })
-            } else {
-                None
-            }
-        }
-        Some(ExprStruct::And(binary)) => {
-            let left = binary
-                .left
-                .as_ref()
-                .and_then(|e| convert_spark_expr_to_predicate(e));
-            let right = binary
-                .right
-                .as_ref()
-                .and_then(|e| convert_spark_expr_to_predicate(e));
-            match (left, right) {
-                (Some(l), Some(r)) => Some(l.and(r)),
-                (Some(l), None) => Some(l),
-                (None, Some(r)) => Some(r),
+    match proto.node.as_ref()? {
+        Node::Unary(u) => {
+            let column = Reference::new(u.column.clone());
+            match u.op() {
+                Op::IsNull => Some(column.is_null()),
+                Op::NotNull => Some(column.is_not_null()),
+                Op::IsNan => Some(column.is_nan()),
+                Op::NotNan => Some(column.is_not_nan()),
                 _ => None,
             }
         }
-        Some(ExprStruct::Or(binary)) => {
-            let left = binary
-                .left
-                .as_ref()
-                .and_then(|e| convert_spark_expr_to_predicate(e));
-            let right = binary
-                .right
-                .as_ref()
-                .and_then(|e| convert_spark_expr_to_predicate(e));
-            match (left, right) {
-                (Some(l), Some(r)) => Some(l.or(r)),
-                _ => None, // OR requires both sides to be valid
-            }
-        }
-        Some(ExprStruct::Not(unary)) => unary
-            .child
-            .as_ref()
-            .and_then(|child| convert_spark_expr_to_predicate(child))
-            .map(|p| !p),
-        Some(ExprStruct::In(in_expr)) => {
-            // NOT IN predicates don't work correctly with iceberg-rust's row-group filtering.
-            // The iceberg-rust RowGroupMetricsEvaluator::not_in() always returns MIGHT_MATCH
-            // (never prunes row groups), even in cases where pruning is possible (e.g., when
-            // min == max == value and value is in the NOT IN set).
-            //
-            // Workaround: Skip NOT IN in predicate pushdown and let CometFilter handle it
-            // post-scan. This sacrifices row-group pruning for NOT IN but ensures correctness.
-            if in_expr.negated {
-                return None;
-            }
-
-            if let Some(ref value) = in_expr.in_value {
-                if let Some(column) = extract_column_reference(value) {
-                    let datums: Vec<iceberg::spec::Datum> = in_expr
-                        .lists
-                        .iter()
-                        .filter_map(extract_literal_as_datum)
-                        .collect();
-
-                    if datums.len() == in_expr.lists.len() {
-                        Some(iceberg::expr::Reference::new(column).is_in(datums))
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                }
-            } else {
-                None
-            }
-        }
-        _ => None, // Unsupported expression
-    }
-}
-
-fn convert_binary_to_predicate(
-    left: &Option<Box<spark_expression::Expr>>,
-    right: &Option<Box<spark_expression::Expr>>,
-    op: iceberg::expr::PredicateOperator,
-) -> Option<iceberg::expr::Predicate> {
-    let left_ref = left.as_ref()?;
-    let right_ref = right.as_ref()?;
-
-    if let (Some(column), Some(datum)) = (
-        extract_column_reference(left_ref),
-        extract_literal_as_datum(right_ref),
-    ) {
-        return Some(iceberg::expr::Predicate::Binary(
-            iceberg::expr::BinaryExpression::new(op, iceberg::expr::Reference::new(column), datum),
-        ));
-    }
-
-    if let (Some(datum), Some(column)) = (
-        extract_literal_as_datum(left_ref),
-        extract_column_reference(right_ref),
-    ) {
-        let reversed_op = match op {
-            iceberg::expr::PredicateOperator::LessThan => {
-                iceberg::expr::PredicateOperator::GreaterThan
-            }
-            iceberg::expr::PredicateOperator::LessThanOrEq => {
-                iceberg::expr::PredicateOperator::GreaterThanOrEq
-            }
-            iceberg::expr::PredicateOperator::GreaterThan => {
-                iceberg::expr::PredicateOperator::LessThan
-            }
-            iceberg::expr::PredicateOperator::GreaterThanOrEq => {
-                iceberg::expr::PredicateOperator::LessThanOrEq
-            }
-            _ => op, // Eq and NotEq are symmetric
-        };
-        return Some(iceberg::expr::Predicate::Binary(
-            iceberg::expr::BinaryExpression::new(
-                reversed_op,
-                iceberg::expr::Reference::new(column),
-                datum,
-            ),
-        ));
-    }
-
-    None
-}
-
-fn extract_column_reference(expr: &spark_expression::Expr) -> Option<String> {
-    use spark_expression::expr::ExprStruct;
-
-    match &expr.expr_struct {
-        Some(ExprStruct::Unbound(unbound_ref)) => Some(unbound_ref.name.clone()),
-        _ => None,
-    }
-}
-
-fn extract_literal_as_datum(expr: &spark_expression::Expr) -> Option<iceberg::spec::Datum> {
-    use spark_expression::expr::ExprStruct;
-
-    match &expr.expr_struct {
-        Some(ExprStruct::Literal(literal)) => {
-            if literal.is_null {
-                return None;
-            }
-
-            match &literal.value {
-                Some(spark_expression::literal::Value::IntVal(v)) => {
-                    Some(iceberg::spec::Datum::int(*v))
-                }
-                Some(spark_expression::literal::Value::LongVal(v)) => {
-                    Some(iceberg::spec::Datum::long(*v))
-                }
-                Some(spark_expression::literal::Value::FloatVal(v)) => {
-                    Some(iceberg::spec::Datum::double(*v as f64))
-                }
-                Some(spark_expression::literal::Value::DoubleVal(v)) => {
-                    Some(iceberg::spec::Datum::double(*v))
-                }
-                Some(spark_expression::literal::Value::StringVal(v)) => {
-                    Some(iceberg::spec::Datum::string(v.clone()))
-                }
-                Some(spark_expression::literal::Value::BoolVal(v)) => {
-                    Some(iceberg::spec::Datum::bool(*v))
-                }
-                Some(spark_expression::literal::Value::ByteVal(v)) => {
-                    Some(iceberg::spec::Datum::int(*v))
-                }
-                Some(spark_expression::literal::Value::ShortVal(v)) => {
-                    Some(iceberg::spec::Datum::int(*v))
-                }
+        Node::Binary(b) => {
+            let column = Reference::new(b.column.clone());
+            let datum = iceberg_literal_to_datum(b.value.as_ref()?)?;
+            match b.op() {
+                Op::Eq => Some(column.equal_to(datum)),
+                Op::NotEq => Some(column.not_equal_to(datum)),
+                Op::LessThan => Some(column.less_than(datum)),
+                Op::LessThanOrEq => Some(column.less_than_or_equal_to(datum)),
+                Op::GreaterThan => Some(column.greater_than(datum)),
+                Op::GreaterThanOrEq => Some(column.greater_than_or_equal_to(datum)),
+                Op::StartsWith => Some(column.starts_with(datum)),
+                Op::NotStartsWith => Some(column.not_starts_with(datum)),
                 _ => None,
             }
         }
-        _ => None,
+        Node::Set(s) => {
+            // Only IN prunes from stats; not_in is inherently unprunable, so it is never emitted.
+            if s.op() != Op::In {
+                return None;
+            }
+            let column = Reference::new(s.column.clone());
+            let datums = s
+                .values
+                .iter()
+                .map(iceberg_literal_to_datum)
+                .collect::<Option<Vec<_>>>()?;
+            Some(column.is_in(datums))
+        }
+        // And/Or are whole-or-nothing: both children must convert. Dropping a child is unsafe.
+        // A dropped disjunct strengthens an Or directly; a dropped conjunct is safe for a bare And
+        // but not under a NOT, where De Morgan turns And into Or (`NOT(A AND B)` = `NOT A OR NOT B`)
+        // and dropping strengthens it, wrongly pruning row groups. Since Not is only pushed to
+        // negation-normal form after decode (rewrite_not below), the Not(And(..)) shape does reach
+        // here, so the And arm cannot assume positive position. Degrading to no-pushdown is always
+        // safe; the post-scan CometFilter is exact. See `combine_logical` for the parity invariant.
+        Node::And(l) => {
+            let left = l.left.as_deref().and_then(iceberg_predicate_to_predicate);
+            let right = l.right.as_deref().and_then(iceberg_predicate_to_predicate);
+            combine_logical(left, right, Predicate::and)
+        }
+        Node::Or(o) => {
+            let left = o.left.as_deref().and_then(iceberg_predicate_to_predicate);
+            let right = o.right.as_deref().and_then(iceberg_predicate_to_predicate);
+            combine_logical(left, right, Predicate::or)
+        }
+        Node::Not(child) => iceberg_predicate_to_predicate(child).map(|p| !p),
+    }
+}
+
+/// Combines the two children of a logical residual node (And/Or), returning `None` unless both
+/// converted. A missing child is not expected: the Scala serde emits a logical node only when both
+/// children convert, and Rust decodes every node it emits, so both sides always convert for a
+/// well-formed residual. A `None` here therefore means the two serde paths have diverged (e.g. a
+/// new `IcebergLiteral` variant on the serialize side without a matching decode arm), so it trips a
+/// debug-only assertion and degrades to no-pushdown in release. See [`iceberg_predicate_to_predicate`]
+/// for why a partial logical node must never be pushed.
+fn combine_logical(
+    left: Option<iceberg::expr::Predicate>,
+    right: Option<iceberg::expr::Predicate>,
+    combine: fn(iceberg::expr::Predicate, iceberg::expr::Predicate) -> iceberg::expr::Predicate,
+) -> Option<iceberg::expr::Predicate> {
+    match (left, right) {
+        (Some(l), Some(r)) => Some(combine(l, r)),
+        _ => {
+            debug_assert!(
+                false,
+                "Iceberg residual logical node with an unconvertible child: the Scala serde emits \
+                 both children and Rust decodes every node it emits, so the two serde paths have \
+                 diverged"
+            );
+            None
+        }
+    }
+}
+
+/// Converts a serialized `IcebergLiteral` into an iceberg-rust `Datum` for predicate pushdown.
+/// Returns `None` for null and for byte-array-backed types (decimal/uuid/fixed/binary), which
+/// iceberg-rust cannot use in the page index yet; the driver does not emit those for predicates,
+/// so this only guards against unexpected input. Correctness is unaffected -- a dropped literal
+/// just skips pushdown.
+fn iceberg_literal_to_datum(lit: &spark_operator::IcebergLiteral) -> Option<iceberg::spec::Datum> {
+    use spark_operator::iceberg_literal::Value;
+
+    if lit.is_null {
+        return None;
+    }
+
+    match lit.value.as_ref()? {
+        Value::BoolVal(v) => Some(iceberg::spec::Datum::bool(*v)),
+        Value::IntVal(v) => Some(iceberg::spec::Datum::int(*v)),
+        Value::LongVal(v) => Some(iceberg::spec::Datum::long(*v)),
+        Value::FloatVal(v) => Some(iceberg::spec::Datum::float(*v)),
+        Value::DoubleVal(v) => Some(iceberg::spec::Datum::double(*v)),
+        Value::DateVal(v) => Some(iceberg::spec::Datum::date(*v)),
+        Value::TimestampVal(v) => Some(iceberg::spec::Datum::timestamp_micros(*v)),
+        Value::TimestampTzVal(v) => Some(iceberg::spec::Datum::timestamptz_micros(*v)),
+        Value::StringVal(v) => Some(iceberg::spec::Datum::string(v.clone())),
+        Value::DecimalVal(_) | Value::UuidVal(_) | Value::FixedVal(_) | Value::BinaryVal(_) => None,
     }
 }
 
@@ -4838,7 +4748,6 @@ mod tests {
 
     #[test]
     fn test_array_repeat() {
-        // Use built-in ArrayRepeat, not SparkArrayRepeat (see jni_api.rs comment)
         let session_ctx = SessionContext::new();
         let task_ctx = session_ctx.task_ctx();
         let planner = PhysicalPlanner::new(Arc::from(session_ctx), 0);
