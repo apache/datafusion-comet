@@ -15,30 +15,27 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- pow runs through the codegen dispatcher by default so results match Spark exactly. The native
--- path has correctness issues and is opt-in via spark.comet.expression.Pow.allowIncompatible.
+-- to_csv runs through the codegen dispatcher by default so results match Spark exactly, including
+-- quoting and escaping. The native path is opt-in via
+-- spark.comet.expression.StructsToCsv.allowIncompatible.
 
 statement
-CREATE TABLE test_pow(base double, exp double) USING parquet
+CREATE TABLE test_to_csv(a int, b string, c double) USING parquet
 
 statement
-INSERT INTO test_pow VALUES (0.0, -1), (2.0, 3.0), (0.0, 0.0), (-1.0, 2.0), (-1.0, 0.5), (2.0, -1.0), (NULL, 2.0), (2.0, NULL), (cast('NaN' as double), 2.0), (cast('Infinity' as double), 2.0), (2.0, cast('Infinity' as double))
+INSERT INTO test_to_csv VALUES
+  (1, 'x', 2.5),
+  (-3, 'hello,world', 0.0),
+  (0, 'has "quote"', -1.5),
+  (NULL, NULL, NULL),
+  (7, '', 3.0)
 
--- query tolerance=1e-6
+-- column struct: values with delimiters and quotes exercise Spark's CSV quoting rules
 query
-SELECT pow(base, exp) FROM test_pow
+SELECT to_csv(named_struct('a', a, 'b', b, 'c', c)) FROM test_to_csv
 
--- column + literal
--- query tolerance=1e-6
+-- literal struct (constant folding is disabled by the test suite)
 query
-SELECT pow(base, 2.0) FROM test_pow
-
--- literal + column
--- query tolerance=1e-6
-query
-SELECT pow(2.0, exp) FROM test_pow
-
--- literal + literal
--- query tolerance=1e-6
-query
-SELECT pow(2.0, 3.0), pow(0.0, 0.0), pow(-1.0, 2.0), pow(NULL, 2.0)
+SELECT
+  to_csv(named_struct('a', 1, 'b', 'x', 'c', 2.5)),
+  to_csv(named_struct('s', 'a,b', 'n', CAST(NULL AS INT)))
