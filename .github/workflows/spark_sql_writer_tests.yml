@@ -117,6 +117,13 @@ jobs:
           spark-short-version: ${{ inputs.spark-version }}
           skip-native-build: true
 
+      - name: Pre-compile Spark SQL test classes
+        run: |
+          cd apache-spark
+          rm -rf /root/.m2/repository/org/apache/parquet
+          NOLINT_ON_COMPILE=true build/sbt -Dsbt.log.noformat=true -mem 3072 \
+            'sql/Test/compile'
+
       - name: Run Parquet writer tests
         run: |
           cd apache-spark
