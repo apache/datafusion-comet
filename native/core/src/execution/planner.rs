@@ -24,7 +24,7 @@ pub mod operator_registry;
 use crate::execution::operators::init_csv_datasource_exec;
 use crate::execution::operators::AlignedArrowStreamReader;
 use crate::execution::operators::IcebergScanExec;
-use crate::execution::operators::PartitionedRankLimitExec;
+use crate::execution::operators::{PartitionedRankLimitExec, WindowFnKind};
 use crate::execution::{
     expressions::list_positions::ListPositionsExpr,
     expressions::subquery::Subquery,
@@ -2243,22 +2243,40 @@ impl PhysicalPlanner {
                     GeneralError("WindowGroupLimit produced empty LexOrdering".to_string())
                 })?;
 
-                let topk: Arc<dyn ExecutionPlan> = if is_row_number {
-                    // Non-empty partition prefix (the empty case is handled above).
-                    Arc::new(PartitionedTopKExec::try_new(
-                        Arc::clone(&child.native_plan),
-                        ordering,
-                        partition_prefix_len,
-                        fetch,
-                    )?)
+                // `LexOrdering::new` deduplicates by underlying `PhysicalExpr`, so if a
+                // PARTITION BY column also appears in ORDER BY (e.g. `PARTITION BY t2c
+                // ORDER BY t2c`, produced by SPARK-46526-shaped scalar-subquery rewrites)
+                // the ORDER BY suffix collapses away. `PartitionedTopKExec::execute` in
+                // DF 54.1.0 panics on an empty ORDER BY suffix, so any WGL whose effective
+                // ORDER BY is fully covered by PARTITION BY routes to Comet's streaming
+                // operator instead, which handles the tie-everything degenerate case.
+                let effective_order_by_len = ordering.len().saturating_sub(partition_prefix_len);
+                let kind = if is_row_number {
+                    WindowFnKind::RowNumber
                 } else {
-                    Arc::new(PartitionedRankLimitExec::try_new(
-                        Arc::clone(&child.native_plan),
-                        ordering,
-                        partition_prefix_len,
-                        fetch,
-                    )?)
+                    WindowFnKind::Rank
                 };
+
+                let topk: Arc<dyn ExecutionPlan> =
+                    if is_row_number && effective_order_by_len > 0 {
+                        // Common fast path: heap-based per-partition top-K.
+                        Arc::new(PartitionedTopKExec::try_new(
+                            Arc::clone(&child.native_plan),
+                            ordering,
+                            partition_prefix_len,
+                            fetch,
+                        )?)
+                    } else {
+                        // Streaming operator handles: any RANK, plus ROW_NUMBER with an
+                        // empty effective ORDER BY suffix.
+                        Arc::new(PartitionedRankLimitExec::try_new(
+                            Arc::clone(&child.native_plan),
+                            ordering,
+                            partition_prefix_len,
+                            fetch,
+                            kind,
+                        )?)
+                    };
 
                 Ok((
                     scans,
