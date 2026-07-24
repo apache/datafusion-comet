@@ -573,7 +573,7 @@ case class CometExecRule(session: SparkSession)
     } else {
       val normalizedPlan = normalizePlan(plan)
 
-      val planWithJoinRewritten = if (CometConf.COMET_REPLACE_SMJ.get()) {
+      val planWithJoinRewritten = if (CometConf.COMET_FORCE_SHJ.get()) {
         normalizedPlan.transformUp { case p =>
           RewriteJoin.rewrite(p)
         }

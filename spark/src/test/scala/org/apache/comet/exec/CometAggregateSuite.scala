@@ -50,6 +50,29 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   override protected def sparkConf: SparkConf =
     super.sparkConf.set(SQLConf.ANSI_ENABLED.key, "false")
 
+  test("collect_list over struct with non-nullable fields") {
+    import org.apache.spark.sql.functions.expr
+
+    val df = Seq(("1", "2", 1), ("2", "3", 3))
+      .toDF("a", "b", "c")
+      .repartition(col("a"))
+      .withColumn("d", expr("named_struct('a', a, 'b', b, 'c', c)"))
+    val include = Seq(classOf[CometHashAggregateExec])
+
+    checkSparkAnswerAndOperator(
+      df.groupBy("a", "b").agg(collect_list("d")),
+      include,
+      classOf[LocalTableScanExec])
+    checkSparkAnswerAndOperator(
+      df.groupBy("a", "b")
+        .agg(collect_list("d").as("e"))
+        .withColumn("f", expr("named_struct('b', b, 'e', e)"))
+        .groupBy("a")
+        .agg(collect_list("f")),
+      include,
+      classOf[LocalTableScanExec])
+  }
+
   test("collect_list/collect_set combined with distinct aggregate runs fully native") {
     // SPARK-17616: combining a distinct aggregate with collect_list/collect_set creates a
     // multi-stage aggregate plan with a PartialMerge collect stage. These collect functions declare

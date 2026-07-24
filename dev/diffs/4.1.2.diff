@@ -392,14 +392,11 @@ index 0d807aeae4d..6d7744e771b 100644
  
        withTempView("t0", "t1", "t2") {
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/DataFrameAggregateSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/DataFrameAggregateSuite.scala
-index bfe15b33768..550549f1c7c 100644
+index bfe15b33768..df8fb4c0a35 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/DataFrameAggregateSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/DataFrameAggregateSuite.scala
-@@ -28,10 +28,12 @@ import org.apache.spark.{SparkArithmeticException, SparkRuntimeException}
- import org.apache.spark.sql.catalyst.plans.logical.Expand
- import org.apache.spark.sql.catalyst.util.AUTO_GENERATED_ALIAS
+@@ -30,8 +30,9 @@ import org.apache.spark.sql.catalyst.util.AUTO_GENERATED_ALIAS
  import org.apache.spark.sql.errors.DataTypeErrors.toSQLId
-+import org.apache.spark.sql.comet.CometHashAggregateExec
  import org.apache.spark.sql.execution.WholeStageCodegenExec
  import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 +import org.apache.spark.sql.comet.CometHashAggregateExec
@@ -409,7 +406,7 @@ index bfe15b33768..550549f1c7c 100644
  import org.apache.spark.sql.expressions.Window
  import org.apache.spark.sql.functions._
  import org.apache.spark.sql.internal.SQLConf
-@@ -792,7 +794,9 @@ class DataFrameAggregateSuite extends QueryTest
+@@ -792,7 +793,9 @@ class DataFrameAggregateSuite extends QueryTest
              case _ => false
            }.isDefined)
          } else {
@@ -420,7 +417,7 @@ index bfe15b33768..550549f1c7c 100644
          }
  
          // test case for ObjectHashAggregate and SortAggregate
-@@ -801,7 +805,8 @@ class DataFrameAggregateSuite extends QueryTest
+@@ -801,7 +804,8 @@ class DataFrameAggregateSuite extends QueryTest
          val objHashAggOrSortAggPlan =
            stripAQEPlan(objHashAggOrSortAggDF.queryExecution.executedPlan)
          if (useObjectHashAgg) {
@@ -430,12 +427,12 @@ index bfe15b33768..550549f1c7c 100644
          } else {
            assert(objHashAggOrSortAggPlan.isInstanceOf[SortAggregateExec])
          }
-@@ -851,12 +856,12 @@ class DataFrameAggregateSuite extends QueryTest
+@@ -851,12 +855,12 @@ class DataFrameAggregateSuite extends QueryTest
        assert(sortAggPlans.isEmpty)
  
        val objHashAggPlans = collect(aggPlan) {
 -        case objHashAgg: ObjectHashAggregateExec => objHashAgg
-+        case agg @ (_: ObjectHashAggregateExec | _: CometHashAggregateExec) => agg
++        case objHashAgg @ (_: ObjectHashAggregateExec | _: CometHashAggregateExec) => objHashAgg
        }
        assert(objHashAggPlans.nonEmpty)
  

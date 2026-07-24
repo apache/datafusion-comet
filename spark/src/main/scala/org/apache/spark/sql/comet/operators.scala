@@ -1889,13 +1889,13 @@ trait CometBaseAggregate {
   }
 
   /**
-   * For partial-like aggregates containing TypedImperativeAggregate functions (like CollectSet
-   * and Percentile), the Spark-side output declares buffer columns as BinaryType because Spark
-   * serializes state to binary. Native Comet emits the actual state type, so fix the exposed
-   * output schema before shuffle/exchange code consumes it.
+   * For partial-like aggregates containing TypedImperativeAggregate functions (like CollectSet,
+   * CollectList, and Percentile), the Spark-side output declares buffer columns as BinaryType
+   * because Spark serializes state to binary. Native Comet emits the actual state type, so fix
+   * the exposed output schema before shuffle/exchange code consumes it.
    *
-   * NOTE: If a new TypedImperativeAggregate function (e.g., CollectList) is added natively, add a
-   * case branch here mapping it to the native state type.
+   * NOTE: If a new TypedImperativeAggregate function is added natively, add a case branch here
+   * mapping it to the native state type.
    */
   protected def adjustOutputForNativeState(op: BaseAggregateExec): Seq[Attribute] = {
     val modeSet = op.aggregateExpressions.map(_.mode).toSet
@@ -1913,6 +1913,10 @@ trait CometBaseAggregate {
       aggFunc match {
         case cs: CollectSet =>
           val elementType = cs.children.head.dataType
+          val nativeStateType = ArrayType(elementType, containsNull = true)
+          output(bufferIdx) = output(bufferIdx).withDataType(nativeStateType)
+        case cl: CollectList =>
+          val elementType = cl.children.head.dataType
           val nativeStateType = ArrayType(elementType, containsNull = true)
           output(bufferIdx) = output(bufferIdx).withDataType(nativeStateType)
         case _: Percentile =>

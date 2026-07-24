@@ -132,12 +132,12 @@ class CometCodegenSuite
   }
 
   test("explainCodegen.enabled surfaces routed expressions in COMET-INFO") {
-    // With the opt-in flag on, `hypot` and `levenshtein` (both `CometCodegenDispatch`) roll up
-    // into one `[COMET-INFO: JVM codegen dispatcher: hypot, levenshtein]` line on the
+    // With the opt-in flag on, `hypot` and `nanvl` (both `CometCodegenDispatch`) roll up
+    // into one `[COMET-INFO: JVM codegen dispatcher: hypot, nanvl]` line on the
     // `CometProject`. With the flag off (default), no such line appears.
     withTable("t") {
-      sql("CREATE TABLE t (a DOUBLE, b DOUBLE, s1 STRING, s2 STRING) USING parquet")
-      sql("INSERT INTO t VALUES (3.0, 4.0, 'kitten', 'sitting')")
+      sql("CREATE TABLE t (a DOUBLE, b DOUBLE) USING parquet")
+      sql("INSERT INTO t VALUES (3.0, 4.0)")
 
       withSQLConf(
         CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "true",
@@ -145,7 +145,7 @@ class CometCodegenSuite
         CometConf.COMET_EXEC_PROJECT_ENABLED.key -> "true",
         CometConf.COMET_EXTENDED_EXPLAIN_FORMAT.key ->
           CometConf.COMET_EXTENDED_EXPLAIN_FORMAT_VERBOSE) {
-        val df = sql("SELECT hypot(a, b), levenshtein(s1, s2) FROM t")
+        val df = sql("SELECT hypot(a, b), nanvl(a, b) FROM t")
         checkSparkAnswerAndOperator(df)
         val explain =
           new ExtendedExplainInfo().generateExtendedInfo(df.queryExecution.executedPlan)
@@ -154,7 +154,7 @@ class CometCodegenSuite
           s"expected a [COMET-INFO: segment, got:\n$explain")
         // Names appear alphabetically via `.distinct.sorted` in rollUpInfoMessages.
         assert(
-          explain.contains("JVM codegen dispatcher: hypot, levenshtein"),
+          explain.contains("JVM codegen dispatcher: hypot, nanvl"),
           s"expected combined codegen-dispatch info, got:\n$explain")
       }
 
@@ -164,7 +164,7 @@ class CometCodegenSuite
         CometConf.COMET_EXEC_PROJECT_ENABLED.key -> "true",
         CometConf.COMET_EXTENDED_EXPLAIN_FORMAT.key ->
           CometConf.COMET_EXTENDED_EXPLAIN_FORMAT_VERBOSE) {
-        val df = sql("SELECT hypot(a, b), levenshtein(s1, s2) FROM t")
+        val df = sql("SELECT hypot(a, b), nanvl(a, b) FROM t")
         checkSparkAnswerAndOperator(df)
         val explain =
           new ExtendedExplainInfo().generateExtendedInfo(df.queryExecution.executedPlan)
