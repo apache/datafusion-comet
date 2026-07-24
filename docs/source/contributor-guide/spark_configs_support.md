@@ -39,10 +39,10 @@ The status column uses these values:
 
 - `spark.sql.legacy.timeParserPolicy`
   - Default: `EXCEPTION`
-  - Status: Falls back (see notes)
-  - Affected expressions: `date_format`, `from_unixtime`, `unix_timestamp`, `to_unix_timestamp`, `to_timestamp`, `to_timestamp_ntz`, `to_date`, `try_to_timestamp` (Spark 4+)
-  - Spark versions checked: 3.4.3, 3.5.8, 4.0.1
-  - Date: 2026-05-02
+  - Status: Partial (see notes)
+  - Affected expressions: `date_format`, `from_unixtime`, `unix_timestamp`, `to_unix_timestamp`, `to_timestamp`, `to_timestamp_ntz`, `to_date`, `try_to_date` (Spark 4.1+), `try_to_timestamp` (Spark 3.4+)
+  - Spark versions checked: 3.4.3, 3.5.8, 4.0.1, 4.1.2
+  - Date: 2026-07-18
 
 ## Audit Notes
 
@@ -76,27 +76,36 @@ across Spark 3.4, 3.5, 4.0, and 4.1. Three expression classes mix in
 `Cast` between strings and date / timestamp also reads the policy via the default
 formatters but is tested separately by `CometCastSuite` and is out of scope here.
 
-**Comet status.** None of the listed expressions consult `legacyTimeParserPolicy` in
-their Comet serde. The native implementations of `date_format`, `from_unixtime`, and
-`unix_timestamp` use a fixed strftime-style mapping that does not vary with policy;
-the remaining four (`to_unix_timestamp`, `to_timestamp`, `to_date`,
-`try_to_timestamp`) have no native implementation and fall back to Spark. Today this
-works because:
+**Comet status.** None of the native implementations consult
+`legacyTimeParserPolicy` directly. Comet instead uses native implementations only for
+policy-independent cases and routes policy-sensitive expressions through Spark's own
+expression code via the Arrow-direct codegen dispatcher. In particular,
+`to_timestamp`, `to_timestamp_ntz`, `to_date`, `try_to_date`, and
+`try_to_timestamp` are rewritten by Spark to `Cast` or `GetTimestamp` before Comet
+sees the plan. Supported casts run natively, while `GetTimestamp` runs through the
+codegen dispatcher and therefore preserves Spark's selected parser policy inside the
+Comet pipeline. Other affected expressions use a mixture of native, codegen-dispatch,
+and fallback paths:
 
 - `date_format` is `Compatible` only for a small whitelist of formats under UTC; the
   whitelisted formats happen to produce identical output under all three policies.
-- `from_unixtime` is marked `Incompatible` and falls back unless
-  `spark.comet.expression.FromUnixTime.allowIncompatible=true` is set.
+  Other formats route through the codegen dispatcher.
+- `from_unixtime` uses the native implementation for its default format when
+  `spark.comet.expression.FromUnixTime.allowIncompatible=true` is set; otherwise
+  it routes through the codegen dispatcher.
 - `unix_timestamp(<timestamp_or_date>)` does not call the formatter at all; the
   string-input overload falls back.
+- `to_unix_timestamp` routes through the codegen dispatcher.
 
 If a Comet contributor adds native string-format parsing or extends the date_format
 whitelist, this audit should be revisited and the policy must be honored explicitly.
 
 **Test coverage.** `spark/src/test/resources/sql-tests/expressions/datetime/`:
 
-- One ConfigMatrix file per expression covering convergent inputs under
-  `LEGACY,CORRECTED,EXCEPTION` (`*_time_parser_policy.sql`).
+- One ConfigMatrix file per originally audited expression covering convergent
+  inputs under `LEGACY,CORRECTED,EXCEPTION` (`*_time_parser_policy.sql`).
+  `try_to_date`, added in Spark 4.1, has native-coverage tests in
+  `try_datetime.sql` but has not yet been added to the parser-policy matrix.
 - Per-policy files locking in divergent behavior:
   - `_legacy.sql` -- lenient inputs (single-digit fields, out-of-range values,
     trailing characters) and legacy-only pattern tokens (`'aaaa'`).
@@ -107,6 +116,7 @@ whitelist, this audit should be revisited and the policy must be honored explici
     `INCONSISTENT_BEHAVIOR_CROSS_VERSION.PARSE_DATETIME_BY_NEW_PARSER` at parse time.
 
 **Findings.** All 42 generated test cases pass on Spark 3.4.3, 3.5.8, and 4.0.1. No
-Comet bugs were uncovered by the audit. The tests use `query spark_answer_only` so
-that result-correctness is enforced regardless of whether Comet runs the expression
-natively or falls back.
+Comet bugs were uncovered by the original audit. The `try_to_timestamp` policy tests
+use the default `query` mode to enforce both result correctness and execution within
+the Comet pipeline. Tests for expressions with known fallback paths continue to use
+`query spark_answer_only`.

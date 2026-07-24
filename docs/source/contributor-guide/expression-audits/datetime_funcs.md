@@ -87,4 +87,12 @@
 
 - Rewrites to `MakeTimestamp(failOnError = false)` and runs through the codegen dispatcher (`CometMakeTimestamp`), so invalid inputs return NULL to match Spark.
 
+## try_to_date
+
+- Spark 4.1+. Rewrites to `Cast(..., EvalMode.LEGACY)` (no format, native) or `Cast(GetTimestamp(..., failOnError = false))` (with format, via the codegen dispatcher) before Comet sees the plan. In non-ANSI mode the rewritten tree is identical to `to_date`; invalid inputs return NULL to match Spark.
+
+## try_to_timestamp
+
+- Rewrites to `Cast(..., EvalMode.LEGACY)` (no format, native) or `GetTimestamp(..., failOnError = false)` (with format, via the codegen dispatcher) before Comet sees the plan. In non-ANSI mode the rewritten tree is identical to `to_timestamp`; invalid inputs return NULL to match Spark.
+
 [Spark Expression Support]: ../../user-guide/latest/expressions.md
