@@ -126,9 +126,8 @@ use datafusion_comet_proto::{
     },
     spark_operator::{
         self, lower_window_frame_bound::LowerFrameBoundStruct, operator::OpStruct,
-        upper_window_frame_bound::UpperFrameBoundStruct,
-        AggregateMode as ProtoAggregateMode, BuildSide,
-        CompressionCodec as SparkCompressionCodec, JoinType, Operator, WindowFrameType,
+        upper_window_frame_bound::UpperFrameBoundStruct, AggregateMode as ProtoAggregateMode,
+        BuildSide, CompressionCodec as SparkCompressionCodec, JoinType, Operator, WindowFrameType,
     },
     spark_partitioning::{partitioning::PartitioningStruct, Partitioning as SparkPartitioning},
 };
@@ -2257,26 +2256,25 @@ impl PhysicalPlanner {
                     WindowFnKind::Rank
                 };
 
-                let topk: Arc<dyn ExecutionPlan> =
-                    if is_row_number && effective_order_by_len > 0 {
-                        // Common fast path: heap-based per-partition top-K.
-                        Arc::new(PartitionedTopKExec::try_new(
-                            Arc::clone(&child.native_plan),
-                            ordering,
-                            partition_prefix_len,
-                            fetch,
-                        )?)
-                    } else {
-                        // Streaming operator handles: any RANK, plus ROW_NUMBER with an
-                        // empty effective ORDER BY suffix.
-                        Arc::new(PartitionedRankLimitExec::try_new(
-                            Arc::clone(&child.native_plan),
-                            ordering,
-                            partition_prefix_len,
-                            fetch,
-                            kind,
-                        )?)
-                    };
+                let topk: Arc<dyn ExecutionPlan> = if is_row_number && effective_order_by_len > 0 {
+                    // Common fast path: heap-based per-partition top-K.
+                    Arc::new(PartitionedTopKExec::try_new(
+                        Arc::clone(&child.native_plan),
+                        ordering,
+                        partition_prefix_len,
+                        fetch,
+                    )?)
+                } else {
+                    // Streaming operator handles: any RANK, plus ROW_NUMBER with an
+                    // empty effective ORDER BY suffix.
+                    Arc::new(PartitionedRankLimitExec::try_new(
+                        Arc::clone(&child.native_plan),
+                        ordering,
+                        partition_prefix_len,
+                        fetch,
+                        kind,
+                    )?)
+                };
 
                 Ok((
                     scans,
