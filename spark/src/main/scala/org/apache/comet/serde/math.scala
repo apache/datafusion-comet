@@ -22,6 +22,7 @@ package org.apache.comet.serde
 import org.apache.spark.sql.catalyst.expressions.{Abs, Add, Atan2, Attribute, BRound, Ceil, CheckOverflow, Conv, Expression, Floor, Hex, Hypot, If, LessThanOrEqual, Literal, Log, Log10, Log1p, Log2, Logarithm, NaNvl, Pmod, Pow, UnaryPositive, Unhex, WidthBucket}
 import org.apache.spark.sql.types.{DecimalType, DoubleType, NumericType}
 
+import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithFallbackReason, scalarFunctionExprToProto, scalarFunctionExprToProtoWithReturnType, serializeDataType}
 
@@ -204,24 +205,36 @@ object CometAbs extends CometExpressionSerde[Abs] with MathExprBase {
   }
 }
 
-object CometPow extends CometExpressionSerde[Pow] {
+object CometPow extends CometExpressionSerde[Pow] with NativeOptInAvailable {
 
   // https://github.com/apache/datafusion/issues/22598
-  val unsupportedReason: String = "Power has correctness issues"
+  private val incompatReason = "Power has correctness issues"
 
-  override def getUnsupportedReasons(): Seq[String] = Seq(unsupportedReason)
+  override def getIncompatibleReasons(): Seq[String] = Seq(incompatReason)
 
   override def getSupportLevel(expr: Pow): SupportLevel =
-    Unsupported(Some(unsupportedReason))
+    if (!CometConf.isExprAllowIncompat(getExprConfigName(expr))) {
+      Compatible(nativeOptIn =
+        Some(NativeOptIn(CometConf.getExprAllowIncompatConfigKey(getExprConfigName(expr)))))
+    } else {
+      Compatible()
+    }
 
   override def convert(
       expr: Pow,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val leftExpr = exprToProtoInternal(expr.left, inputs, binding)
-    val rightExpr = exprToProtoInternal(expr.right, inputs, binding)
-    val optExpr = scalarFunctionExprToProto("pow", leftExpr, rightExpr)
-    optExprWithFallbackReason(optExpr, expr, expr.left, expr.right)
+    if (CometConf.isExprAllowIncompat(getExprConfigName(expr))) {
+      val leftExpr = exprToProtoInternal(expr.left, inputs, binding)
+      val rightExpr = exprToProtoInternal(expr.right, inputs, binding)
+      val optExpr = scalarFunctionExprToProto("pow", leftExpr, rightExpr)
+      optExprWithFallbackReason(optExpr, expr, expr.left, expr.right)
+    } else {
+      // Default: route through the codegen dispatcher so Spark's own doGenCode runs inside the
+      // Comet pipeline (bit-exact). The native path is faster but has correctness issues, so it is
+      // opt-in via allowIncompatible.
+      CometScalaUDF.emitJvmCodegenDispatch(expr, inputs, binding)
+    }
   }
 }
 
