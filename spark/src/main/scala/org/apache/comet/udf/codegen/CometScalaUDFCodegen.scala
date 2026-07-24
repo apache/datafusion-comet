@@ -36,7 +36,6 @@ import org.apache.spark.sql.catalyst.expressions.Expression
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.types.{BinaryType, DataType, StringType}
 
-import org.apache.comet.CometArrowAllocator
 import org.apache.comet.codegen.{CometBatchKernel, CometBatchKernelCodegen}
 import org.apache.comet.codegen.CometBatchKernelCodegen.{ArrayColumnSpec, ArrowColumnSpec, MapColumnSpec, ScalarColumnSpec, StructColumnSpec, StructFieldSpec}
 import org.apache.comet.udf.CometUDF
@@ -88,9 +87,6 @@ class CometScalaUDFCodegen extends CometUDF with Logging {
   private val kernelCache
       : mutable.Map[CometScalaUDFCodegen.CacheKey, CometScalaUDFCodegen.CacheEntry] =
     mutable.HashMap.empty
-
-  override def evaluate(inputs: Array[ValueVector], numRows: Int): ValueVector =
-    evaluate(CometArrowAllocator, inputs, numRows)
 
   override def evaluate(
       allocator: BufferAllocator,

@@ -70,8 +70,7 @@ public class CometUdfBridge {
 
   private static final Logger LOG = LoggerFactory.getLogger(CometUdfBridge.class);
 
-  private static final BufferAllocator ROOT_ALLOCATOR =
-      org.apache.comet.package$.MODULE$.CometArrowAllocator();
+  private static final BufferAllocator ROOT_ALLOCATOR = CometUDF.rootAllocator();
 
   /**
    * Task-scoped UDF instances and output allocator. Entries are removed after task completion and
@@ -374,6 +373,10 @@ public class CometUdfBridge {
     }
   }
 
+  /**
+   * Non-spillable because live UDF Arrow buffers can be referenced by Java or exported through FFI
+   * and cannot be safely evicted and reconstructed.
+   */
   private static final class TaskMemoryConsumer extends MemoryConsumer {
     private TaskMemoryConsumer(TaskMemoryManager taskMemoryManager) {
       super(taskMemoryManager, 0L, MemoryMode.OFF_HEAP);

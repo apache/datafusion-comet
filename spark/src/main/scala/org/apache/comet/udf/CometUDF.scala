@@ -22,6 +22,12 @@ package org.apache.comet.udf
 import org.apache.arrow.memory.BufferAllocator
 import org.apache.arrow.vector.ValueVector
 
+import org.apache.comet.CometArrowAllocator
+
+object CometUDF {
+  def rootAllocator: BufferAllocator = CometArrowAllocator
+}
+
 /**
  * Scalar UDF invoked from native execution via JNI. Receives Arrow vectors as input and returns
  * an Arrow vector.
@@ -46,16 +52,5 @@ import org.apache.arrow.vector.ValueVector
  * Implementations with mutable state must synchronize access.
  */
 trait CometUDF {
-
-  /**
-   * Legacy entry point retained for implementations compiled against earlier Comet releases. New
-   * implementations should override the allocator-aware overload below.
-   */
-  def evaluate(inputs: Array[ValueVector], numRows: Int): ValueVector =
-    throw new UnsupportedOperationException("CometUDF.evaluate is not implemented")
-
-  def evaluate(
-      allocator: BufferAllocator,
-      inputs: Array[ValueVector],
-      numRows: Int): ValueVector = evaluate(inputs, numRows)
+  def evaluate(allocator: BufferAllocator, inputs: Array[ValueVector], numRows: Int): ValueVector
 }
