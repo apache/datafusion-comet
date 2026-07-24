@@ -36,7 +36,7 @@ pub use div::spark_decimal_integral_div;
 pub use floor::spark_floor;
 pub use internal::*;
 pub use log::spark_log;
-pub use modulo_expr::create_modulo_expr;
+pub use modulo_expr::{create_modulo_expr, create_pmod_expr};
 pub use negative::{create_negate_expr, NegativeExpr};
 pub use round::spark_round;
 pub use unhex::spark_unhex;
