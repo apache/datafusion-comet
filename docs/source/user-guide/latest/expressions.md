@@ -498,7 +498,7 @@ expression-level). The `outer` variants are wired but marked `Incompatible`; the
 | `try_variant_get` | 🔜 | tracking [#4098](https://github.com/apache/datafusion-comet/issues/4098) |
 | `typeof` | ✅ | Foldable; resolved to a literal before Comet sees the plan |
 | `user` | ✅ | Resolved to a literal by the Spark analyzer before reaching Comet |
-| `uuid` | 🔜 | Nondeterministic random UUID |
+| `uuid` | ✅ |  |
 | `variant_get` | 🔜 | tracking [#4098](https://github.com/apache/datafusion-comet/issues/4098) |
 
 ---

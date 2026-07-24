@@ -101,6 +101,7 @@ pub enum ExpressionType {
     Rand,
     Randn,
     Shuffle,
+    Uuid,
     SparkPartitionId,
     MonotonicallyIncreasingId,
     ArraysZip,
@@ -376,6 +377,7 @@ impl ExpressionRegistry {
             Some(ExprStruct::Rand(_)) => Ok(ExpressionType::Rand),
             Some(ExprStruct::Randn(_)) => Ok(ExpressionType::Randn),
             Some(ExprStruct::Shuffle(_)) => Ok(ExpressionType::Shuffle),
+            Some(ExprStruct::Uuid(_)) => Ok(ExpressionType::Uuid),
             Some(ExprStruct::SparkPartitionId(_)) => Ok(ExpressionType::SparkPartitionId),
             Some(ExprStruct::MonotonicallyIncreasingId(_)) => {
                 Ok(ExpressionType::MonotonicallyIncreasingId)
@@ -409,6 +411,8 @@ impl ExpressionRegistry {
             .insert(ExpressionType::Randn, Box::new(RandnBuilder));
         self.builders
             .insert(ExpressionType::Shuffle, Box::new(ShuffleBuilder));
+        self.builders
+            .insert(ExpressionType::Uuid, Box::new(UuidBuilder));
     }
 
     /// Register partition expression builders

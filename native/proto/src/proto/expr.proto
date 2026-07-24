@@ -92,6 +92,7 @@ message Expr {
     JvmScalarUdf jvm_scalar_udf = 70;
     PreciseTimestampConversion precise_timestamp_conversion = 71;
     Shuffle shuffle = 72;
+    Uuid uuid = 73;
   }
 
   reserved 20;
@@ -561,6 +562,14 @@ message Rand {
 message Shuffle {
   Expr child = 1;
   int64 seed = 2;
+}
+
+// Spark's Uuid returns a random RFC 4122 version 4 UUID string. It is
+// non-deterministic: the resolved random seed is combined with the partition
+// index and seeds a Commons Math3 MersenneTwister, matching
+// org.apache.spark.sql.catalyst.util.RandomUUIDGenerator.
+message Uuid {
+  int64 seed = 1;
 }
 
 // Spark's ArraysZip takes children: Seq[Expression] and names: Seq[Expression]

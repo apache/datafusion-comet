@@ -160,6 +160,14 @@ impl SparkMersenneTwister {
         ((y as u32) >> (32 - bits)) as i32
     }
 
+    /// Port of `BitsStreamGenerator.nextLong()`: two 32-bit draws combined into a
+    /// signed 64-bit value. Used by `RandomUUIDGenerator`.
+    pub(crate) fn next_long(&mut self) -> i64 {
+        let high = (self.next(32) as i64) << 32;
+        let low = (self.next(32) as i64) & 0xffffffffi64;
+        high | low
+    }
+
     /// Port of `BitsStreamGenerator.nextInt(int n)`. The caller always passes a
     /// strictly positive `n`, matching Spark's `random.nextInt(i + 1)`.
     fn next_int(&mut self, n: i32) -> i32 {

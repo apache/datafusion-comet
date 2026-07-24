@@ -82,4 +82,11 @@
 - Spark 4.0.1 (audited 2026-05-27): identical to 3.4.3 except the resulting literal carries the default string collation.
 - Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
 
+## uuid
+
+- Spark 3.4.3 (audited 2026-07-24): `Uuid(randomSeed: Option[Long]) extends LeafExpression with Nondeterministic with ExpressionWithRandomSeed`. The analyzer's `ResolveRandomSeed` fills `randomSeed` with a random `Long`, so it is always defined before Comet sees the plan. Per partition it seeds `RandomUUIDGenerator(randomSeed + partitionIndex)`, a Commons Math3 `MersenneTwister`, and per row draws two `nextLong()`s, masks in the RFC 4122 version 4 and variant bits, and formats via `java.util.UUID.toString`. Only the no-argument `uuid()` form exists (no seed constructor). Comet emits a `Uuid` proto with the resolved seed and reproduces the generator bit for bit via `SparkMersenneTwister`.
+- Spark 3.5.8 (audited 2026-07-24): identical to 3.4.3.
+- Spark 4.0.1 (audited 2026-07-24): adds `def this(seed: Expression)`, exposing the `uuid(seed)` SQL form (the seed must be an integer or long literal, validated at analysis time). `RandomUUIDGenerator` and the per-row algorithm are unchanged, so results are identical to 3.4.3 for a given seed.
+- Spark 4.1.1 (audited 2026-07-24): identical to 4.0.1, plus `withShiftedSeed`. No runtime change.
+
 [Spark Expression Support]: ../../user-guide/latest/expressions.md
