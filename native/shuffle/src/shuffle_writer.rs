@@ -313,6 +313,80 @@ mod test {
         }
     }
 
+    /// Writing and reading several distinct zstd blocks on one thread exercises reuse of the
+    /// thread-local zstd compression/decompression contexts across frames: a context left dirty by
+    /// one block would corrupt the next.
+    #[test]
+    #[cfg_attr(miri, ignore)] // miri can't call foreign function `ZSTD_createCCtx`
+    fn roundtrip_ipc_multiple_zstd_blocks() {
+        use arrow::array::Int32Array;
+
+        let schema = Arc::new(Schema::new(vec![Field::new("v", DataType::Int32, false)]));
+        let writer =
+            ShuffleBlockWriter::try_new(schema.as_ref(), CompressionCodec::Zstd(1)).unwrap();
+
+        // Distinct batches (varying length and values) written as consecutive blocks.
+        let batches: Vec<RecordBatch> = (0..5)
+            .map(|b| {
+                let values: Vec<i32> = (0..(100 + b * 37)).map(|i| i + b * 1000).collect();
+                RecordBatch::try_new(
+                    Arc::clone(&schema),
+                    vec![Arc::new(Int32Array::from(values)) as Arc<dyn Array>],
+                )
+                .unwrap()
+            })
+            .collect();
+
+        let mut output = vec![];
+        let mut cursor = Cursor::new(&mut output);
+        for batch in &batches {
+            writer
+                .write_batch(batch, &mut cursor, &Time::default())
+                .unwrap();
+        }
+
+        let decoded = read_all_ipc_batches(&output);
+        assert_eq!(decoded, batches);
+    }
+
+    /// The pre-encoded schema message and the per-block record batch are encoded with separate
+    /// dictionary trackers, so a dictionary-typed column must still roundtrip: the dictionary
+    /// batch's id has to match the id assigned while encoding the schema.
+    #[test]
+    #[cfg_attr(miri, ignore)] // miri can't call foreign function `ZSTD_createCCtx`
+    fn roundtrip_ipc_dictionary() {
+        use arrow::array::DictionaryArray;
+        use arrow::datatypes::Int32Type;
+
+        let values: Vec<String> = (0..8192).map(|i| format!("v{}", i % 7)).collect();
+        let dict: DictionaryArray<Int32Type> = values.iter().map(|s| s.as_str()).collect();
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "d",
+            dict.data_type().clone(),
+            false,
+        )]));
+        let batch =
+            RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(dict) as Arc<dyn Array>])
+                .unwrap();
+
+        for codec in &[
+            CompressionCodec::None,
+            CompressionCodec::Zstd(1),
+            CompressionCodec::Snappy,
+            CompressionCodec::Lz4Frame,
+        ] {
+            let mut output = vec![];
+            let mut cursor = Cursor::new(&mut output);
+            let writer = ShuffleBlockWriter::try_new(schema.as_ref(), codec.clone()).unwrap();
+            writer
+                .write_batch(&batch, &mut cursor, &Time::default())
+                .unwrap();
+
+            let batch2 = read_ipc_compressed(&output[16..]).unwrap();
+            assert_eq!(batch, batch2);
+        }
+    }
+
     #[test]
     #[cfg_attr(miri, ignore)] // miri can't call foreign function `ZSTD_createCCtx`
     fn test_single_partition_shuffle_writer() {

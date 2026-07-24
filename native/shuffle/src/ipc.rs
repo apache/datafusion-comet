@@ -19,34 +19,47 @@ use arrow::array::RecordBatch;
 use arrow::ipc::reader::StreamReader;
 use datafusion::common::DataFusionError;
 use datafusion::error::Result;
+use std::cell::RefCell;
+use std::io::Read;
 
 pub fn read_ipc_compressed(bytes: &[u8]) -> Result<RecordBatch> {
     match &bytes[0..4] {
-        b"SNAP" => {
-            let decoder = snap::read::FrameDecoder::new(&bytes[4..]);
-            let mut reader =
-                unsafe { StreamReader::try_new(decoder, None)?.with_skip_validation(true) };
-            reader.next().unwrap().map_err(|e| e.into())
-        }
-        b"LZ4_" => {
-            let decoder = lz4_flex::frame::FrameDecoder::new(&bytes[4..]);
-            let mut reader =
-                unsafe { StreamReader::try_new(decoder, None)?.with_skip_validation(true) };
-            reader.next().unwrap().map_err(|e| e.into())
-        }
-        b"ZSTD" => {
-            let decoder = zstd::Decoder::new(&bytes[4..])?;
-            let mut reader =
-                unsafe { StreamReader::try_new(decoder, None)?.with_skip_validation(true) };
-            reader.next().unwrap().map_err(|e| e.into())
-        }
-        b"NONE" => {
-            let mut reader =
-                unsafe { StreamReader::try_new(&bytes[4..], None)?.with_skip_validation(true) };
-            reader.next().unwrap().map_err(|e| e.into())
-        }
+        b"SNAP" => decode_ipc_stream(snap::read::FrameDecoder::new(&bytes[4..])),
+        b"LZ4_" => decode_ipc_stream(lz4_flex::frame::FrameDecoder::new(&bytes[4..])),
+        b"ZSTD" => ZSTD_DECODER.with(|decoder| decoder.borrow_mut().read_batch(&bytes[4..])),
+        b"NONE" => decode_ipc_stream(&bytes[4..]),
         other => Err(DataFusionError::Execution(format!(
             "Failed to decode batch: invalid compression codec: {other:?}"
         ))),
     }
+}
+
+/// Read the single record batch from an uncompressed Arrow IPC stream.
+fn decode_ipc_stream<R: Read>(reader: R) -> Result<RecordBatch> {
+    let mut reader = unsafe { StreamReader::try_new(reader, None)?.with_skip_validation(true) };
+    reader.next().unwrap().map_err(|e| e.into())
+}
+
+/// Per-thread reusable zstd decompression context, so decoding does not allocate a fresh
+/// `ZSTD_DCtx` for every block.
+struct ZstdBlockDecoder {
+    context: zstd::zstd_safe::DCtx<'static>,
+}
+
+impl ZstdBlockDecoder {
+    fn read_batch(&mut self, frame: &[u8]) -> Result<RecordBatch> {
+        // The reader may stop before draining the whole frame, so reset the session state to leave
+        // the reused context clean for the next block (as a fresh context would be).
+        self.context
+            .reset(zstd::zstd_safe::ResetDirective::SessionOnly)
+            .map_err(|_| DataFusionError::Execution("failed to reset zstd context".to_string()))?;
+        let decoder = zstd::stream::read::Decoder::with_context(frame, &mut self.context);
+        decode_ipc_stream(decoder)
+    }
+}
+
+thread_local! {
+    static ZSTD_DECODER: RefCell<ZstdBlockDecoder> = RefCell::new(ZstdBlockDecoder {
+        context: zstd::zstd_safe::DCtx::create(),
+    });
 }
