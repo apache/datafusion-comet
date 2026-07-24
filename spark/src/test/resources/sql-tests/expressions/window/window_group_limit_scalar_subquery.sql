@@ -22,8 +22,12 @@
 -- have an EMPTY orderSpec but non-empty partitionSpec. Comet's serde must not
 -- hand DataFusion's `PartitionedTopKExec` an ordering with only partition
 -- keys -- that panics at execute time.
+--
+-- Spark 3.5 rejects this correlation form at analysis
+-- (UNSUPPORTED_SUBQUERY_EXPRESSION_CATEGORY.ACCESSING_OUTER_QUERY_COLUMN_IS_NOT_ALLOWED);
+-- the decorrelation that produces the WGL landed in Spark 4.0.
 
--- MinSparkVersion: 3.5
+-- MinSparkVersion: 4.0
 
 statement
 CREATE TABLE t1(t1a string, t1b smallint, t1c int, t1d int) USING parquet
