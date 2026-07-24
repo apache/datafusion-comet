@@ -19,10 +19,14 @@
 
 package org.apache.comet.serde
 
+import java.util.Locale
+
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Base64, BitLength, Cast, Concat, ConcatWs, Contains, Elt, Empty2Null, EndsWith, Expression, FindInSet, FormatNumber, FormatString, GetJsonObject, InitCap, Left, Length, Levenshtein, Like, Literal, Lower, Mask, OctetLength, Overlay, RegExpExtract, RegExpExtractAll, RegExpInStr, RegExpReplace, Right, RLike, SoundEx, StartsWith, StringLocate, StringLPad, StringRepeat, StringReplace, StringRPad, StringSplit, StringTranslate, Substring, SubstringIndex, ToCharacter, ToNumber, TryToNumber, UnBase64, Upper}
 import org.apache.spark.sql.types.{BinaryType, DataTypes, LongType, StringType}
 
 import org.apache.comet.CometConf
+import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
+import org.apache.comet.expressions.{CometCast, CometEvalMode}
 import org.apache.comet.serde.ExprOuterClass.Expr
 import org.apache.comet.serde.QueryPlanSerde.{createBinaryExpr, exprToProtoInternal, optExprWithFallbackReason, scalarFunctionExprToProto, scalarFunctionExprToProtoWithReturnType}
 import org.apache.comet.shims.CometTypeShim
@@ -651,6 +655,39 @@ object CometGetJsonObject extends CometCodegenDispatch[GetJsonObject] with Nativ
     } else {
       super.convert(expr, inputs, binding)
     }
+}
+
+trait CommonStringExprs {
+
+  def stringEncode(
+      expr: Expression,
+      charset: Expression,
+      value: Expression,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[Expr] = {
+    charset match {
+      case Literal(str, DataTypes.StringType)
+          if str != null && str.toString.toLowerCase(Locale.ROOT) == "utf-8" =>
+        // For valid UTF-8, encode(col, 'utf-8') is byte-equivalent to cast(string AS binary).
+        // Spark StringType can also hold malformed UTF-8 bytes; Spark replaces those bytes during
+        // encode, while the cast preserves them. This limitation is tracked by #4764.
+        val strExpr = exprToProtoInternal(value, inputs, binding)
+        if (strExpr.isDefined) {
+          CometCast.castToProto(
+            expr,
+            None,
+            DataTypes.BinaryType,
+            strExpr.get,
+            CometEvalMode.LEGACY)
+        } else {
+          withFallbackReason(expr, value)
+          None
+        }
+      case _ =>
+        withFallbackReason(expr, "Comet only supports encoding with 'utf-8'.")
+        None
+    }
+  }
 }
 
 // Expressions routed through the JVM codegen dispatcher: no native implementation, so Spark's own

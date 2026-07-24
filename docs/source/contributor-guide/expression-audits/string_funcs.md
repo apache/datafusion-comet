@@ -84,6 +84,14 @@
 - `decode` runs through the codegen dispatcher on all versions (Spark 3.x via `CometStringDecode`, Spark 4.0 via the `StaticInvoke` replacement routed to `CometStaticInvokeCodegenDispatch`), so Spark's own evaluation runs inside the Comet pipeline. This honours the `charset` argument and the Spark 4.0 `legacyCharsets` / `legacyErrorAction` flags, and falls back to Spark when the dispatcher is disabled.
 - Known limitation: because there is no `CometExpressionSerde[StringDecode]` registration, `decode` does not surface in the auto-generated compatibility docs (https://github.com/apache/datafusion-comet/issues/4466).
 
+## encode
+
+- Spark 3.4.3 (audited 2026-07-23): `Encode(value, charset)` converts the input through `UTF8String.toString.getBytes(charset)`, replacing malformed UTF-8 before encoding.
+- Spark 3.5.8 (audited 2026-07-23): unchanged from Spark 3.4.3.
+- Spark 4.0.1 (audited 2026-07-23): refactored to `RuntimeReplaceable` backed by `StaticInvoke(Encode.encode, ...)`. Valid UTF-8 uses a raw-byte fast path; malformed UTF-8 is converted through `UTF8String.toString` before encoding.
+- Spark 4.1.1 (audited 2026-07-23): unchanged from Spark 4.0.1.
+- Comet supports literal UTF-8 charsets by lowering `encode` to `CAST(string AS binary)` and falls back for other charsets. The lowering preserves malformed UTF-8 bytes where Spark replaces them, a known incompatibility tracked by https://github.com/apache/datafusion-comet/issues/4764.
+
 ## endswith
 
 - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.

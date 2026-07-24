@@ -35,7 +35,7 @@ import org.apache.comet.serde.QueryPlanSerde.exprToProtoInternal
  * are identical across minor versions; per-version traits override only `binaryOutputStyle` and
  * supply the matching `CometEvalModeUtil.sumEvalMode`.
  */
-trait Spark4xCometExprShim extends CometExprShim4x {
+trait Spark4xCometExprShim extends CometExprShim4x with CometExprShimCommon {
   protected def evalMode(c: Cast): CometEvalMode.Value =
     CometEvalModeUtil.fromSparkEvalMode(c.evalMode)
 
@@ -105,7 +105,7 @@ trait Spark4xCometExprShim extends CometExprShim4x {
                 .foreach(reasons => s.setTagValue(CometExplainInfo.FALLBACK_REASONS, reasons))
             }
             exprProto
-          case _ => None
+          case _ => sparkExprToProto(s, inputs, binding)
         }
 
       // dayname / monthname (Spark 4.0+) are shared across all 4.x minor versions; see

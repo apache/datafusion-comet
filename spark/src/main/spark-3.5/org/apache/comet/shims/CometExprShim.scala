@@ -23,13 +23,13 @@ import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.expressions.aggregate.Sum
 
 import org.apache.comet.expressions.CometEvalMode
-import org.apache.comet.serde.{CometExpressionSerde, CometStringDecode, CometToPrettyString, CometWidthBucket}
+import org.apache.comet.serde.{CometExpressionSerde, CometStringDecode, CometToPrettyString, CometWidthBucket, CommonStringExprs}
 import org.apache.comet.serde.ExprOuterClass.{BinaryOutputStyle, Expr}
 
 /**
  * `CometExprShim` acts as a shim for parsing expressions from different Spark versions.
  */
-trait CometExprShim {
+trait CometExprShim extends CommonStringExprs {
   protected def evalMode(c: Cast): CometEvalMode.Value =
     CometEvalModeUtil.fromSparkEvalMode(c.evalMode)
 
@@ -48,7 +48,13 @@ trait CometExprShim {
   def sparkVersionSpecificExprToProtoInternal(
       expr: Expression,
       inputs: Seq[Attribute],
-      binding: Boolean): Option[Expr] = None
+      binding: Boolean): Option[Expr] = {
+    expr match {
+      case e: Encode =>
+        stringEncode(expr, e.charset, e.value, inputs, binding)
+      case _ => None
+    }
+  }
 }
 
 object CometEvalModeUtil {
