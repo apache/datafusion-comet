@@ -249,7 +249,13 @@ pub fn release_runtime() {
     }
 }
 
-/// Returns a short name for an OpStruct variant.
+/// Returns a short name for an OpStruct variant. Used for tracing event names;
+/// no contrib-specific logic. The `OpStruct::DeltaScan` arm stays unconditional
+/// even in non-`contrib-delta` builds because the proto enum is generated
+/// regardless of cargo feature flags and Rust requires an exhaustive match --
+/// returning a name string here keeps default-build error messages (e.g. "Received
+/// a DeltaScan operator but core was built without the `contrib-delta` Cargo
+/// feature") able to identify the offender by name.
 fn op_name(op: &OpStruct) -> &'static str {
     match op {
         OpStruct::Scan(_) => "Scan",
@@ -270,6 +276,7 @@ fn op_name(op: &OpStruct) -> &'static str {
         OpStruct::CsvScan(_) => "CsvScan",
         OpStruct::ShuffleScan(_) => "ShuffleScan",
         OpStruct::BroadcastNestedLoopJoin(_) => "BroadcastNestedLoopJoin",
+        OpStruct::DeltaScan(_) => "DeltaScan",
     }
 }
 
