@@ -164,6 +164,14 @@ name = "to_json"
 harness = false
 
 [[bench]]
+name = "floor"
+harness = false
+
+[[bench]]
+name = "ceil"
+harness = false
+
+[[bench]]
 name = "cast_float_to_string"
 harness = false
 
