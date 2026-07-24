@@ -3712,6 +3712,9 @@ fn parse_file_scan_tasks_from_common(
                 } else {
                     Some(del.equality_ids.clone())
                 },
+                referenced_data_file: del.referenced_data_file.clone(),
+                content_offset: del.content_offset,
+                content_size_in_bytes: del.content_size_in_bytes,
                 // Plaintext StandardKeyMetadata forwarded verbatim from the JVM; decoded by
                 // iceberg-rust with no KMS unwrap. None for unencrypted delete files.
                 key_metadata: del.key_metadata.clone().map(Vec::into_boxed_slice),
