@@ -25,10 +25,14 @@ use tokio::time::Instant;
 /// A partitioner that writes all shuffle data to a single file and a single index file.
 ///
 /// Batches are streamed straight to the long-lived `BufBatchWriter` inside the
-/// [`PartitionWriter`], whose internal `BatchCoalescer` coalesces small batches into
-/// `batch_size`-row IPC blocks across calls. The partitioner therefore does no buffering
-/// or concatenation of its own; doing so would copy every row an extra time before the
-/// coalescer copies it again.
+/// [`PartitionWriter`], whose internal `BatchCoalescer` combines sub-`batch_size` batches
+/// into `batch_size`-row IPC blocks across calls. A batch that is already `>= batch_size`
+/// and lands on an empty coalescer buffer is passed through and written verbatim as a
+/// single block, which may exceed `batch_size` (see the `BatchCoalescer` bypass in
+/// `BufBatchWriter`). Block boundaries therefore depend on how the input is chunked, but
+/// every row is written exactly once in order. The partitioner does no buffering or
+/// concatenation of its own; doing so would copy every row an extra time before the
+/// coalescer handled it.
 pub(crate) struct SinglePartitionShufflePartitioner<T: PartitionWriter> {
     partition_writer: T,
     /// Metrics for the repartitioner

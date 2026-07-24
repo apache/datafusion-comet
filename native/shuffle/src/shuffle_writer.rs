@@ -1003,12 +1003,13 @@ mod test {
     }
 
     /// The single-partition partitioner streams batches straight to the writer's
-    /// `BatchCoalescer` without any concat/buffer layer of its own. Feeding batches
-    /// of varying sizes must still produce `batch_size`-row IPC blocks (plus a tail)
-    /// with every row roundtripping in order.
+    /// `BatchCoalescer` without any concat/buffer layer of its own. A `>= batch_size`
+    /// batch landing on an empty buffer is passed through as a single (possibly oversized)
+    /// block, while smaller batches are coalesced up to `batch_size`. Every row must
+    /// roundtrip in order regardless of how the input is chunked.
     #[tokio::test]
     #[cfg_attr(miri, ignore)]
-    async fn single_partition_coalesces_to_batch_size_in_order() {
+    async fn single_partition_passthrough_oversized_and_coalesces_small() {
         use crate::metrics::ShufflePartitionerMetrics;
         use crate::partitioners::ShufflePartitioner;
         use arrow::array::Int32Array;
@@ -1046,23 +1047,26 @@ mod test {
         let metrics = ShufflePartitionerMetrics::new(&ExecutionPlanMetricsSet::new(), 0);
         let mut partitioner = SinglePartitionShufflePartitioner::new(writer, metrics);
 
-        // A mix of sub-batch-size batches and one larger-than-batch-size batch.
-        partitioner.insert_batch(make_batch(0, 30)).await.unwrap(); // rows 0..30
-        partitioner.insert_batch(make_batch(30, 30)).await.unwrap(); // rows 30..60
-        partitioner.insert_batch(make_batch(60, 250)).await.unwrap(); // rows 60..310
-        partitioner.insert_batch(make_batch(310, 40)).await.unwrap(); // rows 310..350
+        // Lead with a larger-than-batch-size batch on an empty buffer: this is the
+        // case that distinguishes the coalescer bypass from plain coalescing. Without
+        // the passthrough the coalescer would split the 250-row batch into 100/100/50;
+        // it can only appear as a single 250-row block when the bypass fires.
+        partitioner.insert_batch(make_batch(0, 250)).await.unwrap(); // rows 0..250 -> 250 block (passthrough)
+        partitioner.insert_batch(make_batch(250, 30)).await.unwrap(); // rows 250..280 -> buffered
+        partitioner
+            .insert_batch(make_batch(280, 100))
+            .await
+            .unwrap(); // rows 280..380 -> coalesced with buffered 30
         partitioner.shuffle_write().unwrap();
 
         let data = fs::read(&data_file).unwrap();
         let blocks = read_all_ipc_batches(&data);
 
-        // 350 rows coalesced into 100-row blocks plus a 50-row tail.
+        // The oversized batch passes through as one 250-row block; the 30 buffered rows
+        // then coalesce with the following 100-row batch into a 100-row block plus a
+        // 30-row tail.
         let block_rows: Vec<usize> = blocks.iter().map(|b| b.num_rows()).collect();
-        assert_eq!(
-            block_rows,
-            vec![100, 100, 100, 50],
-            "unexpected block sizes"
-        );
+        assert_eq!(block_rows, vec![250, 100, 30], "unexpected block sizes");
 
         let roundtripped: Vec<i32> = blocks
             .iter()
@@ -1078,7 +1082,7 @@ mod test {
                     .collect::<Vec<_>>()
             })
             .collect();
-        let expected: Vec<i32> = (0..350).collect();
+        let expected: Vec<i32> = (0..380).collect();
         assert_eq!(roundtripped, expected, "rows not preserved in order");
     }
 
