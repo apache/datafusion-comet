@@ -735,19 +735,6 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("cast DecimalType with negative scale to StringType") {
-    // Negative-scale decimals are a legacy Spark feature gated on
-    // spark.sql.legacy.allowNegativeScaleOfDecimal=true. Spark LEGACY cast uses Java's
-    // BigDecimal.toString() which produces scientific notation for negative-scale values
-    // (e.g. 12300 stored as Decimal(7,-2) with unscaled=123 → "1.23E+4").
-    // CometCast.canCastToString checks the
-    // config and returns Incompatible when it is false.
-    //
-    // Parquet does not support negative-scale decimals so we use checkSparkAnswer directly
-    // (no parquet round-trip) to avoid schema coercion.
-
-    // With config enabled, enable localTableScan so Comet can take over the full plan
-    // and execute the cast natively. Parquet does not support negative-scale decimals so
-    // the data is kept in-memory; localTableScan.enabled bridges that gap.
     withSQLConf(
       "spark.sql.legacy.allowNegativeScaleOfDecimal" -> "true",
       "spark.comet.exec.localTableScan.enabled" -> "true") {
@@ -1803,9 +1790,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           assert(
             CometCast.isSupported(fromType, toType, None, CometEvalMode.LEGACY) ==
               Unsupported(Some(expectedMessage)))
-          checkSparkAnswerAndFallbackReason(
-            data.select(col("a").cast(toType).as("converted")),
-            expectedMessage)
+          checkSparkAnswerAndOperator(data.select(col("a").cast(toType).as("converted")))
         }
       }
     }

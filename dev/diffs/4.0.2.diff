@@ -1374,6 +1374,28 @@ index 2e33f6505ab..be967565303 100644
      }
  
      withTable("t1", "t2") {
+diff --git a/sql/core/src/test/scala/org/apache/spark/sql/VariantEndToEndSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/VariantEndToEndSuite.scala
+index a40e34d94d0..abc1f035d15 100644
+--- a/sql/core/src/test/scala/org/apache/spark/sql/VariantEndToEndSuite.scala
++++ b/sql/core/src/test/scala/org/apache/spark/sql/VariantEndToEndSuite.scala
+@@ -21,6 +21,7 @@ import org.apache.spark.sql.QueryTest.sameRows
+ import org.apache.spark.sql.catalyst.InternalRow
+ import org.apache.spark.sql.catalyst.expressions.{Cast, Literal}
+ import org.apache.spark.sql.catalyst.expressions.variant.{ToVariantObject, VariantExpressionEvalUtils}
++import org.apache.spark.sql.comet.CometNativeColumnarToRowExec
+ import org.apache.spark.sql.execution.WholeStageCodegenExec
+ import org.apache.spark.sql.execution.vectorized.OnHeapColumnVector
+ import org.apache.spark.sql.functions._
+@@ -358,7 +359,8 @@ class VariantEndToEndSuite extends QueryTest with SharedSparkSession {
+             s"cast(to_variant_object(s) as ${schema(2).dataType.sql})")
+           checkAnswer(df, input)
+           val plan = df.queryExecution.executedPlan
+-          assert(plan.isInstanceOf[WholeStageCodegenExec] == (codegenMode == "CODEGEN_ONLY"))
++          assert(plan.isInstanceOf[WholeStageCodegenExec] == (codegenMode == "CODEGEN_ONLY")
++            || plan.isInstanceOf[CometNativeColumnarToRowExec])
+         }
+       }
+     }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/collation/CollationSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/collation/CollationSuite.scala
 index 11e9547dfc5..637411056ae 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/collation/CollationSuite.scala

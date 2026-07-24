@@ -93,6 +93,20 @@ object CometConf extends ShimCometConf {
     .booleanConf
     .createWithEnvVarOrDefault("ENABLE_COMET", true)
 
+  val COMET_LEGACY_CONF_FALLBACK_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.legacyConfFallback.enabled")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "When true (default), Comet disables itself for the session if any spark.sql.legacy.* " +
+          "config that Comet does NOT already handle per-expression is set to a non-default " +
+          "value. Legacy configs consumed by specific Spark expressions are already routed " +
+          "through the JVM codegen dispatcher (or an explicit incompat check) inside Comet " +
+          "and do not trigger this fallback. Set this config to false to keep Comet enabled " +
+          "when other legacy configs are set; Spark compatibility is not guaranteed in that " +
+          "case.")
+      .booleanConf
+      .createWithDefault(true)
+
   val COMET_NATIVE_SCAN_ENABLED: ConfigEntry[Boolean] = conf("spark.comet.scan.enabled")
     .category(CATEGORY_TESTING)
     .doc("Whether to enable native scans. Intended for use in Comet's own test suites to " +

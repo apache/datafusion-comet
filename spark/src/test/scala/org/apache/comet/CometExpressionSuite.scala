@@ -2048,9 +2048,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
         Seq(
           (
-            s"SELECT cast(make_interval(c0, c1, c0, c1, c0, c0, c2) as string) as C from $table",
-            Set("Cast from CalendarIntervalType to StringType is not supported")),
-          (
             "SELECT "
               + "date_part('YEAR', make_interval(c0, c1, c0, c1, c0, c0, c2))"
               + " + "
@@ -2067,9 +2064,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               + s"(SELECT c1, sum(c0) as sum_c0, sum(c2) as sum_c2 from $table group by c1) as A, "
               + s"(SELECT c1, cast(make_interval(c0, c1, c0, c1, c0, c0, c2) as string) as casted from $table) as B "
               + "where A.c1 = B.c1 ",
-            Set(
-              "Cast from CalendarIntervalType to StringType is not supported",
-              "Comet shuffle is not enabled: spark.comet.exec.shuffle.enabled is not enabled")),
+            Set("Comet shuffle is not enabled: spark.comet.exec.shuffle.enabled is not enabled")),
           (s"select * from $table LIMIT 10 OFFSET 3", Set("Comet shuffle is not enabled")))
           .foreach(test => {
             val qry = test._1

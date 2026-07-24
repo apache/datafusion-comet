@@ -53,6 +53,58 @@ class CometSparkSessionExtensionsSuite extends CometTestBase {
     NativeBase.setLoaded(true)
   }
 
+  test("isCometLoaded falls back when execution-affecting spark.sql.legacy.* config is set") {
+    val conf = new SQLConf
+    conf.setConfString(CometConf.COMET_ENABLED.key, "true")
+    conf.setConfString(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key, "false")
+
+    // Baseline: no legacy configs set, Comet should load.
+    assert(isCometLoaded(conf))
+
+    // A single boolean-false-default execution-affecting legacy config triggers the fallback.
+    conf.setConfString("spark.sql.legacy.charVarcharAsString", "true")
+    assert(!isCometLoaded(conf))
+
+    // Setting the config back to its Spark default (case-insensitive) clears the trigger.
+    conf.setConfString("spark.sql.legacy.charVarcharAsString", "FALSE")
+    assert(isCometLoaded(conf))
+
+    // Enum-default configs also trigger when set to a non-default value. Use viewSchemaCompensation
+    // as an enum-valued example (default `true`) since timeParserPolicy is handled per-expression.
+    conf.setConfString("spark.sql.legacy.viewSchemaCompensation", "false")
+    assert(!isCometLoaded(conf))
+    conf.setConfString("spark.sql.legacy.viewSchemaCompensation", "TRUE")
+    assert(isCometLoaded(conf))
+
+    // Legacy configs handled per-expression (e.g. castComplexTypesToString,
+    // allowNegativeScaleOfDecimal, timeParserPolicy) are NOT part of the fallback set and must not
+    // disable Comet on their own.
+    conf.setConfString("spark.sql.legacy.timeParserPolicy", "LEGACY")
+    assert(isCometLoaded(conf))
+    conf.unsetConf("spark.sql.legacy.timeParserPolicy")
+    conf.setConfString("spark.sql.legacy.castComplexTypesToString.enabled", "true")
+    assert(isCometLoaded(conf))
+    conf.unsetConf("spark.sql.legacy.castComplexTypesToString.enabled")
+    conf.setConfString("spark.sql.legacy.allowNegativeScaleOfDecimal", "true")
+    assert(isCometLoaded(conf))
+    conf.unsetConf("spark.sql.legacy.allowNegativeScaleOfDecimal")
+
+    // Parquet legacy configs are checked per-scan by CometScanRule, not session-wide, so setting
+    // them here must NOT disable Comet for the whole session.
+    conf.setConfString("spark.sql.parquet.datetimeRebaseModeInRead", "LEGACY")
+    assert(isCometLoaded(conf))
+    conf.unsetConf("spark.sql.parquet.datetimeRebaseModeInRead")
+    conf.setConfString("spark.sql.legacy.parquet.datetimeRebaseModeInRead", "LEGACY")
+    assert(isCometLoaded(conf))
+    conf.unsetConf("spark.sql.legacy.parquet.datetimeRebaseModeInRead")
+
+    // Opt-out: users can keep Comet enabled by disabling the fallback (compatibility not
+    // guaranteed).
+    conf.setConfString("spark.sql.legacy.charVarcharAsString", "true")
+    conf.setConfString(CometConf.COMET_LEGACY_CONF_FALLBACK_ENABLED.key, "false")
+    assert(isCometLoaded(conf))
+  }
+
   test("isCometLoaded requires CometShuffleManager when shuffle.enabled=true") {
     val conf = new SQLConf
     conf.setConfString(CometConf.COMET_ENABLED.key, "true")

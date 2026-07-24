@@ -390,9 +390,29 @@ object CometArrayJoin
   }
 }
 
-object CometArrayInsert extends CometExpressionSerde[ArrayInsert] {
+object CometArrayInsert extends CometExpressionSerde[ArrayInsert] with CodegenDispatchFallback {
 
-  override def getSupportLevel(expr: ArrayInsert): SupportLevel = Compatible()
+  // Spark's `spark.sql.legacy.negativeIndexInArrayInsert=true` changes how a 0-based/negative
+  // position is interpreted. Rather than maintain a parallel native code path for the legacy
+  // semantics, mark `array_insert` Incompatible when the flag is on so
+  // [[CodegenDispatchFallback]] routes the expression through the JVM codegen dispatcher
+  // (Spark's own `doGenCode` inside the Comet kernel) -- that gives Spark-exact results
+  // without duplicating the legacy branch natively.
+  private val legacyNegativeIndexConfig = "spark.sql.legacy.negativeIndexInArrayInsert"
+
+  private val legacyNegativeIndexReason =
+    s"`$legacyNegativeIndexConfig=true` legacy negative-index semantics are not implemented" +
+      " natively"
+
+  override def getIncompatibleReasons(): Seq[String] = Seq(legacyNegativeIndexReason)
+
+  override def getSupportLevel(expr: ArrayInsert): SupportLevel = {
+    if (SQLConf.get.getConfString(legacyNegativeIndexConfig, "false").toBoolean) {
+      Incompatible(Some(legacyNegativeIndexReason))
+    } else {
+      Compatible()
+    }
+  }
 
   override def convert(
       expr: ArrayInsert,
@@ -401,8 +421,12 @@ object CometArrayInsert extends CometExpressionSerde[ArrayInsert] {
     val srcExprProto = exprToProtoInternal(expr.children.head, inputs, binding)
     val posExprProto = exprToProtoInternal(expr.children(1), inputs, binding)
     val itemExprProto = exprToProtoInternal(expr.children(2), inputs, binding)
+    // Reached in two cases:
+    //   1. Legacy conf is false -> getSupportLevel returned Compatible -> run native.
+    //   2. Legacy conf is true AND user set allowIncompatible=true -> opt in to native.
+    // In case (2) the native impl honors the legacy semantics directly so we forward the flag.
     val legacyNegativeIndex =
-      SQLConf.get.getConfString("spark.sql.legacy.negativeIndexInArrayInsert").toBoolean
+      SQLConf.get.getConfString(legacyNegativeIndexConfig, "false").toBoolean
     if (srcExprProto.isDefined && posExprProto.isDefined && itemExprProto.isDefined) {
       val arrayInsertBuilder = ExprOuterClass.ArrayInsert
         .newBuilder()
@@ -687,6 +711,10 @@ object CometArrayFilter extends CometExpressionSerde[ArrayFilter] {
   }
 }
 
+// `spark.sql.legacy.sizeOfNull` (default `true`, effective value `LEGACY_SIZE_OF_NULL &&
+// !ANSI_ENABLED`) is captured by Spark's `Size` constructor into the `legacySizeOfNull` field.
+// `convert` below reads that field and bakes the correct literal (`-1` or `null`) into the
+// CaseWhen's else branch, so both semantics run natively without a fallback.
 object CometSize extends CometExpressionSerde[Size] {
 
   override def getSupportLevel(expr: Size): SupportLevel = {
@@ -869,6 +897,10 @@ trait ArraysBase {
 
 object CometArrayTransform extends CometCodegenDispatch[ArrayTransform]
 
+// `spark.sql.legacy.followThreeValuedLogicInArrayExists` (default `true`) is captured by
+// Spark's `ArrayExists` constructor into the `followThreeValuedLogic` field. Routing through
+// codegen dispatch runs Spark's own `doGenCode`, which closes over that field, so both flag
+// values produce Spark-exact results without a per-serde gate.
 object CometArrayExists extends CometCodegenDispatch[ArrayExists]
 
 object CometArrayForAll extends CometCodegenDispatch[ArrayForAll]

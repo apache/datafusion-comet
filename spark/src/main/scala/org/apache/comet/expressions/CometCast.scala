@@ -25,29 +25,40 @@ import org.apache.spark.sql.types.{ArrayType, DataType, DataTypes, DecimalType, 
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, withFallbackReason}
-import org.apache.comet.serde.{CometExpressionSerde, Compatible, ExprOuterClass, Incompatible, SupportLevel, Unsupported}
+import org.apache.comet.DataTypeSupport.isComplexType
+import org.apache.comet.serde.{CodegenDispatchFallback, CometExpressionSerde, Compatible, ExprOuterClass, Incompatible, SupportLevel, Unsupported}
 import org.apache.comet.serde.ExprOuterClass.Expr
 import org.apache.comet.serde.QueryPlanSerde.{evalModeToProto, exprToProtoInternal, serializeDataType}
-import org.apache.comet.shims.CometExprShim
+import org.apache.comet.shims.{CometExprShim, CometTypeShim}
 
-object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
+object CometCast
+    extends CometExpressionSerde[Cast]
+    with CometExprShim
+    with CometTypeShim
+    with CodegenDispatchFallback {
 
   // Shared with CometCastSuite so the asserted reason cannot drift from production.
   private[comet] val negativeScaleDecimalToStringReason: String =
     "Negative-scale decimal requires spark.sql.legacy.allowNegativeScaleOfDecimal=true"
 
-  // When `spark.sql.legacy.castComplexTypesToString.enabled` is true, Spark wraps maps and
-  // structs with `[]` (instead of `{}`) when casting to string, and omits NULL elements of
-  // structs/maps/arrays (instead of rendering them as the literal "null"). Comet only
-  // implements the default formatting, so fall back to Spark for any array/map/struct to-string
-  // cast when the flag is enabled. The flag is internal in Spark 4.0 and defaults to false.
   private[comet] val legacyCastComplexTypesToStringReason: String =
-    "spark.sql.legacy.castComplexTypesToString.enabled=true is not supported"
+    "spark.sql.legacy.castComplexTypesToString.enabled=true is not supported natively"
+
+  private[comet] val nonDefaultTimeParserPolicyReason: String =
+    "spark.sql.legacy.timeParserPolicy is set to a non-CORRECTED value; the native " +
+      "string-to-datetime parser only implements CORRECTED semantics"
 
   private def legacyCastComplexTypesToString: Boolean =
     SQLConf.get
       .getConfString("spark.sql.legacy.castComplexTypesToString.enabled", "false")
       .toBoolean
+
+  // Non-CORRECTED policies (LEGACY, EXCEPTION) change string-to-date/timestamp parsing behavior in
+  // ways the native cast kernel does not replicate.
+  private def isNonDefaultTimeParserPolicy: Boolean =
+    !SQLConf.get
+      .getConfString("spark.sql.legacy.timeParserPolicy", "CORRECTED")
+      .equalsIgnoreCase("CORRECTED")
 
   def supportedTypes: Seq[DataType] =
     Seq(
@@ -72,6 +83,14 @@ object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
   // would only duplicate the matrix and risk drifting from it.
 
   override def getSupportLevel(cast: Cast): SupportLevel = {
+    // Reject `VariantType` before the Literal short-circuit below. Folding a Cast whose child or
+    // target is `VariantType` produces a `Literal[VariantType]` that no downstream Comet serde
+    // can serialize, and relying on `CometLiteral` to reject it after the fact leaves a native
+    // path that assumes the produced literal is safe. Guarding here (in addition to the
+    // recursive check in `isSupported`) forces Spark fallback for every VariantType cast shape.
+    if (isVariantType(cast.child.dataType) || isVariantType(cast.dataType)) {
+      return unsupported(cast.child.dataType, cast.dataType)
+    }
     if (cast.child.isInstanceOf[Literal]) {
       // A cast whose child is a literal is folded by Spark at planning time via `cast.eval()`
       // (see `convert`), so the cast never executes natively and the result matches Spark by
@@ -159,14 +178,22 @@ object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
       timeZoneId: Option[String],
       evalMode: CometEvalMode.Value): SupportLevel = {
 
+    // Spark 4's `VariantType` (SPARK-45827) has no native counterpart in Comet: serializing it
+    // into the DataFusion plan would fail in `serializeDataType`, and the codegen dispatcher
+    // cannot compile Variant read/write kernels either. Detect it via the version-shimmed
+    // `isVariantType` (which returns false on Spark 3.x where the class does not exist) and
+    // report `Unsupported` so the enclosing operator falls back to Spark.
+    if (isVariantType(fromType) || isVariantType(toType)) {
+      return unsupported(fromType, toType)
+    }
+
     if (fromType == toType) {
       return Compatible()
     }
 
-    if (toType == DataTypes.StringType && legacyCastComplexTypesToString && (fromType
-        .isInstanceOf[ArrayType] || fromType.isInstanceOf[StructType] ||
-        fromType.isInstanceOf[MapType])) {
-      return Unsupported(Some(legacyCastComplexTypesToStringReason))
+    if (toType == DataTypes.StringType && legacyCastComplexTypesToString && isComplexType(
+        fromType)) {
+      return Incompatible(Some(legacyCastComplexTypesToStringReason))
     }
 
     (fromType, toType) match {
@@ -248,6 +275,9 @@ object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
         Compatible()
       case _: DecimalType =>
         Compatible()
+      case DataTypes.DateType | DataTypes.TimestampType | _: TimestampNTZType
+          if isNonDefaultTimeParserPolicy =>
+        Incompatible(Some(nonDefaultTimeParserPolicyReason))
       case DataTypes.DateType =>
         // https://github.com/apache/datafusion-comet/issues/327
         Compatible(Some("Only supports years between 262143 BC and 262142 AD"))

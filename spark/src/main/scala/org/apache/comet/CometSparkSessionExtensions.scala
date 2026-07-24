@@ -150,6 +150,27 @@ object CometSparkSessionExtensions extends Logging {
       return false
     }
 
+    // Some spark.sql.legacy.* configs affect execution semantics for queries Comet accelerates
+    // but are not tied to a specific expression that Comet's serdes can gate on (parquet
+    // datetime rebase modes, decimal-precision analyzer rules, type-coercion policies, etc.).
+    // When any such config is set to a non-default value we disable Comet for the session so
+    // Spark's own execution provides the legacy semantics. The list is intentionally narrow --
+    // legacy configs whose consumers ARE Comet-supported expressions (Cast, ArrayInsert, In,
+    // etc.) are handled per-expression via [[CodegenDispatchFallback]] and are NOT in this set.
+    if (COMET_LEGACY_CONF_FALLBACK_ENABLED.get(conf)) {
+      val triggered = LegacyConfFallback.triggeredConfigs(conf)
+      if (triggered.nonEmpty) {
+        val keys = triggered.mkString(", ")
+        logWarning(
+          "Comet extension is disabled because the following execution-affecting " +
+            s"spark.sql.legacy.* configs are set to non-default values: $keys. Comet does not " +
+            "implement these legacy execution semantics. To keep Comet enabled anyway, set " +
+            s"${COMET_LEGACY_CONF_FALLBACK_ENABLED.key}=false (Spark compatibility is not " +
+            "guaranteed in that case).")
+        return false
+      }
+    }
+
     try {
       // This will load the Comet native lib on demand, and if success, should set
       // `NativeBase.loaded` to true

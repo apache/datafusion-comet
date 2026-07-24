@@ -98,6 +98,41 @@ class CometScanRuleSuite extends CometTestBase {
     }
   }
 
+  test("parquetFallbackReason: default configs -> no fallback") {
+    val conf = new org.apache.spark.sql.internal.SQLConf
+    assert(CometScanRule.parquetFallbackReason(conf).isEmpty)
+  }
+
+  test("parquetFallbackReason: primary key set to LEGACY triggers per-scan fallback") {
+    val conf = new org.apache.spark.sql.internal.SQLConf
+    conf.setConfString("spark.sql.parquet.datetimeRebaseModeInRead", "LEGACY")
+    val reason = CometScanRule.parquetFallbackReason(conf)
+    assert(reason.isDefined)
+    assert(reason.get.contains("spark.sql.parquet.datetimeRebaseModeInRead"))
+  }
+
+  test("parquetFallbackReason: legacy alias set to LEGACY triggers per-scan fallback") {
+    val conf = new org.apache.spark.sql.internal.SQLConf
+    conf.setConfString("spark.sql.legacy.parquet.datetimeRebaseModeInRead", "LEGACY")
+    val reason = CometScanRule.parquetFallbackReason(conf)
+    assert(reason.isDefined)
+    assert(reason.get.contains("spark.sql.legacy.parquet.datetimeRebaseModeInRead"))
+  }
+
+  test("parquetFallbackReason: nanosAsLong=true triggers per-scan fallback") {
+    val conf = new org.apache.spark.sql.internal.SQLConf
+    conf.setConfString("spark.sql.legacy.parquet.nanosAsLong", "true")
+    val reason = CometScanRule.parquetFallbackReason(conf)
+    assert(reason.isDefined)
+    assert(reason.get.contains("spark.sql.legacy.parquet.nanosAsLong"))
+  }
+
+  test("parquetFallbackReason: write-side rebase config does not trigger scan fallback") {
+    val conf = new org.apache.spark.sql.internal.SQLConf
+    conf.setConfString("spark.sql.parquet.datetimeRebaseModeInWrite", "LEGACY")
+    assert(CometScanRule.parquetFallbackReason(conf).isEmpty)
+  }
+
   test("CometScanRule should fallback to Spark for ShortType when safety check enabled") {
     withTempPath { path =>
       // Create test data with ShortType which may be from unsigned UINT_8
