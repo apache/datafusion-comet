@@ -1909,8 +1909,8 @@ fn date_parser(date_str: &str, eval_mode: EvalMode) -> SparkResult<Option<i32>> 
     }
 
     fn is_valid_digits(segment: i32, digits: usize) -> bool {
-        // Years are bounded by `finish` below. We allow up to 7 digits to support leading-zero
-        // year strings like "0002020" (= year 2020), matching Spark's isValidDigits.
+        // Years are bounded by `resolve_epoch_day` below. We allow up to 7 digits to support
+        // leading-zero year strings like "0002020" (= year 2020), matching Spark's isValidDigits.
         let max_digits_year = 7;
         // year (segment 0) can be between 4 to 7 digits,
         // month and day (segment 1 and 2) can be between 1 to 2 digits
@@ -1932,7 +1932,7 @@ fn date_parser(date_str: &str, eval_mode: EvalMode) -> SparkResult<Option<i32>> 
 
     /// Turns parsed year/month/day segments into an epoch day. Shared by both parsing paths so
     /// that the decision of what a segment triple *means* lives in exactly one place.
-    fn finish(
+    fn resolve_epoch_day(
         year: i64,
         month: i64,
         day: i64,
@@ -1949,6 +1949,10 @@ fn date_parser(date_str: &str, eval_mode: EvalMode) -> SparkResult<Option<i32>> 
         // Spark accepts years beyond what chrono can represent, and downstream date kernels
         // cannot handle those values, so Comet keeps returning null for them in every eval mode
         // rather than raising. This is a Comet limitation, not a malformed input.
+        //
+        // The bound is chrono's representable year range: `NaiveDate::MIN` is `-262143-01-01`
+        // and `NaiveDate::MAX` is `262142-12-31`
+        // (https://docs.rs/chrono/latest/chrono/naive/struct.NaiveDate.html#associatedconstant.MIN).
         if !(-262143..=262142).contains(&year) {
             return Ok(None);
         }
@@ -1979,7 +1983,7 @@ fn date_parser(date_str: &str, eval_mode: EvalMode) -> SparkResult<Option<i32>> 
             decode_digits(&trimmed[5..7]),
             decode_digits(&trimmed[8..10]),
         ) {
-            return finish(year, month, day, date_str, eval_mode);
+            return resolve_epoch_day(year, month, day, date_str, eval_mode);
         }
     }
 
@@ -2036,7 +2040,7 @@ fn date_parser(date_str: &str, eval_mode: EvalMode) -> SparkResult<Option<i32>> 
 
     date_segments[current_segment as usize] = current_segment_value.0;
 
-    finish(
+    resolve_epoch_day(
         (sign * date_segments[0]) as i64,
         date_segments[1] as i64,
         date_segments[2] as i64,
@@ -2809,23 +2813,28 @@ mod tests {
         );
     }
 
+    /// Asserts every date parses to null in legacy and try mode. When `expect_ansi_error` is set,
+    /// ANSI mode must raise CAST_INVALID_INPUT; otherwise ANSI mode must also return null.
+    fn assert_dates(dates: &[&str], expect_ansi_error: bool) {
+        for &date in dates {
+            for eval_mode in [EvalMode::Legacy, EvalMode::Try, EvalMode::Ansi] {
+                if expect_ansi_error && eval_mode == EvalMode::Ansi {
+                    assert!(date_parser(date, eval_mode).is_err(), "{date}");
+                } else {
+                    assert_eq!(date_parser(date, eval_mode).unwrap(), None, "{date}");
+                }
+            }
+        }
+    }
+
     /// Malformed input: null in legacy and try mode, CAST_INVALID_INPUT in ANSI mode.
     fn assert_null_or_ansi_error(dates: &[&str]) {
-        for date in dates {
-            for eval_mode in [EvalMode::Legacy, EvalMode::Try] {
-                assert_eq!(date_parser(date, eval_mode).unwrap(), None, "{date}");
-            }
-            assert!(date_parser(date, EvalMode::Ansi).is_err(), "{date}");
-        }
+        assert_dates(dates, true);
     }
 
     /// Input Spark parses successfully but Comet cannot represent: null in every eval mode.
     fn assert_null_in_all_modes(dates: &[&str]) {
-        for date in dates {
-            for eval_mode in [EvalMode::Legacy, EvalMode::Try, EvalMode::Ansi] {
-                assert_eq!(date_parser(date, eval_mode).unwrap(), None, "{date}");
-            }
-        }
+        assert_dates(dates, false);
     }
 
     #[test]
