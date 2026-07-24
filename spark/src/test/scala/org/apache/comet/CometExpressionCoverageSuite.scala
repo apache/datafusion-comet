@@ -177,6 +177,22 @@ class CometExpressionCoverageSuite extends CometTestBase {
       otherGaps.foreach(g =>
         sb.append(s"| `${g.function}` | `${g.className}` | `${g.operator}` |\n"))
 
+      val incompatible = results.filter(_.status == "INCOMPATIBLE").sortBy(_.function)
+      sb.append(
+        s"\n## Incompatible by default (supported, opt-in) - ${incompatible.size}\n\n" +
+          "Supported natively but off by default; today they fall back to Spark unless " +
+          "`allowIncompatible` is set. Candidates for a codegen-dispatch default.\n\n")
+      sb.append("| Function | Expression class | Reason |\n| --- | --- | --- |\n")
+      incompatible.foreach(g =>
+        sb.append(s"| `${g.function}` | `${g.className}` | ${g.reason} |\n"))
+
+      val literalProbe = results.filter(_.status == "LITERAL_PROBE").sortBy(_.function)
+      sb.append(
+        s"\n## Supported, probe artifact (all-literal example) - ${literalProbe.size}\n\n")
+      sb.append("| Function | Expression class | Reason |\n| --- | --- | --- |\n")
+      literalProbe.foreach(g =>
+        sb.append(s"| `${g.function}` | `${g.className}` | ${g.reason} |\n"))
+
       val out = Paths.get("target", s"expression-coverage-report-spark-$sparkVersion.md")
       Files.write(out, sb.toString.getBytes(StandardCharsets.UTF_8))
 
