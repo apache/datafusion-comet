@@ -284,6 +284,8 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `timestamp_micros` | ✅ |  |
 | `timestamp_millis` | ✅ |  |
 | `timestamp_seconds` | ✅ |  |
+| `timestampadd` | ✅ | Runs through the JVM codegen dispatcher |
+| `timestampdiff` | ✅ | Runs through the JVM codegen dispatcher |
 | `to_date` | ✅ | Rewrites to `Cast` (or `Cast(GetTimestamp)` with a format) before Comet sees the plan |
 | `to_time` | 🔜 | Spark 4.1 TIME type; tracked by [#4288](https://github.com/apache/datafusion-comet/issues/4288) |
 | `to_timestamp` | ✅ | Rewrites to `Cast` (or `GetTimestamp` with a format) before Comet sees the plan |
