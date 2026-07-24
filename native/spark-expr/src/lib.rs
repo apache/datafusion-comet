@@ -86,7 +86,7 @@ pub use json_funcs::{FromJson, ToJson};
 pub use math_funcs::{
     checked_add, checked_div, checked_mul, checked_sub, create_modulo_expr, create_negate_expr,
     spark_ceil, spark_decimal_div, spark_decimal_integral_div, spark_floor, spark_log,
-    spark_make_decimal, spark_round, spark_unhex, spark_unscaled_value, CheckOverflow,
+    spark_make_decimal, spark_pow, spark_round, spark_unhex, spark_unscaled_value, CheckOverflow,
     DecimalRescaleCheckOverflow, NegativeExpr, NormalizeNaNAndZero, WideDecimalBinaryExpr,
     WideDecimalOp,
 };
