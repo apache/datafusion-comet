@@ -1274,4 +1274,259 @@ class CometWindowExecSuite extends CometTestBase {
       checkSparkAnswerAndOperator(df)
     }
   }
+
+  // ---------------------------------------------------------------------------
+  // Tests for issue #4834: RANGE frame with explicit PRECEDING/FOLLOWING offset
+  // on DECIMAL ORDER BY. Comet previously fell back to Spark because DataFusion
+  // rejected boundary arithmetic that widened precision (e.g. Decimal(10,0) +
+  // offset -> Decimal(11,0) vs current Decimal(10,0), "Uncomparable values").
+  // The upstream fix (apache/datafusion#22174, closes #22113) makes
+  // ScalarValue::partial_cmp ignore precision for Decimal128 when scales match,
+  // and is included in DataFusion 54.0.0 which Comet already pins. These tests
+  // pin the behavior with `checkSparkAnswerAndOperator` so results must match
+  // Spark AND run natively.
+  // ---------------------------------------------------------------------------
+
+  private def writeDecimalWindowFixture(dir: java.io.File, decimalType: String): Unit = {
+    (0 until 30)
+      .map { i =>
+        // Fractional part rotates 0.00/0.25/0.50/0.75 so RANGE peers vary; c
+        // stays as the aggregate payload.
+        val whole = i % 10
+        val frac = (i % 4) * 25
+        (i % 3, f"$whole%d.$frac%02d", i * 2)
+      }
+      .toDF("a", "d_str", "c")
+      .selectExpr("a", s"CAST(d_str AS $decimalType) AS d", "c")
+      .repartition(3)
+      .write
+      .mode("overwrite")
+      .parquet(dir.toString)
+  }
+
+  test("window: RANGE BETWEEN N PRECEDING AND N FOLLOWING with DECIMAL ORDER BY") {
+    withTempDir { dir =>
+      writeDecimalWindowFixture(dir, "DECIMAL(10, 2)")
+      spark.read.parquet(dir.toString).createOrReplaceTempView("window_test_dec")
+      val df = sql("""
+        SELECT a, d, c,
+          SUM(c) OVER (PARTITION BY a ORDER BY d
+                       RANGE BETWEEN 2 PRECEDING AND 2 FOLLOWING) as sum_c
+        FROM window_test_dec
+      """)
+      checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  test("window: RANGE BETWEEN N PRECEDING AND CURRENT ROW with DECIMAL ORDER BY") {
+    withTempDir { dir =>
+      writeDecimalWindowFixture(dir, "DECIMAL(10, 2)")
+      spark.read.parquet(dir.toString).createOrReplaceTempView("window_test_dec")
+      val df = sql("""
+        SELECT a, d, c,
+          SUM(c) OVER (PARTITION BY a ORDER BY d
+                       RANGE BETWEEN 3 PRECEDING AND CURRENT ROW) as sum_c
+        FROM window_test_dec
+      """)
+      checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  test("window: RANGE BETWEEN CURRENT ROW AND N FOLLOWING with DECIMAL ORDER BY") {
+    withTempDir { dir =>
+      writeDecimalWindowFixture(dir, "DECIMAL(10, 2)")
+      spark.read.parquet(dir.toString).createOrReplaceTempView("window_test_dec")
+      val df = sql("""
+        SELECT a, d, c,
+          SUM(c) OVER (PARTITION BY a ORDER BY d
+                       RANGE BETWEEN CURRENT ROW AND 3 FOLLOWING) as sum_c
+        FROM window_test_dec
+      """)
+      checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  test("window: RANGE BETWEEN UNBOUNDED PRECEDING AND N FOLLOWING with DECIMAL ORDER BY") {
+    withTempDir { dir =>
+      writeDecimalWindowFixture(dir, "DECIMAL(10, 2)")
+      spark.read.parquet(dir.toString).createOrReplaceTempView("window_test_dec")
+      val df = sql("""
+        SELECT a, d, c,
+          SUM(c) OVER (PARTITION BY a ORDER BY d
+                       RANGE BETWEEN UNBOUNDED PRECEDING AND 2 FOLLOWING) as sum_c
+        FROM window_test_dec
+      """)
+      checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  test("window: RANGE BETWEEN with DECIMAL ORDER BY and duplicate values") {
+    // RANGE (not ROWS) must aggregate all peer rows that share the same value.
+    // Duplicates let us tell ROWS from RANGE and expose peer-boundary bugs.
+    withTempDir { dir =>
+      Seq(
+        (1, "1.00", 10),
+        (1, "1.00", 20),
+        (1, "2.00", 30),
+        (1, "2.00", 40),
+        (1, "5.00", 50),
+        (1, "5.00", 60))
+        .toDF("a", "d_str", "c")
+        .selectExpr("a", "CAST(d_str AS DECIMAL(10, 2)) AS d", "c")
+        .write
+        .mode("overwrite")
+        .parquet(dir.toString)
+
+      spark.read.parquet(dir.toString).createOrReplaceTempView("window_test_dec")
+      val df = sql("""
+        SELECT a, d, c,
+          SUM(c) OVER (PARTITION BY a ORDER BY d
+                       RANGE BETWEEN 1 PRECEDING AND 1 FOLLOWING) as sum_c
+        FROM window_test_dec
+      """)
+      checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  test("window: RANGE BETWEEN with DECIMAL ORDER BY and NULL values") {
+    // Null decimals land at the head under ASC NULLS FIRST (Spark's default).
+    // Ensures the native comparator handles Decimal nulls the same way.
+    withTempDir { dir =>
+      Seq(
+        (1, Option.empty[String], 10),
+        (1, Option("1.00"), 20),
+        (1, Option("2.00"), 30),
+        (1, Option.empty[String], 40),
+        (1, Option("5.00"), 50))
+        .toDF("a", "d_str", "c")
+        .selectExpr("a", "CAST(d_str AS DECIMAL(10, 2)) AS d", "c")
+        .write
+        .mode("overwrite")
+        .parquet(dir.toString)
+
+      spark.read.parquet(dir.toString).createOrReplaceTempView("window_test_dec")
+      val df = sql("""
+        SELECT a, d, c,
+          SUM(c) OVER (PARTITION BY a ORDER BY d
+                       RANGE BETWEEN 1 PRECEDING AND 1 FOLLOWING) as sum_c
+        FROM window_test_dec
+      """)
+      checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  test("window: RANGE BETWEEN with DECIMAL ORDER BY DESC") {
+    // Descending order swaps the direction of `current +/- offset` in
+    // calculate_index_of_row; a bug specific to DESC would only show here.
+    withTempDir { dir =>
+      writeDecimalWindowFixture(dir, "DECIMAL(10, 2)")
+      spark.read.parquet(dir.toString).createOrReplaceTempView("window_test_dec")
+      val df = sql("""
+        SELECT a, d, c,
+          SUM(c) OVER (PARTITION BY a ORDER BY d DESC
+                       RANGE BETWEEN 2 PRECEDING AND 2 FOLLOWING) as sum_c
+        FROM window_test_dec
+      """)
+      checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  test("window: RANGE BETWEEN with DECIMAL(10, 0) ORDER BY (zero scale)") {
+    withTempDir { dir =>
+      writeDecimalWindowFixture(dir, "DECIMAL(10, 0)")
+      spark.read.parquet(dir.toString).createOrReplaceTempView("window_test_dec")
+      val df = sql("""
+        SELECT a, d, c,
+          SUM(c) OVER (PARTITION BY a ORDER BY d
+                       RANGE BETWEEN 1 PRECEDING AND 1 FOLLOWING) as sum_c
+        FROM window_test_dec
+      """)
+      checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  test("window: RANGE BETWEEN with DECIMAL(18, 6) ORDER BY (high precision & scale)") {
+    withTempDir { dir =>
+      writeDecimalWindowFixture(dir, "DECIMAL(18, 6)")
+      spark.read.parquet(dir.toString).createOrReplaceTempView("window_test_dec")
+      val df = sql("""
+        SELECT a, d, c,
+          SUM(c) OVER (PARTITION BY a ORDER BY d
+                       RANGE BETWEEN 2 PRECEDING AND 2 FOLLOWING) as sum_c
+        FROM window_test_dec
+      """)
+      checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  test("window: RANGE BETWEEN with negative DECIMAL ORDER BY values") {
+    // Negative current + positive offset crosses zero, which is a common
+    // arithmetic edge for decimal signed comparisons.
+    withTempDir { dir =>
+      Seq(
+        (1, "-5.50", 10),
+        (1, "-3.00", 20),
+        (1, "-1.25", 30),
+        (1, "0.00", 40),
+        (1, "1.25", 50),
+        (1, "3.00", 60),
+        (1, "5.50", 70))
+        .toDF("a", "d_str", "c")
+        .selectExpr("a", "CAST(d_str AS DECIMAL(10, 2)) AS d", "c")
+        .write
+        .mode("overwrite")
+        .parquet(dir.toString)
+
+      spark.read.parquet(dir.toString).createOrReplaceTempView("window_test_dec")
+      val df = sql("""
+        SELECT a, d, c,
+          SUM(c) OVER (PARTITION BY a ORDER BY d
+                       RANGE BETWEEN 2 PRECEDING AND 2 FOLLOWING) as sum_c
+        FROM window_test_dec
+      """)
+      checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  test("window: RANGE BETWEEN with fractional offset on DECIMAL ORDER BY") {
+    // Fractional offsets (0.5 PRECEDING) exercise scale-aware boundary
+    // arithmetic. Spark accepts decimal literals as offsets when the ORDER BY
+    // column is decimal.
+    withTempDir { dir =>
+      writeDecimalWindowFixture(dir, "DECIMAL(10, 2)")
+      spark.read.parquet(dir.toString).createOrReplaceTempView("window_test_dec")
+      val df = sql("""
+        SELECT a, d, c,
+          SUM(c) OVER (PARTITION BY a ORDER BY d
+                       RANGE BETWEEN 0.5 PRECEDING AND 0.5 FOLLOWING) as sum_c
+        FROM window_test_dec
+      """)
+      checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  test("window: RANGE BETWEEN with DECIMAL(38, 0) ORDER BY (max precision)") {
+    // Max-precision Decimal storage. Values are kept well below Decimal128
+    // max so `current +/- offset` never overflows; that keeps the test on
+    // topic (native RANGE frame arithmetic on the widest decimal precision)
+    // and off the overflow-semantics divergence between Spark ANSI and
+    // DataFusion's `add_checked`.
+    withTempDir { dir =>
+      Seq((1, "10", 10), (1, "13", 20), (1, "15", 30), (1, "18", 40), (1, "22", 50))
+        .toDF("a", "d_str", "c")
+        .selectExpr("a", "CAST(d_str AS DECIMAL(38, 0)) AS d", "c")
+        .write
+        .mode("overwrite")
+        .parquet(dir.toString)
+
+      spark.read.parquet(dir.toString).createOrReplaceTempView("window_test_dec")
+      val df = sql("""
+        SELECT a, d, c,
+          SUM(c) OVER (PARTITION BY a ORDER BY d
+                       RANGE BETWEEN 3 PRECEDING AND 3 FOLLOWING) as sum_c
+        FROM window_test_dec
+      """)
+      checkSparkAnswerAndOperator(df)
+    }
+  }
 }
