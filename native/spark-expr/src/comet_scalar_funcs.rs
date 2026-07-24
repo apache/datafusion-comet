@@ -26,9 +26,9 @@ use crate::{
     spark_ceil, spark_day_name, spark_decimal_div, spark_decimal_integral_div, spark_floor,
     spark_isnan, spark_lpad, spark_make_decimal, spark_month_name, spark_read_side_padding,
     spark_round, spark_rpad, spark_to_time, spark_unhex, spark_unscaled_value, EvalMode,
-    SparkArrayCompact, SparkArrayPositionFunc, SparkArraySlice, SparkArraysOverlap, SparkContains,
-    SparkDateDiff, SparkDateFromUnixDate, SparkDateTrunc, SparkFlatten, SparkMakeDate,
-    SparkMakeTime, SparkNextDay, SparkSecondsToTimestamp, SparkSizeFunc,
+    SparkArrayPositionFunc, SparkArraySlice, SparkArraysOverlap, SparkContains, SparkDateDiff,
+    SparkDateFromUnixDate, SparkDateTrunc, SparkFlatten, SparkMakeDate, SparkMakeTime,
+    SparkNextDay, SparkSecondsToTimestamp, SparkSizeFunc,
 };
 use arrow::datatypes::DataType;
 use datafusion::common::{DataFusionError, Result as DataFusionResult};
@@ -233,6 +233,10 @@ pub fn create_comet_physical_fun_with_eval_mode(
         "next_day" => Ok(Arc::new(ScalarUDF::new_from_impl(SparkNextDay::new(
             fail_on_error,
         )))),
+        "levenshtein" => {
+            let func = Arc::new(crate::string_funcs::spark_levenshtein);
+            make_comet_scalar_udf!("levenshtein", func, without data_type)
+        }
         _ => registry.udf(fun_name).map_err(|e| {
             DataFusionError::Execution(format!(
                 "Function {fun_name} not found in the registry: {e}",
@@ -243,7 +247,6 @@ pub fn create_comet_physical_fun_with_eval_mode(
 
 fn all_scalar_functions() -> Vec<Arc<ScalarUDF>> {
     vec![
-        Arc::new(ScalarUDF::new_from_impl(SparkArrayCompact::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkArrayPositionFunc::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkArraySlice::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkArraysOverlap::default())),

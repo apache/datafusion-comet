@@ -2513,6 +2513,31 @@ index daf4e29ac0..0c7d376f80 100644
              .enableHiveSupport()
              .getOrCreate();
  
+diff --git a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/data/AvroDataTestBase.java b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/data/AvroDataTestBase.java
+index 0db6a65fd3..9ee8b9e084 100644
+--- a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/data/AvroDataTestBase.java
++++ b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/data/AvroDataTestBase.java
+@@ -47,7 +47,6 @@ import org.apache.iceberg.types.Types.LongType;
+ import org.apache.iceberg.types.Types.MapType;
+ import org.apache.iceberg.types.Types.StructType;
+ import org.apache.iceberg.util.DateTimeUtil;
+-import org.assertj.core.api.Condition;
+ import org.junit.jupiter.api.Test;
+ import org.junit.jupiter.api.io.TempDir;
+ import org.junit.jupiter.params.ParameterizedTest;
+@@ -307,12 +306,6 @@ public abstract class AvroDataTestBase {
+                 .build());
+ 
+     assertThatThrownBy(() -> writeAndValidate(writeSchema, expectedSchema))
+-        .has(
+-            new Condition<>(
+-                t ->
+-                    IllegalArgumentException.class.isInstance(t)
+-                        || IllegalArgumentException.class.isInstance(t.getCause()),
+-                "Expecting a throwable or cause that is an instance of IllegalArgumentException"))
+         .hasMessageContaining("Missing required field: missing_str");
+   }
+ 
 diff --git a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/data/vectorized/parquet/TestParquetDictionaryEncodedVectorizedReads.java b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/data/vectorized/parquet/TestParquetDictionaryEncodedVectorizedReads.java
 index 973a17c9a3..d7402c1409 100644
 --- a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/data/vectorized/parquet/TestParquetDictionaryEncodedVectorizedReads.java
