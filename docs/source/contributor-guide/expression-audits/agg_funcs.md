@@ -21,6 +21,13 @@
 
 > Audit notes for expressions in this category that have been audited. Absence of an entry means the expression has not been audited yet, not that it is unsupported. See the user guide [Spark Expression Support] for current support status.
 
+## approx_count_distinct
+
+- Spark 3.4.3 (2026-07-03): registered as `expression[HyperLogLogPlusPlus]("approx_count_distinct")`, an `ImperativeAggregate` that hashes each non-null input with `XxHash64` (seed 42, floats normalized via `NormalizeNaNAndZero`) and keeps a HyperLogLog++ register buffer of `numWords` `Long`s (10 six-bit registers per word). The cardinality is estimated with linear counting for small inputs and bias-corrected HLL otherwise. Comet ports `HyperLogLogPlusPlusHelper` exactly, including the bias-correction tables, reuses Comet's Spark-compatible `xxhash64` for hashing, and stores the register buffer in Spark's identical packed-`Long` layout, so results are bit-identical to Spark and the partial-aggregation state matches Spark's `aggBufferSchema` (enabling mixed Comet/Spark partial and final aggregation). `relativeSD` (default 0.05) sets the precision `p`. Comet supports the input types its `xxhash64` hashes identically to Spark: boolean, integral, floating-point, `DecimalType` with precision <= 18, date/time, default-collation (UTF8_BINARY) string, and binary. Wider decimals (hashed through `BigDecimal`) and collated strings (hashed via the collation sort key) fall back to Spark.
+- Spark 3.5.8 (2026-07-03): algorithm and tables identical to 3.4.3.
+- Spark 4.0.1 (2026-07-03): `HyperLogLogPlusPlusHelper` moved to `catalyst.util` and `XxHash64Function.hash` gained collation parameters, but for the default `UTF8_BINARY` collation and non-string types the hash value is unchanged, so results match 3.4.3.
+- Spark 4.1.1 (2026-07-03): identical to 4.0.1.
+
 ## any
 
 - Spark 3.4.3 (audited 2026-05-26): registered as a SQL alias of `BoolOr`, which extends `RuntimeReplaceableAggregate` with `replacement = Max(child)`. Catalyst rewrites `any(x)` to `max(x)` before Comet sees the plan, so `any` is served by `CometMax` on a `BooleanType` column.

@@ -58,7 +58,7 @@ class CometFuzzIcebergBase extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  private def isIcebergVersionLessThan(targetVersion: String): Boolean = {
+  protected def isIcebergVersionLessThan(targetVersion: String): Boolean = {
     try {
       val icebergVersion = org.apache.iceberg.IcebergBuild.version()
       // Parse version strings like "1.5.2" or "1.6.0-SNAPSHOT"
