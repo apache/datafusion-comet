@@ -349,6 +349,7 @@ mod tests {
     use crate::execution::shuffle::{CompressionCodec, ShuffleBlockWriter};
     use arrow::array::{Int32Array, StringArray};
     use arrow::datatypes::{DataType, Field, Schema};
+    use arrow::ipc::writer::CompressionContext;
     use arrow::record_batch::RecordBatch;
     use datafusion::physical_plan::metrics::Time;
     use std::io::Cursor;
@@ -377,7 +378,14 @@ mod tests {
             ShuffleBlockWriter::try_new(&batch.schema(), CompressionCodec::Zstd(1)).unwrap();
         let mut buf = Cursor::new(Vec::new());
         let ipc_time = Time::new();
-        writer.write_batch(&batch, &mut buf, &ipc_time).unwrap();
+        writer
+            .write_batch(
+                &batch,
+                &mut buf,
+                &mut CompressionContext::default(),
+                &ipc_time,
+            )
+            .unwrap();
 
         // Read back (skip 16-byte header: 8 compressed_length + 8 field_count)
         let bytes = buf.into_inner();
@@ -443,7 +451,12 @@ mod tests {
         let mut buf = Cursor::new(Vec::new());
         let ipc_time = Time::new();
         writer
-            .write_batch(&dict_batch, &mut buf, &ipc_time)
+            .write_batch(
+                &dict_batch,
+                &mut buf,
+                &mut CompressionContext::default(),
+                &ipc_time,
+            )
             .unwrap();
         let bytes = buf.into_inner();
         let body = &bytes[16..];
