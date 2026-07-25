@@ -20,10 +20,26 @@
 statement
 CREATE TABLE test_pow(base double, exp double) USING parquet
 
+-- Rows cover: ordinary values, nulls, signed zero, positive/negative infinity in both base and
+-- exponent, subnormal values, and the |base| == 1 with non-finite exponent case where Java's
+-- Math.pow returns NaN but C99 pow (Rust powf) returns 1. Every result is an exact double
+-- (Infinity, -Infinity, NaN, signed zero, or an exact power), so these are compared exactly
+-- rather than with a tolerance, which for doubles skips NaN rows and ignores the sign of Infinity.
 statement
-INSERT INTO test_pow VALUES (0.0, -1), (2.0, 3.0), (0.0, 0.0), (-1.0, 2.0), (-1.0, 0.5), (2.0, -1.0), (NULL, 2.0), (2.0, NULL), (cast('NaN' as double), 2.0), (cast('Infinity' as double), 2.0), (2.0, cast('Infinity' as double))
+INSERT INTO test_pow VALUES
+  (0.0, -1.0), (2.0, 3.0), (0.0, 0.0), (-1.0, 2.0), (-1.0, 0.5), (2.0, -1.0),
+  (NULL, 2.0), (2.0, NULL),
+  (cast('NaN' as double), 2.0), (cast('Infinity' as double), 2.0), (2.0, cast('Infinity' as double)),
+  (cast('-0.0' as double), -1.0), (cast('-0.0' as double), -2.0), (cast('-0.0' as double), 3.0), (cast('-0.0' as double), 2.0),
+  (cast('-Infinity' as double), 2.0), (cast('-Infinity' as double), 3.0), (cast('-Infinity' as double), -1.0),
+  (2.0, cast('-Infinity' as double)), (0.5, cast('-Infinity' as double)),
+  (1.0, cast('Infinity' as double)), (-1.0, cast('Infinity' as double)), (1.0, cast('-Infinity' as double)),
+  (1.0, cast('NaN' as double)), (-1.0, cast('NaN' as double)),
+  (cast('4.9E-324' as double), 2.0), (2.0, cast('4.9E-324' as double))
 
-query tolerance=1e-6
+-- Every pair above yields an exact double, so use exact comparison (no tolerance) to assert the
+-- NaN and signed-Infinity edge cases rather than silently skipping them.
+query
 SELECT pow(base, exp) FROM test_pow
 
 -- column + literal
