@@ -19,7 +19,7 @@
 
 package org.apache.comet.serde
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Base64, ExpressionImplUtils, Literal, StringDecode, TryEval, UrlCodec}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, Base64, Encode, ExpressionImplUtils, Literal, StringDecode, TryEval, UrlCodec}
 import org.apache.spark.sql.catalyst.expressions.objects.StaticInvoke
 import org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils
 import org.apache.spark.sql.types.StringType
@@ -46,6 +46,11 @@ object CometStaticInvoke extends CometExpressionSerde[StaticInvoke] {
       // carrying the `legacyCharsets` / `legacyErrorAction` flags. Routing through the codegen
       // dispatcher runs Spark's own decoder so both flags are honored. See #4465.
       ("decode", classOf[StringDecode]) -> CometStaticInvokeCodegenDispatch,
+      // Spark 4.0+ makes `encode(str, charset)` RuntimeReplaceable, lowering it to
+      // `StaticInvoke(classOf[Encode], "encode", ...)` carrying the `legacyCharsets` /
+      // `legacyErrorAction` flags. Routing through the codegen dispatcher runs Spark's own
+      // encoder so both flags are honored. Dual of the `decode` entry above.
+      ("encode", classOf[Encode]) -> CometStaticInvokeCodegenDispatch,
       // Spark 3.5+ makes `Base64` RuntimeReplaceable, lowering `base64(bin)` to
       // `StaticInvoke(Base64.encode, Seq(child, chunkBase64), ...)`. On Spark 3.4 the `Base64`
       // node survives and is handled directly (see CometBase64).
