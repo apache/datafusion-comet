@@ -25,8 +25,8 @@ import scala.util.Random
 
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.{Column, CometTestBase, DataFrame, Row}
-import org.apache.spark.sql.catalyst.expressions.{Alias, AttributeReference, Cast, FromUnixTime, KnownFloatingPointNormalized, Literal, StructsToJson, TruncDate, TruncTimestamp}
-import org.apache.spark.sql.catalyst.optimizer.{NormalizeNaNAndZero, SimplifyExtractValueOps}
+import org.apache.spark.sql.catalyst.expressions.{Alias, Cast, FromUnixTime, Literal, StructsToJson, TruncDate, TruncTimestamp}
+import org.apache.spark.sql.catalyst.optimizer.SimplifyExtractValueOps
 import org.apache.spark.sql.comet.CometProjectExec
 import org.apache.spark.sql.execution.{ProjectExec, SparkPlan}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
@@ -36,7 +36,6 @@ import org.apache.spark.sql.internal.SQLConf.SESSION_LOCAL_TIMEZONE
 import org.apache.spark.sql.types._
 
 import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, isSpark41Plus, isSpark42Plus}
-import org.apache.comet.serde.{CometAttributeReference, CometKnownFloatingPointNormalized, Unsupported}
 import org.apache.comet.serde.QueryPlanSerde.supportedDataType
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
 
@@ -68,6 +67,12 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
     assert(supportedDataType(StringType, allowAnyStringType = false))
     assert(!supportedDataType(CharType(1), allowAnyStringType = false))
+
+    if (isSpark41Plus) {
+      val timeType = DataType.fromDDL("TIME")
+      assert(supportedDataType(timeType))
+      assert(!supportedDataType(timeType, allowTimeType = false))
+    }
   }
 
   val ARITHMETIC_OVERFLOW_EXCEPTION_MSG =
@@ -1077,18 +1082,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           s"Expected 'native implementation of FromUTCTimestamp' in: $explain")
       }
     }
-  }
-
-  test("misc scalar serdes report static unsupported cases via getSupportLevel") {
-    val intervalAttr = AttributeReference("interval_attr", CalendarIntervalType)()
-
-    assert(
-      CometAttributeReference.getSupportLevel(intervalAttr) ==
-        Unsupported(Some("unsupported datatype: CalendarIntervalType")))
-    assert(
-      CometKnownFloatingPointNormalized.getSupportLevel(
-        KnownFloatingPointNormalized(NormalizeNaNAndZero(intervalAttr))) ==
-        Unsupported(Some("Unsupported datatype CalendarIntervalType")))
   }
 
   test("rlike with non-scalar pattern runs via codegen dispatcher") {

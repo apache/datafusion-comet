@@ -144,8 +144,7 @@ object CometLocalTableScanExec extends CometSink[LocalTableScanExec] with DataTy
       allowIntervals = true,
       allowTimeType = false,
       allowAnyStringType = false)
-    if (!supported) super.isTypeSupported(dt, name, fallbackReasons)
-    supported
+    if (supported) true else super.isTypeSupported(dt, name, fallbackReasons)
   }
 
   override def convert(
