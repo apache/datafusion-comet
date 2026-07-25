@@ -22,21 +22,40 @@ package org.apache.comet.serde
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Literal, RandStr}
 import org.apache.spark.sql.types.{IntegerType, LongType}
 
-import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
-
 /**
  * Serde for Spark 4.0+ `randstr(length[, seed])`. Comet reproduces Spark's output exactly: the
  * resolved seed is combined with the partition index and seeds the same `XORShiftRandom` that
- * drives `ExpressionImplUtils.randStr`, so results match Spark bit for bit.
+ * drives `ExpressionImplUtils.randStr`, so results match Spark bit for bit. `length` and `seed`
+ * are required to be foldable, so after constant folding they are literals; a negative length is
+ * left to Spark, which raises an error at runtime.
  */
 object CometRandStr extends CometExpressionSerde[RandStr] {
+
+  private val nonLiteralLengthReason = "`length` must be a literal value"
+  private val negativeLengthReason = "`length` must be non-negative"
+  private val nonLiteralSeedReason = "`seed` must be a literal value"
+
+  override def getUnsupportedReasons(): Seq[String] =
+    Seq(nonLiteralLengthReason, negativeLengthReason, nonLiteralSeedReason)
+
+  override def getSupportLevel(expr: RandStr): SupportLevel = {
+    val lengthReason = expr.length match {
+      case Literal(n: Int, IntegerType) if n >= 0 => None
+      case Literal(_: Int, IntegerType) => Some(negativeLengthReason)
+      case _ => Some(nonLiteralLengthReason)
+    }
+    val seedReason = expr.seedExpression match {
+      case Literal(_: Int, IntegerType) | Literal(_: Long, LongType) => None
+      case _ => Some(nonLiteralSeedReason)
+    }
+    lengthReason.orElse(seedReason).map(r => Unsupported(Some(r))).getOrElse(Compatible(None))
+  }
 
   override def convert(
       expr: RandStr,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    // `length` and `seed` are required to be foldable, so after constant folding they are literals.
-    // A negative length makes Spark raise an error at runtime, so fall back to Spark for it.
+    // getSupportLevel guarantees a non-negative literal length and a literal Int/Long seed.
     val length = expr.length match {
       case Literal(n: Int, IntegerType) if n >= 0 => Some(n)
       case _ => None
@@ -46,22 +65,12 @@ object CometRandStr extends CometExpressionSerde[RandStr] {
       case Literal(s: Long, LongType) => Some(s)
       case _ => None
     }
-    (length, seed) match {
-      case (Some(len), Some(sd)) =>
-        Some(
-          ExprOuterClass.Expr
-            .newBuilder()
-            .setRandStr(
-              ExprOuterClass.RandStr
-                .newBuilder()
-                .setLength(len)
-                .setSeed(sd))
-            .build())
-      case _ =>
-        withFallbackReason(
-          expr,
-          "randstr requires a non-negative literal length and a resolved literal seed")
-        None
-    }
+    for {
+      len <- length
+      sd <- seed
+    } yield ExprOuterClass.Expr
+      .newBuilder()
+      .setRandStr(ExprOuterClass.RandStr.newBuilder().setLength(len).setSeed(sd))
+      .build()
   }
 }
