@@ -67,6 +67,19 @@ SELECT randstr(12, 9223372036854775807) FROM test_randstr
 query
 SELECT upper(randstr(6, 7)), length(randstr(6, 7)) FROM test_randstr
 
+-- Int vs Long seed: the serde sign-extends an Int seed with `toLong`, so an Int literal and the
+-- equivalent Long literal must drive the same generator and produce identical strings. (A literal,
+-- not `cast(... as bigint)`, so the seed stays foldable and randstr runs natively.)
+query
+SELECT randstr(8, -1) = randstr(8, -1L) FROM test_randstr
+
+-- randstr feeding a filter: computed natively in the inner projection, then filtered on the
+-- projected column. The nondeterministic column blocks predicate pushdown, so randstr stays in the
+-- native Project; the seeded generator makes the result reproducible, so Comet and Spark select the
+-- same rows.
+query
+SELECT id FROM (SELECT id, randstr(1, 7) AS r FROM test_randstr) t WHERE r RLIKE '^[a-m]$'
+
 -- negative length: Comet falls back to Spark, which raises INVALID_PARAMETER_VALUE.LENGTH
 query expect_error(INVALID_PARAMETER_VALUE)
 SELECT randstr(-1, 0)

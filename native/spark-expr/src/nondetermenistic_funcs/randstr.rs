@@ -102,7 +102,10 @@ impl PhysicalExpr for RandStrExpr {
         // Every row produces a `length`-character string; pre-size both builder buffers and build
         // each string in a reused buffer. Every character is ASCII, so pushing keeps this a single
         // pass with no UTF-8 validation scan and no per-row allocation.
-        let mut builder = StringBuilder::with_capacity(num_rows, num_rows * self.length);
+        // `saturating_mul` keeps the pre-size hint from overflowing on adversarially huge length
+        // literals; it only affects the initial capacity, not correctness.
+        let mut builder =
+            StringBuilder::with_capacity(num_rows, num_rows.saturating_mul(self.length));
         let mut buf = String::with_capacity(self.length);
         for _ in 0..num_rows {
             buf.clear();
@@ -134,6 +137,24 @@ impl PhysicalExpr for RandStrExpr {
 mod tests {
     use super::*;
     use arrow::array::{Array, RecordBatchOptions, StringArray};
+
+    // Golden values captured from Spark 4.1.1 `randstr(length, seed)` (via
+    // `org.apache.spark.sql.catalyst.expressions.ExpressionImplUtils.randStr`, a single partition so
+    // the generator is seeded with `seed + 0`). These assert byte-level Spark compatibility
+    // in-process, independent of the (slow, Spark-profile-only) SQL comparison tests. The
+    // consecutive strings correspond to consecutive rows in one partition, matching how Comet
+    // advances a single `XorShiftRandom` per row.
+    const SPARK_SEED_42_LEN10_FIRST_5: [&str; 5] = [
+        "pll6YOIJNn",
+        "I2NS5bEWFX",
+        "kbQpBdnHSp",
+        "RQpCUGa76m",
+        "NEAQ35Q71s",
+    ];
+    const SPARK_SEED_0_LEN12_FIRST_3: [&str; 3] = ["ceV0PXaR2IlB", "hHi56d0uCtuw", "SOTLiL13mRb3"];
+    // Negative seed also locks in the serde's `Int -> Long` sign extension: Spark produces the same
+    // strings for `randstr(8, -1)` and `randstr(8, -1L)`, and the wire seed is -1i64.
+    const SPARK_SEED_NEG1_LEN8_FIRST_3: [&str; 3] = ["S4MAXZER", "uFNlolIG", "ofPTaM5d"];
 
     fn empty_batch(num_rows: usize) -> RecordBatch {
         RecordBatch::try_new_with_options(
@@ -167,8 +188,47 @@ mod tests {
     }
 
     #[test]
+    fn test_randstr_matches_spark_golden() {
+        // Bit-for-bit equality with Spark 4.1.1 across positive, zero, and negative seeds.
+        assert_eq!(eval_strs(10, 42, 5), SPARK_SEED_42_LEN10_FIRST_5);
+        assert_eq!(eval_strs(12, 0, 3), SPARK_SEED_0_LEN12_FIRST_3);
+        assert_eq!(eval_strs(8, -1, 3), SPARK_SEED_NEG1_LEN8_FIRST_3);
+    }
+
+    #[test]
+    fn test_randstr_partition_index_seed() {
+        // The planner seeds each partition with `base_seed + partition_index` before constructing
+        // `RandStrExpr`. A partition-2 evaluation with base seed 40 must therefore reproduce Spark's
+        // output for seed 42, exercising the whole seed-arithmetic path.
+        let base_seed: i64 = 40;
+        let partition: i64 = 2;
+        assert_eq!(
+            eval_strs(10, base_seed + partition, 5),
+            SPARK_SEED_42_LEN10_FIRST_5
+        );
+        // Two partitions sharing a resolved seed produce identical streams (seed fully determines
+        // the output); different partition indices diverge.
+        assert_eq!(eval_strs(8, 100 + 5, 4), eval_strs(8, 90 + 15, 4));
+        assert_ne!(eval_strs(8, 100 + 5, 4), eval_strs(8, 100 + 6, 4));
+    }
+
+    #[test]
     fn test_randstr_zero_length() {
-        assert_eq!(eval_strs(0, 42, 3), vec!["", "", ""]);
+        // Zero length yields empty strings regardless of seed (the seed dimension is irrelevant).
+        for seed in [0, 42, -1, i64::MIN, i64::MAX] {
+            assert_eq!(eval_strs(0, seed, 3), vec!["", "", ""]);
+        }
+    }
+
+    #[test]
+    fn test_randstr_large_length() {
+        // Smoke test for the pre-sized builder capacity math (`num_rows * length`): a large length
+        // over several rows must still produce well-formed alphanumeric strings of the exact length.
+        let length = 65_536;
+        for s in eval_strs(length, 7, 3) {
+            assert_eq!(s.len(), length);
+            assert!(s.bytes().all(|b| b.is_ascii_alphanumeric()));
+        }
     }
 
     #[test]
