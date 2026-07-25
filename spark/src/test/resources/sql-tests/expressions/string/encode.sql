@@ -50,10 +50,19 @@ query
 SELECT encode(s, 'UTF-16LE') FROM test_encode
 
 query
-SELECT encode(s, 'US-ASCII') FROM test_encode
+SELECT encode(s, 'ISO-8859-1') FROM test_encode
+
+-- US-ASCII: use ASCII-only input. Non-ASCII input under US-ASCII throws on Spark 4.0+ strict
+-- mode (matching Spark), so it is not exercised here.
+
+statement
+CREATE TABLE test_encode_ascii(s string) USING parquet
+
+statement
+INSERT INTO test_encode_ascii VALUES ('hello'), ('world'), (''), (NULL)
 
 query
-SELECT encode(s, 'ISO-8859-1') FROM test_encode
+SELECT encode(s, 'US-ASCII') FROM test_encode_ascii
 
 -- Literal inputs including NULL and empty string
 
