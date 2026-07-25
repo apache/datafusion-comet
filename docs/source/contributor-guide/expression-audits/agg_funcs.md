@@ -51,6 +51,15 @@
 - Spark 3.5.8 (2026-05-26)
 - Spark 4.0.1 (2026-05-26)
 
+## collect_list
+
+- Spark 3.4.3 (audited 2026-06-24): `CollectList` extends `Collect[ArrayBuffer[Any]]`, returns `ArrayType(child.dataType, containsNull = false)`, ignores NULL inputs in `update()` (Hive-compatible semantics), and yields an empty array as `defaultResult`. `nullable = false`. No `checkInputDataTypes` override, so any input type is accepted (including STRUCT, ARRAY, MAP). Registered as both `collect_list` and `array_agg` aliases in `FunctionRegistry`.
+- Spark 3.5.8 (audited 2026-06-24): identical to 3.4.3.
+- Spark 4.0.1 (audited 2026-06-24): only structural change is adding `with UnaryLike[Expression]` to the case class (no behavior change).
+- Spark 4.1.1 (audited 2026-06-24): identical to 4.0.1.
+- Comet implementation: native side delegates to `datafusion_spark::function::aggregate::collect::SparkCollectList`, which wraps `ArrayAggAccumulator` with `ignore_nulls = true` and converts a final NULL accumulator state to an empty array (matching Spark's `defaultResult`). The native return type is `List(Field, containsNull = true)`, while Spark uses `containsNull = false`. Because nulls are filtered before insertion, no nulls actually appear in the array, so this is a schema-shape difference only and tests using `checkSparkAnswerAndOperator` accept it (same pattern already in use for `collect_set`).
+- Spark 4.2 (preview): `CollectList` and `CollectSet` gain an `ignoreNulls` field (default `true`); `RESPECT NULLS` sets it to `false` and keeps null elements. The native path always drops nulls, so `CometCollectShim` reads the field per Spark version (always `true` on 3.4-4.1) and `CometCollectList` / `CometCollectSet` report `Unsupported` when it is `false`, falling back to Spark.
+
 ## median
 
 - Spark 3.4.3 (audited 2026-06-24): `Median(child)` is a `RuntimeReplaceableAggregate` with `replacement = Percentile(child, Literal(0.5))`. Catalyst rewrites `median(x)` to `percentile(x, 0.5)` before Comet sees the plan, so it is served by `CometPercentile`.
