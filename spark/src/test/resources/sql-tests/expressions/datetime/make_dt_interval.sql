@@ -53,6 +53,17 @@ SELECT d, h, mi, s,
 FROM test_mdi
 DISTRIBUTE BY d
 
+-- null top-level, struct, and map interval output through native shuffle
+query
+SELECT i, st, m
+FROM VALUES
+  (1,
+   CAST(NULL AS INTERVAL DAY TO SECOND),
+   named_struct('i', CAST(NULL AS INTERVAL DAY TO SECOND)),
+   map('i', CAST(NULL AS INTERVAL DAY TO SECOND)))
+AS t(k, i, st, m)
+DISTRIBUTE BY k
+
 -- overflow: days * MICROS_PER_DAY exceeds the int64 microsecond range. makeDayTimeInterval throws
 -- unconditionally (not ANSI-gated); this confirms the dispatched codegen path propagates Spark's
 -- exception. The pattern is the lowercase word so it matches every version: Spark 4.x raises

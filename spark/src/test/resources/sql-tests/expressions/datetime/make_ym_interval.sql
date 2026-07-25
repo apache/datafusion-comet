@@ -53,6 +53,17 @@ SELECT y, m,
 FROM test_myi
 DISTRIBUTE BY y
 
+-- null top-level, struct, and map interval output through native shuffle
+query
+SELECT i, s, m
+FROM VALUES
+  (1,
+   CAST(NULL AS INTERVAL YEAR TO MONTH),
+   named_struct('i', CAST(NULL AS INTERVAL YEAR TO MONTH)),
+   map('i', CAST(NULL AS INTERVAL YEAR TO MONTH)))
+AS t(k, i, s, m)
+DISTRIBUTE BY k
+
 -- overflow: years * 12 exceeds Int range. makeYearMonthInterval throws unconditionally (not
 -- ANSI-gated); this confirms the dispatched codegen path propagates Spark's exception. The
 -- pattern is the lowercase word so it matches every version: Spark 4.x raises
