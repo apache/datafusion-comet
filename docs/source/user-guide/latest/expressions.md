@@ -447,7 +447,7 @@ expression-level). The `outer` variants are wired but marked `Incompatible`; the
 | `rand` | ✅ |  |
 | `randn` | ✅ |  |
 | `random` | ✅ | Alias for `rand` (Spark 4.0+); seed must be a literal |
-| `randstr` | 🔜 | Random string (Spark 4.0+) |
+| `randstr` | ✅ | Random string (Spark 4.0+); length and seed must be literals |
 | `rint` | ✅ |  |
 | `round` | ✅ | Float/double inputs fall back |
 | `sec` | ✅ |  |

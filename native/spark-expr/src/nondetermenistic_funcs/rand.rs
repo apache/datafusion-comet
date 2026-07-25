@@ -59,6 +59,12 @@ impl XorShiftRandom {
         let b = self.next(27) as i64;
         ((a << 27) + b) as f64 * DOUBLE_UNIT
     }
+
+    /// Equivalent to `java.util.Random.nextInt()` (`next(32)`), the draw Spark's
+    /// `ExpressionImplUtils.randStr` consumes per character.
+    pub(crate) fn next_i32(&mut self) -> i32 {
+        self.next(32)
+    }
 }
 
 impl StatefulSeedValueGenerator<i64, f64> for XorShiftRandom {
