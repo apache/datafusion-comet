@@ -83,7 +83,7 @@ class CometCodegenSuite
     val input = new IntervalMonthDayNanoVector("in", CometArrowAllocator)
     val field =
       CometBatchKernelCodegen.toFfiArrowField("out", CalendarIntervalType, nullable = true)
-    val output = CometBatchKernelCodegen.allocateOutput(field, 2, 0)
+    val output = CometBatchKernelCodegen.allocateOutput(CometArrowAllocator, field, 2, 0)
     try {
       input.allocateNew()
       input.setSafe(0, 14, -3, 1234567000L)
