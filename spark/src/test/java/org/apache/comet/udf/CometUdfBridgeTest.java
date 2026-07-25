@@ -50,6 +50,10 @@ public class CometUdfBridgeTest {
 
   @BeforeClass
   public static void setUp() {
+    startSpark();
+  }
+
+  private static void startSpark() {
     spark =
         SparkSession.builder()
             .master("local[1]")
@@ -82,6 +86,7 @@ public class CometUdfBridgeTest {
     LongAccumulator retained = jsc.sc().longAccumulator("udf-memory-retained");
     LongAccumulator released = jsc.sc().longAccumulator("udf-memory-released");
     LongAccumulator stateCount = jsc.sc().longAccumulator("udf-state-count");
+    LongAccumulator firstTaskAttemptId = jsc.sc().longAccumulator("first-task-attempt-id");
 
     jsc.parallelize(Collections.singletonList(0), 1)
         .foreachPartition(
@@ -89,6 +94,7 @@ public class CometUdfBridgeTest {
                 ignored -> {
                   TaskContext context = TaskContext.get();
                   CometUdfBridge.registerTask(context);
+                  firstTaskAttemptId.add(context.taskAttemptId());
                   TaskMemoryManager taskMemoryManager =
                       CometTaskContextShim.taskMemoryManager(context);
                   before.add(taskMemoryManager.getMemoryConsumptionForThisTask());
@@ -130,6 +136,26 @@ public class CometUdfBridgeTest {
         "task state should retain an exported buffer after completion",
         1,
         CometUdfBridge.taskStateCount());
+
+    spark.stop();
+    spark = null;
+    jsc = null;
+    startSpark();
+
+    LongAccumulator secondTaskAttemptId = jsc.sc().longAccumulator("second-task-attempt-id");
+    jsc.parallelize(Collections.singletonList(0), 1)
+        .foreachPartition(
+            (VoidFunction<Iterator<Integer>>)
+                ignored -> {
+                  TaskContext context = TaskContext.get();
+                  secondTaskAttemptId.add(context.taskAttemptId());
+                  CometUdfBridge.registerTask(context);
+                  CometUdfBridge.taskAllocator(context);
+                });
+    assertEquals(
+        "separate SparkContexts should reuse the task attempt ID in this regression",
+        firstTaskAttemptId.value(),
+        secondTaskAttemptId.value());
 
     ArrowArray deferred = DEFERRED_ARRAY.getAndSet(null);
     assertNotNull("task should export a deferred FFI array", deferred);

@@ -61,10 +61,11 @@ import org.apache.spark.util.TaskCompletionListener;
  *       in a process-lifetime fallback cache because no task-completion event will fire.
  * </ol>
  *
- * <p>Keying by {@code taskAttemptId} rather than by thread keeps the cache correct under Tokio
- * work-stealing: on the scan-free execution path the same Spark task can be polled by different
- * Tokio workers across batches, so a thread-local cache would lose per-task state on migration. The
- * task attempt ID is stable for the life of the task regardless of which worker is polling.
+ * <p>Keying by the propagated {@link TaskContext} rather than by thread keeps the cache correct
+ * under Tokio work-stealing: on the scan-free execution path the same Spark task can be polled by
+ * different Tokio workers across batches, so a thread-local cache would lose per-task state on
+ * migration. The context object is stable for the life of the task and remains unique when a new
+ * SparkContext reuses a numeric task attempt ID.
  */
 public class CometUdfBridge {
 
@@ -76,7 +77,7 @@ public class CometUdfBridge {
    * Task-scoped UDF instances and output allocator. Entries are removed after task completion and
    * after any Arrow buffers still exported through FFI have been released.
    */
-  private static final ConcurrentHashMap<Long, TaskState> TASKS = new ConcurrentHashMap<>();
+  private static final ConcurrentHashMap<TaskContext, TaskState> TASKS = new ConcurrentHashMap<>();
 
   /** Calls without a Spark task retain the existing process-lifetime fallback behavior. */
   private static final ConcurrentHashMap<String, CometUDF> NO_TASK_INSTANCES =
@@ -111,7 +112,7 @@ public class CometUdfBridge {
    *     thread-local on entry, with the prior value (if any) saved and restored in {@code finally}.
    *     Lets partition-sensitive built-ins ({@code Rand}, {@code Uuid}, {@code
    *     MonotonicallyIncreasingID}) work from Tokio workers and avoids reusing a stale TaskContext
-   *     left on a worker by a previous task. Its task attempt ID also keys the UDF-instance cache,
+   *     left on a worker by a previous task. Its object identity also keys the UDF-instance cache,
    *     so a UDF holding per-task state in fields sees a consistent instance for every call within
    *     the task regardless of which Tokio worker is polling.
    */
@@ -252,12 +253,11 @@ public class CometUdfBridge {
   }
 
   private static TaskState taskState(TaskContext taskContext) {
-    long taskAttemptId = taskContext.taskAttemptId();
     return TASKS.computeIfAbsent(
-        taskAttemptId,
-        id -> {
-          TaskState state = new TaskState(id, CometTaskContextShim.taskMemoryManager(taskContext));
-          taskContext.addTaskCompletionListener(
+        taskContext,
+        context -> {
+          TaskState state = new TaskState(context, CometTaskContextShim.taskMemoryManager(context));
+          context.addTaskCompletionListener(
               (TaskCompletionListener) ignored -> state.taskCompleted());
           return state;
         });
@@ -265,6 +265,7 @@ public class CometUdfBridge {
 
   /** Per-task Arrow listener and non-spillable Spark memory consumer. */
   private static final class TaskState implements AllocationListener {
+    private final TaskContext taskContext;
     private final long taskAttemptId;
     private final TaskMemoryConsumer consumer;
     private final ConcurrentHashMap<String, CometUDF> instances = new ConcurrentHashMap<>();
@@ -273,8 +274,9 @@ public class CometUdfBridge {
     private boolean completed;
     private boolean closed;
 
-    private TaskState(long taskAttemptId, TaskMemoryManager taskMemoryManager) {
-      this.taskAttemptId = taskAttemptId;
+    private TaskState(TaskContext taskContext, TaskMemoryManager taskMemoryManager) {
+      this.taskContext = taskContext;
+      this.taskAttemptId = taskContext.taskAttemptId();
       this.consumer =
           taskMemoryManager.getTungstenMemoryMode() == MemoryMode.OFF_HEAP
               ? new TaskMemoryConsumer(taskMemoryManager)
@@ -356,7 +358,7 @@ public class CometUdfBridge {
       if (toClose != null) {
         close(toClose);
       } else if (removeOnly) {
-        TASKS.remove(taskAttemptId, this);
+        TASKS.remove(taskContext, this);
       }
     }
 
@@ -368,7 +370,7 @@ public class CometUdfBridge {
         // leave an actionable leak report instead.
         LOG.warn("JVM UDF allocator for task {} failed to close cleanly", taskAttemptId, e);
       } finally {
-        TASKS.remove(taskAttemptId, this);
+        TASKS.remove(taskContext, this);
       }
     }
   }
