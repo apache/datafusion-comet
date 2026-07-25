@@ -301,6 +301,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       classOf[MakeTimestamp] -> CometMakeTimestamp,
       classOf[MakeYMInterval] -> CometMakeYMInterval,
       classOf[MakeDTInterval] -> CometMakeDTInterval,
+      classOf[MakeInterval] -> CometMakeInterval,
       classOf[MultiplyDTInterval] -> CometMultiplyDTInterval,
       classOf[MicrosToTimestamp] -> CometMicrosToTimestamp,
       classOf[MillisToTimestamp] -> CometMillisToTimestamp,
@@ -1068,9 +1069,16 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
   }
 
   def scalarFunctionExprToProto(funcName: String, args: Option[Expr]*): Option[Expr] = {
+    scalarFunctionExprToProto(funcName, false, args: _*)
+  }
+
+  def scalarFunctionExprToProto(
+      funcName: String,
+      failOnError: Boolean,
+      args: Option[Expr]*): Option[Expr] = {
     val builder = ExprOuterClass.ScalarFunc.newBuilder()
     builder.setFunc(funcName)
-    builder.setFailOnError(false)
+    builder.setFailOnError(failOnError)
     scalarFunctionExprToProto0(builder, args: _*)
   }
 

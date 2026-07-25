@@ -27,8 +27,8 @@ use crate::{
     spark_isnan, spark_lpad, spark_make_decimal, spark_month_name, spark_read_side_padding,
     spark_round, spark_rpad, spark_to_time, spark_unhex, spark_unscaled_value, EvalMode,
     SparkArrayPositionFunc, SparkArraySlice, SparkArraysOverlap, SparkContains, SparkDateDiff,
-    SparkDateFromUnixDate, SparkDateTrunc, SparkFlatten, SparkMakeDate, SparkMakeTime,
-    SparkNextDay, SparkSecondsToTimestamp, SparkSizeFunc,
+    SparkDateFromUnixDate, SparkDateTrunc, SparkFlatten, SparkMakeDate, SparkMakeInterval,
+    SparkMakeTime, SparkNextDay, SparkSecondsToTimestamp, SparkSizeFunc,
 };
 use arrow::datatypes::DataType;
 use datafusion::common::{DataFusionError, Result as DataFusionResult};
@@ -228,6 +228,9 @@ pub fn create_comet_physical_fun_with_eval_mode(
         // make_date and next_day must be constructed with the ANSI flag (fail_on_error) so they
         // throw on invalid input under ANSI rather than returning NULL.
         "make_date" => Ok(Arc::new(ScalarUDF::new_from_impl(SparkMakeDate::new(
+            fail_on_error,
+        )))),
+        "make_interval" => Ok(Arc::new(ScalarUDF::new_from_impl(SparkMakeInterval::new(
             fail_on_error,
         )))),
         "next_day" => Ok(Arc::new(ScalarUDF::new_from_impl(SparkNextDay::new(
