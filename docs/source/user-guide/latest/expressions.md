@@ -562,7 +562,7 @@ expression-level). The `outer` variants are wired but marked `Incompatible`; the
 | `contains` | ✅ | — |  |
 | `decode` | ✅ | — |  |
 | `elt` | ✅ | Codegen dispatch |  |
-| `encode` | 🔜 | — | Lowers to `StaticInvoke(encode)` (not allowlisted); falls back |
+| `encode` | ✅ | — |  |
 | `endswith` | ✅ | — |  |
 | `find_in_set` | ✅ | Codegen dispatch |  |
 | `format_number` | ✅ | Codegen dispatch |  |
