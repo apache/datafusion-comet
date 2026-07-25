@@ -258,6 +258,8 @@ In addition to `getSupportLevel`, which governs runtime planning decisions, the 
 
 These methods do not affect runtime behavior. They are called by `GenerateDocs` (`spark/src/main/scala/org/apache/comet/GenerateDocs.scala`) when building the user-facing Compatibility Guide pages. The Markdown templates live in `docs/source/user-guide/latest/compatibility/expressions/_category_template/` (for example, `math.md`, `datetime.md`, `array.md`, `aggregate.md`, `struct.md`); `docs/build.sh` copies them into per-Spark-version subdirectories (`spark-3.4/`, `spark-3.5/`, `spark-4.0/`, `spark-4.1/`) and runs `GenerateDocs` once per profile, so the published page reflects the expressions registered for that Spark version. Each reason is rendered as a bullet in the corresponding page.
 
+`GenerateDocs` also rewrites the **Implementation** column of every table in [`docs/source/user-guide/latest/expressions.md`](../user-guide/latest/expressions.md) based on the serde's trait mixins: `NativeOptInAvailable` (or its subtype `CodegenDispatchFallback`) is reported as `Hybrid`, a plain `CometCodegenDispatch` is reported as `Codegen dispatch`, and anything else is reported as `Native`. Rows whose function name is not registered in Spark's `FunctionRegistry` (or has no matching serde) get an em-dash placeholder.
+
 Key differences from `getSupportLevel`:
 
 - **No expression instance.** Both methods take no arguments, so they describe the expression in general rather than a specific call site. Use `getSupportLevel` for checks that depend on data types, argument values, or other per-instance details.
@@ -307,6 +309,25 @@ override def getUnsupportedReasons(): Seq[String] = Seq(
       .map(k => s"`$k`")
       .mkString("\n  - ", "\n  - ", ""))
 ```
+
+#### Updating the Supported Expressions Page
+
+The user-facing [Spark Expression Support](../user-guide/latest/expressions.md) page (`docs/source/user-guide/latest/expressions.md`) lists every Spark built-in with its status, implementation kind, and any notes. Unlike the compatibility pages, this file is committed to the repo, so you need to add a row for your new expression and commit it.
+
+Add the row to the correct category table (matching the section header, for example `## math_funcs`). Fill in the Function, Status, and Notes cells and leave the Implementation cell as `—`; the value is regenerated from the serde and does not need to be set by hand:
+
+```markdown
+| `myfunc` | ✅ | — | Some optional note |
+```
+
+To regenerate the Implementation column locally, run the `generate-docs` profile against any supported Spark version:
+
+```shell
+./mvnw -q -pl spark -am -Pspark-3.5 -Pgenerate-docs -DskipTests package \
+  -Dexec.arguments="$(pwd)/docs/source/user-guide/latest/,spark-3.5"
+```
+
+That run rewrites every Implementation cell in place, mapping SQL function names to Catalyst classes via Spark's `FunctionRegistry` and looking each class up in `QueryPlanSerde`. Commit the updated `expressions.md` alongside your serde change. If you forget, a reviewer or a subsequent doc regeneration will fill it in — an `—` in the column for a supported expression usually means the row is aliased or rewritten before Comet sees it (for example `to_date` → `Cast`), not that the row is broken.
 
 #### Adding Spark-side Tests for the New Expression
 
@@ -477,6 +498,23 @@ pub fn spark_ceil(
     // Implementation
 }
 ```
+
+#### Producing strings from arbitrary bytes
+
+Spark's `StringType` may contain bytes that are not valid UTF-8 (Spark stores them verbatim), but
+Arrow's string arrays must be valid UTF-8. Any native code that turns arbitrary bytes into a string
+must therefore **decode** them, not reinterpret them. Building a Rust `String`/`&str` from non-UTF-8
+bytes is undefined behaviour, and an Arrow string array that holds invalid UTF-8 is unsound for the
+downstream kernels that read it via `StringArray::value` (which assumes the UTF-8 invariant).
+
+Use `datafusion_comet_common::decode_utf8_spark_lossy` (defined in `native/common/src/utils.rs`). It
+replaces each ill-formed sequence with `U+FFFD` exactly as the JVM's `new String(bytes, UTF_8)` does,
+so Comet's rendered output matches Spark (including the surrogate-range cases where
+`str::from_utf8_lossy` would differ). This is the decoder used by both `CAST(binary AS string)` and
+the native columnar shuffle. See the
+[strings with non-UTF-8 bytes](../user-guide/latest/compatibility/index.md) note in the
+compatibility guide for the user-visible behavior, including the cases where decoding diverges from
+Spark.
 
 ### API Differences Between Spark Versions
 

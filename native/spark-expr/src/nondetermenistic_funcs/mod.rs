@@ -19,6 +19,8 @@ pub mod internal;
 pub mod monotonically_increasing_id;
 pub mod rand;
 pub mod randn;
+pub mod shuffle;
 
 pub use rand::RandExpr;
 pub use randn::RandnExpr;
+pub use shuffle::ShuffleExpr;

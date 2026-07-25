@@ -41,7 +41,7 @@ import org.apache.spark.sql.execution.adaptive.ShuffleQueryStageExec
 import org.apache.spark.sql.execution.exchange.{ENSURE_REQUIREMENTS, ShuffleExchangeExec, ShuffleExchangeLike, ShuffleOrigin}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics, SQLShuffleReadMetricsReporter, SQLShuffleWriteMetricsReporter}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType, DataType, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, MapType, NullType, ShortType, StringType, StructField, StructType, TimestampNTZType, TimestampType}
+import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType, CalendarIntervalType, DataType, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, MapType, NullType, ShortType, StringType, StructField, StructType, TimestampNTZType, TimestampType}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.util.MutablePair
 import org.apache.spark.util.collection.unsafe.sort.{PrefixComparators, RecordComparator}
@@ -397,6 +397,8 @@ object CometShuffleExchangeExec
         // Decimals with precision > 18 require Java BigDecimal conversion before hashing
         // d.precision <= 18
         true
+      case dt if isTimeType(dt) =>
+        true
       case _ =>
         false
     }
@@ -410,7 +412,10 @@ object CometShuffleExchangeExec
     def supportedSerializableDataType(dt: DataType): Boolean = dt match {
       case _: BooleanType | _: ByteType | _: ShortType | _: IntegerType | _: LongType |
           _: FloatType | _: DoubleType | _: StringType | _: BinaryType | _: TimestampType |
-          _: TimestampNTZType | _: DecimalType | _: DateType | _: NullType =>
+          _: TimestampNTZType | _: DecimalType | _: DateType | _: NullType |
+          CalendarIntervalType =>
+        true
+      case dt if isTimeType(dt) =>
         true
       case StructType(fields) =>
         fields.nonEmpty && fields.forall(f => supportedSerializableDataType(f.dataType))
@@ -534,6 +539,8 @@ object CometShuffleExchangeExec
       case _: BooleanType | _: ByteType | _: ShortType | _: IntegerType | _: LongType |
           _: FloatType | _: DoubleType | _: StringType | _: BinaryType | _: TimestampType |
           _: TimestampNTZType | _: DecimalType | _: DateType | _: NullType =>
+        true
+      case dt if isTimeType(dt) =>
         true
       case StructType(fields) =>
         fields.nonEmpty && fields.forall(f => supportedSerializableDataType(f.dataType)) &&
@@ -763,6 +770,25 @@ object CometShuffleExchangeExec
       spec: NativeShuffleSpec): ShuffleDependency[Int, ColumnarBatch, ColumnarBatch] = {
     val numParts = thinRDD.getNumPartitions
 
+    // Subqueries in the partitioning expressions (e.g. DISTRIBUTE BY over a subquery) belong to
+    // this exchange, not the native child, so the child's collectSubqueries misses them. The
+    // writer serializes them with their exprId, so they must be registered against the iterator or
+    // the native lookup fails with "Subquery N not found". Both the native-child and
+    // non-native-child native-shuffle paths funnel through here.
+    //
+    // Only ScalarSubquery is matched because it is the sole expression QueryPlanSerde turns into a
+    // native Subquery proto (and the only id the native side looks up); this mirrors the other
+    // registration sites (CometExec.collectSubqueries, CometNativeExec.prepareSubqueries). The
+    // exprId is stable under reuse, so a ReusedSubqueryExec plan still resolves to the same result.
+    // The `case _ => Nil` fallthrough is safe: partitionings that are not Expressions
+    // (SinglePartition, RoundRobinPartitioning) carry no key expressions to hold a subquery.
+    val partitioningSubqueries = outputPartitioning match {
+      case e: Expression => e.collect { case s: ScalarSubquery => s }
+      case _ => Nil
+    }
+    val augmentedSpec = spec.copy(execContext =
+      spec.execContext.copy(subqueries = spec.execContext.subqueries ++ partitioningSubqueries))
+
     // The code block below is mostly brought over from
     // ShuffleExchangeExec::prepareShuffleDependency
     val (partitioner, rangePartitionBounds) = outputPartitioning match {
@@ -831,7 +857,7 @@ object CometShuffleExchangeExec
       shuffleWriteMetrics = metrics,
       numParts = numParts,
       rangePartitionBounds = rangePartitionBounds,
-      nativeShuffleSpec = Some(spec))
+      nativeShuffleSpec = Some(augmentedSpec))
   }
 
   /**

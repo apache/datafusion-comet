@@ -195,16 +195,24 @@ impl IcebergScanExec {
         .try_flatten()
         .boxed();
 
-        // iceberg-rust's ArrowReader spawns IO/CPU work onto an iceberg::Runtime. execute() runs
-        // on the JVM-called thread outside any tokio context, so Runtime::current() would panic;
-        // build it from Comet's global runtime, which is where the stream is later polled.
-        let reader =
-            iceberg::arrow::ArrowReaderBuilder::new(file_io, IcebergRuntime::new(get_runtime()))
-                .with_batch_size(batch_size)
-                .with_data_file_concurrency_limit(self.data_file_concurrency_limit)
-                .with_row_selection_enabled(true)
-                .with_metadata_size_hint(512 * 1024) // Same as DataFusion's default
-                .build();
+        // iceberg-rust's ArrowReader spawns IO/CPU work onto an iceberg::Runtime, which only needs
+        // a tokio handle. execute() runs on the JVM-called thread outside any tokio context, so we
+        // enter Comet's global runtime to capture its handle (this is where the stream is later
+        // polled). Capturing the handle rather than borrowing the runtime keeps it tear-downable
+        // via release_runtime.
+        let iceberg_runtime = {
+            let handle = get_runtime();
+            let _guard = handle.enter();
+            IcebergRuntime::try_current().map_err(|e| {
+                DataFusionError::Execution(format!("Failed to build Iceberg runtime: {e}"))
+            })?
+        };
+        let reader = iceberg::arrow::ArrowReaderBuilder::new(file_io, iceberg_runtime)
+            .with_batch_size(batch_size)
+            .with_data_file_concurrency_limit(self.data_file_concurrency_limit)
+            .with_row_selection_enabled(true)
+            .with_metadata_size_hint(512 * 1024) // Same as DataFusion's default
+            .build();
 
         // Pass all tasks to iceberg-rust at once to utilize its flatten_unordered
         // parallelization, avoiding overhead of single-task streams
@@ -625,6 +633,7 @@ mod tests {
     use std::io::Write;
     use std::sync::Arc;
 
+    use iceberg::encryption::StandardKeyMetadata;
     use iceberg::io::{FileIO, FileIOBuilder};
     use iceberg::scan::{FileScanTask, FileScanTaskDeleteFile};
     use iceberg::spec::{DataContentType, DataFileFormat, Schema};
@@ -652,6 +661,7 @@ mod tests {
             partition_spec: None,
             name_mapping: None,
             case_sensitive: false,
+            key_metadata: None,
         }
     }
 
@@ -662,6 +672,7 @@ mod tests {
             file_size_in_bytes: 0,
             partition_spec_id: 0,
             equality_ids: None,
+            key_metadata: None,
         }
     }
 
@@ -727,5 +738,61 @@ mod tests {
         IcebergScanExec::fill_delete_file_sizes(&mut tasks, &fs_file_io(), 4)
             .await
             .unwrap();
+    }
+
+    fn from_hex(s: &str) -> Vec<u8> {
+        assert!(s.len().is_multiple_of(2), "odd-length hex string");
+        (0..s.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&s[i..i + 2], 16).expect("invalid hex"))
+            .collect()
+    }
+
+    // iceberg-rust encodes and decodes its own StandardKeyMetadata identically. Confirms the API
+    // is present after the rev bump and the [version byte][Avro datum] format round-trips.
+    #[test]
+    fn standard_key_metadata_roundtrips() {
+        let key: Vec<u8> = (0u8..16).collect();
+        let aad: &[u8] = b"comet-aad-prefix";
+        let km = StandardKeyMetadata::try_new(&key)
+            .unwrap()
+            .with_aad_prefix(aad);
+
+        let encoded = km.encode().unwrap();
+        assert_eq!(encoded[0], 0x01, "expected StandardKeyMetadata V1 marker");
+
+        let decoded = StandardKeyMetadata::decode(&encoded).unwrap();
+        assert_eq!(decoded.encryption_key().as_bytes(), key.as_slice());
+        assert_eq!(decoded.aad_prefix(), Some(aad));
+    }
+
+    // Cross-language gate for the encrypted-read passthrough plan: iceberg-rust must decode the
+    // exact StandardKeyMetadata bytes that Iceberg-Java writes into a data file's key_metadata,
+    // because Comet forwards those bytes verbatim (no re-encoding, no KMS) into
+    // FileScanTask::key_metadata. This fixture is a real Iceberg-Java blob produced by
+    // StandardEncryptionManager. To regenerate (e.g. after a wire-format change), print the bytes
+    // from CometIcebergEncryptionSuite's plaintext-DEK test and paste them here.
+    const JAVA_KEY_METADATA_HEX: &str =
+        "012084f49fba77f8ff1da0c115d1e46563cc0220f1d31d62b68808b469eb99fe9c57096000";
+    const JAVA_DEK_HEX: &str = "84f49fba77f8ff1da0c115d1e46563cc";
+
+    #[test]
+    fn decodes_java_produced_key_metadata() {
+        let blob = from_hex(JAVA_KEY_METADATA_HEX);
+        let expected_dek = from_hex(JAVA_DEK_HEX);
+
+        let decoded = StandardKeyMetadata::decode(&blob)
+            .expect("iceberg-rust failed to decode a Java-produced StandardKeyMetadata blob");
+        assert_eq!(
+            decoded.encryption_key().as_bytes(),
+            expected_dek.as_slice(),
+            "DEK recovered by Rust differs from the Java plaintext DEK"
+        );
+        // The Java blob carries a 16-byte AAD prefix; confirm the optional-field union decodes too.
+        assert_eq!(
+            decoded.aad_prefix().map(|a| a.len()),
+            Some(16),
+            "expected a 16-byte AAD prefix from the Java blob"
+        );
     }
 }

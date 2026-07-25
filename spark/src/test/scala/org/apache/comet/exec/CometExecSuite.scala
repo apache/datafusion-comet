@@ -2209,6 +2209,48 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
+  // Regression test for https://github.com/apache/datafusion-comet/issues/4787
+  // A scalar subquery inside a RepartitionByExpression (DISTRIBUTE BY) lives in the shuffle's
+  // partitioning expressions, not the native child subtree, so it must be registered separately
+  // for the native shuffle writer to resolve it.
+  test("scalar subquery in repartition") {
+    withParquetTable((0 until 10).map(i => (i, i)), "t") {
+      val df = sql("SELECT * FROM t DISTRIBUTE BY (_1 + (SELECT max(_2) FROM t))")
+      checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  // Same as above but forces a non-native shuffle child (CometSparkToColumnarExec) by disabling
+  // the native scan and routing the parquet read through Spark-to-Arrow conversion. This exercises
+  // the prepareShuffleDependency convenience-overload path, which builds its own NativeExecContext.
+  test("scalar subquery in repartition over non-native child") {
+    withSQLConf(
+      CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "false",
+      CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.key -> "true",
+      CometConf.COMET_SPARK_TO_ARROW_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_SHUFFLE_MODE.key -> "native") {
+      withParquetTable((0 until 10).map(i => (i, i)), "t") {
+        val df = sql("SELECT * FROM t DISTRIBUTE BY (_1 + (SELECT max(_2) FROM t))")
+        checkSparkAnswer(df)
+      }
+    }
+  }
+
+  // Columnar shuffle computes partition keys on the JVM (UnsafeProjection / partitionIdExpression),
+  // so the partitioning subquery resolves via updateResult with no native Subquery serialization.
+  // This confirms the "Subquery N not found" crash is specific to the native shuffle path.
+  test("scalar subquery in repartition (columnar shuffle)") {
+    withSQLConf(
+      CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
+      withParquetTable((0 until 10).map(i => (i, i)), "t") {
+        val df = sql("SELECT * FROM t DISTRIBUTE BY (_1 + (SELECT max(_2) FROM t))")
+        checkSparkAnswer(df)
+      }
+    }
+  }
+
   // Regression test for https://github.com/apache/datafusion-comet/issues/4042
   // SPARK-43402 (Spark 4.0+) pushes scalar subqueries into FileSourceScanExec.dataFilters.
   // CometReuseSubquery re-applies subquery deduplication after Comet node conversions, and
@@ -3707,6 +3749,45 @@ class CometExecSuite extends CometTestBase {
         val table = spark.read.parquet(filename)
         table.createOrReplaceTempView("t1")
         checkSparkAnswer(sql("SELECT * FROM t1"))
+      }
+    }
+  }
+
+  test("SparkToColumnar preserves row count for zero-column input batches (df.count())") {
+    // Regression test: when spark.comet.scan is disabled but convert.parquet is enabled,
+    // Spark's count-from-metadata optimization emits ColumnarBatches with numRows > 0 and
+    // numCols == 0. SparkColumnarArrowReader used to derive the Arrow row count from
+    // per-column writes only, silently producing zero-row Arrow batches in this case and
+    // making df.count() return 0.
+    withSQLConf(
+      SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+      CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "false",
+      CometConf.COMET_SPARK_TO_ARROW_ENABLED.key -> "true",
+      CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.key -> "true") {
+      withTempPath { dir =>
+        val expected = 10000L
+        spark
+          .range(expected)
+          .selectExpr("id as key", "id % 8 as value")
+          .toDF("key", "value")
+          .write
+          .parquet(dir.toString)
+
+        val df = spark.read.parquet(dir.toString)
+        // Materialize the count query explicitly so we can inspect the plan
+        // that runs — Dataset.count() executes groupBy().count() internally
+        // but doesn't expose that plan
+        val countDf = df.groupBy().count()
+        assert(
+          countDf.collect().head.getLong(0) == expected,
+          "df.count() should match number of written rows")
+
+        // Ensure this test actually exercises the SparkColumnarArrowReader code path
+        // guarded by the fix, so future regressions are caught.
+        val sparkToColumnar = collect(countDf.queryExecution.executedPlan) {
+          case s: CometSparkToColumnarExec => s
+        }
+        assert(sparkToColumnar.nonEmpty, "Expected CometSparkToColumnarExec in the executed plan")
       }
     }
   }

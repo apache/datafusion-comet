@@ -42,11 +42,16 @@ impl PartitionedBatchesProducer {
         }
     }
 
-    pub(super) fn produce(&mut self, partition_id: usize) -> PartitionedBatchIterator<'_> {
+    pub(super) fn produce<'a>(
+        &'a mut self,
+        partition_id: usize,
+        interleave_time: &'a Time,
+    ) -> PartitionedBatchIterator<'a> {
         PartitionedBatchIterator::new(
             &self.partition_indices[partition_id],
             &self.buffered_batches,
             self.batch_size,
+            interleave_time,
         )
     }
 }
@@ -57,6 +62,7 @@ pub(crate) struct PartitionedBatchIterator<'a> {
     batch_size: usize,
     indices: Vec<(usize, usize)>,
     pos: usize,
+    interleave_time: &'a Time,
 }
 
 impl<'a> PartitionedBatchIterator<'a> {
@@ -64,6 +70,7 @@ impl<'a> PartitionedBatchIterator<'a> {
         indices: &'a [(u32, u32)],
         buffered_batches: &'a [RecordBatch],
         batch_size: usize,
+        interleave_time: &'a Time,
     ) -> Self {
         if indices.is_empty() {
             // Avoid unnecessary allocations when the partition is empty
@@ -72,6 +79,7 @@ impl<'a> PartitionedBatchIterator<'a> {
                 batch_size,
                 indices: vec![],
                 pos: 0,
+                interleave_time,
             };
         }
         let record_batches = buffered_batches.iter().collect::<Vec<_>>();
@@ -84,21 +92,22 @@ impl<'a> PartitionedBatchIterator<'a> {
             batch_size,
             indices: current_indices,
             pos: 0,
+            interleave_time,
         }
     }
+}
 
-    /// Returns the next shuffled batch, recording the gather cost into `interleave_time`.
-    pub(crate) fn next(
-        &mut self,
-        interleave_time: &Time,
-    ) -> Option<datafusion::common::Result<RecordBatch>> {
+impl Iterator for PartitionedBatchIterator<'_> {
+    type Item = datafusion::common::Result<RecordBatch>;
+
+    fn next(&mut self) -> Option<Self::Item> {
         if self.pos >= self.indices.len() {
             return None;
         }
 
         let indices_end = std::cmp::min(self.pos + self.batch_size, self.indices.len());
         let indices = &self.indices[self.pos..indices_end];
-        let mut timer = interleave_time.timer();
+        let mut timer = self.interleave_time.timer();
         let result = interleave_record_batch(&self.record_batches, indices);
         timer.stop();
         match result {

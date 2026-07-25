@@ -111,7 +111,12 @@ case class CometScanRule(session: SparkSession)
         "all_entries",
         "all_manifests")
 
-      metadataTableSuffix.exists(suffix => scanExec.table.name().endsWith(suffix))
+      // Match case-insensitively: metadata tables surface lowercase via the path form
+      // (...metadata.json#all_manifests) but uppercase via the catalog-identifier form
+      // (db.table.ALL_DATA_FILES), and the latter must hit this gate too rather than fall through
+      // to reflection that fails on the metadata-table class.
+      val name = scanExec.table.name().toLowerCase(Locale.ROOT)
+      metadataTableSuffix.exists(name.endsWith)
     }
 
     val fullPlan = plan
@@ -462,12 +467,18 @@ case class CometScanRule(session: SparkSession)
 
         // Check Iceberg table format version
 
-        val formatVersionSupported = IcebergReflection.getFormatVersion(metadata.table) match {
-          case Some(formatVersion) =>
-            if (formatVersion > 2) {
+        // V3 adds column types iceberg-rust cannot read (variant, geometry, geography, unknown)
+        // and column default values; those are handled by the allow-list and default-value checks
+        // below, which fall back per-table. This gate only bounds the format version. Deletion
+        // vectors (a V3 delete feature) are handled by the delete-file gate, which still falls back
+        // for non-Parquet (Puffin) deletes since native deletion-vector reads are not yet wired.
+        val formatVersion = IcebergReflection.getFormatVersion(metadata.table)
+        val formatVersionSupported = formatVersion match {
+          case Some(v) =>
+            if (v > 3) {
               fallbackReasons += "Iceberg table format version " +
-                s"$formatVersion is not supported. " +
-                "Comet only supports Iceberg table format V1 and V2"
+                s"$v is not supported. " +
+                "Comet supports Iceberg table format V1, V2, and V3"
               false
             } else {
               true
@@ -476,6 +487,68 @@ case class CometScanRule(session: SparkSession)
             fallbackReasons += "Could not verify Iceberg table format version"
             false
         }
+
+        // Column default values are a V3 feature, so V1/V2 tables cannot have them and need no
+        // check. Only inspect V3 tables. iceberg-rust does not synthesize a V3 initial-default for
+        // a column absent from a data file, so a scan projecting such a column must fall back. A V3
+        // table implies an Iceberg version new enough to expose initialDefault(), so a reflection
+        // failure here is unexpected and also falls back rather than risk a crash.
+        val defaultValuesSupported =
+          if (!formatVersion.exists(_ >= 3)) {
+            true
+          } else {
+            try {
+              val defaulted = IcebergReflection.columnsWithInitialDefault(metadata.scanSchema)
+              if (defaulted.nonEmpty) {
+                fallbackReasons += "Iceberg column(s) with V3 default values are not yet " +
+                  s"supported by Comet's native reader: ${defaulted.mkString(", ")}"
+                false
+              } else {
+                true
+              }
+            } catch {
+              case e: Exception =>
+                fallbackReasons += "Iceberg reflection failure: could not verify V3 default " +
+                  s"values: ${e.getMessage}"
+                false
+            }
+          }
+
+        // Comet serializes the whole table/scan schema to native, not just projected columns, so a
+        // type the native reader does not support (e.g. variant) breaks the scan even when that
+        // column is not projected. The readSchema allow-list only covers projected columns, so run
+        // the same allow-list over the full schema Comet may serialize. Reflection failure also
+        // falls back.
+        val schemaTypesSupported =
+          try {
+            val fullSchema = IcebergReflection.toSparkSchema(metadata.tableSchema)
+            typeChecker.isSchemaSupported(fullSchema, fallbackReasons)
+          } catch {
+            case e: Exception =>
+              fallbackReasons += "Iceberg reflection failure: could not verify column " +
+                s"types: ${e.getMessage}"
+              false
+          }
+
+        // The native Parquet reader decrypts 128-bit and 256-bit AES-GCM data keys (16- or
+        // 32-byte). 192-bit is unsupported because the underlying crypto has no AES-192-GCM. Fall
+        // back for anything else. None means the table is unencrypted. Reflection failure also
+        // falls back.
+        val encryptionKeyLengthSupported =
+          try {
+            IcebergReflection.encryptionDataKeyLength(metadata.table) match {
+              case Some(len) if len != 16 && len != 32 =>
+                fallbackReasons += s"Iceberg table encryption with a ${len * 8}-bit data key is " +
+                  "not yet supported by Comet's native reader (only 128-bit and 256-bit AES-GCM)"
+                false
+              case _ => true
+            }
+          } catch {
+            case e: Exception =>
+              fallbackReasons += "Iceberg reflection failure: could not verify encryption key " +
+                s"length: ${e.getMessage}"
+              false
+          }
 
         // Single-pass validation of all FileScanTasks
         val taskValidation =
@@ -603,15 +676,44 @@ case class CometScanRule(session: SparkSession)
 
           try {
             if (!taskValidation.deleteFiles.isEmpty) {
+              val historicSchemas = IcebergReflection.getAllSchemas(metadata.table)
               taskValidation.deleteFiles.asScala.foreach { deleteFile =>
+                // iceberg-rust only reads Parquet delete files. Avro/ORC positional or
+                // equality deletes must be applied by Spark.
+                IcebergReflection.getFileFormat(deleteFile) match {
+                  case Some(fmt) if fmt.equalsIgnoreCase(IcebergReflection.FileFormats.PARQUET) =>
+                  case Some(fmt) =>
+                    hasUnsupportedDeletes = true
+                    fallbackReasons +=
+                      s"Delete file format '$fmt' is not supported by iceberg-rust. " +
+                        "Only Parquet delete files can be applied natively."
+                  case None =>
+                    hasUnsupportedDeletes = true
+                    logWarning(
+                      "Could not determine Iceberg delete file format; falling back to Spark")
+                    fallbackReasons += "Could not determine Iceberg delete file format"
+                }
+
                 val equalityFieldIds = IcebergReflection.getEqualityFieldIds(deleteFile)
 
                 if (!equalityFieldIds.isEmpty) {
-                  // Look up field types
                   equalityFieldIds.asScala.foreach { fieldId =>
-                    val fieldInfo = IcebergReflection.getFieldInfo(
-                      metadata.scanSchema,
-                      fieldId.asInstanceOf[Int])
+                    val fid = fieldId.asInstanceOf[Int]
+                    // Resolve against the current schema, then the table's schema history: an
+                    // equality delete may be keyed on a column that has since been dropped, which
+                    // the serde must still put in the task schema to apply the delete natively.
+                    val inCurrentSchema =
+                      IcebergReflection.getFieldInfo(metadata.tableSchema, fid)
+                    val fieldInfo = inCurrentSchema.orElse(
+                      historicSchemas.iterator
+                        .flatMap(s => IcebergReflection.getFieldInfo(s, fid))
+                        .toSeq
+                        .headOption)
+                    if (inCurrentSchema.isEmpty && fieldInfo.isDefined) {
+                      logDebug(
+                        s"Iceberg equality-delete field id $fid is absent from the current table " +
+                          "schema; resolved from schema history (likely a dropped column)")
+                    }
                     fieldInfo match {
                       case Some((fieldName, fieldType)) =>
                         if (fieldType.contains("struct")) {
@@ -623,6 +725,13 @@ case class CometScanRule(session: SparkSession)
                               "require datum conversion support that is not yet implemented."
                         }
                       case None =>
+                        hasUnsupportedDeletes = true
+                        logWarning(
+                          s"Iceberg equality-delete field id $fid unresolvable in the table " +
+                            "schema or its history; falling back to Spark")
+                        fallbackReasons +=
+                          s"Equality delete references field id $fid which cannot be resolved " +
+                            "in the table schema or its history"
                     }
                   }
                 }
@@ -677,6 +786,7 @@ case class CometScanRule(session: SparkSession)
         }
 
         if (schemaSupported && fileIOCompatible && formatVersionSupported &&
+          defaultValuesSupported && schemaTypesSupported && encryptionKeyLengthSupported &&
           taskValidation.allParquet && allSupportedFilesystems && partitionTypesSupported &&
           complexTypePredicatesSupported && transformFunctionsSupported &&
           deleteFileTypesSupported && dppSubqueriesSupported) {

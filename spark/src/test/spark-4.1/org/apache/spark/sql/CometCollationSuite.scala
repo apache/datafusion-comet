@@ -127,9 +127,12 @@ class CometCollationSuite extends CometTestBase {
   }
 
   test("from_unixtime rejects non-UTF8_BINARY collated format (issue #4646)") {
+    // A collation can only appear on the format argument, so a collated format is a non-default
+    // format. from_unixtime has no native path for non-default formats, so it is reported as
+    // Unsupported (the format reason) rather than Incompatible (the collation reason).
     checkDatetimeFallback(
       "SELECT from_unixtime(_10, _6 COLLATE utf8_lcase) FROM datetime_collation_tbl",
-      "from_unixtime does not support non-UTF8_BINARY collations")
+      "Only the default datetime format pattern `yyyy-MM-dd HH:mm:ss` is supported")
   }
 
   test("make_timestamp rejects non-UTF8_BINARY collated timezone (issue #4646)") {

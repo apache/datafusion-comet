@@ -22,4 +22,4 @@ mod utils;
 
 pub use error::{decimal_overflow_error, SparkError, SparkErrorWithContext, SparkResult};
 pub use query_context::{create_query_context_map, QueryContext, QueryContextMap};
-pub use utils::bytes_to_i128;
+pub use utils::{bytes_to_i128, decode_utf8_spark_lossy};

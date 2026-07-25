@@ -22,11 +22,17 @@ under the License.
 This page documents known issues and limitations specific to each supported Apache Spark version.
 
 For general compatibility information that applies across all Spark versions, see the other pages in this
-compatibility guide.
+compatibility guide. For the rule that governs how long each Spark minor is supported, see the
+[Apache Spark version support section](../../../about/versioning_policy.md#apache-spark-version-support)
+of the versioning policy.
 
 ## Spark 3.4
 
 Spark 3.4.3 is supported with Java 11/17 and Scala 2.12/2.13.
+
+```{warning}
+Spark 3.4 support is deprecated as of the 1.0.0 release and will be removed in the 1.1.0 release.
+```
 
 ### Known Limitations
 
@@ -42,6 +48,11 @@ Spark 3.4.3 is supported with Java 11/17 and Scala 2.12/2.13.
 ## Spark 3.5
 
 Spark 3.5.8 is supported with Java 11/17 and Scala 2.12/2.13.
+
+```{warning}
+JDK 11 support is deprecated as of the 1.0.0 release and will be removed in the 1.1.0 release.
+We recommend moving to JDK 17 or later.
+```
 
 ### Known Limitations
 
@@ -60,8 +71,7 @@ Spark 4.0.2 is supported with Java 17 and Scala 2.13.
 
 ### Known Limitations
 
-- **Collation support** ([#1947](https://github.com/apache/datafusion-comet/issues/1947),
-  [#4051](https://github.com/apache/datafusion-comet/issues/4051)): Spark 4.0 introduced collation
+- **Collation support**: Spark 4.0 introduced collation
   support. Non-default collated strings are not yet supported by Comet and will fall back to Spark.
 
 ## Spark 4.1

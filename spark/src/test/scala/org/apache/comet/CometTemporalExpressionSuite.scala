@@ -56,10 +56,11 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
       checkSparkAnswerAndOperator(s"SELECT c0, trunc(c0, '$format') from tbl order by c0, c1")
     }
     for (format <- unsupportedFormats) {
-      // Comet should fall back to Spark for unsupported or invalid formats
-      checkSparkAnswerAndFallbackReason(
-        s"SELECT c0, trunc(c0, '$format') from tbl order by c0, c1",
-        s"Format $format is not supported")
+      // Formats outside the native set have no native path, but TruncDate mixes in
+      // CodegenDispatchFallback, so they route through the JVM codegen dispatcher (Spark's own
+      // TruncDate.doGenCode inside the Comet pipeline) and stay native while matching Spark
+      // exactly (an invalid format yields null in both engines).
+      checkSparkAnswerAndOperator(s"SELECT c0, trunc(c0, '$format') from tbl order by c0, c1")
     }
 
     // Non-literal format strings are Incompatible on the native path, so Comet routes them
@@ -80,10 +81,11 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
         checkSparkAnswerAndOperator(s"SELECT c0, date_trunc('$format', c0) from tbl order by c0")
       }
       for (format <- unsupportedFormats) {
-        // Comet should fall back to Spark for unsupported or invalid formats
-        checkSparkAnswerAndFallbackReason(
-          s"SELECT c0, date_trunc('$format', c0) from tbl order by c0",
-          s"Format $format is not supported")
+        // Formats outside the native set have no native path, but TruncTimestamp mixes in
+        // CodegenDispatchFallback, so they route through the JVM codegen dispatcher (Spark's own
+        // TruncTimestamp.doGenCode inside the Comet pipeline) and stay native while matching
+        // Spark exactly (an invalid format yields null in both engines).
+        checkSparkAnswerAndOperator(s"SELECT c0, date_trunc('$format', c0) from tbl order by c0")
       }
       // Non-literal format strings are Incompatible on the native path, so Comet routes them
       // through the codegen dispatcher and still executes natively.
@@ -107,10 +109,12 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
             s"SELECT c0, date_trunc('$format', c0) from tbl order by c0")
         }
         for (format <- unsupportedFormats) {
-          // Comet should fall back to Spark for unsupported or invalid formats
-          checkSparkAnswerAndFallbackReason(
-            s"SELECT c0, date_trunc('$format', c0) from tbl order by c0",
-            s"Format $format is not supported")
+          // Formats outside the native set have no native path, but TruncTimestamp mixes in
+          // CodegenDispatchFallback, so they route through the JVM codegen dispatcher (Spark's
+          // own TruncTimestamp.doGenCode inside the Comet pipeline) and stay native while
+          // matching Spark exactly (an invalid format yields null in both engines).
+          checkSparkAnswerAndOperator(
+            s"SELECT c0, date_trunc('$format', c0) from tbl order by c0")
         }
         // Non-literal format strings are Incompatible on the native path, so Comet routes them
         // through the codegen dispatcher and still executes natively.

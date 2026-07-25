@@ -37,9 +37,9 @@
 
 ## array_compact
 
-- Spark 3.4.3 (audited 2026-05-27): `RuntimeReplaceable` -> `ArrayFilter(arr, IsNotNull(lambda))`. Comet receives the rewritten form, dispatches through `CometArrayFilter`, which delegates back to `CometArrayCompact.convert` for the actual proto emission. The native path uses Comet's `spark_array_compact` UDF rather than DataFusion's `array_remove_all` because DataFusion 53 changed `array_remove_all`'s NULL semantics.
+- Spark 3.4.3 (audited 2026-05-27): `RuntimeReplaceable` -> `ArrayFilter(arr, IsNotNull(lambda))`. Comet receives the rewritten form, dispatches through `CometArrayFilter`, which emits a call to DataFusion's built-in `array_compact` (from `datafusion-functions-nested`) via `CometScalarFunction("array_compact")`.
 - Spark 3.5.8 (audited 2026-05-27): identical to 3.4.3.
-- Spark 4.0.1 (audited 2026-05-27): the replacement is wrapped in `KnownNotContainsNull(...)` (analysis-only hint, no semantic change).
+- Spark 4.0.1 (audited 2026-05-27): the replacement is wrapped in `KnownNotContainsNull(...)`. The 4.x `Spark4xCometExprShim` strips the wrapper and emits the same `array_compact` call.
 - Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
 
 ## array_contains
@@ -128,7 +128,7 @@
 ## array_repeat
 
 - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
-- Spark 3.5.8 (audited 2026-05-27): baseline. `ArrayRepeat(left, right) extends BinaryExpression with ExpectsInputTypes`; `inputTypes = Seq(AnyDataType, IntegerType)`. NULL count yields NULL; count <= 0 yields empty array; count > `MAX_ROUNDED_ARRAY_LENGTH` throws at runtime. Comet wraps the call in `CaseWhen(IsNotNull(right), array_repeat(...), null)`.
+- Spark 3.5.8 (audited 2026-05-27): baseline. `ArrayRepeat(left, right) extends BinaryExpression with ExpectsInputTypes`; `inputTypes = Seq(AnyDataType, IntegerType)`. NULL count yields NULL; count <= 0 yields empty array; count > `MAX_ROUNDED_ARRAY_LENGTH` throws at runtime. Wired as `CometScalarFunction("array_repeat")` against `datafusion-spark`'s `SparkArrayRepeat`, which returns NULL for NULL count and repeats NULL elements (matching Spark).
 - Spark 4.0.1 (audited 2026-05-27): error message uses `createArrayWithElementsExceedLimitError(prettyName, count)`; semantics unchanged.
 - Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
 
@@ -174,6 +174,13 @@
 - Spark 3.5.8 (audited 2026-05-27): baseline. `GetArrayItem(child, ordinal, failOnError)`; `inputTypes = Seq(AnyDataType, IntegralType)`. Comet routes via `CometGetArrayItem`, wiring `failOnError` through to the proto.
 - Spark 4.0.1 (audited 2026-05-27): semantics unchanged; ANSI default flips to `true`.
 - Spark 4.1.1 (audited 2026-05-27): `inputTypes` tightened to `Seq(ArrayType, IntegralType)` (analysis-time only); runtime unchanged.
+
+## shuffle
+
+- Spark 3.4.3 (audited 2026-07-02): `Shuffle(child, randomSeed: Option[Long])`; `inputTypes = Seq(ArrayType)`, `dataType = child.dataType`, non-deterministic and stateful. Seeds a Commons Math3 `MersenneTwister` with `randomSeed + partitionIndex` and applies the "inside-out" Fisher-Yates from `RandomIndicesGenerator`. Only the one-argument `shuffle(array)` form exists in SQL. NULL input returns NULL without advancing the RNG.
+- Spark 3.5.8 (audited 2026-07-02): identical to 3.4.3.
+- Spark 4.0.1 (audited 2026-07-02): adds the two-argument constructor `Shuffle(child, seed: Expression)`, exposing `shuffle(array, seed)` in SQL (seed must be an integer/long literal). `RandomIndicesGenerator` and the eval logic are unchanged.
+- Spark 4.1.1 (audited 2026-07-02): identical to 4.0.1. Comet routes via `CometShuffle` and a dedicated stateful `ShuffleExpr` that reproduces the same MersenneTwister and inside-out Fisher-Yates, so results match Spark bit for bit. `childTypesSupportLevel` falls back for binary/struct/map element types, consistent with the other array expressions.
 
 ## sort_array
 

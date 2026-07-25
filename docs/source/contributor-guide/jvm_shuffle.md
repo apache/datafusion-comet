@@ -184,14 +184,11 @@ Selection logic in `CometShuffleManager.shouldBypassMergeSort()`:
 - `CometShuffleMemoryAllocator`: Custom allocator for off-heap memory pages
 - Memory is allocated in pages; when allocation fails, writers spill to disk
 - `CometDiskBlockWriter` coordinates spilling across all partition writers (largest first)
-- Async spilling is supported via `ShuffleThreadPool`
 
 ## Configuration
 
-| Config                                          | Description                         |
-| ----------------------------------------------- | ----------------------------------- |
-| `spark.comet.columnar.shuffle.async.enabled`    | Enable async spill writes           |
-| `spark.comet.columnar.shuffle.async.thread.num` | Threads per writer for async        |
-| `spark.comet.columnar.shuffle.batch.size`       | Rows per Arrow batch                |
-| `spark.comet.columnar.shuffle.spill.threshold`  | Row count threshold for spill       |
-| `spark.comet.exec.shuffle.compression.codec`    | Compression codec (zstd, lz4, etc.) |
+| Config                                         | Description                         |
+| ---------------------------------------------- | ----------------------------------- |
+| `spark.comet.columnar.shuffle.batch.size`      | Rows per Arrow batch                |
+| `spark.comet.columnar.shuffle.spill.threshold` | Row count threshold for spill       |
+| `spark.comet.exec.shuffle.compression.codec`   | Compression codec (zstd, lz4, etc.) |
