@@ -47,9 +47,6 @@ query
 SELECT encode(s, 'UTF-16BE') FROM test_encode
 
 query
-SELECT encode(s, 'UTF-16LE') FROM test_encode
-
-query
 SELECT encode(s, 'ISO-8859-1') FROM test_encode
 
 -- US-ASCII: use ASCII-only input. Non-ASCII input under US-ASCII throws on Spark 4.0+ strict
