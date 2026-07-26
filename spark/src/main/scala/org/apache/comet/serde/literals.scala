@@ -24,7 +24,7 @@ import java.lang
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Literal}
 import org.apache.spark.sql.catalyst.util.ArrayData
-import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType, DateType, DayTimeIntervalType, Decimal, DecimalType, DoubleType, FloatType, IntegerType, LongType, NullType, ShortType, StringType, TimestampNTZType, TimestampType, YearMonthIntervalType}
+import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType, CalendarIntervalType, DateType, DayTimeIntervalType, Decimal, DecimalType, DoubleType, FloatType, IntegerType, LongType, NullType, ShortType, StringType, TimestampNTZType, TimestampType, YearMonthIntervalType}
 import org.apache.spark.unsafe.types.UTF8String
 
 import com.google.protobuf.ByteString
@@ -59,7 +59,8 @@ object CometLiteral extends CometExpressionSerde[Literal] with Logging {
       dataType match {
         // Keep interval types out of QueryPlanSerde.supportedDataType, which gates broader native
         // paths.
-        case _: DayTimeIntervalType | _: YearMonthIntervalType => Compatible(None)
+        case _: DayTimeIntervalType | _: YearMonthIntervalType | CalendarIntervalType =>
+          Compatible(None)
         case _ => Unsupported(Some(s"Unsupported data type $dataType"))
       }
     }

@@ -87,7 +87,7 @@ Calendar interval types fall back to Spark today. Native acceleration is tracked
 | ----------------------- | ------ | ----------------- |
 | `YearMonthIntervalType` | ✅     |                   |
 | `DayTimeIntervalType`   | ✅     |                   |
-| `CalendarIntervalType`  | 🔜     | Tracked by #4540. |
+| `CalendarIntervalType`  | ✅     |                   |
 
 ## Complex
 
