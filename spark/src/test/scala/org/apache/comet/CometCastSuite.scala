@@ -20,6 +20,7 @@
 package org.apache.comet
 
 import java.io.File
+import java.nio.charset.StandardCharsets
 
 import scala.collection.mutable.ListBuffer
 import scala.jdk.CollectionConverters._
@@ -1078,6 +1079,17 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       "abc-def-ghi jkl",
       "2020-mar-20",
       "not_a_date",
+      // parseable shapes that are not real calendar dates
+      "2016-13-01",
+      "2016-02-30",
+      "2016-01-32",
+      "2021-02-29",
+      "2020-04-31",
+      "2020-00-15",
+      "2020-01-00",
+      "2020-2-30",
+      "2020-13-1",
+      "2020-02-30T",
       "T2",
       "\t\n3938\n8",
       "8701\t",
@@ -1308,6 +1320,39 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("cast BinaryType to StringType - valid UTF-8 inputs") {
     castTest(gen.generateStrings(dataSize, numericPattern, 8).toDF("a"), DataTypes.StringType)
+  }
+
+  test("cast BinaryType to StringType - invalid UTF-8 bytes are replaced") {
+    // Arrow strings must be valid UTF-8, so Comet decodes the bytes the way the JVM's
+    // `new String(bytes, UTF_8)` does, replacing each ill-formed sequence with U+FFFD (#4488).
+    // Spark applies the same replacement when the string is materialized, so the results match,
+    // but pin the replacement explicitly here so a change in the native decoder is caught.
+    val values: Seq[Array[Byte]] = Seq(
+      "abc".getBytes(StandardCharsets.UTF_8), // valid, preserved as is
+      Array[Byte](0xff.toByte, 0xfe.toByte), // two invalid bytes
+      Array[Byte](0xed.toByte, 0xa0.toByte, 0x80.toByte), // surrogate range, one replacement
+      Array[Byte]('a'.toByte, 0xc3.toByte), // truncated two-byte sequence
+      Array.emptyByteArray)
+    castTest(values.toDF("a"), DataTypes.StringType)
+
+    withTempPath { dir =>
+      // Carry an explicit index so the rows can be put back in input order after the round-trip.
+      val indexed = values.zipWithIndex.toDF("a", "i")
+      val df = roundtripParquet(indexed, dir)
+        .coalesce(1)
+        .orderBy(col("i"))
+        .select(col("a").cast(DataTypes.StringType).as("casted"))
+      checkSparkAnswerAndOperator(df)
+
+      val actual = df.collect().map(_.getString(0))
+      // The JVM decoder is the oracle: Comet must produce the same string Spark renders.
+      assert(actual.toSeq === values.map(new String(_, StandardCharsets.UTF_8)))
+      assert(actual(0) === "abc")
+      assert(actual(1) === "\uFFFD\uFFFD")
+      assert(actual(2) === "\uFFFD")
+      assert(actual(3) === "a\uFFFD")
+      assert(actual(4) === "")
+    }
   }
 
   // CAST from DateType

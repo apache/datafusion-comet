@@ -156,52 +156,6 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
-  val COMET_PARQUET_PARALLEL_IO_ENABLED: ConfigEntry[Boolean] =
-    conf("spark.comet.parquet.read.parallel.io.enabled")
-      .category(CATEGORY_PARQUET)
-      .doc(
-        "Whether to enable Comet's parallel reader for Parquet files. The parallel reader reads " +
-          "ranges of consecutive data in a  file in parallel. It is faster for large files and " +
-          "row groups but uses more resources.")
-      .booleanConf
-      .createWithDefault(true)
-
-  val COMET_PARQUET_PARALLEL_IO_THREADS: ConfigEntry[Int] =
-    conf("spark.comet.parquet.read.parallel.io.thread-pool.size")
-      .category(CATEGORY_PARQUET)
-      .doc("The maximum number of parallel threads the parallel reader will use in a single " +
-        "executor. For executors configured with a smaller number of cores, use a smaller number.")
-      .intConf
-      .createWithDefault(16)
-
-  val COMET_IO_MERGE_RANGES: ConfigEntry[Boolean] =
-    conf("spark.comet.parquet.read.io.mergeRanges")
-      .category(CATEGORY_PARQUET)
-      .doc(
-        "When enabled the parallel reader will try to merge ranges of data that are separated " +
-          "by less than `comet.parquet.read.io.mergeRanges.delta` bytes. Longer continuous reads " +
-          "are faster on cloud storage.")
-      .booleanConf
-      .createWithDefault(true)
-
-  val COMET_IO_MERGE_RANGES_DELTA: ConfigEntry[Int] =
-    conf("spark.comet.parquet.read.io.mergeRanges.delta")
-      .category(CATEGORY_PARQUET)
-      .doc("The delta in bytes between consecutive read ranges below which the parallel reader " +
-        "will try to merge the ranges. The default is 8MB.")
-      .intConf
-      .createWithDefault(1 << 23) // 8 MB
-
-  val COMET_IO_ADJUST_READRANGE_SKEW: ConfigEntry[Boolean] =
-    conf("spark.comet.parquet.read.io.adjust.readRange.skew")
-      .category(CATEGORY_PARQUET)
-      .doc("In the parallel reader, if the read ranges submitted are skewed in sizes, this " +
-        "option will cause the reader to break up larger read ranges into smaller ranges to " +
-        "reduce the skew. This will result in a slightly larger number of connections opened to " +
-        "the file system but may give improved performance.")
-      .booleanConf
-      .createWithDefault(false)
-
   val COMET_CONVERT_FROM_PARQUET_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.convert.parquet.enabled")
       .category(CATEGORY_EXEC)
@@ -372,8 +326,9 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
-  val COMET_REPLACE_SMJ: ConfigEntry[Boolean] =
-    conf(s"$COMET_EXEC_CONFIG_PREFIX.replaceSortMergeJoin")
+  val COMET_FORCE_SHJ: ConfigEntry[Boolean] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.forceShuffledHashJoin")
+      .withAlternative(s"$COMET_EXEC_CONFIG_PREFIX.replaceSortMergeJoin")
       .category(CATEGORY_EXEC)
       .doc("Experimental feature to force Spark to replace SortMergeJoin with ShuffledHashJoin " +
         s"for improved performance. This feature is not stable yet. $TUNING_GUIDE.")
@@ -506,33 +461,15 @@ object CometConf extends ShimCometConf {
       .intConf
       .createWithDefault(1)
 
-  val COMET_COLUMNAR_SHUFFLE_ASYNC_ENABLED: ConfigEntry[Boolean] =
-    conf("spark.comet.columnar.shuffle.async.enabled")
-      .category(CATEGORY_SHUFFLE)
-      .doc("Whether to enable asynchronous shuffle for Arrow-based shuffle.")
-      .booleanConf
-      .createWithDefault(false)
-
-  val COMET_COLUMNAR_SHUFFLE_ASYNC_THREAD_NUM: ConfigEntry[Int] =
-    conf("spark.comet.columnar.shuffle.async.thread.num")
+  val COMET_COLUMNAR_SHUFFLE_MAX_WRITERS_PER_EXECUTOR: ConfigEntry[Int] = {
+    conf("spark.comet.columnar.shuffle.max.writers.per.executor")
+      .withAlternative("spark.comet.columnar.shuffle.async.max.thread.num")
       .category(CATEGORY_SHUFFLE)
       .doc(
-        "Number of threads used for Comet async columnar shuffle per shuffle task. " +
-          "Note that more threads means more memory requirement to " +
-          "buffer shuffle data before flushing to disk. Also, more threads may not always " +
-          "improve performance, and should be set based on the number of cores available.")
-      .intConf
-      .createWithDefault(3)
-
-  val COMET_COLUMNAR_SHUFFLE_ASYNC_MAX_THREAD_NUM: ConfigEntry[Int] = {
-    conf("spark.comet.columnar.shuffle.async.max.thread.num")
-      .category(CATEGORY_SHUFFLE)
-      .doc("Maximum number of threads on an executor used for Comet async columnar shuffle. " +
-        "This is the upper bound of total number of shuffle " +
-        "threads per executor. In other words, if the number of cores * the number of shuffle " +
-        "threads per task `spark.comet.columnar.shuffle.async.thread.num` is larger than " +
-        "this config. Comet will use this config as the number of shuffle threads per " +
-        "executor instead.")
+        "Maximum number of concurrent hash-based shuffle writers per executor. Comet's " +
+          "hash-based (bypass merge sort) columnar shuffle allocates one writer per partition, " +
+          "so `executor cores * numPartitions` writers can be active concurrently. When that " +
+          "product exceeds this cap, Comet falls back to sort-based shuffle to avoid OOM.")
       .intConf
       .createWithDefault(100)
   }
@@ -615,6 +552,19 @@ object CometConf extends ShimCometConf {
     .doubleConf
     .createWithDefault(1.0)
 
+  val COMET_SHUFFLE_MAX_BUFFER_BYTES: ConfigEntry[Long] =
+    conf("spark.comet.shuffle.maxBufferBytes")
+      .category(CATEGORY_SHUFFLE)
+      .doc(
+        "Maximum number of bytes that the native shuffle writer will buffer in memory " +
+          "before spilling to disk. The default of 0 disables this limit, in which case " +
+          "spilling is triggered only when the memory pool denies an allocation. Setting a " +
+          "limit caps the writer's memory footprint independently of the size of the memory " +
+          "pool, at the cost of more frequent spilling.")
+      .bytesConf(ByteUnit.BYTE)
+      .checkValue(v => v >= 0, "Must not be negative")
+      .createWithDefault(0)
+
   val COMET_DEBUG_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.debug.enabled")
       .category(CATEGORY_EXEC)
@@ -686,6 +636,15 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
+  val COMET_EXPLAIN_CODEGEN_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.explainCodegen.enabled")
+      .category(CATEGORY_EXEC_EXPLAIN)
+      .doc("When enabled, Comet annotates the surrounding Comet operator with a `[COMET-INFO: " +
+        "JVM codegen dispatcher: <names>]` segment listing every expression it routed through " +
+        "the JVM codegen dispatcher. Disabled by default.")
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_ONHEAP_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.exec.onHeap.enabled")
       .category(CATEGORY_TESTING)
@@ -744,17 +703,6 @@ object CometConf extends ShimCometConf {
         "written to the Proleptic Gregorian calendar and will not be rebased.")
       .booleanConf
       .createWithDefault(false)
-
-  val COMET_USE_LAZY_MATERIALIZATION: ConfigEntry[Boolean] = conf(
-    "spark.comet.use.lazyMaterialization")
-    .internal()
-    .category(CATEGORY_PARQUET)
-    .doc(
-      "Whether to enable lazy materialization for Comet. When this is turned on, Comet will " +
-        "read Parquet data source lazily for string and binary columns. For filter operations, " +
-        "lazy materialization will improve read performance by skipping unused pages.")
-    .booleanConf
-    .createWithDefault(true)
 
   val COMET_ENABLE_PARTIAL_HASH_AGGREGATE: ConfigEntry[Boolean] =
     conf("spark.comet.testing.aggregate.partialMode.enabled")
@@ -1063,7 +1011,8 @@ private class TypedConfigBuilder[T](
       parent._doc,
       parent._category,
       parent._public,
-      parent._version)
+      parent._version,
+      parent._alternatives)
     CometConf.register(conf)
     conf
   }
@@ -1079,7 +1028,9 @@ private class TypedConfigBuilder[T](
       parent._doc,
       parent._category,
       parent._public,
-      parent._version)
+      parent._version,
+      None,
+      parent._alternatives)
     CometConf.register(conf)
     conf
   }
@@ -1109,7 +1060,8 @@ private class TypedConfigBuilder[T](
       parent._category,
       parent._public,
       parent._version,
-      Some(envVar))
+      Some(envVar),
+      parent._alternatives)
     CometConf.register(conf)
     conf
   }
@@ -1122,7 +1074,8 @@ abstract class ConfigEntry[T](
     val doc: String,
     val category: String,
     val isPublic: Boolean,
-    val version: String) {
+    val version: String,
+    val alternatives: Seq[String] = Nil) {
 
   /**
    * Retrieves the config value from the given [[SQLConf]].
@@ -1160,8 +1113,17 @@ private[comet] class ConfigEntryWithDefault[T](
     category: String,
     isPublic: Boolean,
     version: String,
-    _envVar: Option[String] = None)
-    extends ConfigEntry(key, valueConverter, stringConverter, doc, category, isPublic, version) {
+    _envVar: Option[String] = None,
+    _alternatives: Seq[String] = Nil)
+    extends ConfigEntry(
+      key,
+      valueConverter,
+      stringConverter,
+      doc,
+      category,
+      isPublic,
+      version,
+      _alternatives) {
   override def defaultValue: Option[T] = Some(_defaultValue)
 
   override def defaultValueString: String = stringConverter(_defaultValue)
@@ -1169,7 +1131,7 @@ private[comet] class ConfigEntryWithDefault[T](
   override def envVar: Option[String] = _envVar
 
   def get(conf: SQLConf): T = {
-    val tmp = conf.getConfString(key, null)
+    val tmp = CometConfDeprecations.readWithAlternatives(conf, key, alternatives)
     if (tmp == null) {
       _defaultValue
     } else {
@@ -1185,7 +1147,8 @@ private[comet] class OptionalConfigEntry[T](
     doc: String,
     category: String,
     isPublic: Boolean,
-    version: String)
+    version: String,
+    _alternatives: Seq[String] = Nil)
     extends ConfigEntry[Option[T]](
       key,
       s => Some(rawValueConverter(s)),
@@ -1193,12 +1156,14 @@ private[comet] class OptionalConfigEntry[T](
       doc,
       category,
       isPublic,
-      version) {
+      version,
+      _alternatives) {
 
   override def defaultValueString: String = ConfigEntry.UNDEFINED
 
   override def get(conf: SQLConf): Option[T] = {
-    Option(conf.getConfString(key, null)).map(rawValueConverter)
+    Option(CometConfDeprecations.readWithAlternatives(conf, key, alternatives))
+      .map(rawValueConverter)
   }
 }
 
@@ -1210,9 +1175,20 @@ private[comet] case class ConfigBuilder(key: String) {
   var _doc = ""
   var _version = ""
   var _category = ""
+  var _alternatives: Seq[String] = Nil
 
   def internal(): ConfigBuilder = {
     _public = false
+    this
+  }
+
+  /**
+   * Registers deprecated config keys that Comet will read as fall-backs when the primary `key` is
+   * unset. Reading a value from an alternative logs a one-time deprecation warning pointing users
+   * at the current `key`. Alternatives are checked in the order provided.
+   */
+  def withAlternative(alt: String, more: String*): ConfigBuilder = {
+    _alternatives = alt +: more
     this
   }
 
@@ -1262,4 +1238,35 @@ private[comet] case class ConfigBuilder(key: String) {
 
 private object ConfigEntry {
   val UNDEFINED = "<undefined>"
+}
+
+private object CometConfDeprecations extends org.apache.spark.internal.Logging {
+
+  private val warned = java.util.concurrent.ConcurrentHashMap.newKeySet[String]()
+
+  /**
+   * Reads the config value for `key`, falling back to each key in `alternatives` (in order) when
+   * the primary key is unset. When the value comes from an alternative, logs a deprecation
+   * warning once per JVM per alternative key.
+   *
+   * @return
+   *   the resolved string value, or `null` if neither the primary key nor any alternative is set.
+   */
+  def readWithAlternatives(conf: SQLConf, key: String, alternatives: Seq[String]): String = {
+    val primary = conf.getConfString(key, null)
+    if (primary != null) return primary
+    if (alternatives.isEmpty) return null
+    val it = alternatives.iterator
+    while (it.hasNext) {
+      val alt = it.next()
+      val v = conf.getConfString(alt, null)
+      if (v != null) {
+        if (warned.add(alt)) {
+          logWarning(s"Comet configuration '$alt' is deprecated; use '$key' instead.")
+        }
+        return v
+      }
+    }
+    null
+  }
 }

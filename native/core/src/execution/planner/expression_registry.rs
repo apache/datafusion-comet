@@ -83,7 +83,6 @@ pub enum ExpressionType {
     CaseWhen,
     In,
     If,
-    Substring,
     Like,
     Rlike,
     CheckOverflow,
@@ -286,8 +285,6 @@ impl ExpressionRegistry {
         use crate::execution::expressions::strings::*;
 
         self.builders
-            .insert(ExpressionType::Substring, Box::new(SubstringBuilder));
-        self.builders
             .insert(ExpressionType::Like, Box::new(LikeBuilder));
         self.builders
             .insert(ExpressionType::Rlike, Box::new(RlikeBuilder));
@@ -359,7 +356,6 @@ impl ExpressionRegistry {
             Some(ExprStruct::CaseWhen(_)) => Ok(ExpressionType::CaseWhen),
             Some(ExprStruct::In(_)) => Ok(ExpressionType::In),
             Some(ExprStruct::If(_)) => Ok(ExpressionType::If),
-            Some(ExprStruct::Substring(_)) => Ok(ExpressionType::Substring),
             Some(ExprStruct::Like(_)) => Ok(ExpressionType::Like),
             Some(ExprStruct::Rlike(_)) => Ok(ExpressionType::Rlike),
             Some(ExprStruct::CheckOverflow(_)) => Ok(ExpressionType::CheckOverflow),

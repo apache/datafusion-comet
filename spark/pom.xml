@@ -108,6 +108,13 @@ under the License.
       <classifier>tests</classifier>
     </dependency>
     <dependency>
+      <!-- Test-only: provides an embedded Hive metastore so Iceberg's type=hive catalog can
+           create encrypted tables (only Hive wires the KMS-backed EncryptionManager). Version and
+           scope come from the parent pom's dependencyManagement. -->
+      <groupId>org.apache.spark</groupId>
+      <artifactId>spark-hive_${scala.binary.version}</artifactId>
+    </dependency>
+    <dependency>
       <groupId>junit</groupId>
       <artifactId>junit</artifactId>
       <scope>test</scope>
@@ -315,7 +322,9 @@ under the License.
           <version>1.10.0</version>
           <scope>test</scope>
         </dependency>
-        <!-- Jetty 11.x for Spark 4.2 (jakarta.servlet); matches Spark 4.2.0-preview4's jetty.version -->
+        <!-- Jetty 11.x for Spark 4.2 (jakarta.servlet). Spark 4.2.0 itself ships Jetty 12, but
+             the Iceberg REST catalog test helper needs jetty-servlet, which Jetty 12 replaced
+             with the jetty-ee10-servlet artifact, so the test classpath stays on 11.x. -->
         <dependency>
           <groupId>org.eclipse.jetty</groupId>
           <artifactId>jetty-server</artifactId>
