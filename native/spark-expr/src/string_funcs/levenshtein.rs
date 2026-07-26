@@ -26,16 +26,66 @@ use datafusion::common::{cast::as_generic_string_array, DataFusionError, Result}
 use datafusion::physical_plan::ColumnarValue;
 use std::sync::Arc;
 
+// Thread-local scratch buffers to avoid heap allocations in the row processing loop
+thread_local! {
+    static LEVENSHTEIN_SCRATCH: std::cell::RefCell<(Vec<i32>, Vec<i32>)> =
+        std::cell::RefCell::new((Vec::with_capacity(64), Vec::with_capacity(64)));
+}
+
 /// Computes the Levenshtein edit distance between two UTF-8 strings.
-///
-/// This uses the standard dynamic programming algorithm with O(min(m,n)) space.
 fn levenshtein_distance(s: &str, t: &str) -> i32 {
+    // Fast path for ASCII strings: operate directly on raw bytes without vector allocations
+    if s.is_ascii() && t.is_ascii() {
+        let s_bytes = s.as_bytes();
+        let t_bytes = t.as_bytes();
+        let m = s_bytes.len();
+        let n = t_bytes.len();
+
+        if m == 0 {
+            return n as i32;
+        }
+        if n == 0 {
+            return m as i32;
+        }
+
+        let (s_bytes, t_bytes, m, n) = if m > n {
+            (t_bytes, s_bytes, n, m)
+        } else {
+            (s_bytes, t_bytes, m, n)
+        };
+
+        return LEVENSHTEIN_SCRATCH.with(|scratch| {
+            let mut borrow = scratch.borrow_mut();
+            let (prev, curr) = &mut *borrow;
+
+            prev.resize(m + 1, 0);
+            curr.resize(m + 1, 0);
+
+            for (i, val) in prev.iter_mut().enumerate() {
+                *val = i as i32;
+            }
+
+            for j in 1..=n {
+                curr[0] = j as i32;
+                for i in 1..=m {
+                    let cost = if s_bytes[i - 1] == t_bytes[j - 1] { 0 } else { 1 };
+                    curr[i] = (prev[i] + 1)
+                        .min(curr[i - 1] + 1)
+                        .min(prev[i - 1] + cost);
+                }
+                std::mem::swap(prev, curr);
+            }
+
+            prev[m]
+        });
+    }
+
+    // General Unicode path for non-ASCII strings
     let s_chars: Vec<char> = s.chars().collect();
     let t_chars: Vec<char> = t.chars().collect();
     let m = s_chars.len();
     let n = t_chars.len();
 
-    // Optimization: if one string is empty, distance is the length of the other
     if m == 0 {
         return n as i32;
     }
@@ -43,50 +93,109 @@ fn levenshtein_distance(s: &str, t: &str) -> i32 {
         return m as i32;
     }
 
-    // Use the shorter string for the "column" to minimize space usage
     let (s_chars, t_chars, m, n) = if m > n {
         (t_chars, s_chars, n, m)
     } else {
         (s_chars, t_chars, m, n)
     };
 
-    // Previous and current row of distances
-    let mut prev = vec![0i32; m + 1];
-    let mut curr = vec![0i32; m + 1];
+    LEVENSHTEIN_SCRATCH.with(|scratch| {
+        let mut borrow = scratch.borrow_mut();
+        let (prev, curr) = &mut *borrow;
 
-    // Initialize base case: distance from empty string
-    for (i, val) in prev.iter_mut().enumerate() {
-        *val = i as i32;
-    }
+        prev.resize(m + 1, 0);
+        curr.resize(m + 1, 0);
 
-    for j in 1..=n {
-        curr[0] = j as i32;
-        for i in 1..=m {
-            let cost = if s_chars[i - 1] == t_chars[j - 1] {
-                0
-            } else {
-                1
-            };
-            curr[i] = (prev[i] + 1) // deletion
-                .min(curr[i - 1] + 1) // insertion
-                .min(prev[i - 1] + cost); // substitution
+        for (i, val) in prev.iter_mut().enumerate() {
+            *val = i as i32;
         }
-        std::mem::swap(&mut prev, &mut curr);
-    }
 
-    prev[m]
+        for j in 1..=n {
+            curr[0] = j as i32;
+            for i in 1..=m {
+                let cost = if s_chars[i - 1] == t_chars[j - 1] { 0 } else { 1 };
+                curr[i] = (prev[i] + 1)
+                    .min(curr[i - 1] + 1)
+                    .min(prev[i - 1] + cost);
+            }
+            std::mem::swap(prev, curr);
+        }
+
+        prev[m]
+    })
 }
 
 /// Computes the Levenshtein distance up to `threshold` using a diagonal band.
-///
-/// Spark's three-argument form uses the threshold to avoid evaluating cells that cannot
-/// contribute to a result within the requested distance. This keeps the complexity at
-/// O(threshold * max(m, n)) when the threshold is small rather than always using O(m * n).
 fn levenshtein_distance_with_threshold(s: &str, t: &str, threshold: i32) -> i32 {
     if threshold < 0 {
         return -1;
     }
 
+    // Fast path for ASCII strings
+    if s.is_ascii() && t.is_ascii() {
+        let s_bytes = s.as_bytes();
+        let t_bytes = t.as_bytes();
+        let (shorter, longer) = if s_bytes.len() <= t_bytes.len() {
+            (s_bytes, t_bytes)
+        } else {
+            (t_bytes, s_bytes)
+        };
+        let m = shorter.len();
+        let n = longer.len();
+        let threshold = threshold as usize;
+
+        if n - m > threshold {
+            return -1;
+        }
+        if m == 0 {
+            return if n <= threshold { n as i32 } else { -1 };
+        }
+
+        let out_of_band = n.saturating_add(1) as i32;
+
+        return LEVENSHTEIN_SCRATCH.with(|scratch| {
+            let mut borrow = scratch.borrow_mut();
+            let (prev, curr) = &mut *borrow;
+
+            prev.resize(m + 1, out_of_band);
+            curr.resize(m + 1, out_of_band);
+
+            for (i, value) in prev.iter_mut().enumerate().take(m.min(threshold) + 1) {
+                *value = i as i32;
+            }
+
+            for j in 1..=n {
+                let start = 1.max(j.saturating_sub(threshold));
+                let end = m.min(j.saturating_add(threshold));
+                if start > end {
+                    return -1;
+                }
+
+                curr[0] = if j <= threshold { j as i32 } else { out_of_band };
+                curr[start - 1] = if start == 1 { curr[0] } else { out_of_band };
+
+                for i in start..=end {
+                    let cost = if shorter[i - 1] == longer[j - 1] { 0 } else { 1 };
+                    curr[i] = prev[i]
+                        .saturating_add(1)
+                        .min(curr[i - 1].saturating_add(1))
+                        .min(prev[i - 1].saturating_add(cost));
+                }
+                if end < m {
+                    curr[end + 1] = out_of_band;
+                }
+                std::mem::swap(prev, curr);
+            }
+
+            if prev[m] <= threshold as i32 {
+                prev[m]
+            } else {
+                -1
+            }
+        });
+    }
+
+    // General Unicode path
     let s_chars: Vec<char> = s.chars().collect();
     let t_chars: Vec<char> = t.chars().collect();
     let (shorter, longer) = if s_chars.len() <= t_chars.len() {
@@ -105,40 +214,48 @@ fn levenshtein_distance_with_threshold(s: &str, t: &str, threshold: i32) -> i32 
         return if n <= threshold { n as i32 } else { -1 };
     }
 
-    let out_of_band = n.saturating_add(1);
-    let mut prev = vec![out_of_band; m + 1];
-    let mut curr = vec![out_of_band; m + 1];
-    for (i, value) in prev.iter_mut().enumerate().take(m.min(threshold) + 1) {
-        *value = i;
-    }
+    let out_of_band = n.saturating_add(1) as i32;
 
-    for j in 1..=n {
-        let start = 1.max(j.saturating_sub(threshold));
-        let end = m.min(j.saturating_add(threshold));
-        if start > end {
-            return -1;
+    LEVENSHTEIN_SCRATCH.with(|scratch| {
+        let mut borrow = scratch.borrow_mut();
+        let (prev, curr) = &mut *borrow;
+
+        prev.resize(m + 1, out_of_band);
+        curr.resize(m + 1, out_of_band);
+
+        for (i, value) in prev.iter_mut().enumerate().take(m.min(threshold) + 1) {
+            *value = i as i32;
         }
 
-        curr[0] = if j <= threshold { j } else { out_of_band };
-        curr[start - 1] = if start == 1 { curr[0] } else { out_of_band };
-        for i in start..=end {
-            let cost = usize::from(shorter[i - 1] != longer[j - 1]);
-            curr[i] = prev[i]
-                .saturating_add(1)
-                .min(curr[i - 1].saturating_add(1))
-                .min(prev[i - 1].saturating_add(cost));
-        }
-        if end < m {
-            curr[end + 1] = out_of_band;
-        }
-        std::mem::swap(&mut prev, &mut curr);
-    }
+        for j in 1..=n {
+            let start = 1.max(j.saturating_sub(threshold));
+            let end = m.min(j.saturating_add(threshold));
+            if start > end {
+                return -1;
+            }
 
-    if prev[m] <= threshold {
-        prev[m] as i32
-    } else {
-        -1
-    }
+            curr[0] = if j <= threshold { j as i32 } else { out_of_band };
+            curr[start - 1] = if start == 1 { curr[0] } else { out_of_band };
+
+            for i in start..=end {
+                let cost = if shorter[i - 1] == longer[j - 1] { 0 } else { 1 };
+                curr[i] = prev[i]
+                    .saturating_add(1)
+                    .min(curr[i - 1].saturating_add(1))
+                    .min(prev[i - 1].saturating_add(cost));
+            }
+            if end < m {
+                curr[end + 1] = out_of_band;
+            }
+            std::mem::swap(prev, curr);
+        }
+
+        if prev[m] <= threshold as i32 {
+            prev[m]
+        } else {
+            -1
+        }
+    })
 }
 
 fn evaluate_levenshtein<LeftOffset, RightOffset>(
@@ -179,40 +296,34 @@ fn evaluate_string_arrays(
     threshold: Option<&Int32Array>,
 ) -> Result<Int32Array> {
     match (left.data_type(), right.data_type()) {
-        (DataType::Utf8, DataType::Utf8) => Ok(evaluate_levenshtein(
-            as_generic_string_array::<i32>(left.as_ref())?,
-            as_generic_string_array::<i32>(right.as_ref())?,
+        (DataType::Utf8, DataType::Utf8) => Ok(evaluate_levenshtein::<i32, i32>(
+            as_generic_string_array::<i32>(left)?,
+            as_generic_string_array::<i32>(right)?,
             threshold,
         )),
-        (DataType::Utf8, DataType::LargeUtf8) => Ok(evaluate_levenshtein(
-            as_generic_string_array::<i32>(left.as_ref())?,
-            as_generic_string_array::<i64>(right.as_ref())?,
+        (DataType::Utf8, DataType::LargeUtf8) => Ok(evaluate_levenshtein::<i32, i64>(
+            as_generic_string_array::<i32>(left)?,
+            as_generic_string_array::<i64>(right)?,
             threshold,
         )),
-        (DataType::LargeUtf8, DataType::Utf8) => Ok(evaluate_levenshtein(
-            as_generic_string_array::<i64>(left.as_ref())?,
-            as_generic_string_array::<i32>(right.as_ref())?,
+        (DataType::LargeUtf8, DataType::Utf8) => Ok(evaluate_levenshtein::<i64, i32>(
+            as_generic_string_array::<i64>(left)?,
+            as_generic_string_array::<i32>(right)?,
             threshold,
         )),
-        (DataType::LargeUtf8, DataType::LargeUtf8) => Ok(evaluate_levenshtein(
-            as_generic_string_array::<i64>(left.as_ref())?,
-            as_generic_string_array::<i64>(right.as_ref())?,
+        (DataType::LargeUtf8, DataType::LargeUtf8) => Ok(evaluate_levenshtein::<i64, i64>(
+            as_generic_string_array::<i64>(left)?,
+            as_generic_string_array::<i64>(right)?,
             threshold,
         )),
-        (left_type, right_type) => Err(DataFusionError::Execution(format!(
-            "levenshtein expects Utf8 or LargeUtf8 arguments, got {left_type:?} and {right_type:?}"
+        other => Err(DataFusionError::Internal(format!(
+            "levenshtein not supported for types {:?} and {:?}",
+            other.0, other.1
         ))),
     }
 }
 
 /// Spark-compatible levenshtein scalar function.
-///
-/// Accepts two or three arguments:
-/// - `levenshtein(str1, str2)` → edit distance
-/// - `levenshtein(str1, str2, threshold)` → edit distance if <= threshold, else -1
-///
-/// The threshold argument can be either a scalar or a column (array).
-/// NULL inputs produce NULL outputs. NULL threshold produces NULL output for that row.
 pub fn spark_levenshtein(args: &[ColumnarValue]) -> Result<ColumnarValue> {
     if args.len() < 2 || args.len() > 3 {
         return Err(DataFusionError::Internal(format!(
@@ -221,7 +332,6 @@ pub fn spark_levenshtein(args: &[ColumnarValue]) -> Result<ColumnarValue> {
         )));
     }
 
-    // Determine array length from any array argument
     let len = args
         .iter()
         .find_map(|arg| match arg {
@@ -238,7 +348,6 @@ pub fn spark_levenshtein(args: &[ColumnarValue]) -> Result<ColumnarValue> {
         ));
     }
 
-    // Handle the optional threshold argument (scalar or array)
     let threshold_array = if args.len() == 3 {
         let threshold_array = args[2].clone().into_array(len)?;
         if threshold_array.len() != len {
