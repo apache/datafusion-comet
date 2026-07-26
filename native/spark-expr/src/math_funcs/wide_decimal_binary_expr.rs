@@ -281,7 +281,7 @@ impl PhysicalExpr for WideDecimalBinaryExpr {
             }
         };
 
-        let result = if eval_mode != EvalMode::Ansi {
+        let result = if eval_mode != EvalMode::Ansi && result.values().contains(&i128::MAX) {
             result.null_if_overflow_precision(p_out)
         } else {
             result
@@ -504,6 +504,23 @@ mod tests {
         let result = eval_expr(&batch, WideDecimalOp::Add, 1, 0, EvalMode::Legacy).unwrap();
         let arr = result.as_primitive::<Decimal128Type>();
         assert!(arr.is_null(0));
+    }
+
+    #[test]
+    fn test_overflow_with_nulls_legacy_mode() {
+        let batch = make_batch(
+            vec![Some(4), Some(5), None],
+            38,
+            0,
+            vec![Some(5), Some(5), Some(1)],
+            38,
+            0,
+        );
+        let result = eval_expr(&batch, WideDecimalOp::Add, 1, 0, EvalMode::Legacy).unwrap();
+        let arr = result.as_primitive::<Decimal128Type>();
+        assert_eq!(arr.value(0), 9);
+        assert!(arr.is_null(1));
+        assert!(arr.is_null(2));
     }
 
     #[test]
