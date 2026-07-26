@@ -24,7 +24,7 @@ import java.lang
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Literal}
 import org.apache.spark.sql.catalyst.util.ArrayData
-import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType, DateType, Decimal, DecimalType, DoubleType, FloatType, IntegerType, LongType, NullType, ShortType, StringType, TimestampNTZType, TimestampType, YearMonthIntervalType}
+import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType, DateType, DayTimeIntervalType, Decimal, DecimalType, DoubleType, FloatType, IntegerType, LongType, NullType, ShortType, StringType, TimestampNTZType, TimestampType, YearMonthIntervalType}
 import org.apache.spark.unsafe.types.UTF8String
 
 import com.google.protobuf.ByteString
@@ -57,9 +57,9 @@ object CometLiteral extends CometExpressionSerde[Literal] with Logging {
       Compatible(None)
     } else {
       dataType match {
-        // Keep YearMonthIntervalType out of QueryPlanSerde.supportedDataType, which gates broader
-        // native paths.
-        case _: YearMonthIntervalType => Compatible(None)
+        // Keep interval types out of QueryPlanSerde.supportedDataType, which gates broader native
+        // paths.
+        case _: DayTimeIntervalType | _: YearMonthIntervalType => Compatible(None)
         case _ => Unsupported(Some(s"Unsupported data type $dataType"))
       }
     }
@@ -84,7 +84,7 @@ object CometLiteral extends CometExpressionSerde[Literal] with Logging {
         case _: ShortType => exprBuilder.setShortVal(value.asInstanceOf[Short])
         case _: IntegerType | _: DateType | _: YearMonthIntervalType =>
           exprBuilder.setIntVal(value.asInstanceOf[Int])
-        case _: LongType | _: TimestampType | _: TimestampNTZType =>
+        case _: LongType | _: TimestampType | _: TimestampNTZType | _: DayTimeIntervalType =>
           exprBuilder.setLongVal(value.asInstanceOf[Long])
         case dt if isTimeType(dt) =>
           exprBuilder.setLongVal(value.asInstanceOf[Long])

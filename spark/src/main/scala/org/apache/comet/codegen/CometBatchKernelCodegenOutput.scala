@@ -175,6 +175,7 @@ private[codegen] object CometBatchKernelCodegenOutput extends CometTypeShim {
     case TimestampNTZType => classOf[TimeStampMicroVector].getName
     case _: YearMonthIntervalType => classOf[IntervalYearVector].getName
     case _: DayTimeIntervalType => classOf[DurationVector].getName
+    case CalendarIntervalType => classOf[IntervalMonthDayNanoVector].getName
     case _: ArrayType => classOf[ListVector].getName
     case _: StructType => classOf[StructVector].getName
     case _: MapType => classOf[MapVector].getName
@@ -218,6 +219,14 @@ private[codegen] object CometBatchKernelCodegenOutput extends CometTypeShim {
       // DayTimeIntervalType -> DurationVector.set(int, long micros).
       val set = if (nested) "setSafe" else "set"
       OutputEmit("", s"$targetVec.$set($idx, $source);")
+    case CalendarIntervalType =>
+      val set = if (nested) "setSafe" else "set"
+      val interval = ctx.freshName("interval")
+      OutputEmit(
+        "",
+        s"""org.apache.spark.unsafe.types.CalendarInterval $interval = $source;
+           |$targetVec.$set($idx, $interval.months, $interval.days,
+           |    java.lang.Math.multiplyExact($interval.microseconds, 1000L));""".stripMargin)
     case dt if isTimeType(dt) =>
       val set = if (nested) "setSafe" else "set"
       OutputEmit("", s"$targetVec.$set($idx, $source);")
@@ -403,6 +412,7 @@ private[codegen] object CometBatchKernelCodegenOutput extends CometTypeShim {
       case ShortType => s"$target.getShort($idx)"
       case IntegerType | DateType => s"$target.getInt($idx)"
       case LongType | TimestampType | TimestampNTZType => s"$target.getLong($idx)"
+      case CalendarIntervalType => s"$target.getInterval($idx)"
       case dt if isTimeType(dt) => s"$target.getLong($idx)"
       case FloatType => s"$target.getFloat($idx)"
       case DoubleType => s"$target.getDouble($idx)"

@@ -43,6 +43,7 @@ private[codegen] object CometSpecializedGettersDispatch {
       case IntegerType | DateType => java.lang.Integer.valueOf(g.getInt(ordinal))
       case LongType | TimestampType | TimestampNTZType =>
         java.lang.Long.valueOf(g.getLong(ordinal))
+      case CalendarIntervalType => g.getInterval(ordinal)
       case FloatType => java.lang.Float.valueOf(g.getFloat(ordinal))
       case DoubleType => java.lang.Double.valueOf(g.getDouble(ordinal))
       case _: StringType => g.getUTF8String(ordinal)

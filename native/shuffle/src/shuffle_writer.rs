@@ -313,6 +313,44 @@ mod test {
         }
     }
 
+    /// A dictionary-typed column must roundtrip. Such schemas take the `StreamWriter` fallback
+    /// (rather than the pre-encoded schema path), because dictionary encoding requires the schema
+    /// and record batch to share a dictionary tracker.
+    #[test]
+    #[cfg_attr(miri, ignore)] // miri can't call foreign function `ZSTD_createCCtx`
+    fn roundtrip_ipc_dictionary() {
+        use arrow::array::DictionaryArray;
+        use arrow::datatypes::Int32Type;
+
+        let values: Vec<String> = (0..8192).map(|i| format!("v{}", i % 7)).collect();
+        let dict: DictionaryArray<Int32Type> = values.iter().map(|s| s.as_str()).collect();
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "d",
+            dict.data_type().clone(),
+            false,
+        )]));
+        let batch =
+            RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(dict) as Arc<dyn Array>])
+                .unwrap();
+
+        for codec in &[
+            CompressionCodec::None,
+            CompressionCodec::Zstd(1),
+            CompressionCodec::Snappy,
+            CompressionCodec::Lz4Frame,
+        ] {
+            let mut output = vec![];
+            let mut cursor = Cursor::new(&mut output);
+            let writer = ShuffleBlockWriter::try_new(schema.as_ref(), codec.clone()).unwrap();
+            writer
+                .write_batch(&batch, &mut cursor, &Time::default())
+                .unwrap();
+
+            let batch2 = read_ipc_compressed(&output[16..]).unwrap();
+            assert_eq!(batch, batch2);
+        }
+    }
+
     #[test]
     #[cfg_attr(miri, ignore)] // miri can't call foreign function `ZSTD_createCCtx`
     fn test_single_partition_shuffle_writer() {
@@ -922,6 +960,85 @@ mod test {
             .iter()
             .map(|b| b.num_rows())
             .sum()
+    }
+
+    /// Batches that are already at least `batch_size` rows should bypass the
+    /// coalescer, being written one-block-per-batch, while smaller batches are
+    /// still coalesced. In both cases the data must roundtrip exactly, in order.
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn test_full_batches_bypass_coalescer() {
+        use crate::writers::BufBatchWriter;
+        use arrow::array::Int32Array;
+
+        let schema = Arc::new(Schema::new(vec![Field::new("v", DataType::Int32, false)]));
+        let batch_size = 100;
+
+        let make_batch = |start: i32, len: i32| {
+            let values: Vec<i32> = (start..start + len).collect();
+            RecordBatch::try_new(
+                Arc::clone(&schema),
+                vec![Arc::new(Int32Array::from(values)) as Arc<dyn Array>],
+            )
+            .unwrap()
+        };
+
+        // Sequence: a full batch (bypass), an oversized batch (bypass, emitted whole),
+        // a partial batch (buffered), then a full batch (must not bypass because the
+        // coalescer still holds buffered rows).
+        //
+        // The 150-row batch is the case that distinguishes the fast path: the
+        // coalescer alone would split it into a 100-row block plus 50 buffered rows,
+        // so it can only appear as a single 150-row block when the passthrough fires.
+        let inputs = vec![
+            make_batch(0, batch_size),   // rows 0..100   -> bypass (100-row block)
+            make_batch(batch_size, 150), // rows 100..250 -> oversized bypass (150-row block)
+            make_batch(250, 30),         // rows 250..280 -> buffered
+            make_batch(280, batch_size), // rows 280..380 -> coalesced with buffered 30
+        ];
+
+        let codec = CompressionCodec::Lz4Frame;
+        let encode_time = Time::default();
+        let write_time = Time::default();
+
+        let mut output = Vec::new();
+        {
+            let mut writer = ShuffleBlockWriter::try_new(schema.as_ref(), codec.clone()).unwrap();
+            let mut buf_writer = BufBatchWriter::new(
+                &mut writer,
+                Cursor::new(&mut output),
+                1024 * 1024,
+                batch_size as usize,
+            );
+            for batch in &inputs {
+                buf_writer.write(batch, &encode_time, &write_time).unwrap();
+            }
+            buf_writer.flush(&encode_time, &write_time).unwrap();
+        }
+
+        let blocks = read_all_ipc_batches(&output);
+
+        // The full and oversized batches are emitted verbatim as their own blocks,
+        // then the partial+full pair coalesces into a full block plus a 30-row tail.
+        let block_rows: Vec<usize> = blocks.iter().map(|b| b.num_rows()).collect();
+        assert_eq!(
+            block_rows,
+            vec![100, 150, 100, 30],
+            "unexpected block boundaries"
+        );
+
+        // All 380 rows must roundtrip in order (0..380).
+        let mut roundtripped = Vec::new();
+        for block in &blocks {
+            let col = block
+                .column(0)
+                .as_any()
+                .downcast_ref::<Int32Array>()
+                .unwrap();
+            roundtripped.extend(col.values().iter().copied());
+        }
+        let expected: Vec<i32> = (0..380).collect();
+        assert_eq!(roundtripped, expected, "rows not preserved in order");
     }
 
     #[test]
