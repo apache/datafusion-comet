@@ -837,6 +837,15 @@ under the License.
 <li><p>Uses Rust regexp engine, which has different behavior to Java regexp engine</p></li>
 </ul>
 </section>
+<section id="randstr">
+<h2>RandStr<a class="headerlink" href="#randstr" title="Link to this heading">#</a></h2>
+<p>The following cases are not supported by Comet and always fall back to Spark, regardless of any <code class="docutils literal notranslate"><span class="pre">allowIncompatible</span></code> setting:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">length</span></code> must be a literal value</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">length</span></code> must be non-negative</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">seed</span></code> must be a literal value</p></li>
+</ul>
+</section>
 <section id="regexpreplace">
 <h2>RegExpReplace<a class="headerlink" href="#regexpreplace" title="Link to this heading">#</a></h2>
 <p>By default, <code class="docutils literal notranslate"><span class="pre">RegExpReplace</span></code> is evaluated in the JVM using Spark’s own code-generated implementation (run inside the Comet pipeline), which matches Spark exactly. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.RegExpReplace.allowIncompatible=true</span></code> to opt into Comet’s native implementation instead, which has the following differences from Spark:</p>
@@ -972,6 +981,7 @@ under the License.
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#lower">Lower</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#octetlength">OctetLength</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#rlike">RLike</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#randstr">RandStr</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#regexpreplace">RegExpReplace</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#reverse">Reverse</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#startswith">StartsWith</a></li>

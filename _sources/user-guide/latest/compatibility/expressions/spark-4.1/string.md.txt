@@ -98,6 +98,14 @@ By default, `RLike` is evaluated in the JVM using Spark's own code-generated imp
 
 - Uses Rust regexp engine, which has different behavior to Java regexp engine
 
+## RandStr
+
+The following cases are not supported by Comet and always fall back to Spark, regardless of any `allowIncompatible` setting:
+
+- `length` must be a literal value
+- `length` must be non-negative
+- `seed` must be a literal value
+
 ## RegExpReplace
 
 By default, `RegExpReplace` is evaluated in the JVM using Spark's own code-generated implementation (run inside the Comet pipeline), which matches Spark exactly. Set `spark.comet.expression.RegExpReplace.allowIncompatible=true` to opt into Comet's native implementation instead, which has the following differences from Spark:

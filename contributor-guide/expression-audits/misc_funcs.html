@@ -605,6 +605,15 @@ under the License.
 <li><p>Comet limitation: same as <code class="docutils literal notranslate"><span class="pre">rand</span></code> — the seed argument must be a literal.</p></li>
 </ul>
 </section>
+<section id="randstr">
+<h2>randstr<a class="headerlink" href="#randstr" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>Spark 3.4.3 (audited 2026-07-24): not present. <code class="docutils literal notranslate"><span class="pre">RandStr</span></code> was added in Spark 4.0, so <code class="docutils literal notranslate"><span class="pre">randstr</span></code> does not exist before then.</p></li>
+<li><p>Spark 3.5.8 (audited 2026-07-24): not present.</p></li>
+<li><p>Spark 4.0.1 (audited 2026-07-24): <code class="docutils literal notranslate"><span class="pre">RandStr(length,</span> <span class="pre">seedExpression,</span> <span class="pre">hideSeed)</span> <span class="pre">extends</span> <span class="pre">ExpressionWithRandomSeed</span> <span class="pre">with</span> <span class="pre">BinaryLike</span> <span class="pre">with</span> <span class="pre">Nondeterministic</span></code>. Both <code class="docutils literal notranslate"><span class="pre">length</span></code> (coerced to <code class="docutils literal notranslate"><span class="pre">IntegerType</span></code>) and <code class="docutils literal notranslate"><span class="pre">seed</span></code> (<code class="docutils literal notranslate"><span class="pre">IntegerType</span></code> or <code class="docutils literal notranslate"><span class="pre">LongType</span></code>) must be foldable; a non-foldable argument is rejected at analysis. Per partition it seeds <code class="docutils literal notranslate"><span class="pre">new</span> <span class="pre">XORShiftRandom(seed</span> <span class="pre">+</span> <span class="pre">partitionIndex)</span></code>; per row it calls <code class="docutils literal notranslate"><span class="pre">ExpressionImplUtils.randStr</span></code>, which fills <code class="docutils literal notranslate"><span class="pre">length</span></code> bytes with <code class="docutils literal notranslate"><span class="pre">abs(rng.nextInt()</span> <span class="pre">%</span> <span class="pre">62)</span></code> mapped onto <code class="docutils literal notranslate"><span class="pre">0-9</span></code>/<code class="docutils literal notranslate"><span class="pre">a-z</span></code>/<code class="docutils literal notranslate"><span class="pre">A-Z</span></code>. A negative length raises <code class="docutils literal notranslate"><span class="pre">INVALID_PARAMETER_VALUE.LENGTH</span></code> at runtime. Comet emits a <code class="docutils literal notranslate"><span class="pre">RandStr</span></code> proto with the resolved length and seed and reproduces the <code class="docutils literal notranslate"><span class="pre">XORShiftRandom</span></code> and character mapping bit for bit; non-negative literal length and literal seed only (otherwise it falls back to Spark, which also raises the negative-length error).</p></li>
+<li><p>Spark 4.1.1 (audited 2026-07-24): <code class="docutils literal notranslate"><span class="pre">ExpressionImplUtils.randStr</span></code> and the <code class="docutils literal notranslate"><span class="pre">XORShiftRandom(seed</span> <span class="pre">+</span> <span class="pre">partitionIndex)</span></code> seeding are byte-identical to 4.0.1; adds <code class="docutils literal notranslate"><span class="pre">withShiftedSeed</span></code>, no runtime change.</p></li>
+</ul>
+</section>
 <section id="session-user">
 <h2>session_user<a class="headerlink" href="#session-user" title="Link to this heading">#</a></h2>
 <ul class="simple">
@@ -691,6 +700,7 @@ under the License.
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#monotonically-increasing-id">monotonically_increasing_id</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#rand">rand</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#randn">randn</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#randstr">randstr</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#session-user">session_user</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#spark-partition-id">spark_partition_id</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#typeof">typeof</a></li>
