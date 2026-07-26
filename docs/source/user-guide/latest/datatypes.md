@@ -83,11 +83,11 @@ the tables below and may be reconsidered based on demand:
 Calendar interval types fall back to Spark today. Native acceleration is tracked by
 [#4540](https://github.com/apache/datafusion-comet/issues/4540).
 
-| Type                    | Status | Notes             |
-| ----------------------- | ------ | ----------------- |
-| `YearMonthIntervalType` | ✅     |                   |
-| `DayTimeIntervalType`   | ✅     |                   |
-| `CalendarIntervalType`  | ✅     |                   |
+| Type                    | Status | Notes |
+| ----------------------- | ------ | ----- |
+| `YearMonthIntervalType` | ✅     |       |
+| `DayTimeIntervalType`   | ✅     |       |
+| `CalendarIntervalType`  | ✅     |       |
 
 ## Complex
 
