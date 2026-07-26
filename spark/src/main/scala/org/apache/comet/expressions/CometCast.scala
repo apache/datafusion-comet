@@ -170,6 +170,7 @@ object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
     }
 
     (fromType, toType) match {
+      case (NullType, _) => Compatible()
       case (dt: ArrayType, _: ArrayType) if dt.elementType == NullType => Compatible()
       case (ArrayType(DataTypes.DateType, _), ArrayType(toElementType, _))
           if toElementType != DataTypes.IntegerType && toElementType != DataTypes.StringType =>
