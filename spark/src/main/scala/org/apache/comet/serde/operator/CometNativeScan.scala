@@ -27,7 +27,7 @@ import org.apache.spark.sql.catalyst.expressions.{Expression, Literal}
 import org.apache.spark.sql.catalyst.util.ResolveDefaultColumns.getExistenceDefaultValues
 import org.apache.spark.sql.comet.{CometNativeExec, CometNativeScanExec, CometScanExec}
 import org.apache.spark.sql.execution.{FileSourceScanExec, InSubqueryExec, SubqueryAdaptiveBroadcastExec}
-import org.apache.spark.sql.execution.datasources.parquet.ParquetUtils
+import org.apache.spark.sql.execution.datasources.parquet.{ParquetOptions, ParquetUtils}
 import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.{CometConf, ConfigEntry}
@@ -189,6 +189,9 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with Logging {
       commonBuilder.addAllPartitionSchema(partitionSchema.toIterable.asJava)
       commonBuilder.setSessionTimezone(scan.conf.getConfString("spark.sql.session.timeZone"))
       commonBuilder.setCaseSensitive(scan.conf.getConf[Boolean](SQLConf.CASE_SENSITIVE))
+      val parquetOptions = new ParquetOptions(scan.relation.options, scan.conf)
+      commonBuilder.setDatetimeRebaseMode(parquetOptions.datetimeRebaseModeInRead)
+      commonBuilder.setInt96RebaseMode(parquetOptions.int96RebaseModeInRead)
 
       // SPARK-53535 (Spark 4.1+): when reading a struct whose requested fields are all
       // missing in the Parquet file, the new default preserves the parent struct's

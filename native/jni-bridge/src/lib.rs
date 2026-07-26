@@ -194,6 +194,7 @@ mod comet_metric_node;
 mod comet_s3_credential_dispatcher;
 mod comet_task_memory_manager;
 mod comet_udf_bridge;
+mod rebase_date_time;
 mod shuffle_block_iterator;
 
 use arrow_array_stream::ArrowArrayStream;
@@ -201,6 +202,7 @@ pub use comet_metric_node::*;
 pub use comet_s3_credential_dispatcher::CometS3CredentialDispatcher;
 pub use comet_task_memory_manager::*;
 use comet_udf_bridge::CometUdfBridge;
+use rebase_date_time::RebaseDateTime;
 use shuffle_block_iterator::CometShuffleBlockIterator;
 
 /// The JVM classes that are used in the JNI calls.
@@ -238,6 +240,8 @@ pub struct JVMClasses<'a> {
     pub comet_udf_bridge: Option<CometUdfBridge<'a>>,
     /// JNI handles for the CometS3CredentialDispatcher SPI and the CometS3Credentials POJO.
     pub comet_s3_credential_dispatcher: CometS3CredentialDispatcher<'a>,
+    /// Spark's exact Julian-to-Gregorian timestamp fallback.
+    pub rebase_date_time: RebaseDateTime<'a>,
 }
 
 unsafe impl Send for JVMClasses<'_> {}
@@ -316,6 +320,7 @@ impl JVMClasses<'_> {
                     bridge
                 },
                 comet_s3_credential_dispatcher: CometS3CredentialDispatcher::new(env).unwrap(),
+                rebase_date_time: RebaseDateTime::new(env).unwrap(),
             }
         });
     }

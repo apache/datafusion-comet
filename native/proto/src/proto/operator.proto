@@ -132,6 +132,13 @@ message NativeScanCommon {
   // SchemaColumnConvertNotSupportedException (Spark 3.x, SPARK-36182). Set
   // from Comet's per-Spark-version constant in ShimCometConf.
   bool allow_timestamp_ltz_to_ntz = 18;
+  // Configured Parquet read modes. File metadata takes precedence on the
+  // native side, matching Spark's DataSourceUtils.
+  string datetime_rebase_mode = 19;
+  string int96_rebase_mode = 20;
+  // Spark falls back to the JVM default when a legacy file has no timezone
+  // metadata. This is intentionally distinct from session_timezone.
+  string jvm_timezone = 21;
 }
 
 message NativeScan {

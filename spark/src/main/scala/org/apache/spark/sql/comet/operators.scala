@@ -19,8 +19,7 @@
 
 package org.apache.spark.sql.comet
 
-import java.util.Locale
-import java.util.ServiceLoader
+import java.util.{Locale, ServiceLoader, TimeZone}
 
 import scala.collection.mutable
 import scala.collection.mutable.ArrayBuffer
@@ -333,7 +332,11 @@ private[comet] object NativeScanPlanDataInjector extends PlanDataInjector {
       commonBytes: Array[Byte],
       partitionBytes: Array[Byte]): Operator = {
 
-    val common = OperatorOuterClass.NativeScanCommon.parseFrom(commonBytes)
+    val common = OperatorOuterClass.NativeScanCommon
+      .parseFrom(commonBytes)
+      .toBuilder
+      .setJvmTimezone(TimeZone.getDefault.getID)
+      .build()
     val partitionOnly = OperatorOuterClass.NativeScan.parseFrom(partitionBytes)
 
     // Build complete NativeScan with common fields + this partition's file list

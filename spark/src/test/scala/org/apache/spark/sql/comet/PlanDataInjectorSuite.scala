@@ -19,9 +19,11 @@
 
 package org.apache.spark.sql.comet
 
+import java.util.TimeZone
+
 import org.scalatest.funsuite.AnyFunSuite
 
-import org.apache.comet.serde.OperatorOuterClass.Operator
+import org.apache.comet.serde.OperatorOuterClass.{NativeScan, NativeScanCommon, Operator, SparkFilePartition}
 
 class PlanDataInjectorSuite extends AnyFunSuite {
 
@@ -49,5 +51,20 @@ class PlanDataInjectorSuite extends AnyFunSuite {
     }
     assert(IcebergPlanDataInjector.opStructCase == Operator.OpStructCase.ICEBERG_SCAN)
     assert(NativeScanPlanDataInjector.opStructCase == Operator.OpStructCase.NATIVE_SCAN)
+  }
+
+  test("native scan injector records the executor JVM timezone") {
+    val common = NativeScanCommon.newBuilder().setJvmTimezone("driver-timezone").build()
+    val partition = NativeScan
+      .newBuilder()
+      .setFilePartition(SparkFilePartition.getDefaultInstance)
+      .build()
+    val op =
+      Operator.newBuilder().setNativeScan(NativeScan.newBuilder().setCommon(common)).build()
+
+    val result =
+      NativeScanPlanDataInjector.inject(op, common.toByteArray, partition.toByteArray)
+
+    assert(result.getNativeScan.getCommon.getJvmTimezone == TimeZone.getDefault.getID)
   }
 }

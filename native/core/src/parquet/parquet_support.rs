@@ -46,6 +46,7 @@ use std::{collections::hash_map::DefaultHasher, hash::Hasher, sync::RwLock};
 use std::{fmt::Debug, hash::Hash, sync::Arc};
 use url::Url;
 
+use super::datetime_rebase::{rebase_primitive_array, RebaseMode, RebaseSpec};
 use super::objectstore;
 
 // This file originates from cast.rs. While developing native scan support and implementing
@@ -74,8 +75,10 @@ pub struct SparkParquetOptions {
     pub allow_incompat: bool,
     /// Support casting unsigned ints to signed ints (used by Parquet SchemaAdapter)
     pub allow_cast_unsigned_ints: bool,
-    /// Whether to read dates/timestamps that were written in the legacy hybrid Julian + Gregorian calendar as it is. If false, throw exceptions instead. If the spark type is TimestampNTZ, this should be true.
-    pub use_legacy_date_timestamp_or_ntz: bool,
+    /// Per-file DATE/TIMESTAMP_MILLIS/TIMESTAMP_MICROS read semantics.
+    pub datetime_rebase_spec: RebaseSpec,
+    /// Per-file INT96 read semantics.
+    pub int96_rebase_spec: RebaseSpec,
     // Whether schema field names are case sensitive
     pub case_sensitive: bool,
     /// SPARK-53535 (Spark 4.1+): when reading a struct whose requested fields are all
@@ -108,7 +111,8 @@ impl SparkParquetOptions {
             timezone: timezone.to_string(),
             allow_incompat,
             allow_cast_unsigned_ints: false,
-            use_legacy_date_timestamp_or_ntz: false,
+            datetime_rebase_spec: RebaseSpec::new(RebaseMode::Corrected, "UTC"),
+            int96_rebase_spec: RebaseSpec::new(RebaseMode::Corrected, "UTC"),
             case_sensitive: false,
             return_null_struct_if_all_fields_missing: true,
             use_field_id: false,
@@ -124,7 +128,8 @@ impl SparkParquetOptions {
             timezone: "".to_string(),
             allow_incompat,
             allow_cast_unsigned_ints: false,
-            use_legacy_date_timestamp_or_ntz: false,
+            datetime_rebase_spec: RebaseSpec::new(RebaseMode::Corrected, "UTC"),
+            int96_rebase_spec: RebaseSpec::new(RebaseMode::Corrected, "UTC"),
             case_sensitive: false,
             return_null_struct_if_all_fields_missing: true,
             use_field_id: false,
@@ -169,6 +174,12 @@ fn parquet_convert_array(
     parquet_options: &SparkParquetOptions,
 ) -> DataFusionResult<ArrayRef> {
     use DataType::*;
+    let array = rebase_primitive_array(
+        array,
+        to_type,
+        &parquet_options.datetime_rebase_spec,
+        &parquet_options.int96_rebase_spec,
+    )?;
     let from_type = array.data_type().clone();
 
     let array = match &from_type {

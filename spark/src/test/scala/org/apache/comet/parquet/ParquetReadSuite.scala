@@ -1712,9 +1712,8 @@ class ParquetReadV1Suite extends ParquetReadSuite with AdaptiveSparkPlanHelper {
   }
 
   test("reading ancient dates before 1582") {
-    // Verify that legacy dates (before 1582-10-15) are read without error.
-    // Comet does not support datetime rebasing, so these dates are read as if they were
-    // written using the Proleptic Gregorian calendar (no rebase, no exception).
+    // This Spark 3.2 file is marked as using the corrected calendar, so ancient
+    // values must pass through without rebasing.
     val file =
       getResourceParquetFilePath("test-data/before_1582_date_v3_2_0.snappy.parquet")
 
@@ -1730,6 +1729,44 @@ class ParquetReadV1Suite extends ParquetReadSuite with AdaptiveSparkPlanHelper {
     rows.foreach { row =>
       val date = row.getDate(0)
       assert(date.toLocalDate.getYear < 1582, s"Expected date before 1582, got $date")
+    }
+  }
+
+  test("native scan rebases legacy Parquet datetime values") {
+    Seq("TIMESTAMP_MICROS", "INT96").foreach { timestampType =>
+      withTempPath { path =>
+        withSQLConf(
+          SQLConf.SESSION_LOCAL_TIMEZONE.key -> "UTC",
+          SQLConf.PARQUET_OUTPUT_TIMESTAMP_TYPE.key -> timestampType,
+          SQLConf.PARQUET_REBASE_MODE_IN_WRITE.key -> "LEGACY",
+          SQLConf.PARQUET_INT96_REBASE_MODE_IN_WRITE.key -> "LEGACY") {
+          sql("""
+              |SELECT cast(s AS date) AS d, cast(s AS timestamp) AS ts
+              |FROM VALUES ('1000-01-01'), ('1990-01-01') AS v(s)
+              |""".stripMargin).write.parquet(path.toString)
+
+          val result = spark.read
+            .parquet(path.toString)
+            .where("d = date'1000-01-01'")
+            .selectExpr("count(*)", "min(ts)", "max(ts)")
+          val (_, cometPlan) = checkSparkAnswer(result)
+          assert(collect(cometPlan) { case _: CometNativeScanExec => true }.nonEmpty)
+        }
+      }
+    }
+  }
+
+  test("native scan rebases legacy timestamp with a non-table timezone") {
+    withTempPath { path =>
+      withSQLConf(
+        SQLConf.SESSION_LOCAL_TIMEZONE.key -> "GMT+08:00",
+        SQLConf.PARQUET_OUTPUT_TIMESTAMP_TYPE.key -> "TIMESTAMP_MICROS",
+        SQLConf.PARQUET_REBASE_MODE_IN_WRITE.key -> "LEGACY") {
+        sql("SELECT timestamp'1000-01-01 00:00:00' AS ts").write.parquet(path.toString)
+
+        val (_, cometPlan) = checkSparkAnswer(spark.read.parquet(path.toString))
+        assert(collect(cometPlan) { case _: CometNativeScanExec => true }.nonEmpty)
+      }
     }
   }
 

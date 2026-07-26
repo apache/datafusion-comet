@@ -26,6 +26,7 @@ import scala.util.matching.Regex
 import org.apache.spark.QueryContext
 import org.apache.spark.SparkException
 import org.apache.spark.sql.errors.QueryExecutionErrors
+import org.apache.spark.sql.execution.datasources.DataSourceUtils
 import org.apache.spark.sql.execution.datasources.SchemaColumnConvertNotSupportedException
 import org.apache.spark.sql.types._
 import org.apache.spark.unsafe.types.UTF8String
@@ -324,6 +325,9 @@ trait ShimSparkErrorConverter {
             "`spark.sql.parquet.fieldId.read.ignoreMissing = true`")
         val missingPath = params.get("filePath").map(_.toString).getOrElse("")
         Some(QueryExecutionErrors.cannotReadFilesError(missingCause, missingPath))
+
+      case "ParquetDatetimeRebase" =>
+        Some(DataSourceUtils.newRebaseExceptionInRead(params("format").toString))
 
       case "ParquetSchemaConvert" =>
         // Mirror Spark 4.0's FileDataSourceV2: wrap the

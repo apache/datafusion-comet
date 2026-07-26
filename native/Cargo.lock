@@ -1979,6 +1979,7 @@ dependencies = [
  "rand 0.10.2",
  "reqsign-core",
  "reqwest 0.12.28",
+ "serde",
  "serde_json",
  "tempfile",
  "tikv-jemalloc-ctl",

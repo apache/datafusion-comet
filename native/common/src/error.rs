@@ -202,6 +202,9 @@ pub enum SparkError {
     #[error("Spark read schema expects field Ids, but Parquet file schema doesn't contain any field Ids. Please remove the field ids from Spark schema or ignore missing ids by setting `spark.sql.parquet.fieldId.read.ignoreMissing = true`")]
     ParquetMissingFieldIds,
 
+    #[error("Datetime rebasing is required when reading {format}")]
+    ParquetDatetimeRebase { format: String },
+
     /// Schema mismatch when reading a Parquet column under a requested schema
     /// that's incompatible with the physical column type. Translated by the JVM
     /// shim into Spark's `SchemaColumnConvertNotSupportedException`. The
@@ -299,6 +302,7 @@ impl SparkError {
             SparkError::DuplicateFieldCaseInsensitive { .. } => "DuplicateFieldCaseInsensitive",
             SparkError::DuplicateFieldByFieldId { .. } => "DuplicateFieldByFieldId",
             SparkError::ParquetMissingFieldIds => "ParquetMissingFieldIds",
+            SparkError::ParquetDatetimeRebase { .. } => "ParquetDatetimeRebase",
             SparkError::ParquetSchemaConvert { .. } => "ParquetSchemaConvert",
             SparkError::CannotReadFile { .. } => "CannotReadFile",
             SparkError::Arrow(_) => "Arrow",
@@ -525,6 +529,11 @@ impl SparkError {
                     "matchedFields": matched_fields,
                 })
             }
+            SparkError::ParquetDatetimeRebase { format } => {
+                serde_json::json!({
+                    "format": format,
+                })
+            }
             SparkError::ParquetSchemaConvert {
                 file_path,
                 column,
@@ -628,6 +637,9 @@ impl SparkError {
             // file lacks field ids and `spark.sql.parquet.fieldId.read.ignoreMissing=false`.
             SparkError::ParquetMissingFieldIds => "java/lang/RuntimeException",
 
+            // Converted to SparkUpgradeException by the JVM shim.
+            SparkError::ParquetDatetimeRebase { .. } => "org/apache/spark/SparkException",
+
             // ParquetSchemaConvert - converted to SchemaColumnConvertNotSupportedException by the shim
             SparkError::ParquetSchemaConvert { .. } => {
                 "org/apache/spark/sql/execution/datasources/SchemaColumnConvertNotSupportedException"
@@ -721,6 +733,9 @@ impl SparkError {
 
             // ParquetMissingFieldIds is a plain RuntimeException with no error class.
             SparkError::ParquetMissingFieldIds => None,
+
+            // The JVM shim creates Spark's version-specific SparkUpgradeException.
+            SparkError::ParquetDatetimeRebase { .. } => None,
 
             // Parquet schema mismatch — translated to SchemaColumnConvertNotSupportedException
             // by the JVM shim. The shim wraps it in the version-appropriate
@@ -967,6 +982,19 @@ mod tests {
         assert_eq!(parsed["errorClass"], "NULL_MAP_KEY");
         // Params should be an empty object
         assert_eq!(parsed["params"], serde_json::json!({}));
+    }
+
+    #[test]
+    fn test_parquet_datetime_rebase_json() {
+        let error = SparkError::ParquetDatetimeRebase {
+            format: "Parquet".to_string(),
+        };
+        let parsed: serde_json::Value = serde_json::from_str(&error.to_json()).unwrap();
+
+        assert_eq!(parsed["errorType"], "ParquetDatetimeRebase");
+        assert_eq!(parsed["errorClass"], "");
+        assert_eq!(parsed["params"]["format"], "Parquet");
+        assert_eq!(error.exception_class(), "org/apache/spark/SparkException");
     }
 
     #[test]
