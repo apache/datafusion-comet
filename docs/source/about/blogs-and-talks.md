@@ -25,8 +25,8 @@ open a pull request to add it.
 
 ## 📝 Blog Posts
 
+- **2026-07-15**: [Accelerating Apache Spark Queries (and Iceberg Rust Development) with Apache DataFusion Comet](https://iceberg.apache.org/blog/accelerating-iceberg-rust-development-with-datafusion-comet/) — on the Apache Iceberg blog, covering Comet's native Iceberg Parquet scan support.
 - **2024-03-06**: [Announcing Apache Arrow DataFusion Comet](https://arrow.apache.org/blog/2024/03/06/comet-donation/) — the Apache Arrow PMC announces the donation of Comet, a native Spark SQL accelerator built on Apache DataFusion.
-- [Accelerating Apache Spark Queries (and Iceberg Rust Development) with Apache DataFusion Comet](https://iceberg.apache.org/blog/accelerating-iceberg-rust-development-with-datafusion-comet/) — on the Apache Iceberg blog, covering Comet's native Iceberg Parquet scan support.
 
 Release announcements for each Comet version are published on the
 [Apache DataFusion blog](https://datafusion.apache.org/blog/).
