@@ -33,7 +33,7 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Ascending, Attribute, AttributeSet, Expression, ExpressionSet, Generator, NamedExpression, SortOrder}
-import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, AggregateMode, CollectList, CollectSet, Final, First, Last, Partial, PartialMerge, Percentile}
+import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, AggregateMode, CollectList, CollectSet, Final, Partial, PartialMerge, Percentile}
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide}
 import org.apache.spark.sql.catalyst.plans._
 import org.apache.spark.sql.catalyst.plans.physical._
@@ -1742,25 +1742,6 @@ trait CometBaseAggregate {
           case _ =>
             withFallbackReason(aggregate, s"Unsupported aggregation mode ${modes.head}")
             return None
-        }
-      }
-
-      // FIRST/LAST are order-dependent: in PartialMerge mode, DataFusion's hash
-      // table may process rows in a different order than Spark's. CollectSet is
-      // handled separately (floating-point compat in CometCollectSet; streaming
-      // in ShimCometStreaming.isStreamingPlan).
-      // https://github.com/apache/datafusion-comet/issues/4131
-      if (hasPartialMerge) {
-        val unsupportedAggs = aggregateExpressions.filter { a =>
-          a.mode == PartialMerge && (a.aggregateFunction.isInstanceOf[First] ||
-            a.aggregateFunction.isInstanceOf[Last])
-        }
-        if (unsupportedAggs.nonEmpty) {
-          withFallbackReason(
-            aggregate,
-            "PartialMerge not supported for aggregates: " +
-              unsupportedAggs.map(_.aggregateFunction.prettyName).mkString(", "))
-          return None
         }
       }
 
