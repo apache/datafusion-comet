@@ -68,10 +68,12 @@ fn levenshtein_distance(s: &str, t: &str) -> i32 {
             for j in 1..=n {
                 curr[0] = j as i32;
                 for i in 1..=m {
-                    let cost = if s_bytes[i - 1] == t_bytes[j - 1] { 0 } else { 1 };
-                    curr[i] = (prev[i] + 1)
-                        .min(curr[i - 1] + 1)
-                        .min(prev[i - 1] + cost);
+                    let cost = if s_bytes[i - 1] == t_bytes[j - 1] {
+                        0
+                    } else {
+                        1
+                    };
+                    curr[i] = (prev[i] + 1).min(curr[i - 1] + 1).min(prev[i - 1] + cost);
                 }
                 std::mem::swap(prev, curr);
             }
@@ -113,10 +115,12 @@ fn levenshtein_distance(s: &str, t: &str) -> i32 {
         for j in 1..=n {
             curr[0] = j as i32;
             for i in 1..=m {
-                let cost = if s_chars[i - 1] == t_chars[j - 1] { 0 } else { 1 };
-                curr[i] = (prev[i] + 1)
-                    .min(curr[i - 1] + 1)
-                    .min(prev[i - 1] + cost);
+                let cost = if s_chars[i - 1] == t_chars[j - 1] {
+                    0
+                } else {
+                    1
+                };
+                curr[i] = (prev[i] + 1).min(curr[i - 1] + 1).min(prev[i - 1] + cost);
             }
             std::mem::swap(prev, curr);
         }
@@ -171,11 +175,19 @@ fn levenshtein_distance_with_threshold(s: &str, t: &str, threshold: i32) -> i32 
                     return -1;
                 }
 
-                curr[0] = if j <= threshold { j as i32 } else { out_of_band };
+                curr[0] = if j <= threshold {
+                    j as i32
+                } else {
+                    out_of_band
+                };
                 curr[start - 1] = if start == 1 { curr[0] } else { out_of_band };
 
                 for i in start..=end {
-                    let cost = if shorter[i - 1] == longer[j - 1] { 0 } else { 1 };
+                    let cost = if shorter[i - 1] == longer[j - 1] {
+                        0
+                    } else {
+                        1
+                    };
                     curr[i] = prev[i]
                         .saturating_add(1)
                         .min(curr[i - 1].saturating_add(1))
@@ -234,11 +246,19 @@ fn levenshtein_distance_with_threshold(s: &str, t: &str, threshold: i32) -> i32 
                 return -1;
             }
 
-            curr[0] = if j <= threshold { j as i32 } else { out_of_band };
+            curr[0] = if j <= threshold {
+                j as i32
+            } else {
+                out_of_band
+            };
             curr[start - 1] = if start == 1 { curr[0] } else { out_of_band };
 
             for i in start..=end {
-                let cost = if shorter[i - 1] == longer[j - 1] { 0 } else { 1 };
+                let cost = if shorter[i - 1] == longer[j - 1] {
+                    0
+                } else {
+                    1
+                };
                 curr[i] = prev[i]
                     .saturating_add(1)
                     .min(curr[i - 1].saturating_add(1))

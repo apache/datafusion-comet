@@ -43,7 +43,10 @@ fn create_string_arrays(rows: usize) -> (ArrayRef, ArrayRef) {
             .collect::<Vec<&str>>(),
     );
 
-    (Arc::new(left_array) as ArrayRef, Arc::new(right_array) as ArrayRef)
+    (
+        Arc::new(left_array) as ArrayRef,
+        Arc::new(right_array) as ArrayRef,
+    )
 }
 
 fn criterion_benchmark(c: &mut Criterion) {
