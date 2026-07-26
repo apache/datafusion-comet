@@ -15,8 +15,6 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- Routes elt through the codegen dispatcher so behavior matches Spark exactly.
-
 statement
 CREATE TABLE test_elt(n int) USING parquet
 
@@ -24,8 +22,26 @@ statement
 INSERT INTO test_elt VALUES (1), (2), (3), (NULL)
 
 query
-SELECT n, elt(n, 'a', 'b') FROM test_elt
+SELECT elt(0, 'a', 'b', 'c'), elt(-1, 'a', 'b', 'c'), elt(4, 'a', 'b', 'c')
 
--- literal arguments
 query
-SELECT elt(1, 'scala', 'java'), elt(2, 'scala', 'java'), elt(2, 'a', 'b', 'c')
+SELECT elt(n + 1, 'x', 'y', 'z', 'w') FROM test_elt
+
+query
+SELECT elt(1, 'a', NULL, 'c'), elt(2, 'a', NULL, 'c'), elt(3, 'a', NULL, 'c')
+
+statement
+CREATE TABLE test_elt_edge (idx int, v1 string, v2 string, v3 string) USING parquet
+
+statement
+INSERT INTO test_elt_edge VALUES
+  (1, 'foo', 'bar', 'baz'),
+  (2, 'foo', NULL, 'baz'),
+  (3, NULL, 'bar', 'baz'),
+  (4, 'foo', 'bar', 'baz'),
+  (NULL, 'foo', 'bar', 'baz'),
+  (0, 'foo', 'bar', 'baz'),
+  (-1, 'foo', 'bar', 'baz')
+
+query
+SELECT elt(idx, v1, v2, v3) FROM test_elt_edge

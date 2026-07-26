@@ -676,9 +676,10 @@ object CometGetJsonObject extends CometCodegenDispatch[GetJsonObject] with Nativ
     }
 }
 
+object CometElt extends CometScalarFunction[Elt]("elt")
+
 // Expressions routed through the JVM codegen dispatcher: no native implementation, so Spark's own
 // doGenCode runs inside the Comet pipeline, matching Spark exactly.
-object CometElt extends CometCodegenDispatch[Elt]
 
 object CometFindInSet extends CometCodegenDispatch[FindInSet]
 
