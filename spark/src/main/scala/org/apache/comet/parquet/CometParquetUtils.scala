@@ -20,8 +20,10 @@
 package org.apache.comet.parquet
 
 import org.apache.hadoop.conf.Configuration
+import org.apache.hadoop.fs.Path
 import org.apache.parquet.crypto.DecryptionPropertiesFactory
 import org.apache.parquet.crypto.keytools.{KeyToolkit, PropertiesDrivenCryptoFactory}
+import org.apache.parquet.hadoop.ParquetFileReader
 import org.apache.spark.sql.internal.SQLConf
 
 object CometParquetUtils {
@@ -56,6 +58,33 @@ object CometParquetUtils {
 
   def ignoreMissingIds(conf: SQLConf): Boolean =
     conf.getConfString(IGNORE_MISSING_PARQUET_FIELD_ID, "false").toBoolean
+
+  def requiresDatetimeRebase(
+      paths: Seq[Path],
+      conf: Configuration,
+      datetimeMode: String,
+      int96Mode: String,
+      hasDate: Boolean,
+      hasTimestamp: Boolean): Boolean = {
+    paths.exists { path =>
+      val reader = ParquetFileReader.open(conf, path)
+      try {
+        val metadata = reader.getFooter.getFileMetaData.getKeyValueMetaData
+        val version = Option(metadata.get("org.apache.spark.version"))
+        def needsRebase(mode: String, minVersion: String, legacyKey: String): Boolean =
+          version.fold(mode != "CORRECTED")(v =>
+            v < minVersion || metadata.containsKey(legacyKey))
+
+        (hasDate &&
+          needsRebase(datetimeMode, "3.0.0", "org.apache.spark.legacyDateTime")) ||
+        (hasTimestamp &&
+          (needsRebase(datetimeMode, "3.0.0", "org.apache.spark.legacyDateTime") ||
+            needsRebase(int96Mode, "3.1.0", "org.apache.spark.legacyINT96")))
+      } finally {
+        reader.close()
+      }
+    }
+  }
 
   /**
    * Checks if the given Hadoop configuration contains any unsupported encryption settings.

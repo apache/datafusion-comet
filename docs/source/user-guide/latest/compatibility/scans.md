@@ -43,18 +43,16 @@ The following features are not supported and cause Comet to fall back to Spark:
 - No support for `input_file_name()`, `input_file_block_start()`, or `input_file_block_length()` SQL functions.
   Comet's Parquet scan does not use Spark's `FileScanRDD`, so these functions cannot populate their values.
 - No support for `ignoreMissingFiles` or `ignoreCorruptFiles` being set to `true`
+- Files that require datetime rebasing. Comet falls back to Spark when Parquet metadata or
+  `spark.sql.parquet.datetimeRebaseModeInRead` /
+  `spark.sql.parquet.int96RebaseModeInRead` requires legacy-calendar handling. This includes
+  files written by any Spark version with a corresponding legacy rebase mode, not only files
+  written before Spark 3.0. See [#5010](https://github.com/apache/datafusion-comet/issues/5010).
 - `spark.sql.parquet.enableVectorizedReader=false`. Disabling the vectorized reader opts into
   Spark's parquet-mr semantics (silent overflow, null-on-narrowing), which Comet's native reader
   does not replicate. By default Comet falls back to Spark in this case. Set
   `spark.comet.scan.allowDisabledParquetVectorizedReader=true` to opt in to running the
   Comet Parquet scan regardless.
-
-The following limitation may produce incorrect results without falling back to Spark:
-
-- No support for datetime rebasing. When reading Parquet files containing dates or timestamps written before
-  Spark 3.0 (which used a hybrid Julian/Gregorian calendar), dates/timestamps will be read as if they were
-  written using the Proleptic Gregorian calendar. This may produce incorrect results for dates before
-  October 15, 1582.
 
 The following limitations raise an error at scan time rather than falling back to Spark:
 

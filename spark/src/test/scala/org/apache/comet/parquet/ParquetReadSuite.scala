@@ -1733,4 +1733,27 @@ class ParquetReadV1Suite extends ParquetReadSuite with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("fallback for Parquet datetime rebasing") {
+    withTempPath { path =>
+      withSQLConf(
+        SQLConf.PARQUET_REBASE_MODE_IN_WRITE.key -> "LEGACY",
+        SQLConf.PARQUET_INT96_REBASE_MODE_IN_WRITE.key -> "LEGACY") {
+        sql("""
+            |SELECT cast(s AS date) AS d, cast(s AS timestamp) AS ts
+            |FROM VALUES ('1000-01-01'), ('1990-01-01') AS v(s)
+            |""".stripMargin).write.parquet(path.toString)
+      }
+
+      val df = spark.read.parquet(path.toString)
+      val plan = df.queryExecution.executedPlan
+      assert(collect(plan) { case _: CometNativeScanExec => true }.isEmpty)
+      checkAnswer(
+        df.where("d = date'1000-01-01'").selectExpr("count(*)", "min(ts)", "max(ts)"),
+        Row(
+          1L,
+          java.sql.Timestamp.valueOf("1000-01-01 00:00:00"),
+          java.sql.Timestamp.valueOf("1000-01-01 00:00:00")))
+    }
+  }
+
 }
