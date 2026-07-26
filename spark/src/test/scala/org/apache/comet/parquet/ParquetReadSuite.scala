@@ -37,7 +37,7 @@ import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.catalyst.util.DateTimeUtils
 import org.apache.spark.sql.comet.{CometNativeScanExec, CometScanExec}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
-import org.apache.spark.sql.execution.datasources.parquet.ParquetUtils
+import org.apache.spark.sql.execution.datasources.parquet.{ParquetOptions, ParquetUtils}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
@@ -1711,24 +1711,32 @@ class ParquetReadV1Suite extends ParquetReadSuite with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("reading ancient dates before 1582") {
-    // This Spark 3.2 file is marked as using the corrected calendar, so ancient
-    // values must pass through without rebasing.
-    val file =
-      getResourceParquetFilePath("test-data/before_1582_date_v3_2_0.snappy.parquet")
+  test("SPARK-31159, SPARK-37705: native scan honors per-file datetime rebase modes") {
+    Seq(
+      (
+        "timestamp_millis",
+        SQLConf.PARQUET_REBASE_MODE_IN_READ.key,
+        ParquetOptions.DATETIME_REBASE_MODE),
+      (
+        "timestamp_int96_dict",
+        SQLConf.PARQUET_INT96_REBASE_MODE_IN_READ.key,
+        ParquetOptions.INT96_REBASE_MODE)).foreach { case (kind, conf, option) =>
+      val oldFile =
+        getResourceParquetFilePath(s"test-data/before_1582_${kind}_v2_4_5.snappy.parquet")
+      val legacyFile =
+        getResourceParquetFilePath(s"test-data/before_1582_${kind}_v3_2_0.snappy.parquet")
 
-    val df = spark.read.parquet(file)
+      withSQLConf(conf -> "EXCEPTION") {
+        val mixed = spark.read.option(option, "CORRECTED").parquet(oldFile, legacyFile)
+        val (_, cometPlan) = checkSparkAnswer(mixed)
+        assert(collect(cometPlan) { case _: CometNativeScanExec => true }.nonEmpty)
 
-    // Verify Comet scan is in the plan
-    val plan = df.queryExecution.executedPlan
-    checkCometOperators(plan)
-
-    // Verify all 8 rows are read and contain dates before 1582
-    val rows = df.collect()
-    assert(rows.length == 8, s"Expected 8 rows, got ${rows.length}")
-    rows.foreach { row =>
-      val date = row.getDate(0)
-      assert(date.toLocalDate.getYear < 1582, s"Expected date before 1582, got $date")
+        val failing = spark.read.parquet(oldFile)
+        checkCometOperators(failing.queryExecution.executedPlan)
+        val error = intercept[RuntimeException](failing.collect())
+        assert(error.getClass.getName == "org.apache.spark.SparkUpgradeException")
+        assert(error.getMessage.contains(conf))
+      }
     }
   }
 
