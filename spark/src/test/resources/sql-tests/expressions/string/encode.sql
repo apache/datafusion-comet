@@ -46,11 +46,21 @@ SELECT encode(s, 'UTF-16') FROM test_encode
 query
 SELECT encode(s, 'UTF-16BE') FROM test_encode
 
+-- UTF-16 emits a byte-order mark and UTF-16LE does not, so the two differ in output, and
+-- UTF-16LE differs from UTF-16BE in byte order.
+
+query
+SELECT encode(s, 'UTF-16LE') FROM test_encode
+
+query
+SELECT encode(s, 'UTF-32') FROM test_encode
+
 query
 SELECT encode(s, 'ISO-8859-1') FROM test_encode
 
--- US-ASCII: use ASCII-only input. Non-ASCII input under US-ASCII throws on Spark 4.0+ strict
--- mode (matching Spark), so it is not exercised here.
+-- US-ASCII: use ASCII-only input so this file stays version-agnostic. Unmappable input under
+-- US-ASCII substitutes on Spark 3.4/3.5 and throws on Spark 4.0+, so it is covered by the paired
+-- fixtures encode_unmappable.sql and encode_unmappable_strict.sql instead.
 
 statement
 CREATE TABLE test_encode_ascii(s string) USING parquet
