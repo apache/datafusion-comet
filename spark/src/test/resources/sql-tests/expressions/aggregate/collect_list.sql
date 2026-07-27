@@ -247,43 +247,33 @@ query
 SELECT grp, sort_array(collect_list(v)) FROM cl_src_date GROUP BY grp ORDER BY grp
 
 -- ============================================================
--- Timestamp (with NULLs)
+-- Timestamp / Timestamp NTZ (with NULLs). Both are in
+-- QueryPlanSerde.supportedDataType, so both run through the
+-- native SparkCollectList accumulator.
 -- ============================================================
 
 statement
-CREATE TABLE cl_src_ts(v timestamp, grp string) USING parquet
+CREATE TABLE cl_src_ts(v timestamp, v_ntz timestamp_ntz, grp string) USING parquet
 
 statement
 INSERT INTO cl_src_ts VALUES
-  (TIMESTAMP '2024-01-01 00:00:00', 'a'), (TIMESTAMP '2024-06-15 12:30:00', 'a'),
-  (TIMESTAMP '2024-01-01 00:00:00', 'a'), (NULL, 'a'),
-  (TIMESTAMP '1970-01-01 00:00:00', 'b'), (NULL, 'b')
+  (TIMESTAMP '2024-01-01 00:00:00', TIMESTAMP_NTZ '2024-01-01 00:00:00', 'a'),
+  (TIMESTAMP '2024-06-15 12:30:00', TIMESTAMP_NTZ '2024-06-15 12:30:00', 'a'),
+  (TIMESTAMP '2024-01-01 00:00:00', TIMESTAMP_NTZ '2024-01-01 00:00:00', 'a'),
+  (NULL, NULL, 'a'),
+  (TIMESTAMP '1970-01-01 00:00:00', TIMESTAMP_NTZ '1970-01-01 00:00:00', 'b'),
+  (NULL, NULL, 'b')
 
 query
 SELECT grp, sort_array(collect_list(v)) FROM cl_src_ts GROUP BY grp ORDER BY grp
 
--- ============================================================
--- Timestamp NTZ (with NULLs). TimestampNTZType is in
--- QueryPlanSerde.supportedDataType, so this runs through the
--- native SparkCollectList accumulator rather than falling back.
--- ============================================================
-
-statement
-CREATE TABLE cl_src_ts_ntz(v timestamp_ntz, grp string) USING parquet
-
-statement
-INSERT INTO cl_src_ts_ntz VALUES
-  (timestamp_ntz '2024-01-01 00:00:00', 'a'), (timestamp_ntz '2024-06-15 12:30:00', 'a'),
-  (timestamp_ntz '2024-01-01 00:00:00', 'a'), (NULL, 'a'),
-  (timestamp_ntz '1970-01-01 00:00:00', 'b'), (NULL, 'b')
-
 query
-SELECT grp, sort_array(collect_list(v)) FROM cl_src_ts_ntz GROUP BY grp ORDER BY grp
+SELECT grp, sort_array(collect_list(v_ntz)) FROM cl_src_ts GROUP BY grp ORDER BY grp
 
 -- ============================================================
 -- ANSI intervals (with NULLs). Neither YearMonthIntervalType nor
 -- DayTimeIntervalType is in QueryPlanSerde.supportedDataType, so
--- these fall back to Spark and only the answer is checked.
+-- the scan rejects the column and the query falls back to Spark.
 -- ============================================================
 
 statement
@@ -299,10 +289,10 @@ INSERT INTO cl_src_interval VALUES
   (INTERVAL '-3-4' YEAR TO MONTH, INTERVAL '-5 06:07:08' DAY TO SECOND, 'b'),
   (NULL, NULL, 'b')
 
-query spark_answer_only
+query expect_fallback(Unsupported ym of type YearMonthIntervalType)
 SELECT grp, sort_array(collect_list(ym)) FROM cl_src_interval GROUP BY grp ORDER BY grp
 
-query spark_answer_only
+query expect_fallback(Unsupported dt of type DayTimeIntervalType)
 SELECT grp, sort_array(collect_list(dt)) FROM cl_src_interval GROUP BY grp ORDER BY grp
 
 -- ============================================================
