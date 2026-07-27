@@ -48,5 +48,6 @@
 - Spark 4.0.1 (audited 2026-05-27): byte-for-byte identical to 3.5.8.
 - Spark 4.1.1 (audited 2026-05-27): byte-for-byte identical to 3.5.8.
 - Known limitation: `Size` over `MapType` falls back to Spark (https://github.com/apache/datafusion-comet/issues/4472).
+- Performance (tuned 2026-07-10, PR #4877): compute list row sizes from the offset buffer instead of allocating a sliced `ArrayRef` per row via `list_array.value(i)`, removing one heap allocation per row. ~94% faster. Benchmark: `benches/array_size.rs`.
 
 [Spark Expression Support]: ../../user-guide/latest/expressions.md

@@ -51,6 +51,7 @@ object IcebergReflection extends Logging {
     val UNBOUND_PREDICATE = "org.apache.iceberg.expressions.UnboundPredicate"
     val SPARK_BATCH_QUERY_SCAN = "org.apache.iceberg.spark.source.SparkBatchQueryScan"
     val SPARK_STAGED_SCAN = "org.apache.iceberg.spark.source.SparkStagedScan"
+    val SPARK_SCHEMA_UTIL = "org.apache.iceberg.spark.SparkSchemaUtil"
   }
 
   /**
@@ -159,6 +160,21 @@ object IcebergReflection extends Logging {
     }
   }
 
+  /** The file format of a ContentFile (data or delete file), e.g. "PARQUET", "AVRO", "ORC". */
+  def getFileFormat(file: Any): Option[String] = {
+    try {
+      // Resolve format() on the public ContentFile interface. Iceberg's concrete file impls are
+      // package-private, so a method resolved on the concrete class throws IllegalAccessException
+      // when invoked.
+      // TODO callers in a loop (e.g. validateIcebergFileScanTasks) already hold a cached
+      // contentFileClass; add an overload that takes it to avoid reloading per file.
+      val contentFileClass = loadClass(ClassNames.CONTENT_FILE)
+      Some(contentFileClass.getMethod("format").invoke(file).toString)
+    } catch {
+      case _: Exception => None
+    }
+  }
+
   /**
    * Gets the Iceberg Table from a SparkScan.
    *
@@ -248,13 +264,15 @@ object IcebergReflection extends Logging {
     if (isStagedScan(scan)) {
       Some(java.util.Collections.emptyList[AnyRef]())
     } else {
-      findMethodInHierarchy(scan.getClass, "filterExpressions") match {
+      // Iceberg 1.11 renamed SparkScan.filterExpressions() to filters(); 1.8-1.10 use the old name.
+      findMethodInHierarchy(scan.getClass, "filters")
+        .orElse(findMethodInHierarchy(scan.getClass, "filterExpressions")) match {
         case Some(method) =>
           Some(method.invoke(scan).asInstanceOf[java.util.List[_]])
         case None =>
           logError(
             "Iceberg reflection failure: Failed to get filter expressions from SparkScan: " +
-              s"filterExpressions() not found on ${scan.getClass.getName}")
+              s"filters()/filterExpressions() not found on ${scan.getClass.getName}")
           None
       }
     }
@@ -350,6 +368,81 @@ object IcebergReflection extends Logging {
       case e: Exception =>
         logError(s"Iceberg reflection failure: Failed to get schema from table: ${e.getMessage}")
         None
+    }
+  }
+
+  /**
+   * All schema versions a table has had (table.schemas().values()), for resolving field ids of
+   * columns that have since been dropped -- mirrors Iceberg-Java's FieldLookup. table.schemas()
+   * is stable across Iceberg 1.5-1.11.
+   */
+  def getAllSchemas(table: Any): Seq[Any] = {
+    import scala.jdk.CollectionConverters._
+    try {
+      table.getClass
+        .getMethod("schemas")
+        .invoke(table)
+        .asInstanceOf[java.util.Map[_, _]]
+        .values()
+        .asScala
+        .toSeq
+    } catch {
+      case e: Exception =>
+        logDebug(s"Iceberg reflection: table.schemas() not available: ${e.getMessage}")
+        Seq.empty
+    }
+  }
+
+  /** Returns the `Types.NestedField` for `fieldId` in `schema`, or None. */
+  def findFieldObject(schema: Any, fieldId: Int): Option[Any] = {
+    try {
+      val findFieldMethod = schema.getClass.getMethod("findField", classOf[Int])
+      Option(findFieldMethod.invoke(schema, fieldId.asInstanceOf[AnyRef]))
+    } catch {
+      case _: Exception => None
+    }
+  }
+
+  /**
+   * Returns a schema equal to `baseSchema` but guaranteed to contain `requiredFieldIds`. Any id
+   * not already present is resolved from the table's schema history (`table.schemas()`) and
+   * appended.
+   *
+   * This mirrors Iceberg-Java's `DeleteFilter.fileProjection`: an equality delete may be keyed on
+   * a column that has since been dropped from the current schema, and iceberg-rust needs that
+   * column in the task schema to read and apply the delete. Called at serialization time, so it
+   * throws on failure (a required id that cannot be resolved, or any reflection error) rather
+   * than silently degrading; CometScanRule is responsible for falling back before we get here.
+   */
+  def schemaWithRequiredFields(baseSchema: Any, table: Any, requiredFieldIds: Seq[Int]): Any = {
+    val existingIds = buildFieldIdMapping(baseSchema).values.toSet
+    val missingIds = requiredFieldIds.distinct.filterNot(existingIds.contains)
+    if (missingIds.isEmpty) {
+      baseSchema
+    } else {
+      logDebug(
+        s"Iceberg equality delete references field id(s) ${missingIds.mkString(",")} absent from " +
+          "the task schema; resolving from table schema history to build the native scan schema")
+      val history = getAllSchemas(table)
+      val resolvedFields = missingIds.map { id =>
+        history.iterator
+          .flatMap(s => findFieldObject(s, id))
+          .toSeq
+          .headOption
+          .getOrElse(throw new IllegalStateException(
+            s"Cannot resolve equality-delete field id $id in table schema history"))
+      }
+      val existing =
+        baseSchema.getClass
+          .getMethod("columns")
+          .invoke(baseSchema)
+          .asInstanceOf[java.util.List[_]]
+      val newColumns = new java.util.ArrayList[Any](existing)
+      resolvedFields.foreach(newColumns.add)
+      baseSchema.getClass
+        .getConstructor(classOf[java.util.List[_]])
+        .newInstance(newColumns)
+        .asInstanceOf[AnyRef]
     }
   }
 
@@ -527,15 +620,19 @@ object IcebergReflection extends Logging {
    *   The expected Iceberg Schema, or None if reflection fails
    */
   def getExpectedSchema(scan: Any): Option[Any] = {
-    findMethodInHierarchy(scan.getClass, "expectedSchema").flatMap { schemaMethod =>
-      try {
-        Some(schemaMethod.invoke(scan))
-      } catch {
-        case e: Exception =>
-          logError(s"Failed to get expectedSchema from SparkScan: ${e.getMessage}")
-          None
+    // Iceberg 1.11 renamed SparkScan.expectedSchema() to projection() (the projected read
+    // schema); 1.8-1.10 still expose expectedSchema(). Try the new name first, then fall back.
+    findMethodInHierarchy(scan.getClass, "projection")
+      .orElse(findMethodInHierarchy(scan.getClass, "expectedSchema"))
+      .flatMap { schemaMethod =>
+        try {
+          Some(schemaMethod.invoke(scan))
+        } catch {
+          case e: Exception =>
+            logError(s"Failed to get projection/expectedSchema from SparkScan: ${e.getMessage}")
+            None
+        }
       }
-    }
   }
 
   /**
@@ -575,6 +672,42 @@ object IcebergReflection extends Logging {
       case e: Exception =>
         logWarning(s"Failed to build field ID mapping from schema: ${e.getMessage}")
         Map.empty[String, Int]
+    }
+  }
+
+  /**
+   * Top-level column names whose Iceberg type iceberg-rust's page-index evaluator cannot prune
+   * over, so callers must not push a residual predicate on them, not even the IS NOT NULL that
+   * Iceberg adds for every filtered column. Two physical layouts fail (page_index_evaluator.rs):
+   *   - FIXED_LEN_BYTE_ARRAY (decimal, uuid, fixed): rejected outright as an unsupported index
+   *     type, which fails the native scan.
+   *   - BYTE_ARRAY backing a binary column: the evaluator decodes column-index min/max as UTF-8
+   *     (String::from_utf8(..).unwrap()) before the predicate closure runs, so non-UTF-8 bounds
+   *     panic the native scan even for a bare IS [NOT] NULL. Extend this set as Iceberg adds
+   *     types with either layout (e.g. geometry).
+   */
+  def pageIndexUnsupportedColumns(schema: Any): Set[String] = {
+    import scala.jdk.CollectionConverters._
+    try {
+      val columns = schema.getClass
+        .getMethod("columns")
+        .invoke(schema)
+        .asInstanceOf[java.util.List[_]]
+      columns.asScala.flatMap { column =>
+        val name = column.getClass.getMethod("name").invoke(column).asInstanceOf[String]
+        val typeStr = column.getClass.getMethod("type").invoke(column).toString
+        if (typeStr.startsWith("decimal(") || typeStr == "uuid" || typeStr.startsWith("fixed[") ||
+          typeStr == "binary") {
+          Some(name)
+        } else {
+          None
+        }
+      }.toSet
+    } catch {
+      case e: Exception =>
+        logWarning(
+          s"Failed to inspect schema for page-index-unsupported columns: ${e.getMessage}")
+        Set.empty[String]
     }
   }
 
@@ -639,6 +772,68 @@ object IcebergReflection extends Logging {
 
     unsupportedTypes.toList
   }
+
+  /**
+   * Returns the names of schema columns (including nested struct/list/map fields) that declare a
+   * V3 initial-default value. iceberg-rust does not synthesize default values for columns absent
+   * from a data file, so reads projecting such columns must fall back. Throws on reflection
+   * failure so the caller can fall back rather than risk a native crash.
+   */
+  def columnsWithInitialDefault(schema: Any): List[String] = {
+    import scala.jdk.CollectionConverters._
+    val columns =
+      schema.getClass.getMethod("columns").invoke(schema).asInstanceOf[java.util.List[_]]
+    columns.asScala.flatMap(walkFieldForDefault).toList
+  }
+
+  private def walkFieldForDefault(field: Any): List[String] = {
+    import scala.jdk.CollectionConverters._
+    val name = field.getClass.getMethod("name").invoke(field).asInstanceOf[String]
+    val here =
+      if (field.getClass.getMethod("initialDefault").invoke(field) != null) List(name) else Nil
+    val fieldType = field.getClass.getMethod("type").invoke(field)
+    val nested =
+      if (fieldType.getClass.getMethod("isNestedType").invoke(fieldType).asInstanceOf[Boolean]) {
+        val nestedType = fieldType.getClass.getMethod("asNestedType").invoke(fieldType)
+        val fields =
+          nestedType.getClass
+            .getMethod("fields")
+            .invoke(nestedType)
+            .asInstanceOf[java.util.List[_]]
+        fields.asScala.flatMap(walkFieldForDefault).toList
+      } else {
+        Nil
+      }
+    here ++ nested
+  }
+
+  /**
+   * Converts an Iceberg `Schema` to the Spark `StructType` it reads as, via
+   * `SparkSchemaUtil.convert`. Comet serializes the whole table/scan schema to native (not just
+   * projected columns), so callers use this to run the schema through Comet's existing type
+   * allow-list and fall back if any column is a type the native reader does not support (e.g.
+   * variant). Throws on reflection failure so the caller can fall back.
+   */
+  def toSparkSchema(schema: Any): org.apache.spark.sql.types.StructType = {
+    val sparkSchemaUtil = loadClass(ClassNames.SPARK_SCHEMA_UTIL)
+    val schemaClass = loadClass(ClassNames.SCHEMA)
+    val convert = sparkSchemaUtil.getMethod("convert", schemaClass)
+    convert
+      .invoke(null, schema.asInstanceOf[AnyRef])
+      .asInstanceOf[org.apache.spark.sql.types.StructType]
+  }
+
+  /**
+   * The configured AES data-key length in bytes for an encrypted table (Iceberg's
+   * `encryption.data-key-length`, default 16), or None if the table is not encrypted. Comet's
+   * native Parquet reader supports 128-bit (16-byte) and 256-bit (32-byte) keys but not 192-bit
+   * (the underlying crypto has no AES-192-GCM), so callers fall back for anything else. Throws on
+   * reflection failure so the caller can fall back.
+   */
+  def encryptionDataKeyLength(table: Any): Option[Int] =
+    getTableProperties(table).filter(_.containsKey("encryption.key-id")).map { props =>
+      Option(props.get("encryption.data-key-length")).map(_.toInt).getOrElse(16)
+    }
 }
 
 /**

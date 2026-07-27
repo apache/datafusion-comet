@@ -56,9 +56,9 @@ jobs:
       github.event_name != 'pull_request' ||
       github.event.action != 'labeled' ||
       github.event.label.name == 'run-spark-3.4-tests' ||
-
       github.event.label.name == 'run-spark-4.0-tests' ||
-      github.event.label.name == 'run-spark-4.1-tests'
+      github.event.label.name == 'run-spark-4.1-tests' ||
+      github.event.label.name == 'run-iceberg-tests'
     steps:
       - uses: actions/checkout@v7
 
@@ -72,7 +72,7 @@ jobs:
         run: ./mvnw -B -N apache-rat:check
 
       - name: Setup Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version: '24'
 
@@ -117,6 +117,7 @@ jobs:
       iceberg_1_8:  ${{ steps.compute.outputs.iceberg_1_8 }}
       iceberg_1_9:  ${{ steps.compute.outputs.iceberg_1_9 }}
       iceberg_1_10: ${{ steps.compute.outputs.iceberg_1_10 }}
+      iceberg_1_11: ${{ steps.compute.outputs.iceberg_1_11 }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -136,7 +137,7 @@ jobs:
         run: |
           set -euo pipefail
           if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
-            for key in build_linux build_macos benchmark docs spark_3_4 spark_3_5 spark_4_0 spark_4_1 iceberg_1_8 iceberg_1_9 iceberg_1_10; do
+            for key in build_linux build_macos benchmark docs spark_3_4 spark_3_5 spark_4_0 spark_4_1 iceberg_1_8 iceberg_1_9 iceberg_1_10 iceberg_1_11; do
               echo "${key}=true" >> "$GITHUB_OUTPUT"
             done
             exit 0
@@ -265,10 +266,13 @@ jobs:
   iceberg_1_8:
     name: Iceberg Spark SQL Tests (Iceberg 1.8)
     needs: changes
-    # Main-only; never runs on PR events.
+    # Main-only by default; PRs need the `run-iceberg-tests` label.
     if: |
       needs.changes.outputs.iceberg_1_8 == 'true' &&
-      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+      (github.event_name == 'push' ||
+       github.event_name == 'workflow_dispatch' ||
+       (github.event_name == 'pull_request' &&
+        contains(github.event.pull_request.labels.*.name, 'run-iceberg-tests')))
     uses: ./.github/workflows/iceberg_spark_test_reusable.yml
     with:
       iceberg-short: '1.8'
@@ -280,10 +284,13 @@ jobs:
   iceberg_1_9:
     name: Iceberg Spark SQL Tests (Iceberg 1.9)
     needs: changes
-    # Main-only; never runs on PR events.
+    # Main-only by default; PRs need the `run-iceberg-tests` label.
     if: |
       needs.changes.outputs.iceberg_1_9 == 'true' &&
-      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+      (github.event_name == 'push' ||
+       github.event_name == 'workflow_dispatch' ||
+       (github.event_name == 'pull_request' &&
+        contains(github.event.pull_request.labels.*.name, 'run-iceberg-tests')))
     uses: ./.github/workflows/iceberg_spark_test_reusable.yml
     with:
       iceberg-short: '1.9'
@@ -295,15 +302,35 @@ jobs:
   iceberg_1_10:
     name: Iceberg Spark SQL Tests (Iceberg 1.10)
     needs: changes
+    # Main-only by default; PRs need the `run-iceberg-tests` label. Iceberg 1.11
+    # (Spark 4.1) is the PR-gated Iceberg job; 1.10 covers the Spark 3.5 path.
     if: |
       needs.changes.outputs.iceberg_1_10 == 'true' &&
       (github.event_name == 'push' ||
        github.event_name == 'workflow_dispatch' ||
-       github.event_name == 'pull_request')
+       (github.event_name == 'pull_request' &&
+        contains(github.event.pull_request.labels.*.name, 'run-iceberg-tests')))
     uses: ./.github/workflows/iceberg_spark_test_reusable.yml
     with:
       iceberg-short: '1.10'
       iceberg-full: '1.10.0'
       spark-short: '3.5'
       spark-full: '3.5.8'
+      java: 17
+
+  iceberg_1_11:
+    name: Iceberg Spark SQL Tests (Iceberg 1.11)
+    needs: changes
+    # Runs on every PR: Iceberg 1.11 is our only Spark 4.1 Iceberg coverage.
+    if: |
+      needs.changes.outputs.iceberg_1_11 == 'true' &&
+      (github.event_name == 'push' ||
+       github.event_name == 'workflow_dispatch' ||
+       github.event_name == 'pull_request')
+    uses: ./.github/workflows/iceberg_spark_test_reusable.yml
+    with:
+      iceberg-short: '1.11'
+      iceberg-full: '1.11.0'
+      spark-short: '4.1'
+      spark-full: '4.1.2'
       java: 17

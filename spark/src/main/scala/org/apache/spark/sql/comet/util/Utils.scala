@@ -98,7 +98,12 @@ object Utils extends CometTypeShim with Logging {
     case float: ArrowType.FloatingPoint if float.getPrecision == FloatingPointPrecision.DOUBLE =>
       DoubleType
     case ArrowType.Utf8.INSTANCE => StringType
+    // Large (64-bit offset) variants: a PyArrow UDF's Python output may use large_string /
+    // large_binary (e.g. pandas 3 backs string columns with Arrow large types), and mapInArrow
+    // passes those types straight through to the JVM. CometPlainVector reads both offset widths.
+    case ArrowType.LargeUtf8.INSTANCE => StringType
     case ArrowType.Binary.INSTANCE => BinaryType
+    case ArrowType.LargeBinary.INSTANCE => BinaryType
     case _: ArrowType.FixedSizeBinary => BinaryType
     case d: ArrowType.Decimal => DecimalType(d.getPrecision, d.getScale)
     case date: ArrowType.Date if date.getUnit == DateUnit.DAY => DateType
@@ -110,6 +115,9 @@ object Utils extends CometTypeShim with Logging {
     case yi: ArrowType.Interval if yi.getUnit == IntervalUnit.YEAR_MONTH =>
       YearMonthIntervalType()
     case di: ArrowType.Interval if di.getUnit == IntervalUnit.DAY_TIME => DayTimeIntervalType()
+    case ci: ArrowType.Interval if ci.getUnit == IntervalUnit.MONTH_DAY_NANO =>
+      CalendarIntervalType
+    case d: ArrowType.Duration if d.getUnit == TimeUnit.MICROSECOND => DayTimeIntervalType()
     case t: ArrowType.Time if t.getUnit == TimeUnit.NANOSECOND && t.getBitWidth == 64 =>
       // scalastyle:off classforname
       val clazz = Class.forName("org.apache.spark.sql.types.TimeType$")
@@ -153,6 +161,11 @@ object Utils extends CometTypeShim with Logging {
       case NullType => ArrowType.Null.INSTANCE
       case dt if isTimeType(dt) =>
         new ArrowType.Time(TimeUnit.NANOSECOND, 64)
+      case _: YearMonthIntervalType => new ArrowType.Interval(IntervalUnit.YEAR_MONTH)
+      // Spark stores DayTimeIntervalType as microseconds in an int64, matching Arrow
+      // Duration(Microsecond) rather than the lossy Interval(DayTime) {days, millis} layout.
+      case _: DayTimeIntervalType => new ArrowType.Duration(TimeUnit.MICROSECOND)
+      case CalendarIntervalType => new ArrowType.Interval(IntervalUnit.MONTH_DAY_NANO)
       case _ =>
         throw new UnsupportedOperationException(
           s"Unsupported data type: [${dt.getClass.getName}] ${dt.catalogString}")

@@ -32,7 +32,7 @@
 - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
 - Spark 3.5.8 (audited 2026-05-27): baseline. `(StringType|BinaryType) -> IntegerType`; eval returns `numBytes * 8` for strings and `.length * 8` for binary.
 - Spark 4.0.1 (audited 2026-05-27): `inputTypes` widened to `StringTypeWithCollation(supportsTrimCollation = true)`; semantics unchanged for `UTF8_BINARY`. Non-default collations not honoured by Comet (https://github.com/apache/datafusion-comet/issues/4496).
-- Known limitation: wired as a raw `CometScalarFunction("bit_length")` with no `BinaryType` guard. DataFusion's `BitLengthFunc` signature only accepts string types, so `bit_length(<binary>)` execute-fails on the native side instead of falling back cleanly (https://github.com/apache/datafusion-comet/issues/4464).
+- `BinaryType` input is reported `Unsupported` in `getSupportLevel`, so `bit_length(<binary>)` falls back to Spark cleanly (DataFusion's `BitLengthFunc` signature accepts string types only).
 
 ## btrim
 
@@ -81,7 +81,8 @@
 - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
 - Spark 3.5.8 (audited 2026-05-27): baseline. `StringDecode(bin, charset)` evaluated directly; invalid sequences silently substitute replacement characters via `new String(bytes, charset)`.
 - Spark 4.0.1 (audited 2026-05-27): refactored to `RuntimeReplaceable` whose `replacement` is a `StaticInvoke(StringDecode.decode, bin, charset, legacyCharsets, legacyErrorAction)`; the 4-arg form raises on malformed input unless legacy flags are set.
-- Known limitations: Comet handles `decode` via `CommonStringExprs.stringDecode` from the version shims (no `CometExpressionSerde[StringDecode]` registration, so the function does not surface in the auto-generated compatibility docs: https://github.com/apache/datafusion-comet/issues/4466). Only literal `charset = 'utf-8'` (case-insensitive) is supported; everything else falls back. The Spark 4.0 `legacyCharsets` / `legacyErrorAction` flags are ignored: Comet always lowers to `Cast(bin, StringType, TRY)`, so invalid UTF-8 yields NULL where Spark 3.x substitutes replacement characters and Spark 4.0 (non-legacy) raises (https://github.com/apache/datafusion-comet/issues/4465).
+- `decode` runs through the codegen dispatcher on all versions (Spark 3.x via `CometStringDecode`, Spark 4.0 via the `StaticInvoke` replacement routed to `CometStaticInvokeCodegenDispatch`), so Spark's own evaluation runs inside the Comet pipeline. This honours the `charset` argument and the Spark 4.0 `legacyCharsets` / `legacyErrorAction` flags, and falls back to Spark when the dispatcher is disabled.
+- Known limitation: because there is no `CometExpressionSerde[StringDecode]` registration, `decode` does not surface in the auto-generated compatibility docs (https://github.com/apache/datafusion-comet/issues/4466).
 
 ## endswith
 
@@ -110,7 +111,7 @@
 ## left
 
 - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
-- Spark 3.5.8 (audited 2026-05-27): baseline. `RuntimeReplaceable` with `replacement = Substring(str, Literal(1), len)`; accepts `StringType` or `BinaryType` plus `IntegerType`. Comet serde rewrites to a `Substring` proto with `start=1, len=lenValue`. `getSupportLevel` declares `Unsupported` for non-literal `len` so the dispatcher falls back uniformly.
+- Spark 3.5.8 (audited 2026-05-27): baseline. `RuntimeReplaceable` with `replacement = Substring(str, Literal(1), len)`; accepts `StringType` or `BinaryType` plus `IntegerType`. Comet serde serialises `expr.replacement`, routing through `SparkSubstring` — so non-literal `len` is supported.
 - Spark 4.0.1 (audited 2026-05-27): `inputTypes` widened with `StringTypeWithCollation`; behaviour unchanged for `UTF8_BINARY`. Non-default collations not honoured by Comet (https://github.com/apache/datafusion-comet/issues/4496).
 
 ## len
@@ -149,7 +150,7 @@
 - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
 - Spark 3.5.8 (audited 2026-05-27): baseline. `(StringType|BinaryType) -> IntegerType`; eval returns `numBytes` for strings and `.length` for binary.
 - Spark 4.0.1 (audited 2026-05-27): `inputTypes` widened to `StringTypeWithCollation`; semantics unchanged for `UTF8_BINARY`. Non-default collations not honoured by Comet (https://github.com/apache/datafusion-comet/issues/4496).
-- Known limitation: wired as a raw `CometScalarFunction("octet_length")` with no `BinaryType` guard. DataFusion's `OctetLengthFunc` signature only accepts string types, so `octet_length(<binary>)` execute-fails on the native side instead of falling back cleanly (https://github.com/apache/datafusion-comet/issues/4464).
+- `BinaryType` input is reported `Unsupported` in `getSupportLevel`, so `octet_length(<binary>)` falls back to Spark cleanly (DataFusion's `OctetLengthFunc` signature accepts string types only).
 
 ## regexp_replace
 
@@ -173,7 +174,7 @@
 ## right
 
 - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
-- Spark 3.5.8 (audited 2026-05-27): baseline. `RuntimeReplaceable` with `replacement = If(IsNull(str), null, If(len <= 0, "", Substring(str, -len, len)))`; accepts `StringType` plus `IntegerType`. Comet serde rewrites positive `len` to a `Substring` proto with `start=-len, len=len`; for `len <= 0` it builds an `If(IsNull(str), null, "")` proto chain to preserve NULL propagation. `getSupportLevel` declares `Unsupported` for non-literal `len` so the dispatcher falls back uniformly.
+- Spark 3.5.8 (audited 2026-05-27): baseline. `RuntimeReplaceable` with `replacement = If(IsNull(str), null, If(len <= 0, "", Substring(str, -len, len)))`; accepts `StringType` plus `IntegerType`. Comet serde serialises `expr.replacement`, so NULL propagation for `len <= 0` and non-literal `len` are handled by the replacement tree itself.
 - Spark 4.0.1 (audited 2026-05-27): `inputTypes` widened with collation; uses `UnaryMinus(len, failOnError = false)` to avoid integer-overflow exceptions on `len = Int.MinValue`. Semantics unchanged for `UTF8_BINARY`. Non-default collations not honoured by Comet (https://github.com/apache/datafusion-comet/issues/4496).
 
 ## rpad
@@ -216,8 +217,8 @@
 ## substring
 
 - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
-- Spark 3.5.8 (audited 2026-05-27): baseline. `TernaryExpression`; two-arg form defaults `len = Integer.MAX_VALUE`; supports `StringType` and `BinaryType`. Comet serializes to a dedicated `Substring` proto. `getSupportLevel` declares `Unsupported` when either `pos` or `len` is not a `Literal` so the dispatcher falls back uniformly.
-- Spark 4.0.1 (audited 2026-05-27): `inputTypes` widened with `StringTypeWithCollation`; semantics unchanged for `UTF8_BINARY`. Native `SubstringExpr` implements Spark's negative-start clamping and is exercised against ASCII, multibyte UTF-8, emoji, decomposed and Telugu inputs. Non-default collations not honoured by Comet (https://github.com/apache/datafusion-comet/issues/4496).
+- Spark 3.5.8 (audited 2026-05-27): baseline. `TernaryExpression`; two-arg form defaults `len = Integer.MAX_VALUE`; supports `StringType` and `BinaryType`. Comet routes through the `datafusion-spark` `SparkSubstring` UDF (registered as `substring`), which accepts non-literal `pos`/`len` and Utf8/Utf8View/Binary/LargeBinary/BinaryView inputs.
+- Spark 4.0.1 (audited 2026-05-27): `inputTypes` widened with `StringTypeWithCollation`; semantics unchanged for `UTF8_BINARY`. `SparkSubstring` implements Spark's 1-indexed, negative-start, and negative-length clamping. Non-default collations not honoured by Comet (https://github.com/apache/datafusion-comet/issues/4496).
 
 ## substring_index
 
@@ -230,7 +231,7 @@
 - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
 - Spark 3.5.8 (audited 2026-05-27): baseline. `StringTranslate(src, from, to)`; `UTF8String.translate(dict)` is code-point based, and any character mapped explicitly to U+0000 in `to` is also deleted.
 - Spark 4.0.1 (audited 2026-05-27): routes through `CollationSupport.StringTranslate.exec`; semantics unchanged for `UTF8_BINARY`. Non-default collations not honoured by Comet (https://github.com/apache/datafusion-comet/issues/4496).
-- Known divergence: DataFusion's `translate` is grapheme-based (Spark uses code points), and does not delete characters mapped to U+0000 in `to`. Currently the support level is `Compatible` (https://github.com/apache/datafusion-comet/issues/4463).
+- Marked `Incompatible`: DataFusion's `translate` iterates over Unicode graphemes (Spark uses code points) and substitutes U+0000 instead of treating it as a deletion sentinel. It falls back to Spark by default and runs natively only when incompatible expressions are explicitly allowed.
 
 ## trim
 

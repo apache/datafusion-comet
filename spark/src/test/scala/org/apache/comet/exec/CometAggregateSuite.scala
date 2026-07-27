@@ -48,6 +48,65 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   override protected def sparkConf: SparkConf =
     super.sparkConf.set(SQLConf.ANSI_ENABLED.key, "false")
 
+  test("collect_list over struct with non-nullable fields") {
+    // Building a struct from non-nullable columns yields non-nullable struct fields. The native
+    // collect_list accumulator emits a list whose element fields are all nullable, so the produced
+    // array must be reconciled with the declared aggregate output type, otherwise the grouped
+    // native aggregate fails with "column types must match schema types".
+    import org.apache.spark.sql.functions.{collect_list, expr}
+    import org.apache.spark.sql.execution.LocalTableScanExec
+    // One row per (a, b) group keeps each collected list deterministic for the answer comparison.
+    // repartition inserts a Comet exchange so the aggregate runs natively over a Comet child; the
+    // in-memory source stays a (non-Comet) LocalTableScan, which we allow via excludedClasses.
+    val df = Seq(("1", "2", 1), ("2", "3", 3))
+      .toDF("a", "b", "c")
+      .repartition(col("a"))
+      .withColumn("d", expr("named_struct('a', a, 'b', b, 'c', c)"))
+    val include = Seq(classOf[CometHashAggregateExec])
+    // Single grouped collect_list of a struct with a non-nullable field.
+    checkSparkAnswerAndOperator(
+      df.groupBy("a", "b").agg(collect_list("d")),
+      include,
+      classOf[LocalTableScanExec])
+    // Multi-stage: the array<struct> result flows through a projection into a second collect_list
+    // (the SPARK-22223 plan shape), so the nested struct field nullability must round-trip.
+    checkSparkAnswerAndOperator(
+      df.groupBy("a", "b")
+        .agg(collect_list("d").as("e"))
+        .withColumn("f", expr("named_struct('b', b, 'e', e)"))
+        .groupBy("a")
+        .agg(collect_list("f")),
+      include,
+      classOf[LocalTableScanExec])
+  }
+
+  test("collect_list/collect_set combined with distinct aggregate falls back safely") {
+    // SPARK-17616: a distinct aggregate combined with collect_list/collect_set produces a
+    // multi-stage plan where the buffer-producing Partial may run in Spark (e.g. over a
+    // non-native LocalTableScan). Comet cannot read Spark's serialized Binary buffer, so the
+    // dependent PartialMerge/Final stages must also fall back rather than crash. See issue #4724
+    // for enabling the fully-native distinct path.
+    import org.apache.spark.sql.functions.{collect_list, collect_set, sort_array}
+    // Non-native source (LocalTableScan): the buffer-producing Partial runs in Spark.
+    val df = Seq((1, 3, "a"), (1, 2, "b"), (3, 4, "c"), (3, 4, "c"), (3, 5, "d"))
+      .toDF("x", "y", "z")
+    checkSparkAnswer(
+      df.groupBy(col("x")).agg(count_distinct(col("y")), sort_array(collect_list(col("z")))))
+    checkSparkAnswer(
+      df.groupBy(col("x")).agg(count_distinct(col("y")), sort_array(collect_set(col("z")))))
+
+    // Native source (Parquet): the whole multi-stage distinct chain must still fall back to
+    // Spark consistently (issue #4724), rather than running a fully-native pipeline that crashes.
+    withParquetTable(
+      Seq((1, 3, "a"), (1, 2, "b"), (3, 4, "c"), (3, 4, "c"), (3, 5, "d")),
+      "t17616") {
+      for (fn <- Seq("collect_list", "collect_set")) {
+        checkSparkAnswer(
+          sql(s"SELECT _1, count(distinct _2), sort_array($fn(_3)) FROM t17616 GROUP BY _1"))
+      }
+    }
+  }
+
   test("min/max floating point with negative zero") {
     val r = new Random(42)
     val schema = StructType(
@@ -104,6 +163,31 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         // once this is fixed, we should change this test to
         // checkSparkAnswerAndNumOfAggregates
         checkSparkAnswer(s"SELECT c1, avg(c7) FROM $tableName GROUP BY c1 ORDER BY c1")
+      }
+    }
+  }
+
+  // Regression test for the approx_percentile distinct-aggregate crash: an aggregate with an
+  // incompatible intermediate buffer (percentile_approx) combined with a distinct aggregate is
+  // rewritten by Spark into a multi-stage plan. If part of that chain runs in Comet and part in
+  // Spark, the incompatible buffer crosses the boundary and crashes. Here we force the split with
+  // the partial/final debug configs and assert results still match Spark (the whole chain must
+  // fall back to Spark). See https://github.com/apache/datafusion-comet/issues/4813.
+  test("approx_percentile with distinct aggregate does not split across Comet and Spark") {
+    val data = (0 until 500).map(i => (i % 10, i % 100, i % 37))
+    withParquetTable(data, "tbl", false) {
+      for (disablePartial <- Seq(false, true);
+        disableFinal <- Seq(false, true);
+        groupBy <- Seq("", " GROUP BY _1")) {
+        withSQLConf(
+          CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+          CometConf.COMET_SHUFFLE_MODE.key -> "native",
+          SQLConf.USE_OBJECT_HASH_AGG.key -> "true",
+          CometConf.COMET_ENABLE_PARTIAL_HASH_AGGREGATE.key -> (!disablePartial).toString,
+          CometConf.COMET_ENABLE_FINAL_HASH_AGGREGATE.key -> (!disableFinal).toString) {
+          checkSparkAnswer(
+            s"SELECT percentile_approx(_2, 0.5), count(DISTINCT _3) FROM tbl$groupBy")
+        }
       }
     }
   }
@@ -179,6 +263,32 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
         val df = sql("select sum(a), avg(a) from allNulls")
         checkSparkAnswer(df)
+      }
+    }
+  }
+
+  test("mixed engine sum/avg: Comet partial + Spark final matches Spark") {
+    val data = (0 until 100).map(i => (i, i.toLong, i.toDouble, i % 7))
+    withParquetTable(data, "tbl") {
+      withSQLConf(
+        CometConf.COMET_ENABLE_FINAL_HASH_AGGREGATE.key -> "false",
+        CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+        CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
+        checkSparkAnswer(
+          "SELECT _4, SUM(_1), SUM(_2), SUM(_3), AVG(_1), AVG(_2), AVG(_3) FROM tbl GROUP BY _4")
+      }
+    }
+  }
+
+  test("mixed engine sum/avg: Spark partial + Comet final matches Spark") {
+    val data = (0 until 100).map(i => (i, i.toLong, i.toDouble, i % 7))
+    withParquetTable(data, "tbl") {
+      withSQLConf(
+        CometConf.COMET_ENABLE_PARTIAL_HASH_AGGREGATE.key -> "false",
+        CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+        CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
+        checkSparkAnswer(
+          "SELECT _4, SUM(_1), SUM(_2), SUM(_3), AVG(_1), AVG(_2), AVG(_3) FROM tbl GROUP BY _4")
       }
     }
   }

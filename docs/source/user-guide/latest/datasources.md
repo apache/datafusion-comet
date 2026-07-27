@@ -71,7 +71,7 @@ Provide the JRE linker path in `RUSTFLAGS`, the path can vary depending on the s
 
 ```shell
 export JAVA_HOME="/opt/homebrew/opt/openjdk@17"
-make release PROFILES="-Pspark-4.1" COMET_FEATURES=hdfs RUSTFLAGS="-L $JAVA_HOME/libexec/openjdk.jdk/Contents/Home/lib/server"
+make release PROFILES="-Pspark-4.1" RUSTFLAGS="-L $JAVA_HOME/libexec/openjdk.jdk/Contents/Home/lib/server"
 ```
 
 Start Comet with HDFS support as [described](installation.md/#run-spark-shell-with-comet-enabled)
@@ -110,7 +110,7 @@ Arguments: [id#0, first_name#1, personal_info#4]
 Input [3]: [id#0, first_name#1, personal_info#4]
 
 
-25/01/30 16:50:44 INFO fs-hdfs-0.1.12/src/hdfs.rs: Connecting to Namenode (hdfs://namenode:9000)
+25/01/30 16:50:44 INFO opendal::services::hdfs: Connecting to Namenode (hdfs://namenode:9000)
 +---+----------+-----------------+
 |id |first_name|personal_info    |
 +---+----------+-----------------+
@@ -123,8 +123,6 @@ Input [3]: [id#0, first_name#1, personal_info#4]
 ```
 
 Verify the scan type should be `CometNativeScan`.
-
-More on [HDFS Reader](https://github.com/apache/datafusion-comet/blob/main/native/hdfs/README.md)
 
 ### Local HDFS development
 
@@ -145,7 +143,7 @@ docker compose -f kube/local/hdfs-docker-compose.yml up
 - Build a project with HDFS support
 
 ```shell
-JAVA_HOME="/opt/homebrew/opt/openjdk@17" make release PROFILES="-Pspark-4.1" COMET_FEATURES=hdfs RUSTFLAGS="-L /opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home/lib/server"
+JAVA_HOME="/opt/homebrew/opt/openjdk@17" make release PROFILES="-Pspark-4.1" RUSTFLAGS="-L /opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home/lib/server"
 ```
 
 - Run local test
@@ -255,3 +253,123 @@ Comet's S3 support has the following limitations:
 1. **Partial Hadoop S3A configuration support**: Not all Hadoop S3A configurations are currently supported. Only the configurations listed in the tables above are translated and applied to the underlying `object_store` crate.
 
 2. **Custom credential providers**: Custom implementations of AWS credential providers are not supported. The implementation only supports the standard credential providers listed in the table above. We are planning to add support for custom credential providers through a JNI-based adapter that will allow calling Java credential providers from Rust code. See [issue #1829](https://github.com/apache/datafusion-comet/issues/1829) for more details.
+
+## Azure
+
+Comet's Parquet scan reads Azure Data Lake Storage Gen2 (ADLS Gen2) through the
+[`object_store` crate](https://crates.io/crates/object_store), using the `abfs` and `abfss` URL schemes.
+As with S3, standard Hadoop ABFS configurations (the `fs.azure.*` keys you already set in `core-site.xml` or via `spark.hadoop.*`) are translated into the `object_store` crate's format, so existing configurations continue to work.
+
+URLs use the same shape Spark and Hadoop emit: `abfss://<container>@<account>.dfs.core.windows.net/<path>`. The account is taken from the host and the container from the URL user-info. The `wasb`, `wasbs`, `az`, `azure`, and `adl` schemes are not supported by the native scan.
+
+### Root CA Certificates
+
+Azure scans discover Root CA Certificates the same way S3 scans do. See [Root CA Certificates](#root-ca-certificates) above. The Rust-based scan uses system Root CA Certificates rather than the Java Trust Store.
+
+### Supported Authentication
+
+Comet first calls `MicrosoftAzureBuilder::from_env()`, so any `AZURE_*` environment variables (`AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_FEDERATED_TOKEN_FILE`, `AZURE_AUTHORITY_HOST`, `AZURE_STORAGE_*`) are honored out of the box. This is what makes AKS Workload Identity work in a stock pod with no extra configuration. Any Hadoop `fs.azure.*` keys below are then applied on top, overriding the environment.
+
+| Authentication method     | Hadoop keys                                                                                                                                                            |
+| ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Shared account key        | `fs.azure.account.key`                                                                                                                                                 |
+| OAuth2 client credentials | `fs.azure.account.oauth2.client.id`, `fs.azure.account.oauth2.client.secret`, `fs.azure.account.oauth2.client.endpoint` (tenant id is extracted from the endpoint URL) |
+| Managed identity (MSI)    | `fs.azure.account.oauth2.msi.tenant`, `fs.azure.account.oauth2.msi.endpoint`, `fs.azure.account.oauth2.msi.authority`                                                  |
+| Workload Identity         | `fs.azure.account.oauth2.client.id`, `fs.azure.account.oauth2.msi.tenant`, `fs.azure.account.oauth2.token.file`                                                        |
+| SAS token                 | `fs.azure.sas.<container>.<account>`                                                                                                                                   |
+
+### Hadoop-to-object_store key mapping
+
+Internally, each Hadoop key is translated into a specific `AzureConfigKey` on the underlying `object_store` `MicrosoftAzureBuilder`:
+
+| Hadoop key (account-scoped suffix omitted) | `AzureConfigKey`         |
+| ------------------------------------------ | ------------------------ |
+| `fs.azure.account.key`                     | `AccessKey`              |
+| `fs.azure.account.oauth2.client.id`        | `ClientId`               |
+| `fs.azure.account.oauth2.client.secret`    | `ClientSecret`           |
+| `fs.azure.account.oauth2.client.endpoint`  | `AuthorityId` (from URL) |
+| `fs.azure.account.oauth2.msi.tenant`       | `AuthorityId`            |
+| `fs.azure.account.oauth2.msi.endpoint`     | `MsiEndpoint`            |
+| `fs.azure.account.oauth2.msi.authority`    | `AuthorityHost`          |
+| `fs.azure.account.oauth2.token.file`       | `FederatedTokenFile`     |
+| `fs.azure.sas.<container>.<account>`       | `SasKey`                 |
+
+Anything beyond these keys is not translated and falls through to whatever `from_env()` or the URL itself provided.
+
+### Tenant id resolution
+
+`AuthorityId` (the AAD tenant id) can be supplied in two ways:
+
+- **Directly**, via `fs.azure.account.oauth2.msi.tenant`.
+- **Indirectly**, via `fs.azure.account.oauth2.client.endpoint`, which is a full token URL such as `https://login.microsoftonline.com/<tenant>/oauth2/token`. Comet extracts the tenant id from the first path segment of that URL.
+
+If both are set, the value from `msi.tenant` wins.
+
+### Account-scoped key lookup order
+
+Account-scoped keys take precedence over global ones, mirroring Hadoop ABFS's own precedence. For each Hadoop key above, Comet probes the following names in order and uses the first match:
+
+1. `<key>.<account>.dfs.core.windows.net`
+2. `<key>.<account>.blob.core.windows.net`
+3. `<key>.<account>`
+4. `<key>` (unscoped / global)
+
+The SAS namespace follows the same shape with the container inlined into the key name: `fs.azure.sas.<container>.<account>.dfs.core.windows.net`, then `fs.azure.sas.<container>.<account>.blob.core.windows.net`, then `fs.azure.sas.<container>.<account>`.
+
+The Hadoop values, when present, override anything already picked up from the `AZURE_*` environment.
+
+### Examples
+
+**Example 1: Shared account key**
+
+```shell
+$SPARK_HOME/bin/spark-shell \
+...
+--conf spark.hadoop.fs.azure.account.key.myaccount.dfs.core.windows.net=my-account-key
+...
+```
+
+**Example 2: Workload Identity (AKS)**
+
+In an AKS pod with Workload Identity enabled, the `AZURE_*` environment variables injected by the webhook are picked up automatically, so no Comet-specific configuration is required. To set the values explicitly instead:
+
+```shell
+$SPARK_HOME/bin/spark-shell \
+...
+--conf spark.hadoop.fs.azure.account.oauth2.client.id.myaccount.dfs.core.windows.net=<client-id> \
+--conf spark.hadoop.fs.azure.account.oauth2.msi.tenant.myaccount.dfs.core.windows.net=<tenant-id> \
+--conf spark.hadoop.fs.azure.account.oauth2.token.file.myaccount.dfs.core.windows.net=/var/run/secrets/azure/tokens/azure-identity-token
+...
+```
+
+**Example 3: OAuth2 client credentials with tenant embedded in the endpoint URL**
+
+If only `fs.azure.account.oauth2.client.endpoint` is set, the tenant id is parsed from the endpoint path automatically — there is no need to set `msi.tenant` separately.
+
+```shell
+$SPARK_HOME/bin/spark-shell \
+...
+--conf spark.hadoop.fs.azure.account.oauth2.client.id.myaccount.dfs.core.windows.net=<client-id> \
+--conf spark.hadoop.fs.azure.account.oauth2.client.secret.myaccount.dfs.core.windows.net=<client-secret> \
+--conf spark.hadoop.fs.azure.account.oauth2.client.endpoint.myaccount.dfs.core.windows.net=https://login.microsoftonline.com/<tenant-id>/oauth2/token
+...
+```
+
+**Example 4: SAS token scoped to a container**
+
+```shell
+$SPARK_HOME/bin/spark-shell \
+...
+--conf spark.hadoop.fs.azure.sas.mycontainer.myaccount.dfs.core.windows.net='sv=2020-08-04&sig=...'
+...
+```
+
+### Limitations
+
+1. **Partial Hadoop ABFS configuration support**: Only the `fs.azure.*` keys listed above are translated and applied to the underlying `object_store` crate.
+
+2. **Supported schemes**: Only `abfs` and `abfss` are routed to the native Azure store. `wasb[s]`, `az`, `azure`, and `adl` are not supported. `wasb[s]` is not recognised by `object_store` at all; `az`, `azure`, and `adl` are recognised by `object_store` but treat the URL host as the _container_ rather than the _account_, which is incompatible with Hadoop's account-scoped configuration keys.
+
+3. **URL shape**: URLs must include the account in the host, i.e. `abfss://<container>@<account>.dfs.core.windows.net/<path>`. Bare `abfs://<container>/<path>` (fsspec-style, no account in the URL) is not supported because Comet cannot resolve the storage account name.
+
+4. **Endpoint suffixes for account-scoped lookup**: Comet probes for account-scoped keys under `dfs.core.windows.net` and `blob.core.windows.net`. Custom or sovereign-cloud endpoint suffixes (e.g. `dfs.core.chinacloudapi.cn`, Fabric endpoints) are not probed; use the unscoped `<key>.<account>` form for those.

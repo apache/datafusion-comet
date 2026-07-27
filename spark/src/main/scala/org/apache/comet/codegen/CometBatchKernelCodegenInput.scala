@@ -27,6 +27,7 @@ import org.apache.spark.sql.catalyst.expressions.{BoundReference, Expression}
 import org.apache.spark.sql.types._
 
 import org.apache.comet.codegen.CometBatchKernelCodegen.{ArrayColumnSpec, ArrowColumnSpec, MapColumnSpec, ScalarColumnSpec, StructColumnSpec}
+import org.apache.comet.shims.CometTypeShim
 import org.apache.comet.vector.CometPlainVector
 
 /**
@@ -44,7 +45,7 @@ import org.apache.comet.vector.CometPlainVector
  * stashing references in an `OpenHashSet`) get distinct identities, and JIT escape analysis
  * usually scalarizes the allocation when the value is consumed locally.
  */
-private[codegen] object CometBatchKernelCodegenInput {
+private[codegen] object CometBatchKernelCodegenInput extends CometTypeShim {
 
   /**
    * Primitive Arrow vector classes wrapped in [[CometPlainVector]] at input-cast time so per-row
@@ -61,8 +62,11 @@ private[codegen] object CometBatchKernelCodegenInput {
     classOf[Float4Vector],
     classOf[Float8Vector],
     classOf[DateDayVector],
+    classOf[DurationVector],
+    classOf[TimeNanoVector],
     classOf[TimeStampMicroVector],
-    classOf[TimeStampMicroTZVector])
+    classOf[TimeStampMicroTZVector],
+    classOf[IntervalMonthDayNanoVector])
   private val cometPlainVectorName: String = classOf[CometPlainVector].getName
 
   /** Emit kernel typed-vector field declarations for every level of every input column. */
@@ -133,9 +137,15 @@ private[codegen] object CometBatchKernelCodegenInput {
     val longCases = withOrd.collect {
       case (ArrowColumnSpec(cls, _), ord)
           if cls == classOf[BigIntVector] ||
+            cls == classOf[DurationVector] ||
+            cls == classOf[TimeNanoVector] ||
             cls == classOf[TimeStampMicroVector] ||
             cls == classOf[TimeStampMicroTZVector] =>
         s"      case $ord: return this.col$ord.getLong(this.rowIdx);"
+    }
+    val intervalCases = withOrd.collect {
+      case (ArrowColumnSpec(cls, _), ord) if cls == classOf[IntervalMonthDayNanoVector] =>
+        s"      case $ord: return this.col$ord.getInterval(this.rowIdx);"
     }
     val floatCases = withOrd.collect {
       case (ArrowColumnSpec(cls, _), ord) if cls == classOf[Float4Vector] =>
@@ -196,6 +206,10 @@ private[codegen] object CometBatchKernelCodegenInput {
       emitOrdinalSwitch("public long getLong(int ordinal)", "getLong", longCases),
       emitOrdinalSwitch("public float getFloat(int ordinal)", "getFloat", floatCases),
       emitOrdinalSwitch("public double getDouble(int ordinal)", "getDouble", doubleCases),
+      emitOrdinalSwitch(
+        "public org.apache.spark.unsafe.types.CalendarInterval getInterval(int ordinal)",
+        "getInterval",
+        intervalCases),
       emitOrdinalSwitch(
         "public org.apache.spark.sql.types.Decimal getDecimal(" +
           "int ordinal, int precision, int scale)",
@@ -591,7 +605,10 @@ private[codegen] object CometBatchKernelCodegenInput {
     case ByteType => s"getByte($idx)"
     case ShortType => s"getShort($idx)"
     case IntegerType | DateType => s"getInt($idx)"
-    case LongType | TimestampType | TimestampNTZType => s"getLong($idx)"
+    case LongType | TimestampType | TimestampNTZType | _: DayTimeIntervalType =>
+      s"getLong($idx)"
+    case CalendarIntervalType => s"getInterval($idx)"
+    case dt if isTimeType(dt) => s"getLong($idx)"
     case FloatType => s"getFloat($idx)"
     case DoubleType => s"getDouble($idx)"
     case d: DecimalType => s"getDecimal($idx, ${d.precision}, ${d.scale})"
@@ -692,7 +709,17 @@ private[codegen] object CometBatchKernelCodegenInput {
            |      public int getInt(int i) {
            |        return $childField.getInt(startIndex + i);
            |      }""".stripMargin
-      case LongType | TimestampType | TimestampNTZType =>
+      case LongType | TimestampType | TimestampNTZType | _: DayTimeIntervalType =>
+        s"""      @Override
+           |      public long getLong(int i) {
+           |        return $childField.getLong(startIndex + i);
+           |      }""".stripMargin
+      case CalendarIntervalType =>
+        s"""      @Override
+           |      public org.apache.spark.unsafe.types.CalendarInterval getInterval(int i) {
+           |$nullGuard        return $childField.getInterval(startIndex + i);
+           |      }""".stripMargin
+      case dt if isTimeType(dt) =>
         s"""      @Override
            |      public long getLong(int i) {
            |        return $childField.getLong(startIndex + i);
@@ -845,7 +872,13 @@ private[codegen] object CometBatchKernelCodegenInput {
           s"        case $fi: return ${path}_f$fi.getShort(this.rowIdx);"
         case IntegerType | DateType =>
           s"        case $fi: return ${path}_f$fi.getInt(this.rowIdx);"
-        case LongType | TimestampType | TimestampNTZType =>
+        case LongType | TimestampType | TimestampNTZType | _: DayTimeIntervalType =>
+          s"        case $fi: return ${path}_f$fi.getLong(this.rowIdx);"
+        case CalendarIntervalType =>
+          s"""        case $fi: {
+             |$guard          return ${path}_f$fi.getInterval(this.rowIdx);
+             |        }""".stripMargin
+        case dt if isTimeType(dt) =>
           s"        case $fi: return ${path}_f$fi.getLong(this.rowIdx);"
         case FloatType =>
           s"        case $fi: return ${path}_f$fi.getFloat(this.rowIdx);"
@@ -897,8 +930,14 @@ private[codegen] object CometBatchKernelCodegenInput {
     val longCases = scalarOrd.collect {
       case (f, fi)
           if f.sparkType == LongType || f.sparkType == TimestampType ||
-            f.sparkType == TimestampNTZType =>
-        fieldReadScalar(fi, LongType, f.nullable)
+            f.sparkType == TimestampNTZType ||
+            f.sparkType.isInstanceOf[DayTimeIntervalType] ||
+            isTimeType(f.sparkType) =>
+        fieldReadScalar(fi, f.sparkType, f.nullable)
+    }
+    val intervalCases = scalarOrd.collect {
+      case (f, fi) if f.sparkType == CalendarIntervalType =>
+        fieldReadScalar(fi, CalendarIntervalType, f.nullable)
     }
     val floatCases =
       scalarOrd.collect {
@@ -944,6 +983,10 @@ private[codegen] object CometBatchKernelCodegenInput {
       structSwitch("public long getLong(int ordinal)", "getLong", longCases),
       structSwitch("public float getFloat(int ordinal)", "getFloat", floatCases),
       structSwitch("public double getDouble(int ordinal)", "getDouble", doubleCases),
+      structSwitch(
+        "public org.apache.spark.unsafe.types.CalendarInterval getInterval(int ordinal)",
+        "getInterval",
+        intervalCases),
       structSwitch(
         "public org.apache.spark.sql.types.Decimal getDecimal(" +
           "int ordinal, int precision, int scale)",

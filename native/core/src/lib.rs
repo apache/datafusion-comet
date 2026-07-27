@@ -125,13 +125,18 @@ pub extern "system" fn Java_org_apache_comet_NativeBase_init(
     })
 }
 
+#[no_mangle]
+/// Releases the global Tokio runtime used by Comet native execution.
+pub extern "system" fn Java_org_apache_comet_NativeBase_release(_e: EnvUnowned, _class: JClass) {
+    execution::jni_api::release_runtime();
+}
+
 const LOG_PATTERN: &str = "{d(%y/%m/%d %H:%M:%S)} {l} {f}: {m}{n}";
 
 /// JNI method to check if a specific feature is enabled in the native Rust code.
 /// # Arguments
 /// * `feature_name` - The name of the feature to check. Supported features:
 ///   - "jemalloc" - tikv-jemallocator memory allocator
-///   - "hdfs" - HDFS object store support
 ///   - "hdfs-opendal" - HDFS support via OpenDAL
 /// # Returns
 /// * `1` (true) if the feature is enabled
@@ -147,7 +152,6 @@ pub extern "system" fn Java_org_apache_comet_NativeBase_isFeatureEnabled(
 
         let enabled = match feature.as_str() {
             "jemalloc" => cfg!(feature = "jemalloc"),
-            "hdfs" => cfg!(feature = "hdfs"),
             "hdfs-opendal" => cfg!(feature = "hdfs-opendal"),
             _ => false, // Unknown features return false
         };

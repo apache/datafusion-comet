@@ -19,17 +19,24 @@
 
 package org.apache.comet.exec
 
+import scala.util.Random
+
 import org.scalactic.source.Position
 import org.scalatest.Tag
 
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.{CometTestBase, Row}
+import org.apache.spark.sql.catalyst.expressions.{Alias, Cast, Divide, Expression, MakeDecimal, WindowExpression}
 import org.apache.spark.sql.comet.CometWindowExec
+import org.apache.spark.sql.execution.SparkPlan
+import org.apache.spark.sql.execution.window.{WindowExec => SparkWindowExec}
 import org.apache.spark.sql.expressions.Window
 import org.apache.spark.sql.functions.{count, lead, sum}
 import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.types.DecimalType
 
 import org.apache.comet.CometConf
+import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 
 class CometWindowExecSuite extends CometTestBase {
 
@@ -48,6 +55,66 @@ class CometWindowExecSuite extends CometTestBase {
         testFun
       }
     }
+  }
+
+  private def assertCometWindowExecExists(plan: SparkPlan): Unit = {
+    val cometWindowExecs = collect(plan) { case w: CometWindowExec =>
+      w
+    }
+    assert(cometWindowExecs.nonEmpty)
+  }
+
+  private def sparkWindowExpressions(plan: SparkPlan): Seq[Expression] = {
+    collect(plan) { case w: SparkWindowExec =>
+      w.windowExpression
+    }.flatten
+  }
+
+  private def assertSparkPlanHasDecimalAvgRewrite(plan: SparkPlan): Unit = {
+    val windowExprs = sparkWindowExpressions(plan)
+    assert(
+      windowExprs.exists {
+        case Alias(Cast(Divide(_: WindowExpression, _, _), _: DecimalType, _, _), _) => true
+        case _ => false
+      },
+      s"Expected Spark decimal AVG rewrite in window expressions, but found: $windowExprs")
+  }
+
+  private def assertSparkPlanHasDecimalSumRewrite(plan: SparkPlan): Unit = {
+    val windowExprs = sparkWindowExpressions(plan)
+    assert(
+      windowExprs.exists {
+        case Alias(MakeDecimal(_: WindowExpression, _, _, _), _) => true
+        case _ => false
+      },
+      s"Expected Spark decimal SUM rewrite in window expressions, but found: $windowExprs")
+  }
+
+  private def randomDecimalString(rng: Random, precision: Int, scale: Int): String = {
+    val maxIntegerDigits = math.max(1, precision - scale)
+    val integerDigits = 1 + rng.nextInt(math.min(maxIntegerDigits, 6))
+    val integerPart = randomDigits(rng, integerDigits, allowLeadingZero = false)
+    val fractionalPart = randomDigits(rng, scale, allowLeadingZero = true)
+    val sign = if (rng.nextBoolean()) "-" else ""
+    if (scale == 0) {
+      s"$sign$integerPart"
+    } else {
+      s"$sign$integerPart.$fractionalPart"
+    }
+  }
+
+  private def randomDigits(rng: Random, length: Int, allowLeadingZero: Boolean): String = {
+    val digits = new StringBuilder(length)
+    (0 until length).foreach { pos =>
+      val digit =
+        if (pos == 0 && !allowLeadingZero) {
+          1 + rng.nextInt(9)
+        } else {
+          rng.nextInt(10)
+        }
+      digits.append(('0' + digit).toChar)
+    }
+    digits.toString()
   }
 
   test("lead/lag should return the default value if the offset row does not exist") {
@@ -351,6 +418,112 @@ class CometWindowExecSuite extends CometTestBase {
       val df =
         sql("SELECT a, b, c, AVG(c) OVER (PARTITION BY a ORDER BY b) as avg_c FROM window_test")
       checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  test("window: decimal AVG with PARTITION BY and ORDER BY") {
+    withTempDir { dir =>
+      Seq((1, "10.10"), (1, "20.25"), (1, "30.33"), (1, "41.00"), (2, "11.11"), (2, "22.22"))
+        .toDF("g", "raw_v")
+        .selectExpr("g", "CAST(raw_v AS DECIMAL(10,2)) AS v")
+        .repartition(1)
+        .write
+        .mode("overwrite")
+        .parquet(dir.toString)
+
+      spark.read.parquet(dir.toString).createOrReplaceTempView("dec_avg")
+      val df = sql("""
+        SELECT g, v, run_avg
+        FROM (
+          SELECT g, v,
+            AVG(v) OVER (
+              PARTITION BY g
+              ORDER BY v
+              ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+            ) AS run_avg
+          FROM dec_avg
+        )
+        ORDER BY g, v
+      """)
+      val (sparkPlan, cometPlan) = checkSparkAnswerAndOperator(df)
+      if (isSpark40Plus) {
+        assertSparkPlanHasDecimalAvgRewrite(sparkPlan)
+      }
+      assertCometWindowExecExists(cometPlan)
+    }
+  }
+
+  test("window: decimal AVG fuzz with PARTITION BY and ORDER BY") {
+    Seq((9, 1), (9, 4), (10, 2), (11, 3), (11, 6)).foreach { case (precision, scale) =>
+      withTempDir { dir =>
+        val rng = new Random(precision * 31L + scale)
+        (0 until 120)
+          .map { i =>
+            (i % 7, i, randomDecimalString(rng, precision, scale))
+          }
+          .toDF("g", "ord", "raw_v")
+          .selectExpr("g", "ord", s"CAST(raw_v AS DECIMAL($precision,$scale)) AS v")
+          .repartition(1)
+          .write
+          .mode("overwrite")
+          .parquet(dir.toString)
+
+        spark.read.parquet(dir.toString).createOrReplaceTempView("dec_avg_fuzz")
+        val df = sql("""
+          SELECT g, ord, v, run_avg
+          FROM (
+            SELECT g, ord, v,
+              AVG(v) OVER (
+                PARTITION BY g
+                ORDER BY ord
+                ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+              ) AS run_avg
+            FROM dec_avg_fuzz
+          )
+          ORDER BY g, ord
+        """)
+        val (sparkPlan, cometPlan) = checkSparkAnswerAndOperator(df)
+        if (isSpark40Plus) {
+          assertSparkPlanHasDecimalAvgRewrite(sparkPlan)
+        }
+        assertCometWindowExecExists(cometPlan)
+      }
+    }
+  }
+
+  test("window: decimal SUM with PARTITION BY and ORDER BY") {
+    withTempDir { dir =>
+      Seq(
+        (1, 1, "10.10"),
+        (1, 2, "20.25"),
+        (1, 3, "-5.35"),
+        (2, 1, "11.11"),
+        (2, 2, "22.22"),
+        (2, 3, "33.33"))
+        .toDF("g", "ord", "raw_v")
+        .selectExpr("g", "ord", "CAST(raw_v AS DECIMAL(8,2)) AS v")
+        .repartition(1)
+        .write
+        .mode("overwrite")
+        .parquet(dir.toString)
+
+      spark.read.parquet(dir.toString).createOrReplaceTempView("dec_sum")
+      val df = sql("""
+        SELECT g, ord, v, run_sum
+        FROM (
+          SELECT g, ord, v,
+            SUM(v) OVER (
+              PARTITION BY g
+              ORDER BY ord
+              ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+            ) AS run_sum
+          FROM dec_sum
+        )
+        ORDER BY g, ord
+      """)
+      val (sparkPlan, cometPlan) = checkSparkAnswerAndOperator(df)
+      assertSparkPlanHasDecimalSumRewrite(sparkPlan)
+      assertCometWindowExecExists(cometPlan)
     }
   }
 

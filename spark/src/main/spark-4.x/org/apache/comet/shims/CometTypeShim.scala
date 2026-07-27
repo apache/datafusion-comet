@@ -56,4 +56,6 @@ trait CometTypeShim {
 
   def isTimeType(dt: DataType): Boolean =
     dt.getClass.getSimpleName.startsWith("TimeType")
+
+  def hasCollationSupport: Boolean = true
 }
