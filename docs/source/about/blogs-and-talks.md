@@ -35,6 +35,7 @@ Release announcements for each Comet version are published on the
 
 - **2026-07-25**: [Learn How to Accelerate Apache Iceberg Reads on EMR with Apache DataFusion Comet](https://www.youtube.com/watch?v=mGMtrk2RXVY) — step-by-step guide.
 - **2026-07-23**: [DataFusion Community Showcase Vol. 2: DataFusion Comet & DataFusion Ballista](https://www.youtube.com/watch?v=G8In--2RUwI).
+- **2025-11-24**: [Fusing Academic Research and Open Source Systems for Petabyte-Scale Analytics](https://uci.yuja.com/V/Video?v=14629808&node=63064690&a=99786452) — Matt Butrovich, UC Irvine CS 224P.
 - **2025-06-13**: [Apache DataFusion: Putting Theory Into Practice](https://www.youtube.com/watch?v=P_GLl14d9A4) — Matt Butrovich, DC Systems 004.
 - **2025-04-30**: [Accelerating Spark with Iceberg and DataFusion Comet: Challenges, Performance Insights, and Roadmap](https://www.youtube.com/watch?v=kd4iqN0dmog) — Huaxin Gao and Parth Chandra, Iceberg Summit 2025.
 - **2024-09-30**: [Accelerating Apache Spark Workloads with Apache DataFusion Comet](https://www.youtube.com/watch?v=o59s0d3HE1k) — Andy Grove, CMU Database Group "Database Building Blocks" seminar series.
