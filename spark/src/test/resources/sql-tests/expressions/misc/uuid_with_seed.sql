@@ -29,13 +29,35 @@ CREATE TABLE test_uuid_seed(id int) USING parquet
 statement
 INSERT INTO test_uuid_seed VALUES (1), (2), (3), (4), (5)
 
--- fixed seed, single row
+-- Multi-partition table used by the DISTRIBUTE BY query below to exercise partitionIndex != 0.
+statement
+CREATE TABLE test_uuid_parts(id int) USING parquet
+
+statement
+INSERT INTO test_uuid_parts SELECT id FROM range(0, 32)
+
+-- fixed seed, single row -- also exercises the no-scan (OneRowRelation) planning path
 query
 SELECT uuid(0)
+
+-- pin the no-scan path with a deterministic assertion on top of the raw value above
+query
+SELECT length(uuid(0))
 
 -- fixed seed, multiple rows: the generator advances per row within the partition
 query
 SELECT uuid(42) FROM test_uuid_seed
+
+-- Forces a hash exchange so uuid runs post-shuffle across several partitions. Locks the
+-- `seed + partitionIndex` offset used by RandomUUIDGenerator; a single-partition test would
+-- silently agree with Spark even if Comet ignored partitionIndex.
+query
+SELECT uuid(42) FROM test_uuid_parts DISTRIBUTE BY id
+
+-- Aliased seeded projections: both nodes carry the same explicit seed, so freshCopyIfContainsStatefulExpression
+-- must not accidentally hoist a shared instance -- each row must satisfy uuid(0) = uuid(0).
+query
+SELECT uuid(0) = uuid(0) FROM test_uuid_seed
 
 -- zero seed over multiple rows
 query

@@ -34,3 +34,10 @@ SELECT length(uuid()) FROM test_uuid
 -- This regex subsumes the length, alphabet, version, and variant checks.
 query
 SELECT uuid() RLIKE '^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$' FROM test_uuid
+
+-- Two unseeded uuid() nodes get distinct fresh random seeds during analysis (Uuid is stateful,
+-- freshCopyIfContainsStatefulExpression rewrites aliases). Every row must therefore compare
+-- unequal -- if Comet ever hoisted a single instance, this would flip to true.
+-- spark_answer_only: value is random, so we only cross-check that Spark and Comet agree.
+query spark_answer_only
+SELECT uuid() = uuid() FROM test_uuid
