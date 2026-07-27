@@ -1711,20 +1711,15 @@ class ParquetReadV1Suite extends ParquetReadSuite with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("reading ancient dates before 1582") {
-    // Verify that legacy dates (before 1582-10-15) are read without error.
-    // Comet does not support datetime rebasing, so these dates are read as if they were
-    // written using the Proleptic Gregorian calendar (no rebase, no exception).
+  test("fallback when reading ancient dates before 1582") {
     val file =
       getResourceParquetFilePath("test-data/before_1582_date_v3_2_0.snappy.parquet")
 
     val df = spark.read.parquet(file)
 
-    // Verify Comet scan is in the plan
     val plan = df.queryExecution.executedPlan
-    checkCometOperators(plan)
+    assert(collect(plan) { case _: CometNativeScanExec => true }.isEmpty)
 
-    // Verify all 8 rows are read and contain dates before 1582
     val rows = df.collect()
     assert(rows.length == 8, s"Expected 8 rows, got ${rows.length}")
     rows.foreach { row =>

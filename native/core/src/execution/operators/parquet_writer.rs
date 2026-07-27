@@ -52,7 +52,7 @@ use futures::TryStreamExt;
 use parquet::{
     arrow::ArrowWriter,
     basic::{Compression, GzipLevel, ZstdLevel},
-    file::properties::WriterProperties,
+    file::{metadata::KeyValue, properties::WriterProperties},
 };
 use url::Url;
 
@@ -506,6 +506,10 @@ impl ExecutionPlan for ParquetWriterExec {
         // Configure writer properties
         let props = WriterProperties::builder()
             .set_compression(compression)
+            .set_key_value_metadata(Some(vec![KeyValue::new(
+                "org.apache.comet.datetimeRebaseMode".to_string(),
+                Some("CORRECTED".to_string()),
+            )]))
             .build();
 
         let object_store_options = self.object_store_options.clone();
