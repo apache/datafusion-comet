@@ -71,10 +71,6 @@ object CometParquetUtils {
       try {
         val metadata = reader.getFooter.getFileMetaData.getKeyValueMetaData
         val version = Option(metadata.get("org.apache.spark.version"))
-        // Copy from Spark's rebase spec
-        // scalastyle:off line.size.limit
-        // https://github.com/apache/spark/blob/v4.1.2/sql/core/src/main/scala/org/apache/spark/sql/execution/datasources/DataSourceUtils.scala#L130-L177
-        // scalastyle:on line.size.limit
         def needsRebase(mode: String, minVersion: String, legacyKey: String): Boolean =
           version.fold(mode != "CORRECTED")(v =>
             v < minVersion || metadata.containsKey(legacyKey))
