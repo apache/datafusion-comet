@@ -263,6 +263,49 @@ query
 SELECT grp, sort_array(collect_list(v)) FROM cl_src_ts GROUP BY grp ORDER BY grp
 
 -- ============================================================
+-- Timestamp NTZ (with NULLs). TimestampNTZType is in
+-- QueryPlanSerde.supportedDataType, so this runs through the
+-- native SparkCollectList accumulator rather than falling back.
+-- ============================================================
+
+statement
+CREATE TABLE cl_src_ts_ntz(v timestamp_ntz, grp string) USING parquet
+
+statement
+INSERT INTO cl_src_ts_ntz VALUES
+  (timestamp_ntz '2024-01-01 00:00:00', 'a'), (timestamp_ntz '2024-06-15 12:30:00', 'a'),
+  (timestamp_ntz '2024-01-01 00:00:00', 'a'), (NULL, 'a'),
+  (timestamp_ntz '1970-01-01 00:00:00', 'b'), (NULL, 'b')
+
+query
+SELECT grp, sort_array(collect_list(v)) FROM cl_src_ts_ntz GROUP BY grp ORDER BY grp
+
+-- ============================================================
+-- ANSI intervals (with NULLs). Neither YearMonthIntervalType nor
+-- DayTimeIntervalType is in QueryPlanSerde.supportedDataType, so
+-- these fall back to Spark and only the answer is checked.
+-- ============================================================
+
+statement
+CREATE TABLE cl_src_interval(ym interval year to month, dt interval day to second, grp string)
+USING parquet
+
+statement
+INSERT INTO cl_src_interval VALUES
+  (INTERVAL '1-2' YEAR TO MONTH, INTERVAL '3 04:05:06' DAY TO SECOND, 'a'),
+  (INTERVAL '0-0' YEAR TO MONTH, INTERVAL '0 00:00:00' DAY TO SECOND, 'a'),
+  (INTERVAL '1-2' YEAR TO MONTH, INTERVAL '3 04:05:06' DAY TO SECOND, 'a'),
+  (NULL, NULL, 'a'),
+  (INTERVAL '-3-4' YEAR TO MONTH, INTERVAL '-5 06:07:08' DAY TO SECOND, 'b'),
+  (NULL, NULL, 'b')
+
+query spark_answer_only
+SELECT grp, sort_array(collect_list(ym)) FROM cl_src_interval GROUP BY grp ORDER BY grp
+
+query spark_answer_only
+SELECT grp, sort_array(collect_list(dt)) FROM cl_src_interval GROUP BY grp ORDER BY grp
+
+-- ============================================================
 -- Mixed with other aggregates
 -- ============================================================
 

@@ -87,22 +87,34 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     // dependent PartialMerge/Final stages must also fall back rather than crash. See issue #4724
     // for enabling the fully-native distinct path.
     import org.apache.spark.sql.functions.{collect_list, collect_set, sort_array}
-    // Non-native source (LocalTableScan): the buffer-producing Partial runs in Spark.
+    // Non-native source (LocalTableScan): the buffer-producing Partial runs in Spark, so the
+    // dependent PartialMerge/Final stages fall back via the buffer-source check in doConvert.
+    // tagUnsafePartialAggregates does not fire here because the Partial was never convertible.
+    def bufferSourceFallback(fn: String): String =
+      "Comet aggregate that merges intermediate buffers requires a Comet child aggregate when " +
+        "the intermediate buffer formats are incompatible with Spark. Incompatible aggregate " +
+        s"function(s): $fn"
     val df = Seq((1, 3, "a"), (1, 2, "b"), (3, 4, "c"), (3, 4, "c"), (3, 5, "d"))
       .toDF("x", "y", "z")
-    checkSparkAnswer(
-      df.groupBy(col("x")).agg(count_distinct(col("y")), sort_array(collect_list(col("z")))))
-    checkSparkAnswer(
-      df.groupBy(col("x")).agg(count_distinct(col("y")), sort_array(collect_set(col("z")))))
+    checkSparkAnswerAndFallbackReason(
+      df.groupBy(col("x")).agg(count_distinct(col("y")), sort_array(collect_list(col("z")))),
+      bufferSourceFallback("collect_list"))
+    checkSparkAnswerAndFallbackReason(
+      df.groupBy(col("x")).agg(count_distinct(col("y")), sort_array(collect_set(col("z")))),
+      bufferSourceFallback("collect_set"))
 
-    // Native source (Parquet): the whole multi-stage distinct chain must still fall back to
-    // Spark consistently (issue #4724), rather than running a fully-native pipeline that crashes.
+    // Native source (Parquet): the Partial would otherwise convert, so tagUnsafePartialAggregates
+    // must disable it and force the whole multi-stage distinct chain back to Spark (issue #4724),
+    // rather than running a fully-native pipeline that crashes.
+    val multiStageFallback = "Partial aggregate disabled: part of a multi-stage CollectList/" +
+      "CollectSet aggregate whose intermediate buffer cannot round-trip in Comet (issue #4724)"
     withParquetTable(
       Seq((1, 3, "a"), (1, 2, "b"), (3, 4, "c"), (3, 4, "c"), (3, 5, "d")),
       "t17616") {
       for (fn <- Seq("collect_list", "collect_set")) {
-        checkSparkAnswer(
-          sql(s"SELECT _1, count(distinct _2), sort_array($fn(_3)) FROM t17616 GROUP BY _1"))
+        checkSparkAnswerAndFallbackReasons(
+          sql(s"SELECT _1, count(distinct _2), sort_array($fn(_3)) FROM t17616 GROUP BY _1"),
+          Set(multiStageFallback, bufferSourceFallback(fn)))
       }
     }
   }
@@ -289,6 +301,38 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
         checkSparkAnswer(
           "SELECT _4, SUM(_1), SUM(_2), SUM(_3), AVG(_1), AVG(_2), AVG(_3) FROM tbl GROUP BY _4")
+      }
+    }
+  }
+
+  test("mixed engine collect_list: Comet partial + Spark final matches Spark") {
+    // collect_list has no Spark-compatible intermediate buffer (Spark declares BinaryType, the
+    // native accumulator produces a list), so a Spark final must never sit above a Comet partial.
+    // tagUnsafePartialAggregates is expected to cascade the fallback down to the partial.
+    val data = (0 until 100).map(i => (if (i % 11 == 0) None else Some(i), i % 7))
+    withParquetTable(data, "tbl") {
+      withSQLConf(
+        CometConf.COMET_ENABLE_FINAL_HASH_AGGREGATE.key -> "false",
+        CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+        CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
+        checkSparkAnswer(
+          "SELECT _2, sort_array(collect_list(_1)), count(*) FROM tbl GROUP BY _2 ORDER BY _2")
+      }
+    }
+  }
+
+  test("mixed engine collect_list: Spark partial + Comet final matches Spark") {
+    // The reverse direction: the Spark partial emits a serialized BinaryType buffer that Comet
+    // cannot read, and adjustOutputForNativeState would misinterpret it as a list if the final
+    // ran natively, so the final must fall back too.
+    val data = (0 until 100).map(i => (if (i % 11 == 0) None else Some(i), i % 7))
+    withParquetTable(data, "tbl") {
+      withSQLConf(
+        CometConf.COMET_ENABLE_PARTIAL_HASH_AGGREGATE.key -> "false",
+        CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+        CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
+        checkSparkAnswer(
+          "SELECT _2, sort_array(collect_list(_1)), count(*) FROM tbl GROUP BY _2 ORDER BY _2")
       }
     }
   }
