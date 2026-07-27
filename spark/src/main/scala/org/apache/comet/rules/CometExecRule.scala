@@ -29,7 +29,7 @@ import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.trees.TreeNodeTag
 import org.apache.spark.sql.catalyst.util.sideBySide
 import org.apache.spark.sql.comet._
-import org.apache.spark.sql.comet.CometInMemoryTableScanExec
+import org.apache.spark.sql.comet.execution.arrow.ArrowCachedBatchSerializer
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometNativeShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution._
@@ -287,22 +287,22 @@ case class CometExecRule(session: SparkSession)
         convertToComet(op, CometScanWrapper).getOrElse(op)
 
       case scan: InMemoryTableScanExec =>
-        val usesCometCacheSerializer =
-          scan.relation.cacheBuilder.serializer
-            .isInstanceOf[org.apache.spark.sql.comet.execution.arrow.ArrowCachedBatchSerializer]
+        val serializer = scan.relation.cacheBuilder.serializer
+        val usesCometCacheSerializer = serializer.isInstanceOf[ArrowCachedBatchSerializer]
+        val nativeCacheEnabled = CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.get(conf)
 
-        if (CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.get(conf)) {
-          if (usesCometCacheSerializer) {
-            convertToComet(scan, CometInMemoryTableScanExec).getOrElse(scan)
-          } else {
+        if (nativeCacheEnabled && usesCometCacheSerializer) {
+          convertToComet(scan, CometInMemoryTableScanExec).getOrElse(scan)
+        } else {
+          // The native cache scan is not available for this relation. Record why, then take the
+          // same SparkToColumnar fallback that any other unsupported operator would take, so
+          // that turning the feature on is never worse for a scan than leaving it off.
+          if (nativeCacheEnabled) {
             withFallbackReason(
               scan,
-              "Comet in-memory cache requires ArrowCachedBatchSerializer, " +
-                s"but found ${scan.relation.cacheBuilder.serializer.getClass.getName}")
-            scan
-          }
-        } else {
-          if (usesCometCacheSerializer) {
+              s"Comet in-memory cache requires ${classOf[ArrowCachedBatchSerializer].getName} " +
+                s"but this relation was cached with ${serializer.getClass.getName}")
+          } else if (usesCometCacheSerializer) {
             withFallbackReason(
               scan,
               "Native support for operator InMemoryTableScanExec is disabled. " +

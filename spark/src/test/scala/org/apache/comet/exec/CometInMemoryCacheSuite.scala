@@ -26,11 +26,32 @@ import org.apache.spark.SparkConf
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.catalyst.expressions.{And, Expression, GreaterThanOrEqual, LessThan, Literal}
 import org.apache.spark.sql.columnar.SimpleMetricsCachedBatch
+import org.apache.spark.sql.execution.columnar.CometInMemoryRelationHelper
 import org.apache.spark.sql.internal.{SQLConf, StaticSQLConf}
 
 import org.apache.comet.CometConf
 
 class CometInMemoryCacheSuite extends CometTestBase {
+
+  // `InMemoryRelation` resolves `spark.sql.cache.serializer` once per JVM and memoizes the
+  // instance in a static field. Test suites share a forked JVM, so whichever suite caches a
+  // table first pins the serializer for everything that follows: without this reset the
+  // serializer configured below is ignored and every cached batch here is a `DefaultCachedBatch`.
+  // Clear it on the way out as well so this suite does not pin Comet's serializer for the rest
+  // of the JVM.
+  override protected def beforeAll(): Unit = {
+    CometInMemoryRelationHelper.clearSerializer()
+    super.beforeAll()
+  }
+
+  override protected def afterAll(): Unit = {
+    try {
+      super.afterAll()
+    } finally {
+      CometInMemoryRelationHelper.clearSerializer()
+    }
+  }
+
   override protected def sparkConf: SparkConf = {
     val conf = new SparkConf()
     conf.set("spark.driver.memory", "1G")

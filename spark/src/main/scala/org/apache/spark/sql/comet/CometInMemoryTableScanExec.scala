@@ -57,6 +57,11 @@ case class CometInMemoryTableScanExec(
   override lazy val metrics: Map[String, SQLMetric] = Map(
     "numOutputRows" -> SQLMetrics.createMetric(sparkContext, "number of output rows"))
 
+  // For an empty-projection scan (`SELECT count(*)`) this is empty while `scanOutput` holds the
+  // full cache schema, so the emitted batches are wider than the declared output. That is safe
+  // because the only consumer of an empty-output scan is a count-style aggregate, which reads
+  // the row count rather than any column; `convert` and `createExec` deliberately fall back to
+  // the cache schema in that case because the native plan still needs a non-empty scan schema.
   override def output: Seq[Attribute] = originalPlan.output
 
   // Use the serializer's vector types because the cached batch layout is owned by the serializer.

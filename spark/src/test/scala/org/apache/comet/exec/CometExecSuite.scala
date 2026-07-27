@@ -38,6 +38,7 @@ import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, Comet
 import org.apache.spark.sql.connector.catalog.InMemoryTableCatalog
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, BroadcastQueryStageExec}
+import org.apache.spark.sql.execution.columnar.CometInMemoryRelationHelper
 import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, BroadcastExchangeLike, ReusedExchangeExec, ShuffleExchangeExec}
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, BroadcastNestedLoopJoinExec, CartesianProductExec, SortMergeJoinExec}
@@ -3698,6 +3699,34 @@ class CometExecSuite extends CometTestBase {
 
       }
     })
+  }
+
+  test("SparkToColumnar over InMemoryTableScanExec with a non-Comet cache serializer") {
+    // Enabling the native in-memory cache must never leave a cached scan worse off than having
+    // the feature disabled. When the relation was cached by a serializer Comet cannot decode, the
+    // native scan is unavailable, but the scan should still take the SparkToColumnar fallback
+    // rather than staying entirely on Spark.
+    //
+    // This session does not configure spark.sql.cache.serializer, so it uses Spark's default.
+    // The reset makes that deterministic regardless of which suite ran first in this JVM, since
+    // InMemoryRelation memoizes the serializer per JVM.
+    CometInMemoryRelationHelper.clearSerializer()
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      CometConf.COMET_SHUFFLE_MODE.key -> "jvm",
+      CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true") {
+      spark
+        .range(1000)
+        .selectExpr("id as key", "id % 8 as value")
+        .createOrReplaceTempView("foreign_cache_serializer")
+      spark.catalog.cacheTable("foreign_cache_serializer")
+      try {
+        val df = spark.sql("SELECT * FROM foreign_cache_serializer").groupBy("key").count()
+        checkSparkAnswerAndOperator(df, includeClasses = Seq(classOf[CometSparkToColumnarExec]))
+      } finally {
+        spark.catalog.uncacheTable("foreign_cache_serializer")
+      }
+    }
   }
 
   test("SparkToColumnar eliminate redundant in AQE") {
