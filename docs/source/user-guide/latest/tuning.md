@@ -117,22 +117,13 @@ flushes sorted spill files. It must not exceed `spark.comet.batchSize`.
 ### Limiting Spill Disk Usage
 
 Native operators that spill to disk (aggregate, sort, shuffle) are collectively bounded by
-`spark.comet.maxTempDirectorySize` (default 100 GB per executor). If the limit is reached, further spills
-fail and the query errors out. Raise this on workloads with large sort/aggregate/shuffle spills, or lower
-it to protect executors on shared disks.
+`spark.comet.maxTempDirectorySize` (default 100 GB). The limit is applied per Spark task, so an
+executor running `N` concurrent tasks may use up to `N` times this value on shared local disks.
+If the limit is reached, further spills fail and the query errors out. Raise this on workloads
+with large sort/aggregate/shuffle spills, or lower it to protect executors on shared disks
+(remembering to divide by task concurrency to reason about the aggregate).
 
 ## Parquet Reader Tuning
-
-### Parallel I/O
-
-Comet's native Parquet reader can issue overlapping range reads within a single file, which is often the
-dominant win when reading from object storage (S3, GCS, ADLS). It is enabled by default via
-`spark.comet.parquet.read.parallel.io.enabled=true`, with the thread pool sized by
-`spark.comet.parquet.read.parallel.io.thread-pool.size` (default `16` threads per executor). If your
-executors have fewer cores or you are reading from local disk, lower this value; if you are reading many
-small files from high-latency storage, raise it. When multiple ranges are close together, Comet coalesces
-them (`spark.comet.parquet.read.io.mergeRanges`, delta `spark.comet.parquet.read.io.mergeRanges.delta`,
-default 8 MB) to reduce request count on cloud storage.
 
 ### Filter Pushdown / Late Materialization
 
@@ -143,12 +134,45 @@ because it can hurt when the filter is not selective or when most columns must b
 page-index, and bloom-filter pruning happen regardless of this flag whenever Spark's
 `spark.sql.parquet.filterPushdown` is on.
 
+### Parquet Native Scans
+
+Spark and DataFusion's native Parquet scans use different rules to decide which row groups belong to a
+given scan range (split). Spark assigns a row group to a split if the row group's start offset falls
+within `[split.start, split.start + split.length)`, guaranteeing that every task Spark plans reads at
+least one row group when the file layout permits. DataFusion's `prune_by_range` also checks whether a
+row group's start offset falls within the split's byte range, but because row group sizes are not aligned
+with Spark's split boundaries, the two systems can disagree on which split "owns" a given row group.
+
+When a file contains row groups whose sizes are close to `spark.sql.files.maxPartitionBytes`, this
+mismatch can leave some Comet scan tasks with no row groups to read. Those tasks still load Parquet
+metadata but return zero rows, while neighboring tasks end up reading more row groups than Spark
+intended. The overall effect is that Comet uses only a fraction of the parallelism that Spark planned
+for the scan stage, and end-to-end scan latency increases even though the total amount of data read
+is unchanged.
+
+Symptoms to look for:
+
+- A subset of scan tasks completes almost immediately and reports 0 input rows, while the remaining
+  tasks read noticeably more rows than the equivalent Spark tasks would.
+- The Comet scan stage has the same number of planned tasks as Spark but a much lower count of tasks
+  that actually do work.
+
+Workaround: lower `spark.sql.files.maxPartitionBytes` so that each split is smaller than a single row
+group. For example, if the file's row groups are around 120 MB and `spark.sql.files.maxPartitionBytes`
+is left at the 128 MB default, most splits will contain at most one row group boundary and the
+mismatch is amplified; setting `spark.sql.files.maxPartitionBytes` below 120 MB (for example, 64 MB)
+distributes row groups across more splits and reduces the number of idle tasks. Smaller values produce
+more splits overall, so some idle tasks may remain — tune the value against your file layout.
+
+See [issue #3817](https://github.com/apache/datafusion-comet/issues/3817#issuecomment-4193279630) for a
+worked example and further discussion.
+
 ## Iceberg Scan Tuning
 
-When using the native Iceberg scan (`spark.comet.scan.icebergNative.enabled=true`), each task reads its
-data files one at a time by default. For tables with many small files or high-latency storage, increase
-`spark.comet.scan.icebergNative.dataFileConcurrencyLimit` (values of 2–8 are suggested) to overlap I/O
-across files at the cost of extra memory.
+Comet's native Iceberg scan (`spark.comet.scan.icebergNative.enabled`, enabled by default) reads each
+task's data files one at a time by default. For tables with many small files or high-latency storage,
+increase `spark.comet.scan.icebergNative.dataFileConcurrencyLimit` (default `1`; values of 2–8 are
+suggested) to overlap I/O across files at the cost of extra memory.
 
 ## Optimizing Sorting on Floating-Point Values
 
@@ -229,16 +253,18 @@ even when both its parent and child are non-Comet operators.
 
 ### Shuffle Compression
 
-By default, Comet's native shuffle compresses shuffle files with LZ4. Compression can be disabled by setting
-`spark.shuffle.compress=false`, which may result in faster shuffle times in certain environments, such as
+`spark.comet.exec.shuffle.compression.codec` controls the codec used to compress shuffle data written by
+both Comet's native shuffle and the JVM columnar shuffle writer. Supported values are `lz4` (default),
+`zstd`, and `snappy`. LZ4 favors CPU efficiency; ZSTD produces smaller shuffle files at higher CPU cost —
+useful when shuffle I/O or network bandwidth is the bottleneck. When ZSTD is selected, the level is
+controlled by `spark.comet.exec.shuffle.compression.zstd.level` (default `1`).
+
+`spark.shuffle.compress=false` disables compression for Comet's native shuffle only. It has no effect on
+the JVM columnar shuffle writer, which always compresses spill files with the codec above. Disabling
+compression on the native path may result in faster shuffle times in certain environments, such as
 single-node setups with fast NVMe drives, at the expense of increased disk space usage.
 
-The codec used by Comet's native shuffle is controlled by `spark.comet.exec.shuffle.compression.codec`. Supported
-values are `lz4` (default), `zstd`, and `snappy`. LZ4 favors CPU efficiency; ZSTD produces smaller shuffle files
-at higher CPU cost — useful when shuffle I/O or network bandwidth is the bottleneck. When ZSTD is selected, the
-level is controlled by `spark.comet.exec.shuffle.compression.zstd.level` (default `1`).
-
-### Reducing Row/Columnar Conversion Overhead
+## Reducing Row/Columnar Conversion Overhead
 
 When a query stage contains many operators that fall back to Spark row-based execution, Comet may insert
 repeated columnar-to-row and row-to-columnar conversions that dominate stage runtime. Set
@@ -254,39 +280,6 @@ disabled by default because traversing the Spark plan on every task adds measura
 require an external sink (for example Prometheus) to be useful. Enable them with
 `spark.comet.metrics.enabled=true` when you have a metrics sink configured. This setting must be applied
 before the `SparkSession` is created.
-
-### Parquet Native Scans
-
-Spark and DataFusion's native Parquet scans use different rules to decide which row groups belong to a
-given scan range (split). Spark assigns a row group to a split if the row group's start offset falls
-within `[split.start, split.start + split.length)`, guaranteeing that every task Spark plans reads at
-least one row group when the file layout permits. DataFusion's `prune_by_range` also checks whether a
-row group's start offset falls within the split's byte range, but because row group sizes are not aligned
-with Spark's split boundaries, the two systems can disagree on which split "owns" a given row group.
-
-When a file contains row groups whose sizes are close to `spark.sql.files.maxPartitionBytes`, this
-mismatch can leave some Comet scan tasks with no row groups to read. Those tasks still load Parquet
-metadata but return zero rows, while neighboring tasks end up reading more row groups than Spark
-intended. The overall effect is that Comet uses only a fraction of the parallelism that Spark planned
-for the scan stage, and end-to-end scan latency increases even though the total amount of data read
-is unchanged.
-
-Symptoms to look for:
-
-- A subset of scan tasks completes almost immediately and reports 0 input rows, while the remaining
-  tasks read noticeably more rows than the equivalent Spark tasks would.
-- The Comet scan stage has the same number of planned tasks as Spark but a much lower count of tasks
-  that actually do work.
-
-Workaround: lower `spark.sql.files.maxPartitionBytes` so that each split is smaller than a single row
-group. For example, if the file's row groups are around 120 MB and `spark.sql.files.maxPartitionBytes`
-is left at the 128 MB default, most splits will contain at most one row group boundary and the
-mismatch is amplified; setting `spark.sql.files.maxPartitionBytes` below 120 MB (for example, 64 MB)
-distributes row groups across more splits and reduces the number of idle tasks. Smaller values produce
-more splits overall, so some idle tasks may remain — tune the value against your file layout.
-
-See [issue #3817](https://github.com/apache/datafusion-comet/issues/3817#issuecomment-4193279630) for a
-worked example and further discussion.
 
 ## Explain Plan
 

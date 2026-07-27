@@ -843,8 +843,9 @@ object CometConf extends ShimCometConf {
       .category(CATEGORY_TUNING)
       .doc(
         "The maximum amount of data (in bytes) stored inside the temporary directories " +
-          "used by native operators when spilling. Once the limit is reached, further spills " +
-          "will fail and the query will error out.")
+          "used by native operators when spilling. Applied per Spark task, so an executor " +
+          "running N concurrent tasks may use up to N times this value on shared local disks. " +
+          "Once the limit is reached, further spills will fail and the query will error out.")
       .bytesConf(ByteUnit.BYTE)
       .createWithDefault(100L * 1024 * 1024 * 1024) // 100 GB
 
