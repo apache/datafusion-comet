@@ -29,11 +29,9 @@ reflect the fact that Comet ships much more frequently than Spark, and that Come
 rather than an engine in its own right: Spark, not Comet, defines what a correct answer looks like.
 
 ```{note}
-Comet has not yet released `1.0.0`. Until it does, the `0.x` series remains unstable in the sense
-semantic versioning gives that term: any minor release may include breaking changes, and a patch
-release contains bug fixes only. The policy described below takes effect with `1.0.0`. Tracking and
-planning for that release happens in
-[issue #4082](https://github.com/apache/datafusion-comet/issues/4082).
+This policy takes effect with the `1.0.0` release. The earlier `0.x` series was unstable in the
+sense semantic versioning gives that term: any `0.x` minor release could include breaking changes,
+and the guarantees described below do not apply retroactively to it.
 ```
 
 ## Comet's Compatibility Surface
