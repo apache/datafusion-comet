@@ -1004,6 +1004,88 @@ class CometNativeCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("cast between negative-scale decimal and integer/timestamp is unsupported") {
+    // Native casts here scale-align by multiplying by 10^|scale|, which overflows the
+    // underlying integer (panic in debug, silent wrap in release). Both directions fall
+    // back. `Decimal(neg) -> Timestamp` panics for the same reason (probed). See #5013.
+    // `DecimalType(_, s<0)` must be constructed under allowNegativeScaleOfDecimal=true
+    // because the case class initializer reads the flag, so wrap everything in one block.
+    withSQLConf(
+      "spark.sql.legacy.allowNegativeScaleOfDecimal" -> "true",
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
+      SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
+        "org.apache.spark.sql.catalyst.optimizer.ConvertToLocalRelation") {
+      val negScaleType = DecimalType(10, -1)
+      val expected = Unsupported(Some(CometCast.negativeScaleDecimalCastReason))
+      val intTypes =
+        Seq(DataTypes.ByteType, DataTypes.ShortType, DataTypes.IntegerType, DataTypes.LongType)
+      intTypes.foreach { intType =>
+        assert(
+          CometCast.isSupported(intType, negScaleType, None, CometEvalMode.LEGACY) == expected,
+          s"expected $intType -> $negScaleType to be Unsupported")
+        assert(
+          CometCast.isSupported(negScaleType, intType, None, CometEvalMode.LEGACY) == expected,
+          s"expected $negScaleType -> $intType to be Unsupported")
+      }
+      // Decimal(neg) -> Timestamp: multiply-with-overflow panic observed in debug build.
+      assert(
+        CometCast.isSupported(
+          negScaleType,
+          DataTypes.TimestampType,
+          None,
+          CometEvalMode.LEGACY) == expected)
+
+      // End-to-end: fall back with the same reason and produce Spark-equal results.
+      // ConvertToLocalRelation is excluded so the cast actually runs on the plan rather
+      // than being folded away at plan time (#4789).
+      val ints = Seq(100, 200, 300).toDF("i")
+      checkSparkAnswerAndFallbackReason(
+        ints.select(col("i").cast(negScaleType).as("v")),
+        CometCast.negativeScaleDecimalCastReason)
+      // Build the neg-scale column via string -> Decimal(neg), a known-safe cast, so the
+      // source construction does not depend on any of the guards under test.
+      val negDec =
+        Seq("100", "200", "300").toDF("s").select(col("s").cast(negScaleType).as("v"))
+      checkSparkAnswerAndFallbackReason(
+        negDec.select(col("v").cast(DataTypes.IntegerType).as("i")),
+        CometCast.negativeScaleDecimalCastReason)
+      checkSparkAnswerAndFallbackReason(
+        negDec.select(col("v").cast(DataTypes.TimestampType).as("t")),
+        CometCast.negativeScaleDecimalCastReason)
+    }
+  }
+
+  test("safe casts around negative-scale decimal run natively (regression pin)") {
+    // The guard in canCastFromDecimal / canCastFromByte-Short-Int-Long only rejects the
+    // paths that scale-align an integer (int <-> Decimal(neg), Decimal(neg) -> Timestamp).
+    // All other cast directions to/from Decimal(neg) run natively today because they
+    // don't perform that alignment. Pin those paths here so a future change that adds
+    // scale-alignment to one of them can't silently reintroduce the #5013 panic.
+    withSQLConf(
+      "spark.sql.legacy.allowNegativeScaleOfDecimal" -> "true",
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
+      SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
+        "org.apache.spark.sql.catalyst.optimizer.ConvertToLocalRelation") {
+      val negScaleType = DecimalType(10, -1)
+      val negDec =
+        Seq("100", "200", "300").toDF("s").select(col("s").cast(negScaleType).as("v"))
+      // Casts INTO Decimal(neg) that don't scale-align an integer.
+      checkSparkAnswerAndOperator(Seq("100", "200").toDF("s").select(col("s").cast(negScaleType)))
+      checkSparkAnswerAndOperator(
+        Seq("100", "200").toDF("s").select(col("s").cast(DecimalType(10, 0)).cast(negScaleType)))
+      withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[Cast]) -> "true") {
+        checkSparkAnswerAndOperator(Seq(1.0f, 2.5f).toDF("n").select(col("n").cast(negScaleType)))
+        checkSparkAnswerAndOperator(Seq(1.0, 2.5).toDF("n").select(col("n").cast(negScaleType)))
+      }
+      // Casts OUT of Decimal(neg) that don't scale-align an integer.
+      checkSparkAnswerAndOperator(negDec.select(col("v").cast(FloatType)))
+      checkSparkAnswerAndOperator(negDec.select(col("v").cast(DoubleType)))
+      checkSparkAnswerAndOperator(negDec.select(col("v").cast(StringType)))
+      checkSparkAnswerAndOperator(negDec.select(col("v").cast(DecimalType(38, 10))))
+      checkSparkAnswerAndOperator(negDec.select(col("v").cast(BooleanType)))
+    }
+  }
+
   test("cast DecimalType(10,2) to TimestampType") {
     castTest(generateDecimalsPrecision10Scale2(), DataTypes.TimestampType)
   }
