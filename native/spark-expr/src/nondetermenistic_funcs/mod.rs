@@ -19,10 +19,12 @@ pub mod internal;
 pub mod monotonically_increasing_id;
 pub mod rand;
 pub mod randn;
+pub mod randstr;
 pub mod shuffle;
 pub mod uuid;
 
 pub use rand::RandExpr;
 pub use randn::RandnExpr;
+pub use randstr::RandStrExpr;
 pub use shuffle::ShuffleExpr;
 pub use uuid::UuidExpr;

@@ -60,6 +60,13 @@
 - Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
 - Comet limitation: same as `rand` — the seed argument must be a literal.
 
+## randstr
+
+- Spark 3.4.3 (audited 2026-07-24): not present. `RandStr` was added in Spark 4.0, so `randstr` does not exist before then.
+- Spark 3.5.8 (audited 2026-07-24): not present.
+- Spark 4.0.1 (audited 2026-07-24): `RandStr(length, seedExpression, hideSeed) extends ExpressionWithRandomSeed with BinaryLike with Nondeterministic`. Both `length` (coerced to `IntegerType`) and `seed` (`IntegerType` or `LongType`) must be foldable; a non-foldable argument is rejected at analysis. Per partition it seeds `new XORShiftRandom(seed + partitionIndex)`; per row it calls `ExpressionImplUtils.randStr`, which fills `length` bytes with `abs(rng.nextInt() % 62)` mapped onto `0-9`/`a-z`/`A-Z`. A negative length raises `INVALID_PARAMETER_VALUE.LENGTH` at runtime. Comet emits a `RandStr` proto with the resolved length and seed and reproduces the `XORShiftRandom` and character mapping bit for bit; non-negative literal length and literal seed only (otherwise it falls back to Spark, which also raises the negative-length error).
+- Spark 4.1.1 (audited 2026-07-24): `ExpressionImplUtils.randStr` and the `XORShiftRandom(seed + partitionIndex)` seeding are byte-identical to 4.0.1; adds `withShiftedSeed`, no runtime change.
+
 ## session_user
 
 - Alias of `current_user`; resolved to a literal by the analyzer.
