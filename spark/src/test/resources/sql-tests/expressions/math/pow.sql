@@ -22,9 +22,7 @@ CREATE TABLE test_pow(base double, exp double) USING parquet
 
 -- Rows cover: ordinary values, nulls, signed zero, positive/negative infinity in both base and
 -- exponent, subnormal values, and the |base| == 1 with non-finite exponent case where Java's
--- Math.pow returns NaN but C99 pow (Rust powf) returns 1. Every result is an exact double
--- (Infinity, -Infinity, NaN, signed zero, or an exact power), so these are compared exactly
--- rather than with a tolerance, which for doubles skips NaN rows and ignores the sign of Infinity.
+-- Math.pow returns NaN but C99 pow (Rust powf) returns 1.
 statement
 INSERT INTO test_pow VALUES
   (0.0, -1.0), (2.0, 3.0), (0.0, 0.0), (-1.0, 2.0), (-1.0, 0.5), (2.0, -1.0),
@@ -38,7 +36,10 @@ INSERT INTO test_pow VALUES
   (cast('4.9E-324' as double), 2.0), (2.0, cast('4.9E-324' as double))
 
 -- Every pair above yields an exact double, so use exact comparison (no tolerance) to assert the
--- NaN and signed-Infinity edge cases rather than silently skipping them.
+-- NaN and signed-Infinity edge cases rather than silently skipping them: a tolerance comparison
+-- makes no assertion at all for NaN and ignores the sign of Infinity. Exact comparison is
+-- payload-insensitive for NaN (the test framework canonicalizes it) but not for signed zero, so
+-- the -0.0 results are asserted exactly.
 query
 SELECT pow(base, exp) FROM test_pow
 

@@ -429,8 +429,17 @@ abstract class CometTestBase
     case s: java.lang.Short => s.shortValue
     case i: java.lang.Integer => i.intValue
     case l: java.lang.Long => l.longValue
-    case f: java.lang.Float => f.floatValue
-    case d: java.lang.Double => d.doubleValue
+    // `QueryTest.compare` compares floating point values by raw bits so that 0.0 and -0.0 are
+    // distinguished. A side effect is that it also distinguishes NaN payloads, which are not
+    // specified: `Math.pow` and friends may return any NaN, and the payload the JVM produces
+    // differs across architectures, so a native kernel and Spark can return NaNs that print
+    // identically but compare unequal. Spark fixed this in `compare` itself for 4.1.2 and 4.2.0
+    // ("in some hardware NaN can be represented with different bits, so first check for it"), but
+    // 3.4, 3.5, 4.0 and 4.1.1 still compare raw bits. Canonicalize NaN here so every supported
+    // version asserts NaN-ness without asserting the payload. Signed zero is deliberately left
+    // alone: distinguishing it is the reason the raw-bit comparison exists.
+    case f: java.lang.Float => if (f.isNaN) Float.NaN else f.floatValue
+    case d: java.lang.Double => if (d.isNaN) Double.NaN else d.doubleValue
     case x => x
   }
 
