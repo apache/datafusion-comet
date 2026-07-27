@@ -21,14 +21,12 @@ package org.apache.spark.sql.comet.execution.arrow
 
 import scala.collection.JavaConverters._
 
-import org.apache.spark.TaskContext
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.expressions.{Attribute, GenericInternalRow, UnsafeProjection}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, GenericInternalRow, IsNotNull, IsNull, UnsafeProjection}
 import org.apache.spark.sql.columnar.{CachedBatch, SimpleMetricsCachedBatch, SimpleMetricsCachedBatchSerializer}
 import org.apache.spark.sql.comet.util.Utils
-import org.apache.spark.sql.execution.columnar.{ColumnAccessor, DefaultCachedBatch, DefaultCachedBatchSerializer}
-import org.apache.spark.sql.execution.vectorized.{OnHeapColumnVector, WritableColumnVector}
+import org.apache.spark.sql.execution.columnar.DefaultCachedBatchSerializer
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
@@ -36,7 +34,7 @@ import org.apache.spark.storage.StorageLevel
 import org.apache.spark.unsafe.types.{ByteArray, UTF8String}
 import org.apache.spark.util.io.ChunkedByteBuffer
 
-import org.apache.comet.{CometArrowAllocator, CometConf}
+import org.apache.comet.CometArrowAllocator
 
 /**
  * Cached batch format used when Comet writes Spark in-memory cache data.
@@ -54,20 +52,23 @@ private case class CometCachedBatch(
 /**
  * Cache serializer that stores Comet-compatible Arrow batches in Spark's in-memory cache.
  *
- * Writes use Comet's Arrow cache format only when Comet and the native in-memory cache path are
- * enabled. Reads of CometCachedBatch are still supported even if the native scan is disabled
- * later, because Spark may then read the same cached data through the SparkToColumnar fallback
- * path.
+ * The cached payload format is decided by the schema alone. A relation whose schema Comet's Arrow
+ * writer supports is stored as `CometCachedBatch`, and every other relation is delegated in full
+ * to Spark's `DefaultCachedBatchSerializer`. The format deliberately does not depend on any
+ * runtime config: `spark.sql.cache.serializer` is a static conf, so installing this serializer is
+ * already a per-application decision, and a relation whose format could flip mid-session cannot
+ * be read back reliably. `spark.comet.exec.inMemoryCache.enabled` still governs whether a scan
+ * over the cache runs natively, and its value at startup is what makes `CometDriverPlugin`
+ * install this serializer in the first place.
+ *
+ * Reads of `CometCachedBatch` keep working when the native scan is disabled, because Spark then
+ * reads the same cached data through the SparkToColumnar fallback path.
  */
 class ArrowCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
 
-  private val fallback = new DefaultCachedBatchSerializer()
+  import ArrowCachedBatchSerializer.supportsSchema
 
-  // Cache writes use Comet format only when both Comet and the in-memory cache scan are enabled.
-  private def enabled(conf: SQLConf): Boolean = {
-    CometConf.COMET_ENABLED.get(conf) &&
-    CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.get(conf)
-  }
+  private val fallback = new DefaultCachedBatchSerializer()
 
   // Row-to-Arrow conversion needs a StructType, while cache APIs pass attributes.
   private def toStructType(schema: Seq[Attribute]): StructType = {
@@ -229,14 +230,45 @@ class ArrowCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
     }
   }
 
-  override def supportsColumnarInput(schema: Seq[Attribute]): Boolean = {
-    val activeConf = SQLConf.get
-    activeConf != null && enabled(activeConf)
+  // Spark's SimpleMetricsCachedBatchSerializer prunes a batch when the generated partition filter
+  // does not evaluate to true against the stats row. Bounds are only computed for the types
+  // tracksBounds accepts, and for every other column the lower and upper bounds stay null, which
+  // makes a comparison against them evaluate to null and therefore prune the batch. That would
+  // silently drop rows, so predicates over columns without bounds are not pushed down at all.
+  // Null counts and row counts are recorded for every column, so IsNull and IsNotNull stay safe.
+  override def buildFilter(
+      predicates: Seq[Expression],
+      cachedAttributes: Seq[Attribute]): (Int, Iterator[CachedBatch]) => Iterator[CachedBatch] = {
+    val prunable = cachedAttributes.collect {
+      case a if tracksBounds(a.dataType) => a.exprId
+    }.toSet
+
+    val prunablePredicates = predicates.filter {
+      case _: IsNull | _: IsNotNull => true
+      case p => p.references.forall(a => prunable.contains(a.exprId))
+    }
+
+    super.buildFilter(prunablePredicates, cachedAttributes)
   }
 
-  override def supportsColumnarOutput(schema: StructType): Boolean = true
+  // Comet's Arrow writer only handles the types listed in supportsSchema. Reporting false here
+  // sends the relation down the row path, where it is delegated to Spark's default serializer,
+  // instead of failing at cache materialization inside Utils.serializeBatches.
+  override def supportsColumnarInput(schema: Seq[Attribute]): Boolean = supportsSchema(schema)
 
-  // Columnar Comet output is stored as compressed Arrow stream bytes.
+  // A relation Comet stores is always readable as columnar Arrow. Anything else holds
+  // DefaultCachedBatch, so defer to Spark, which only claims columnar output for the primitive
+  // types its ColumnAccessor.decompress path can actually decode.
+  override def supportsColumnarOutput(schema: StructType): Boolean = {
+    if (schema.fields.forall(f => ArrowCachedBatchSerializer.supportsType(f.dataType))) {
+      true
+    } else {
+      fallback.supportsColumnarOutput(schema)
+    }
+  }
+
+  // Columnar Comet output is stored as compressed Arrow stream bytes. Spark only calls this when
+  // supportsColumnarInput returned true, so the schema is known to be Comet-writable here.
   override def convertColumnarBatchToCachedBatch(
       input: RDD[ColumnarBatch],
       schema: Seq[Attribute],
@@ -248,48 +280,19 @@ class ArrowCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
     }
   }
 
-  // A cached relation can contain DefaultCachedBatch when this serializer is installed
-  // but spark.comet.exec.inMemoryCache.enabled was disabled while the table was cached.
-  // Decode Spark's default cache format here so the read path stays symmetric with the
-  // fallback write path without launching another Spark job from inside a task.
-  private def decodeDefaultCachedBatch(
-      batch: DefaultCachedBatch,
-      cacheAttributes: Seq[Attribute],
-      selectedAttributes: Seq[Attribute],
-      conf: SQLConf): ColumnarBatch = {
-    val schema = toStructType(selectedAttributes)
-    val indices = selectedIndices(cacheAttributes, selectedAttributes)
-    val numRows = batch.numRows
-
-    // This fallback path is used only for Spark's DefaultCachedBatch format. Use on-heap
-    // vectors here to avoid reading SQLConf inside executor-side cache decode code.
-    val vectors = OnHeapColumnVector.allocateColumns(numRows, schema)
-
-    val columnarBatch = new ColumnarBatch(vectors.asInstanceOf[Array[ColumnVector]])
-    columnarBatch.setNumRows(numRows)
-
-    var i = 0
-    while (i < selectedAttributes.length) {
-      ColumnAccessor.decompress(
-        batch.buffers(indices(i)),
-        columnarBatch.column(i).asInstanceOf[WritableColumnVector],
-        schema.fields(i).dataType,
-        numRows)
-      i += 1
-    }
-
-    Option(TaskContext.get()).foreach { taskContext =>
-      taskContext.addTaskCompletionListener[Unit](_ => columnarBatch.close())
-    }
-
-    columnarBatch
-  }
-
   override def convertCachedBatchToColumnarBatch(
       input: RDD[CachedBatch],
       cacheAttributes: Seq[Attribute],
       selectedAttributes: Seq[Attribute],
       conf: SQLConf): RDD[ColumnarBatch] = {
+    if (!supportsSchema(cacheAttributes)) {
+      return fallback.convertCachedBatchToColumnarBatch(
+        input,
+        cacheAttributes,
+        selectedAttributes,
+        conf)
+    }
+
     val indices = selectedIndices(cacheAttributes, selectedAttributes)
 
     input.mapPartitions { it =>
@@ -299,9 +302,6 @@ class ArrowCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
             projectBatch(batch, indices)
           }
 
-        case cb: DefaultCachedBatch =>
-          Iterator(decodeDefaultCachedBatch(cb, cacheAttributes, selectedAttributes, conf))
-
         case other =>
           throw new IllegalStateException(
             s"Unsupported cached batch type ${other.getClass.getName}")
@@ -309,14 +309,14 @@ class ArrowCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
     }
   }
 
-  // Row input can still be cached in Comet format by converting rows to Arrow batches first.
+  // Row input is cached in Comet format by converting rows to Arrow batches first.
   override def convertInternalRowToCachedBatch(
       input: RDD[InternalRow],
       schema: Seq[Attribute],
       storageLevel: StorageLevel,
       conf: SQLConf): RDD[CachedBatch] = {
 
-    if (!enabled(conf)) {
+    if (!supportsSchema(schema)) {
       fallback.convertInternalRowToCachedBatch(input, schema, storageLevel, conf)
     } else {
       val batchSize = conf.columnBatchSize
@@ -340,6 +340,14 @@ class ArrowCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
       cacheAttributes: Seq[Attribute],
       selectedAttributes: Seq[Attribute],
       conf: SQLConf): RDD[InternalRow] = {
+    if (!supportsSchema(cacheAttributes)) {
+      return fallback.convertCachedBatchToInternalRow(
+        input,
+        cacheAttributes,
+        selectedAttributes,
+        conf)
+    }
+
     convertCachedBatchToColumnarBatch(input, cacheAttributes, selectedAttributes, conf)
       .mapPartitions { batches =>
         val toUnsafe = UnsafeProjection.create(selectedAttributes, selectedAttributes)
@@ -349,4 +357,29 @@ class ArrowCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
         }
       }
   }
+}
+
+object ArrowCachedBatchSerializer {
+
+  /**
+   * Whether Comet's Arrow cache format can store this type.
+   *
+   * This mirrors the vectors `Utils.getFieldVector` accepts. A type missing from that list throws
+   * during cache materialization, so it has to be delegated to Spark's default cache format
+   * instead. Interval types are the notable omission.
+   */
+  def supportsType(dt: DataType): Boolean = dt match {
+    case BooleanType | ByteType | ShortType | IntegerType | LongType | FloatType | DoubleType |
+        DateType | TimestampType | TimestampNTZType | BinaryType | NullType =>
+      true
+    case _: DecimalType => true
+    case _: StringType => true
+    case ArrayType(elementType, _) => supportsType(elementType)
+    case MapType(keyType, valueType, _) => supportsType(keyType) && supportsType(valueType)
+    case StructType(fields) => fields.forall(f => supportsType(f.dataType))
+    case _ => false
+  }
+
+  def supportsSchema(schema: Seq[Attribute]): Boolean =
+    schema.forall(a => supportsType(a.dataType))
 }

@@ -289,19 +289,31 @@ case class CometExecRule(session: SparkSession)
       case scan: InMemoryTableScanExec =>
         val serializer = scan.relation.cacheBuilder.serializer
         val usesCometCacheSerializer = serializer.isInstanceOf[ArrowCachedBatchSerializer]
+        // The serializer only stores Comet's Arrow format for schemas it supports and delegates
+        // everything else to Spark's default cache format, which the native scan cannot read.
+        val cometCacheFormat = usesCometCacheSerializer &&
+          ArrowCachedBatchSerializer.supportsSchema(scan.relation.output)
         val nativeCacheEnabled = CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.get(conf)
 
-        if (nativeCacheEnabled && usesCometCacheSerializer) {
+        if (nativeCacheEnabled && cometCacheFormat) {
           convertToComet(scan, CometInMemoryTableScanExec).getOrElse(scan)
         } else {
           // The native cache scan is not available for this relation. Record why, then take the
           // same SparkToColumnar fallback that any other unsupported operator would take, so
           // that turning the feature on is never worse for a scan than leaving it off.
-          if (nativeCacheEnabled) {
+          if (nativeCacheEnabled && !usesCometCacheSerializer) {
             withFallbackReason(
               scan,
               s"Comet in-memory cache requires ${classOf[ArrowCachedBatchSerializer].getName} " +
                 s"but this relation was cached with ${serializer.getClass.getName}")
+          } else if (nativeCacheEnabled) {
+            val unsupported = scan.relation.output
+              .filterNot(a => ArrowCachedBatchSerializer.supportsType(a.dataType))
+              .map(a => s"${a.name}: ${a.dataType.simpleString}")
+            withFallbackReason(
+              scan,
+              "Comet in-memory cache does not support the type of these cached columns, so the " +
+                s"relation was cached in Spark's default format: ${unsupported.mkString(", ")}")
           } else if (usesCometCacheSerializer) {
             withFallbackReason(
               scan,

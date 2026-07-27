@@ -30,6 +30,7 @@ import org.apache.spark.sql.execution.columnar.CometInMemoryRelationHelper
 import org.apache.spark.sql.internal.{SQLConf, StaticSQLConf}
 
 import org.apache.comet.CometConf
+import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 
 class CometInMemoryCacheSuite extends CometTestBase {
 
@@ -153,19 +154,24 @@ class CometInMemoryCacheSuite extends CometTestBase {
     }
   }
 
-  test("Comet cache serializer can read DefaultCachedBatch fallback data") {
+  test("Comet cache serializer delegates unsupported types to Spark's cache format") {
     withSQLConf(
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
       CometConf.COMET_SHUFFLE_MODE.key -> "jvm",
       SQLConf.CACHE_VECTORIZED_READER_ENABLED.key -> "true",
-      CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "false",
+      CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true",
       "spark.comet.sparkToColumnar.enabled" -> "true") {
 
       spark.catalog.clearCache()
 
+      // Interval types have no Arrow vector in Utils.getFieldVector. Without the schema check in
+      // the serializer, caching this relation fails outright with "Unsupported Arrow Vector for
+      // serialize: class org.apache.arrow.vector.DurationVector".
       spark
-        .range(1000)
-        .selectExpr("id as key", "id % 8 as value", "id + 1 as key_plus_1")
+        .sql("""
+          SELECT id AS key, make_dt_interval(0, 0, 0, id) AS dt
+          FROM range(1000)
+        """)
         .createOrReplaceTempView("default_cached_batch")
 
       spark.catalog.cacheTable("default_cached_batch")
@@ -175,27 +181,27 @@ class CometInMemoryCacheSuite extends CometTestBase {
         cachedBatchTypes("default_cached_batch").sameElements(
           Array("org.apache.spark.sql.execution.columnar.DefaultCachedBatch")))
 
-      // Columnar read path: reads DefaultCachedBatch through
-      // convertCachedBatchToColumnarBatch instead of throwing.
+      // Columnar read path, delegated to Spark's serializer.
       val columnarDf = spark.sql("""
-        SELECT key, value
+        SELECT key, dt
         FROM default_cached_batch
         WHERE key >= 10 AND key < 20
       """)
+      assert(columnarDf.collect().length == 10)
       checkSparkAnswer(columnarDf)
 
       val columnarPlan = columnarDf.queryExecution.executedPlan.toString()
       assert(!columnarPlan.contains("CometInMemoryTableScan"))
 
       // Row read path: disabling the vectorized cache reader makes Spark use
-      // convertCachedBatchToInternalRow. This verifies DefaultCachedBatch is
-      // readable there as well.
+      // convertCachedBatchToInternalRow.
       withSQLConf(SQLConf.CACHE_VECTORIZED_READER_ENABLED.key -> "false") {
         val rowDf = spark.sql("""
-          SELECT key_plus_1
+          SELECT dt
           FROM default_cached_batch
           WHERE key >= 10 AND key < 20
         """)
+        assert(rowDf.collect().length == 10)
         checkSparkAnswer(rowDf)
 
         val rowPlan = rowDf.queryExecution.executedPlan.toString()
@@ -461,6 +467,170 @@ class CometInMemoryCacheSuite extends CometTestBase {
       assert(plan.contains("CometInMemoryTableScan"))
 
       spark.catalog.clearCache()
+    }
+  }
+
+  private def withNativeCache(f: => Unit): Unit = {
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      CometConf.COMET_SHUFFLE_MODE.key -> "jvm",
+      SQLConf.CACHE_VECTORIZED_READER_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true",
+      "spark.comet.sparkToColumnar.enabled" -> "true") {
+      spark.catalog.clearCache()
+      try f
+      finally spark.catalog.clearCache()
+    }
+  }
+
+  test("Comet in-memory cache round-trips all supported types") {
+    withNativeCache {
+      val query =
+        """
+          SELECT
+            id AS l,
+            CAST(id AS INT) AS i,
+            CAST(id AS SMALLINT) AS sh,
+            CAST(id AS TINYINT) AS ti,
+            CAST(id % 2 AS BOOLEAN) AS bo,
+            CAST(id AS FLOAT) AS fl,
+            CAST(id AS DOUBLE) AS db,
+            CAST(id AS DECIMAL(20,4)) AS de,
+            CAST(id AS STRING) AS st,
+            CAST(CAST(id AS STRING) AS BINARY) AS bi,
+            DATE_ADD(DATE'2020-01-01', CAST(id AS INT)) AS da,
+            TIMESTAMP'2020-01-01 00:00:00' + make_dt_interval(0, 0, 0, id) AS ts,
+            CAST(TIMESTAMP'2020-01-01 00:00:00' + make_dt_interval(0, 0, 0, id) AS TIMESTAMP_NTZ)
+              AS tsntz,
+            struct(id AS a, CAST(id AS STRING) AS b) AS sc,
+            array(id, id + 1) AS ar,
+            map('k', id) AS mp
+          FROM range(100)
+        """
+
+      // Expected values come from the uncached query so a wrong-but-consistent cached answer
+      // cannot make this pass.
+      val expected = spark.sql(query).orderBy("l").collect()
+
+      spark.sql(query).createOrReplaceTempView("all_types_cache")
+      spark.catalog.cacheTable("all_types_cache")
+      spark.table("all_types_cache").count()
+
+      assert(
+        cachedBatchTypes("all_types_cache").sameElements(
+          Array("org.apache.spark.sql.comet.execution.arrow.CometCachedBatch")))
+
+      val df = spark.sql("SELECT * FROM all_types_cache").orderBy("l")
+      assert(df.collect() === expected)
+      assert(df.queryExecution.executedPlan.toString().contains("CometInMemoryTableScan"))
+    }
+  }
+
+  test("Comet in-memory cache prunes only on columns that have bounds") {
+    assume(isSpark40Plus, "collated string types require Spark 4.0+")
+    withNativeCache {
+      // A collated StringType does not match `case StringType` in the serializer's bounds
+      // tracking, so its lower and upper bounds stay null. Spark still builds a partition filter
+      // for it because a collated string literal is an AtomicType, and comparing against null
+      // bounds prunes every batch. Without the buildFilter guard this query returns no rows.
+      spark
+        .sql("SELECT id, CAST(id AS STRING) COLLATE UTF8_LCASE AS s FROM range(100)")
+        .createOrReplaceTempView("collated_cache")
+      spark.catalog.cacheTable("collated_cache")
+      spark.table("collated_cache").count()
+
+      assert(
+        cachedBatchTypes("collated_cache").sameElements(
+          Array("org.apache.spark.sql.comet.execution.arrow.CometCachedBatch")))
+
+      val expected =
+        spark.sql("SELECT id FROM range(100) WHERE CAST(id AS STRING) >= '5'").collect().length
+      assert(expected > 0)
+      assert(
+        spark.sql("SELECT id FROM collated_cache WHERE s >= '5'").collect().length == expected)
+
+      // Null-count based pruning stays available for columns without bounds.
+      assert(
+        spark.sql("SELECT id FROM collated_cache WHERE s IS NOT NULL").collect().length == 100)
+    }
+  }
+
+  test("Comet in-memory cache is readable when Comet is disabled") {
+    // spark.sql.cache.serializer is static, so the cached format cannot depend on a runtime
+    // config. Disabling Comet must still leave the cached relation readable, including for
+    // string columns, which Spark's DefaultCachedBatch columnar decoder cannot handle.
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.CACHE_VECTORIZED_READER_ENABLED.key -> "true",
+      CometConf.COMET_ENABLED.key -> "false",
+      CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true") {
+      spark.catalog.clearCache()
+      spark
+        .sql("SELECT id, CAST(id AS STRING) AS s FROM range(100)")
+        .createOrReplaceTempView("comet_off_cache")
+      spark.catalog.cacheTable("comet_off_cache")
+      spark.table("comet_off_cache").count()
+
+      val rows = spark.sql("SELECT s FROM comet_off_cache WHERE id >= 90").collect()
+      assert(rows.length == 10)
+      assert(rows.map(_.getString(0)).toSet == (90 until 100).map(_.toString).toSet)
+
+      spark.catalog.clearCache()
+    }
+  }
+
+  test("Comet in-memory cache supports the row read path over CometCachedBatch") {
+    withNativeCache {
+      spark
+        .sql("SELECT id AS key, CAST(id AS STRING) AS s FROM range(100)")
+        .createOrReplaceTempView("row_path_cache")
+      spark.catalog.cacheTable("row_path_cache")
+      spark.table("row_path_cache").count()
+
+      assert(
+        cachedBatchTypes("row_path_cache").sameElements(
+          Array("org.apache.spark.sql.comet.execution.arrow.CometCachedBatch")))
+
+      // Turning off the vectorized cache reader routes the scan through
+      // convertCachedBatchToInternalRow rather than convertCachedBatchToColumnarBatch.
+      withSQLConf(SQLConf.CACHE_VECTORIZED_READER_ENABLED.key -> "false") {
+        val rows = spark.sql("SELECT s FROM row_path_cache WHERE key >= 90").collect()
+        assert(rows.length == 10)
+        assert(rows.map(_.getString(0)).toSet == (90 until 100).map(_.toString).toSet)
+      }
+    }
+  }
+
+  test("Comet in-memory cache projects a reordered full-width selection") {
+    withNativeCache {
+      spark
+        .sql("SELECT id AS key, CAST(id * 10 AS STRING) AS value FROM range(10)")
+        .createOrReplaceTempView("reorder_cache")
+      spark.catalog.cacheTable("reorder_cache")
+      spark.table("reorder_cache").count()
+
+      val relation =
+        spark.sharedState.cacheManager
+          .lookupCachedData(spark.table("reorder_cache"))
+          .get
+          .cachedRepresentation
+      val serializer = relation.cacheBuilder.serializer
+
+      // A full-width but reordered projection has the same length as the cache schema, so an
+      // identity check based on length alone would return the columns in the wrong order.
+      val reordered = Seq(relation.output(1), relation.output(0))
+      val rows = serializer
+        .convertCachedBatchToInternalRow(
+          relation.cacheBuilder.cachedColumnBuffers,
+          relation.output,
+          reordered,
+          spark.sessionState.conf)
+        .map(row => (row.getString(0).toString, row.getLong(1)))
+        .collect()
+        .sortBy(_._2)
+
+      assert(rows.length == 10)
+      assert(rows === (0 until 10).map(i => ((i * 10).toString, i.toLong)).toArray)
     }
   }
 
