@@ -498,7 +498,8 @@ fn create_hdfs_object_store(
 
 type ObjectStoreCache = RwLock<HashMap<(String, u64), Arc<dyn ObjectStore>>>;
 
-/// Process-wide cache of object stores, keyed by `(scheme://host:port, config_hash)`.
+/// Process-wide cache of object stores, keyed by
+/// `(scheme://[container@]host:port, config_hash)`.
 ///
 /// ## Why static / process lifetime?
 ///
@@ -513,9 +514,9 @@ type ObjectStoreCache = RwLock<HashMap<(String, u64), Arc<dyn ObjectStore>>>;
 ///
 /// ## Unbounded size
 ///
-/// Cache entries are indexed by `(scheme://host:port, hash-of-configs)`.  A typical Spark
-/// job accesses a small, fixed set of buckets with a stable configuration, so the number of
-/// distinct keys is O(buckets × credential-configs) and remains small throughout the job.
+/// Cache entries are indexed by `(scheme://[container@]host:port, hash-of-configs)`.  A typical
+/// Spark job accesses a small, fixed set of buckets or containers with a stable configuration,
+/// so the number of distinct keys remains small throughout the job.
 /// Entries are cheap relative to the cost of creating a new object store (new HTTP
 /// connection pool + DNS resolution), and there is no meaningful benefit from eviction, so
 /// no eviction policy is applied.
@@ -563,10 +564,15 @@ pub(crate) fn prepare_object_store_with_configs(
             ExecutionError::GeneralError("Could not convert scheme from s3a to s3".to_string())
         })?;
     }
+    let authority_start = if is_azure_scheme(scheme) {
+        url::Position::BeforeUsername
+    } else {
+        url::Position::BeforeHost
+    };
     let url_key = format!(
         "{}://{}",
         scheme,
-        &url[url::Position::BeforeHost..url::Position::AfterPort],
+        &url[authority_start..url::Position::AfterPort],
     );
 
     let config_hash = hash_object_store_configs(object_store_configs);
@@ -617,18 +623,15 @@ pub(crate) fn prepare_object_store_with_configs(
 mod tests {
     #[cfg(not(feature = "hdfs-opendal"))]
     use datafusion::execution::object_store::ObjectStoreUrl;
-    #[cfg(not(feature = "hdfs-opendal"))]
     use datafusion::execution::runtime_env::RuntimeEnv;
     #[cfg(not(feature = "hdfs-opendal"))]
     use object_store::path::Path;
-    #[cfg(not(feature = "hdfs-opendal"))]
     use std::sync::Arc;
     #[cfg(not(feature = "hdfs-opendal"))]
     use url::Url;
 
     #[cfg(not(feature = "hdfs-opendal"))]
     use crate::execution::operators::ExecutionError;
-    #[cfg(not(feature = "hdfs-opendal"))]
     use std::collections::HashMap;
 
     /// Parses the url, registers the object store, and returns a tuple of the object store url and object store path
@@ -682,5 +685,25 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn test_azure_containers_use_distinct_stores() {
+        let configs = HashMap::from([("fs.azure.account.key".into(), "c2VjcmV0".into())]);
+        let object_store = |container| {
+            let runtime_env = Arc::new(RuntimeEnv::default());
+            let (object_store_url, _) = super::prepare_object_store_with_configs(
+                Arc::clone(&runtime_env),
+                format!("abfss://{container}@myacct.dfs.core.windows.net/path/file.parquet"),
+                &configs,
+            )
+            .unwrap();
+            runtime_env.object_store(&object_store_url).unwrap()
+        };
+
+        assert!(!Arc::ptr_eq(
+            &object_store("container-a"),
+            &object_store("container-b")
+        ));
     }
 }
