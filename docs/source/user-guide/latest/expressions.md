@@ -460,7 +460,7 @@ expression-level). The `outer` variants are wired but marked `Incompatible`; the
 | `rand` | ✅ | Native |  |
 | `randn` | ✅ | Native |  |
 | `random` | ✅ | Native | Alias for `rand` (Spark 4.0+); seed must be a literal |
-| `randstr` | 🔜 | — | Random string (Spark 4.0+) |
+| `randstr` | ✅ | Native | Random string (Spark 4.0+); length and seed must be literals |
 | `rint` | ✅ | Native |  |
 | `round` | ✅ | Native | Float/double inputs fall back |
 | `sec` | ✅ | Native |  |
