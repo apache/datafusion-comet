@@ -24,12 +24,13 @@ import scala.jdk.CollectionConverters._
 import org.scalatest.funsuite.AnyFunSuite
 import org.scalatest.matchers.should.Matchers
 
-import org.apache.arrow.memory.RootAllocator
-import org.apache.arrow.vector.{BigIntVector, IntervalMonthDayNanoVector, IntVector, VectorSchemaRoot}
+import org.apache.arrow.memory.{AllocationListener, RootAllocator}
+import org.apache.arrow.vector.{BaseValueVector, BigIntVector, IntervalMonthDayNanoVector, IntVector, VectorSchemaRoot}
 import org.apache.arrow.vector.types.pojo.{ArrowType, Field, FieldType, Schema}
 import org.apache.spark.sql.catalyst.expressions.GenericInternalRow
 import org.apache.spark.sql.comet.util.Utils
-import org.apache.spark.sql.types.CalendarIntervalType
+import org.apache.spark.sql.execution.vectorized.OnHeapColumnVector
+import org.apache.spark.sql.types.{CalendarIntervalType, IntegerType, StructField, StructType}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.unsafe.types.CalendarInterval
 
@@ -78,6 +79,58 @@ class CometArrowStreamSuite extends AnyFunSuite with Matchers {
       comet.getInterval(1) shouldBe null
     } finally {
       root.close()
+      allocator.close()
+    }
+  }
+
+  test("pre-sized Arrow writer avoids fixed-width reallocations") {
+    var allocatedBytes = 0L
+    val allocator = new RootAllocator(
+      new AllocationListener {
+        override def onAllocation(size: Long): Unit = allocatedBytes += size
+      },
+      Long.MaxValue)
+    val numRows = BaseValueVector.INITIAL_VALUE_ALLOCATION + 1
+    val schema = StructType(
+      Seq(
+        StructField("nullable_int", IntegerType, nullable = true),
+        StructField("required_int", IntegerType, nullable = false)))
+    val nullableInput = new OnHeapColumnVector(numRows, IntegerType)
+    val requiredInput = new OnHeapColumnVector(numRows, IntegerType)
+    val inputBatch = new ColumnarBatch(Array(nullableInput, requiredInput), numRows)
+    val reader = new SparkColumnarArrowReader(
+      allocator,
+      Utils.toArrowSchema(schema, "UTC"),
+      Iterator.single(inputBatch),
+      numRows)
+
+    try {
+      var i = 0
+      while (i < numRows) {
+        if ((i & 1) == 0) {
+          nullableInput.putNull(i)
+        } else {
+          nullableInput.putInt(i, i)
+        }
+        requiredInput.putInt(i, -i)
+        i += 1
+      }
+
+      reader.loadNextBatch() shouldBe true
+      val root = reader.getVectorSchemaRoot
+      val nullableArrow = root.getVector(0).asInstanceOf[IntVector]
+      val requiredArrow = root.getVector(1).asInstanceOf[IntVector]
+      root.getRowCount shouldBe numRows
+      nullableArrow.getValueCapacity should be >= numRows
+      requiredArrow.getValueCapacity should be >= numRows
+      nullableArrow.get(1) shouldBe 1
+      nullableArrow.isNull(numRows - 1) shouldBe true
+      requiredArrow.get(numRows - 1) shouldBe -(numRows - 1)
+      allocatedBytes shouldBe allocator.getAllocatedMemory
+    } finally {
+      reader.close()
+      nullableInput.close()
+      requiredInput.close()
       allocator.close()
     }
   }

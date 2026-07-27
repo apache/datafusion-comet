@@ -76,15 +76,15 @@ private[comet] class SparkColumnarArrowReader(
       if (maxRecordsPerBatch <= 0) rowsRemaining
       else math.min(maxRecordsPerBatch, rowsRemaining)
 
-    val writer = ArrowWriter.create(getVectorSchemaRoot)
+    val writer = ArrowWriter.create(getVectorSchemaRoot, rowsToProduce)
     var col = 0
     while (col < current.numCols()) {
       val column = current.column(col)
       val columnArray = new ColumnarArray(column, rowsConsumedInCurrent, rowsToProduce)
       if (column.hasNull) {
-        writer.writeCol(columnArray, col)
+        writer.writeColUnsafe(columnArray, col)
       } else {
-        writer.writeColNoNull(columnArray, col)
+        writer.writeColNoNullUnsafe(columnArray, col)
       }
       col += 1
     }
