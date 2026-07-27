@@ -516,7 +516,7 @@ type ObjectStoreCache = RwLock<HashMap<(String, u64), Arc<dyn ObjectStore>>>;
 ///
 /// Cache entries are indexed by `(scheme://[container@]host:port, hash-of-configs)`.  A typical
 /// Spark job accesses a small, fixed set of buckets or containers with a stable configuration,
-/// so the number of distinct keys remains small throughout the job.
+/// so the number of distinct keys is O(buckets/containers × credential-configs) and remains small throughout the job.
 /// Entries are cheap relative to the cost of creating a new object store (new HTTP
 /// connection pool + DNS resolution), and there is no meaningful benefit from eviction, so
 /// no eviction policy is applied.
