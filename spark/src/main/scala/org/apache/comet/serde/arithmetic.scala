@@ -21,7 +21,7 @@ package org.apache.comet.serde
 
 import scala.math.min
 
-import org.apache.spark.sql.catalyst.expressions.{Add, Attribute, Cast, Divide, EmptyRow, EqualTo, EvalMode, Expression, If, IntegralDivide, Literal, Multiply, Remainder, Round, Subtract, UnaryMinus}
+import org.apache.spark.sql.catalyst.expressions.{Add, Attribute, BinaryArithmetic, Cast, Divide, EmptyRow, EqualTo, EvalMode, Expression, If, IntegralDivide, Literal, Multiply, Remainder, Round, Subtract, UnaryMinus}
 import org.apache.spark.sql.types.{ByteType, DataType, DecimalType, DoubleType, FloatType, IntegerType, LongType, ShortType}
 
 import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
@@ -90,6 +90,25 @@ trait MathBase {
       Unsupported(Some(s"Unsupported datatype $dt"))
     }
 
+  // Native decimal Add/Subtract/Divide/IntegralDivide/Remainder scale-aligns operands by
+  // multiplying by 10^|delta|, which overflows (subtract-with-overflow panic in debug, silent
+  // wrap in release) whenever any operand or the result has negative scale. See issue #5013.
+  private[comet] val negScaleDecimalArithmeticReason: String =
+    "Arithmetic on negative-scale decimal is not supported natively"
+
+  private[comet] def negScaleDecimalRejection(expr: BinaryArithmetic): Option[Unsupported] = {
+    def isNegScale(dt: DataType): Boolean = dt match {
+      case d: DecimalType => d.scale < 0
+      case _ => false
+    }
+    if (isNegScale(expr.left.dataType) || isNegScale(expr.right.dataType) ||
+      isNegScale(expr.dataType)) {
+      Some(Unsupported(Some(negScaleDecimalArithmeticReason)))
+    } else {
+      None
+    }
+  }
+
   /**
    * True when an `Add` / `Multiply` chain of `dataType` in `evalMode` can be rebalanced without
    * changing results. Only integral types in LEGACY (wrapping, modular) eval mode are exactly
@@ -154,7 +173,7 @@ trait MathBase {
 object CometAdd extends CometExpressionSerde[Add] with MathBase {
 
   override def getSupportLevel(expr: Add): SupportLevel =
-    mathDataTypeSupportLevel(expr.left.dataType)
+    negScaleDecimalRejection(expr).getOrElse(mathDataTypeSupportLevel(expr.left.dataType))
 
   override def convert(
       expr: Add,
@@ -192,7 +211,7 @@ object CometAdd extends CometExpressionSerde[Add] with MathBase {
 object CometSubtract extends CometExpressionSerde[Subtract] with MathBase {
 
   override def getSupportLevel(expr: Subtract): SupportLevel =
-    mathDataTypeSupportLevel(expr.left.dataType)
+    negScaleDecimalRejection(expr).getOrElse(mathDataTypeSupportLevel(expr.left.dataType))
 
   override def convert(
       expr: Subtract,
@@ -212,6 +231,8 @@ object CometSubtract extends CometExpressionSerde[Subtract] with MathBase {
 
 object CometMultiply extends CometExpressionSerde[Multiply] with MathBase {
 
+  // No `negScaleDecimalRejection` guard: Multiply doesn't scale-align operands, so negative-scale
+  // decimals are safe here. Pinned by a regression test in CometExpressionSuite. See issue #5013.
   override def getSupportLevel(expr: Multiply): SupportLevel =
     mathDataTypeSupportLevel(expr.left.dataType)
 
@@ -251,7 +272,7 @@ object CometMultiply extends CometExpressionSerde[Multiply] with MathBase {
 object CometDivide extends CometExpressionSerde[Divide] with MathBase {
 
   override def getSupportLevel(expr: Divide): SupportLevel =
-    mathDataTypeSupportLevel(expr.left.dataType)
+    negScaleDecimalRejection(expr).getOrElse(mathDataTypeSupportLevel(expr.left.dataType))
 
   override def convert(
       expr: Divide,
@@ -292,7 +313,7 @@ object CometDivide extends CometExpressionSerde[Divide] with MathBase {
 object CometIntegralDivide extends CometExpressionSerde[IntegralDivide] with MathBase {
 
   override def getSupportLevel(expr: IntegralDivide): SupportLevel =
-    mathDataTypeSupportLevel(expr.left.dataType)
+    negScaleDecimalRejection(expr).getOrElse(mathDataTypeSupportLevel(expr.left.dataType))
 
   override def convert(
       expr: IntegralDivide,
@@ -355,7 +376,7 @@ object CometIntegralDivide extends CometExpressionSerde[IntegralDivide] with Mat
 object CometRemainder extends CometExpressionSerde[Remainder] with MathBase {
 
   override def getSupportLevel(expr: Remainder): SupportLevel =
-    mathDataTypeSupportLevel(expr.left.dataType)
+    negScaleDecimalRejection(expr).getOrElse(mathDataTypeSupportLevel(expr.left.dataType))
 
   override def convert(
       expr: Remainder,
