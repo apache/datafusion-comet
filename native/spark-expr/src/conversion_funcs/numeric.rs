@@ -497,12 +497,11 @@ macro_rules! cast_decimal_to_int32_up {
                 }
                 Ok(truncated as $rust_dest_type)
             })?,
-            _ => cast_array
-                .unary::<_, $dest_arrow_type>(|value| {
-                    // `unary` runs the op on null slots too; `value / divisor` cannot panic
-                    // because divisor = 10^scale is always positive.
-                    (value / divisor) as $rust_dest_type
-                }),
+            _ => cast_array.unary::<_, $dest_arrow_type>(|value| {
+                // `unary` runs the op on null slots too; `value / divisor` cannot panic
+                // because divisor = 10^scale is always positive.
+                (value / divisor) as $rust_dest_type
+            }),
         };
         Ok(Arc::new(output_array) as ArrayRef)
     }};
