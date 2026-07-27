@@ -22,7 +22,7 @@ package org.apache.comet.serde
 import scala.annotation.tailrec
 import scala.jdk.CollectionConverters._
 
-import org.apache.spark.sql.catalyst.expressions.{And, ArrayAggregate, ArrayAppend, ArrayContains, ArrayExcept, ArrayExists, ArrayFilter, ArrayForAll, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayMin, ArrayPosition, ArrayRemove, ArrayRepeat, ArraySort, ArraysOverlap, ArraysZip, ArrayTransform, ArrayUnion, Attribute, Cast, CreateArray, ElementAt, EmptyRow, Expression, Flatten, GetArrayItem, IsNotNull, LambdaFunction, Literal, NamedLambdaVariable, Reverse, Sequence, Size, Slice, SortArray, ZipWith}
+import org.apache.spark.sql.catalyst.expressions.{And, ArrayAggregate, ArrayAppend, ArrayContains, ArrayExcept, ArrayExists, ArrayFilter, ArrayForAll, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayMin, ArrayPosition, ArrayRemove, ArraySort, ArraysOverlap, ArraysZip, ArrayTransform, ArrayUnion, Attribute, Cast, CreateArray, ElementAt, EmptyRow, Expression, Flatten, GetArrayItem, IsNotNull, LambdaFunction, Literal, NamedLambdaVariable, Reverse, Sequence, Size, Slice, SortArray, ZipWith}
 import org.apache.spark.sql.catalyst.util.GenericArrayData
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
@@ -259,46 +259,6 @@ object CometArraysOverlap extends CometExpressionSerde[ArraysOverlap] {
   }
 }
 
-object CometArrayRepeat extends CometExpressionSerde[ArrayRepeat] {
-
-  override def convert(
-      expr: ArrayRepeat,
-      inputs: Seq[Attribute],
-      binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val elementProto = exprToProto(expr.left, inputs, binding)
-    val countProto = exprToProto(expr.right, inputs, binding)
-    val returnType = ArrayType(elementType = expr.left.dataType)
-    for {
-      countIsNotNullExpr <- countIsNotNullExpr(expr, inputs, binding)
-      arrayRepeatExprProto <- scalarFunctionExprToProto("array_repeat", elementProto, countProto)
-      nullLiteralExprProto <- exprToProtoInternal(Literal(null, returnType), inputs, binding)
-    } yield {
-      val caseWhenProto = ExprOuterClass.CaseWhen
-        .newBuilder()
-        .addWhen(countIsNotNullExpr)
-        .addThen(arrayRepeatExprProto)
-        .setElseExpr(nullLiteralExprProto)
-        .build()
-      ExprOuterClass.Expr
-        .newBuilder()
-        .setCaseWhen(caseWhenProto)
-        .build()
-    }
-  }
-
-  private def countIsNotNullExpr(
-      expr: ArrayRepeat,
-      inputs: Seq[Attribute],
-      binding: Boolean): Option[ExprOuterClass.Expr] = {
-    createUnaryExpr(
-      expr,
-      expr.right,
-      inputs,
-      binding,
-      (builder, countExpr) => builder.setIsNotNull(countExpr))
-  }
-}
-
 object CometArrayCompact extends CometExpressionSerde[Expression] {
 
   override def convert(
@@ -306,19 +266,9 @@ object CometArrayCompact extends CometExpressionSerde[Expression] {
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     val child = expr.children.head
-    val elementType = child.dataType.asInstanceOf[ArrayType].elementType
-
     val arrayExprProto = exprToProto(child, inputs, binding)
 
-    // Use Comet's SparkArrayCompact UDF instead of DataFusion's array_remove_all.
-    // DF 53 changed array_remove_all to return NULL when the element arg is NULL,
-    // which breaks the array_compact use case.
-    // TODO: upstream to datafusion-spark crate
-    val arrayCompactScalarExpr = scalarFunctionExprToProtoWithReturnType(
-      "spark_array_compact",
-      ArrayType(elementType = elementType),
-      false,
-      arrayExprProto)
+    val arrayCompactScalarExpr = scalarFunctionExprToProto("array_compact", arrayExprProto)
     optExprWithFallbackReason(arrayCompactScalarExpr, expr, expr.children: _*)
   }
 }
