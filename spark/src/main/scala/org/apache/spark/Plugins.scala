@@ -30,6 +30,7 @@ import org.apache.spark.sql.internal.StaticSQLConf
 
 import org.apache.comet.{CometSparkSessionExtensions, NativeBase}
 import org.apache.comet.CometConf.{COMET_METRICS_ENABLED, COMET_ONHEAP_ENABLED}
+import org.apache.comet.annotation.Public
 
 /**
  * Comet driver plugin. This class is loaded by Spark's plugin framework. It will be instantiated
@@ -172,6 +173,7 @@ class CometExecutorPlugin extends ExecutorPlugin with Logging {
  * The Comet plugin for Spark. To enable this plugin, set the config "spark.plugins" to
  * `org.apache.spark.CometPlugin`
  */
+@Public
 class CometPlugin extends SparkPlugin with Logging {
   override def driverPlugin(): DriverPlugin = new CometDriverPlugin
 
