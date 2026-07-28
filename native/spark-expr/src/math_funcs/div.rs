@@ -51,16 +51,34 @@ pub fn spark_decimal_integral_div(
 // get enough scale that matches with Spark behavior, it requires to widen s1 to s2 + s3 + 1. Since
 // both s2 and s3 are 38 at max., s1 is 77 at max. DataFusion division cannot handle such scale >
 // Decimal256Type::MAX_SCALE. Therefore, we need to implement this decimal division using BigInt.
+/// Convert a computed quotient to the `i128` stored in the result array, throwing
+/// ARITHMETIC_OVERFLOW when the integral divide overflow check applies and the quotient
+/// does not fit in a LONG (see `MathExpr.check_divide_overflow` in expr.proto).
+#[inline]
+fn quotient_to_i128<T: ToPrimitive>(
+    res: &T,
+    check_divide_overflow: bool,
+) -> Result<i128, ArrowError> {
+    let res = res.to_i128().unwrap_or(i128::MAX);
+    if check_divide_overflow && i64::try_from(res).is_err() {
+        return Err(ArrowError::ComputeError(
+            integral_divide_overflow_error().to_string(),
+        ));
+    }
+    Ok(res)
+}
+
 fn spark_decimal_div_internal(
     args: &[ColumnarValue],
     data_type: &DataType,
     is_integral_div: bool,
     eval_mode: EvalMode,
-    // Only set for integral divide when Spark would check for overflow (ANSI mode with
-    // LONG operands): Long.MinValue div -1 is the only LONG quotient that cannot be
-    // represented as a LONG, so any out-of-range quotient throws ARITHMETIC_OVERFLOW.
+    // See `MathExpr.check_divide_overflow` in expr.proto
     check_divide_overflow: bool,
 ) -> Result<ColumnarValue, DataFusionError> {
+    // Spark captures rather than throws overflow errors in TRY mode, and never checks
+    // in legacy mode, so the overflow check only ever throws under ANSI
+    let check_divide_overflow = check_divide_overflow && eval_mode == EvalMode::Ansi;
     let left = &args[0];
     let right = &args[1];
     let (p3, s3) = get_precision_scale(data_type);
@@ -112,12 +130,7 @@ fn spark_decimal_div_internal(
             } else {
                 div + &five
             } / &ten;
-            if check_divide_overflow && res.to_i64().is_none() {
-                return Err(ArrowError::ComputeError(
-                    integral_divide_overflow_error().to_string(),
-                ));
-            }
-            Ok(res.to_i128().unwrap_or(i128::MAX))
+            quotient_to_i128(&res, check_divide_overflow)
         })?
     } else {
         let l_mul = 10_i128.pow(l_exp);
@@ -144,12 +157,7 @@ fn spark_decimal_div_internal(
             } else {
                 div + 5
             } / 10;
-            if check_divide_overflow && res.to_i64().is_none() {
-                return Err(ArrowError::ComputeError(
-                    integral_divide_overflow_error().to_string(),
-                ));
-            }
-            Ok(res.to_i128().unwrap_or(i128::MAX))
+            quotient_to_i128(&res, check_divide_overflow)
         })?
     };
     let result = result.with_data_type(DataType::Decimal128(p3, s3));

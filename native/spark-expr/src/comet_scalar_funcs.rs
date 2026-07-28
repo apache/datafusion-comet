@@ -160,12 +160,15 @@ pub fn create_comet_physical_fun_with_eval_mode(
             make_comet_scalar_udf!("decimal_div", spark_decimal_div, data_type, eval_mode)
         }
         "decimal_integral_div" => {
+            // the planner repurposes the fail_on_error slot to carry check_divide_overflow
+            // (see MathExpr.check_divide_overflow in expr.proto)
+            let check_divide_overflow = fail_on_error;
             make_comet_scalar_udf!(
                 "decimal_integral_div",
                 spark_decimal_integral_div,
                 data_type,
                 eval_mode,
-                fail_on_error
+                check_divide_overflow
             )
         }
         "checked_add" => {

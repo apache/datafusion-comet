@@ -227,9 +227,7 @@ fn strip_timestamp_tz(
 #[derive(Default)]
 pub struct BinaryExprOptions {
     pub is_integral_div: bool,
-    /// True when Spark would check integral divide overflow (ANSI mode with LONG
-    /// operands), in which case Long.MinValue div -1 throws ARITHMETIC_OVERFLOW
-    /// instead of wrapping around.
+    /// See `MathExpr.check_divide_overflow` in expr.proto
     pub check_divide_overflow: bool,
 }
 
@@ -953,6 +951,8 @@ impl PhysicalPlanner {
                 } else {
                     "decimal_div"
                 };
+                // check_divide_overflow rides in the generic fail_on_error slot; only
+                // decimal_integral_div consumes it
                 let fun_expr = create_comet_physical_fun_with_eval_mode(
                     func_name,
                     data_type.clone(),
@@ -5349,6 +5349,7 @@ mod tests {
                     type_info: None,
                 }),
                 eval_mode: 0, // Legacy mode
+                check_divide_overflow: false,
             }))),
             expr_id: None,
             query_context: None,

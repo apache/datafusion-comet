@@ -319,11 +319,6 @@ object CometIntegralDivide extends CometExpressionSerde[IntegralDivide] with Mat
       case _ => left.dataType
     }
 
-    // Spark only checks integral divide overflow (Long.MinValue div -1) when the operands
-    // are LONG and ANSI mode is enabled; DECIMAL operands wrap around on the cast to LONG
-    val checkDivideOverflow =
-      expr.left.dataType == LongType && expr.evalMode == EvalMode.ANSI
-
     val divideExpr = createMathExpression(
       expr,
       left,
@@ -333,7 +328,9 @@ object CometIntegralDivide extends CometExpressionSerde[IntegralDivide] with Mat
       dataType,
       expr.evalMode,
       (builder, mathExpr) => builder.setIntegralDivide(mathExpr),
-      checkDivideOverflow = checkDivideOverflow)
+      // Spark only checks integral divide overflow (Long.MinValue div -1) for LONG
+      // operands; DECIMAL operands wrap around on the cast to LONG even in ANSI mode
+      checkDivideOverflow = expr.checkDivideOverflow)
 
     if (divideExpr.isDefined) {
       val childExpr = if (dataType.isInstanceOf[DecimalType]) {
