@@ -100,12 +100,14 @@ case class CometNativeColumnarToRowExec(child: SparkPlan)
         val numInputBatches = longMetric("numInputBatches")
         val localSchema = this.schema
         val batchSize = CometConf.COMET_BATCH_SIZE.get()
+        val minNativeBatchSize = CometConf.COMET_NATIVE_COLUMNAR_TO_ROW_MIN_BATCH_SIZE.get()
         val broadcastColumnar = child.executeBroadcast()
         val serializedBatches =
           broadcastColumnar.value.asInstanceOf[Array[org.apache.spark.util.io.ChunkedByteBuffer]]
 
         // Use native converter to convert columnar data to rows
-        val converter = new NativeColumnarToRowConverter(localSchema, batchSize)
+        val converter =
+          new NativeColumnarToRowConverter(localSchema, batchSize, minNativeBatchSize)
         try {
           val rows = serializedBatches.iterator
             .flatMap(CometUtils.decodeBatches(_, this.getClass.getSimpleName))
@@ -192,10 +194,11 @@ case class CometNativeColumnarToRowExec(child: SparkPlan)
     // Get the schema and batch size for native conversion
     val localSchema = child.schema
     val batchSize = CometConf.COMET_BATCH_SIZE.get()
+    val minNativeBatchSize = CometConf.COMET_NATIVE_COLUMNAR_TO_ROW_MIN_BATCH_SIZE.get()
 
     child.executeColumnar().mapPartitionsInternal { batches =>
       // Create native converter for this partition
-      val converter = new NativeColumnarToRowConverter(localSchema, batchSize)
+      val converter = new NativeColumnarToRowConverter(localSchema, batchSize, minNativeBatchSize)
 
       // Register cleanup on task completion
       TaskContext.get().addTaskCompletionListener[Unit] { _ =>

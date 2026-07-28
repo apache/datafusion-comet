@@ -245,6 +245,18 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(true)
 
+  val COMET_NATIVE_COLUMNAR_TO_ROW_MIN_BATCH_SIZE: ConfigEntry[Int] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.columnarToRow.native.minBatchSize")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "When native columnar to row conversion is enabled, batches with fewer rows than " +
+          "this threshold are converted with the JVM implementation instead. Each native " +
+          "conversion carries a fixed JNI cost per batch, so the JVM implementation is " +
+          "faster for small batches. Set to 0 to always use native conversion.")
+      .intConf
+      .checkValue(v => v >= 0, "The minimum batch size must not be negative")
+      .createWithDefault(512)
+
   val COMET_EXEC_SORT_MERGE_JOIN_WITH_JOIN_FILTER_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.exec.sortMergeJoinWithJoinFilter.enabled")
       .category(CATEGORY_ENABLE_EXEC)

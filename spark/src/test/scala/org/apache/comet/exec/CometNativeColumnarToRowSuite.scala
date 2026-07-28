@@ -46,7 +46,11 @@ class CometNativeColumnarToRowSuite extends CometTestBase with AdaptiveSparkPlan
   override protected def test(testName: String, testTags: Tag*)(testFun: => Any)(implicit
       pos: Position): Unit = {
     super.test(testName, testTags: _*) {
-      withSQLConf(CometConf.COMET_NATIVE_COLUMNAR_TO_ROW_ENABLED.key -> "true") {
+      // Set the minimum native batch size to 0 so that the small batches used in these tests
+      // exercise the native conversion path rather than the small-batch JVM fallback.
+      withSQLConf(
+        CometConf.COMET_NATIVE_COLUMNAR_TO_ROW_ENABLED.key -> "true",
+        CometConf.COMET_NATIVE_COLUMNAR_TO_ROW_MIN_BATCH_SIZE.key -> "0") {
         testFun
       }
     }
@@ -534,6 +538,57 @@ class CometNativeColumnarToRowSuite extends CometTestBase with AdaptiveSparkPlan
       converter.close()
       allocator.close()
     }
+  }
+
+  test("small-batch JVM fallback produces the same rows as native conversion") {
+    import org.apache.spark.sql.catalyst.InternalRow
+    import org.apache.spark.sql.comet.execution.arrow.CometArrowConverters
+    import org.apache.spark.unsafe.types.UTF8String
+
+    import scala.collection.mutable.ArrayBuffer
+
+    val schema = new StructType().add("id", IntegerType).add("str", StringType)
+    val numRows = 20
+
+    val rows = (0 until numRows).map { i =>
+      InternalRow(i, UTF8String.fromString(s"value_$i"))
+    }
+
+    def convertAll(minNativeBatchSize: Int): Seq[(Int, String)] = {
+      val allocator =
+        org.apache.comet.CometArrowAllocator.newChildAllocator("c2r-fallback", 0, Long.MaxValue)
+      val batchIter = CometArrowConverters
+        .rowToArrowBatchIter(rows.iterator, schema, numRows, "UTC", allocator)
+      val converter = new NativeColumnarToRowConverter(schema, numRows, minNativeBatchSize)
+      try {
+        val result = new ArrayBuffer[(Int, String)]()
+        while (batchIter.hasNext) {
+          val batch = batchIter.next()
+          val rowIter = converter.convert(batch)
+          // Hold row references across next() calls to verify both paths return
+          // independent copies
+          val converted = new ArrayBuffer[InternalRow]()
+          while (rowIter.hasNext) {
+            converted += rowIter.next()
+          }
+          converted.foreach(row => result += ((row.getInt(0), row.getUTF8String(1).toString)))
+          batch.close()
+        }
+        result.toSeq
+      } finally {
+        converter.close()
+        allocator.close()
+      }
+    }
+
+    // The batch has fewer rows than the threshold, so this takes the JVM fallback path
+    val jvmRows = convertAll(minNativeBatchSize = numRows + 1)
+    // Threshold 0 always takes the native path
+    val nativeRows = convertAll(minNativeBatchSize = 0)
+
+    val expected = (0 until numRows).map(i => (i, s"value_$i"))
+    assert(jvmRows == expected)
+    assert(nativeRows == expected)
   }
 
   /**

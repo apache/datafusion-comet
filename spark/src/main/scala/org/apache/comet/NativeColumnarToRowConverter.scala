@@ -19,8 +19,10 @@
 
 package org.apache.comet
 
+import scala.jdk.CollectionConverters._
+
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.expressions.UnsafeRow
+import org.apache.spark.sql.catalyst.expressions.{UnsafeProjection, UnsafeRow}
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
@@ -35,16 +37,24 @@ import org.apache.comet.vector.NativeUtil
  *
  * Memory Management:
  *   - The native side owns the output buffer
- *   - UnsafeRow objects returned by convert() point directly to native memory (zero-copy)
  *   - The buffer is valid until the next convert() call or close()
+ *   - Rows returned by convert() are independent copies on the JVM heap
  *   - Always call close() when done to release native resources
  *
  * @param schema
  *   The schema of the data to convert
  * @param batchSize
  *   Maximum number of rows per batch (used for buffer pre-allocation)
+ * @param minNativeBatchSize
+ *   Batches with fewer rows than this are converted with the JVM implementation instead of
+ *   natively. Each native conversion carries a fixed JNI cost per batch, so the JVM
+ *   implementation is faster for small batches. 0 means always convert natively.
  */
-class NativeColumnarToRowConverter(schema: StructType, batchSize: Int) extends AutoCloseable {
+class NativeColumnarToRowConverter(
+    schema: StructType,
+    batchSize: Int,
+    minNativeBatchSize: Int = 0)
+    extends AutoCloseable {
 
   private val nativeLib = new Native()
   private val nativeUtil = new NativeUtil()
@@ -65,11 +75,14 @@ class NativeColumnarToRowConverter(schema: StructType, batchSize: Int) extends A
   // Reusable UnsafeRow for iteration
   private val unsafeRow = new UnsafeRow(schema.fields.length)
 
+  // Reused projection for the small-batch JVM fallback path
+  private lazy val toUnsafe = UnsafeProjection.create(schema.fields.map(_.dataType))
+
   /**
    * Converts a ColumnarBatch to an iterator of InternalRows.
    *
-   * The returned iterator yields UnsafeRow objects that point directly to native memory. These
-   * rows are valid only until the next call to convert() or close().
+   * The returned rows are independent copies on the JVM heap and remain valid after subsequent
+   * convert() calls.
    *
    * @param batch
    *   The columnar batch to convert
@@ -84,6 +97,12 @@ class NativeColumnarToRowConverter(schema: StructType, batchSize: Int) extends A
     val numRows = batch.numRows()
     if (numRows == 0) {
       return Iterator.empty
+    }
+
+    if (numRows < minNativeBatchSize) {
+      // The fixed per-batch JNI cost dominates native conversion for small batches, so
+      // convert them on the JVM instead. Rows are copied to match the native path's contract.
+      return batch.rowIterator().asScala.map(row => toUnsafe(row).copy())
     }
 
     // Export the batch to Arrow FFI and get memory addresses

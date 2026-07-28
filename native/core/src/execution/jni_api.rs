@@ -1219,6 +1219,27 @@ use crate::execution::columnar_to_row::ColumnarToRowContext;
 use arrow::ffi::{from_ffi, FFI_ArrowArray, FFI_ArrowSchema};
 use datafusion_spark::function::math::bin::SparkBin;
 use datafusion_spark::function::string::soundex::SparkSoundex;
+use jni::objects::JMethodID;
+
+/// Cached JNI handles for `org.apache.comet.NativeColumnarToRowInfo`. The class and
+/// constructor lookups are resolved once per process instead of on every
+/// `columnarToRowConvert` call, which runs once per batch.
+struct ColumnarToRowInfoClass {
+    class: Global<JClass<'static>>,
+    ctor: JMethodID,
+}
+
+static COLUMNAR_TO_ROW_INFO_CLASS: OnceLock<ColumnarToRowInfoClass> = OnceLock::new();
+
+fn columnar_to_row_info_class(env: &mut Env) -> CometResult<&'static ColumnarToRowInfoClass> {
+    if COLUMNAR_TO_ROW_INFO_CLASS.get().is_none() {
+        let class = env.find_class(jni::jni_str!("org/apache/comet/NativeColumnarToRowInfo"))?;
+        let ctor = env.get_method_id(&class, jni::jni_str!("<init>"), jni::jni_sig!("(J[I[I)V"))?;
+        let class = env.new_global_ref(&class)?;
+        let _ = COLUMNAR_TO_ROW_INFO_CLASS.set(ColumnarToRowInfoClass { class, ctor });
+    }
+    Ok(COLUMNAR_TO_ROW_INFO_CLASS.get().unwrap())
+}
 
 /// Initialize a native columnar to row converter.
 ///
@@ -1234,6 +1255,10 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_columnarToRowInit(
     try_unwrap_or_throw(&e, |env| {
         // Deserialize the schema
         let schema = convert_datatype_arrays(env, serialized_schema)?;
+
+        // Resolve the NativeColumnarToRowInfo JNI handles up front so that the per-batch
+        // convert calls do not pay for the lookups.
+        columnar_to_row_info_class(env)?;
 
         // Create the context
         let ctx = Box::new(ColumnarToRowContext::new(schema, batch_size as usize));
@@ -1313,18 +1338,19 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_columnarToRowConvert(
         let lengths_array = env.new_int_array(lengths.len())?;
         lengths_array.set_region(env, 0, lengths)?;
 
-        // Create the NativeColumnarToRowInfo object
-        let info_class =
-            env.find_class(jni::jni_str!("org/apache/comet/NativeColumnarToRowInfo"))?;
-        let info_obj = env.new_object(
-            info_class,
-            jni::jni_sig!("(J[I[I)V"),
-            &[
-                jni::objects::JValue::Long(buffer_ptr as jlong),
-                jni::objects::JValue::Object(&offsets_array),
-                jni::objects::JValue::Object(&lengths_array),
-            ],
-        )?;
+        // Create the NativeColumnarToRowInfo object using the cached class and constructor
+        let info = columnar_to_row_info_class(env)?;
+        let info_obj = unsafe {
+            env.new_object_unchecked(
+                &*info.class,
+                info.ctor,
+                &[
+                    jni::objects::JValue::Long(buffer_ptr as jlong).as_jni(),
+                    jni::objects::JValue::Object(&offsets_array).as_jni(),
+                    jni::objects::JValue::Object(&lengths_array).as_jni(),
+                ],
+            )
+        }?;
 
         Ok(info_obj.into_raw())
     })
