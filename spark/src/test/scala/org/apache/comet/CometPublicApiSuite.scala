@@ -91,7 +91,10 @@ class CometPublicApiSuite extends AnyFunSuite {
         // Scala companion objects and anonymous/inner classes cannot carry the annotation
         // meaningfully and would only add noise to the diff message.
         .filterNot(n => n.endsWith("$") || n.contains("$$") || n.contains("$anon"))
-        .toSeq
+        // Must be strict: on Scala 2.12 `Iterator.toSeq` is `toStream`, which would not be
+        // forced until after the `finally` below closes the walk, failing with
+        // IllegalStateException.
+        .toList
     } finally {
       stream.close()
     }
