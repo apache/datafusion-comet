@@ -663,17 +663,32 @@ targeting the release branch.</p>
 </section>
 <section id="update-maven-version">
 <h3>Update Maven Version<a class="headerlink" href="#update-maven-version" title="Link to this heading">#</a></h3>
-<p>Open a PR targeting the release branch that changes the Maven version from <code class="docutils literal notranslate"><span class="pre">0.13.0-SNAPSHOT</span></code> to <code class="docutils literal notranslate"><span class="pre">0.13.0</span></code> in
-the <code class="docutils literal notranslate"><span class="pre">pom.xml</span></code> files and in the diff files under <code class="docutils literal notranslate"><span class="pre">dev/diffs</span></code>.</p>
+<p>Open a PR targeting the release branch that changes the Maven version from <code class="docutils literal notranslate"><span class="pre">0.13.0-SNAPSHOT</span></code> to <code class="docutils literal notranslate"><span class="pre">0.13.0</span></code> in:</p>
+<ul class="simple">
+<li><p>the <code class="docutils literal notranslate"><span class="pre">pom.xml</span></code> files: <code class="docutils literal notranslate"><span class="pre">pom.xml</span></code>, <code class="docutils literal notranslate"><span class="pre">common/pom.xml</span></code>, <code class="docutils literal notranslate"><span class="pre">spark/pom.xml</span></code>, and <code class="docutils literal notranslate"><span class="pre">spark-integration/pom.xml</span></code></p></li>
+<li><p>the <code class="docutils literal notranslate"><span class="pre">&lt;comet.version&gt;</span></code> property in the Spark test diffs under <code class="docutils literal notranslate"><span class="pre">dev/diffs</span></code></p></li>
+<li><p>the <code class="docutils literal notranslate"><span class="pre">comet</span></code> version in the Iceberg test diffs under <code class="docutils literal notranslate"><span class="pre">dev/diffs/iceberg</span></code>, which use a Gradle version
+catalog entry (<code class="docutils literal notranslate"><span class="pre">comet</span> <span class="pre">=</span> <span class="pre">&quot;0.13.0&quot;</span></code>) rather than a Maven property</p></li>
+</ul>
 <p>There is no need to update the Rust crate versions because they will already be <code class="docutils literal notranslate"><span class="pre">0.13.0</span></code>.</p>
+<p>Once the version is bumped, verify that no references to the old version remain:</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>git<span class="w"> </span>grep<span class="w"> </span>-n<span class="w"> </span><span class="s1">&#39;0.13.0-SNAPSHOT&#39;</span><span class="w"> </span>--<span class="w"> </span>.<span class="w"> </span><span class="s1">&#39;:!docs/source/changelog&#39;</span>
+</pre></div>
+</div>
+<p>Any hit outside the change log is a place that will break on the release branch. Note that dropping the
+<code class="docutils literal notranslate"><span class="pre">-SNAPSHOT</span></code> qualifier changes the built artifact file names, so anything that locates the jar by glob must
+match a bare version too. Prefer patterns such as <code class="docutils literal notranslate"><span class="pre">comet-spark-spark3.5_2.12-*.jar</span></code> over
+<code class="docutils literal notranslate"><span class="pre">comet-spark-spark3.5_2.12-*-SNAPSHOT.jar</span></code>, and prefer resolving the jar by glob over hardcoding a version.
+The release branch runs the same CI workflows as <code class="docutils literal notranslate"><span class="pre">main</span></code>, including the PyArrow UDF tests, so a
+<code class="docutils literal notranslate"><span class="pre">-SNAPSHOT</span></code>-only glob in a test harness or script fails only after the release branch is cut.</p>
 </section>
 <section id="update-version-in-main">
 <h3>Update Version in main<a class="headerlink" href="#update-version-in-main" title="Link to this heading">#</a></h3>
 <p>Create a PR against the main branch to prepare for developing the next release:</p>
 <ul class="simple">
 <li><p>Update the Rust crate version to <code class="docutils literal notranslate"><span class="pre">0.14.0</span></code>.</p></li>
-<li><p>Update the Maven version to <code class="docutils literal notranslate"><span class="pre">0.14.0-SNAPSHOT</span></code> (both in the <code class="docutils literal notranslate"><span class="pre">pom.xml</span></code> files and also in the diff files
-under <code class="docutils literal notranslate"><span class="pre">dev/diffs</span></code>).</p></li>
+<li><p>Update the Maven version to <code class="docutils literal notranslate"><span class="pre">0.14.0-SNAPSHOT</span></code> in the same set of files listed above (the <code class="docutils literal notranslate"><span class="pre">pom.xml</span></code> files,
+the Spark test diffs under <code class="docutils literal notranslate"><span class="pre">dev/diffs</span></code>, and the Iceberg test diffs under <code class="docutils literal notranslate"><span class="pre">dev/diffs/iceberg</span></code>).</p></li>
 </ul>
 </section>
 <section id="generate-the-change-log">
