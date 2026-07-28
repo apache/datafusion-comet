@@ -1291,7 +1291,9 @@ mod tests {
 
     #[test]
     fn test_cast_int_to_decimal128_overflow_ansi_errors() {
-        let array: ArrayRef = Arc::new(Int32Array::from(vec![Some(9), Some(1000)]));
+        // Two overflowing values: the rescan is documented to report the first one, so asserting
+        // on 1000 rather than 2000 pins the scan order as well as the error variant and payload.
+        let array: ArrayRef = Arc::new(Int32Array::from(vec![Some(9), Some(1000), Some(2000)]));
         let result = cast_int_to_decimal128(
             &array,
             EvalMode::Ansi,
@@ -1300,8 +1302,20 @@ mod tests {
             3,
             2,
         );
-        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            matches!(
+                err,
+                SparkError::NumericValueOutOfRange {
+                    ref value,
+                    precision: 3,
+                    scale: 2
+                } if value == "1000"
+            ),
+            "unexpected error: {err:?}"
+        );
     }
+
     #[test]
     fn test_cast_int_to_timestamp() {
         let timezones: [Option<Arc<str>>; 6] = [
