@@ -85,8 +85,8 @@ $SPARK_HOME/bin/spark-submit \
     --conf spark.comet.exec.enabled=true \
     --conf spark.comet.exec.all.enabled=true \
     --conf spark.comet.cast.allowIncompatible=true \
-    --conf spark.comet.exec.shuffle.enabled=true \
-    --conf spark.comet.exec.shuffle.mode=auto \
+    --conf spark.comet.shuffle.enabled=true \
+    --conf spark.comet.shuffle.mode=auto \
     --conf spark.shuffle.manager=org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager \
     --conf spark.kubernetes.namespace=default \
     --conf spark.kubernetes.driver.pod.name=tpcbench  \

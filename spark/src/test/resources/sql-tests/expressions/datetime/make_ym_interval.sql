@@ -16,7 +16,7 @@
 -- under the License.
 
 -- Config: spark.comet.exec.localTableScan.enabled=true
--- Config: spark.comet.exec.shuffle.mode=native
+-- Config: spark.comet.shuffle.mode=native
 
 -- Routes make_ym_interval through the codegen dispatcher; produces YearMonthIntervalType.
 
