@@ -814,15 +814,15 @@ They serve different purposes and produce output in different places.</p>
 </tr>
 </thead>
 <tbody>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.explainFallback.enabled</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.explain.fallback.enabled</span></code></p></td>
 <td><p>Driver log (only when fallback)</p></td>
 <td><p>A WARN with the list of reasons each query stage could not run in Comet.</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.logFallbackReasons.enabled</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.explain.fallback.log.enabled</span></code></p></td>
 <td><p>Driver log</p></td>
 <td><p>One WARN per fallback reason as it is encountered, without surrounding plan context.</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.explainCodegen.enabled</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.explain.codegen.enabled</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">ExtendedExplainInfo</span></code> / SQL UI</p></td>
 <td><p>A single <code class="docutils literal notranslate"><span class="pre">[COMET-INFO:</span> <span class="pre">JVM</span> <span class="pre">codegen</span> <span class="pre">dispatcher:</span> <span class="pre">&lt;name1&gt;,</span> <span class="pre">&lt;name2&gt;,</span> <span class="pre">...]</span></code> segment naming each expression on the operator that was routed through the JVM codegen dispatcher.</p></td>
 </tr>
@@ -837,22 +837,22 @@ They serve different purposes and produce output in different places.</p>
 </tbody>
 </table>
 </div>
-<section id="spark-comet-explainfallback-enabled">
-<h3><code class="docutils literal notranslate"><span class="pre">spark.comet.explainFallback.enabled</span></code><a class="headerlink" href="#spark-comet-explainfallback-enabled" title="Link to this heading">#</a></h3>
+<section id="spark-comet-explain-fallback-enabled">
+<h3><code class="docutils literal notranslate"><span class="pre">spark.comet.explain.fallback.enabled</span></code><a class="headerlink" href="#spark-comet-explain-fallback-enabled" title="Link to this heading">#</a></h3>
 <p>Logs a single WARN listing the reasons each query stage could not be executed
 in Comet. Nothing is logged when the entire stage runs in Comet. Useful as a
 low-noise check that fallback is or is not happening.</p>
 </section>
-<section id="spark-comet-logfallbackreasons-enabled">
-<h3><code class="docutils literal notranslate"><span class="pre">spark.comet.logFallbackReasons.enabled</span></code><a class="headerlink" href="#spark-comet-logfallbackreasons-enabled" title="Link to this heading">#</a></h3>
+<section id="spark-comet-explain-fallback-log-enabled">
+<h3><code class="docutils literal notranslate"><span class="pre">spark.comet.explain.fallback.log.enabled</span></code><a class="headerlink" href="#spark-comet-explain-fallback-log-enabled" title="Link to this heading">#</a></h3>
 <p>Logs every fallback reason as it is encountered, one WARN per reason. Use this
 when you want to see all reasons, including ones that
-<code class="docutils literal notranslate"><span class="pre">spark.comet.explainFallback.enabled</span></code> may aggregate or omit. The output does
+<code class="docutils literal notranslate"><span class="pre">spark.comet.explain.fallback.enabled</span></code> may aggregate or omit. The output does
 not include the surrounding plan, so it is best for accumulating diagnostics
 across many queries.</p>
 </section>
-<section id="spark-comet-explaincodegen-enabled">
-<h3><code class="docutils literal notranslate"><span class="pre">spark.comet.explainCodegen.enabled</span></code><a class="headerlink" href="#spark-comet-explaincodegen-enabled" title="Link to this heading">#</a></h3>
+<section id="spark-comet-explain-codegen-enabled">
+<h3><code class="docutils literal notranslate"><span class="pre">spark.comet.explain.codegen.enabled</span></code><a class="headerlink" href="#spark-comet-explain-codegen-enabled" title="Link to this heading">#</a></h3>
 <p>Disabled by default. When enabled, Comet annotates the surrounding Comet
 operator (<code class="docutils literal notranslate"><span class="pre">CometProject</span></code>, <code class="docutils literal notranslate"><span class="pre">CometFilter</span></code>, etc.) with a single combined
 <code class="docutils literal notranslate"><span class="pre">[COMET-INFO:</span> <span class="pre">JVM</span> <span class="pre">codegen</span> <span class="pre">dispatcher:</span> <span class="pre">&lt;name1&gt;,</span> <span class="pre">&lt;name2&gt;,</span> <span class="pre">...]</span></code> segment listing
@@ -869,7 +869,7 @@ specific input (<code class="docutils literal notranslate"><span class="pre">Cod
 expression ran here” marker.</p>
 <p>Example:</p>
 <div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="n">spark</span><span class="p">.</span><span class="n">conf</span><span class="p">.</span><span class="n">set</span><span class="p">(</span><span class="s">&quot;spark.comet.exec.scalaUDF.codegen.enabled&quot;</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;true&quot;</span><span class="p">)</span>
-<span class="n">spark</span><span class="p">.</span><span class="n">conf</span><span class="p">.</span><span class="n">set</span><span class="p">(</span><span class="s">&quot;spark.comet.explainCodegen.enabled&quot;</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;true&quot;</span><span class="p">)</span>
+<span class="n">spark</span><span class="p">.</span><span class="n">conf</span><span class="p">.</span><span class="n">set</span><span class="p">(</span><span class="s">&quot;spark.comet.explain.codegen.enabled&quot;</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;true&quot;</span><span class="p">)</span>
 
 <span class="kd">val</span><span class="w"> </span><span class="n">df</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">spark</span><span class="p">.</span><span class="n">sql</span><span class="p">(</span><span class="s">&quot;SELECT hypot(a, b), levenshtein(s1, s2) FROM t&quot;</span><span class="p">)</span>
 <span class="n">println</span><span class="p">(</span><span class="k">new</span><span class="w"> </span><span class="n">org</span><span class="p">.</span><span class="n">apache</span><span class="p">.</span><span class="n">comet</span><span class="p">.</span><span class="nc">ExtendedExplainInfo</span><span class="p">()</span>
@@ -1190,9 +1190,9 @@ columnar.</p>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#reading-a-plan">Reading a Plan</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#fallback">Fallback</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#configs-for-inspecting-plans-and-fallback">Configs for Inspecting Plans and Fallback</a><ul class="nav section-nav flex-column">
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#spark-comet-explainfallback-enabled"><code class="docutils literal notranslate"><span class="pre">spark.comet.explainFallback.enabled</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#spark-comet-logfallbackreasons-enabled"><code class="docutils literal notranslate"><span class="pre">spark.comet.logFallbackReasons.enabled</span></code></a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#spark-comet-explaincodegen-enabled"><code class="docutils literal notranslate"><span class="pre">spark.comet.explainCodegen.enabled</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#spark-comet-explain-fallback-enabled"><code class="docutils literal notranslate"><span class="pre">spark.comet.explain.fallback.enabled</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#spark-comet-explain-fallback-log-enabled"><code class="docutils literal notranslate"><span class="pre">spark.comet.explain.fallback.log.enabled</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#spark-comet-explain-codegen-enabled"><code class="docutils literal notranslate"><span class="pre">spark.comet.explain.codegen.enabled</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#spark-comet-explain-format"><code class="docutils literal notranslate"><span class="pre">spark.comet.explain.format</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#spark-comet-explain-native-enabled"><code class="docutils literal notranslate"><span class="pre">spark.comet.explain.native.enabled</span></code></a></li>
 </ul>

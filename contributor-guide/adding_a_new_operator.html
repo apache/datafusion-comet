@@ -1103,7 +1103,7 @@ manages the boundary between JVM and native execution.</p>
 <h2>Debugging Tips<a class="headerlink" href="#debugging-tips" title="Link to this heading">#</a></h2>
 <ol class="arabic simple">
 <li><p><strong>Enable verbose logging</strong>: Set <code class="docutils literal notranslate"><span class="pre">spark.comet.explain.format=verbose</span></code> to see detailed plan transformations</p></li>
-<li><p><strong>Check fallback reasons</strong>: Set <code class="docutils literal notranslate"><span class="pre">spark.comet.logFallbackReasons.enabled=true</span></code> to log why operators fall back to Spark</p></li>
+<li><p><strong>Check fallback reasons</strong>: Set <code class="docutils literal notranslate"><span class="pre">spark.comet.explain.fallback.log.enabled=true</span></code> to log why operators fall back to Spark</p></li>
 <li><p><strong>Verify protobuf</strong>: Add debug prints in Rust to inspect deserialized operators</p></li>
 <li><p><strong>Use EXPLAIN</strong>: Run <code class="docutils literal notranslate"><span class="pre">EXPLAIN</span> <span class="pre">EXTENDED</span></code> on queries to see the physical plan</p></li>
 </ol>
