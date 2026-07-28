@@ -377,8 +377,8 @@ case class CometExecRule(session: SparkSession)
             // WriteFilesExec is always wrapped by DataWritingCommandExec (via Spark's V1Writes
             // rule); the parent case converts the whole write to CometNativeWriteExec and
             // unwraps WriteFilesExec inside convertToComet. Tagging WriteFilesExec here would
-            // produce a spurious "WriteFilesExec is not supported" fallback reason (and a
-            // warning when COMET_LOG_FALLBACK_REASONS=true) even when the write is fully native.
+            // produce a spurious "WriteFilesExec is not supported" fallback reason (and a warning
+            // when COMET_EXPLAIN_FALLBACK_LOG_ENABLED=true) even when the write is fully native.
             op
           case _ =>
             // The operator was not converted to a Comet plan. Possible reasons for this happening:

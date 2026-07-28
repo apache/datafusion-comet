@@ -73,8 +73,8 @@ $SPARK_HOME/bin/spark-submit \
   --conf spark.comet.enabled=true \
   --conf spark.comet.operator.DataWritingCommandExec.allowIncompatible=true \
   --conf spark.comet.parquet.write.enabled=true \
-  --conf spark.comet.logFallbackReasons.enabled=true \
-  --conf spark.comet.explainFallback.enabled=true \
+  --conf spark.comet.explain.fallback.log.enabled=true \
+  --conf spark.comet.explain.fallback.enabled=true \
   --conf spark.comet.shuffle.mode=jvm \
   --conf spark.comet.exec.shuffle.mode=jvm \
   --conf spark.comet.exec.replaceSortMergeJoin=true \
@@ -101,8 +101,8 @@ $SPARK_HOME/bin/spark-submit \
   --conf spark.comet.enabled=true \
   --conf spark.comet.operator.DataWritingCommandExec.allowIncompatible=true \
   --conf spark.comet.parquet.write.enabled=true \
-  --conf spark.comet.logFallbackReasons.enabled=true \
-  --conf spark.comet.explainFallback.enabled=true \
+  --conf spark.comet.explain.fallback.log.enabled=true \
+  --conf spark.comet.explain.fallback.enabled=true \
   --conf spark.comet.exec.shuffle.mode=native \
   --conf spark.comet.exec.replaceSortMergeJoin=true \
   --conf spark.shuffle.manager=org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager \

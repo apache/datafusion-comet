@@ -1216,7 +1216,7 @@ abstract class CometTestBase
    *       "select arr from tbl",
    *       sqlConf = Seq(
    *         CometConf.COMET_SCAN_UNSIGNED_SMALL_INT_SAFETY_CHECK.key -> "true",
-   *         "spark.comet.explainFallback.enabled" -> "false"
+   *         "spark.comet.explain.fallback.enabled" -> "false"
    *       ),
    *       debugCometDF = df => {
    *         df.printSchema()
