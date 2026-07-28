@@ -212,6 +212,7 @@ pub(crate) fn init_datasource_exec(
     Ok(data_source_exec)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn get_options(
     session_timezone: &str,
     case_sensitive: bool,
