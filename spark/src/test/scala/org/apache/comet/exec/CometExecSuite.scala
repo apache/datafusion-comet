@@ -87,6 +87,60 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
+  test("sample without replacement") {
+    withParquetTable((0 until 1000).map(i => (i, i + 1)), "tbl") {
+      val df = sql("SELECT * FROM tbl").sample(withReplacement = false, fraction = 0.3, seed = 42)
+      checkSparkAnswerAndOperator(df, Seq(classOf[CometSampleExec]))
+    }
+  }
+
+  // The sampler is seeded per partition with `seed + partitionIndex`, so a multi-partition input
+  // is what catches a native side that ignores the partition index.
+  test("sample without replacement over multiple partitions") {
+    withTempDir { dir =>
+      val path = new Path(dir.toURI.toString, "sample.parquet")
+      spark
+        .range(0, 4000)
+        .repartition(4)
+        .write
+        .parquet(path.toString)
+      withParquetTable(path.toString, "tbl") {
+        val df =
+          sql("SELECT * FROM tbl").sample(withReplacement = false, fraction = 0.2, seed = 7)
+        assert(df.rdd.getNumPartitions > 1)
+        checkSparkAnswerAndOperator(df, Seq(classOf[CometSampleExec]))
+      }
+    }
+  }
+
+  test("sample without replacement with non-zero lower bound (randomSplit)") {
+    withParquetTable((0 until 1000).map(i => (i, i + 1)), "tbl") {
+      val splits = sql("SELECT * FROM tbl").randomSplit(Array(0.3, 0.7), seed = 42)
+      splits.foreach(checkSparkAnswerAndOperator(_, Seq(classOf[CometSampleExec])))
+      assert(splits.map(_.count()).sum == 1000)
+    }
+  }
+
+  test("sample with replacement falls back to Spark") {
+    withParquetTable((0 until 1000).map(i => (i, i + 1)), "tbl") {
+      val df = sql("SELECT * FROM tbl").sample(withReplacement = true, fraction = 0.3, seed = 42)
+      checkSparkAnswer(df)
+      assert(collect(df.queryExecution.executedPlan) { case s: CometSampleExec => s }.isEmpty)
+      assert(collect(df.queryExecution.executedPlan) { case s: SampleExec => s }.size == 1)
+    }
+  }
+
+  test("sample falls back to Spark when disabled") {
+    withSQLConf(CometConf.COMET_EXEC_SAMPLE_ENABLED.key -> "false") {
+      withParquetTable((0 until 1000).map(i => (i, i + 1)), "tbl") {
+        val df =
+          sql("SELECT * FROM tbl").sample(withReplacement = false, fraction = 0.3, seed = 42)
+        checkSparkAnswer(df)
+        assert(collect(df.queryExecution.executedPlan) { case s: CometSampleExec => s }.isEmpty)
+      }
+    }
+  }
+
   test("TopK operator should return correct results on dictionary column with nulls") {
     withSQLConf(SQLConf.USE_V1_SOURCE_LIST.key -> "") {
       withTable("test_data") {

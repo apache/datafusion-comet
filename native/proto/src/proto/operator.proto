@@ -55,6 +55,7 @@ message Operator {
     CsvScan csv_scan = 115;
     ShuffleScan shuffle_scan = 116;
     BroadcastNestedLoopJoin broadcast_nested_loop_join = 117;
+    Sample sample = 118;
   }
 }
 
@@ -394,6 +395,16 @@ message HashAggregate {
 message Limit {
   int32 limit = 1;
   int32 offset = 2;
+}
+
+// Sampling without replacement. Spark's SampleExec also supports sampling with
+// replacement, but that path is not serialized to native yet, so there is no
+// `with_replacement` field.
+message Sample {
+  double lower_bound = 1;
+  double upper_bound = 2;
+  // Seed before the partition index is added, which happens on the native side.
+  int64 seed = 3;
 }
 
 enum CompressionCodec {
