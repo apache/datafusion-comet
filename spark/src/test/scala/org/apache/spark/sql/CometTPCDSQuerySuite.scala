@@ -180,9 +180,6 @@ class CometTPCDSQuerySuite
   override def sparkConf: SparkConf = {
     val conf = super.sparkConf
     conf.set("spark.sql.extensions", "org.apache.comet.CometSparkSessionExtensions")
-    conf.set(
-      "spark.shuffle.manager",
-      "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
     conf.set(CometConf.COMET_ENABLED.key, "true")
     conf.set(CometConf.COMET_EXEC_ENABLED.key, "true")
     conf.set(CometConf.COMET_NATIVE_SCAN_ENABLED.key, "true")
@@ -192,6 +189,7 @@ class CometTPCDSQuerySuite
     conf.set("spark.sql.adaptive.coalescePartitions.enabled", "true")
     conf.set(MEMORY_OFFHEAP_ENABLED.key, "true")
     conf.set(MEMORY_OFFHEAP_SIZE.key, "15g")
+    CometTestShuffleManager.confs.foreach { case (key, value) => conf.set(key, value) }
     conf
   }
 

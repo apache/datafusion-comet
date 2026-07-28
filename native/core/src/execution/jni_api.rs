@@ -1217,6 +1217,7 @@ pub extern "system" fn Java_org_apache_comet_Native_getRustThreadId(
 
 use crate::execution::columnar_to_row::ColumnarToRowContext;
 use arrow::ffi::{from_ffi, FFI_ArrowArray, FFI_ArrowSchema};
+use datafusion_comet_shuffle::RssPartitionPusher;
 use datafusion_spark::function::math::bin::SparkBin;
 use datafusion_spark::function::string::soundex::SparkSoundex;
 
@@ -1346,6 +1347,49 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_columnarToRowClose(
             let _ctx: Box<ColumnarToRowContext> =
                 Box::from_raw(c2r_handle as *mut ColumnarToRowContext);
             // ctx is dropped here, freeing the buffer
+        }
+        Ok(())
+    })
+}
+
+/// Create a native RSS partition pusher backed by the supplied Java pusher.
+///
+/// The returned handle owns the native pusher and must eventually be passed to
+/// `releaseRssPartitionPusher`.
+///
+/// # Safety
+/// `pusher` must be a valid JNI reference for the duration of this call.
+#[no_mangle]
+pub unsafe extern "system" fn Java_org_apache_comet_Native_createRssPartitionPusher(
+    e: EnvUnowned,
+    _class: JClass,
+    pusher: JObject,
+) -> jlong {
+    try_unwrap_or_throw(&e, |env| {
+        let rss_partition_pusher = Box::new(RssPartitionPusher::try_new(Arc::new(
+            jni_new_global_ref!(env, pusher)?,
+        ))?);
+
+        Ok(Box::into_raw(rss_partition_pusher) as i64)
+    })
+}
+
+/// Release a native RSS partition pusher created by `createRssPartitionPusher`.
+///
+/// # Safety
+/// `handle` must be a non-zero valid handle returned by `createRssPartitionPusher`. It must not be
+/// released more than once or used after this function returns.
+#[no_mangle]
+pub unsafe extern "system" fn Java_org_apache_comet_Native_releaseRssPartitionPusher(
+    e: EnvUnowned,
+    _class: JClass,
+    handle: jlong,
+) {
+    try_unwrap_or_throw(&e, |_env| {
+        debug_assert!(handle != 0, "releaseRssPartitionPusher: handle is null");
+        if handle != 0 {
+            let _pusher: Box<RssPartitionPusher> = Box::from_raw(handle as *mut RssPartitionPusher);
+            // _pusher is dropped here, freeing the resources
         }
         Ok(())
     })

@@ -41,7 +41,8 @@ datafusion-comet-jni-bridge = { workspace = true }
 datafusion-comet-spark-expr = { workspace = true }
 futures = { workspace = true }
 itertools = "0.15.0"
-jni = "0.21"
+jni = "0.22.4"
+paste = "1.0.14"
 log = "0.4"
 lz4_flex = { version = "0.14.0", default-features = false, features = ["frame"] }
 # parquet is only used by the shuffle_bench binary (shuffle-bench feature)
@@ -60,6 +61,9 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 
 [features]
 shuffle-bench = ["clap", "parquet"]
+
+[package.metadata.cargo-machete]
+ignored = ["paste"]
 
 [lib]
 name = "datafusion_comet_shuffle"

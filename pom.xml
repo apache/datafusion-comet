@@ -83,6 +83,7 @@ under the License.
     <semanticdb.version>4.13.6</semanticdb.version>
     <slf4j.version>2.0.17</slf4j.version>
     <guava.version>33.2.1-jre</guava.version>
+    <uniffle.version>0.10.0</uniffle.version>
     <testcontainers.version>1.21.4</testcontainers.version>
     <amazon-awssdk-v2.version>2.31.51</amazon-awssdk-v2.version>
     <jni.dir>${project.basedir}/../native/target/debug</jni.dir>
@@ -869,6 +870,22 @@ under the License.
               </plugins>
           </build>
     </profile>
+
+    <profile>
+      <id>uniffle</id>
+      <modules>
+        <module>thirdparty/comet-uniffle</module>
+      </modules>
+      <dependencyManagement>
+        <dependencies>
+          <dependency>
+            <groupId>org.apache.uniffle</groupId>
+            <artifactId>rss-client-spark3-shaded</artifactId>
+            <version>${uniffle.version}</version>
+          </dependency>
+        </dependencies>
+      </dependencyManagement>
+    </profile>
   </profiles>
 
   <build>
@@ -1258,6 +1275,22 @@ under the License.
                         <!-- Spark 4.2.0 bundles its own copy of this class in spark-catalyst,
                              which collides with the transitive datasketches-memory jar. -->
                         <ignoreClass>org.apache.datasketches.memory.internal.ResourceImpl</ignoreClass>
+                      </ignoreClasses>
+                    </dependency>
+                    <dependency>
+                      <groupId>org.apache.uniffle</groupId>
+                      <artifactId>rss-client-spark3-shaded</artifactId>
+                      <ignoreClasses>
+                        <!-- Uniffle's shaded Spark client embeds these APIs; Spark provides them at runtime. -->
+                        <ignoreClass>javax.servlet.*</ignoreClass>
+                        <ignoreClass>META-INF/versions/9/javax/xml/bind/ModuleUtil</ignoreClass>
+                        <ignoreClass>javax.activation.MailcapCommandMap</ignoreClass>
+                        <ignoreClass>javax.activation.MimetypesFileTypeMap</ignoreClass>
+                        <ignoreClass>javax.annotation.MatchesPattern$Checker</ignoreClass>
+                        <ignoreClass>javax.annotation.Nonnegative$Checker</ignoreClass>
+                        <ignoreClass>javax.annotation.RegEx$Checker</ignoreClass>
+                        <ignoreClass>javax.annotation.Resource$AuthenticationType</ignoreClass>
+                        <ignoreClass>META-INF/versions/11/org/roaringbitmap/ArraysShim</ignoreClass>
                       </ignoreClasses>
                     </dependency>
                   </dependencies>

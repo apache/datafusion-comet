@@ -45,7 +45,9 @@ use datafusion::physical_plan::common::collect;
 use datafusion::physical_plan::metrics::{MetricValue, MetricsSet};
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::{ParquetReadOptions, SessionContext};
-use datafusion_comet_shuffle::{CometPartitioning, CompressionCodec, ShuffleWriterExec};
+use datafusion_comet_shuffle::{
+    CometPartitioning, CompressionCodec, ShufflePartitionWriter, ShuffleWriterExec,
+};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -482,8 +484,10 @@ async fn execute_shuffle_write(
         input,
         partitioning,
         codec,
-        data_file,
-        index_file,
+        ShufflePartitionWriter::Local {
+            output_data_file: data_file,
+            output_index_file: index_file,
+        },
         false,
         write_buffer_size,
         max_buffer_bytes,

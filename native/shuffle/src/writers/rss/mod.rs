@@ -15,17 +15,5 @@
 // specific language governing permissions and limitations
 // under the License.
 
-mod buf_batch_writer;
-mod checksum;
-mod local;
-mod partition_writer;
-mod rss;
-mod shuffle_block_writer;
-
-pub(crate) use buf_batch_writer::BufBatchWriter;
-pub(crate) use checksum::Checksum;
-pub(crate) use local::local_partition_writer::LocalPartitionWriter;
-pub(crate) use partition_writer::PartitionWriter;
-pub use rss::rss_partition_pusher::RssPartitionPusher;
-pub(crate) use rss::rss_partition_writer::RssPartitionWriter;
-pub use shuffle_block_writer::{CompressionCodec, ShuffleBlockWriter};
+pub mod rss_partition_pusher;
+pub mod rss_partition_writer;

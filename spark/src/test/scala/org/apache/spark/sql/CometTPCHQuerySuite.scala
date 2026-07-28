@@ -83,15 +83,14 @@ class CometTPCHQuerySuite extends QueryTest with TPCBase with ShimCometTPCHQuery
     val conf = super.sparkConf
     conf.set(SQLConf.SHUFFLE_PARTITIONS.key, "1")
     conf.set("spark.sql.extensions", "org.apache.comet.CometSparkSessionExtensions")
-    conf.set(
-      "spark.shuffle.manager",
-      "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
     conf.set(CometConf.COMET_ENABLED.key, "true")
     conf.set(CometConf.COMET_EXEC_ENABLED.key, "true")
     conf.set(CometConf.COMET_NATIVE_SCAN_ENABLED.key, "true")
     conf.set(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key, "true")
     conf.set(MEMORY_OFFHEAP_ENABLED.key, "true")
     conf.set(MEMORY_OFFHEAP_SIZE.key, "2g")
+    CometTestShuffleManager.confs.foreach { case (key, value) => conf.set(key, value) }
+    conf
   }
 
   protected override def createSparkSession: TestSparkSession = {

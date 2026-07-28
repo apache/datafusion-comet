@@ -58,3 +58,19 @@ message RoundRobinPartition {
   // Maximum number of columns to hash. 0 means no limit (hash all columns).
   int32 max_hash_columns = 2;
 }
+
+message PartitionWriter {
+  oneof partition_writer_struct {
+    LocalPartitionWriter local_partition_writer = 1;
+    RssPartitionWriter rss_partition_writer = 2;
+  }
+}
+
+message LocalPartitionWriter {
+  string output_data_file = 1;
+  string output_index_file = 2;
+}
+
+message RssPartitionWriter {
+  int64 rss_partition_pusher = 1;
+}
