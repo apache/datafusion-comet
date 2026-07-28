@@ -23,6 +23,7 @@ pub mod schema_adapter;
 pub mod util;
 
 mod cast_column;
+mod datetime_rebase;
 pub(crate) mod objectstore;
 
 use std::collections::HashMap;
@@ -221,6 +222,9 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_initRecordBat
             return_null_struct_if_all_fields_missing != JNI_FALSE,
             true, // allow_type_promotion: JVM side already validated via TypeUtil.checkParquetType
             true, // allow_timestamp_ltz_to_ntz: JVM side already validated via TypeUtil.checkParquetType
+            "CORRECTED",
+            "CORRECTED",
+            "UTC",
             session_ctx,
             encryption_enabled,
             // The iceberg-compat path resolves IDs in the JVM via NativeBatchReader,

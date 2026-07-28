@@ -16,11 +16,12 @@
 // under the License.
 
 use crate::parquet::cast_column::CometCastColumnExpr;
+use crate::parquet::datetime_rebase::{needs_rebase, resolve_rebase_spec};
 use crate::parquet::parquet_support::{spark_parquet_convert, SparkParquetOptions};
 use arrow::array::new_empty_array;
 use arrow::datatypes::{DataType, Field, FieldRef, Schema, SchemaRef};
 use arrow::record_batch::RecordBatch;
-use datafusion::common::tree_node::{Transformed, TransformedResult, TreeNode};
+use datafusion::common::tree_node::{Transformed, TransformedResult, TreeNode, TreeNodeRecursion};
 use datafusion::common::{DataFusionError, Result as DataFusionResult};
 use datafusion::physical_expr::expressions::Column;
 use datafusion::physical_expr::PhysicalExpr;
@@ -355,6 +356,23 @@ impl PhysicalExprAdapterFactory for SparkPhysicalExprAdapterFactory {
         logical_file_schema: SchemaRef,
         physical_file_schema: SchemaRef,
     ) -> DataFusionResult<Arc<dyn PhysicalExprAdapter>> {
+        let metadata = physical_file_schema.metadata();
+        let mut parquet_options = self.parquet_options.clone();
+        parquet_options.datetime_rebase_spec = resolve_rebase_spec(
+            metadata,
+            self.parquet_options.datetime_rebase_spec.mode,
+            "3.0.0",
+            "org.apache.spark.legacyDateTime",
+            &self.parquet_options.datetime_rebase_spec.timezone,
+        );
+        parquet_options.int96_rebase_spec = resolve_rebase_spec(
+            metadata,
+            self.parquet_options.int96_rebase_spec.mode,
+            "3.1.0",
+            "org.apache.spark.legacyINT96",
+            &self.parquet_options.int96_rebase_spec.timezone,
+        );
+
         // Remap physical schema field names to match logical names by Parquet field id
         // (when the logical schema carries IDs and `use_field_id` is set) and/or by
         // case-insensitive name match. The DefaultPhysicalExprAdapter uses exact name
@@ -405,7 +423,7 @@ impl PhysicalExprAdapterFactory for SparkPhysicalExprAdapterFactory {
         Ok(Arc::new(SparkPhysicalExprAdapter {
             logical_file_schema,
             physical_file_schema: adapted_physical_schema,
-            parquet_options: self.parquet_options.clone(),
+            parquet_options,
             default_values: self.default_values.clone(),
             default_adapter,
             logical_to_physical_names,
@@ -495,6 +513,7 @@ impl PhysicalExprAdapter for SparkPhysicalExprAdapter {
                 self.wrap_all_type_mismatches(expr)?
             }
         };
+        let expr = self.wrap_datetime_rebase(expr)?;
 
         // For case-insensitive mode: remap column names from logical back to
         // original physical names. The default adapter was given a remapped
@@ -523,6 +542,58 @@ impl PhysicalExprAdapter for SparkPhysicalExprAdapter {
 }
 
 impl SparkPhysicalExprAdapter {
+    /// Ensure projection and filter expressions both see Spark-compatible
+    /// calendar values. Existing Comet casts perform rebasing themselves;
+    /// otherwise wrap the referenced column once and stop descending.
+    fn wrap_datetime_rebase(
+        &self,
+        expr: Arc<dyn PhysicalExpr>,
+    ) -> DataFusionResult<Arc<dyn PhysicalExpr>> {
+        expr.transform_down(|e| {
+            if e.downcast_ref::<CometCastColumnExpr>().is_some() {
+                return Ok(Transformed::new(e, false, TreeNodeRecursion::Jump));
+            }
+            let Some(column) = e.downcast_ref::<Column>() else {
+                return Ok(Transformed::no(e));
+            };
+            let physical_field = self.physical_file_schema.field(column.index());
+            let logical_field = if self.parquet_options.case_sensitive {
+                self.logical_file_schema
+                    .fields()
+                    .iter()
+                    .find(|field| field.name() == column.name())
+            } else {
+                self.logical_file_schema
+                    .fields()
+                    .iter()
+                    .find(|field| field.name().eq_ignore_ascii_case(column.name()))
+            };
+            let Some(logical_field) = logical_field else {
+                return Ok(Transformed::no(e));
+            };
+            if !needs_rebase(
+                physical_field.data_type(),
+                logical_field.data_type(),
+                &self.parquet_options.datetime_rebase_spec,
+                &self.parquet_options.int96_rebase_spec,
+            ) {
+                return Ok(Transformed::no(e));
+            }
+
+            let wrapped: Arc<dyn PhysicalExpr> = Arc::new(
+                CometCastColumnExpr::new(
+                    e,
+                    Arc::new(physical_field.clone()),
+                    Arc::clone(logical_field),
+                    None,
+                )
+                .with_parquet_options(self.parquet_options.clone()),
+            );
+            Ok(Transformed::new(wrapped, true, TreeNodeRecursion::Jump))
+        })
+        .data()
+    }
+
     /// Wrap ALL Column expressions that have type mismatches with CometCastColumnExpr.
     /// This is the fallback path when the default adapter fails (e.g., for complex
     /// nested type casts like List<Struct> or Map). Uses `spark_parquet_convert`

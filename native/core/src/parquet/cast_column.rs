@@ -24,6 +24,7 @@ use arrow::{
     record_batch::RecordBatch,
 };
 
+use crate::parquet::datetime_rebase::needs_rebase;
 use crate::parquet::parquet_support::{spark_parquet_convert, SparkParquetOptions};
 use datafusion::common::format::DEFAULT_CAST_OPTIONS;
 use datafusion::common::Result as DataFusionResult;
@@ -259,6 +260,20 @@ impl PhysicalExpr for CometCastColumnExpr {
 
     fn evaluate(&self, batch: &RecordBatch) -> DataFusionResult<ColumnarValue> {
         let value = self.expr.evaluate(batch)?;
+        if let Some(parquet_options) = &self.parquet_options {
+            if needs_rebase(
+                self.input_physical_field.data_type(),
+                self.target_field.data_type(),
+                &parquet_options.datetime_rebase_spec,
+                &parquet_options.int96_rebase_spec,
+            ) {
+                return spark_parquet_convert(
+                    value,
+                    self.target_field.data_type(),
+                    parquet_options,
+                );
+            }
+        }
 
         // Use == (PartialEq) instead of equals_datatype because equals_datatype
         // ignores field names in nested types (Struct, List, Map). We need to detect

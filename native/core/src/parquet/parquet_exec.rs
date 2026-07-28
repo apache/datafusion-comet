@@ -16,10 +16,11 @@
 // under the License.
 
 use crate::execution::operators::ExecutionError;
+use crate::parquet::datetime_rebase::{RebaseMode, RebaseSpec, INT96_TIMEZONE_MARKER};
 use crate::parquet::encryption_support::{CometEncryptionConfig, ENCRYPTION_FACTORY_ID};
 use crate::parquet::parquet_support::SparkParquetOptions;
 use crate::parquet::schema_adapter::SparkPhysicalExprAdapterFactory;
-use arrow::datatypes::{Field, SchemaRef};
+use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion::config::TableParquetOptions;
 use datafusion::datasource::listing::PartitionedFile;
 use datafusion::datasource::physical_plan::parquet::CachedParquetFileReaderFactory;
@@ -71,6 +72,9 @@ pub(crate) fn init_datasource_exec(
     return_null_struct_if_all_fields_missing: bool,
     allow_type_promotion: bool,
     allow_timestamp_ltz_to_ntz: bool,
+    datetime_rebase_mode: &str,
+    int96_rebase_mode: &str,
+    jvm_timezone: &str,
     session_ctx: &Arc<SessionContext>,
     encryption_enabled: bool,
     use_field_id: bool,
@@ -85,6 +89,10 @@ pub(crate) fn init_datasource_exec(
         &object_store_url,
         encryption_enabled,
     );
+    spark_parquet_options.datetime_rebase_spec =
+        RebaseSpec::new(RebaseMode::parse(datetime_rebase_mode)?, jvm_timezone);
+    spark_parquet_options.int96_rebase_spec =
+        RebaseSpec::new(RebaseMode::parse(int96_rebase_mode)?, jvm_timezone);
     spark_parquet_options.use_field_id = use_field_id;
     spark_parquet_options.ignore_missing_field_id = ignore_missing_field_id;
 
@@ -121,6 +129,27 @@ pub(crate) fn init_datasource_exec(
             }
         }
         _ => (Arc::clone(&required_schema), None),
+    };
+    // DataFusion skips the per-file adapter when schemas compare equal and
+    // there is no predicate. A private schema marker keeps the adapter active
+    // for projection-only datetime scans, including versionless files whose
+    // behavior comes solely from the configured read mode.
+    let base_schema = if required_schema
+        .fields()
+        .iter()
+        .any(|field| contains_datetime(field.data_type()))
+    {
+        let mut metadata = base_schema.metadata().clone();
+        metadata.insert(
+            "org.apache.comet.forceParquetSchemaAdapter".to_string(),
+            String::new(),
+        );
+        Arc::new(Schema::new_with_metadata(
+            base_schema.fields().clone(),
+            metadata,
+        ))
+    } else {
+        base_schema
     };
     let partition_fields: Vec<_> = partition_schema
         .iter()
@@ -219,11 +248,9 @@ fn get_options(
 ) -> (TableParquetOptions, SparkParquetOptions) {
     let mut table_parquet_options = TableParquetOptions::new();
     table_parquet_options.global.coerce_int96 = Some("us".to_string());
-    // INT96 columns encode UTC-adjusted instants; attaching the UTC timezone
-    // preserves that signal at the Arrow level so the schema adapter can
-    // distinguish INT96-derived TimestampLTZ from a true TimestampNTZ source
-    // and apply the pre-Spark-4 SPARK-36182 rejection (#4219).
-    table_parquet_options.global.coerce_int96_tz = Some("UTC".to_string());
+    // This valid UTC alias tags only fields that DataFusion coerces from
+    // physical INT96, preserving their origin until the per-file adapter.
+    table_parquet_options.global.coerce_int96_tz = Some(INT96_TIMEZONE_MARKER.to_string());
     let mut spark_parquet_options =
         SparkParquetOptions::new(EvalMode::Legacy, session_timezone, false);
     spark_parquet_options.allow_cast_unsigned_ints = true;
@@ -243,6 +270,18 @@ fn get_options(
     }
 
     (table_parquet_options, spark_parquet_options)
+}
+
+fn contains_datetime(data_type: &DataType) -> bool {
+    match data_type {
+        DataType::Date32 | DataType::Timestamp(_, _) => true,
+        DataType::Struct(fields) => fields
+            .iter()
+            .any(|field| contains_datetime(field.data_type())),
+        DataType::List(field) | DataType::LargeList(field) => contains_datetime(field.data_type()),
+        DataType::Map(field, _) => contains_datetime(field.data_type()),
+        _ => false,
+    }
 }
 
 #[cfg(test)]
@@ -309,6 +348,9 @@ mod tests {
             false,
             false,
             false,
+            "CORRECTED",
+            "CORRECTED",
+            "UTC",
             &session_ctx,
             false,
             false,

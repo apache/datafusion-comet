@@ -26,6 +26,7 @@ import scala.util.matching.Regex
 import org.apache.spark.{QueryContext, SparkDateTimeException, SparkException}
 import org.apache.spark.sql.catalyst.trees.SQLQueryContext
 import org.apache.spark.sql.errors.QueryExecutionErrors
+import org.apache.spark.sql.execution.datasources.DataSourceUtils
 import org.apache.spark.sql.execution.datasources.SchemaColumnConvertNotSupportedException
 import org.apache.spark.sql.types._
 import org.apache.spark.unsafe.types.UTF8String
@@ -303,6 +304,9 @@ trait ShimSparkErrorConverter {
               "contain any field Ids. Please remove the field ids from Spark schema or " +
               "ignore missing ids by setting " +
               "`spark.sql.parquet.fieldId.read.ignoreMissing = true`"))
+
+      case "ParquetDatetimeRebase" =>
+        Some(DataSourceUtils.newRebaseExceptionInRead(params("format").toString))
 
       case "ParquetSchemaConvert" =>
         // Mirror Spark's FileScanRDD: wrap the SchemaColumnConvertNotSupportedException
