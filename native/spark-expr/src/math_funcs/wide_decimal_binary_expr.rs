@@ -282,6 +282,12 @@ impl PhysicalExpr for WideDecimalBinaryExpr {
         };
 
         let result = if eval_mode != EvalMode::Ansi && result.values().contains(&i128::MAX) {
+            // The arithmetic pass writes i128::MAX as an overflow sentinel for values that do
+            // not fit the output precision. Only when a sentinel is present do we need the
+            // extra null-masking pass (which allocates a new array); `contains` short-circuits
+            // at the first sentinel, so the common no-overflow case skips that allocation
+            // entirely. ANSI mode raises on overflow and never produces a sentinel, so it also
+            // skips this pass.
             result.null_if_overflow_precision(p_out)
         } else {
             result
