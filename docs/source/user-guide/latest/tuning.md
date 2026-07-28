@@ -111,7 +111,7 @@ increase peak memory usage — a batch holds all projected columns in Arrow form
 if you see frequent spilling or out-of-memory errors on wide tables; increase it (for example to `16384`) on
 narrow tables when memory is plentiful.
 
-`spark.comet.columnar.shuffle.batch.size` controls the batch size used when the JVM columnar shuffle writer
+`spark.comet.shuffle.jvm.batchSize` controls the batch size used when the JVM columnar shuffle writer
 flushes sorted spill files. It must not exceed `spark.comet.batchSize`.
 
 ### Limiting Spill Disk Usage
@@ -253,11 +253,11 @@ even when both its parent and child are non-Comet operators.
 
 ### Shuffle Compression
 
-`spark.comet.exec.shuffle.compression.codec` controls the codec used to compress shuffle data written by
+`spark.comet.shuffle.compression.codec` controls the codec used to compress shuffle data written by
 both Comet's native shuffle and the JVM columnar shuffle writer. Supported values are `lz4` (default),
 `zstd`, and `snappy`. LZ4 favors CPU efficiency; ZSTD produces smaller shuffle files at higher CPU cost —
 useful when shuffle I/O or network bandwidth is the bottleneck. When ZSTD is selected, the level is
-controlled by `spark.comet.exec.shuffle.compression.zstd.level` (default `1`).
+controlled by `spark.comet.shuffle.compression.zstd.level` (default `1`).
 
 `spark.shuffle.compress=false` disables compression for Comet's native shuffle only. It has no effect on
 the JVM columnar shuffle writer, which always compresses spill files with the codec above. Disabling
