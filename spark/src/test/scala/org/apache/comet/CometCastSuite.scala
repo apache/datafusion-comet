@@ -189,6 +189,18 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     castTest(generateBools(), DataTypes.createDecimalType(30, 0))
   }
 
+  test("cast BooleanType to DecimalType where 10^scale overflows precision") {
+    // Regression for https://github.com/apache/datafusion-comet/issues/5068.
+    // `true` scales to 10^scale, which does not fit in DECIMAL(1,1)/(2,2)/(3,3).
+    // Spark returns NULL in legacy/try mode and only throws under ANSI.
+    Seq(
+      DataTypes.createDecimalType(1, 1),
+      DataTypes.createDecimalType(2, 2),
+      DataTypes.createDecimalType(3, 3)).foreach { dt =>
+      castTest(generateBools(), dt)
+    }
+  }
+
   test("cast BooleanType to StringType") {
     castTest(generateBools(), DataTypes.StringType)
   }
