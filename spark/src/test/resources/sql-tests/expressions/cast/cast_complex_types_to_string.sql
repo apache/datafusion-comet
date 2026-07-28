@@ -269,12 +269,16 @@ SELECT cast(array(cast(1.5 as double), cast('NaN' as double), cast('-Infinity' a
 query
 SELECT cast(array(array(array(1, 2), array(3)), array(array(cast(null as int)))) as string)
 
+-- Array of map: map-to-string is routed through the codegen dispatcher via the outer array.
+query
 SELECT cast(array(map('k', 1)) as string)
 
 -- ----------------------------------------------------------------------------
 -- Map → string
 -- ----------------------------------------------------------------------------
--- Comet does not implement map-to-string casts, so every map → string falls back to Spark.
+-- Comet does not implement map-to-string casts natively; the CodegenDispatchFallback
+-- mixin on CometCast routes them through Spark's doGenCode inside the Comet pipeline,
+-- so results match Spark exactly without a full Spark fallback.
 -- Note: maps materialized through parquet have nondeterministic entry order, so map column
 -- tests use literal maps directly rather than reading from a parquet table.
 
