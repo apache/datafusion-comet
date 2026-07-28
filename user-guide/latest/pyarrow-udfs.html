@@ -768,9 +768,10 @@ operators in the physical plan and replaces them with <code class="docutils lite
 <li><p>Keeps the Python output in columnar format for downstream operators</p></li>
 </ul>
 <p>This eliminates the ColumnarToRow transition and the output row conversion, reducing CPU overhead
-and memory allocations. The internal row-to-Arrow IPC re-encoding inside Spark’s
-<code class="docutils literal notranslate"><span class="pre">ArrowPythonRunner</span></code> is unchanged in this version; full round-trip elimination is tracked in
-<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4240">#4240</a>.</p>
+and memory allocations. The row-to-Arrow re-encoding that Spark’s <code class="docutils literal notranslate"><span class="pre">ArrowPythonRunner</span></code> performed on
+the input side is also gone: <code class="docutils literal notranslate"><span class="pre">CometArrowPythonRunner</span></code> consumes <code class="docutils literal notranslate"><span class="pre">ColumnarBatch</span></code> directly, so batches
+are written straight from Comet’s vectors into the IPC root. See <a class="reference internal" href="#limitations">Limitations</a> for the
+copies that remain.</p>
 <section id="plan-flow">
 <h3>Plan flow<a class="headerlink" href="#plan-flow" title="Link to this heading">#</a></h3>
 <p>Without Comet’s optimization:</p>

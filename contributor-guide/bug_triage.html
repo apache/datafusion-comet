@@ -749,14 +749,17 @@ inputs are literals (e.g., when <code class="docutils literal notranslate"><span
 <h3>Aggregate Planning Bugs<a class="headerlink" href="#aggregate-planning-bugs" title="Link to this heading">#</a></h3>
 <p>Several bugs relate to how Comet plans hash aggregates across stage boundaries. The key issue is
 that Spark’s AQE may materialize a Comet partial aggregate but then run the final aggregate in
-Spark (or vice versa), and the intermediate formats may not be compatible. See the
-<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/2892">EPIC #2892</a> for the full picture.</p>
+Spark (or vice versa), and the intermediate formats may not be compatible. The closed
+EPIC <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/2892">#2892</a> collects the historical
+reports and is a good starting point when a new one comes in.</p>
 </section>
 <section id="native-writer-bugs">
 <h3>Native Writer Bugs<a class="headerlink" href="#native-writer-bugs" title="Link to this heading">#</a></h3>
-<p>The native Parquet writer has a cluster of known test failures tracked as individual issues
-(#3417–#3430). These are lower priority since the native writer is still maturing, but they
-should be addressed before the writer is promoted to production-ready status.</p>
+<p>The native Parquet writer has a cluster of known test failures tracked as individual issues, from
+<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/3417">#3417</a> to
+<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/3430">#3430</a>. These are lower priority since the
+native writer is still maturing, but they should be addressed before the writer is promoted to
+production-ready status.</p>
 </section>
 </section>
 <section id="how-to-help-with-triage">

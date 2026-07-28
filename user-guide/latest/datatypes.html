@@ -899,8 +899,12 @@ the tables below and may be reconsidered based on demand:</p>
 </section>
 <section id="interval">
 <h2>Interval<a class="headerlink" href="#interval" title="Link to this heading">#</a></h2>
-<p>Interval types fall back to Spark today. Native acceleration is tracked by
-<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4540">#4540</a>.</p>
+<p>All three interval types are mapped to Arrow and flow through serde, native shuffle, and the
+codegen dispatcher, so interval columns and the interval-producing expressions run natively.
+Several operators still gate on the type and fall back: Parquet scans of ANSI interval columns,
+single-column sorts, hash aggregates (<code class="docutils literal notranslate"><span class="pre">min</span></code> / <code class="docutils literal notranslate"><span class="pre">max</span></code> / <code class="docutils literal notranslate"><span class="pre">sum</span></code> / <code class="docutils literal notranslate"><span class="pre">avg</span></code>), <code class="docutils literal notranslate"><span class="pre">GROUP</span> <span class="pre">BY</span></code>, window
+functions, and hashing a <code class="docutils literal notranslate"><span class="pre">CalendarInterval</span></code>. Remaining work is tracked by
+<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5061">#5061</a>.</p>
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
 <tr class="row-odd"><th class="head"><p>Type</p></th>
@@ -910,16 +914,16 @@ the tables below and may be reconsidered based on demand:</p>
 </thead>
 <tbody>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">YearMonthIntervalType</span></code></p></td>
-<td><p>🔜</p></td>
-<td><p>Tracked by #4540.</p></td>
+<td><p>⚠️</p></td>
+<td><p>Parquet scan, single-column sort, aggregate, <code class="docutils literal notranslate"><span class="pre">GROUP</span> <span class="pre">BY</span></code>, and window operators fall back.</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">DayTimeIntervalType</span></code></p></td>
-<td><p>🔜</p></td>
-<td><p>Tracked by #4540.</p></td>
+<td><p>⚠️</p></td>
+<td><p>Parquet scan, single-column sort, aggregate, <code class="docutils literal notranslate"><span class="pre">GROUP</span> <span class="pre">BY</span></code>, and window operators fall back.</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">CalendarIntervalType</span></code></p></td>
-<td><p>🔜</p></td>
-<td><p>Tracked by #4540.</p></td>
+<td><p>⚠️</p></td>
+<td><p>As above, plus <code class="docutils literal notranslate"><span class="pre">hash</span></code> / <code class="docutils literal notranslate"><span class="pre">xxhash64</span></code> of a <code class="docutils literal notranslate"><span class="pre">CalendarInterval</span></code> fails rather than falling back.</p></td>
 </tr>
 </tbody>
 </table>

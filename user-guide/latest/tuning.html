@@ -907,7 +907,7 @@ is left at the 128 MB default, most splits will contain at most one row group bo
 mismatch is amplified; setting <code class="docutils literal notranslate"><span class="pre">spark.sql.files.maxPartitionBytes</span></code> below 120 MB (for example, 64 MB)
 distributes row groups across more splits and reduces the number of idle tasks. Smaller values produce
 more splits overall, so some idle tasks may remain — tune the value against your file layout.</p>
-<p>See <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/3817#issuecomment-4193279630">issue #3817</a> for a
+<p>See <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/3817#issuecomment-4193279630">#3817</a> for a
 worked example and further discussion.</p>
 </section>
 </section>

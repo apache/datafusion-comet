@@ -779,7 +779,7 @@ omitted from the tables below and may be reconsidered based on demand:</p>
 <li><p><strong>Structured Streaming operators</strong> (<code class="docutils literal notranslate"><span class="pre">StateStoreSaveExec</span></code>, <code class="docutils literal notranslate"><span class="pre">StateStoreRestoreExec</span></code>, <code class="docutils literal notranslate"><span class="pre">StreamingSymmetricHashJoinExec</span></code>, and similar): Comet targets batch execution.</p></li>
 <li><p><strong>Cartesian / cross joins</strong> (<code class="docutils literal notranslate"><span class="pre">CartesianProductExec</span></code>): rare and expensive, with little acceleration benefit.</p></li>
 <li><p><strong>Sampling and range generation</strong> (<code class="docutils literal notranslate"><span class="pre">SampleExec</span></code>, <code class="docutils literal notranslate"><span class="pre">RangeExec</span></code>): niche leaf operators.</p></li>
-<li><p><strong>Pickled (non-Arrow) Python UDFs</strong> (<code class="docutils literal notranslate"><span class="pre">BatchEvalPythonExec</span></code>): Comet accelerates Arrow-based Python UDFs only (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4234">#4234</a>).</p></li>
+<li><p><strong>Pickled (non-Arrow) Python UDFs</strong> (<code class="docutils literal notranslate"><span class="pre">BatchEvalPythonExec</span></code>): Comet accelerates Arrow-based Python UDFs only (<a class="reference external" href="https://github.com/apache/datafusion-comet/pull/4234">#4234</a>).</p></li>
 </ul>
 </section>
 <section id="scans">
@@ -802,7 +802,7 @@ omitted from the tables below and may be reconsidered based on demand:</p>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">LocalTableScanExec</span></code></p></td>
 <td><p>⚠️</p></td>
-<td><p>Disabled by default; there is no acceleration advantage and this operator is typically only used in test code. Can be opted into via config (#4393).</p></td>
+<td><p>Disabled by default; there is no acceleration advantage and this operator is typically only used in test code. Can be opted into via config (<a class="reference external" href="https://github.com/apache/datafusion-comet/pull/4393">#4393</a>).</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">InMemoryTableScanExec</span></code></p></td>
 <td><p>🔜</p></td>
@@ -918,7 +918,7 @@ omitted from the tables below and may be reconsidered based on demand:</p>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">BroadcastNestedLoopJoinExec</span></code></p></td>
 <td><p>✅</p></td>
-<td><p>Falls back to Spark when the preserved side is broadcast (for example LEFT OUTER with BROADCAST on the left) (#4429).</p></td>
+<td><p>Falls back to Spark when the preserved side is broadcast (for example LEFT OUTER with BROADCAST on the left) (<a class="reference external" href="https://github.com/apache/datafusion-comet/pull/4429">#4429</a>).</p></td>
 </tr>
 </tbody>
 </table>
@@ -1028,7 +1028,7 @@ omitted from the tables below and may be reconsidered based on demand:</p>
 <tbody>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ArrowEvalPythonExec</span></code>, <code class="docutils literal notranslate"><span class="pre">MapInArrowExec</span></code>, <code class="docutils literal notranslate"><span class="pre">MapInPandasExec</span></code>, <code class="docutils literal notranslate"><span class="pre">FlatMapGroupsInPandasExec</span></code></p></td>
 <td><p>🔜</p></td>
-<td><p>Experimental accelerated PyArrow UDF support is in progress (#4234).</p></td>
+<td><p>Experimental accelerated PyArrow UDF support is in progress (<a class="reference external" href="https://github.com/apache/datafusion-comet/pull/4234">#4234</a>).</p></td>
 </tr>
 </tbody>
 </table>

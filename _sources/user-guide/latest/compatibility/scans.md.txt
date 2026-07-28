@@ -72,7 +72,7 @@ The following limitations raise an error at scan time rather than falling back t
   rejecting the read. This applies to all LTZ physical encodings (INT96, TIMESTAMP_MICROS,
   TIMESTAMP_MILLIS). On Spark 4.0+, this read is permitted
   ([SPARK-47447](https://issues.apache.org/jira/browse/SPARK-47447)) and Comet matches Spark's
-  behavior. See [#4219](https://github.com/apache/datafusion-comet/issues/4219).
+  behavior.
 
 ### Schema Mismatch Handling
 
