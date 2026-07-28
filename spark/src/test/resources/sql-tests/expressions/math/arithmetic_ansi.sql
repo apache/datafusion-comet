@@ -148,6 +148,37 @@ query expect_error(BY_ZERO)
 SELECT c % d FROM ansi_div_zero
 
 -- ============================================================================
+-- Float/Double remainder by zero (issue #5067)
+-- Spark 4.1 throws REMAINDER_BY_ZERO for floating-point x % 0 as well.
+-- ============================================================================
+
+statement
+CREATE TABLE ansi_float_div_zero(a float, b float, c double, d double) USING parquet
+
+statement
+INSERT INTO ansi_float_div_zero VALUES (3.0, 0.0, 3.0, 0.0), (1.0, -0.0, 1.0, -0.0)
+
+-- float column % 0 should throw
+query expect_error(BY_ZERO)
+SELECT a % b FROM ansi_float_div_zero WHERE b = 0.0
+
+-- double column % 0 should throw
+query expect_error(BY_ZERO)
+SELECT c % d FROM ansi_float_div_zero WHERE d = 0.0
+
+-- literal double % 0.0 should throw
+query expect_error(BY_ZERO)
+SELECT CAST(1.0 AS DOUBLE) % CAST(0.0 AS DOUBLE)
+
+-- literal double % -0.0 should also throw (IEEE 754: -0.0 == 0.0)
+query expect_error(BY_ZERO)
+SELECT CAST(1.0 AS DOUBLE) % CAST(-0.0 AS DOUBLE)
+
+-- literal float % 0.0 should throw
+query expect_error(BY_ZERO)
+SELECT CAST(1.0 AS FLOAT) % CAST(0.0 AS FLOAT)
+
+-- ============================================================================
 -- Unary minus overflow
 -- ============================================================================
 
