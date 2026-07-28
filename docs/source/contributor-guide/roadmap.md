@@ -46,9 +46,11 @@ supported functions, frames, and fallback cases.
 Spark supports higher-order functions on arrays and maps that take a lambda, including `transform`, `exists`,
 `forall`, `aggregate`, `zip_with`, `map_filter`, and `map_zip_with`. Comet evaluates these today through a JVM
 codegen-dispatch bridge (`CometScalaUDF`, `CometBatchKernelCodegen`) instead of falling back to Spark, but the
-lambda body is still interpreted row-at-a-time on the JVM rather than natively in DataFusion. Moving evaluation
-into native Rust code would remove that JVM round-trip and let these expressions benefit from vectorized native
-execution.
+lambda body is still interpreted row-at-a-time on the JVM rather than natively in DataFusion. DataFusion added
+native higher-order function support (`array_transform`, `array_filter`, `array_any_match`, etc.) that Comet
+does not yet use; it's not yet known whether their semantics are Spark-compatible. We'll explore whether
+DataFusion's implementations can replace the JVM codegen-dispatch bridge to remove that round-trip and let
+these expressions benefit from vectorized native execution.
 
 ## Iceberg Table Format V3 Support
 
