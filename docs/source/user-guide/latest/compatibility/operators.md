@@ -26,11 +26,10 @@ Comet runs `SampleExec` natively when sampling is performed without replacement,
 reproduces Spark's per-row `XORShiftRandom` draw sequence, so for a given seed it selects the same
 rows as Spark.
 
-Because the sampler consumes one random value per row within a partition, it selects the same rows
-as Spark only when the rows reach it in the same order. Sampling directly above a scan, filter, or
-projection meets that condition. Sampling above an operator where Comet may emit rows in a
-different order than Spark, such as a join or an aggregate, still returns a valid sample of the
-same expected size, but not necessarily the same rows Spark would have selected.
+Because the sampler consumes one random value per row, sampling directly above a scan, filter, or
+projection reproduces Spark's selection. Above an operator where Comet may emit rows in a different
+order than Spark, such as a join or an aggregate, the result is still a valid sample of the same
+expected size, but not necessarily the same rows.
 
 Sampling with replacement (`df.sample(withReplacement = true, ...)`) falls back to Spark, because
 it draws from a Poisson distribution that Comet does not implement natively

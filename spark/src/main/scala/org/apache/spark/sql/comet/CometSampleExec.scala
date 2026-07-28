@@ -50,16 +50,18 @@ object CometSampleExec extends CometOperatorSerde[SampleExec] {
       op: SampleExec,
       builder: Operator.Builder,
       childOp: OperatorOuterClass.Operator*): Option[OperatorOuterClass.Operator] = {
-    if (childOp.isEmpty) {
+    if (childOp.nonEmpty) {
+      val sampleBuilder = OperatorOuterClass.Sample
+        .newBuilder()
+        .setLowerBound(op.lowerBound)
+        .setUpperBound(op.upperBound)
+        // The partition index is added to the seed on the native side.
+        .setSeed(op.seed)
+      Some(builder.setSample(sampleBuilder).build())
+    } else {
       withFallbackReason(op, "No child operator")
-      return None
+      None
     }
-    val sampleBuilder = OperatorOuterClass.Sample
-      .newBuilder()
-      .setLowerBound(op.lowerBound)
-      .setUpperBound(op.upperBound)
-      .setSeed(op.seed)
-    Some(builder.setSample(sampleBuilder).build())
   }
 
   override def createExec(nativeOp: Operator, op: SampleExec): CometNativeExec = {
@@ -76,11 +78,7 @@ object CometSampleExec extends CometOperatorSerde[SampleExec] {
 
 /**
  * Comet physical plan node for Spark `SampleExec`, for the case where sampling is performed
- * without replacement.
- *
- * Spark applies `BernoulliCellSampler` to each partition, seeded with `seed + partitionIndex`,
- * and draws one `XORShiftRandom.nextDouble()` per input row, keeping the row when the value falls
- * in `[lowerBound, upperBound)`. The native operator reproduces that draw sequence exactly, so it
+ * without replacement. The native operator reproduces Spark's per-row draw sequence, so it
  * selects the same rows as Spark for a given seed as long as the input rows arrive in the same
  * order.
  */

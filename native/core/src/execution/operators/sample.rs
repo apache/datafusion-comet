@@ -15,9 +15,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow::array::{BooleanArray, RecordBatch};
+use arrow::array::BooleanArray;
+use arrow::buffer::BooleanBuffer;
 use arrow::compute::filter_record_batch;
-use arrow::datatypes::SchemaRef;
 use datafusion::common::Result;
 use datafusion::execution::TaskContext;
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
@@ -32,12 +32,8 @@ use std::fmt::Formatter;
 use std::sync::Arc;
 
 /// A Comet native operator matching Spark's `SampleExec` for the case where sampling is performed
-/// without replacement.
-///
-/// Spark applies a `BernoulliCellSampler` to each partition, drawing one
-/// `XORShiftRandom.nextDouble()` per input row and keeping the row when the value falls in
-/// `[lower_bound, upper_bound)`. Reproducing that draw sequence exactly is what makes this
-/// operator select the same rows as Spark for a given seed.
+/// without replacement. Rows are selected by `BernoulliCellSampler`, which reproduces Spark's
+/// per-row draw sequence.
 #[derive(Debug)]
 pub struct SampleExec {
     input: Arc<dyn ExecutionPlan>,
@@ -70,16 +66,6 @@ impl SampleExec {
             cache,
         }
     }
-
-    fn sample_batch(
-        sampler: &mut BernoulliCellSampler,
-        batch: &RecordBatch,
-    ) -> Result<RecordBatch> {
-        let mask: BooleanArray = (0..batch.num_rows())
-            .map(|_| Some(sampler.sample()))
-            .collect();
-        Ok(filter_record_batch(batch, &mask)?)
-    }
 }
 
 impl DisplayAs for SampleExec {
@@ -100,10 +86,6 @@ impl DisplayAs for SampleExec {
 impl ExecutionPlan for SampleExec {
     fn name(&self) -> &str {
         "CometSampleExec"
-    }
-
-    fn schema(&self) -> SchemaRef {
-        self.input.schema()
     }
 
     fn properties(&self) -> &Arc<PlanProperties> {
@@ -136,7 +118,13 @@ impl ExecutionPlan for SampleExec {
         // The generator advances across batch boundaries, so a single sampler is used for the
         // whole stream rather than one per batch.
         let mut sampler = BernoulliCellSampler::new(self.lower_bound, self.upper_bound, self.seed);
-        let stream = input.map(move |batch| Self::sample_batch(&mut sampler, &batch?));
+        let stream = input.map(move |batch| {
+            let batch = batch?;
+            // `collect_bool` invokes the closure once per row, in order, which is what keeps the
+            // draw sequence identical to Spark's.
+            let mask = BooleanBuffer::collect_bool(batch.num_rows(), |_| sampler.sample());
+            Ok(filter_record_batch(&batch, &BooleanArray::new(mask, None))?)
+        });
         Ok(Box::pin(RecordBatchStreamAdapter::new(schema, stream)))
     }
 }
@@ -144,7 +132,7 @@ impl ExecutionPlan for SampleExec {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::Int32Array;
+    use arrow::array::{Int32Array, RecordBatch};
     use arrow::datatypes::{DataType, Field, Schema};
     use datafusion::datasource::memory::MemorySourceConfig;
     use datafusion::datasource::source::DataSourceExec;

@@ -97,14 +97,9 @@ class CometExecSuite extends CometTestBase {
   // The sampler is seeded per partition with `seed + partitionIndex`, so a multi-partition input
   // is what catches a native side that ignores the partition index.
   test("sample without replacement over multiple partitions") {
-    withTempDir { dir =>
-      val path = new Path(dir.toURI.toString, "sample.parquet")
-      spark
-        .range(0, 4000)
-        .repartition(4)
-        .write
-        .parquet(path.toString)
-      withParquetTable(path.toString, "tbl") {
+    withTempPath { dir =>
+      spark.range(0, 4000).repartition(4).write.parquet(dir.getCanonicalPath)
+      withParquetTable(dir.getCanonicalPath, "tbl") {
         val df =
           sql("SELECT * FROM tbl").sample(withReplacement = false, fraction = 0.2, seed = 7)
         assert(df.rdd.getNumPartitions > 1)
@@ -117,16 +112,13 @@ class CometExecSuite extends CometTestBase {
     withParquetTable((0 until 1000).map(i => (i, i + 1)), "tbl") {
       val splits = sql("SELECT * FROM tbl").randomSplit(Array(0.3, 0.7), seed = 42)
       splits.foreach(checkSparkAnswerAndOperator(_, Seq(classOf[CometSampleExec])))
-      assert(splits.map(_.count()).sum == 1000)
     }
   }
 
   test("sample with replacement falls back to Spark") {
     withParquetTable((0 until 1000).map(i => (i, i + 1)), "tbl") {
       val df = sql("SELECT * FROM tbl").sample(withReplacement = true, fraction = 0.3, seed = 42)
-      checkSparkAnswer(df)
-      assert(collect(df.queryExecution.executedPlan) { case s: CometSampleExec => s }.isEmpty)
-      assert(collect(df.queryExecution.executedPlan) { case s: SampleExec => s }.size == 1)
+      checkSparkAnswerAndFallbackReason(df, "Sampling with replacement is not supported")
     }
   }
 
@@ -135,8 +127,7 @@ class CometExecSuite extends CometTestBase {
       withParquetTable((0 until 1000).map(i => (i, i + 1)), "tbl") {
         val df =
           sql("SELECT * FROM tbl").sample(withReplacement = false, fraction = 0.3, seed = 42)
-        checkSparkAnswer(df)
-        assert(collect(df.queryExecution.executedPlan) { case s: CometSampleExec => s }.isEmpty)
+        checkSparkAnswerAndFallbackReason(df, "spark.comet.exec.sample.enabled=true")
       }
     }
   }

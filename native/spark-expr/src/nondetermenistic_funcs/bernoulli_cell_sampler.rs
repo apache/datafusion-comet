@@ -27,6 +27,9 @@ use crate::nondetermenistic_funcs::rand::XorShiftRandom;
 pub struct BernoulliCellSampler {
     lower_bound: f64,
     upper_bound: f64,
+    /// Spark selects nothing, without consuming a value from the generator, when the range is
+    /// empty. The range is fixed at construction, so the check is not repeated per row.
+    selects_nothing: bool,
     rng: XorShiftRandom,
 }
 
@@ -37,14 +40,15 @@ impl BernoulliCellSampler {
         Self {
             lower_bound,
             upper_bound,
+            selects_nothing: upper_bound - lower_bound <= 0.0,
             rng: XorShiftRandom::from_init_seed(seed),
         }
     }
 
     /// Whether the next row should be included in the sample.
+    #[inline]
     pub fn sample(&mut self) -> bool {
-        if self.upper_bound - self.lower_bound <= 0.0 {
-            // Spark returns early here without consuming a value from the generator.
+        if self.selects_nothing {
             return false;
         }
         let x = self.rng.next_f64();
