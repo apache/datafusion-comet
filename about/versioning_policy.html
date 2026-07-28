@@ -483,47 +483,230 @@ under the License.
 compatibility guarantees Comet provides, and how Comet relates to Apache Spark versions.</p>
 <p>This policy is inspired by, but is not identical to, the
 <a class="reference external" href="https://spark.apache.org/versioning-policy.html">Apache Spark versioning policy</a>. The differences
-reflect the fact that Comet is currently pre-1.0 and ships much more frequently than Spark.</p>
-<section id="pre-1-0-releases">
-<h2>Pre-1.0 Releases<a class="headerlink" href="#pre-1-0-releases" title="Link to this heading">#</a></h2>
-<p>Comet is currently in the <code class="docutils literal notranslate"><span class="pre">0.x</span></code> series. Per semantic versioning, the <code class="docutils literal notranslate"><span class="pre">0.x</span></code> series is considered
-unstable:</p>
+reflect the fact that Comet ships much more frequently than Spark, and that Comet is an accelerator
+rather than an engine in its own right: Spark, not Comet, defines what a correct answer looks like.</p>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>This policy takes effect with the <code class="docutils literal notranslate"><span class="pre">1.0.0</span></code> release. The earlier <code class="docutils literal notranslate"><span class="pre">0.x</span></code> series was unstable in the
+sense semantic versioning gives that term: any <code class="docutils literal notranslate"><span class="pre">0.x</span></code> minor release could include breaking changes,
+and the guarantees described below do not apply retroactively to it.</p>
+</div>
+<section id="comet-s-compatibility-surface">
+<h2>Comet’s Compatibility Surface<a class="headerlink" href="#comet-s-compatibility-surface" title="Link to this heading">#</a></h2>
+<p>Comet is a plugin rather than a library. Users install it through Spark’s plugin system and then
+set <code class="docutils literal notranslate"><span class="pre">spark.comet.*</span></code> properties in <code class="docutils literal notranslate"><span class="pre">spark-defaults.conf</span></code>, in a <code class="docutils literal notranslate"><span class="pre">spark-submit</span></code> invocation, or in a
+notebook. For the overwhelming majority of users, configuration is the only thing they ever touch,
+so Comet’s configuration is its primary API and this policy treats it as such.</p>
+<p>Comet does also expose a small Java and Scala API, enumerated below, for the cases that
+configuration cannot express: the class names Spark itself needs by name, and one service provider
+interface that vendors implement. It is small on purpose, and everything outside it is internal.</p>
+<p>The following are covered by this versioning policy:</p>
 <ul class="simple">
-<li><p>A minor release (<code class="docutils literal notranslate"><span class="pre">0.X.0</span></code>) may include breaking changes.</p></li>
-<li><p>A patch release (<code class="docutils literal notranslate"><span class="pre">0.X.Y</span></code>, where <code class="docutils literal notranslate"><span class="pre">Y</span> <span class="pre">&gt;</span> <span class="pre">0</span></code>) contains bug fixes only.</p></li>
+<li><p><strong>Configuration keys under <code class="docutils literal notranslate"><span class="pre">spark.comet.*</span></code></strong>: their names, types, accepted values, default
+values, and semantics.</p></li>
+<li><p><strong>A small, enumerated public Java and Scala API</strong>: the class names users write into Spark config
+properties, and the S3 credential provider SPI that vendors implement. The full list is in
+<a class="reference internal" href="#public-scala-and-java-api">Public Scala and Java API</a>.</p></li>
+<li><p><strong>Query results for expressions and operators whose support level is <code class="docutils literal notranslate"><span class="pre">Compatible</span></code></strong>, where the
+contract is defined by Apache Spark rather than by Comet. See
+<a class="reference internal" href="#query-result-semantics">Query Result Semantics</a>.</p></li>
 </ul>
-<p>In particular, the following are explicitly <strong>not</strong> stable in the <code class="docutils literal notranslate"><span class="pre">0.x</span></code> series and may change in any
-minor release without prior notice:</p>
+<p>The following are internal implementation details. They are not covered by this policy and may
+change in any release:</p>
 <ul class="simple">
-<li><p>Configuration keys under <code class="docutils literal notranslate"><span class="pre">spark.comet.*</span></code> (names, defaults, and semantics).</p></li>
-<li><p>The protobuf format used to serialize query plans between the JVM and the native library.</p></li>
-<li><p>Internal Scala, Java, and Rust APIs that are not part of the documented public API.</p></li>
+<li><p>The protobuf format used to serialize query plans between the JVM and the native library. The
+JVM jar and the native library ship together and are versioned together; see
+<a class="reference internal" href="#native-library-coupling">Native Library Coupling</a>.</p></li>
+<li><p>Every Scala, Java, and Rust type not on that list, including the internal structure of the
+classes that are on it. See <a class="reference internal" href="#everything-else-is-internal">Everything Else Is Internal</a>.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">EXPLAIN</span></code> output, and the shape of the plans Comet produces. Which operators are fused, how a
+native block is partitioned, and how a plan is rendered may all change between releases.</p></li>
+<li><p>Metric names and log output.</p></li>
+<li><p>Performance characteristics, including which expressions and operators run natively and which
+fall back to Spark. An expression that ran natively in one release may fall back in the next,
+and vice versa. The results stay the same; only the speed changes.</p></li>
 </ul>
-<p>Where a breaking change is significant, it will be called out in the release notes.</p>
 </section>
-<section id="compatibility-commitments">
-<h2>Compatibility Commitments<a class="headerlink" href="#compatibility-commitments" title="Link to this heading">#</a></h2>
-<p>The following commitments apply to every Comet release, including the <code class="docutils literal notranslate"><span class="pre">0.x</span></code> series.</p>
-<section id="public-scala-and-java-api">
-<h3>Public Scala and Java API<a class="headerlink" href="#public-scala-and-java-api" title="Link to this heading">#</a></h3>
-<p>Public classes and methods (for example, <code class="docutils literal notranslate"><span class="pre">org.apache.spark.CometPlugin</span></code>) are considered part of
-Comet’s public API. Removing or making source- or binary-incompatible changes to a public API
-requires a deprecation cycle: the API must remain available, with a deprecation warning, for at
-least one minor release before removal.</p>
-<p>Public APIs annotated with <code class="docutils literal notranslate"><span class="pre">&#64;Unstable</span></code> are exempt from this guarantee and may change in any minor
-release without a deprecation cycle. The <code class="docutils literal notranslate"><span class="pre">&#64;Unstable</span></code> annotation does not yet exist and will be
-introduced as the need arises.</p>
+<section id="what-each-version-component-means">
+<h2>What Each Version Component Means<a class="headerlink" href="#what-each-version-component-means" title="Link to this heading">#</a></h2>
+<section id="major-releases">
+<h3>Major Releases<a class="headerlink" href="#major-releases" title="Link to this heading">#</a></h3>
+<p>A major release may:</p>
+<ul class="simple">
+<li><p>Remove a configuration key, or change one in a way that is not backward compatible.</p></li>
+<li><p>Remove or incompatibly change a member of the enumerated
+<a class="reference internal" href="#public-scala-and-java-api">public API</a>, including any change that breaks a vendor jar built
+against an earlier release.</p></li>
+<li><p>Remove a <code class="docutils literal notranslate"><span class="pre">spark.comet.legacy.*</span></code> escape hatch, making the newer behavior unconditional.</p></li>
+<li><p>Remove a deprecated configuration alias left behind by a rename.</p></li>
+</ul>
 </section>
+<section id="minor-releases">
+<h3>Minor Releases<a class="headerlink" href="#minor-releases" title="Link to this heading">#</a></h3>
+<p>A minor release may:</p>
+<ul class="simple">
+<li><p>Add features, operators, expressions, and configuration keys, and make additive changes to the
+public API that keep existing vendor jars working.</p></li>
+<li><p>Change existing behavior, provided the change ships with a legacy escape hatch. See
+<a class="reference internal" href="#behavior-changes-and-legacy-configurations">Behavior Changes and Legacy Configurations</a>.</p></li>
+<li><p>Deprecate configuration keys and public API members, ahead of removal in a later major release.</p></li>
+<li><p>Add or remove support for an Apache Spark version. See
+<a class="reference internal" href="#apache-spark-version-support">Apache Spark Version Support</a>.</p></li>
+</ul>
+</section>
+<section id="patch-releases">
+<h3>Patch Releases<a class="headerlink" href="#patch-releases" title="Link to this heading">#</a></h3>
+<p>A patch release contains bug fixes only. It adds no configuration keys and makes no behavior
+changes, with one exception: correctness fixes, which are covered in
+<a class="reference internal" href="#correctness-fixes-are-not-breaking-changes">Correctness Fixes Are Not Breaking Changes</a>.</p>
+</section>
+</section>
+<section id="behavior-changes-and-legacy-configurations">
+<h2>Behavior Changes and Legacy Configurations<a class="headerlink" href="#behavior-changes-and-legacy-configurations" title="Link to this heading">#</a></h2>
+<p>A <strong>behavior change</strong> is one where the same query, run over the same data, with the same explicitly
+set configuration, produces a different result or a different error than it did in the previous
+release.</p>
+<p>Comet follows Apache Spark’s approach here. A behavior change may ship in a minor release, but only
+when all three of the following hold:</p>
+<ol class="arabic simple">
+<li><p>A boolean configuration key under <code class="docutils literal notranslate"><span class="pre">spark.comet.legacy.*</span></code> restores the previous behavior. It
+defaults to <code class="docutils literal notranslate"><span class="pre">false</span></code>, meaning the new behavior is what users get unless they opt out.</p></li>
+<li><p>The <a class="reference internal" href="../user-guide/latest/migration-guide.html"><span class="std std-doc">Upgrade Guide</span></a> gains an entry that describes the
+change and names the configuration key that reverts it.</p></li>
+<li><p>The release notes for that version call the change out.</p></li>
+</ol>
+<p>The escape hatch is what makes the change safe to ship in a minor release. A user who is broken by
+it has a documented, single-property fix available while they adapt, rather than being forced to
+pin an old Comet release.</p>
+<p>Behavior changes that require this treatment include changing the default value of an existing
+configuration key, changing what an existing key’s values mean, and changing the semantics of an
+<code class="docutils literal notranslate"><span class="pre">Incompatible</span></code> expression or operator whose divergence from Spark users may have come to depend on.</p>
+<section id="lifetime-of-a-legacy-configuration">
+<h3>Lifetime of a Legacy Configuration<a class="headerlink" href="#lifetime-of-a-legacy-configuration" title="Link to this heading">#</a></h3>
+<p>A <code class="docutils literal notranslate"><span class="pre">spark.comet.legacy.*</span></code> key is deprecated from the moment it is added. Its purpose is to buy users
+time to migrate, not to preserve two behaviors indefinitely.</p>
+<p>Such a key may only be removed in a major release. When it is removed, the newer behavior becomes
+unconditional and the removal is noted in the upgrade guide.</p>
+<p>Contributors adding a legacy configuration should follow
+<a class="reference internal" href="../contributor-guide/config_conventions.html#changing-the-behavior-of-an-existing-config"><span class="std std-ref">Changing the Behavior of an Existing Config</span></a>
+in the contributor guide.</p>
+</section>
+<section id="renaming-and-removing-configuration-keys">
+<h3>Renaming and Removing Configuration Keys<a class="headerlink" href="#renaming-and-removing-configuration-keys" title="Link to this heading">#</a></h3>
+<p>Renaming a configuration key is not a behavior change and does not need a legacy escape hatch. The
+old key is kept working as a deprecated alias using the <code class="docutils literal notranslate"><span class="pre">withAlternative</span></code> mechanism described in
+<a class="reference internal" href="../contributor-guide/config_conventions.html#renaming-an-existing-config"><span class="std std-ref">Renaming an Existing Config</span></a>.
+The alias may only be dropped in a major release.</p>
+<p>Removing a configuration key outright requires a deprecation cycle: the key must remain available,
+with a deprecation warning, for at least one minor release before it is removed in a major release.</p>
+</section>
+</section>
+<section id="correctness-fixes-are-not-breaking-changes">
+<h2>Correctness Fixes Are Not Breaking Changes<a class="headerlink" href="#correctness-fixes-are-not-breaking-changes" title="Link to this heading">#</a></h2>
+<p>Comet’s contract is to produce the results that Apache Spark produces. When an expression or
+operator whose support level is <code class="docutils literal notranslate"><span class="pre">Compatible</span></code> produces something different from Spark, that is a
+bug in Comet, not a behavior that users are entitled to rely on.</p>
+<p>Fixing such a bug is a bug fix. It may ship in any release, including a patch release. It does not
+require a major version bump, and it does not require a legacy configuration key. Users must not
+depend on Comet-specific incorrect results.</p>
+<p>Two riders apply:</p>
+<ul class="simple">
+<li><p>Maintainers <strong>may</strong> add a legacy configuration key for a correctness fix with an unusually wide
+blast radius, for example one that changes the results of a common expression across many
+queries. This is a judgment call made case by case, not an obligation.</p></li>
+<li><p>When Apache Spark itself changes results for a given Spark version, Comet follows Spark. Tracking
+an upstream change is likewise not a Comet breaking change.</p></li>
+</ul>
 <section id="query-result-semantics">
 <h3>Query Result Semantics<a class="headerlink" href="#query-result-semantics" title="Link to this heading">#</a></h3>
 <p>Expressions and operators whose support level is <code class="docutils literal notranslate"><span class="pre">Compatible</span></code> are expected to produce results that
 match Apache Spark. Result differences in <code class="docutils literal notranslate"><span class="pre">Compatible</span></code> items are tracked as bugs and fixed in
-subsequent releases.</p>
+subsequent releases, under the rules above.</p>
 <p>Items whose support level is <code class="docutils literal notranslate"><span class="pre">Incompatible</span></code> or <code class="docutils literal notranslate"><span class="pre">Unsupported</span></code> have no result-compatibility
 guarantees. <code class="docutils literal notranslate"><span class="pre">Incompatible</span></code> items require an explicit per-expression or per-operator opt-in
-(for example, <code class="docutils literal notranslate"><span class="pre">spark.comet.expr.&lt;Name&gt;.allowIncompatible=true</span></code>).</p>
+(for example, <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.&lt;Name&gt;.allowIncompatible=true</span></code>).</p>
 <p>For details on per-expression and per-operator support levels, see the
 <a class="reference internal" href="../user-guide/latest/compatibility/index.html"><span class="std std-doc">compatibility guide</span></a>.</p>
+</section>
+</section>
+<section id="public-scala-and-java-api">
+<h2>Public Scala and Java API<a class="headerlink" href="#public-scala-and-java-api" title="Link to this heading">#</a></h2>
+<p>Comet is a plugin, not a library, so its public Java and Scala API is deliberately small. Every
+member of it carries the <code class="docutils literal notranslate"><span class="pre">org.apache.comet.annotation.Public</span></code> annotation, and it is enumerated in
+full below. <strong>Anything not listed here is internal</strong>, whatever its access modifier
+says, and is covered by <a class="reference internal" href="#everything-else-is-internal">Everything Else Is Internal</a>.</p>
+<section id="class-names-referenced-from-configuration">
+<h3>Class Names Referenced From Configuration<a class="headerlink" href="#class-names-referenced-from-configuration" title="Link to this heading">#</a></h3>
+<p>These classes are named as <em>values</em> in Spark configuration properties. Users do not compile against
+them; they write the fully qualified name into a config string.</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Class</p></th>
+<th class="head"><p>Named in</p></th>
+<th class="head"><p>Purpose</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">org.apache.spark.CometPlugin</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">spark.plugins</span></code></p></td>
+<td><p>Installs Comet.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">org.apache.comet.ExtendedExplainInfo</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">spark.sql.extendedExplainProviders</span></code></p></td>
+<td><p>Adds Comet fallback explanations to <code class="docutils literal notranslate"><span class="pre">EXPLAIN</span></code> output.</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>Renaming or removing one of these class names breaks user configuration in exactly the way renaming
+a <code class="docutils literal notranslate"><span class="pre">spark.comet.*</span></code> key does, so it is treated on the same terms: a deprecation cycle, then removal in
+a major release. Their internal structure, by contrast, carries no guarantee.</p>
+</section>
+<section id="the-s3-credential-provider-spi">
+<h3>The S3 Credential Provider SPI<a class="headerlink" href="#the-s3-credential-provider-spi" title="Link to this heading">#</a></h3>
+<p>The classes in <code class="docutils literal notranslate"><span class="pre">org.apache.comet.cloud.s3</span></code> are a service provider interface. Vendors implement it to
+supply AWS credentials to Comet’s native S3 readers, compiling against Comet with <code class="docutils literal notranslate"><span class="pre">provided</span></code> scope
+and shipping their implementation as a separate jar. Both source and binary compatibility matter
+here, because a vendor jar built against one Comet release is loaded by another.</p>
+<p>The SPI consists of:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">CometS3CredentialProvider</span></code>, the interface a vendor implements.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">CometS3Credentials</span></code>, the value a provider returns.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">CometS3CredentialContext</span></code> and <code class="docutils literal notranslate"><span class="pre">CometS3AccessMode</span></code>, describing the request being served.</p></li>
+</ul>
+<p>Additive changes are allowed in a minor release, for example a new accessor on
+<code class="docutils literal notranslate"><span class="pre">CometS3CredentialContext</span></code>, because a vendor jar compiled against an earlier <code class="docutils literal notranslate"><span class="pre">1.x</span></code> continues to
+load and run. Any change that would break such a jar, including adding an abstract method to
+<code class="docutils literal notranslate"><span class="pre">CometS3CredentialProvider</span></code> without a default implementation, requires a major release.</p>
+<p><code class="docutils literal notranslate"><span class="pre">CometS3CredentialDispatcher</span></code> is the JNI entry point Comet uses to reach a provider. It is internal
+despite living in the same package, and vendors must not call it.</p>
+<p>See the <a class="reference internal" href="../user-guide/latest/s3-credential-providers.html"><span class="std std-doc">S3 Credential Providers</span></a> guide for the
+full vendor contract.</p>
+</section>
+<section id="everything-else-is-internal">
+<h3>Everything Else Is Internal<a class="headerlink" href="#everything-else-is-internal" title="Link to this heading">#</a></h3>
+<p>Every other Scala, Java, and Rust type Comet ships is internal. This includes the rest of
+<code class="docutils literal notranslate"><span class="pre">org.apache.comet.*</span></code>, everything Comet contributes to <code class="docutils literal notranslate"><span class="pre">org.apache.spark.*</span></code>, and all of the native
+crates. These types exist to make the plugin work, not to be programmed against. They may be
+renamed, changed, or removed in any release, including a patch release, with no deprecation cycle
+and no upgrade guide entry.</p>
+<p>User code must not import, extend, or call them. Where Comet documentation shows an internal class
+in a code sample, treat it as a debugging aid for interactive use rather than as an interface with
+a stability guarantee.</p>
+</section>
+<section id="deprecation-cycle">
+<h3>Deprecation Cycle<a class="headerlink" href="#deprecation-cycle" title="Link to this heading">#</a></h3>
+<p>Removing anything listed above as public, or changing it incompatibly, requires a deprecation cycle:
+it must remain available, with a deprecation warning where one can be raised, for at least one minor
+release, and may only be removed in a major release.</p>
+</section>
+<section id="changing-the-public-api">
+<h3>Changing the Public API<a class="headerlink" href="#changing-the-public-api" title="Link to this heading">#</a></h3>
+<p><code class="docutils literal notranslate"><span class="pre">CometPublicApiSuite</span></code> pins the exact set of <code class="docutils literal notranslate"><span class="pre">&#64;Public</span></code> types to the list above, so adding or removing
+the annotation fails the build until the list is updated. That is deliberate: growing the public API
+commits the project to supporting the addition indefinitely, which is a policy decision rather than
+a routine code change. Agree the addition in an issue or on the mailing list first, then update the
+annotation, this page, and the suite together in one pull request.</p>
 </section>
 </section>
 <section id="apache-spark-version-support">
@@ -532,6 +715,17 @@ guarantees. <code class="docutils literal notranslate"><span class="pre">Incompa
 <a class="reference internal" href="../user-guide/latest/compatibility/spark-versions.html"><span class="std std-doc">Spark Version Compatibility</span></a> page. Comet
 binaries are published per <code class="docutils literal notranslate"><span class="pre">(Spark</span> <span class="pre">minor</span> <span class="pre">×</span> <span class="pre">Scala</span> <span class="pre">binary</span> <span class="pre">version)</span></code> combination. Users must select
 the binary that matches their Spark and Scala installation.</p>
+<p><strong>Which Spark versions Comet supports is not governed by semantic versioning.</strong> Adding support for
+a new Spark minor is a Comet minor release, never a major one. Removing support for a Spark minor
+is also a minor release, and is never by itself grounds for a major version bump.</p>
+<p>The reasoning is that Comet’s supported Spark matrix tracks the upstream Apache Spark project’s
+maintenance windows, which have nothing to do with Comet’s own version numbers. Tying the two
+together would force Comet major releases on a schedule set by another project, and would make the
+major version number say something about Spark rather than about Comet’s own compatibility.</p>
+<p>Scala binary versions are treated the same way: adding or removing one is a minor release.</p>
+<p>Users running a Spark version that a given Comet release no longer supports should stay on an
+earlier Comet release until they can upgrade Spark. The deprecation notice described under
+<a class="reference internal" href="#support-lifetime">Support Lifetime</a> is the signal to start planning that upgrade.</p>
 <section id="new-version-adoption">
 <h3>New Version Adoption<a class="headerlink" href="#new-version-adoption" title="Link to this heading">#</a></h3>
 <p>Comet does not commit to a timeline for adopting a new Apache Spark minor release. The effort
@@ -576,8 +770,8 @@ up. Older Spark patches within the same minor are not separately supported.</p>
 </section>
 <section id="release-cadence">
 <h2>Release Cadence<a class="headerlink" href="#release-cadence" title="Link to this heading">#</a></h2>
-<p>Comet targets a <code class="docutils literal notranslate"><span class="pre">0.X.0</span></code> minor release every four to six weeks. Patch releases (<code class="docutils literal notranslate"><span class="pre">0.X.Y</span></code>) are made
-on demand, only when a critical bug or security fix needs to ship before the next minor release.</p>
+<p>Comet targets a minor release every four to six weeks. Patch releases are made on demand, only
+when a critical bug or security fix needs to ship before the next minor release.</p>
 <p>Only the most recent minor release receives patch releases. Comet does not currently backport
 fixes to older minor releases; users are expected to upgrade forward.</p>
 </section>
@@ -587,19 +781,6 @@ fixes to older minor releases; users are expected to upgrade forward.</p>
 two artifacts must come from the <strong>same Comet release</strong>. Mixing a JVM jar from one Comet release
 with a native library from another is unsupported and may fail at runtime due to protobuf or FFI
 incompatibilities.</p>
-</section>
-<section id="road-to-1-0">
-<h2>Road to 1.0<a class="headerlink" href="#road-to-1-0" title="Link to this heading">#</a></h2>
-<p>When <code class="docutils literal notranslate"><span class="pre">1.0.0</span></code> ships:</p>
-<ul class="simple">
-<li><p>Strict semantic versioning will apply to the public Scala and Java API: breaking changes will
-only be made in a future major release. APIs annotated with <code class="docutils literal notranslate"><span class="pre">&#64;Unstable</span></code> remain exempt and may
-change in any minor release.</p></li>
-<li><p>The stability commitments for configuration keys and the protobuf plan format will be
-re-evaluated and documented as part of the <code class="docutils literal notranslate"><span class="pre">1.0.0</span></code> release.</p></li>
-</ul>
-<p>Tracking and planning for the <code class="docutils literal notranslate"><span class="pre">1.0.0</span></code> release happens in
-<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4082">issue #4082</a>.</p>
 </section>
 </section>
 
@@ -650,10 +831,28 @@ re-evaluated and documented as part of the <code class="docutils literal notrans
   </div>
   <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="visible nav section-nav flex-column">
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#pre-1-0-releases">Pre-1.0 Releases</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#compatibility-commitments">Compatibility Commitments</a><ul class="nav section-nav flex-column">
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#public-scala-and-java-api">Public Scala and Java API</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#comet-s-compatibility-surface">Comet’s Compatibility Surface</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#what-each-version-component-means">What Each Version Component Means</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#major-releases">Major Releases</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#minor-releases">Minor Releases</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#patch-releases">Patch Releases</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#behavior-changes-and-legacy-configurations">Behavior Changes and Legacy Configurations</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#lifetime-of-a-legacy-configuration">Lifetime of a Legacy Configuration</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#renaming-and-removing-configuration-keys">Renaming and Removing Configuration Keys</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#correctness-fixes-are-not-breaking-changes">Correctness Fixes Are Not Breaking Changes</a><ul class="nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#query-result-semantics">Query Result Semantics</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#public-scala-and-java-api">Public Scala and Java API</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#class-names-referenced-from-configuration">Class Names Referenced From Configuration</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#the-s3-credential-provider-spi">The S3 Credential Provider SPI</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#everything-else-is-internal">Everything Else Is Internal</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#deprecation-cycle">Deprecation Cycle</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#changing-the-public-api">Changing the Public API</a></li>
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#apache-spark-version-support">Apache Spark Version Support</a><ul class="nav section-nav flex-column">
@@ -664,7 +863,6 @@ re-evaluated and documented as part of the <code class="docutils literal notrans
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#release-cadence">Release Cadence</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#native-library-coupling">Native Library Coupling</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#road-to-1-0">Road to 1.0</a></li>
 </ul>
   </nav></div>
 

@@ -647,6 +647,49 @@ pattern (single-hop, multiple alternatives, etc.).</p></li>
 typically the next Comet major after the rename first ships. See the
 <a class="reference internal" href="../about/versioning_policy.html"><span class="std std-doc">versioning policy</span></a> for the timing rules.</p>
 </section>
+<section id="changing-the-behavior-of-an-existing-config">
+<h2>Changing the Behavior of an Existing Config<a class="headerlink" href="#changing-the-behavior-of-an-existing-config" title="Link to this heading">#</a></h2>
+<p>A rename keeps behavior identical and only moves the key. A <strong>behavior change</strong> is different: the
+same query, over the same data, with the same explicitly set configuration, starts producing a
+different result or a different error. Changing a config’s default value, or changing what its
+existing values mean, is a behavior change.</p>
+<p>Comet’s <a class="reference internal" href="../about/versioning_policy.html"><span class="std std-doc">versioning policy</span></a> allows a behavior change to ship in a
+minor release, but only when users have a documented way to opt back out. That escape hatch is a
+boolean config under <code class="docutils literal notranslate"><span class="pre">spark.comet.legacy.*</span></code>, defaulting to <code class="docutils literal notranslate"><span class="pre">false</span></code>, whose only job is to restore
+the previous behavior:</p>
+<div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="kd">val</span><span class="w"> </span><span class="nc">COMET_LEGACY_FOO_BEHAVIOR</span><span class="p">:</span><span class="w"> </span><span class="nc">ConfigEntry</span><span class="p">[</span><span class="nc">Boolean</span><span class="p">]</span><span class="w"> </span><span class="o">=</span>
+<span class="w">  </span><span class="n">conf</span><span class="p">(</span><span class="s">&quot;spark.comet.legacy.fooBehavior&quot;</span><span class="p">)</span>
+<span class="w">    </span><span class="p">.</span><span class="n">category</span><span class="p">(</span><span class="nc">CATEGORY_LEGACY</span><span class="p">)</span>
+<span class="w">    </span><span class="p">.</span><span class="n">doc</span><span class="p">(</span><span class="s">&quot;When true, restores the pre-1.1.0 behavior of &lt;config&gt;, which &lt;describe old &quot;</span><span class="w"> </span><span class="o">+</span>
+<span class="w">      </span><span class="s">&quot;behavior&gt;. This config is deprecated and will be removed in a future major release.&quot;</span><span class="p">)</span>
+<span class="w">    </span><span class="p">.</span><span class="n">booleanConf</span>
+<span class="w">    </span><span class="p">.</span><span class="n">createWithDefault</span><span class="p">(</span><span class="kc">false</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>Naming follows the usual conventions: <code class="docutils literal notranslate"><span class="pre">spark.comet.legacy.</span></code> prefix, <code class="docutils literal notranslate"><span class="pre">camelCase</span></code> final segment, and
+a <code class="docutils literal notranslate"><span class="pre">COMET_LEGACY_*</span></code> Scala symbol. The doc string must state which release changed the behavior and
+what the old behavior was, so that <code class="docutils literal notranslate"><span class="pre">configs.md</span></code> is self-explanatory without cross-referencing the
+upgrade guide.</p>
+<p>The checklist for a behavior change:</p>
+<ol class="arabic simple">
+<li><p>Make the behavior change itself, gated on the new legacy config.</p></li>
+<li><p>Declare the legacy config in <code class="docutils literal notranslate"><span class="pre">CometConf.scala</span></code> under <code class="docutils literal notranslate"><span class="pre">CATEGORY_LEGACY</span></code>, defaulting to <code class="docutils literal notranslate"><span class="pre">false</span></code>.</p></li>
+<li><p>Add a section to the <a class="reference internal" href="../user-guide/latest/migration-guide.html"><span class="std std-doc">upgrade guide</span></a> under the
+upcoming release, describing the change and naming the config that reverts it.</p></li>
+<li><p>Add a test covering both branches: the new behavior by default, and the old behavior with the
+legacy config set.</p></li>
+</ol>
+<p>Two cases do <strong>not</strong> need a legacy config:</p>
+<ul class="simple">
+<li><p><strong>Correctness fixes.</strong> When a <code class="docutils literal notranslate"><span class="pre">Compatible</span></code> expression or operator does not match Spark, that is a
+bug. Fixing it is a bug fix and may ship in any release, including a patch release. Add a legacy
+config only if the fix has an unusually wide blast radius, and say so in the PR description.</p></li>
+<li><p><strong>Changes to which expressions and operators run natively.</strong> Falling back to Spark, or ceasing
+to, changes performance rather than results.</p></li>
+</ul>
+<p>Removing a legacy config is a major-release change, handled the same way as removing a deprecated
+alias.</p>
+</section>
 </section>
 
 
@@ -700,6 +743,7 @@ typically the next Comet major after the rename first ships. See the
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#symbol-naming-scala">Symbol Naming (Scala)</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#categories">Categories</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#renaming-an-existing-config">Renaming an Existing Config</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#changing-the-behavior-of-an-existing-config">Changing the Behavior of an Existing Config</a></li>
 </ul>
   </nav></div>
 
