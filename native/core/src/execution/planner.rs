@@ -227,6 +227,10 @@ fn strip_timestamp_tz(
 #[derive(Default)]
 pub struct BinaryExprOptions {
     pub is_integral_div: bool,
+    /// True when Spark would check integral divide overflow (ANSI mode with LONG
+    /// operands), in which case Long.MinValue div -1 throws ARITHMETIC_OVERFLOW
+    /// instead of wrapping around.
+    pub check_divide_overflow: bool,
 }
 
 pub const TEST_EXEC_CONTEXT_ID: i64 = -1;
@@ -953,7 +957,7 @@ impl PhysicalPlanner {
                     func_name,
                     data_type.clone(),
                     &self.session_ctx.state(),
-                    None,
+                    Some(options.check_divide_overflow),
                     eval_mode,
                 )?;
                 Ok(Arc::new(ScalarFunctionExpr::new(

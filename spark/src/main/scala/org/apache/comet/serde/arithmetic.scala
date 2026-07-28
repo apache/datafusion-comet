@@ -38,8 +38,8 @@ trait MathBase {
       binding: Boolean,
       dataType: DataType,
       evalMode: EvalMode.Value,
-      f: (ExprOuterClass.Expr.Builder, ExprOuterClass.MathExpr) => ExprOuterClass.Expr.Builder)
-      : Option[ExprOuterClass.Expr] = {
+      f: (ExprOuterClass.Expr.Builder, ExprOuterClass.MathExpr) => ExprOuterClass.Expr.Builder,
+      checkDivideOverflow: Boolean = false): Option[ExprOuterClass.Expr] = {
     val leftExpr = exprToProtoInternal(left, inputs, binding)
     val rightExpr = exprToProtoInternal(right, inputs, binding)
 
@@ -49,6 +49,7 @@ trait MathBase {
       builder.setLeft(leftExpr.get)
       builder.setRight(rightExpr.get)
       builder.setEvalMode(evalModeToProto(CometEvalModeUtil.fromSparkEvalMode(evalMode)))
+      builder.setCheckDivideOverflow(checkDivideOverflow)
       serializeDataType(dataType).foreach { t =>
         builder.setReturnType(t)
       }
@@ -318,6 +319,11 @@ object CometIntegralDivide extends CometExpressionSerde[IntegralDivide] with Mat
       case _ => left.dataType
     }
 
+    // Spark only checks integral divide overflow (Long.MinValue div -1) when the operands
+    // are LONG and ANSI mode is enabled; DECIMAL operands wrap around on the cast to LONG
+    val checkDivideOverflow =
+      expr.left.dataType == LongType && expr.evalMode == EvalMode.ANSI
+
     val divideExpr = createMathExpression(
       expr,
       left,
@@ -326,7 +332,8 @@ object CometIntegralDivide extends CometExpressionSerde[IntegralDivide] with Mat
       binding,
       dataType,
       expr.evalMode,
-      (builder, mathExpr) => builder.setIntegralDivide(mathExpr))
+      (builder, mathExpr) => builder.setIntegralDivide(mathExpr),
+      checkDivideOverflow = checkDivideOverflow)
 
     if (divideExpr.isDefined) {
       val childExpr = if (dataType.isInstanceOf[DecimalType]) {

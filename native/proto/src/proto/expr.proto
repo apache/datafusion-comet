@@ -322,6 +322,10 @@ message MathExpr {
   Expr right = 2;
   DataType return_type = 4;
   EvalMode eval_mode = 5;
+  // Only set for integral_divide: true when Spark would check for overflow
+  // (ANSI mode with LONG operands), in which case Long.MinValue div -1 throws
+  // ARITHMETIC_OVERFLOW instead of wrapping around.
+  bool check_divide_overflow = 6;
 }
 
 message Cast {

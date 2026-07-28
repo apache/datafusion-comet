@@ -16,7 +16,7 @@
 // under the License.
 
 use crate::math_funcs::utils::get_precision_scale;
-use crate::{divide_by_zero_error, EvalMode};
+use crate::{divide_by_zero_error, integral_divide_overflow_error, EvalMode};
 use arrow::array::{Array, Decimal128Array};
 use arrow::datatypes::{DataType, DECIMAL128_MAX_PRECISION};
 use arrow::error::ArrowError;
@@ -34,15 +34,16 @@ pub fn spark_decimal_div(
     data_type: &DataType,
     eval_mode: EvalMode,
 ) -> Result<ColumnarValue, DataFusionError> {
-    spark_decimal_div_internal(args, data_type, false, eval_mode)
+    spark_decimal_div_internal(args, data_type, false, eval_mode, false)
 }
 
 pub fn spark_decimal_integral_div(
     args: &[ColumnarValue],
     data_type: &DataType,
     eval_mode: EvalMode,
+    check_divide_overflow: bool,
 ) -> Result<ColumnarValue, DataFusionError> {
-    spark_decimal_div_internal(args, data_type, true, eval_mode)
+    spark_decimal_div_internal(args, data_type, true, eval_mode, check_divide_overflow)
 }
 
 // Let Decimal(p3, s3) as return type i.e. Decimal(p1, s1) / Decimal(p2, s2) = Decimal(p3, s3).
@@ -55,6 +56,10 @@ fn spark_decimal_div_internal(
     data_type: &DataType,
     is_integral_div: bool,
     eval_mode: EvalMode,
+    // Only set for integral divide when Spark would check for overflow (ANSI mode with
+    // LONG operands): Long.MinValue div -1 is the only LONG quotient that cannot be
+    // represented as a LONG, so any out-of-range quotient throws ARITHMETIC_OVERFLOW.
+    check_divide_overflow: bool,
 ) -> Result<ColumnarValue, DataFusionError> {
     let left = &args[0];
     let right = &args[1];
@@ -107,6 +112,11 @@ fn spark_decimal_div_internal(
             } else {
                 div + &five
             } / &ten;
+            if check_divide_overflow && res.to_i64().is_none() {
+                return Err(ArrowError::ComputeError(
+                    integral_divide_overflow_error().to_string(),
+                ));
+            }
             Ok(res.to_i128().unwrap_or(i128::MAX))
         })?
     } else {
@@ -134,6 +144,11 @@ fn spark_decimal_div_internal(
             } else {
                 div + 5
             } / 10;
+            if check_divide_overflow && res.to_i64().is_none() {
+                return Err(ArrowError::ComputeError(
+                    integral_divide_overflow_error().to_string(),
+                ));
+            }
             Ok(res.to_i128().unwrap_or(i128::MAX))
         })?
     };

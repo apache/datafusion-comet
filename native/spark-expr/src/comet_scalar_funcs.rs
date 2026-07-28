@@ -79,6 +79,15 @@ macro_rules! make_comet_scalar_udf {
         );
         Ok(Arc::new(ScalarUDF::new_from_impl(scalar_func)))
     }};
+    ($name:expr, $func:ident, $data_type:ident, $eval_mode:ident, $fail_on_error:ident) => {{
+        let scalar_func = CometScalarFunction::new(
+            $name.to_string(),
+            Signature::variadic_any(Volatility::Immutable),
+            $data_type.clone(),
+            Arc::new(move |args| $func(args, &$data_type, $eval_mode, $fail_on_error)),
+        );
+        Ok(Arc::new(ScalarUDF::new_from_impl(scalar_func)))
+    }};
 }
 
 /// Create a physical scalar function.
@@ -155,7 +164,8 @@ pub fn create_comet_physical_fun_with_eval_mode(
                 "decimal_integral_div",
                 spark_decimal_integral_div,
                 data_type,
-                eval_mode
+                eval_mode,
+                fail_on_error
             )
         }
         "checked_add" => {
