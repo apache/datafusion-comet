@@ -88,7 +88,7 @@ fn check_float_remainder_by_zero(lhs: &ColumnarValue, rhs: &ColumnarValue) -> Re
             }
         }
         (ColumnarValue::Array(l_arr), ColumnarValue::Scalar(r)) => {
-            if is_zero_float_scalar(r) && !array_all_null(l_arr) {
+            if is_zero_float_scalar(r) && l_arr.null_count() != l_arr.len() {
                 return Err(remainder_by_zero_error().into());
             }
         }
@@ -106,20 +106,13 @@ fn check_float_remainder_by_zero(lhs: &ColumnarValue, rhs: &ColumnarValue) -> Re
     Ok(())
 }
 
-fn array_all_null(arr: &ArrayRef) -> bool {
-    match arr.logical_nulls() {
-        Some(nulls) => nulls.null_count() == arr.len(),
-        None => arr.is_empty(),
-    }
-}
-
 /// Returns true if `divisor` contains any non-null zero. When `dividend_mask` is provided,
 /// positions where `dividend_mask` is null are skipped (they will produce null results and
 /// must not raise an error).
 fn float_array_has_zero(divisor: &ArrayRef, dividend_mask: Option<&dyn Array>) -> bool {
     match divisor.data_type() {
-        DataType::Float32 => scan_float_array::<Float32Type>(divisor, dividend_mask, 0.0),
-        DataType::Float64 => scan_float_array::<Float64Type>(divisor, dividend_mask, 0.0),
+        DataType::Float32 => scan_float_array::<Float32Type>(divisor, dividend_mask),
+        DataType::Float64 => scan_float_array::<Float64Type>(divisor, dividend_mask),
         _ => false,
     }
 }
@@ -127,12 +120,12 @@ fn float_array_has_zero(divisor: &ArrayRef, dividend_mask: Option<&dyn Array>) -
 fn scan_float_array<T: ArrowPrimitiveType>(
     divisor: &ArrayRef,
     dividend_mask: Option<&dyn Array>,
-    zero: T::Native,
 ) -> bool
 where
-    T::Native: PartialEq,
+    T::Native: Default + PartialEq,
 {
     let arr = divisor.as_primitive::<T>();
+    let zero = T::Native::default();
     for i in 0..arr.len() {
         if arr.is_null(i) {
             continue;
@@ -563,8 +556,8 @@ mod tests {
             DataType::Float64,
             Arc::new(Float64Array::from(vec![Some(1.0)])),
             Arc::new(Float64Array::from(vec![Some(0.0)])),
-            /* fail_on_error */ true,
-            /* should_fail */ true,
+            true,
+            true,
             None,
         );
     }
@@ -602,8 +595,8 @@ mod tests {
             DataType::Float64,
             Arc::new(Float64Array::from(vec![Some(1.0)])),
             Arc::new(Float64Array::from(vec![Some(0.0)])),
-            /* fail_on_error */ false,
-            /* should_fail */ false,
+            false,
+            false,
             Some(Arc::new(Float64Array::from(vec![None]))),
         );
     }
