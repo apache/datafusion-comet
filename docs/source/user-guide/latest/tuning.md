@@ -216,7 +216,7 @@ mismatch is amplified; setting `spark.sql.files.maxPartitionBytes` below 120 MB 
 distributes row groups across more splits and reduces the number of idle tasks. Smaller values produce
 more splits overall, so some idle tasks may remain — tune the value against your file layout.
 
-See [issue #3817](https://github.com/apache/datafusion-comet/issues/3817#issuecomment-4193279630) for a
+See [#3817](https://github.com/apache/datafusion-comet/issues/3817#issuecomment-4193279630) for a
 worked example and further discussion.
 
 ## Explain Plan

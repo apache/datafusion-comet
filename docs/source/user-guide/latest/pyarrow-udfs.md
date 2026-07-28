@@ -48,9 +48,10 @@ operators in the physical plan and replaces them with `CometMapInBatchExec`, whi
 - Keeps the Python output in columnar format for downstream operators
 
 This eliminates the ColumnarToRow transition and the output row conversion, reducing CPU overhead
-and memory allocations. The internal row-to-Arrow IPC re-encoding inside Spark's
-`ArrowPythonRunner` is unchanged in this version; full round-trip elimination is tracked in
-[#4240](https://github.com/apache/datafusion-comet/issues/4240).
+and memory allocations. The row-to-Arrow re-encoding that Spark's `ArrowPythonRunner` performed on
+the input side is also gone: `CometArrowPythonRunner` consumes `ColumnarBatch` directly, so batches
+are written straight from Comet's vectors into the IPC root. See [Limitations](#limitations) for the
+copies that remain.
 
 ### Plan flow
 

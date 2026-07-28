@@ -121,4 +121,26 @@ class CometConfSuite extends AnyFunSuite {
 
     assert(CometConf.COMET_FORCE_SHJ.get(conf))
   }
+
+  test("COMET_EXPLAIN_CODEGEN_ENABLED reads deprecated explainCodegen.enabled as an alias") {
+    val conf = new SQLConf
+    conf.setConfString("spark.comet.explainCodegen.enabled", "true")
+
+    assert(CometConf.COMET_EXPLAIN_CODEGEN_ENABLED.get(conf))
+  }
+
+  test("COMET_EXPLAIN_FALLBACK_ENABLED reads deprecated explainFallback.enabled as an alias") {
+    val conf = new SQLConf
+    conf.setConfString("spark.comet.explainFallback.enabled", "true")
+
+    assert(CometConf.COMET_EXPLAIN_FALLBACK_ENABLED.get(conf))
+  }
+
+  test(
+    "COMET_EXPLAIN_FALLBACK_LOG_ENABLED reads deprecated logFallbackReasons.enabled as alias") {
+    val conf = new SQLConf
+    conf.setConfString("spark.comet.logFallbackReasons.enabled", "true")
+
+    assert(CometConf.COMET_EXPLAIN_FALLBACK_LOG_ENABLED.get(conf))
+  }
 }

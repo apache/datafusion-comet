@@ -128,7 +128,7 @@
 
 ## like
 
-- See `string_funcs / like` (audited in PR #4461). `CometLike` only supports the default `\\` escape character.
+- See `string_funcs / like` (audited in PR [#4461](https://github.com/apache/datafusion-comet/pull/4461)). `CometLike` only supports the default `\\` escape character.
 
 ## not
 
@@ -146,6 +146,6 @@
 
 ## rlike
 
-- See `string_funcs / regexp_replace` and the `CometRLike` notes (audited in PR #4461). Uses the Rust `regex` crate, which differs from Java's `Pattern` engine; requires `spark.comet.expression.regexp.allowIncompatible=true`.
+- See `string_funcs / regexp_replace` and the `CometRLike` notes (audited in PR [#4461](https://github.com/apache/datafusion-comet/pull/4461)). Uses the Rust `regex` crate, which differs from Java's `Pattern` engine; requires `spark.comet.expression.regexp.allowIncompatible=true`.
 
 [Spark Expression Support]: ../../user-guide/latest/expressions.md
