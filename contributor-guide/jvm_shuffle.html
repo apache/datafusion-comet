@@ -566,7 +566,7 @@ Uses Spark’s partitioner for partition assignment. Can accept either row-based
 <h2>When JVM Shuffle is Used<a class="headerlink" href="#when-jvm-shuffle-is-used" title="Link to this heading">#</a></h2>
 <p>JVM shuffle (<code class="docutils literal notranslate"><span class="pre">CometColumnarExchange</span></code>) is used instead of native shuffle (<code class="docutils literal notranslate"><span class="pre">CometExchange</span></code>) in the following cases:</p>
 <ol class="arabic simple">
-<li><p><strong>Shuffle mode is explicitly set to “jvm”</strong>: When <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.shuffle.mode</span></code> is set to <code class="docutils literal notranslate"><span class="pre">jvm</span></code>.</p></li>
+<li><p><strong>Shuffle mode is explicitly set to “jvm”</strong>: When <code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.mode</span></code> is set to <code class="docutils literal notranslate"><span class="pre">jvm</span></code>.</p></li>
 <li><p><strong>Child plan is not a Comet native operator</strong>: When the child plan is a Spark row-based operator
 (not a <code class="docutils literal notranslate"><span class="pre">CometPlan</span></code>), JVM shuffle is the only option since native shuffle requires columnar input
 from Comet operators.</p></li>
@@ -791,13 +791,13 @@ to protobuf and implements the partitioning logic in native code.</p>
 </tr>
 </thead>
 <tbody>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.columnar.shuffle.batch.size</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.jvm.batchSize</span></code></p></td>
 <td><p>Rows per Arrow batch</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.columnar.shuffle.spill.threshold</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.jvm.spillThreshold</span></code></p></td>
 <td><p>Row count threshold for spill</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.shuffle.compression.codec</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.compression.codec</span></code></p></td>
 <td><p>Compression codec (zstd, lz4, etc.)</p></td>
 </tr>
 </tbody>

@@ -566,7 +566,7 @@ overhead that JVM shuffle incurs.</p>
 <h2>When Native Shuffle is Used<a class="headerlink" href="#when-native-shuffle-is-used" title="Link to this heading">#</a></h2>
 <p>Native shuffle (<code class="docutils literal notranslate"><span class="pre">CometExchange</span></code>) is selected when all of the following conditions are met:</p>
 <ol class="arabic simple">
-<li><p><strong>Shuffle mode allows native</strong>: <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.shuffle.mode</span></code> is <code class="docutils literal notranslate"><span class="pre">native</span></code> or <code class="docutils literal notranslate"><span class="pre">auto</span></code>.</p></li>
+<li><p><strong>Shuffle mode allows native</strong>: <code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.mode</span></code> is <code class="docutils literal notranslate"><span class="pre">native</span></code> or <code class="docutils literal notranslate"><span class="pre">auto</span></code>.</p></li>
 <li><p><strong>Child plan is a Comet native operator</strong>: The child must be a <code class="docutils literal notranslate"><span class="pre">CometPlan</span></code> that produces
 columnar output. Row-based Spark operators require JVM shuffle.</p></li>
 <li><p><strong>Supported partitioning type</strong>: Native shuffle supports:</p>
@@ -799,7 +799,7 @@ sizes.</p>
 <ul class="simple">
 <li><p><strong>Memory pool</strong>: Tracks memory usage across the shuffle operation.</p></li>
 <li><p><strong>Spill triggers</strong>: Partitions spill to disk when the memory pool denies an allocation, or
-when the buffered bytes reach <code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.maxBufferBytes</span></code>. That config defaults to
+when the buffered bytes reach <code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.native.maxBufferBytes</span></code>. That config defaults to
 0, which disables the fixed limit and leaves memory pressure as the only trigger.</p></li>
 <li><p><strong>Per-partition spilling</strong>: Each partition has its own spill file. Multiple spills for a
 partition are concatenated when writing the final output.</p></li>
@@ -815,7 +815,7 @@ partition are concatenated when writing the final output.</p></li>
 <section id="compression">
 <h2>Compression<a class="headerlink" href="#compression" title="Link to this heading">#</a></h2>
 <p>Native shuffle supports multiple compression codecs configured via
-<code class="docutils literal notranslate"><span class="pre">spark.comet.exec.shuffle.compression.codec</span></code>:</p>
+<code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.compression.codec</span></code>:</p>
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
 <tr class="row-odd"><th class="head"><p>Codec</p></th>
@@ -851,19 +851,19 @@ independently compressed, allowing parallel decompression during reads.</p>
 </tr>
 </thead>
 <tbody>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.shuffle.enabled</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.enabled</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">true</span></code></p></td>
 <td><p>Enable Comet shuffle</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.shuffle.mode</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.mode</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">auto</span></code></p></td>
 <td><p>Shuffle mode: <code class="docutils literal notranslate"><span class="pre">native</span></code>, <code class="docutils literal notranslate"><span class="pre">jvm</span></code>, or <code class="docutils literal notranslate"><span class="pre">auto</span></code></p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.shuffle.compression.codec</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.compression.codec</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">zstd</span></code></p></td>
 <td><p>Compression codec</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.shuffle.compression.zstd.level</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.compression.zstd.level</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">1</span></code></p></td>
 <td><p>Zstd compression level</p></td>
 </tr>
@@ -871,7 +871,7 @@ independently compressed, allowing parallel decompression during reads.</p>
 <td><p><code class="docutils literal notranslate"><span class="pre">1MB</span></code></p></td>
 <td><p>Write buffer size</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.columnar.shuffle.batch.size</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.jvm.batchSize</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">8192</span></code></p></td>
 <td><p>Target rows per batch</p></td>
 </tr>

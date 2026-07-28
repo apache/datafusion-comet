@@ -783,7 +783,7 @@ window are not supported by Spark either.</p></li>
 <h2>Round-Robin Partitioning<a class="headerlink" href="#round-robin-partitioning" title="Link to this heading">#</a></h2>
 <p>Comet’s native shuffle implementation of round-robin partitioning (<code class="docutils literal notranslate"><span class="pre">df.repartition(n)</span></code>) is not compatible with
 Spark’s implementation and is disabled by default. It can be enabled by setting
-<code class="docutils literal notranslate"><span class="pre">spark.comet.native.shuffle.partitioning.roundrobin.enabled=true</span></code>.</p>
+<code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.native.partitioning.roundrobin.enabled=true</span></code>.</p>
 <p><strong>Why the incompatibility exists:</strong></p>
 <p>Spark’s round-robin partitioning sorts rows by their binary <code class="docutils literal notranslate"><span class="pre">UnsafeRow</span></code> representation before assigning them to
 partitions. This ensures deterministic output for fault tolerance (task retries produce identical results).
