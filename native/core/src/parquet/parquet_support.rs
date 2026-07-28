@@ -565,6 +565,7 @@ pub(crate) fn prepare_object_store_with_configs(
         })?;
     }
     let authority_start = if is_azure_scheme(scheme) {
+        // ABFS URLs encode the container in the userinfo
         url::Position::BeforeUsername
     } else {
         url::Position::BeforeHost
@@ -701,9 +702,34 @@ mod tests {
             runtime_env.object_store(&object_store_url).unwrap()
         };
 
-        assert!(!Arc::ptr_eq(
-            &object_store("container-a"),
-            &object_store("container-b")
+        let container_a = object_store("container-a");
+        assert!(Arc::ptr_eq(&container_a, &object_store("container-a")));
+        assert!(!Arc::ptr_eq(&container_a, &object_store("container-b")));
+    }
+
+    #[test]
+    fn test_s3_store_cache_keys_by_host() {
+        let configs = HashMap::from([
+            (
+                "fs.s3a.aws.credentials.provider".into(),
+                "org.apache.hadoop.fs.s3a.AnonymousAWSCredentialsProvider".into(),
+            ),
+            ("fs.s3a.endpoint.region".into(), "us-east-1".into()),
+        ]);
+        let object_store = |bucket| {
+            let runtime_env = Arc::new(RuntimeEnv::default());
+            let (object_store_url, _) = super::prepare_object_store_with_configs(
+                Arc::clone(&runtime_env),
+                format!("s3://{bucket}@shared-host/path/file.parquet"),
+                &configs,
+            )
+            .unwrap();
+            runtime_env.object_store(&object_store_url).unwrap()
+        };
+
+        assert!(Arc::ptr_eq(
+            &object_store("bucket-a"),
+            &object_store("bucket-b")
         ));
     }
 }
