@@ -20,7 +20,7 @@ use crate::parquet::encryption_support::{CometEncryptionConfig, ENCRYPTION_FACTO
 use crate::parquet::parquet_support::SparkParquetOptions;
 use crate::parquet::schema_adapter::SparkPhysicalExprAdapterFactory;
 use arrow::datatypes::{Field, SchemaRef};
-use datafusion::config::TableParquetOptions;
+use datafusion::config::{ParquetOptions, TableParquetOptions};
 use datafusion::datasource::listing::PartitionedFile;
 use datafusion::datasource::physical_plan::parquet::CachedParquetFileReaderFactory;
 use datafusion::datasource::physical_plan::{
@@ -76,6 +76,10 @@ pub(crate) fn init_datasource_exec(
     use_field_id: bool,
     ignore_missing_field_id: bool,
 ) -> Result<Arc<DataSourceExec>, ExecutionError> {
+    // Computed once and reused below for `try_pushdown_filters`, since `SessionContext::state()`
+    // clones the whole `SessionState` (function registries, optimizer rules, etc.), not just the
+    // config.
+    let state = session_ctx.state();
     let (table_parquet_options, mut spark_parquet_options) = get_options(
         session_timezone,
         case_sensitive,
@@ -84,6 +88,7 @@ pub(crate) fn init_datasource_exec(
         allow_timestamp_ltz_to_ntz,
         &object_store_url,
         encryption_enabled,
+        &state.config_options().execution.parquet,
     );
     spark_parquet_options.use_field_id = use_field_id;
     spark_parquet_options.ignore_missing_field_id = ignore_missing_field_id;
@@ -171,7 +176,6 @@ pub(crate) fn init_datasource_exec(
     // correct without us inserting a FilterExec here.
     let file_source: Arc<dyn FileSource> = match data_filters {
         Some(filters) if !filters.is_empty() => {
-            let state = session_ctx.state();
             let propagation =
                 parquet_source.try_pushdown_filters(filters, state.config_options())?;
             // `updated_node` is `None` when every filter classified as `No`
@@ -216,8 +220,30 @@ fn get_options(
     allow_timestamp_ltz_to_ntz: bool,
     object_store_url: &ObjectStoreUrl,
     encryption_enabled: bool,
+    session_parquet_options: &ParquetOptions,
 ) -> (TableParquetOptions, SparkParquetOptions) {
     let mut table_parquet_options = TableParquetOptions::new();
+
+    // Reader options that reach `ParquetSource`'s actual per-file execution path
+    // (`ParquetMorselizer`, built from `table_parquet_options.global`) rather than only
+    // `ParquetFormat::infer_schema`'s schema-inference path, which Comet never calls (Comet
+    // always supplies its own schema, translated from Spark's catalog). Seeded from the
+    // session so `spark.comet.datafusion.execution.parquet.*` (behind
+    // `spark.comet.exec.respectDataFusionConfigs`) and `spark.comet.parquet.
+    // rowFilterPushdown.enabled` actually take effect on the native scan (#4990); a fresh
+    // `TableParquetOptions::new()` ignored the session entirely.
+    table_parquet_options.global.pushdown_filters = session_parquet_options.pushdown_filters;
+    table_parquet_options.global.reorder_filters = session_parquet_options.reorder_filters;
+    table_parquet_options.global.force_filter_selections =
+        session_parquet_options.force_filter_selections;
+    table_parquet_options.global.bloom_filter_on_read =
+        session_parquet_options.bloom_filter_on_read;
+    table_parquet_options.global.max_predicate_cache_size =
+        session_parquet_options.max_predicate_cache_size;
+    table_parquet_options.global.enable_page_index = session_parquet_options.enable_page_index;
+    table_parquet_options.global.pruning = session_parquet_options.pruning;
+
+    // Hardcoded for Spark compatibility, not session-overridable.
     table_parquet_options.global.coerce_int96 = Some("us".to_string());
     // INT96 columns encode UTC-adjusted instants; attaching the UTC timezone
     // preserves that signal at the Arrow level so the schema adapter can
@@ -258,6 +284,51 @@ mod tests {
     use parquet::arrow::ArrowWriter;
     use parquet::file::properties::{EnabledStatistics, WriterProperties};
     use std::fs::File;
+
+    // Regression test for #4990: a fresh `TableParquetOptions::new()` ignored session-level
+    // `datafusion.execution.parquet.*` settings entirely, so `spark.comet.datafusion.
+    // execution.parquet.*` (behind `respectDataFusionConfigs`) and `spark.comet.parquet.
+    // rowFilterPushdown.enabled` had no effect on the native scan.
+    #[test]
+    fn seeds_allowlisted_fields_from_session_but_protects_spark_compat_fields() {
+        let session_parquet_options = ParquetOptions {
+            pushdown_filters: true,
+            reorder_filters: true,
+            force_filter_selections: true,
+            bloom_filter_on_read: false,
+            max_predicate_cache_size: Some(0),
+            enable_page_index: false,
+            pruning: false,
+            // An escape-hatch attempt to override Spark-compat fields; must not take effect.
+            coerce_int96: None,
+            coerce_int96_tz: None,
+            ..Default::default()
+        };
+
+        let (table_parquet_options, _) = get_options(
+            "UTC",
+            true,
+            false,
+            false,
+            false,
+            &ObjectStoreUrl::local_filesystem(),
+            false,
+            &session_parquet_options,
+        );
+
+        let global = &table_parquet_options.global;
+        assert!(global.pushdown_filters);
+        assert!(global.reorder_filters);
+        assert!(global.force_filter_selections);
+        assert!(!global.bloom_filter_on_read);
+        assert_eq!(global.max_predicate_cache_size, Some(0));
+        assert!(!global.enable_page_index);
+        assert!(!global.pruning);
+
+        // Spark-compat fields stay hardcoded regardless of the session.
+        assert_eq!(global.coerce_int96, Some("us".to_string()));
+        assert_eq!(global.coerce_int96_tz, Some("UTC".to_string()));
+    }
 
     // The scan's reader factory caches each file's footer metadata in the per-task RuntimeEnv
     // metadata cache, reused across the file's row-group splits (#3978). The page index is loaded
