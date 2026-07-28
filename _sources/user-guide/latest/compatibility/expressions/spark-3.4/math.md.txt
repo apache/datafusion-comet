@@ -27,12 +27,6 @@ The following cases are not supported by Comet and always fall back to Spark, re
 
 - Only integral, floating-point, and decimal types are supported
 
-## Pow
-
-The following cases are not supported by Comet and always fall back to Spark, regardless of any `allowIncompatible` setting:
-
-- Power has correctness issues
-
 ## Rand
 
 The following cases are not supported by Comet and always fall back to Spark, regardless of any `allowIncompatible` setting:
