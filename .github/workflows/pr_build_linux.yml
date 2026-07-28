@@ -364,6 +364,7 @@ jobs:
               org.apache.spark.sql.comet.CometDecimalArithmeticViewSuite
               org.apache.spark.sql.comet.CometScanWithPlanDataSuite
               org.apache.spark.sql.comet.util.UtilsSuite
+              org.apache.comet.vector.NativeUtilSuite
               org.apache.comet.objectstore.NativeConfigSuite
               org.apache.spark.sql.CometToPrettyStringSuite
               org.apache.spark.sql.CometCollationSuite
