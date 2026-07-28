@@ -25,45 +25,151 @@ compatibility guarantees Comet provides, and how Comet relates to Apache Spark v
 
 This policy is inspired by, but is not identical to, the
 [Apache Spark versioning policy](https://spark.apache.org/versioning-policy.html). The differences
-reflect the fact that Comet is currently pre-1.0 and ships much more frequently than Spark.
+reflect the fact that Comet ships much more frequently than Spark, and that Comet is an accelerator
+rather than an engine in its own right: Spark, not Comet, defines what a correct answer looks like.
 
-## Pre-1.0 Releases
+```{note}
+This policy takes effect with the `1.0.0` release. The earlier `0.x` series was unstable in the
+sense semantic versioning gives that term: any `0.x` minor release could include breaking changes,
+and the guarantees described below do not apply retroactively to it.
+```
 
-Comet is currently in the `0.x` series. Per semantic versioning, the `0.x` series is considered
-unstable:
+## Comet's Compatibility Surface
 
-- A minor release (`0.X.0`) may include breaking changes.
-- A patch release (`0.X.Y`, where `Y > 0`) contains bug fixes only.
+Comet is a plugin rather than a library. Users install it through Spark's plugin system and then
+set `spark.comet.*` properties in `spark-defaults.conf`, in a `spark-submit` invocation, or in a
+notebook. For the overwhelming majority of users, configuration is the only thing they ever touch,
+so Comet's configuration is its primary API and this policy treats it as such.
 
-In particular, the following are explicitly **not** stable in the `0.x` series and may change in any
-minor release without prior notice:
+Comet does also expose a small Java and Scala API, enumerated below, for the cases that
+configuration cannot express: the class names Spark itself needs by name, and one service provider
+interface that vendors implement. It is small on purpose, and everything outside it is internal.
 
-- Configuration keys under `spark.comet.*` (names, defaults, and semantics).
-- The protobuf format used to serialize query plans between the JVM and the native library.
-- Internal Scala, Java, and Rust APIs that are not part of the documented public API.
+The following are covered by this versioning policy:
 
-Where a breaking change is significant, it will be called out in the release notes.
+- **Configuration keys under `spark.comet.*`**: their names, types, accepted values, default
+  values, and semantics.
+- **A small, enumerated public Java and Scala API**: the class names users write into Spark config
+  properties, and the S3 credential provider SPI that vendors implement. The full list is in
+  [Public Scala and Java API](#public-scala-and-java-api).
+- **Query results for expressions and operators whose support level is `Compatible`**, where the
+  contract is defined by Apache Spark rather than by Comet. See
+  [Query Result Semantics](#query-result-semantics).
 
-## Compatibility Commitments
+The following are internal implementation details. They are not covered by this policy and may
+change in any release:
 
-The following commitments apply to every Comet release, including the `0.x` series.
+- The protobuf format used to serialize query plans between the JVM and the native library. The
+  JVM jar and the native library ship together and are versioned together; see
+  [Native Library Coupling](#native-library-coupling).
+- Every Scala, Java, and Rust type not on that list, including the internal structure of the
+  classes that are on it. See [Everything Else Is Internal](#everything-else-is-internal).
+- `EXPLAIN` output, and the shape of the plans Comet produces. Which operators are fused, how a
+  native block is partitioned, and how a plan is rendered may all change between releases.
+- Metric names and log output.
+- Performance characteristics, including which expressions and operators run natively and which
+  fall back to Spark. An expression that ran natively in one release may fall back in the next,
+  and vice versa. The results stay the same; only the speed changes.
 
-### Public Scala and Java API
+## What Each Version Component Means
 
-Public classes and methods (for example, `org.apache.spark.CometPlugin`) are considered part of
-Comet's public API. Removing or making source- or binary-incompatible changes to a public API
-requires a deprecation cycle: the API must remain available, with a deprecation warning, for at
-least one minor release before removal.
+### Major Releases
 
-Public APIs annotated with `@Unstable` are exempt from this guarantee and may change in any minor
-release without a deprecation cycle. The `@Unstable` annotation does not yet exist and will be
-introduced as the need arises.
+A major release may:
+
+- Remove a configuration key, or change one in a way that is not backward compatible.
+- Remove or incompatibly change a member of the enumerated
+  [public API](#public-scala-and-java-api), including any change that breaks a vendor jar built
+  against an earlier release.
+- Remove a `spark.comet.legacy.*` escape hatch, making the newer behavior unconditional.
+- Remove a deprecated configuration alias left behind by a rename.
+
+### Minor Releases
+
+A minor release may:
+
+- Add features, operators, expressions, and configuration keys, and make additive changes to the
+  public API that keep existing vendor jars working.
+- Change existing behavior, provided the change ships with a legacy escape hatch. See
+  [Behavior Changes and Legacy Configurations](#behavior-changes-and-legacy-configurations).
+- Deprecate configuration keys and public API members, ahead of removal in a later major release.
+- Add or remove support for an Apache Spark version. See
+  [Apache Spark Version Support](#apache-spark-version-support).
+
+### Patch Releases
+
+A patch release contains bug fixes only. It adds no configuration keys and makes no behavior
+changes, with one exception: correctness fixes, which are covered in
+[Correctness Fixes Are Not Breaking Changes](#correctness-fixes-are-not-breaking-changes).
+
+## Behavior Changes and Legacy Configurations
+
+A **behavior change** is one where the same query, run over the same data, with the same explicitly
+set configuration, produces a different result or a different error than it did in the previous
+release.
+
+Comet follows Apache Spark's approach here. A behavior change may ship in a minor release, but only
+when all three of the following hold:
+
+1. A boolean configuration key under `spark.comet.legacy.*` restores the previous behavior. It
+   defaults to `false`, meaning the new behavior is what users get unless they opt out.
+2. The [Upgrade Guide](../user-guide/latest/migration-guide.md) gains an entry that describes the
+   change and names the configuration key that reverts it.
+3. The release notes for that version call the change out.
+
+The escape hatch is what makes the change safe to ship in a minor release. A user who is broken by
+it has a documented, single-property fix available while they adapt, rather than being forced to
+pin an old Comet release.
+
+Behavior changes that require this treatment include changing the default value of an existing
+configuration key, changing what an existing key's values mean, and changing the semantics of an
+`Incompatible` expression or operator whose divergence from Spark users may have come to depend on.
+
+### Lifetime of a Legacy Configuration
+
+A `spark.comet.legacy.*` key is deprecated from the moment it is added. Its purpose is to buy users
+time to migrate, not to preserve two behaviors indefinitely.
+
+Such a key may only be removed in a major release. When it is removed, the newer behavior becomes
+unconditional and the removal is noted in the upgrade guide.
+
+Contributors adding a legacy configuration should follow
+[Changing the Behavior of an Existing Config](../contributor-guide/config_conventions.md#changing-the-behavior-of-an-existing-config)
+in the contributor guide.
+
+### Renaming and Removing Configuration Keys
+
+Renaming a configuration key is not a behavior change and does not need a legacy escape hatch. The
+old key is kept working as a deprecated alias using the `withAlternative` mechanism described in
+[Renaming an Existing Config](../contributor-guide/config_conventions.md#renaming-an-existing-config).
+The alias may only be dropped in a major release.
+
+Removing a configuration key outright requires a deprecation cycle: the key must remain available,
+with a deprecation warning, for at least one minor release before it is removed in a major release.
+
+## Correctness Fixes Are Not Breaking Changes
+
+Comet's contract is to produce the results that Apache Spark produces. When an expression or
+operator whose support level is `Compatible` produces something different from Spark, that is a
+bug in Comet, not a behavior that users are entitled to rely on.
+
+Fixing such a bug is a bug fix. It may ship in any release, including a patch release. It does not
+require a major version bump, and it does not require a legacy configuration key. Users must not
+depend on Comet-specific incorrect results.
+
+Two riders apply:
+
+- Maintainers **may** add a legacy configuration key for a correctness fix with an unusually wide
+  blast radius, for example one that changes the results of a common expression across many
+  queries. This is a judgment call made case by case, not an obligation.
+- When Apache Spark itself changes results for a given Spark version, Comet follows Spark. Tracking
+  an upstream change is likewise not a Comet breaking change.
 
 ### Query Result Semantics
 
 Expressions and operators whose support level is `Compatible` are expected to produce results that
 match Apache Spark. Result differences in `Compatible` items are tracked as bugs and fixed in
-subsequent releases.
+subsequent releases, under the rules above.
 
 Items whose support level is `Incompatible` or `Unsupported` have no result-compatibility
 guarantees. `Incompatible` items require an explicit per-expression or per-operator opt-in
@@ -72,12 +178,98 @@ guarantees. `Incompatible` items require an explicit per-expression or per-opera
 For details on per-expression and per-operator support levels, see the
 [compatibility guide](../user-guide/latest/compatibility/index.md).
 
+## Public Scala and Java API
+
+Comet is a plugin, not a library, so its public Java and Scala API is deliberately small. Every
+member of it carries the `org.apache.comet.annotation.Public` annotation, and it is enumerated in
+full below. **Anything not listed here is internal**, whatever its access modifier
+says, and is covered by [Everything Else Is Internal](#everything-else-is-internal).
+
+### Class Names Referenced From Configuration
+
+These classes are named as _values_ in Spark configuration properties. Users do not compile against
+them; they write the fully qualified name into a config string.
+
+| Class                                  | Named in                             | Purpose                                               |
+| -------------------------------------- | ------------------------------------ | ----------------------------------------------------- |
+| `org.apache.spark.CometPlugin`         | `spark.plugins`                      | Installs Comet.                                       |
+| `org.apache.comet.ExtendedExplainInfo` | `spark.sql.extendedExplainProviders` | Adds Comet fallback explanations to `EXPLAIN` output. |
+
+Renaming or removing one of these class names breaks user configuration in exactly the way renaming
+a `spark.comet.*` key does, so it is treated on the same terms: a deprecation cycle, then removal in
+a major release. Their internal structure, by contrast, carries no guarantee.
+
+### The S3 Credential Provider SPI
+
+The classes in `org.apache.comet.cloud.s3` are a service provider interface. Vendors implement it to
+supply AWS credentials to Comet's native S3 readers, compiling against Comet with `provided` scope
+and shipping their implementation as a separate jar. Both source and binary compatibility matter
+here, because a vendor jar built against one Comet release is loaded by another.
+
+The SPI consists of:
+
+- `CometS3CredentialProvider`, the interface a vendor implements.
+- `CometS3Credentials`, the value a provider returns.
+- `CometS3CredentialContext` and `CometS3AccessMode`, describing the request being served.
+
+Additive changes are allowed in a minor release, for example a new accessor on
+`CometS3CredentialContext`, because a vendor jar compiled against an earlier `1.x` continues to
+load and run. Any change that would break such a jar, including adding an abstract method to
+`CometS3CredentialProvider` without a default implementation, requires a major release.
+
+`CometS3CredentialDispatcher` is the JNI entry point Comet uses to reach a provider. It is internal
+despite living in the same package, and vendors must not call it.
+
+See the [S3 Credential Providers](../user-guide/latest/s3-credential-providers.md) guide for the
+full vendor contract.
+
+### Everything Else Is Internal
+
+Every other Scala, Java, and Rust type Comet ships is internal. This includes the rest of
+`org.apache.comet.*`, everything Comet contributes to `org.apache.spark.*`, and all of the native
+crates. These types exist to make the plugin work, not to be programmed against. They may be
+renamed, changed, or removed in any release, including a patch release, with no deprecation cycle
+and no upgrade guide entry.
+
+User code must not import, extend, or call them. Where Comet documentation shows an internal class
+in a code sample, treat it as a debugging aid for interactive use rather than as an interface with
+a stability guarantee.
+
+### Deprecation Cycle
+
+Removing anything listed above as public, or changing it incompatibly, requires a deprecation cycle:
+it must remain available, with a deprecation warning where one can be raised, for at least one minor
+release, and may only be removed in a major release.
+
+### Changing the Public API
+
+`CometPublicApiSuite` pins the exact set of `@Public` types to the list above, so adding or removing
+the annotation fails the build until the list is updated. That is deliberate: growing the public API
+commits the project to supporting the addition indefinitely, which is a policy decision rather than
+a routine code change. Agree the addition in an issue or on the mailing list first, then update the
+annotation, this page, and the suite together in one pull request.
+
 ## Apache Spark Version Support
 
 The currently supported Spark versions are listed on the
 [Spark Version Compatibility](../user-guide/latest/compatibility/spark-versions.md) page. Comet
 binaries are published per `(Spark minor × Scala binary version)` combination. Users must select
 the binary that matches their Spark and Scala installation.
+
+**Which Spark versions Comet supports is not governed by semantic versioning.** Adding support for
+a new Spark minor is a Comet minor release, never a major one. Removing support for a Spark minor
+is also a minor release, and is never by itself grounds for a major version bump.
+
+The reasoning is that Comet's supported Spark matrix tracks the upstream Apache Spark project's
+maintenance windows, which have nothing to do with Comet's own version numbers. Tying the two
+together would force Comet major releases on a schedule set by another project, and would make the
+major version number say something about Spark rather than about Comet's own compatibility.
+
+Scala binary versions are treated the same way: adding or removing one is a minor release.
+
+Users running a Spark version that a given Comet release no longer supports should stay on an
+earlier Comet release until they can upgrade Spark. The deprecation notice described under
+[Support Lifetime](#support-lifetime) is the signal to start planning that upgrade.
 
 ### New Version Adoption
 
@@ -124,8 +316,8 @@ up. Older Spark patches within the same minor are not separately supported.
 
 ## Release Cadence
 
-Comet targets a `0.X.0` minor release every four to six weeks. Patch releases (`0.X.Y`) are made
-on demand, only when a critical bug or security fix needs to ship before the next minor release.
+Comet targets a minor release every four to six weeks. Patch releases are made on demand, only
+when a critical bug or security fix needs to ship before the next minor release.
 
 Only the most recent minor release receives patch releases. Comet does not currently backport
 fixes to older minor releases; users are expected to upgrade forward.
@@ -136,16 +328,3 @@ Each Comet release ships a JVM jar and a native library that are built and teste
 two artifacts must come from the **same Comet release**. Mixing a JVM jar from one Comet release
 with a native library from another is unsupported and may fail at runtime due to protobuf or FFI
 incompatibilities.
-
-## Road to 1.0
-
-When `1.0.0` ships:
-
-- Strict semantic versioning will apply to the public Scala and Java API: breaking changes will
-  only be made in a future major release. APIs annotated with `@Unstable` remain exempt and may
-  change in any minor release.
-- The stability commitments for configuration keys and the protobuf plan format will be
-  re-evaluated and documented as part of the `1.0.0` release.
-
-Tracking and planning for the `1.0.0` release happens in
-[issue #4082](https://github.com/apache/datafusion-comet/issues/4082).
