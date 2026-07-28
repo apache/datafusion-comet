@@ -67,7 +67,7 @@ subsequent releases.
 
 Items whose support level is `Incompatible` or `Unsupported` have no result-compatibility
 guarantees. `Incompatible` items require an explicit per-expression or per-operator opt-in
-(for example, `spark.comet.expr.<Name>.allowIncompatible=true`).
+(for example, `spark.comet.expression.<Name>.allowIncompatible=true`).
 
 For details on per-expression and per-operator support levels, see the
 [compatibility guide](../user-guide/latest/compatibility/index.md).
