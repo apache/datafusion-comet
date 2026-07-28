@@ -16,9 +16,7 @@
 // under the License.
 
 use crate::{EvalMode, SparkError, SparkResult};
-use arrow::array::{
-    Array, ArrayRef, AsArray, Decimal128Array, Decimal128Builder, TimestampMicrosecondBuilder,
-};
+use arrow::array::{Array, ArrayRef, AsArray, Decimal128Array, TimestampMicrosecondBuilder};
 use arrow::datatypes::{is_validate_decimal_precision, DataType};
 use std::sync::Arc;
 
@@ -39,36 +37,23 @@ pub fn cast_boolean_to_decimal(
     let bool_array = array.as_boolean();
     let scaled_val = 10_i128.pow(scale as u32);
 
-    // Spark's Cast for boolean-to-decimal delegates to Decimal.toPrecision with
-    // nullOnOverflow = !ansiEnabled: legacy and try modes return NULL on overflow,
-    // only ANSI raises. `false` maps to 0 which always fits, so overflow only
-    // happens for `true` when 10^scale does not fit the target precision.
-    if !is_validate_decimal_precision(scaled_val, precision) {
-        match eval_mode {
-            EvalMode::Ansi => {
-                return Err(crate::error::decimal_overflow_error(
-                    scaled_val, precision, scale,
-                ));
-            }
-            EvalMode::Legacy | EvalMode::Try => {
-                let mut builder = Decimal128Builder::with_capacity(bool_array.len());
-                for i in 0..bool_array.len() {
-                    if bool_array.is_null(i) || bool_array.value(i) {
-                        builder.append_null();
-                    } else {
-                        builder.append_value(0);
-                    }
-                }
-                return Ok(Arc::new(
-                    builder.with_precision_and_scale(precision, scale)?.finish(),
-                ));
-            }
-        }
+    // Spark's Cast uses `nullOnOverflow = !ansiEnabled`: legacy/try return NULL
+    // on overflow, only ANSI raises. `false` maps to 0 which always fits, so
+    // overflow only happens for `true` when 10^scale exceeds `precision`.
+    let overflows = !is_validate_decimal_precision(scaled_val, precision);
+    if overflows && eval_mode == EvalMode::Ansi {
+        return Err(crate::error::decimal_overflow_error(
+            scaled_val, precision, scale,
+        ));
     }
 
     let result: Decimal128Array = bool_array
         .iter()
-        .map(|v| v.map(|b| if b { scaled_val } else { 0 }))
+        .map(|v| match v {
+            Some(false) => Some(0),
+            Some(true) if !overflows => Some(scaled_val),
+            _ => None,
+        })
         .collect();
     let decimal_array = result
         .with_precision_and_scale(precision, scale)
@@ -248,32 +233,21 @@ mod tests {
     }
 
     #[test]
-    fn test_bool_to_decimal_overflow_legacy_returns_null() {
-        // 10^1 = 10 does not fit in DECIMAL(1,1); Spark legacy returns NULL for `true`.
-        let result = cast_array(
-            test_input_bool_array(),
-            &Decimal128(1, 1),
-            &SparkCastOptions::new(EvalMode::Legacy, "UTC", false),
-        )
-        .unwrap();
-        let arr = result.as_any().downcast_ref::<Decimal128Array>().unwrap();
-        assert!(arr.is_null(0));
-        assert_eq!(arr.value(1), 0);
-        assert!(arr.is_null(2));
-    }
-
-    #[test]
-    fn test_bool_to_decimal_overflow_try_returns_null() {
-        let result = cast_array(
-            test_input_bool_array(),
-            &Decimal128(1, 1),
-            &SparkCastOptions::new(EvalMode::Try, "UTC", false),
-        )
-        .unwrap();
-        let arr = result.as_any().downcast_ref::<Decimal128Array>().unwrap();
-        assert!(arr.is_null(0));
-        assert_eq!(arr.value(1), 0);
-        assert!(arr.is_null(2));
+    fn test_bool_to_decimal_overflow_returns_null_for_nonansi() {
+        // 10^1 = 10 does not fit in DECIMAL(1,1); Spark returns NULL for `true`
+        // in legacy and try modes.
+        for mode in [EvalMode::Legacy, EvalMode::Try] {
+            let result = cast_array(
+                test_input_bool_array(),
+                &Decimal128(1, 1),
+                &SparkCastOptions::new(mode, "UTC", false),
+            )
+            .unwrap();
+            let arr = result.as_any().downcast_ref::<Decimal128Array>().unwrap();
+            assert!(arr.is_null(0), "mode {mode:?}");
+            assert_eq!(arr.value(1), 0, "mode {mode:?}");
+            assert!(arr.is_null(2), "mode {mode:?}");
+        }
     }
 
     #[test]
