@@ -288,27 +288,25 @@ If the PR adds a new expression but does not update `expressions.md`, flag that.
 
 ### 8. Recurring Review Checks
 
-These ten checks encode the most frequent findings by senior Comet
-reviewers on recent perf/correctness PRs. Run through them explicitly
-on every non-trivial diff. Anything that fires here goes into the
-review; anything that doesn't, drop.
+These checks encode the most frequent findings senior Comet reviewers
+make on real PRs. They are split into checks that apply to almost any
+non-trivial diff and checks that only apply when the PR touches native
+performance code (Rust perf, cast, arithmetic, overflow, buffer
+sizing, criterion benchmarks). Skip a section that does not match the
+diff. A checklist item that does not match the diff is not a finding.
+Do not manufacture one to fill the list.
+
+#### 8a. General checks (any non-trivial PR)
 
 1. **Diff-branch test coverage.** For every added branch (new `if`,
-   new `match` arm, new fast path, new eval-mode arm), locate the test
-   that would fail if _that specific branch_ regressed. If the
-   pre-existing tests still pass without touching the new branch, that
-   branch is untested. This is the single most common missing item.
-   The ANSI/Try/Legacy arms are independent code paths — a Legacy test
-   does not cover ANSI.
+   new `match` arm, new eval-mode arm), locate the test that would
+   fail if _that specific branch_ regressed. If the pre-existing
+   tests still pass without touching the new branch, that branch is
+   untested. This is the single most common missing item. ANSI, Try,
+   and Legacy arms are independent code paths — a Legacy test does
+   not cover ANSI.
 
-2. **Fast path AND fallback each hit.** When a PR adds an i64 fast
-   path with an i128 fallback (or ASCII fast path with Unicode
-   fallback, dictionary fast path with general fallback, etc.),
-   confirm at least one test input lands on each arm. A test suite
-   whose inputs all fit in the fast path would still pass if the
-   fallback returned wrong answers.
-
-3. **Error assertion depth.** For ANSI / try-cast / overflow paths, do
+2. **Error assertion depth.** For ANSI / try-cast / overflow paths, do
    not accept `assert!(result.is_err())`. Require matching on the
    exact `SparkError` variant and asserting every field (`value`,
    `precision`, `scale`, `from_type`, `to_type`). Also check
@@ -316,7 +314,7 @@ review; anything that doesn't, drop.
    `"too large"` in `find(...)`, negative overflow may fall through to
    an `.unwrap_or(0)` and report the wrong value.
 
-4. **Comment / code alignment.** Read every added or modified comment
+3. **Comment / code alignment.** Read every added or modified comment
    and confirm it names the correct method (`.any(...)` vs
    `.contains(...)`), states the correct Spark behavior (e.g. does
    Spark actually return NULL for `2020-02-30` or throw?), references
@@ -325,15 +323,41 @@ review; anything that doesn't, drop.
    single-partition output shape actually changed). A comment that
    drifts from the code is a review finding.
 
-5. **Sibling call sites.** For any fix or optimization applied to one
-   helper, grep for structurally identical siblings. Common families:
-   `date_trunc` / `timestamp_trunc` / `timestamp_trunc_ntz`, the
-   scalar and array variants of the same helper, `to_uppercase` /
-   `eq_ignore_ascii_case` in temporal code. Either fold the sibling
-   into the PR or require a follow-up issue linked from the PR body.
-   Do not accept "we can do the others later" without an issue number.
+4. **Sibling call sites.** For a fix applied to one helper, grep for
+   structurally identical siblings before approving. Common families:
+   `date_trunc` / `timestamp_trunc` / `timestamp_trunc_ntz`, scalar
+   and array variants of the same helper, `to_uppercase` /
+   `eq_ignore_ascii_case` in temporal code. Do this only when the fix
+   is a pattern likely to recur, not on every one-line change. If
+   siblings exist, fold them in or require a follow-up issue linked
+   from the PR body. Do not accept "we can do the others later"
+   without an issue number.
 
-6. **Upstream API first.** Before accepting a hand-rolled helper
+5. **Load-bearing invariants have a `debug_assert!` or a comment.**
+   When correctness depends on an unchecked cast (`x as i32`), a
+   specific IPC/format version (`MetadataVersion::V5`), a
+   finalization step earlier in the loop (`append_value("")` on the
+   null branch), or a caller-side precondition, either
+   `debug_assert!` the invariant at the enforcement point or leave a
+   one-line comment naming it. A future edit that silently violates
+   the invariant should not slip past review.
+
+#### 8b. Native performance PR checks
+
+Only apply this subsection when the PR adds a fast path, tunes a
+buffer size, adds or edits a criterion benchmark, or claims a
+speed-up. On non-perf PRs (serde changes, planner rules, docs,
+Scala-only changes), skip it. A finding here should tie to something
+the diff actually introduced.
+
+1. **Fast path AND fallback each hit.** When a PR adds an i64 fast
+   path with an i128 fallback (or ASCII fast path with Unicode
+   fallback, dictionary fast path with general fallback), confirm at
+   least one test input lands on each arm. A test suite whose inputs
+   all fit in the fast path would still pass if the fallback returned
+   wrong answers.
+
+2. **Upstream API first.** Before accepting a hand-rolled helper
    (dictionary detection, integer-to-string formatting, ASCII case
    folding, schema flattening), grep arrow-rs and std for an existing
    equivalent. Recent hits: `Schema::flattened_fields()`, `write!` on
@@ -343,7 +367,7 @@ review; anything that doesn't, drop.
    `&dyn Fn` and one `impl Fn`, and callers should not pass `&f` to
    an `impl Fn` parameter.
 
-7. **Capacity hints and worst-case reasoning.** Any
+3. **Capacity hints and worst-case reasoning.** Any
    `with_capacity(rows * K)` or arithmetic like `4 * n.div_ceil(3) + n`
    needs three checks: (a) `K` matches arrow-rs's own defaults where
    they exist (e.g. `AVERAGE_STRING_LENGTH = 16` for string buffers),
@@ -352,7 +376,7 @@ review; anything that doesn't, drop.
    arithmetic (`+ num_rows` is not needed on top of `div_ceil`).
    Over-provisioning by 3x on the common path is a real cost.
 
-8. **Benchmark integrity.** For any new Criterion benchmark, confirm:
+4. **Benchmark integrity.** For any new Criterion benchmark, confirm:
    (a) the `group/function` name is unique across `benches/` — two
    benches with the same name silently clobber each other's
    `target/criterion/...` baseline directory; (b) RNGs are seeded
@@ -361,31 +385,15 @@ review; anything that doesn't, drop.
    description actually exists as committed code — hallucinated bench
    names in perf PR descriptions are a recurring pattern; (d) the
    default (non-fast-path) case is measured before and after so the
-   claim is evidence-based.
+   claim is evidence-based, not just the case the fast path targets.
 
-9. **Panic-safety of new helpers.** Table lookups with arithmetic
+5. **Panic-safety of new helpers.** Table lookups with arithmetic
    fallbacks (e.g. `POW10_I128.get(exp).copied().unwrap_or_else(||
    10_i128.pow(exp))`) must be total across all inputs the caller can
    actually reach. Trace every call site and confirm the argument is
    bounded before the call. `10_i128.pow(40)` panics in debug and
    wraps in release. `n.checked_mul(k).unwrap()` at the top of a hot
    loop is not exception-safe.
-
-10. **Load-bearing invariants have a `debug_assert!` or a comment.**
-    When correctness depends on an unchecked cast (`x as i32`), a
-    specific IPC/format version (`MetadataVersion::V5`), a
-    finalization step earlier in the loop (`append_value("")` on the
-    null branch), or a caller-side precondition, either
-    `debug_assert!` the invariant at the enforcement point or leave a
-    one-line comment naming it. A future edit that silently violates
-    the invariant should not slip past review.
-
-Style tells to strip from Claude-authored diffs before requesting
-merge: `**bold**` and ALL-CAPS emphasis inside code comments;
-fully-qualified names in place of `use` imports; multi-sentence
-docstrings on trivial helpers. These are cosmetic but they are
-consistent enough to be recognizable as machine-authored, and
-reviewers flag them.
 
 ### 9. Common Comet Review Issues
 

@@ -374,62 +374,74 @@ Also review the Comet implementation (Step 3) against the Spark behavior (Step 1
 The Spark-behaviour matrix above catches missing SQL-level coverage.
 This checklist catches missing unit coverage in the Rust
 implementation: cases where the tests pass but a targeted regression
-in the new code path would still pass. Every item that is not covered
-must either be added as a Rust unit test in the same file or explicitly
-justified as N/A.
+in the new code path would still pass.
+
+Split into general items that apply to any Rust expression change and
+performance items that apply only when the audit was triggered by a
+native fast path, overflow-sensitive cast, arithmetic kernel, or
+buffer-sizing change. Skip the performance subsection if the audited
+expression has no fast/slow path split and no numeric overflow
+behaviour. Do not manufacture a finding just because the checklist
+lists the item.
+
+**General**
 
 1. **All eval modes exercised.** `EvalMode::Legacy`, `EvalMode::Try`,
    and `EvalMode::Ansi` are separate code paths for cast, arithmetic,
    and overflow-sensitive expressions. A test that only covers Legacy
-   does not cover ANSI. Do not accept "the code path is shared" without
-   reading the branch and confirming it.
-2. **Fast path AND fallback each hit at least once.** Any `if` that
-   selects between an i64 fast path and an i128 fallback (or a
-   dictionary fast path and a general fallback, or an ASCII fast path
-   and a Unicode fallback) needs at least one input that lands on each
-   arm. A test whose inputs all fit in the fast path would silently
-   pass if the fallback regressed.
-3. **Boundary values.** Exact bounds (`10^p - 1` fits, `10^p`
-   overflows), `i64::MAX ± 1` for i64→i128 fast paths, the 38→39 digit
-   boundary for decimal, leap-day / month-end boundaries for date. If
-   the code names a threshold, one test hits it and one straddles it.
-4. **Positive AND negative overflow.** Do not accept a test that only
-   overflows on the positive side when an underflow path exists. This
-   is a recurring failure mode when overflow error text uses a
-   substring like "too large" that only matches one direction.
-5. **NaN, +Infinity, -Infinity** for every float→X cast, in every
-   eval mode. These are distinct code paths from finite overflow.
-6. **All-null, all-valid, all-invalid batches, plus a mixed batch.**
+   does not cover ANSI. Do not accept "the code path is shared"
+   without reading the branch and confirming it.
+2. **All-null, all-valid, all-invalid batches, plus a mixed batch.**
    The all-empty case is where `iter().all(...)` returns `true` on an
    empty iterator and a "nothing overflows" fast path claims success
-   trivially. The all-invalid case is where the slow path must run for
-   every row.
-7. **First-offender ordering.** If the error message reports the
-   "first offending value" in row order, include a batch with two
-   different-looking offenders and assert the first is reported. A
-   test with a single offender cannot distinguish "reports first" from
-   "reports any".
-8. **Error assertion depth.** On ANSI and try-cast paths, match on the
-   exact `SparkError` variant and assert every field (`value`,
+   trivially. The all-invalid case is where the slow path must run
+   for every row.
+3. **Error assertion depth.** On ANSI and try-cast paths, match on
+   the exact `SparkError` variant and assert every field (`value`,
    `precision`, `scale`, `from_type`, `to_type`). Never accept a bare
    `assert!(result.is_err())`. A regression that returned the wrong
-   variant, the wrong value, or a stringified default would still pass.
-9. **Multi-limb / wide-value coverage for i128 code.** Include values
-   that straddle both 64-bit halves and at least one where the low
-   half has leading zeros the formatter must emit. Small-value tests
-   never exercise the wide formatting path.
-10. **Fuzz-suite reach check.** If the coverage argument is "the Scala
-    fuzz suite exercises this", open the generator (e.g.
+   variant, the wrong value, or a stringified default would still
+   pass.
+4. **Load-bearing invariants documented.** Any code that relies on an
+   unchecked cast (`x as i32`), a specific IPC/format version, or a
+   caller-side precondition must have either a `debug_assert!` at
+   the enforcement point or a one-line comment naming the invariant.
+
+**Performance-specific (native fast paths, overflow, buffers)**
+
+5. **Fast path AND fallback each hit at least once.** Any `if` that
+   selects between an i64 fast path and an i128 fallback (or a
+   dictionary fast path and a general fallback, or an ASCII fast
+   path and a Unicode fallback) needs at least one input that lands
+   on each arm. A test whose inputs all fit in the fast path would
+   silently pass if the fallback regressed.
+6. **Boundary values.** Exact bounds (`10^p - 1` fits, `10^p`
+   overflows), `i64::MAX ± 1` for i64→i128 fast paths, the 38→39
+   digit boundary for decimal, leap-day / month-end boundaries for
+   date. If the code names a threshold, one test hits it and one
+   straddles it.
+7. **Positive AND negative overflow.** Do not accept a test that
+   only overflows on the positive side when an underflow path
+   exists. This is a recurring failure mode when overflow error text
+   uses a substring like "too large" that only matches one
+   direction.
+8. **NaN, +Infinity, -Infinity** for every float→X cast, in every
+   eval mode. These are distinct code paths from finite overflow.
+9. **First-offender ordering.** If the error message reports the
+   "first offending value" in row order, include a batch with two
+   different-looking offenders and assert the first is reported. A
+   test with a single offender cannot distinguish "reports first"
+   from "reports any".
+10. **Multi-limb / wide-value coverage for i128 code.** Include
+    values that straddle both 64-bit halves and at least one where
+    the low half has leading zeros the formatter must emit.
+    Small-value tests never exercise the wide formatting path.
+11. **Fuzz-suite reach check.** If the coverage argument is "the
+    Scala fuzz suite exercises this", open the generator (e.g.
     `CometCastSuite.scala`) and confirm it actually generates values
     that reach the new branch. Fuzz generators frequently cap at
     exactly the boundary you care about (e.g. digit count ≤ 38), so
     they never hit the code path they appear to cover.
-11. **Load-bearing invariants documented.** Any fast path that relies
-    on an unchecked cast (`x as i32`), a specific IPC/format version,
-    or "previous row finalized" state must have either a
-    `debug_assert!` at the enforcement point or a one-line comment
-    naming the invariant. A future edit that violates the invariant
-    should not be able to slip past review.
 
 ### Support-level consistency audit
 
