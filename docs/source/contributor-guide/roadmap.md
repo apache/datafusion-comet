@@ -65,20 +65,19 @@ Iceberg native scans support non-AQE DPP ([#3349], [#3511]) and, on Spark 3.5+, 
 
 We regularly publish benchmark results derived from TPC-H and TPC-DS to track performance against Spark. Closing
 the remaining gaps and increasing the speedup on both benchmark suites is an ongoing focus, tracked under [#2004]
-(TPC-H), [#858] (TPC-DS), and [#3799] (improving the awslabs published TPC-DS results).
+(TPC-H) and [#858] (TPC-DS).
 
 [#858]: https://github.com/apache/datafusion-comet/issues/858
 [#2004]: https://github.com/apache/datafusion-comet/issues/2004
-[#3799]: https://github.com/apache/datafusion-comet/issues/3799
 
 ## Upstream Work in DataFusion
 
 A growing number of Spark-compatible expressions live in the `datafusion-spark` crate in the core DataFusion
 repository. Comet is migrating its expression implementations to that crate so that they can be shared by other
-DataFusion-based projects, tracked in [#2084]. Improvements to core DataFusion operators (joins, aggregates,
-window) made in support of Comet also benefit the wider ecosystem.
+DataFusion-based projects, and is wiring up the functions that crate already provides ([#4150]). Improvements to
+core DataFusion operators (joins, aggregates, window) made in support of Comet also benefit the wider ecosystem.
 
-[#2084]: https://github.com/apache/datafusion-comet/issues/2084
+[#4150]: https://github.com/apache/datafusion-comet/issues/4150
 
 ## Spillable Hash Join
 

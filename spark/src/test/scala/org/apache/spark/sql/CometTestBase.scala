@@ -80,7 +80,7 @@ abstract class CometTestBase
     conf.set(CometConf.COMET_ENABLED.key, "true")
     conf.set(CometConf.COMET_ONHEAP_ENABLED.key, "true")
     conf.set(CometConf.COMET_EXEC_ENABLED.key, "true")
-    conf.set(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key, "true")
+    conf.set(CometConf.COMET_SHUFFLE_ENABLED.key, "true")
     conf.set(CometConf.COMET_SPARK_TO_ARROW_ENABLED.key, "true")
     conf.set(CometConf.COMET_NATIVE_SCAN_ENABLED.key, "true")
     conf.set(CometConf.COMET_PARQUET_UNSIGNED_SMALL_INT_CHECK.key, "false")
@@ -429,8 +429,17 @@ abstract class CometTestBase
     case s: java.lang.Short => s.shortValue
     case i: java.lang.Integer => i.intValue
     case l: java.lang.Long => l.longValue
-    case f: java.lang.Float => f.floatValue
-    case d: java.lang.Double => d.doubleValue
+    // `QueryTest.compare` compares floating point values by raw bits so that 0.0 and -0.0 are
+    // distinguished. A side effect is that it also distinguishes NaN payloads, which are not
+    // specified: `Math.pow` and friends may return any NaN, and the payload the JVM produces
+    // differs across architectures, so a native kernel and Spark can return NaNs that print
+    // identically but compare unequal. Spark fixed this in `compare` itself for 4.1.2 and 4.2.0
+    // ("in some hardware NaN can be represented with different bits, so first check for it"), but
+    // 3.4, 3.5, 4.0 and 4.1.1 still compare raw bits. Canonicalize NaN here so every supported
+    // version asserts NaN-ness without asserting the payload. Signed zero is deliberately left
+    // alone: distinguishing it is the reason the raw-bit comparison exists.
+    case f: java.lang.Float => if (f.isNaN) Float.NaN else f.floatValue
+    case d: java.lang.Double => if (d.isNaN) Double.NaN else d.doubleValue
     case x => x
   }
 
@@ -1171,7 +1180,7 @@ abstract class CometTestBase
       df: DataFrame,
       cometExchangeNum: Int,
       native: Boolean): Seq[CometShuffleExchangeExec] = {
-    if (CometConf.COMET_EXEC_SHUFFLE_ENABLED.get()) {
+    if (CometConf.COMET_SHUFFLE_ENABLED.get()) {
       val sparkPlan = stripAQEPlan(df.queryExecution.executedPlan)
 
       val cometShuffleExecs = sparkPlan.collect { case b: CometShuffleExchangeExec => b }
@@ -1216,7 +1225,7 @@ abstract class CometTestBase
    *       "select arr from tbl",
    *       sqlConf = Seq(
    *         CometConf.COMET_SCAN_UNSIGNED_SMALL_INT_SAFETY_CHECK.key -> "true",
-   *         "spark.comet.explainFallback.enabled" -> "false"
+   *         "spark.comet.explain.fallback.enabled" -> "false"
    *       ),
    *       debugCometDF = df => {
    *         df.printSchema()

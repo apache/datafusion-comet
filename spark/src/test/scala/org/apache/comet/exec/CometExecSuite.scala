@@ -60,7 +60,7 @@ class CometExecSuite extends CometTestBase {
   override protected def test(testName: String, testTags: Tag*)(testFun: => Any)(implicit
       pos: Position): Unit = {
     super.test(testName, testTags: _*) {
-      withSQLConf(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true") {
+      withSQLConf(CometConf.COMET_SHUFFLE_ENABLED.key -> "true") {
         testFun
       }
     }
@@ -1837,7 +1837,7 @@ class CometExecSuite extends CometTestBase {
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
       SQLConf.PARQUET_VECTORIZED_READER_ENABLED.key -> "false",
       CometConf.COMET_EXEC_ENABLED.key -> "true",
-      CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
       CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
       val data1 =
         Seq(Tuple1(null), Tuple1((1, "a")), Tuple1((2, null)), Tuple1((3, "b")), Tuple1(null))
@@ -1871,7 +1871,7 @@ class CometExecSuite extends CometTestBase {
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
       SQLConf.PARQUET_VECTORIZED_READER_ENABLED.key -> "false",
       CometConf.COMET_EXEC_ENABLED.key -> "true",
-      CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
       CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
 
       sql("""
@@ -1897,7 +1897,7 @@ class CometExecSuite extends CometTestBase {
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
       SQLConf.PARQUET_VECTORIZED_READER_ENABLED.key -> "false",
       CometConf.COMET_EXEC_ENABLED.key -> "true",
-      CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
       CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
 
       sql("""
@@ -1925,7 +1925,7 @@ class CometExecSuite extends CometTestBase {
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
       SQLConf.PARQUET_VECTORIZED_READER_ENABLED.key -> "false",
       CometConf.COMET_EXEC_ENABLED.key -> "true",
-      CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
       CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
 
       sql("""
@@ -1952,7 +1952,7 @@ class CometExecSuite extends CometTestBase {
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
       SQLConf.PARQUET_VECTORIZED_READER_ENABLED.key -> "false",
       CometConf.COMET_EXEC_ENABLED.key -> "true",
-      CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
       CometConf.COMET_EXEC_SORT_ENABLED.key -> "true",
       CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
 
@@ -2167,7 +2167,7 @@ class CometExecSuite extends CometTestBase {
         "DECIMAL(38, 10)")
     dataTypes.map { subqueryType =>
       withSQLConf(
-        CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+        CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
         CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
         withParquetTable((0 until 5).map(i => (i, i + 1)), "tbl") {
           var column1 = s"CAST(max(_1) AS $subqueryType)"
@@ -2228,7 +2228,7 @@ class CometExecSuite extends CometTestBase {
       CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "false",
       CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.key -> "true",
       CometConf.COMET_SPARK_TO_ARROW_ENABLED.key -> "true",
-      CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
       CometConf.COMET_SHUFFLE_MODE.key -> "native") {
       withParquetTable((0 until 10).map(i => (i, i)), "t") {
         val df = sql("SELECT * FROM t DISTRIBUTE BY (_1 + (SELECT max(_2) FROM t))")
@@ -2242,7 +2242,7 @@ class CometExecSuite extends CometTestBase {
   // This confirms the "Subquery N not found" crash is specific to the native shuffle path.
   test("scalar subquery in repartition (columnar shuffle)") {
     withSQLConf(
-      CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
       CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
       withParquetTable((0 until 10).map(i => (i, i)), "t") {
         val df = sql("SELECT * FROM t DISTRIBUTE BY (_1 + (SELECT max(_2) FROM t))")
@@ -2483,7 +2483,7 @@ class CometExecSuite extends CometTestBase {
       SQLConf.EXCHANGE_REUSE_ENABLED.key -> "true",
       SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
       SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
-      CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
       CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
       withTable(tableName, dim) {
 
@@ -2539,7 +2539,7 @@ class CometExecSuite extends CometTestBase {
     withSQLConf(
       SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
       SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "10485760",
-      CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
       CometConf.COMET_SHUFFLE_MODE.key -> "native") {
       withParquetTable((0 until 100).map(i => (i, i + 1)), "tbl_a") {
         withParquetTable((0 until 100).map(i => (i, i + 2)), "tbl_b") {
@@ -2574,7 +2574,7 @@ class CometExecSuite extends CometTestBase {
     withSQLConf(
       SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
       SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "10485760",
-      CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
       CometConf.COMET_SHUFFLE_MODE.key -> "auto") {
       withParquetTable((0 until 100).map(i => (i, i + 1)), "tbl_a") {
         withParquetTable((0 until 100).map(i => (i, i + 2)), "tbl_b") {
@@ -2848,7 +2848,7 @@ class CometExecSuite extends CometTestBase {
   }
 
   test("final aggregation") {
-    withSQLConf(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true") {
+    withSQLConf(CometConf.COMET_SHUFFLE_ENABLED.key -> "true") {
       withParquetTable(
         (0 until 100)
           .map(_ => (Random.nextInt(), Random.nextInt() % 5)),
@@ -2897,7 +2897,7 @@ class CometExecSuite extends CometTestBase {
   test("global sort (columnar shuffle only)") {
     withSQLConf(
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
-      CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
       CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
       withParquetTable((0 until 5).map(i => (i, i + 1)), "tbl") {
         val df = sql("SELECT * FROM tbl").sort($"_1".desc)
@@ -2948,7 +2948,7 @@ class CometExecSuite extends CometTestBase {
   test("limit") {
     Seq("native", "jvm").foreach { columnarShuffleMode =>
       withSQLConf(
-        CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+        CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
         CometConf.COMET_SHUFFLE_MODE.key -> columnarShuffleMode) {
         withParquetTable((0 until 5).map(i => (i, i + 1)), "tbl_a") {
           val df = sql("SELECT * FROM tbl_a")
@@ -3445,7 +3445,7 @@ class CometExecSuite extends CometTestBase {
   }
 
   test("coalesce") {
-    withSQLConf(CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true") {
+    withSQLConf(CometConf.COMET_SHUFFLE_ENABLED.key -> "true") {
       withTable("t1") {
         (0 until 5)
           .map(i => (i, (i + 1).toLong))
