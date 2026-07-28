@@ -52,13 +52,27 @@ does not yet use; it's not yet known whether their semantics are Spark-compatibl
 DataFusion's implementations can replace the JVM codegen-dispatch bridge to remove that round-trip and let
 these expressions benefit from vectorized native execution.
 
+## Native Coverage for Codegen-Dispatched Expressions
+
+Beyond lambda bodies, a number of built-in Spark scalar expressions (some regular expression, JSON, and datetime
+functions, for example) and aggregate functions route through the same JVM codegen-dispatch bridge by default,
+either because their native DataFusion or `datafusion-spark` implementation has known semantic differences from
+Spark, or because no native implementation exists yet. See the [compatibility guide] for the current list of
+codegen-dispatched expressions. We're exploring closing these gaps so that more expressions run natively by
+default, which would reduce JVM round-trips beyond what the lambda and UDF work above already covers.
+
+[compatibility guide]: ../user-guide/latest/compatibility/index.md
+
 ## Iceberg Table Format V3 Support
 
 Comet landed its first Iceberg table format V3 feature (native data file decryption, [#4991]), and we want to
 add more V3 features to Comet's native Iceberg scans so they don't fall back to Spark. The work is tracked
 phase-by-phase in [#3376]: detecting the V3 format and supporting new V3 data types, deletion vector reads, row
 lineage, and table encryption. Native deletion vector reads are prototyped in a draft PR ([#4887]), but are
-blocked on upstream `iceberg-rust` support, tracked in [iceberg-rust #2792] and [iceberg-rust #2411].
+blocked on upstream `iceberg-rust` support, tracked in [iceberg-rust #2792] and [iceberg-rust #2411]. Native Iceberg
+scans don't support HDFS-backed tables today: the storage scheme match in `iceberg_scan.rs` only handles `file`,
+`s3`/`s3a`, `gs`, and `oss`, and would need an HDFS `StorageFactory` upstream in `iceberg-storage-opendal`. We're
+scoping what that work would take.
 
 [#3376]: https://github.com/apache/datafusion-comet/issues/3376
 [#4887]: https://github.com/apache/datafusion-comet/pull/4887
@@ -68,10 +82,15 @@ blocked on upstream `iceberg-rust` support, tracked in [iceberg-rust #2792] and 
 
 ## TPC-H and TPC-DS Performance
 
-We regularly publish benchmark results derived from TPC-H and TPC-DS to track performance against Spark. Closing
-the remaining gaps and increasing the speedup on both benchmark suites is an ongoing focus, tracked under [#2004]
-(TPC-H) and [#858] (TPC-DS).
+Comet already delivers substantial speedups over vanilla Spark on both benchmark suites; we publish per-query
+results for [TPC-H] and [TPC-DS] with each release. An independent [AWS Labs benchmark] comparing Comet 0.16.0 with
+Gluten 1.6.0 on a 3TB TPC-DS workload found that the two accelerators deliver similar overall performance. Increasing
+the speedup further and closing the remaining per-query gaps is an ongoing focus, tracked under [#2004] (TPC-H) and
+[#858] (TPC-DS).
 
+[TPC-H]: benchmark-results/tpc-h.md
+[TPC-DS]: benchmark-results/tpc-ds.md
+[AWS Labs benchmark]: https://awslabs.github.io/data-on-eks/docs/benchmarks/spark-gluten-velox-comet-benchmark
 [#858]: https://github.com/apache/datafusion-comet/issues/858
 [#2004]: https://github.com/apache/datafusion-comet/issues/2004
 
@@ -111,3 +130,33 @@ disabled by default. The goal is to reach correctness and performance parity wit
 enabled by default ([#1625]).
 
 [#1625]: https://github.com/apache/datafusion-comet/issues/1625
+
+## Iceberg Table Writes
+
+Comet's native scans accelerate Iceberg reads today, but writes still run entirely through Spark's Iceberg V2 write
+operator. [#4322] tracks exploring native acceleration of Iceberg writes, so an ETL job could run end to end in
+native code, falling back only where Comet can't match Iceberg Java's functionality. Draft proposals split the
+existing V2 write operator into separate "writer" and "committer" operators so the data-file-write portion can be
+planned and accelerated the same way as a native Parquet write ([#4658], [#4487]). No design here is committed yet;
+we're exploring whether this approach is worth pursuing.
+
+[#4322]: https://github.com/apache/datafusion-comet/issues/4322
+[#4487]: https://github.com/apache/datafusion-comet/pull/4487
+[#4658]: https://github.com/apache/datafusion-comet/pull/4658
+
+## Delta Lake Support
+
+Comet currently supports Spark's built-in file formats and Iceberg, but not Delta Lake ([#174]). A draft PR reuses
+Comet's existing native Parquet reader to accelerate scans of plain Delta tables that use neither deletion vectors
+nor column mapping ([#4669]); a separate, larger effort explores a full native Delta scan built on `delta-kernel-rs`
+as an out-of-tree contrib module ([#4366]), landing in inert, gated slices ([#4700], [#4952]). Generalizing Comet's
+scan-side APIs so that Delta and other non-Iceberg data sources can plug in more easily is tracked as a Table
+Provider API abstraction ([#4706]). None of this is committed yet; we're exploring which approach, if any, is worth
+pursuing.
+
+[#174]: https://github.com/apache/datafusion-comet/issues/174
+[#4366]: https://github.com/apache/datafusion-comet/pull/4366
+[#4669]: https://github.com/apache/datafusion-comet/pull/4669
+[#4700]: https://github.com/apache/datafusion-comet/pull/4700
+[#4706]: https://github.com/apache/datafusion-comet/issues/4706
+[#4952]: https://github.com/apache/datafusion-comet/pull/4952
