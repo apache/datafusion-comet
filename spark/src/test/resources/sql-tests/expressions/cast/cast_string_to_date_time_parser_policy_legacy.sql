@@ -38,13 +38,13 @@ INSERT INTO test_cast_string_dt VALUES
   (NULL)
 
 -- Cast to DateType under LEGACY timeParserPolicy.
-query spark_answer_only
+query
 SELECT s, CAST(s AS DATE) FROM test_cast_string_dt ORDER BY s
 
 -- Cast to TimestampType under LEGACY timeParserPolicy.
-query spark_answer_only
+query
 SELECT s, CAST(s AS TIMESTAMP) FROM test_cast_string_dt ORDER BY s
 
 -- Cast to TimestampNTZType under LEGACY timeParserPolicy.
-query spark_answer_only
+query
 SELECT s, CAST(s AS TIMESTAMP_NTZ) FROM test_cast_string_dt ORDER BY s
