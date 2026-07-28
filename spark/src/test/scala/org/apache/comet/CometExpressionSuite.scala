@@ -3246,6 +3246,30 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("make decimal using DataFrame API - overflow throws when nullOnOverflow=false") {
+    // https://github.com/apache/datafusion-comet/issues/5066
+    withTable("t1") {
+      sql("create table t1 using parquet as select cast(123456 as long) as c1 from range(1)")
+
+      withSQLConf(
+        SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+        SQLConf.ADAPTIVE_OPTIMIZER_EXCLUDED_RULES.key -> "org.apache.spark.sql.catalyst.optimizer.ConstantFolding") {
+
+        val df = sql("select * from t1")
+        val makeDecimalColumn =
+          createMakeDecimalColumn(df.col("c1").expr, 3, 0, nullOnOverflow = false)
+        val df1 = df.withColumn("result", makeDecimalColumn)
+
+        val (sparkErr, cometErr) = checkSparkAnswerMaybeThrows(df1)
+        assert(sparkErr.isDefined, "Spark should throw on overflow when nullOnOverflow=false")
+        assert(cometErr.isDefined, "Comet should throw on overflow when nullOnOverflow=false")
+        assert(sparkErr.get.getMessage.contains("cannot be represented as Decimal(3, 0)"))
+        assert(cometErr.get.getMessage.contains("cannot be represented as Decimal(3, 0)"))
+      }
+    }
+  }
+
   test("deep AND/OR predicate chains do not overflow the protobuf recursion limit") {
     // A left-deep chain of N associative boolean operands serializes to a proto nested N
     // levels deep. With N > protobuf's default recursion limit (100), the message overflows
