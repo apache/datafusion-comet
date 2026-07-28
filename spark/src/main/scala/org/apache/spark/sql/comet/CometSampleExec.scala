@@ -29,6 +29,7 @@ import org.apache.comet.{CometConf, ConfigEntry}
 import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 import org.apache.comet.serde.{CometOperatorSerde, OperatorOuterClass, SupportLevel, Unsupported}
 import org.apache.comet.serde.OperatorOuterClass.Operator
+import org.apache.comet.shims.CometSampleShim
 
 object CometSampleExec extends CometOperatorSerde[SampleExec] {
 
@@ -56,7 +57,7 @@ object CometSampleExec extends CometOperatorSerde[SampleExec] {
         .setLowerBound(op.lowerBound)
         .setUpperBound(op.upperBound)
         // The partition index is added to the seed on the native side.
-        .setSeed(op.seed)
+        .setSeed(CometSampleShim.seed(op))
       Some(builder.setSample(sampleBuilder).build())
     } else {
       withFallbackReason(op, "No child operator")
@@ -70,7 +71,7 @@ object CometSampleExec extends CometOperatorSerde[SampleExec] {
       op,
       op.lowerBound,
       op.upperBound,
-      op.seed,
+      CometSampleShim.seed(op),
       op.child,
       SerializedPlan(None))
   }
