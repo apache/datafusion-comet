@@ -60,29 +60,24 @@ macro_rules! integer_round {
 }
 
 // Round a single native integer when `10^(-point)` does not fit in the native
-// integer type but still fits in i128. `|x|` is strictly less than `div` here
-// (otherwise the caller would have taken the in-native fast path), so the
-// only possible results are `0`, `+div`, or `-div`. The latter two overflow
-// the native type: under ANSI we throw, under legacy we wrap by truncation
-// (equivalent to `BigDecimal.longValue`'s low-64-bit semantics).
+// integer type but still fits in i128. The caller has already excluded the
+// case where `div` fits the native type, so `|x| < div` and the result is
+// either `0` (when `|x| < half`) or `sign(x) * div` — the latter always
+// overflows the native type. Under ANSI we throw, under legacy we wrap by
+// truncation (matches `BigDecimal.longValue`'s low-64-bit semantics).
 macro_rules! integer_round_widened {
     ($X:expr, $DIV:expr, $HALF:expr, $NATIVE:ty, $FAIL_ON_ERROR:expr) => {{
         let x128 = $X as i128;
-        let rounded: i128 = if x128 <= -$HALF {
-            -$DIV
-        } else if x128 >= $HALF {
-            $DIV
-        } else {
-            0
-        };
-        if rounded >= <$NATIVE>::MIN as i128 && rounded <= <$NATIVE>::MAX as i128 {
-            Ok(rounded as $NATIVE)
+        if x128 > -$HALF && x128 < $HALF {
+            Ok(0 as $NATIVE)
         } else if $FAIL_ON_ERROR {
             Err(ArrowError::ComputeError(
                 arithmetic_overflow_error("integer").to_string(),
             ))
+        } else if x128 >= $HALF {
+            Ok($DIV as $NATIVE)
         } else {
-            Ok(rounded as $NATIVE)
+            Ok((-$DIV) as $NATIVE)
         }
     }};
 }
@@ -336,15 +331,12 @@ mod test {
     // values with |x| >= 5e18 round to sign(x)*1e19, which does not fit in a long:
     // Spark throws under ANSI and wraps (low-order 64 bits) under legacy.
 
-    #[test]
-    fn test_round_int64_negative_scale_overflow_ansi() {
-        // 5e18 rounds up to 1e19, which overflows i64.
-        let args = vec![
-            ColumnarValue::Array(Arc::new(Int64Array::from(vec![
-                5_000_000_000_000_000_000i64,
-            ]))),
-            ColumnarValue::Scalar(ScalarValue::Int64(Some(-19))),
-        ];
+    // 1e19 truncated to the low 64 bits, matching `BigDecimal.longValue`.
+    const WRAPPED_POS_1E19: i64 = 10_000_000_000_000_000_000u64 as i64;
+    const WRAPPED_NEG_1E19: i64 = -WRAPPED_POS_1E19;
+
+    fn assert_round_int64_ansi_overflows(value: ColumnarValue) {
+        let args = vec![value, ColumnarValue::Scalar(ScalarValue::Int64(Some(-19)))];
         let err = spark_round(&args, &DataType::Int64, true).unwrap_err();
         assert!(
             err.to_string().to_ascii_lowercase().contains("overflow"),
@@ -353,8 +345,23 @@ mod test {
     }
 
     #[test]
+    fn test_round_int64_negative_scale_overflow_ansi() {
+        // 5e18 rounds up to 1e19, which overflows i64.
+        assert_round_int64_ansi_overflows(ColumnarValue::Array(Arc::new(Int64Array::from(vec![
+            5_000_000_000_000_000_000i64,
+        ]))));
+    }
+
+    #[test]
+    fn test_round_int64_negative_scale_overflow_ansi_scalar() {
+        assert_round_int64_ansi_overflows(ColumnarValue::Scalar(ScalarValue::Int64(Some(
+            5_000_000_000_000_000_000i64,
+        ))));
+    }
+
+    #[test]
     fn test_round_int64_negative_scale_overflow_legacy() -> Result<()> {
-        // Under legacy mode, 1e19 wraps to its low-order 64 bits.
+        // Under legacy mode, ±1e19 wraps to its low-order 64 bits.
         let args = vec![
             ColumnarValue::Array(Arc::new(Int64Array::from(vec![
                 5_000_000_000_000_000_000i64,
@@ -370,14 +377,13 @@ mod test {
             unreachable!()
         };
         let longs = as_int64_array(&result)?;
-        // 1e19 as i64 wraps to -8446744073709551616; -1e19 wraps to +8446744073709551616.
         let expected = Int64Array::from(vec![
-            10_000_000_000_000_000_000u64 as i64,
-            -10_000_000_000_000_000_000i128 as i64,
+            WRAPPED_POS_1E19,
+            WRAPPED_NEG_1E19,
             0i64,
             0i64,
-            10_000_000_000_000_000_000u64 as i64,
-            -10_000_000_000_000_000_000i128 as i64,
+            WRAPPED_POS_1E19,
+            WRAPPED_NEG_1E19,
         ]);
         assert_eq!(longs, &expected);
         Ok(())
@@ -404,19 +410,6 @@ mod test {
     }
 
     #[test]
-    fn test_round_int64_negative_scale_overflow_ansi_scalar() {
-        let args = vec![
-            ColumnarValue::Scalar(ScalarValue::Int64(Some(5_000_000_000_000_000_000i64))),
-            ColumnarValue::Scalar(ScalarValue::Int64(Some(-19))),
-        ];
-        let err = spark_round(&args, &DataType::Int64, true).unwrap_err();
-        assert!(
-            err.to_string().to_ascii_lowercase().contains("overflow"),
-            "expected arithmetic overflow error, got: {err}"
-        );
-    }
-
-    #[test]
     fn test_round_int64_negative_scale_legacy_scalar() -> Result<()> {
         let args = vec![
             ColumnarValue::Scalar(ScalarValue::Int64(Some(5_000_000_000_000_000_000i64))),
@@ -427,7 +420,7 @@ mod test {
         else {
             unreachable!()
         };
-        assert_eq!(result, 10_000_000_000_000_000_000u64 as i64);
+        assert_eq!(result, WRAPPED_POS_1E19);
         Ok(())
     }
 }
