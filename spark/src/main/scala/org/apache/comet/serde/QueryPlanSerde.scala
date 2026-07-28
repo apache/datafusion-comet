@@ -301,6 +301,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       classOf[MakeTimestamp] -> CometMakeTimestamp,
       classOf[MakeYMInterval] -> CometMakeYMInterval,
       classOf[MakeDTInterval] -> CometMakeDTInterval,
+      classOf[MultiplyDTInterval] -> CometMultiplyDTInterval,
       classOf[MicrosToTimestamp] -> CometMicrosToTimestamp,
       classOf[MillisToTimestamp] -> CometMillisToTimestamp,
       classOf[MonthsBetween] -> CometMonthsBetween,
@@ -389,11 +390,13 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
    */
   val aggrSerdeMap: Map[Class[_], CometAggregateExpressionSerde[_]] = Map(
     classOf[ApproximatePercentile] -> CometApproxPercentile,
+    classOf[HyperLogLogPlusPlus] -> CometApproxCountDistinct,
     classOf[Average] -> CometAverage,
     classOf[BitAndAgg] -> CometBitAndAgg,
     classOf[BitOrAgg] -> CometBitOrAgg,
     classOf[BitXorAgg] -> CometBitXOrAgg,
     classOf[BloomFilterAggregate] -> CometBloomFilterAggregate,
+    classOf[CollectList] -> CometCollectList,
     classOf[CollectSet] -> CometCollectSet,
     classOf[Corr] -> CometCorr,
     classOf[Count] -> CometCount,
@@ -438,6 +441,25 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
           .supportsMixedPartialFinal(fn)
       case None => false
     }
+  }
+
+  /**
+   * Returns true if any aggregate is CollectList/CollectSet. These produce a native ArrayType
+   * intermediate buffer while Spark declares BinaryType for its serialized
+   * TypedImperativeAggregate buffer, so Comet cannot interpret Spark's Binary buffer, and Comet
+   * cannot yet represent this buffer consistently across the intermediate PartialMerge stages of
+   * a multi-stage aggregate (issue #4724). These aggregates are therefore only safe to run
+   * natively when every stage runs in Comet and there are at most two stages (Partial + Final).
+   *
+   * Percentile has a similar Array-shaped intermediate buffer (see `adjustOutputForNativeState`)
+   * but is not matched here: it already passes through the general mixed-execution guard, so this
+   * check is scoped narrowly to the collect functions.
+   */
+  def hasNativeArrayBufferAgg(aggExprs: Seq[AggregateExpression]): Boolean = {
+    aggExprs.exists(_.aggregateFunction match {
+      case _: CollectList | _: CollectSet => true
+      case _ => false
+    })
   }
 
   //  A unique id for each expression. ~used to look up QueryContext during error creation.
@@ -505,7 +527,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
   def supportedDataType(dt: DataType, allowComplex: Boolean = false): Boolean = dt match {
     case _: ByteType | _: ShortType | _: IntegerType | _: LongType | _: FloatType |
         _: DoubleType | _: StringType | _: BinaryType | _: TimestampType | _: TimestampNTZType |
-        _: DecimalType | _: DateType | _: BooleanType | _: NullType =>
+        _: DecimalType | _: DateType | _: BooleanType | _: NullType | CalendarIntervalType =>
       true
     case dt if isTimeType(dt) =>
       true
@@ -546,6 +568,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       case dt if isTimeType(dt) => 17
       case _: YearMonthIntervalType => 18
       case _: DayTimeIntervalType => 19
+      case CalendarIntervalType => 20
       case dt =>
         logWarning(s"Cannot serialize Spark data type: $dt")
         return None

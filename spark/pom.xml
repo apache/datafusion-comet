@@ -108,6 +108,13 @@ under the License.
       <classifier>tests</classifier>
     </dependency>
     <dependency>
+      <!-- Test-only: provides an embedded Hive metastore so Iceberg's type=hive catalog can
+           create encrypted tables (only Hive wires the KMS-backed EncryptionManager). Version and
+           scope come from the parent pom's dependencyManagement. -->
+      <groupId>org.apache.spark</groupId>
+      <artifactId>spark-hive_${scala.binary.version}</artifactId>
+    </dependency>
+    <dependency>
       <groupId>junit</groupId>
       <artifactId>junit</artifactId>
       <scope>test</scope>

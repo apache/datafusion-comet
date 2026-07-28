@@ -24,6 +24,7 @@ are versioned, and links to the Apache Software Foundation resources behind it.
 
 - [Comparison with Gluten](gluten_comparison.md) — how Comet differs from other Spark accelerators
 - [Versioning Policy](versioning_policy.md) — what our version numbers mean and our release cadence
+- [Blog Posts and Talks](blogs-and-talks.md) — external writing and conference talks about Comet
 - [ASF Links](../asf/index.md) — licensing, donations, security reporting, and the code of conduct
 
 ```{toctree}
@@ -33,5 +34,6 @@ are versioned, and links to the Apache Software Foundation resources behind it.
 
 Comparison with Gluten <gluten_comparison>
 Versioning Policy <versioning_policy>
+Blog Posts and Talks <blogs-and-talks>
 ASF Links <../asf/index>
 ```

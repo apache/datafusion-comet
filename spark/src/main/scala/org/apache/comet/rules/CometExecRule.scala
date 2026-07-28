@@ -377,8 +377,8 @@ case class CometExecRule(session: SparkSession)
             // WriteFilesExec is always wrapped by DataWritingCommandExec (via Spark's V1Writes
             // rule); the parent case converts the whole write to CometNativeWriteExec and
             // unwraps WriteFilesExec inside convertToComet. Tagging WriteFilesExec here would
-            // produce a spurious "WriteFilesExec is not supported" fallback reason (and a
-            // warning when COMET_LOG_FALLBACK_REASONS=true) even when the write is fully native.
+            // produce a spurious "WriteFilesExec is not supported" fallback reason (and a warning
+            // when COMET_EXPLAIN_FALLBACK_LOG_ENABLED=true) even when the write is fully native.
             op
           case _ =>
             // The operator was not converted to a Comet plan. Possible reasons for this happening:
@@ -873,6 +873,29 @@ case class CometExecRule(session: SparkSession)
                 CometExecRule.COMET_UNSAFE_PARTIAL,
                 "Partial aggregate disabled: corresponding final aggregate " +
                   "cannot be converted to Comet and intermediate buffer formats are incompatible")
+            }
+          }
+        }
+
+        // CollectList/CollectSet round-trip an ArrayType buffer that Spark declares as BinaryType.
+        // In a multi-stage aggregate with a PartialMerge stage (e.g. Spark's distinct-aggregate
+        // rewrite), Comet cannot represent that buffer consistently across the intermediate stages
+        // (issue #4724), so a fully-native pipeline crashes. Force the whole chain to fall back to
+        // Spark by tagging the feeding pure-Partial; the PartialMerge/Final stages then fall back
+        // via the buffer-source check in doConvert.
+        //
+        // This block is intentionally separate from the tagging block just above: that one only
+        // fires when the Final itself cannot be converted, but `canAggregateBeConverted` skips
+        // the child-native check, so an all-native distinct `collect_list` chain converts its
+        // Final and slips past the earlier tagging pass. This block catches that case.
+        if (agg.aggregateExpressions.exists(_.mode == PartialMerge) &&
+          QueryPlanSerde.hasNativeArrayBufferAgg(agg.aggregateExpressions)) {
+          findPartialAggInPlan(agg.child).foreach { partial =>
+            if (canAggregateBeConverted(partial, Partial)) {
+              partial.setTagValue(
+                CometExecRule.COMET_UNSAFE_PARTIAL,
+                "Partial aggregate disabled: part of a multi-stage CollectList/CollectSet " +
+                  "aggregate whose intermediate buffer cannot round-trip in Comet (issue #4724)")
             }
           }
         }
