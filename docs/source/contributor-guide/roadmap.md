@@ -41,25 +41,28 @@ supported functions, frames, and fallback cases.
 [#4836]: https://github.com/apache/datafusion-comet/issues/4836
 [#4837]: https://github.com/apache/datafusion-comet/issues/4837
 
-## Lambda Expressions
+## Native Lambda Evaluation
 
 Spark supports higher-order functions on arrays and maps that take a lambda, including `transform`, `exists`,
-`forall`, `aggregate`, `zip_with`, `map_filter`, and `map_zip_with`. Comet currently lacks a general mechanism
-for serializing lambda expressions and evaluating them in DataFusion. Adding this capability will unlock a
-significant family of Spark expressions in one effort.
+`forall`, `aggregate`, `zip_with`, `map_filter`, and `map_zip_with`. Comet evaluates these today through a JVM
+codegen-dispatch bridge (`CometScalaUDF`, `CometBatchKernelCodegen`) instead of falling back to Spark, but the
+lambda body is still interpreted row-at-a-time on the JVM rather than natively in DataFusion. Moving evaluation
+into native Rust code would remove that JVM round-trip and let these expressions benefit from vectorized native
+execution.
 
-## Dynamic Partition Pruning
+## Iceberg Table Format V3 Support
 
-Native Parquet scans (`CometNativeScanExec`) support Dynamic Partition Pruning (DPP) both with and without
-Adaptive Query Execution. Non-AQE DPP landed in [#4011] and AQE DPP with broadcast reuse landed in [#4112].
-Iceberg native scans support non-AQE DPP ([#3349], [#3511]) and, on Spark 3.5+, AQE DPP with broadcast reuse
-([#4215]); on Spark 3.4 Iceberg AQE DPP falls back to Spark without reuse.
+Comet landed its first Iceberg table format V3 feature (native data file decryption, [#4991]), and we want to
+add more V3 features to Comet's native Iceberg scans so they don't fall back to Spark. The work is tracked
+phase-by-phase in [#3376]: detecting the V3 format and supporting new V3 data types, deletion vector reads, row
+lineage, and table encryption. Native deletion vector reads are prototyped in a draft PR ([#4887]), but are
+blocked on upstream `iceberg-rust` support, tracked in [iceberg-rust #2792] and [iceberg-rust #2411].
 
-[#3349]: https://github.com/apache/datafusion-comet/pull/3349
-[#3511]: https://github.com/apache/datafusion-comet/pull/3511
-[#4011]: https://github.com/apache/datafusion-comet/pull/4011
-[#4112]: https://github.com/apache/datafusion-comet/pull/4112
-[#4215]: https://github.com/apache/datafusion-comet/pull/4215
+[#3376]: https://github.com/apache/datafusion-comet/issues/3376
+[#4887]: https://github.com/apache/datafusion-comet/pull/4887
+[#4991]: https://github.com/apache/datafusion-comet/pull/4991
+[iceberg-rust #2411]: https://github.com/apache/iceberg-rust/issues/2411
+[iceberg-rust #2792]: https://github.com/apache/iceberg-rust/issues/2792
 
 ## TPC-H and TPC-DS Performance
 
@@ -85,24 +88,19 @@ Comet's native hash join currently requires the build side to fit entirely in me
 support will allow Comet to handle larger joins without falling back to Spark, improving both reliability and
 performance for memory-intensive workloads.
 
-## Java/Scala Columnar and Arrow UDF Support
+## Java/Scala UDF Support
 
-Spark users frequently define custom UDFs in Java or Scala. Comet currently falls back to Spark when a query
-contains a JVM UDF. Adding support for calling Java/Scala UDFs that operate on columnar Arrow data directly
-from native execution will reduce fallbacks and allow more queries to run end-to-end in Comet.
+Spark users frequently define custom UDFs in Java or Scala. Comet now dispatches scalar `ScalaUDF` expressions
+through a JVM codegen bridge (`CometScalaUDF`) instead of always falling back to Spark. Aggregate UDFs, table
+UDFs/generators, Python/Pandas UDFs, and Hive `GenericUDF`/`SimpleUDF` still fall back to Spark entirely.
+Extending the codegen-dispatch approach to cover these remaining categories will reduce fallbacks further and
+allow more queries to run end-to-end in Comet.
 
 ## Memory Management Improvements
 
 Comet coordinates memory between the JVM and native Rust execution through a custom memory pool. Improving
 memory accounting, reservation strategies, and spill integration will reduce out-of-memory errors and allow
 Comet to make better use of available resources, especially in multi-query and multi-task environments.
-
-## Prepare for 1.0.0 Release
-
-The project is working toward a 1.0.0 release. This effort includes finalizing configuration options,
-resolving known correctness issues, and improving documentation. Progress is tracked in [#4082].
-
-[#4082]: https://github.com/apache/datafusion-comet/issues/4082
 
 ## Native Parquet Writes
 
