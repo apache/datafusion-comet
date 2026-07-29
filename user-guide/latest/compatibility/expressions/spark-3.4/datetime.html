@@ -822,6 +822,20 @@ with Spark. For dates beyond this range, functions that involve timezone-aware c
 <li><p>Only <code class="docutils literal notranslate"><span class="pre">TimestampType</span></code> and <code class="docutils literal notranslate"><span class="pre">TimestampNTZType</span></code> inputs are supported.</p></li>
 </ul>
 </section>
+<section id="makedate">
+<h2>MakeDate<a class="headerlink" href="#makedate" title="Link to this heading">#</a></h2>
+<p>The following differences from Spark are always present and do not require any additional configuration:</p>
+<ul class="simple">
+<li><p>Under ANSI mode, an out-of-range <code class="docutils literal notranslate"><span class="pre">(year,</span> <span class="pre">month,</span> <span class="pre">day)</span></code> triple surfaces as <code class="docutils literal notranslate"><span class="pre">CometNativeException</span></code> rather than Spark’s <code class="docutils literal notranslate"><span class="pre">SparkDateTimeException</span></code> with error class <code class="docutils literal notranslate"><span class="pre">DATETIME_FIELD_OUT_OF_BOUNDS.WITH_SUGGESTION</span></code>. The throw/NULL decision is correct; only the exception class and error class differ (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5073">#5073</a>).</p></li>
+</ul>
+</section>
+<section id="nextday">
+<h2>NextDay<a class="headerlink" href="#nextday" title="Link to this heading">#</a></h2>
+<p>The following differences from Spark are always present and do not require any additional configuration:</p>
+<ul class="simple">
+<li><p>Under ANSI mode, an invalid <code class="docutils literal notranslate"><span class="pre">dayOfWeek</span></code> surfaces as <code class="docutils literal notranslate"><span class="pre">CometNativeException</span></code> rather than Spark’s <code class="docutils literal notranslate"><span class="pre">SparkIllegalArgumentException</span></code> with error class <code class="docutils literal notranslate"><span class="pre">ILLEGAL_DAY_OF_WEEK</span></code>. The throw/NULL decision is correct; only the exception class and error class differ (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5073">#5073</a>).</p></li>
+</ul>
+</section>
 <section id="precisetimestampconversion">
 <h2>PreciseTimestampConversion<a class="headerlink" href="#precisetimestampconversion" title="Link to this heading">#</a></h2>
 <p>The following cases are not supported by Comet and always fall back to Spark, regardless of any <code class="docutils literal notranslate"><span class="pre">allowIncompatible</span></code> setting:</p>
@@ -930,6 +944,8 @@ with Spark. For dates beyond this range, functions that involve timezone-aware c
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#fromutctimestamp">FromUTCTimestamp</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#fromunixtime">FromUnixTime</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#hours">Hours</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#makedate">MakeDate</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#nextday">NextDay</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#precisetimestampconversion">PreciseTimestampConversion</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#secondstotimestamp">SecondsToTimestamp</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#toutctimestamp">ToUTCTimestamp</a></li>

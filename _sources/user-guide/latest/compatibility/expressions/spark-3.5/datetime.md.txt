@@ -88,6 +88,18 @@ The following cases are not supported by Comet and always fall back to Spark, re
 
 - Only `TimestampType` and `TimestampNTZType` inputs are supported.
 
+## MakeDate
+
+The following differences from Spark are always present and do not require any additional configuration:
+
+- Under ANSI mode, an out-of-range `(year, month, day)` triple surfaces as `CometNativeException` rather than Spark's `SparkDateTimeException` with error class `DATETIME_FIELD_OUT_OF_BOUNDS.WITH_SUGGESTION`. The throw/NULL decision is correct; only the exception class and error class differ ([#5073](https://github.com/apache/datafusion-comet/issues/5073)).
+
+## NextDay
+
+The following differences from Spark are always present and do not require any additional configuration:
+
+- Under ANSI mode, an invalid `dayOfWeek` surfaces as `CometNativeException` rather than Spark's `SparkIllegalArgumentException` with error class `ILLEGAL_DAY_OF_WEEK`. The throw/NULL decision is correct; only the exception class and error class differ ([#5073](https://github.com/apache/datafusion-comet/issues/5073)).
+
 ## PreciseTimestampConversion
 
 The following cases are not supported by Comet and always fall back to Spark, regardless of any `allowIncompatible` setting:

@@ -761,6 +761,10 @@ IEEE total ordering for floating-point, which differs from Spark’s <code class
 </section>
 <section id="mapfromarrays">
 <h2>MapFromArrays<a class="headerlink" href="#mapfromarrays" title="Link to this heading">#</a></h2>
+<p>The following differences from Spark are always present and do not require any additional configuration:</p>
+<ul class="simple">
+<li><p>Spark rejects a <code class="docutils literal notranslate"><span class="pre">NULL</span></code> element inside the keys array with a <code class="docutils literal notranslate"><span class="pre">RuntimeException</span></code> (<code class="docutils literal notranslate"><span class="pre">Cannot</span> <span class="pre">use</span> <span class="pre">null</span> <span class="pre">as</span> <span class="pre">map</span> <span class="pre">key</span></code>); Comet’s native <code class="docutils literal notranslate"><span class="pre">map_from_arrays</span></code> / <code class="docutils literal notranslate"><span class="pre">map_from_entries</span></code> does not detect a per-element <code class="docutils literal notranslate"><span class="pre">NULL</span></code> key and produces a map with a <code class="docutils literal notranslate"><span class="pre">NULL</span></code> key instead (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4680">#4680</a>).</p></li>
+</ul>
 <p>The following incompatibilities cause <code class="docutils literal notranslate"><span class="pre">MapFromArrays</span></code> to fall back to Spark by default. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.MapFromArrays.allowIncompatible=true</span></code> to enable Comet acceleration despite these differences.</p>
 <ul class="simple">
 <li><p><code class="docutils literal notranslate"><span class="pre">spark.sql.mapKeyDedupPolicy</span></code> is set to <code class="docutils literal notranslate"><span class="pre">LAST_WIN</span></code>; Comet’s native map construction does not implement LAST_WIN dedup semantics.</p></li>
@@ -768,6 +772,10 @@ IEEE total ordering for floating-point, which differs from Spark’s <code class
 </section>
 <section id="mapfromentries">
 <h2>MapFromEntries<a class="headerlink" href="#mapfromentries" title="Link to this heading">#</a></h2>
+<p>The following differences from Spark are always present and do not require any additional configuration:</p>
+<ul class="simple">
+<li><p>Spark rejects a <code class="docutils literal notranslate"><span class="pre">NULL</span></code> element inside the keys array with a <code class="docutils literal notranslate"><span class="pre">RuntimeException</span></code> (<code class="docutils literal notranslate"><span class="pre">Cannot</span> <span class="pre">use</span> <span class="pre">null</span> <span class="pre">as</span> <span class="pre">map</span> <span class="pre">key</span></code>); Comet’s native <code class="docutils literal notranslate"><span class="pre">map_from_arrays</span></code> / <code class="docutils literal notranslate"><span class="pre">map_from_entries</span></code> does not detect a per-element <code class="docutils literal notranslate"><span class="pre">NULL</span></code> key and produces a map with a <code class="docutils literal notranslate"><span class="pre">NULL</span></code> key instead (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4680">#4680</a>).</p></li>
+</ul>
 <p>By default, <code class="docutils literal notranslate"><span class="pre">MapFromEntries</span></code> is evaluated in the JVM using Spark’s own code-generated implementation (run inside the Comet pipeline), which matches Spark exactly. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.MapFromEntries.allowIncompatible=true</span></code> to opt into Comet’s native implementation instead, which has the following differences from Spark:</p>
 <ul class="simple">
 <li><p><code class="docutils literal notranslate"><span class="pre">BinaryType</span></code> is not supported as a map key in <code class="docutils literal notranslate"><span class="pre">map_from_entries</span></code></p></li>

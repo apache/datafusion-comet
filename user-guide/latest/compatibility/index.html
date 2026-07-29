@@ -820,6 +820,64 @@ string paths is tracked by
 valid UTF-8 rather than reading them like Spark
 (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4121">#4121</a>).</p>
 </section>
+<section id="ansi-mode-error-classes-and-messages">
+<h2>ANSI-mode error classes and messages<a class="headerlink" href="#ansi-mode-error-classes-and-messages" title="Link to this heading">#</a></h2>
+<p>Under <code class="docutils literal notranslate"><span class="pre">spark.sql.ansi.enabled=true</span></code>, several native error paths raise the error at the correct
+input but with a different exception type, error class, SQLSTATE, or message text than Spark.
+Code that catches <code class="docutils literal notranslate"><span class="pre">SparkException</span></code> and only asserts on message substrings is unaffected; code that
+inspects the exception class, <code class="docutils literal notranslate"><span class="pre">getCondition()</span></code>, or the parameterised error class will observe
+divergence:</p>
+<ul class="simple">
+<li><p>Byte / Short <code class="docutils literal notranslate"><span class="pre">Add</span></code>, <code class="docutils literal notranslate"><span class="pre">Subtract</span></code>, and <code class="docutils literal notranslate"><span class="pre">Multiply</span></code> overflow raises <code class="docutils literal notranslate"><span class="pre">ARITHMETIC_OVERFLOW</span></code> where Spark
+4.1 raises <code class="docutils literal notranslate"><span class="pre">BINARY_ARITHMETIC_OVERFLOW</span></code>, and Long overflow surfaces as <code class="docutils literal notranslate"><span class="pre">&quot;integer</span> <span class="pre">overflow&quot;</span></code>
+rather than <code class="docutils literal notranslate"><span class="pre">&quot;long</span> <span class="pre">overflow&quot;</span></code>. <code class="docutils literal notranslate"><span class="pre">Abs</span></code> uses Rust type names (<code class="docutils literal notranslate"><span class="pre">Int8</span></code>, <code class="docutils literal notranslate"><span class="pre">Int64</span></code>, …) in the message
+instead of Spark’s SQL type names, and the scalar path of <code class="docutils literal notranslate"><span class="pre">UnaryMinus</span></code> on Byte / Short emits a
+malformed message. The <code class="docutils literal notranslate"><span class="pre">try_</span></code> suggestion is omitted from all of these
+(<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5071">#5071</a>).</p></li>
+<li><p>Wide-decimal arithmetic overflow, decimal divide-by-zero, and decimal-to-decimal cast overflow
+raise raw Arrow errors that bypass <code class="docutils literal notranslate"><span class="pre">SparkErrorConverter</span></code> and surface as <code class="docutils literal notranslate"><span class="pre">CometNativeException</span></code>
+rather than <code class="docutils literal notranslate"><span class="pre">SparkArithmeticException</span></code> with the proper error class and query context
+(<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5072">#5072</a>).</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">next_day</span></code> and <code class="docutils literal notranslate"><span class="pre">make_date</span></code> throw at the correct inputs but surface as <code class="docutils literal notranslate"><span class="pre">CometNativeException</span></code>
+instead of <code class="docutils literal notranslate"><span class="pre">SparkIllegalArgumentException</span> <span class="pre">[ILLEGAL_DAY_OF_WEEK]</span></code> /
+<code class="docutils literal notranslate"><span class="pre">SparkDateTimeException</span> <span class="pre">[DATETIME_FIELD_OUT_OF_BOUNDS.WITH_SUGGESTION]</span></code>
+(<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5073">#5073</a>).</p></li>
+<li><p>Spark 4.2 introduced additional ANSI arithmetic overflow behavior differences that Comet does
+not yet track (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4967">#4967</a>).</p></li>
+</ul>
+</section>
+<section id="known-result-value-divergences">
+<h2>Known result-value divergences<a class="headerlink" href="#known-result-value-divergences" title="Link to this heading">#</a></h2>
+<p>The following native paths silently return values that differ from Spark for edge-case inputs.
+Most also have entries in the per-category expression pages linked above; they are collected here
+so users hunting an unexpected value have a single place to check:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">CAST(boolean</span> <span class="pre">AS</span> <span class="pre">DECIMAL(p,</span> <span class="pre">s))</span></code> where <code class="docutils literal notranslate"><span class="pre">10^s</span></code> exceeds the target precision (e.g.
+<code class="docutils literal notranslate"><span class="pre">DECIMAL(1,</span> <span class="pre">1)</span></code>) throws <code class="docutils literal notranslate"><span class="pre">NUMERIC_VALUE_OUT_OF_RANGE</span></code> regardless of the eval mode. Spark returns
+<code class="docutils literal notranslate"><span class="pre">NULL</span></code> under legacy and try mode, and only throws under ANSI
+(<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5068">#5068</a>).</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">CAST(string</span> <span class="pre">AS</span> <span class="pre">boolean)</span></code> trims only Unicode whitespace. Spark also trims the ASCII control
+bytes <code class="docutils literal notranslate"><span class="pre">0x00-0x08</span></code>, <code class="docutils literal notranslate"><span class="pre">0x0E-0x1F</span></code>, and <code class="docutils literal notranslate"><span class="pre">0x7F</span></code>, so a string like <code class="docutils literal notranslate"><span class="pre">&quot;true&quot;</span></code> casts to
+<code class="docutils literal notranslate"><span class="pre">true</span></code> in Spark and to <code class="docutils literal notranslate"><span class="pre">NULL</span></code> in Comet (or throws under ANSI)
+(<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4959">#4959</a>).</p></li>
+<li><p>Native <code class="docutils literal notranslate"><span class="pre">RANGE</span></code> window frames with an explicit <code class="docutils literal notranslate"><span class="pre">PRECEDING</span></code> / <code class="docutils literal notranslate"><span class="pre">FOLLOWING</span></code> offset diverge from
+Spark when the boundary arithmetic overflows for <code class="docutils literal notranslate"><span class="pre">DATE</span></code> or <code class="docutils literal notranslate"><span class="pre">DECIMAL</span></code> <code class="docutils literal notranslate"><span class="pre">ORDER</span> <span class="pre">BY</span></code> columns
+(<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5022">#5022</a>).</p></li>
+<li><p>For an empty <code class="docutils literal notranslate"><span class="pre">IN</span></code> list, Comet always returns <code class="docutils literal notranslate"><span class="pre">false</span></code> for a <code class="docutils literal notranslate"><span class="pre">NULL</span></code> operand. Spark returns <code class="docutils literal notranslate"><span class="pre">NULL</span></code>
+when <code class="docutils literal notranslate"><span class="pre">spark.sql.legacy.nullInEmptyListBehavior=true</span></code> (Spark 4.0+)
+(<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4786">#4786</a>).</p></li>
+</ul>
+</section>
+<section id="object-store-cache">
+<h2>Object store cache<a class="headerlink" href="#object-store-cache" title="Link to this heading">#</a></h2>
+<p>When Comet’s native scan reads Parquet files, it caches one object store instance per
+<code class="docutils literal notranslate"><span class="pre">(scheme</span> <span class="pre">+</span> <span class="pre">host</span> <span class="pre">+</span> <span class="pre">port,</span> <span class="pre">hadoop-config-hash)</span></code> key. For <code class="docutils literal notranslate"><span class="pre">abfss://container&#64;account.dfs.core.windows.net/...</span></code>
+URLs, the container lives in the URL userinfo, not the host, so two containers in one storage
+account currently collide on the same cache entry. Within a single executor process, reading from
+a second container after a first can be served by the first container’s store instance and return
+its data. S3, GCS, and HDFS are unaffected because their bucket / host lives in the URL host
+component. Tracked by <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4993">#4993</a>.</p>
+</section>
 </section>
 
 
@@ -872,6 +930,9 @@ valid UTF-8 rather than reading them like Spark
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#compatible-by-default-opt-in-to-native">Compatible by default, opt in to native</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#native-and-codegen-dispatch-implementations">Native and codegen-dispatch implementations</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#strings-with-non-utf-8-bytes">Strings with non-UTF-8 bytes</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#ansi-mode-error-classes-and-messages">ANSI-mode error classes and messages</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#known-result-value-divergences">Known result-value divergences</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#object-store-cache">Object store cache</a></li>
 </ul>
   </nav></div>
 

@@ -773,10 +773,16 @@ Comet Parquet scan regardless.</p></li>
 </ul>
 <p>The following limitation may produce incorrect results without falling back to Spark:</p>
 <ul class="simple">
-<li><p>No support for datetime rebasing. When reading Parquet files containing dates or timestamps written before
-Spark 3.0 (which used a hybrid Julian/Gregorian calendar), dates/timestamps will be read as if they were
-written using the Proleptic Gregorian calendar. This may produce incorrect results for dates before
-October 15, 1582.</p></li>
+<li><p>No support for datetime rebasing. When reading Parquet files containing dates or timestamps
+written with <code class="docutils literal notranslate"><span class="pre">spark.sql.parquet.datetimeRebaseModeInWrite=LEGACY</span></code> (which is Spark’s default for
+data written before Spark 3.0, using the hybrid Julian/Gregorian calendar), Comet reads them as
+if they were written using the Proleptic Gregorian calendar. This produces silently-wrong
+values for dates before October 15, 1582 in both projections and predicates. Comet also
+ignores <code class="docutils literal notranslate"><span class="pre">spark.sql.parquet.datetimeRebaseModeInRead</span></code> and the file-level
+<code class="docutils literal notranslate"><span class="pre">org.apache.spark.legacyDateTime</span></code> metadata that would tell it to rebase. The
+<code class="docutils literal notranslate"><span class="pre">spark.comet.exceptionOnDatetimeRebase</span></code> config is currently dead code and does not raise on
+legacy-calendar data. Tracked by
+<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5010">#5010</a>.</p></li>
 </ul>
 <p>The following limitations raise an error at scan time rather than falling back to Spark:</p>
 <ul class="simple">

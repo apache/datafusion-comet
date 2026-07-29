@@ -765,6 +765,10 @@ under the License.
 </section>
 <section id="makedecimal">
 <h2>MakeDecimal<a class="headerlink" href="#makedecimal" title="Link to this heading">#</a></h2>
+<p>The following differences from Spark are always present and do not require any additional configuration:</p>
+<ul class="simple">
+<li><p>The native implementation silently returns <code class="docutils literal notranslate"><span class="pre">NULL</span></code> on overflow regardless of the <code class="docutils literal notranslate"><span class="pre">nullOnOverflow</span></code> flag, so under ANSI mode Comet returns <code class="docutils literal notranslate"><span class="pre">NULL</span></code> where Spark raises <code class="docutils literal notranslate"><span class="pre">NUMERIC_VALUE_OUT_OF_RANGE</span></code>. <code class="docutils literal notranslate"><span class="pre">MakeDecimal</span></code> is inserted by the <code class="docutils literal notranslate"><span class="pre">DecimalAggregates</span></code> optimizer rule, so this affects <code class="docutils literal notranslate"><span class="pre">sum</span></code>/<code class="docutils literal notranslate"><span class="pre">avg</span></code> over low-precision decimals when the unscaled long overflows the target precision (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5066">#5066</a>).</p></li>
+</ul>
 <p>The following cases are not supported by Comet and always fall back to Spark, regardless of any <code class="docutils literal notranslate"><span class="pre">allowIncompatible</span></code> setting:</p>
 <ul class="simple">
 <li><p>Only <code class="docutils literal notranslate"><span class="pre">LongType</span></code> input is supported</p></li>

@@ -34,11 +34,19 @@ IEEE total ordering for floating-point, which differs from Spark's `Double.compa
 
 ## MapFromArrays
 
+The following differences from Spark are always present and do not require any additional configuration:
+
+- Spark rejects a `NULL` element inside the keys array with a `RuntimeException` (`Cannot use null as map key`); Comet's native `map_from_arrays` / `map_from_entries` does not detect a per-element `NULL` key and produces a map with a `NULL` key instead ([#4680](https://github.com/apache/datafusion-comet/issues/4680)).
+
 The following incompatibilities cause `MapFromArrays` to fall back to Spark by default. Set `spark.comet.expression.MapFromArrays.allowIncompatible=true` to enable Comet acceleration despite these differences.
 
 - `spark.sql.mapKeyDedupPolicy` is set to `LAST_WIN`; Comet's native map construction does not implement LAST_WIN dedup semantics.
 
 ## MapFromEntries
+
+The following differences from Spark are always present and do not require any additional configuration:
+
+- Spark rejects a `NULL` element inside the keys array with a `RuntimeException` (`Cannot use null as map key`); Comet's native `map_from_arrays` / `map_from_entries` does not detect a per-element `NULL` key and produces a map with a `NULL` key instead ([#4680](https://github.com/apache/datafusion-comet/issues/4680)).
 
 By default, `MapFromEntries` is evaluated in the JVM using Spark's own code-generated implementation (run inside the Comet pipeline), which matches Spark exactly. Set `spark.comet.expression.MapFromEntries.allowIncompatible=true` to opt into Comet's native implementation instead, which has the following differences from Spark:
 

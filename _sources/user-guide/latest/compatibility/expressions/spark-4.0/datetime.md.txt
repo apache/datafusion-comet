@@ -90,6 +90,12 @@ The following cases are not supported by Comet and always fall back to Spark, re
 
 - Only `TimestampType` and `TimestampNTZType` inputs are supported.
 
+## MakeDate
+
+The following differences from Spark are always present and do not require any additional configuration:
+
+- Under ANSI mode, an out-of-range `(year, month, day)` triple surfaces as `CometNativeException` rather than Spark's `SparkDateTimeException` with error class `DATETIME_FIELD_OUT_OF_BOUNDS.WITH_SUGGESTION`. The throw/NULL decision is correct; only the exception class and error class differ ([#5073](https://github.com/apache/datafusion-comet/issues/5073)).
+
 ## MakeTimestamp
 
 By default, `MakeTimestamp` is evaluated in the JVM using Spark's own code-generated implementation (run inside the Comet pipeline), which matches Spark exactly. Set `spark.comet.expression.MakeTimestamp.allowIncompatible=true` to opt into Comet's native implementation instead, which has the following differences from Spark:
@@ -97,6 +103,10 @@ By default, `MakeTimestamp` is evaluated in the JVM using Spark's own code-gener
 - make_timestamp does not support non-UTF8_BINARY collations (https://github.com/apache/datafusion-comet/issues/4646)
 
 ## NextDay
+
+The following differences from Spark are always present and do not require any additional configuration:
+
+- Under ANSI mode, an invalid `dayOfWeek` surfaces as `CometNativeException` rather than Spark's `SparkIllegalArgumentException` with error class `ILLEGAL_DAY_OF_WEEK`. The throw/NULL decision is correct; only the exception class and error class differ ([#5073](https://github.com/apache/datafusion-comet/issues/5073)).
 
 The following incompatibilities cause `NextDay` to fall back to Spark by default. Set `spark.comet.expression.NextDay.allowIncompatible=true` to enable Comet acceleration despite these differences.
 

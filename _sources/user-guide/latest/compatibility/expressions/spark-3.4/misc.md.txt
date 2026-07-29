@@ -35,6 +35,10 @@ The following cases are not supported by Comet and always fall back to Spark, re
 
 ## MakeDecimal
 
+The following differences from Spark are always present and do not require any additional configuration:
+
+- The native implementation silently returns `NULL` on overflow regardless of the `nullOnOverflow` flag, so under ANSI mode Comet returns `NULL` where Spark raises `NUMERIC_VALUE_OUT_OF_RANGE`. `MakeDecimal` is inserted by the `DecimalAggregates` optimizer rule, so this affects `sum`/`avg` over low-precision decimals when the unscaled long overflows the target precision ([#5066](https://github.com/apache/datafusion-comet/issues/5066)).
+
 The following cases are not supported by Comet and always fall back to Spark, regardless of any `allowIncompatible` setting:
 
 - Only `LongType` input is supported

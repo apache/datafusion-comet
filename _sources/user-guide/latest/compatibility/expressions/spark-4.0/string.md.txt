@@ -54,6 +54,7 @@ The following cases have no native implementation and always run in the JVM usin
 By default, `GetJsonObject` is evaluated in the JVM using Spark's own code-generated implementation (run inside the Comet pipeline), which matches Spark exactly. Set `spark.comet.expression.GetJsonObject.allowIncompatible=true` to opt into Comet's native implementation instead, which has the following differences from Spark:
 
 - Spark allows single-quoted JSON and unescaped control characters which Comet does not support
+- For JSON objects containing duplicate keys, Spark returns the value of the first occurrence while Comet's native implementation returns the last occurrence ([#4947](https://github.com/apache/datafusion-comet/issues/4947))
 
 ## InitCap
 
