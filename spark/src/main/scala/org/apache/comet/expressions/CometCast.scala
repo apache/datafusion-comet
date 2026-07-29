@@ -78,19 +78,15 @@ object CometCast
   // would only duplicate the matrix and risk drifting from it.
 
   override def getSupportLevel(cast: Cast): SupportLevel = {
-    // Reject `VariantType` before the Literal short-circuit below. Folding a Cast whose child or
-    // target is `VariantType` produces a `Literal[VariantType]` that no downstream Comet serde
-    // can serialize, and relying on `CometLiteral` to reject it after the fact leaves a native
-    // path that assumes the produced literal is safe. Report `Unsupported`; the
-    // `CodegenDispatchFallback` mixin will then try the codegen dispatcher, which itself cannot
-    // serialize `VariantType` data args or return types, so the operator falls back to Spark.
-    if (isVariantType(cast.child.dataType) || isVariantType(cast.dataType)) {
-      return unsupported(cast.child.dataType, cast.dataType)
-    }
     if (cast.child.isInstanceOf[Literal]) {
       // A cast whose child is a literal is folded by Spark at planning time via `cast.eval()`
       // (see `convert`), so the cast never executes natively and the result matches Spark by
-      // definition. `CometLiteral` then validates the resulting literal's data type.
+      // definition. `CometLiteral` then validates the resulting literal's data type, except
+      // for `VariantType` which must be rejected here: the fold produces a `Literal[VariantType]`
+      // that no downstream Comet serde can serialize.
+      if (isVariantType(cast.child.dataType) || isVariantType(cast.dataType)) {
+        return unsupported(cast.child.dataType, cast.dataType)
+      }
       Compatible()
     } else {
       isSupported(cast.child.dataType, cast.dataType, cast.timeZoneId, evalMode(cast))
@@ -174,12 +170,10 @@ object CometCast
       timeZoneId: Option[String],
       evalMode: CometEvalMode.Value): SupportLevel = {
 
-    // Spark 4's `VariantType` (SPARK-45827) has no native counterpart in Comet: serializing it
-    // into the DataFusion plan fails in `serializeDataType`, and the codegen dispatcher used by
-    // the `CodegenDispatchFallback` mixin also cannot serialize `VariantType` in the data args or
-    // return type. Detect it via the version-shimmed `isVariantType` (which returns false on
-    // Spark 3.x where the class does not exist) and report `Unsupported`. The mixin will attempt
-    // the codegen dispatcher and then fall back to Spark when the dispatcher rejects the type.
+    // Spark 4's `VariantType` (SPARK-45827) has no native counterpart in Comet, and the codegen
+    // dispatcher also cannot serialize `VariantType` in the data args or return type. The
+    // version-shimmed `isVariantType` returns false on Spark 3.x. Reporting `Unsupported` lets the
+    // `CodegenDispatchFallback` mixin try the dispatcher and then fall back to Spark cleanly.
     if (isVariantType(fromType) || isVariantType(toType)) {
       return unsupported(fromType, toType)
     }
@@ -188,8 +182,8 @@ object CometCast
       return Compatible()
     }
 
-    if (toType == DataTypes.StringType && legacyCastComplexTypesToString && isComplexType(
-        fromType)) {
+    if (toType == DataTypes.StringType && isComplexType(fromType) &&
+      legacyCastComplexTypesToString) {
       return Unsupported(Some(legacyCastComplexTypesToStringReason))
     }
 

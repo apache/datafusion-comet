@@ -276,9 +276,8 @@ SELECT cast(array(map('k', 1)) as string)
 -- ----------------------------------------------------------------------------
 -- Map → string
 -- ----------------------------------------------------------------------------
--- Comet does not implement map-to-string casts natively; the CodegenDispatchFallback
--- mixin on CometCast routes them through Spark's doGenCode inside the Comet pipeline,
--- so results match Spark exactly without a full Spark fallback.
+-- Comet has no native map-to-string cast; `CometCast` mixes in `CodegenDispatchFallback`, so
+-- these stay native via the codegen dispatcher and match Spark exactly.
 -- Note: maps materialized through parquet have nondeterministic entry order, so map column
 -- tests use literal maps directly rather than reading from a parquet table.
 

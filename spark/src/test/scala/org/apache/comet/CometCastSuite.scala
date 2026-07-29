@@ -1869,11 +1869,9 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("cast to and from VariantType matches Spark") {
-    // Spark 4's VariantType has no native counterpart in Comet: the CometCast
-    // matrix reports Unsupported, and the codegen dispatcher cannot serialize a
-    // VariantType data arg or output type either, so the operator falls back to
-    // Spark cleanly. Guard on Spark 4.0+ because VariantType and parse_json do
-    // not exist in Spark 3.x.
+    // VariantType has no native path in Comet and the codegen dispatcher cannot serialize it
+    // either, so the operator falls back to Spark. Guarded on Spark 4.0+ (parse_json / VARIANT
+    // are unavailable in 3.x).
     assume(CometSparkSessionExtensions.isSpark40Plus, "VariantType requires Spark 4.0+")
     withTable("variant_cast") {
       sql("CREATE TABLE variant_cast(id INT, s STRING) USING parquet")
