@@ -407,8 +407,7 @@ object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
         DataTypes.IntegerType | DataTypes.LongType | DataTypes.TimestampType =>
       Compatible()
     case _: DecimalType =>
-      // https://github.com/apache/datafusion-comet/issues/1371
-      Incompatible(Some("There can be rounding differences"))
+      Compatible()
     case _ =>
       unsupported(DataTypes.FloatType, toType)
   }
@@ -418,8 +417,7 @@ object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
         DataTypes.IntegerType | DataTypes.LongType | DataTypes.TimestampType =>
       Compatible()
     case _: DecimalType =>
-      // https://github.com/apache/datafusion-comet/issues/1371
-      Incompatible(Some("There can be rounding differences"))
+      Compatible()
     case _ => unsupported(DataTypes.DoubleType, toType)
   }
 

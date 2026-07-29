@@ -899,33 +899,50 @@ where
 {
     let input = array.as_any().downcast_ref::<PrimitiveArray<T>>().unwrap();
     let mul = 10_f64.powi(scale as i32);
+    // Values whose scaled magnitude clearly exceeds the precision limit overflow no matter
+    // what their exact decimal digits are; the slack covers the float rounding error so
+    // borderline values still take the exact path below.
+    let overflow_bound = 10_f64.powi(precision as i32) * (1.0 + 1e-12);
 
-    // Single vectorized pass: a value with no in-range integer form (NaN / infinity) or that
-    // does not fit the output precision maps to null. `unary_opt` only applies the closure to
-    // non-null slots and carries the input null buffer over, so it replaces the per-element
-    // builder loop without a second pass.
+    // A value with no decimal form (NaN / infinity) or that does not fit the output
+    // precision maps to null. `unary_opt` only applies the closure to non-null slots and
+    // carries the input null buffer over. Floats are widened to double first because Spark
+    // casts through `x.toDouble` before converting to a string.
     let result: Decimal128Array = input.unary_opt::<_, Decimal128Type>(|v| {
         let f: f64 = v.as_();
-        (f * mul)
-            .round()
-            .to_i128()
-            .filter(|x| is_validate_decimal_precision(*x, precision))
+        let x = f * mul;
+        if x.abs() > overflow_bound {
+            // also catches ±infinity inputs, which Spark nulls
+            return None;
+        }
+        // Rounding the binary product agrees with Spark's string-based result whenever
+        // every value within the combined error of the shortest-string representation,
+        // the multiplication, and `powi` (a few ulp, at most |x| * 2^-50) rounds to the
+        // same integer: |x - round(x)| + |x| * TIE_GUARD < 0.5, with TIE_GUARD at 4x the
+        // error bound. For |x| > 2^47 the guard exceeds 0.5, so large values, whose
+        // integer neighborhoods are wider than 1, always take the exact path. NaN fails
+        // the comparison and takes the exact path, which nulls it.
+        const TIE_GUARD: f64 = 3.552713678800501e-15; // 2^-48
+        let r = x.round();
+        if (x - r).abs() + x.abs() * TIE_GUARD < 0.5 {
+            return r
+                .to_i128()
+                .filter(|u| is_validate_decimal_precision(*u, precision));
+        }
+        float_to_decimal128(f, precision, scale)
     });
 
-    // ANSI must raise on out-of-range values instead of nulling them. `unary_opt` only nulls
-    // non-null inputs that overflow, so a null count beyond the input's signals an overflow to
-    // report. This check is O(1); the element-wise rescan runs only on the rare error path and
-    // reports the first offending value with Spark's exact error.
+    // ANSI must raise on out-of-range values instead of nulling them, but NaN / infinity
+    // stay null even in ANSI mode: Spark catches the NumberFormatException thrown by
+    // `Decimal(double)` and returns null before the ANSI overflow check runs. `unary_opt`
+    // only nulls non-null inputs, so a null count beyond the input's signals a potential
+    // overflow; the element-wise rescan runs only on that rare path and reports the first
+    // finite offending value with Spark's exact error.
     if eval_mode == EvalMode::Ansi && result.null_count() > input.null_count() {
         for i in 0..input.len() {
-            if !input.is_null(i) {
+            if !input.is_null(i) && result.is_null(i) {
                 let input_value: f64 = input.value(i).as_();
-                let fits = (input_value * mul)
-                    .round()
-                    .to_i128()
-                    .map(|x| is_validate_decimal_precision(x, precision))
-                    .unwrap_or(false);
-                if !fits {
+                if input_value.is_finite() {
                     return Err(SparkError::NumericValueOutOfRange {
                         value: input_value.to_string(),
                         precision,
@@ -937,6 +954,79 @@ where
     }
 
     Ok(Arc::new(result.with_precision_and_scale(precision, scale)?))
+}
+
+/// Convert a double to a decimal unscaled value with Spark semantics.
+///
+/// Spark converts through `BigDecimal(Double.toString(d)).setScale(scale, HALF_UP)`: it
+/// rounds the shortest decimal string form of the value, not its exact binary expansion.
+/// The two disagree for values like 0.5153125 whose binary value (0.51531249999...) sits
+/// just below the rounding tie that the string form lands on, so a plain
+/// `(f * 10^scale).round()` produces results that differ from Spark.
+///
+/// Returns `None` for NaN / infinity and for results that do not fit `precision`.
+fn float_to_decimal128(f: f64, precision: u8, scale: i8) -> Option<i128> {
+    if !f.is_finite() {
+        return None;
+    }
+
+    // Shortest round-trip decimal form, same digits as Java's Double.toString
+    let mut buf = ryu::Buffer::new();
+    let (mantissa, exp10) = parse_decimal_notation(buf.format_finite(f));
+
+    // value = mantissa * 10^exp10, so unscaled = round(mantissa * 10^(exp10 + scale))
+    let shift = exp10 + scale as i32;
+    let unscaled = if mantissa == 0 {
+        0
+    } else if shift >= 0 {
+        // Overflowing i128 here means the result cannot fit any decimal precision
+        mantissa.checked_mul(10_i128.checked_pow(shift.try_into().ok()?)?)?
+    } else if -shift > 38 {
+        // The mantissa has at most 17 significant digits, so dividing by more than 10^38
+        // (the largest power of ten representable in i128) always rounds to zero
+        0
+    } else {
+        // Divide with HALF_UP rounding (away from zero on a tie, matching BigDecimal)
+        let div = 10_i128.pow(-shift as u32);
+        let quotient = mantissa / div;
+        let remainder = mantissa % div;
+        if remainder.abs() >= div / 2 {
+            quotient + mantissa.signum()
+        } else {
+            quotient
+        }
+    };
+
+    is_validate_decimal_precision(unscaled, precision).then_some(unscaled)
+}
+
+/// Parse ryu's `[-]digits[.digits][e[-]digits]` output into an integer mantissa and a
+/// base-10 exponent such that the value equals `mantissa * 10^exp10`. The mantissa of a
+/// shortest-form double has at most 17 significant digits so it cannot overflow i128.
+fn parse_decimal_notation(s: &str) -> (i128, i32) {
+    let (digits, exp10) = match s.split_once('e') {
+        Some((digits, exp)) => (digits, exp.parse::<i32>().expect("exponent from ryu")),
+        None => (s, 0),
+    };
+    let mut mantissa: i128 = 0;
+    let mut frac_digits = 0;
+    let mut in_fraction = false;
+    for b in digits.bytes() {
+        match b {
+            b'-' => {}
+            b'.' => in_fraction = true,
+            _ => {
+                mantissa = mantissa * 10 + (b - b'0') as i128;
+                if in_fraction {
+                    frac_digits += 1;
+                }
+            }
+        }
+    }
+    if digits.starts_with('-') {
+        mantissa = -mantissa;
+    }
+    (mantissa, exp10 - frac_digits)
 }
 
 pub(crate) fn spark_cast_nonintegral_numeric_to_integral(
@@ -1325,13 +1415,6 @@ mod tests {
         }
     }
     #[test]
-    // Currently the cast function depending on `f64::powi`, which has unspecified precision according to the doc
-    // https://doc.rust-lang.org/std/primitive.f64.html#unspecified-precision.
-    // Miri deliberately apply random floating-point errors to these operations to expose bugs
-    // https://github.com/rust-lang/miri/issues/4395.
-    // The random errors may interfere with test cases at rounding edge, so we ignore it on miri for now.
-    // Once https://github.com/apache/datafusion-comet/issues/1371 is fixed, this should no longer be an issue.
-    #[cfg_attr(miri, ignore)]
     fn test_cast_float_to_decimal() {
         let a: ArrayRef = Arc::new(Float64Array::from(vec![
             Some(42.),
@@ -1350,8 +1433,7 @@ mod tests {
         assert_eq!(b.len(), a.len());
         let casted = b.as_primitive::<Decimal128Type>();
         assert_eq!(casted.value(0), 42000000);
-        // https://github.com/apache/datafusion-comet/issues/1371
-        // assert_eq!(casted.value(1), 515313);
+        assert_eq!(casted.value(1), 515313);
         assert_eq!(casted.value(2), -42424242);
         assert_eq!(casted.value(3), 0);
         assert_eq!(casted.value(4), 0);
@@ -1363,7 +1445,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore)]
     fn test_cast_float_to_decimal_no_overflow_fast_path() {
         // All values fit precision 10, scale 2, so the vectorized fast path is taken and the
         // input null is preserved.
@@ -1384,7 +1465,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore)]
     fn test_cast_float_to_decimal_ansi_no_overflow() {
         let a: ArrayRef = Arc::new(Float64Array::from(vec![Some(42.0), None, Some(-1.5)]));
         let b =
@@ -1396,7 +1476,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore)]
     fn test_cast_float_to_decimal_ansi_overflow_errors() {
         // Precision overflow: 4242.42 * 10^2 = 424242 does not fit precision 4. Two overflow
         // rows with distinct string forms pin that the rescan reports the *first* offender.
@@ -1420,30 +1499,139 @@ mod tests {
     }
 
     #[test]
+    fn test_cast_float_to_decimal_ansi_nan_and_infinity_are_null() {
+        // Spark converts through Decimal(double) which throws NumberFormatException for
+        // NaN/infinity; the cast catches it and produces null before the ANSI overflow
+        // check runs, so these are null even in ANSI mode.
+        let a: ArrayRef = Arc::new(Float64Array::from(vec![
+            Some(1.0),
+            Some(f64::NAN),
+            Some(f64::INFINITY),
+            Some(f64::NEG_INFINITY),
+        ]));
+        let b =
+            cast_floating_point_to_decimal128::<Float64Type>(&a, 10, 2, EvalMode::Ansi).unwrap();
+        let d = b.as_primitive::<Decimal128Type>();
+        assert_eq!(d.value(0), 100);
+        assert!(d.is_null(1));
+        assert!(d.is_null(2));
+        assert!(d.is_null(3));
+    }
+
+    #[test]
+    fn test_cast_float_to_decimal_spark_rounding_parity() {
+        // Spark rounds the shortest decimal string form of the double (Double.toString ->
+        // BigDecimal.setScale(HALF_UP)), not the binary value. These values sit exactly on
+        // a rounding tie in string form while the binary value is just below it, so binary
+        // rounding gives a different (wrong) result.
+        let a: ArrayRef = Arc::new(Float64Array::from(vec![
+            Some(0.5153125),
+            Some(-0.5153125),
+            Some(0.5203125),
+        ]));
+        let b =
+            cast_floating_point_to_decimal128::<Float64Type>(&a, 8, 6, EvalMode::Legacy).unwrap();
+        let d = b.as_primitive::<Decimal128Type>();
+        assert_eq!(d.value(0), 515313);
+        assert_eq!(d.value(1), -515313);
+        assert_eq!(d.value(2), 520313);
+
+        // HALF_UP rounds away from zero for negative values too
+        let a: ArrayRef = Arc::new(Float64Array::from(vec![Some(1.005), Some(-1.005)]));
+        let b =
+            cast_floating_point_to_decimal128::<Float64Type>(&a, 10, 2, EvalMode::Legacy).unwrap();
+        let d = b.as_primitive::<Decimal128Type>();
+        assert_eq!(d.value(0), 101);
+        assert_eq!(d.value(1), -101);
+
+        // values whose shortest form uses exponent notation
+        let a: ArrayRef = Arc::new(Float64Array::from(vec![Some(1.5e10)]));
+        let b =
+            cast_floating_point_to_decimal128::<Float64Type>(&a, 20, 2, EvalMode::Legacy).unwrap();
+        let d = b.as_primitive::<Decimal128Type>();
+        assert_eq!(d.value(0), 1_500_000_000_000);
+
+        let a: ArrayRef = Arc::new(Float64Array::from(vec![Some(1e30)]));
+        let b =
+            cast_floating_point_to_decimal128::<Float64Type>(&a, 10, 2, EvalMode::Legacy).unwrap();
+        let d = b.as_primitive::<Decimal128Type>();
+        assert!(d.is_null(0));
+    }
+
+    #[test]
+    fn test_cast_float32_to_decimal_widens_to_double_first() {
+        // Spark widens float to double before converting to string, so 1.005f32 becomes
+        // 1.0049999952316284 and rounds down; using the shortest f32 form ("1.005") would
+        // incorrectly round up.
+        let a: ArrayRef = Arc::new(Float32Array::from(vec![Some(1.005f32)]));
+        let b =
+            cast_floating_point_to_decimal128::<Float32Type>(&a, 10, 2, EvalMode::Legacy).unwrap();
+        let d = b.as_primitive::<Decimal128Type>();
+        assert_eq!(d.value(0), 100);
+
+        // 0.5153125f32 widens to 0.5153124928474426 which rounds down, unlike the f64 case
+        let a: ArrayRef = Arc::new(Float32Array::from(vec![Some(0.5153125f32)]));
+        let b =
+            cast_floating_point_to_decimal128::<Float32Type>(&a, 8, 6, EvalMode::Legacy).unwrap();
+        let d = b.as_primitive::<Decimal128Type>();
+        assert_eq!(d.value(0), 515312);
+    }
+
+    #[test]
+    // Not a correctness concern under miri, just far too slow: 240k values through the
+    // interpreter. The fixed-value tests above cover both paths under miri.
     #[cfg_attr(miri, ignore)]
-    fn test_cast_float_to_decimal_ansi_nan_errors() {
-        // NaN / infinity have no in-range integer form: `to_i128()` returns `None`, so the
-        // closure nulls the slot and the rescan must recompute `fits == false` and raise.
-        // This is a distinct path from finite precision overflow — assert both here to lock
-        // the reported value string.
-        let a: ArrayRef = Arc::new(Float64Array::from(vec![Some(1.0), Some(f64::NAN)]));
-        match cast_floating_point_to_decimal128::<Float64Type>(&a, 10, 2, EvalMode::Ansi) {
+    fn test_cast_float_to_decimal_fast_path_matches_exact_path() {
+        use rand::rngs::StdRng;
+        use rand::{RngExt, SeedableRng};
+        let mut rng = StdRng::seed_from_u64(42);
+        let mut values: Vec<f64> = Vec::new();
+        // random bit patterns cover the full range including subnormals, NaN and infinity
+        for _ in 0..20_000 {
+            values.push(f64::from_bits(rng.random::<u64>()));
+        }
+        // decimal-looking values, which land on or near rounding ties far more often
+        for _ in 0..20_000 {
+            let unscaled = rng.random_range(-10_000_000_i64..10_000_000);
+            let scale = rng.random_range(0_i32..8);
+            values.push(unscaled as f64 / 10_f64.powi(scale));
+        }
+        for (precision, scale) in [(38_u8, 18_i8), (18, 6), (10, 2), (8, 6), (4, 2), (38, 0)] {
+            let a: ArrayRef = Arc::new(Float64Array::from(values.clone()));
+            let b = cast_floating_point_to_decimal128::<Float64Type>(
+                &a,
+                precision,
+                scale,
+                EvalMode::Legacy,
+            )
+            .unwrap();
+            let d = b.as_primitive::<Decimal128Type>();
+            for (i, &v) in values.iter().enumerate() {
+                let expected = float_to_decimal128(v, precision, scale);
+                let actual = (!d.is_null(i)).then(|| d.value(i));
+                assert_eq!(actual, expected, "value {v:?} at ({precision},{scale})");
+            }
+        }
+    }
+
+    #[test]
+    fn test_cast_float_to_decimal_round_up_overflow() {
+        // 99.995 rounds up to 100.00 in string form, which no longer fits precision 4.
+        // Binary rounding of 99.99499999999999886... would incorrectly keep 99.99.
+        let a: ArrayRef = Arc::new(Float64Array::from(vec![Some(99.995)]));
+        let b =
+            cast_floating_point_to_decimal128::<Float64Type>(&a, 4, 2, EvalMode::Legacy).unwrap();
+        assert!(b.as_primitive::<Decimal128Type>().is_null(0));
+
+        match cast_floating_point_to_decimal128::<Float64Type>(&a, 4, 2, EvalMode::Ansi) {
             Err(SparkError::NumericValueOutOfRange {
                 value,
                 precision,
                 scale,
             }) => {
-                assert_eq!(value, "NaN");
-                assert_eq!(precision, 10);
+                assert_eq!(value, "99.995");
+                assert_eq!(precision, 4);
                 assert_eq!(scale, 2);
-            }
-            other => panic!("expected NumericValueOutOfRange, got {other:?}"),
-        }
-
-        let a: ArrayRef = Arc::new(Float64Array::from(vec![Some(f64::INFINITY)]));
-        match cast_floating_point_to_decimal128::<Float64Type>(&a, 10, 2, EvalMode::Ansi) {
-            Err(SparkError::NumericValueOutOfRange { value, .. }) => {
-                assert_eq!(value, "inf");
             }
             other => panic!("expected NumericValueOutOfRange, got {other:?}"),
         }
