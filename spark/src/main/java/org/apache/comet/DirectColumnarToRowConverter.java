@@ -84,6 +84,44 @@ public final class DirectColumnarToRowConverter {
   private byte[] batchBuffer = new byte[0];
   private int batchNumRows;
 
+  /** Returns true if every field of the schema has a type this converter supports. */
+  public static boolean supportsSchema(StructType schema) {
+    for (StructField field : schema.fields()) {
+      if (typeCodeFor(field.dataType()) < 0) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  private static int typeCodeFor(DataType dt) {
+    if (dt instanceof BooleanType) {
+      return BOOLEAN;
+    } else if (dt instanceof ByteType) {
+      return BYTE;
+    } else if (dt instanceof ShortType) {
+      return SHORT;
+    } else if (dt instanceof IntegerType || dt instanceof DateType) {
+      return INT;
+    } else if (dt instanceof LongType
+        || dt instanceof TimestampType
+        || dt instanceof TimestampNTZType) {
+      return LONG;
+    } else if (dt instanceof FloatType) {
+      return FLOAT;
+    } else if (dt instanceof DoubleType) {
+      return DOUBLE;
+    } else if (dt instanceof StringType) {
+      return STRING;
+    } else if (dt instanceof DecimalType) {
+      return ((DecimalType) dt).precision() <= Decimal.MAX_LONG_DIGITS()
+          ? DECIMAL_COMPACT
+          : DECIMAL_WIDE;
+    } else {
+      return -1;
+    }
+  }
+
   public DirectColumnarToRowConverter(StructType schema) {
     StructField[] fields = schema.fields();
     numFields = fields.length;
@@ -92,32 +130,16 @@ public final class DirectColumnarToRowConverter {
     scales = new int[numFields];
     for (int i = 0; i < numFields; i++) {
       DataType dt = fields[i].dataType();
-      if (dt instanceof BooleanType) {
-        typeCodes[i] = BOOLEAN;
-      } else if (dt instanceof ByteType) {
-        typeCodes[i] = BYTE;
-      } else if (dt instanceof ShortType) {
-        typeCodes[i] = SHORT;
-      } else if (dt instanceof IntegerType || dt instanceof DateType) {
-        typeCodes[i] = INT;
-      } else if (dt instanceof LongType
-          || dt instanceof TimestampType
-          || dt instanceof TimestampNTZType) {
-        typeCodes[i] = LONG;
-      } else if (dt instanceof FloatType) {
-        typeCodes[i] = FLOAT;
-      } else if (dt instanceof DoubleType) {
-        typeCodes[i] = DOUBLE;
-      } else if (dt instanceof StringType) {
-        typeCodes[i] = STRING;
-      } else if (dt instanceof DecimalType) {
+      int code = typeCodeFor(dt);
+      if (code < 0) {
+        throw new UnsupportedOperationException(
+            "DirectColumnarToRowConverter does not support data type: " + dt);
+      }
+      typeCodes[i] = code;
+      if (dt instanceof DecimalType) {
         DecimalType d = (DecimalType) dt;
         precisions[i] = d.precision();
         scales[i] = d.scale();
-        typeCodes[i] = d.precision() <= Decimal.MAX_LONG_DIGITS() ? DECIMAL_COMPACT : DECIMAL_WIDE;
-      } else {
-        throw new UnsupportedOperationException(
-            "DirectColumnarToRowConverter does not support data type: " + dt);
       }
     }
     nullBitsetWidth = UnsafeRow.calculateBitSetWidthInBytes(numFields);
@@ -248,7 +270,7 @@ public final class DirectColumnarToRowConverter {
           if (isNull) {
             setNull(c, slot);
           } else {
-            Platform.putLong(buffer, slot, ((CometVector) col).getLongDecimal(rowId));
+            Platform.putLong(buffer, slot, compactDecimalValue(col, rowId, c));
           }
           break;
         case DECIMAL_WIDE:
@@ -447,7 +469,7 @@ public final class DirectColumnarToRowConverter {
         }
         break;
       case DECIMAL_COMPACT:
-        {
+        if (col instanceof CometVector) {
           CometVector cometCol = (CometVector) col;
           for (int r = 0; r < n; r++) {
             long slot = slotBase + (long) r * stride;
@@ -457,12 +479,32 @@ public final class DirectColumnarToRowConverter {
               Platform.putLong(batchBuffer, slot, cometCol.getLongDecimal(r));
             }
           }
+        } else {
+          for (int r = 0; r < n; r++) {
+            long slot = slotBase + (long) r * stride;
+            if (mayHaveNulls && col.isNullAt(r)) {
+              setNullFixedWidth(r, stride, slot, bitWordBase, bitMask);
+            } else {
+              Platform.putLong(batchBuffer, slot, compactDecimalValue(col, r, c));
+            }
+          }
         }
         break;
       default:
         throw new IllegalStateException(
             "Type code not supported by fixed-width path: " + typeCodes[c]);
     }
+  }
+
+  /**
+   * Reads a compact decimal's unscaled long. Comet vectors expose it allocation-free; other vector
+   * types (e.g. ConstantColumnVector) go through the allocating accessor.
+   */
+  private long compactDecimalValue(ColumnVector col, int rowId, int ordinal) {
+    if (col instanceof CometVector) {
+      return ((CometVector) col).getLongDecimal(rowId);
+    }
+    return col.getDecimal(rowId, precisions[ordinal], scales[ordinal]).toUnscaledLong();
   }
 
   private void setNullFixedWidth(int rowId, int stride, long slot, long bitWordBase, long bitMask) {

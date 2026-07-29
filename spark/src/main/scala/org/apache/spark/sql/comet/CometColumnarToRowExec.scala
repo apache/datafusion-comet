@@ -45,6 +45,8 @@ import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
 import org.apache.spark.util.{SparkFatalException, Utils}
 import org.apache.spark.util.io.ChunkedByteBuffer
 
+import org.apache.comet.{CometConf, DirectColumnarToRowConverter}
+
 /**
  * Copied from Spark `ColumnarToRowExec`. Comet needs the fix for SPARK-50235 but cannot wait for
  * the fix to be released in Spark versions. We copy the implementation here to apply the fix.
@@ -70,19 +72,21 @@ case class CometColumnarToRowExec(child: SparkPlan)
     "numOutputRows" -> SQLMetrics.createMetric(sparkContext, "number of output rows"),
     "numInputBatches" -> SQLMetrics.createMetric(sparkContext, "number of input batches"))
 
+  private def useDirectConverter: Boolean =
+    CometConf.COMET_DIRECT_COLUMNAR_TO_ROW_ENABLED.get(conf) &&
+      DirectColumnarToRowConverter.supportsSchema(
+        StructType(output.map(a => StructField(a.name, a.dataType, a.nullable))))
+
   override def doExecute(): RDD[InternalRow] = {
     val numOutputRows = longMetric("numOutputRows")
     val numInputBatches = longMetric("numInputBatches")
     // This avoids calling `output` in the RDD closure, so that we don't need to include the entire
     // plan (this) in the closure.
     val localOutput = this.output
+    val direct = useDirectConverter
     child.executeColumnar().mapPartitionsInternal { batches =>
-      val toUnsafe = UnsafeProjection.create(localOutput, localOutput)
-      batches.flatMap { batch =>
-        numInputBatches += 1
-        numOutputRows += batch.numRows()
-        batch.rowIterator().asScala.map(toUnsafe)
-      }
+      CometColumnarToRowExec
+        .convertBatches(batches, localOutput, direct, numInputBatches, numOutputRows)
     }
   }
 
@@ -113,14 +117,14 @@ case class CometColumnarToRowExec(child: SparkPlan)
         val localOutput = this.output
         val broadcastColumnar = child.executeBroadcast()
         val serializedBatches = broadcastColumnar.value.asInstanceOf[Array[ChunkedByteBuffer]]
-        val toUnsafe = UnsafeProjection.create(localOutput, localOutput)
-        val rows = serializedBatches.iterator
+        val batches = serializedBatches.iterator
           .flatMap(CometUtils.decodeBatches(_, this.getClass.getSimpleName))
-          .flatMap { batch =>
-            numInputBatches += 1
-            numOutputRows += batch.numRows()
-            batch.rowIterator().asScala.map(toUnsafe)
-          }
+        val rows = CometColumnarToRowExec.convertBatches(
+          batches,
+          localOutput,
+          useDirectConverter,
+          numInputBatches,
+          numOutputRows)
 
         val mode = cometBroadcastExchange.get.mode
         val relation = mode.transform(rows, Some(numOutputRows.value))
@@ -302,4 +306,46 @@ case class CometColumnarToRowExec(child: SparkPlan)
 
   override protected def withNewChildInternal(newChild: SparkPlan): CometColumnarToRowExec =
     copy(child = newChild)
+}
+
+object CometColumnarToRowExec {
+
+  /**
+   * Converts columnar batches to rows, either through the allocation-free
+   * [[DirectColumnarToRowConverter]] or the default `rowIterator` plus `UnsafeProjection` path.
+   * Both paths reuse the returned row across calls; consumers must copy rows they retain.
+   */
+  private[comet] def convertBatches(
+      batches: Iterator[ColumnarBatch],
+      output: Seq[Attribute],
+      useDirectConverter: Boolean,
+      numInputBatches: SQLMetric,
+      numOutputRows: SQLMetric): Iterator[InternalRow] = {
+    if (useDirectConverter) {
+      val schema = StructType(output.map(a => StructField(a.name, a.dataType, a.nullable)))
+      val converter = new DirectColumnarToRowConverter(schema)
+      batches.flatMap { batch =>
+        numInputBatches += 1
+        numOutputRows += batch.numRows()
+        converter.setBatch(batch)
+        val numRows = batch.numRows()
+        new Iterator[InternalRow] {
+          private var i = 0
+          override def hasNext: Boolean = i < numRows
+          override def next(): InternalRow = {
+            val row = converter.convertRow(i)
+            i += 1
+            row
+          }
+        }
+      }
+    } else {
+      val toUnsafe = UnsafeProjection.create(output, output)
+      batches.flatMap { batch =>
+        numInputBatches += 1
+        numOutputRows += batch.numRows()
+        batch.rowIterator().asScala.map(toUnsafe)
+      }
+    }
+  }
 }

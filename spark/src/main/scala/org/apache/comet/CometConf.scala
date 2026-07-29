@@ -245,6 +245,20 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(true)
 
+  val COMET_DIRECT_COLUMNAR_TO_ROW_ENABLED: ConfigEntry[Boolean] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.columnarToRow.direct.enabled")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "Whether to use the direct columnar to row converter in the JVM columnar to row " +
+          "operator's non-codegen paths (including broadcast relation builds). The direct " +
+          "converter writes values straight from Arrow buffers into UnsafeRow format without " +
+          "per-value object allocation, which is significantly faster for decimal-heavy " +
+          "schemas. Schemas with unsupported data types fall back to the default conversion. " +
+          "Only applies when the JVM columnar to row operator is used " +
+          "(spark.comet.exec.columnarToRow.native.enabled=false).")
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_EXEC_SORT_MERGE_JOIN_WITH_JOIN_FILTER_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.exec.sortMergeJoinWithJoinFilter.enabled")
       .category(CATEGORY_ENABLE_EXEC)
