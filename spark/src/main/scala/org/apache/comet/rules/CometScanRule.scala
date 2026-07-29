@@ -88,12 +88,6 @@ case class CometScanRule(session: SparkSession)
       case _ => false
     }
 
-    def metadataCols(plan: SparkPlan): Seq[String] = {
-      plan.expressions.collect {
-        case a: Attribute if a.isMetadataCol => a.name
-      }
-    }
-
     def isIcebergMetadataTable(scanExec: BatchScanExec): Boolean = {
       // List of Iceberg metadata tables:
       // https://iceberg.apache.org/docs/latest/spark-queries/#inspecting-tables
@@ -130,10 +124,12 @@ case class CometScanRule(session: SparkSession)
       case scan if !CometConf.COMET_NATIVE_SCAN_ENABLED.get(conf) =>
         withFallbackReason(scan, "Comet Scan is not enabled")
 
-      case scan if metadataCols(scan).nonEmpty =>
-        withFallbackReason(
-          scan,
-          s"Metadata column(s) ${metadataCols(scan).mkString(", ")} is not supported")
+      // NOTE: the metadata-column bailout is NOT here. It applies to Comet's *built-in* scan
+      // handling, not to an out-of-tree contrib that may support metadata columns natively (the
+      // Delta contrib synthesises `_metadata.*` in its own reader). Rejecting here would decline
+      // such a scan before the contrib is ever offered it. Instead each transform path applies the
+      // guard right after its contrib hook declines -- see `transformV1Scan` / `transformV2Scan`.
+      // Coverage is unchanged: `isSupportedScanNode` admits only these two shapes.
 
       // data source V1
       case scanExec: FileSourceScanExec =>
@@ -150,6 +146,13 @@ case class CometScanRule(session: SparkSession)
 
     plan.transform {
       case scan if isSupportedScanNode(scan) => transformScan(scan)
+    }
+  }
+
+  /** Names of any metadata columns referenced by `plan`'s output expressions. */
+  private def metadataCols(plan: SparkPlan): Seq[String] = {
+    plan.expressions.collect {
+      case a: Attribute if a.isMetadataCol => a.name
     }
   }
 
@@ -170,9 +173,27 @@ case class CometScanRule(session: SparkSession)
 
     scanExec.relation match {
       case r: HadoopFsRelation =>
+        // Give any optional, out-of-tree scan contrib (e.g. Delta) first crack at this scan. On a
+        // default build no contrib is registered, so this returns None and we fall through to the
+        // vanilla scan path. A registered contrib either claims the scan (returning its marker
+        // node) or declines via its own `withFallbackReason` fallback message. A claiming contrib
+        // owns its own metadata-column handling -- which is why the guard below runs only after
+        // the contrib has declined.
+        CometScanContrib.tryTransformV1(plan, session, scanExec, r) match {
+          case Some(handled) => return handled
+          case None => // proceed with vanilla logic
+        }
+        if (metadataCols(scanExec).nonEmpty) {
+          return withFallbackReason(
+            scanExec,
+            s"Metadata column(s) ${metadataCols(scanExec).mkString(", ")} is not supported")
+        }
         if (!CometScanExec.isFileFormatSupported(r.fileFormat)) {
           return withFallbackReason(scanExec, s"Unsupported file format ${r.fileFormat}")
         }
+        // NOTE: the object_store scheme gate lives in `nativeScan` (below), shared with the
+        // non-contrib path. The contrib delegation above runs before it, so contrib scans are
+        // unaffected; vanilla V1 scans hit the gate when this method calls `nativeScan`.
         val hadoopConf = r.sparkSession.sessionState.newHadoopConfWithOptions(r.options)
 
         // TODO is this restriction valid for all native scan types?
@@ -299,6 +320,23 @@ case class CometScanRule(session: SparkSession)
   }
 
   private def transformV2Scan(scanExec: BatchScanExec): SparkPlan = {
+
+    // Give any optional, out-of-tree scan contrib (e.g. Lance) first crack at this V2 scan. On a
+    // default build no contrib is registered, so this returns None and we proceed with Comet's
+    // built-in V2 handling below. A registered contrib either claims the scan or declines via its
+    // own `withFallbackReason` fallback message.
+    CometScanContrib.tryTransformV2(scanExec) match {
+      case Some(handled) => return handled
+      case None => // proceed with vanilla logic
+    }
+
+    // Built-in V2 handling does not support metadata columns. Runs after the contrib hook so a
+    // contrib that synthesises them itself still gets the chance to claim the scan.
+    if (metadataCols(scanExec).nonEmpty) {
+      return withFallbackReason(
+        scanExec,
+        s"Metadata column(s) ${metadataCols(scanExec).mkString(", ")} is not supported")
+    }
 
     scanExec.scan match {
       case scan: CSVScan if COMET_CSV_V2_NATIVE_ENABLED.get() =>

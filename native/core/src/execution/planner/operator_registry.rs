@@ -152,5 +152,11 @@ fn get_operator_type(spark_operator: &Operator) -> Option<OperatorType> {
         OpStruct::CsvScan(_) => Some(OperatorType::CsvScan),
         OpStruct::ShuffleScan(_) => None, // Not yet in OperatorType enum
         OpStruct::BroadcastNestedLoopJoin(_) => None,
+        // Generic extension point for out-of-tree contrib scans (Delta, Lance, ...); not in
+        // OperatorType enum. The arm stays unconditional even in non-contrib builds because the
+        // proto enum is generated regardless of cargo features and Rust requires an exhaustive
+        // match. No contrib-specific logic lives here -- we just signal "no OperatorType mapping"
+        // so the supports-mixed-codegen check skips it.
+        OpStruct::ContribScan(_) => None,
     }
 }

@@ -249,7 +249,11 @@ pub fn release_runtime() {
     }
 }
 
-/// Returns a short name for an OpStruct variant.
+/// Returns a short name for an OpStruct variant. Used for tracing event names;
+/// no contrib-specific logic. The `OpStruct::ContribScan` arm is the generic
+/// extension point for out-of-tree contrib scans (Delta, Lance, ...); it stays
+/// unconditional even in non-contrib builds because the proto enum is generated
+/// regardless of cargo feature flags and Rust requires an exhaustive match.
 fn op_name(op: &OpStruct) -> &'static str {
     match op {
         OpStruct::Scan(_) => "Scan",
@@ -270,6 +274,7 @@ fn op_name(op: &OpStruct) -> &'static str {
         OpStruct::CsvScan(_) => "CsvScan",
         OpStruct::ShuffleScan(_) => "ShuffleScan",
         OpStruct::BroadcastNestedLoopJoin(_) => "BroadcastNestedLoopJoin",
+        OpStruct::ContribScan(_) => "ContribScan",
     }
 }
 

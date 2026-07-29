@@ -123,8 +123,13 @@ private[comet] object PlanDataInjector extends Logging {
   // `for (injector <- injectors if injector.canInject(op))` walk was paying N*M canInject calls
   // (N operators, M injectors) just to find no match. Keying by OpStructCase lets us skip the
   // iteration entirely for non-scan operators.
-  private val injectorsByKind: Map[Operator.OpStructCase, PlanDataInjector] =
-    injectors.map(i => i.opStructCase -> i).toMap
+  //
+  // Several injectors may share one kind: every out-of-tree contrib scan arrives as the SAME
+  // generic `CONTRIB_SCAN` envelope (distinguished by its `type_url`), so Delta and Lance both
+  // key here. Hence a Seq per kind rather than a single injector -- a `Map[kind, injector]` would
+  // silently drop all but the last contrib. Within a kind, `canInject` disambiguates.
+  private val injectorsByKind: Map[Operator.OpStructCase, Seq[PlanDataInjector]] =
+    injectors.groupBy(_.opStructCase)
 
   /**
    * Injects planning data into an Operator tree by finding nodes that need injection and applying
@@ -141,8 +146,8 @@ private[comet] object PlanDataInjector extends Logging {
 
     // O(1) by op kind, then a canInject confirm (which may inspect detail fields like `hasCommon`
     // / `!hasFilePartition`). Most operators in any tree are non-scan and skip the lookup body.
-    injectorsByKind.get(op.getOpStructCase) match {
-      case Some(injector) if injector.canInject(op) =>
+    injectorsByKind.get(op.getOpStructCase).flatMap(_.find(_.canInject(op))) match {
+      case Some(injector) =>
         injector.getKey(op) match {
           case Some(key) =>
             (commonByKey.get(key), partitionByKey.get(key)) match {
