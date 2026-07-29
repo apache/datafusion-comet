@@ -229,7 +229,7 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 
 | Function | Status | Implementation | Notes |
 | --- | --- | --- | --- |
-| `cast` | ✅ | Native | Some casts fall back; float-to-decimal is opt-in ([details](compatibility/expressions/cast.md)) |
+| `cast` | ✅ | Hybrid | Some casts fall back; float-to-decimal is opt-in ([details](compatibility/expressions/cast.md)) |
 
 ---
 
