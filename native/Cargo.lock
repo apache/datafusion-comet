@@ -1935,7 +1935,7 @@ dependencies = [
 
 [[package]]
 name = "datafusion-comet"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "arrow",
  "assertables",
@@ -1990,7 +1990,7 @@ dependencies = [
 
 [[package]]
 name = "datafusion-comet-common"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "arrow",
  "datafusion",
@@ -2001,7 +2001,7 @@ dependencies = [
 
 [[package]]
 name = "datafusion-comet-jni-bridge"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "arrow",
  "assertables",
@@ -2019,7 +2019,7 @@ dependencies = [
 
 [[package]]
 name = "datafusion-comet-proto"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "prost",
  "prost-build",
@@ -2027,7 +2027,7 @@ dependencies = [
 
 [[package]]
 name = "datafusion-comet-shuffle"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "arrow",
  "async-trait",
@@ -2055,7 +2055,7 @@ dependencies = [
 
 [[package]]
 name = "datafusion-comet-spark-expr"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "arrow",
  "base64 0.23.0",
