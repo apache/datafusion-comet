@@ -25,10 +25,17 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DATA_PATH="${1:-/tmp/shuffle-benchmark-data}"
-COMET_JAR="${COMET_JAR:-$SCRIPT_DIR/../../spark/target/comet-spark-spark3.5_2.12-0.14.0-SNAPSHOT.jar}"
+# Resolve the built jar without hardcoding the version, which changes every
+# development cycle and drops the `-SNAPSHOT` qualifier on release branches.
+COMET_JAR="${COMET_JAR:-$(ls "$SCRIPT_DIR"/../../spark/target/comet-spark-spark3.5_2.12-*.jar 2>/dev/null | grep -v -e sources -e tests | tail -1)}"
 SPARK_MASTER="${SPARK_MASTER:-local[*]}"
 EXECUTOR_MEMORY="${EXECUTOR_MEMORY:-16g}"
 EVENT_LOG_DIR="${EVENT_LOG_DIR:-/tmp/spark-events}"
+
+if [ ! -f "$COMET_JAR" ]; then
+  echo "Comet jar not found. Set COMET_JAR or run 'make release'." >&2
+  exit 1
+fi
 
 # Create event log directory
 mkdir -p "$EVENT_LOG_DIR"

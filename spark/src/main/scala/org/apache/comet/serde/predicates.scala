@@ -249,6 +249,11 @@ object CometIn extends CometExpressionSerde[In] with CodegenDispatchFallback {
   override def getUnsupportedReasons(): Seq[String] =
     Seq(ComparisonUtils.nonDefaultCollationDocReason)
 
+  override def getCompatibleNotes(): Seq[String] = Seq(
+    "For an empty `IN` list, Comet always returns `false` for a `NULL` operand. Spark returns" +
+      " `NULL` when `spark.sql.legacy.nullInEmptyListBehavior=true` (Spark 4.0+)" +
+      " ([#4786](https://github.com/apache/datafusion-comet/issues/4786)).")
+
   override def convert(
       expr: In,
       inputs: Seq[Attribute],
