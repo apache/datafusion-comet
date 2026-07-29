@@ -26,7 +26,7 @@ import scala.util.Random
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.{Column, CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.catalyst.expressions.{Alias, Cast, FromUnixTime, Literal, StructsToJson, TruncDate, TruncTimestamp}
-import org.apache.spark.sql.catalyst.optimizer.SimplifyExtractValueOps
+import org.apache.spark.sql.catalyst.optimizer.{ConvertToLocalRelation, OptimizeIn, SimplifyExtractValueOps}
 import org.apache.spark.sql.comet.CometProjectExec
 import org.apache.spark.sql.execution.{ProjectExec, SparkPlan}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
@@ -1709,6 +1709,32 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             // TODO: why with not in, the plan is only `LocalTableScan`?
             checkSparkAnswerAndOperator(s"SELECT * FROM $table WHERE id not in (1)")
             checkSparkAnswer(s"SELECT * FROM $table WHERE name not in ('Smith', 'Brown', NULL)")
+          }
+        }
+      }
+    }
+  }
+
+  test("null IN empty list honours legacy null-in-empty behavior") {
+    // Spark returns NULL for a NULL operand against an empty IN list when the legacy behavior is
+    // in effect (SPARK-44550): always on Spark 3.4, on by default on Spark 3.5, and whenever ANSI
+    // mode is disabled on Spark 4.0+. Comet's native `in` kernel always returns false, so the
+    // legacy case must leave the native path. Empty IN lists are not expressible in SQL and
+    // `OptimizeIn` folds them away, so build the expression via the DataFrame API with that rule
+    // (and `ConvertToLocalRelation`) excluded.
+    withSQLConf(
+      SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
+        Seq(ConvertToLocalRelation.ruleName, OptimizeIn.ruleName).mkString(",")) {
+      val data: Seq[(Integer, Int)] = Seq((1, 1), (null, 2))
+      withParquetTable(data, "tbl") {
+        // An unset config exercises the version-dependent default, which follows ANSI mode on
+        // Spark 4.0+ and is always the legacy behavior on Spark 3.x.
+        for (legacy <- Seq(Some("true"), Some("false"), None); ansi <- Seq("true", "false")) {
+          val legacyConf = legacy.map("spark.sql.legacy.nullInEmptyListBehavior" -> _).toSeq
+          withSQLConf(Seq(SQLConf.ANSI_ENABLED.key -> ansi) ++ legacyConf: _*) {
+            val df = sql("SELECT _1 AS a FROM tbl")
+              .select(col("a"), col("a").isin(), !col("a").isin())
+            checkSparkAnswer(df)
           }
         }
       }
