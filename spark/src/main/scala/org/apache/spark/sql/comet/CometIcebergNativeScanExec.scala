@@ -51,7 +51,7 @@ import org.apache.comet.serde.operator.CometIcebergNativeScan
  * `expressions` walk picks up the contained `DynamicPruningExpression(InSubqueryExec(...))`, and
  * the standard `prepare -> prepareSubqueries -> waitForSubqueries` lifecycle resolves it. The
  * lifecycle is invoked via `CometLeafExec.ensureSubqueriesResolved`, called from
- * `CometNativeExec.findAllPlanData` before `commonData` is read.
+ * `PlanDataInjector.findAllPlanData` before `commonData` is read.
  */
 case class CometIcebergNativeScanExec(
     override val nativeOp: Operator,
@@ -60,6 +60,7 @@ case class CometIcebergNativeScanExec(
     @transient override val originalPlan: BatchScanExec,
     override val serializedPlanOpt: SerializedPlan,
     metadataLocation: String,
+    scanHashCode: Int,
     @transient nativeIcebergScanMetadata: CometIcebergNativeScanMetadata)
     extends CometLeafExec {
 
@@ -69,12 +70,12 @@ case class CometIcebergNativeScanExec(
 
   /**
    * Lazy partition serialization, deferred until execution time. Triggered from `commonData` /
-   * `perPartitionData` (via `CometNativeExec.findAllPlanData`) and from `LazyIcebergMetric.value`
-   * (via Iceberg planning metrics). Lazy val semantics ensure single evaluation across entry
-   * points.
+   * `perPartitionData` (via `PlanDataInjector.findAllPlanData`) and from
+   * `LazyIcebergMetric.value` (via Iceberg planning metrics). Lazy val semantics ensure single
+   * evaluation across entry points.
    *
    * DPP InSubqueryExec values must already be resolved by the time this lazy val runs.
-   * `CometNativeExec.findAllPlanData` calls `ensureSubqueriesResolved` (which invokes Spark's
+   * `PlanDataInjector.findAllPlanData` calls `ensureSubqueriesResolved` (which invokes Spark's
    * `prepare -> waitForSubqueries`) before reading `commonData`. The `serializePartitions` call
    * below reads `originalPlan.runtimeFilters` indirectly through `inputRDD -> filteredPartitions`
    * and applies the resolved values to Iceberg's runtime filtering. `originalPlan.runtimeFilters`
@@ -258,6 +259,7 @@ case class CometIcebergNativeScanExec(
       originalPlan,
       newSerializedPlan,
       metadataLocation,
+      scanHashCode,
       nativeIcebergScanMetadata)
   }
 
@@ -271,6 +273,10 @@ case class CometIcebergNativeScanExec(
       null, // Don't need originalPlan for canonicalization
       SerializedPlan(None),
       metadataLocation,
+      // originalPlan is nulled here, so scanHashCode is the only field left that distinguishes
+      // scans differing solely in pushed-down filters. Dropping it lets ReuseExchange collapse
+      // them (see #4774).
+      scanHashCode,
       null
     ) // Don't need metadata for canonicalization
   }
@@ -296,6 +302,13 @@ case class CometIcebergNativeScanExec(
    * `originalPlan` (`@transient`) and `nativeIcebergScanMetadata` (`@transient`) are
    * intentionally omitted: they're recoverable from `metadataLocation` + the serialized plan and
    * including them would over-constrain equality across re-planning.
+   *
+   * `scanHashCode` (Iceberg's `SparkScan.hashCode()`, folding in pushed filters, snapshot,
+   * branch, and read schema) distinguishes scans that differ only in static pushed-down filters,
+   * so that ReuseExchange does not collapse two scans that read different data (see #4774). It is
+   * an `Int` and so carries a theoretical hash-collision risk, but `metadataLocation` (table +
+   * snapshot path) is compared alongside it, matching how Iceberg's `SparkBatch.equals` pairs the
+   * hash with `table.name()`.
    */
   override def equals(obj: Any): Boolean = {
     obj match {
@@ -303,14 +316,22 @@ case class CometIcebergNativeScanExec(
         this.metadataLocation == other.metadataLocation &&
         this.output == other.output &&
         this.serializedPlanOpt == other.serializedPlanOpt &&
-        this.runtimeFilters == other.runtimeFilters
+        this.runtimeFilters == other.runtimeFilters &&
+        this.scanHashCode == other.scanHashCode
       case _ =>
         false
     }
   }
 
   override def hashCode(): Int =
-    Objects.hashCode(metadataLocation, output.asJava, serializedPlanOpt, runtimeFilters)
+    Objects.hashCode(
+      metadataLocation,
+      output.asJava,
+      serializedPlanOpt,
+      runtimeFilters,
+      // Ascribe java.lang.Integer: Scala 2.12 rejects the implicit Int -> Object conversion into
+      // the Object... varargs of Guava's Objects.hashCode.
+      scanHashCode: java.lang.Integer)
 }
 
 object CometIcebergNativeScanExec {
@@ -330,6 +351,9 @@ object CometIcebergNativeScanExec {
       scanExec,
       SerializedPlan(None),
       metadataLocation,
+      // Capture Iceberg's scan hash now, while the transient scan is still available; it is
+      // needed for equality after canonicalization nulls originalPlan (see #4774).
+      scanExec.scan.hashCode(),
       nativeIcebergScanMetadata)
 
     scanExec.logicalLink.foreach(exec.setLogicalLink)

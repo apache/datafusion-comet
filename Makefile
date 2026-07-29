@@ -21,7 +21,7 @@ define spark_jvm_17_extra_args
 $(shell ./mvnw help:evaluate -q -DforceStdout -Dexpression=extraJavaTestArgs)
 endef
 
-# Build optional Comet native features (like hdfs e.g)
+# Build optional Comet native features (like hdfs-opendal e.g)
 FEATURES_ARG := $(shell ! [ -z $(COMET_FEATURES) ] && echo '--features=$(COMET_FEATURES)')
 
 all: core jvm

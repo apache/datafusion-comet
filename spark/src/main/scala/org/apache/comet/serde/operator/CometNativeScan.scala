@@ -126,9 +126,7 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with Logging {
       // Sink operators don't have children
       builder.clearChildren()
 
-      if (scan.conf.getConf(SQLConf.PARQUET_FILTER_PUSHDOWN_ENABLED) &&
-        CometConf.COMET_RESPECT_PARQUET_FILTER_PUSHDOWN.get(scan.conf)) {
-
+      if (scan.conf.getConf(SQLConf.PARQUET_FILTER_PUSHDOWN_ENABLED)) {
         val dataFilters = new ListBuffer[Expr]()
         for (filter <- scan.supportedDataFilters) {
           exprToProto(filter, scan.output) match {
@@ -214,6 +212,7 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with Logging {
         scan.conf.getConf(SQLConf.IGNORE_MISSING_PARQUET_FIELD_ID))
 
       commonBuilder.setAllowTypePromotion(CometConf.COMET_SCHEMA_EVOLUTION_ENABLED)
+      commonBuilder.setAllowTimestampLtzToNtz(CometConf.COMET_ALLOW_TIMESTAMP_LTZ_AS_NTZ)
 
       // Collect S3/cloud storage configurations
       val hadoopConf = scan.relation.sparkSession.sessionState

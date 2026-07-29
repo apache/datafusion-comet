@@ -21,11 +21,23 @@
 
 > Audit notes for expressions in this category that have been audited. Absence of an entry means the expression has not been audited yet, not that it is unsupported. See the user guide [Spark Expression Support] for current support status.
 
+## approx_count_distinct
+
+- Spark 3.4.3 (2026-07-03): registered as `expression[HyperLogLogPlusPlus]("approx_count_distinct")`, an `ImperativeAggregate` that hashes each non-null input with `XxHash64` (seed 42, floats normalized via `NormalizeNaNAndZero`) and keeps a HyperLogLog++ register buffer of `numWords` `Long`s (10 six-bit registers per word). The cardinality is estimated with linear counting for small inputs and bias-corrected HLL otherwise. Comet ports `HyperLogLogPlusPlusHelper` exactly, including the bias-correction tables, reuses Comet's Spark-compatible `xxhash64` for hashing, and stores the register buffer in Spark's identical packed-`Long` layout, so results are bit-identical to Spark and the partial-aggregation state matches Spark's `aggBufferSchema` (enabling mixed Comet/Spark partial and final aggregation). `relativeSD` (default 0.05) sets the precision `p`. Comet supports the input types its `xxhash64` hashes identically to Spark: boolean, integral, floating-point, `DecimalType` with precision <= 18, date/time, default-collation (UTF8_BINARY) string, and binary. Wider decimals (hashed through `BigDecimal`) and collated strings (hashed via the collation sort key) fall back to Spark.
+- Spark 3.5.8 (2026-07-03): algorithm and tables identical to 3.4.3.
+- Spark 4.0.1 (2026-07-03): `HyperLogLogPlusPlusHelper` moved to `catalyst.util` and `XxHash64Function.hash` gained collation parameters, but for the default `UTF8_BINARY` collation and non-string types the hash value is unchanged, so results match 3.4.3.
+- Spark 4.1.1 (2026-07-03): identical to 4.0.1.
+
 ## any
 
 - Spark 3.4.3 (audited 2026-05-26): registered as a SQL alias of `BoolOr`, which extends `RuntimeReplaceableAggregate` with `replacement = Max(child)`. Catalyst rewrites `any(x)` to `max(x)` before Comet sees the plan, so `any` is served by `CometMax` on a `BooleanType` column.
 - Spark 3.5.8 (audited 2026-05-26): identical to 3.4.3.
 - Spark 4.0.1 (audited 2026-05-26): identical to 3.4.3.
+
+## approx_percentile
+
+- Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1 (audited 2026-07-02): `ApproximatePercentile(child, percentageExpression, accuracyExpression)` is a `TypedImperativeAggregate` backed by a Greenwald-Khanna `PercentileDigest` quantile summary with relative error `1.0 / accuracy`. `child` accepts `NumericType`, `DateType`, `TimestampType`, `TimestampNTZType`, and interval types (all cast to `double` internally); `percentage` is a single literal or literal array in `[0.0, 1.0]`; `accuracy` is a positive literal (default 10000). NULL inputs are skipped; an empty or all-null group returns NULL. `approx_percentile` is a SQL alias for the primary function name `percentile_approx`.
+- `CometApproxPercentile` maps the byte, short, int, long, float, and double input forms to a native Greenwald-Khanna quantile summary port with the same insert/compress/merge/query algorithm and relative error, casting the result back to the input type. `percentage` and `accuracy` must be foldable literals, matching Spark. Date, timestamp, interval, and decimal inputs fall back to Spark.
 
 ## avg
 
@@ -38,5 +50,29 @@
 - Spark 3.4.3 (2026-05-26)
 - Spark 3.5.8 (2026-05-26)
 - Spark 4.0.1 (2026-05-26)
+
+## collect_list
+
+- Spark 3.4.3 (audited 2026-06-24): `CollectList` extends `Collect[ArrayBuffer[Any]]`, returns `ArrayType(child.dataType, containsNull = false)`, ignores NULL inputs in `update()` (Hive-compatible semantics), and yields an empty array as `defaultResult`. `nullable = false`. No `checkInputDataTypes` override, so any input type is accepted (including STRUCT, ARRAY, MAP). Registered as both `collect_list` and `array_agg` aliases in `FunctionRegistry`.
+- Spark 3.5.8 (audited 2026-06-24): identical to 3.4.3.
+- Spark 4.0.1 (audited 2026-06-24): only structural change is adding `with UnaryLike[Expression]` to the case class (no behavior change).
+- Spark 4.1.1 (audited 2026-06-24): identical to 4.0.1.
+- Comet implementation: native side delegates to `datafusion_spark::function::aggregate::collect::SparkCollectList`, which wraps `ArrayAggAccumulator` with `ignore_nulls = true` and converts a final NULL accumulator state to an empty array (matching Spark's `defaultResult`). The native return type is `List(Field, containsNull = true)`, while Spark uses `containsNull = false`. Because nulls are filtered before insertion, no nulls actually appear in the array, so this is a schema-shape difference only and tests using `checkSparkAnswerAndOperator` accept it (same pattern already in use for `collect_set`).
+- Spark 4.2 (preview): `CollectList` and `CollectSet` gain an `ignoreNulls` field (default `true`); `RESPECT NULLS` sets it to `false` and keeps null elements. The native path always drops nulls, so `CometCollectShim` reads the field per Spark version (always `true` on 3.4-4.1) and `CometCollectList` / `CometCollectSet` report `Unsupported` when it is `false`, falling back to Spark.
+
+## median
+
+- Spark 3.4.3 (audited 2026-06-24): `Median(child)` is a `RuntimeReplaceableAggregate` with `replacement = Percentile(child, Literal(0.5))`. Catalyst rewrites `median(x)` to `percentile(x, 0.5)` before Comet sees the plan, so it is served by `CometPercentile`.
+- Spark 3.5.8 (audited 2026-06-24): identical to 3.4.3.
+- Spark 4.0.1 (audited 2026-06-24): `replacement` becomes `lazy val`; semantics unchanged.
+- Spark 4.1.1 (audited 2026-06-24): identical to 4.0.1.
+
+## percentile
+
+- Spark 3.4.3 (audited 2026-06-24): `Percentile(child, percentageExpression, frequencyExpression, ..., reverse)` over `PercentileBase`. Exact percentile using `index = p * (n - 1)` linear interpolation, NULL inputs skipped, empty/all-null group returns NULL. `CometPercentile` maps the single-literal-percentage, default-frequency, numeric-input, ascending form to DataFusion's `percentile_cont` (same interpolation). Array-of-percentages, a non-default frequency argument, descending order, and interval inputs fall back to Spark.
+- Spark 3.5.8 (audited 2026-06-24): ordering centralized via `PhysicalDataType.ordering`; behavior identical to 3.4.3.
+- Spark 4.0.1 (audited 2026-06-24): adds `PercentileCont`/`PercentileDisc` builders and `SupportsOrderingWithinGroup`, enabling `percentile_cont(p) WITHIN GROUP (ORDER BY col)`, which rewrites to `Percentile(col, p, reverse)`. The ascending form runs natively; the `DESC` form sets `reverse = true` and falls back to Spark because the native `percentile_cont` always interpolates in ascending order.
+- Spark 4.1.1 (audited 2026-06-24): identical to 4.0.1.
+- `CometPercentile` reports `Compatible` for the single-literal-percentage, default-frequency, numeric-input, ascending form and runs it natively by default. Every other form is `Unsupported` and falls back to Spark.
 
 [Spark Expression Support]: ../../user-guide/latest/expressions.md

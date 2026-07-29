@@ -1,15 +1,15 @@
-TakeOrderedAndProject
-+- Project
-   +-  Window [COMET: WindowExec is not fully compatible with Spark (Native WindowExec has known correctness issues). To enable it anyway, set spark.comet.operator.WindowExec.allowIncompatible=true. For more information, refer to the Comet Compatibility Guide (https://datafusion.apache.org/comet/user-guide/compatibility.html).]
-      +- CometNativeColumnarToRow
+CometNativeColumnarToRow
++- CometTakeOrderedAndProject
+   +- CometProject
+      +- CometWindowExec
          +- CometSort
             +- CometExchange
                +- CometHashAggregate
-                  +- CometColumnarExchange
-                     +- HashAggregate
-                        +- Union
-                           :-  HashAggregate [COMET: Spark Final aggregate without Comet Partial requires compatible intermediate buffer formats]
-                           :  +- Exchange
+                  +- CometExchange
+                     +- CometHashAggregate
+                        +- CometUnion
+                           :- CometHashAggregate
+                           :  +- CometColumnarExchange
                            :     +- HashAggregate
                            :        +- Project
                            :           +- BroadcastHashJoin
@@ -58,11 +58,11 @@ TakeOrderedAndProject
                            :                                                              +- CometProject
                            :                                                                 +- CometFilter
                            :                                                                    +- CometNativeScan parquet spark_catalog.default.date_dim
-                           :-  HashAggregate [COMET: Spark Final aggregate without Comet Partial requires compatible intermediate buffer formats]
-                           :  +- Exchange
-                           :     +- HashAggregate
-                           :        +-  HashAggregate [COMET: Spark Final aggregate without Comet Partial requires compatible intermediate buffer formats]
-                           :           +- Exchange
+                           :- CometHashAggregate
+                           :  +- CometExchange
+                           :     +- CometHashAggregate
+                           :        +- CometHashAggregate
+                           :           +- CometColumnarExchange
                            :              +- HashAggregate
                            :                 +- Project
                            :                    +- BroadcastHashJoin
@@ -111,11 +111,11 @@ TakeOrderedAndProject
                            :                                                                       +- CometProject
                            :                                                                          +- CometFilter
                            :                                                                             +- CometNativeScan parquet spark_catalog.default.date_dim
-                           +-  HashAggregate [COMET: Spark Final aggregate without Comet Partial requires compatible intermediate buffer formats]
-                              +- Exchange
-                                 +- HashAggregate
-                                    +-  HashAggregate [COMET: Spark Final aggregate without Comet Partial requires compatible intermediate buffer formats]
-                                       +- Exchange
+                           +- CometHashAggregate
+                              +- CometExchange
+                                 +- CometHashAggregate
+                                    +- CometHashAggregate
+                                       +- CometColumnarExchange
                                           +- HashAggregate
                                              +- Project
                                                 +- BroadcastHashJoin
@@ -165,4 +165,4 @@ TakeOrderedAndProject
                                                                                                       +- CometFilter
                                                                                                          +- CometNativeScan parquet spark_catalog.default.date_dim
 
-Comet accelerated 100 out of 156 eligible operators (64%). Final plan contains 10 transitions between Spark and Comet.
+Comet accelerated 117 out of 156 eligible operators (75%). Final plan contains 10 transitions between Spark and Comet.

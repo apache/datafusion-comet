@@ -57,9 +57,11 @@ method on any worker thread, and may move it between threads across polls. Any s
 in the operator struct or be shared via `Arc`.
 
 **JNI calls work from any thread, but have overhead.** `JVMClasses::get_env()` calls
-`AttachCurrentThread`, which acquires JVM internal locks. The `AttachGuard` detaches the thread
-when dropped. Repeated attach/detach cycles on tokio workers add overhead, so avoid calling
-into the JVM on hot paths during stream execution.
+`AttachCurrentThread`, which acquires JVM internal locks. The attachment is cached in
+thread-local storage and is only released when the worker thread itself exits, not when the
+`AttachGuard` is dropped. This is why the tokio runtime has to be shut down (releasing its
+worker threads) for the JVM to be able to exit. Acquiring the JVM locks on each `get_env()`
+call adds overhead, so avoid calling into the JVM on hot paths during stream execution.
 
 **Do not call `TaskContext.get()` from JVM callbacks during execution.** Spark's `TaskContext` is
 a `ThreadLocal` on the executor task thread. JVM methods invoked from tokio worker threads will
@@ -84,7 +86,9 @@ to unwrap decryption keys during Parquet reads. It uses a stored `GlobalRef` and
 
 ### The tokio runtime
 
-The runtime is created once per executor JVM in a `Lazy<Runtime>` static:
+The runtime is stored in a `Mutex<Option<Runtime>>` static and created lazily on first use. It
+is torn down on plugin shutdown (via `release_runtime`) so that the tokio worker threads exit
+and the JVM can shut down cleanly:
 
 - **Worker threads:** `num_cpus` by default, configurable via `COMET_WORKER_THREADS`
 - **Max blocking threads:** 512 by default, configurable via `COMET_MAX_BLOCKING_THREADS`

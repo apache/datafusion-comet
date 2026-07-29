@@ -22,12 +22,13 @@ use crate::math_funcs::abs::abs;
 use crate::math_funcs::checked_arithmetic::{checked_add, checked_div, checked_mul, checked_sub};
 use crate::math_funcs::log::spark_log;
 use crate::math_funcs::modulo_expr::spark_modulo;
+use crate::math_funcs::pow::spark_pow;
 use crate::{
     spark_ceil, spark_day_name, spark_decimal_div, spark_decimal_integral_div, spark_floor,
     spark_isnan, spark_lpad, spark_make_decimal, spark_month_name, spark_read_side_padding,
     spark_round, spark_rpad, spark_to_time, spark_unhex, spark_unscaled_value, EvalMode,
-    SparkArrayCompact, SparkArrayPositionFunc, SparkArraySlice, SparkArraysOverlap, SparkContains,
-    SparkDateDiff, SparkDateFromUnixDate, SparkDateTrunc, SparkMakeDate, SparkMakeTime,
+    SparkArrayPositionFunc, SparkArraySlice, SparkArraysOverlap, SparkContains, SparkDateDiff,
+    SparkDateFromUnixDate, SparkDateTrunc, SparkFlatten, SparkMakeDate, SparkMakeTime,
     SparkNextDay, SparkSecondsToTimestamp, SparkSizeFunc,
 };
 use arrow::datatypes::DataType;
@@ -38,7 +39,6 @@ use datafusion::logical_expr::{
     Volatility,
 };
 use datafusion::physical_plan::ColumnarValue;
-use std::any::Any;
 use std::fmt::Debug;
 use std::sync::Arc;
 
@@ -141,7 +141,9 @@ pub fn create_comet_physical_fun_with_eval_mode(
             make_comet_scalar_udf!("unscaled_value", func, without data_type)
         }
         "make_decimal" => {
-            make_comet_scalar_udf!("make_decimal", spark_make_decimal, data_type)
+            // fail_on_error corresponds to Spark's nullOnOverflow = false (ANSI mode): the
+            // unscaled long must fit the target precision or the query fails.
+            make_comet_scalar_udf!("make_decimal", spark_make_decimal, data_type, fail_on_error)
         }
         "unhex" => {
             let func = Arc::new(spark_unhex);
@@ -194,9 +196,21 @@ pub fn create_comet_physical_fun_with_eval_mode(
             let func = Arc::new(spark_log);
             make_comet_scalar_udf!("spark_log", func, without data_type)
         }
+        "pow" => {
+            let func = Arc::new(spark_pow);
+            make_comet_scalar_udf!("pow", func, without data_type)
+        }
+        "base64" => {
+            let func = Arc::new(crate::string_funcs::spark_base64);
+            make_comet_scalar_udf!("base64", func, without data_type)
+        }
         "split" => {
             let func = Arc::new(crate::string_funcs::spark_split);
             make_comet_scalar_udf!("split", func, without data_type)
+        }
+        "split_sql" => {
+            let func = Arc::new(crate::string_funcs::spark_split_sql);
+            make_comet_scalar_udf!("split_sql", func, without data_type)
         }
         "regexp_extract" => {
             let func = Arc::new(crate::string_funcs::spark_regexp_extract);
@@ -217,6 +231,7 @@ pub fn create_comet_physical_fun_with_eval_mode(
         "to_time" => {
             make_comet_scalar_udf!("to_time", spark_to_time, without data_type, fail_on_error)
         }
+        "flatten" => Ok(Arc::new(ScalarUDF::new_from_impl(SparkFlatten::new()))),
         // make_date and next_day must be constructed with the ANSI flag (fail_on_error) so they
         // throw on invalid input under ANSI rather than returning NULL.
         "make_date" => Ok(Arc::new(ScalarUDF::new_from_impl(SparkMakeDate::new(
@@ -225,6 +240,10 @@ pub fn create_comet_physical_fun_with_eval_mode(
         "next_day" => Ok(Arc::new(ScalarUDF::new_from_impl(SparkNextDay::new(
             fail_on_error,
         )))),
+        "levenshtein" => {
+            let func = Arc::new(crate::string_funcs::spark_levenshtein);
+            make_comet_scalar_udf!("levenshtein", func, without data_type)
+        }
         _ => registry.udf(fun_name).map_err(|e| {
             DataFusionError::Execution(format!(
                 "Function {fun_name} not found in the registry: {e}",
@@ -235,7 +254,6 @@ pub fn create_comet_physical_fun_with_eval_mode(
 
 fn all_scalar_functions() -> Vec<Arc<ScalarUDF>> {
     vec![
-        Arc::new(ScalarUDF::new_from_impl(SparkArrayCompact::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkArrayPositionFunc::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkArraySlice::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkArraysOverlap::default())),
@@ -243,6 +261,7 @@ fn all_scalar_functions() -> Vec<Arc<ScalarUDF>> {
         Arc::new(ScalarUDF::new_from_impl(SparkDateDiff::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkDateFromUnixDate::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkDateTrunc::default())),
+        Arc::new(ScalarUDF::new_from_impl(SparkFlatten::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkMakeDate::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkMakeTime::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkNextDay::default())),
@@ -316,10 +335,6 @@ impl CometScalarFunction {
 }
 
 impl ScalarUDFImpl for CometScalarFunction {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn name(&self) -> &str {
         self.name.as_str()
     }

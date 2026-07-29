@@ -30,16 +30,23 @@
 //!   - false if no overlap and neither array contains null elements
 
 use arrow::array::{
-    Array, ArrayRef, BooleanArray, FixedSizeListArray, GenericListArray, OffsetSizeTrait, Scalar,
-    StructArray,
+    Array, ArrayRef, AsArray, BooleanArray, FixedSizeListArray, GenericListArray,
+    GenericStringArray, OffsetSizeTrait, PrimitiveArray, Scalar, StructArray,
 };
+use arrow::buffer::NullBuffer;
 use arrow::compute::kernels::cmp::eq;
-use arrow::datatypes::{DataType, FieldRef};
-use datafusion::common::{exec_err, utils::take_function_args, Result, ScalarValue};
+use arrow::datatypes::{
+    ArrowPrimitiveType, DataType, Date32Type, Date64Type, Decimal128Type, FieldRef, Float32Type,
+    Float64Type, Int16Type, Int32Type, Int64Type, Int8Type, TimeUnit, TimestampMicrosecondType,
+    TimestampMillisecondType, TimestampNanosecondType, TimestampSecondType, UInt16Type, UInt32Type,
+    UInt64Type, UInt8Type,
+};
+use datafusion::common::{exec_err, utils::take_function_args, HashSet, Result, ScalarValue};
 use datafusion::logical_expr::{
     ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, TypeSignature, Volatility,
 };
-use std::any::Any;
+use std::hash::Hash;
+use std::ops::Range;
 use std::sync::Arc;
 
 #[derive(Debug, PartialEq, Eq, Hash)]
@@ -62,10 +69,6 @@ impl SparkArraysOverlap {
 }
 
 impl ScalarUDFImpl for SparkArraysOverlap {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn name(&self) -> &str {
         "spark_arrays_overlap"
     }
@@ -157,6 +160,234 @@ impl ScalarUDFImpl for SparkArraysOverlap {
 /// - null if no definite overlap but either array contains null elements
 /// - false otherwise
 fn arrays_overlap_list<OffsetSize: OffsetSizeTrait>(
+    left: &GenericListArray<OffsetSize>,
+    right: &GenericListArray<OffsetSize>,
+) -> Result<ArrayRef> {
+    let left_values = left.values();
+    let right_values = right.values();
+
+    if left_values.data_type() != right_values.data_type() {
+        return arrays_overlap_list_generic(left, right);
+    }
+
+    // Fast paths for flat element types: probe the flat value buffers directly instead of
+    // slicing each row and running an Arrow compare kernel once per probe element.
+    macro_rules! flat_fast_path {
+        ($l:expr, $r:expr) => {
+            return Ok(overlap_rows(left, right, flat_row_overlap($l, $r)))
+        };
+    }
+    macro_rules! primitive_fast_path {
+        ($t:ty) => {
+            flat_fast_path!(
+                left_values.as_primitive::<$t>(),
+                right_values.as_primitive::<$t>()
+            )
+        };
+    }
+
+    match left_values.data_type() {
+        DataType::Boolean => flat_fast_path!(left_values.as_boolean(), right_values.as_boolean()),
+        DataType::Int8 => primitive_fast_path!(Int8Type),
+        DataType::Int16 => primitive_fast_path!(Int16Type),
+        DataType::Int32 => primitive_fast_path!(Int32Type),
+        DataType::Int64 => primitive_fast_path!(Int64Type),
+        DataType::UInt8 => primitive_fast_path!(UInt8Type),
+        DataType::UInt16 => primitive_fast_path!(UInt16Type),
+        DataType::UInt32 => primitive_fast_path!(UInt32Type),
+        DataType::UInt64 => primitive_fast_path!(UInt64Type),
+        DataType::Float32 => primitive_fast_path!(Float32Type),
+        DataType::Float64 => primitive_fast_path!(Float64Type),
+        DataType::Date32 => primitive_fast_path!(Date32Type),
+        DataType::Date64 => primitive_fast_path!(Date64Type),
+        DataType::Decimal128(_, _) => primitive_fast_path!(Decimal128Type),
+        DataType::Timestamp(TimeUnit::Second, _) => primitive_fast_path!(TimestampSecondType),
+        DataType::Timestamp(TimeUnit::Millisecond, _) => {
+            primitive_fast_path!(TimestampMillisecondType)
+        }
+        DataType::Timestamp(TimeUnit::Microsecond, _) => {
+            primitive_fast_path!(TimestampMicrosecondType)
+        }
+        DataType::Timestamp(TimeUnit::Nanosecond, _) => {
+            primitive_fast_path!(TimestampNanosecondType)
+        }
+        DataType::Utf8 => flat_fast_path!(
+            left_values.as_string::<i32>(),
+            right_values.as_string::<i32>()
+        ),
+        DataType::LargeUtf8 => flat_fast_path!(
+            left_values.as_string::<i64>(),
+            right_values.as_string::<i64>()
+        ),
+        _ => arrays_overlap_list_generic(left, right),
+    }
+}
+
+/// Drives the row loop for the flat fast paths. `row_overlap` reports whether the two element
+/// ranges share a non-null value; null bookkeeping is identical to the generic path: when there
+/// is no definite overlap, the row is null if either side holds a null element.
+fn overlap_rows<OffsetSize: OffsetSizeTrait>(
+    left: &GenericListArray<OffsetSize>,
+    right: &GenericListArray<OffsetSize>,
+    mut row_overlap: impl FnMut(Range<usize>, Range<usize>) -> bool,
+) -> ArrayRef {
+    let len = left.len();
+    let left_offsets = left.offsets();
+    let right_offsets = right.offsets();
+    let left_element_nulls = left.values().nulls();
+    let right_element_nulls = right.values().nulls();
+
+    let mut builder = BooleanArray::builder(len);
+
+    for i in 0..len {
+        if left.is_null(i) || right.is_null(i) {
+            builder.append_null();
+            continue;
+        }
+
+        let left_range = left_offsets[i].as_usize()..left_offsets[i + 1].as_usize();
+        let right_range = right_offsets[i].as_usize()..right_offsets[i + 1].as_usize();
+
+        if left_range.is_empty() || right_range.is_empty() {
+            builder.append_value(false);
+        } else if row_overlap(left_range.clone(), right_range.clone()) {
+            builder.append_value(true);
+        } else if range_has_null(left_element_nulls, left_range)
+            || range_has_null(right_element_nulls, right_range)
+        {
+            builder.append_null();
+        } else {
+            builder.append_value(false);
+        }
+    }
+
+    Arc::new(builder.finish())
+}
+
+/// True if the validity bitmap marks any element in `range` as null. Slicing counts the bitmap a
+/// word at a time rather than testing each element.
+fn range_has_null(nulls: Option<&NullBuffer>, range: Range<usize>) -> bool {
+    nulls.is_some_and(|n| n.null_count() > 0 && n.slice(range.start, range.len()).null_count() > 0)
+}
+
+/// Projects a native value onto a hashable key whose equality matches the Arrow compare kernels:
+/// the value itself for integral types, the bit pattern for floats. Arrow orders floats by total
+/// order rather than IEEE semantics (NaN equals NaN, and 0.0 does not equal -0.0), which is
+/// exactly bit equality.
+trait OverlapKey: Copy {
+    type Key: Hash + Eq + Copy;
+
+    fn overlap_key(self) -> Self::Key;
+}
+
+macro_rules! identity_overlap_key {
+    ($($t:ty),*) => {
+        $(impl OverlapKey for $t {
+            type Key = $t;
+
+            fn overlap_key(self) -> $t {
+                self
+            }
+        })*
+    };
+}
+identity_overlap_key!(i8, i16, i32, i64, i128, u8, u16, u32, u64);
+
+impl OverlapKey for f32 {
+    type Key = u32;
+
+    fn overlap_key(self) -> u32 {
+        self.to_bits()
+    }
+}
+
+impl OverlapKey for f64 {
+    type Key = u64;
+
+    fn overlap_key(self) -> u64 {
+        self.to_bits()
+    }
+}
+
+/// A flat element array whose value at an index reduces to a hashable key, or `None` when the
+/// element is null and so can never take part in an overlap.
+trait KeyedValues<'a> {
+    type Key: Hash + Eq + Copy;
+
+    fn key_at(&self, i: usize) -> Option<Self::Key>;
+}
+
+impl<'a, T: ArrowPrimitiveType> KeyedValues<'a> for &'a PrimitiveArray<T>
+where
+    T::Native: OverlapKey,
+{
+    type Key = <T::Native as OverlapKey>::Key;
+
+    fn key_at(&self, i: usize) -> Option<Self::Key> {
+        (!self.is_null(i)).then(|| self.value(i).overlap_key())
+    }
+}
+
+impl<'a> KeyedValues<'a> for &'a BooleanArray {
+    type Key = bool;
+
+    fn key_at(&self, i: usize) -> Option<bool> {
+        (!self.is_null(i)).then(|| self.value(i))
+    }
+}
+
+impl<'a, S: OffsetSizeTrait> KeyedValues<'a> for &'a GenericStringArray<S> {
+    type Key = &'a str;
+
+    fn key_at(&self, i: usize) -> Option<&'a str> {
+        let values: &'a GenericStringArray<S> = self;
+        (!values.is_null(i)).then(|| values.value(i))
+    }
+}
+
+/// Above this many pairwise comparisons a hash probe beats the nested scan.
+const NESTED_SCAN_BUDGET: usize = 256;
+
+/// Row overlap for flat element types. The scratch set is reused across rows.
+fn flat_row_overlap<'a, V>(left: V, right: V) -> impl FnMut(Range<usize>, Range<usize>) -> bool + 'a
+where
+    V: KeyedValues<'a> + Copy + 'a,
+{
+    let mut seen: HashSet<V::Key> = HashSet::new();
+
+    move |left_range, right_range| {
+        // Probe with the smaller side so the inner loop, and the hash table, stay small.
+        let (probe, probe_range, search, search_range) = if left_range.len() <= right_range.len() {
+            (left, left_range, right, right_range)
+        } else {
+            (right, right_range, left, left_range)
+        };
+
+        if probe_range.len() * search_range.len() <= NESTED_SCAN_BUDGET {
+            for pi in probe_range {
+                let Some(key) = probe.key_at(pi) else {
+                    continue;
+                };
+                for si in search_range.clone() {
+                    if search.key_at(si) == Some(key) {
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }
+
+        seen.clear();
+        seen.reserve(probe_range.len());
+        seen.extend(probe_range.filter_map(|pi| probe.key_at(pi)));
+        search_range
+            .into_iter()
+            .any(|si| search.key_at(si).is_some_and(|key| seen.contains(&key)))
+    }
+}
+
+/// Fallback for nested and otherwise unhandled element types.
+fn arrays_overlap_list_generic<OffsetSize: OffsetSizeTrait>(
     left: &GenericListArray<OffsetSize>,
     right: &GenericListArray<OffsetSize>,
 ) -> Result<ArrayRef> {

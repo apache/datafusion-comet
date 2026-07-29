@@ -28,8 +28,9 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.internal.config.{EXECUTOR_MEMORY, EXECUTOR_MEMORY_OVERHEAD, EXECUTOR_MEMORY_OVERHEAD_FACTOR}
 import org.apache.spark.sql.internal.StaticSQLConf
 
+import org.apache.comet.{CometSparkSessionExtensions, NativeBase}
 import org.apache.comet.CometConf.{COMET_METRICS_ENABLED, COMET_ONHEAP_ENABLED}
-import org.apache.comet.CometSparkSessionExtensions
+import org.apache.comet.annotation.Public
 
 /**
  * Comet driver plugin. This class is loaded by Spark's plugin framework. It will be instantiated
@@ -95,6 +96,8 @@ class CometDriverPlugin extends DriverPlugin with Logging with ShimCometDriverPl
   override def shutdown(): Unit = {
     logInfo("CometDriverPlugin shutdown")
 
+    NativeBase.releaseNative()
+
     super.shutdown()
   }
 
@@ -148,12 +151,31 @@ object CometDriverPlugin extends Logging {
   }
 }
 
+class CometExecutorPlugin extends ExecutorPlugin with Logging {
+
+  override def init(ctx: PluginContext, extraConf: ju.Map[String, String]): Unit = {
+    logInfo("CometExecutorPlugin init")
+
+    super.init(ctx, extraConf)
+  }
+
+  override def shutdown(): Unit = {
+    logInfo("CometExecutorPlugin shutdown")
+
+    NativeBase.releaseNative()
+
+    super.shutdown()
+  }
+
+}
+
 /**
  * The Comet plugin for Spark. To enable this plugin, set the config "spark.plugins" to
  * `org.apache.spark.CometPlugin`
  */
+@Public
 class CometPlugin extends SparkPlugin with Logging {
   override def driverPlugin(): DriverPlugin = new CometDriverPlugin
 
-  override def executorPlugin(): ExecutorPlugin = null
+  override def executorPlugin(): ExecutorPlugin = new CometExecutorPlugin
 }

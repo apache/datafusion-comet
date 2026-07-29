@@ -19,15 +19,16 @@
 
 package org.apache.comet.shims
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, DayName, Expression, Literal, MonthName, StructsToXml, XmlToStructs}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, DayName, Expression, Literal, MonthName, StringSplitSQL, StructsToXml, XmlToStructs}
 import org.apache.spark.sql.catalyst.expressions.csv.SchemaOfCsvEvaluator
 import org.apache.spark.sql.catalyst.expressions.json.{JsonExpressionUtils, SchemaOfJsonEvaluator}
 import org.apache.spark.sql.catalyst.expressions.objects.{Invoke, StaticInvoke}
 import org.apache.spark.sql.catalyst.expressions.xml.{XmlExpressionEvalUtils, XPathEvaluator}
 
+import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 import org.apache.comet.serde.CometScalaUDF
 import org.apache.comet.serde.ExprOuterClass.Expr
-import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithFallbackReason, scalarFunctionExprToProtoWithReturnType}
+import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, hasNonDefaultStringCollation, optExprWithFallbackReason, scalarFunctionExprToProtoWithReturnType}
 
 /**
  * Expression conversions shared across all Spark 4.x minor versions, compiled from the
@@ -37,6 +38,10 @@ import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithFa
  * `CometExprShim`.
  */
 trait CometExprShim4x {
+
+  private val stringSplitSQLCollationReason =
+    "StringSplitSQL does not support non-UTF8_BINARY collations " +
+      "(https://github.com/apache/datafusion-comet/issues/2190)"
 
   /**
    * `dayname` / `monthname` (Spark 4.0+) map a `DateType` value to a fixed US-English abbreviated
@@ -60,6 +65,32 @@ trait CometExprShim4x {
         scalarFunctionExprToProtoWithReturnType("monthname", m.dataType, false, childExpr)
       optExprWithFallbackReason(nameExpr, m, m.child)
     case _ => None
+  }
+
+  /**
+   * `split_part` lowers to `element_at(StringSplitSQL(...), partNum)`. StringSplitSQL uses a
+   * literal delimiter instead of a regex pattern, unlike `split` / `StringSplit`.
+   */
+  protected def convertStringSplitSQL(
+      expr: StringSplitSQL,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[Expr] = {
+    if (hasNonDefaultStringCollation(expr.dataType) ||
+      hasNonDefaultStringCollation(expr.str.dataType) ||
+      hasNonDefaultStringCollation(expr.delimiter.dataType)) {
+      withFallbackReason(expr, stringSplitSQLCollationReason)
+      return None
+    }
+
+    val strExpr = exprToProtoInternal(expr.str, inputs, binding)
+    val delimiterExpr = exprToProtoInternal(expr.delimiter, inputs, binding)
+    val splitExpr = scalarFunctionExprToProtoWithReturnType(
+      "split_sql",
+      expr.dataType,
+      false,
+      strExpr,
+      delimiterExpr)
+    optExprWithFallbackReason(splitExpr, expr, expr.str, expr.delimiter)
   }
 
   // Spark 4.x lowers the RuntimeReplaceable structured-text functions to an evaluator-backed

@@ -24,17 +24,20 @@ CREATE TABLE test_array_concat(c1 array<int>, c2 array<int>, c3 array<int>, c4 a
 statement
 INSERT INTO test_array_concat VALUES (array(0, 1), array(2, 3), array(), array(null), null), (array(1, 2), array(3, 4), array(), array(null), null), (array(2, 3), array(4, 5), array(), array(null), null)
 
-query expect_fallback(CONCAT supports only string input parameters)
+-- Concat mixes in CodegenDispatchFallback, so non-string (array) children have no native path
+-- but route through the JVM codegen dispatcher (Spark's own Concat.doGenCode inside the Comet
+-- pipeline) and stay native while matching Spark exactly.
+query
 SELECT concat(c1, c2) AS x FROM test_array_concat
 
-query expect_fallback(CONCAT supports only string input parameters)
+query
 SELECT concat(c1, c1) AS x FROM test_array_concat
 
-query expect_fallback(CONCAT supports only string input parameters)
+query
 SELECT concat(c1, c2, c3) AS x FROM test_array_concat
 
-query expect_fallback(CONCAT supports only string input parameters)
+query
 SELECT concat(c1, c2, c3, c5) AS x FROM test_array_concat
 
-query expect_fallback(CONCAT supports only string input parameters)
+query
 SELECT concat(concat(c1, c2, c3), concat(c1, c3)) AS x FROM test_array_concat

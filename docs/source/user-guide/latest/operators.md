@@ -45,16 +45,16 @@ omitted from the tables below and may be reconsidered based on demand:
 - **Structured Streaming operators** (`StateStoreSaveExec`, `StateStoreRestoreExec`, `StreamingSymmetricHashJoinExec`, and similar): Comet targets batch execution.
 - **Cartesian / cross joins** (`CartesianProductExec`): rare and expensive, with little acceleration benefit.
 - **Sampling and range generation** (`SampleExec`, `RangeExec`): niche leaf operators.
-- **Pickled (non-Arrow) Python UDFs** (`BatchEvalPythonExec`): Comet accelerates Arrow-based Python UDFs only ([#4234](https://github.com/apache/datafusion-comet/issues/4234)).
+- **Pickled (non-Arrow) Python UDFs** (`BatchEvalPythonExec`): Comet accelerates Arrow-based Python UDFs only ([#4234](https://github.com/apache/datafusion-comet/pull/4234)).
 
 ## Scans
 
-| Operator                | Status | Notes                                                                                                                                                  |
-| ----------------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `FileSourceScanExec`    | ✅     | Parquet only. Some types and configurations fall back. See [Parquet Scan Compatibility](compatibility/scans.md).                                       |
-| `BatchScanExec`         | ✅     | Parquet, Apache Iceberg Parquet, and CSV (native) scans. See [Parquet Scan Compatibility](compatibility/scans.md) and the [Iceberg Guide](iceberg.md). |
-| `LocalTableScanExec`    | ⚠️     | Disabled by default; there is no acceleration advantage and this operator is typically only used in test code. Can be opted into via config (#4393).   |
-| `InMemoryTableScanExec` | 🔜     | Cached / in-memory table scans fall back today.                                                                                                        |
+| Operator                | Status | Notes                                                                                                                                                                                                        |
+| ----------------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `FileSourceScanExec`    | ✅     | Parquet only. Some types and configurations fall back. See [Parquet Scan Compatibility](compatibility/scans.md).                                                                                             |
+| `BatchScanExec`         | ✅     | Parquet, Apache Iceberg Parquet, and CSV (native) scans. See [Parquet Scan Compatibility](compatibility/scans.md) and the [Iceberg Guide](iceberg.md).                                                       |
+| `LocalTableScanExec`    | ⚠️     | Disabled by default; there is no acceleration advantage and this operator is typically only used in test code. Can be opted into via config ([#4393](https://github.com/apache/datafusion-comet/pull/4393)). |
+| `InMemoryTableScanExec` | 🔜     | Cached / in-memory table scans fall back today.                                                                                                                                                              |
 
 ## Projection and filtering
 
@@ -83,12 +83,12 @@ omitted from the tables below and may be reconsidered based on demand:
 
 ## Joins
 
-| Operator                      | Status | Notes                                                                                                                 |
-| ----------------------------- | ------ | --------------------------------------------------------------------------------------------------------------------- |
-| `BroadcastHashJoinExec`       | ✅     |                                                                                                                       |
-| `ShuffledHashJoinExec`        | ✅     |                                                                                                                       |
-| `SortMergeJoinExec`           | ✅     |                                                                                                                       |
-| `BroadcastNestedLoopJoinExec` | ✅     | Falls back to Spark when the preserved side is broadcast (for example LEFT OUTER with BROADCAST on the left) (#4429). |
+| Operator                      | Status | Notes                                                                                                                                                                         |
+| ----------------------------- | ------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `BroadcastHashJoinExec`       | ✅     |                                                                                                                                                                               |
+| `ShuffledHashJoinExec`        | ✅     |                                                                                                                                                                               |
+| `SortMergeJoinExec`           | ✅     |                                                                                                                                                                               |
+| `BroadcastNestedLoopJoinExec` | ✅     | Falls back to Spark when the preserved side is broadcast (for example LEFT OUTER with BROADCAST on the left) ([#4429](https://github.com/apache/datafusion-comet/pull/4429)). |
 
 ## Exchanges
 
@@ -99,10 +99,10 @@ omitted from the tables below and may be reconsidered based on demand:
 
 ## Window
 
-| Operator               | Status | Notes                                                                                                                                            |
-| ---------------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `WindowExec`           | ⚠️     | Runs natively, but only a subset of window functions is accelerated. The rest fall back. See the [expression reference](expressions.md) (#2721). |
-| `WindowGroupLimitExec` | 🔜     | Window-based limit pushdown falls back today.                                                                                                    |
+| Operator               | Status | Notes                                                                                                                                                                                            |
+| ---------------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `WindowExec`           | ⚠️     | Runs natively and is enabled by default. A broad set of window functions is accelerated; unsupported shapes fall back to Spark. See [window function compatibility](compatibility/operators.md). |
+| `WindowGroupLimitExec` | 🔜     | Window-based limit pushdown falls back today ([#4837](https://github.com/apache/datafusion-comet/issues/4837)).                                                                                  |
 
 ## Generators and set operations
 
@@ -121,9 +121,9 @@ omitted from the tables below and may be reconsidered based on demand:
 
 ## Python and UDF
 
-| Operator                                                                                | Status | Notes                                                                |
-| --------------------------------------------------------------------------------------- | ------ | -------------------------------------------------------------------- |
-| `ArrowEvalPythonExec`, `MapInArrowExec`, `MapInPandasExec`, `FlatMapGroupsInPandasExec` | 🔜     | Experimental accelerated PyArrow UDF support is in progress (#4234). |
+| Operator                                                                                | Status | Notes                                                                                                                        |
+| --------------------------------------------------------------------------------------- | ------ | ---------------------------------------------------------------------------------------------------------------------------- |
+| `ArrowEvalPythonExec`, `MapInArrowExec`, `MapInPandasExec`, `FlatMapGroupsInPandasExec` | 🔜     | Experimental accelerated PyArrow UDF support is in progress ([#4234](https://github.com/apache/datafusion-comet/pull/4234)). |
 
 ## See also
 

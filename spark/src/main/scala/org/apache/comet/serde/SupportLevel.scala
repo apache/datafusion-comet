@@ -30,21 +30,37 @@ sealed trait SupportLevel
  * Comet either supports this feature with full compatibility with Spark, or may have known
  * differences in some specific edge cases that are unlikely to be an issue for most users.
  *
- * Any compatibility differences are noted in the
- * [[https://datafusion.apache.org/comet/user-guide/compatibility.html Comet Compatibility Guide]].
+ * Any compatibility differences are noted in the Comet Compatibility Guide:
+ * [[https://datafusion.apache.org/comet/user-guide/latest/compatibility/index.html]].
  */
-case class Compatible(notes: Option[String] = None) extends SupportLevel
+case class Compatible(notes: Option[String] = None, nativeOptIn: Option[NativeOptIn] = None)
+    extends SupportLevel
 
 /**
  * Comet supports this feature but results can be different from Spark.
  *
- * Any compatibility differences are noted in the
- * [[https://datafusion.apache.org/comet/user-guide/compatibility.html Comet Compatibility Guide]].
+ * Any compatibility differences are noted in the Comet Compatibility Guide:
+ * [[https://datafusion.apache.org/comet/user-guide/latest/compatibility/index.html]].
  */
 case class Incompatible(notes: Option[String] = None) extends SupportLevel
 
 /** Comet does not support this feature */
 case class Unsupported(notes: Option[String] = None) extends SupportLevel
+
+/**
+ * Describes a faster native implementation that is available for an expression but not currently
+ * selected. The default execution path stays Spark-compatible; setting `configKey` to true opts
+ * into the native path and its documented differences.
+ */
+case class NativeOptIn(configKey: String)
+
+object NativeOptIn {
+
+  /** Shared wording for the `[COMET-INFO]` plan hint, so docs and runtime cannot drift. */
+  def message(exprName: String, configKey: String): String =
+    s"A native implementation of $exprName is available. Set $configKey=true to enable it. " +
+      CometConf.COMPAT_GUIDE
+}
 
 object SupportLevel {
 

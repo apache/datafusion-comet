@@ -39,6 +39,7 @@ to read more.
 
    Installing Comet <installation>
    Configuration Settings <configs>
+   Upgrading Comet <migration-guide>
 
 .. toctree::
    :maxdepth: 1
@@ -73,6 +74,7 @@ to read more.
    Understanding Comet Plans <understanding-comet-plans>
    Tuning Guide <tuning>
    Metrics Guide <metrics>
+   PyArrow UDF Acceleration <pyarrow-udfs>
 
 .. toctree::
    :maxdepth: 1
