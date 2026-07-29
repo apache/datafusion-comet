@@ -1784,7 +1784,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         Unsupported(Some(expectedMessage)))
   }
 
-  test("cast ArrayType(DateType) to unsupported ArrayType falls back") {
+  test("cast ArrayType(DateType) to unsupported ArrayType routes through codegen dispatch") {
     val fromType = ArrayType(DateType)
     val unsupportedElementTypes =
       Seq(BooleanType, ByteType, ShortType, LongType, FloatType, DoubleType, DecimalType(10, 2))
@@ -1852,6 +1852,28 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> tz) {
         castTimestampTest(generateTimestampNTZ(), DataTypes.TimestampType, assertNative = true)
       }
+    }
+  }
+
+  test("cast to and from VariantType matches Spark") {
+    // Spark 4's VariantType has no native counterpart in Comet: the CometCast
+    // matrix reports Unsupported, and the codegen dispatcher cannot serialize a
+    // VariantType data arg or output type either, so the operator falls back to
+    // Spark cleanly. Guard on Spark 4.0+ because VariantType and parse_json do
+    // not exist in Spark 3.x.
+    assume(CometSparkSessionExtensions.isSpark40Plus, "VariantType requires Spark 4.0+")
+    withTable("variant_cast") {
+      sql("CREATE TABLE variant_cast(id INT, s STRING) USING parquet")
+      sql("""
+          |INSERT INTO variant_cast VALUES
+          |  (1, '{"a": 1}'),
+          |  (2, '{"b": [1, 2, 3]}'),
+          |  (3, cast(null as string))
+          """.stripMargin)
+      checkSparkAnswer(
+        "SELECT id, CAST(parse_json(s) AS STRING) AS v FROM variant_cast ORDER BY id")
+      checkSparkAnswer(
+        "SELECT id, CAST(CAST(s AS VARIANT) AS STRING) AS v FROM variant_cast ORDER BY id")
     }
   }
 

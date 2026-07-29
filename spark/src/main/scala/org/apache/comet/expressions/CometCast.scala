@@ -44,21 +44,10 @@ object CometCast
   private[comet] val legacyCastComplexTypesToStringReason: String =
     "spark.sql.legacy.castComplexTypesToString.enabled=true is not supported natively"
 
-  private[comet] val nonDefaultTimeParserPolicyReason: String =
-    "spark.sql.legacy.timeParserPolicy is set to a non-CORRECTED value; the native " +
-      "string-to-datetime parser only implements CORRECTED semantics"
-
   private def legacyCastComplexTypesToString: Boolean =
     SQLConf.get
       .getConfString("spark.sql.legacy.castComplexTypesToString.enabled", "false")
       .toBoolean
-
-  // Non-CORRECTED policies (LEGACY, EXCEPTION) change string-to-date/timestamp parsing behavior in
-  // ways the native cast kernel does not replicate.
-  private def isNonDefaultTimeParserPolicy: Boolean =
-    !SQLConf.get
-      .getConfString("spark.sql.legacy.timeParserPolicy", "CORRECTED")
-      .equalsIgnoreCase("CORRECTED")
 
   def supportedTypes: Seq[DataType] =
     Seq(
@@ -86,8 +75,9 @@ object CometCast
     // Reject `VariantType` before the Literal short-circuit below. Folding a Cast whose child or
     // target is `VariantType` produces a `Literal[VariantType]` that no downstream Comet serde
     // can serialize, and relying on `CometLiteral` to reject it after the fact leaves a native
-    // path that assumes the produced literal is safe. Guarding here (in addition to the
-    // recursive check in `isSupported`) forces Spark fallback for every VariantType cast shape.
+    // path that assumes the produced literal is safe. Report `Unsupported`; the
+    // `CodegenDispatchFallback` mixin will then try the codegen dispatcher, which itself cannot
+    // serialize `VariantType` data args or return types, so the operator falls back to Spark.
     if (isVariantType(cast.child.dataType) || isVariantType(cast.dataType)) {
       return unsupported(cast.child.dataType, cast.dataType)
     }
@@ -179,10 +169,11 @@ object CometCast
       evalMode: CometEvalMode.Value): SupportLevel = {
 
     // Spark 4's `VariantType` (SPARK-45827) has no native counterpart in Comet: serializing it
-    // into the DataFusion plan would fail in `serializeDataType`, and the codegen dispatcher
-    // cannot compile Variant read/write kernels either. Detect it via the version-shimmed
-    // `isVariantType` (which returns false on Spark 3.x where the class does not exist) and
-    // report `Unsupported` so the enclosing operator falls back to Spark.
+    // into the DataFusion plan fails in `serializeDataType`, and the codegen dispatcher used by
+    // the `CodegenDispatchFallback` mixin also cannot serialize `VariantType` in the data args or
+    // return type. Detect it via the version-shimmed `isVariantType` (which returns false on
+    // Spark 3.x where the class does not exist) and report `Unsupported`. The mixin will attempt
+    // the codegen dispatcher and then fall back to Spark when the dispatcher rejects the type.
     if (isVariantType(fromType) || isVariantType(toType)) {
       return unsupported(fromType, toType)
     }
@@ -193,7 +184,7 @@ object CometCast
 
     if (toType == DataTypes.StringType && legacyCastComplexTypesToString && isComplexType(
         fromType)) {
-      return Incompatible(Some(legacyCastComplexTypesToStringReason))
+      return Unsupported(Some(legacyCastComplexTypesToStringReason))
     }
 
     (fromType, toType) match {
@@ -275,9 +266,6 @@ object CometCast
         Compatible()
       case _: DecimalType =>
         Compatible()
-      case DataTypes.DateType | DataTypes.TimestampType | _: TimestampNTZType
-          if isNonDefaultTimeParserPolicy =>
-        Incompatible(Some(nonDefaultTimeParserPolicyReason))
       case DataTypes.DateType =>
         // https://github.com/apache/datafusion-comet/issues/327
         Compatible(Some("Only supports years between 262143 BC and 262142 AD"))
