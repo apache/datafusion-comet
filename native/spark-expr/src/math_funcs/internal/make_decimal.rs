@@ -36,7 +36,7 @@ pub fn spark_make_decimal(
     match &args[0] {
         ColumnarValue::Scalar(v) => match v {
             ScalarValue::Int64(n) => Ok(ColumnarValue::Scalar(ScalarValue::Decimal128(
-                long_to_decimal(n, precision, scale, fail_on_error)?,
+                long_to_decimal(*n, precision, scale, fail_on_error)?,
                 precision,
                 scale,
             ))),
@@ -47,7 +47,7 @@ pub fn spark_make_decimal(
                 let arr = a.as_primitive::<Int64Type>();
                 let mut result = Decimal128Builder::new();
                 for v in arr.into_iter() {
-                    result.append_option(long_to_decimal(&v, precision, scale, fail_on_error)?)
+                    result.append_option(long_to_decimal(v, precision, scale, fail_on_error)?)
                 }
                 let result_type = DataType::Decimal128(precision, scale);
 
@@ -65,21 +65,21 @@ pub fn spark_make_decimal(
 /// otherwise.
 #[inline]
 fn long_to_decimal(
-    v: &Option<i64>,
+    v: Option<i64>,
     precision: u8,
     scale: i8,
     fail_on_error: bool,
 ) -> DataFusionResult<Option<i128>> {
-    match v {
-        Some(v) => match validate_decimal_precision(*v as i128, precision, scale) {
-            Ok(()) => Ok(Some(*v as i128)),
+    v.map_or(Ok(None), |v| {
+        let v = v as i128;
+        match validate_decimal_precision(v, precision, scale) {
+            Ok(()) => Ok(Some(v)),
             Err(_) if fail_on_error => Err(DataFusionError::External(Box::new(
-                decimal_overflow_error(*v as i128, precision, scale),
+                decimal_overflow_error(v, precision, scale),
             ))),
             Err(_) => Ok(None),
-        },
-        None => Ok(None),
-    }
+        }
+    })
 }
 
 #[cfg(test)]
