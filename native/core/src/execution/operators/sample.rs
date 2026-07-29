@@ -183,6 +183,34 @@ mod tests {
         assert!(!single.is_empty() && single.len() < 300);
     }
 
+    /// Empty batches consume no draws from the generator, so interleaving them with non-empty
+    /// batches cannot change which rows are selected.
+    #[tokio::test]
+    async fn test_empty_batches_do_not_affect_selection() {
+        let without_empty = collect_sample(
+            vec![batch((0..100).collect()), batch((100..200).collect())],
+            0.0,
+            0.4,
+            42,
+        )
+        .await;
+        let with_empty = collect_sample(
+            vec![
+                batch(vec![]),
+                batch((0..100).collect()),
+                batch(vec![]),
+                batch((100..200).collect()),
+                batch(vec![]),
+            ],
+            0.0,
+            0.4,
+            42,
+        )
+        .await;
+        assert_eq!(without_empty, with_empty);
+        assert!(!without_empty.is_empty());
+    }
+
     /// Complementary ranges must partition the input, which is the property `randomSplit` needs.
     #[tokio::test]
     async fn test_complementary_ranges_partition_input() {

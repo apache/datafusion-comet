@@ -115,6 +115,47 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
+  test("sample via SQL TABLESAMPLE") {
+    withParquetTable((0 until 1000).map(i => (i, i + 1)), "tbl") {
+      val df = sql("SELECT * FROM tbl TABLESAMPLE (30 PERCENT) REPEATABLE (42)")
+      checkSparkAnswerAndOperator(df, Seq(classOf[CometSampleExec]))
+    }
+  }
+
+  // Sampling only drops rows, so above an order-preserving input the output must stay sorted and
+  // match Spark row-for-row. The logical plan contains a Sort, so checkSparkAnswerAndOperator
+  // compares results in order rather than sorting both sides first.
+  test("sample preserves ordering of sorted input") {
+    withParquetTable((0 until 1000).reverse.map(i => (i, i + 1)), "tbl") {
+      val df = sql("SELECT * FROM tbl")
+        .orderBy("_1")
+        .sample(withReplacement = false, fraction = 0.3, seed = 42)
+      checkSparkAnswerAndOperator(df, Seq(classOf[CometSampleExec]))
+      val ids = df.collect().map(_.getInt(0))
+      assert(ids.nonEmpty && ids.sameElements(ids.sorted))
+    }
+  }
+
+  // Above an operator where Comet may emit rows in a different order than Spark, such as an
+  // aggregate, the sampler sees a different row sequence and can select different rows, but the
+  // result must still be a valid sample of the same expected size.
+  test("sample above aggregate produces a valid sample of the expected size") {
+    withParquetTable((0 until 10000).map(i => (i % 1000, i)), "tbl") {
+      val agg = sql("SELECT _1, SUM(_2) FROM tbl GROUP BY _1")
+      val df = agg.sample(withReplacement = false, fraction = 0.5, seed = 42)
+      val sampled = df.collect()
+      val plan = stripAQEPlan(df.queryExecution.executedPlan)
+      assert(plan.collect { case s: CometSampleExec => s }.nonEmpty)
+      // Every sampled row must be a distinct row of the aggregate output.
+      val full = agg.collect().toSet
+      assert(sampled.length == sampled.distinct.length)
+      assert(sampled.forall(full.contains))
+      // 1000 Bernoulli(0.5) draws have a standard deviation of ~15.8, so a tolerance of 100
+      // is a ~6-sigma bound.
+      assert(math.abs(sampled.length - 500) < 100)
+    }
+  }
+
   test("sample with replacement falls back to Spark") {
     withParquetTable((0 until 1000).map(i => (i, i + 1)), "tbl") {
       val df = sql("SELECT * FROM tbl").sample(withReplacement = true, fraction = 0.3, seed = 42)
