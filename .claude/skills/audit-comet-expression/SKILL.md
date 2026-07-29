@@ -157,10 +157,9 @@ most common bugs in Comet serdes are misalignments between them.
   is not implemented, or when running the native path would crash or error.
 - `Incompatible(Some(reason))`: Comet can run this, but results may differ
   from Spark. The dispatcher only allows it when
-  `spark.comet.expr.allowIncompatible=true` (or the per-expression
-  equivalent). Use this for known result differences such as locale
-  sensitivity, timezone handling, ordering ambiguity, or floating-point
-  precision.
+  `spark.comet.expression.<exprName>.allowIncompatible=true` is set. Use
+  this for known result differences such as locale sensitivity, timezone
+  handling, ordering ambiguity, or floating-point precision.
 - `Compatible(None)`: full Spark compatibility for this combination of
   inputs and options.
 - `Compatible(Some(note))`: fully compatible but with a docs-only caveat.
