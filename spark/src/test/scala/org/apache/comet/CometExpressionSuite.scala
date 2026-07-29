@@ -26,7 +26,7 @@ import scala.util.Random
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.{Column, CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.catalyst.expressions.{Alias, Cast, FromUnixTime, Literal, StructsToJson, TruncDate, TruncTimestamp}
-import org.apache.spark.sql.catalyst.optimizer.SimplifyExtractValueOps
+import org.apache.spark.sql.catalyst.optimizer.{ConvertToLocalRelation, OptimizeIn, SimplifyExtractValueOps}
 import org.apache.spark.sql.comet.CometProjectExec
 import org.apache.spark.sql.execution.{ProjectExec, SparkPlan}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
@@ -1724,11 +1724,8 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     // (and `ConvertToLocalRelation`) excluded.
     withSQLConf(
       SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
-        Seq(
-          "org.apache.spark.sql.catalyst.optimizer.ConvertToLocalRelation",
-          "org.apache.spark.sql.catalyst.optimizer.OptimizeIn").mkString(",")) {
-      val data: Seq[(Integer, Integer)] =
-        Seq((Integer.valueOf(1), Integer.valueOf(1)), (null, Integer.valueOf(2)))
+        Seq(ConvertToLocalRelation.ruleName, OptimizeIn.ruleName).mkString(",")) {
+      val data: Seq[(Integer, Int)] = Seq((1, 1), (null, 2))
       withParquetTable(data, "tbl") {
         // An unset config exercises the version-dependent default, which follows ANSI mode on
         // Spark 4.0+ and is always the legacy behavior on Spark 3.x.

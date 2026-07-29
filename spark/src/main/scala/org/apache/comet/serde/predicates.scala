@@ -25,6 +25,7 @@ import org.apache.spark.sql.catalyst.expressions.{And, Attribute, BinaryExpressi
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.BooleanType
 
+import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus, withFallbackReason}
 import org.apache.comet.serde.ExprOuterClass.Expr
 import org.apache.comet.serde.QueryPlanSerde._
@@ -35,10 +36,15 @@ object CometNot extends CometExpressionSerde[Not] {
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
 
-    import ComparisonUtils.hasCollatedOperand
+    // The fused fast paths below build a single native node from `Not` and its child, bypassing
+    // `exprToProtoInternal`, and with it the child serde's `getSupportLevel` gate. Consult that
+    // gate here so the fast path is only taken when the child has a native path, rather than
+    // re-checking the child's conditions by hand.
+    def hasNativePath[T <: Expression](serde: CometExpressionSerde[T], child: T): Boolean =
+      serde.getSupportLevel(child).isInstanceOf[Compatible]
 
     expr.child match {
-      case inner: EqualTo if !hasCollatedOperand(inner.left, inner.right) =>
+      case inner: EqualTo if hasNativePath(CometEqualTo, inner) =>
         createBinaryExpr(
           inner,
           inner.left,
@@ -46,7 +52,7 @@ object CometNot extends CometExpressionSerde[Not] {
           inputs,
           binding,
           (builder, binaryExpr) => builder.setNeq(binaryExpr))
-      case inner: EqualNullSafe if !hasCollatedOperand(inner.left, inner.right) =>
+      case inner: EqualNullSafe if hasNativePath(CometEqualNullSafe, inner) =>
         createBinaryExpr(
           inner,
           inner.left,
@@ -54,19 +60,15 @@ object CometNot extends CometExpressionSerde[Not] {
           inputs,
           binding,
           (builder, binaryExpr) => builder.setNeqNullSafe(binaryExpr))
-      case inner: In
-          if !hasCollatedOperand((inner.value +: inner.list): _*) &&
-            !ComparisonUtils.legacyNullInEmptyList(inner.list) =>
+      case inner: In if hasNativePath(CometIn, inner) =>
         ComparisonUtils.in(inner, inner.value, inner.list, inputs, binding, negate = true)
       case _ =>
-        // Includes the collated variants of EqualTo / EqualNullSafe / In above, and the legacy
-        // `null IN ()` case: fall through so the child expression's own serde is consulted, which
-        // now returns `Unsupported` for non-UTF8_BINARY operands (see
-        // `CometEqualTo.getSupportLevel` and siblings). That makes `exprToProtoInternal` return
-        // None for the child, which cascades this Not to None and falls the enclosing operator
-        // back to Spark — the only way to honour collation-aware (in)equality without a native
-        // path. For serdes that mix in `CodegenDispatchFallback`, such as `CometIn`, the child is
-        // instead routed through the JVM codegen dispatcher and this Not stays native.
+        // Includes the cases the child serdes above declare as having no native path, such as
+        // non-UTF8_BINARY collated operands and the legacy `null IN ()` behavior: fall through so
+        // the child expression's own serde is consulted. `exprToProtoInternal` then either routes
+        // the child through the JVM codegen dispatcher (Spark's own `doGenCode`), keeping this Not
+        // native, or returns None, which cascades this Not to None and falls the enclosing
+        // operator back to Spark.
         createUnaryExpr(
           expr,
           expr.child,
@@ -249,14 +251,9 @@ object CometIsNaN extends CometExpressionSerde[IsNaN] {
 object CometIn extends CometExpressionSerde[In] with CodegenDispatchFallback {
 
   override def getSupportLevel(expr: In): SupportLevel =
-    if (ComparisonUtils.legacyNullInEmptyList(expr.list)) {
-      Unsupported(Some(ComparisonUtils.legacyNullInEmptyListReason))
-    } else {
-      ComparisonUtils.collationSupportLevel("In", (expr.value +: expr.list): _*)
-    }
+    ComparisonUtils.inSupportLevel("In", expr.list, (expr.value +: expr.list): _*)
 
-  override def getUnsupportedReasons(): Seq[String] =
-    Seq(ComparisonUtils.nonDefaultCollationDocReason, ComparisonUtils.legacyNullInEmptyListReason)
+  override def getUnsupportedReasons(): Seq[String] = ComparisonUtils.inUnsupportedReasons
 
   override def convert(
       expr: In,
@@ -269,14 +266,9 @@ object CometIn extends CometExpressionSerde[In] with CodegenDispatchFallback {
 object CometInSet extends CometExpressionSerde[InSet] with CodegenDispatchFallback {
 
   override def getSupportLevel(expr: InSet): SupportLevel =
-    if (ComparisonUtils.legacyNullInEmptyList(expr.hset)) {
-      Unsupported(Some(ComparisonUtils.legacyNullInEmptyListReason))
-    } else {
-      ComparisonUtils.collationSupportLevel("InSet", expr.child)
-    }
+    ComparisonUtils.inSupportLevel("InSet", expr.hset, expr.child)
 
-  override def getUnsupportedReasons(): Seq[String] =
-    Seq(ComparisonUtils.nonDefaultCollationDocReason, ComparisonUtils.legacyNullInEmptyListReason)
+  override def getUnsupportedReasons(): Seq[String] = ComparisonUtils.inUnsupportedReasons
 
   override def convert(
       expr: InSet,
@@ -345,29 +337,33 @@ object ComparisonUtils {
   // JVM codegen dispatcher (Spark's own `doGenCode` inside the Comet pipeline).
   private val legacyNullInEmptyListConfig = "spark.sql.legacy.nullInEmptyListBehavior"
 
-  val legacyNullInEmptyListReason: String =
+  private val legacyNullInEmptyListReason: String =
     "An empty `IN` list has no native path when Spark's legacy `null IN ()` behavior is in " +
       s"effect (`$legacyNullInEmptyListConfig`), because a `NULL` operand then evaluates to " +
       "`NULL` rather than `false`."
 
-  /**
-   * Whether Spark's legacy `null IN ()` behavior is in effect for the current session. Spark 3.4
-   * has no config and always uses the legacy behavior, Spark 3.5 defaults the config to true, and
-   * Spark 4.0+ makes it optional with a default of `!spark.sql.ansi.enabled`. Read by string key
-   * so this compiles against every supported Spark version.
-   */
-  def legacyNullInEmptyListBehavior: Boolean = {
-    if (!isSpark35Plus) {
-      true
-    } else {
-      val default = if (isSpark40Plus) !SQLConf.get.ansiEnabled else true
-      SQLConf.get.getConfString(legacyNullInEmptyListConfig, default.toString).toBoolean
+  // Spark 3.4 has no config and always uses the legacy behavior, Spark 3.5 defaults the config to
+  // true, and Spark 4.0+ makes it optional with a default of `!spark.sql.ansi.enabled`. Read by
+  // string key so this compiles against every supported Spark version.
+  private def legacyNullInEmptyListBehavior: Boolean =
+    !isSpark35Plus || {
+      val default = !isSpark40Plus || !SQLConf.get.ansiEnabled
+      CometConf.getBooleanConf(legacyNullInEmptyListConfig, default, SQLConf.get)
     }
-  }
 
-  /** True when `list` is an empty `IN` list that must honour the legacy `null IN ()` behavior. */
-  def legacyNullInEmptyList(list: Iterable[_]): Boolean =
-    list.isEmpty && legacyNullInEmptyListBehavior
+  /**
+   * Support level shared by the `In` and `InSet` serdes: `list` is the set of values being tested
+   * against, and `operands` are the expressions whose collation must be checked.
+   */
+  def inSupportLevel(exprName: String, list: Iterable[_], operands: Expression*): SupportLevel =
+    if (list.isEmpty && legacyNullInEmptyListBehavior) {
+      Unsupported(Some(legacyNullInEmptyListReason))
+    } else {
+      collationSupportLevel(exprName, operands: _*)
+    }
+
+  val inUnsupportedReasons: Seq[String] =
+    Seq(nonDefaultCollationDocReason, legacyNullInEmptyListReason)
 
   def in(
       expr: Expression,
