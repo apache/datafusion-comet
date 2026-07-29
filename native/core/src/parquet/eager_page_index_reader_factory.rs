@@ -61,11 +61,11 @@ use std::sync::Arc;
 #[derive(Debug)]
 pub struct EagerPageIndexReaderFactory {
     store: Arc<dyn ObjectStore>,
-    metadata_cache: Arc<FileMetadataCache>,
+    metadata_cache: Arc<dyn FileMetadataCache>,
 }
 
 impl EagerPageIndexReaderFactory {
-    pub fn new(store: Arc<dyn ObjectStore>, metadata_cache: Arc<FileMetadataCache>) -> Self {
+    pub fn new(store: Arc<dyn ObjectStore>, metadata_cache: Arc<dyn FileMetadataCache>) -> Self {
         Self {
             store,
             metadata_cache,
@@ -111,7 +111,7 @@ struct EagerPageIndexReader {
     store: Arc<dyn ObjectStore>,
     inner: ParquetObjectReader,
     partitioned_file: PartitionedFile,
-    metadata_cache: Arc<FileMetadataCache>,
+    metadata_cache: Arc<dyn FileMetadataCache>,
     metadata_size_hint: Option<usize>,
 }
 
