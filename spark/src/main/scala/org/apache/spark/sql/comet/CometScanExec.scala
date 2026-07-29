@@ -118,7 +118,7 @@ case class CometScanExec(
         },
         Nil)
       val ret = selectedPartitions.filter(p => boundPredicate.eval(p.values))
-      setFilesNumAndSizeMetric(ret, false)
+      setFilesNumAndSizeMetric(ret.toIndexedSeq, false)
       val timeTakenMs = (System.nanoTime() - startTime) / 1000 / 1000
       driverMetrics("pruningTime") = timeTakenMs
       ret
@@ -333,7 +333,7 @@ case class CometScanExec(
       fsRelation: HadoopFsRelation): Seq[FilePartition] = {
     val openCostInBytes = fsRelation.sparkSession.sessionState.conf.filesOpenCostInBytes
     val maxSplitBytes =
-      FilePartition.maxSplitBytes(fsRelation.sparkSession, selectedPartitions)
+      FilePartition.maxSplitBytes(fsRelation.sparkSession, selectedPartitions.toIndexedSeq)
     logInfo(
       s"Planning scan with bin packing, max size: $maxSplitBytes bytes, " +
         s"open cost is considered as scanning $openCostInBytes bytes.")
@@ -376,7 +376,7 @@ case class CometScanExec(
       }
       .sortBy(_.length)(implicitly[Ordering[Long]].reverse)
 
-    FilePartition.getFilePartitions(relation.sparkSession, splitFiles, maxSplitBytes)
+    FilePartition.getFilePartitions(relation.sparkSession, splitFiles.toIndexedSeq, maxSplitBytes)
   }
 
   override def doCanonicalize(): CometScanExec = {

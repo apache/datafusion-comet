@@ -152,8 +152,8 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with Logging {
           }
           .unzip
         commonBuilder.addAllDefaultValues(
-          defaultValues.flatMap(exprToProto(_, scan.output)).toIterable.asJava)
-        commonBuilder.addAllDefaultValuesIndexes(indexes.toIterable.asJava)
+          defaultValues.flatMap(exprToProto(_, scan.output)).toSeq.asJava)
+        commonBuilder.addAllDefaultValuesIndexes(indexes.toSeq.asJava)
       }
 
       // Extract object store options from first file (S3 configs apply to all files in scan).
@@ -179,14 +179,14 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with Logging {
       val projectionVector = (dataSchemaIndexes ++ partitionSchemaIndexes).map(idx =>
         idx.toLong.asInstanceOf[java.lang.Long])
 
-      commonBuilder.addAllProjectionVector(projectionVector.toIterable.asJava)
+      commonBuilder.addAllProjectionVector(projectionVector.toSeq.asJava)
 
       // In `CometScanRule`, we ensure partitionSchema is supported.
       assert(partitionSchema.length == scan.relation.partitionSchema.fields.length)
 
-      commonBuilder.addAllDataSchema(dataSchema.toIterable.asJava)
-      commonBuilder.addAllRequiredSchema(requiredSchema.toIterable.asJava)
-      commonBuilder.addAllPartitionSchema(partitionSchema.toIterable.asJava)
+      commonBuilder.addAllDataSchema(dataSchema.toSeq.asJava)
+      commonBuilder.addAllRequiredSchema(requiredSchema.toSeq.asJava)
+      commonBuilder.addAllPartitionSchema(partitionSchema.toSeq.asJava)
       commonBuilder.setSessionTimezone(scan.conf.getConfString("spark.sql.session.timeZone"))
       commonBuilder.setCaseSensitive(scan.conf.getConf[Boolean](SQLConf.CASE_SENSITIVE))
 

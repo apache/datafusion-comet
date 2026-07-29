@@ -740,9 +740,9 @@ abstract class CometNativeExec extends CometExec {
     val (firstNonBroadcastPlanRDD, firstNonBroadcastPlanNumPartitions) =
       firstNonBroadcastPlan.get._1 match {
         case plan: CometNativeExec =>
-          (null, plan.outputPartitioning.numPartitions)
+          (null.asInstanceOf[RDD[Any]], plan.outputPartitioning.numPartitions)
         case plan =>
-          val rdd = asArrowStreamRDD(plan, 0, firstNonBroadcastSlot)
+          val rdd = asArrowStreamRDD(plan, 0, firstNonBroadcastSlot).asInstanceOf[RDD[Any]]
           (rdd, rdd.getNumPartitions)
       }
 

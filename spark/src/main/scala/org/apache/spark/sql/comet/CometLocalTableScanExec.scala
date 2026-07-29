@@ -65,7 +65,7 @@ case class CometLocalTableScanExec(
       sparkContext.emptyRDD
     } else {
       val numSlices = math.min(unsafeRows.length, session.leafNodeDefaultParallelism)
-      sparkContext.parallelize(unsafeRows, numSlices)
+      sparkContext.parallelize(unsafeRows.toIndexedSeq, numSlices)
     }
   }
 

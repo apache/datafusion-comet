@@ -80,7 +80,7 @@ abstract class Tables(
                 v
               }
             }
-            Row.fromSeq(values)
+            Row.fromSeq(values.toIndexedSeq)
           } else {
             Row.fromSeq(Seq(l))
           }
@@ -97,7 +97,7 @@ abstract class Tables(
           val columns = schema.fields.map { f =>
             col(f.name).cast(f.dataType).as(f.name)
           }
-          stringData.select(columns: _*)
+          stringData.select(columns.toIndexedSeq: _*)
         }
 
         convertedData
@@ -169,7 +169,7 @@ abstract class Tables(
           // in case data has more than maxRecordsPerFile, split into multiple writers to improve
           // datagen speed files will be truncated to maxRecordsPerFile value, so the final result
           // will be the same
-          val numRows = data.count
+          val numRows = data.count()
           val maxRecordPerFile =
             Try(sqlContext.getConf("spark.sql.files.maxRecordsPerFile").toInt).getOrElse(0)
 

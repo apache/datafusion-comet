@@ -127,9 +127,9 @@ abstract class CometTestBase
     }
     val dfComet = datasetOfRows(spark, df.logicalPlan)
     if (withTol.isDefined) {
-      checkAnswerWithTolerance(dfComet, expected, withTol.get)
+      checkAnswerWithTolerance(dfComet, expected.toIndexedSeq, withTol.get)
     } else {
-      checkCometAnswer(dfComet, expected)
+      checkCometAnswer(dfComet, expected.toIndexedSeq)
     }
 
     if (assertCometNative) {
