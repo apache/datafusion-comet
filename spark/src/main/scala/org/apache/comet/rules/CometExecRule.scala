@@ -440,10 +440,20 @@ case class CometExecRule(session: SparkSession)
       case sub: SubqueryBroadcastExec =>
         sub.child match {
           case b: BroadcastExchangeExec =>
-            // The BroadcastExchangeExec child is CometNativeColumnarToRowExec wrapping
+            // The BroadcastExchangeExec child is a Comet columnar-to-row transition wrapping
             // a Comet plan. Strip the row transition to get the columnar Comet plan.
+            // CometColumnarToRowExec is CodegenSupport, so by the time this rule sees the
+            // subquery plan it is compiled into WholeStageCodegenExec(CometColumnarToRowExec(
+            // InputAdapter(cometPlan))); CometNativeColumnarToRowExec is not CodegenSupport and
+            // sits directly under the exchange.
             val cometChild = b.child match {
               case c2r: CometNativeColumnarToRowExec => c2r.child
+              case c2r: CometColumnarToRowExec => c2r.child
+              case WholeStageCodegenExec(c2r: CometColumnarToRowExec) =>
+                c2r.child match {
+                  case InputAdapter(child) => child
+                  case other => other
+                }
               case other => other
             }
             if (cometChild.isInstanceOf[CometNativeExec]) {
