@@ -21,8 +21,10 @@ package org.apache.comet
 
 import scala.util.Random
 
-import org.apache.spark.sql.CometTestBase
+import org.apache.spark.sql.{CometTestBase, Row}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
+import org.apache.spark.sql.types.{CalendarIntervalType, StructField, StructType}
+import org.apache.spark.unsafe.types.CalendarInterval
 
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator, ParquetGenerator, SchemaGenOptions}
 
@@ -125,6 +127,24 @@ class CometHashExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelpe
             (TIMESTAMP '2000-12-31 23:59:59'),
             (null)""")
       checkSparkAnswerAndOperator("SELECT c, hash(c) FROM t ORDER BY c")
+    }
+  }
+
+  test("hash - calendar interval") {
+    withTempView("t") {
+      val rows = Seq(
+        Row(new CalendarInterval(14, 25, 18367008009L)),
+        Row(new CalendarInterval(0, 1, 0L)),
+        Row(new CalendarInterval(0, 2, 0L)),
+        Row(new CalendarInterval(-14, -25, -18367008009L)),
+        Row(null))
+      spark
+        .createDataFrame(
+          spark.sparkContext.parallelize(rows),
+          StructType(Seq(StructField("c", CalendarIntervalType, nullable = true))))
+        .createOrReplaceTempView("t")
+
+      checkSparkAnswerAndOperator("SELECT hash(c), xxhash64(c) FROM t")
     }
   }
 

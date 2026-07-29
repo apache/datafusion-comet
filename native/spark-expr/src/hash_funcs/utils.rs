@@ -706,6 +706,23 @@ macro_rules! create_hashes_internal {
                         $hash_method
                     );
                 }
+                DataType::Interval(arrow::datatypes::IntervalUnit::MonthDayNano) => {
+                    let array = col
+                        .as_any()
+                        .downcast_ref::<IntervalMonthDayNanoArray>()
+                        .unwrap();
+                    for (hash, value) in $hashes_buffer.iter_mut().zip(array.iter()) {
+                        if let Some(value) = value {
+                            // Match Spark's generated hash code, which omits the days field:
+                            // https://github.com/apache/spark/blob/710b3c45aab88bd14e51d49f400e2f31e3b65772/sql/catalyst/src/main/scala/org/apache/spark/sql/catalyst/expressions/hash.scala#L420-L423
+                            *hash = $hash_method(
+                                (value.nanoseconds / 1_000).to_le_bytes(),
+                                *hash,
+                            );
+                            *hash = $hash_method(value.months.to_le_bytes(), *hash);
+                        }
+                    }
+                }
                 DataType::Utf8 => {
                     $crate::hash_array!(StringArray, col, $hashes_buffer, $hash_method);
                 }
