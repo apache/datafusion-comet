@@ -137,6 +137,10 @@ pub(crate) fn divide_by_zero_error() -> SparkError {
     SparkError::DivideByZero
 }
 
+pub(crate) fn integral_divide_overflow_error() -> SparkError {
+    SparkError::IntegralDivideOverflow
+}
+
 pub(crate) fn remainder_by_zero_error() -> SparkError {
     SparkError::RemainderByZero
 }
