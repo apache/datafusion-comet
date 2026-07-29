@@ -77,6 +77,9 @@ case class CometColumnarToRowExec(child: SparkPlan)
       DirectColumnarToRowConverter.supportsSchema(
         StructType(output.map(a => StructField(a.name, a.dataType, a.nullable))))
 
+  private def directConverterMinBatchSize: Int =
+    CometConf.COMET_DIRECT_COLUMNAR_TO_ROW_MIN_BATCH_SIZE.get(conf)
+
   override def doExecute(): RDD[InternalRow] = {
     val numOutputRows = longMetric("numOutputRows")
     val numInputBatches = longMetric("numInputBatches")
@@ -84,9 +87,16 @@ case class CometColumnarToRowExec(child: SparkPlan)
     // plan (this) in the closure.
     val localOutput = this.output
     val direct = useDirectConverter
+    val minBatchSize = directConverterMinBatchSize
     child.executeColumnar().mapPartitionsInternal { batches =>
       CometColumnarToRowExec
-        .convertBatches(batches, localOutput, direct, numInputBatches, numOutputRows)
+        .convertBatches(
+          batches,
+          localOutput,
+          direct,
+          minBatchSize,
+          numInputBatches,
+          numOutputRows)
     }
   }
 
@@ -123,6 +133,7 @@ case class CometColumnarToRowExec(child: SparkPlan)
           batches,
           localOutput,
           useDirectConverter,
+          directConverterMinBatchSize,
           numInputBatches,
           numOutputRows)
 
@@ -313,30 +324,39 @@ object CometColumnarToRowExec {
   /**
    * Converts columnar batches to rows, either through the allocation-free
    * [[DirectColumnarToRowConverter]] or the default `rowIterator` plus `UnsafeProjection` path.
-   * Both paths reuse the returned row across calls; consumers must copy rows they retain.
+   * When the direct converter is enabled, batches smaller than `minBatchSize` still use the
+   * default path since the direct converter's per-batch setup does not amortize on very small
+   * batches. Both paths reuse the returned row across calls; consumers must copy rows they
+   * retain.
    */
   private[comet] def convertBatches(
       batches: Iterator[ColumnarBatch],
       output: Seq[Attribute],
       useDirectConverter: Boolean,
+      minBatchSize: Int,
       numInputBatches: SQLMetric,
       numOutputRows: SQLMetric): Iterator[InternalRow] = {
     if (useDirectConverter) {
       val schema = StructType(output.map(a => StructField(a.name, a.dataType, a.nullable)))
       val converter = new DirectColumnarToRowConverter(schema)
+      lazy val toUnsafe = UnsafeProjection.create(output, output)
       batches.flatMap { batch =>
         numInputBatches += 1
         numOutputRows += batch.numRows()
-        converter.setBatch(batch)
-        val numRows = batch.numRows()
-        new Iterator[InternalRow] {
-          private var i = 0
-          override def hasNext: Boolean = i < numRows
-          override def next(): InternalRow = {
-            val row = converter.convertRow(i)
-            i += 1
-            row
+        if (batch.numRows() >= minBatchSize) {
+          converter.setBatch(batch)
+          val numRows = batch.numRows()
+          new Iterator[InternalRow] {
+            private var i = 0
+            override def hasNext: Boolean = i < numRows
+            override def next(): InternalRow = {
+              val row = converter.convertRow(i)
+              i += 1
+              row
+            }
           }
+        } else {
+          batch.rowIterator().asScala.map(toUnsafe)
         }
       }
     } else {

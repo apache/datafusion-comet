@@ -249,15 +249,26 @@ object CometConf extends ShimCometConf {
     conf(s"$COMET_EXEC_CONFIG_PREFIX.columnarToRow.direct.enabled")
       .category(CATEGORY_EXEC)
       .doc(
-        "Whether to use the direct columnar to row converter in the JVM columnar to row " +
-          "operator's non-codegen paths (including broadcast relation builds). The direct " +
-          "converter writes values straight from Arrow buffers into UnsafeRow format without " +
-          "per-value object allocation, which is significantly faster for decimal-heavy " +
-          "schemas. Schemas with unsupported data types fall back to the default conversion. " +
-          "Only applies when the JVM columnar to row operator is used " +
-          "(spark.comet.exec.columnarToRow.native.enabled=false).")
+        "Experimental: Whether to use the direct columnar to row converter in the JVM " +
+          "columnar to row operator's non-codegen paths (including broadcast relation " +
+          "builds). The direct converter writes values straight from Arrow buffers into " +
+          "UnsafeRow format without per-value object allocation, which is significantly " +
+          "faster for decimal-heavy schemas. Schemas with unsupported data types fall back " +
+          "to the default conversion. Only applies when the JVM columnar to row operator is " +
+          "used (spark.comet.exec.columnarToRow.native.enabled=false).")
       .booleanConf
       .createWithDefault(false)
+
+  val COMET_DIRECT_COLUMNAR_TO_ROW_MIN_BATCH_SIZE: ConfigEntry[Int] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.columnarToRow.direct.minBatchSize")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "Experimental: Batches with fewer rows than this use the default conversion even " +
+          s"when $COMET_EXEC_CONFIG_PREFIX.columnarToRow.direct.enabled is true, since the " +
+          "direct converter's per-batch setup does not amortize on very small batches. Only " +
+          "applies when the direct columnar to row converter is enabled.")
+      .intConf
+      .createWithDefault(128)
 
   val COMET_EXEC_SORT_MERGE_JOIN_WITH_JOIN_FILTER_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.exec.sortMergeJoinWithJoinFilter.enabled")

@@ -32,10 +32,11 @@ import org.apache.comet.CometConf
  */
 class CometDirectColumnarToRowSuite extends CometTestBase {
 
-  private def withDirectConverter(f: => Unit): Unit = {
+  private def withDirectConverter(minBatchSize: Int = 0)(f: => Unit): Unit = {
     withSQLConf(
       CometConf.COMET_NATIVE_COLUMNAR_TO_ROW_ENABLED.key -> "false",
       CometConf.COMET_DIRECT_COLUMNAR_TO_ROW_ENABLED.key -> "true",
+      CometConf.COMET_DIRECT_COLUMNAR_TO_ROW_MIN_BATCH_SIZE.key -> minBatchSize.toString,
       SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "false")(f)
   }
 
@@ -47,7 +48,7 @@ class CometDirectColumnarToRowSuite extends CometTestBase {
   }
 
   test("direct converter: mixed types with nulls") {
-    withDirectConverter {
+    withDirectConverter() {
       withParquetTable((0 until 1000).map(i => (i.toLong, i.toString, i % 5)), "tbl") {
         checkQueryUsesJvmColumnarToRow("""
             | SELECT
@@ -65,7 +66,7 @@ class CometDirectColumnarToRowSuite extends CometTestBase {
   }
 
   test("direct converter: all-fixed-width schema takes the columnar fast path") {
-    withDirectConverter {
+    withDirectConverter() {
       withParquetTable((0 until 1000).map(i => (i.toLong, i, i.toDouble)), "tbl") {
         checkQueryUsesJvmColumnarToRow("""
             | SELECT
@@ -80,8 +81,18 @@ class CometDirectColumnarToRowSuite extends CometTestBase {
     }
   }
 
+  test("batches below minBatchSize fall back to default conversion") {
+    withDirectConverter(minBatchSize = Int.MaxValue) {
+      withParquetTable((0 until 1000).map(i => (i.toLong, i.toString)), "tbl") {
+        // Every batch is below the threshold, so this exercises the per-batch fallback while
+        // the direct converter is enabled.
+        checkQueryUsesJvmColumnarToRow("SELECT _1, _2, CAST(_1 AS decimal(12,2)) AS dec FROM tbl")
+      }
+    }
+  }
+
   test("unsupported schema falls back to default conversion") {
-    withDirectConverter {
+    withDirectConverter() {
       withParquetTable((0 until 100).map(i => (i, i.toString)), "tbl") {
         // BinaryType is not supported by DirectColumnarToRowConverter, so this exercises the
         // per-plan fallback to the UnsafeProjection path.
