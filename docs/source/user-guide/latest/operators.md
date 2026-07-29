@@ -40,8 +40,8 @@ all native execution can be turned off with `spark.comet.exec.enabled=false`. Se
 | ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | ✅ Supported           | Native implementation, enabled by default; works in the common case. Some inputs or forms may fall back to Spark.                                                                                                                  |
 | ⚠️ Supported (caveats) | Experimental or disabled by default, or accelerates only a limited subset. See the [Compatibility Guide](compatibility/index.md).                                                                                                  |
-| 🔜 Planned             | Intended; tracked by an open issue or pull request.                                                                                                                                                                                |
-| ❌ Not supported       | Falls back to Spark today. Native execution would be worthwhile, so these are genuine gaps.                                                                                                                                        |
+| 🔜 Planned             | Actively planned or in progress; tracked by an open issue or pull request.                                                                                                                                                         |
+| ❌ Not supported       | Falls back to Spark today. Native execution would be worthwhile, so these are genuine gaps. Tracking issues for proposed work are linked in the notes.                                                                             |
 | ➖ Not applicable      | Falls back to Spark by design. Either there is no meaningful native work to do — catalog commands, streaming, arbitrary JVM closures, driver-side operations — or the operator is plan plumbing that Comet handles while planning. |
 
 Neither ❌ nor ➖ is a correctness concern: Comet falls back rather than producing a different
@@ -50,19 +50,19 @@ plan caused a fallback.
 
 ## Scans
 
-| Operator                | Status | Notes                                                                                                                                                                                                            |
-| ----------------------- | ------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `FileSourceScanExec`    | ✅     | Parquet only. Some types and configurations fall back. See [Parquet Scan Compatibility](compatibility/scans.md).                                                                                                 |
-| `BatchScanExec`         | ✅     | Parquet, Apache Iceberg Parquet, and CSV (native) scans. See [Parquet Scan Compatibility](compatibility/scans.md) and the [Iceberg Guide](iceberg.md).                                                           |
-| `LocalTableScanExec`    | ⚠️     | Disabled by default; there is no acceleration advantage and this operator is typically only used in test code. Can be opted into via config ([#4393](https://github.com/apache/datafusion-comet/pull/4393)).     |
-| `InMemoryTableScanExec` | 🔜     | Cached / in-memory table scans fall back today. The output can still be fed into a native stage with `spark.comet.sparkToColumnar.enabled=true` (see [Bridging non-native leaves](#bridging-non-native-leaves)). |
-| `UnionLoopExec`         | ❌     | Spark 4.1+. The recursion driver for `WITH RECURSIVE` common table expressions.                                                                                                                                  |
-| `RowDataSourceScanExec` | ➖     | V1 sources that are not file-based, most commonly JDBC. Rows arrive from the external system already materialized, so there is no columnar read to accelerate.                                                   |
-| `RDDScanExec`           | ➖     | `createDataFrame` over an RDD or local collection. Can be bridged into a native stage (see below); it is in the default bridge list.                                                                             |
-| `ExternalRDDScanExec`   | ➖     | `Dataset` built from an RDD of JVM objects. Rows arrive as deserialized objects, so there is nothing columnar to read.                                                                                           |
-| `OneRowRelationExec`    | ➖     | Spark 4.1+. A single-row source, for example `SELECT 1`. Can be bridged into a native stage; it is in the default bridge list.                                                                                   |
-| `RangeExec`             | ➖     | `spark.range(...)`. Generating a sequence is not a bottleneck, but it is in the default bridge list, so a native stage above it does not have to fall back.                                                      |
-| `EmptyRelationExec`     | ➖     | Spark 4.0+. An empty relation folded out by AQE. There are no rows to process.                                                                                                                                   |
+| Operator                | Status | Notes                                                                                                                                                                                                                                                                              |
+| ----------------------- | ------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `FileSourceScanExec`    | ✅     | Parquet only. Some types and configurations fall back. See [Parquet Scan Compatibility](compatibility/scans.md).                                                                                                                                                                   |
+| `BatchScanExec`         | ✅     | Parquet, Apache Iceberg Parquet, and CSV (native) scans. See [Parquet Scan Compatibility](compatibility/scans.md) and the [Iceberg Guide](iceberg.md).                                                                                                                             |
+| `LocalTableScanExec`    | ⚠️     | Disabled by default; there is no acceleration advantage and this operator is typically only used in test code. Can be opted into via config ([#4393](https://github.com/apache/datafusion-comet/pull/4393)).                                                                       |
+| `InMemoryTableScanExec` | 🔜     | Cached / in-memory table scans fall back today ([#2391](https://github.com/apache/datafusion-comet/issues/2391)). The output can still be fed into a native stage with `spark.comet.sparkToColumnar.enabled=true` (see [Bridging non-native leaves](#bridging-non-native-leaves)). |
+| `UnionLoopExec`         | ❌     | Spark 4.1+. The recursion driver for `WITH RECURSIVE` common table expressions.                                                                                                                                                                                                    |
+| `RowDataSourceScanExec` | ➖     | V1 sources that are not file-based, most commonly JDBC. Rows arrive from the external system already materialized, so there is no columnar read to accelerate.                                                                                                                     |
+| `RDDScanExec`           | ➖     | `createDataFrame` over an RDD or local collection. Can be bridged into a native stage (see below); it is in the default bridge list.                                                                                                                                               |
+| `ExternalRDDScanExec`   | ➖     | `Dataset` built from an RDD of JVM objects. Rows arrive as deserialized objects, so there is nothing columnar to read.                                                                                                                                                             |
+| `OneRowRelationExec`    | ➖     | Spark 4.1+. A single-row source, for example `SELECT 1`. Can be bridged into a native stage; it is in the default bridge list.                                                                                                                                                     |
+| `RangeExec`             | ➖     | `spark.range(...)`. Generating a sequence is not a bottleneck, but it is in the default bridge list, so a native stage above it does not have to fall back.                                                                                                                        |
+| `EmptyRelationExec`     | ➖     | Spark 4.0+. An empty relation folded out by AQE. There are no rows to process.                                                                                                                                                                                                     |
 
 ### Bridging non-native leaves
 
@@ -76,12 +76,12 @@ off when enough native work sits above the leaf.
 
 ## Projection and filtering
 
-| Operator             | Status | Notes                                                                                                                                                                    |
-| -------------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `ProjectExec`        | ✅     |                                                                                                                                                                          |
-| `FilterExec`         | ✅     |                                                                                                                                                                          |
-| `SampleExec`         | ❌     | `df.sample(...)` and `TABLESAMPLE`. Matching Spark's output row-for-row requires reproducing its per-partition RNG stream, which is why this has not been attempted yet. |
-| `CollectMetricsExec` | ❌     | `df.observe(...)`. Falls back, and because it sits in the middle of a plan it also splits the surrounding native stage in two.                                           |
+| Operator             | Status | Notes                                                                                                                                                                                                                                      |
+| -------------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `ProjectExec`        | ✅     |                                                                                                                                                                                                                                            |
+| `FilterExec`         | ✅     |                                                                                                                                                                                                                                            |
+| `SampleExec`         | ❌     | `df.sample(...)` and `TABLESAMPLE`. Matching Spark's output row-for-row requires reproducing its per-partition RNG stream, which is why this has not been attempted yet ([#5109](https://github.com/apache/datafusion-comet/issues/5109)). |
+| `CollectMetricsExec` | ❌     | `df.observe(...)`. Falls back, and because it sits in the middle of a plan it also splits the surrounding native stage in two ([#5124](https://github.com/apache/datafusion-comet/issues/5124)).                                           |
 
 ## Sorting and limiting
 
@@ -96,23 +96,23 @@ off when enough native work sits above the leaf.
 
 ## Aggregation
 
-| Operator                  | Status | Notes                                                                                      |
-| ------------------------- | ------ | ------------------------------------------------------------------------------------------ |
-| `HashAggregateExec`       | ✅     |                                                                                            |
-| `ObjectHashAggregateExec` | ✅     | Supports a limited set of aggregates, such as `bloom_filter_agg`.                          |
-| `SortAggregateExec`       | 🔜     | Falls back today; Comet currently accelerates hash aggregates.                             |
-| `MergingSessionsExec`     | ❌     | Session-window aggregation (`session_window`). Used in batch as well as streaming queries. |
-| `UpdatingSessionsExec`    | ❌     | Assigns rows to session windows ahead of a session-window aggregate.                       |
+| Operator                  | Status | Notes                                                                                                                                                        |
+| ------------------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `HashAggregateExec`       | ✅     |                                                                                                                                                              |
+| `ObjectHashAggregateExec` | ✅     | Supports a limited set of aggregates, such as `bloom_filter_agg`.                                                                                            |
+| `SortAggregateExec`       | 🔜     | Falls back today; Comet currently accelerates hash aggregates ([#1994](https://github.com/apache/datafusion-comet/issues/1994)).                             |
+| `MergingSessionsExec`     | ❌     | Session-window aggregation (`session_window`). Used in batch as well as streaming queries ([#4785](https://github.com/apache/datafusion-comet/issues/4785)). |
+| `UpdatingSessionsExec`    | ❌     | Assigns rows to session windows ahead of a session-window aggregate ([#4785](https://github.com/apache/datafusion-comet/issues/4785)).                       |
 
 ## Joins
 
-| Operator                      | Status | Notes                                                                                                                                                                         |
-| ----------------------------- | ------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `BroadcastHashJoinExec`       | ✅     |                                                                                                                                                                               |
-| `ShuffledHashJoinExec`        | ✅     |                                                                                                                                                                               |
-| `SortMergeJoinExec`           | ✅     |                                                                                                                                                                               |
-| `BroadcastNestedLoopJoinExec` | ✅     | Falls back to Spark when the preserved side is broadcast (for example LEFT OUTER with BROADCAST on the left) ([#4429](https://github.com/apache/datafusion-comet/pull/4429)). |
-| `CartesianProductExec`        | ➖     | Cross joins. Runtime is dominated by output size rather than per-row cost, so there is little for a native implementation to win.                                             |
+| Operator                      | Status | Notes                                                                                                                                                                                      |
+| ----------------------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `BroadcastHashJoinExec`       | ✅     |                                                                                                                                                                                            |
+| `ShuffledHashJoinExec`        | ✅     |                                                                                                                                                                                            |
+| `SortMergeJoinExec`           | ✅     |                                                                                                                                                                                            |
+| `BroadcastNestedLoopJoinExec` | ✅     | Falls back to Spark when the preserved side is broadcast (for example LEFT OUTER with BROADCAST on the left) ([#4429](https://github.com/apache/datafusion-comet/pull/4429)).              |
+| `CartesianProductExec`        | ➖     | Cross joins. Runtime is dominated by output size rather than per-row cost, so there is little for the operator itself to win, though a fallback here does split an otherwise native stage. |
 
 ## Exchanges
 
@@ -130,12 +130,12 @@ off when enough native work sits above the leaf.
 
 ## Generators and set operations
 
-| Operator       | Status | Notes                                                                                                                      |
-| -------------- | ------ | -------------------------------------------------------------------------------------------------------------------------- |
-| `GenerateExec` | ✅     | Supports `explode` and `posexplode` over arrays. The `_outer` variants are incompatible, and `inline` / `stack` fall back. |
-| `ExpandExec`   | ✅     |                                                                                                                            |
-| `UnionExec`    | ✅     |                                                                                                                            |
-| `CoalesceExec` | ✅     |                                                                                                                            |
+| Operator       | Status | Notes                                                                                                                                                                                                                                                          |
+| -------------- | ------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GenerateExec` | ✅     | Supports `explode` and `posexplode` over arrays. The `_outer` variants are incompatible ([#2838](https://github.com/apache/datafusion-comet/issues/2838)), and `inline` / `stack` fall back ([#5125](https://github.com/apache/datafusion-comet/issues/5125)). |
+| `ExpandExec`   | ✅     |                                                                                                                                                                                                                                                                |
+| `UnionExec`    | ✅     |                                                                                                                                                                                                                                                                |
+| `CoalesceExec` | ✅     |                                                                                                                                                                                                                                                                |
 
 ## Typed Dataset operators
 
@@ -166,9 +166,10 @@ with `spark.comet.exec.pyarrowUdf.enabled=true` and see the
 Comet's native shuffle.
 
 The remaining Arrow-based UDF operators are marked ❌ rather than ➖ because the same optimization
-applies to them in principle — they already exchange Arrow batches with the Python worker. Pickled
-UDFs and SparkR are marked ➖ because they serialize row at a time, with no columnar boundary to
-preserve.
+applies to them in principle — they already exchange Arrow batches with the Python worker.
+Extending the native path to them is tracked by
+[#5123](https://github.com/apache/datafusion-comet/issues/5123). Pickled UDFs and SparkR are
+marked ➖ because they serialize row at a time, with no columnar boundary to preserve.
 
 | Operator                                                                                 | Status | Notes                                                                                                                                                         |
 | ---------------------------------------------------------------------------------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -190,12 +191,12 @@ preserve.
 
 ## Writes
 
-| Operator                                                                                                   | Status | Notes                                                                                                                            |
-| ---------------------------------------------------------------------------------------------------------- | ------ | -------------------------------------------------------------------------------------------------------------------------------- |
-| `DataWritingCommandExec`                                                                                   | ⚠️     | Experimental native Parquet writes, disabled by default (opt-in).                                                                |
-| `WriteFilesExec`                                                                                           | ⚠️     | The V1 write operator that `DataWritingCommandExec` wraps. Comet converts the pair together; it is never accelerated on its own. |
-| `AppendDataExec`, `OverwriteByExpressionExec`, `OverwritePartitionsDynamicExec`, `WriteToDataSourceV2Exec` | ❌     | DataSource V2 writes, including Iceberg writes. Comet accelerates Iceberg reads only.                                            |
-| `ReplaceDataExec`, `WriteDeltaExec`, `MergeRowsExec`, `InsertOnlyMergeExec`, `DeleteFromTableExec`         | ❌     | Row-level `MERGE` / `UPDATE` / `DELETE` plans. `MergeRowsExec` is Spark 3.5+, `InsertOnlyMergeExec` is Spark 4.2+.               |
+| Operator                                                                                                   | Status | Notes                                                                                                                                                                                |
+| ---------------------------------------------------------------------------------------------------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `DataWritingCommandExec`                                                                                   | ⚠️     | Experimental native Parquet writes, disabled by default (opt-in). See [#1625](https://github.com/apache/datafusion-comet/issues/1625).                                               |
+| `WriteFilesExec`                                                                                           | ⚠️     | The V1 write operator that `DataWritingCommandExec` wraps. Comet converts the pair together; it is never accelerated on its own.                                                     |
+| `AppendDataExec`, `OverwriteByExpressionExec`, `OverwritePartitionsDynamicExec`, `WriteToDataSourceV2Exec` | ❌     | DataSource V2 writes, including Iceberg writes. Comet accelerates Iceberg reads only ([#5121](https://github.com/apache/datafusion-comet/issues/5121)).                              |
+| `ReplaceDataExec`, `WriteDeltaExec`, `MergeRowsExec`, `InsertOnlyMergeExec`, `DeleteFromTableExec`         | ❌     | Row-level `MERGE` / `UPDATE` / `DELETE` plans ([#5122](https://github.com/apache/datafusion-comet/issues/5122)). `MergeRowsExec` is Spark 3.5+, `InsertOnlyMergeExec` is Spark 4.2+. |
 
 ## Plan infrastructure
 
