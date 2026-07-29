@@ -27,7 +27,7 @@ import org.apache.spark.sql.types._
 import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.unsafe.types.UTF8String
 
-import org.apache.comet.NativeColumnarToRowConverter
+import org.apache.comet.{DirectColumnarToRowConverter, NativeColumnarToRowConverter}
 
 /**
  * Isolated columnar-to-row microbenchmark that excludes the parquet scan entirely. Batches are
@@ -171,6 +171,24 @@ object CometC2RIsolatedBench {
       if (sink == Long.MinValue) println(sink)
     }
 
+    benchmark.addCase("JVM direct converter (prototype)") { _ =>
+      val converter = new DirectColumnarToRowConverter(scenario.schema)
+      var sink = 0L
+      var b = 0
+      while (b < batches.length) {
+        val batch = batches(b)
+        converter.setBatch(batch)
+        val numRows = batch.numRows()
+        var i = 0
+        while (i < numRows) {
+          sink += scenario.consume(converter.convertRow(i))
+          i += 1
+        }
+        b += 1
+      }
+      if (sink == Long.MinValue) println(sink)
+    }
+
     benchmark.addCase("Native converter") { _ =>
       val converter = new NativeColumnarToRowConverter(scenario.schema, batchSize)
       var sink = 0L
@@ -205,6 +223,20 @@ object CometC2RIsolatedBench {
       }
       if (sink == Long.MinValue) println(sink)
     }
+    val directAlloc = measureAllocatedBytes {
+      val converter = new DirectColumnarToRowConverter(scenario.schema)
+      var sink = 0L
+      for (batch <- batches) {
+        converter.setBatch(batch)
+        val numRows = batch.numRows()
+        var i = 0
+        while (i < numRows) {
+          sink += scenario.consume(converter.convertRow(i))
+          i += 1
+        }
+      }
+      if (sink == Long.MinValue) println(sink)
+    }
     val nativeAlloc = measureAllocatedBytes {
       val converter = new NativeColumnarToRowConverter(scenario.schema, batchSize)
       var sink = 0L
@@ -222,6 +254,7 @@ object CometC2RIsolatedBench {
     }
     println(
       f"JVM heap allocation per row: JVM path ${jvmAlloc.toDouble / totalRows}%.1f bytes, " +
+        f"direct path ${directAlloc.toDouble / totalRows}%.1f bytes, " +
         f"native path ${nativeAlloc.toDouble / totalRows}%.1f bytes%n")
 
     batches.foreach(_.close())
