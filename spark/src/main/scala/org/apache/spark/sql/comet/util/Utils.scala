@@ -397,6 +397,15 @@ object Utils extends CometTypeShim with Logging {
     }
   }
 
+  /**
+   * Whether every column in `batch` satisfies [[getBatchFieldVectors]]'s precondition, i.e. is an
+   * Arrow-backed `CometVector`. Callers that may receive batches from a plan they did not build
+   * (e.g. Comet's cache serializer, which Spark hands the cached plan's columnar output) use this
+   * to convert foreign vectors to Arrow instead of tripping the exception below.
+   */
+  def isArrowBacked(batch: ColumnarBatch): Boolean =
+    (0 until batch.numCols()).forall(i => batch.column(i).isInstanceOf[CometVector])
+
   def getBatchFieldVectors(
       batch: ColumnarBatch): (Seq[FieldVector], Option[DictionaryProvider]) = {
     var provider: Option[DictionaryProvider] = None

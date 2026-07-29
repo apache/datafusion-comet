@@ -28,17 +28,19 @@ import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.vectorized.{ColumnarArray, ColumnarBatch}
 
-import org.apache.comet.vector.{CometVector, NativeUtil}
+import org.apache.comet.vector.NativeUtil
 
 /**
- * Convert a stream of Spark `InternalRow`s to a stream of independently-owned Arrow
- * `ColumnarBatch`es: each emitted batch owns a fresh `VectorSchemaRoot` with newly allocated
- * buffers and the consumer is responsible for closing it.
+ * Convert Spark data that is not Arrow-backed (`InternalRow`s, or `ColumnarBatch`es whose columns
+ * are Spark/third-party `ColumnVector`s) into independently-owned Arrow `ColumnarBatch`es: each
+ * emitted batch owns a fresh `VectorSchemaRoot` with newly allocated buffers and the consumer is
+ * responsible for closing it.
  *
- * This differs from [[RowArrowReader]], which reuses one stable `VectorSchemaRoot`
- * (release-and-replace) so only one batch is valid at a time. Use this when multiple emitted
- * batches must be alive simultaneously (e.g. tests that buffer several batches before consuming).
- * Buffers come from the caller-provided `BufferAllocator`, whose lifecycle the caller owns.
+ * This differs from [[RowArrowReader]] and [[SparkColumnarArrowReader]], which reuse one stable
+ * `VectorSchemaRoot` (release-and-replace) so only one batch is valid at a time. Use this when
+ * multiple emitted batches must be alive simultaneously (e.g. tests that buffer several batches
+ * before consuming). Buffers come from the caller-provided `BufferAllocator`, whose lifecycle the
+ * caller owns.
  */
 object CometArrowConverters extends Logging {
 
@@ -76,27 +78,22 @@ object CometArrowConverters extends Logging {
   }
 
   /**
-   * Copy a Spark `ColumnarBatch` whose columns are not Arrow-backed (e.g.
-   * `On/OffHeapColumnVector` from Spark's vectorized Parquet reader, or a third-party connector's
-   * vectors) into a freshly allocated Arrow `ColumnarBatch` of `CometVector`s.
+   * Copy `numRows` rows starting at `startRow` from a Spark `ColumnarBatch` into `root`.
    *
-   * The input batch is not consumed or closed; the caller owns the returned batch and must close
-   * it. Values are copied element-wise, since Spark's `ColumnVector` implementations do not
-   * expose Arrow buffers.
+   * Spark's `ColumnVector` implementations do not expose Arrow buffers, so values are necessarily
+   * copied element-wise. Shared by [[SparkColumnarArrowReader]], which slices into a stable root,
+   * and [[columnarBatchToArrowBatch]], which fills a fresh one.
    */
-  def columnarBatchToArrowBatch(
+  private[arrow] def writeColumns(
+      root: VectorSchemaRoot,
       batch: ColumnarBatch,
-      schema: StructType,
-      timeZoneId: String,
-      allocator: BufferAllocator): ColumnarBatch = {
-    val arrowSchema: Schema = Utils.toArrowSchema(schema, timeZoneId)
-    val root = VectorSchemaRoot.create(arrowSchema, allocator)
+      startRow: Int,
+      numRows: Int): Unit = {
     val writer = ArrowWriter.create(root)
-    val numRows = batch.numRows()
     var col = 0
     while (col < batch.numCols()) {
       val column = batch.column(col)
-      val columnArray = new ColumnarArray(column, 0, numRows)
+      val columnArray = new ColumnarArray(column, startRow, numRows)
       if (column.hasNull) {
         writer.writeCol(columnArray, col)
       } else {
@@ -109,10 +106,22 @@ object CometArrowConverters extends Logging {
     // batch (Spark's count-from-metadata scan: numRows > 0, numCols == 0) would otherwise produce
     // a root with rowCount == 0 and silently drop the rows.
     root.setRowCount(numRows)
-    NativeUtil.rootAsBatch(root)
   }
 
-  /** Whether every column in `batch` is already an Arrow-backed `CometVector`. */
-  def isArrowBacked(batch: ColumnarBatch): Boolean =
-    (0 until batch.numCols()).forall(i => batch.column(i).isInstanceOf[CometVector])
+  /**
+   * Copy a Spark `ColumnarBatch` whose columns are not Arrow-backed (e.g.
+   * `On/OffHeapColumnVector` from Spark's vectorized Parquet reader, or a third-party connector's
+   * vectors) into a freshly allocated Arrow `ColumnarBatch` of `CometVector`s.
+   *
+   * The input batch is not consumed or closed; the caller owns the returned batch and must close
+   * it.
+   */
+  def columnarBatchToArrowBatch(
+      batch: ColumnarBatch,
+      arrowSchema: Schema,
+      allocator: BufferAllocator): ColumnarBatch = {
+    val root = VectorSchemaRoot.create(arrowSchema, allocator)
+    writeColumns(root, batch, 0, batch.numRows())
+    NativeUtil.rootAsBatch(root)
+  }
 }

@@ -70,13 +70,6 @@ class ArrowCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
 
   private val fallback = new DefaultCachedBatchSerializer()
 
-  // Row-to-Arrow conversion needs a StructType, while cache APIs pass attributes.
-  private def toStructType(schema: Seq[Attribute]): StructType = {
-    StructType(schema.map { attr =>
-      StructField(attr.name, attr.dataType, attr.nullable, attr.metadata)
-    })
-  }
-
   // Build the statistics row expected by SimpleMetricsCachedBatchSerializer.
   // For each cached column Spark expects five values in this order:
   // lower bound, upper bound, null count, row count, and size in bytes.
@@ -181,50 +174,38 @@ class ArrowCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
   // The stats are stored beside the Arrow bytes so Spark's cache filter can prune
   // CometCachedBatch without decoding the batch first.
   //
-  // Spark decides the input path from `supportsColumnarInput`, which only sees the schema, so a
-  // columnar input batch is not guaranteed to be Arrow-backed: any Spark or third-party columnar
-  // leaf (Spark's vectorized Parquet/ORC reader, a connector's own vectors) reaches
-  // `convertColumnarBatchToCachedBatch` with `On/OffHeapColumnVector`-style columns, which
-  // `Utils.serializeBatches` cannot write. Copy those into Arrow first.
+  // A columnar input batch is not guaranteed to be Arrow-backed; see supportsColumnarInput for
+  // why. Batches that are not get copied into Arrow first, since Utils.serializeBatches only
+  // writes CometVector columns.
   private def encodeBatches(
       batches: Iterator[ColumnarBatch],
       attrs: Seq[Attribute]): Iterator[CachedBatch] = {
-    lazy val structType = toStructType(attrs)
+    val arrowSchema =
+      Utils.toArrowSchema(Utils.fromAttributes(attrs), CometArrowStream.NATIVE_TIMEZONE)
 
-    batches.flatMap { batch =>
+    batches.map { batch =>
       val stats = computeStats(batch, attrs)
 
-      val (arrowBatch, ownsBatch) =
-        if (CometArrowConverters.isArrowBacked(batch)) {
-          (batch, false)
-        } else {
-          val converted = CometArrowConverters.columnarBatchToArrowBatch(
-            batch,
-            structType,
-            CometArrowStream.NATIVE_TIMEZONE,
-            CometArrowAllocator)
-          (converted, true)
-        }
-
-      try {
-        // `Utils.serializeBatches` is lazy and clears the batch's vectors as it writes, so the
-        // result has to be materialized before a converted batch is closed.
-        Utils
-          .serializeBatches(Iterator.single(arrowBatch))
-          .map { case (rows, buffer) =>
-            CometCachedBatch(
-              numRows = rows.toInt,
-              sizeInBytes = buffer.size,
-              stats = stats,
-              bytes = buffer)
-          }
-          .toList
-      } finally {
-        if (ownsBatch) {
-          arrowBatch.close()
-        }
+      if (Utils.isArrowBacked(batch)) {
+        serializeBatch(batch, stats)
+      } else {
+        val arrowBatch =
+          CometArrowConverters.columnarBatchToArrowBatch(batch, arrowSchema, CometArrowAllocator)
+        try serializeBatch(arrowBatch, stats)
+        finally arrowBatch.close()
       }
     }
+  }
+
+  // Utils.serializeBatches is one-in/one-out, so take the single element eagerly: the write has to
+  // happen before a converted batch is closed.
+  private def serializeBatch(batch: ColumnarBatch, stats: InternalRow): CachedBatch = {
+    val (rows, buffer) = Utils.serializeBatches(Iterator.single(batch)).next()
+    CometCachedBatch(
+      numRows = rows.toInt,
+      sizeInBytes = buffer.size,
+      stats = stats,
+      bytes = buffer)
   }
 
   // Resolve requested columns by exprId, not by name, because aliases may reuse names.
@@ -285,6 +266,13 @@ class ArrowCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
   // Comet's Arrow writer only handles the types listed in supportsSchema. Reporting false here
   // sends the relation down the row path, where it is delegated to Spark's default serializer,
   // instead of failing at cache materialization inside Utils.serializeBatches.
+  //
+  // This answer is schema-only, because attributes are all Spark gives us; it says nothing about
+  // the vectors. Returning true also makes InMemoryRelation strip the ColumnarToRow above the
+  // cached plan, so convertColumnarBatchToCachedBatch then receives whatever that plan produces:
+  // a Comet scan's CometVectors, but equally Spark's vectorized Parquet/ORC reader or a
+  // connector's own vectors. encodeBatches converts the non-Arrow ones; that conversion is load
+  // bearing, not defensive.
   override def supportsColumnarInput(schema: Seq[Attribute]): Boolean = supportsSchema(schema)
 
   // A relation Comet stores is always readable as columnar Arrow. Anything else holds
@@ -356,7 +344,7 @@ class ArrowCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
       input.mapPartitions { rows =>
         val iter = CometArrowConverters.rowToArrowBatchIter(
           rows,
-          toStructType(schema),
+          Utils.fromAttributes(schema),
           batchSize,
           sessionTz,
           CometArrowAllocator)
