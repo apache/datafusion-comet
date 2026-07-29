@@ -107,13 +107,11 @@ SELECT a * 2 FROM ansi_long_overflow WHERE a = 9223372036854775807
 -- ============================================================================
 
 -- LONG_MIN div -1 should overflow
--- (match on the message body rather than the ARITHMETIC_OVERFLOW condition name,
--- which is not rendered on all Spark versions)
-query expect_error(Overflow in integral divide)
+query expect_error(ARITHMETIC_OVERFLOW)
 SELECT a div b FROM ansi_long_overflow WHERE a = -9223372036854775808 AND b = -1
 
 -- literal LONG_MIN div -1 should overflow
-query expect_error(Overflow in integral divide)
+query expect_error(ARITHMETIC_OVERFLOW)
 SELECT -9223372036854775808L div -1L
 
 -- INT_MIN div -1 does not overflow because the result type is LONG
