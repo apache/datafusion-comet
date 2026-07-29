@@ -102,3 +102,59 @@ string paths is tracked by
 Separately, Comet's native Parquet scan currently rejects string columns whose stored bytes are not
 valid UTF-8 rather than reading them like Spark
 ([#4121](https://github.com/apache/datafusion-comet/issues/4121)).
+
+## ANSI-mode error classes and messages
+
+Under `spark.sql.ansi.enabled=true`, several native error paths raise the error at the correct
+input but with a different exception type, error class, SQLSTATE, or message text than Spark.
+Code that catches `SparkException` and only asserts on message substrings is unaffected; code that
+inspects the exception class, `getCondition()`, or the parameterised error class will observe
+divergence:
+
+- Byte / Short `Add`, `Subtract`, and `Multiply` overflow raises `ARITHMETIC_OVERFLOW` where Spark
+  4.1 raises `BINARY_ARITHMETIC_OVERFLOW`, and Long overflow surfaces as `"integer overflow"`
+  rather than `"long overflow"`. `Abs` uses Rust type names (`Int8`, `Int64`, ...) in the message
+  instead of Spark's SQL type names, and the scalar path of `UnaryMinus` on Byte / Short emits a
+  malformed message. The `try_` suggestion is omitted from all of these
+  ([#5071](https://github.com/apache/datafusion-comet/issues/5071)).
+- Wide-decimal arithmetic overflow, decimal divide-by-zero, and decimal-to-decimal cast overflow
+  raise raw Arrow errors that bypass `SparkErrorConverter` and surface as `CometNativeException`
+  rather than `SparkArithmeticException` with the proper error class and query context
+  ([#5072](https://github.com/apache/datafusion-comet/issues/5072)).
+- `next_day` and `make_date` throw at the correct inputs but surface as `CometNativeException`
+  instead of `SparkIllegalArgumentException [ILLEGAL_DAY_OF_WEEK]` /
+  `SparkDateTimeException [DATETIME_FIELD_OUT_OF_BOUNDS.WITH_SUGGESTION]`
+  ([#5073](https://github.com/apache/datafusion-comet/issues/5073)).
+- Spark 4.2 introduced additional ANSI arithmetic overflow behavior differences that Comet does
+  not yet track ([#4967](https://github.com/apache/datafusion-comet/issues/4967)).
+
+## Known result-value divergences
+
+The following native paths silently return values that differ from Spark for edge-case inputs.
+Most also have entries in the per-category expression pages linked above; they are collected here
+so users hunting an unexpected value have a single place to check:
+
+- `CAST(boolean AS DECIMAL(p, s))` where `10^s` exceeds the target precision (e.g.
+  `DECIMAL(1, 1)`) throws `NUMERIC_VALUE_OUT_OF_RANGE` regardless of the eval mode. Spark returns
+  `NULL` under legacy and try mode, and only throws under ANSI
+  ([#5068](https://github.com/apache/datafusion-comet/issues/5068)).
+- `CAST(string AS boolean)` trims only Unicode whitespace. Spark also trims the ASCII control
+  bytes `0x00-0x08`, `0x0E-0x1F`, and `0x7F`, so a string like `"true"` casts to
+  `true` in Spark and to `NULL` in Comet (or throws under ANSI)
+  ([#4959](https://github.com/apache/datafusion-comet/issues/4959)).
+- Native `RANGE` window frames with an explicit `PRECEDING` / `FOLLOWING` offset diverge from
+  Spark when the boundary arithmetic overflows for `DATE` or `DECIMAL` `ORDER BY` columns
+  ([#5022](https://github.com/apache/datafusion-comet/issues/5022)).
+- For an empty `IN` list, Comet always returns `false` for a `NULL` operand. Spark returns `NULL`
+  when `spark.sql.legacy.nullInEmptyListBehavior=true` (Spark 4.0+)
+  ([#4786](https://github.com/apache/datafusion-comet/issues/4786)).
+
+## Object store cache
+
+When Comet's native scan reads Parquet files, it caches one object store instance per
+`(scheme + host + port, hadoop-config-hash)` key. For `abfss://container@account.dfs.core.windows.net/...`
+URLs, the container lives in the URL userinfo, not the host, so two containers in one storage
+account currently collide on the same cache entry. Within a single executor process, reading from
+a second container after a first can be served by the first container's store instance and return
+its data. S3, GCS, and HDFS are unaffected because their bucket / host lives in the URL host
+component. Tracked by [#4993](https://github.com/apache/datafusion-comet/issues/4993).
