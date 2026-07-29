@@ -39,10 +39,17 @@ use std::sync::Arc;
 /// This is the normalizing counterpart to stamping `schema` on directly: it absorbs the
 /// return-type drift — most commonly a nested `nullable` flag — that native kernels and non-Parquet
 /// sources introduce, the same way `ScanExec` absorbs it at the FFI boundary.
+///
+/// Reconciliation follows `schema` in both directions, so it will also narrow a nullable nested
+/// child to non-null when that is what `schema` declares. That is not silently lossy: arrow's
+/// `StructArray::try_new` rejects unmasked nulls under a non-nullable field, so data that cannot
+/// survive the narrowing errors here rather than producing an array that misreports itself.
+/// Callers that must not narrow should widen `schema` first — see [`widen_nested_nullability`],
+/// which is what `SchemaAlignExec` and `ExpandExec` do.
 pub fn cast_and_stamp_schema(
     operator: &str,
     schema: &SchemaRef,
-    columns: &[ArrayRef],
+    mut columns: Vec<ArrayRef>,
     num_rows: usize,
 ) -> Result<RecordBatch, DataFusionError> {
     if columns.len() != schema.fields().len() {
@@ -53,44 +60,28 @@ pub fn cast_and_stamp_schema(
         )));
     }
 
-    let mut aligned: Vec<ArrayRef> = Vec::with_capacity(columns.len());
-    // A cast yields exactly the target type, so after this loop every column's type matches the
-    // declared field. `residual_mismatch` records the one case that would not: a cast that returned
-    // something other than what it was asked for. Tracked here so the error below can name the
-    // column without having to keep `aligned` alive past the stamp.
-    let mut residual_mismatch: Option<(usize, DataType)> = None;
-    for (idx, (column, field)) in columns.iter().zip(schema.fields()).enumerate() {
-        if column.data_type() == field.data_type() {
-            aligned.push(Arc::clone(column));
-            continue;
+    for (idx, (column, field)) in columns.iter_mut().zip(schema.fields()).enumerate() {
+        if column.data_type() != field.data_type() {
+            *column = cast_with_options(column, field.data_type(), &CastOptions::default())
+                .map_err(|e| cast_error(operator, schema, idx, column.data_type(), e))?;
         }
-        let cast = cast_with_options(column, field.data_type(), &CastOptions::default())
-            .map_err(|e| stamp_error(operator, schema, idx, column.data_type(), e))?;
-        if residual_mismatch.is_none() && cast.data_type() != field.data_type() {
-            residual_mismatch = Some((idx, cast.data_type().clone()));
-        }
-        aligned.push(cast);
     }
 
+    // Every column's type now matches its declared field — `cast_with_options` returns either an
+    // error or an array of exactly the requested type — so the stamp can only fail on row counts.
     let options = RecordBatchOptions::new().with_row_count(Some(num_rows));
-    RecordBatch::try_new_with_options(Arc::clone(schema), aligned, &options).map_err(|e| {
-        match residual_mismatch {
-            Some((idx, actual)) => stamp_error(operator, schema, idx, &actual, e),
-            // Types all match, so the stamp can only have failed on row counts.
-            None => DataFusionError::Context(
-                format!(
-                    "{operator} cannot build a batch of {num_rows} rows with its declared schema"
-                ),
-                Box::new(DataFusionError::from(e)),
-            ),
-        }
+    RecordBatch::try_new_with_options(Arc::clone(schema), columns, &options).map_err(|e| {
+        DataFusionError::Context(
+            format!("{operator} cannot build a batch of {num_rows} rows with its declared schema"),
+            Box::new(DataFusionError::from(e)),
+        )
     })
 }
 
 /// Names the operator and the dotted path of the column that could not be reconciled, since
 /// arrow's own message reports only `at column index N` and the two printed types may differ by a
 /// single flag hundreds of characters in.
-fn stamp_error(
+fn cast_error(
     operator: &str,
     schema: &SchemaRef,
     idx: usize,
@@ -108,19 +99,16 @@ fn stamp_error(
 
 /// Describes where `expected` and `actual` first diverge, as a dotted path rooted at `path`.
 /// Returns `None` when the two types are equal.
-pub fn describe_type_mismatch(
-    path: &str,
-    expected: &DataType,
-    actual: &DataType,
-) -> Option<String> {
+///
+/// The nested arms cover the shapes Comet actually builds — see `make_all_fields_nullable` in the
+/// planner and `to_arrow_datatype` in the serde layer, which walk the same set.
+fn describe_type_mismatch(path: &str, expected: &DataType, actual: &DataType) -> Option<String> {
     if expected == actual {
         return None;
     }
     match (expected, actual) {
         (DataType::List(e), DataType::List(a))
-        | (DataType::LargeList(e), DataType::LargeList(a))
-        | (DataType::ListView(e), DataType::ListView(a))
-        | (DataType::LargeListView(e), DataType::LargeListView(a)) => {
+        | (DataType::LargeList(e), DataType::LargeList(a)) => {
             describe_field_mismatch(&format!("{path}.element"), e, a)
         }
         (DataType::FixedSizeList(e, e_len), DataType::FixedSizeList(a, a_len))
@@ -135,11 +123,6 @@ pub fn describe_type_mismatch(
             .iter()
             .zip(a.iter())
             .find_map(|(e, a)| describe_field_mismatch(&format!("{path}.{}", e.name()), e, a)),
-        (DataType::Dictionary(e_key, e_value), DataType::Dictionary(a_key, a_value))
-            if e_key == a_key =>
-        {
-            describe_type_mismatch(path, e_value, a_value)
-        }
         _ => Some(format!("{path}: expected {expected}, found {actual}")),
     }
 }
@@ -159,13 +142,6 @@ fn describe_field_mismatch(path: &str, expected: &FieldRef, actual: &FieldRef) -
             nullability(actual)
         ));
     }
-    if expected.metadata() != actual.metadata() {
-        return Some(format!(
-            "{path}: expected metadata {:?}, found {:?}",
-            expected.metadata(),
-            actual.metadata()
-        ));
-    }
     describe_type_mismatch(path, expected.data_type(), actual.data_type())
 }
 
@@ -182,14 +158,14 @@ fn nullability(field: &FieldRef) -> String {
 /// either type can be stamped with the result. Shapes that do not line up (different struct field
 /// counts, different list flavours, ...) are left as `base`; those are real type differences and
 /// are handled by the cast in [`cast_and_stamp_schema`].
+///
+/// Related but not interchangeable: `make_all_fields_nullable` in the planner widens one type
+/// unconditionally, and arrow's `Field::try_merge` unions two but errors on a leaf type difference
+/// instead of tolerating it and does not recurse into maps or fixed-size lists.
 pub fn widen_nested_nullability(base: &DataType, other: &DataType) -> DataType {
     match (base, other) {
         (DataType::List(b), DataType::List(o)) => DataType::List(widen_field(b, o)),
         (DataType::LargeList(b), DataType::LargeList(o)) => DataType::LargeList(widen_field(b, o)),
-        (DataType::ListView(b), DataType::ListView(o)) => DataType::ListView(widen_field(b, o)),
-        (DataType::LargeListView(b), DataType::LargeListView(o)) => {
-            DataType::LargeListView(widen_field(b, o))
-        }
         (DataType::FixedSizeList(b, b_len), DataType::FixedSizeList(o, o_len))
             if b_len == o_len =>
         {
@@ -204,14 +180,6 @@ pub fn widen_nested_nullability(base: &DataType, other: &DataType) -> DataType {
                 .map(|(b, o)| widen_field(b, o))
                 .collect(),
         ),
-        (DataType::Dictionary(b_key, b_value), DataType::Dictionary(o_key, o_value))
-            if b_key == o_key =>
-        {
-            DataType::Dictionary(
-                b_key.clone(),
-                Box::new(widen_nested_nullability(b_value, o_value)),
-            )
-        }
         _ => base.clone(),
     }
 }
@@ -328,7 +296,7 @@ mod tests {
             "arrow no longer treats nested field nullability as part of DataType identity"
         );
 
-        let batch = cast_and_stamp_schema("TestExec", &schema, &[actual], 2).unwrap();
+        let batch = cast_and_stamp_schema("TestExec", &schema, vec![actual], 2).unwrap();
         assert_eq!(batch.num_rows(), 2);
         assert_eq!(batch.schema(), schema);
         let list = batch
@@ -376,7 +344,8 @@ mod tests {
     fn stamps_equal_types_without_copying() {
         let schema = Arc::new(Schema::new(vec![Field::new("c0", DataType::Int32, true)]));
         let column: ArrayRef = Arc::new(Int32Array::from(vec![1, 2, 3]));
-        let batch = cast_and_stamp_schema("TestExec", &schema, &[Arc::clone(&column)], 3).unwrap();
+        let batch =
+            cast_and_stamp_schema("TestExec", &schema, vec![Arc::clone(&column)], 3).unwrap();
         assert!(Arc::ptr_eq(batch.column(0), &column));
     }
 
@@ -389,7 +358,7 @@ mod tests {
             true,
         )]));
         let column: ArrayRef = Arc::new(StringArray::from(vec!["a", "b"]));
-        let err = cast_and_stamp_schema("TestExec", &schema, &[column], 2).unwrap_err();
+        let err = cast_and_stamp_schema("TestExec", &schema, vec![column], 2).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("TestExec"), "{msg}");
         assert!(msg.contains("col[0]"), "{msg}");
@@ -399,7 +368,7 @@ mod tests {
     #[test]
     fn error_on_column_count_mismatch() {
         let schema = Arc::new(Schema::new(vec![Field::new("c0", DataType::Int32, true)]));
-        let err = cast_and_stamp_schema("TestExec", &schema, &[], 0).unwrap_err();
+        let err = cast_and_stamp_schema("TestExec", &schema, vec![], 0).unwrap_err();
         assert!(
             err.to_string()
                 .contains("produced 0 columns but its schema declares 1"),

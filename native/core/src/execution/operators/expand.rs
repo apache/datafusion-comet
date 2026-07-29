@@ -218,7 +218,7 @@ impl ExpandStream {
 
         // A projection whose nested nullability is narrower than the operator's declared schema is
         // reconciled here rather than rejected by the stamp.
-        cast_and_stamp_schema("CometExpandExec", &self.schema, &columns, batch.num_rows())
+        cast_and_stamp_schema("CometExpandExec", &self.schema, columns, batch.num_rows())
     }
 }
 
@@ -267,62 +267,29 @@ mod tests {
     //! <https://github.com/apache/datafusion-comet/issues/5137>.
 
     use super::*;
-    use arrow::array::{Array, ArrayRef, BooleanArray, Int64Array, ListArray, StructArray};
-    use arrow::buffer::OffsetBuffer;
-    use arrow::datatypes::{DataType, FieldRef, Fields};
+    use crate::execution::operators::nested_nullability_fixture::{
+        list_of_struct, list_of_struct_type,
+    };
+    use arrow::array::{Array, ListArray};
     use datafusion::datasource::memory::MemorySourceConfig;
-    use datafusion::datasource::source::DataSourceExec;
     use datafusion::physical_expr::expressions::Column;
+    use datafusion::physical_plan::collect;
     use datafusion::prelude::SessionContext;
-
-    fn struct_fields(flag_nullable: bool) -> Fields {
-        Fields::from(vec![
-            Field::new("id", DataType::Int64, true),
-            Field::new("flag", DataType::Boolean, flag_nullable),
-        ])
-    }
-
-    fn element_field(flag_nullable: bool) -> FieldRef {
-        Arc::new(Field::new_list_field(
-            DataType::Struct(struct_fields(flag_nullable)),
-            true,
-        ))
-    }
-
-    /// `[[{1,true},{2,false}], [{3,true}]]`. The two variants hold identical values; only the
-    /// `flag` field's `nullable` flag differs, which is the whole of the drift being absorbed.
-    fn list_of_struct(flag_nullable: bool) -> ArrayRef {
-        let entries = StructArray::new(
-            struct_fields(flag_nullable),
-            vec![
-                Arc::new(Int64Array::from(vec![1, 2, 3])) as ArrayRef,
-                Arc::new(BooleanArray::from(vec![true, false, true])),
-            ],
-            None,
-        );
-        Arc::new(ListArray::new(
-            element_field(flag_nullable),
-            OffsetBuffer::new(vec![0, 2, 3].into()),
-            Arc::new(entries),
-            None,
-        ))
-    }
 
     /// Child with two columns of the same logical `array<struct<id,flag>>` type that disagree on
     /// the `flag` field's nullability, so that projecting one per Expand projection reproduces the
     /// drift.
     fn drifting_child() -> Arc<dyn ExecutionPlan> {
         let schema = Arc::new(Schema::new(vec![
-            Field::new("a", DataType::List(element_field(true)), true),
-            Field::new("b", DataType::List(element_field(false)), true),
+            Field::new("a", list_of_struct_type(true), true),
+            Field::new("b", list_of_struct_type(false), true),
         ]));
         let batch = RecordBatch::try_new(
             Arc::clone(&schema),
             vec![list_of_struct(true), list_of_struct(false)],
         )
         .unwrap();
-        let config = MemorySourceConfig::try_new(&[vec![batch]], schema, None).unwrap();
-        Arc::new(DataSourceExec::new(Arc::new(config)))
+        MemorySourceConfig::try_new_exec(&[vec![batch]], schema, None).unwrap()
     }
 
     fn drifting_projections() -> Vec<Vec<Arc<dyn PhysicalExpr>>> {
@@ -332,14 +299,10 @@ mod tests {
         ]
     }
 
-    async fn collect(plan: Arc<dyn ExecutionPlan>) -> Vec<RecordBatch> {
-        let ctx = SessionContext::new().task_ctx();
-        let mut stream = plan.execute(0, ctx).unwrap();
-        let mut batches = vec![];
-        while let Some(batch) = stream.next().await {
-            batches.push(batch.unwrap());
-        }
-        batches
+    async fn expand_all(plan: Arc<dyn ExecutionPlan>) -> Vec<RecordBatch> {
+        collect(plan, SessionContext::new().task_ctx())
+            .await
+            .unwrap()
     }
 
     /// Each output batch must carry the operator's declared schema and the values the projection
@@ -373,7 +336,7 @@ mod tests {
         let schema = ExpandExec::build_schema(&projections, &child.schema()).unwrap();
         assert_eq!(
             schema.field(0).data_type(),
-            &DataType::List(element_field(true)),
+            &list_of_struct_type(true),
             "the flag field must be nullable because projection[1] produces it nullable"
         );
     }
@@ -400,7 +363,7 @@ mod tests {
         let projections = drifting_projections();
         let schema = ExpandExec::build_schema(&projections, &child.schema()).unwrap();
         let expand = Arc::new(ExpandExec::new(projections, child, Arc::clone(&schema)));
-        assert_expanded(&collect(expand).await, &schema);
+        assert_expanded(&expand_all(expand).await, &schema);
     }
 
     /// The stamp reconciles on its own: even given the narrow `projections[0]`-derived schema that
@@ -410,7 +373,7 @@ mod tests {
         let child = drifting_child();
         let narrow = Arc::new(Schema::new(vec![Field::new(
             "col_0",
-            DataType::List(element_field(false)),
+            list_of_struct_type(false),
             true,
         )]));
         let expand = Arc::new(ExpandExec::new(
@@ -418,7 +381,7 @@ mod tests {
             child,
             Arc::clone(&narrow),
         ));
-        assert_expanded(&collect(expand).await, &narrow);
+        assert_expanded(&expand_all(expand).await, &narrow);
     }
 
     /// When no projection drifts, the schema is exactly what `projections[0]` yields, and the stamp
@@ -431,11 +394,8 @@ mod tests {
             vec![Arc::new(Column::new("a", 0)) as Arc<dyn PhysicalExpr>],
         ];
         let schema = ExpandExec::build_schema(&projections, &child.schema()).unwrap();
-        assert_eq!(
-            schema.field(0).data_type(),
-            &DataType::List(element_field(true))
-        );
+        assert_eq!(schema.field(0).data_type(), &list_of_struct_type(true));
         let expand = Arc::new(ExpandExec::new(projections, child, Arc::clone(&schema)));
-        assert_expanded(&collect(expand).await, &schema);
+        assert_expanded(&expand_all(expand).await, &schema);
     }
 }

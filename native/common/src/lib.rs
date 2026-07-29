@@ -23,5 +23,5 @@ mod utils;
 
 pub use error::{decimal_overflow_error, SparkError, SparkErrorWithContext, SparkResult};
 pub use query_context::{create_query_context_map, QueryContext, QueryContextMap};
-pub use schema::{cast_and_stamp_schema, describe_type_mismatch, widen_nested_nullability};
+pub use schema::{cast_and_stamp_schema, widen_nested_nullability};
 pub use utils::{bytes_to_i128, decode_utf8_spark_lossy};

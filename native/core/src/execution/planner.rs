@@ -1780,11 +1780,6 @@ impl PhysicalPlanner {
                     Ok::<(), ExecutionError>(())
                 })?;
 
-                assert!(
-                    !projections.is_empty(),
-                    "Expand should have at least one projection"
-                );
-
                 let schema = ExpandExec::build_schema(&projections, &child.schema())?;
 
                 // `Expand` operator keeps the input batch and expands it to multiple output

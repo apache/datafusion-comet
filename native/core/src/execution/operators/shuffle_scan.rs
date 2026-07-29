@@ -326,7 +326,7 @@ impl Stream for ShuffleScanStream {
                 let maybe_batch = cast_and_stamp_schema(
                     self.shuffle_scan.name(),
                     &self.shuffle_scan.schema,
-                    columns,
+                    columns.clone(),
                     *num_rows,
                 );
                 Poll::Ready(Some(maybe_batch))
@@ -512,44 +512,17 @@ mod tests {
     #[cfg_attr(miri, ignore)]
     fn test_nested_nullability_drift_is_reconciled() {
         use super::*;
-        use arrow::array::{Array, BooleanArray, Int64Array, ListArray, StructArray};
-        use arrow::buffer::OffsetBuffer;
-        use arrow::datatypes::{FieldRef, Fields};
+        use crate::execution::operators::nested_nullability_fixture::{
+            list_of_struct, list_of_struct_type,
+        };
+        use arrow::array::Array;
         use datafusion::physical_plan::ExecutionPlan;
         use futures::StreamExt;
 
-        fn struct_fields(flag_nullable: bool) -> Fields {
-            Fields::from(vec![
-                Field::new("id", DataType::Int64, true),
-                Field::new("flag", DataType::Boolean, flag_nullable),
-            ])
-        }
-
-        fn element_field(flag_nullable: bool) -> FieldRef {
-            Arc::new(Field::new_list_field(
-                DataType::Struct(struct_fields(flag_nullable)),
-                true,
-            ))
-        }
-
-        // The block carries `List(Struct("id": Int64, "flag": non-null Boolean))` ...
-        let entries = StructArray::new(
-            struct_fields(false),
-            vec![
-                Arc::new(Int64Array::from(vec![1, 2, 3])) as ArrayRef,
-                Arc::new(BooleanArray::from(vec![true, false, true])),
-            ],
-            None,
-        );
-        let block_column: ArrayRef = Arc::new(ListArray::new(
-            element_field(false),
-            OffsetBuffer::new(vec![0, 2, 3].into()),
-            Arc::new(entries),
-            None,
-        ));
-
-        // ... while catalyst declared the `flag` child nullable.
-        let declared = DataType::List(element_field(true));
+        // The block carries `List(Struct("id": Int64, "flag": non-null Boolean))` while catalyst
+        // declared the `flag` child nullable.
+        let block_column = list_of_struct(false);
+        let declared = list_of_struct_type(true);
         let mut scan = ShuffleScanExec::new(
             super::super::super::planner::TEST_EXEC_CONTEXT_ID,
             None,
@@ -566,28 +539,10 @@ mod tests {
 
             assert_eq!(batch.schema().field(0).data_type(), &declared);
             assert_eq!(batch.num_rows(), 2);
-
-            // The values must survive the reconciliation untouched.
-            let list = batch
-                .column(0)
-                .as_any()
-                .downcast_ref::<ListArray>()
-                .unwrap();
-            assert_eq!(list.value(0).len(), 2);
-            assert_eq!(list.value(1).len(), 1);
-            let flags = list
-                .values()
-                .as_any()
-                .downcast_ref::<StructArray>()
-                .unwrap()
-                .column(1)
-                .as_any()
-                .downcast_ref::<BooleanArray>()
-                .unwrap();
-            assert_eq!(
-                flags.values().iter().collect::<Vec<_>>()[..3],
-                [true, false, true]
-            );
+            // The values must survive the reconciliation untouched. `ArrayData` equality is
+            // logical, so this holds regardless of whether the cast materialized an all-valid
+            // null buffer for the widened child.
+            assert_eq!(batch.column(0).to_data(), list_of_struct(true).to_data());
         });
     }
 
