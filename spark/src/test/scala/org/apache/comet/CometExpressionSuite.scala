@@ -1715,6 +1715,35 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("null IN empty list honours legacy null-in-empty behavior") {
+    // Spark returns NULL for a NULL operand against an empty IN list when the legacy behavior is
+    // in effect (SPARK-44550): always on Spark 3.4, on by default on Spark 3.5, and whenever ANSI
+    // mode is disabled on Spark 4.0+. Comet's native `in` kernel always returns false, so the
+    // legacy case must leave the native path. Empty IN lists are not expressible in SQL and
+    // `OptimizeIn` folds them away, so build the expression via the DataFrame API with that rule
+    // (and `ConvertToLocalRelation`) excluded.
+    withSQLConf(
+      SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
+        Seq(
+          "org.apache.spark.sql.catalyst.optimizer.ConvertToLocalRelation",
+          "org.apache.spark.sql.catalyst.optimizer.OptimizeIn").mkString(",")) {
+      val data: Seq[(Integer, Integer)] =
+        Seq((Integer.valueOf(1), Integer.valueOf(1)), (null, Integer.valueOf(2)))
+      withParquetTable(data, "tbl") {
+        // An unset config exercises the version-dependent default, which follows ANSI mode on
+        // Spark 4.0+ and is always the legacy behavior on Spark 3.x.
+        for (legacy <- Seq(Some("true"), Some("false"), None); ansi <- Seq("true", "false")) {
+          val legacyConf = legacy.map("spark.sql.legacy.nullInEmptyListBehavior" -> _).toSeq
+          withSQLConf(Seq(SQLConf.ANSI_ENABLED.key -> ansi) ++ legacyConf: _*) {
+            val df = sql("SELECT _1 AS a FROM tbl")
+              .select(col("a"), col("a").isin(), !col("a").isin())
+            checkSparkAnswer(df)
+          }
+        }
+      }
+    }
+  }
+
   test("not") {
     Seq(false, true).foreach { dictionary =>
       withSQLConf("parquet.enable.dictionary" -> dictionary.toString) {
