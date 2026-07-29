@@ -21,9 +21,9 @@ package org.apache.comet.serde
 
 import java.util.Locale
 
-import org.apache.spark.sql.catalyst.expressions.{AddMonths, Attribute, ConvertTimezone, DateAdd, DateDiff, DateFormatClass, DateFromUnixDate, DateSub, DayOfMonth, DayOfWeek, DayOfYear, Days, Expression, FromUTCTimestamp, GetDateField, GetTimestamp, Hour, Hours, LastDay, Literal, MakeDate, MakeDTInterval, MakeInterval, MakeTimestamp, MakeYMInterval, MicrosToTimestamp, MillisToTimestamp, Minute, Month, MonthsBetween, MultiplyDTInterval, NextDay, PreciseTimestampConversion, Quarter, Second, SecondsToTimestamp, ToUnixTimestamp, ToUTCTimestamp, TruncDate, TruncTimestamp, UnixDate, UnixMicros, UnixMillis, UnixSeconds, UnixTimestamp, WeekDay, WeekOfYear, Year}
+import org.apache.spark.sql.catalyst.expressions.{AddMonths, Attribute, Cast, ConvertTimezone, DateAdd, DateDiff, DateFormatClass, DateFromUnixDate, DateSub, DayOfMonth, DayOfWeek, DayOfYear, Days, Expression, FromUTCTimestamp, GetDateField, GetTimestamp, Hour, Hours, LastDay, Literal, MakeDate, MakeDTInterval, MakeInterval, MakeTimestamp, MakeYMInterval, MicrosToTimestamp, MillisToTimestamp, Minute, Month, MonthsBetween, MultiplyDTInterval, NextDay, PreciseTimestampConversion, Quarter, Second, SecondsToTimestamp, ToUnixTimestamp, ToUTCTimestamp, TruncDate, TruncTimestamp, UnixDate, UnixMicros, UnixMillis, UnixSeconds, UnixTimestamp, WeekDay, WeekOfYear, Year}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{DataType, DateType, DoubleType, FloatType, IntegerType, LongType, StringType, TimestampNTZType, TimestampType}
+import org.apache.spark.sql.types.{CalendarIntervalType, DataType, DateType, DoubleType, FloatType, IntegerType, LongType, StringType, TimestampNTZType, TimestampType}
 import org.apache.spark.unsafe.types.UTF8String
 
 import org.apache.comet.CometConf
@@ -955,13 +955,29 @@ object CometMakeYMInterval extends CometCodegenDispatch[MakeYMInterval]
 object CometMakeDTInterval extends CometCodegenDispatch[MakeDTInterval]
 
 object CometMakeInterval extends CometExpressionSerde[MakeInterval] {
+  private val incompatReason =
+    "The native implementation converts seconds to `Float64`, which can lose microsecond" +
+      " precision, and stores time in nanoseconds, which overflows for large seconds values" +
+      " that Spark can represent."
+
+  override def getIncompatibleReasons(): Seq[String] = Seq(incompatReason)
+
+  override def getSupportLevel(expr: MakeInterval): SupportLevel =
+    Incompatible(Some(incompatReason))
+
   override def convert(
       expr: MakeInterval,
       inputs: Seq[Attribute],
       binding: Boolean): Option[Expr] = {
-    val childExprs = expr.children.map(exprToProtoInternal(_, inputs, binding))
-    val optExpr = scalarFunctionExprToProto("make_interval", expr.failOnError, childExprs: _*)
-    optExprWithFallbackReason(optExpr, expr, expr.children: _*)
+    // The explicit return type skips DataFusion's registry coercion, but its kernel needs Float64.
+    val children = expr.children.updated(6, Cast(expr.children(6), DoubleType))
+    val childExprs = children.map(exprToProtoInternal(_, inputs, binding))
+    val optExpr = scalarFunctionExprToProtoWithReturnType(
+      "make_interval",
+      CalendarIntervalType,
+      expr.failOnError,
+      childExprs: _*)
+    optExprWithFallbackReason(optExpr, expr, children: _*)
   }
 }
 

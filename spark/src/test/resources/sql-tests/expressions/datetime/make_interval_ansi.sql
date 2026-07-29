@@ -17,7 +17,7 @@
 
 -- Native ANSI execution must preserve Spark's overflow exception.
 -- Config: spark.sql.ansi.enabled=true
--- Config: spark.comet.exec.scalaUDF.codegen.enabled=false
+-- Config: spark.comet.expression.MakeInterval.allowIncompatible=true
 
 statement
 CREATE TABLE test_make_interval_ansi(years int) USING parquet
@@ -33,3 +33,6 @@ SELECT make_interval(years) FROM test_make_interval_ansi
 
 query expect_error(overflow)
 SELECT make_interval(2147483647)
+
+query expect_error(overflow)
+SELECT make_interval(0, 0, 2147483647)

@@ -57,20 +57,29 @@ impl ScalarUDFImpl for SparkMakeInterval {
     }
 
     fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
-        let inputs = if self.fail_on_error && !args.args.is_empty() {
-            Some(ColumnarValue::values_to_arrays(&args.args)?)
+        let inputs = if self.fail_on_error {
+            Some(args.args.clone())
         } else {
             None
         };
         let result = self.inner.invoke_with_args(args)?;
 
         if let Some(inputs) = inputs {
+            let inputs_are_valid = |i| {
+                inputs.iter().all(|input| match input {
+                    ColumnarValue::Array(values) => values.is_valid(i),
+                    ColumnarValue::Scalar(value) => !value.is_null(),
+                })
+            };
             let overflow = match &result {
-                ColumnarValue::Array(values) => (0..values.len())
-                    .any(|i| values.is_null(i) && inputs.iter().all(|a| !a.is_null(i))),
-                ColumnarValue::Scalar(value) => {
-                    value.is_null() && inputs.iter().all(|a| !a.is_null(0))
-                }
+                ColumnarValue::Array(values) => values.nulls().is_some_and(|nulls| {
+                    nulls.null_count() != 0
+                        && nulls
+                            .iter()
+                            .enumerate()
+                            .any(|(i, is_valid)| !is_valid && inputs_are_valid(i))
+                }),
+                ColumnarValue::Scalar(value) => value.is_null() && inputs_are_valid(0),
             };
             if overflow {
                 return Err(arithmetic_overflow_error("interval").into());

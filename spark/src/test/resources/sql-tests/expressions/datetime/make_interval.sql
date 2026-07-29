@@ -15,7 +15,7 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- Config: spark.comet.exec.scalaUDF.codegen.enabled=false
+-- Config: spark.comet.expression.MakeInterval.allowIncompatible=true
 
 statement
 CREATE TABLE test_make_interval(
@@ -25,14 +25,17 @@ CREATE TABLE test_make_interval(
   days int,
   hours int,
   mins int,
-  secs decimal(38, 6)) USING parquet
+  secs decimal(18, 6)) USING parquet
 
 statement
 INSERT INTO test_make_interval VALUES
   (1, 2, 3, 4, 5, 6, 7.123456),
   (0, 1, 0, 1, 0, 0, 100.000001),
   (-1, -2, -1, -1, -1, -1, -1.500000),
-  (NULL, 1, 2, 3, 4, 5, 6.000000)
+  (NULL, 1, 2, 3, 4, 5, 6.000000),
+  (2, NULL, 2, 3, 4, 5, 6.000000),
+  (3, 1, 2, 3, 4, 5, NULL),
+  (-2147483648, 0, 0, 0, 0, 0, 0.000000)
 
 query
 SELECT make_interval(years, months, weeks, days, hours, mins, secs)
@@ -43,4 +46,19 @@ query
 SELECT make_interval(1, 2), make_interval(3), make_interval()
 
 query
+SELECT make_interval(0, 1, 0, 1, 0, 0, 100.000001)
+
+query
 SELECT make_interval(2147483647)
+
+query ignore(https://github.com/apache/datafusion-comet/issues/5131)
+SELECT make_interval(1, 2, 3, 4, 0, 0, 123456789012.123456)
+
+query
+SELECT make_interval(0, 0, 0, 0, 0, 0, 999999999.999999)
+
+query ignore(https://github.com/apache/datafusion-comet/issues/5131)
+SELECT make_interval(0, 0, 0, 0, 0, 0, 999999999.000001)
+
+query
+SELECT make_interval(0, 0, 0, 0, 0, 0, 1234567890123456789)
