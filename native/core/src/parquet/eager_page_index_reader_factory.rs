@@ -29,12 +29,19 @@
 //! every open. At the scale of a wide fact table scanned across many partitions, that is
 //! repeated, unbounded I/O for the same bytes.
 //!
-//! This factory forces `PageIndexPolicy::Optional` on every metadata fetch, ignoring whatever
-//! policy the caller requests, so the page index is always present in the cached
-//! `ParquetMetaData` after the first load. DataFusion's opener checks whether the metadata it
-//! already has includes the page index before issuing its own fetch, so with this factory that
-//! check is always true and the uncached fetch never happens. The tradeoff: files where the
-//! opener's skip heuristic would have avoided the page index load entirely now load it anyway.
+//! This factory forces `PageIndexPolicy::Optional` on every metadata fetch for files with no
+//! decryption properties, ignoring whatever policy the caller requests, so the page index is
+//! always present in the cached `ParquetMetaData` after the first load. DataFusion's opener
+//! checks whether the metadata it already has includes the page index before issuing its own
+//! fetch, so with this factory that check is always true and the uncached fetch never happens.
+//! The tradeoff: files where the opener's skip heuristic would have avoided the page index load
+//! entirely now load it anyway.
+//!
+//! Encrypted files are exempt from the override: `DFParquetMetadata::fetch_metadata` disables
+//! `FileMetadataCache` entirely whenever decryption properties are set, so nothing gets cached
+//! for them either way, and forcing eager loading would only add an unconditional page-index
+//! fetch to encrypted scans that have no pruning predicate at all. Encrypted opens get exactly
+//! the caller's requested policy, unchanged from stock behavior.
 //!
 //! Filed upstream as apache/datafusion#23978. Revert this once the opener merges its deferred
 //! page-index load back into `FileMetadataCache` instead of bypassing it.
@@ -138,9 +145,8 @@ impl AsyncFileReader for EagerPageIndexReader {
         &'a mut self,
         options: Option<&'a ArrowReaderOptions>,
     ) -> BoxFuture<'a, parquet::errors::Result<Arc<ParquetMetaData>>> {
-        // Forward decryption properties like `CachedParquetFileReader` does; only the page-index
-        // policy is a deliberate override, ignoring whatever the opener requested so the page
-        // index is always fetched and cached on the first load.
+        // Forward decryption properties like `CachedParquetFileReader` does. Only override the
+        // policy for non-encrypted opens; see module docs for why.
         let object_meta = self.partitioned_file.object_meta.clone();
         let metadata_cache = Arc::clone(&self.metadata_cache);
         let store = Arc::clone(&self.store);
@@ -149,12 +155,17 @@ impl AsyncFileReader for EagerPageIndexReader {
             let file_decryption_properties = options
                 .and_then(|o| o.file_decryption_properties())
                 .map(Arc::clone);
+            let page_index_policy = if file_decryption_properties.is_none() {
+                Some(PageIndexPolicy::Optional)
+            } else {
+                options.map(|o| o.column_index_policy())
+            };
 
             DFParquetMetadata::new(store.as_ref(), &object_meta)
                 .with_decryption_properties(file_decryption_properties)
                 .with_file_metadata_cache(Some(metadata_cache))
                 .with_metadata_size_hint(metadata_size_hint)
-                .with_page_index_policy(Some(PageIndexPolicy::Optional))
+                .with_page_index_policy(page_index_policy)
                 .fetch_metadata()
                 .await
                 .map_err(|e| {
