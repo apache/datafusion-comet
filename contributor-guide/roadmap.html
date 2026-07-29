@@ -560,25 +560,44 @@ non-literal <code class="docutils literal notranslate"><span class="pre">lag</sp
 <a class="reference internal" href="../user-guide/latest/compatibility/operators.html"><span class="std std-doc">window function compatibility guide</span></a> for the complete list of
 supported functions, frames, and fallback cases.</p>
 </section>
-<section id="lambda-expressions">
-<h2>Lambda Expressions<a class="headerlink" href="#lambda-expressions" title="Link to this heading">#</a></h2>
+<section id="native-lambda-evaluation">
+<h2>Native Lambda Evaluation<a class="headerlink" href="#native-lambda-evaluation" title="Link to this heading">#</a></h2>
 <p>Spark supports higher-order functions on arrays and maps that take a lambda, including <code class="docutils literal notranslate"><span class="pre">transform</span></code>, <code class="docutils literal notranslate"><span class="pre">exists</span></code>,
-<code class="docutils literal notranslate"><span class="pre">forall</span></code>, <code class="docutils literal notranslate"><span class="pre">aggregate</span></code>, <code class="docutils literal notranslate"><span class="pre">zip_with</span></code>, <code class="docutils literal notranslate"><span class="pre">map_filter</span></code>, and <code class="docutils literal notranslate"><span class="pre">map_zip_with</span></code>. Comet currently lacks a general mechanism
-for serializing lambda expressions and evaluating them in DataFusion. Adding this capability will unlock a
-significant family of Spark expressions in one effort.</p>
+<code class="docutils literal notranslate"><span class="pre">forall</span></code>, <code class="docutils literal notranslate"><span class="pre">aggregate</span></code>, <code class="docutils literal notranslate"><span class="pre">zip_with</span></code>, <code class="docutils literal notranslate"><span class="pre">map_filter</span></code>, and <code class="docutils literal notranslate"><span class="pre">map_zip_with</span></code>. Comet evaluates these today through a JVM
+codegen-dispatch bridge (<code class="docutils literal notranslate"><span class="pre">CometScalaUDF</span></code>, <code class="docutils literal notranslate"><span class="pre">CometBatchKernelCodegen</span></code>) instead of falling back to Spark, but the
+lambda body is still interpreted row-at-a-time on the JVM rather than natively in DataFusion. DataFusion added
+native higher-order function support (<code class="docutils literal notranslate"><span class="pre">array_transform</span></code>, <code class="docutils literal notranslate"><span class="pre">array_filter</span></code>, <code class="docutils literal notranslate"><span class="pre">array_any_match</span></code>, etc.) that Comet
+does not yet use; it’s not yet known whether their semantics are Spark-compatible. We’ll explore whether
+DataFusion’s implementations can replace the JVM codegen-dispatch bridge to remove that round-trip and let
+these expressions benefit from vectorized native execution.</p>
 </section>
-<section id="dynamic-partition-pruning">
-<h2>Dynamic Partition Pruning<a class="headerlink" href="#dynamic-partition-pruning" title="Link to this heading">#</a></h2>
-<p>Native Parquet scans (<code class="docutils literal notranslate"><span class="pre">CometNativeScanExec</span></code>) support Dynamic Partition Pruning (DPP) both with and without
-Adaptive Query Execution. Non-AQE DPP landed in <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/4011">#4011</a> and AQE DPP with broadcast reuse landed in <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/4112">#4112</a>.
-Iceberg native scans support non-AQE DPP (<a class="reference external" href="https://github.com/apache/datafusion-comet/pull/3349">#3349</a>, <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/3511">#3511</a>) and, on Spark 3.5+, AQE DPP with broadcast reuse
-(<a class="reference external" href="https://github.com/apache/datafusion-comet/pull/4215">#4215</a>); on Spark 3.4 Iceberg AQE DPP falls back to Spark without reuse.</p>
+<section id="native-coverage-for-codegen-dispatched-expressions">
+<h2>Native Coverage for Codegen-Dispatched Expressions<a class="headerlink" href="#native-coverage-for-codegen-dispatched-expressions" title="Link to this heading">#</a></h2>
+<p>Beyond lambda bodies, a number of built-in Spark scalar expressions (some regular expression, JSON, and datetime
+functions, for example) and aggregate functions route through the same JVM codegen-dispatch bridge by default,
+either because their native DataFusion or <code class="docutils literal notranslate"><span class="pre">datafusion-spark</span></code> implementation has known semantic differences from
+Spark, or because no native implementation exists yet. See the <a class="reference internal" href="../user-guide/latest/compatibility/index.html"><span class="std std-doc">compatibility guide</span></a> for the current list of
+codegen-dispatched expressions. We’re exploring closing these gaps so that more expressions run natively by
+default, which would reduce JVM round-trips beyond what the lambda and UDF work above already covers.</p>
+</section>
+<section id="iceberg-table-format-v3-support">
+<h2>Iceberg Table Format V3 Support<a class="headerlink" href="#iceberg-table-format-v3-support" title="Link to this heading">#</a></h2>
+<p>Comet landed its first Iceberg table format V3 feature (native data file decryption, <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/4991">#4991</a>), and we want to
+add more V3 features to Comet’s native Iceberg scans so they don’t fall back to Spark. The work is tracked
+phase-by-phase in <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/3376">#3376</a>: detecting the V3 format and supporting new V3 data types, deletion vector reads, row
+lineage, and table encryption. Native deletion vector reads are prototyped in a draft PR (<a class="reference external" href="https://github.com/apache/datafusion-comet/pull/4887">#4887</a>), but are
+blocked on upstream <code class="docutils literal notranslate"><span class="pre">iceberg-rust</span></code> support, tracked in <a class="reference external" href="https://github.com/apache/iceberg-rust/issues/2792">iceberg-rust #2792</a> and <a class="reference external" href="https://github.com/apache/iceberg-rust/issues/2411">iceberg-rust #2411</a>. Native Iceberg
+scans don’t support HDFS-backed tables today: the storage scheme match in <code class="docutils literal notranslate"><span class="pre">iceberg_scan.rs</span></code> only handles <code class="docutils literal notranslate"><span class="pre">file</span></code>,
+<code class="docutils literal notranslate"><span class="pre">s3</span></code>/<code class="docutils literal notranslate"><span class="pre">s3a</span></code>, <code class="docutils literal notranslate"><span class="pre">gs</span></code>, and <code class="docutils literal notranslate"><span class="pre">oss</span></code>, and would need an HDFS <code class="docutils literal notranslate"><span class="pre">StorageFactory</span></code> upstream in <code class="docutils literal notranslate"><span class="pre">iceberg-storage-opendal</span></code>. We’re
+scoping what that work would take.</p>
 </section>
 <section id="tpc-h-and-tpc-ds-performance">
 <h2>TPC-H and TPC-DS Performance<a class="headerlink" href="#tpc-h-and-tpc-ds-performance" title="Link to this heading">#</a></h2>
-<p>We regularly publish benchmark results derived from TPC-H and TPC-DS to track performance against Spark. Closing
-the remaining gaps and increasing the speedup on both benchmark suites is an ongoing focus, tracked under <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/2004">#2004</a>
-(TPC-H) and <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/858">#858</a> (TPC-DS).</p>
+<p>Comet already delivers substantial speedups over vanilla Spark on both benchmark suites; we publish per-query
+results for <a class="reference internal" href="benchmark-results/tpc-h.html"><span class="std std-doc">TPC-H</span></a> and <a class="reference internal" href="benchmark-results/tpc-ds.html"><span class="std std-doc">TPC-DS</span></a> with each release. An independent <a class="reference external" href="https://awslabs.github.io/data-on-eks/docs/benchmarks/spark-gluten-velox-comet-benchmark">AWS Labs benchmark</a> comparing Comet 0.16.0 with
+Gluten 1.6.0 on a 3TB TPC-DS workload found that the two accelerators deliver similar overall performance. Increasing
+the speedup further and closing the remaining per-query gaps is an ongoing focus, tracked under <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/2004">#2004</a> (TPC-H) and
+<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/858">#858</a> (TPC-DS).</p>
 </section>
 <section id="upstream-work-in-datafusion">
 <h2>Upstream Work in DataFusion<a class="headerlink" href="#upstream-work-in-datafusion" title="Link to this heading">#</a></h2>
@@ -593,11 +612,13 @@ core DataFusion operators (joins, aggregates, window) made in support of Comet a
 support will allow Comet to handle larger joins without falling back to Spark, improving both reliability and
 performance for memory-intensive workloads.</p>
 </section>
-<section id="java-scala-columnar-and-arrow-udf-support">
-<h2>Java/Scala Columnar and Arrow UDF Support<a class="headerlink" href="#java-scala-columnar-and-arrow-udf-support" title="Link to this heading">#</a></h2>
-<p>Spark users frequently define custom UDFs in Java or Scala. Comet currently falls back to Spark when a query
-contains a JVM UDF. Adding support for calling Java/Scala UDFs that operate on columnar Arrow data directly
-from native execution will reduce fallbacks and allow more queries to run end-to-end in Comet.</p>
+<section id="java-scala-udf-support">
+<h2>Java/Scala UDF Support<a class="headerlink" href="#java-scala-udf-support" title="Link to this heading">#</a></h2>
+<p>Spark users frequently define custom UDFs in Java or Scala. Comet now dispatches scalar <code class="docutils literal notranslate"><span class="pre">ScalaUDF</span></code> expressions
+through a JVM codegen bridge (<code class="docutils literal notranslate"><span class="pre">CometScalaUDF</span></code>) instead of always falling back to Spark. Aggregate UDFs, table
+UDFs/generators, Python/Pandas UDFs, and Hive <code class="docutils literal notranslate"><span class="pre">GenericUDF</span></code>/<code class="docutils literal notranslate"><span class="pre">SimpleUDF</span></code> still fall back to Spark entirely.
+Extending the codegen-dispatch approach to cover these remaining categories will reduce fallbacks further and
+allow more queries to run end-to-end in Comet.</p>
 </section>
 <section id="memory-management-improvements">
 <h2>Memory Management Improvements<a class="headerlink" href="#memory-management-improvements" title="Link to this heading">#</a></h2>
@@ -605,16 +626,30 @@ from native execution will reduce fallbacks and allow more queries to run end-to
 memory accounting, reservation strategies, and spill integration will reduce out-of-memory errors and allow
 Comet to make better use of available resources, especially in multi-query and multi-task environments.</p>
 </section>
-<section id="prepare-for-1-0-0-release">
-<h2>Prepare for 1.0.0 Release<a class="headerlink" href="#prepare-for-1-0-0-release" title="Link to this heading">#</a></h2>
-<p>The project is working toward a 1.0.0 release. This effort includes finalizing configuration options,
-resolving known correctness issues, and improving documentation. Progress is tracked in <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4082">#4082</a>.</p>
-</section>
 <section id="native-parquet-writes">
 <h2>Native Parquet Writes<a class="headerlink" href="#native-parquet-writes" title="Link to this heading">#</a></h2>
 <p>Comet has experimental support for native Parquet writes via <code class="docutils literal notranslate"><span class="pre">InsertIntoHadoopFsRelationCommand</span></code>, currently
 disabled by default. The goal is to reach correctness and performance parity with Spark’s writer so it can be
 enabled by default (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/1625">#1625</a>).</p>
+</section>
+<section id="iceberg-table-writes">
+<h2>Iceberg Table Writes<a class="headerlink" href="#iceberg-table-writes" title="Link to this heading">#</a></h2>
+<p>Comet’s native scans accelerate Iceberg reads today, but writes still run entirely through Spark’s Iceberg V2 write
+operator. <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4322">#4322</a> tracks exploring native acceleration of Iceberg writes, so an ETL job could run end to end in
+native code, falling back only where Comet can’t match Iceberg Java’s functionality. Draft proposals split the
+existing V2 write operator into separate “writer” and “committer” operators so the data-file-write portion can be
+planned and accelerated the same way as a native Parquet write (<a class="reference external" href="https://github.com/apache/datafusion-comet/pull/4658">#4658</a>, <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/4487">#4487</a>). No design here is committed yet;
+we’re exploring whether this approach is worth pursuing.</p>
+</section>
+<section id="delta-lake-support">
+<h2>Delta Lake Support<a class="headerlink" href="#delta-lake-support" title="Link to this heading">#</a></h2>
+<p>Comet currently supports Spark’s built-in file formats and Iceberg, but not Delta Lake (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/174">#174</a>). A draft PR reuses
+Comet’s existing native Parquet reader to accelerate scans of plain Delta tables that use neither deletion vectors
+nor column mapping (<a class="reference external" href="https://github.com/apache/datafusion-comet/pull/4669">#4669</a>); a separate, larger effort explores a full native Delta scan built on <code class="docutils literal notranslate"><span class="pre">delta-kernel-rs</span></code>
+as an out-of-tree contrib module (<a class="reference external" href="https://github.com/apache/datafusion-comet/pull/4366">#4366</a>), landing in inert, gated slices (<a class="reference external" href="https://github.com/apache/datafusion-comet/pull/4700">#4700</a>, <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/4952">#4952</a>). Generalizing Comet’s
+scan-side APIs so that Delta and other non-Iceberg data sources can plug in more easily is tracked as a Table
+Provider API abstraction (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4706">#4706</a>). None of this is committed yet; we’re exploring which approach, if any, is worth
+pursuing.</p>
 </section>
 </section>
 
@@ -666,15 +701,17 @@ enabled by default (<a class="reference external" href="https://github.com/apach
   <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="visible nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#window-expressions">Window Expressions</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#lambda-expressions">Lambda Expressions</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#dynamic-partition-pruning">Dynamic Partition Pruning</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#native-lambda-evaluation">Native Lambda Evaluation</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#native-coverage-for-codegen-dispatched-expressions">Native Coverage for Codegen-Dispatched Expressions</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#iceberg-table-format-v3-support">Iceberg Table Format V3 Support</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#tpc-h-and-tpc-ds-performance">TPC-H and TPC-DS Performance</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#upstream-work-in-datafusion">Upstream Work in DataFusion</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#spillable-hash-join">Spillable Hash Join</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#java-scala-columnar-and-arrow-udf-support">Java/Scala Columnar and Arrow UDF Support</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#java-scala-udf-support">Java/Scala UDF Support</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#memory-management-improvements">Memory Management Improvements</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#prepare-for-1-0-0-release">Prepare for 1.0.0 Release</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#native-parquet-writes">Native Parquet Writes</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#iceberg-table-writes">Iceberg Table Writes</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#delta-lake-support">Delta Lake Support</a></li>
 </ul>
   </nav></div>
 
