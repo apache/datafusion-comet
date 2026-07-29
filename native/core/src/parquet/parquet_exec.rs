@@ -16,13 +16,13 @@
 // under the License.
 
 use crate::execution::operators::ExecutionError;
+use crate::parquet::eager_page_index_reader_factory::EagerPageIndexReaderFactory;
 use crate::parquet::encryption_support::{CometEncryptionConfig, ENCRYPTION_FACTORY_ID};
 use crate::parquet::parquet_support::SparkParquetOptions;
 use crate::parquet::schema_adapter::SparkPhysicalExprAdapterFactory;
 use arrow::datatypes::{Field, SchemaRef};
 use datafusion::config::TableParquetOptions;
 use datafusion::datasource::listing::PartitionedFile;
-use datafusion::datasource::physical_plan::parquet::CachedParquetFileReaderFactory;
 use datafusion::datasource::physical_plan::{
     FileGroup, FileScanConfigBuilder, FileSource, ParquetSource,
 };
@@ -142,11 +142,15 @@ pub(crate) fn init_datasource_exec(
         );
     }
 
-    // DataFusion's metadata-caching reader factory: loads each file's footer metadata once into the
-    // per-task RuntimeEnv cache (bounded LRU, `metadata_cache_limit`) and reuses it across that
-    // file's row-group splits. The page index is loaded lazily by the opener, only when row-group
-    // statistics cannot already prove no further pruning is possible (apache/datafusion#22857), and
-    // that load bypasses this factory, so only footer metadata is cached.
+    // DataFusion's opener requests `PageIndexPolicy::Skip` on the initial metadata load and
+    // defers loading the page index until row-group pruning shows it is still needed
+    // (apache/datafusion#22857). That deferred load bypasses `FileMetadataCache` entirely, so on
+    // a predicate that never resolves to fully-matched by row-group statistics alone (e.g. `IS
+    // NOT NULL` on a column whose row groups don't carry `null_count` stats, as with TPC-DS
+    // `store_sales`), the page index is re-fetched, uncached, on every open (comet#3978).
+    // `EagerPageIndexReaderFactory` forces the page index to load on the first fetch and be
+    // cached with the footer, at the cost of losing the skip's benefit when it would have
+    // applied. Filed upstream as apache/datafusion#23978; revert this once that's fixed.
     //
     // TODO: metadata I/O is invisible in metrics. `fetch_metadata` reads via `ObjectStore::get_ranges`,
     // bypassing the `get_bytes` path where `bytes_scanned` is counted. A byte-counting ObjectStore
@@ -155,7 +159,7 @@ pub(crate) fn init_datasource_exec(
     let store = runtime_env.object_store(&object_store_url)?;
     let metadata_cache = runtime_env.cache_manager.get_file_metadata_cache();
     parquet_source = parquet_source.with_parquet_file_reader_factory(Arc::new(
-        CachedParquetFileReaderFactory::new(store, metadata_cache),
+        EagerPageIndexReaderFactory::new(store, metadata_cache),
     ));
 
     // Route data filters through `try_pushdown_filters` rather than calling
@@ -259,16 +263,18 @@ mod tests {
     use parquet::file::properties::{EnabledStatistics, WriterProperties};
     use std::fs::File;
 
-    // The scan's reader factory caches each file's footer metadata in the per-task RuntimeEnv
-    // metadata cache, reused across the file's row-group splits (#3978). The page index is loaded
-    // lazily and only when row-group statistics cannot already prune the surviving row groups
-    // (apache/datafusion#22857); that load bypasses the caching factory, so the cache holds footer
-    // metadata only. Without a pruning predicate here the page index is never loaded.
+    // Regression test for #3978: DataFusion's opener requests `PageIndexPolicy::Skip` on the
+    // initial metadata load and only loads the page index later, on demand, when row-group
+    // pruning shows it is still needed (apache/datafusion#22857). That on-demand load bypasses
+    // `FileMetadataCache` entirely, so on a predicate that never resolves to fully-matched (e.g.
+    // non-null `IS NOT NULL` join keys without row-group `null_count` stats), the page index is
+    // re-fetched, uncached, on every open. `EagerPageIndexReaderFactory` ignores the requested
+    // policy and always loads the page index into the cache on the first fetch, so it asserts
+    // present here even though this scan has no pruning predicate to request it.
     #[tokio::test]
-    async fn caches_footer_metadata() {
+    async fn caches_full_metadata_with_page_index() {
         // A file with a page index (page-level statistics and a small data page row limit) so we can
-        // assert the cached metadata deliberately excludes the page index rather than lacking it
-        // because none was written.
+        // assert the cached metadata includes it rather than lacking it because none was written.
         let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
         let batch = RecordBatch::try_new(
             Arc::clone(&schema),
@@ -322,8 +328,8 @@ mod tests {
             batch.unwrap();
         }
 
-        // The per-task RuntimeEnv metadata cache holds this file's footer metadata. The page index
-        // is not loaded (no pruning predicate), so the cached metadata excludes it.
+        // The per-task RuntimeEnv metadata cache holds this file's metadata with the page index
+        // (column + offset index) loaded, even though this scan pushed no pruning predicate.
         let cache = session_ctx
             .runtime_env()
             .cache_manager
@@ -338,8 +344,8 @@ mod tests {
             .expect("cached entry should hold Parquet metadata")
             .parquet_metadata();
         assert!(
-            parquet_meta.column_index().is_none() && parquet_meta.offset_index().is_none(),
-            "footer-only cache must not include the page index"
+            parquet_meta.column_index().is_some() && parquet_meta.offset_index().is_some(),
+            "cached metadata must include the page index"
         );
     }
 }
