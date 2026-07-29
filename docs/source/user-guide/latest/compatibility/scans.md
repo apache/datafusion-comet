@@ -51,10 +51,16 @@ The following features are not supported and cause Comet to fall back to Spark:
 
 The following limitation may produce incorrect results without falling back to Spark:
 
-- No support for datetime rebasing. When reading Parquet files containing dates or timestamps written before
-  Spark 3.0 (which used a hybrid Julian/Gregorian calendar), dates/timestamps will be read as if they were
-  written using the Proleptic Gregorian calendar. This may produce incorrect results for dates before
-  October 15, 1582.
+- No support for datetime rebasing. When reading Parquet files containing dates or timestamps
+  written with `spark.sql.parquet.datetimeRebaseModeInWrite=LEGACY` (which is Spark's default for
+  data written before Spark 3.0, using the hybrid Julian/Gregorian calendar), Comet reads them as
+  if they were written using the Proleptic Gregorian calendar. This produces silently-wrong
+  values for dates before October 15, 1582 in both projections and predicates. Comet also
+  ignores `spark.sql.parquet.datetimeRebaseModeInRead` and the file-level
+  `org.apache.spark.legacyDateTime` metadata that would tell it to rebase. The
+  `spark.comet.exceptionOnDatetimeRebase` config is currently dead code and does not raise on
+  legacy-calendar data. Tracked by
+  [#5010](https://github.com/apache/datafusion-comet/issues/5010).
 
 The following limitations raise an error at scan time rather than falling back to Spark:
 
@@ -72,7 +78,7 @@ The following limitations raise an error at scan time rather than falling back t
   rejecting the read. This applies to all LTZ physical encodings (INT96, TIMESTAMP_MICROS,
   TIMESTAMP_MILLIS). On Spark 4.0+, this read is permitted
   ([SPARK-47447](https://issues.apache.org/jira/browse/SPARK-47447)) and Comet matches Spark's
-  behavior. See [#4219](https://github.com/apache/datafusion-comet/issues/4219).
+  behavior.
 
 ### Schema Mismatch Handling
 
