@@ -481,7 +481,7 @@ const POW10_I128: [i128; 39] = {
 
 /// `10^exp`, or `None` when the exponent overflows an `i128` (exp >= 39).
 #[inline]
-fn pow10_i128(exp: u32) -> Option<i128> {
+pub(crate) fn pow10_i128(exp: u32) -> Option<i128> {
     POW10_I128.get(exp as usize).copied()
 }
 

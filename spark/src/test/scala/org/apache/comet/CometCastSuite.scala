@@ -505,18 +505,23 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     castTest(generateFloats(), DataTypes.createDecimalType(10, 2))
   }
 
-  test("cast FloatType to DecimalType - rounding edge cases") {
-    // Values whose shortest decimal form sits exactly on a rounding tie while the binary
-    // value is just below it, so rounding the binary value disagrees with Spark's
-    // Double.toString-based rounding (https://github.com/apache/datafusion-comet/issues/1371)
-    val values =
-      Seq(0.5153125f, -0.5153125f, 0.5203125f, 1.005f, -1.005f, 99.995f, -99.995f, 0.999995f)
+  // Values whose shortest decimal form sits exactly on a rounding tie while the binary
+  // value is just below it, so rounding the binary value disagrees with Spark's
+  // Double.toString-based rounding (https://github.com/apache/datafusion-comet/issues/1371)
+  private val decimalRoundingEdgeCases =
+    Seq(0.5153125d, -0.5153125d, 0.5203125d, 1.005d, -1.005d, 99.995d, -99.995d, 0.999995d)
+
+  private def castRoundingEdgeCasesTest(input: DataFrame): Unit = {
     Seq(
       DataTypes.createDecimalType(10, 2),
       DataTypes.createDecimalType(8, 6),
       DataTypes.createDecimalType(4, 2)).foreach { toType =>
-      castTest(withNulls(values).toDF("a"), toType)
+      castTest(input, toType)
     }
+  }
+
+  test("cast FloatType to DecimalType - rounding edge cases") {
+    castRoundingEdgeCasesTest(withNulls(decimalRoundingEdgeCases.map(_.toFloat)).toDF("a"))
   }
 
   test("cast FloatType to StringType") {
@@ -578,17 +583,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("cast DoubleType to DecimalType - rounding edge cases") {
-    // Values whose shortest decimal form sits exactly on a rounding tie while the binary
-    // value is just below it, so rounding the binary value disagrees with Spark's
-    // Double.toString-based rounding (https://github.com/apache/datafusion-comet/issues/1371)
-    val values =
-      Seq(0.5153125d, -0.5153125d, 0.5203125d, 1.005d, -1.005d, 99.995d, -99.995d, 0.999995d)
-    Seq(
-      DataTypes.createDecimalType(10, 2),
-      DataTypes.createDecimalType(8, 6),
-      DataTypes.createDecimalType(4, 2)).foreach { toType =>
-      castTest(withNulls(values).toDF("a"), toType)
-    }
+    castRoundingEdgeCasesTest(withNulls(decimalRoundingEdgeCases).toDF("a"))
   }
 
   test("cast DoubleType to StringType") {
