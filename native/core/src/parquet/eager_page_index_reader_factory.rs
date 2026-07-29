@@ -136,16 +136,22 @@ impl AsyncFileReader for EagerPageIndexReader {
 
     fn get_metadata<'a>(
         &'a mut self,
-        _options: Option<&'a ArrowReaderOptions>,
+        options: Option<&'a ArrowReaderOptions>,
     ) -> BoxFuture<'a, parquet::errors::Result<Arc<ParquetMetaData>>> {
-        // Ignore the caller-requested policy: always fetch and cache the page index eagerly so
-        // the opener never has a reason to load it again, uncached, later in the same open.
+        // Forward decryption properties like `CachedParquetFileReader` does; only the page-index
+        // policy is a deliberate override, ignoring whatever the opener requested so the page
+        // index is always fetched and cached on the first load.
         let object_meta = self.partitioned_file.object_meta.clone();
         let metadata_cache = Arc::clone(&self.metadata_cache);
         let store = Arc::clone(&self.store);
         let metadata_size_hint = self.metadata_size_hint;
         async move {
+            let file_decryption_properties = options
+                .and_then(|o| o.file_decryption_properties())
+                .map(Arc::clone);
+
             DFParquetMetadata::new(store.as_ref(), &object_meta)
+                .with_decryption_properties(file_decryption_properties)
                 .with_file_metadata_cache(Some(metadata_cache))
                 .with_metadata_size_hint(metadata_size_hint)
                 .with_page_index_policy(Some(PageIndexPolicy::Optional))
