@@ -106,6 +106,39 @@ class DirectColumnarToRowConverterSuite extends AnyFunSuite {
     assertMatchesUnsafeProjection(schema, rows, batchSize = 64)
   }
 
+  test("all-fixed-width schema takes the columnar fast path and matches bytes") {
+    val schema = new StructType()
+      .add("bool", BooleanType)
+      .add("byte", ByteType)
+      .add("short", ShortType)
+      .add("int", IntegerType)
+      .add("long", LongType)
+      .add("float", FloatType)
+      .add("double", DoubleType)
+      .add("date", DateType)
+      .add("ts", TimestampType)
+      .add("dec_compact", DecimalType(12, 2))
+
+    val rows = (0 until 1000).map { i =>
+      def nullEvery(k: Int, v: Any): Any = if (i % k == 0) null else v
+      val sign = if (i % 2 == 0) 1L else -1L
+      new GenericInternalRow(
+        Array[Any](
+          nullEvery(3, i % 2 == 0),
+          nullEvery(4, (i % 128).toByte),
+          nullEvery(5, (i * 7).toShort),
+          nullEvery(6, i * sign.toInt),
+          nullEvery(7, i.toLong * sign * 1000003L),
+          nullEvery(8, if (i % 50 == 1) Float.NaN else i.toFloat * sign),
+          nullEvery(9, if (i % 50 == 2) Double.NaN else i.toDouble * sign),
+          nullEvery(10, 8000 + i % 2500),
+          nullEvery(11, i.toLong * 1000000L),
+          nullEvery(3, Decimal.createUnsafe(i * sign * 97, 12, 2))))
+    }
+
+    assertMatchesUnsafeProjection(schema, rows, batchSize = 64)
+  }
+
   test("multi-word null bitset matches UnsafeProjection bytes") {
     val numCols = 70
     val schema =

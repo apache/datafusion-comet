@@ -40,6 +40,12 @@ import org.apache.comet.vector.CometVector;
  * compact decimals as unscaled longs via {@link CometVector#getLongDecimal(int)} and wide decimals
  * as raw big-endian bytes via {@link CometVector#copyBinaryDecimal(int, byte[])}.
  *
+ * <p>When every column is fixed-width (no strings, no decimals above precision 18), the whole batch
+ * is converted column-at-a-time in {@link #setBatch(ColumnarBatch)} into a single buffer with a
+ * constant row stride: one monomorphic loop per column with the null check hoisted out for
+ * null-free columns, mirroring the native converter's fixed-width fast path. In that mode {@link
+ * #convertRow(int)} only repoints the reused row.
+ *
  * <p>The produced rows are byte-identical to {@code UnsafeProjection} output, which matters because
  * {@link UnsafeRow} equality and hashing are byte-wise. The returned row and its backing buffer are
  * reused across calls; callers must copy a row to retain it.
@@ -63,6 +69,7 @@ public final class DirectColumnarToRowConverter {
   private final int[] scales;
   private final int nullBitsetWidth;
   private final int fixedSize;
+  private final boolean allFixedWidth;
 
   private final byte[] decimalBytes = new byte[16];
   private final UnsafeRow row;
@@ -72,6 +79,10 @@ public final class DirectColumnarToRowConverter {
   // Per-batch state
   private ColumnVector[] columns;
   private boolean[] hasNulls;
+
+  // Fixed-width fast path state: the whole batch converted at a constant row stride.
+  private byte[] batchBuffer = new byte[0];
+  private int batchNumRows;
 
   public DirectColumnarToRowConverter(StructType schema) {
     StructField[] fields = schema.fields();
@@ -111,6 +122,14 @@ public final class DirectColumnarToRowConverter {
     }
     nullBitsetWidth = UnsafeRow.calculateBitSetWidthInBytes(numFields);
     fixedSize = nullBitsetWidth + numFields * 8;
+    boolean fixed = true;
+    for (int i = 0; i < numFields; i++) {
+      if (typeCodes[i] == STRING || typeCodes[i] == DECIMAL_WIDE) {
+        fixed = false;
+        break;
+      }
+    }
+    allFixedWidth = fixed;
     row = new UnsafeRow(numFields);
     if (buffer.length < fixedSize) {
       buffer = new byte[fixedSize];
@@ -131,13 +150,20 @@ public final class DirectColumnarToRowConverter {
       columns[i] = batch.column(i);
       hasNulls[i] = columns[i].hasNull();
     }
+    if (allFixedWidth) {
+      convertBatchFixedWidth(batch.numRows());
+    }
   }
 
   /**
    * Converts one row of the current batch. The returned row is reused across calls and valid until
-   * the next call.
+   * the next call ({@code setBatch} for fixed-width schemas).
    */
   public UnsafeRow convertRow(int rowId) {
+    if (allFixedWidth) {
+      row.pointTo(batchBuffer, Platform.BYTE_ARRAY_OFFSET + (long) rowId * fixedSize, fixedSize);
+      return row;
+    }
     // Zero the null bitset; fixed slots are always fully written below.
     for (int i = 0; i < nullBitsetWidth; i += 8) {
       Platform.putLong(buffer, Platform.BYTE_ARRAY_OFFSET + i, 0L);
@@ -303,6 +329,146 @@ public final class DirectColumnarToRowConverter {
       Platform.putLong(buffer, slot, ((long) cursor << 32) | numBytes);
     }
     cursor += 16;
+  }
+
+  private void convertBatchFixedWidth(int numRows) {
+    batchNumRows = numRows;
+    long totalSize = (long) fixedSize * numRows;
+    if (totalSize > Integer.MAX_VALUE) {
+      throw new IllegalArgumentException("Batch too large for fixed-width conversion");
+    }
+    if (batchBuffer.length < totalSize) {
+      batchBuffer = new byte[(int) totalSize];
+    }
+    // Zero the null bitset of every row; fixed slots are always fully written below.
+    for (int r = 0; r < numRows; r++) {
+      long rowStart = Platform.BYTE_ARRAY_OFFSET + (long) r * fixedSize;
+      for (int w = 0; w < nullBitsetWidth; w += 8) {
+        Platform.putLong(batchBuffer, rowStart + w, 0L);
+      }
+    }
+    for (int c = 0; c < numFields; c++) {
+      writeColumnFixedWidth(c);
+    }
+  }
+
+  /**
+   * Writes one column's values for all rows of the batch. Each type gets its own loop so the
+   * accessor call site stays monomorphic, and every slot is written as a single long whose byte
+   * layout matches what UnsafeRowWriter produces for that type (values are little-endian, so a
+   * narrow value zero-extended to a long occupies the same bytes as a partial write into a zeroed
+   * slot).
+   */
+  private void writeColumnFixedWidth(int c) {
+    ColumnVector col = columns[c];
+    boolean mayHaveNulls = hasNulls[c];
+    int stride = fixedSize;
+    int n = batchNumRows;
+    long slotBase = Platform.BYTE_ARRAY_OFFSET + nullBitsetWidth + c * 8L;
+    long bitWordBase = Platform.BYTE_ARRAY_OFFSET + (c >> 6) * 8L;
+    long bitMask = 1L << (c & 63);
+    switch (typeCodes[c]) {
+      case BOOLEAN:
+        for (int r = 0; r < n; r++) {
+          long slot = slotBase + (long) r * stride;
+          if (mayHaveNulls && col.isNullAt(r)) {
+            setNullFixedWidth(r, stride, slot, bitWordBase, bitMask);
+          } else {
+            Platform.putLong(batchBuffer, slot, col.getBoolean(r) ? 1L : 0L);
+          }
+        }
+        break;
+      case BYTE:
+        for (int r = 0; r < n; r++) {
+          long slot = slotBase + (long) r * stride;
+          if (mayHaveNulls && col.isNullAt(r)) {
+            setNullFixedWidth(r, stride, slot, bitWordBase, bitMask);
+          } else {
+            Platform.putLong(batchBuffer, slot, col.getByte(r) & 0xFFL);
+          }
+        }
+        break;
+      case SHORT:
+        for (int r = 0; r < n; r++) {
+          long slot = slotBase + (long) r * stride;
+          if (mayHaveNulls && col.isNullAt(r)) {
+            setNullFixedWidth(r, stride, slot, bitWordBase, bitMask);
+          } else {
+            Platform.putLong(batchBuffer, slot, col.getShort(r) & 0xFFFFL);
+          }
+        }
+        break;
+      case INT:
+        for (int r = 0; r < n; r++) {
+          long slot = slotBase + (long) r * stride;
+          if (mayHaveNulls && col.isNullAt(r)) {
+            setNullFixedWidth(r, stride, slot, bitWordBase, bitMask);
+          } else {
+            Platform.putLong(batchBuffer, slot, col.getInt(r) & 0xFFFFFFFFL);
+          }
+        }
+        break;
+      case LONG:
+        for (int r = 0; r < n; r++) {
+          long slot = slotBase + (long) r * stride;
+          if (mayHaveNulls && col.isNullAt(r)) {
+            setNullFixedWidth(r, stride, slot, bitWordBase, bitMask);
+          } else {
+            Platform.putLong(batchBuffer, slot, col.getLong(r));
+          }
+        }
+        break;
+      case FLOAT:
+        for (int r = 0; r < n; r++) {
+          long slot = slotBase + (long) r * stride;
+          if (mayHaveNulls && col.isNullAt(r)) {
+            setNullFixedWidth(r, stride, slot, bitWordBase, bitMask);
+          } else {
+            float f = col.getFloat(r);
+            if (Float.isNaN(f)) {
+              f = Float.NaN;
+            }
+            Platform.putLong(batchBuffer, slot, Float.floatToRawIntBits(f) & 0xFFFFFFFFL);
+          }
+        }
+        break;
+      case DOUBLE:
+        for (int r = 0; r < n; r++) {
+          long slot = slotBase + (long) r * stride;
+          if (mayHaveNulls && col.isNullAt(r)) {
+            setNullFixedWidth(r, stride, slot, bitWordBase, bitMask);
+          } else {
+            double d = col.getDouble(r);
+            if (Double.isNaN(d)) {
+              d = Double.NaN;
+            }
+            Platform.putLong(batchBuffer, slot, Double.doubleToRawLongBits(d));
+          }
+        }
+        break;
+      case DECIMAL_COMPACT:
+        {
+          CometVector cometCol = (CometVector) col;
+          for (int r = 0; r < n; r++) {
+            long slot = slotBase + (long) r * stride;
+            if (mayHaveNulls && col.isNullAt(r)) {
+              setNullFixedWidth(r, stride, slot, bitWordBase, bitMask);
+            } else {
+              Platform.putLong(batchBuffer, slot, cometCol.getLongDecimal(r));
+            }
+          }
+        }
+        break;
+      default:
+        throw new IllegalStateException(
+            "Type code not supported by fixed-width path: " + typeCodes[c]);
+    }
+  }
+
+  private void setNullFixedWidth(int rowId, int stride, long slot, long bitWordBase, long bitMask) {
+    long wordAddr = bitWordBase + (long) rowId * stride;
+    Platform.putLong(batchBuffer, wordAddr, Platform.getLong(batchBuffer, wordAddr) | bitMask);
+    Platform.putLong(batchBuffer, slot, 0L);
   }
 
   private void ensureCapacity(int needed) {
