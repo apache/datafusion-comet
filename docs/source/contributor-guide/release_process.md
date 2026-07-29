@@ -142,18 +142,35 @@ targeting the release branch.
 
 ### Update Maven Version
 
-Open a PR targeting the release branch that changes the Maven version from `0.13.0-SNAPSHOT` to `0.13.0` in
-the `pom.xml` files and in the diff files under `dev/diffs`.
+Open a PR targeting the release branch that changes the Maven version from `0.13.0-SNAPSHOT` to `0.13.0` in:
+
+- the `pom.xml` files: `pom.xml`, `common/pom.xml`, `spark/pom.xml`, and `spark-integration/pom.xml`
+- the `<comet.version>` property in the Spark test diffs under `dev/diffs`
+- the `comet` version in the Iceberg test diffs under `dev/diffs/iceberg`, which use a Gradle version
+  catalog entry (`comet = "0.13.0"`) rather than a Maven property
 
 There is no need to update the Rust crate versions because they will already be `0.13.0`.
+
+Once the version is bumped, verify that no references to the old version remain:
+
+```shell
+git grep -n '0.13.0-SNAPSHOT' -- . ':!docs/source/changelog'
+```
+
+Any hit outside the change log is a place that will break on the release branch. Note that dropping the
+`-SNAPSHOT` qualifier changes the built artifact file names, so anything that locates the jar by glob must
+match a bare version too. Prefer patterns such as `comet-spark-spark3.5_2.12-*.jar` over
+`comet-spark-spark3.5_2.12-*-SNAPSHOT.jar`, and prefer resolving the jar by glob over hardcoding a version.
+The release branch runs the same CI workflows as `main`, including the PyArrow UDF tests, so a
+`-SNAPSHOT`-only glob in a test harness or script fails only after the release branch is cut.
 
 ### Update Version in main
 
 Create a PR against the main branch to prepare for developing the next release:
 
 - Update the Rust crate version to `0.14.0`.
-- Update the Maven version to `0.14.0-SNAPSHOT` (both in the `pom.xml` files and also in the diff files
-  under `dev/diffs`).
+- Update the Maven version to `0.14.0-SNAPSHOT` in the same set of files listed above (the `pom.xml` files,
+  the Spark test diffs under `dev/diffs`, and the Iceberg test diffs under `dev/diffs/iceberg`).
 
 ### Generate the Change Log
 
