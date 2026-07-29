@@ -41,8 +41,14 @@ object CometCast
   private[comet] val negativeScaleDecimalToStringReason: String =
     "Negative-scale decimal requires spark.sql.legacy.allowNegativeScaleOfDecimal=true"
 
+  // When `spark.sql.legacy.castComplexTypesToString.enabled` is true, Spark wraps maps and
+  // structs with `[]` (instead of `{}`) when casting to string, and omits NULL elements of
+  // structs/maps/arrays (instead of rendering them as the literal "null"). Comet's native
+  // cast only implements the default formatting, so with the flag enabled we route
+  // array/map/struct to-string casts through the JVM codegen dispatcher via
+  // `CodegenDispatchFallback`. The flag is internal in Spark 4.0 and defaults to false.
   private[comet] val legacyCastComplexTypesToStringReason: String =
-    "spark.sql.legacy.castComplexTypesToString.enabled=true is not supported natively"
+    "spark.sql.legacy.castComplexTypesToString.enabled=true is not supported"
 
   private def legacyCastComplexTypesToString: Boolean =
     SQLConf.get
