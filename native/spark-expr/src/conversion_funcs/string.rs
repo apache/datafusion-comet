@@ -15,7 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::{timezone, EvalMode, SparkError, SparkResult};
+use crate::{EvalMode, SparkError, SparkResult};
+use arrow::array::timezone::Tz;
 use arrow::array::{
     Array, ArrayRef, ArrowPrimitiveType, BooleanArray, Decimal128Builder, GenericStringArray,
     OffsetSizeTrait, PrimitiveArray, PrimitiveBuilder, StringArray,
@@ -793,7 +794,7 @@ pub(crate) fn cast_string_to_timestamp(
         .downcast_ref::<GenericStringArray<i32>>()
         .expect("Expected a string array");
 
-    let tz = &timezone::Tz::from_str(timezone_str)
+    let tz = &Tz::from_str(timezone_str)
         .map_err(|_| SparkError::Internal(format!("Invalid timezone string: {timezone_str}")))?;
 
     let cast_array: ArrayRef = match to_type {
@@ -1514,14 +1515,14 @@ fn parse_sign_offset(s: &str) -> Option<i32> {
     Some(sign * (h * 3600 + m * 60))
 }
 
-/// Constructs a `timezone::Tz` from an offset measured in seconds.
+/// Constructs a [`Tz`] from an offset measured in seconds.
 /// E.g. `+7*3600 + 30*60` -> `"+07:30"`.
-fn tz_from_offset_secs(secs: i32) -> Option<timezone::Tz> {
+fn tz_from_offset_secs(secs: i32) -> Option<Tz> {
     let abs = secs.abs();
     let h = abs / 3600;
     let m = (abs % 3600) / 60;
     let sign = if secs >= 0 { '+' } else { '-' };
-    timezone::Tz::from_str(&format!("{}{:02}:{:02}", sign, h, m)).ok()
+    Tz::from_str(&format!("{}{:02}:{:02}", sign, h, m)).ok()
 }
 
 /// Returns the last (rightmost) byte position where `needle` starts inside `haystack`.
@@ -1549,7 +1550,7 @@ fn rfind_str(haystack: &str, needle: &str) -> Option<usize> {
 ///
 /// **The caller must ensure the value does not already match a base timestamp pattern.**
 /// Without that guard a bare '-' in "2015-03-18" would be misread as a -18:00 offset.
-fn extract_offset_suffix(value: &str) -> Option<(&str, timezone::Tz)> {
+fn extract_offset_suffix(value: &str) -> Option<(&str, Tz)> {
     // 1. Z suffix
     if let Some(stripped) = value.strip_suffix('Z') {
         return Some((stripped, tz_from_offset_secs(0)?));
@@ -1593,7 +1594,7 @@ fn extract_offset_suffix(value: &str) -> Option<(&str, timezone::Tz)> {
     if let Some(space_pos) = value.rfind(' ') {
         let tz_name = &value[space_pos + 1..];
         if tz_name.contains('/') {
-            if let Ok(tz) = timezone::Tz::from_str(tz_name) {
+            if let Ok(tz) = Tz::from_str(tz_name) {
                 return Some((&value[..space_pos], tz));
             }
         }
@@ -2110,7 +2111,7 @@ mod tests {
             Some("0119704"),
             Some("2024001"),
         ]));
-        let tz = &timezone::Tz::from_str("UTC").unwrap();
+        let tz = &Tz::from_str("UTC").unwrap();
 
         let string_array = array
             .as_any()
@@ -2146,7 +2147,7 @@ mod tests {
             Some("2020-01-01T12:34:56.123456"),
             Some("not_a_timestamp"),
         ]));
-        let tz = &timezone::Tz::from_str("UTC").unwrap();
+        let tz = &Tz::from_str("UTC").unwrap();
         let string_array = array
             .as_any()
             .downcast_ref::<GenericStringArray<i32>>()
@@ -2175,7 +2176,7 @@ mod tests {
         let array: ArrayRef = Arc::new(StringArray::from(vec![
             Some("91\n3       "), // trailing spaces after a newline in the middle
         ]));
-        let tz = &timezone::Tz::from_str("UTC").unwrap();
+        let tz = &Tz::from_str("UTC").unwrap();
         let string_array = array
             .as_any()
             .downcast_ref::<GenericStringArray<i32>>()
@@ -2379,7 +2380,7 @@ mod tests {
 
     #[test]
     fn extreme_year_boundary_test() {
-        let tz = &timezone::Tz::from_str("UTC").unwrap();
+        let tz = &Tz::from_str("UTC").unwrap();
         // Long.MaxValue = 9223372036854775807 μs -> 294247-01-10T04:00:54.775807Z
         assert_eq!(
             timestamp_parser("294247-01-10T04:00:54.775807Z", EvalMode::Legacy, tz, true).unwrap(),
@@ -2404,7 +2405,7 @@ mod tests {
 
     #[test]
     fn test_leading_whitespace_t_hm() {
-        let tz = &timezone::Tz::from_str("UTC").unwrap();
+        let tz = &Tz::from_str("UTC").unwrap();
         // Spark 4.0+ rejects leading whitespace for ALL T-prefixed time-only patterns.
         for ws_input in &[" T2:30", "\tT2:30", "\nT2:30", " T2", "\tT2", "\nT2"] {
             assert!(
@@ -2439,7 +2440,7 @@ mod tests {
 
     #[test]
     fn plus_sign_year_test() {
-        let tz = &timezone::Tz::from_str("UTC").unwrap();
+        let tz = &Tz::from_str("UTC").unwrap();
         // Spark accepts '+year' prefix on full date-time strings for TIMESTAMP casts.
         // "+2020-01-01T12:34:56" -> 2020-01-01T12:34:56 UTC = 1577882096 seconds.
         assert_eq!(
@@ -2458,7 +2459,7 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore)] // test takes too long with miri
     fn timestamp_parser_test() {
-        let tz = &timezone::Tz::from_str("UTC").unwrap();
+        let tz = &Tz::from_str("UTC").unwrap();
         // write for all formats
         assert_eq!(
             timestamp_parser("2020", EvalMode::Legacy, tz, true).unwrap(),
@@ -2604,7 +2605,7 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore)]
     fn timestamp_parser_fraction_scaling_test() {
-        let tz = &timezone::Tz::from_str("UTC").unwrap();
+        let tz = &Tz::from_str("UTC").unwrap();
         // Base: "2020-01-01T12:34:56" = 1577882096000000 µs (confirmed by timestamp_parser_test)
         let base = 1577882096000000i64;
 
@@ -2648,7 +2649,7 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore)]
     fn timestamp_parser_tz_offset_formats_test() {
-        let tz = &timezone::Tz::from_str("UTC").unwrap();
+        let tz = &Tz::from_str("UTC").unwrap();
         // All of these represent 2020-01-01T12:34:56 UTC = 1577882096000000 µs.
         let utc = 1577882096000000i64;
         // +05:30 offset -> UTC = 12:34:56 − 5h30m = 07:04:56 UTC = 1577862296000000 µs
@@ -2787,7 +2788,7 @@ mod tests {
         // DST spring-forward: America/New_York springs forward 2020-03-08 02:00 -> 03:00.
         // 02:30 does not exist; Spark advances to 03:30 EDT (UTC-4) = 07:30 UTC.
         // 2020-03-08T07:30:00Z = 1577836800 + 67*86400 + 27000 = 1583652600 seconds.
-        let ny_tz = &timezone::Tz::from_str("America/New_York").unwrap();
+        let ny_tz = &Tz::from_str("America/New_York").unwrap();
         assert_eq!(
             timestamp_parser("2020-03-08 02:30:00", EvalMode::Legacy, ny_tz, true).unwrap(),
             Some(1583652600000000)

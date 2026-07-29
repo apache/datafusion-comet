@@ -33,7 +33,6 @@ pub use struct_funcs::{CreateNamedStruct, GetStructField};
 mod csv_funcs;
 mod json_funcs;
 pub mod test_common;
-pub mod timezone;
 mod unbound;
 pub use unbound::UnboundColumn;
 mod predicate_funcs;

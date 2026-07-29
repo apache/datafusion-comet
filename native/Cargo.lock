@@ -2060,7 +2060,6 @@ dependencies = [
  "arrow",
  "base64 0.23.0",
  "chrono",
- "chrono-tz",
  "criterion",
  "datafusion",
  "datafusion-comet-common",
