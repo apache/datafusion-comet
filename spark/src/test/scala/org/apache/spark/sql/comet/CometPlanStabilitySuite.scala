@@ -28,7 +28,7 @@ import org.apache.commons.io.FileUtils
 import org.apache.spark.SparkContext
 import org.apache.spark.internal.config.{MEMORY_OFFHEAP_ENABLED, MEMORY_OFFHEAP_SIZE}
 import org.apache.spark.sql.TPCDSBase
-import org.apache.spark.sql.catalyst.expressions.{AttributeSet, Cast}
+import org.apache.spark.sql.catalyst.expressions.AttributeSet
 import org.apache.spark.sql.catalyst.util.resourceToString
 import org.apache.spark.sql.execution.{ReusedSubqueryExec, SparkPlan, SubqueryBroadcastExec, SubqueryExec}
 import org.apache.spark.sql.execution.adaptive.DisableAdaptiveExecutionSuite
