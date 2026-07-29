@@ -121,7 +121,7 @@ impl MemoryPool for CometUnifiedMemoryPool {
         }
         if let Err(prev) = self
             .used
-            .try_update(Relaxed, Relaxed, |old| old.checked_sub(size))
+            .fetch_update(Relaxed, Relaxed, |old| old.checked_sub(size))
         {
             panic!(
                 "Task {} overflow when releasing {size} of {prev} bytes",
@@ -149,7 +149,7 @@ impl MemoryPool for CometUnifiedMemoryPool {
             }
             if let Err(prev) = self
                 .used
-                .try_update(Relaxed, Relaxed, |old| old.checked_add(acquired as usize))
+                .fetch_update(Relaxed, Relaxed, |old| old.checked_add(acquired as usize))
             {
                 return Err(resources_datafusion_err!(
                     "Task {} failed to acquire {} bytes due to overflow. Reserved: {}",
