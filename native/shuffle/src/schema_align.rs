@@ -22,17 +22,16 @@
 //! return-type drift from DataFusion / `datafusion-spark` is self-healing. When a native plan's
 //! output crosses back to the JVM and feeds another native plan, the consuming `ScanExec` casts
 //! every imported column to the catalyst-declared type, so a wrong Arrow type never survives the
-//! boundary. Shuffle is the lone exception, on two counts:
+//! boundary. Shuffle is the lone exception because the writer hash-partitions on these columns, and
+//! Spark's hash differs by type (e.g. `Int32` vs `Int64`), so a drifted type would route rows to
+//! the wrong partition. A read-side cast cannot undo a wrong partition assignment, so the type must
+//! be corrected before partitioning — which forces the alignment onto the writer input.
 //!
-//!   1. The writer hash-partitions on these columns, and Spark's hash differs by type (e.g. `Int32`
-//!      vs `Int64`), so a drifted type would route rows to the wrong partition. A read-side cast
-//!      cannot undo a wrong partition assignment, so the type must be corrected before partitioning.
-//!   2. The shuffle read path (`ShuffleScanExec`) does not cast; it stamps the catalyst schema onto
-//!      the decoded block and errors on any mismatch. The schema is serialized into the block on
-//!      write and trusted on read.
+//! The read path (`ShuffleScanExec`) casts too, so a drift that only affects the batch's Arrow type
+//! and not its partition assignment is absorbed there as well. See
+//! <https://github.com/apache/datafusion-comet/issues/5137>.
 //!
-//! Both force the alignment to happen on the writer input. See
-//! <https://github.com/apache/datafusion-comet/issues/4515> for the running list of mismatched
+//! See <https://github.com/apache/datafusion-comet/issues/4515> for the running list of mismatched
 //! functions.
 
 use arrow::array::{ArrayRef, RecordBatch, RecordBatchOptions};
