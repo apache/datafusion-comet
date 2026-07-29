@@ -863,9 +863,6 @@ bytes <code class="docutils literal notranslate"><span class="pre">0x00-0x08</sp
 <li><p>Native <code class="docutils literal notranslate"><span class="pre">RANGE</span></code> window frames with an explicit <code class="docutils literal notranslate"><span class="pre">PRECEDING</span></code> / <code class="docutils literal notranslate"><span class="pre">FOLLOWING</span></code> offset diverge from
 Spark when the boundary arithmetic overflows for <code class="docutils literal notranslate"><span class="pre">DATE</span></code> or <code class="docutils literal notranslate"><span class="pre">DECIMAL</span></code> <code class="docutils literal notranslate"><span class="pre">ORDER</span> <span class="pre">BY</span></code> columns
 (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5022">#5022</a>).</p></li>
-<li><p>For an empty <code class="docutils literal notranslate"><span class="pre">IN</span></code> list, Comet always returns <code class="docutils literal notranslate"><span class="pre">false</span></code> for a <code class="docutils literal notranslate"><span class="pre">NULL</span></code> operand. Spark returns <code class="docutils literal notranslate"><span class="pre">NULL</span></code>
-when <code class="docutils literal notranslate"><span class="pre">spark.sql.legacy.nullInEmptyListBehavior=true</span></code> (Spark 4.0+)
-(<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4786">#4786</a>).</p></li>
 </ul>
 </section>
 <section id="object-store-cache">
