@@ -688,4 +688,94 @@ class CometInMemoryCacheSuite extends CometTestBase {
       spark.catalog.clearCache()
     }
   }
+
+  test("cache a Spark columnar plan whose vectors are not Arrow-backed") {
+    withTempPath { path =>
+      spark
+        .range(1000)
+        .selectExpr(
+          "id as key",
+          "id % 8 as value",
+          "cast(id as string) as s",
+          "cast(id as double) as d",
+          "cast(null as int) as n",
+          "cast(id as decimal(20,3)) as dec",
+          "date_add(date'2020-01-01', cast(id as int)) as dt",
+          "timestamp_micros(id * 1000000) as ts")
+        .write
+        .parquet(path.toString)
+
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+        CometConf.COMET_SHUFFLE_MODE.key -> "jvm",
+        SQLConf.CACHE_VECTORIZED_READER_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true",
+        // Force the cached plan to be Spark's own vectorized Parquet reader, which produces
+        // On/OffHeapColumnVector rather than CometVector. Spark's InMemoryRelation strips the
+        // ColumnarToRow above it because supportsColumnarInput is true for this schema, so the
+        // serializer receives non-Arrow columnar batches.
+        CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "false",
+        CometConf.COMET_SPARK_TO_ARROW_ENABLED.key -> "false",
+        SQLConf.PARQUET_VECTORIZED_READER_ENABLED.key -> "true",
+        SQLConf.SESSION_LOCAL_TIMEZONE.key -> "America/Denver") {
+
+        spark.catalog.clearCache()
+
+        spark.read.parquet(path.toString).createOrReplaceTempView("spark_columnar_cache")
+
+        spark.catalog.cacheTable("spark_columnar_cache")
+        assert(spark.table("spark_columnar_cache").count() == 1000)
+
+        assert(
+          cachedBatchTypes("spark_columnar_cache").sameElements(
+            Array("org.apache.spark.sql.comet.execution.arrow.CometCachedBatch")))
+
+        checkSparkAnswer(
+          spark.sql(
+            "SELECT * FROM spark_columnar_cache WHERE key >= 10 AND key < 20 ORDER BY key"))
+        checkSparkAnswer(
+          spark.sql("SELECT sum(key), sum(d), sum(dec), count(s), count(n), max(dt), max(ts) " +
+            "FROM spark_columnar_cache"))
+
+        spark.catalog.clearCache()
+      }
+    }
+  }
+
+  test("cache a non-Arrow-backed Spark columnar plan with complex types") {
+    withTempPath { path =>
+      spark
+        .range(200)
+        .selectExpr(
+          "id as key",
+          "if(id % 5 = 0, null, array(id, id + 1)) as a",
+          "named_struct('x', id, 'y', cast(id as string)) as st",
+          "if(id % 7 = 0, null, map(cast(id as string), id)) as m",
+          "cast(id as binary) as b")
+        .write
+        .parquet(path.toString)
+
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+        CometConf.COMET_SHUFFLE_MODE.key -> "jvm",
+        SQLConf.CACHE_VECTORIZED_READER_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true",
+        CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "false",
+        CometConf.COMET_SPARK_TO_ARROW_ENABLED.key -> "false",
+        SQLConf.PARQUET_VECTORIZED_READER_ENABLED.key -> "true",
+        SQLConf.PARQUET_VECTORIZED_READER_NESTED_COLUMN_ENABLED.key -> "true") {
+
+        spark.catalog.clearCache()
+
+        spark.read.parquet(path.toString).createOrReplaceTempView("spark_columnar_complex")
+
+        spark.catalog.cacheTable("spark_columnar_complex")
+        assert(spark.table("spark_columnar_complex").count() == 200)
+
+        checkSparkAnswer(spark.sql("SELECT key, a, st, m, b FROM spark_columnar_complex"))
+
+        spark.catalog.clearCache()
+      }
+    }
+  }
 }

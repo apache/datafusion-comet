@@ -26,9 +26,9 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.types.StructType
-import org.apache.spark.sql.vectorized.ColumnarBatch
+import org.apache.spark.sql.vectorized.{ColumnarArray, ColumnarBatch}
 
-import org.apache.comet.vector.NativeUtil
+import org.apache.comet.vector.{CometVector, NativeUtil}
 
 /**
  * Convert a stream of Spark `InternalRow`s to a stream of independently-owned Arrow
@@ -74,4 +74,45 @@ object CometArrowConverters extends Logging {
       }
     }
   }
+
+  /**
+   * Copy a Spark `ColumnarBatch` whose columns are not Arrow-backed (e.g.
+   * `On/OffHeapColumnVector` from Spark's vectorized Parquet reader, or a third-party connector's
+   * vectors) into a freshly allocated Arrow `ColumnarBatch` of `CometVector`s.
+   *
+   * The input batch is not consumed or closed; the caller owns the returned batch and must close
+   * it. Values are copied element-wise, since Spark's `ColumnVector` implementations do not
+   * expose Arrow buffers.
+   */
+  def columnarBatchToArrowBatch(
+      batch: ColumnarBatch,
+      schema: StructType,
+      timeZoneId: String,
+      allocator: BufferAllocator): ColumnarBatch = {
+    val arrowSchema: Schema = Utils.toArrowSchema(schema, timeZoneId)
+    val root = VectorSchemaRoot.create(arrowSchema, allocator)
+    val writer = ArrowWriter.create(root)
+    val numRows = batch.numRows()
+    var col = 0
+    while (col < batch.numCols()) {
+      val column = batch.column(col)
+      val columnArray = new ColumnarArray(column, 0, numRows)
+      if (column.hasNull) {
+        writer.writeCol(columnArray, col)
+      } else {
+        writer.writeColNoNull(columnArray, col)
+      }
+      col += 1
+    }
+    writer.finish()
+    // ArrowWriter derives the root row count from its per-column writes, so a zero-column input
+    // batch (Spark's count-from-metadata scan: numRows > 0, numCols == 0) would otherwise produce
+    // a root with rowCount == 0 and silently drop the rows.
+    root.setRowCount(numRows)
+    NativeUtil.rootAsBatch(root)
+  }
+
+  /** Whether every column in `batch` is already an Arrow-backed `CometVector`. */
+  def isArrowBacked(batch: ColumnarBatch): Boolean =
+    (0 until batch.numCols()).forall(i => batch.column(i).isInstanceOf[CometVector])
 }

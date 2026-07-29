@@ -180,18 +180,49 @@ class ArrowCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
   // Compute Spark-compatible cache stats before serializing each batch to Arrow.
   // The stats are stored beside the Arrow bytes so Spark's cache filter can prune
   // CometCachedBatch without decoding the batch first.
+  //
+  // Spark decides the input path from `supportsColumnarInput`, which only sees the schema, so a
+  // columnar input batch is not guaranteed to be Arrow-backed: any Spark or third-party columnar
+  // leaf (Spark's vectorized Parquet/ORC reader, a connector's own vectors) reaches
+  // `convertColumnarBatchToCachedBatch` with `On/OffHeapColumnVector`-style columns, which
+  // `Utils.serializeBatches` cannot write. Copy those into Arrow first.
   private def encodeBatches(
       batches: Iterator[ColumnarBatch],
       attrs: Seq[Attribute]): Iterator[CachedBatch] = {
+    lazy val structType = toStructType(attrs)
+
     batches.flatMap { batch =>
       val stats = computeStats(batch, attrs)
 
-      Utils.serializeBatches(Iterator.single(batch)).map { case (rows, buffer) =>
-        CometCachedBatch(
-          numRows = rows.toInt,
-          sizeInBytes = buffer.size,
-          stats = stats,
-          bytes = buffer)
+      val (arrowBatch, ownsBatch) =
+        if (CometArrowConverters.isArrowBacked(batch)) {
+          (batch, false)
+        } else {
+          val converted = CometArrowConverters.columnarBatchToArrowBatch(
+            batch,
+            structType,
+            CometArrowStream.NATIVE_TIMEZONE,
+            CometArrowAllocator)
+          (converted, true)
+        }
+
+      try {
+        // `Utils.serializeBatches` is lazy and clears the batch's vectors as it writes, so the
+        // result has to be materialized before a converted batch is closed.
+        Utils
+          .serializeBatches(Iterator.single(arrowBatch))
+          .map { case (rows, buffer) =>
+            CometCachedBatch(
+              numRows = rows.toInt,
+              sizeInBytes = buffer.size,
+              stats = stats,
+              bytes = buffer)
+          }
+          .toList
+      } finally {
+        if (ownsBatch) {
+          arrowBatch.close()
+        }
       }
     }
   }
