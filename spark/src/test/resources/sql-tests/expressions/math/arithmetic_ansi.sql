@@ -166,6 +166,32 @@ SELECT a % b FROM ansi_float_div_zero WHERE b = 0.0
 query expect_error(BY_ZERO)
 SELECT c % d FROM ansi_float_div_zero WHERE d = 0.0
 
+-- The cases below keep a column operand so that ConstantFolding cannot evaluate them
+-- during optimization, which means they reach the native remainder at execution time.
+
+-- float column % literal 0.0 should throw
+query expect_error(BY_ZERO)
+SELECT a % CAST(0.0 AS FLOAT) FROM ansi_float_div_zero
+
+-- double column % literal 0.0 should throw
+query expect_error(BY_ZERO)
+SELECT c % CAST(0.0 AS DOUBLE) FROM ansi_float_div_zero
+
+-- double column % literal -0.0 should also throw (IEEE 754: -0.0 == 0.0)
+query expect_error(BY_ZERO)
+SELECT c % CAST(-0.0 AS DOUBLE) FROM ansi_float_div_zero
+
+-- literal double % double column should throw
+query expect_error(BY_ZERO)
+SELECT CAST(1.0 AS DOUBLE) % d FROM ansi_float_div_zero
+
+-- a non-zero literal divisor must still produce results rather than throw
+query
+SELECT c % CAST(2.0 AS DOUBLE) FROM ansi_float_div_zero ORDER BY 1
+
+-- The fully-literal cases below are folded by Spark's ConstantFolding rule before the
+-- query reaches Comet, so they assert Spark's own behavior rather than the native path.
+
 -- literal double % 0.0 should throw
 query expect_error(BY_ZERO)
 SELECT CAST(1.0 AS DOUBLE) % CAST(0.0 AS DOUBLE)

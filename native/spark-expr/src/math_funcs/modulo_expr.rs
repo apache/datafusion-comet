@@ -17,9 +17,11 @@
 
 use crate::{create_comet_physical_fun, IfExpr};
 use crate::{remainder_by_zero_error, Cast, EvalMode, SparkCastOptions};
-use arrow::array::{Array, ArrayRef, AsArray};
+use arrow::array::{ArrayRef, ArrowNativeTypeOp, AsArray, PrimitiveArray};
+use arrow::compute::kernels::arity::try_binary;
 use arrow::compute::kernels::numeric::rem;
 use arrow::datatypes::*;
+use arrow::error::ArrowError;
 use datafusion::common::{exec_err, internal_err, DataFusionError, Result, ScalarValue};
 use datafusion::config::ConfigOptions;
 use datafusion::execution::FunctionRegistry;
@@ -54,11 +56,15 @@ pub fn spark_modulo(args: &[ColumnarValue], fail_on_error: bool) -> Result<Colum
         return apply_cmp_for_nested(Operator::Modulo, lhs, rhs);
     }
 
-    // Arrow's `rem` kernel only signals `DivideByZero` for integer and decimal types.
-    // For floating point, `x % 0.0` yields NaN silently, so under ANSI mode we must
-    // detect zero divisors explicitly to raise the Spark-compliant error.
-    if fail_on_error && matches!(right_data_type, DataType::Float32 | DataType::Float64) {
-        check_float_remainder_by_zero(lhs, rhs)?;
+    // Arrow's `rem` kernel only signals `DivideByZero` for integer and decimal types. For
+    // floating point it uses `mod_wrapping`, so `x % 0.0` silently yields NaN. Under ANSI
+    // mode we compute the float remainder with `mod_checked` instead, which reports
+    // `DivideByZero` for a zero divisor.
+    if fail_on_error
+        && left_data_type == right_data_type
+        && matches!(right_data_type, DataType::Float32 | DataType::Float64)
+    {
+        return checked_float_modulo(lhs, rhs, &right_data_type);
     }
 
     match apply(lhs, rhs, rem) {
@@ -71,75 +77,59 @@ pub fn spark_modulo(args: &[ColumnarValue], fail_on_error: bool) -> Result<Colum
     }
 }
 
-/// Returns an error if any row has a non-null dividend paired with a zero divisor. Only
-/// meant to be called with floating point operands — Spark treats `-0.0` as zero here,
-/// which falls out naturally from IEEE 754 equality.
-fn check_float_remainder_by_zero(lhs: &ColumnarValue, rhs: &ColumnarValue) -> Result<()> {
-    let is_zero_float_scalar = |sv: &ScalarValue| match sv {
-        ScalarValue::Float32(Some(v)) => *v == 0.0,
-        ScalarValue::Float64(Some(v)) => *v == 0.0,
-        _ => false,
+/// Computes floating point remainder in ANSI mode using `mod_checked`, which raises
+/// `DivideByZero` when the divisor is zero. `-0.0` triggers the error too, since
+/// `mod_checked` compares the divisor against zero with IEEE 754 equality — matching
+/// Spark, which also treats `-0.0` as a zero divisor.
+fn checked_float_modulo(
+    lhs: &ColumnarValue,
+    rhs: &ColumnarValue,
+    data_type: &DataType,
+) -> Result<ColumnarValue> {
+    let (left, right): (ArrayRef, ArrayRef) = match (lhs, rhs) {
+        (ColumnarValue::Array(l), ColumnarValue::Array(r)) => (Arc::clone(l), Arc::clone(r)),
+        (ColumnarValue::Scalar(l), ColumnarValue::Array(r)) => {
+            (l.to_array_of_size(r.len())?, Arc::clone(r))
+        }
+        (ColumnarValue::Array(l), ColumnarValue::Scalar(r)) => {
+            (Arc::clone(l), r.to_array_of_size(l.len())?)
+        }
+        (ColumnarValue::Scalar(l), ColumnarValue::Scalar(r)) => (l.to_array()?, r.to_array()?),
     };
 
-    match (lhs, rhs) {
-        (ColumnarValue::Scalar(l), ColumnarValue::Scalar(r)) => {
-            if !l.is_null() && is_zero_float_scalar(r) {
-                return Err(remainder_by_zero_error().into());
-            }
-        }
-        (ColumnarValue::Array(l_arr), ColumnarValue::Scalar(r)) => {
-            if is_zero_float_scalar(r) && l_arr.null_count() != l_arr.len() {
-                return Err(remainder_by_zero_error().into());
-            }
-        }
-        (ColumnarValue::Scalar(l), ColumnarValue::Array(r_arr)) => {
-            if !l.is_null() && float_array_has_zero(r_arr, None) {
-                return Err(remainder_by_zero_error().into());
-            }
-        }
-        (ColumnarValue::Array(l_arr), ColumnarValue::Array(r_arr)) => {
-            if float_array_has_zero(r_arr, Some(l_arr.as_ref())) {
-                return Err(remainder_by_zero_error().into());
-            }
-        }
-    }
-    Ok(())
-}
+    let result: ArrayRef = match data_type {
+        DataType::Float32 => Arc::new(checked_modulo_kernel::<Float32Type>(&left, &right)?),
+        DataType::Float64 => Arc::new(checked_modulo_kernel::<Float64Type>(&left, &right)?),
+        _ => return internal_err!("checked_float_modulo called with {data_type}"),
+    };
 
-/// Returns true if `divisor` contains any non-null zero. When `dividend_mask` is provided,
-/// positions where `dividend_mask` is null are skipped (they will produce null results and
-/// must not raise an error).
-fn float_array_has_zero(divisor: &ArrayRef, dividend_mask: Option<&dyn Array>) -> bool {
-    match divisor.data_type() {
-        DataType::Float32 => scan_float_array::<Float32Type>(divisor, dividend_mask),
-        DataType::Float64 => scan_float_array::<Float64Type>(divisor, dividend_mask),
-        _ => false,
+    if matches!(
+        (lhs, rhs),
+        (ColumnarValue::Scalar(_), ColumnarValue::Scalar(_))
+    ) {
+        // Preserve `apply`'s behavior of returning a scalar when both operands are scalars.
+        Ok(ColumnarValue::Scalar(ScalarValue::try_from_array(
+            &result, 0,
+        )?))
+    } else {
+        Ok(ColumnarValue::Array(result))
     }
 }
 
-fn scan_float_array<T: ArrowPrimitiveType>(
-    divisor: &ArrayRef,
-    dividend_mask: Option<&dyn Array>,
-) -> bool
-where
-    T::Native: Default + PartialEq,
-{
-    let arr = divisor.as_primitive::<T>();
-    let zero = T::Native::default();
-    for i in 0..arr.len() {
-        if arr.is_null(i) {
-            continue;
-        }
-        if let Some(mask) = dividend_mask {
-            if mask.is_null(i) {
-                continue;
-            }
-        }
-        if arr.value(i) == zero {
-            return true;
-        }
-    }
-    false
+/// `try_binary` only invokes the closure for rows that are valid in both arrays, so rows
+/// where either operand is null produce a null result without raising — matching Spark's
+/// row-wise semantics.
+fn checked_modulo_kernel<T: ArrowPrimitiveType>(
+    lhs: &ArrayRef,
+    rhs: &ArrayRef,
+) -> Result<PrimitiveArray<T>> {
+    try_binary::<_, _, _, T>(lhs.as_primitive::<T>(), rhs.as_primitive::<T>(), |l, r| {
+        l.mod_checked(r)
+    })
+    .map_err(|e| match e {
+        ArrowError::DivideByZero => remainder_by_zero_error().into(),
+        other => DataFusionError::from(other),
+    })
 }
 
 pub fn create_modulo_expr(
@@ -641,5 +631,185 @@ mod tests {
             false,
             Some(Arc::new(Float64Array::from(vec![None, None]))),
         );
+    }
+
+    /// Evaluates `a % <literal>` where `a` is a Float64 column, so `spark_modulo` receives
+    /// `(Array, Scalar)` rather than the `(Array, Array)` pair that `run_float_modulo`
+    /// produces.
+    fn run_float_modulo_with_literal_divisor(
+        lhs: ArrayRef,
+        divisor: ScalarValue,
+        fail_on_error: bool,
+        should_fail: bool,
+        expected: Option<Arc<Float64Array>>,
+    ) {
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Float64, true)]));
+        let batch = RecordBatch::try_new(Arc::clone(&schema), vec![lhs]).unwrap();
+
+        let session_ctx = SessionContext::new();
+        let modulo_expr = create_modulo_expr(
+            Arc::new(Column::new("a", 0)),
+            Arc::new(Literal::new(divisor)),
+            DataType::Float64,
+            schema,
+            fail_on_error,
+            &session_ctx.state(),
+        )
+        .unwrap();
+
+        verify_result(modulo_expr, batch, should_fail, expected);
+    }
+
+    #[test]
+    fn test_modulo_literal_zero_divisor_float64_ansi() {
+        // `(Array, Scalar)` operands with a zero literal divisor must raise.
+        run_float_modulo_with_literal_divisor(
+            Arc::new(Float64Array::from(vec![Some(1.0), Some(2.0)])),
+            ScalarValue::Float64(Some(0.0)),
+            true,
+            true,
+            None,
+        );
+    }
+
+    #[test]
+    fn test_modulo_literal_negative_zero_divisor_float64_ansi() {
+        run_float_modulo_with_literal_divisor(
+            Arc::new(Float64Array::from(vec![Some(1.0)])),
+            ScalarValue::Float64(Some(-0.0)),
+            true,
+            true,
+            None,
+        );
+    }
+
+    #[test]
+    fn test_modulo_all_null_lhs_literal_zero_divisor_float64_ansi() {
+        // Every dividend is null, so no row pairs a non-null dividend with the zero
+        // literal divisor and no error should be raised.
+        run_float_modulo_with_literal_divisor(
+            Arc::new(Float64Array::from(vec![None, None])),
+            ScalarValue::Float64(Some(0.0)),
+            true,
+            false,
+            Some(Arc::new(Float64Array::from(vec![None, None]))),
+        );
+    }
+
+    #[test]
+    fn test_modulo_literal_non_zero_divisor_float64() {
+        with_fail_on_error(|fail_on_error| {
+            run_float_modulo_with_literal_divisor(
+                Arc::new(Float64Array::from(vec![Some(5.0), None])),
+                ScalarValue::Float64(Some(2.0)),
+                fail_on_error,
+                false,
+                Some(Arc::new(Float64Array::from(vec![Some(1.0), None]))),
+            );
+        })
+    }
+
+    /// Evaluates `<literal> % b` where `b` is a Float64 column, covering the
+    /// `(Scalar, Array)` operand pair.
+    fn run_float_modulo_with_literal_dividend(
+        dividend: ScalarValue,
+        rhs: ArrayRef,
+        fail_on_error: bool,
+        should_fail: bool,
+        expected: Option<Arc<Float64Array>>,
+    ) {
+        let schema = Arc::new(Schema::new(vec![Field::new("b", DataType::Float64, true)]));
+        let batch = RecordBatch::try_new(Arc::clone(&schema), vec![rhs]).unwrap();
+
+        let session_ctx = SessionContext::new();
+        let modulo_expr = create_modulo_expr(
+            Arc::new(Literal::new(dividend)),
+            Arc::new(Column::new("b", 0)),
+            DataType::Float64,
+            schema,
+            fail_on_error,
+            &session_ctx.state(),
+        )
+        .unwrap();
+
+        verify_result(modulo_expr, batch, should_fail, expected);
+    }
+
+    #[test]
+    fn test_modulo_literal_dividend_zero_divisor_float64_ansi() {
+        // `(Scalar, Array)` operands: row 1 pairs the non-null literal dividend with a
+        // zero divisor and must raise.
+        run_float_modulo_with_literal_dividend(
+            ScalarValue::Float64(Some(1.0)),
+            Arc::new(Float64Array::from(vec![Some(2.0), Some(0.0)])),
+            true,
+            true,
+            None,
+        );
+    }
+
+    #[test]
+    fn test_modulo_null_literal_dividend_zero_divisor_float64_ansi() {
+        // A null literal dividend must not raise even though the divisor is zero.
+        run_float_modulo_with_literal_dividend(
+            ScalarValue::Float64(None),
+            Arc::new(Float64Array::from(vec![Some(0.0)])),
+            true,
+            false,
+            Some(Arc::new(Float64Array::from(vec![None]))),
+        );
+    }
+
+    #[test]
+    fn test_modulo_both_literals_zero_divisor_float64_ansi() {
+        // `(Scalar, Scalar)` operands. Spark folds fully-literal expressions before
+        // execution, so this pair only reaches `spark_modulo` via a plan built directly,
+        // but the branch must still raise rather than return NaN.
+        let session_ctx = SessionContext::new();
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Float64, true)]));
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![Arc::new(Float64Array::from(vec![Some(1.0)])) as ArrayRef],
+        )
+        .unwrap();
+
+        let modulo_expr = create_modulo_expr(
+            Arc::new(Literal::new(ScalarValue::Float64(Some(1.0)))),
+            Arc::new(Literal::new(ScalarValue::Float64(Some(0.0)))),
+            DataType::Float64,
+            schema,
+            true,
+            &session_ctx.state(),
+        )
+        .unwrap();
+
+        verify_result::<Float64Type>(modulo_expr, batch, true, None);
+    }
+
+    #[test]
+    fn test_modulo_both_literals_non_zero_divisor_float64_ansi() {
+        // `(Scalar, Scalar)` operands must still evaluate to a scalar, not a one-row array.
+        let session_ctx = SessionContext::new();
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Float64, true)]));
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![Arc::new(Float64Array::from(vec![Some(1.0), Some(2.0)])) as ArrayRef],
+        )
+        .unwrap();
+
+        let modulo_expr = create_modulo_expr(
+            Arc::new(Literal::new(ScalarValue::Float64(Some(5.0)))),
+            Arc::new(Literal::new(ScalarValue::Float64(Some(2.0)))),
+            DataType::Float64,
+            schema,
+            true,
+            &session_ctx.state(),
+        )
+        .unwrap();
+
+        match modulo_expr.evaluate(&batch).unwrap() {
+            ColumnarValue::Scalar(ScalarValue::Float64(Some(v))) => assert_eq!(v, 1.0),
+            other => panic!("Expected a Float64 scalar, got {other:?}"),
+        }
     }
 }
