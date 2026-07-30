@@ -1,7 +1,7 @@
-CometNativeColumnarToRow
+CometColumnarToRow
 +- CometFilter
    :  +- Subquery
-   :     +- CometNativeColumnarToRow
+   :     +- CometColumnarToRow
    :        +- CometHashAggregate
    :           +- CometExchange
    :              +- CometHashAggregate

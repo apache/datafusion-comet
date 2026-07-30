@@ -1,4 +1,4 @@
-CometNativeColumnarToRow
+CometColumnarToRow
 +- CometBroadcastNestedLoopJoin
    :- CometBroadcastNestedLoopJoin
    :  :- CometBroadcastNestedLoopJoin
