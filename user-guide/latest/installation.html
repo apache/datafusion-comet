@@ -909,6 +909,27 @@ CometColumnarToRow
 </div>
 </section>
 </section>
+<section id="checking-the-comet-version">
+<h2>Checking the Comet Version<a class="headerlink" href="#checking-the-comet-version" title="Link to this heading">#</a></h2>
+<p>When the Comet plugin is loaded, it exposes its build version as the Spark config
+<code class="docutils literal notranslate"><span class="pre">spark.comet.version</span></code>. This can be queried at runtime from any supported language, for example:</p>
+<div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="n">scala</span><span class="o">&gt;</span><span class="w"> </span><span class="n">spark</span><span class="p">.</span><span class="n">conf</span><span class="p">.</span><span class="n">get</span><span class="p">(</span><span class="s">&quot;spark.comet.version&quot;</span><span class="p">)</span>
+</pre></div>
+</div>
+<div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="k">SET</span><span class="w"> </span><span class="n">spark</span><span class="p">.</span><span class="n">comet</span><span class="p">.</span><span class="k">version</span><span class="p">;</span>
+</pre></div>
+</div>
+<p>The same value is available programmatically on the JVM classpath, along with additional build
+metadata that is useful when reporting issues:</p>
+<div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="n">scala</span><span class="o">&gt;</span><span class="w"> </span><span class="k">import</span><span class="w"> </span><span class="nn">org</span><span class="p">.</span><span class="nn">apache</span><span class="p">.</span><span class="nn">comet</span><span class="p">.{</span><span class="nc">COMET_VERSION</span><span class="p">,</span><span class="w"> </span><span class="nc">COMET_BRANCH</span><span class="p">,</span><span class="w"> </span><span class="nc">COMET_REVISION</span><span class="p">}</span>
+<span class="n">scala</span><span class="o">&gt;</span><span class="w"> </span><span class="n">println</span><span class="p">(</span><span class="nc">COMET_VERSION</span><span class="p">)</span>
+</pre></div>
+</div>
+<p>Comet also logs its version when the native library is initialized:</p>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>INFO<span class="w"> </span>core/src/lib.rs:<span class="w"> </span>Comet<span class="w"> </span>native<span class="w"> </span>library<span class="w"> </span>version<span class="w"> </span>&lt;version&gt;<span class="w"> </span>initialized
+</pre></div>
+</div>
+</section>
 <section id="additional-configuration">
 <h2>Additional Configuration<a class="headerlink" href="#additional-configuration" title="Link to this heading">#</a></h2>
 <p>Depending on your deployment mode you may also need to set the driver &amp; executor class path(s) to
@@ -985,6 +1006,7 @@ allocation for native execution. See <a class="reference internal" href="tuning.
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#verify-comet-enabled-for-spark-sql-query">Verify Comet enabled for Spark SQL query</a></li>
 </ul>
 </li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#checking-the-comet-version">Checking the Comet Version</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#additional-configuration">Additional Configuration</a><ul class="nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#memory-tuning">Memory tuning</a></li>
 </ul>
