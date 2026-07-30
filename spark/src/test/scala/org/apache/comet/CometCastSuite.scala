@@ -811,6 +811,48 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     castTest(testValues, DataTypes.BooleanType)
   }
 
+  /**
+   * Padding used to check that Comet trims exactly the byte set that each Spark cast trims. Spark
+   * has two trim regimes and neither of them trims any non-ASCII whitespace:
+   *   - `UTF8String.trimAll` (bytes `0x00`-`0x20` and `0x7F`) for boolean, integral and datetime
+   *   - `java.lang.String.trim` (bytes `0x00`-`0x20` only) for float, double and decimal
+   *
+   * Spark itself is the oracle here, so the expectations do not need to be spelled out. See
+   * https://github.com/apache/datafusion-comet/issues/5149.
+   */
+  private val trimPadding: Seq[String] = {
+    // trimmed by both regimes
+    val asciiControlAndSpace = (0x00 to 0x20).map(cp => cp.toChar.toString)
+    // DELETE: trimmed by the `trimAll` regime only
+    val delete = Seq(0x7f)
+    // whitespace to Unicode, but never trimmed by Spark
+    val nonAsciiWhitespace =
+      Seq(0x85, 0xa0, 0x1680, 0x2000, 0x2005, 0x200a, 0x2028, 0x2029, 0x202f, 0x205f, 0x3000)
+    asciiControlAndSpace ++ (delete ++ nonAsciiWhitespace).map(cp =>
+      new String(Character.toChars(cp)))
+  }
+
+  /** `value` with each [[trimPadding]] entry in leading, trailing, both and interior position. */
+  private def trimPaddedValues(value: String): Seq[String] =
+    trimPadding.flatMap(pad =>
+      Seq(pad + value, value + pad, pad + value + pad, value.take(1) + pad + value.drop(1)))
+
+  test("cast StringType to BooleanType - whitespace trim parity") {
+    castTest(trimPaddedValues("true").toDF("a"), DataTypes.BooleanType)
+  }
+
+  test("cast StringType to integral types - whitespace trim parity") {
+    val values = trimPaddedValues("12").toDF("a")
+    Seq(DataTypes.ByteType, DataTypes.ShortType, DataTypes.IntegerType, DataTypes.LongType)
+      .foreach(castTest(values, _))
+  }
+
+  test("cast StringType to floating point and decimal types - whitespace trim parity") {
+    val values = trimPaddedValues("1.5").toDF("a")
+    Seq(DataTypes.FloatType, DataTypes.DoubleType, DataTypes.createDecimalType(10, 2))
+      .foreach(castTest(values, _))
+  }
+
   private val castStringToIntegralInputs: Seq[String] = Seq(
     "",
     ".",

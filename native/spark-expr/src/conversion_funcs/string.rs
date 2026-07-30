@@ -15,6 +15,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::conversion_funcs::trim::{
+    is_whitespace_or_iso_control, trim_all, trim_all_bytes, trim_java_string,
+};
 use crate::{timezone, EvalMode, SparkError, SparkResult};
 use arrow::array::{
     Array, ArrayRef, ArrowPrimitiveType, BooleanArray, Decimal128Builder, GenericStringArray,
@@ -207,7 +210,10 @@ where
         if arr.is_null(i) {
             builder.append_null();
         } else {
-            let str_value = arr.value(i).trim();
+            // `Double.parseDouble` calls `String.trim` before parsing, so only bytes <= 0x20
+            // are trimmed here -- `0x7F` is not whitespace to this cast, and no non-ASCII
+            // whitespace is trimmed by any Spark cast.
+            let str_value = trim_java_string(arr.value(i));
             match parse_string_to_float(str_value) {
                 Some(v) => builder.append_value(v),
                 None => {
@@ -268,9 +274,9 @@ where
     let output_array = array
         .iter()
         .map(|value| match value {
-            Some(value) => match value.to_ascii_lowercase().trim() {
-                "t" | "true" | "y" | "yes" | "1" => Ok(Some(true)),
-                "f" | "false" | "n" | "no" | "0" => Ok(Some(false)),
+            Some(value) => match trim_all(value) {
+                v if is_true_string(v) => Ok(Some(true)),
+                v if is_false_string(v) => Ok(Some(false)),
                 _ if eval_mode == EvalMode::Ansi => Err(SparkError::CastInvalidValue {
                     value: value.to_string(),
                     from_type: "STRING".to_string(),
@@ -283,6 +289,28 @@ where
         .collect::<Result<BooleanArray, _>>()?;
 
     Ok(Arc::new(output_array))
+}
+
+/// Equivalent to `org.apache.spark.sql.catalyst.util.StringUtils.isTrueString`, minus the trim
+/// that the caller has already applied.
+#[inline]
+fn is_true_string(trimmed: &str) -> bool {
+    matches_ignore_ascii_case(trimmed, &["t", "true", "y", "yes", "1"])
+}
+
+/// Equivalent to `org.apache.spark.sql.catalyst.util.StringUtils.isFalseString`, minus the trim
+/// that the caller has already applied.
+#[inline]
+fn is_false_string(trimmed: &str) -> bool {
+    matches_ignore_ascii_case(trimmed, &["f", "false", "n", "no", "0"])
+}
+
+/// Spark lowercases with `UTF8String.toLowerCase` before comparing, but every candidate is
+/// ASCII, and no non-ASCII character lowercases into an ASCII one that would complete any of
+/// them, so an ASCII-insensitive comparison gives the same answer without allocating.
+#[inline]
+fn matches_ignore_ascii_case(value: &str, candidates: &[&str]) -> bool {
+    candidates.iter().any(|c| value.eq_ignore_ascii_case(c))
 }
 
 pub(crate) fn cast_string_to_decimal(
@@ -534,23 +562,12 @@ fn is_special_value(trimmed: &str) -> bool {
 /// e.g., "123.45" -> (12345, 2), "-0.001" -> (-1, 3) , 0e50 -> (0,50) etc
 /// Parse a string to decimal following Spark's behavior
 fn parse_string_to_decimal(input_str: &str, precision: u8, scale: i8) -> SparkResult<Option<i128>> {
-    let string_bytes = input_str.as_bytes();
-    let mut start = 0;
-    let mut end = string_bytes.len();
-
-    // Trim ASCII whitespace and null bytes from both ends. Spark's UTF8String
-    // trims null bytes the same way it trims whitespace: "123\u0000" and
-    // "\u0000123" both parse as 123. Null bytes in the middle are not trimmed
-    // and will fail the digit validation in parse_decimal_str, producing NULL.
-    while start < end && (string_bytes[start].is_ascii_whitespace() || string_bytes[start] == 0) {
-        start += 1;
-    }
-    while end > start && (string_bytes[end - 1].is_ascii_whitespace() || string_bytes[end - 1] == 0)
-    {
-        end -= 1;
-    }
-
-    let trimmed = &input_str[start..end];
+    // Spark parses via `new java.math.BigDecimal(str.toString.trim)`, so the trim set is
+    // `String.trim`'s: every byte <= 0x20, which includes the null byte ("123\u0000" and
+    // "\u0000123" both parse as 123) but not 0x7F or any non-ASCII whitespace. Null bytes in
+    // the middle are not trimmed and will fail the digit validation in parse_decimal_str,
+    // producing NULL.
+    let trimmed = trim_java_string(input_str);
 
     // Normalize fullwidth digits to ASCII. Fast path skips the allocation for
     // pure-ASCII strings, which is the common case.
@@ -929,7 +946,7 @@ fn do_parse_string_to_int_legacy<T: Integer + CheckedSub + CheckedNeg + From<u8>
     str: &str,
     min_value: T,
 ) -> SparkResult<Option<T>> {
-    let trimmed_bytes = str.as_bytes().trim_ascii();
+    let trimmed_bytes = trim_all_bytes(str.as_bytes());
 
     let (negative, digits) = match parse_sign(trimmed_bytes) {
         Some(result) => result,
@@ -980,7 +997,7 @@ fn do_parse_string_to_int_ansi<T: Integer + CheckedSub + CheckedNeg + From<u8> +
 ) -> SparkResult<Option<T>> {
     let error = || Err(invalid_value(str, "STRING", type_name));
 
-    let trimmed_bytes = str.as_bytes().trim_ascii();
+    let trimmed_bytes = trim_all_bytes(str.as_bytes());
 
     let (negative, digits) = match parse_sign(trimmed_bytes) {
         Some(result) => result,
@@ -1016,7 +1033,7 @@ fn do_parse_string_to_int_try<T: Integer + CheckedSub + CheckedNeg + From<u8> + 
     str: &str,
     min_value: T,
 ) -> SparkResult<Option<T>> {
-    let trimmed_bytes = str.as_bytes().trim_ascii();
+    let trimmed_bytes = trim_all_bytes(str.as_bytes());
 
     let (negative, digits) = match parse_sign(trimmed_bytes) {
         Some(result) => result,
@@ -1881,6 +1898,8 @@ fn parse_str_to_time_only_timestamp<T: TimeZone>(value: &str, tz: &T) -> SparkRe
 //a string to date parser - port of spark's SparkDateTimeUtils#stringToDate.
 fn date_parser(date_str: &str, eval_mode: EvalMode) -> SparkResult<Option<i32>> {
     // local functions
+    // `SparkDateTimeUtils.getTrimmedStart`/`getTrimmedEnd` trim the same byte set as
+    // `UTF8String.trimAll`; see `is_whitespace_or_iso_control`.
     fn get_trimmed_start(bytes: &[u8]) -> usize {
         let mut start = 0;
         while start < bytes.len() && is_whitespace_or_iso_control(bytes[start]) {
@@ -1895,10 +1914,6 @@ fn date_parser(date_str: &str, eval_mode: EvalMode) -> SparkResult<Option<i32>> 
             end -= 1;
         }
         end + 1
-    }
-
-    fn is_whitespace_or_iso_control(byte: u8) -> bool {
-        byte.is_ascii_whitespace() || byte.is_ascii_control()
     }
 
     /// Decodes a run of ASCII digits, or `None` if any byte is not a digit.
@@ -2200,6 +2215,123 @@ mod tests {
             }
             other => panic!("Expected InvalidInputInCastToDatetime error, got {other:?}"),
         }
+    }
+
+    /// One padding string used to check trim parity with Spark, and which of Spark's two trim
+    /// regimes strips it. See [`crate::conversion_funcs::trim`].
+    struct Pad {
+        text: String,
+        /// Removed by `UTF8String.trimAll`: the boolean, integral and datetime casts.
+        trim_all: bool,
+        /// Removed by `String.trim`: the float, double and decimal casts.
+        java_trim: bool,
+    }
+
+    /// The codepoint matrix from
+    /// <https://github.com/apache/datafusion-comet/issues/5149>: ASCII control bytes (which
+    /// both regimes strip), DELETE (which only `trimAll` strips), and every non-ASCII
+    /// whitespace codepoint (which neither regime strips, so Spark returns NULL / raises).
+    fn trim_pads() -> Vec<Pad> {
+        let mut pads = Vec::new();
+        // 0x00-0x20: stripped by both regimes.
+        for b in 0x00u8..=0x20 {
+            pads.push(Pad {
+                text: String::from(b as char),
+                trim_all: true,
+                java_trim: true,
+            });
+        }
+        // DELETE: `trimAll` only.
+        pads.push(Pad {
+            text: "\u{7f}".to_string(),
+            trim_all: true,
+            java_trim: false,
+        });
+        // Unicode whitespace outside ASCII: never stripped, by either regime.
+        for text in [
+            "\u{85}", "\u{a0}", "\u{1680}", "\u{2000}", "\u{2005}", "\u{200a}", "\u{2028}",
+            "\u{2029}", "\u{202f}", "\u{205f}", "\u{3000}",
+        ] {
+            pads.push(Pad {
+                text: text.to_string(),
+                trim_all: false,
+                java_trim: false,
+            });
+        }
+        pads
+    }
+
+    /// Asserts that padding `valid` with each entry of [`trim_pads`] produces the value in
+    /// every eval mode when Spark trims that padding, and NULL (or an ANSI error) when it does
+    /// not. Interior padding must never parse.
+    fn assert_trim_parity(to_type: &DataType, valid: &str, uses_trim_all: bool) {
+        for pad in trim_pads() {
+            let stripped = if uses_trim_all {
+                pad.trim_all
+            } else {
+                pad.java_trim
+            };
+            let split = valid.char_indices().nth(1).map(|(i, _)| i).unwrap();
+            let cases = [
+                ("leading", format!("{}{valid}", pad.text), stripped),
+                ("trailing", format!("{valid}{}", pad.text), stripped),
+                ("both", format!("{}{valid}{}", pad.text, pad.text), stripped),
+                (
+                    "interior",
+                    format!("{}{}{}", &valid[..split], pad.text, &valid[split..]),
+                    false,
+                ),
+            ];
+            for (position, input, expect_value) in cases {
+                for eval_mode in [EvalMode::Legacy, EvalMode::Try, EvalMode::Ansi] {
+                    let array: ArrayRef = Arc::new(StringArray::from(vec![Some(input.as_str())]));
+                    let options = SparkCastOptions::new(eval_mode, "UTC", false);
+                    let result = cast_array(array, to_type, &options);
+                    let context = format!(
+                        "cast {input:?} ({position} {:?}) to {to_type} in {eval_mode:?} mode",
+                        pad.text
+                    );
+                    if expect_value {
+                        let array = result.unwrap_or_else(|e| panic!("{context}: {e}"));
+                        assert!(!array.is_null(0), "{context}: expected a value, got NULL");
+                    } else if eval_mode == EvalMode::Ansi {
+                        assert!(result.is_err(), "{context}: expected an error");
+                    } else {
+                        let array = result.unwrap_or_else(|e| panic!("{context}: {e}"));
+                        assert!(array.is_null(0), "{context}: expected NULL");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_cast_string_to_boolean_trim_parity() {
+        assert_trim_parity(&DataType::Boolean, "true", true);
+    }
+
+    #[test]
+    fn test_cast_string_to_int_trim_parity() {
+        for to_type in [
+            DataType::Int8,
+            DataType::Int16,
+            DataType::Int32,
+            DataType::Int64,
+        ] {
+            assert_trim_parity(&to_type, "12", true);
+        }
+    }
+
+    #[test]
+    fn test_cast_string_to_float_trim_parity() {
+        for to_type in [DataType::Float32, DataType::Float64] {
+            assert_trim_parity(&to_type, "1.5", false);
+        }
+    }
+
+    #[test]
+    fn test_cast_string_to_decimal_trim_parity() {
+        assert_trim_parity(&DataType::Decimal128(10, 2), "1.5", false);
     }
 
     #[test]
