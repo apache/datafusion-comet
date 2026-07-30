@@ -548,9 +548,10 @@ impl ExecutionPlan for ParquetWriterExec {
                 })?;
             }
 
-            let file_size = writer.close().await.map_err(|e| {
-                DataFusionError::Execution(format!("Failed to close writer: {}", e))
-            })? as i64;
+            let file_size =
+                writer.close().await.map_err(|e| {
+                    DataFusionError::Execution(format!("Failed to close writer: {}", e))
+                })? as i64;
 
             // Update metrics with write statistics
             files_written.add(1);
