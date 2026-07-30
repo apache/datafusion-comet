@@ -41,14 +41,6 @@ object CometMakeDecimal extends CometExpressionSerde[MakeDecimal] {
 
   override def getUnsupportedReasons(): Seq[String] = Seq("Only `LongType` input is supported")
 
-  override def getCompatibleNotes(): Seq[String] = Seq(
-    "The native implementation silently returns `NULL` on overflow regardless of the" +
-      " `nullOnOverflow` flag, so under ANSI mode Comet returns `NULL` where Spark raises" +
-      " `NUMERIC_VALUE_OUT_OF_RANGE`. `MakeDecimal` is inserted by the `DecimalAggregates`" +
-      " optimizer rule, so this affects `sum`/`avg` over low-precision decimals when the" +
-      " unscaled long overflows the target precision" +
-      " ([#5066](https://github.com/apache/datafusion-comet/issues/5066)).")
-
   override def getSupportLevel(expr: MakeDecimal): SupportLevel = {
     expr.child.dataType match {
       case LongType => Compatible()
