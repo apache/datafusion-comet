@@ -100,6 +100,10 @@ impl ExpandExec {
             }
         }
 
+        // `col_{idx}` is the name the planner used before this logic moved here, kept so that only
+        // the nullability derivation changes. A projection is an arbitrary expression with no
+        // natural output name, and parent operators bind to these columns by index (a bound
+        // reference takes its name from the child schema), so the name is positional either way.
         let fields: Vec<Field> = data_types
             .into_iter()
             .enumerate()
