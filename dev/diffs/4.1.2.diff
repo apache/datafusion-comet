@@ -2736,10 +2736,10 @@ index 3e7d26f74bd..79232dc3664 100644
          assert(o1.semanticEquals(o2), "Different output column order after AQE optimization")
        }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/columnar/CachedBatchSerializerSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/columnar/CachedBatchSerializerSuite.scala
-index 47b935a2880..3e9b87f5c32 100644
+index 47b935a2880..3fdeab3113c 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/columnar/CachedBatchSerializerSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/columnar/CachedBatchSerializerSuite.scala
-@@ -230,9 +230,16 @@ class CachedBatchSerializerNoUnwrapSuite extends QueryTest
+@@ -230,9 +230,21 @@ class CachedBatchSerializerNoUnwrapSuite extends QueryTest
        assert(cachedPlans.length == 2)
        cachedPlans.foreach {
          cachedPlan =>
@@ -2750,11 +2750,16 @@ index 47b935a2880..3e9b87f5c32 100644
 +          // (CometNativeColumnarToRow / CometColumnarToRow). Accept either the
 +          // Spark shape or the equivalent Comet shape, since the important property
 +          // under this serializer is that the row conversion is not unwrapped.
-+          val isSparkShape =
-+            cachedPlan.isInstanceOf[WholeStageCodegenExec] &&
-+              cachedPlan.asInstanceOf[WholeStageCodegenExec]
-+                .child.isInstanceOf[ColumnarToRowExec]
-+          val isCometShape = cachedPlan.getClass.getName.startsWith("org.apache.spark.sql.comet.")
++          // CometColumnarToRowExec supports codegen, so it appears as the child of a
++          // WholeStageCodegenExec, while CometNativeColumnarToRowExec does not and is
++          // the cached plan itself.
++          val transition = cachedPlan match {
++            case w: WholeStageCodegenExec => w.child
++            case other => other
++          }
++          val isSparkShape = cachedPlan.isInstanceOf[WholeStageCodegenExec] &&
++            transition.isInstanceOf[ColumnarToRowExec]
++          val isCometShape = transition.getClass.getName.startsWith("org.apache.spark.sql.comet.")
 +          assert(isSparkShape || isCometShape, s"unexpected cached plan:\n$cachedPlan")
        }
      }
