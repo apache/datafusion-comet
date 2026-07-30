@@ -19,7 +19,10 @@
 
 package org.apache.comet.cloud.s3;
 
+import org.apache.comet.annotation.Public;
+
 /** Access intent passed to {@link CometS3CredentialProvider#getCredentialsForPath}. */
+@Public
 public enum CometS3AccessMode {
   /** GET / HEAD / LIST. All Comet native scan paths request this today. */
   READ,

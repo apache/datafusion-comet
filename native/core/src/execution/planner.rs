@@ -28,7 +28,7 @@ use crate::execution::{
     expressions::list_positions::ListPositionsExpr,
     expressions::subquery::Subquery,
     operators::{
-        ExecutionError, ExpandExec, ParquetCompression, ParquetWriterExec, ScanExec,
+        ExecutionError, ExpandExec, ParquetCompression, ParquetWriterExec, SampleExec, ScanExec,
         ShuffleScanExec,
     },
     planner::expression_registry::ExpressionRegistry,
@@ -227,6 +227,8 @@ fn strip_timestamp_tz(
 #[derive(Default)]
 pub struct BinaryExprOptions {
     pub is_integral_div: bool,
+    /// See `MathExpr.check_divide_overflow` in expr.proto
+    pub check_divide_overflow: bool,
 }
 
 pub const TEST_EXEC_CONTEXT_ID: i64 = -1;
@@ -949,11 +951,13 @@ impl PhysicalPlanner {
                 } else {
                     "decimal_div"
                 };
+                // check_divide_overflow rides in the generic fail_on_error slot; only
+                // decimal_integral_div consumes it
                 let fun_expr = create_comet_physical_fun_with_eval_mode(
                     func_name,
                     data_type.clone(),
                     &self.session_ctx.state(),
-                    None,
+                    Some(options.check_divide_overflow),
                     eval_mode,
                 )?;
                 Ok(Arc::new(ScalarFunctionExpr::new(
@@ -1373,6 +1377,24 @@ impl PhysicalPlanner {
                     scans,
                     shuffle_scans,
                     Arc::new(SparkPlan::new(spark_plan.plan_id, limit, vec![child])),
+                ))
+            }
+            OpStruct::Sample(sample) => {
+                assert_eq!(children.len(), 1);
+                let (scans, shuffle_scans, child) =
+                    self.create_plan(&children[0], inputs, partition_count)?;
+                // Spark seeds a fresh sampler per partition with `seed + partitionIndex`.
+                let seed = sample.seed.wrapping_add(self.partition().into());
+                let sample_exec: Arc<dyn ExecutionPlan> = Arc::new(SampleExec::new(
+                    Arc::clone(&child.native_plan),
+                    sample.lower_bound,
+                    sample.upper_bound,
+                    seed,
+                ));
+                Ok((
+                    scans,
+                    shuffle_scans,
+                    Arc::new(SparkPlan::new(spark_plan.plan_id, sample_exec, vec![child])),
                 ))
             }
             OpStruct::Sort(sort) => {
@@ -5345,6 +5367,7 @@ mod tests {
                     type_info: None,
                 }),
                 eval_mode: 0, // Legacy mode
+                check_divide_overflow: false,
             }))),
             expr_id: None,
             query_context: None,

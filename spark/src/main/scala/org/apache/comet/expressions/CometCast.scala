@@ -25,12 +25,17 @@ import org.apache.spark.sql.types.{ArrayType, DataType, DataTypes, DecimalType, 
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, withFallbackReason}
-import org.apache.comet.serde.{CometExpressionSerde, Compatible, ExprOuterClass, Incompatible, SupportLevel, Unsupported}
+import org.apache.comet.DataTypeSupport.isComplexType
+import org.apache.comet.serde.{CodegenDispatchFallback, CometExpressionSerde, Compatible, ExprOuterClass, Incompatible, SupportLevel, Unsupported}
 import org.apache.comet.serde.ExprOuterClass.Expr
 import org.apache.comet.serde.QueryPlanSerde.{evalModeToProto, exprToProtoInternal, serializeDataType}
-import org.apache.comet.shims.CometExprShim
+import org.apache.comet.shims.{CometExprShim, CometTypeShim}
 
-object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
+object CometCast
+    extends CometExpressionSerde[Cast]
+    with CometExprShim
+    with CometTypeShim
+    with CodegenDispatchFallback {
 
   // Shared with CometCastSuite so the asserted reason cannot drift from production.
   private[comet] val negativeScaleDecimalToStringReason: String =
@@ -38,9 +43,10 @@ object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
 
   // When `spark.sql.legacy.castComplexTypesToString.enabled` is true, Spark wraps maps and
   // structs with `[]` (instead of `{}`) when casting to string, and omits NULL elements of
-  // structs/maps/arrays (instead of rendering them as the literal "null"). Comet only
-  // implements the default formatting, so fall back to Spark for any array/map/struct to-string
-  // cast when the flag is enabled. The flag is internal in Spark 4.0 and defaults to false.
+  // structs/maps/arrays (instead of rendering them as the literal "null"). Comet's native
+  // cast only implements the default formatting, so with the flag enabled we route
+  // array/map/struct to-string casts through the JVM codegen dispatcher via
+  // `CodegenDispatchFallback`. The flag is internal in Spark 4.0 and defaults to false.
   private[comet] val legacyCastComplexTypesToStringReason: String =
     "spark.sql.legacy.castComplexTypesToString.enabled=true is not supported"
 
@@ -75,7 +81,12 @@ object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
     if (cast.child.isInstanceOf[Literal]) {
       // A cast whose child is a literal is folded by Spark at planning time via `cast.eval()`
       // (see `convert`), so the cast never executes natively and the result matches Spark by
-      // definition. `CometLiteral` then validates the resulting literal's data type.
+      // definition. `CometLiteral` then validates the resulting literal's data type, except
+      // for `VariantType` which must be rejected here: the fold produces a `Literal[VariantType]`
+      // that no downstream Comet serde can serialize.
+      if (isVariantType(cast.child.dataType) || isVariantType(cast.dataType)) {
+        return unsupported(cast.child.dataType, cast.dataType)
+      }
       Compatible()
     } else {
       isSupported(cast.child.dataType, cast.dataType, cast.timeZoneId, evalMode(cast))
@@ -159,13 +170,20 @@ object CometCast extends CometExpressionSerde[Cast] with CometExprShim {
       timeZoneId: Option[String],
       evalMode: CometEvalMode.Value): SupportLevel = {
 
+    // Spark 4's `VariantType` (SPARK-45827) has no native counterpart in Comet, and the codegen
+    // dispatcher also cannot serialize `VariantType` in the data args or return type. The
+    // version-shimmed `isVariantType` returns false on Spark 3.x. Reporting `Unsupported` lets the
+    // `CodegenDispatchFallback` mixin try the dispatcher and then fall back to Spark cleanly.
+    if (isVariantType(fromType) || isVariantType(toType)) {
+      return unsupported(fromType, toType)
+    }
+
     if (fromType == toType) {
       return Compatible()
     }
 
-    if (toType == DataTypes.StringType && legacyCastComplexTypesToString && (fromType
-        .isInstanceOf[ArrayType] || fromType.isInstanceOf[StructType] ||
-        fromType.isInstanceOf[MapType])) {
+    if (toType == DataTypes.StringType && isComplexType(fromType) &&
+      legacyCastComplexTypesToString) {
       return Unsupported(Some(legacyCastComplexTypesToStringReason))
     }
 

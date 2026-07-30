@@ -38,8 +38,8 @@ trait MathBase {
       binding: Boolean,
       dataType: DataType,
       evalMode: EvalMode.Value,
-      f: (ExprOuterClass.Expr.Builder, ExprOuterClass.MathExpr) => ExprOuterClass.Expr.Builder)
-      : Option[ExprOuterClass.Expr] = {
+      f: (ExprOuterClass.Expr.Builder, ExprOuterClass.MathExpr) => ExprOuterClass.Expr.Builder,
+      checkDivideOverflow: Boolean = false): Option[ExprOuterClass.Expr] = {
     val leftExpr = exprToProtoInternal(left, inputs, binding)
     val rightExpr = exprToProtoInternal(right, inputs, binding)
 
@@ -49,6 +49,7 @@ trait MathBase {
       builder.setLeft(leftExpr.get)
       builder.setRight(rightExpr.get)
       builder.setEvalMode(evalModeToProto(CometEvalModeUtil.fromSparkEvalMode(evalMode)))
+      builder.setCheckDivideOverflow(checkDivideOverflow)
       serializeDataType(dataType).foreach { t =>
         builder.setReturnType(t)
       }
@@ -291,6 +292,12 @@ object CometDivide extends CometExpressionSerde[Divide] with MathBase {
 
 object CometIntegralDivide extends CometExpressionSerde[IntegralDivide] with MathBase {
 
+  override def getCompatibleNotes(): Seq[String] = Seq(
+    "On `LongType` input, `Long.MinValue div -1` does not overflow-check: Comet's decimal-backed" +
+      " path returns the wrapped value `Long.MinValue` under legacy mode and silently returns" +
+      " the same wrapped value under ANSI, where Spark raises `ARITHMETIC_OVERFLOW`" +
+      " ([#5065](https://github.com/apache/datafusion-comet/issues/5065)).")
+
   override def getSupportLevel(expr: IntegralDivide): SupportLevel =
     mathDataTypeSupportLevel(expr.left.dataType)
 
@@ -326,7 +333,10 @@ object CometIntegralDivide extends CometExpressionSerde[IntegralDivide] with Mat
       binding,
       dataType,
       expr.evalMode,
-      (builder, mathExpr) => builder.setIntegralDivide(mathExpr))
+      (builder, mathExpr) => builder.setIntegralDivide(mathExpr),
+      // Spark only checks integral divide overflow (Long.MinValue div -1) for LONG
+      // operands; DECIMAL operands wrap around on the cast to LONG even in ANSI mode
+      checkDivideOverflow = expr.checkDivideOverflow)
 
     if (divideExpr.isDefined) {
       val childExpr = if (dataType.isInstanceOf[DecimalType]) {
@@ -374,6 +384,12 @@ object CometRemainder extends CometExpressionSerde[Remainder] with MathBase {
 }
 
 object CometRound extends CometExpressionSerde[Round] {
+
+  override def getCompatibleNotes(): Seq[String] = Seq(
+    "On `LongType` input with a negative `scale` of `-19` or lower, `10^(-scale)` overflows the" +
+      " native integer type and Comet returns `0` instead of Spark's overflowed value. Under" +
+      " ANSI mode Spark raises `ARITHMETIC_OVERFLOW` at the same input; Comet still returns `0`" +
+      " ([#5070](https://github.com/apache/datafusion-comet/issues/5070)).")
 
   override def getSupportLevel(expr: Round): SupportLevel = expr.child.dataType match {
     case t: DecimalType if t.scale < 0 => // Spark disallows negative scale SPARK-30252
