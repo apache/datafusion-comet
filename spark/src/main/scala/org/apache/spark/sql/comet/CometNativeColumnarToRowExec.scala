@@ -194,8 +194,12 @@ case class CometNativeColumnarToRowExec(child: SparkPlan)
     val batchSize = CometConf.COMET_BATCH_SIZE.get()
 
     child.executeColumnar().mapPartitionsInternal { batches =>
-      // Create native converter for this partition
-      val converter = new NativeColumnarToRowConverter(localSchema, batchSize)
+      // Create native converter for this partition. Rows are not copied: the returned UnsafeRow
+      // is reused and points at the native output buffer, which stays valid until the next batch
+      // is converted. This matches the contract of Spark's own ColumnarToRowExec, which reuses
+      // its UnsafeRow on every next() call. The broadcast path above retains rows across batches
+      // and therefore keeps copying (see #3308).
+      val converter = new NativeColumnarToRowConverter(localSchema, batchSize, copyRows = false)
 
       // Register cleanup on task completion
       TaskContext.get().addTaskCompletionListener[Unit] { _ =>

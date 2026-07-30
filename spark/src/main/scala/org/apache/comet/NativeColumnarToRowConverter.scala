@@ -19,10 +19,11 @@
 
 package org.apache.comet
 
+import org.apache.arrow.vector.{BaseFixedWidthVector, BaseVariableWidthVector}
 import org.apache.arrow.vector.types.pojo.Field
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.UnsafeRow
-import org.apache.spark.sql.types.StructType
+import org.apache.spark.sql.types._
 import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.unsafe.Platform
 
@@ -50,8 +51,15 @@ import org.apache.comet.vector.{CometVector, NativeUtil}
  *   The schema of the data to convert
  * @param batchSize
  *   Maximum number of rows per batch (used for buffer pre-allocation)
+ * @param copyRows
+ *   Whether each row is copied to the JVM heap before being returned. When false the returned
+ *   `UnsafeRow` is reused and points at the native output buffer, which stays valid until the
+ *   next `convert` call - the same contract as Spark's own `ColumnarToRowExec`, which reuses its
+ *   row on every `next()`. Callers that retain rows across batches (for example the broadcast
+ *   path, see #3308) must pass true.
  */
-class NativeColumnarToRowConverter(schema: StructType, batchSize: Int) extends AutoCloseable {
+class NativeColumnarToRowConverter(schema: StructType, batchSize: Int, copyRows: Boolean = true)
+    extends AutoCloseable {
 
   private val nativeLib = new Native()
   private val nativeUtil = new NativeUtil()
@@ -83,12 +91,20 @@ class NativeColumnarToRowConverter(schema: StructType, batchSize: Int) extends A
   // when a field changes (for example when a column becomes dictionary-encoded).
   private val cachedFields = new Array[Field](numCols)
 
+  // Scratch space in native memory that raw buffer addresses are written into, for batches that
+  // can skip Arrow FFI altogether.
+  private val rawAddrs: Long = nativeLib.columnarToRowRawAddrs(c2rHandle)
+
+  // Whether every column's type can be handed over by raw buffer address.
+  private val rawSupported: Boolean =
+    schema.fields.forall(f => NativeColumnarToRowConverter.supportsRawTransfer(f.dataType))
+
   // Reusable UnsafeRow for iteration
   private val unsafeRow = new UnsafeRow(schema.fields.length)
 
   // Reused across batches: rows from a previous batch are invalidated by the next convert() call
   // anyway, since the native output buffer is reused.
-  private val rowIterator = new NativeRowIterator(unsafeRow)
+  private val rowIterator = new NativeRowIterator(unsafeRow, copyRows)
 
   /**
    * Converts a ColumnarBatch to an iterator of InternalRows.
@@ -111,18 +127,80 @@ class NativeColumnarToRowConverter(schema: StructType, batchSize: Int) extends A
       return Iterator.empty
     }
 
-    // Export the batch into the reused Arrow FFI structs, exporting the C schema only when a
-    // column's Arrow Field has changed since the last export.
+    // Hand the batch to native code. Preferred route is raw buffer addresses, which skips Arrow
+    // FFI entirely; that needs the native side to already have the Arrow types from a previous
+    // schema export, so the first batch (and any batch whose fields changed) goes through FFI.
     val exportSchema = schemaChanged(batch)
-    val exportedNumRows =
-      nativeUtil.exportBatchToStructs(arrowArrays, arrowSchemas, batch, exportSchema)
+    val mode =
+      if (!exportSchema && rawSupported && writeRawAddrs(batch, numRows)) {
+        NativeColumnarToRowConverter.MODE_RAW
+      } else {
+        nativeUtil.exportBatchToStructs(arrowArrays, arrowSchemas, batch, exportSchema)
+        if (exportSchema) NativeColumnarToRowConverter.MODE_FFI_WITH_SCHEMA
+        else NativeColumnarToRowConverter.MODE_FFI
+      }
 
-    // Call native conversion. The returned address points at three longs: the row buffer, the
-    // row offsets and the row lengths.
-    val metaAddr = nativeLib.columnarToRowConvert(c2rHandle, exportedNumRows, exportSchema)
+    // The returned address points at three longs: the row buffer, the row offsets and the row
+    // lengths.
+    val metaAddr = nativeLib.columnarToRowConvert(c2rHandle, numRows, mode)
 
-    rowIterator.reset(metaAddr, exportedNumRows)
+    rowIterator.reset(metaAddr, numRows)
     rowIterator
+  }
+
+  /**
+   * Writes the raw Arrow buffer addresses of every column into the native scratch space.
+   *
+   * Returns false without completing if any column cannot be handed over this way (a
+   * dictionary-encoded column, a non-Arrow vector, an unsupported vector layout, or a row count
+   * that disagrees with the batch), in which case the caller falls back to Arrow FFI.
+   */
+  private def writeRawAddrs(batch: ColumnarBatch, numRows: Int): Boolean = {
+    var i = 0
+    while (i < numCols) {
+      batch.column(i) match {
+        case v: CometVector =>
+          val vector = v.getValueVector
+          if (vector.getField.getDictionary != null || vector.getValueCount != numRows) {
+            return false
+          }
+
+          val base = rawAddrs + i * NativeColumnarToRowConverter.RAW_SLOTS_PER_COLUMN * 8
+
+          // A zero validity address tells native code the column has no nulls.
+          if (vector.getNullCount == 0) {
+            Platform.putLong(null, base, 0L)
+            Platform.putLong(null, base + 8, 0L)
+          } else {
+            val validity = vector.getValidityBuffer
+            Platform.putLong(null, base, validity.memoryAddress())
+            Platform.putLong(null, base + 8, validity.capacity())
+          }
+
+          vector match {
+            case fixed: BaseFixedWidthVector =>
+              val data = fixed.getDataBuffer
+              Platform.putLong(null, base + 16, data.memoryAddress())
+              Platform.putLong(null, base + 24, data.capacity())
+              Platform.putLong(null, base + 32, 0L)
+              Platform.putLong(null, base + 40, 0L)
+            case varWidth: BaseVariableWidthVector =>
+              val offsets = varWidth.getOffsetBuffer
+              val data = varWidth.getDataBuffer
+              Platform.putLong(null, base + 16, offsets.memoryAddress())
+              Platform.putLong(null, base + 24, offsets.capacity())
+              Platform.putLong(null, base + 32, data.memoryAddress())
+              Platform.putLong(null, base + 40, data.capacity())
+            case _ =>
+              // For example large var-width vectors, which use 64-bit offsets.
+              return false
+          }
+        case _ =>
+          return false
+      }
+      i += 1
+    }
+    true
   }
 
   /**
@@ -170,13 +248,42 @@ class NativeColumnarToRowConverter(schema: StructType, batchSize: Int) extends A
   }
 }
 
+object NativeColumnarToRowConverter {
+
+  /** Batch handed over through Arrow FFI, with the C schema exported for this batch. */
+  private[comet] val MODE_FFI_WITH_SCHEMA = 0
+
+  /** Batch handed over through Arrow FFI, reusing the Arrow types cached natively. */
+  private[comet] val MODE_FFI = 1
+
+  /** Batch handed over as raw Arrow buffer addresses, skipping Arrow FFI. */
+  private[comet] val MODE_RAW = 2
+
+  /** Must match `RAW_SLOTS_PER_COLUMN` in `columnar_to_row.rs`. */
+  private[comet] val RAW_SLOTS_PER_COLUMN = 6
+
+  /**
+   * Whether a column of this type can be handed to native code as raw Arrow buffer addresses.
+   * Nested types keep going through Arrow FFI, which rebuilds their child arrays.
+   */
+  private[comet] def supportsRawTransfer(dataType: DataType): Boolean = dataType match {
+    case BooleanType | ByteType | ShortType | IntegerType | LongType => true
+    case FloatType | DoubleType => true
+    case DateType | TimestampType | TimestampNTZType => true
+    case _: DecimalType => true
+    case StringType | BinaryType => true
+    case _ => false
+  }
+}
+
 /**
  * Iterator that yields UnsafeRows backed by native memory.
  *
- * The UnsafeRow is reused across iterations - callers must copy the row if they need to retain it
- * beyond the current iteration.
+ * When `copyRows` is false the UnsafeRow is reused across iterations and points at the native
+ * output buffer - callers must copy the row if they need to retain it beyond the current batch.
  */
-private class NativeRowIterator(unsafeRow: UnsafeRow) extends Iterator[InternalRow] {
+private class NativeRowIterator(unsafeRow: UnsafeRow, copyRows: Boolean)
+    extends Iterator[InternalRow] {
 
   private var bufferAddr: Long = 0
   private var offsetsAddr: Long = 0
@@ -207,6 +314,6 @@ private class NativeRowIterator(unsafeRow: UnsafeRow) extends Iterator[InternalR
     unsafeRow.pointTo(null, bufferAddr + rowOffset, rowSize)
     currentIdx += 1
 
-    unsafeRow.copy()
+    if (copyRows) unsafeRow.copy() else unsafeRow
   }
 }

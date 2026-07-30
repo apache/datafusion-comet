@@ -236,21 +236,31 @@ class Native extends NativeBase {
       schemaAddrs: Array[Long]): Long
 
   /**
-   * Convert Arrow columnar data to Spark UnsafeRow format. The batch is read from the Arrow FFI
-   * structs whose addresses were passed to columnarToRowInit.
+   * Returns the address of the scratch space that the JVM fills in with raw buffer addresses when
+   * handing a batch to columnarToRowConvert without Arrow FFI. The address is stable for the
+   * lifetime of the converter.
+   *
+   * @param c2rHandle
+   *   The handle returned by columnarToRowInit.
+   */
+  @native def columnarToRowRawAddrs(c2rHandle: Long): Long
+
+  /**
+   * Convert Arrow columnar data to Spark UnsafeRow format.
    *
    * @param c2rHandle
    *   The handle returned by columnarToRowInit.
    * @param numRows
    *   The number of rows to convert.
-   * @param hasSchema
-   *   Whether the Arrow Schema structs were exported for this batch. When false, the native side
-   *   reuses the Arrow types cached from the last exported schema.
+   * @param mode
+   *   How the batch is handed over: 0 for Arrow FFI with the C schema exported for this batch, 1
+   *   for Arrow FFI reusing the cached Arrow types, 2 for raw buffer addresses written into the
+   *   scratch space.
    * @return
    *   The address of three consecutive longs: the row buffer address, the row offsets address,
    *   and the row lengths address.
    */
-  @native def columnarToRowConvert(c2rHandle: Long, numRows: Int, hasSchema: Boolean): Long
+  @native def columnarToRowConvert(c2rHandle: Long, numRows: Int, mode: Int): Long
 
   /**
    * Close and release the native columnar to row converter.

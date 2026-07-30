@@ -41,10 +41,20 @@ use arrow::array::types::{
     UInt64Type, UInt8Type,
 };
 use arrow::array::*;
+use arrow::buffer::{BooleanBuffer, Buffer, NullBuffer};
 use arrow::compute::{cast_with_options, CastOptions};
 use arrow::datatypes::{ArrowNativeType, DataType, TimeUnit};
 use arrow::ffi::{from_ffi, from_ffi_and_data_type, FFI_ArrowArray, FFI_ArrowSchema};
+use std::ptr::NonNull;
 use std::sync::Arc;
+
+/// Number of `i64` slots that the JVM fills in per column when handing a batch over by raw
+/// buffer address instead of through the Arrow C data interface. The layout per column is
+/// `[validity addr, validity len, buffer1 addr, buffer1 len, buffer2 addr, buffer2 len]`, where
+/// `buffer1` is the values buffer for fixed-width columns and the offsets buffer for byte arrays,
+/// `buffer2` is the payload buffer of a byte-array column, and a zero validity address means the
+/// column has no nulls.
+pub const RAW_SLOTS_PER_COLUMN: usize = 6;
 
 /// Maximum digits for decimal that can fit in a long (8 bytes).
 const MAX_LONG_DIGITS: u8 = 18;
@@ -100,12 +110,12 @@ macro_rules! typed_elements_from_primitive {
 
 /// Macro for write_column_fixed_width arms - handles downcast + loop pattern.
 macro_rules! write_fixed_column_primitive {
-    ($self:expr, $array:expr, $row_size:expr, $field_offset:expr, $num_rows:expr,
+    ($self:expr, $array:expr, $row_starts:expr, $field_offset:expr, $num_rows:expr,
      $arr_type:ty, $to_i64:expr) => {{
         let arr = downcast_array!($array, $arr_type)?;
         for row_idx in 0..$num_rows {
             if !arr.is_null(row_idx) {
-                let offset = row_idx * $row_size + $field_offset;
+                let offset = $row_starts[row_idx] as usize + $field_offset;
                 let value: i64 = $to_i64(arr.value(row_idx));
                 $self.buffer[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
             }
@@ -861,6 +871,222 @@ fn is_all_fixed_width(schema: &[DataType]) -> bool {
     schema.iter().all(is_fixed_width)
 }
 
+/// Check whether a type is a byte array (string or binary) written as a single memcpy into the
+/// variable-length region of a row.
+#[inline]
+fn is_byte_array(data_type: &DataType) -> bool {
+    matches!(
+        data_type,
+        DataType::Utf8
+            | DataType::LargeUtf8
+            | DataType::Binary
+            | DataType::LargeBinary
+            | DataType::FixedSizeBinary(_)
+    )
+}
+
+/// Check whether every column can be written by the column-at-a-time path, which supports
+/// fixed-width columns and byte-array columns. Nested types, dictionaries and large decimals
+/// still go through the row-at-a-time path.
+fn supports_columnar_path(schema: &[DataType]) -> bool {
+    schema
+        .iter()
+        .all(|dt| is_fixed_width(dt) || is_byte_array(dt))
+}
+
+/// Wraps foreign memory owned by the JVM as an Arrow buffer. The buffer must outlive the
+/// conversion, which holds because the batch is alive for the duration of the JNI call and every
+/// row is written into the output buffer before returning.
+///
+/// # Safety
+/// `addr` must point to at least `len` readable bytes.
+unsafe fn buffer_from_raw(addr: i64, len: usize) -> CometResult<Buffer> {
+    let ptr = NonNull::new(addr as *mut u8)
+        .ok_or_else(|| CometError::Internal("Null buffer address in raw batch".to_string()))?;
+    Ok(Buffer::from_custom_allocation(ptr, len, Arc::new(())))
+}
+
+/// Rebuilds one column from the raw buffer addresses written by the JVM.
+///
+/// # Safety
+/// The slots must describe buffers valid for `num_rows` values of `data_type`.
+unsafe fn array_from_raw(
+    data_type: &DataType,
+    slots: &[i64],
+    num_rows: usize,
+) -> CometResult<ArrayRef> {
+    let nulls = if slots[0] != 0 {
+        let validity = buffer_from_raw(slots[0], slots[1] as usize)?;
+        Some(NullBuffer::new(BooleanBuffer::new(validity, 0, num_rows)))
+    } else {
+        None
+    };
+
+    let mut builder = ArrayData::builder(data_type.clone())
+        .len(num_rows)
+        .nulls(nulls);
+
+    match data_type {
+        DataType::Boolean
+        | DataType::Int8
+        | DataType::Int16
+        | DataType::Int32
+        | DataType::Int64
+        | DataType::Float32
+        | DataType::Float64
+        | DataType::Date32
+        | DataType::Timestamp(TimeUnit::Microsecond, _)
+        | DataType::Time64(TimeUnit::Nanosecond)
+        | DataType::Decimal128(_, _)
+        | DataType::FixedSizeBinary(_) => {
+            builder = builder.add_buffer(buffer_from_raw(slots[2], slots[3] as usize)?);
+        }
+        DataType::Utf8 | DataType::Binary => {
+            builder = builder
+                .add_buffer(buffer_from_raw(slots[2], slots[3] as usize)?)
+                .add_buffer(buffer_from_raw(slots[4], slots[5] as usize)?);
+        }
+        other => {
+            return Err(CometError::Internal(format!(
+                "Type not supported by the raw batch path: {:?}",
+                other
+            )))
+        }
+    }
+
+    Ok(make_array(builder.build_unchecked()))
+}
+
+/// Byte-array column accessor used by [`write_byte_column`], so that the writer is monomorphized
+/// per array type and does no dispatch per value.
+trait ByteValues {
+    fn is_null_at(&self, idx: usize) -> bool;
+    fn value_bytes(&self, idx: usize) -> &[u8];
+}
+
+impl<O: OffsetSizeTrait> ByteValues for &GenericStringArray<O> {
+    #[inline]
+    fn is_null_at(&self, idx: usize) -> bool {
+        self.is_null(idx)
+    }
+    #[inline]
+    fn value_bytes(&self, idx: usize) -> &[u8] {
+        self.value(idx).as_bytes()
+    }
+}
+
+impl<O: OffsetSizeTrait> ByteValues for &GenericBinaryArray<O> {
+    #[inline]
+    fn is_null_at(&self, idx: usize) -> bool {
+        self.is_null(idx)
+    }
+    #[inline]
+    fn value_bytes(&self, idx: usize) -> &[u8] {
+        self.value(idx)
+    }
+}
+
+impl ByteValues for &FixedSizeBinaryArray {
+    #[inline]
+    fn is_null_at(&self, idx: usize) -> bool {
+        self.is_null(idx)
+    }
+    #[inline]
+    fn value_bytes(&self, idx: usize) -> &[u8] {
+        self.value(idx)
+    }
+}
+
+/// Writes one byte-array column for every row: the payload into the row's variable-length region
+/// at the row's current cursor, and `(offset << 32) | length` into the row's field slot.
+fn write_byte_column<A: ByteValues>(
+    array: A,
+    buffer: &mut [u8],
+    var_cursor: &mut [i32],
+    row_starts: &[i32],
+    field_offset_in_row: usize,
+    num_rows: usize,
+) {
+    for row_idx in 0..num_rows {
+        if array.is_null_at(row_idx) {
+            continue;
+        }
+
+        let bytes = array.value_bytes(row_idx);
+        let len = bytes.len();
+        let row_start = row_starts[row_idx] as usize;
+        let rel_offset = var_cursor[row_idx] as usize;
+
+        let dst = row_start + rel_offset;
+        buffer[dst..dst + len].copy_from_slice(bytes);
+
+        let slot = row_start + field_offset_in_row;
+        let offset_and_len = ((rel_offset as i64) << 32) | (len as i64);
+        buffer[slot..slot + 8].copy_from_slice(&offset_and_len.to_le_bytes());
+
+        var_cursor[row_idx] = (rel_offset + round_up_to_8(len)) as i32;
+    }
+}
+
+/// Adds the padded payload size of a byte-array column to each row's length.
+fn add_byte_array_lengths(
+    array: &ArrayRef,
+    num_rows: usize,
+    lengths: &mut [i32],
+) -> CometResult<()> {
+    fn add_from_offsets<O: OffsetSizeTrait>(
+        offsets: &[O],
+        nulls: Option<&NullBuffer>,
+        num_rows: usize,
+        lengths: &mut [i32],
+    ) {
+        for row_idx in 0..num_rows {
+            if nulls.is_some_and(|n| n.is_null(row_idx)) {
+                continue;
+            }
+            let len = offsets[row_idx + 1].as_usize() - offsets[row_idx].as_usize();
+            lengths[row_idx] += round_up_to_8(len) as i32;
+        }
+    }
+
+    match array.data_type() {
+        DataType::Utf8 => {
+            let arr = downcast_array!(array, StringArray)?;
+            add_from_offsets(arr.value_offsets(), arr.nulls(), num_rows, lengths);
+        }
+        DataType::LargeUtf8 => {
+            let arr = downcast_array!(array, LargeStringArray)?;
+            add_from_offsets(arr.value_offsets(), arr.nulls(), num_rows, lengths);
+        }
+        DataType::Binary => {
+            let arr = downcast_array!(array, BinaryArray)?;
+            add_from_offsets(arr.value_offsets(), arr.nulls(), num_rows, lengths);
+        }
+        DataType::LargeBinary => {
+            let arr = downcast_array!(array, LargeBinaryArray)?;
+            add_from_offsets(arr.value_offsets(), arr.nulls(), num_rows, lengths);
+        }
+        DataType::FixedSizeBinary(width) => {
+            let padded = round_up_to_8(*width as usize) as i32;
+            let nulls = array.nulls();
+            for row_idx in 0..num_rows {
+                if nulls.is_some_and(|n| n.is_null(row_idx)) {
+                    continue;
+                }
+                lengths[row_idx] += padded;
+            }
+        }
+        other => {
+            return Err(CometError::Internal(format!(
+                "Unexpected non byte-array type in columnar path: {:?}",
+                other
+            )))
+        }
+    }
+
+    Ok(())
+}
+
 /// Context for columnar to row conversion.
 ///
 /// This struct maintains the output buffer and schema information needed for
@@ -884,6 +1110,11 @@ pub struct ColumnarToRowContext {
     _batch_size: usize,
     /// Whether all columns are fixed-width (enables fast path).
     all_fixed_width: bool,
+    /// Whether every column can be written column-at-a-time (fixed-width and byte-array columns).
+    columnar_path: bool,
+    /// Scratch space holding, for each row, the offset of the next variable-length payload within
+    /// that row. Used by the column-at-a-time path.
+    var_cursor: Vec<i32>,
     /// Addresses of the Arrow FFI array structs, exported once by the JVM and reused for
     /// every batch.
     array_addrs: Vec<i64>,
@@ -898,6 +1129,9 @@ pub struct ColumnarToRowContext {
     needs_cast: bool,
     /// Scratch space for the imported arrays, reused across batches.
     input_arrays: Vec<ArrayRef>,
+    /// Raw buffer addresses written by the JVM for batches handed over without Arrow FFI.
+    /// See [`RAW_SLOTS_PER_COLUMN`] for the layout.
+    raw_addrs: Vec<i64>,
     /// `[buffer address, offsets address, lengths address]`, read by the JVM after each
     /// conversion. Avoids allocating any JVM object per batch.
     out_meta: [i64; 3],
@@ -915,6 +1149,7 @@ impl ColumnarToRowContext {
         let null_bitset_width = Self::calculate_bitset_width(num_fields);
         let fixed_width_size = null_bitset_width + num_fields * 8;
         let all_fixed_width = is_all_fixed_width(&schema);
+        let columnar_path = !all_fixed_width && supports_columnar_path(&schema);
 
         // Pre-allocate buffer for maximum batch size
         // For fixed-width schemas, we know exact size; otherwise estimate
@@ -934,6 +1169,8 @@ impl ColumnarToRowContext {
             fixed_width_size,
             _batch_size: batch_size,
             all_fixed_width,
+            columnar_path,
+            var_cursor: Vec::with_capacity(batch_size),
             array_addrs: vec![],
             schema_addrs: vec![],
             imported_types: vec![],
@@ -941,6 +1178,7 @@ impl ColumnarToRowContext {
             // schema, so default to casting. The FFI path recomputes this per exported schema.
             needs_cast: true,
             input_arrays: Vec::with_capacity(num_fields),
+            raw_addrs: vec![0; num_fields * RAW_SLOTS_PER_COLUMN],
             out_meta: [0; 3],
         }
     }
@@ -949,6 +1187,51 @@ impl ColumnarToRowContext {
     pub fn set_ffi_addrs(&mut self, array_addrs: Vec<i64>, schema_addrs: Vec<i64>) {
         self.array_addrs = array_addrs;
         self.schema_addrs = schema_addrs;
+    }
+
+    /// Address of the scratch space the JVM writes raw buffer addresses into. Stable for the
+    /// lifetime of the context, so the JVM reads it once.
+    pub fn raw_addrs_ptr(&mut self) -> *mut i64 {
+        self.raw_addrs.as_mut_ptr()
+    }
+
+    /// Converts a batch handed over as raw buffer addresses, bypassing the Arrow C data interface
+    /// entirely. The Arrow types cached from the last exported C schema are reused, so at least
+    /// one batch must have been converted through [`Self::convert_imported`] first.
+    ///
+    /// Returns a pointer to `[buffer address, offsets address, lengths address]`.
+    ///
+    /// # Safety
+    /// The raw address scratch space must describe buffers of the cached types that stay valid
+    /// for the duration of this call.
+    pub unsafe fn convert_raw(&mut self, num_rows: usize) -> CometResult<*const i64> {
+        let num_cols = self.schema.len();
+        if self.imported_types.len() != num_cols {
+            return Err(CometError::Internal(
+                "raw batch conversion requires a previously exported schema".to_string(),
+            ));
+        }
+
+        let mut arrays = std::mem::take(&mut self.input_arrays);
+        arrays.clear();
+
+        for col_idx in 0..num_cols {
+            let slots = &self.raw_addrs
+                [col_idx * RAW_SLOTS_PER_COLUMN..(col_idx + 1) * RAW_SLOTS_PER_COLUMN];
+            match array_from_raw(&self.imported_types[col_idx], slots, num_rows) {
+                Ok(array) => arrays.push(array),
+                Err(e) => {
+                    self.input_arrays = arrays;
+                    return Err(e);
+                }
+            }
+        }
+
+        let result = self.convert(&arrays, num_rows).map(|_| ());
+        self.input_arrays = arrays;
+        result?;
+
+        Ok(self.out_meta.as_ptr())
     }
 
     /// Imports the batch from the Arrow FFI structs registered by [`Self::set_ffi_addrs`] and
@@ -1081,6 +1364,18 @@ impl ColumnarToRowContext {
         // Use fast path for fixed-width-only schemas
         if self.all_fixed_width {
             return self.convert_fixed_width(arrays, num_rows);
+        }
+
+        // Column-at-a-time path for schemas of fixed-width and byte-array columns. The types of
+        // the arrays are checked as well as the schema's, since a cast can widen a column into a
+        // type the columnar path does not handle.
+        if self.columnar_path
+            && arrays.iter().all(|a| {
+                let dt = a.data_type();
+                is_fixed_width(dt) || is_byte_array(dt)
+            })
+        {
+            return self.convert_columnar(arrays, num_rows);
         }
 
         // Pre-downcast all arrays to avoid type dispatch in inner loop
@@ -1221,7 +1516,6 @@ impl ColumnarToRowContext {
     ) -> CometResult<(*const u8, &[i32], &[i32])> {
         let row_size = self.fixed_width_size;
         let total_size = row_size * num_rows;
-        let null_bitset_width = self.null_bitset_width;
 
         // Pre-allocate entire buffer at once (all zeros)
         self.buffer.resize(total_size, 0);
@@ -1233,22 +1527,179 @@ impl ColumnarToRowContext {
             self.lengths.push(row_size_i32);
         }
 
-        // Process column by column for better cache locality
-        for (col_idx, array) in arrays.iter().enumerate() {
-            let field_offset_in_row = null_bitset_width + col_idx * 8;
-
-            // Write values for all rows in this column
-            self.write_column_fixed_width(
-                array,
-                &self.schema[col_idx].clone(),
-                col_idx,
-                field_offset_in_row,
-                row_size,
-                num_rows,
-            )?;
-        }
+        self.write_columns(arrays, num_rows)?;
 
         Ok(self.finish())
+    }
+
+    /// Fast path for schemas made up of fixed-width columns and byte-array columns (string,
+    /// binary). Sizes every row up front from the Arrow offset buffers, allocates the output
+    /// buffer once, then writes column-at-a-time like [`Self::convert_fixed_width`], instead of
+    /// growing the buffer and dispatching per column for every row.
+    fn convert_columnar(
+        &mut self,
+        arrays: &[ArrayRef],
+        num_rows: usize,
+    ) -> CometResult<(*const u8, &[i32], &[i32])> {
+        let fixed_width_size = self.fixed_width_size;
+
+        // Pass 1: row lengths. Start from the fixed-width portion and add the padded payload
+        // size of each byte-array column, which comes straight from its Arrow offset buffer.
+        self.lengths.resize(num_rows, fixed_width_size as i32);
+        for array in arrays.iter() {
+            if is_byte_array(array.data_type()) {
+                add_byte_array_lengths(array, num_rows, &mut self.lengths)?;
+            }
+        }
+
+        // Pass 2: prefix sum into row offsets, then a single zeroing allocation. Zeroing the
+        // whole buffer covers the null bitsets and the alignment padding of every row.
+        let mut total_size = 0usize;
+        for row_idx in 0..num_rows {
+            self.offsets.push(total_size as i32);
+            total_size += self.lengths[row_idx] as usize;
+        }
+        self.buffer.resize(total_size, 0);
+
+        // Pass 3: write column-at-a-time. `var_cursor` tracks where the next payload goes within
+        // each row, since byte-array columns fill the variable-length region in column order.
+        self.var_cursor.clear();
+        self.var_cursor.resize(num_rows, fixed_width_size as i32);
+        self.write_columns(arrays, num_rows)?;
+
+        Ok(self.finish())
+    }
+
+    /// Writes every column of the batch into the pre-sized output buffer, one column at a time.
+    fn write_columns(&mut self, arrays: &[ArrayRef], num_rows: usize) -> CometResult<()> {
+        let null_bitset_width = self.null_bitset_width;
+
+        // Row starts are already computed, but they live in `self.offsets`, so move them out for
+        // the duration of the writes to keep the borrow checker happy.
+        let row_starts = std::mem::take(&mut self.offsets);
+
+        let result = (|| {
+            for (col_idx, array) in arrays.iter().enumerate() {
+                let field_offset_in_row = null_bitset_width + col_idx * 8;
+                let data_type = self.schema[col_idx].clone();
+
+                if array.null_count() > 0 {
+                    self.write_column_null_bits(array, col_idx, &row_starts, num_rows);
+                }
+
+                if is_byte_array(&data_type) {
+                    self.write_column_byte_array(
+                        array,
+                        &row_starts,
+                        field_offset_in_row,
+                        num_rows,
+                    )?;
+                } else {
+                    self.write_column_fixed_width(
+                        array,
+                        &data_type,
+                        &row_starts,
+                        field_offset_in_row,
+                        num_rows,
+                    )?;
+                }
+            }
+            Ok(())
+        })();
+
+        self.offsets = row_starts;
+        result
+    }
+
+    /// Sets the null bit of one column for every null row.
+    fn write_column_null_bits(
+        &mut self,
+        array: &ArrayRef,
+        col_idx: usize,
+        row_starts: &[i32],
+        num_rows: usize,
+    ) {
+        let word_idx = col_idx / 64;
+        let bit_idx = col_idx % 64;
+        let bit_mask = 1i64 << bit_idx;
+
+        for row_idx in 0..num_rows {
+            if array.is_null(row_idx) {
+                let word_offset = row_starts[row_idx] as usize + word_idx * 8;
+                let mut word = i64::from_le_bytes(
+                    self.buffer[word_offset..word_offset + 8]
+                        .try_into()
+                        .unwrap(),
+                );
+                word |= bit_mask;
+                self.buffer[word_offset..word_offset + 8].copy_from_slice(&word.to_le_bytes());
+            }
+        }
+    }
+
+    /// Writes a byte-array (string or binary) column into the variable-length region of every
+    /// row, together with the `(offset << 32) | length` field slot.
+    fn write_column_byte_array(
+        &mut self,
+        array: &ArrayRef,
+        row_starts: &[i32],
+        field_offset_in_row: usize,
+        num_rows: usize,
+    ) -> CometResult<()> {
+        // Disjoint field borrows so that the writer can take the buffer and the cursor at once.
+        let buffer = &mut self.buffer;
+        let var_cursor = &mut self.var_cursor;
+
+        match array.data_type() {
+            DataType::Utf8 => write_byte_column(
+                downcast_array!(array, StringArray)?,
+                buffer,
+                var_cursor,
+                row_starts,
+                field_offset_in_row,
+                num_rows,
+            ),
+            DataType::LargeUtf8 => write_byte_column(
+                downcast_array!(array, LargeStringArray)?,
+                buffer,
+                var_cursor,
+                row_starts,
+                field_offset_in_row,
+                num_rows,
+            ),
+            DataType::Binary => write_byte_column(
+                downcast_array!(array, BinaryArray)?,
+                buffer,
+                var_cursor,
+                row_starts,
+                field_offset_in_row,
+                num_rows,
+            ),
+            DataType::LargeBinary => write_byte_column(
+                downcast_array!(array, LargeBinaryArray)?,
+                buffer,
+                var_cursor,
+                row_starts,
+                field_offset_in_row,
+                num_rows,
+            ),
+            DataType::FixedSizeBinary(_) => write_byte_column(
+                downcast_array!(array, FixedSizeBinaryArray)?,
+                buffer,
+                var_cursor,
+                row_starts,
+                field_offset_in_row,
+                num_rows,
+            ),
+            other => {
+                return Err(CometError::Internal(format!(
+                    "Unexpected non byte-array type in columnar path: {:?}",
+                    other
+                )))
+            }
+        }
+
+        Ok(())
     }
 
     /// Write a fixed-width column's values for all rows.
@@ -1257,32 +1708,10 @@ impl ColumnarToRowContext {
         &mut self,
         array: &ArrayRef,
         data_type: &DataType,
-        col_idx: usize,
+        row_starts: &[i32],
         field_offset_in_row: usize,
-        row_size: usize,
         num_rows: usize,
     ) -> CometResult<()> {
-        // Handle nulls first - set null bits
-        if array.null_count() > 0 {
-            let word_idx = col_idx / 64;
-            let bit_idx = col_idx % 64;
-            let bit_mask = 1i64 << bit_idx;
-
-            for row_idx in 0..num_rows {
-                if array.is_null(row_idx) {
-                    let row_start = row_idx * row_size;
-                    let word_offset = row_start + word_idx * 8;
-                    let mut word = i64::from_le_bytes(
-                        self.buffer[word_offset..word_offset + 8]
-                            .try_into()
-                            .unwrap(),
-                    );
-                    word |= bit_mask;
-                    self.buffer[word_offset..word_offset + 8].copy_from_slice(&word.to_le_bytes());
-                }
-            }
-        }
-
         // Write non-null values using type-specific fast paths
         match data_type {
             DataType::Boolean => {
@@ -1290,7 +1719,7 @@ impl ColumnarToRowContext {
                 let arr = downcast_array!(array, BooleanArray)?;
                 for row_idx in 0..num_rows {
                     if !arr.is_null(row_idx) {
-                        let offset = row_idx * row_size + field_offset_in_row;
+                        let offset = row_starts[row_idx] as usize + field_offset_in_row;
                         self.buffer[offset] = if arr.value(row_idx) { 1 } else { 0 };
                     }
                 }
@@ -1299,7 +1728,7 @@ impl ColumnarToRowContext {
             DataType::Int8 => write_fixed_column_primitive!(
                 self,
                 array,
-                row_size,
+                row_starts,
                 field_offset_in_row,
                 num_rows,
                 Int8Array,
@@ -1308,7 +1737,7 @@ impl ColumnarToRowContext {
             DataType::Int16 => write_fixed_column_primitive!(
                 self,
                 array,
-                row_size,
+                row_starts,
                 field_offset_in_row,
                 num_rows,
                 Int16Array,
@@ -1317,7 +1746,7 @@ impl ColumnarToRowContext {
             DataType::Int32 => write_fixed_column_primitive!(
                 self,
                 array,
-                row_size,
+                row_starts,
                 field_offset_in_row,
                 num_rows,
                 Int32Array,
@@ -1326,7 +1755,7 @@ impl ColumnarToRowContext {
             DataType::Int64 => write_fixed_column_primitive!(
                 self,
                 array,
-                row_size,
+                row_starts,
                 field_offset_in_row,
                 num_rows,
                 Int64Array,
@@ -1335,7 +1764,7 @@ impl ColumnarToRowContext {
             DataType::Float32 => write_fixed_column_primitive!(
                 self,
                 array,
-                row_size,
+                row_starts,
                 field_offset_in_row,
                 num_rows,
                 Float32Array,
@@ -1344,7 +1773,7 @@ impl ColumnarToRowContext {
             DataType::Float64 => write_fixed_column_primitive!(
                 self,
                 array,
-                row_size,
+                row_starts,
                 field_offset_in_row,
                 num_rows,
                 Float64Array,
@@ -1353,7 +1782,7 @@ impl ColumnarToRowContext {
             DataType::Date32 => write_fixed_column_primitive!(
                 self,
                 array,
-                row_size,
+                row_starts,
                 field_offset_in_row,
                 num_rows,
                 Date32Array,
@@ -1362,7 +1791,7 @@ impl ColumnarToRowContext {
             DataType::Timestamp(TimeUnit::Microsecond, _) => write_fixed_column_primitive!(
                 self,
                 array,
-                row_size,
+                row_starts,
                 field_offset_in_row,
                 num_rows,
                 TimestampMicrosecondArray,
@@ -1371,7 +1800,7 @@ impl ColumnarToRowContext {
             DataType::Time64(TimeUnit::Nanosecond) => write_fixed_column_primitive!(
                 self,
                 array,
-                row_size,
+                row_starts,
                 field_offset_in_row,
                 num_rows,
                 Time64NanosecondArray,
@@ -1381,7 +1810,7 @@ impl ColumnarToRowContext {
                 write_fixed_column_primitive!(
                     self,
                     array,
-                    row_size,
+                    row_starts,
                     field_offset_in_row,
                     num_rows,
                     Decimal128Array,
@@ -2167,6 +2596,78 @@ mod tests {
             !ctx.all_fixed_width,
             "Schema with Utf8 should not be all fixed-width"
         );
+        // Fixed-width plus byte-array columns are written column-at-a-time
+        assert!(ctx.columnar_path, "Int32 + Utf8 should use columnar path");
+    }
+
+    #[test]
+    fn test_nested_schema_uses_row_path() {
+        let schema = vec![
+            DataType::Int32,
+            DataType::List(Arc::new(arrow::datatypes::Field::new(
+                "item",
+                DataType::Int32,
+                true,
+            ))),
+        ];
+        let ctx = ColumnarToRowContext::new(schema, 100);
+        assert!(
+            !ctx.columnar_path,
+            "Nested types must fall back to the row-at-a-time path"
+        );
+    }
+
+    #[test]
+    fn test_columnar_path_with_nulls() {
+        // Int32 + Utf8 goes through the column-at-a-time path; check null bits, row lengths and
+        // payloads, including a null string (which contributes no payload bytes).
+        let schema = vec![DataType::Int32, DataType::Utf8];
+        let mut ctx = ColumnarToRowContext::new(schema, 100);
+
+        let ints: ArrayRef = Arc::new(Int32Array::from(vec![Some(1), None, Some(3)]));
+        let strings: ArrayRef = Arc::new(StringArray::from(vec![Some("a"), Some("bb"), None]));
+        let arrays = vec![ints, strings];
+
+        let (ptr, offsets, lengths) = ctx.convert(&arrays, 3).unwrap();
+
+        // 8 bytes of null bitset + 2 fields * 8 bytes
+        let fixed = 24;
+        assert_eq!(lengths, &[fixed + 8, fixed + 8, fixed]);
+        assert_eq!(offsets, &[0, fixed + 8, 2 * (fixed + 8)]);
+
+        let total = (lengths.iter().sum::<i32>()) as usize;
+        let buffer = unsafe { std::slice::from_raw_parts(ptr, total) };
+
+        let row = |idx: usize| {
+            let start = offsets[idx] as usize;
+            &buffer[start..start + lengths[idx] as usize]
+        };
+        let null_word = |r: &[u8]| i64::from_le_bytes(r[0..8].try_into().unwrap());
+        let field = |r: &[u8], i: usize| {
+            i64::from_le_bytes(r[8 + i * 8..16 + i * 8].try_into().unwrap())
+        };
+
+        // Row 0: both fields set
+        let r0 = row(0);
+        assert_eq!(null_word(r0), 0);
+        assert_eq!(field(r0, 0), 1);
+        assert_eq!(field(r0, 1), (24i64 << 32) | 1);
+        assert_eq!(&r0[24..25], b"a");
+        // Padding after the payload must be zeroed
+        assert_eq!(&r0[25..32], &[0u8; 7]);
+
+        // Row 1: null int, string "bb"
+        let r1 = row(1);
+        assert_eq!(null_word(r1), 1); // bit 0 = column 0
+        assert_eq!(field(r1, 0), 0);
+        assert_eq!(field(r1, 1), (24i64 << 32) | 2);
+        assert_eq!(&r1[24..26], b"bb");
+
+        // Row 2: int 3, null string
+        let r2 = row(2);
+        assert_eq!(null_word(r2), 2); // bit 1 = column 1
+        assert_eq!(field(r2, 0), 3);
+        assert_eq!(field(r2, 1), 0);
     }
 
     #[test]

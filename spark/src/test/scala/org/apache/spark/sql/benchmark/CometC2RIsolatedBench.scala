@@ -88,6 +88,38 @@ object CometC2RIsolatedBench {
       if (sink == Long.MinValue) println(sink)
     }
 
+    benchmark.addCase("Native converter (no row copy)") { _ =>
+      val converter = new NativeColumnarToRowConverter(schema, batchSize, copyRows = false)
+      var sink = 0L
+      try {
+        var b = 0
+        while (b < batches.length) {
+          val it = converter.convert(batches(b))
+          while (it.hasNext) {
+            val u = it.next()
+            sink += u.getLong(0) + u.getUTF8String(3).numBytes()
+          }
+          b += 1
+        }
+      } finally {
+        converter.close()
+      }
+      if (sink == Long.MinValue) println(sink)
+    }
+
+    benchmark.addCase("Native convert only (no row iteration)") { _ =>
+      val converter = new NativeColumnarToRowConverter(schema, batchSize, copyRows = false)
+      try {
+        var b = 0
+        while (b < batches.length) {
+          converter.convert(batches(b))
+          b += 1
+        }
+      } finally {
+        converter.close()
+      }
+    }
+
     benchmark.addCase("Arrow FFI export only (no conversion)") { _ =>
       val nativeUtil = new NativeUtil()
       val (arrays, schemas) = nativeUtil.allocateArrowStructs(schema.fields.length)

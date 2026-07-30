@@ -1250,11 +1250,31 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_columnarToRowInit(
     })
 }
 
+/// Returns the address of the scratch space that the JVM fills in with raw buffer addresses when
+/// handing a batch over without Arrow FFI.
+///
+/// # Safety
+/// This function is inherently unsafe since it deals with raw pointers passed from JNI.
+#[no_mangle]
+pub unsafe extern "system" fn Java_org_apache_comet_Native_columnarToRowRawAddrs(
+    e: EnvUnowned,
+    _class: JClass,
+    c2r_handle: jlong,
+) -> jlong {
+    try_unwrap_or_throw(&e, |_env| {
+        let ctx = (c2r_handle as *mut ColumnarToRowContext)
+            .as_mut()
+            .ok_or_else(|| CometError::Internal("Null columnar to row context".to_string()))?;
+        Ok(ctx.raw_addrs_ptr() as jlong)
+    })
+}
+
 /// Convert Arrow columnar data to Spark UnsafeRow format.
 ///
-/// The batch is read from the Arrow FFI structs registered by `columnarToRowInit`. When
-/// `has_schema` is false, the C schema structs are ignored and the Arrow types cached from the
-/// last schema export are used, so the JVM only has to export the array structs.
+/// `mode` selects how the batch is handed over:
+/// - 0: Arrow FFI, with the C schema exported for this batch
+/// - 1: Arrow FFI, reusing the Arrow types cached from the last exported schema
+/// - 2: raw buffer addresses written into the scratch space, no Arrow FFI at all
 ///
 /// Returns the address of `[row buffer, row offsets, row lengths]`; the JVM reads the three
 /// addresses from there, which avoids allocating any JVM object per batch.
@@ -1267,7 +1287,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_columnarToRowConvert(
     _class: JClass,
     c2r_handle: jlong,
     num_rows: jint,
-    has_schema: jboolean,
+    mode: jint,
 ) -> jlong {
     try_unwrap_or_throw(&e, |_env| {
         // Get the context
@@ -1282,7 +1302,17 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_columnarToRowConvert(
             num_rows
         );
 
-        let meta = ctx.convert_imported(num_rows as usize, has_schema != JNI_FALSE)?;
+        let meta = match mode {
+            0 => ctx.convert_imported(num_rows as usize, true)?,
+            1 => ctx.convert_imported(num_rows as usize, false)?,
+            2 => ctx.convert_raw(num_rows as usize)?,
+            other => {
+                return Err(CometError::Internal(format!(
+                    "Unknown columnar to row conversion mode: {}",
+                    other
+                )))
+            }
+        };
         Ok(meta as jlong)
     })
 }
