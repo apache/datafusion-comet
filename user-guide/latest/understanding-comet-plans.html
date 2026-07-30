@@ -878,7 +878,7 @@ expression ran here” marker.</p>
 </pre></div>
 </div>
 <p>Output:</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">CometNativeColumnarToRow</span>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">CometColumnarToRow</span>
 <span class="o">+-</span> <span class="n">CometProject</span> <span class="p">[</span><span class="n">COMET</span><span class="o">-</span><span class="n">INFO</span><span class="p">:</span> <span class="n">JVM</span> <span class="n">codegen</span> <span class="n">dispatcher</span><span class="p">:</span> <span class="n">hypot</span><span class="p">,</span> <span class="n">levenshtein</span><span class="p">]</span>
    <span class="o">+-</span> <span class="n">CometNativeScan</span> <span class="n">parquet</span> <span class="n">spark_catalog</span><span class="o">.</span><span class="n">default</span><span class="o">.</span><span class="n">t</span>
 
@@ -952,7 +952,7 @@ it works on any Spark version because it does not rely on the Spark 4.0
 </div>
 <p>Output</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">Project</span> <span class="p">[</span><span class="n">COMET</span><span class="p">:</span> <span class="n">from_unixtime</span><span class="p">(</span><span class="n">eventTime</span><span class="c1">#5L, yyyy-MM-dd HH:mm:ss, Some(GMT)) is not fully compatible with Spark. To enable it anyway, set spark.comet.expression.FromUnixTime.allowIncompatible=true. For more information, refer to the Comet Compatibility Guide (https://datafusion.apache.org/comet/user-guide/compatibility.html).]</span>
-<span class="o">+-</span> <span class="n">CometNativeColumnarToRow</span>
+<span class="o">+-</span> <span class="n">CometColumnarToRow</span>
    <span class="o">+-</span> <span class="n">CometNativeScan</span> <span class="n">parquet</span>
 
 <span class="n">Comet</span> <span class="n">accelerated</span> <span class="mi">1</span> <span class="n">out</span> <span class="n">of</span> <span class="mi">2</span> <span class="n">eligible</span> <span class="n">operators</span> <span class="p">(</span><span class="mi">50</span><span class="o">%</span><span class="p">)</span><span class="o">.</span> <span class="n">Final</span> <span class="n">plan</span> <span class="n">contains</span> <span class="mi">1</span> <span class="n">transitions</span> <span class="n">between</span> <span class="n">Spark</span> <span class="ow">and</span> <span class="n">Comet</span><span class="o">.</span>
@@ -1116,11 +1116,11 @@ produced the columnar data.</p>
 <tbody>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">CometColumnarToRow</span></code></p></td>
 <td><p>columnar → row</p></td>
-<td><p>JVM-based row conversion. A fork of Spark’s <code class="docutils literal notranslate"><span class="pre">ColumnarToRowExec</span></code> that includes the SPARK-50235 fix.</p></td>
+<td><p>JVM-based row conversion. A fork of Spark’s <code class="docutils literal notranslate"><span class="pre">ColumnarToRowExec</span></code> that includes the SPARK-50235 fix. This is the default.</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">CometNativeColumnarToRow</span></code></p></td>
 <td><p>columnar → row</p></td>
-<td><p>Rust-based row conversion that decodes broadcast Arrow batches via <code class="docutils literal notranslate"><span class="pre">NativeColumnarToRowConverter</span></code>. Used downstream of <code class="docutils literal notranslate"><span class="pre">CometBroadcastExchange</span></code>. Zero-copy for variable-length types and avoids an extra JVM materialization step.</p></td>
+<td><p>Rust-based row conversion via <code class="docutils literal notranslate"><span class="pre">NativeColumnarToRowConverter</span></code>. Disabled by default; enable with <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.columnarToRow.native.enabled=true</span></code>. It carries a fixed JNI cost per batch and is slower than the JVM conversion for small batches.</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">CometSparkColumnarToColumnar</span></code></p></td>
 <td><p>columnar → columnar</p></td>
