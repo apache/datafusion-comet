@@ -150,6 +150,7 @@ fn criterion_benchmark(c: &mut Criterion) {
         for (data_type, name, batch) in [
             (DataType::Boolean, "boolean", &bool_batch),
             (DataType::Boolean, "boolean_padded", &bool_padded_batch),
+            (DataType::Float32, "float", &float_batch),
             (DataType::Float64, "double", &float_batch),
             (DataType::Float64, "double_padded", &float_padded_batch),
         ] {
