@@ -141,7 +141,9 @@ pub fn create_comet_physical_fun_with_eval_mode(
             make_comet_scalar_udf!("unscaled_value", func, without data_type)
         }
         "make_decimal" => {
-            make_comet_scalar_udf!("make_decimal", spark_make_decimal, data_type)
+            // fail_on_error corresponds to Spark's nullOnOverflow = false (ANSI mode): the
+            // unscaled long must fit the target precision or the query fails.
+            make_comet_scalar_udf!("make_decimal", spark_make_decimal, data_type, fail_on_error)
         }
         "unhex" => {
             let func = Arc::new(spark_unhex);
