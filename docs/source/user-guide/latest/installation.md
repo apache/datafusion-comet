@@ -161,7 +161,7 @@ Comet will log output similar to:
 
 ```shell
 == Physical Plan ==
-CometNativeColumnarToRow
+CometColumnarToRow
 +- CometFilter [a#6], (isnotnull(a#6) AND (a#6 > 5))
    +- CometNativeScan parquet [a#6] Batched: true, DataFilters: [isnotnull(a#6), (a#6 > 5)], Format: CometParquet, Location: InMemoryFileIndex(1 paths)[file:/tmp/test], PartitionFilters: [], PushedFilters: [IsNotNull(a), GreaterThan(a,5)], ReadSchema: struct<a:int>
 ```

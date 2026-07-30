@@ -1203,6 +1203,30 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("avg decimal with nothing to average") {
+    // There is no sum to overflow when the input is empty or entirely null, so avg must
+    // return null rather than raising ARITHMETIC_OVERFLOW in ANSI mode.
+    // https://github.com/apache/datafusion-comet/issues/5148
+    Seq(true, false).foreach { ansiEnabled =>
+      withSQLConf(
+        SQLConf.ANSI_ENABLED.key -> ansiEnabled.toString,
+        CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
+        CometConf.COMET_SHUFFLE_MODE.key -> "native") {
+        val table = s"avg_decimal_empty_ansi_$ansiEnabled"
+        withTable(table) {
+          sql(s"create table $table(a decimal(38, 2), b INT) using parquet")
+          // no rows at all
+          checkSparkAnswer(s"select avg(a) from $table")
+          checkSparkAnswer(s"select b, avg(a) from $table group by b")
+          // rows, but every value to average is null
+          sql(s"insert into $table values(null, 1), (null, 2)")
+          checkSparkAnswer(s"select avg(a) from $table")
+          checkSparkAnswer(s"select b, avg(a) from $table group by b")
+        }
+      }
+    }
+  }
+
   test("test final avg") {
     withSQLConf(
       CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
