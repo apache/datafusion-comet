@@ -219,32 +219,38 @@ class Native extends NativeBase {
    * @param batchSize
    *   The maximum number of rows that will be converted in a single batch. Used to pre-allocate
    *   the output buffer.
+   * @param arrayAddrs
+   *   The addresses of the Arrow Array structures, allocated once per converter and reused for
+   *   every batch.
+   * @param schemaAddrs
+   *   The addresses of the Arrow Schema structures, allocated once per converter and reused for
+   *   every batch.
    * @return
    *   A handle to the native converter context. This handle must be passed to subsequent convert
    *   and close calls.
    */
-  @native def columnarToRowInit(schema: Array[Array[Byte]], batchSize: Int): Long
+  @native def columnarToRowInit(
+      schema: Array[Array[Byte]],
+      batchSize: Int,
+      arrayAddrs: Array[Long],
+      schemaAddrs: Array[Long]): Long
 
   /**
-   * Convert Arrow columnar data to Spark UnsafeRow format.
+   * Convert Arrow columnar data to Spark UnsafeRow format. The batch is read from the Arrow FFI
+   * structs whose addresses were passed to columnarToRowInit.
    *
    * @param c2rHandle
    *   The handle returned by columnarToRowInit.
-   * @param arrayAddrs
-   *   The addresses of Arrow Array structures for each column.
-   * @param schemaAddrs
-   *   The addresses of Arrow Schema structures for each column.
    * @param numRows
    *   The number of rows to convert.
+   * @param hasSchema
+   *   Whether the Arrow Schema structs were exported for this batch. When false, the native side
+   *   reuses the Arrow types cached from the last exported schema.
    * @return
-   *   A NativeColumnarToRowInfo containing the memory address of the row buffer and metadata
-   *   (offsets and lengths) for each row.
+   *   The address of three consecutive longs: the row buffer address, the row offsets address,
+   *   and the row lengths address.
    */
-  @native def columnarToRowConvert(
-      c2rHandle: Long,
-      arrayAddrs: Array[Long],
-      schemaAddrs: Array[Long],
-      numRows: Int): NativeColumnarToRowInfo
+  @native def columnarToRowConvert(c2rHandle: Long, numRows: Int, hasSchema: Boolean): Long
 
   /**
    * Close and release the native columnar to row converter.

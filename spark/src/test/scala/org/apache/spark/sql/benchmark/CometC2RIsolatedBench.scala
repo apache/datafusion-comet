@@ -28,6 +28,7 @@ import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.unsafe.types.UTF8String
 
 import org.apache.comet.NativeColumnarToRowConverter
+import org.apache.comet.vector.NativeUtil
 
 /**
  * Isolated columnar-to-row microbenchmark that excludes the parquet scan entirely. Batches are
@@ -85,6 +86,25 @@ object CometC2RIsolatedBench {
         converter.close()
       }
       if (sink == Long.MinValue) println(sink)
+    }
+
+    benchmark.addCase("Arrow FFI export only (no conversion)") { _ =>
+      val nativeUtil = new NativeUtil()
+      val (arrays, schemas) = nativeUtil.allocateArrowStructs(schema.fields.length)
+      try {
+        var b = 0
+        while (b < batches.length) {
+          nativeUtil.exportBatchToStructs(arrays, schemas, batches(b), b == 0)
+          // The native side would consume (and release) the exported arrays; release them here
+          // so that the exported data does not accumulate.
+          arrays.foreach(_.release())
+          b += 1
+        }
+      } finally {
+        arrays.foreach(_.close())
+        schemas.foreach(_.close())
+        nativeUtil.close()
+      }
     }
 
     benchmark.run()

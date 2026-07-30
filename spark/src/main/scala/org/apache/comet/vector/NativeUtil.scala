@@ -22,7 +22,7 @@ package org.apache.comet.vector
 import scala.collection.mutable
 
 import org.apache.arrow.c.{ArrowArray, ArrowImporter, ArrowSchema, CDataDictionaryProvider, Data}
-import org.apache.arrow.vector.VectorSchemaRoot
+import org.apache.arrow.vector.{FieldVector, VectorSchemaRoot}
 import org.apache.arrow.vector.dictionary.DictionaryProvider
 import org.apache.spark.SparkException
 import org.apache.spark.sql.comet.execution.arrow.ConstantColumnVectors
@@ -166,6 +166,67 @@ class NativeUtil {
     }
 
     numRows.headOption.getOrElse(batch.numRows())
+  }
+
+  /**
+   * Exports a `ColumnarBatch` into Arrow FFI structs that the caller allocated once and reuses
+   * for every batch.
+   *
+   * When `exportSchema` is false, only the Arrow Array structs are written, which skips
+   * rebuilding the C schema for a schema that does not change between batches. Callers must
+   * export the schema for the first batch, and again whenever a column's Arrow `Field` changes.
+   *
+   * Unlike [[exportBatch]] this method allocates nothing per batch.
+   *
+   * @return
+   *   the number of rows exported
+   */
+  def exportBatchToStructs(
+      arrays: Array[ArrowArray],
+      schemas: Array[ArrowSchema],
+      batch: ColumnarBatch,
+      exportSchema: Boolean): Int = {
+    val numCols = batch.numCols()
+    var numRows = -1
+    var index = 0
+    while (index < numCols) {
+      var vector: FieldVector = null
+      var provider: DictionaryProvider = null
+      batch.column(index) match {
+        case a: CometVector =>
+          val valueVector = a.getValueVector
+          if (valueVector.getField.getDictionary != null) {
+            provider = a.getDictionaryProvider
+          }
+          vector = getFieldVector(valueVector, "export")
+        case cv: ConstantColumnVector =>
+          // See the comment in `exportBatch`.
+          vector = ConstantColumnVectors
+            .materialize(cv, cv.dataType(), batch.numRows(), s"_const_$index", allocator, "UTC")
+        case c =>
+          throw new SparkException(
+            "Comet execution only takes Arrow Arrays, but got " +
+              s"${c.getClass}")
+      }
+
+      val count = vector.getValueCount
+      if (numRows == -1) {
+        numRows = count
+      } else if (numRows != count) {
+        throw new SparkException(
+          s"Number of rows in each column should be the same, but got [$numRows, $count]")
+      }
+
+      if (exportSchema) {
+        Data.exportVector(allocator, vector, provider, arrays(index), schemas(index))
+      } else {
+        Data.exportVector(allocator, vector, provider, arrays(index))
+      }
+
+      index += 1
+    }
+
+    if (numRows == -1) batch.numRows() else numRows
   }
 
   /**

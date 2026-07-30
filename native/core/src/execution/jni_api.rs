@@ -1216,11 +1216,13 @@ pub extern "system" fn Java_org_apache_comet_Native_getRustThreadId(
 // ============================================================================
 
 use crate::execution::columnar_to_row::ColumnarToRowContext;
-use arrow::ffi::{from_ffi, FFI_ArrowArray, FFI_ArrowSchema};
 use datafusion_spark::function::math::bin::SparkBin;
 use datafusion_spark::function::string::soundex::SparkSoundex;
 
 /// Initialize a native columnar to row converter.
+///
+/// `array_addrs` and `schema_addrs` are the addresses of the Arrow FFI structs that the JVM
+/// allocates once per converter and reuses for every batch.
 ///
 /// # Safety
 /// This function is inherently unsafe since it deals with raw pointers passed from JNI.
@@ -1230,19 +1232,32 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_columnarToRowInit(
     _class: JClass,
     serialized_schema: JObjectArray,
     batch_size: jint,
+    array_addrs: JLongArray,
+    schema_addrs: JLongArray,
 ) -> jlong {
     try_unwrap_or_throw(&e, |env| {
         // Deserialize the schema
         let schema = convert_datatype_arrays(env, serialized_schema)?;
 
         // Create the context
-        let ctx = Box::new(ColumnarToRowContext::new(schema, batch_size as usize));
+        let mut ctx = Box::new(ColumnarToRowContext::new(schema, batch_size as usize));
+
+        let array_addrs = unsafe { array_addrs.get_elements(env, ReleaseMode::NoCopyBack)? };
+        let schema_addrs = unsafe { schema_addrs.get_elements(env, ReleaseMode::NoCopyBack)? };
+        ctx.set_ffi_addrs(array_addrs.to_vec(), schema_addrs.to_vec());
 
         Ok(Box::into_raw(ctx) as jlong)
     })
 }
 
 /// Convert Arrow columnar data to Spark UnsafeRow format.
+///
+/// The batch is read from the Arrow FFI structs registered by `columnarToRowInit`. When
+/// `has_schema` is false, the C schema structs are ignored and the Arrow types cached from the
+/// last schema export are used, so the JVM only has to export the array structs.
+///
+/// Returns the address of `[row buffer, row offsets, row lengths]`; the JVM reads the three
+/// addresses from there, which avoids allocating any JVM object per batch.
 ///
 /// # Safety
 /// This function is inherently unsafe since it deals with raw pointers passed from JNI.
@@ -1251,82 +1266,24 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_columnarToRowConvert(
     e: EnvUnowned,
     _class: JClass,
     c2r_handle: jlong,
-    array_addrs: JLongArray,
-    schema_addrs: JLongArray,
     num_rows: jint,
-) -> jni::sys::jobject {
-    try_unwrap_or_throw(&e, |env| {
+    has_schema: jboolean,
+) -> jlong {
+    try_unwrap_or_throw(&e, |_env| {
         // Get the context
         debug_assert!(c2r_handle != 0, "columnarToRowConvert: c2r_handle is null");
         let ctx = (c2r_handle as *mut ColumnarToRowContext)
             .as_mut()
             .ok_or_else(|| CometError::Internal("Null columnar to row context".to_string()))?;
 
-        let num_cols = array_addrs.len(env)?;
-
-        // Get array and schema addresses
-        let array_addrs_elements =
-            unsafe { array_addrs.get_elements(env, ReleaseMode::NoCopyBack)? };
-        let schema_addrs_elements =
-            unsafe { schema_addrs.get_elements(env, ReleaseMode::NoCopyBack)? };
-
-        // Import Arrow arrays from FFI
-        let mut arrays = Vec::with_capacity(num_cols);
-        for i in 0..num_cols {
-            let array_ptr = array_addrs_elements[i] as *mut FFI_ArrowArray;
-            let schema_ptr = schema_addrs_elements[i] as *mut FFI_ArrowSchema;
-
-            debug_assert!(
-                !array_ptr.is_null(),
-                "columnarToRowConvert: null array pointer at index {}",
-                i
-            );
-            debug_assert!(
-                !schema_ptr.is_null(),
-                "columnarToRowConvert: null schema pointer at index {}",
-                i
-            );
-
-            // Take ownership of the FFI structures
-            let ffi_array = unsafe { std::ptr::read(array_ptr) };
-            let ffi_schema = unsafe { std::ptr::read(schema_ptr) };
-
-            // Convert to Arrow ArrayData
-            let array_data = from_ffi(ffi_array, &ffi_schema)
-                .map_err(|e| CometError::Internal(format!("Failed to import array: {}", e)))?;
-
-            arrays.push(arrow::array::make_array(array_data));
-        }
-
-        // Convert columnar to row
         debug_assert!(
             num_rows >= 0,
             "columnarToRowConvert: num_rows is negative: {}",
             num_rows
         );
-        let (buffer_ptr, offsets, lengths) = ctx.convert(&arrays, num_rows as usize)?;
 
-        // Create Java int arrays for offsets and lengths
-        let offsets_array = env.new_int_array(offsets.len())?;
-        offsets_array.set_region(env, 0, offsets)?;
-
-        let lengths_array = env.new_int_array(lengths.len())?;
-        lengths_array.set_region(env, 0, lengths)?;
-
-        // Create the NativeColumnarToRowInfo object
-        let info_class =
-            env.find_class(jni::jni_str!("org/apache/comet/NativeColumnarToRowInfo"))?;
-        let info_obj = env.new_object(
-            info_class,
-            jni::jni_sig!("(J[I[I)V"),
-            &[
-                jni::objects::JValue::Long(buffer_ptr as jlong),
-                jni::objects::JValue::Object(&offsets_array),
-                jni::objects::JValue::Object(&lengths_array),
-            ],
-        )?;
-
-        Ok(info_obj.into_raw())
+        let meta = ctx.convert_imported(num_rows as usize, has_schema != JNI_FALSE)?;
+        Ok(meta as jlong)
     })
 }
 

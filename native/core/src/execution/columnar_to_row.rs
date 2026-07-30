@@ -43,6 +43,7 @@ use arrow::array::types::{
 use arrow::array::*;
 use arrow::compute::{cast_with_options, CastOptions};
 use arrow::datatypes::{ArrowNativeType, DataType, TimeUnit};
+use arrow::ffi::{from_ffi, from_ffi_and_data_type, FFI_ArrowArray, FFI_ArrowSchema};
 use std::sync::Arc;
 
 /// Maximum digits for decimal that can fit in a long (8 bytes).
@@ -883,6 +884,23 @@ pub struct ColumnarToRowContext {
     _batch_size: usize,
     /// Whether all columns are fixed-width (enables fast path).
     all_fixed_width: bool,
+    /// Addresses of the Arrow FFI array structs, exported once by the JVM and reused for
+    /// every batch.
+    array_addrs: Vec<i64>,
+    /// Addresses of the Arrow FFI schema structs, exported once by the JVM and reused for
+    /// every batch.
+    schema_addrs: Vec<i64>,
+    /// Arrow types of the imported arrays, cached from the last batch whose C schema the JVM
+    /// exported. Lets subsequent batches import without a schema.
+    imported_types: Vec<DataType>,
+    /// Whether any imported array type differs from the Spark schema type, requiring a cast.
+    /// Recomputed whenever the JVM exports the C schema.
+    needs_cast: bool,
+    /// Scratch space for the imported arrays, reused across batches.
+    input_arrays: Vec<ArrayRef>,
+    /// `[buffer address, offsets address, lengths address]`, read by the JVM after each
+    /// conversion. Avoids allocating any JVM object per batch.
+    out_meta: [i64; 3],
 }
 
 impl ColumnarToRowContext {
@@ -916,7 +934,80 @@ impl ColumnarToRowContext {
             fixed_width_size,
             _batch_size: batch_size,
             all_fixed_width,
+            array_addrs: vec![],
+            schema_addrs: vec![],
+            imported_types: vec![],
+            // Direct callers of `convert` (Rust tests) pass arrays that may not match the
+            // schema, so default to casting. The FFI path recomputes this per exported schema.
+            needs_cast: true,
+            input_arrays: Vec::with_capacity(num_fields),
+            out_meta: [0; 3],
         }
+    }
+
+    /// Records the addresses of the Arrow FFI structs that the JVM reuses for every batch.
+    pub fn set_ffi_addrs(&mut self, array_addrs: Vec<i64>, schema_addrs: Vec<i64>) {
+        self.array_addrs = array_addrs;
+        self.schema_addrs = schema_addrs;
+    }
+
+    /// Imports the batch from the Arrow FFI structs registered by [`Self::set_ffi_addrs`] and
+    /// converts it to rows.
+    ///
+    /// When `has_schema` is false the C schema structs are not read at all and the Arrow types
+    /// cached from the last schema export are used instead, which lets the JVM skip exporting
+    /// the (constant) schema on every batch.
+    ///
+    /// Returns a pointer to `[buffer address, offsets address, lengths address]`.
+    ///
+    /// # Safety
+    /// The registered addresses must point at Arrow FFI structs populated for this batch.
+    pub unsafe fn convert_imported(
+        &mut self,
+        num_rows: usize,
+        has_schema: bool,
+    ) -> CometResult<*const i64> {
+        let num_cols = self.array_addrs.len();
+
+        if !has_schema && self.imported_types.len() != num_cols {
+            return Err(CometError::Internal(
+                "columnar to row conversion requires an exported schema for the first batch"
+                    .to_string(),
+            ));
+        }
+
+        // Reuse the array vector so that importing a batch does not allocate.
+        let mut arrays = std::mem::take(&mut self.input_arrays);
+        arrays.clear();
+
+        for i in 0..num_cols {
+            let ffi_array = std::ptr::read(self.array_addrs[i] as *mut FFI_ArrowArray);
+            let array_data = if has_schema {
+                let ffi_schema = std::ptr::read(self.schema_addrs[i] as *mut FFI_ArrowSchema);
+                from_ffi(ffi_array, &ffi_schema)
+            } else {
+                from_ffi_and_data_type(ffi_array, self.imported_types[i].clone())
+            }
+            .map_err(|e| CometError::Internal(format!("Failed to import array: {}", e)))?;
+            arrays.push(make_array(array_data));
+        }
+
+        if has_schema {
+            self.imported_types.clear();
+            self.imported_types
+                .extend(arrays.iter().map(|a| a.data_type().clone()));
+            self.needs_cast = self
+                .imported_types
+                .iter()
+                .zip(self.schema.iter())
+                .any(|(imported, expected)| imported != expected);
+        }
+
+        let result = self.convert(&arrays, num_rows).map(|_| ());
+        self.input_arrays = arrays;
+        result?;
+
+        Ok(self.out_meta.as_ptr())
     }
 
     /// Calculate the width of the null bitset in bytes.
@@ -960,13 +1051,23 @@ impl ColumnarToRowContext {
 
         // Unpack any dictionary arrays to their underlying value type
         // This is needed because Parquet may return dictionary-encoded arrays
-        // even when the schema expects a specific type like Decimal128
-        let arrays: Vec<ArrayRef> = arrays
-            .iter()
-            .zip(self.schema.iter())
-            .map(|(arr, schema_type)| Self::maybe_cast_to_schema_type(arr, schema_type))
-            .collect::<CometResult<Vec<_>>>()?;
-        let arrays = arrays.as_slice();
+        // even when the schema expects a specific type like Decimal128.
+        // When the imported types are known to match the schema this is skipped entirely,
+        // avoiding a per-batch allocation and per-column type comparison.
+        let casted: Vec<ArrayRef> = if self.needs_cast {
+            arrays
+                .iter()
+                .zip(self.schema.iter())
+                .map(|(arr, schema_type)| Self::maybe_cast_to_schema_type(arr, schema_type))
+                .collect::<CometResult<Vec<_>>>()?
+        } else {
+            vec![]
+        };
+        let arrays = if self.needs_cast {
+            casted.as_slice()
+        } else {
+            arrays
+        };
 
         // Clear previous data
         self.buffer.clear();
@@ -1008,7 +1109,18 @@ impl ColumnarToRowContext {
             self.lengths.push((row_end - row_start) as i32);
         }
 
-        Ok((self.buffer.as_ptr(), &self.offsets, &self.lengths))
+        Ok(self.finish())
+    }
+
+    /// Publishes the buffer, offsets and lengths addresses so that the JVM can read them
+    /// without any per-batch object allocation.
+    fn finish(&mut self) -> (*const u8, &[i32], &[i32]) {
+        self.out_meta = [
+            self.buffer.as_ptr() as i64,
+            self.offsets.as_ptr() as i64,
+            self.lengths.as_ptr() as i64,
+        ];
+        (self.buffer.as_ptr(), &self.offsets, &self.lengths)
     }
 
     /// Casts an array to match the expected schema type if needed.
@@ -1136,7 +1248,7 @@ impl ColumnarToRowContext {
             )?;
         }
 
-        Ok((self.buffer.as_ptr(), &self.offsets, &self.lengths))
+        Ok(self.finish())
     }
 
     /// Write a fixed-width column's values for all rows.
