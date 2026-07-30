@@ -162,6 +162,36 @@ object CometExecBenchmark extends CometBenchmarkBase {
     }
   }
 
+  def sampleExecBenchmark(values: Int, fraction: Double): Unit = {
+    val benchmark = new Benchmark(s"Sample Exec (fraction $fraction)", values, output = output)
+
+    withTempPath { dir =>
+      withTempTable("parquetV1Table") {
+        prepareTable(dir, spark.sql(s"SELECT * FROM $tbl"))
+
+        benchmark.addCase("SQL Parquet - Spark") { _ =>
+          spark
+            .sql("select * from parquetV1Table")
+            .sample(withReplacement = false, fraction = fraction, seed = 42)
+            .noop()
+        }
+
+        benchmark.addCase("SQL Parquet - Comet") { _ =>
+          withSQLConf(
+            CometConf.COMET_ENABLED.key -> "true",
+            CometConf.COMET_EXEC_ENABLED.key -> "true") {
+            spark
+              .sql("select * from parquetV1Table")
+              .sample(withReplacement = false, fraction = fraction, seed = 42)
+              .noop()
+          }
+        }
+
+        benchmark.run()
+      }
+    }
+  }
+
   def expandExecBenchmark(values: Int): Unit = {
     val benchmark = new Benchmark("Expand Exec", values, output = output)
 
@@ -253,6 +283,12 @@ object CometExecBenchmark extends CometBenchmarkBase {
 
     runBenchmarkWithTable("Sort", 1024 * 1024 * 10) { v =>
       sortExecBenchmark(v)
+    }
+
+    runBenchmarkWithTable("Sample", 1024 * 1024 * 10) { v =>
+      for (fraction <- List(0.05, 0.5, 0.95)) {
+        sampleExecBenchmark(v, fraction)
+      }
     }
 
     runBenchmarkWithTable("BloomFilterAggregate", 1024 * 1024 * 10) { v =>

@@ -28,7 +28,7 @@ use crate::execution::{
     expressions::list_positions::ListPositionsExpr,
     expressions::subquery::Subquery,
     operators::{
-        ExecutionError, ExpandExec, ParquetCompression, ParquetWriterExec, ScanExec,
+        ExecutionError, ExpandExec, ParquetCompression, ParquetWriterExec, SampleExec, ScanExec,
         ShuffleScanExec,
     },
     planner::expression_registry::ExpressionRegistry,
@@ -1373,6 +1373,24 @@ impl PhysicalPlanner {
                     scans,
                     shuffle_scans,
                     Arc::new(SparkPlan::new(spark_plan.plan_id, limit, vec![child])),
+                ))
+            }
+            OpStruct::Sample(sample) => {
+                assert_eq!(children.len(), 1);
+                let (scans, shuffle_scans, child) =
+                    self.create_plan(&children[0], inputs, partition_count)?;
+                // Spark seeds a fresh sampler per partition with `seed + partitionIndex`.
+                let seed = sample.seed.wrapping_add(self.partition().into());
+                let sample_exec: Arc<dyn ExecutionPlan> = Arc::new(SampleExec::new(
+                    Arc::clone(&child.native_plan),
+                    sample.lower_bound,
+                    sample.upper_bound,
+                    seed,
+                ));
+                Ok((
+                    scans,
+                    shuffle_scans,
+                    Arc::new(SparkPlan::new(spark_plan.plan_id, sample_exec, vec![child])),
                 ))
             }
             OpStruct::Sort(sort) => {
