@@ -117,9 +117,12 @@ impl ParquetWriter {
                 // Write batch to in-memory buffer
                 arrow_writer.write(batch)?;
 
-                // Flush and take ownership of the buffered bytes so the next batch encodes
-                // into a fresh empty Vec (no clone, no explicit clear).
+                // `flush()` closes the in-progress row group but leaves bytes in the internal
+                // `BufWriter`. `sync()` pushes those bytes down into our cursor so the upload
+                // is genuinely incremental. Then take ownership of the cursor's buffer and
+                // reset it to empty for the next batch (no clone, no explicit clear).
                 arrow_writer.flush()?;
+                arrow_writer.sync()?;
                 let cursor = arrow_writer.inner_mut();
                 let current_data = std::mem::take(cursor.get_mut());
                 cursor.set_position(0);
@@ -169,10 +172,14 @@ impl ParquetWriter {
             } => {
                 // Finalize the Parquet footer into the in-memory cursor. `bytes_written()`
                 // reports the authoritative file size once `finish()` has flushed the footer.
+                // We cannot call `into_inner()` after `finish()`: `finish()` marks the
+                // underlying `SerializedFileWriter` as finished, and `into_inner()` then fails
+                // with `SerializedFileWriter already finished`. Pull the bytes out through
+                // `inner_mut()` instead - `finish()` has already flushed the buffered writer
+                // into the cursor.
                 arrow_writer.finish()?;
                 let total_bytes = arrow_writer.bytes_written() as u64;
-                let cursor = arrow_writer.into_inner()?;
-                let final_data = cursor.into_inner();
+                let final_data = std::mem::take(arrow_writer.inner_mut().get_mut());
 
                 if !final_data.is_empty() {
                     let mut w = match hdfs_writer.take() {
@@ -520,12 +527,13 @@ impl ExecutionPlan for ParquetWriterExec {
 
         // Write batches
         let write_task = async move {
-            let _timer = elapsed_compute.timer();
             let mut stream = input;
             let mut total_rows = 0i64;
 
             while let Some(batch_result) = stream.try_next().await.transpose() {
                 let batch = batch_result?;
+
+                let mut timer = elapsed_compute.timer();
 
                 // Track row count
                 total_rows += batch.num_rows() as i64;
@@ -546,12 +554,16 @@ impl ExecutionPlan for ParquetWriterExec {
                 writer.write(&renamed_batch).await.map_err(|e| {
                     DataFusionError::Execution(format!("Failed to write batch: {}", e))
                 })?;
+
+                timer.stop();
             }
 
+            let mut timer = elapsed_compute.timer();
             let file_size =
                 writer.close().await.map_err(|e| {
                     DataFusionError::Execution(format!("Failed to close writer: {}", e))
                 })? as i64;
+            timer.stop();
 
             // Update metrics with write statistics
             files_written.add(1);
@@ -607,6 +619,80 @@ mod tests {
             ParquetCompression::Gzip.to_parquet().unwrap(),
             Compression::GZIP(GzipLevel::default())
         );
+    }
+
+    /// Exercise the `ParquetWriter::Remote` write/close path against an in-memory
+    /// opendal `Operator`, so the remote path has real automated coverage without
+    /// requiring an HDFS cluster. Writes a handful of batches, reads the uploaded
+    /// bytes back with `ParquetRecordBatchReaderBuilder`, and asserts the returned
+    /// row count and the reported `bytes_written` both match the upload.
+    #[tokio::test]
+    #[cfg(feature = "hdfs-opendal")]
+    async fn test_parquet_writer_remote_memory_backend() -> Result<()> {
+        use opendal::services::Memory;
+        use opendal::Operator;
+        use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+
+        let op = Operator::new(Memory::default())
+            .map_err(|e| {
+                DataFusionError::Execution(format!("Failed to create memory operator: {}", e))
+            })?
+            .finish();
+        let output_path = "test/data.parquet".to_string();
+
+        let schema = create_test_record_batch(1)?.schema();
+        let props = WriterProperties::builder()
+            .set_compression(Compression::UNCOMPRESSED)
+            .build();
+        let buffer = Vec::new();
+        let cursor = Cursor::new(buffer);
+        let arrow_writer = ArrowWriter::try_new(cursor, Arc::clone(&schema), Some(props))
+            .map_err(|e| DataFusionError::Execution(format!("try_new failed: {}", e)))?;
+
+        let mut writer = ParquetWriter::Remote {
+            arrow_writer,
+            hdfs_writer: None,
+            op: op.clone(),
+            output_path: output_path.clone(),
+        };
+
+        let mut expected_rows: i64 = 0;
+        for i in 1..=3 {
+            let batch = create_test_record_batch(i)?;
+            expected_rows += batch.num_rows() as i64;
+            writer.write(&batch).await.map_err(|e| {
+                DataFusionError::Execution(format!("Failed to write batch {}: {}", i, e))
+            })?;
+        }
+
+        let reported_bytes = writer
+            .close()
+            .await
+            .map_err(|e| DataFusionError::Execution(format!("Failed to close writer: {}", e)))?;
+
+        let uploaded = op.read(&output_path).await.map_err(|e| {
+            DataFusionError::Execution(format!("Failed to read uploaded object: {}", e))
+        })?;
+        let uploaded_bytes = uploaded.to_vec();
+        assert_eq!(
+            reported_bytes as usize,
+            uploaded_bytes.len(),
+            "bytes_written must match uploaded object length"
+        );
+
+        let reader = ParquetRecordBatchReaderBuilder::try_new(bytes::Bytes::from(uploaded_bytes))
+            .map_err(|e| DataFusionError::Execution(format!("Reader builder failed: {}", e)))?
+            .build()
+            .map_err(|e| DataFusionError::Execution(format!("Reader build failed: {}", e)))?;
+        let mut actual_rows: i64 = 0;
+        for batch in reader {
+            let batch =
+                batch.map_err(|e| DataFusionError::Execution(format!("Read error: {}", e)))?;
+            actual_rows += batch.num_rows() as i64;
+        }
+        assert_eq!(actual_rows, expected_rows);
+
+        Ok(())
     }
 
     /// Helper function to create a test RecordBatch with 1000 rows of (int, string) data
