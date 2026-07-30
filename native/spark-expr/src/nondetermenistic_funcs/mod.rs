@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+pub mod bernoulli_cell_sampler;
 pub mod internal;
 pub mod monotonically_increasing_id;
 pub mod rand;
@@ -22,6 +23,7 @@ pub mod randn;
 pub mod randstr;
 pub mod shuffle;
 
+pub use bernoulli_cell_sampler::BernoulliCellSampler;
 pub use rand::RandExpr;
 pub use randn::RandnExpr;
 pub use randstr::RandStrExpr;

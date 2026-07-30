@@ -87,6 +87,92 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
+  test("sample without replacement") {
+    withParquetTable((0 until 1000).map(i => (i, i + 1)), "tbl") {
+      val df = sql("SELECT * FROM tbl").sample(withReplacement = false, fraction = 0.3, seed = 42)
+      checkSparkAnswerAndOperator(df, Seq(classOf[CometSampleExec]))
+    }
+  }
+
+  // The sampler is seeded per partition with `seed + partitionIndex`, so a multi-partition input
+  // is what catches a native side that ignores the partition index.
+  test("sample without replacement over multiple partitions") {
+    withTempPath { dir =>
+      spark.range(0, 4000).repartition(4).write.parquet(dir.getCanonicalPath)
+      withParquetTable(dir.getCanonicalPath, "tbl") {
+        val df =
+          sql("SELECT * FROM tbl").sample(withReplacement = false, fraction = 0.2, seed = 7)
+        assert(df.rdd.getNumPartitions > 1)
+        checkSparkAnswerAndOperator(df, Seq(classOf[CometSampleExec]))
+      }
+    }
+  }
+
+  test("sample without replacement with non-zero lower bound (randomSplit)") {
+    withParquetTable((0 until 1000).map(i => (i, i + 1)), "tbl") {
+      val splits = sql("SELECT * FROM tbl").randomSplit(Array(0.3, 0.7), seed = 42)
+      splits.foreach(checkSparkAnswerAndOperator(_, Seq(classOf[CometSampleExec])))
+    }
+  }
+
+  test("sample via SQL TABLESAMPLE") {
+    withParquetTable((0 until 1000).map(i => (i, i + 1)), "tbl") {
+      val df = sql("SELECT * FROM tbl TABLESAMPLE (30 PERCENT) REPEATABLE (42)")
+      checkSparkAnswerAndOperator(df, Seq(classOf[CometSampleExec]))
+    }
+  }
+
+  // Sampling only drops rows, so above an order-preserving input the output must stay sorted and
+  // match Spark row-for-row. The logical plan contains a Sort, so checkSparkAnswerAndOperator
+  // compares results in order rather than sorting both sides first.
+  test("sample preserves ordering of sorted input") {
+    withParquetTable((0 until 1000).reverse.map(i => (i, i + 1)), "tbl") {
+      val df = sql("SELECT * FROM tbl")
+        .orderBy("_1")
+        .sample(withReplacement = false, fraction = 0.3, seed = 42)
+      checkSparkAnswerAndOperator(df, Seq(classOf[CometSampleExec]))
+      val ids = df.collect().map(_.getInt(0))
+      assert(ids.nonEmpty && ids.sameElements(ids.sorted))
+    }
+  }
+
+  // Above an operator where Comet may emit rows in a different order than Spark, such as an
+  // aggregate, the sampler sees a different row sequence and can select different rows, but the
+  // result must still be a valid sample of the same expected size.
+  test("sample above aggregate produces a valid sample of the expected size") {
+    withParquetTable((0 until 10000).map(i => (i % 1000, i)), "tbl") {
+      val agg = sql("SELECT _1, SUM(_2) FROM tbl GROUP BY _1")
+      val df = agg.sample(withReplacement = false, fraction = 0.5, seed = 42)
+      val sampled = df.collect()
+      val plan = stripAQEPlan(df.queryExecution.executedPlan)
+      assert(plan.collect { case s: CometSampleExec => s }.nonEmpty)
+      // Every sampled row must be a distinct row of the aggregate output.
+      val full = agg.collect().toSet
+      assert(sampled.length == sampled.distinct.length)
+      assert(sampled.forall(full.contains))
+      // 1000 Bernoulli(0.5) draws have a standard deviation of ~15.8, so a tolerance of 100
+      // is a ~6-sigma bound.
+      assert(math.abs(sampled.length - 500) < 100)
+    }
+  }
+
+  test("sample with replacement falls back to Spark") {
+    withParquetTable((0 until 1000).map(i => (i, i + 1)), "tbl") {
+      val df = sql("SELECT * FROM tbl").sample(withReplacement = true, fraction = 0.3, seed = 42)
+      checkSparkAnswerAndFallbackReason(df, "Sampling with replacement is not supported")
+    }
+  }
+
+  test("sample falls back to Spark when disabled") {
+    withSQLConf(CometConf.COMET_EXEC_SAMPLE_ENABLED.key -> "false") {
+      withParquetTable((0 until 1000).map(i => (i, i + 1)), "tbl") {
+        val df =
+          sql("SELECT * FROM tbl").sample(withReplacement = false, fraction = 0.3, seed = 42)
+        checkSparkAnswerAndFallbackReason(df, "spark.comet.exec.sample.enabled=true")
+      }
+    }
+  }
+
   test("TopK operator should return correct results on dictionary column with nulls") {
     withSQLConf(SQLConf.USE_V1_SOURCE_LIST.key -> "") {
       withTable("test_data") {
