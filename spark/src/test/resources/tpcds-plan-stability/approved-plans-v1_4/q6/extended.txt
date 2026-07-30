@@ -53,7 +53,7 @@ CometColumnarToRow
                               :  +- CometNativeScan parquet spark_catalog.default.item
                               +- CometBroadcastExchange
                                  +- CometFilter
-                                    +- CometHashAggregate
+                                    +-  CometHashAggregate [COMET-INFO: A native implementation of Cast is available. Set spark.comet.expression.Cast.allowIncompatible=true to enable it. For more information, refer to the Comet Compatibility Guide (https://datafusion.apache.org/comet/user-guide/latest/compatibility/index.html)]
                                        +- CometExchange
                                           +- CometHashAggregate
                                              +- CometProject

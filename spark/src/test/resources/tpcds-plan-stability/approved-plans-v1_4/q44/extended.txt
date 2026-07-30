@@ -1,4 +1,4 @@
-CometColumnarToRow
+CometNativeColumnarToRow
 +- CometTakeOrderedAndProject
    +- CometProject
       +- CometBroadcastHashJoin
@@ -14,14 +14,14 @@ CometColumnarToRow
          :     :     :              +- CometExchange
          :     :     :                 +- CometFilter
          :     :     :                    :  +- Subquery
-         :     :     :                    :     +- CometColumnarToRow
-         :     :     :                    :        +- CometHashAggregate
+         :     :     :                    :     +- CometNativeColumnarToRow
+         :     :     :                    :        +-  CometHashAggregate [COMET-INFO: A native implementation of Cast is available. Set spark.comet.expression.Cast.allowIncompatible=true to enable it. For more information, refer to the Comet Compatibility Guide (https://datafusion.apache.org/comet/user-guide/latest/compatibility/index.html)]
          :     :     :                    :           +- CometExchange
          :     :     :                    :              +- CometHashAggregate
          :     :     :                    :                 +- CometProject
          :     :     :                    :                    +- CometFilter
          :     :     :                    :                       +- CometNativeScan parquet spark_catalog.default.store_sales
-         :     :     :                    +- CometHashAggregate
+         :     :     :                    +-  CometHashAggregate [COMET-INFO: A native implementation of Cast is available. Set spark.comet.expression.Cast.allowIncompatible=true to enable it. For more information, refer to the Comet Compatibility Guide (https://datafusion.apache.org/comet/user-guide/latest/compatibility/index.html)]
          :     :     :                       +- CometExchange
          :     :     :                          +- CometHashAggregate
          :     :     :                             +- CometProject
@@ -35,14 +35,14 @@ CometColumnarToRow
          :     :                    +- CometExchange
          :     :                       +- CometFilter
          :     :                          :  +- Subquery
-         :     :                          :     +- CometColumnarToRow
-         :     :                          :        +- CometHashAggregate
+         :     :                          :     +- CometNativeColumnarToRow
+         :     :                          :        +-  CometHashAggregate [COMET-INFO: A native implementation of Cast is available. Set spark.comet.expression.Cast.allowIncompatible=true to enable it. For more information, refer to the Comet Compatibility Guide (https://datafusion.apache.org/comet/user-guide/latest/compatibility/index.html)]
          :     :                          :           +- CometExchange
          :     :                          :              +- CometHashAggregate
          :     :                          :                 +- CometProject
          :     :                          :                    +- CometFilter
          :     :                          :                       +- CometNativeScan parquet spark_catalog.default.store_sales
-         :     :                          +- CometHashAggregate
+         :     :                          +-  CometHashAggregate [COMET-INFO: A native implementation of Cast is available. Set spark.comet.expression.Cast.allowIncompatible=true to enable it. For more information, refer to the Comet Compatibility Guide (https://datafusion.apache.org/comet/user-guide/latest/compatibility/index.html)]
          :     :                             +- CometExchange
          :     :                                +- CometHashAggregate
          :     :                                   +- CometProject

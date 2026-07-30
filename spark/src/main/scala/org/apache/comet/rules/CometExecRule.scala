@@ -86,6 +86,7 @@ object CometExecRule {
       classOf[SortMergeJoinExec] -> CometSortMergeJoinExec,
       classOf[SortExec] -> CometSortExec,
       classOf[LocalTableScanExec] -> CometLocalTableScanExec,
+      classOf[SampleExec] -> CometSampleExec,
       classOf[WindowExec] -> CometWindowExec)
 
   /**
