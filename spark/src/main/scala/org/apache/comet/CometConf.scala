@@ -152,10 +152,7 @@ object CometConf extends ShimCometConf {
           "statistics, page index, bloom filters) is independent of this flag and runs " +
           "whenever Spark's spark.sql.parquet.filterPushdown is enabled. Disabling this " +
           "flag still lets format-level pruning work; the per-row eval falls back to " +
-          "the CometFilter operator above the scan. This flag's derived pushdown_filters " +
-          "/ reorder_filters settings can be overridden by explicitly setting " +
-          "spark.comet.datafusion.execution.parquet.pushdown_filters / reorder_filters " +
-          "when spark.comet.exec.respectDataFusionConfigs is enabled.")
+          "the CometFilter operator above the scan.")
       .booleanConf
       .createWithDefault(false)
 

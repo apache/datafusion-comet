@@ -76,10 +76,11 @@ pub(crate) fn init_datasource_exec(
     use_field_id: bool,
     ignore_missing_field_id: bool,
 ) -> Result<Arc<DataSourceExec>, ExecutionError> {
-    // Computed once and reused below for `try_pushdown_filters`, since `SessionContext::state()`
-    // clones the whole `SessionState` (function registries, optimizer rules, etc.), not just the
-    // config.
-    let state = session_ctx.state();
+    // Computed once and reused below for `try_pushdown_filters`. `copied_config()` clones only
+    // `SessionConfig` (an `Arc<ConfigOptions>` plus a small extensions map); `SessionContext::
+    // state()` would clone the whole `SessionState`, including the function registries (~250+
+    // UDFs) and optimizer rules, on every scan init.
+    let session_config = session_ctx.copied_config();
     let (table_parquet_options, mut spark_parquet_options) = get_options(
         session_timezone,
         case_sensitive,
@@ -88,7 +89,7 @@ pub(crate) fn init_datasource_exec(
         allow_timestamp_ltz_to_ntz,
         &object_store_url,
         encryption_enabled,
-        &state.config_options().execution.parquet,
+        &session_config.options().execution.parquet,
     );
     spark_parquet_options.use_field_id = use_field_id;
     spark_parquet_options.ignore_missing_field_id = ignore_missing_field_id;
@@ -181,7 +182,7 @@ pub(crate) fn init_datasource_exec(
     let file_source: Arc<dyn FileSource> = match data_filters {
         Some(filters) if !filters.is_empty() => {
             let propagation =
-                parquet_source.try_pushdown_filters(filters, state.config_options())?;
+                parquet_source.try_pushdown_filters(filters, session_config.options())?;
             // `updated_node` is `None` when every filter classified as `No`
             // (nothing pushable); keep the unmodified source in that case.
             propagation
@@ -237,6 +238,12 @@ fn get_options(
     // `spark.comet.exec.respectDataFusionConfigs`) and `spark.comet.parquet.
     // rowFilterPushdown.enabled` actually take effect on the native scan (#4990); a fresh
     // `TableParquetOptions::new()` ignored the session entirely.
+    //
+    // Deliberately an allowlist, not `table_parquet_options.global = session_parquet_options.
+    // clone()`: a new DataFusion reader option should be silently ignored here until someone
+    // checks whether it is safe to pass through for Spark semantics (as `coerce_int96`/
+    // `coerce_int96_tz` below are not), not silently active. Recheck this list against
+    // `ParquetOptions` whenever the DataFusion dependency version changes.
     table_parquet_options.global.pushdown_filters = session_parquet_options.pushdown_filters;
     table_parquet_options.global.reorder_filters = session_parquet_options.reorder_filters;
     table_parquet_options.global.force_filter_selections =
@@ -245,6 +252,11 @@ fn get_options(
         session_parquet_options.bloom_filter_on_read;
     table_parquet_options.global.max_predicate_cache_size =
         session_parquet_options.max_predicate_cache_size;
+    // Only gates whether the page index is used for row-group/page pruning
+    // (datafusion's `enable_page_index` check around `page_pruning_predicate`). It does not
+    // stop the index from being fetched: `EagerPageIndexReaderFactory` always forces
+    // `PageIndexPolicy::Optional` on unencrypted files regardless of the requested policy, so
+    // disabling this reduces pruning, not read I/O.
     table_parquet_options.global.enable_page_index = session_parquet_options.enable_page_index;
     table_parquet_options.global.pruning = session_parquet_options.pruning;
 

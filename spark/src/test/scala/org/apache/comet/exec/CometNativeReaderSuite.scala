@@ -949,6 +949,54 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
       }
     }
   }
+
+  test("datafusion escape hatch pruning=false disables row-group statistics pruning") {
+    // Regression test pinning the `pruning` field of the newly-plumbed session
+    // `ParquetOptions` at the level users care about: an explicit
+    // `spark.comet.datafusion.execution.parquet.pruning=false` must actually turn off
+    // row-group statistics pruning at the native scan, not just be copied into
+    // `get_options()`'s output.
+    withTempPath { dir =>
+      withSQLConf(SQLConf.LEAF_NODE_DEFAULT_PARALLELISM.key -> "1") {
+        spark
+          .range(0, 1000)
+          .toDF("c1")
+          .repartition(1)
+          .write
+          .option("parquet.block.size", "1024")
+          .format("parquet")
+          .save(dir.toString)
+
+        val parquetFile = dir
+          .listFiles()
+          .find(_.getName.endsWith(".parquet"))
+          .getOrElse(fail("No parquet file was written"))
+        val reader = ParquetFileReader.open(
+          org.apache.parquet.hadoop.util.HadoopInputFile
+            .fromPath(new Path(parquetFile.getAbsolutePath), spark.sessionState.newHadoopConf()))
+        val numRowGroups =
+          try reader.getRowGroups.size()
+          finally reader.close()
+        assert(numRowGroups > 1, s"Test setup needs >1 row groups, got $numRowGroups")
+
+        withSQLConf(
+          CometConf.COMET_RESPECT_DATAFUSION_CONFIGS.key -> "true",
+          "spark.comet.datafusion.execution.parquet.pruning" -> "false") {
+          val df = spark.read.parquet(dir.toString).where("c1 > 500")
+          val (_, cometPlan) = checkSparkAnswerAndOperator(df)
+          val nativeScans = cometPlan.collect { case n: CometNativeScanExec => n }
+          assert(nativeScans.nonEmpty, "Expected a CometNativeScanExec")
+          val metrics = nativeScans.head.metrics
+          val pruned = metrics("row_groups_pruned_statistics").value
+          val matched = metrics("row_groups_matched_statistics").value
+          assert(
+            pruned == 0 && matched == numRowGroups,
+            "Expected the explicit pruning=false override to disable row-group statistics " +
+              s"pruning, got pruned=$pruned matched=$matched of $numRowGroups total")
+        }
+      }
+    }
+  }
 }
 
 private class DirectWriteSupport(schema: org.apache.parquet.schema.MessageType)
