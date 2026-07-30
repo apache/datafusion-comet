@@ -145,9 +145,6 @@ so users hunting an unexpected value have a single place to check:
 - Native `RANGE` window frames with an explicit `PRECEDING` / `FOLLOWING` offset diverge from
   Spark when the boundary arithmetic overflows for `DATE` or `DECIMAL` `ORDER BY` columns
   ([#5022](https://github.com/apache/datafusion-comet/issues/5022)).
-- For an empty `IN` list, Comet always returns `false` for a `NULL` operand. Spark returns `NULL`
-  when `spark.sql.legacy.nullInEmptyListBehavior=true` (Spark 4.0+)
-  ([#4786](https://github.com/apache/datafusion-comet/issues/4786)).
 
 ## Object store cache
 
