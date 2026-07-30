@@ -779,7 +779,7 @@ omitted from the tables below and may be reconsidered based on demand:</p>
 <ul class="simple">
 <li><p><strong>Structured Streaming operators</strong> (<code class="docutils literal notranslate"><span class="pre">StateStoreSaveExec</span></code>, <code class="docutils literal notranslate"><span class="pre">StateStoreRestoreExec</span></code>, <code class="docutils literal notranslate"><span class="pre">StreamingSymmetricHashJoinExec</span></code>, and similar): Comet targets batch execution.</p></li>
 <li><p><strong>Cartesian / cross joins</strong> (<code class="docutils literal notranslate"><span class="pre">CartesianProductExec</span></code>): rare and expensive, with little acceleration benefit.</p></li>
-<li><p><strong>Sampling and range generation</strong> (<code class="docutils literal notranslate"><span class="pre">SampleExec</span></code>, <code class="docutils literal notranslate"><span class="pre">RangeExec</span></code>): niche leaf operators.</p></li>
+<li><p><strong>Range generation</strong> (<code class="docutils literal notranslate"><span class="pre">RangeExec</span></code>): niche leaf operator.</p></li>
 <li><p><strong>Pickled (non-Arrow) Python UDFs</strong> (<code class="docutils literal notranslate"><span class="pre">BatchEvalPythonExec</span></code>): Comet accelerates Arrow-based Python UDFs only (<a class="reference external" href="https://github.com/apache/datafusion-comet/pull/4234">#4234</a>).</p></li>
 </ul>
 </section>
@@ -830,6 +830,10 @@ omitted from the tables below and may be reconsidered based on demand:</p>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">FilterExec</span></code></p></td>
 <td><p>✅</p></td>
 <td><p></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">SampleExec</span></code></p></td>
+<td><p>⚠️</p></td>
+<td><p>Sampling without replacement only. See <a class="reference internal" href="compatibility/operators.html"><span class="std std-doc">Operator Compatibility</span></a>.</p></td>
 </tr>
 </tbody>
 </table>

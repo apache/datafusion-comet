@@ -742,6 +742,20 @@ under the License.
 -->
 <section id="operator-compatibility">
 <h1>Operator Compatibility<a class="headerlink" href="#operator-compatibility" title="Link to this heading">#</a></h1>
+<section id="sampling">
+<h2>Sampling<a class="headerlink" href="#sampling" title="Link to this heading">#</a></h2>
+<p>Comet runs <code class="docutils literal notranslate"><span class="pre">SampleExec</span></code> natively when sampling is performed without replacement, which covers
+<code class="docutils literal notranslate"><span class="pre">DataFrame.sample</span></code>, SQL <code class="docutils literal notranslate"><span class="pre">TABLESAMPLE</span></code>, and <code class="docutils literal notranslate"><span class="pre">DataFrame.randomSplit</span></code>. The native implementation
+reproduces Spark’s per-row <code class="docutils literal notranslate"><span class="pre">XORShiftRandom</span></code> draw sequence, so for a given seed it selects the same
+rows as Spark.</p>
+<p>Because the sampler consumes one random value per row, sampling directly above a scan, filter, or
+projection reproduces Spark’s selection. Above an operator where Comet may emit rows in a different
+order than Spark, such as a join or an aggregate, the result is still a valid sample of the same
+expected size, but not necessarily the same rows.</p>
+<p>Sampling with replacement (<code class="docutils literal notranslate"><span class="pre">df.sample(withReplacement</span> <span class="pre">=</span> <span class="pre">true,</span> <span class="pre">...)</span></code>) falls back to Spark, because
+it draws from a Poisson distribution that Comet does not implement natively
+(<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5109">#5109</a>).</p>
+</section>
 <section id="window-functions">
 <h2>Window Functions<a class="headerlink" href="#window-functions" title="Link to this heading">#</a></h2>
 <p>Comet runs <code class="docutils literal notranslate"><span class="pre">WindowExec</span></code> natively and it is enabled by default (<code class="docutils literal notranslate"><span class="pre">spark.comet.exec.window.enabled</span></code>). A broad set of
@@ -851,6 +865,7 @@ they will be identical to Spark. Unsorted results may have different row orderin
   </div>
   <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="visible nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#sampling">Sampling</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#window-functions">Window Functions</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#round-robin-partitioning">Round-Robin Partitioning</a></li>
 </ul>
