@@ -101,7 +101,10 @@ case class CometNativeWriteExec(
   override lazy val metrics: Map[String, SQLMetric] = Map(
     "files_written" -> SQLMetrics.createMetric(sparkContext, "number of written data files"),
     "bytes_written" -> SQLMetrics.createSizeMetric(sparkContext, "written data"),
-    "rows_written" -> SQLMetrics.createMetric(sparkContext, "number of written rows"))
+    "rows_written" -> SQLMetrics.createMetric(sparkContext, "number of written rows"),
+    "elapsed_compute" -> SQLMetrics.createNanoTimingMetric(
+      sparkContext,
+      "total time (in ms) spent in native writer"))
 
   override def doExecute(): RDD[InternalRow] = {
     // Setup job if committer is present
