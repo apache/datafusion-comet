@@ -576,6 +576,20 @@ fn prepare_datafusion_session_context(
             &ScalarValue::Float64(Some(1.1)),
         );
 
+    // Translate the Comet-namespaced row-level pushdown flag into the equivalent
+    // DataFusion session options. `pushdown_filters` enables the parquet reader's
+    // RowFilter evaluation during decode (late materialization); `reorder_filters`
+    // is only meaningful when pushdown_filters is on, so they move together. Set
+    // before the `spark.comet.datafusion.*` testing escape hatch pass-through below,
+    // so an explicit override of either key wins instead of being silently forced
+    // back to `true`.
+    if spark_config.get_bool(COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED) {
+        session_config =
+            session_config.set_str("datafusion.execution.parquet.pushdown_filters", "true");
+        session_config =
+            session_config.set_str("datafusion.execution.parquet.reorder_filters", "true");
+    }
+
     // Pass through DataFusion configs from Spark.
     // e.g: spark-shell --conf spark.comet.datafusion.sql_parser.parse_float_as_decimal=true
     // becomes datafusion.sql_parser.parse_float_as_decimal=true
@@ -585,16 +599,6 @@ fn prepare_datafusion_session_context(
             let df_key = format!("datafusion.{df_key}");
             session_config = session_config.set_str(&df_key, value);
         }
-    }
-
-    // Translate the Comet-namespaced row-level pushdown flag into the equivalent
-    // DataFusion session options. `pushdown_filters` enables the parquet reader's
-    // RowFilter evaluation during decode (late materialization); `reorder_filters`
-    // is only meaningful when pushdown_filters is on, so they move together.
-    if spark_config.get_bool(COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED) {
-        session_config = session_config
-            .set_str("datafusion.execution.parquet.pushdown_filters", "true")
-            .set_str("datafusion.execution.parquet.reorder_filters", "true");
     }
 
     let runtime = rt_config.build()?;
