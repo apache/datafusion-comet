@@ -204,6 +204,63 @@ SELECT CAST(1.0 AS DOUBLE) % CAST(-0.0 AS DOUBLE)
 query expect_error(BY_ZERO)
 SELECT CAST(1.0 AS FLOAT) % CAST(0.0 AS FLOAT)
 
+-- ----------------------------------------------------------------------------
+-- Zero divisor paired with special dividends.
+-- Spark's DivModLike.eval only inspects the divisor when deciding whether to raise, so
+-- NaN, +/-Infinity and 0.0 dividends must all throw rather than yielding NaN. Keeping the
+-- dividend as a column puts these out of reach of ConstantFolding.
+-- ----------------------------------------------------------------------------
+
+statement
+CREATE TABLE ansi_float_special(a double) USING parquet
+
+statement
+INSERT INTO ansi_float_special VALUES (double('NaN')), (double('Infinity')), (double('-Infinity')), (0.0)
+
+-- NaN % 0 should throw
+query expect_error(BY_ZERO)
+SELECT a % CAST(0.0 AS DOUBLE) FROM ansi_float_special WHERE isnan(a)
+
+-- +Infinity % 0 should throw
+query expect_error(BY_ZERO)
+SELECT a % CAST(0.0 AS DOUBLE) FROM ansi_float_special WHERE a = double('Infinity')
+
+-- -Infinity % 0 should throw
+query expect_error(BY_ZERO)
+SELECT a % CAST(0.0 AS DOUBLE) FROM ansi_float_special WHERE a = double('-Infinity')
+
+-- 0 % 0 should throw
+query expect_error(BY_ZERO)
+SELECT a % CAST(0.0 AS DOUBLE) FROM ansi_float_special WHERE a = 0.0
+
+-- the same special dividends with a non-zero divisor must not throw
+query
+SELECT a % CAST(2.0 AS DOUBLE) FROM ansi_float_special ORDER BY 1
+
+-- ----------------------------------------------------------------------------
+-- Mixed-row batches: some rows have a zero divisor, some do not, and some have a null
+-- dividend. Comet raises once per batch, so only a mixed batch checks that the zero
+-- divisor is correlated with dividend nullness rather than tested batch-wide.
+-- ----------------------------------------------------------------------------
+
+statement
+CREATE TABLE ansi_float_mixed(a double, b double) USING parquet
+
+statement
+INSERT INTO ansi_float_mixed VALUES (1.0, 2.0), (3.0, 0.0), (NULL, 0.0), (5.0, 1.5), (NULL, 4.0)
+
+-- a non-null dividend meets a zero divisor somewhere in the batch, so this must throw
+query expect_error(BY_ZERO)
+SELECT a % b FROM ansi_float_mixed
+
+-- the only zero divisor left pairs with a null dividend, so this must return null, not throw
+query
+SELECT a % b FROM ansi_float_mixed WHERE a IS NULL ORDER BY 1
+
+-- no zero divisors in this batch at all
+query
+SELECT a % b FROM ansi_float_mixed WHERE b <> 0.0 ORDER BY 1
+
 -- ============================================================================
 -- Unary minus overflow
 -- ============================================================================
