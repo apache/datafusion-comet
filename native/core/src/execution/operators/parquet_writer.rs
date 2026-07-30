@@ -96,9 +96,6 @@ enum ParquetWriter {
         hdfs_writer: Option<opendal::Writer>,
         op: Operator,
         output_path: String,
-        /// Cumulative bytes pushed to `hdfs_writer` across `write` and `close`. Used to report
-        /// the real destination size since `std::fs::metadata` cannot stat `hdfs://` paths.
-        bytes_uploaded: u64,
     },
 }
 
@@ -116,15 +113,16 @@ impl ParquetWriter {
                 hdfs_writer,
                 op,
                 output_path,
-                bytes_uploaded,
             } => {
                 // Write batch to in-memory buffer
                 arrow_writer.write(batch)?;
 
-                // Flush and get the current buffer content
+                // Flush and take ownership of the buffered bytes so the next batch encodes
+                // into a fresh empty Vec (no clone, no explicit clear).
                 arrow_writer.flush()?;
                 let cursor = arrow_writer.inner_mut();
-                let current_data = cursor.get_ref().clone();
+                let current_data = std::mem::take(cursor.get_mut());
+                cursor.set_position(0);
 
                 // Create HDFS writer lazily on first write
                 if hdfs_writer.is_none() {
@@ -139,7 +137,6 @@ impl ParquetWriter {
 
                 // Write the accumulated data to HDFS
                 if let Some(w) = hdfs_writer {
-                    let chunk_len = current_data.len() as u64;
                     w.write(current_data).await.map_err(|e| {
                         parquet::errors::ParquetError::External(
                             format!(
@@ -149,75 +146,65 @@ impl ParquetWriter {
                             .into(),
                         )
                     })?;
-                    *bytes_uploaded += chunk_len;
                 }
-
-                // Clear the buffer after upload
-                cursor.get_mut().clear();
-                cursor.set_position(0);
 
                 Ok(())
             }
         }
     }
 
-    /// Close the writer and finalize the file, returning bytes pushed to remote storage.
-    /// For `LocalFile` returns `None` (caller resolves size via `fs::metadata`).
-    async fn close(self) -> std::result::Result<Option<u64>, parquet::errors::ParquetError> {
+    /// Close the writer and finalize the file, returning the total bytes written.
+    async fn close(self) -> std::result::Result<u64, parquet::errors::ParquetError> {
         match self {
-            ParquetWriter::LocalFile(writer) => {
-                writer.close()?;
-                Ok(None)
+            ParquetWriter::LocalFile(mut writer) => {
+                writer.finish()?;
+                Ok(writer.bytes_written() as u64)
             }
             #[cfg(feature = "hdfs-opendal")]
             ParquetWriter::Remote {
-                arrow_writer,
+                mut arrow_writer,
                 mut hdfs_writer,
                 op,
                 output_path,
-                mut bytes_uploaded,
             } => {
-                // Close the arrow writer to finalize parquet format
+                // Finalize the Parquet footer into the in-memory cursor. `bytes_written()`
+                // reports the authoritative file size once `finish()` has flushed the footer.
+                arrow_writer.finish()?;
+                let total_bytes = arrow_writer.bytes_written() as u64;
                 let cursor = arrow_writer.into_inner()?;
                 let final_data = cursor.into_inner();
 
-                // Create HDFS writer if not already created
-                if hdfs_writer.is_none() && !final_data.is_empty() {
-                    let writer = op.writer(output_path.as_str()).await.map_err(|e| {
-                        parquet::errors::ParquetError::External(
-                            format!("Failed to create HDFS writer for '{}': {}", output_path, e)
-                                .into(),
-                        )
-                    })?;
-                    hdfs_writer = Some(writer);
-                }
-
-                // Write any remaining data
                 if !final_data.is_empty() {
-                    if let Some(mut w) = hdfs_writer {
-                        let chunk_len = final_data.len() as u64;
-                        w.write(final_data).await.map_err(|e| {
+                    let mut w = match hdfs_writer.take() {
+                        Some(w) => w,
+                        None => op.writer(output_path.as_str()).await.map_err(|e| {
                             parquet::errors::ParquetError::External(
                                 format!(
-                                    "Failed to write final data to HDFS file '{}': {}",
+                                    "Failed to create HDFS writer for '{}': {}",
                                     output_path, e
                                 )
                                 .into(),
                             )
-                        })?;
-                        bytes_uploaded += chunk_len;
-
-                        // Close the HDFS writer
-                        w.close().await.map_err(|e| {
-                            parquet::errors::ParquetError::External(
-                                format!("Failed to close HDFS writer for '{}': {}", output_path, e)
-                                    .into(),
+                        })?,
+                    };
+                    w.write(final_data).await.map_err(|e| {
+                        parquet::errors::ParquetError::External(
+                            format!(
+                                "Failed to write final data to HDFS file '{}': {}",
+                                output_path, e
                             )
-                        })?;
-                    }
+                            .into(),
+                        )
+                    })?;
+                    w.close().await.map_err(|e| {
+                        parquet::errors::ParquetError::External(
+                            format!("Failed to close HDFS writer for '{}': {}", output_path, e)
+                                .into(),
+                        )
+                    })?;
                 }
 
-                Ok(Some(bytes_uploaded))
+                Ok(total_bytes)
             }
         }
     }
@@ -352,7 +339,6 @@ impl ParquetWriterExec {
                     hdfs_writer: None,
                     op,
                     output_path: object_store_path.to_string(),
-                    bytes_uploaded: 0,
                 })
             }
             #[cfg(not(feature = "hdfs-opendal"))]
@@ -562,23 +548,9 @@ impl ExecutionPlan for ParquetWriterExec {
                 })?;
             }
 
-            let remote_bytes = writer.close().await.map_err(|e| {
+            let file_size = writer.close().await.map_err(|e| {
                 DataFusionError::Execution(format!("Failed to close writer: {}", e))
-            })?;
-
-            // For remote (HDFS) writes, trust the byte counter the writer accumulated. For
-            // local writes, fall back to `fs::metadata` since we don't track bytes locally.
-            let file_size = if let Some(bytes) = remote_bytes {
-                bytes as i64
-            } else {
-                let local_path = part_file
-                    .strip_prefix("file://")
-                    .or_else(|| part_file.strip_prefix("file:"))
-                    .unwrap_or(&part_file);
-                std::fs::metadata(local_path)
-                    .map(|m| m.len() as i64)
-                    .unwrap_or(0)
-            };
+            })? as i64;
 
             // Update metrics with write statistics
             files_written.add(1);

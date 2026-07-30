@@ -104,7 +104,7 @@ case class CometNativeWriteExec(
     "rows_written" -> SQLMetrics.createMetric(sparkContext, "number of written rows"),
     "elapsed_compute" -> SQLMetrics.createNanoTimingMetric(
       sparkContext,
-      "total time (in ms) spent in native writer"))
+      "total time (in ms) spent in this operator"))
 
   override def doExecute(): RDD[InternalRow] = {
     // Setup job if committer is present
