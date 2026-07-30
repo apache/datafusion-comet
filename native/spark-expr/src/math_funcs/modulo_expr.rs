@@ -344,11 +344,8 @@ mod tests {
                         if !actual_arr.is_null(i) {
                             let actual_value = actual_arr.value(i);
                             let expected_value = expected_arr.value(i);
-                            // `is_eq` uses arrow's total ordering, under which `NaN` equals
-                            // `NaN`. Plain `==` would fail for the NaN results that a
-                            // non-zero divisor produces from NaN or infinite dividends.
-                            assert!(
-                                actual_value.is_eq(expected_value),
+                            assert_eq!(
+                                actual_value, expected_value,
                                 "Mismatch at index {i}, actual {actual_value:?}, expected {expected_value:?}"
                             );
                         }
@@ -843,12 +840,41 @@ mod tests {
         }
     }
 
+    /// Evaluates `a % b` over two Float64 columns and returns the result array.
+    ///
+    /// Used by tests whose expected result is NaN. `verify_result` compares with `==`, under
+    /// which `NaN != NaN`, and arrow's `is_eq`/`total_cmp` is no better here because the NaN
+    /// produced by an invalid `fmod` has a platform-dependent sign — x86 and aarch64 disagree
+    /// on whether it is `+NaN` or `-NaN`. These tests assert NaN-ness instead.
+    fn eval_float64_modulo(lhs: ArrayRef, rhs: ArrayRef, fail_on_error: bool) -> Float64Array {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("a", DataType::Float64, true),
+            Field::new("b", DataType::Float64, true),
+        ]));
+        let batch = RecordBatch::try_new(Arc::clone(&schema), vec![lhs, rhs]).unwrap();
+
+        let session_ctx = SessionContext::new();
+        let modulo_expr = create_modulo_expr(
+            Arc::new(Column::new("a", 0)),
+            Arc::new(Column::new("b", 1)),
+            DataType::Float64,
+            schema,
+            fail_on_error,
+            &session_ctx.state(),
+        )
+        .unwrap();
+
+        let ColumnarValue::Array(result) = modulo_expr.evaluate(&batch).unwrap() else {
+            panic!("Expected an array result");
+        };
+        result.as_primitive::<Float64Type>().clone()
+    }
+
     #[test]
     fn test_modulo_special_dividends_non_zero_divisor_float64_ansi() {
-        // The same dividends must not raise when the divisor is non-zero. `x % 2.0` is
-        // NaN for NaN and for both infinities, and preserves the sign of a zero dividend.
-        run_float_modulo::<Float64Type>(
-            DataType::Float64,
+        // The same dividends must not raise when the divisor is non-zero: `x % 2.0` is NaN
+        // for NaN and for both infinities, 0.0 for a zero dividend, and 1.0 for 5.0.
+        let result = eval_float64_modulo(
             Arc::new(Float64Array::from(vec![
                 Some(f64::NAN),
                 Some(f64::INFINITY),
@@ -858,15 +884,18 @@ mod tests {
             ])),
             Arc::new(Float64Array::from(vec![Some(2.0); 5])),
             true,
-            false,
-            Some(Arc::new(Float64Array::from(vec![
-                Some(f64::NAN),
-                Some(f64::NAN),
-                Some(f64::NAN),
-                Some(0.0),
-                Some(1.0),
-            ]))),
         );
+
+        assert_eq!(result.null_count(), 0);
+        for i in 0..3 {
+            assert!(
+                result.value(i).is_nan(),
+                "Expected NaN at index {i}, got {}",
+                result.value(i)
+            );
+        }
+        assert_eq!(result.value(3), 0.0);
+        assert_eq!(result.value(4), 1.0);
     }
 
     #[test]
@@ -941,13 +970,16 @@ mod tests {
     #[test]
     fn test_modulo_nan_divisor_float64_ansi() {
         // A NaN divisor is not zero either, so `x % NaN` is NaN rather than an error.
-        run_float_modulo::<Float64Type>(
-            DataType::Float64,
+        let result = eval_float64_modulo(
             Arc::new(Float64Array::from(vec![Some(1.0)])),
             Arc::new(Float64Array::from(vec![Some(f64::NAN)])),
             true,
-            false,
-            Some(Arc::new(Float64Array::from(vec![Some(f64::NAN)]))),
+        );
+        assert_eq!(result.null_count(), 0);
+        assert!(
+            result.value(0).is_nan(),
+            "Expected NaN, got {}",
+            result.value(0)
         );
     }
 }

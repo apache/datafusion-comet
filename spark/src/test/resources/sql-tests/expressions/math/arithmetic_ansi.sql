@@ -233,9 +233,15 @@ SELECT a % CAST(0.0 AS DOUBLE) FROM ansi_float_special WHERE a = double('-Infini
 query expect_error(BY_ZERO)
 SELECT a % CAST(0.0 AS DOUBLE) FROM ansi_float_special WHERE a = 0.0
 
--- the same special dividends with a non-zero divisor must not throw
+-- the same special dividends with a non-zero divisor must not throw. Compare isnan() rather
+-- than the values themselves: NaN % 2.0 and +/-Infinity % 2.0 are NaN, and the sign of a NaN
+-- produced by an invalid fmod is platform-dependent.
 query
-SELECT a % CAST(2.0 AS DOUBLE) FROM ansi_float_special ORDER BY 1
+SELECT isnan(a % CAST(2.0 AS DOUBLE)) AS r FROM ansi_float_special ORDER BY r
+
+-- a finite dividend with a non-zero divisor still compares by value
+query
+SELECT a % CAST(2.0 AS DOUBLE) FROM ansi_float_special WHERE a = 0.0
 
 -- ----------------------------------------------------------------------------
 -- Mixed-row batches: some rows have a zero divisor, some do not, and some have a null
