@@ -15,16 +15,16 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Whitespace trimming for casts from string.
+//! Whitespace trimming for parsing from string.
 //!
 //! Spark's string casts do not all agree on what "whitespace" means. There are exactly two
 //! regimes, and neither of them matches Rust's `str::trim` (which trims Unicode whitespace) or
 //! `<[u8]>::trim_ascii` (which omits `0x0B`):
 //!
-//! | Regime                      | Trimmed bytes            | Cast targets                                               |
-//! |-----------------------------|--------------------------|------------------------------------------------------------|
-//! | [`trim_all`]                | `0x00`-`0x20` and `0x7F` | boolean, byte, short, int, long, date, timestamp, timestamp_ntz |
-//! | [`trim_java_string`]        | `0x00`-`0x20`            | float, double, decimal                                     |
+//! | Regime               | Trimmed bytes            | Cast targets                                          |
+//! |----------------------|--------------------------|-------------------------------------------------------|
+//! | [`trim_all`]         | `0x00`-`0x20` and `0x7F` | boolean, byte, short, int, long, date, timestamp \*    |
+//! | [`trim_java_string`] | `0x00`-`0x20`            | float, double, decimal                                |
 //!
 //! Crucially, **neither regime trims any non-ASCII whitespace**. `U+0085`, `U+00A0`, `U+1680`,
 //! `U+2000`-`U+200A`, `U+2028`, `U+2029`, `U+202F`, `U+205F` and `U+3000` all leave Spark
@@ -35,8 +35,9 @@
 //! `String.trim` set does not. That single byte is why a shared helper cannot be applied
 //! uniformly: trimming it in the float/double/decimal paths would introduce a new divergence.
 //!
-//! Both helpers can slice on byte offsets without breaking UTF-8 because every byte either
-//! regime trims is ASCII, and a byte below `0x80` never appears inside a multi-byte sequence.
+//! \* `timestamp` and `timestamp_ntz` are listed for what Spark does; the Comet parsers for
+//! those two targets still use `str::trim` and have not been migrated to these helpers
+//! (<https://github.com/apache/datafusion-comet/issues/5149>).
 
 /// True for the bytes trimmed by `org.apache.spark.unsafe.types.UTF8String.trimAll`, i.e. the
 /// bytes `b` for which `Character.isWhitespace(b) || Character.isISOControl(b)` holds.
@@ -45,7 +46,7 @@
 /// `0x00`-`0x1F` and `0x7F`; the union is `0x00`-`0x20` plus `0x7F`. Spark widens a *signed*
 /// `byte` into the `int` overload, so bytes `0x80`-`0xFF` arrive negative and are never trimmed.
 #[inline]
-pub(crate) const fn is_whitespace_or_iso_control(b: u8) -> bool {
+const fn is_whitespace_or_iso_control(b: u8) -> bool {
     b <= 0x20 || b == 0x7F
 }
 
@@ -54,25 +55,32 @@ pub(crate) const fn is_whitespace_or_iso_control(b: u8) -> bool {
 /// A char above `U+0020` always encodes to bytes `>= 0x80` in UTF-8, so testing bytes rather
 /// than chars gives the same answer.
 #[inline]
-pub(crate) const fn is_java_trim_byte(b: u8) -> bool {
+const fn is_java_trim_byte(b: u8) -> bool {
     b <= 0x20
 }
 
 /// Trims the `UTF8String.trimAll` byte set (`0x00`-`0x20` and `0x7F`) from both ends.
 ///
-/// This is the trim used by `CAST(string AS boolean)`, the integral casts, and the datetime
-/// casts. See the [module docs](self) for why the other targets need [`trim_java_string`].
+/// This is the trim used by `CAST(string AS boolean)`, the integral casts and `date_parser`.
+/// See the [module docs](self) for why the other targets need [`trim_java_string`].
 #[inline]
 pub(crate) fn trim_all(s: &str) -> &str {
-    let (start, end) = trim_range(s.as_bytes(), is_whitespace_or_iso_control);
+    let (start, end) = trim_all_range(s.as_bytes());
     &s[start..end]
 }
 
 /// [`trim_all`] over a byte slice, for parsers that already work on bytes.
 #[inline]
 pub(crate) fn trim_all_bytes(bytes: &[u8]) -> &[u8] {
-    let (start, end) = trim_range(bytes, is_whitespace_or_iso_control);
-    &bytes[start..end]
+    trim_bytes(bytes, is_whitespace_or_iso_control).0
+}
+
+/// The byte offsets [`trim_all`] would slice at, for parsers that need to keep a cursor into
+/// the untrimmed input.
+#[inline]
+pub(crate) fn trim_all_range(bytes: &[u8]) -> (usize, usize) {
+    let (trimmed, start) = trim_bytes(bytes, is_whitespace_or_iso_control);
+    (start, start + trimmed.len())
 }
 
 /// Trims the `java.lang.String.trim` byte set (`0x00`-`0x20`, keeping `0x7F`) from both ends.
@@ -82,78 +90,68 @@ pub(crate) fn trim_all_bytes(bytes: &[u8]) -> &[u8] {
 /// `Decimal.stringToJavaBigDecimal`, which does `str.toString.trim`).
 #[inline]
 pub(crate) fn trim_java_string(s: &str) -> &str {
-    let (start, end) = trim_range(s.as_bytes(), is_java_trim_byte);
-    &s[start..end]
+    let (trimmed, start) = trim_bytes(s.as_bytes(), is_java_trim_byte);
+    &s[start..start + trimmed.len()]
 }
 
-/// Byte offsets of `bytes` with every leading and trailing byte matching `trimmed` removed.
+/// `bytes` with every leading and trailing byte matching `trimmed` removed, plus the number of
+/// bytes removed from the front.
 ///
-/// Slicing a `&str` on the returned offsets cannot panic as long as `trimmed` only accepts ASCII
-/// bytes, since those never appear inside a multi-byte UTF-8 sequence.
+/// Written with slice patterns rather than indexing -- the same shape as `<[u8]>::trim_ascii` --
+/// so the scan compiles to a leaf with no bounds checks. These run per row in the cast kernels,
+/// and an indexed version measurably slows the integral casts down.
+///
+/// Slicing a `&str` on the returned offsets cannot panic as long as `trimmed` only accepts
+/// ASCII bytes, since those never appear inside a multi-byte UTF-8 sequence.
 #[inline]
-fn trim_range(bytes: &[u8], trimmed: fn(u8) -> bool) -> (usize, usize) {
+fn trim_bytes(bytes: &[u8], trimmed: impl Fn(u8) -> bool) -> (&[u8], usize) {
     let mut start = 0;
-    let mut end = bytes.len();
-    while start < end && trimmed(bytes[start]) {
+    let mut rest = bytes;
+    while let [first, tail @ ..] = rest {
+        if !trimmed(*first) {
+            break;
+        }
         start += 1;
+        rest = tail;
     }
-    while end > start && trimmed(bytes[end - 1]) {
-        end -= 1;
+    while let [head @ .., last] = rest {
+        if !trimmed(*last) {
+            break;
+        }
+        rest = head;
     }
-    (start, end)
+    (rest, start)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Every byte the `trimAll` regime trims, as derived from Java's `Character.isWhitespace`
-    /// and `Character.isISOControl` rather than from the implementation under test.
-    fn expected_trim_all_bytes() -> Vec<u8> {
-        (0..=u8::MAX)
-            .filter(|&b| {
-                let is_whitespace = matches!(b, 0x09..=0x0D | 0x1C..=0x1F | 0x20);
-                let is_iso_control = matches!(b, 0x00..=0x1F | 0x7F);
-                is_whitespace || is_iso_control
-            })
-            .collect()
-    }
-
     #[test]
-    fn trim_all_matches_spark_byte_set() {
+    fn trim_sets_match_spark() {
         for b in 0..=u8::MAX {
-            let expected = expected_trim_all_bytes().contains(&b);
+            // Derived from Java's `Character.isWhitespace` / `isISOControl` rather than from
+            // the implementation under test.
+            let is_whitespace = matches!(b, 0x09..=0x0D | 0x1C..=0x1F | 0x20);
+            let is_iso_control = matches!(b, 0x00..=0x1F | 0x7F);
             assert_eq!(
                 is_whitespace_or_iso_control(b),
-                expected,
-                "byte 0x{b:02X} classified incorrectly"
+                is_whitespace || is_iso_control,
+                "byte 0x{b:02X} classified incorrectly for the trimAll set"
             );
-        }
-    }
-
-    #[test]
-    fn java_trim_set_is_trim_all_without_delete() {
-        for b in 0..=u8::MAX {
-            assert_eq!(is_java_trim_byte(b), b <= 0x20, "byte 0x{b:02X}");
+            assert_eq!(
+                is_java_trim_byte(b),
+                b <= 0x20,
+                "byte 0x{b:02X} classified incorrectly for the String.trim set"
+            );
         }
         // The two regimes differ in exactly one byte: DELETE.
         let differing: Vec<u8> = (0..=u8::MAX)
             .filter(|&b| is_whitespace_or_iso_control(b) != is_java_trim_byte(b))
             .collect();
         assert_eq!(differing, vec![0x7F]);
-    }
-
-    /// `<[u8]>::trim_ascii` and `str::trim` are both wrong here; pin down how, so that a future
-    /// change back to either is caught.
-    #[test]
-    fn rust_builtins_disagree_with_spark() {
-        // trim_ascii omits the vertical tab, which Spark trims.
-        assert!(is_whitespace_or_iso_control(0x0B));
-        assert!(!0x0Bu8.is_ascii_whitespace());
-        // str::trim removes non-ASCII whitespace, which Spark never trims.
-        assert_eq!("\u{3000}1".trim(), "1");
-        assert_eq!(trim_all("\u{3000}1"), "\u{3000}1");
-        assert_eq!(trim_java_string("\u{3000}1"), "\u{3000}1");
+        // `<[u8]>::trim_ascii` omits the vertical tab, which is why it cannot be used here.
+        assert!(is_whitespace_or_iso_control(0x0B) && !0x0Bu8.is_ascii_whitespace());
     }
 
     #[test]
@@ -163,16 +161,10 @@ mod tests {
         // Interior bytes are never touched.
         assert_eq!(trim_all("1\u{0}2"), "1\u{0}2");
         assert_eq!(trim_java_string("1\u{0}2"), "1\u{0}2");
-    }
-
-    #[test]
-    fn delete_byte_is_trimmed_only_by_trim_all() {
+        // DELETE is trimmed by one regime only.
         assert_eq!(trim_all("\u{7f}123\u{7f}"), "123");
         assert_eq!(trim_java_string("\u{7f}123\u{7f}"), "\u{7f}123\u{7f}");
-    }
-
-    #[test]
-    fn all_whitespace_input_trims_to_empty() {
+        // All-whitespace and empty input trim to empty.
         assert_eq!(trim_all(" \t\u{7f}"), "");
         assert_eq!(trim_java_string(" \t\n"), "");
         assert_eq!(trim_all(""), "");
@@ -180,9 +172,25 @@ mod tests {
     }
 
     #[test]
-    fn multibyte_content_is_preserved() {
-        // A trailing multi-byte char must not be sliced into.
+    fn non_ascii_whitespace_is_preserved() {
+        // `str::trim` would strip U+3000 here; Spark never does. A trailing multi-byte char
+        // must also not be sliced into.
+        assert_eq!("\u{3000}1".trim(), "1");
         assert_eq!(trim_all(" \u{3000}\u{e9} "), "\u{3000}\u{e9}");
         assert_eq!(trim_java_string(" \u{3000}\u{e9} "), "\u{3000}\u{e9}");
+    }
+
+    #[test]
+    fn byte_and_range_helpers_agree_with_str_helper() {
+        for input in ["", " ", "\u{7f}\u{b}x\u{0}", "1 2", "\u{3000}x\u{3000}"] {
+            let bytes = input.as_bytes();
+            let (start, end) = trim_all_range(bytes);
+            assert_eq!(trim_all_bytes(bytes), &bytes[start..end], "{input:?}");
+            assert_eq!(
+                trim_all(input).as_bytes(),
+                trim_all_bytes(bytes),
+                "{input:?}"
+            );
+        }
     }
 }

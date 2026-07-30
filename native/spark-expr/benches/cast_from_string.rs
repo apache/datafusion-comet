@@ -133,6 +133,79 @@ fn criterion_benchmark(c: &mut Criterion) {
         }
         group.finish();
     }
+
+    // str -> boolean and str -> float benchmarks, with and without the leading/trailing
+    // whitespace that exercises the trim helpers in `conversion_funcs::trim`
+    let bool_batch = create_boolean_string_batch(false);
+    let bool_padded_batch = create_boolean_string_batch(true);
+    let float_batch = create_float_string_batch(false);
+    let float_padded_batch = create_float_string_batch(true);
+    for (mode, mode_name) in [
+        (EvalMode::Legacy, "legacy"),
+        (EvalMode::Ansi, "ansi"),
+        (EvalMode::Try, "try"),
+    ] {
+        let spark_cast_options = SparkCastOptions::new(mode, "", false);
+        let mut group = c.benchmark_group(format!("cast_string_to_bool_and_float/{}", mode_name));
+        for (data_type, name, batch) in [
+            (DataType::Boolean, "boolean", &bool_batch),
+            (DataType::Boolean, "boolean_padded", &bool_padded_batch),
+            (DataType::Float64, "double", &float_batch),
+            (DataType::Float64, "double_padded", &float_padded_batch),
+        ] {
+            let cast = Cast::new(
+                expr.clone(),
+                data_type,
+                spark_cast_options.clone(),
+                None,
+                None,
+            );
+            group.bench_function(name, |b| {
+                b.iter(|| cast.evaluate(batch).unwrap());
+            });
+        }
+        group.finish();
+    }
+}
+
+/// Create batch with the boolean spellings Spark accepts, optionally space-padded
+fn create_boolean_string_batch(padded: bool) -> RecordBatch {
+    let words = ["true", "FALSE", "t", "n", "yes", "0", "TRUE", "no"];
+    create_string_batch(|i| {
+        let word = words[i % words.len()];
+        if padded {
+            format!("  {}  ", word)
+        } else {
+            word.to_string()
+        }
+    })
+}
+
+/// Create batch with floating point strings, optionally space-padded
+fn create_float_string_batch(padded: bool) -> RecordBatch {
+    let mut rng = StdRng::seed_from_u64(42);
+    create_string_batch(move |_| {
+        let value = rng.random_range(-1_000_000.0..1_000_000.0f64);
+        if padded {
+            format!("  {}  ", value)
+        } else {
+            format!("{}", value)
+        }
+    })
+}
+
+/// Create a single-column Utf8 batch of 8192 rows, every tenth one null
+fn create_string_batch(mut value: impl FnMut(usize) -> String) -> RecordBatch {
+    let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Utf8, true)]));
+    let mut b = StringBuilder::new();
+    for i in 0..8192 {
+        if i % 10 == 0 {
+            b.append_null();
+        } else {
+            b.append_value(value(i));
+        }
+    }
+    RecordBatch::try_new(schema, vec![Arc::new(b.finish())]).unwrap()
 }
 
 /// Create batch with small integer strings that fit in i8 range (for i8/i16 benchmarks)

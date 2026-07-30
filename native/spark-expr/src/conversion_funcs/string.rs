@@ -15,9 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::conversion_funcs::trim::{
-    is_whitespace_or_iso_control, trim_all, trim_all_bytes, trim_java_string,
-};
+use crate::conversion_funcs::trim::{trim_all, trim_all_bytes, trim_all_range, trim_java_string};
 use crate::{timezone, EvalMode, SparkError, SparkResult};
 use arrow::array::{
     Array, ArrayRef, ArrowPrimitiveType, BooleanArray, Decimal128Builder, GenericStringArray,
@@ -293,24 +291,24 @@ where
 
 /// Equivalent to `org.apache.spark.sql.catalyst.util.StringUtils.isTrueString`, minus the trim
 /// that the caller has already applied.
-#[inline]
-fn is_true_string(trimmed: &str) -> bool {
-    matches_ignore_ascii_case(trimmed, &["t", "true", "y", "yes", "1"])
-}
-
-/// Equivalent to `org.apache.spark.sql.catalyst.util.StringUtils.isFalseString`, minus the trim
-/// that the caller has already applied.
-#[inline]
-fn is_false_string(trimmed: &str) -> bool {
-    matches_ignore_ascii_case(trimmed, &["f", "false", "n", "no", "0"])
-}
-
+///
 /// Spark lowercases with `UTF8String.toLowerCase` before comparing, but every candidate is
 /// ASCII, and no non-ASCII character lowercases into an ASCII one that would complete any of
 /// them, so an ASCII-insensitive comparison gives the same answer without allocating.
 #[inline]
-fn matches_ignore_ascii_case(value: &str, candidates: &[&str]) -> bool {
-    candidates.iter().any(|c| value.eq_ignore_ascii_case(c))
+fn is_true_string(trimmed: &str) -> bool {
+    ["t", "true", "y", "yes", "1"]
+        .iter()
+        .any(|v| trimmed.eq_ignore_ascii_case(v))
+}
+
+/// Equivalent to `org.apache.spark.sql.catalyst.util.StringUtils.isFalseString`; see
+/// [`is_true_string`] for why the comparison is ASCII-only.
+#[inline]
+fn is_false_string(trimmed: &str) -> bool {
+    ["f", "false", "n", "no", "0"]
+        .iter()
+        .any(|v| trimmed.eq_ignore_ascii_case(v))
 }
 
 pub(crate) fn cast_string_to_decimal(
@@ -1898,24 +1896,6 @@ fn parse_str_to_time_only_timestamp<T: TimeZone>(value: &str, tz: &T) -> SparkRe
 //a string to date parser - port of spark's SparkDateTimeUtils#stringToDate.
 fn date_parser(date_str: &str, eval_mode: EvalMode) -> SparkResult<Option<i32>> {
     // local functions
-    // `SparkDateTimeUtils.getTrimmedStart`/`getTrimmedEnd` trim the same byte set as
-    // `UTF8String.trimAll`; see `is_whitespace_or_iso_control`.
-    fn get_trimmed_start(bytes: &[u8]) -> usize {
-        let mut start = 0;
-        while start < bytes.len() && is_whitespace_or_iso_control(bytes[start]) {
-            start += 1;
-        }
-        start
-    }
-
-    fn get_trimmed_end(start: usize, bytes: &[u8]) -> usize {
-        let mut end = bytes.len() - 1;
-        while end > start && is_whitespace_or_iso_control(bytes[end]) {
-            end -= 1;
-        }
-        end + 1
-    }
-
     /// Decodes a run of ASCII digits, or `None` if any byte is not a digit.
     fn decode_digits(bytes: &[u8]) -> Option<i64> {
         bytes.iter().try_fold(0i64, |acc, b| {
@@ -1981,8 +1961,10 @@ fn date_parser(date_str: &str, eval_mode: EvalMode) -> SparkResult<Option<i32>> 
 
     let bytes = date_str.as_bytes();
 
-    let mut j = get_trimmed_start(bytes);
-    let str_end_trimmed = get_trimmed_end(j, bytes);
+    // `SparkDateTimeUtils.getTrimmedStart`/`getTrimmedEnd` trim the same byte set as
+    // `UTF8String.trimAll`.
+    let (start, str_end_trimmed) = trim_all_range(bytes);
+    let mut j = start;
 
     if j == str_end_trimmed {
         return return_result(date_str, eval_mode);
@@ -2217,68 +2199,40 @@ mod tests {
         }
     }
 
-    /// One padding string used to check trim parity with Spark, and which of Spark's two trim
-    /// regimes strips it. See [`crate::conversion_funcs::trim`].
-    struct Pad {
-        text: String,
-        /// Removed by `UTF8String.trimAll`: the boolean, integral and datetime casts.
-        trim_all: bool,
-        /// Removed by `String.trim`: the float, double and decimal casts.
-        java_trim: bool,
-    }
-
     /// The codepoint matrix from
-    /// <https://github.com/apache/datafusion-comet/issues/5149>: ASCII control bytes (which
-    /// both regimes strip), DELETE (which only `trimAll` strips), and every non-ASCII
-    /// whitespace codepoint (which neither regime strips, so Spark returns NULL / raises).
-    fn trim_pads() -> Vec<Pad> {
-        let mut pads = Vec::new();
-        // 0x00-0x20: stripped by both regimes.
-        for b in 0x00u8..=0x20 {
-            pads.push(Pad {
-                text: String::from(b as char),
-                trim_all: true,
-                java_trim: true,
-            });
-        }
-        // DELETE: `trimAll` only.
-        pads.push(Pad {
-            text: "\u{7f}".to_string(),
-            trim_all: true,
-            java_trim: false,
-        });
-        // Unicode whitespace outside ASCII: never stripped, by either regime.
-        for text in [
-            "\u{85}", "\u{a0}", "\u{1680}", "\u{2000}", "\u{2005}", "\u{200a}", "\u{2028}",
-            "\u{2029}", "\u{202f}", "\u{205f}", "\u{3000}",
-        ] {
-            pads.push(Pad {
-                text: text.to_string(),
-                trim_all: false,
-                java_trim: false,
-            });
-        }
+    /// <https://github.com/apache/datafusion-comet/issues/5149>: the ASCII control bytes and
+    /// DELETE, plus the non-ASCII codepoints that are whitespace to Unicode but that no Spark
+    /// cast trims. `CometCastSuite` runs the same matrix with Spark itself as the oracle.
+    fn trim_pads() -> Vec<String> {
+        let mut pads: Vec<String> = (0x00u8..=0x20).map(|b| String::from(b as char)).collect();
+        pads.push("\u{7f}".to_string());
+        pads.extend(
+            [
+                "\u{85}", "\u{a0}", "\u{1680}", "\u{2000}", "\u{2005}", "\u{200a}", "\u{2028}",
+                "\u{2029}", "\u{202f}", "\u{205f}", "\u{3000}",
+            ]
+            .iter()
+            .map(|s| s.to_string()),
+        );
         pads
     }
 
-    /// Asserts that padding `valid` with each entry of [`trim_pads`] produces the value in
-    /// every eval mode when Spark trims that padding, and NULL (or an ANSI error) when it does
-    /// not. Interior padding must never parse.
-    fn assert_trim_parity(to_type: &DataType, valid: &str, uses_trim_all: bool) {
+    /// Asserts that the cast to `to_type` trims each [`trim_pads`] entry exactly when `regime`
+    /// -- the trim helper that Spark's cast to `to_type` uses -- trims it: a value in every eval
+    /// mode when it is trimmed, NULL (or an ANSI error) when it is not. Interior padding must
+    /// never parse.
+    fn assert_trim_parity(to_type: &DataType, valid: &str, regime: fn(&str) -> &str) {
+        let split = valid.char_indices().nth(1).map(|(i, _)| i).unwrap();
         for pad in trim_pads() {
-            let stripped = if uses_trim_all {
-                pad.trim_all
-            } else {
-                pad.java_trim
-            };
-            let split = valid.char_indices().nth(1).map(|(i, _)| i).unwrap();
+            // The regime trims this padding iff trimming the padding alone leaves nothing.
+            let trimmed = regime(&pad).is_empty();
             let cases = [
-                ("leading", format!("{}{valid}", pad.text), stripped),
-                ("trailing", format!("{valid}{}", pad.text), stripped),
-                ("both", format!("{}{valid}{}", pad.text, pad.text), stripped),
+                ("leading", format!("{pad}{valid}"), trimmed),
+                ("trailing", format!("{valid}{pad}"), trimmed),
+                ("both", format!("{pad}{valid}{pad}"), trimmed),
                 (
                     "interior",
-                    format!("{}{}{}", &valid[..split], pad.text, &valid[split..]),
+                    format!("{}{pad}{}", &valid[..split], &valid[split..]),
                     false,
                 ),
             ];
@@ -2288,8 +2242,7 @@ mod tests {
                     let options = SparkCastOptions::new(eval_mode, "UTC", false);
                     let result = cast_array(array, to_type, &options);
                     let context = format!(
-                        "cast {input:?} ({position} {:?}) to {to_type} in {eval_mode:?} mode",
-                        pad.text
+                        "cast {input:?} ({position} {pad:?}) to {to_type} in {eval_mode:?}"
                     );
                     if expect_value {
                         let array = result.unwrap_or_else(|e| panic!("{context}: {e}"));
@@ -2307,7 +2260,7 @@ mod tests {
 
     #[test]
     fn test_cast_string_to_boolean_trim_parity() {
-        assert_trim_parity(&DataType::Boolean, "true", true);
+        assert_trim_parity(&DataType::Boolean, "true", trim_all);
     }
 
     #[test]
@@ -2318,20 +2271,25 @@ mod tests {
             DataType::Int32,
             DataType::Int64,
         ] {
-            assert_trim_parity(&to_type, "12", true);
+            assert_trim_parity(&to_type, "12", trim_all);
         }
     }
 
     #[test]
-    fn test_cast_string_to_float_trim_parity() {
-        for to_type in [DataType::Float32, DataType::Float64] {
-            assert_trim_parity(&to_type, "1.5", false);
-        }
+    fn test_cast_string_to_date_trim_parity() {
+        assert_trim_parity(&DataType::Date32, "2020-01-01", trim_all);
     }
 
+    /// Float, double and decimal all use the narrower `String.trim` set, which keeps `0x7F`.
     #[test]
-    fn test_cast_string_to_decimal_trim_parity() {
-        assert_trim_parity(&DataType::Decimal128(10, 2), "1.5", false);
+    fn test_cast_string_to_float_and_decimal_trim_parity() {
+        for to_type in [
+            DataType::Float32,
+            DataType::Float64,
+            DataType::Decimal128(10, 2),
+        ] {
+            assert_trim_parity(&to_type, "1.5", trim_java_string);
+        }
     }
 
     #[test]
