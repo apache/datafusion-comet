@@ -29,7 +29,9 @@ statement
 CREATE TABLE cast_trim_pad(name string, pad string) USING parquet
 
 -- The padding is materialized here rather than in the queries, so that the cast operands below
--- stay inside expressions Comet runs natively.
+-- stay inside expressions Comet runs natively. The two multi-byte pads are spelled as casts of
+-- their UTF-8 bytes: `decode(bin, charset)` resolves to a RuntimeReplaceable on Spark 3.4 and
+-- 4.x, which is not foldable, and an inline table only accepts foldable expressions.
 statement
 INSERT INTO cast_trim_pad VALUES
   ('a_none', ''),
@@ -38,8 +40,8 @@ INSERT INTO cast_trim_pad VALUES
   ('d_us_0x1f', chr(31)),
   ('e_space_0x20', ' '),
   ('f_del_0x7f', chr(127)),
-  ('g_nbsp_u00a0', decode(X'C2A0', 'utf-8')),
-  ('h_ideographic_u3000', decode(X'E38080', 'utf-8'))
+  ('g_nbsp_u00a0', cast(X'C2A0' as string)),
+  ('h_ideographic_u3000', cast(X'E38080' as string))
 
 query
 SELECT
