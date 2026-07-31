@@ -30,9 +30,15 @@ use tokio::time::Instant;
 /// and lands on an empty coalescer buffer is passed through and written verbatim as a
 /// single block, which may exceed `batch_size` (see the `BatchCoalescer` bypass in
 /// `BufBatchWriter`). Block boundaries therefore depend on how the input is chunked, but
-/// every row is written exactly once in order. The partitioner does no buffering or
-/// concatenation of its own; doing so would copy every row an extra time before the
-/// coalescer handled it.
+/// every row is written exactly once in order.
+///
+/// The partitioner does no buffering or concatenation of its own. A concat layer here
+/// would be redundant with the coalescer, and actively wasteful whenever its output landed
+/// below `batch_size` and so missed the bypass: those rows would be copied once by the
+/// concat and again into the coalescer's builders. That happens whenever the input batch
+/// size does not divide `batch_size` evenly. When it does divide evenly the concat output
+/// hit the bypass and only one copy was made either way, so streaming costs nothing there
+/// beyond one `push_batch` call per input batch instead of per accumulated group.
 pub(crate) struct SinglePartitionShufflePartitioner<T: PartitionWriter> {
     partition_writer: T,
     /// Metrics for the repartitioner
