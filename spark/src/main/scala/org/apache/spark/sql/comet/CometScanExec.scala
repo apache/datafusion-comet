@@ -92,13 +92,15 @@ case class CometScanExec(
     val optimizerMetadataTimeNs = relation.location.metadataOpsTimeNs.getOrElse(0L)
     val startTime = System.nanoTime()
     val ret =
-      relation.location.listFiles(partitionFilters.filterNot(isDynamicPruningFilter), dataFilters)
+      relation.location
+        .listFiles(partitionFilters.filterNot(isDynamicPruningFilter), dataFilters)
+        .toArray
     setFilesNumAndSizeMetric(ret, true)
     val timeTakenMs =
       NANOSECONDS.toMillis((System.nanoTime() - startTime) + optimizerMetadataTimeNs)
     driverMetrics("metadataTime") = timeTakenMs
     ret
-  }.toArray
+  }
 
   // We can only determine the actual partitions at runtime when a dynamic partition filter is
   // present. This is because such a filter relies on information that is only available at run
@@ -118,7 +120,7 @@ case class CometScanExec(
         },
         Nil)
       val ret = selectedPartitions.filter(p => boundPredicate.eval(p.values))
-      setFilesNumAndSizeMetric(ret.toIndexedSeq, false)
+      setFilesNumAndSizeMetric(ret, false)
       val timeTakenMs = (System.nanoTime() - startTime) / 1000 / 1000
       driverMetrics("pruningTime") = timeTakenMs
       ret
@@ -214,7 +216,7 @@ case class CometScanExec(
 
   /** Helper for computing total number and size of files in selected partitions. */
   private def setFilesNumAndSizeMetric(
-      partitions: Seq[PartitionDirectory],
+      partitions: Array[PartitionDirectory],
       static: Boolean): Unit = {
     val filesNum = partitions.map(_.files.size.toLong).sum
     val filesSize = partitions.map(_.files.map(_.getLen).sum).sum
@@ -331,9 +333,13 @@ case class CometScanExec(
   private def createFilePartitionsForNonBucketedScan(
       selectedPartitions: Array[PartitionDirectory],
       fsRelation: HadoopFsRelation): Seq[FilePartition] = {
+    // FilePartition.maxSplitBytes and FilePartition.getFilePartitions both take a Seq and only
+    // read from it, so the partition array is converted once here and splitFiles below is built
+    // as a Seq.
+    val partitions = selectedPartitions.toSeq
     val openCostInBytes = fsRelation.sparkSession.sessionState.conf.filesOpenCostInBytes
     val maxSplitBytes =
-      FilePartition.maxSplitBytes(fsRelation.sparkSession, selectedPartitions.toIndexedSeq)
+      FilePartition.maxSplitBytes(fsRelation.sparkSession, partitions)
     logInfo(
       s"Planning scan with bin packing, max size: $maxSplitBytes bytes, " +
         s"open cost is considered as scanning $openCostInBytes bytes.")
@@ -348,7 +354,7 @@ case class CometScanExec(
         _ => true
     }
 
-    val splitFiles = selectedPartitions
+    val splitFiles = partitions
       .flatMap { partition =>
         partition.files.flatMap { file =>
           // getPath() is very expensive so we only want to call it once in this block:
@@ -376,7 +382,7 @@ case class CometScanExec(
       }
       .sortBy(_.length)(implicitly[Ordering[Long]].reverse)
 
-    FilePartition.getFilePartitions(relation.sparkSession, splitFiles.toIndexedSeq, maxSplitBytes)
+    FilePartition.getFilePartitions(relation.sparkSession, splitFiles, maxSplitBytes)
   }
 
   override def doCanonicalize(): CometScanExec = {

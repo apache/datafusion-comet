@@ -58,7 +58,7 @@ object Utils extends CometTypeShim with Logging {
   }
 
   def stringToSeq(str: String): Seq[String] = {
-    str.split(",").map(_.trim()).filter(_.nonEmpty).toIndexedSeq
+    str.split(",").iterator.map(_.trim()).filter(_.nonEmpty).toList
   }
 
   /** bridges the function call to Spark's Util */

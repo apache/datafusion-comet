@@ -118,18 +118,18 @@ abstract class CometTestBase
       excludedClasses: Seq[Class[_]] = Seq.empty,
       withTol: Option[Double] = None): (SparkPlan, SparkPlan) = {
 
-    var expected: Array[Row] = Array.empty
+    var expected: Seq[Row] = Seq.empty
     var sparkPlan = null.asInstanceOf[SparkPlan]
     withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
       val dfSpark = datasetOfRows(spark, df.logicalPlan)
-      expected = dfSpark.collect()
+      expected = dfSpark.collect().toSeq
       sparkPlan = dfSpark.queryExecution.executedPlan
     }
     val dfComet = datasetOfRows(spark, df.logicalPlan)
     if (withTol.isDefined) {
-      checkAnswerWithTolerance(dfComet, expected.toIndexedSeq, withTol.get)
+      checkAnswerWithTolerance(dfComet, expected, withTol.get)
     } else {
-      checkCometAnswer(dfComet, expected.toIndexedSeq)
+      checkCometAnswer(dfComet, expected)
     }
 
     if (assertCometNative) {
