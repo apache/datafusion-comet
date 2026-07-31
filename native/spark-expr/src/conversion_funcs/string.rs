@@ -1358,23 +1358,33 @@ fn local_datetime_to_micros(timestamp_info: &TimeStampInfo) -> SparkResult<Optio
     Ok(micros)
 }
 
+fn is_whitespace_or_iso_control(c: char) -> bool {
+    c.is_ascii_whitespace() || c.is_ascii_control()
+}
+
 fn timestamp_parser<T: TimeZone>(
     value: &str,
     eval_mode: EvalMode,
     tz: &T,
     is_spark4_plus: bool,
 ) -> SparkResult<Option<i64>> {
-    let trimmed = value.trim();
+    let trimmed = value.trim_matches(is_whitespace_or_iso_control);
     if trimmed.is_empty() {
-        return Ok(None);
+        // Keep the existing null result for empty/whitespace-only input, but do not widen it to
+        // control-only input under ANSI.
+        return if value.trim().is_empty() {
+            Ok(None)
+        } else {
+            timestamp_parser_with_tz(value, eval_mode, tz)
+        };
     }
-    // Spark 4.0+ rejects leading whitespace for ALL T-prefixed time-only strings
-    // (T<h>, T<h>:<m>, T<h>:<m>:<s>, T<h>:<m>:<s>.<f>), but accepts trailing whitespace.
-    // Spark 3.x trims all whitespace first, so leading whitespace is accepted there.
-    // Check the raw (pre-trim) value for leading whitespace before any T-time-only match.
+    // Spark 4.0+ rejects leading whitespace or ISO controls for ALL T-prefixed time-only strings
+    // (T<h>, T<h>:<m>, T<h>:<m>:<s>, T<h>:<m>:<s>.<f>), but accepts trailing padding.
+    // Spark 3.x trims this padding first, so it is accepted there.
+    // Check the raw (pre-trim) value for leading padding before any T-time-only match.
     if is_spark4_plus
-        && value.len() > value.trim_start().len()
-        && classify_timestamp_pattern(trimmed).is_some_and(TimestampPattern::is_t_time_only)
+        && value.len() > value.trim_start_matches(is_whitespace_or_iso_control).len()
+        && trimmed.starts_with('T')
     {
         return if eval_mode == EvalMode::Ansi {
             Err(SparkError::InvalidInputInCastToDatetime {
@@ -1390,12 +1400,12 @@ fn timestamp_parser<T: TimeZone>(
     // Spark accepts a leading '+' year sign on full date-time strings (e.g. "+2020-01-01T12:34:56")
     // but rejects it on time-only strings (e.g. "+12:12:12" -> null).
     // Detect: '+' followed by at least one digit and then a '-' separator -> year prefix -> strip '+'.
-    // Anything else starting with '+' (time-only, bare number, etc.) -> null.
+    // Anything else starting with '+' uses the normal invalid-input path.
     let value = if let Some(rest) = value.strip_prefix('+') {
         let first_non_digit = rest.find(|c: char| !c.is_ascii_digit());
         match first_non_digit {
             Some(i) if i >= 1 && rest.as_bytes()[i] == b'-' => rest,
-            _ => return Ok(None),
+            _ => return timestamp_parser_with_tz(value, eval_mode, tz),
         }
     } else {
         value
@@ -1654,15 +1664,6 @@ impl TimestampPattern {
                 | Self::Microsecond
         )
     }
-
-    /// True for the `T`-prefixed time-only shapes only, which Spark 4.0+ rejects when the
-    /// raw value has leading whitespace.
-    fn is_t_time_only(self) -> bool {
-        matches!(
-            self,
-            Self::TimeOnlyH | Self::TimeOnlyHm | Self::TimeOnlyHms | Self::TimeOnlyHmsu
-        )
-    }
 }
 
 static TIMESTAMP_PATTERN_SET: LazyLock<RegexSet> = LazyLock::new(|| {
@@ -1901,9 +1902,15 @@ fn timestamp_ntz_parser(
     allow_time_zone: bool,
     _is_spark4_plus: bool,
 ) -> SparkResult<Option<i64>> {
-    let trimmed = value.trim();
+    let trimmed = value.trim_matches(is_whitespace_or_iso_control);
     if trimmed.is_empty() {
-        return Ok(None);
+        // Keep the existing null result for empty/whitespace-only input, but do not widen it to
+        // control-only input under ANSI.
+        return if value.trim().is_empty() {
+            Ok(None)
+        } else {
+            invalid_ntz_timestamp(value, eval_mode)
+        };
     }
 
     // NTZ rejects leading whitespace for T-prefixed time-only strings on Spark 4+
@@ -1916,7 +1923,7 @@ fn timestamp_ntz_parser(
         let first_non_digit = rest.find(|c: char| !c.is_ascii_digit());
         match first_non_digit {
             Some(i) if i >= 1 && rest.as_bytes()[i] == b'-' => rest,
-            _ => return Ok(None),
+            _ => return invalid_ntz_timestamp(value, eval_mode),
         }
     } else {
         value
@@ -2033,7 +2040,7 @@ fn date_parser(date_str: &str, eval_mode: EvalMode) -> SparkResult<Option<i32>> 
     // local functions
     fn get_trimmed_start(bytes: &[u8]) -> usize {
         let mut start = 0;
-        while start < bytes.len() && is_whitespace_or_iso_control(bytes[start]) {
+        while start < bytes.len() && is_whitespace_or_iso_control(char::from(bytes[start])) {
             start += 1;
         }
         start
@@ -2041,14 +2048,10 @@ fn date_parser(date_str: &str, eval_mode: EvalMode) -> SparkResult<Option<i32>> 
 
     fn get_trimmed_end(start: usize, bytes: &[u8]) -> usize {
         let mut end = bytes.len() - 1;
-        while end > start && is_whitespace_or_iso_control(bytes[end]) {
+        while end > start && is_whitespace_or_iso_control(char::from(bytes[end])) {
             end -= 1;
         }
         end + 1
-    }
-
-    fn is_whitespace_or_iso_control(byte: u8) -> bool {
-        byte.is_ascii_whitespace() || byte.is_ascii_control()
     }
 
     /// Decodes a run of ASCII digits, or `None` if any byte is not a digit.
@@ -2659,8 +2662,18 @@ mod tests {
     #[test]
     fn test_leading_whitespace_t_hm() {
         let tz = &timezone::Tz::from_str("UTC").unwrap();
-        // Spark 4.0+ rejects leading whitespace for ALL T-prefixed time-only patterns.
-        for ws_input in &[" T2:30", "\tT2:30", "\nT2:30", " T2", "\tT2", "\nT2"] {
+        // Spark 4.0+ rejects leading whitespace or ISO controls for T-prefixed time-only patterns.
+        for ws_input in &[
+            " T2:30",
+            "\tT2:30",
+            "\nT2:30",
+            "\u{3}T2:30",
+            "\u{3}T2:30+00:00",
+            " T2",
+            "\tT2",
+            "\nT2",
+            "\u{3}T2",
+        ] {
             assert!(
                 timestamp_parser(ws_input, EvalMode::Legacy, tz, true)
                     .unwrap()
@@ -2672,7 +2685,7 @@ mod tests {
                 timestamp_parser(ws_input, EvalMode::Ansi, tz, true).is_err(),
                 "'{ws_input}' should error in ANSI mode on Spark 4.0+"
             );
-            // Spark 3.x trims all whitespace first, so leading whitespace is valid.
+            // Spark 3.x trims the padding first, so the input is valid.
             assert!(
                 timestamp_parser(ws_input, EvalMode::Legacy, tz, false)
                     .unwrap()
@@ -2680,7 +2693,7 @@ mod tests {
                 "'{ws_input}' should be valid in Legacy mode on Spark 3.x"
             );
         }
-        // Without leading whitespace, these must be valid on all versions.
+        // Without leading padding, these must be valid on all versions.
         for ok_input in &["T2:30", "T2"] {
             assert!(
                 timestamp_parser(ok_input, EvalMode::Legacy, tz, true)
@@ -2701,12 +2714,20 @@ mod tests {
             Some(1577882096000000),
             "+year on full datetime should parse the same as without the + prefix"
         );
-        // But '+' on a time-only string is rejected (Spark returns null).
         assert_eq!(
-            timestamp_parser("+12:12:12", EvalMode::Legacy, tz, true).unwrap(),
-            None,
-            "+hour:min:sec must return null"
+            timestamp_ntz_parser("+2020-01-01T12:34:56", EvalMode::Legacy, true, true).unwrap(),
+            Some(1577882096000000)
         );
+        // Other leading '+' inputs are null outside ANSI and errors in ANSI.
+        for value in ["+12:12:12", "+"] {
+            for eval_mode in [EvalMode::Legacy, EvalMode::Try] {
+                assert_eq!(
+                    timestamp_ntz_parser(value, eval_mode, true, true).unwrap(),
+                    None
+                );
+            }
+            assert!(timestamp_ntz_parser(value, EvalMode::Ansi, true, true).is_err());
+        }
     }
 
     #[test]
@@ -3111,23 +3132,6 @@ mod tests {
         utc_micros - offset_seconds * 1_000_000
     }
 
-    /// The inputs for which Comet's ANSI mode returns null where Spark raises
-    /// CAST_INVALID_INPUT: a leading `+` that is not followed by a `<digits>-` year.
-    ///
-    /// This predicate exists only to keep the ported Spark tests below honest about the
-    /// divergence rather than skipping the ANSI dimension for them entirely. Tracked by
-    /// <https://github.com/apache/datafusion-comet/issues/5165>.
-    fn ansi_returns_null_instead_of_raising(value: &str) -> bool {
-        let trimmed = value.trim();
-        match trimmed.strip_prefix('+') {
-            None => false,
-            Some(rest) => !matches!(
-                rest.find(|c: char| !c.is_ascii_digit()),
-                Some(i) if i >= 1 && rest.as_bytes()[i] == b'-'
-            ),
-        }
-    }
-
     /// Asserts `value` parses to `expected` in every eval mode, under session timezone `tz`.
     ///
     /// Mirrors `checkStringToTimestamp` in Spark's `DateTimeUtilsSuite`, extended over the
@@ -3153,12 +3157,6 @@ mod tests {
                 // Spark raises CAST_INVALID_INPUT under ANSI for anything it cannot parse,
                 // except that an all-whitespace or empty string is null in every mode.
                 None if value.trim().is_empty() => {
-                    assert_eq!(ansi.unwrap(), None, "{value:?} in ANSI")
-                }
-                // Pre-existing gap, not introduced by the shape classifier: a leading '+'
-                // that is not a year sign returns null in every mode, where Spark raises
-                // under ANSI. Tracked by issue 5165; asserted here so it cannot widen.
-                None if ansi_returns_null_instead_of_raising(value) => {
                     assert_eq!(ansi.unwrap(), None, "{value:?} in ANSI")
                 }
                 None => assert!(
@@ -3351,19 +3349,17 @@ mod tests {
         );
 
         // Whitespace and control-character permutations.
-        // Pre-existing gap, not introduced by the shape classifier: Spark trims leading and
-        // trailing whitespace *and ISO control* characters before parsing a timestamp
-        // (`SparkDateTimeUtils.getTrimmedStart`/`getTrimmedEnd`), but `timestamp_parser` uses
-        // Rust's `str::trim`, which only strips Unicode whitespace. So a value padded with a
-        // control character such as U+0003 returns null where Spark parses it. Comet's own
-        // `date_parser` already trims both, so this is also internally inconsistent.
-        //
-        // Asserted as-is so the divergence cannot silently widen. Tracked by
-        // <https://github.com/apache/datafusion-comet/issues/5165>.
         let expected = Some(utc_micros(2015, 3, 18, 12, 3, 17, 0));
         for value in permute_with_whitespace_and_control(&["2015-03-18 12:03:17"]) {
             debug_assert!(value.contains('\u{0003}'));
-            check(&value, None);
+            check(&value, expected);
+            for eval_mode in [EvalMode::Legacy, EvalMode::Try, EvalMode::Ansi] {
+                assert_eq!(
+                    timestamp_ntz_parser(&value, eval_mode, true, true).unwrap(),
+                    expected,
+                    "{value:?} in {eval_mode:?}"
+                );
+            }
         }
         // Values Spark rejects are rejected here too, control characters or not.
         for value in permute_with_whitespace_and_control(&[
@@ -3376,7 +3372,8 @@ mod tests {
         ]) {
             check(&value, None);
         }
-        // Whitespace-only padding, which Rust's `trim` does handle, parses as Spark expects.
+        assert!(timestamp_ntz_parser("\u{3}", EvalMode::Ansi, true, true).is_err());
+        // Whitespace-only padding parses as Spark expects.
         for value in [
             "2015-03-18 12:03:17",
             " 2015-03-18 12:03:17",
