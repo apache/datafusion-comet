@@ -25,6 +25,7 @@ import org.slf4j.LoggerFactory
 
 import org.apache.spark.SparkContext
 import org.apache.spark.rdd.RDD
+import org.apache.spark.sql.catalyst.expressions.GenericRow
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.types._
 
@@ -72,7 +73,7 @@ abstract class Tables(
       val rows = generatedData.mapPartitions { iter =>
         iter.map { l =>
           if (convertToSchema) {
-            val values = l.split("\\|", -1).dropRight(1).map { v =>
+            val values: Array[Any] = l.split("\\|", -1).dropRight(1).map { v =>
               if (v.equals("")) {
                 // If the string value is an empty string, we turn it to a null
                 null
@@ -80,7 +81,9 @@ abstract class Tables(
                 v
               }
             }
-            Row.fromSeq(values)
+            // Row.fromSeq copies its argument into a new array; GenericRow, which is what it
+            // wraps the values in, takes the array as-is.
+            new GenericRow(values)
           } else {
             Row.fromSeq(Seq(l))
           }
@@ -94,7 +97,9 @@ abstract class Tables(
             StructType(schema.fields.map(f => StructField(f.name, StringType))))
 
         val convertedData = {
-          val columns = schema.fields.map { f =>
+          // StructType is itself a Seq[StructField], so mapping it yields a Seq[Column] that can
+          // be splatted directly.
+          val columns = schema.map { f =>
             col(f.name).cast(f.dataType).as(f.name)
           }
           stringData.select(columns: _*)
