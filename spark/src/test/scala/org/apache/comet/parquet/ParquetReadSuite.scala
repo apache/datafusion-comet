@@ -31,6 +31,8 @@ import org.scalatest.Tag
 
 import org.apache.hadoop.fs.Path
 import org.apache.parquet.example.data.simple.SimpleGroup
+import org.apache.parquet.hadoop.ParquetFileReader
+import org.apache.parquet.hadoop.util.HadoopInputFile
 import org.apache.parquet.schema.MessageTypeParser
 import org.apache.spark.SparkException
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
@@ -122,6 +124,64 @@ abstract class ParquetReadSuite extends CometTestBase {
         }
         checkParquetFile(data)
       }
+    }
+  }
+
+  test("ANSI interval types") {
+    val intervals = Seq(
+      "YEAR" -> "1",
+      "MONTH" -> "2",
+      "YEAR TO MONTH" -> "1-2",
+      "DAY" -> "1",
+      "HOUR" -> "2",
+      "MINUTE" -> "3",
+      "SECOND" -> "4.5",
+      "DAY TO HOUR" -> "1 02",
+      "DAY TO MINUTE" -> "1 02:03",
+      "DAY TO SECOND" -> "1 02:03:04.5",
+      "HOUR TO MINUTE" -> "02:03",
+      "HOUR TO SECOND" -> "02:03:04.5",
+      "MINUTE TO SECOND" -> "03:04.5")
+
+    withTempPath { dir =>
+      val columns = intervals.zipWithIndex.map { case ((dataType, value), index) =>
+        s"CASE id % 3 WHEN 0 THEN CAST(NULL AS INTERVAL $dataType) " +
+          s"WHEN 1 THEN INTERVAL '$value' $dataType " +
+          s"ELSE INTERVAL '-$value' $dataType END AS i$index"
+      }
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        spark
+          .range(1000)
+          .selectExpr(columns: _*)
+          .coalesce(1)
+          .write
+          .option("parquet.enable.dictionary", "true")
+          .option("parquet.block.size", "1024")
+          .parquet(dir.getCanonicalPath)
+      }
+
+      val parquetFile = dir
+        .listFiles()
+        .find(_.getName.endsWith(".parquet"))
+        .getOrElse(fail("No parquet file was written"))
+      val reader = ParquetFileReader.open(
+        HadoopInputFile
+          .fromPath(new Path(parquetFile.getAbsolutePath), spark.sessionState.newHadoopConf()))
+      val (numRowGroups, columnChunks) =
+        try {
+          (reader.getRowGroups.size(), reader.getFooter.getBlocks.get(0).getColumns)
+        } finally {
+          reader.close()
+        }
+      assert(numRowGroups > 1, s"Test setup needs >1 row groups, got $numRowGroups")
+      assert(
+        columnChunks
+          .stream()
+          .allMatch(column =>
+            column.getEncodings.stream().anyMatch(encoding => encoding.usesDictionary())),
+        s"Test setup needs dictionary encoding for every column, got $columnChunks")
+
+      checkSparkAnswerAndOperator(spark.read.parquet(dir.getCanonicalPath))
     }
   }
 
