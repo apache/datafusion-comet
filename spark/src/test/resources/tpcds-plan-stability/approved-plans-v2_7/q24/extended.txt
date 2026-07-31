@@ -1,9 +1,9 @@
-CometNativeColumnarToRow
+CometColumnarToRow
 +- CometSort
    +- CometExchange
       +- CometFilter
          :  +- Subquery
-         :     +- CometNativeColumnarToRow
+         :     +- CometColumnarToRow
          :        +- CometHashAggregate
          :           +- CometExchange
          :              +- CometHashAggregate

@@ -1397,14 +1397,14 @@ index 7bfc8cf4fa6..4bd387801db 100644
              df.collect()
            }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala
-index 3ba48da0e32..0313aaa9ec6 100644
+index 3ba48da0e32..a7f9513b9c8 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala
 @@ -23,10 +23,11 @@ import org.apache.spark.SparkRuntimeException
  import org.apache.spark.sql.catalyst.expressions.{EqualTo, NamedExpression, OuterReference, SubqueryExpression}
  import org.apache.spark.sql.catalyst.plans.{LeftAnti, LeftSemi}
  import org.apache.spark.sql.catalyst.plans.logical.{Aggregate, Filter, Join, LogicalPlan, Project, Sort, Union}
-+import org.apache.spark.sql.comet.{CometNativeColumnarToRowExec, CometNativeScanExec, CometScanExec}
++import org.apache.spark.sql.comet.{CometColumnarToRowExec, CometNativeColumnarToRowExec, CometNativeScanExec, CometScanExec}
  import org.apache.spark.sql.execution._
  import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanHelper, DisableAdaptiveExecution}
  import org.apache.spark.sql.execution.datasources.FileScanRDD
@@ -1413,13 +1413,25 @@ index 3ba48da0e32..0313aaa9ec6 100644
  import org.apache.spark.sql.execution.joins.{BaseJoinExec, BroadcastHashJoinExec, BroadcastNestedLoopJoinExec}
  import org.apache.spark.sql.internal.SQLConf
  import org.apache.spark.sql.test.SharedSparkSession
-@@ -1529,6 +1530,18 @@ class SubquerySuite extends QueryTest
+@@ -1529,6 +1530,30 @@ class SubquerySuite extends QueryTest
              fs.inputRDDs().forall(
                _.asInstanceOf[FileScanRDD].filePartitions.forall(
                  _.files.forall(_.urlEncodedPath.contains("p=0"))))
 +        case WholeStageCodegenExec(ColumnarToRowExec(InputAdapter(
 +        fs @ CometScanExec(_, _, _, partitionFilters, _, _, _, _, _, _)))) =>
 +          partitionFilters.exists(ExecSubqueryExpression.hasSubquery) &&
++            fs.inputRDDs().forall(
++              _.asInstanceOf[FileScanRDD].filePartitions.forall(
++                _.files.forall(_.urlEncodedPath.contains("p=0"))))
++        case WholeStageCodegenExec(CometColumnarToRowExec(InputAdapter(
++        fs @ CometScanExec(_, _, _, partitionFilters, _, _, _, _, _, _)))) =>
++          partitionFilters.exists(ExecSubqueryExpression.hasSubquery) &&
++            fs.inputRDDs().forall(
++              _.asInstanceOf[FileScanRDD].filePartitions.forall(
++                _.files.forall(_.urlEncodedPath.contains("p=0"))))
++        case WholeStageCodegenExec(CometColumnarToRowExec(InputAdapter(
++        fs: CometNativeScanExec))) =>
++          fs.partitionFilters.exists(ExecSubqueryExpression.hasSubquery) &&
 +            fs.inputRDDs().forall(
 +              _.asInstanceOf[FileScanRDD].filePartitions.forall(
 +                _.files.forall(_.urlEncodedPath.contains("p=0"))))
@@ -1432,7 +1444,7 @@ index 3ba48da0e32..0313aaa9ec6 100644
          case _ => false
        })
      }
-@@ -2094,7 +2107,7 @@ class SubquerySuite extends QueryTest
+@@ -2094,7 +2119,7 @@ class SubquerySuite extends QueryTest
  
        df.collect()
        val exchanges = collect(df.queryExecution.executedPlan) {
@@ -1441,7 +1453,7 @@ index 3ba48da0e32..0313aaa9ec6 100644
        }
        assert(exchanges.size === 1)
      }
-@@ -2678,18 +2691,29 @@ class SubquerySuite extends QueryTest
+@@ -2678,18 +2703,29 @@ class SubquerySuite extends QueryTest
      def checkFileSourceScan(query: String, answer: Seq[Row]): Unit = {
        val df = sql(query)
        checkAnswer(df, answer)
@@ -2724,10 +2736,10 @@ index 3e7d26f74bd..79232dc3664 100644
          assert(o1.semanticEquals(o2), "Different output column order after AQE optimization")
        }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/columnar/CachedBatchSerializerSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/columnar/CachedBatchSerializerSuite.scala
-index 47b935a2880..3e9b87f5c32 100644
+index 47b935a2880..3fdeab3113c 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/columnar/CachedBatchSerializerSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/columnar/CachedBatchSerializerSuite.scala
-@@ -230,9 +230,16 @@ class CachedBatchSerializerNoUnwrapSuite extends QueryTest
+@@ -230,9 +230,21 @@ class CachedBatchSerializerNoUnwrapSuite extends QueryTest
        assert(cachedPlans.length == 2)
        cachedPlans.foreach {
          cachedPlan =>
@@ -2738,11 +2750,16 @@ index 47b935a2880..3e9b87f5c32 100644
 +          // (CometNativeColumnarToRow / CometColumnarToRow). Accept either the
 +          // Spark shape or the equivalent Comet shape, since the important property
 +          // under this serializer is that the row conversion is not unwrapped.
-+          val isSparkShape =
-+            cachedPlan.isInstanceOf[WholeStageCodegenExec] &&
-+              cachedPlan.asInstanceOf[WholeStageCodegenExec]
-+                .child.isInstanceOf[ColumnarToRowExec]
-+          val isCometShape = cachedPlan.getClass.getName.startsWith("org.apache.spark.sql.comet.")
++          // CometColumnarToRowExec supports codegen, so it appears as the child of a
++          // WholeStageCodegenExec, while CometNativeColumnarToRowExec does not and is
++          // the cached plan itself.
++          val transition = cachedPlan match {
++            case w: WholeStageCodegenExec => w.child
++            case other => other
++          }
++          val isSparkShape = cachedPlan.isInstanceOf[WholeStageCodegenExec] &&
++            transition.isInstanceOf[ColumnarToRowExec]
++          val isCometShape = transition.getClass.getName.startsWith("org.apache.spark.sql.comet.")
 +          assert(isSparkShape || isCometShape, s"unexpected cached plan:\n$cachedPlan")
        }
      }
