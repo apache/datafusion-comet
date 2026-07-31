@@ -92,9 +92,9 @@ them in review, and do not "simplify" them into an arrow call without new eviden
   DST rules.
 - **Shuffle byte formats**: whole-stream compression framing (arrow IPC per-buffer compression is
   a different byte format and has no Snappy), the pre-encoded schema fast path (byte-identical to
-  `StreamWriter`, exists to avoid re-encoding), radix sort over packed record pointers (not over
-  arrow arrays), and counting-sort partition grouping (linear versus the kernel route's
-  `n log n`). Row gather already uses `interleave_record_batch`.
+  `StreamWriter`, exists to avoid re-encoding), radix sort over packed record pointers on the JVM
+  shuffle path (not over arrow arrays), and counting-sort partition grouping (linear versus the
+  kernel route's `n log n`). Row gather already uses `interleave_record_batch`.
 - **columnar_to_row**: the `UnsafeRow` and `UnsafeArrayData` writers emit Spark's byte format.
   `arrow_row::RowConverter` produces arrow's row format and is not applicable.
 - **Aggregates**: decimal sum and avg per-row overflow checks (batch-level checking would change

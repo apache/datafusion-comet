@@ -36,10 +36,14 @@ relying on the summary here.
 distinguish them.
 
 The first axis is the allocation policy. Greedy pools are first come, first served up to the pool
-size. Fair pools cap a request against a divided share of the pool so that one operator cannot
-starve the others. Only two of the nine are Comet's own implementations
-(`CometUnifiedMemoryPool` and `CometFairMemoryPool`); the rest are DataFusion's `GreedyMemoryPool`,
-`FairSpillPool`, and `UnboundedMemoryPool`.
+size. Fair pools divide the pool size by the number of registered consumers, but the two fair
+implementations apply that share differently. DataFusion's `FairSpillPool` compares it against the
+calling reservation, so one operator cannot starve the others. `CometFairMemoryPool` compares it
+against the pool-wide total instead, which caps the pool as a whole rather than any one operator.
+`CometFairMemoryPool` is one of only two pools selectable in off-heap mode, so read the exact
+arithmetic under "How native memory relates to Spark's" below before reasoning about it. Only two
+of the nine are Comet's own implementations (`CometUnifiedMemoryPool` and `CometFairMemoryPool`);
+the rest are DataFusion's `GreedyMemoryPool`, `FairSpillPool`, and `UnboundedMemoryPool`.
 
 The second axis is scope, meaning how many native plans share one pool instance. `create_memory_pool`
 in `native/core/src/execution/memory_pools/mod.rs` implements three scopes:
@@ -67,10 +71,13 @@ in `native/core/src/execution/memory_pools/mod.rs` implements three scopes:
 | `unbounded`              | on-heap  | DataFusion `UnboundedMemoryPool` | per plan    | unlimited               |
 
 `memory_limit` and `memory_limit_per_task` are computed on the JVM in
-`CometExecIterator.getMemoryConfig` and passed to `createPlan` as separate arguments.
-`memory_limit_per_task` is `memory_limit * spark.task.cpus / cores`. In off-heap mode
-`memory_limit_per_task` crosses JNI but `parse_memory_pool_config` never reads it: the off-heap
-branch sizes from `memory_limit` only.
+`CometExecIterator.getMemoryConfig` and passed to `createPlan` as separate arguments. Which two
+values those are depends on the mode: in off-heap mode `memory_limit` is
+`spark.memory.offHeap.size` times `spark.comet.exec.memoryPool.fraction`, and in on-heap mode it is
+`CometSparkSessionExtensions.getCometMemoryOverhead`. `memory_limit_per_task` is
+`memory_limit * spark.task.cpus / cores` in both. In off-heap mode `memory_limit_per_task` crosses
+JNI but `parse_memory_pool_config` never reads it: the off-heap branch sizes from `memory_limit`
+only.
 
 Every pool is wrapped in DataFusion's `TrackConsumersPool` with `NUM_TRACKED_CONSUMERS = 10`
 (`memory_pools/mod.rs`). That wrapper does not change any allocation decision. Its only effect is
@@ -170,8 +177,9 @@ they have one, their spill logic. `HashJoinExec` is the exception worth knowing 
 side calls `state.reservation.try_grow(batch_size)?` and propagates the error, so a hash join that
 does not fit fails rather than spills. DataFusion's `ExternalSorter` is the model for the ones that
 do spill: `reserve_memory_for_batch_and_maybe_spill` calls `reservation.try_grow(size)`, and on any
-`Err` it spills the in-memory batches and retries the same `try_grow` once. Spill files land in the
-directories Comet passes down from Spark's `blockManager.getLocalDiskDirs`, configured through
+`Err` it spills the in-memory batches, if it has any, and retries the same `try_grow` once. Spill
+files land in the directories Comet passes down from Spark's `blockManager.getLocalDiskDirs`,
+configured through
 `DiskManagerBuilder` in `prepare_datafusion_session_context` and capped by
 `spark.comet.maxTempDirectorySize`.
 

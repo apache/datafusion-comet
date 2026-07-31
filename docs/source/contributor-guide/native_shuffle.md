@@ -146,9 +146,11 @@ These files live in the `datafusion-comet-shuffle` crate. `native/core` re-expor
 
 2. **Native execution**: A single `CometExecIterator` per partition runs the unified plan.
 
-3. **Partitioning**: `ShuffleWriterExec` receives batches and routes to the appropriate partitioner:
-   - `MultiPartitionShuffleRepartitioner`: For hash/range/round-robin partitioning
+3. **Partitioning**: `ShuffleWriterExec` receives batches and routes to the appropriate partitioner,
+   checked in this order:
+   - `EmptySchemaShufflePartitioner`: For zero-column input, whatever partitioning was requested
    - `SinglePartitionShufflePartitioner`: For single partition (simpler path)
+   - `MultiPartitionShuffleRepartitioner`: For hash/range/round-robin partitioning
 
 4. **Buffering and spilling**: The partitioner buffers rows per partition. When memory pressure
    exceeds the threshold, partitions spill to temporary files.
@@ -256,7 +258,7 @@ Native shuffle supports multiple compression codecs configured via
 The compression codec is applied uniformly to all partitions. Each partition's data is
 independently compressed, allowing parallel decompression during reads.
 
-## Rules and common mistakes
+## Rules and Common Mistakes
 
 Shuffle carries more cross-boundary invariants than most of the native code, because its output has
 to satisfy Spark's planner, its bytes have to satisfy two separate readers, and neither side
@@ -324,10 +326,10 @@ the passthrough assertion. That is the signal the workaround for that function c
 
 `ShuffleBlockWriter::write_batch` (`native/shuffle/src/writers/shuffle_block_writer.rs`) emits each
 block as an 8-byte little-endian length, an 8-byte field count, a 4-byte ASCII codec tag (`ZSTD`,
-`LZ4_`, `SNAP`, or `NONE`), and then one complete Arrow IPC stream compressed as a single frame. The length covers everything after itself.
-The field count is written because the JVM reader has to know how many array addresses to allocate,
-and `NativeBatchDecoderIterator` reads both headers before handing the remainder, starting at the
-codec tag, to native code.
+`LZ4_`, `SNAP`, or `NONE`), and then one complete Arrow IPC stream compressed as a single frame.
+The length covers everything after itself. The field count is written because the JVM reader has to
+know how many array addresses to allocate, and `NativeBatchDecoderIterator` reads both headers
+before handing the remainder, starting at the codec tag, to native code.
 
 Compression wraps the whole IPC stream rather than individual buffers. `read_ipc_compressed`
 (`native/shuffle/src/ipc.rs`) dispatches on the 4-byte tag, wraps the rest in the matching frame
