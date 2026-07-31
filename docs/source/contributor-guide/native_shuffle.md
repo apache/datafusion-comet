@@ -275,13 +275,15 @@ all three have to match Spark:
    column, feeding each value's little-endian bytes at a width fixed by the arrow data type.
    `hash_array_primitive!` (`native/spark-expr/src/hash_funcs/utils.rs`) widens `Int8`, `Int16`, and
    `Int32` to `i32` and hashes four bytes, and `Int64` to `i64` and hashes eight. The finalizer mixes
-   the byte length in, so the same numeric value at a different width yields a different hash. Null
-   slots are skipped and leave the running hash unchanged.
+   the byte length in, so the same numeric value hashed as `Int32` versus `Int64` yields a different
+   hash. Null slots are skipped and leave the running hash unchanged.
 3. `pmod` (`native/shuffle/src/comet_partitioning.rs`) reinterprets the `u32` hash as `i32` before
    taking the remainder, then folds a negative result back into range. The signed reinterpretation is
-   load bearing: Spark's `Murmur3Hash` returns a signed `Int`, so dropping the `as i32` moves every
-   hash at or above 2^31 to a different partition. `test_pmod` in that file pins five hashes against
-   the partition ids Spark produces for `n = 200`.
+   load bearing: Spark's `Murmur3Hash` returns a signed `Int`, so dropping the `as i32` moves hashes
+   at or above 2^31 to a different partition for any partition count that is not a power of two,
+   including 200, Spark's default. A power of two divides 2^32 exactly, which is why testing this
+   with `repartition(1024)` shows no difference at all. `test_pmod` in that file pins five hashes,
+   all of them above 2^31, against the partition ids Spark produces for `n = 200`.
 
 Round-robin partitioning runs the same three steps over the first `max_hash_columns` columns, so it
 inherits all of them.
@@ -320,10 +322,9 @@ the passthrough assertion. That is the signal the workaround for that function c
 
 ### The block format is deliberately not stock Arrow IPC
 
-Each block `ShuffleBlockWriter::write_batch`
-(`native/shuffle/src/writers/shuffle_block_writer.rs`) emits is an 8-byte little-endian length, an
-8-byte field count, a 4-byte ASCII codec tag (`ZSTD`, `LZ4_`, `SNAP`, or `NONE`), and then one
-complete Arrow IPC stream compressed as a single frame. The length covers everything after itself.
+`ShuffleBlockWriter::write_batch` (`native/shuffle/src/writers/shuffle_block_writer.rs`) emits each
+block as an 8-byte little-endian length, an 8-byte field count, a 4-byte ASCII codec tag (`ZSTD`,
+`LZ4_`, `SNAP`, or `NONE`), and then one complete Arrow IPC stream compressed as a single frame. The length covers everything after itself.
 The field count is written because the JVM reader has to know how many array addresses to allocate,
 and `NativeBatchDecoderIterator` reads both headers before handing the remainder, starting at the
 codec tag, to native code.
@@ -404,10 +405,10 @@ Where a kernel does fit, one is already used: the per-partition row gather is
 `interleave_record_batch` (`partitioners/partitioned_batch_iterator.rs`), and `SchemaAlignExec` casts
 with `cast_with_options`. Add a new hand-rolled loop only with a reason of the same kind.
 
-Two items that #5104 files under "shuffle" are not part of this path. The radix sort over packed
-record pointers is `Java_org_apache_comet_Native_sortRowPartitionsNative`
+The radix sort over packed record pointers, which #5104 lists under shuffle, is not part of this
+path: it is `Java_org_apache_comet_Native_sortRowPartitionsNative`
 (`native/core/src/execution/jni_api.rs`), which sorts the in-memory partition id array of
-`CometShuffleExternalSorter`, and the CRC32, CRC32C, and Adler32 checksums in
+`CometShuffleExternalSorter`. Separately, the CRC32, CRC32C, and Adler32 checksums in
 `native/shuffle/src/writers/checksum.rs` are reached only from `process_sorted_row_partition`, called
 by `Java_org_apache_comet_Native_writeSortedFileNative`. Both belong to
 [JVM Shuffle](jvm_shuffle.md). The native shuffle writer emits no checksums at all: it commits with
