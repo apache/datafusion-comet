@@ -124,7 +124,7 @@ $SPARK_HOME/bin/spark-shell \
     --conf spark.executor.extraClassPath=$COMET_JAR \
     --conf spark.plugins=org.apache.spark.CometPlugin \
     --conf spark.shuffle.manager=org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager \
-    --conf spark.comet.explainFallback.enabled=true \
+    --conf spark.comet.explain.fallback.enabled=true \
     --conf spark.memory.offHeap.enabled=true \
     --conf spark.memory.offHeap.size=4g
 ```
@@ -141,7 +141,7 @@ Comet will log output similar to:
 
 ```shell
 INFO core/src/lib.rs: Comet native library version $COMET_VERSION initialized
-WARN CometExecRule: Comet cannot execute some parts of this plan natively (set spark.comet.explainFallback.enabled=false to disable this logging):
+WARN CometExecRule: Comet cannot execute some parts of this plan natively (set spark.comet.explain.fallback.enabled=false to disable this logging):
   Execute InsertIntoHadoopFsRelationCommand [COMET: Native support for operator DataWritingCommandExec is disabled. Set spark.comet.parquet.write.enabled=true to enable it.]
 +- WriteFiles
    +-  LocalTableScan [COMET: Native support for operator LocalTableScanExec is disabled. Set spark.comet.exec.localTableScan.enabled=true to enable it.]
@@ -161,9 +161,36 @@ Comet will log output similar to:
 
 ```shell
 == Physical Plan ==
-CometNativeColumnarToRow
+CometColumnarToRow
 +- CometFilter [a#6], (isnotnull(a#6) AND (a#6 > 5))
    +- CometNativeScan parquet [a#6] Batched: true, DataFilters: [isnotnull(a#6), (a#6 > 5)], Format: CometParquet, Location: InMemoryFileIndex(1 paths)[file:/tmp/test], PartitionFilters: [], PushedFilters: [IsNotNull(a), GreaterThan(a,5)], ReadSchema: struct<a:int>
+```
+
+## Checking the Comet Version
+
+When the Comet plugin is loaded, it exposes its build version as the Spark config
+`spark.comet.version`. This can be queried at runtime from any supported language, for example:
+
+```scala
+scala> spark.conf.get("spark.comet.version")
+```
+
+```sql
+SET spark.comet.version;
+```
+
+The same value is available programmatically on the JVM classpath, along with additional build
+metadata that is useful when reporting issues:
+
+```scala
+scala> import org.apache.comet.{COMET_VERSION, COMET_BRANCH, COMET_REVISION}
+scala> println(COMET_VERSION)
+```
+
+Comet also logs its version when the native library is initialized:
+
+```shell
+INFO core/src/lib.rs: Comet native library version <version> initialized
 ```
 
 ## Additional Configuration

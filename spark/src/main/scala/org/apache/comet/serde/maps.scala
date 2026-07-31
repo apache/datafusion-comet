@@ -81,6 +81,12 @@ private object MapKeyDedupPolicySupport {
       s"`${SQLConf.MapKeyDedupPolicy.LAST_WIN}`; Comet's native map construction " +
       "does not implement LAST_WIN dedup semantics."
 
+  val nullKeyReason: String =
+    "Spark rejects a `NULL` element inside the keys array with a `RuntimeException`" +
+      " (`Cannot use null as map key`); Comet's native `map_from_arrays` / `map_from_entries`" +
+      " does not detect a per-element `NULL` key and produces a map with a `NULL` key instead" +
+      " ([#4680](https://github.com/apache/datafusion-comet/issues/4680))."
+
   def isLastWin: Boolean =
     SQLConf.get
       .getConf(SQLConf.MAP_KEY_DEDUP_POLICY)
@@ -92,6 +98,9 @@ object CometMapFromArrays extends CometExpressionSerde[MapFromArrays] {
 
   override def getIncompatibleReasons(): Seq[String] =
     Seq(MapKeyDedupPolicySupport.incompatibleReason)
+
+  override def getCompatibleNotes(): Seq[String] =
+    Seq(MapKeyDedupPolicySupport.nullKeyReason)
 
   override def getSupportLevel(expr: MapFromArrays): SupportLevel = {
     if (MapKeyDedupPolicySupport.isLastWin) {
@@ -152,6 +161,9 @@ object CometMapFromEntries
 
   override def getIncompatibleReasons(): Seq[String] =
     Seq(keyUnsupportedReason, valueUnsupportedReason, MapKeyDedupPolicySupport.incompatibleReason)
+
+  override def getCompatibleNotes(): Seq[String] =
+    Seq(MapKeyDedupPolicySupport.nullKeyReason)
 
   override def getSupportLevel(expr: MapFromEntries): SupportLevel = {
     if (SupportLevel.containsType(expr.dataType.keyType, classOf[BinaryType])) {

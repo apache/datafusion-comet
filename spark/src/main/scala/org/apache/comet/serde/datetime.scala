@@ -450,6 +450,12 @@ object CometNextDay extends CometExpressionSerde[NextDay] {
   override def getIncompatibleReasons(): Seq[String] =
     DatetimeCollation.incompatibleReasons("next_day")
 
+  override def getCompatibleNotes(): Seq[String] = Seq(
+    "Under ANSI mode, an invalid `dayOfWeek` surfaces as `CometNativeException` rather than" +
+      " Spark's `SparkIllegalArgumentException` with error class `ILLEGAL_DAY_OF_WEEK`. The" +
+      " throw/NULL decision is correct; only the exception class and error class differ" +
+      " ([#5073](https://github.com/apache/datafusion-comet/issues/5073)).")
+
   override def getSupportLevel(expr: NextDay): SupportLevel = {
     if (DatetimeCollation.hasNonDefaultCollation(expr)) {
       Incompatible(Some(collationReason))
@@ -475,6 +481,14 @@ object CometMakeDate extends CometExpressionSerde[MakeDate] {
    * `(year, month, day)` triple rather than returning NULL. The resolved flag is passed to native
    * via the `ScalarFunc.fail_on_error` field.
    */
+
+  override def getCompatibleNotes(): Seq[String] = Seq(
+    "Under ANSI mode, an out-of-range `(year, month, day)` triple surfaces as" +
+      " `CometNativeException` rather than Spark's `SparkDateTimeException` with error class" +
+      " `DATETIME_FIELD_OUT_OF_BOUNDS.WITH_SUGGESTION`. The throw/NULL decision is correct;" +
+      " only the exception class and error class differ" +
+      " ([#5073](https://github.com/apache/datafusion-comet/issues/5073)).")
+
   override def convert(expr: MakeDate, inputs: Seq[Attribute], binding: Boolean): Option[Expr] = {
     val childExpr = expr.children.map(exprToProtoInternal(_, inputs, binding))
     val optExpr = scalarFunctionExprToProtoWithReturnType(
