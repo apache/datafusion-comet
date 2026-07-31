@@ -40,7 +40,15 @@ INSERT INTO test_uuid_parts SELECT id FROM range(0, 32)
 query
 SELECT uuid(0)
 
--- pin the no-scan path with a deterministic assertion on top of the raw value above
+-- pin the no-scan path with a deterministic assertion on top of the raw value above.
+-- typeof(uuid(0)) would read better here but cannot be used: Spark's TypeOf.doGenCode
+-- interpolates the catalog string unquoted into generated Java --
+-- `UTF8String.fromString(${child.dataType.catalogString})` -- which emits
+-- `UTF8String.fromString(string)` and fails to compile. That code is byte-identical on 3.5, 4.0
+-- and master, so it is not version specific; it is normally invisible because TypeOf.foldable is
+-- true and ConstantFolding removes the node before codegen. This suite excludes ConstantFolding
+-- (see CometSqlFileTestSuite), which is what exposes it. So no SQL fixture here can use typeof on
+-- a non-foldable input.
 query
 SELECT length(uuid(0))
 
@@ -48,11 +56,20 @@ SELECT length(uuid(0))
 query
 SELECT uuid(42) FROM test_uuid_seed
 
--- Forces a hash exchange so uuid runs post-shuffle across several partitions. Locks the
--- `seed + partitionIndex` offset used by RandomUUIDGenerator; a single-partition test would
--- silently agree with Spark even if Comet ignored partitionIndex.
+-- Runs the projection *above* a hash exchange so uuid is evaluated on post-shuffle partitions and
+-- exercises the `seed + partitionIndex` offset in RandomUUIDGenerator. The projection must sit on
+-- top of the exchange: `... FROM t DISTRIBUTE BY id` parses as RepartitionByExpression on top of
+-- the Project, so uuid would run on the scan's partitions instead, and those pack into a single
+-- FilePartition here -- partitionIndex would be 0 and the test would agree with Spark even if the
+-- offset were dropped entirely.
 query
-SELECT uuid(42) FROM test_uuid_parts DISTRIBUTE BY id
+SELECT uuid(42) FROM (SELECT id FROM test_uuid_parts DISTRIBUTE BY id)
+
+-- The value of the query above rests on there being more than one post-shuffle partition, which
+-- cannot be asserted here: this suite compares Comet against Spark, so if the plan ever collapsed
+-- to one partition both engines would collapse identically and any check would still pass. The
+-- partition count is asserted directly in CometUuidExpressionSuite ("across multiple partitions"),
+-- which checks getNumPartitions > 1 before comparing, and covers 3.4/3.5 as well.
 
 -- Aliased seeded projections: both nodes carry the same explicit seed, so freshCopyIfContainsStatefulExpression
 -- must not accidentally hoist a shared instance -- each row must satisfy uuid(0) = uuid(0).
