@@ -371,7 +371,8 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       classOf[SortOrder] -> CometSortOrder,
       classOf[StaticInvoke] -> CometStaticInvoke,
       classOf[TryEval] -> CometTryEval,
-      classOf[UnscaledValue] -> CometUnscaledValue)
+      classOf[UnscaledValue] -> CometUnscaledValue,
+      classOf[Uuid] -> CometUuid)
     base ++ sparkVersionSpecificMiscExpressions
   }
 
