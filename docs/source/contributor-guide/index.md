@@ -46,6 +46,7 @@ Development Guide <development>
 
 Comet Plugin Overview <plugin_overview>
 Arrow FFI <ffi>
+Working with Arrow <working_with_arrow>
 JVM Shuffle <jvm_shuffle>
 Native Shuffle <native_shuffle>
 ANSI Error Propagation <sql_error_propagation>
