@@ -3054,7 +3054,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         Short.MaxValue)).foreach { value =>
       val data = Seq(value)
       withParquetTable(data, "tbl") {
-        Seq(-1000, -100, -10, -1, 0, 1, 10, 100, 1000).foreach { scale =>
+        Seq(-1000, -100, -20, -19, -10, -1, 0, 1, 10, 100, 1000).foreach { scale =>
           Seq(true, false).foreach { ansi =>
             withSQLConf(SQLConf.ANSI_ENABLED.key -> ansi.toString) {
               val res = spark.sql(s"SELECT round(_1, $scale) from tbl")
@@ -3069,6 +3069,46 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                   fail("Spark threw an exception but Comet did not. Spark exception: " +
                     sparkException.getMessage)
               }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  test("ANSI support for round function with negative scale overflow on long") {
+    // The test above only ever rounds `_1`, an int, so it never reaches the band
+    // where rounding a *long* overflows: 10^19 does not fit in a long, so scales
+    // in [-19, -18] can round a long to a value outside the long range. Spark
+    // throws ARITHMETIC_OVERFLOW under ANSI and wraps to the low-order 64 bits
+    // under legacy. Scales <= -20 round every long to 0 instead, and -39 is past
+    // the point where 10^(-scale) fits in an i128, so include those to pin the
+    // band boundaries. See https://github.com/apache/datafusion-comet/issues/5070.
+    val data = Seq(
+      Long.MaxValue,
+      Long.MinValue,
+      5000000000000000000L,
+      -5000000000000000000L,
+      4999999999999999999L,
+      0L).map(Tuple1.apply)
+    withParquetTable(data, "tbl") {
+      Seq(-39, -38, -20, -19, -18).foreach { scale =>
+        Seq(true, false).foreach { ansi =>
+          withSQLConf(SQLConf.ANSI_ENABLED.key -> ansi.toString) {
+            val res = spark.sql(s"SELECT round(_1, $scale) from tbl")
+            checkSparkAnswerMaybeThrows(res) match {
+              case (Some(sparkException), Some(cometException)) =>
+                assert(sparkException.getMessage.contains("ARITHMETIC_OVERFLOW"))
+                assert(cometException.getMessage.contains("ARITHMETIC_OVERFLOW"))
+              case (None, None) => checkSparkAnswerAndOperator(res)
+              case (None, Some(ex)) =>
+                fail(
+                  s"Comet threw an exception but Spark did not (scale=$scale, ansi=$ansi). " +
+                    "Comet exception: " + ex.getMessage)
+              case (Some(sparkException), None) =>
+                fail(
+                  s"Spark threw an exception but Comet did not (scale=$scale, ansi=$ansi). " +
+                    "Spark exception: " + sparkException.getMessage)
             }
           }
         }

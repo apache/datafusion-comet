@@ -199,5 +199,9 @@ name = "check_overflow"
 harness = false
 
 [[bench]]
+name = "round"
+harness = false
+
+[[bench]]
 name = "unscaled_value"
 harness = false
