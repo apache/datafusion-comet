@@ -24,6 +24,8 @@ import org.apache.spark.sql.catalyst.expressions.{Add, AttributeReference, Check
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.DecimalType
 
+import org.apache.comet.serde.QueryPlanSerde
+
 class CometDecimalArithmeticViewSuite extends CometTestBase {
 
   // Spark 4.1+ (SPARK-53968) stores `spark.sql.decimalOperations.allowPrecisionLoss` per
@@ -50,7 +52,7 @@ class CometDecimalArithmeticViewSuite extends CometTestBase {
     Seq((true, storedFalse), (false, storedTrue)).foreach { case (currentConf, add) =>
       withSQLConf(SQLConf.DECIMAL_OPERATIONS_ALLOW_PREC_LOSS.key -> currentConf.toString) {
         val promoted = org.apache.spark.sql.comet.DecimalPrecision
-          .promote(add, nullOnOverflow = true)
+          .promote(add)
         promoted match {
           case CheckOverflow(_, dt, _) =>
             assert(
@@ -61,6 +63,27 @@ class CometDecimalArithmeticViewSuite extends CometTestBase {
             fail(s"Expected DecimalPrecision.promote to wrap Add in CheckOverflow, got: $other")
         }
       }
+    }
+  }
+
+  test("issue #5075: DecimalPrecision.promote honours per-expression eval mode") {
+    val left = AttributeReference("a", DecimalType(10, 0))()
+    val right = AttributeReference("b", DecimalType(10, 0))()
+    val third = AttributeReference("c", DecimalType(10, 0))()
+    val tryAdd =
+      Add(left, right, NumericEvalContext(EvalMode.TRY, allowDecimalPrecisionLoss = true))
+    val ansiAdd =
+      Add(tryAdd, third, NumericEvalContext(EvalMode.ANSI, allowDecimalPrecisionLoss = true))
+
+    withSQLConf(SQLConf.ANSI_ENABLED.key -> "false") {
+      val proto = QueryPlanSerde.exprToProto(ansiAdd, Seq(left, right, third)).get
+      assert(proto.hasCheckOverflow)
+      val ansiOverflow = proto.getCheckOverflow
+      assert(ansiOverflow.getFailOnError)
+
+      val tryAddProto = ansiOverflow.getChild.getAdd.getLeft
+      assert(tryAddProto.hasCheckOverflow)
+      assert(!tryAddProto.getCheckOverflow.getFailOnError)
     }
   }
 }
