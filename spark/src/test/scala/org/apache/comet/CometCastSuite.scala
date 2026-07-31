@@ -36,9 +36,39 @@ import org.apache.spark.sql.functions.{col, monotonically_increasing_id}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType, DataType, DataTypes, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, MapType, ShortType, StringType, StructField, StructType, TimestampType}
 
+import org.apache.comet.codegen.CometBatchKernelCodegen
 import org.apache.comet.expressions.{CometCast, CometEvalMode}
 import org.apache.comet.rules.CometScanTypeChecker
 import org.apache.comet.serde.{Compatible, Incompatible, Unsupported}
+
+/**
+ * How a cast is expected to execute under Comet.
+ *
+ * `CometCast` mixes in `CodegenDispatchFallback`, so an `Incompatible` or `Unsupported` support
+ * level no longer means the plan leaves Comet. It means there is no native kernel for that pair,
+ * and the JVM codegen dispatcher runs Spark's own `Cast.doGenCode` inside the Comet pipeline
+ * instead. That is a third outcome, distinct from both native execution and Spark fallback, which
+ * the suite's former `hasIncompatibleType` boolean could not express.
+ */
+object CastExecution extends Enumeration {
+
+  /** Comet evaluates the cast with its own native kernel. */
+  val Native: Value = Value
+
+  /**
+   * There is no native kernel for the pair, so the JVM codegen dispatcher compiles Spark's own
+   * generated code into the Comet pipeline. The plan stays fully native and the results match
+   * Spark by construction.
+   */
+  val Dispatched: Value = Value
+
+  /**
+   * The plan leaves Comet entirely, so only the answer is compared. In this suite this happens
+   * because of the input type rather than the cast -- the Parquet scan rejects the column and
+   * takes the whole plan with it.
+   */
+  val SparkFallback: Value = Value
+}
 
 class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
@@ -72,6 +102,13 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   lazy val usingParquetExecWithIncompatTypes: Boolean =
     hasUnsignedSmallIntSafetyCheck(conf)
+
+  /**
+   * Byte and short columns are rejected by the scan when the unsigned small-int safety check is
+   * enabled, which takes the whole plan back to Spark whatever the cast does.
+   */
+  private lazy val smallIntScanExecution: CastExecution.Value =
+    if (usingParquetExecWithIncompatTypes) CastExecution.SparkFallback else CastExecution.Native
 
   // Timezone list to check temporal type casts
   private val representativeTimezones = Seq(
@@ -124,21 +161,30 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             } else if (!testExists) {
               fail(s"Missing test: $expectedTestName")
             } else {
+              val execution = expectedExecution(fromType, toType, CometEvalMode.LEGACY)
+
+              // Every pair in this matrix stays inside the Comet pipeline: `Compatible` pairs run
+              // Comet's own kernel, and the rest are routed through the JVM codegen dispatcher,
+              // which can always bind them because `CometCast.supportedTypes` only contains types
+              // `CometBatchKernelCodegen` handles.
+              assert(
+                execution != CastExecution.SparkFallback,
+                s"Cast from $fromType to $toType has no native kernel and cannot be routed " +
+                  "through the JVM codegen dispatcher either, so the plan falls back to Spark")
+
               val testIgnored =
                 tags.get(expectedTestName).exists(s => s.contains("org.scalatest.Ignore"))
-              CometCast.isSupported(fromType, toType, None, CometEvalMode.LEGACY) match {
-                case Compatible(_, _) =>
-                  if (testIgnored) {
-                    fail(
-                      s"Cast from $fromType to $toType is reported as compatible " +
-                        "with Spark but the test is ignored")
-                  }
-                case _ =>
-                  if (!testIgnored) {
-                    fail(
-                      s"We claim that cast from $fromType to $toType is not compatible " +
-                        "with Spark but the test is not ignored")
-                  }
+              if (testIgnored) {
+                val why = if (execution == CastExecution.Native) {
+                  "the support level claims Comet's native kernel matches Spark"
+                } else {
+                  "there is no native kernel, so the JVM codegen dispatcher runs Spark's own " +
+                    "generated code inside the Comet pipeline and the results match Spark by " +
+                    "construction"
+                }
+                fail(
+                  s"Cast from $fromType to $toType has an ignored test, but $why. Un-ignore " +
+                    s"the test and declare `expectedExecution = CastExecution.$execution`.")
               }
             }
           } else if (testExists) {
@@ -150,6 +196,24 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
     assertTestsExist(CometCast.supportedTypes, CometCast.supportedTypes)
   }
+
+  /**
+   * The path a cast between these two types takes today: Comet's native kernel when the support
+   * level is `Compatible`, otherwise the JVM codegen dispatcher when it can bind both types, and
+   * only failing that a Spark fallback.
+   */
+  private def expectedExecution(
+      fromType: DataType,
+      toType: DataType,
+      evalMode: CometEvalMode.Value): CastExecution.Value =
+    CometCast.isSupported(fromType, toType, None, evalMode) match {
+      case Compatible(_, _) => CastExecution.Native
+      case _
+          if CometBatchKernelCodegen.isSupportedDataType(fromType) &&
+            CometBatchKernelCodegen.isSupportedDataType(toType) =>
+        CastExecution.Dispatched
+      case _ => CastExecution.SparkFallback
+    }
 
   // CAST from BooleanType
 
@@ -201,59 +265,38 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   // CAST from ByteType
 
   test("cast ByteType to BooleanType") {
-    castTest(
-      generateBytes(),
-      DataTypes.BooleanType,
-      hasIncompatibleType = usingParquetExecWithIncompatTypes)
+    castTest(generateBytes(), DataTypes.BooleanType, expectedExecution = smallIntScanExecution)
   }
 
   test("cast ByteType to ShortType") {
-    castTest(
-      generateBytes(),
-      DataTypes.ShortType,
-      hasIncompatibleType = usingParquetExecWithIncompatTypes)
+    castTest(generateBytes(), DataTypes.ShortType, expectedExecution = smallIntScanExecution)
   }
 
   test("cast ByteType to IntegerType") {
-    castTest(
-      generateBytes(),
-      DataTypes.IntegerType,
-      hasIncompatibleType = usingParquetExecWithIncompatTypes)
+    castTest(generateBytes(), DataTypes.IntegerType, expectedExecution = smallIntScanExecution)
   }
 
   test("cast ByteType to LongType") {
-    castTest(
-      generateBytes(),
-      DataTypes.LongType,
-      hasIncompatibleType = usingParquetExecWithIncompatTypes)
+    castTest(generateBytes(), DataTypes.LongType, expectedExecution = smallIntScanExecution)
   }
 
   test("cast ByteType to FloatType") {
-    castTest(
-      generateBytes(),
-      DataTypes.FloatType,
-      hasIncompatibleType = usingParquetExecWithIncompatTypes)
+    castTest(generateBytes(), DataTypes.FloatType, expectedExecution = smallIntScanExecution)
   }
 
   test("cast ByteType to DoubleType") {
-    castTest(
-      generateBytes(),
-      DataTypes.DoubleType,
-      hasIncompatibleType = usingParquetExecWithIncompatTypes)
+    castTest(generateBytes(), DataTypes.DoubleType, expectedExecution = smallIntScanExecution)
   }
 
   test("cast ByteType to DecimalType(10,2)") {
     castTest(
       generateBytes(),
       DataTypes.createDecimalType(10, 2),
-      hasIncompatibleType = usingParquetExecWithIncompatTypes)
+      expectedExecution = smallIntScanExecution)
   }
 
   test("cast ByteType to StringType") {
-    castTest(
-      generateBytes(),
-      DataTypes.StringType,
-      hasIncompatibleType = usingParquetExecWithIncompatTypes)
+    castTest(generateBytes(), DataTypes.StringType, expectedExecution = smallIntScanExecution)
   }
 
   test("cast ByteType to BinaryType") {
@@ -261,7 +304,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     castTest(
       generateBytes(),
       DataTypes.BinaryType,
-      hasIncompatibleType = usingParquetExecWithIncompatTypes,
+      expectedExecution = smallIntScanExecution,
       testAnsi = false,
       testTry = false)
   }
@@ -272,7 +315,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         castTest(
           generateBytes(),
           DataTypes.TimestampType,
-          hasIncompatibleType = usingParquetExecWithIncompatTypes)
+          expectedExecution = smallIntScanExecution)
       }
     }
   }
@@ -280,60 +323,39 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   // CAST from ShortType
 
   test("cast ShortType to BooleanType") {
-    castTest(
-      generateShorts(),
-      DataTypes.BooleanType,
-      hasIncompatibleType = usingParquetExecWithIncompatTypes)
+    castTest(generateShorts(), DataTypes.BooleanType, expectedExecution = smallIntScanExecution)
   }
 
   test("cast ShortType to ByteType") {
     // https://github.com/apache/datafusion-comet/issues/311
-    castTest(
-      generateShorts(),
-      DataTypes.ByteType,
-      hasIncompatibleType = usingParquetExecWithIncompatTypes)
+    castTest(generateShorts(), DataTypes.ByteType, expectedExecution = smallIntScanExecution)
   }
 
   test("cast ShortType to IntegerType") {
-    castTest(
-      generateShorts(),
-      DataTypes.IntegerType,
-      hasIncompatibleType = usingParquetExecWithIncompatTypes)
+    castTest(generateShorts(), DataTypes.IntegerType, expectedExecution = smallIntScanExecution)
   }
 
   test("cast ShortType to LongType") {
-    castTest(
-      generateShorts(),
-      DataTypes.LongType,
-      hasIncompatibleType = usingParquetExecWithIncompatTypes)
+    castTest(generateShorts(), DataTypes.LongType, expectedExecution = smallIntScanExecution)
   }
 
   test("cast ShortType to FloatType") {
-    castTest(
-      generateShorts(),
-      DataTypes.FloatType,
-      hasIncompatibleType = usingParquetExecWithIncompatTypes)
+    castTest(generateShorts(), DataTypes.FloatType, expectedExecution = smallIntScanExecution)
   }
 
   test("cast ShortType to DoubleType") {
-    castTest(
-      generateShorts(),
-      DataTypes.DoubleType,
-      hasIncompatibleType = usingParquetExecWithIncompatTypes)
+    castTest(generateShorts(), DataTypes.DoubleType, expectedExecution = smallIntScanExecution)
   }
 
   test("cast ShortType to DecimalType(10,2)") {
     castTest(
       generateShorts(),
       DataTypes.createDecimalType(10, 2),
-      hasIncompatibleType = usingParquetExecWithIncompatTypes)
+      expectedExecution = smallIntScanExecution)
   }
 
   test("cast ShortType to StringType") {
-    castTest(
-      generateShorts(),
-      DataTypes.StringType,
-      hasIncompatibleType = usingParquetExecWithIncompatTypes)
+    castTest(generateShorts(), DataTypes.StringType, expectedExecution = smallIntScanExecution)
   }
 
   test("cast ShortType to BinaryType") {
@@ -341,7 +363,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     castTest(
       generateShorts(),
       DataTypes.BinaryType,
-      hasIncompatibleType = usingParquetExecWithIncompatTypes,
+      expectedExecution = smallIntScanExecution,
       testAnsi = false,
       testTry = false)
   }
@@ -352,7 +374,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         castTest(
           generateShorts(),
           DataTypes.TimestampType,
-          hasIncompatibleType = usingParquetExecWithIncompatTypes)
+          expectedExecution = smallIntScanExecution)
       }
     }
   }
@@ -501,9 +523,15 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     castTest(generateFloats(), DataTypes.DoubleType)
   }
 
-  ignore("cast FloatType to DecimalType(10,2)") {
-    // // https://github.com/apache/datafusion-comet/issues/1371
-    castTest(generateFloats(), DataTypes.createDecimalType(10, 2))
+  test("cast FloatType to DecimalType(10,2)") {
+    // Comet's native float -> decimal kernel can round differently to Spark
+    // (https://github.com/apache/datafusion-comet/issues/1371), so `CometCast` reports
+    // Incompatible and the cast is routed through the JVM codegen dispatcher instead. The
+    // variant below opts into the native kernel.
+    castTest(
+      generateFloats(),
+      DataTypes.createDecimalType(10, 2),
+      expectedExecution = CastExecution.Dispatched)
   }
 
   test("cast FloatType to DecimalType(10,2) - allow incompat") {
@@ -566,9 +594,13 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     castTest(generateDoubles(), DataTypes.FloatType)
   }
 
-  ignore("cast DoubleType to DecimalType(10,2)") {
-    // https://github.com/apache/datafusion-comet/issues/1371
-    castTest(generateDoubles(), DataTypes.createDecimalType(10, 2))
+  test("cast DoubleType to DecimalType(10,2)") {
+    // Incompatible for the same reason as float -> decimal, so this exercises the codegen
+    // dispatcher; the variant below opts into the native kernel.
+    castTest(
+      generateDoubles(),
+      DataTypes.createDecimalType(10, 2),
+      expectedExecution = CastExecution.Dispatched)
   }
 
   test("cast DoubleType to DecimalType(10,2) - allow incompat") {
@@ -1422,49 +1454,65 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   // CAST from TimestampType
 
-  ignore("cast TimestampType to BooleanType") {
-    // Arrow error: Cast error: Casting from Timestamp(Microsecond, Some("America/Los_Angeles")) to Boolean not supported
-    castTest(generateTimestamps(), DataTypes.BooleanType)
+  // Comet has no native kernel for timestamp -> boolean or timestamp -> numeric
+  // (https://github.com/apache/datafusion-comet/issues/352), so `canCastFromTimestamp` reports
+  // these as Unsupported and they run through the JVM codegen dispatcher.
+
+  test("cast TimestampType to BooleanType") {
+    // Spark's ANSI and TRY modes reject timestamp -> boolean at analysis time
+    // (`Cast.canAnsiCast`), so only the LEGACY cast is exercised.
+    castTest(
+      generateTimestamps(),
+      DataTypes.BooleanType,
+      expectedExecution = CastExecution.Dispatched,
+      testAnsi = false,
+      testTry = false)
   }
 
-  ignore("cast TimestampType to ByteType") {
-    // https://github.com/apache/datafusion-comet/issues/352
-    // input: 2023-12-31 10:00:00.0, expected: 32, actual: null
-    castTest(generateTimestamps(), DataTypes.ByteType)
+  test("cast TimestampType to ByteType") {
+    castTest(
+      generateTimestamps(),
+      DataTypes.ByteType,
+      expectedExecution = CastExecution.Dispatched)
   }
 
-  ignore("cast TimestampType to ShortType") {
-    // https://github.com/apache/datafusion-comet/issues/352
-    // input: 2023-12-31 10:00:00.0, expected: -21472, actual: null
-    castTest(generateTimestamps(), DataTypes.ShortType)
+  test("cast TimestampType to ShortType") {
+    castTest(
+      generateTimestamps(),
+      DataTypes.ShortType,
+      expectedExecution = CastExecution.Dispatched)
   }
 
-  ignore("cast TimestampType to IntegerType") {
-    // https://github.com/apache/datafusion-comet/issues/352
-    // input: 2023-12-31 10:00:00.0, expected: 1704045600, actual: null
-    castTest(generateTimestamps(), DataTypes.IntegerType)
+  test("cast TimestampType to IntegerType") {
+    castTest(
+      generateTimestamps(),
+      DataTypes.IntegerType,
+      expectedExecution = CastExecution.Dispatched)
   }
 
   test("cast TimestampType to LongType") {
     castTest(generateTimestampsExtended(), DataTypes.LongType)
   }
 
-  ignore("cast TimestampType to FloatType") {
-    // https://github.com/apache/datafusion-comet/issues/352
-    // input: 2023-12-31 10:00:00.0, expected: 1.7040456E9, actual: 1.7040456E15
-    castTest(generateTimestamps(), DataTypes.FloatType)
+  test("cast TimestampType to FloatType") {
+    castTest(
+      generateTimestamps(),
+      DataTypes.FloatType,
+      expectedExecution = CastExecution.Dispatched)
   }
 
-  ignore("cast TimestampType to DoubleType") {
-    // https://github.com/apache/datafusion-comet/issues/352
-    // input: 2023-12-31 10:00:00.0, expected: 1.7040456E9, actual: 1.7040456E15
-    castTest(generateTimestamps(), DataTypes.DoubleType)
+  test("cast TimestampType to DoubleType") {
+    castTest(
+      generateTimestamps(),
+      DataTypes.DoubleType,
+      expectedExecution = CastExecution.Dispatched)
   }
 
-  ignore("cast TimestampType to DecimalType(10,2)") {
-    // https://github.com/apache/datafusion-comet/issues/1280
-    // Native cast invoked for unsupported cast from Timestamp(Microsecond, Some("Etc/UTC")) to Decimal128(10, 2)
-    castTest(generateTimestamps(), DataTypes.createDecimalType(10, 2))
+  test("cast TimestampType to DecimalType(10,2)") {
+    castTest(
+      generateTimestamps(),
+      DataTypes.createDecimalType(10, 2),
+      expectedExecution = CastExecution.Dispatched)
   }
 
   test("cast TimestampType to StringType") {
@@ -1643,8 +1691,10 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("cast ArrayType to StringType") {
-    val hasIncompatibleType =
-      (dt: DataType) => !CometScanTypeChecker().isTypeSupported(dt, "a", ListBuffer.empty)
+    // The scan, not the cast, decides whether the plan stays in Comet for these element types.
+    val scanExecution = (dt: DataType) =>
+      if (CometScanTypeChecker().isTypeSupported(dt, "a", ListBuffer.empty)) CastExecution.Native
+      else CastExecution.SparkFallback
     Seq(
       BooleanType,
       StringType,
@@ -1659,7 +1709,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       DecimalType(38, 18),
       DataTypes.TimestampNTZType).foreach { dt =>
       val input = generateArrays(100, dt)
-      castTest(input, StringType, hasIncompatibleType = hasIncompatibleType(input.schema))
+      castTest(input, StringType, expectedExecution = scanExecution(input.schema))
     }
   }
 
@@ -2334,125 +2384,182 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  /**
+   * @param expectedExecution
+   *   How the cast under test is expected to run. `Native` and `Dispatched` both keep the plan
+   *   fully inside Comet, so both assert that; they differ in whether Comet's own kernel or
+   *   Spark's generated code evaluates the cast, which `assertCastExecution` pins from the
+   *   verbose extended explain. Only the non-ANSI `cast()` is checked that precisely: the ANSI
+   *   block below enables `allowIncompatible`, which pushes an `Incompatible` cast onto the
+   *   native path, so there the assertion is only that the plan stayed in Comet.
+   */
   private def castTest(
       input: DataFrame,
       toType: DataType,
-      hasIncompatibleType: Boolean = false,
+      expectedExecution: CastExecution.Value = CastExecution.Native,
       testAnsi: Boolean = true,
       testTry: Boolean = true,
       expectAnsiFailure: Boolean = false,
       useDataFrameDiff: Boolean = false): Unit = {
 
+    val staysInComet = expectedExecution != CastExecution.SparkFallback
+
     withTempPath { dir =>
       val data = roundtripParquet(input, dir).coalesce(1)
       val dataWithRowId = data.withColumn("__row_id", monotonically_increasing_id())
 
-      withSQLConf((SQLConf.ANSI_ENABLED.key, "false")) {
-        // cast() should return null for invalid inputs when ansi mode is disabled
-        val df = dataWithRowId
-          .select(col("__row_id"), col("a"), col("a").cast(toType).as("casted"))
-          .orderBy(col("__row_id"))
-          .drop("__row_id")
-        if (useDataFrameDiff) {
-          assertDataFrameEqualsWithExceptions(df, assertCometNative = !hasIncompatibleType)
-        } else {
-          if (hasIncompatibleType) {
-            checkSparkAnswer(df)
-          } else {
-            checkSparkAnswerAndOperator(df)
-          }
-        }
+      withSQLConf(
+        // Make the codegen dispatcher tag the expressions it routes, and render those tags in
+        // the extended explain output, so `assertCastExecution` can tell a native cast from a
+        // dispatched one.
+        CometConf.COMET_EXPLAIN_CODEGEN_ENABLED.key -> "true",
+        CometConf.COMET_EXTENDED_EXPLAIN_FORMAT.key ->
+          CometConf.COMET_EXTENDED_EXPLAIN_FORMAT_VERBOSE) {
 
-        if (testTry) {
-          val df2 = tryCastWithRowId(dataWithRowId, toType)
-          if (hasIncompatibleType) {
-            checkSparkAnswer(df2)
-          } else {
-            if (useDataFrameDiff) {
-              assertDataFrameEqualsWithExceptions(df2, assertCometNative = !hasIncompatibleType)
-            } else {
-              checkSparkAnswerAndOperator(df2)
-            }
-          }
-        }
-      }
-
-      if (testAnsi) {
-        // with ANSI enabled, we should produce the same exception as Spark
-        withSQLConf(
-          SQLConf.ANSI_ENABLED.key -> "true",
-          CometConf.getExprAllowIncompatConfigKey(classOf[Cast]) -> "true") {
-
-          // cast() should throw exception on invalid inputs when ansi mode is enabled
+        withSQLConf((SQLConf.ANSI_ENABLED.key, "false")) {
+          // cast() should return null for invalid inputs when ansi mode is disabled
           val df = dataWithRowId
-            .select(col("__row_id"), col("a"), col("a").cast(toType).as("converted"))
+            .select(col("__row_id"), col("a"), col("a").cast(toType).as("casted"))
             .orderBy(col("__row_id"))
             .drop("__row_id")
-          if (expectAnsiFailure) {
-            assert(!hasIncompatibleType, "Expected ANSI failures must use Comet native execution")
-            checkCometOperators(stripAQEPlan(df.queryExecution.executedPlan))
-          }
-          val res = if (useDataFrameDiff) {
-            assertDataFrameEqualsWithExceptions(df, assertCometNative = !hasIncompatibleType)
+          if (useDataFrameDiff) {
+            assertDataFrameEqualsWithExceptions(df, assertCometNative = staysInComet)
           } else {
-            checkSparkAnswerMaybeThrows(df)
+            if (staysInComet) {
+              checkSparkAnswerAndOperator(df)
+            } else {
+              checkSparkAnswer(df)
+            }
           }
-          if (expectAnsiFailure) {
-            assert(res._1.isDefined, "Expected Spark ANSI cast to fail")
-            assert(res._2.isDefined, "Expected Comet ANSI cast to fail")
-          }
-          res match {
-            case (None, None) =>
-            // neither system threw an exception
-            case (None, Some(e)) =>
-              throw e
-            case (Some(e), None) =>
-              // Spark failed but Comet succeeded
-              fail(s"Comet should have failed with ${e.getCause.getMessage}")
-            case (Some(sparkException), Some(cometException)) =>
-              // both systems threw an exception so we make sure they are the same
-              val sparkMessage =
-                if (sparkException.getCause != null) sparkException.getCause.getMessage
-                else sparkException.getMessage
-              val cometMessage =
-                if (cometException.getCause != null) cometException.getCause.getMessage
-                else cometException.getMessage
-              // this if branch should only check decimal to decimal cast and errors when output precision, scale causes overflow.
-              if (df.schema("a").dataType.typeName.contains("decimal") && toType.typeName
-                  .contains("decimal") && sparkMessage.contains("cannot be represented as")) {
-                assert(cometMessage.contains("too large to store"))
+          assertCastExecution(df, expectedExecution)
+
+          if (testTry) {
+            val df2 = tryCastWithRowId(dataWithRowId, toType)
+            if (!staysInComet) {
+              checkSparkAnswer(df2)
+            } else {
+              if (useDataFrameDiff) {
+                assertDataFrameEqualsWithExceptions(df2, assertCometNative = staysInComet)
               } else {
-                if (CometSparkSessionExtensions.isSpark40Plus) {
-                  // for Spark 4 we expect to sparkException carries the message
-                  assert(sparkMessage.contains("SQLSTATE"))
-                  // we compare a subset of the error message. Comet grabs the query
-                  // context eagerly so it displays the call site at the
-                  // line of code where the cast method was called, whereas spark grabs the context
-                  // lazily and displays the call site at the line of code where the error is checked.
-                  assert(
-                    sparkMessage.startsWith(
-                      cometMessage.substring(0, math.min(40, cometMessage.length))))
-                } else {
-                  // for Spark 3.4 we expect to reproduce the error message exactly
-                  assert(cometMessage == sparkMessage)
-                }
+                checkSparkAnswerAndOperator(df2)
               }
+            }
           }
         }
 
-        if (testTry) {
-          val df2 = tryCastWithRowId(dataWithRowId, toType)
-          if (useDataFrameDiff) {
-            assertDataFrameEqualsWithExceptions(df2, assertCometNative = !hasIncompatibleType)
-          } else {
-            if (hasIncompatibleType) {
-              checkSparkAnswer(df2)
+        if (testAnsi) {
+          // with ANSI enabled, we should produce the same exception as Spark
+          withSQLConf(
+            SQLConf.ANSI_ENABLED.key -> "true",
+            CometConf.getExprAllowIncompatConfigKey(classOf[Cast]) -> "true") {
+
+            // cast() should throw exception on invalid inputs when ansi mode is enabled
+            val df = dataWithRowId
+              .select(col("__row_id"), col("a"), col("a").cast(toType).as("converted"))
+              .orderBy(col("__row_id"))
+              .drop("__row_id")
+            if (expectAnsiFailure) {
+              assert(
+                expectedExecution == CastExecution.Native,
+                "Expected ANSI failures must use Comet native execution")
+              checkCometOperators(stripAQEPlan(df.queryExecution.executedPlan))
+            }
+            val res = if (useDataFrameDiff) {
+              assertDataFrameEqualsWithExceptions(df, assertCometNative = staysInComet)
             } else {
-              checkSparkAnswerAndOperator(df2)
+              checkSparkAnswerMaybeThrows(df)
+            }
+            if (expectAnsiFailure) {
+              assert(res._1.isDefined, "Expected Spark ANSI cast to fail")
+              assert(res._2.isDefined, "Expected Comet ANSI cast to fail")
+            }
+            res match {
+              case (None, None) =>
+              // neither system threw an exception
+              case (None, Some(e)) =>
+                throw e
+              case (Some(e), None) =>
+                // Spark failed but Comet succeeded
+                fail(s"Comet should have failed with ${e.getCause.getMessage}")
+              case (Some(sparkException), Some(cometException)) =>
+                // both systems threw an exception so we make sure they are the same
+                val sparkMessage =
+                  if (sparkException.getCause != null) sparkException.getCause.getMessage
+                  else sparkException.getMessage
+                val cometMessage =
+                  if (cometException.getCause != null) cometException.getCause.getMessage
+                  else cometException.getMessage
+                // this if branch should only check decimal to decimal cast and errors when output precision, scale causes overflow.
+                if (df.schema("a").dataType.typeName.contains("decimal") && toType.typeName
+                    .contains("decimal") && sparkMessage.contains("cannot be represented as")) {
+                  assert(cometMessage.contains("too large to store"))
+                } else {
+                  if (CometSparkSessionExtensions.isSpark40Plus) {
+                    // for Spark 4 we expect to sparkException carries the message
+                    assert(sparkMessage.contains("SQLSTATE"))
+                    // we compare a subset of the error message. Comet grabs the query
+                    // context eagerly so it displays the call site at the
+                    // line of code where the cast method was called, whereas spark grabs the context
+                    // lazily and displays the call site at the line of code where the error is checked.
+                    assert(
+                      sparkMessage.startsWith(
+                        cometMessage.substring(0, math.min(40, cometMessage.length))))
+                  } else {
+                    // for Spark 3.4 we expect to reproduce the error message exactly
+                    assert(cometMessage == sparkMessage)
+                  }
+                }
+            }
+          }
+
+          if (testTry) {
+            val df2 = tryCastWithRowId(dataWithRowId, toType)
+            if (useDataFrameDiff) {
+              assertDataFrameEqualsWithExceptions(df2, assertCometNative = staysInComet)
+            } else {
+              if (!staysInComet) {
+                checkSparkAnswer(df2)
+              } else {
+                checkSparkAnswerAndOperator(df2)
+              }
             }
           }
         }
       }
+    }
+  }
+
+  private val codegenDispatchInfo = """JVM codegen dispatcher: ([^\]\n]+)""".r
+
+  /**
+   * Assert that the cast in `df` ran the way the test declares. `CometScalaUDF` tags every
+   * expression it hands to the JVM codegen dispatcher, and `CometExecRule` rolls those tags up
+   * into a single `JVM codegen dispatcher: <names>` info line on the enclosing Comet operator, so
+   * the verbose extended explain distinguishes a native kernel from a dispatched one. `Cast`
+   * reports itself there as `cast`, `try_cast` or `ansi_cast` depending on its eval mode.
+   *
+   * There is nothing to assert for `SparkFallback`: `checkSparkAnswer` has already established
+   * that the plan left Comet.
+   */
+  private def assertCastExecution(df: DataFrame, expected: CastExecution.Value): Unit = {
+    if (expected == CastExecution.SparkFallback) {
+      return
+    }
+    val explain = new ExtendedExplainInfo().generateExtendedInfo(df.queryExecution.executedPlan)
+    val dispatched = codegenDispatchInfo
+      .findAllMatchIn(explain)
+      .flatMap(_.group(1).split(", "))
+      .exists(_.endsWith("cast"))
+    if (expected == CastExecution.Dispatched) {
+      assert(
+        dispatched,
+        "Expected the cast to be routed through the JVM codegen dispatcher, but the plan does " +
+          s"not report it:\n$explain")
+    } else {
+      assert(
+        !dispatched,
+        "Expected the cast to run on Comet's native kernel, but it was routed through the JVM " +
+          s"codegen dispatcher:\n$explain")
     }
   }
 
