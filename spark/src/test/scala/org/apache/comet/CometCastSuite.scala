@@ -1599,6 +1599,37 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     castTest(generateDecimalsPrecision10Scale2(), DataTypes.createDecimalType(10, 4))
   }
 
+  test("cast negative-scale DecimalType to integral types") {
+    // With allowNegativeScaleOfDecimal=true a DECIMAL(p, s<0) value is unscaled * 10^-s, so a cast
+    // to an integral type has to multiply rather than divide. The native kernel divides by
+    // 10^scale, and `scale as u32` wraps a negative i8 to a huge exponent whose wrapped power is
+    // 0, so it would divide by zero. These casts must therefore fall back to Spark.
+    //
+    // The all-null case matters on its own: arrow's `unary` applies the closure to null slots too,
+    // so an all-null negative-scale column reaches the divisor even though it has no real values.
+    withSQLConf("spark.sql.legacy.allowNegativeScaleOfDecimal" -> "true") {
+      // Built through the DataFrame API: the SQL parser rejects DECIMAL(10,-4) regardless of
+      // allowNegativeScaleOfDecimal, as the string-cast test below notes. It also cannot be
+      // round-tripped through Parquet ("Invalid DECIMAL scale: -4"), so the negative-scale value is
+      // produced mid-plan by the first cast and consumed by the second, which is the only way the
+      // native integral-cast kernel can be handed one.
+      val negScale = DataTypes.createDecimalType(10, -4)
+      Seq(
+        Seq("12500", "15000", "-12500", "0", null),
+        Seq[String](null, null, null) // all-null: still evaluates the divisor under `unary`
+      ).foreach { values =>
+        withTempPath { path =>
+          values.toDF("a").write.mode("overwrite").parquet(path.toString)
+          val reread = spark.read.parquet(path.toString)
+          Seq(DataTypes.ByteType, DataTypes.ShortType, DataTypes.IntegerType, DataTypes.LongType)
+            .foreach { target =>
+              checkSparkAnswer(reread.select(col("a").cast(negScale).cast(target)))
+            }
+        }
+      }
+    }
+  }
+
   test("cast StringType to DecimalType with negative scale (allowNegativeScaleOfDecimal)") {
     // With allowNegativeScaleOfDecimal=true, Spark allows DECIMAL(p, s) where s < 0.
     // The value is rounded to the nearest 10^|s| — e.g. DECIMAL(10,-4) rounds to

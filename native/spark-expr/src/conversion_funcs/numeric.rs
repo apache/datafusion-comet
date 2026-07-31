@@ -422,6 +422,12 @@ macro_rules! cast_decimal_to_int16_down {
         // The scale divisor is constant across the batch, so hoist it out of the per-element
         // loop. `unary`/`try_unary` then map the values buffer in one pass, carrying the null
         // buffer over, instead of the per-element iterator-collect.
+        //
+        // `$scale` is assumed non-negative: a negative i8 scale would wrap to a huge u32 exponent
+        // here and panic with "attempt to multiply with overflow" (release: wrap to a divisor of 0,
+        // then divide by zero). Negative-scale decimal sources are kept off this path by
+        // CometCast.canCastFromDecimal, which reports them Unsupported so the cast falls back to
+        // Spark. Keep these in sync.
         let divisor = 10_i128.pow($scale as u32);
         let output_array: $dest_array_type = match $eval_mode {
             EvalMode::Ansi => cast_array.try_unary::<_, $dest_arrow_type, SparkError>(|value| {
@@ -480,6 +486,12 @@ macro_rules! cast_decimal_to_int32_up {
         // The scale divisor is constant across the batch, so hoist it out of the per-element
         // loop. `unary`/`try_unary` then map the values buffer in one pass, carrying the null
         // buffer over, instead of the per-element iterator-collect.
+        //
+        // `$scale` is assumed non-negative: a negative i8 scale would wrap to a huge u32 exponent
+        // here and panic with "attempt to multiply with overflow" (release: wrap to a divisor of 0,
+        // then divide by zero). Negative-scale decimal sources are kept off this path by
+        // CometCast.canCastFromDecimal, which reports them Unsupported so the cast falls back to
+        // Spark. Keep these in sync.
         let divisor = 10_i128.pow($scale as u32);
         let output_array: $dest_array_type = match $eval_mode {
             EvalMode::Ansi => cast_array.try_unary::<_, $dest_arrow_type, SparkError>(|value| {
