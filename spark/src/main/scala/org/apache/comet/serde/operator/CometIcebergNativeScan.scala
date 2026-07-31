@@ -411,40 +411,49 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
           }
         }.toList
 
-        // Deduplicate partition spec, pairing each new spec-pool entry with a partition-type-pool
-        // entry at the same index. Native correlates the two by index to recover, per spec, the
-        // spec_id needed to merge partition types across historical specs in the same order
-        // Iceberg Java's Partitioning.partitionType()/iceberg-rust's compute_unified_partition_type
-        // do (newest spec_id first); see parse_file_scan_tasks_from_common in planner.rs.
-        try {
-          val partitionSpecParserClass =
-            IcebergReflection.loadClass(IcebergReflection.ClassNames.PARTITION_SPEC_PARSER)
-          val toJsonMethod = partitionSpecParserClass.getMethod(
-            "toJson",
-            IcebergReflection.loadClass(IcebergReflection.ClassNames.PARTITION_SPEC))
-          val partitionSpecJson = toJsonMethod
-            .invoke(null, spec)
-            .asInstanceOf[String]
+        // Serializes the file's real partition spec plus its paired partition-type-pool entry,
+        // then points the task at that pool index. Only invoked for tasks that actually carry
+        // partition values: a value-less task (partition evolution) takes the empty-spec path
+        // below instead, so this avoids the toJson reflection call and pool intern that would
+        // otherwise be computed and then immediately overwritten.
+        //
+        // The spec and type pools are index-aligned: native correlates the two by index to
+        // recover, per spec, the spec_id needed to merge partition types across historical specs
+        // in the same order Iceberg Java's Partitioning.partitionType()/iceberg-rust's
+        // compute_unified_partition_type do (newest spec_id first); see
+        // parse_file_scan_tasks_from_common in planner.rs. Every path that adds a spec-pool entry
+        // adds its type-pool entry in the same block to keep them aligned.
+        def serializeRealSpec(): Unit = {
+          try {
+            val partitionSpecParserClass =
+              IcebergReflection.loadClass(IcebergReflection.ClassNames.PARTITION_SPEC_PARSER)
+            val toJsonMethod = partitionSpecParserClass.getMethod(
+              "toJson",
+              IcebergReflection.loadClass(IcebergReflection.ClassNames.PARTITION_SPEC))
+            val partitionSpecJson = toJsonMethod
+              .invoke(null, spec)
+              .asInstanceOf[String]
 
-          val specIdx = partitionSpecToPoolIndex.getOrElseUpdate(
-            partitionSpecJson, {
-              val idx = partitionSpecToPoolIndex.size
-              commonBuilder.addPartitionSpecPool(partitionSpecJson)
-              // Manually build StructType JSON to match iceberg-rust expectations.
-              // Using Iceberg's SchemaParser.toJson() would include schema-level
-              // metadata (e.g., "schema-id") that iceberg-rust's StructType
-              // deserializer rejects. We need pure StructType format:
-              // {"type":"struct","fields":[...]}
-              val partitionTypeJson = compact(
-                render(("type" -> "struct") ~
-                  ("fields" -> fieldsJson)))
-              commonBuilder.addPartitionTypePool(partitionTypeJson)
-              idx
-            })
-          taskBuilder.setPartitionSpecIdx(specIdx)
-        } catch {
-          case e: Exception =>
-            logWarning(s"Failed to serialize partition spec to JSON: ${e.getMessage}")
+            val specIdx = partitionSpecToPoolIndex.getOrElseUpdate(
+              partitionSpecJson, {
+                val idx = partitionSpecToPoolIndex.size
+                commonBuilder.addPartitionSpecPool(partitionSpecJson)
+                // Manually build StructType JSON to match iceberg-rust expectations.
+                // Using Iceberg's SchemaParser.toJson() would include schema-level
+                // metadata (e.g., "schema-id") that iceberg-rust's StructType
+                // deserializer rejects. We need pure StructType format:
+                // {"type":"struct","fields":[...]}
+                val partitionTypeJson = compact(
+                  render(("type" -> "struct") ~
+                    ("fields" -> fieldsJson)))
+                commonBuilder.addPartitionTypePool(partitionTypeJson)
+                idx
+              })
+            taskBuilder.setPartitionSpecIdx(specIdx)
+          } catch {
+            case e: Exception =>
+              logWarning(s"Failed to serialize partition spec to JSON: ${e.getMessage}")
+          }
         }
 
         // Get partition data from the task (via file().partition())
@@ -493,6 +502,9 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
           // real spec id (so _spec_id stays correct) plus empty data, so native fills every
           // unified _partition field with null -- matching Spark and the pre-tightening behaviour.
           // Pair it with an empty partition-type-pool entry too, keeping the two pools aligned.
+          //
+          // Only the value-carrying path serializes the real spec (serializeRealSpec), so the
+          // value-less path never does the reflection/intern work just to overwrite it.
           if (partitionValues.isEmpty) {
             val specId = spec.getClass.getMethod("specId").invoke(spec).asInstanceOf[Int]
             val emptySpecJson =
@@ -508,8 +520,9 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
                 commonBuilder.addPartitionTypePool(emptyTypeJson)
                 idx
               })
-            // Override the real spec registered above.
             taskBuilder.setPartitionSpecIdx(emptySpecIdx)
+          } else {
+            serializeRealSpec()
           }
 
           // Always send partition data (empty when there are no values) so native never sees a
@@ -531,6 +544,12 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
               idx
             })
           taskBuilder.setPartitionDataIdx(partitionDataIdx)
+        } else {
+          // Defensive: ContentScanTask.partition() returns an empty struct (never null) for
+          // unpartitioned tables in practice. If it is ever null we cannot compute values, so
+          // just register the file's real spec (preserving the pre-refactor behaviour) to keep
+          // _spec_id correct.
+          serializeRealSpec()
         }
       }
     } catch {
