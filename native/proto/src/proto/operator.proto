@@ -283,6 +283,12 @@ message IcebergScanCommon {
   // delete file here (rather than embedding copies per delete_files_pool set) keeps the broadcast
   // common message from growing with the number of references.
   repeated IcebergDeleteFile delete_file_pool = 14;
+
+  // Iceberg's SparkScan.hashCode() (folds in pushed filters, snapshot, branch, and read schema).
+  // A self-join/self-merge can read the same table (same metadata_location) twice with different
+  // projections or filters, so PlanDataInjector keys planning data by
+  // (metadata_location, scan_hash_code) rather than metadata_location alone.
+  int32 scan_hash_code = 15;
 }
 
 message IcebergScan {
