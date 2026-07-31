@@ -55,7 +55,7 @@ fn make_overflow_batch(null_every: usize, overflow_every: usize) -> RecordBatch 
         .map(|i| {
             if null_every != 0 && i % null_every == 0 {
                 None
-            } else if overflow_every != 0 && i % overflow_every == 0 {
+            } else if overflow_every != 0 && (i + 1) % overflow_every == 0 {
                 Some(10_000_000_000)
             } else {
                 Some((i as i128 % 100_000) * 100)
@@ -190,6 +190,7 @@ fn criterion_benchmark(c: &mut Criterion) {
     let no_overflow_nulls = make_overflow_batch(17, 0);
     let sparse_overflow = make_overflow_batch(0, 17);
     let dense_overflow = make_overflow_batch(0, 2);
+    let overflow_at_end = make_overflow_batch(0, BATCH_SIZE);
     let legacy = build_new_expr(WideDecimalOp::Add, 10, 2, EvalMode::Legacy);
     let ansi = build_new_expr(WideDecimalOp::Add, 10, 2, EvalMode::Ansi);
 
@@ -204,6 +205,9 @@ fn criterion_benchmark(c: &mut Criterion) {
     });
     c.bench_function("wide_decimal: dense overflow", |b| {
         b.iter(|| black_box(legacy.evaluate(black_box(&dense_overflow)).unwrap()))
+    });
+    c.bench_function("wide_decimal: overflow at end of batch", |b| {
+        b.iter(|| black_box(legacy.evaluate(black_box(&overflow_at_end)).unwrap()))
     });
     c.bench_function("wide_decimal: ansi no overflow", |b| {
         b.iter(|| black_box(ansi.evaluate(black_box(&no_overflow)).unwrap()))

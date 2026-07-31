@@ -199,11 +199,10 @@ impl PhysicalExpr for DecimalRescaleCheckOverflow {
 
                 let result = if !fail_on_error && result.values().contains(&i128::MAX) {
                     // The rescale pass writes i128::MAX as an overflow sentinel for values that
-                    // do not fit the output precision. Only when a sentinel is present do we need
-                    // the extra null-masking pass (which allocates a new array); `contains`
-                    // short-circuits at the first sentinel, so the common no-overflow case skips
-                    // that allocation entirely. ANSI mode raises on overflow and never produces a
-                    // sentinel, so it also skips this pass.
+                    // do not fit the output precision. In the common no-overflow case, `contains`
+                    // trades the allocating null-masking pass for one full read-only scan. With
+                    // overflow, it short-circuits at the first sentinel before running that pass.
+                    // The fail-on-error path returns an error before this scan.
                     result.null_if_overflow_precision(p_out)
                 } else {
                     result

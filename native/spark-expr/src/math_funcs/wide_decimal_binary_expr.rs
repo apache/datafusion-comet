@@ -29,6 +29,7 @@ use arrow::record_batch::RecordBatch;
 use datafusion::common::Result;
 use datafusion::logical_expr::ColumnarValue;
 use datafusion::physical_expr::PhysicalExpr;
+use std::cell::Cell;
 use std::fmt::{Display, Formatter};
 use std::hash::Hash;
 use std::sync::Arc;
@@ -214,6 +215,7 @@ impl PhysicalExpr for WideDecimalBinaryExpr {
 
         let bound = max_for_precision(p_out);
         let neg_bound = i256::ZERO.wrapping_sub(bound);
+        let overflowed = Cell::new(false);
 
         let result: Decimal128Array = match op {
             WideDecimalOp::Add | WideDecimalOp::Subtract => {
@@ -249,7 +251,7 @@ impl PhysicalExpr for WideDecimalBinaryExpr {
                     } else {
                         raw
                     };
-                    check_overflow_and_convert(result, bound, neg_bound, eval_mode)
+                    check_overflow_and_convert(result, bound, neg_bound, eval_mode, &overflowed)
                 })?
             }
             WideDecimalOp::Multiply => {
@@ -276,18 +278,12 @@ impl PhysicalExpr for WideDecimalBinaryExpr {
                     } else {
                         raw
                     };
-                    check_overflow_and_convert(result, bound, neg_bound, eval_mode)
+                    check_overflow_and_convert(result, bound, neg_bound, eval_mode, &overflowed)
                 })?
             }
         };
 
-        let result = if eval_mode != EvalMode::Ansi && result.values().contains(&i128::MAX) {
-            // The arithmetic pass writes i128::MAX as an overflow sentinel for values that do
-            // not fit the output precision. Only when a sentinel is present do we need the
-            // extra null-masking pass (which allocates a new array); `contains` short-circuits
-            // at the first sentinel, so the common no-overflow case skips that allocation
-            // entirely. ANSI mode raises on overflow and never produces a sentinel, so it also
-            // skips this pass.
+        let result = if overflowed.get() {
             result.null_if_overflow_precision(p_out)
         } else {
             result
@@ -335,20 +331,22 @@ impl PhysicalExpr for WideDecimalBinaryExpr {
 }
 
 /// Check if the i256 result fits in the output precision. In Ansi mode, return an error
-/// on overflow. In Legacy/Try mode, return i128::MAX as a sentinel value that will be
-/// nullified by `null_if_overflow_precision`.
+/// on overflow. In Legacy/Try mode, record the overflow and return i128::MAX as a sentinel
+/// value that will be nullified by `null_if_overflow_precision`.
 #[inline]
 fn check_overflow_and_convert(
     result: i256,
     bound: i256,
     neg_bound: i256,
     eval_mode: EvalMode,
+    overflowed: &Cell<bool>,
 ) -> Result<i128, ArrowError> {
     if result > bound || result < neg_bound {
         if eval_mode == EvalMode::Ansi {
             return Err(ArrowError::ComputeError("Arithmetic overflow".to_string()));
         }
         // Sentinel value — will be nullified by null_if_overflow_precision
+        overflowed.set(true);
         Ok(i128::MAX)
     } else {
         Ok(result.to_i128().unwrap())
@@ -641,6 +639,28 @@ mod tests {
                 panic!("Scalar x Scalar must return ColumnarValue::Scalar, not Array");
             }
         }
+    }
+
+    #[test]
+    fn test_scalar_scalar_overflow_returns_null_scalar() {
+        use datafusion::common::ScalarValue;
+        use datafusion::physical_expr::expressions::Literal;
+
+        let value = ScalarValue::Decimal128(Some(5), 38, 0);
+        let expr = WideDecimalBinaryExpr::new(
+            Arc::new(Literal::new(value.clone())),
+            Arc::new(Literal::new(value)),
+            WideDecimalOp::Multiply,
+            1,
+            0,
+            EvalMode::Legacy,
+        );
+        let batch = RecordBatch::new_empty(Arc::new(Schema::empty()));
+
+        assert!(matches!(
+            expr.evaluate(&batch).unwrap(),
+            ColumnarValue::Scalar(ScalarValue::Decimal128(None, 1, 0))
+        ));
     }
 
     /// Companion test: when at least one input is an Array, the result must remain an Array.
