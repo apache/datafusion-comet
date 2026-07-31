@@ -763,14 +763,42 @@ Spark.</p></li>
 <h2>ANSI Mode Fallback<a class="headerlink" href="#ansi-mode-fallback" title="Link to this heading">#</a></h2>
 <p>Cast will fall back to Spark in some cases when ANSI mode is enabled. This can be enabled by setting <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Cast.allowIncompatible=true</span></code>. See the <a class="reference internal" href="../../../expressions.html"><span class="std std-doc">Comet Supported Expressions Guide</span></a> for more information on this configuration setting.</p>
 </section>
+<section id="whitespace-trimming-in-casts-from-string">
+<h2>Whitespace Trimming in Casts from String<a class="headerlink" href="#whitespace-trimming-in-casts-from-string" title="Link to this heading">#</a></h2>
+<p>Spark uses two different notions of whitespace when casting from string. Comet reproduces both,
+with one known exception noted below:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Trim set</p></th>
+<th class="head"><p>Cast targets</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Bytes <code class="docutils literal notranslate"><span class="pre">0x00</span></code>-<code class="docutils literal notranslate"><span class="pre">0x20</span></code> and <code class="docutils literal notranslate"><span class="pre">0x7F</span></code> (<code class="docutils literal notranslate"><span class="pre">DEL</span></code>)</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">BOOLEAN</span></code>, <code class="docutils literal notranslate"><span class="pre">TINYINT</span></code>, <code class="docutils literal notranslate"><span class="pre">SMALLINT</span></code>, <code class="docutils literal notranslate"><span class="pre">INT</span></code>, <code class="docutils literal notranslate"><span class="pre">BIGINT</span></code>, <code class="docutils literal notranslate"><span class="pre">DATE</span></code>, <code class="docutils literal notranslate"><span class="pre">TIMESTAMP</span></code> *</p></td>
+</tr>
+<tr class="row-odd"><td><p>Bytes <code class="docutils literal notranslate"><span class="pre">0x00</span></code>-<code class="docutils literal notranslate"><span class="pre">0x20</span></code> only</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">FLOAT</span></code>, <code class="docutils literal notranslate"><span class="pre">DOUBLE</span></code>, <code class="docutils literal notranslate"><span class="pre">DECIMAL</span></code></p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>Neither set includes any non-ASCII whitespace, so padding a value with <code class="docutils literal notranslate"><span class="pre">U+0085</span></code>, <code class="docutils literal notranslate"><span class="pre">U+00A0</span></code>,
+<code class="docutils literal notranslate"><span class="pre">U+1680</span></code>, <code class="docutils literal notranslate"><span class="pre">U+2000</span></code>-<code class="docutils literal notranslate"><span class="pre">U+200A</span></code>, <code class="docutils literal notranslate"><span class="pre">U+2028</span></code>, <code class="docutils literal notranslate"><span class="pre">U+2029</span></code>, <code class="docutils literal notranslate"><span class="pre">U+202F</span></code>, <code class="docutils literal notranslate"><span class="pre">U+205F</span></code> or <code class="docutils literal notranslate"><span class="pre">U+3000</span></code> produces <code class="docutils literal notranslate"><span class="pre">NULL</span></code>
+(or raises under ANSI mode), even though those codepoints are whitespace to Unicode. Whitespace
+inside a value is never trimmed.</p>
+<p>* <code class="docutils literal notranslate"><span class="pre">CAST(string</span> <span class="pre">AS</span> <span class="pre">TIMESTAMP)</span></code> and <code class="docutils literal notranslate"><span class="pre">CAST(string</span> <span class="pre">AS</span> <span class="pre">TIMESTAMP_NTZ)</span></code> still trim Unicode whitespace
+in Comet; see <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5149">#5149</a>.</p>
+</section>
 <section id="string-to-decimal">
 <h2>String to Decimal<a class="headerlink" href="#string-to-decimal" title="Link to this heading">#</a></h2>
 <p>Comet’s native <code class="docutils literal notranslate"><span class="pre">CAST(string</span> <span class="pre">AS</span> <span class="pre">DECIMAL)</span></code> implementation matches Apache Spark’s behavior,
 including:</p>
 <ul class="simple">
-<li><p>Leading and trailing ASCII whitespace is trimmed before parsing.</p></li>
-<li><p>Null bytes (<code class="docutils literal notranslate"><span class="pre">\u0000</span></code>) at the start or end of a string are trimmed, matching Spark’s
-<code class="docutils literal notranslate"><span class="pre">UTF8String</span></code> behavior. Null bytes embedded in the middle of a string produce <code class="docutils literal notranslate"><span class="pre">NULL</span></code>.</p></li>
+<li><p>Leading and trailing bytes <code class="docutils literal notranslate"><span class="pre">0x00</span></code>-<code class="docutils literal notranslate"><span class="pre">0x20</span></code> are trimmed before parsing, matching the
+<code class="docutils literal notranslate"><span class="pre">java.lang.String.trim</span></code> that Spark applies before handing the value to <code class="docutils literal notranslate"><span class="pre">BigDecimal</span></code>.</p></li>
+<li><p>Null bytes (<code class="docutils literal notranslate"><span class="pre">\u0000</span></code>) at the start or end of a string are therefore trimmed. Null bytes
+embedded in the middle of a string produce <code class="docutils literal notranslate"><span class="pre">NULL</span></code>.</p></li>
 <li><p>Fullwidth Unicode digits (U+FF10–U+FF19, e.g. <code class="docutils literal notranslate"><span class="pre">１２３.４５</span></code>) are treated as their ASCII
 equivalents, so <code class="docutils literal notranslate"><span class="pre">CAST('１２３.４５'</span> <span class="pre">AS</span> <span class="pre">DECIMAL(10,2))</span></code> returns <code class="docutils literal notranslate"><span class="pre">123.45</span></code>.</p></li>
 <li><p>Scientific notation (e.g. <code class="docutils literal notranslate"><span class="pre">1.23E+5</span></code>) is supported.</p></li>
@@ -787,7 +815,7 @@ are supported.</p>
 <ul class="simple">
 <li><p><code class="docutils literal notranslate"><span class="pre">yyyy</span></code>, <code class="docutils literal notranslate"><span class="pre">yyyy-[m]m</span></code>, <code class="docutils literal notranslate"><span class="pre">yyyy-[m]m-[d]d</span></code></p></li>
 <li><p>Optional <code class="docutils literal notranslate"><span class="pre">T</span></code> suffix with arbitrary trailing text (e.g. <code class="docutils literal notranslate"><span class="pre">2020-01-01T12:34:56</span></code>)</p></li>
-<li><p>Leading/trailing whitespace and control characters are trimmed</p></li>
+<li><p>Leading/trailing bytes <code class="docutils literal notranslate"><span class="pre">0x00</span></code>-<code class="docutils literal notranslate"><span class="pre">0x20</span></code> and <code class="docutils literal notranslate"><span class="pre">0x7F</span></code> are trimmed</p></li>
 <li><p>Optional sign prefix (<code class="docutils literal notranslate"><span class="pre">-</span></code> for negative years)</p></li>
 <li><p>Leading zeros (e.g. <code class="docutils literal notranslate"><span class="pre">0002020-01-01</span></code> is year 2020)</p></li>
 </ul>
@@ -1644,6 +1672,7 @@ as <code class="docutils literal notranslate"><span class="pre">&quot;1.23E+4&qu
   <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="visible nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#ansi-mode-fallback">ANSI Mode Fallback</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#whitespace-trimming-in-casts-from-string">Whitespace Trimming in Casts from String</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#string-to-decimal">String to Decimal</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#string-to-date">String to Date</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#date-to-timestamp">Date to Timestamp</a></li>
