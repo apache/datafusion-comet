@@ -24,8 +24,20 @@
 statement
 CREATE TABLE test_translate(s string, from_str string, to_str string) USING parquet
 
+-- The last two rows are the regression test for this file's routing change: they are the inputs
+-- where the native path is known to disagree with Spark, so they are only assertable now that the
+-- default is the bit-exact dispatcher. Built with decode() rather than literal characters to keep
+-- the fixture ASCII.
+--   decode(X'65CC81') is "e" + U+0301 COMBINING ACUTE ACCENT: one grapheme, two code points.
+--     DataFusion iterates graphemes, Spark iterates code points, so translating "e" differs.
+--   decode(X'00') as the `to` argument is U+0000, which Spark treats as a deletion sentinel and
+--     the native path substitutes literally.
 statement
-INSERT INTO test_translate VALUES ('hello', 'el', 'ip'), ('hello', 'aeiou', '12345'), ('', 'a', 'b'), (NULL, 'a', 'b'), ('hello', '', ''), ('abc', 'abc', 'x')
+INSERT INTO test_translate VALUES
+  ('hello', 'el', 'ip'), ('hello', 'aeiou', '12345'), ('', 'a', 'b'), (NULL, 'a', 'b'),
+  ('hello', '', ''), ('abc', 'abc', 'x'),
+  (concat('caf', decode(X'65CC81', 'UTF-8')), 'e', 'E'),
+  ('hello', 'l', decode(X'00', 'UTF-8'))
 
 query
 SELECT translate(s, from_str, to_str) FROM test_translate

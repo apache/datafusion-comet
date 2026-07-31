@@ -258,7 +258,12 @@ object CometJsonToStructs extends CometCodegenDispatch[JsonToStructs] with Nativ
   }
 }
 
-object CometStructsToCsv extends CometCodegenDispatch[StructsToCsv] with NativeOptInAvailable {
+// Routes through the JVM codegen dispatcher by default: the `Unsupported` (complex field types)
+// and non-opted-in `Incompatible` (#3232 field types) results below are both handled by
+// `CodegenDispatchFallback`, which runs Spark's own `doGenCode` inside the Comet pipeline so the
+// projection stays native and bit-exact. The native ToCsv path remains available via
+// `allowIncompatible`, for the field types it can actually handle.
+object CometStructsToCsv extends CometExpressionSerde[StructsToCsv] with CodegenDispatchFallback {
 
   private val incompatibleDataTypes = Seq(DateType, TimestampType, TimestampNTZType, BinaryType)
 
@@ -266,42 +271,42 @@ object CometStructsToCsv extends CometCodegenDispatch[StructsToCsv] with NativeO
     "Date, Timestamp, TimestampNTZ, and Binary data types may produce different results" +
       " (https://github.com/apache/datafusion-comet/issues/3232)")
 
-  // The native ToCsv path only supports non-complex, compatible field types. Everything else
-  // (and the default, unless opted in) runs through the codegen dispatcher, which is bit-exact.
-  private def nativeSupported(expr: StructsToCsv): Boolean = {
-    val dataTypes = expr.inputSchema.fields.map(_.dataType)
-    !dataTypes.exists(DataTypeSupport.isComplexType) &&
-    !dataTypes.exists(incompatibleDataTypes.contains)
-  }
+  override def getUnsupportedReasons(): Seq[String] = Seq(
+    "Complex types (arrays, maps, structs) in the schema are not supported")
 
-  override def getSupportLevel(expr: StructsToCsv): SupportLevel =
-    if (!CometConf.isExprAllowIncompat(getExprConfigName(expr)) && nativeSupported(expr)) {
-      Compatible(nativeOptIn =
-        Some(NativeOptIn(CometConf.getExprAllowIncompatConfigKey(getExprConfigName(expr)))))
-    } else {
-      Compatible()
+  override def getSupportLevel(expr: StructsToCsv): SupportLevel = {
+    val dataTypes = expr.inputSchema.fields.map(_.dataType)
+    val containsComplexType = dataTypes.exists(DataTypeSupport.isComplexType)
+    if (containsComplexType) {
+      return Unsupported(
+        Some(
+          s"The schema ${expr.inputSchema} is not supported because it includes a complex type"))
     }
+    val containsIncompatibleDataTypes = dataTypes.exists(incompatibleDataTypes.contains)
+    if (containsIncompatibleDataTypes) {
+      return Incompatible(
+        Some(
+          s"The schema ${expr.inputSchema} is not supported because " +
+            s"it includes a incompatible data types: $incompatibleDataTypes"))
+    }
+    // https://github.com/apache/datafusion-comet/issues/3232
+    Incompatible()
+  }
 
   override def convert(
       expr: StructsToCsv,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    if (CometConf.isExprAllowIncompat(getExprConfigName(expr)) && nativeSupported(expr)) {
-      for {
-        childProto <- exprToProtoInternal(expr.child, inputs, binding)
-      } yield {
-        val optionsProto = options2Proto(expr.options, expr.timeZoneId)
-        val toCsv = ExprOuterClass.ToCsv
-          .newBuilder()
-          .setChild(childProto)
-          .setOptions(optionsProto)
-          .build()
-        ExprOuterClass.Expr.newBuilder().setToCsv(toCsv).build()
-      }
-    } else {
-      // Default: route through the codegen dispatcher so Spark's own doGenCode runs inside the
-      // Comet pipeline (bit-exact). The native path is opt-in via allowIncompatible.
-      super.convert(expr, inputs, binding)
+    for {
+      childProto <- exprToProtoInternal(expr.child, inputs, binding)
+    } yield {
+      val optionsProto = options2Proto(expr.options, expr.timeZoneId)
+      val toCsv = ExprOuterClass.ToCsv
+        .newBuilder()
+        .setChild(childProto)
+        .setOptions(optionsProto)
+        .build()
+      ExprOuterClass.Expr.newBuilder().setToCsv(toCsv).build()
     }
   }
 
