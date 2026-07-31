@@ -38,6 +38,14 @@ on:
       - main
   workflow_dispatch:
 
+# Least-privilege default for the whole pipeline: every job here builds and tests,
+# and nothing needs to write back to the repository. Jobs that call reusable
+# workflows inherit this, and a callee can only narrow it further -- so the one
+# job that does need to write (docs, which pushes the built site to asf-site)
+# raises it to `contents: write` on itself.
+permissions:
+  contents: read
+
 jobs:
   # ---------------------------------------------------------------------------
   # preflight: cheap checks that gate everything else. Failure short-circuits
@@ -201,6 +209,10 @@ jobs:
     if: |
       needs.changes.outputs.docs == 'true' &&
       (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    # docs.yaml commits and pushes the generated site to the asf-site branch, so
+    # this job needs write access on top of the read-only default above.
+    permissions:
+      contents: write
     uses: ./.github/workflows/docs.yaml
 
   spark_3_4:
