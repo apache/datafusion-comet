@@ -64,6 +64,10 @@ name = "cast_string_to_date"
 harness = false
 
 [[bench]]
+name = "cast_string_to_timestamp"
+harness = false
+
+[[bench]]
 name = "cast_numeric"
 harness = false
 
@@ -193,6 +197,10 @@ harness = false
 
 [[bench]]
 name = "check_overflow"
+harness = false
+
+[[bench]]
+name = "round"
 harness = false
 
 [[bench]]

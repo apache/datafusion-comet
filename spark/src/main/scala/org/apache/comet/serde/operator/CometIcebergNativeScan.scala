@@ -843,10 +843,12 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
     val icebergScanBuilder = OperatorOuterClass.IcebergScan.newBuilder()
     val commonBuilder = OperatorOuterClass.IcebergScanCommon.newBuilder()
 
-    // Only set metadata_location - used for matching in PlanDataInjector.
-    // All other fields (catalog_properties, required_schema, pools) are set by
-    // serializePartitions() at execution time, so setting them here would be wasted work.
+    // metadata_location and scan_hash_code are set here for PlanDataInjector's key (see the
+    // scan_hash_code field comment in operator.proto). Everything else (catalog_properties,
+    // required_schema, pools) is set by serializePartitions() at execution time, so setting it
+    // here would be wasted work.
     commonBuilder.setMetadataLocation(metadata.metadataLocation)
+    commonBuilder.setScanHashCode(scan.scan.hashCode())
 
     icebergScanBuilder.setCommon(commonBuilder.build())
     // partition field intentionally empty - will be populated at execution time

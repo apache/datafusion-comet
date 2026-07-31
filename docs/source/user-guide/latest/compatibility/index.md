@@ -138,10 +138,11 @@ so users hunting an unexpected value have a single place to check:
   `DECIMAL(1, 1)`) throws `NUMERIC_VALUE_OUT_OF_RANGE` regardless of the eval mode. Spark returns
   `NULL` under legacy and try mode, and only throws under ANSI
   ([#5068](https://github.com/apache/datafusion-comet/issues/5068)).
-- `CAST(string AS boolean)` trims only Unicode whitespace. Spark also trims the ASCII control
-  bytes `0x00-0x08`, `0x0E-0x1F`, and `0x7F`, so a string like `"true"` casts to
-  `true` in Spark and to `NULL` in Comet (or throws under ANSI)
-  ([#4959](https://github.com/apache/datafusion-comet/issues/4959)).
+- `CAST(string AS timestamp)`, `CAST(string AS timestamp_ntz)`, `to_time` and `try_to_time` trim
+  Unicode whitespace. Spark trims only the bytes `0x00`-`0x20` and `0x7F`, so a value padded with
+  an ASCII control byte parses in Spark and returns `NULL` in Comet, while a value padded with
+  non-ASCII whitespace such as `U+3000` returns `NULL` in Spark and parses in Comet
+  ([#5149](https://github.com/apache/datafusion-comet/issues/5149)).
 - Native `RANGE` window frames with an explicit `PRECEDING` / `FOLLOWING` offset diverge from
   Spark when the boundary arithmetic overflows for `DATE` or `DECIMAL` `ORDER BY` columns
   ([#5022](https://github.com/apache/datafusion-comet/issues/5022)).
