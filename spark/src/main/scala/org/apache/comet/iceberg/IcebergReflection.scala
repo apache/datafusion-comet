@@ -68,7 +68,7 @@ object IcebergReflection extends Logging {
 
   def isIcebergScanClass(name: String): Boolean = ICEBERG_SCAN_CLASSES.contains(name)
 
-  // Iceberg FileIO implementations whose underlying storage object_store can reach.
+  // Iceberg FileIO implementations whose backing storage Comet's native reader can reach.
   // Custom/test FileIO classes (e.g. CustomFileIO in TestSparkExecutorCache) are not compatible
   // because Comet's native reader bypasses Java FileIO entirely.
   val COMPATIBLE_FILE_IO_CLASSES: Set[String] = Set(
@@ -84,7 +84,8 @@ object IcebergReflection extends Logging {
   // EncryptingFileIO but a nested variant chosen from the wrapped delegate's capabilities
   // (e.g. EncryptingFileIO$WithSupportsPrefixOperations when the delegate is HadoopFileIO), so
   // an exact class-name match misses it. Comet forwards each file's key_metadata to iceberg-rust
-  // and reads the ciphertext via object_store, so any EncryptingFileIO variant is compatible.
+  // and reads the ciphertext through iceberg-rust's own storage layer, so any EncryptingFileIO
+  // variant is compatible.
   private val ENCRYPTING_FILE_IO_PREFIX = "org.apache.iceberg.encryption.EncryptingFileIO"
 
   /**

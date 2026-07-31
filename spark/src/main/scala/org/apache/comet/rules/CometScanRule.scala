@@ -473,15 +473,15 @@ case class CometScanRule(session: SparkSession)
 
         // Now perform all validation using the pre-extracted metadata
         // Check if table uses a FileIO implementation compatible with iceberg-rust.
-        // Comet's native reader uses object_store (Rust) for I/O, bypassing Iceberg Java's
-        // FileIO entirely. Only allow known-compatible implementations whose underlying
-        // storage object_store can reach via standard URL schemes.
+        // Comet's native reader bypasses Iceberg Java's FileIO entirely and reads through
+        // iceberg-rust's own storage layer instead. Only allow known-compatible implementations
+        // whose backing storage that layer can reach via standard URL schemes.
         val fileIOCompatible = IcebergReflection.getFileIO(metadata.table) match {
           case Some(fileIO) if IcebergReflection.isCompatibleFileIO(fileIO) =>
             true
           case Some(fileIO) =>
             fallbackReasons += s"FileIO ${fileIO.getClass.getName} is not supported by " +
-              "Comet's native reader (object_store bypasses Iceberg Java FileIO)"
+              "Comet's native reader (bypasses Iceberg Java FileIO)"
             false
           case None =>
             fallbackReasons += "Could not check FileIO compatibility"
