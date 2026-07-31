@@ -22,9 +22,9 @@ package org.apache.comet.rules
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.util.sideBySide
-import org.apache.spark.sql.comet.{CometCollectLimitExec, CometColumnarToRowExec, CometMapInBatchExec, CometNativeColumnarToRowExec, CometNativeWriteExec, CometPlan, CometSparkToColumnarExec}
+import org.apache.spark.sql.comet.{CometCollectLimitExec, CometColumnarToRowExec, CometExec, CometFlatMapGroupsInBatchExec, CometMapInBatchExec, CometNativeColumnarToRowExec, CometNativeWriteExec, CometPlan, CometSparkToColumnarExec}
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometShuffleExchangeExec}
-import org.apache.spark.sql.comet.shims.{MapInBatchInfo, ShimCometMapInBatch}
+import org.apache.spark.sql.comet.shims.{FlatMapGroupsInBatchInfo, MapInBatchInfo, ShimCometMapInBatch}
 import org.apache.spark.sql.execution.{ColumnarToRowExec, RowToColumnarExec, SparkPlan}
 import org.apache.spark.sql.execution.adaptive.QueryStageExec
 import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
@@ -136,6 +136,22 @@ case class EliminateRedundantTransitions(session: SparkSession)
               "PyArrow UDFs (mapInArrow/mapInPandas)",
               CometConf.COMET_PYARROW_UDF_ENABLED.key))
         }
+      case p @ EligibleFlatMapGroupsInBatch(info, columnarChild) =>
+        if (CometConf.COMET_PYARROW_UDF_ENABLED.get()) {
+          CometFlatMapGroupsInBatchExec(
+            info.groupingAttributes,
+            info.func,
+            info.output,
+            columnarChild,
+            info.pythonEvalType,
+            info.structInput)
+        } else {
+          withInfo(
+            p,
+            NativeOptIn.message(
+              "PyArrow UDFs (applyInArrow/applyInPandas)",
+              CometConf.COMET_PYARROW_UDF_ENABLED.key))
+        }
 
       // Spark adds `RowToColumnar` under Comet columnar shuffle. But it's redundant as the
       // shuffle takes row-based input.
@@ -185,6 +201,10 @@ case class EliminateRedundantTransitions(session: SparkSession)
     // columnar output directly. Its flattened output vectors are `CometVector`s, exactly what
     // `CometMapInBatchExec`'s input path expects.
     case child: CometMapInBatchExec => Some(child)
+    case child: CometFlatMapGroupsInBatchExec => Some(child)
+    // EnsureRequirements can insert and Comet can convert a sort below grouped Python operators
+    // after transitions are planned, leaving the operator with a direct columnar Comet child.
+    case child: CometExec => Some(child)
     case _ => None
   }
 
@@ -206,6 +226,17 @@ case class EliminateRedundantTransitions(session: SparkSession)
       } else {
         matchMapInArrow(plan)
           .orElse(matchMapInPandas(plan))
+          .flatMap(info => extractColumnarChild(info.child).map(child => (info, child)))
+      }
+    }
+  }
+
+  private object EligibleFlatMapGroupsInBatch {
+    def unapply(plan: SparkPlan): Option[(FlatMapGroupsInBatchInfo, SparkPlan)] = {
+      if (arrowUseLargeVarTypes(plan.conf)) {
+        None
+      } else {
+        matchFlatMapGroupsInBatch(plan)
           .flatMap(info => extractColumnarChild(info.child).map(child => (info, child)))
       }
     }

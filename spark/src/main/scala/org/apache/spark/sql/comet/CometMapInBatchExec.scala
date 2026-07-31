@@ -25,11 +25,10 @@ import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.expressions.PythonUDF
 import org.apache.spark.sql.catalyst.plans.physical.Partitioning
-import org.apache.spark.sql.comet.shims.ShimCometMapInBatch
+import org.apache.spark.sql.comet.shims.{CometArrowPythonInputConfig, ShimCometMapInBatch}
 import org.apache.spark.sql.execution.{ColumnarToRowExec, SparkPlan, UnaryExecNode}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.execution.python.PythonSQLMetrics
-import org.apache.spark.sql.types.{StructField, StructType}
 import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
 
 import org.apache.comet.vector.CometStructVector
@@ -97,7 +96,7 @@ case class CometMapInBatchExec(
         resolvedRunnerInputs,
         evalType,
         Array(Array(0)),
-        StructType(Array(StructField("struct", childSchema))),
+        CometArrowPythonInputConfig(childSchema, structInput = true),
         metricsCopy,
         Iterator(counting),
         context.partitionId(),

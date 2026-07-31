@@ -23,8 +23,9 @@ import org.apache.spark.JobArtifactSet
 import org.apache.spark.api.python.{ChainedPythonFunctions, PythonEvalType}
 import org.apache.spark.sql.catalyst.expressions.PythonUDF
 import org.apache.spark.sql.execution.SparkPlan
-import org.apache.spark.sql.execution.python.{ArrowPythonRunner, MapInArrowExec, MapInPandasExec}
+import org.apache.spark.sql.execution.python.{ArrowPythonRunner, FlatMapGroupsInArrowExec, FlatMapGroupsInPandasExec, MapInArrowExec, MapInPandasExec}
 import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.types.StructType
 
 /**
  * Shared 4.x bits for `ShimCometMapInBatch`. The matchers and `runnerInputs` helper are identical
@@ -32,6 +33,8 @@ import org.apache.spark.sql.internal.SQLConf
  * so each minor's `ShimCometMapInBatch` provides only `computeArrowPython`.
  */
 trait Spark4xMapInBatchSupport {
+
+  protected def framedGroups: Boolean
 
   protected def matchMapInArrow(plan: SparkPlan): Option[MapInBatchInfo] =
     plan match {
@@ -58,6 +61,39 @@ trait Spark4xMapInBatchSupport {
             PythonEvalType.SQL_MAP_PANDAS_ITER_UDF))
       case _ => None
     }
+
+  protected def matchFlatMapGroupsInBatch(plan: SparkPlan): Option[FlatMapGroupsInBatchInfo] =
+    plan match {
+      case p: FlatMapGroupsInPandasExec =>
+        Some(
+          FlatMapGroupsInBatchInfo(
+            p.groupingAttributes,
+            p.func,
+            p.output,
+            p.child,
+            p.func.asInstanceOf[PythonUDF].evalType,
+            structInput = false))
+      case p: FlatMapGroupsInArrowExec =>
+        Some(
+          FlatMapGroupsInBatchInfo(
+            p.groupingAttributes,
+            p.func,
+            p.output,
+            p.child,
+            p.func.asInstanceOf[PythonUDF].evalType,
+            structInput = true))
+      case _ => None
+    }
+
+  protected def groupedInputConfig(
+      schema: StructType,
+      structInput: Boolean): CometArrowPythonInputConfig =
+    CometArrowPythonInputConfig(schema, structInput, grouped = true, framedGroups = framedGroups)
+
+  protected def groupedArrowMaxBytesPerBatch(conf: SQLConf): Long = {
+    val maxBytes = conf.arrowMaxBytesPerBatch
+    if (maxBytes == Int.MaxValue) Long.MaxValue else maxBytes
+  }
 
   /** Inputs every 4.x `ArrowPythonRunner` constructor needs in the same shape. */
   protected case class RunnerInputs(

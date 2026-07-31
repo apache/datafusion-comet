@@ -22,8 +22,8 @@ package org.apache.spark.sql.execution.python
 import java.io.DataOutputStream
 
 import org.apache.spark.api.python.{BasePythonRunner, ChainedPythonFunctions}
+import org.apache.spark.sql.comet.shims.CometArrowPythonInputConfig
 import org.apache.spark.sql.execution.metric.SQLMetric
-import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
 /**
@@ -35,10 +35,10 @@ class CometArrowPythonRunner(
     funcs: Seq[(ChainedPythonFunctions, Long)],
     evalType: Int,
     argOffsets: Array[Array[Int]],
-    override val schema: StructType,
     override val workerConf: Map[String, String],
     override val pythonMetrics: Map[String, SQLMetric],
-    jobArtifactUUID: Option[String])
+    jobArtifactUUID: Option[String],
+    override val inputConfig: CometArrowPythonInputConfig)
     extends BasePythonRunner[Iterator[ColumnarBatch], ColumnarBatch](
       funcs.map(_._1),
       evalType,
@@ -48,5 +48,5 @@ class CometArrowPythonRunner(
     with CometArrowPythonRunnerBase {
 
   override protected def writeUDF(dataOut: DataOutputStream): Unit =
-    PythonUDFRunner.writeUDFs(dataOut, funcs, argOffsets, jobArtifactUUID)
+    PythonUDFRunner.writeUDFs(dataOut, funcs, argOffsets, None)
 }

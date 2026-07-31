@@ -19,26 +19,10 @@
 
 package org.apache.spark.sql.comet.shims
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression}
-import org.apache.spark.sql.execution.SparkPlan
+import org.apache.spark.sql.types.StructType
 
-/**
- * Spark-version-agnostic projection of a `MapInBatchExec` (`PythonMapInArrowExec`,
- * `MapInArrowExec`, or `MapInPandasExec`) that the Comet rewrite needs. Lives outside the shims
- * so the Comet planner can pattern-match on it without depending on which concrete Spark class
- * was matched.
- */
-case class MapInBatchInfo(
-    func: Expression,
-    output: Seq[Attribute],
-    child: SparkPlan,
-    isBarrier: Boolean,
-    pythonEvalType: Int)
-
-case class FlatMapGroupsInBatchInfo(
-    groupingAttributes: Seq[Attribute],
-    func: Expression,
-    output: Seq[Attribute],
-    child: SparkPlan,
-    pythonEvalType: Int,
-    structInput: Boolean)
+case class CometArrowPythonInputConfig(
+    schema: StructType,
+    structInput: Boolean,
+    grouped: Boolean = false,
+    framedGroups: Boolean = false)

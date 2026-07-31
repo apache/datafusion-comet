@@ -19,7 +19,8 @@ under the License.
 
 # PyArrow UDF Acceleration
 
-Comet can accelerate Python UDFs that use PyArrow-backed batch processing, such as `mapInArrow` and `mapInPandas`.
+On Spark 4.x, Comet can accelerate Python UDFs that use PyArrow-backed batch processing, such as
+`mapInArrow`, `mapInPandas`, `applyInArrow`, and `applyInPandas`.
 These APIs are commonly used for ML inference, feature engineering, and data transformation workloads.
 
 ## Background
@@ -40,12 +41,12 @@ Steps 2 and 3 are redundant since the data starts and ends in Arrow format.
 
 ## How Comet Optimizes This
 
-When enabled, Comet detects `PythonMapInArrowExec` / `MapInArrowExec` and `MapInPandasExec`
-operators in the physical plan and replaces them with `CometMapInBatchExec`, which:
+When enabled, Comet replaces supported map operators with `CometMapInBatchExec` and supported
+grouped-map operators with `CometFlatMapGroupsInBatchExec`. These operators:
 
-- Reads Arrow columnar batches directly from the upstream Comet operator
-- Feeds them to the Python runner without the expensive UnsafeProjection copy
-- Keeps the Python output in columnar format for downstream operators
+- Read Arrow columnar batches directly from the upstream Comet operator
+- Feed them to the Python runner without the expensive UnsafeProjection copy
+- Keep the Python output in columnar format for downstream operators
 
 This eliminates the ColumnarToRow transition and the output row conversion, reducing CPU overhead
 and memory allocations. The row-to-Arrow re-encoding that Spark's `ArrowPythonRunner` performed on
@@ -87,18 +88,19 @@ The default is `false` while the feature stabilizes.
 `spark.comet.exec.pyarrowUdf.enabled` is **not** the same as PySpark's
 [`spark.sql.execution.arrow.pyspark.enabled`](https://spark.apache.org/docs/latest/api/python/tutorial/sql/arrow_pandas.html#enabling-for-conversion-to-from-pandas).
 That conf controls whether Spark uses Arrow when materializing a DataFrame to a Pandas DataFrame
-(`toPandas()`) or constructing one from Pandas. The Comet conf controls a planner rewrite for
-`mapInArrow` / `mapInPandas`, and only affects how Comet's columnar batches feed the Python
-worker. Both confs can be set independently.
+(`toPandas()`) or constructing one from Pandas. The Comet conf controls planner rewrites for the
+supported APIs listed below, and only affects how Comet's columnar batches feed the Python worker.
+Both confs can be set independently.
 
 ## Supported APIs
 
-| PySpark API                      | Spark Plan Node             | Supported |
-| -------------------------------- | --------------------------- | --------- |
-| `df.mapInArrow(func, schema)`    | `PythonMapInArrowExec`      | Yes       |
-| `df.mapInPandas(func, schema)`   | `MapInPandasExec`           | Yes       |
-| `@pandas_udf` (scalar)           | `ArrowEvalPythonExec`       | Not yet   |
-| `df.applyInPandas(func, schema)` | `FlatMapGroupsInPandasExec` | Not yet   |
+| PySpark API                                   | Spark Plan Node             | Supported |
+| --------------------------------------------- | --------------------------- | --------- |
+| `df.mapInArrow(func, schema)`                 | `MapInArrowExec`            | Spark 4.x |
+| `df.mapInPandas(func, schema)`                | `MapInPandasExec`           | Spark 4.x |
+| `df.groupBy(...).applyInArrow(func, schema)`  | `FlatMapGroupsInArrowExec`  | Spark 4.x |
+| `df.groupBy(...).applyInPandas(func, schema)` | `FlatMapGroupsInPandasExec` | Spark 4.x |
+| `@pandas_udf` (scalar, aggregate, or window)  | `ArrowEvalPythonExec`, etc. | Not yet   |
 
 ## Example
 
@@ -180,8 +182,8 @@ on the unoptimized path.
 
 ## Limitations
 
-- The optimization currently applies only to `mapInArrow` and `mapInPandas`. Scalar pandas UDFs
-  (`@pandas_udf`) and grouped operations (`applyInPandas`) are not yet supported.
+- Scalar, grouped-aggregate, and window pandas UDFs (`@pandas_udf`), cogrouped maps, and Python
+  UDTFs are not yet supported.
 - The optimization requires Arrow data on the input side. If a shuffle sits between the upstream
   Comet operator and the Python UDF, you need Comet's native shuffle for the optimization to
   apply. Set `spark.shuffle.manager` to
