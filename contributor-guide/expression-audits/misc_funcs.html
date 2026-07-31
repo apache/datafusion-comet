@@ -644,6 +644,15 @@ under the License.
 <li><p>Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.</p></li>
 </ul>
 </section>
+<section id="uuid">
+<h2>uuid<a class="headerlink" href="#uuid" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>Spark 3.4.3 (audited 2026-07-24): <code class="docutils literal notranslate"><span class="pre">Uuid(randomSeed:</span> <span class="pre">Option[Long])</span> <span class="pre">extends</span> <span class="pre">LeafExpression</span> <span class="pre">with</span> <span class="pre">Nondeterministic</span> <span class="pre">with</span> <span class="pre">ExpressionWithRandomSeed</span></code>. The analyzer’s <code class="docutils literal notranslate"><span class="pre">ResolveRandomSeed</span></code> fills <code class="docutils literal notranslate"><span class="pre">randomSeed</span></code> with a random <code class="docutils literal notranslate"><span class="pre">Long</span></code>, so it is always defined before Comet sees the plan. Per partition it seeds <code class="docutils literal notranslate"><span class="pre">RandomUUIDGenerator(randomSeed</span> <span class="pre">+</span> <span class="pre">partitionIndex)</span></code>, a Commons Math3 <code class="docutils literal notranslate"><span class="pre">MersenneTwister</span></code>, and per row draws two <code class="docutils literal notranslate"><span class="pre">nextLong()</span></code>s, masks in the RFC 4122 version 4 and variant bits, and formats via <code class="docutils literal notranslate"><span class="pre">java.util.UUID.toString</span></code>. Only the no-argument <code class="docutils literal notranslate"><span class="pre">uuid()</span></code> form exists (no seed constructor). Comet emits a <code class="docutils literal notranslate"><span class="pre">Uuid</span></code> proto with the resolved seed and reproduces the generator bit for bit via <code class="docutils literal notranslate"><span class="pre">SparkMersenneTwister</span></code>.</p></li>
+<li><p>Spark 3.5.8 (audited 2026-07-24): identical to 3.4.3.</p></li>
+<li><p>Spark 4.0.1 (audited 2026-07-24): adds <code class="docutils literal notranslate"><span class="pre">def</span> <span class="pre">this(seed:</span> <span class="pre">Expression)</span></code>, exposing the <code class="docutils literal notranslate"><span class="pre">uuid(seed)</span></code> SQL form (the seed must be an integer or long literal, validated at analysis time). <code class="docutils literal notranslate"><span class="pre">RandomUUIDGenerator</span></code> and the per-row algorithm are unchanged, so results are identical to 3.4.3 for a given seed.</p></li>
+<li><p>Spark 4.1.1 (audited 2026-07-24): identical to 4.0.1, plus <code class="docutils literal notranslate"><span class="pre">withShiftedSeed</span></code>. No runtime change.</p></li>
+</ul>
+</section>
 </section>
 
 
@@ -705,6 +714,7 @@ under the License.
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#spark-partition-id">spark_partition_id</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#typeof">typeof</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#user">user</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#uuid">uuid</a></li>
 </ul>
   </nav></div>
 

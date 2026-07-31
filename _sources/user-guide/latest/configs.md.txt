@@ -440,6 +440,7 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.expression.UnixTimestamp.enabled` | Enable Comet acceleration for `UnixTimestamp` | true |
 | `spark.comet.expression.UnscaledValue.enabled` | Enable Comet acceleration for `UnscaledValue` | true |
 | `spark.comet.expression.Upper.enabled` | Enable Comet acceleration for `Upper` | true |
+| `spark.comet.expression.Uuid.enabled` | Enable Comet acceleration for `Uuid` | true |
 | `spark.comet.expression.WeekDay.enabled` | Enable Comet acceleration for `WeekDay` | true |
 | `spark.comet.expression.WeekOfYear.enabled` | Enable Comet acceleration for `WeekOfYear` | true |
 | `spark.comet.expression.WidthBucket.enabled` | Enable Comet acceleration for `WidthBucket` | true |
