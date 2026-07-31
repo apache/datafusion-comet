@@ -51,8 +51,8 @@ when it was written and is not correct now. Verified examples:
 
 - `native/spark-expr/src/timezone.rs` is a copy of arrow-array's `Tz` and `TzOffset`. Its own
   header says "This is basically from arrow-array::timezone (private)". In arrow 58 that module
-  is public with the `chrono-tz` feature, which the workspace already enables, and
-  `native/spark-expr/src/kernels/temporal.rs` already imports arrow's version. The crate now
+  is public, and with the `chrono-tz` feature the workspace already enables it resolves named
+  zones. `native/spark-expr/src/kernels/temporal.rs` already imports arrow's version. The crate now
   carries two parallel, incompatible `Tz` types
   ([#5088](https://github.com/apache/datafusion-comet/issues/5088)).
 - `is_valid_decimal_precision` in `native/spark-expr/src/utils.rs` is a copy of arrow's
@@ -61,8 +61,12 @@ when it was written and is not correct now. Verified examples:
   ([#5089](https://github.com/apache/datafusion-comet/issues/5089)).
 - `native/spark-expr/src/datetime_funcs/date_from_unix_date.rs` reinterprets Int32 as Date32 by
   hand, and `native/spark-expr/src/utils.rs` converts milliseconds to microseconds with
-  `arity::unary(millis_array, |v| v * 1000)`. Arrow's `cast` kernel performs both bit-identically
-  ([#5090](https://github.com/apache/datafusion-comet/issues/5090)).
+  `arity::unary(millis_array, |v| v * 1000)`. Arrow's `cast` kernel covers both; see
+  [#5090](https://github.com/apache/datafusion-comet/issues/5090) for the equivalence argument and
+  the timezone caveats. Note that the two are not equivalent on overflow: the plain `unary`
+  multiply wraps, while arrow's timestamp unit cast uses `unary_opt` with `checked_mul` in safe
+  mode (null on overflow) and `try_unary` with `mul_checked` otherwise (error). Confirm which
+  behavior you want before swapping a loop for the kernel.
 
 If you decide to keep a local implementation because the upstream one is wrong, record why in the
 file, with a pointer to the upstream issue and the condition under which the file can be deleted.
@@ -131,11 +135,19 @@ bug from ignoring this. The `check_overflow!` macro in
 raises `ARITHMETIC_OVERFLOW` when a `MIN` value happens to sit under a null slot. Spark returns
 null for that row ([#5093](https://github.com/apache/datafusion-comet/issues/5093)).
 
-`native/spark-expr/src/math_funcs/checked_arithmetic.rs` shows the correct shape. It unions the
-input null buffers up front and gates the error on `nulls.as_ref().is_none_or(|n| n.is_valid(i))`,
-so a garbage value under a null cannot raise. The behavior is pinned by
-`test_null_row_with_garbage_value_does_not_error_in_ansi_mode`. Add an equivalent test whenever
-you write a fallible per-row path.
+`native/spark-expr/src/math_funcs/checked_arithmetic.rs` shows the correct shape, and the shape is
+not "add a validity check to the loop". `checked_binary` returns early for the ANSI path at lines
+64 to 72, delegating to `arrow::compute::kernels::arity::try_binary` and mapping the resulting
+`ArrowError` back to a Spark error. The kernel is what guarantees the null behavior: when either
+input has a non-zero null count, `try_binary` unions the null buffers and drives the closure
+through `nulls.try_for_each_valid_idx`, so `op` is never applied to a null slot. The behavior is
+pinned by `test_null_row_with_garbage_value_does_not_error_in_ansi_mode` in the same file. The
+hand-rolled loop below the early return is the non-ANSI path, where an overflow marks the row null
+instead of raising.
+
+The fix proposed for #5093 is the same move: replace the manual scan with arrow's checked `neg`,
+which skips invalid slots. Prefer delegating the fallible path to a kernel over guarding a loop by
+hand, and add an equivalent garbage-value-under-a-null test whenever you write one.
 
 **Arrow's infallible arity helpers do not save you.** In arrow 58.4.0, `unary` and `binary`
 evaluate the closure on every element including nulls, by design: the arrow docs state the cost of
@@ -155,8 +167,11 @@ outermost one silently drops data.
 lines earlier it passes `None` for the entries `StructArray`'s null buffer, dropping
 `map_array.entries().nulls()`. It also propagates the source's `sorted` flag rather than the
 target's ([#5097](https://github.com/apache/datafusion-comet/issues/5097)). Arrow's Map-to-Map
-`cast_with_options` handles both correctly, which is the other reason to prefer the kernel: it
-carries structure you may not have thought about.
+`cast_with_options` carries the entries validity through (`cast/map.rs` passes
+`from.entries().nulls().cloned()`), and it refuses a sortedness change outright rather than
+silently taking the source's: `cast/mod.rs` matches Map to Map only when the two `ordered` flags
+are equal, in both `can_cast_types` and the cast dispatch. That is the other reason to prefer the
+kernel: it carries structure you may not have thought about, and rejects what it cannot express.
 
 The general rule follows from the first section. Prefer the kernel; reach for a hand-built array
 only when Spark semantics require it, and when you do, enumerate every null buffer and every
