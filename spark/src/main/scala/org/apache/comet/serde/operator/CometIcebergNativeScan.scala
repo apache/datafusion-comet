@@ -357,7 +357,6 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
       fileScanTaskClass: Class[_],
       taskBuilder: OperatorOuterClass.IcebergFileScanTask.Builder,
       commonBuilder: OperatorOuterClass.IcebergScanCommon.Builder,
-      partitionTypeToPoolIndex: mutable.HashMap[String, Int],
       partitionSpecToPoolIndex: mutable.HashMap[String, Int],
       partitionDataToPoolIndex: mutable.HashMap[String, Int]): Unit = {
     try {
@@ -365,7 +364,58 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
       val spec = specMethod.invoke(task)
 
       if (spec != null) {
-        // Deduplicate partition spec
+        // Get the partition type/schema from the spec. Needed regardless of whether this task
+        // ends up value-less below.
+        val partitionTypeMethod = spec.getClass.getMethod("partitionType")
+        val partitionType = partitionTypeMethod.invoke(spec)
+        val fieldsMethod = partitionType.getClass.getMethod("fields")
+        val fields = fieldsMethod
+          .invoke(partitionType)
+          .asInstanceOf[java.util.List[_]]
+
+        // Helper to get field type string (shared by both type and data serialization)
+        def getFieldType(field: Any): String = {
+          val typeMethod = field.getClass.getMethod("type")
+          typeMethod.invoke(field).toString
+        }
+
+        // Filter out fields with unknown types (dropped partition fields).
+        // Unknown type fields represent partition columns that have been dropped
+        // from the schema. Per the Iceberg spec, unknown type fields are not
+        // stored in data files and iceberg-rust doesn't support deserializing
+        // them. Since these columns are dropped, we don't need to expose their
+        // partition values when reading.
+        val fieldsJson = fields.asScala.flatMap { field =>
+          val fieldTypeStr = getFieldType(field)
+
+          // Skip fields with unknown type (dropped partition columns)
+          if (fieldTypeStr == IcebergReflection.TypeNames.UNKNOWN) {
+            None
+          } else {
+            val fieldIdMethod = field.getClass.getMethod("fieldId")
+            val fieldId = fieldIdMethod.invoke(field).asInstanceOf[Int]
+
+            val nameMethod = field.getClass.getMethod("name")
+            val fieldName = nameMethod.invoke(field).asInstanceOf[String]
+
+            val isOptionalMethod = field.getClass.getMethod("isOptional")
+            val isOptional =
+              isOptionalMethod.invoke(field).asInstanceOf[Boolean]
+            val required = !isOptional
+
+            Some(
+              ("id" -> fieldId) ~
+                ("name" -> fieldName) ~
+                ("required" -> required) ~
+                ("type" -> fieldTypeStr))
+          }
+        }.toList
+
+        // Deduplicate partition spec, pairing each new spec-pool entry with a partition-type-pool
+        // entry at the same index. Native correlates the two by index to recover, per spec, the
+        // spec_id needed to merge partition types across historical specs in the same order
+        // Iceberg Java's Partitioning.partitionType()/iceberg-rust's compute_unified_partition_type
+        // do (newest spec_id first); see parse_file_scan_tasks_from_common in planner.rs.
         try {
           val partitionSpecParserClass =
             IcebergReflection.loadClass(IcebergReflection.ClassNames.PARTITION_SPEC_PARSER)
@@ -380,6 +430,15 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
             partitionSpecJson, {
               val idx = partitionSpecToPoolIndex.size
               commonBuilder.addPartitionSpecPool(partitionSpecJson)
+              // Manually build StructType JSON to match iceberg-rust expectations.
+              // Using Iceberg's SchemaParser.toJson() would include schema-level
+              // metadata (e.g., "schema-id") that iceberg-rust's StructType
+              // deserializer rejects. We need pure StructType format:
+              // {"type":"struct","fields":[...]}
+              val partitionTypeJson = compact(
+                render(("type" -> "struct") ~
+                  ("fields" -> fieldsJson)))
+              commonBuilder.addPartitionTypePool(partitionTypeJson)
               idx
             })
           taskBuilder.setPartitionSpecIdx(specIdx)
@@ -393,84 +452,6 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
         val partitionData = partitionMethod.invoke(task)
 
         if (partitionData != null) {
-          // Get the partition type/schema from the spec
-          val partitionTypeMethod = spec.getClass.getMethod("partitionType")
-          val partitionType = partitionTypeMethod.invoke(spec)
-
-          // Check if partition type has any fields before serializing
-          val fieldsMethod = partitionType.getClass.getMethod("fields")
-          val fields = fieldsMethod
-            .invoke(partitionType)
-            .asInstanceOf[java.util.List[_]]
-
-          // Helper to get field type string (shared by both type and data serialization)
-          def getFieldType(field: Any): String = {
-            val typeMethod = field.getClass.getMethod("type")
-            typeMethod.invoke(field).toString
-          }
-
-          // Only serialize partition type if there are actual partition fields
-          if (!fields.isEmpty) {
-            try {
-              // Manually build StructType JSON to match iceberg-rust expectations.
-              // Using Iceberg's SchemaParser.toJson() would include schema-level
-              // metadata (e.g., "schema-id") that iceberg-rust's StructType
-              // deserializer rejects. We need pure StructType format:
-              // {"type":"struct","fields":[...]}
-
-              // Filter out fields with unknown types (dropped partition fields).
-              // Unknown type fields represent partition columns that have been dropped
-              // from the schema. Per the Iceberg spec, unknown type fields are not
-              // stored in data files and iceberg-rust doesn't support deserializing
-              // them. Since these columns are dropped, we don't need to expose their
-              // partition values when reading.
-              val fieldsJson = fields.asScala.flatMap { field =>
-                val fieldTypeStr = getFieldType(field)
-
-                // Skip fields with unknown type (dropped partition columns)
-                if (fieldTypeStr == IcebergReflection.TypeNames.UNKNOWN) {
-                  None
-                } else {
-                  val fieldIdMethod = field.getClass.getMethod("fieldId")
-                  val fieldId = fieldIdMethod.invoke(field).asInstanceOf[Int]
-
-                  val nameMethod = field.getClass.getMethod("name")
-                  val fieldName = nameMethod.invoke(field).asInstanceOf[String]
-
-                  val isOptionalMethod = field.getClass.getMethod("isOptional")
-                  val isOptional =
-                    isOptionalMethod.invoke(field).asInstanceOf[Boolean]
-                  val required = !isOptional
-
-                  Some(
-                    ("id" -> fieldId) ~
-                      ("name" -> fieldName) ~
-                      ("required" -> required) ~
-                      ("type" -> fieldTypeStr))
-                }
-              }.toList
-
-              // Only serialize if we have non-unknown fields
-              if (fieldsJson.nonEmpty) {
-                val partitionTypeJson = compact(
-                  render(
-                    ("type" -> "struct") ~
-                      ("fields" -> fieldsJson)))
-
-                val typeIdx = partitionTypeToPoolIndex.getOrElseUpdate(
-                  partitionTypeJson, {
-                    val idx = partitionTypeToPoolIndex.size
-                    commonBuilder.addPartitionTypePool(partitionTypeJson)
-                    idx
-                  })
-                taskBuilder.setPartitionTypeIdx(typeIdx)
-              }
-            } catch {
-              case e: Exception =>
-                logWarning(s"Failed to serialize partition type to JSON: ${e.getMessage}")
-            }
-          }
-
           // Serialize partition data to protobuf for native execution.
           // The native execution engine uses partition_data protobuf messages to
           // build a constants_map, which provides partition values to identity-
@@ -511,13 +492,20 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
           // empty partition data out of range. Instead send an empty-fields spec that keeps the
           // real spec id (so _spec_id stays correct) plus empty data, so native fills every
           // unified _partition field with null -- matching Spark and the pre-tightening behaviour.
+          // Pair it with an empty partition-type-pool entry too, keeping the two pools aligned.
           if (partitionValues.isEmpty) {
             val specId = spec.getClass.getMethod("specId").invoke(spec).asInstanceOf[Int]
-            val emptySpecJson = s"""{"spec-id":$specId,"fields":[]}"""
+            val emptySpecJson =
+              compact(
+                render(("spec-id" -> specId) ~ ("fields" -> List.empty[org.json4s.JObject])))
             val emptySpecIdx = partitionSpecToPoolIndex.getOrElseUpdate(
               emptySpecJson, {
                 val idx = partitionSpecToPoolIndex.size
                 commonBuilder.addPartitionSpecPool(emptySpecJson)
+                val emptyTypeJson = compact(
+                  render(("type" -> "struct") ~
+                    ("fields" -> List.empty[org.json4s.JObject])))
+                commonBuilder.addPartitionTypePool(emptyTypeJson)
                 idx
               })
             // Override the real spec registered above.
@@ -885,7 +873,6 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
 
     // Deduplication structures - map unique values to pool indices
     val schemaToPoolIndex = mutable.HashMap[AnyRef, Int]()
-    val partitionTypeToPoolIndex = mutable.HashMap[String, Int]()
     val partitionSpecToPoolIndex = mutable.HashMap[String, Int]()
     val nameMappingToPoolIndex = mutable.HashMap[String, Int]()
     val projectFieldIdsToPoolIndex = mutable.HashMap[Seq[Int], Int]()
@@ -1140,7 +1127,6 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
                   fileScanTaskClass,
                   taskBuilder,
                   commonBuilder,
-                  partitionTypeToPoolIndex,
                   partitionSpecToPoolIndex,
                   partitionDataToPoolIndex)
 
@@ -1182,7 +1168,6 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
     // Log deduplication summary
     val allPoolSizes = Seq(
       schemaToPoolIndex.size,
-      partitionTypeToPoolIndex.size,
       partitionSpecToPoolIndex.size,
       nameMappingToPoolIndex.size,
       projectFieldIdsToPoolIndex.size,

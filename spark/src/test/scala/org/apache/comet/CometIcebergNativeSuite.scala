@@ -39,7 +39,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{StringType, TimestampType}
 
 import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus, isSpark42Plus}
-import org.apache.comet.iceberg.RESTCatalogHelper
+import org.apache.comet.iceberg.{IcebergReflection, RESTCatalogHelper}
 import org.apache.comet.serde.OperatorOuterClass
 import org.apache.comet.testing.{FuzzDataGenerator, SchemaGenOptions}
 
@@ -4806,6 +4806,41 @@ class CometIcebergNativeSuite
     }
   }
 
+  test("metadata columns - still-unsupported column falls back to Spark") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        val table = "test_cat.db.unsupported_meta_col"
+        try {
+          spark.sql(s"""
+            CREATE TABLE $table (id INT, value DOUBLE) USING iceberg
+            TBLPROPERTIES ('format-version' = '2')
+          """)
+
+          spark.sql(s"INSERT INTO $table VALUES (1, 10.5), (2, 20.3)")
+
+          // _deleted is a real, selectable Iceberg metadata column (SparkTable.metadataColumns())
+          // but is not in CometIcebergNativeScan.MetadataFieldIds, so this must fall back rather
+          // than silently drop the column or crash. Guards against a future change to
+          // MetadataFieldIds or the unsupportedMetadataCols filter regressing this path.
+          checkIcebergNativeScanFallback(
+            s"SELECT id, _deleted FROM $table ORDER BY id",
+            "_deleted is not in CometIcebergNativeScan.MetadataFieldIds")
+        } finally {
+          spark.sql(s"DROP TABLE IF EXISTS $table PURGE")
+        }
+      }
+    }
+  }
+
   test("metadata columns - _pos returns row position within each file") {
     assume(icebergAvailable, "Iceberg not available in classpath")
 
@@ -5359,6 +5394,148 @@ class CometIcebergNativeSuite
           checkIcebergNativeScan(s"SELECT id, _partition FROM $table ORDER BY id")
 
           checkIcebergNativeScan(s"SELECT id, _partition.region FROM $table ORDER BY id")
+        } finally {
+          spark.sql(s"DROP TABLE IF EXISTS $table PURGE")
+        }
+      }
+    }
+  }
+
+  test("partition evolution - conflicting V1 spec field detected before native scan") {
+    // Iceberg Java's own write path (e.g. updateSpec()) can never produce two specs that bind
+    // the same partition field id to different source columns: TableMetadata.Builder always
+    // reassigns fresh, non-conflicting field ids when a spec is added. Only V1 tables written by
+    // a non-Java writer (or, as here, a hand-edited metadata.json) can have this defect --
+    // exactly the case IcebergReflection.validateUnifiedPartitionType/CometScanRule's
+    // unifiedPartitionTypeSupported guards against. Table *loading* does not validate this
+    // (TableMetadataParser binds all non-default specs via UnboundPartitionSpec#bindUnchecked),
+    // so the conflict only surfaces when something asks for the unified partition type.
+    //
+    // That "something" turns out to always be Spark itself, not just Comet: resolving
+    // _partition's output type for any query that touches metadata columns on this table goes
+    // through SparkTable.metadataColumns(), which eagerly calls the same
+    // Partitioning.partitionType(table) and throws during analysis, before CometScanRule (which
+    // runs during physical planning) ever sees the query. So there's no SQL query that
+    // reaches CometScanRule's fallback for this case -- plain Spark can't analyze it either. This
+    // test instead exercises IcebergReflection.validateUnifiedPartitionType directly, which is
+    // the reflection call unifiedPartitionTypeSupported relies on to fall back safely in the
+    // (currently unreached, but not guaranteed to stay that way across Iceberg versions) case
+    // where analysis succeeds but the native scan's own merge would otherwise fail.
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        val table = "test_cat.db.conflicting_spec"
+        try {
+          spark.sql(s"""
+            CREATE TABLE $table (id INT, region STRING, ts TIMESTAMP)
+            USING iceberg PARTITIONED BY (region)
+            TBLPROPERTIES ('format-version' = '1')
+          """)
+          spark.sql(s"INSERT INTO $table VALUES (1, 'US', TIMESTAMP '2024-01-01 00:00:00')")
+
+          import org.apache.iceberg.catalog.TableIdentifier
+          import org.apache.iceberg.spark.SparkCatalog
+
+          val sparkCatalog = spark.sessionState.catalogManager
+            .catalog("test_cat")
+            .asInstanceOf[SparkCatalog]
+          val iceTable = sparkCatalog
+            .icebergCatalog()
+            .loadTable(TableIdentifier.of("db", "conflicting_spec"))
+
+          // Derive the metadata dir from the table's own reported location rather than
+          // reconstructing the warehouse layout by hand, since location() may or may not carry a
+          // "file:" URI scheme depending on the FileIO in use.
+          val tableLocationUri = iceTable.location()
+          val tableDir =
+            if (tableLocationUri.contains(":")) new File(new java.net.URI(tableLocationUri))
+            else new File(tableLocationUri)
+          val metadataDir = new File(tableDir, "metadata")
+          // Discover the current metadata version by listing files rather than trusting
+          // version-hint.text: HadoopCatalog (unlike plain HadoopTables) does not always write
+          // it, and Iceberg's own HadoopTableOperations falls back to a directory scan for the
+          // same reason.
+          val versionPattern = "^v(\\d+)\\.metadata\\.json$".r
+          val currentVersion = metadataDir
+            .listFiles()
+            .flatMap(f => versionPattern.findFirstMatchIn(f.getName).map(_.group(1).toInt))
+            .max
+          val currentMetadataFile = new File(metadataDir, s"v$currentVersion.metadata.json")
+          val currentMetadataJson =
+            new String(java.nio.file.Files.readAllBytes(currentMetadataFile.toPath), UTF_8)
+
+          val mapper = new com.fasterxml.jackson.databind.ObjectMapper()
+          val root = mapper
+            .readTree(currentMetadataJson)
+            .asInstanceOf[com.fasterxml.jackson.databind.node.ObjectNode]
+          val specs = root
+            .get("partition-specs")
+            .asInstanceOf[com.fasterxml.jackson.databind.node.ArrayNode]
+          val spec0 = specs.get(0)
+          val regionFieldId = spec0.get("fields").get(0).get("field-id").asInt()
+          val idFieldId = root
+            .get("schemas")
+            .get(0)
+            .get("fields")
+            .elements()
+            .asScala
+            .find(_.get("name").asText() == "id")
+            .get
+            .get("id")
+            .asInt()
+
+          // New spec (id 1) reuses region's field id for a field bound to a *different* source
+          // column ("id" instead of "region") -- exactly what Partitioning.partitionType()/
+          // compute_unified_partition_type's equivalentIgnoringNames rejects.
+          val conflictingSpec = mapper.createObjectNode()
+          conflictingSpec.put("spec-id", 1)
+          val conflictingFields = mapper.createArrayNode()
+          val conflictingField = mapper.createObjectNode()
+          conflictingField.put("source-id", idFieldId)
+          conflictingField.put("field-id", regionFieldId)
+          conflictingField.put("name", "id_as_region")
+          conflictingField.put("transform", "identity")
+          conflictingFields.add(conflictingField)
+          conflictingSpec.set("fields", conflictingFields)
+          specs.add(conflictingSpec)
+
+          // Round-trip through Iceberg's own parser before writing, so a malformed hand-edit
+          // fails this test with a clear parse error rather than producing an unloadable table.
+          val newMetadataJson = mapper.writeValueAsString(root)
+          org.apache.iceberg.TableMetadataParser.fromJson(newMetadataJson)
+
+          val newVersion = currentVersion + 1
+          val newMetadataFile = new File(metadataDir, s"v$newVersion.metadata.json")
+          java.nio.file.Files.write(newMetadataFile.toPath, newMetadataJson.getBytes(UTF_8))
+          // Best-effort: some catalog configurations track the current version via this file;
+          // others (see the directory-listing fallback above) don't require it.
+          java.nio.file.Files.write(
+            new File(metadataDir, "version-hint.text").toPath,
+            newVersion.toString.getBytes(UTF_8))
+
+          // Not testable end-to-end via a SQL query: resolving _partition's output type for
+          // *any* query touching metadata columns on this table goes through Spark's own
+          // SparkTable.metadataColumns() -> SparkMetadataColumns.partition() ->
+          // Partitioning.partitionType(table), which throws this exact ValidationException
+          // during analysis -- before CometScanRule (which runs during physical planning) ever
+          // sees the query. So this exercises the same reflection call CometScanRule's
+          // unifiedPartitionTypeSupported guards with, directly, against the conflicting table.
+          iceTable.refresh()
+          val reason = IcebergReflection.validateUnifiedPartitionType(iceTable)
+          assert(
+            reason.isDefined,
+            "Expected a validation failure for conflicting partition specs")
+          assert(
+            reason.get.contains("Conflicting partition fields"),
+            s"Expected a conflicting-partition-fields reason, got: ${reason.get}")
         } finally {
           spark.sql(s"DROP TABLE IF EXISTS $table PURGE")
         }

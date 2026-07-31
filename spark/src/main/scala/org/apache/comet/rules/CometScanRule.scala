@@ -477,7 +477,7 @@ case class CometScanRule(session: SparkSession)
         // FileIO entirely. Only allow known-compatible implementations whose underlying
         // storage object_store can reach via standard URL schemes.
         val fileIOCompatible = IcebergReflection.getFileIO(metadata.table) match {
-          case Some(fileIO) if CometScanRule.isCompatibleFileIO(fileIO.getClass.getName) =>
+          case Some(fileIO) if IcebergReflection.isCompatibleFileIO(fileIO) =>
             true
           case Some(fileIO) =>
             fallbackReasons += s"FileIO ${fileIO.getClass.getName} is not supported by " +
@@ -930,29 +930,6 @@ case class CometScanTypeChecker() extends DataTypeSupport with CometTypeShim {
 }
 
 object CometScanRule extends Logging {
-
-  // Iceberg FileIO implementations whose underlying storage object_store can reach.
-  // Custom/test FileIO classes (e.g. CustomFileIO in TestSparkExecutorCache) are not compatible
-  // because Comet's native reader bypasses Java FileIO entirely.
-  private val CompatibleFileIOClasses: Set[String] = Set(
-    "org.apache.iceberg.hadoop.HadoopFileIO",
-    "org.apache.iceberg.aws.s3.S3FileIO",
-    "org.apache.iceberg.gcp.gcs.GCSFileIO",
-    "org.apache.iceberg.io.ResolvingFileIO",
-    "org.apache.iceberg.spark.SparkFileIO",
-    "org.apache.iceberg.azure.adlsv2.ADLSFileIO",
-    "org.apache.iceberg.CachingFileIO")
-
-  // Prefix of the EncryptingFileIO family. An encrypted table's io() is not the bare
-  // EncryptingFileIO but a nested variant chosen from the wrapped delegate's capabilities
-  // (e.g. EncryptingFileIO$WithSupportsPrefixOperations when the delegate is HadoopFileIO), so
-  // an exact class-name match misses it. Comet forwards each file's key_metadata to iceberg-rust
-  // and reads the ciphertext via object_store, so any EncryptingFileIO variant is compatible.
-  private val EncryptingFileIOPrefix = "org.apache.iceberg.encryption.EncryptingFileIO"
-
-  /** True if `className` is a FileIO whose backing storage Comet's native reader can reach. */
-  def isCompatibleFileIO(className: String): Boolean =
-    CompatibleFileIOClasses.contains(className) || className.startsWith(EncryptingFileIOPrefix)
 
   // Per-scheme memo of `NativeBase.isObjectStoreSchemeSupported`. The answer depends only on the
   // URL scheme, so we cache by scheme and never re-cross the JNI boundary for a repeated scheme.

@@ -68,6 +68,36 @@ object IcebergReflection extends Logging {
 
   def isIcebergScanClass(name: String): Boolean = ICEBERG_SCAN_CLASSES.contains(name)
 
+  // Iceberg FileIO implementations whose underlying storage object_store can reach.
+  // Custom/test FileIO classes (e.g. CustomFileIO in TestSparkExecutorCache) are not compatible
+  // because Comet's native reader bypasses Java FileIO entirely.
+  val COMPATIBLE_FILE_IO_CLASSES: Set[String] = Set(
+    "org.apache.iceberg.hadoop.HadoopFileIO",
+    "org.apache.iceberg.aws.s3.S3FileIO",
+    "org.apache.iceberg.gcp.gcs.GCSFileIO",
+    "org.apache.iceberg.io.ResolvingFileIO",
+    "org.apache.iceberg.spark.SparkFileIO",
+    "org.apache.iceberg.azure.adlsv2.ADLSFileIO",
+    "org.apache.iceberg.CachingFileIO")
+
+  // Prefix of the EncryptingFileIO family. An encrypted table's io() is not the bare
+  // EncryptingFileIO but a nested variant chosen from the wrapped delegate's capabilities
+  // (e.g. EncryptingFileIO$WithSupportsPrefixOperations when the delegate is HadoopFileIO), so
+  // an exact class-name match misses it. Comet forwards each file's key_metadata to iceberg-rust
+  // and reads the ciphertext via object_store, so any EncryptingFileIO variant is compatible.
+  private val ENCRYPTING_FILE_IO_PREFIX = "org.apache.iceberg.encryption.EncryptingFileIO"
+
+  /**
+   * True if `fileIO` is a FileIO whose backing storage Comet's native reader can reach. Matches
+   * on `fileIO`'s own class hierarchy (via [[classNameInHierarchy]]) rather than its exact leaf
+   * class, so a subclass that only adds metrics/retry/credential-routing on top of a known-
+   * compatible FileIO (e.g. a custom S3FileIO subclass) still matches, instead of silently
+   * falling back to Spark.
+   */
+  def isCompatibleFileIO(fileIO: Any): Boolean =
+    classNameInHierarchy(fileIO.getClass, COMPATIBLE_FILE_IO_CLASSES) ||
+      fileIO.getClass.getName.startsWith(ENCRYPTING_FILE_IO_PREFIX)
+
   /**
    * Iceberg content types.
    */
@@ -125,6 +155,23 @@ object IcebergReflection extends Logging {
       }
     }
     None
+  }
+
+  /**
+   * True if `clazz` or any of its superclasses has a name in `names`. Walks the already-loaded
+   * class object's own hierarchy, so unlike [[loadClass]] it never risks a
+   * `ClassNotFoundException` for a candidate name that isn't on this JVM's classpath (e.g.
+   * checking for a GCS/Azure FileIO class when only iceberg-aws is bundled).
+   */
+  def classNameInHierarchy(clazz: Class[_], names: Set[String]): Boolean = {
+    var current: Class[_] = clazz
+    while (current != null) {
+      if (names.contains(current.getName)) {
+        return true
+      }
+      current = current.getSuperclass
+    }
+    false
   }
 
   /**

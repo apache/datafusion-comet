@@ -3837,33 +3837,67 @@ fn parse_file_scan_tasks_from_common(
 
     // Compute unified partition type from the partition_type_pool.
     // Each entry is a StructType JSON with the resolved field types for one partition spec.
-    // Merge all specs into a single unified type (dedup by field_id).
+    // Merge all specs into a single unified type, matching Iceberg Java's
+    // Partitioning.buildPartitionProjectionType()/iceberg-rust's own
+    // compute_unified_partition_type(): process specs by spec_id descending (so the newest
+    // spec's field name wins when two specs share a field id), then sort the merged fields
+    // ascending by field id. The ascending sort matters beyond cosmetics: it fixes the
+    // physical Arrow struct field order for `_partition`, which must match the field order
+    // Spark's analyzer bound `_partition.<field>` accesses to (also computed via
+    // Partitioning.partitionType(), spec-descending + ascending-sort) -- a mismatch would
+    // read the wrong value under the right field name instead of erroring.
     //
-    // NOTE: The type information here comes from Iceberg Java's PartitionSpec.partitionType()
-    // (via Scala reflection). This is the same type computation as iceberg-rust's
-    // Transform::result_type() -- both implement the Iceberg spec's transform result rules.
-    // When iceberg-rust's own scan planning is used (not Comet's proto path), it computes
-    // this via compute_unified_partition_type(specs, schema) instead.
+    // partition_type_pool is index-aligned with partition_spec_pool (see the .proto comment),
+    // so partition_spec_cache[i].spec_id() gives the spec_id for partition_type_pool[i].
+    //
+    // NOTE: The resolved field types here come from Iceberg Java's PartitionSpec.partitionType()
+    // (via Scala reflection), which already applied Transform::result_type() per field. Because
+    // we only have resolved types (not the original Transform), we cannot replicate one further
+    // nuance of the reference algorithms: preferring a non-void transform's type over an older
+    // void transform's for the same field id. In practice this only affects a field whose
+    // partition source column was later dropped from the schema, which Comet already filters out
+    // upstream (see the "unknown type" filtering in serializePartitionData).
     let unified_partition_type = {
+        let mut indexed_types = proto_common
+            .partition_type_pool
+            .iter()
+            .enumerate()
+            .map(|(idx, type_json)| {
+                let struct_type = serde_json::from_str::<iceberg::spec::StructType>(type_json)
+                    .map_err(|e| {
+                        ExecutionError::GeneralError(format!(
+                            "Failed to deserialize partition type JSON from pool: {e}"
+                        ))
+                    })?;
+                let spec_id = partition_spec_cache
+                    .get(idx)
+                    .and_then(|opt| opt.as_ref())
+                    .map(|spec| spec.spec_id())
+                    .ok_or_else(|| {
+                        ExecutionError::GeneralError(format!(
+                            "No partition spec at pool index {idx} matching partition_type_pool \
+                             entry; partition_type_pool must be index-aligned with \
+                             partition_spec_pool"
+                        ))
+                    })?;
+                Ok((spec_id, struct_type))
+            })
+            .collect::<Result<Vec<_>, ExecutionError>>()?;
+
+        indexed_types.sort_by_key(|(spec_id, _)| std::cmp::Reverse(*spec_id));
+
         let mut seen_field_ids = std::collections::HashSet::new();
         let mut struct_fields: Vec<iceberg::spec::NestedFieldRef> = Vec::new();
 
-        for type_json in &proto_common.partition_type_pool {
-            match serde_json::from_str::<iceberg::spec::StructType>(type_json) {
-                Ok(struct_type) => {
-                    for field in struct_type.fields() {
-                        if seen_field_ids.insert(field.id) {
-                            struct_fields.push(Arc::clone(field));
-                        }
-                    }
-                }
-                Err(e) => {
-                    return Err(ExecutionError::GeneralError(format!(
-                        "Failed to deserialize partition type JSON from pool: {e}"
-                    )));
+        for (_, struct_type) in &indexed_types {
+            for field in struct_type.fields() {
+                if seen_field_ids.insert(field.id) {
+                    struct_fields.push(Arc::clone(field));
                 }
             }
         }
+
+        struct_fields.sort_by_key(|f| f.id);
 
         iceberg::spec::StructType::new(struct_fields)
     };
@@ -5515,5 +5549,111 @@ mod tests {
             i32::MAX - 5,
             "RESERVED_FIELD_ID_PARTITION must be i32::MAX - 5 to match Scala MetadataFieldIds"
         );
+    }
+
+    #[test]
+    fn test_unified_partition_type_merges_specs_by_descending_spec_id() {
+        use iceberg::spec::{NestedField, PartitionSpec, PrimitiveType, Type};
+
+        let iceberg_schema = iceberg::spec::Schema::builder()
+            .with_schema_id(0)
+            .with_fields(vec![
+                NestedField::required(1, "id", Type::Primitive(PrimitiveType::Int)).into(),
+                NestedField::required(2, "region", Type::Primitive(PrimitiveType::String)).into(),
+                NestedField::required(3, "category", Type::Primitive(PrimitiveType::String)).into(),
+            ])
+            .build()
+            .expect("schema");
+        let schema_arc = Arc::new(iceberg_schema);
+
+        // Spec 0 (older): field 1000 named "region_old".
+        let spec0 = PartitionSpec::builder(Arc::clone(&schema_arc))
+            .with_spec_id(0)
+            .add_unbound_field(iceberg::spec::UnboundPartitionField {
+                source_id: 2,
+                field_id: Some(1000),
+                name: "region_old".to_string(),
+                transform: iceberg::spec::Transform::Identity,
+            })
+            .expect("add field")
+            .build()
+            .expect("build spec0");
+
+        // Spec 1 (newer): same field id 1000 renamed to "region_new", plus a new field 2000.
+        let spec1 = PartitionSpec::builder(Arc::clone(&schema_arc))
+            .with_spec_id(1)
+            .add_unbound_field(iceberg::spec::UnboundPartitionField {
+                source_id: 2,
+                field_id: Some(1000),
+                name: "region_new".to_string(),
+                transform: iceberg::spec::Transform::Identity,
+            })
+            .expect("add field")
+            .add_unbound_field(iceberg::spec::UnboundPartitionField {
+                source_id: 3,
+                field_id: Some(2000),
+                name: "category".to_string(),
+                transform: iceberg::spec::Transform::Identity,
+            })
+            .expect("add field")
+            .build()
+            .expect("build spec1");
+
+        let spec0_type_json =
+            serde_json::to_string(&spec0.partition_type(&schema_arc).expect("partition_type"))
+                .expect("serialize");
+        let spec1_type_json =
+            serde_json::to_string(&spec1.partition_type(&schema_arc).expect("partition_type"))
+                .expect("serialize");
+        let spec0_json = serde_json::to_string(&spec0).expect("serialize spec0");
+        let spec1_json = serde_json::to_string(&spec1).expect("serialize spec1");
+
+        let schema_json = serde_json::to_string(schema_arc.as_ref()).expect("serialize schema");
+
+        // Pool insertion order deliberately does NOT match spec_id order: the newer spec
+        // (spec_id 1) is inserted first, at index 0, and the older spec (spec_id 0) second, at
+        // index 1. If the merge relied on pool-insertion order instead of spec_id, this would
+        // produce the wrong result (region_old kept instead of region_new).
+        let proto_common = spark_operator::IcebergScanCommon {
+            schema_pool: vec![schema_json],
+            partition_type_pool: vec![spec1_type_json, spec0_type_json],
+            partition_spec_pool: vec![spec1_json, spec0_json],
+            project_field_ids_pool: vec![spark_operator::ProjectFieldIdList {
+                field_ids: vec![iceberg::metadata_columns::RESERVED_FIELD_ID_PARTITION],
+            }],
+            ..Default::default()
+        };
+
+        let proto_task = spark_operator::IcebergFileScanTask {
+            data_file_path: "file:///tmp/data.parquet".to_string(),
+            file_size_in_bytes: 100,
+            schema_idx: 0,
+            partition_spec_idx: Some(0),
+            project_field_ids_idx: 0,
+            ..Default::default()
+        };
+
+        let tasks =
+            parse_file_scan_tasks_from_common(&proto_common, &[proto_task]).expect("parse tasks");
+        assert_eq!(tasks.len(), 1);
+
+        let unified = tasks[0]
+            .unified_partition_type
+            .as_ref()
+            .expect("unified_partition_type must be set when _partition is projected");
+
+        let fields = unified.fields();
+        assert_eq!(
+            fields.len(),
+            2,
+            "expected fields 1000 and 2000, got {fields:?}"
+        );
+        // Ascending by field id: 1000 before 2000.
+        assert_eq!(fields[0].id, 1000);
+        assert_eq!(fields[1].id, 2000);
+        // Newest spec (spec_id 1) wins the name for field 1000, despite being inserted into the
+        // pool before spec_id 0's entry.
+        assert_eq!(fields[0].name, "region_new");
+        assert_eq!(fields[1].name, "category");
     }
 }

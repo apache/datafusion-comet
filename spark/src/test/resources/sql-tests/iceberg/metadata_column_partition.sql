@@ -312,8 +312,12 @@ SELECT id, _pos FROM test_cat.db.mor_delete ORDER BY id
 statement
 DROP TABLE test_cat.db.mor_delete
 
--- NOTE: Merge-on-read UPDATE is not tested here because UPDATE TABLE is not
--- supported in Spark 4.0. Covered in CometIcebergNativeSuite instead.
+-- NOTE: Merge-on-read UPDATE is not tested here because UPDATE TABLE is not supported in Spark
+-- 4.0, and is not covered anywhere else either: it requires Iceberg's SQL extensions
+-- (IcebergSparkSessionExtensions), which are registered at SparkSession construction time and
+-- are not wired into CometTestBase's shared test session (same blocker as ALTER TABLE ADD
+-- PARTITION FIELD elsewhere in this test suite). Adding coverage needs that session-level
+-- infra, not just a new test case.
 
 -- =============================================================
 -- Temporal transforms: years() on DATE column
