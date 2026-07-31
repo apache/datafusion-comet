@@ -25,6 +25,8 @@ use datafusion::logical_expr::{
 };
 use std::sync::Arc;
 
+use crate::SparkError;
+
 /// Spark-compatible make_date function.
 /// Creates a date from year, month, and day columns.
 /// For an invalid `(year, month, day)` triple Spark returns NULL when `spark.sql.ansi.enabled` is
@@ -178,7 +180,10 @@ impl ScalarUDFImpl for SparkMakeDate {
                     Some(days) => builder.append_value(days),
                     None => {
                         if self.fail_on_error {
-                            return Err(DataFusionError::Execution(invalid_date_message(y, m, d)));
+                            return Err(SparkError::DatetimeFieldOutOfBounds {
+                                range_message: invalid_date_message(y, m, d),
+                            }
+                            .into());
                         }
                         builder.append_null();
                     }

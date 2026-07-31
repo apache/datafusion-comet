@@ -21,6 +21,7 @@ package org.apache.comet
 
 import scala.util.Random
 
+import org.apache.spark.SparkThrowable
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row, SaveMode}
 import org.apache.spark.sql.catalyst.analysis.UnresolvedAttribute
 import org.apache.spark.sql.catalyst.expressions.{Days, Hours, Literal}
@@ -38,6 +39,40 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
   /** Timezones used to verify that TimestampNTZ operations are timezone-independent. */
   private val crossTimezones =
     Seq("UTC", "America/Los_Angeles", "Europe/London", "Asia/Tokyo")
+
+  private def causeChain(error: Throwable): Seq[Throwable] =
+    Iterator.iterate(error)(_.getCause).takeWhile(_ != null).toSeq
+
+  private def deepestSparkThrowable(error: Throwable): SparkThrowable with Throwable =
+    causeChain(error)
+      .collect { case e: SparkThrowable with Throwable => e }
+      .lastOption
+      .getOrElse(
+        fail(s"No SparkThrowable in cause chain: ${causeChain(error).map(_.getClass.getName)}"))
+
+  test("next_day and make_date ANSI errors match Spark exceptions") {
+    withSQLConf(
+      SQLConf.ANSI_ENABLED.key -> "true",
+      SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
+        "org.apache.spark.sql.catalyst.optimizer.ConstantFolding") {
+      Seq("SELECT next_day(date('2024-01-01'), 'NOT_A_DAY')", "SELECT make_date(2024, 13, 1)")
+        .foreach { query =>
+          val df = sql(query)
+          checkCometOperators(stripAQEPlan(df.queryExecution.executedPlan))
+
+          val (sparkError, cometError) = checkSparkAnswerMaybeThrows(df)
+          val sparkFailure = sparkError.getOrElse(fail(s"Spark did not fail for: $query"))
+          val cometFailure = cometError.getOrElse(fail(s"Comet did not fail for: $query"))
+          val expected = deepestSparkThrowable(sparkFailure)
+          val actual = deepestSparkThrowable(cometFailure)
+
+          assert(actual.getClass == expected.getClass)
+          assert(actual.getErrorClass == expected.getErrorClass)
+          assert(actual.getSqlState == expected.getSqlState)
+          assert(!causeChain(cometFailure).exists(_.isInstanceOf[CometNativeException]))
+        }
+    }
+  }
 
   test("trunc (TruncDate)") {
     val supportedFormats = CometTruncDate.supportedFormats
