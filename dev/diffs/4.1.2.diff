@@ -392,7 +392,7 @@ index 0d807aeae4d..6d7744e771b 100644
  
        withTempView("t0", "t1", "t2") {
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/DataFrameAggregateSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/DataFrameAggregateSuite.scala
-index bfe15b33768..31f8ba4b876 100644
+index bfe15b33768..13aeb3f6610 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/DataFrameAggregateSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/DataFrameAggregateSuite.scala
 @@ -30,8 +30,9 @@ import org.apache.spark.sql.catalyst.util.AUTO_GENERATED_ALIAS
@@ -417,7 +417,13 @@ index bfe15b33768..31f8ba4b876 100644
          }
  
          // test case for ObjectHashAggregate and SortAggregate
-@@ -856,7 +859,7 @@ class DataFrameAggregateSuite extends QueryTest
+@@ -851,12 +854,12 @@ class DataFrameAggregateSuite extends QueryTest
+       assert(sortAggPlans.isEmpty)
+ 
+       val objHashAggPlans = collect(aggPlan) {
+-        case objHashAgg: ObjectHashAggregateExec => objHashAgg
++        case objHashAgg @ (_: ObjectHashAggregateExec | _: CometHashAggregateExec) => objHashAgg
+       }
        assert(objHashAggPlans.nonEmpty)
  
        val exchangePlans = collect(aggPlan) {
@@ -1391,14 +1397,14 @@ index 7bfc8cf4fa6..4bd387801db 100644
              df.collect()
            }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala
-index 3ba48da0e32..0313aaa9ec6 100644
+index 3ba48da0e32..a7f9513b9c8 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala
 @@ -23,10 +23,11 @@ import org.apache.spark.SparkRuntimeException
  import org.apache.spark.sql.catalyst.expressions.{EqualTo, NamedExpression, OuterReference, SubqueryExpression}
  import org.apache.spark.sql.catalyst.plans.{LeftAnti, LeftSemi}
  import org.apache.spark.sql.catalyst.plans.logical.{Aggregate, Filter, Join, LogicalPlan, Project, Sort, Union}
-+import org.apache.spark.sql.comet.{CometNativeColumnarToRowExec, CometNativeScanExec, CometScanExec}
++import org.apache.spark.sql.comet.{CometColumnarToRowExec, CometNativeColumnarToRowExec, CometNativeScanExec, CometScanExec}
  import org.apache.spark.sql.execution._
  import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanHelper, DisableAdaptiveExecution}
  import org.apache.spark.sql.execution.datasources.FileScanRDD
@@ -1407,13 +1413,25 @@ index 3ba48da0e32..0313aaa9ec6 100644
  import org.apache.spark.sql.execution.joins.{BaseJoinExec, BroadcastHashJoinExec, BroadcastNestedLoopJoinExec}
  import org.apache.spark.sql.internal.SQLConf
  import org.apache.spark.sql.test.SharedSparkSession
-@@ -1529,6 +1530,18 @@ class SubquerySuite extends QueryTest
+@@ -1529,6 +1530,30 @@ class SubquerySuite extends QueryTest
              fs.inputRDDs().forall(
                _.asInstanceOf[FileScanRDD].filePartitions.forall(
                  _.files.forall(_.urlEncodedPath.contains("p=0"))))
 +        case WholeStageCodegenExec(ColumnarToRowExec(InputAdapter(
 +        fs @ CometScanExec(_, _, _, partitionFilters, _, _, _, _, _, _)))) =>
 +          partitionFilters.exists(ExecSubqueryExpression.hasSubquery) &&
++            fs.inputRDDs().forall(
++              _.asInstanceOf[FileScanRDD].filePartitions.forall(
++                _.files.forall(_.urlEncodedPath.contains("p=0"))))
++        case WholeStageCodegenExec(CometColumnarToRowExec(InputAdapter(
++        fs @ CometScanExec(_, _, _, partitionFilters, _, _, _, _, _, _)))) =>
++          partitionFilters.exists(ExecSubqueryExpression.hasSubquery) &&
++            fs.inputRDDs().forall(
++              _.asInstanceOf[FileScanRDD].filePartitions.forall(
++                _.files.forall(_.urlEncodedPath.contains("p=0"))))
++        case WholeStageCodegenExec(CometColumnarToRowExec(InputAdapter(
++        fs: CometNativeScanExec))) =>
++          fs.partitionFilters.exists(ExecSubqueryExpression.hasSubquery) &&
 +            fs.inputRDDs().forall(
 +              _.asInstanceOf[FileScanRDD].filePartitions.forall(
 +                _.files.forall(_.urlEncodedPath.contains("p=0"))))
@@ -1426,7 +1444,7 @@ index 3ba48da0e32..0313aaa9ec6 100644
          case _ => false
        })
      }
-@@ -2094,7 +2107,7 @@ class SubquerySuite extends QueryTest
+@@ -2094,7 +2119,7 @@ class SubquerySuite extends QueryTest
  
        df.collect()
        val exchanges = collect(df.queryExecution.executedPlan) {
@@ -1435,7 +1453,7 @@ index 3ba48da0e32..0313aaa9ec6 100644
        }
        assert(exchanges.size === 1)
      }
-@@ -2678,18 +2691,29 @@ class SubquerySuite extends QueryTest
+@@ -2678,18 +2703,29 @@ class SubquerySuite extends QueryTest
      def checkFileSourceScan(query: String, answer: Seq[Row]): Unit = {
        val df = sql(query)
        checkAnswer(df, answer)
@@ -1473,6 +1491,28 @@ index 3ba48da0e32..0313aaa9ec6 100644
      }
  
      withTable("t1", "t2") {
+diff --git a/sql/core/src/test/scala/org/apache/spark/sql/VariantEndToEndSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/VariantEndToEndSuite.scala
+index 8a0e2c29653..d276a51cbc6 100644
+--- a/sql/core/src/test/scala/org/apache/spark/sql/VariantEndToEndSuite.scala
++++ b/sql/core/src/test/scala/org/apache/spark/sql/VariantEndToEndSuite.scala
+@@ -21,6 +21,7 @@ import org.apache.spark.sql.QueryTest.sameRows
+ import org.apache.spark.sql.catalyst.InternalRow
+ import org.apache.spark.sql.catalyst.expressions.{Cast, Literal}
+ import org.apache.spark.sql.catalyst.expressions.variant.{ToVariantObject, VariantExpressionEvalUtils}
++import org.apache.spark.sql.comet.CometNativeColumnarToRowExec
+ import org.apache.spark.sql.execution.WholeStageCodegenExec
+ import org.apache.spark.sql.execution.vectorized.OnHeapColumnVector
+ import org.apache.spark.sql.functions._
+@@ -358,7 +359,8 @@ class VariantEndToEndSuite extends QueryTest with SharedSparkSession {
+             s"cast(to_variant_object(s) as ${schema(2).dataType.sql})")
+           checkAnswer(df, input)
+           val plan = df.queryExecution.executedPlan
+-          assert(plan.isInstanceOf[WholeStageCodegenExec] == (codegenMode == "CODEGEN_ONLY"))
++          assert(plan.isInstanceOf[WholeStageCodegenExec] == (codegenMode == "CODEGEN_ONLY")
++            || plan.isInstanceOf[CometNativeColumnarToRowExec])
+         }
+       }
+     }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/VariantShreddingSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/VariantShreddingSuite.scala
 index fee375db10a..8c2c24e2c5f 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/VariantShreddingSuite.scala
@@ -2696,10 +2736,10 @@ index 3e7d26f74bd..79232dc3664 100644
          assert(o1.semanticEquals(o2), "Different output column order after AQE optimization")
        }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/columnar/CachedBatchSerializerSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/columnar/CachedBatchSerializerSuite.scala
-index 47b935a2880..3e9b87f5c32 100644
+index 47b935a2880..3fdeab3113c 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/columnar/CachedBatchSerializerSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/columnar/CachedBatchSerializerSuite.scala
-@@ -230,9 +230,16 @@ class CachedBatchSerializerNoUnwrapSuite extends QueryTest
+@@ -230,9 +230,21 @@ class CachedBatchSerializerNoUnwrapSuite extends QueryTest
        assert(cachedPlans.length == 2)
        cachedPlans.foreach {
          cachedPlan =>
@@ -2710,11 +2750,16 @@ index 47b935a2880..3e9b87f5c32 100644
 +          // (CometNativeColumnarToRow / CometColumnarToRow). Accept either the
 +          // Spark shape or the equivalent Comet shape, since the important property
 +          // under this serializer is that the row conversion is not unwrapped.
-+          val isSparkShape =
-+            cachedPlan.isInstanceOf[WholeStageCodegenExec] &&
-+              cachedPlan.asInstanceOf[WholeStageCodegenExec]
-+                .child.isInstanceOf[ColumnarToRowExec]
-+          val isCometShape = cachedPlan.getClass.getName.startsWith("org.apache.spark.sql.comet.")
++          // CometColumnarToRowExec supports codegen, so it appears as the child of a
++          // WholeStageCodegenExec, while CometNativeColumnarToRowExec does not and is
++          // the cached plan itself.
++          val transition = cachedPlan match {
++            case w: WholeStageCodegenExec => w.child
++            case other => other
++          }
++          val isSparkShape = cachedPlan.isInstanceOf[WholeStageCodegenExec] &&
++            transition.isInstanceOf[ColumnarToRowExec]
++          val isCometShape = transition.getClass.getName.startsWith("org.apache.spark.sql.comet.")
 +          assert(isSparkShape || isCometShape, s"unexpected cached plan:\n$cachedPlan")
        }
      }
@@ -3913,7 +3958,7 @@ index f0f3f94b811..b7d18771314 100644
  
      spark.internalCreateDataFrame(withoutFilters.execute(), schema)
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/test/SharedSparkSession.scala b/sql/core/src/test/scala/org/apache/spark/sql/test/SharedSparkSession.scala
-index 720b13b812e..813779bd3b2 100644
+index 720b13b812e..93221ef4cf5 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/test/SharedSparkSession.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/test/SharedSparkSession.scala
 @@ -98,6 +98,21 @@ trait SharedSparkSessionBase
@@ -3931,7 +3976,7 @@ index 720b13b812e..813779bd3b2 100644
 +        .set("spark.comet.exec.enabled", "true")
 +        .set("spark.shuffle.manager",
 +          "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
-+        .set("spark.comet.exec.shuffle.enabled", "true")
++        .set("spark.comet.shuffle.enabled", "true")
 +        .set("spark.comet.memoryOverhead", "2g")
 +
 +    }
@@ -4056,7 +4101,7 @@ index b67370f6eb9..746b3974b29 100644
    override def beforeEach(): Unit = {
      super.beforeEach()
 diff --git a/sql/hive/src/test/scala/org/apache/spark/sql/hive/test/TestHive.scala b/sql/hive/src/test/scala/org/apache/spark/sql/hive/test/TestHive.scala
-index a394d0b7393..3e1f0404a37 100644
+index a394d0b7393..7056c74759c 100644
 --- a/sql/hive/src/test/scala/org/apache/spark/sql/hive/test/TestHive.scala
 +++ b/sql/hive/src/test/scala/org/apache/spark/sql/hive/test/TestHive.scala
 @@ -53,24 +53,34 @@ object TestHive
@@ -4103,7 +4148,7 @@ index a394d0b7393..3e1f0404a37 100644
 +            .set("spark.comet.exec.enabled", "true")
 +            .set("spark.shuffle.manager",
 +              "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
-+            .set("spark.comet.exec.shuffle.enabled", "true")
++            .set("spark.comet.shuffle.enabled", "true")
 +        }
 +
 +        conf

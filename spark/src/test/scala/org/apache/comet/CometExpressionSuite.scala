@@ -25,8 +25,8 @@ import scala.util.Random
 
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.{Column, CometTestBase, DataFrame, Row}
-import org.apache.spark.sql.catalyst.expressions.{Alias, AttributeReference, Cast, FromUnixTime, KnownFloatingPointNormalized, Literal, StructsToJson, TruncDate, TruncTimestamp}
-import org.apache.spark.sql.catalyst.optimizer.{NormalizeNaNAndZero, SimplifyExtractValueOps}
+import org.apache.spark.sql.catalyst.expressions.{Alias, Cast, FromUnixTime, Literal, StructsToJson, TruncDate, TruncTimestamp}
+import org.apache.spark.sql.catalyst.optimizer.{ConvertToLocalRelation, OptimizeIn, SimplifyExtractValueOps}
 import org.apache.spark.sql.comet.CometProjectExec
 import org.apache.spark.sql.execution.{ProjectExec, SparkPlan}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
@@ -36,7 +36,6 @@ import org.apache.spark.sql.internal.SQLConf.SESSION_LOCAL_TIMEZONE
 import org.apache.spark.sql.types._
 
 import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, isSpark41Plus, isSpark42Plus}
-import org.apache.comet.serde.{CometAttributeReference, CometKnownFloatingPointNormalized, Unsupported}
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
 
 class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
@@ -146,8 +145,8 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         StructField("v", IntegerType, nullable = false)))
     val rows = (0 until 1000).map(i => Row(if (i % 2 == 0) Row(i.toLong) else null, i))
     withSQLConf(
-      CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
-      CometConf.COMET_EXEC_SHUFFLE_WITH_HASH_PARTITIONING_ENABLED.key -> "true") {
+      CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_SHUFFLE_NATIVE_HASH_PARTITIONING_ENABLED.key -> "true") {
       val df = spark
         .createDataFrame(spark.sparkContext.parallelize(rows), schema)
         .repartition(4, col("v")) // materialize the typed struct through a Comet shuffle
@@ -1051,18 +1050,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("misc scalar serdes report static unsupported cases via getSupportLevel") {
-    val intervalAttr = AttributeReference("interval_attr", CalendarIntervalType)()
-
-    assert(
-      CometAttributeReference.getSupportLevel(intervalAttr) ==
-        Unsupported(Some("unsupported datatype: CalendarIntervalType")))
-    assert(
-      CometKnownFloatingPointNormalized.getSupportLevel(
-        KnownFloatingPointNormalized(NormalizeNaNAndZero(intervalAttr))) ==
-        Unsupported(Some("Unsupported datatype CalendarIntervalType")))
-  }
-
   test("rlike with non-scalar pattern runs via codegen dispatcher") {
     val table = "rlike_non_scalar"
     withTable(table) {
@@ -1728,6 +1715,32 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("null IN empty list honours legacy null-in-empty behavior") {
+    // Spark returns NULL for a NULL operand against an empty IN list when the legacy behavior is
+    // in effect (SPARK-44550): always on Spark 3.4, on by default on Spark 3.5, and whenever ANSI
+    // mode is disabled on Spark 4.0+. Comet's native `in` kernel always returns false, so the
+    // legacy case must leave the native path. Empty IN lists are not expressible in SQL and
+    // `OptimizeIn` folds them away, so build the expression via the DataFrame API with that rule
+    // (and `ConvertToLocalRelation`) excluded.
+    withSQLConf(
+      SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
+        Seq(ConvertToLocalRelation.ruleName, OptimizeIn.ruleName).mkString(",")) {
+      val data: Seq[(Integer, Int)] = Seq((1, 1), (null, 2))
+      withParquetTable(data, "tbl") {
+        // An unset config exercises the version-dependent default, which follows ANSI mode on
+        // Spark 4.0+ and is always the legacy behavior on Spark 3.x.
+        for (legacy <- Seq(Some("true"), Some("false"), None); ansi <- Seq("true", "false")) {
+          val legacyConf = legacy.map("spark.sql.legacy.nullInEmptyListBehavior" -> _).toSeq
+          withSQLConf(Seq(SQLConf.ANSI_ENABLED.key -> ansi) ++ legacyConf: _*) {
+            val df = sql("SELECT _1 AS a FROM tbl")
+              .select(col("a"), col("a").isin(), !col("a").isin())
+            checkSparkAnswer(df)
+          }
+        }
+      }
+    }
+  }
+
   test("not") {
     Seq(false, true).foreach { dictionary =>
       withSQLConf("parquet.enable.dictionary" -> dictionary.toString) {
@@ -2039,7 +2052,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       SQLConf.COALESCE_PARTITIONS_ENABLED.key -> "true",
       CometConf.COMET_ENABLED.key -> "true",
       CometConf.COMET_EXEC_ENABLED.key -> "true",
-      CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "false",
+      CometConf.COMET_SHUFFLE_ENABLED.key -> "false",
       EXTENDED_EXPLAIN_PROVIDERS_KEY -> "org.apache.comet.ExtendedExplainInfo") {
       val table = "test"
       withTable(table) {
@@ -2047,9 +2060,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         sql(s"insert into $table values(0, 1, 100.000001)")
 
         Seq(
-          (
-            s"SELECT cast(make_interval(c0, c1, c0, c1, c0, c0, c2) as string) as C from $table",
-            Set("Cast from CalendarIntervalType to StringType is not supported")),
           (
             "SELECT "
               + "date_part('YEAR', make_interval(c0, c1, c0, c1, c0, c0, c2))"
@@ -2061,15 +2071,13 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               "extractintervalmonths is not supported")),
           (
             s"SELECT sum(c0), sum(c2) from $table group by c1",
-            Set("Comet shuffle is not enabled: spark.comet.exec.shuffle.enabled is not enabled")),
+            Set("Comet shuffle is not enabled: spark.comet.shuffle.enabled is not enabled")),
           (
             "SELECT A.c1, A.sum_c0, A.sum_c2, B.casted from "
               + s"(SELECT c1, sum(c0) as sum_c0, sum(c2) as sum_c2 from $table group by c1) as A, "
               + s"(SELECT c1, cast(make_interval(c0, c1, c0, c1, c0, c0, c2) as string) as casted from $table) as B "
               + "where A.c1 = B.c1 ",
-            Set(
-              "Cast from CalendarIntervalType to StringType is not supported",
-              "Comet shuffle is not enabled: spark.comet.exec.shuffle.enabled is not enabled")),
+            Set("Comet shuffle is not enabled: spark.comet.shuffle.enabled is not enabled")),
           (s"select * from $table LIMIT 10 OFFSET 3", Set("Comet shuffle is not enabled")))
           .foreach(test => {
             val qry = test._1
@@ -3255,6 +3263,30 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         val df1 = df.withColumn("result", makeDecimalColumn)
 
         checkSparkAnswerAndOperator(df1)
+      }
+    }
+  }
+
+  test("make decimal using DataFrame API - overflow throws when nullOnOverflow=false") {
+    // https://github.com/apache/datafusion-comet/issues/5066
+    withTable("t1") {
+      sql("create table t1 using parquet as select cast(123456 as long) as c1 from range(1)")
+
+      withSQLConf(
+        SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+        SQLConf.ADAPTIVE_OPTIMIZER_EXCLUDED_RULES.key -> "org.apache.spark.sql.catalyst.optimizer.ConstantFolding") {
+
+        val df = sql("select * from t1")
+        val makeDecimalColumn =
+          createMakeDecimalColumn(df.col("c1").expr, 3, 0, nullOnOverflow = false)
+        val df1 = df.withColumn("result", makeDecimalColumn)
+
+        val (sparkErr, cometErr) = checkSparkAnswerMaybeThrows(df1)
+        assert(sparkErr.isDefined, "Spark should throw on overflow when nullOnOverflow=false")
+        assert(cometErr.isDefined, "Comet should throw on overflow when nullOnOverflow=false")
+        assert(sparkErr.get.getMessage.contains("cannot be represented as Decimal(3, 0)"))
+        assert(cometErr.get.getMessage.contains("cannot be represented as Decimal(3, 0)"))
       }
     }
   }

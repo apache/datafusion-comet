@@ -1,4 +1,4 @@
-CometNativeColumnarToRow
+CometColumnarToRow
 +- CometTakeOrderedAndProject
    +- CometProject
       +- CometBroadcastHashJoin
@@ -24,7 +24,7 @@ CometNativeColumnarToRow
          :     :                 :     :                       +- CometProject
          :     :                 :     :                          +- CometFilter
          :     :                 :     :                             :  +- Subquery
-         :     :                 :     :                             :     +- CometNativeColumnarToRow
+         :     :                 :     :                             :     +- CometColumnarToRow
          :     :                 :     :                             :        +- CometProject
          :     :                 :     :                             :           +- CometFilter
          :     :                 :     :                             :              +- CometNativeScan parquet spark_catalog.default.date_dim
@@ -42,7 +42,7 @@ CometNativeColumnarToRow
          :     :                             +- CometProject
          :     :                                +- CometFilter
          :     :                                   :  +- Subquery
-         :     :                                   :     +- CometNativeColumnarToRow
+         :     :                                   :     +- CometColumnarToRow
          :     :                                   :        +- CometProject
          :     :                                   :           +- CometFilter
          :     :                                   :              +- CometNativeScan parquet spark_catalog.default.date_dim

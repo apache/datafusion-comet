@@ -86,6 +86,7 @@ object CometExecRule {
       classOf[SortMergeJoinExec] -> CometSortMergeJoinExec,
       classOf[SortExec] -> CometSortExec,
       classOf[LocalTableScanExec] -> CometLocalTableScanExec,
+      classOf[SampleExec] -> CometSampleExec,
       classOf[WindowExec] -> CometWindowExec)
 
   /**
@@ -377,8 +378,8 @@ case class CometExecRule(session: SparkSession)
             // WriteFilesExec is always wrapped by DataWritingCommandExec (via Spark's V1Writes
             // rule); the parent case converts the whole write to CometNativeWriteExec and
             // unwraps WriteFilesExec inside convertToComet. Tagging WriteFilesExec here would
-            // produce a spurious "WriteFilesExec is not supported" fallback reason (and a
-            // warning when COMET_LOG_FALLBACK_REASONS=true) even when the write is fully native.
+            // produce a spurious "WriteFilesExec is not supported" fallback reason (and a warning
+            // when COMET_EXPLAIN_FALLBACK_LOG_ENABLED=true) even when the write is fully native.
             op
           case _ =>
             // The operator was not converted to a Comet plan. Possible reasons for this happening:
@@ -440,10 +441,20 @@ case class CometExecRule(session: SparkSession)
       case sub: SubqueryBroadcastExec =>
         sub.child match {
           case b: BroadcastExchangeExec =>
-            // The BroadcastExchangeExec child is CometNativeColumnarToRowExec wrapping
+            // The BroadcastExchangeExec child is a Comet columnar-to-row transition wrapping
             // a Comet plan. Strip the row transition to get the columnar Comet plan.
+            // CometColumnarToRowExec is CodegenSupport, so by the time this rule sees the
+            // subquery plan it is compiled into WholeStageCodegenExec(CometColumnarToRowExec(
+            // InputAdapter(cometPlan))); CometNativeColumnarToRowExec is not CodegenSupport and
+            // sits directly under the exchange.
             val cometChild = b.child match {
               case c2r: CometNativeColumnarToRowExec => c2r.child
+              case c2r: CometColumnarToRowExec => c2r.child
+              case WholeStageCodegenExec(c2r: CometColumnarToRowExec) =>
+                c2r.child match {
+                  case InputAdapter(child) => child
+                  case other => other
+                }
               case other => other
             }
             if (cometChild.isInstanceOf[CometNativeExec]) {
@@ -611,7 +622,7 @@ case class CometExecRule(session: SparkSession)
       // Revert CometColumnarShuffle to Spark's ShuffleExchangeExec when both its parent and child
       // are non-Comet HashAggregate/ObjectHashAggregate operators that remained JVM after the main
       // transform pass. See https://github.com/apache/datafusion-comet/issues/4004.
-      if (CometConf.COMET_EXEC_SHUFFLE_REVERT_REDUNDANT_COLUMNAR_ENABLED.get()) {
+      if (CometConf.COMET_SHUFFLE_REVERT_REDUNDANT_COLUMNAR_ENABLED.get()) {
         newPlan = revertRedundantColumnarShuffle(newPlan)
       }
 
@@ -873,6 +884,29 @@ case class CometExecRule(session: SparkSession)
                 CometExecRule.COMET_UNSAFE_PARTIAL,
                 "Partial aggregate disabled: corresponding final aggregate " +
                   "cannot be converted to Comet and intermediate buffer formats are incompatible")
+            }
+          }
+        }
+
+        // CollectList/CollectSet round-trip an ArrayType buffer that Spark declares as BinaryType.
+        // In a multi-stage aggregate with a PartialMerge stage (e.g. Spark's distinct-aggregate
+        // rewrite), Comet cannot represent that buffer consistently across the intermediate stages
+        // (issue #4724), so a fully-native pipeline crashes. Force the whole chain to fall back to
+        // Spark by tagging the feeding pure-Partial; the PartialMerge/Final stages then fall back
+        // via the buffer-source check in doConvert.
+        //
+        // This block is intentionally separate from the tagging block just above: that one only
+        // fires when the Final itself cannot be converted, but `canAggregateBeConverted` skips
+        // the child-native check, so an all-native distinct `collect_list` chain converts its
+        // Final and slips past the earlier tagging pass. This block catches that case.
+        if (agg.aggregateExpressions.exists(_.mode == PartialMerge) &&
+          QueryPlanSerde.hasNativeArrayBufferAgg(agg.aggregateExpressions)) {
+          findPartialAggInPlan(agg.child).foreach { partial =>
+            if (canAggregateBeConverted(partial, Partial)) {
+              partial.setTagValue(
+                CometExecRule.COMET_UNSAFE_PARTIAL,
+                "Partial aggregate disabled: part of a multi-stage CollectList/CollectSet " +
+                  "aggregate whose intermediate buffer cannot round-trip in Comet (issue #4724)")
             }
           }
         }

@@ -87,29 +87,29 @@ incompatibility details.
 Comet provides five configs for understanding what is happening in a plan.
 They serve different purposes and produce output in different places.
 
-| Config                                   | Output destination                 | What you see                                                                                                                                                              |
-| ---------------------------------------- | ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `spark.comet.explainFallback.enabled`    | Driver log (only when fallback)    | A WARN with the list of reasons each query stage could not run in Comet.                                                                                                  |
-| `spark.comet.logFallbackReasons.enabled` | Driver log                         | One WARN per fallback reason as it is encountered, without surrounding plan context.                                                                                      |
-| `spark.comet.explainCodegen.enabled`     | `ExtendedExplainInfo` / SQL UI     | A single `[COMET-INFO: JVM codegen dispatcher: <name1>, <name2>, ...]` segment naming each expression on the operator that was routed through the JVM codegen dispatcher. |
-| `spark.comet.explain.format`             | Spark SQL UI (Spark 4.0 and newer) | Annotated plan or fallback-reason list, depending on `verbose` (default) or `fallback` value.                                                                             |
-| `spark.comet.explain.native.enabled`     | Executor logs, per task            | The DataFusion plan with metrics, useful for inspecting Rust execution.                                                                                                   |
+| Config                                     | Output destination                 | What you see                                                                                                                                                              |
+| ------------------------------------------ | ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `spark.comet.explain.fallback.enabled`     | Driver log (only when fallback)    | A WARN with the list of reasons each query stage could not run in Comet.                                                                                                  |
+| `spark.comet.explain.fallback.log.enabled` | Driver log                         | One WARN per fallback reason as it is encountered, without surrounding plan context.                                                                                      |
+| `spark.comet.explain.codegen.enabled`      | `ExtendedExplainInfo` / SQL UI     | A single `[COMET-INFO: JVM codegen dispatcher: <name1>, <name2>, ...]` segment naming each expression on the operator that was routed through the JVM codegen dispatcher. |
+| `spark.comet.explain.format`               | Spark SQL UI (Spark 4.0 and newer) | Annotated plan or fallback-reason list, depending on `verbose` (default) or `fallback` value.                                                                             |
+| `spark.comet.explain.native.enabled`       | Executor logs, per task            | The DataFusion plan with metrics, useful for inspecting Rust execution.                                                                                                   |
 
-### `spark.comet.explainFallback.enabled`
+### `spark.comet.explain.fallback.enabled`
 
 Logs a single WARN listing the reasons each query stage could not be executed
 in Comet. Nothing is logged when the entire stage runs in Comet. Useful as a
 low-noise check that fallback is or is not happening.
 
-### `spark.comet.logFallbackReasons.enabled`
+### `spark.comet.explain.fallback.log.enabled`
 
 Logs every fallback reason as it is encountered, one WARN per reason. Use this
 when you want to see all reasons, including ones that
-`spark.comet.explainFallback.enabled` may aggregate or omit. The output does
+`spark.comet.explain.fallback.enabled` may aggregate or omit. The output does
 not include the surrounding plan, so it is best for accumulating diagnostics
 across many queries.
 
-### `spark.comet.explainCodegen.enabled`
+### `spark.comet.explain.codegen.enabled`
 
 Disabled by default. When enabled, Comet annotates the surrounding Comet
 operator (`CometProject`, `CometFilter`, etc.) with a single combined
@@ -130,7 +130,7 @@ Example:
 
 ```scala
 spark.conf.set("spark.comet.exec.scalaUDF.codegen.enabled", "true")
-spark.conf.set("spark.comet.explainCodegen.enabled", "true")
+spark.conf.set("spark.comet.explain.codegen.enabled", "true")
 
 val df = spark.sql("SELECT hypot(a, b), levenshtein(s1, s2) FROM t")
 println(new org.apache.comet.ExtendedExplainInfo()
@@ -140,7 +140,7 @@ println(new org.apache.comet.ExtendedExplainInfo()
 Output:
 
 ```
-CometNativeColumnarToRow
+CometColumnarToRow
 +- CometProject [COMET-INFO: JVM codegen dispatcher: hypot, levenshtein]
    +- CometNativeScan parquet spark_catalog.default.t
 
@@ -221,7 +221,7 @@ Output
 
 ```
 Project [COMET: from_unixtime(eventTime#5L, yyyy-MM-dd HH:mm:ss, Some(GMT)) is not fully compatible with Spark. To enable it anyway, set spark.comet.expression.FromUnixTime.allowIncompatible=true. For more information, refer to the Comet Compatibility Guide (https://datafusion.apache.org/comet/user-guide/compatibility.html).]
-+- CometNativeColumnarToRow
++- CometColumnarToRow
    +- CometNativeScan parquet
 
 Comet accelerated 1 out of 2 eligible operators (50%). Final plan contains 1 transitions between Spark and Comet.
@@ -309,12 +309,12 @@ Comet inserts these nodes wherever data has to cross the columnar/row boundary.
 Multiple implementations exist because the optimal strategy depends on what
 produced the columnar data.
 
-| Node                           | Direction           | Notes                                                                                                                                                                                                                             |
-| ------------------------------ | ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `CometColumnarToRow`           | columnar → row      | JVM-based row conversion. A fork of Spark's `ColumnarToRowExec` that includes the SPARK-50235 fix.                                                                                                                                |
-| `CometNativeColumnarToRow`     | columnar → row      | Rust-based row conversion that decodes broadcast Arrow batches via `NativeColumnarToRowConverter`. Used downstream of `CometBroadcastExchange`. Zero-copy for variable-length types and avoids an extra JVM materialization step. |
-| `CometSparkColumnarToColumnar` | columnar → columnar | Converts a Spark columnar input (a non-Comet `ColumnarBatch`) into Comet's Arrow batches.                                                                                                                                         |
-| `CometSparkRowToColumnar`      | row → columnar      | Converts a Spark row input into Comet's Arrow batches.                                                                                                                                                                            |
+| Node                           | Direction           | Notes                                                                                                                                                                                                                                               |
+| ------------------------------ | ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `CometColumnarToRow`           | columnar → row      | JVM-based row conversion. A fork of Spark's `ColumnarToRowExec` that includes the SPARK-50235 fix. This is the default.                                                                                                                             |
+| `CometNativeColumnarToRow`     | columnar → row      | Rust-based row conversion via `NativeColumnarToRowConverter`. Disabled by default; enable with `spark.comet.exec.columnarToRow.native.enabled=true`. It carries a fixed JNI cost per batch and is slower than the JVM conversion for small batches. |
+| `CometSparkColumnarToColumnar` | columnar → columnar | Converts a Spark columnar input (a non-Comet `ColumnarBatch`) into Comet's Arrow batches.                                                                                                                                                           |
+| `CometSparkRowToColumnar`      | row → columnar      | Converts a Spark row input into Comet's Arrow batches.                                                                                                                                                                                              |
 
 The two `CometSpark*` names come from a single `CometSparkToColumnarExec`
 operator that picks the node name based on whether its child supports

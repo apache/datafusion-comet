@@ -22,6 +22,7 @@ use crate::math_funcs::abs::abs;
 use crate::math_funcs::checked_arithmetic::{checked_add, checked_div, checked_mul, checked_sub};
 use crate::math_funcs::log::spark_log;
 use crate::math_funcs::modulo_expr::spark_modulo;
+use crate::math_funcs::pow::spark_pow;
 use crate::{
     spark_ceil, spark_day_name, spark_decimal_div, spark_decimal_integral_div, spark_floor,
     spark_isnan, spark_lpad, spark_make_decimal, spark_month_name, spark_read_side_padding,
@@ -75,6 +76,15 @@ macro_rules! make_comet_scalar_udf {
             Signature::variadic_any(Volatility::Immutable),
             $data_type.clone(),
             Arc::new(move |args| $func(args, &$data_type, $eval_mode)),
+        );
+        Ok(Arc::new(ScalarUDF::new_from_impl(scalar_func)))
+    }};
+    ($name:expr, $func:ident, $data_type:ident, $eval_mode:ident, $fail_on_error:ident) => {{
+        let scalar_func = CometScalarFunction::new(
+            $name.to_string(),
+            Signature::variadic_any(Volatility::Immutable),
+            $data_type.clone(),
+            Arc::new(move |args| $func(args, &$data_type, $eval_mode, $fail_on_error)),
         );
         Ok(Arc::new(ScalarUDF::new_from_impl(scalar_func)))
     }};
@@ -140,7 +150,9 @@ pub fn create_comet_physical_fun_with_eval_mode(
             make_comet_scalar_udf!("unscaled_value", func, without data_type)
         }
         "make_decimal" => {
-            make_comet_scalar_udf!("make_decimal", spark_make_decimal, data_type)
+            // fail_on_error corresponds to Spark's nullOnOverflow = false (ANSI mode): the
+            // unscaled long must fit the target precision or the query fails.
+            make_comet_scalar_udf!("make_decimal", spark_make_decimal, data_type, fail_on_error)
         }
         "unhex" => {
             let func = Arc::new(spark_unhex);
@@ -150,11 +162,15 @@ pub fn create_comet_physical_fun_with_eval_mode(
             make_comet_scalar_udf!("decimal_div", spark_decimal_div, data_type, eval_mode)
         }
         "decimal_integral_div" => {
+            // the planner repurposes the fail_on_error slot to carry check_divide_overflow
+            // (see MathExpr.check_divide_overflow in expr.proto)
+            let check_divide_overflow = fail_on_error;
             make_comet_scalar_udf!(
                 "decimal_integral_div",
                 spark_decimal_integral_div,
                 data_type,
-                eval_mode
+                eval_mode,
+                check_divide_overflow
             )
         }
         "checked_add" => {
@@ -192,6 +208,10 @@ pub fn create_comet_physical_fun_with_eval_mode(
         "spark_log" => {
             let func = Arc::new(spark_log);
             make_comet_scalar_udf!("spark_log", func, without data_type)
+        }
+        "pow" => {
+            let func = Arc::new(spark_pow);
+            make_comet_scalar_udf!("pow", func, without data_type)
         }
         "base64" => {
             let func = Arc::new(crate::string_funcs::spark_base64);
@@ -233,6 +253,10 @@ pub fn create_comet_physical_fun_with_eval_mode(
         "next_day" => Ok(Arc::new(ScalarUDF::new_from_impl(SparkNextDay::new(
             fail_on_error,
         )))),
+        "levenshtein" => {
+            let func = Arc::new(crate::string_funcs::spark_levenshtein);
+            make_comet_scalar_udf!("levenshtein", func, without data_type)
+        }
         _ => registry.udf(fun_name).map_err(|e| {
             DataFusionError::Execution(format!(
                 "Function {fun_name} not found in the registry: {e}",
