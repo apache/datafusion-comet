@@ -203,9 +203,17 @@ private[comet] object PlanDataInjector extends Logging {
         // the serializedPartitionData lazy val initializer (a known deadlock surface).
         iceberg.ensureSubqueriesResolved()
         if (iceberg.commonData.nonEmpty && iceberg.perPartitionData.nonEmpty) {
-          (
-            Map(iceberg.metadataLocation -> iceberg.commonData),
-            Map(iceberg.metadataLocation -> iceberg.perPartitionData))
+          // A self-join/self-merge can put two scans of the same table (same metadata_location)
+          // in one native plan. Computing the key via IcebergPlanDataInjector.getKey, the same
+          // function injectPlanData uses to look it up, keeps the two sides from drifting apart
+          // (see the scan_hash_code field comment in operator.proto for why metadata_location
+          // alone cannot distinguish them).
+          IcebergPlanDataInjector.getKey(iceberg.nativeOp) match {
+            case Some(key) =>
+              (Map(key -> iceberg.commonData), Map(key -> iceberg.perPartitionData))
+            case None =>
+              (Map.empty, Map.empty)
+          }
         } else {
           (Map.empty, Map.empty)
         }
@@ -274,8 +282,10 @@ private[comet] object IcebergPlanDataInjector extends PlanDataInjector {
       op.getIcebergScan.getFileScanTasksCount == 0 &&
       op.getIcebergScan.hasCommon
 
-  override def getKey(op: Operator): Option[String] =
-    Some(op.getIcebergScan.getCommon.getMetadataLocation)
+  override def getKey(op: Operator): Option[String] = {
+    val common = op.getIcebergScan.getCommon
+    Some(s"${common.getMetadataLocation}_${common.getScanHashCode}")
+  }
 
   override def inject(
       op: Operator,
