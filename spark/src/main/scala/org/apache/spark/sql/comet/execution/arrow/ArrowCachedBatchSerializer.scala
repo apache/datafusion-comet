@@ -21,6 +21,7 @@ package org.apache.spark.sql.comet.execution.arrow
 
 import scala.collection.JavaConverters._
 
+import org.apache.spark.TaskContext
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, GenericInternalRow, IsNotNull, IsNull, UnsafeProjection}
@@ -315,10 +316,33 @@ class ArrowCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
     val indices = selectedIndices(cacheAttributes, selectedAttributes)
 
     input.mapPartitions { it =>
+      // An ArrowReaderIterator closes its reader (releasing the batch it is holding) only when it
+      // runs to exhaustion. A consumer that stops early -- LIMIT, take(), or a cancelled task --
+      // leaves the reader it was part-way through open, so close it on task completion. Spark's
+      // own ArrowCachedBatchSerializer registers a listener for the same reason.
+      //
+      // flatMap consumes each inner iterator fully before building the next, so at most one reader
+      // is open at a time and tracking the current one is enough. close() is idempotent, so closing
+      // one that already exhausted itself is a no-op.
+      @volatile var current: ArrowReaderIterator = null
+      Option(TaskContext.get()).foreach { tc =>
+        tc.addTaskCompletionListener[Unit] { _ =>
+          val reader = current
+          current = null
+          if (reader != null) {
+            reader.close()
+          }
+        }
+      }
+
       it.flatMap {
         case cb: CometCachedBatch =>
-          Utils.decodeBatches(cb.bytes, "CometCache").map { batch =>
-            projectBatch(batch, indices)
+          Utils.decodeBatches(cb.bytes, "CometCache") match {
+            case reader: ArrowReaderIterator =>
+              current = reader
+              reader.map(batch => projectBatch(batch, indices))
+            case empty =>
+              empty.map(batch => projectBatch(batch, indices))
           }
 
         case other =>

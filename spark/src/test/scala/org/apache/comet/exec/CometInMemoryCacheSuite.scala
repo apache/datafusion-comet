@@ -28,6 +28,7 @@ import org.apache.spark.sql.catalyst.expressions.{And, Expression, GreaterThanOr
 import org.apache.spark.sql.columnar.SimpleMetricsCachedBatch
 import org.apache.spark.sql.execution.columnar.CometInMemoryRelationHelper
 import org.apache.spark.sql.internal.{SQLConf, StaticSQLConf}
+import org.apache.spark.storage.StorageLevel
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
@@ -407,6 +408,114 @@ class CometInMemoryCacheSuite extends CometTestBase {
       val plan = df.queryExecution.executedPlan.toString()
       assert(plan.contains("CometInMemoryTableScan"))
       assert(!plan.contains("CometSparkColumnarToColumnar"))
+
+      spark.catalog.clearCache()
+    }
+  }
+
+  test("Comet in-memory cache honors inMemoryColumnarStorage.partitionPruning=false") {
+    // CometInMemoryTableScanExec applies the serializer's stats filter before decoding, the same
+    // way Spark's InMemoryTableScanExec.filteredCachedBatches does. Spark gates that on
+    // spark.sql.inMemoryColumnarStorage.partitionPruning, so Comet must too.
+    //
+    // Pruning is transparent in the results, so it is observed through the scan's numOutputRows:
+    // that counts the rows in the batches actually decoded, so pruning fewer batches means fewer
+    // rows. With pruning off, every cached row must be decoded.
+    def scanRowsFor(pruning: Boolean): (Long, Long) = {
+      var result: (Long, Long) = (0L, 0L)
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+        CometConf.COMET_SHUFFLE_MODE.key -> "jvm",
+        SQLConf.CACHE_VECTORIZED_READER_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true",
+        "spark.comet.sparkToColumnar.enabled" -> "true",
+        "spark.sql.inMemoryColumnarStorage.batchSize" -> "100",
+        SQLConf.IN_MEMORY_PARTITION_PRUNING.key -> pruning.toString) {
+
+        spark.catalog.clearCache()
+        spark
+          .range(0, 1000, 1, 10)
+          .selectExpr("id as key", "id % 7 as value")
+          .createOrReplaceTempView("prune_conf_cache")
+        spark.catalog.cacheTable("prune_conf_cache")
+        val totalRows = spark.table("prune_conf_cache").count()
+
+        val df =
+          spark.sql("SELECT key, value FROM prune_conf_cache WHERE key >= 900 AND key < 905")
+        checkSparkAnswer(df)
+
+        val scans = df.queryExecution.executedPlan.collect {
+          case s: org.apache.spark.sql.comet.CometInMemoryTableScanExec => s
+        }
+        assert(scans.length == 1, s"expected one CometInMemoryTableScan, got ${scans.length}")
+        // scalastyle:off println
+        println(
+          "DIAG rows=" + df.collect().length + " metrics=" + scans.head.metrics
+            .map { case (k, v) => k + "=" + v.value }
+            .mkString(","))
+        println("DIAG plan=" + df.queryExecution.executedPlan.getClass.getName)
+        // scalastyle:on println
+        result = (scans.head.metrics("numOutputRows").value, totalRows)
+        spark.catalog.clearCache()
+      }
+      result
+    }
+
+    val (prunedRows, total) = scanRowsFor(pruning = true)
+    val (unprunedRows, total2) = scanRowsFor(pruning = false)
+    assert(total == total2)
+    // With pruning on, only the batch holding keys 900-904 is decoded.
+    assert(prunedRows < total, s"expected pruning to decode fewer than $total rows")
+    // With pruning off, every cached batch is decoded.
+    assert(
+      unprunedRows == total,
+      s"expected all $total rows to be decoded with pruning disabled, got $unprunedRows")
+  }
+
+  test("Comet in-memory cache supports DISK_ONLY storage level") {
+    // CometCachedBatch holds a ChunkedByteBuffer, which is Externalizable, so BlockManager can
+    // spill it to the DiskStore like any other cached block. Pins that: nothing is held in memory,
+    // the bytes really do land on disk, every partition is cached, and the cache still reads back
+    // through the native scan.
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      CometConf.COMET_SHUFFLE_MODE.key -> "jvm",
+      SQLConf.CACHE_VECTORIZED_READER_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true",
+      "spark.comet.sparkToColumnar.enabled" -> "true") {
+
+      spark.catalog.clearCache()
+      spark
+        .range(0, 1000, 1, 4)
+        .selectExpr("id as key", "id % 7 as value")
+        .createOrReplaceTempView("disk_cache")
+
+      spark.catalog.cacheTable("disk_cache", StorageLevel.DISK_ONLY)
+      val total = spark.table("disk_cache").count()
+      assert(total == 1000)
+
+      assert(
+        cachedBatchTypes("disk_cache").sameElements(
+          Array("org.apache.spark.sql.comet.execution.arrow.CometCachedBatch")),
+        "DISK_ONLY must still use Comet's cached batch format")
+
+      val cached =
+        spark.sharedState.cacheManager.lookupCachedData(spark.table("disk_cache")).get
+      val rddId = cached.cachedRepresentation.cacheBuilder.cachedColumnBuffers.id
+      val info = spark.sparkContext.getRDDStorageInfo
+        .find(_.id == rddId)
+        .getOrElse(fail(s"no storage info for cached RDD $rddId"))
+
+      assert(info.memSize == 0, s"expected nothing in memory, got ${info.memSize} bytes")
+      assert(info.diskSize > 0, "expected the cached bytes to be on disk")
+      assert(
+        info.numCachedPartitions == info.numPartitions,
+        s"expected all ${info.numPartitions} partitions cached, got ${info.numCachedPartitions}")
+
+      val df = spark.sql("SELECT key, value FROM disk_cache WHERE key >= 900 AND key < 905")
+      checkSparkAnswer(df)
+      val plan = df.queryExecution.executedPlan.toString()
+      assert(plan.contains("CometInMemoryTableScan"))
 
       spark.catalog.clearCache()
     }

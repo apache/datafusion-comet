@@ -71,11 +71,17 @@ case class CometInMemoryTableScanExec(
   // Apply Spark's cache batch filter before decoding. Spark's InMemoryTableScanExec does this in
   // filteredCachedBatches(), but that method is private. Reusing the serializer's buildFilter here
   // keeps Comet on the same stats-based pruning path instead of decoding every cached batch.
+  //
+  // Gated on conf.inMemoryPartitionPruning the same way Spark's filteredCachedBatches is, so
+  // spark.sql.inMemoryColumnarStorage.partitionPruning=false disables pruning here too. Pruning is
+  // normally a win, but the config exists to be able to turn it off -- for debugging a suspected
+  // stats bug, for instance -- and silently ignoring it would make Comet diverge from Spark on a
+  // knob a user reaching for it is specifically trying to control.
   override def doExecuteColumnar(): RDD[ColumnarBatch] = {
     val numOutputRows = longMetric("numOutputRows")
 
     val filteredBuffers =
-      if (originalPlan.predicates.nonEmpty) {
+      if (originalPlan.predicates.nonEmpty && conf.inMemoryPartitionPruning) {
         val filter = serializer.buildFilter(originalPlan.predicates, relationOutput)
         cachedBuffers.mapPartitionsWithIndex(filter)
       } else {

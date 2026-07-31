@@ -19,6 +19,8 @@
 
 package org.apache.spark.sql.comet.execution.arrow
 
+import scala.util.control.NonFatal
+
 import org.apache.arrow.memory.BufferAllocator
 import org.apache.arrow.vector.VectorSchemaRoot
 import org.apache.arrow.vector.types.pojo.Schema
@@ -64,15 +66,23 @@ object CometArrowConverters extends Logging {
 
       override def next(): ColumnarBatch = {
         val root = VectorSchemaRoot.create(arrowSchema, allocator)
-        val writer = ArrowWriter.create(root)
-        var rowCount = 0L
-        while (rowIter.hasNext &&
-          (maxRecordsPerBatch <= 0 || rowCount < maxRecordsPerBatch)) {
-          writer.write(rowIter.next())
-          rowCount += 1
+        // Same ownership rule as columnarBatchToArrowBatch: the caller only owns the batch that
+        // rootAsBatch returns, so a throw from writing a row has to release the root here.
+        try {
+          val writer = ArrowWriter.create(root)
+          var rowCount = 0L
+          while (rowIter.hasNext &&
+            (maxRecordsPerBatch <= 0 || rowCount < maxRecordsPerBatch)) {
+            writer.write(rowIter.next())
+            rowCount += 1
+          }
+          writer.finish()
+          NativeUtil.rootAsBatch(root)
+        } catch {
+          case NonFatal(e) =>
+            root.close()
+            throw e
         }
-        writer.finish()
-        NativeUtil.rootAsBatch(root)
       }
     }
   }
@@ -121,7 +131,15 @@ object CometArrowConverters extends Logging {
       arrowSchema: Schema,
       allocator: BufferAllocator): ColumnarBatch = {
     val root = VectorSchemaRoot.create(arrowSchema, allocator)
-    writeColumns(root, batch, 0, batch.numRows())
-    NativeUtil.rootAsBatch(root)
+    // The caller only owns the returned batch, so anything that throws before `rootAsBatch` wraps
+    // the root has to release it here or the allocation leaks.
+    try {
+      writeColumns(root, batch, 0, batch.numRows())
+      NativeUtil.rootAsBatch(root)
+    } catch {
+      case NonFatal(e) =>
+        root.close()
+        throw e
+    }
   }
 }
