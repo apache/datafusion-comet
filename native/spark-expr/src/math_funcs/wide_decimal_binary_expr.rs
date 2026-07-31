@@ -20,13 +20,14 @@
 //! Instead of building a 4-node expression tree (Cast→BinaryExpr→Cast→Cast), this performs
 //! i256 intermediate arithmetic in a single expression, producing only one output array.
 
+use crate::conversion_funcs::format_decimal_str;
 use crate::math_funcs::utils::get_precision_scale;
-use crate::EvalMode;
+use crate::{EvalMode, SparkError};
 use arrow::array::{Array, ArrayRef, AsArray, Decimal128Array};
 use arrow::datatypes::{i256, DataType, Decimal128Type, Schema};
 use arrow::error::ArrowError;
 use arrow::record_batch::RecordBatch;
-use datafusion::common::Result;
+use datafusion::common::{DataFusionError, Result};
 use datafusion::logical_expr::ColumnarValue;
 use datafusion::physical_expr::PhysicalExpr;
 use std::fmt::{Display, Formatter};
@@ -215,7 +216,7 @@ impl PhysicalExpr for WideDecimalBinaryExpr {
         let bound = max_for_precision(p_out);
         let neg_bound = i256::ZERO.wrapping_sub(bound);
 
-        let result: Decimal128Array = match op {
+        let result: std::result::Result<Decimal128Array, ArrowError> = match op {
             WideDecimalOp::Add | WideDecimalOp::Subtract => {
                 let max_scale = std::cmp::max(s1, s2);
                 let l_scale_up = i256_pow10((max_scale - s1) as u32);
@@ -249,8 +250,8 @@ impl PhysicalExpr for WideDecimalBinaryExpr {
                     } else {
                         raw
                     };
-                    check_overflow_and_convert(result, bound, neg_bound, eval_mode)
-                })?
+                    check_overflow_and_convert(result, bound, neg_bound, p_out, s_out, eval_mode)
+                })
             }
             WideDecimalOp::Multiply => {
                 let natural_scale = s1 + s2;
@@ -276,10 +277,16 @@ impl PhysicalExpr for WideDecimalBinaryExpr {
                     } else {
                         raw
                     };
-                    check_overflow_and_convert(result, bound, neg_bound, eval_mode)
-                })?
+                    check_overflow_and_convert(result, bound, neg_bound, p_out, s_out, eval_mode)
+                })
             }
         };
+        let result = result.map_err(|error| -> DataFusionError {
+            match error {
+                ArrowError::ExternalError(error) => DataFusionError::External(error),
+                error => error.into(),
+            }
+        })?;
 
         let result = if eval_mode != EvalMode::Ansi {
             result.null_if_overflow_precision(p_out)
@@ -336,11 +343,21 @@ fn check_overflow_and_convert(
     result: i256,
     bound: i256,
     neg_bound: i256,
+    precision: u8,
+    scale: i8,
     eval_mode: EvalMode,
 ) -> Result<i128, ArrowError> {
     if result > bound || result < neg_bound {
         if eval_mode == EvalMode::Ansi {
-            return Err(ArrowError::ComputeError("Arithmetic overflow".to_string()));
+            let unscaled = result.to_string();
+            let digits = unscaled.trim_start_matches('-').len();
+            return Err(ArrowError::ExternalError(Box::new(
+                SparkError::NumericValueOutOfRange {
+                    value: format_decimal_str(&unscaled, digits, scale),
+                    precision,
+                    scale,
+                },
+            )));
         }
         // Sentinel value — will be nullified by null_if_overflow_precision
         Ok(i128::MAX)
@@ -507,10 +524,26 @@ mod tests {
     }
 
     #[test]
-    fn test_overflow_ansi_mode_returns_error() {
-        let batch = make_batch(vec![Some(5)], 38, 0, vec![Some(5)], 38, 0);
-        let result = eval_expr(&batch, WideDecimalOp::Add, 1, 0, EvalMode::Ansi);
-        assert!(result.is_err());
+    fn test_overflow_ansi_mode_returns_spark_error() {
+        // 0.5 + 0.5 = 1.0, which does not fit Decimal(1, 1). The error must report
+        // the scaled decimal value rather than its raw unscaled integer (10).
+        let batch = make_batch(vec![Some(5)], 38, 1, vec![Some(5)], 38, 1);
+        let result = eval_expr(&batch, WideDecimalOp::Add, 1, 1, EvalMode::Ansi);
+        match result {
+            Err(DataFusionError::External(error)) => match error.downcast_ref::<SparkError>() {
+                Some(SparkError::NumericValueOutOfRange {
+                    value,
+                    precision,
+                    scale,
+                }) => {
+                    assert_eq!(value, "1.0");
+                    assert_eq!(*precision, 1);
+                    assert_eq!(*scale, 1);
+                }
+                other => panic!("expected NumericValueOutOfRange, got {other:?}"),
+            },
+            other => panic!("expected external SparkError, got {other:?}"),
+        }
     }
 
     #[test]

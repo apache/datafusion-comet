@@ -101,6 +101,7 @@ use datafusion::physical_expr::expressions::{Literal, StatsType};
 use datafusion::physical_expr::window::WindowExpr;
 use datafusion::physical_expr::LexOrdering;
 
+use crate::execution::expressions::arithmetic::CheckedBinaryExpr;
 use crate::parquet::parquet_exec::init_datasource_exec;
 use arrow::array::{
     new_empty_array, Array, ArrayRef, BinaryBuilder, BooleanArray, Date32Array, Decimal128Array,
@@ -517,13 +518,17 @@ impl PhysicalPlanner {
                     self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&input_schema))?;
                 let data_type = to_arrow_datatype(expr.datatype.as_ref().unwrap());
                 let fail_on_error = expr.fail_on_error;
+                let query_context = spark_expr.expr_id.and_then(|expr_id| {
+                    let registry = &self.query_context_registry;
+                    registry.get(expr_id)
+                });
 
                 // WideDecimalBinaryExpr already handles overflow — skip redundant check
                 // but only if its output type matches CheckOverflow's declared type
                 if child.downcast_ref::<WideDecimalBinaryExpr>().is_some() {
                     let child_type = child.data_type(&input_schema)?;
                     if child_type == data_type {
-                        return Ok(child);
+                        return Ok(Arc::new(CheckedBinaryExpr::new(child, query_context)));
                     }
                 }
 
@@ -548,14 +553,8 @@ impl PhysicalPlanner {
                     }
                 }
 
-                // Look up query context from registry if expr_id is present
-                let query_context = spark_expr.expr_id.and_then(|expr_id| {
-                    let registry = &self.query_context_registry;
-                    registry.get(expr_id)
-                });
-
                 Ok(Arc::new(CheckOverflow::new(
-                    child,
+                    Arc::new(CheckedBinaryExpr::new(child, query_context.clone())),
                     data_type,
                     fail_on_error,
                     spark_expr.expr_id,
@@ -1034,7 +1033,6 @@ impl PhysicalPlanner {
                     ));
 
                     // Wrap with CheckedBinaryExpr to add query_context to errors
-                    use crate::execution::expressions::arithmetic::CheckedBinaryExpr;
                     Ok(Arc::new(CheckedBinaryExpr::new(scalar_expr, query_context)))
                 } else {
                     Ok(Arc::new(BinaryExpr::new(left, op, right)))
