@@ -553,8 +553,9 @@ verification has been performed, and any known gaps.</p>
 <h2>How to Read This Document<a class="headerlink" href="#how-to-read-this-document" title="Link to this heading">#</a></h2>
 <p>The status column uses these values:</p>
 <ul class="simple">
-<li><p><strong>Supported</strong> – Comet runs the affected expressions natively under every value of
-the config, and produces results matching Spark.</p></li>
+<li><p><strong>Supported</strong> – Comet honors every value of the config within the Comet pipeline and
+produces results matching Spark. The execution path may be native or use the JVM codegen
+dispatcher, as noted for each config.</p></li>
 <li><p><strong>Partial</strong> – Comet runs natively for some values of the config but falls back to
 Spark for others, or runs natively but with documented incompatibilities.</p></li>
 <li><p><strong>Falls back</strong> – Comet does not run the affected expressions natively under this
@@ -565,6 +566,15 @@ config and always defers to Spark.</p></li>
 <section id="audited-configurations">
 <h2>Audited Configurations<a class="headerlink" href="#audited-configurations" title="Link to this heading">#</a></h2>
 <ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">spark.sql.legacy.followThreeValuedLogicInArrayExists</span></code></p>
+<ul>
+<li><p>Default: <code class="docutils literal notranslate"><span class="pre">true</span></code></p></li>
+<li><p>Status: Supported (JVM codegen dispatch)</p></li>
+<li><p>Affected expression: <code class="docutils literal notranslate"><span class="pre">exists</span></code></p></li>
+<li><p>Spark versions checked: 3.4.3, 3.5.8, 4.0.2, 4.1.2</p></li>
+<li><p>Date: 2026-07-22</p></li>
+</ul>
+</li>
 <li><p><code class="docutils literal notranslate"><span class="pre">spark.sql.legacy.timeParserPolicy</span></code></p>
 <ul>
 <li><p>Default: <code class="docutils literal notranslate"><span class="pre">EXCEPTION</span></code></p></li>
@@ -578,6 +588,27 @@ config and always defers to Spark.</p></li>
 </section>
 <section id="audit-notes">
 <h2>Audit Notes<a class="headerlink" href="#audit-notes" title="Link to this heading">#</a></h2>
+<section id="spark-sql-legacy-followthreevaluedlogicinarrayexists">
+<h3><code class="docutils literal notranslate"><span class="pre">spark.sql.legacy.followThreeValuedLogicInArrayExists</span></code><a class="headerlink" href="#spark-sql-legacy-followthreevaluedlogicinarrayexists" title="Link to this heading">#</a></h3>
+<p><strong>Source.</strong> Spark captures
+<code class="docutils literal notranslate"><span class="pre">SQLConf.LEGACY_ARRAY_EXISTS_FOLLOWS_THREE_VALUED_LOGIC</span></code> in the
+<code class="docutils literal notranslate"><span class="pre">ArrayExists.followThreeValuedLogic</span></code> constructor field. If no predicate result is <code class="docutils literal notranslate"><span class="pre">true</span></code> but at
+least one result is <code class="docutils literal notranslate"><span class="pre">null</span></code>, <code class="docutils literal notranslate"><span class="pre">exists</span></code> returns <code class="docutils literal notranslate"><span class="pre">null</span></code> when the config is <code class="docutils literal notranslate"><span class="pre">true</span></code> and <code class="docutils literal notranslate"><span class="pre">false</span></code> when it
+is <code class="docutils literal notranslate"><span class="pre">false</span></code>. A matching element still returns <code class="docutils literal notranslate"><span class="pre">true</span></code>, while a null input array still returns
+<code class="docutils literal notranslate"><span class="pre">null</span></code>, under either value.</p>
+<p><strong>Comet status.</strong> <code class="docutils literal notranslate"><span class="pre">CometArrayExists</span></code> routes Spark’s <code class="docutils literal notranslate"><span class="pre">ArrayExists</span></code> expression through the JVM
+codegen dispatcher. The dispatcher evaluates the Spark expression carrying the captured
+<code class="docutils literal notranslate"><span class="pre">followThreeValuedLogic</span></code> value inside the Comet pipeline, so both config values preserve Spark’s
+semantics. If the dispatcher is disabled, the affected Comet operator falls back to Spark rather
+than executing with different semantics.</p>
+<p><strong>Test coverage.</strong> <code class="docutils literal notranslate"><span class="pre">spark/src/test/resources/sql-tests/expressions/array/exists.sql</span></code> uses a
+<code class="docutils literal notranslate"><span class="pre">ConfigMatrix</span></code> to run both values and covers null arrays, empty arrays, matching predicates,
+no-match predicates with a null result, and predicates whose every result is null. The default
+<code class="docutils literal notranslate"><span class="pre">query</span></code> mode compares with Spark and requires a Comet operator. <code class="docutils literal notranslate"><span class="pre">CometCodegenHOFSuite</span></code> separately
+wraps the divergent column-backed case in <code class="docutils literal notranslate"><span class="pre">assertCodegenRan</span></code> and
+<code class="docutils literal notranslate"><span class="pre">checkSparkAnswerAndOperator</span></code>, directly verifying dispatcher activity and preventing the test
+from passing through silent Spark fallback.</p>
+</section>
 <section id="spark-sql-legacy-timeparserpolicy">
 <h3><code class="docutils literal notranslate"><span class="pre">spark.sql.legacy.timeParserPolicy</span></code><a class="headerlink" href="#spark-sql-legacy-timeparserpolicy" title="Link to this heading">#</a></h3>
 <p><strong>Source.</strong> <code class="docutils literal notranslate"><span class="pre">SQLConf.LEGACY_TIME_PARSER_POLICY</span></code> selects the formatter used by
@@ -707,6 +738,7 @@ the Comet pipeline. Tests for expressions with known fallback paths continue to 
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#how-to-read-this-document">How to Read This Document</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#audited-configurations">Audited Configurations</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#audit-notes">Audit Notes</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#spark-sql-legacy-followthreevaluedlogicinarrayexists"><code class="docutils literal notranslate"><span class="pre">spark.sql.legacy.followThreeValuedLogicInArrayExists</span></code></a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#spark-sql-legacy-timeparserpolicy"><code class="docutils literal notranslate"><span class="pre">spark.sql.legacy.timeParserPolicy</span></code></a></li>
 </ul>
 </li>
