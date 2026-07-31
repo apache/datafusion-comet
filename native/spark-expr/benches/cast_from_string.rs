@@ -15,8 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow::array::{builder::StringBuilder, RecordBatch};
-use arrow::datatypes::{DataType, Field, Schema};
+use arrow::array::RecordBatch;
+use arrow::datatypes::DataType;
 use criterion::{criterion_group, criterion_main, Criterion};
 use datafusion::physical_expr::{expressions::Column, PhysicalExpr};
 use datafusion_comet_spark_expr::{Cast, EvalMode, SparkCastOptions};
@@ -24,17 +24,23 @@ use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
 use std::sync::Arc;
 
+#[path = "common/mod.rs"]
+mod common;
+use common::string_batch;
+
+const EVAL_MODES: [(EvalMode, &str); 3] = [
+    (EvalMode::Legacy, "legacy"),
+    (EvalMode::Ansi, "ansi"),
+    (EvalMode::Try, "try"),
+];
+
 fn criterion_benchmark(c: &mut Criterion) {
     let small_int_batch = create_small_int_string_batch();
     let int_batch = create_int_string_batch();
     let decimal_batch = create_decimal_string_batch();
     let expr = Arc::new(Column::new("a", 0));
 
-    for (mode, mode_name) in [
-        (EvalMode::Legacy, "legacy"),
-        (EvalMode::Ansi, "ansi"),
-        (EvalMode::Try, "try"),
-    ] {
+    for (mode, mode_name) in EVAL_MODES {
         let spark_cast_options = SparkCastOptions::new(mode, "", false);
         let cast_to_i8 = Cast::new(
             expr.clone(),
@@ -109,11 +115,7 @@ fn criterion_benchmark(c: &mut Criterion) {
 
     // str -> decimal benchmark
     let decimal_string_batch = create_decimal_cast_string_batch();
-    for (mode, mode_name) in [
-        (EvalMode::Legacy, "legacy"),
-        (EvalMode::Ansi, "ansi"),
-        (EvalMode::Try, "try"),
-    ] {
+    for (mode, mode_name) in EVAL_MODES {
         let spark_cast_options = SparkCastOptions::new(mode, "", false);
         let mut group = c.benchmark_group(format!("cast_string_to_decimal/{}", mode_name));
         for (data_type, name) in [
@@ -140,11 +142,7 @@ fn criterion_benchmark(c: &mut Criterion) {
     let bool_padded_batch = create_boolean_string_batch(true);
     let float_batch = create_float_string_batch(false);
     let float_padded_batch = create_float_string_batch(true);
-    for (mode, mode_name) in [
-        (EvalMode::Legacy, "legacy"),
-        (EvalMode::Ansi, "ansi"),
-        (EvalMode::Try, "try"),
-    ] {
+    for (mode, mode_name) in EVAL_MODES {
         let spark_cast_options = SparkCastOptions::new(mode, "", false);
         let mut group = c.benchmark_group(format!("cast_string_to_bool_and_float/{}", mode_name));
         for (data_type, name, batch) in [
@@ -172,137 +170,86 @@ fn criterion_benchmark(c: &mut Criterion) {
 /// Create batch with the boolean spellings Spark accepts, optionally space-padded
 fn create_boolean_string_batch(padded: bool) -> RecordBatch {
     let words = ["true", "FALSE", "t", "n", "yes", "0", "TRUE", "no"];
-    create_string_batch(|i| {
-        let word = words[i % words.len()];
-        if padded {
-            format!("  {}  ", word)
-        } else {
-            word.to_string()
-        }
+    string_batch(8192, 10, |i| {
+        pad(words[i % words.len()].to_string(), padded)
     })
 }
 
 /// Create batch with floating point strings, optionally space-padded
 fn create_float_string_batch(padded: bool) -> RecordBatch {
     let mut rng = StdRng::seed_from_u64(42);
-    create_string_batch(move |_| {
-        let value = rng.random_range(-1_000_000.0..1_000_000.0f64);
-        if padded {
-            format!("  {}  ", value)
-        } else {
-            format!("{}", value)
-        }
+    string_batch(8192, 10, move |_| {
+        pad(
+            rng.random_range(-1_000_000.0..1_000_000.0f64).to_string(),
+            padded,
+        )
     })
 }
 
-/// Create a single-column Utf8 batch of 8192 rows, every tenth one null
-fn create_string_batch(mut value: impl FnMut(usize) -> String) -> RecordBatch {
-    let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Utf8, true)]));
-    let mut b = StringBuilder::new();
-    for i in 0..8192 {
-        if i % 10 == 0 {
-            b.append_null();
-        } else {
-            b.append_value(value(i));
-        }
+/// Surround `value` with the leading/trailing whitespace that exercises the trim helpers
+fn pad(value: String, padded: bool) -> String {
+    if padded {
+        format!("  {}  ", value)
+    } else {
+        value
     }
-    RecordBatch::try_new(schema, vec![Arc::new(b.finish())]).unwrap()
 }
 
 /// Create batch with small integer strings that fit in i8 range (for i8/i16 benchmarks)
 fn create_small_int_string_batch() -> RecordBatch {
-    let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Utf8, true)]));
-    let mut b = StringBuilder::new();
-    for i in 0..1000 {
-        if i % 10 == 0 {
-            b.append_null();
-        } else {
-            b.append_value(format!("{}", rand::random::<i8>()));
-        }
-    }
-    let array = b.finish();
-    RecordBatch::try_new(schema, vec![Arc::new(array)]).unwrap()
+    string_batch(1000, 10, |_| rand::random::<i8>().to_string())
 }
 
 /// Create batch with valid integer strings (works for all eval modes)
 fn create_int_string_batch() -> RecordBatch {
-    let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Utf8, true)]));
-    let mut b = StringBuilder::new();
-    for i in 0..1000 {
-        if i % 10 == 0 {
-            b.append_null();
-        } else {
-            b.append_value(format!("{}", rand::random::<i32>()));
-        }
-    }
-    let array = b.finish();
-    RecordBatch::try_new(schema, vec![Arc::new(array)]).unwrap()
+    string_batch(1000, 10, |_| rand::random::<i32>().to_string())
 }
 
 /// Create batch with decimal strings (for Legacy mode decimal truncation)
 fn create_decimal_string_batch() -> RecordBatch {
-    let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Utf8, true)]));
-    let mut b = StringBuilder::new();
-    for i in 0..1000 {
-        if i % 10 == 0 {
-            b.append_null();
-        } else {
-            // Generate integers with decimal portions to test truncation
-            let int_part: i32 = rand::random();
-            let dec_part: u32 = rand::random::<u32>() % 1000;
-            b.append_value(format!("{}.{}", int_part, dec_part));
-        }
-    }
-    let array = b.finish();
-    RecordBatch::try_new(schema, vec![Arc::new(array)]).unwrap()
+    // Integers with decimal portions, to test truncation
+    string_batch(1000, 10, |_| {
+        format!("{}.{}", rand::random::<i32>(), rand::random::<u32>() % 1000)
+    })
 }
 
 /// Create batch with decimal strings for string-to-decimal cast perf evaluation
 fn create_decimal_cast_string_batch() -> RecordBatch {
-    let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Utf8, true)]));
     let mut rng = StdRng::seed_from_u64(42);
-    let mut b = StringBuilder::new();
-    for i in 0..8192 {
-        if i % 10 == 0 {
-            b.append_null();
-        } else {
-            // Generate various decimal formats
-            match i % 5 {
-                0 => {
-                    // gen simple decimals (ex :  "123.45"
-                    let int_part = rng.random_range(0..1_000_000u32);
-                    let dec_part = rng.random_range(0..100_000u32);
-                    b.append_value(format!("{}.{}", int_part, dec_part));
-                }
-                1 => {
-                    // gen scientific notation like "123e5"
-                    b.append_value(format!(
-                        "{}.{}E{}",
-                        rng.random_range(0..10u32),
-                        rng.random_range(0..100u32),
-                        rng.random_range(0..10u32)
-                    ));
-                }
-                2 => {
-                    // Negative numbers
-                    let int_part = rng.random_range(0..1_000_000u32);
-                    let dec_part = rng.random_range(0..100_000u32);
-                    b.append_value(format!("-{}.{}", int_part, dec_part));
-                }
-                3 => {
-                    // Ints only
-                    b.append_value(format!("{}", rng.random_range(-1_000_000..1_000_000i32)));
-                }
-                _ => {
-                    // Small decimals (ex : 0.001)
-                    let dec_part = rng.random_range(0..100_000u32);
-                    b.append_value(format!("0.{:05}", dec_part));
-                }
+    string_batch(8192, 10, move |i| {
+        // Generate various decimal formats
+        match i % 5 {
+            0 => {
+                // gen simple decimals (ex :  "123.45"
+                let int_part = rng.random_range(0..1_000_000u32);
+                let dec_part = rng.random_range(0..100_000u32);
+                format!("{}.{}", int_part, dec_part)
+            }
+            1 => {
+                // gen scientific notation like "123e5"
+                format!(
+                    "{}.{}E{}",
+                    rng.random_range(0..10u32),
+                    rng.random_range(0..100u32),
+                    rng.random_range(0..10u32)
+                )
+            }
+            2 => {
+                // Negative numbers
+                let int_part = rng.random_range(0..1_000_000u32);
+                let dec_part = rng.random_range(0..100_000u32);
+                format!("-{}.{}", int_part, dec_part)
+            }
+            3 => {
+                // Ints only
+                format!("{}", rng.random_range(-1_000_000..1_000_000i32))
+            }
+            _ => {
+                // Small decimals (ex : 0.001)
+                format!("0.{:05}", rng.random_range(0..100_000u32))
             }
         }
-    }
-    let array = b.finish();
-    RecordBatch::try_new(schema, vec![Arc::new(array)]).unwrap()
+    })
 }
 
 fn config() -> Criterion {

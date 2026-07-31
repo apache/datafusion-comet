@@ -2219,40 +2219,49 @@ mod tests {
 
     /// Asserts that the cast to `to_type` trims each [`trim_pads`] entry exactly when `regime`
     /// -- the trim helper that Spark's cast to `to_type` uses -- trims it: a value in every eval
-    /// mode when it is trimmed, NULL (or an ANSI error) when it is not. Interior padding must
-    /// never parse.
+    /// mode when it is trimmed, NULL (or an ANSI error) when it is not. Interior padding, padding
+    /// on its own and the empty string must never parse.
     fn assert_trim_parity(to_type: &DataType, valid: &str, regime: fn(&str) -> &str) {
         let split = valid.char_indices().nth(1).map(|(i, _)| i).unwrap();
+        // The empty string reaches the same empty-slice branch that fully-trimmed padding does.
+        let mut cases = vec![("empty".to_string(), String::new(), false)];
         for pad in trim_pads() {
             // The regime trims this padding iff trimming the padding alone leaves nothing.
             let trimmed = regime(&pad).is_empty();
-            let cases = [
-                ("leading", format!("{pad}{valid}"), trimmed),
-                ("trailing", format!("{valid}{pad}"), trimmed),
-                ("both", format!("{pad}{valid}{pad}"), trimmed),
+            cases.extend([
+                (format!("leading {pad:?}"), format!("{pad}{valid}"), trimmed),
                 (
-                    "interior",
+                    format!("trailing {pad:?}"),
+                    format!("{valid}{pad}"),
+                    trimmed,
+                ),
+                (
+                    format!("both ends {pad:?}"),
+                    format!("{pad}{valid}{pad}"),
+                    trimmed,
+                ),
+                (
+                    format!("interior {pad:?}"),
                     format!("{}{pad}{}", &valid[..split], &valid[split..]),
                     false,
                 ),
-            ];
-            for (position, input, expect_value) in cases {
-                for eval_mode in [EvalMode::Legacy, EvalMode::Try, EvalMode::Ansi] {
-                    let array: ArrayRef = Arc::new(StringArray::from(vec![Some(input.as_str())]));
-                    let options = SparkCastOptions::new(eval_mode, "UTC", false);
-                    let result = cast_array(array, to_type, &options);
-                    let context = format!(
-                        "cast {input:?} ({position} {pad:?}) to {to_type} in {eval_mode:?}"
-                    );
-                    if expect_value {
-                        let array = result.unwrap_or_else(|e| panic!("{context}: {e}"));
-                        assert!(!array.is_null(0), "{context}: expected a value, got NULL");
-                    } else if eval_mode == EvalMode::Ansi {
-                        assert!(result.is_err(), "{context}: expected an error");
-                    } else {
-                        let array = result.unwrap_or_else(|e| panic!("{context}: {e}"));
-                        assert!(array.is_null(0), "{context}: expected NULL");
-                    }
+                (format!("only {pad:?}"), pad.clone(), false),
+            ]);
+        }
+        for (position, input, expect_value) in cases {
+            for eval_mode in [EvalMode::Legacy, EvalMode::Try, EvalMode::Ansi] {
+                let array: ArrayRef = Arc::new(StringArray::from(vec![Some(input.as_str())]));
+                let options = SparkCastOptions::new(eval_mode, "UTC", false);
+                let result = cast_array(array, to_type, &options);
+                let context = format!("cast {input:?} ({position}) to {to_type} in {eval_mode:?}");
+                if expect_value {
+                    let array = result.unwrap_or_else(|e| panic!("{context}: {e}"));
+                    assert!(!array.is_null(0), "{context}: expected a value, got NULL");
+                } else if eval_mode == EvalMode::Ansi {
+                    assert!(result.is_err(), "{context}: expected an error");
+                } else {
+                    let array = result.unwrap_or_else(|e| panic!("{context}: {e}"));
+                    assert!(array.is_null(0), "{context}: expected NULL");
                 }
             }
         }
@@ -2289,6 +2298,35 @@ mod tests {
             DataType::Decimal128(10, 2),
         ] {
             assert_trim_parity(&to_type, "1.5", trim_java_string);
+        }
+    }
+
+    /// Pins the one trim divergence this PR leaves behind, so that resolving
+    /// <https://github.com/apache/datafusion-comet/issues/5149> has to update this test rather
+    /// than change behaviour silently. `timestamp_parser` and `timestamp_ntz_parser` still use
+    /// `str::trim`, so they accept the non-ASCII whitespace that Spark's
+    /// `SparkDateTimeUtils.getTrimmedStart` / `getTrimmedEnd` leave in place, where Spark returns
+    /// NULL. `CometCastSuite` cannot cover this, because Spark is the oracle there and Comet does
+    /// not fall back -- it silently returns a value.
+    #[test]
+    fn test_cast_string_to_timestamp_unicode_whitespace_divergence() {
+        let to_types = [
+            DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
+            DataType::Timestamp(TimeUnit::Microsecond, None),
+        ];
+        for pad in ["\u{85}", "\u{a0}", "\u{2028}", "\u{3000}"] {
+            for to_type in &to_types {
+                let input = format!("{pad}2020-01-01 12:34:56{pad}");
+                let array: ArrayRef = Arc::new(StringArray::from(vec![Some(input.as_str())]));
+                let options = SparkCastOptions::new(EvalMode::Legacy, "UTC", false);
+                let result = cast_array(array, to_type, &options).unwrap();
+                assert!(
+                    !result.is_null(0),
+                    "cast {input:?} to {to_type}: Comet still trims {pad:?} where Spark returns \
+                     NULL. If this now returns NULL, the parsers have moved to the trim helpers \
+                     -- delete this test and extend `assert_trim_parity` to the timestamp targets."
+                );
+            }
         }
     }
 

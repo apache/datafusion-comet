@@ -812,13 +812,10 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   /**
-   * Padding used to check that Comet trims exactly the byte set that each Spark cast trims. Spark
-   * has two trim regimes and neither of them trims any non-ASCII whitespace:
-   *   - `UTF8String.trimAll` (bytes `0x00`-`0x20` and `0x7F`) for boolean, integral and datetime
-   *   - `java.lang.String.trim` (bytes `0x00`-`0x20` only) for float, double and decimal
-   *
-   * Spark itself is the oracle here, so the expectations do not need to be spelled out. See
-   * https://github.com/apache/datafusion-comet/issues/5149.
+   * Padding used to check that Comet trims exactly the byte set each Spark cast trims. See
+   * `conversion_funcs::trim` in the native crate for the two regimes and their cast targets, and
+   * https://github.com/apache/datafusion-comet/issues/5149. Spark itself is the oracle here, so
+   * the expectations do not need to be spelled out.
    */
   private val trimPadding: Seq[String] =
     ((0x00 to 0x20) ++ // trimmed by both regimes
@@ -827,10 +824,13 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       Seq(0x85, 0xa0, 0x1680, 0x2000, 0x2005, 0x200a, 0x2028, 0x2029, 0x202f, 0x205f, 0x3000))
       .map(_.toChar.toString)
 
-  /** `value` with each [[trimPadding]] entry in leading, trailing, both and interior position. */
+  /**
+   * `value` with each [[trimPadding]] entry in leading, trailing, both and interior position,
+   * plus the padding on its own and the empty string, which trim to nothing.
+   */
   private def trimPaddedValues(value: String): Seq[String] =
-    trimPadding.flatMap(pad =>
-      Seq(pad + value, value + pad, pad + value + pad, value.take(1) + pad + value.drop(1)))
+    "" +: trimPadding.flatMap(pad =>
+      Seq(pad + value, value + pad, pad + value + pad, value.take(1) + pad + value.drop(1), pad))
 
   test("cast StringType to BooleanType - whitespace trim parity") {
     castTest(trimPaddedValues("true").toDF("a"), DataTypes.BooleanType)

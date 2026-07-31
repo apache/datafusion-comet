@@ -21,30 +21,27 @@
 //! regimes, and neither of them matches Rust's `str::trim` (which trims Unicode whitespace) or
 //! `<[u8]>::trim_ascii` (which omits `0x0B`):
 //!
-//! | Regime               | Trimmed bytes            | Cast targets                                          |
-//! |----------------------|--------------------------|-------------------------------------------------------|
-//! | [`trim_all`]         | `0x00`-`0x20` and `0x7F` | boolean, byte, short, int, long, date, timestamp \*    |
-//! | [`trim_java_string`] | `0x00`-`0x20`            | float, double, decimal                                |
+//! | Regime               | Trimmed bytes            | Cast targets                                       |
+//! |----------------------|--------------------------|----------------------------------------------------|
+//! | [`trim_all`]         | `0x00`-`0x20` and `0x7F` | boolean, byte, short, int, long, date, timestamp \* |
+//! | [`trim_java_string`] | `0x00`-`0x20`            | float, double, decimal                             |
 //!
-//! Crucially, **neither regime trims any non-ASCII whitespace**. `U+0085`, `U+00A0`, `U+1680`,
-//! `U+2000`-`U+200A`, `U+2028`, `U+2029`, `U+202F`, `U+205F` and `U+3000` all leave Spark
-//! returning NULL (or raising under ANSI) for every cast target, so using `str::trim` here
-//! silently produces a value where Spark produces none.
+//! Neither regime trims non-ASCII whitespace (`str::trim` does, which is why it cannot be reused
+//! here). The `String.trim` regime comes from the JDK calls Spark delegates to:
+//! `Double.parseDouble` trims before parsing, and `Decimal.stringToJavaBigDecimal` does
+//! `str.toString.trim`.
 //!
-//! The two regimes differ only in `0x7F` (DELETE), which the `trimAll` set removes and the
-//! `String.trim` set does not. That single byte is why a shared helper cannot be applied
-//! uniformly: trimming it in the float/double/decimal paths would introduce a new divergence.
-//!
-//! \* `timestamp` and `timestamp_ntz` are listed for what Spark does; the Comet parsers for
-//! those two targets still use `str::trim` and have not been migrated to these helpers
+//! \* `timestamp` and `timestamp_ntz` are listed for what Spark does; the Comet parsers for those
+//! two targets have not been migrated to these helpers and still use `str::trim`, as do `to_time`
+//! and `try_to_time` in `datetime_funcs::to_time`
 //! (<https://github.com/apache/datafusion-comet/issues/5149>).
 
 /// True for the bytes trimmed by `org.apache.spark.unsafe.types.UTF8String.trimAll`, i.e. the
-/// bytes `b` for which `Character.isWhitespace(b) || Character.isISOControl(b)` holds.
+/// bytes `b` for which `Character.isWhitespace(b) || Character.isISOControl(b)` holds, which
+/// reduces to `b <= 0x20 || b == 0x7F`.
 ///
-/// `isWhitespace` covers `0x09`-`0x0D`, `0x1C`-`0x1F` and `0x20`; `isISOControl` covers
-/// `0x00`-`0x1F` and `0x7F`; the union is `0x00`-`0x20` plus `0x7F`. Spark widens a *signed*
-/// `byte` into the `int` overload, so bytes `0x80`-`0xFF` arrive negative and are never trimmed.
+/// Spark widens a *signed* `byte` into the `int` overload, so bytes `0x80`-`0xFF` arrive negative
+/// and are never trimmed.
 #[inline]
 const fn is_whitespace_or_iso_control(b: u8) -> bool {
     b <= 0x20 || b == 0x7F
@@ -52,8 +49,9 @@ const fn is_whitespace_or_iso_control(b: u8) -> bool {
 
 /// True for the bytes trimmed by `java.lang.String.trim`, which drops any char `<= U+0020`.
 ///
-/// A char above `U+0020` always encodes to bytes `>= 0x80` in UTF-8, so testing bytes rather
-/// than chars gives the same answer.
+/// In valid UTF-8 a byte `<= 0x20` is always a single-byte codepoint, since the lead and
+/// continuation bytes of a multi-byte sequence are all `>= 0x80`. So testing bytes rather than
+/// chars gives the same answer.
 #[inline]
 const fn is_java_trim_byte(b: u8) -> bool {
     b <= 0x20
@@ -61,8 +59,8 @@ const fn is_java_trim_byte(b: u8) -> bool {
 
 /// Trims the `UTF8String.trimAll` byte set (`0x00`-`0x20` and `0x7F`) from both ends.
 ///
-/// This is the trim used by `CAST(string AS boolean)`, the integral casts and `date_parser`.
-/// See the [module docs](self) for why the other targets need [`trim_java_string`].
+/// See the [module docs](self) for which cast targets use this regime and which use
+/// [`trim_java_string`].
 #[inline]
 pub(crate) fn trim_all(s: &str) -> &str {
     let (start, end) = trim_all_range(s.as_bytes());
@@ -85,9 +83,7 @@ pub(crate) fn trim_all_range(bytes: &[u8]) -> (usize, usize) {
 
 /// Trims the `java.lang.String.trim` byte set (`0x00`-`0x20`, keeping `0x7F`) from both ends.
 ///
-/// This is the trim used by `CAST(string AS float/double)` (via `Double.parseDouble`, which
-/// calls `String.trim` before parsing) and by `CAST(string AS decimal)` (via
-/// `Decimal.stringToJavaBigDecimal`, which does `str.toString.trim`).
+/// See the [module docs](self) for which cast targets use this regime and which use [`trim_all`].
 #[inline]
 pub(crate) fn trim_java_string(s: &str) -> &str {
     let (trimmed, start) = trim_bytes(s.as_bytes(), is_java_trim_byte);
