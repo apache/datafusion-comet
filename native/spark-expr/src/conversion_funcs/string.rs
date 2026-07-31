@@ -1595,6 +1595,52 @@ enum TimestampPattern {
 }
 
 impl TimestampPattern {
+    /// Every shape, in the order they are matched. First match wins, so the order matters.
+    const ALL: [TimestampPattern; 14] = [
+        Self::Year,
+        Self::Month,
+        Self::Day,
+        Self::Hour,
+        Self::Minute,
+        Self::Second,
+        Self::Microsecond,
+        Self::TimeOnlyH,
+        Self::TimeOnlyHm,
+        Self::TimeOnlyHms,
+        Self::TimeOnlyHmsu,
+        Self::BareHm,
+        Self::BareHms,
+        Self::BareHmsu,
+    ];
+
+    /// The equivalent regular expression for this shape.
+    ///
+    /// Only used for the rare non-ASCII input, where the Unicode-aware `\d` class accepts
+    /// digits (e.g. Arabic-Indic) that the ASCII classifier below does not.
+    ///
+    /// `Year` allows only 4-6 digits (not 7) because a bare 7-digit string like "0119704" is
+    /// ambiguous and Spark rejects it. The others keep `\d{4,7}` because the `-` separator
+    /// disambiguates the year portion, so "0002020-01-01" is validly year 2020 with leading
+    /// zeros. `date_parser`'s `is_valid_digits` allows up to 7 year digits for the same reason.
+    fn regex_str(self) -> &'static str {
+        match self {
+            Self::Year => r"^-?\d{4,6}$",
+            Self::Month => r"^-?\d{4,7}-\d{2}$",
+            Self::Day => r"^-?\d{4,7}-\d{2}-\d{2}$",
+            Self::Hour => r"^-?\d{4,7}-\d{2}-\d{2}[T ]\d{1,2}$",
+            Self::Minute => r"^-?\d{4,7}-\d{2}-\d{2}[T ]\d{2}:\d{2}$",
+            Self::Second => r"^-?\d{4,7}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}$",
+            Self::Microsecond => r"^-?\d{4,7}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}\.\d+$",
+            Self::TimeOnlyH => r"^T\d{1,2}$",
+            Self::TimeOnlyHm => r"^T\d{1,2}:\d{1,2}$",
+            Self::TimeOnlyHms => r"^T\d{1,2}:\d{1,2}:\d{1,2}$",
+            Self::TimeOnlyHmsu => r"^T\d{1,2}:\d{1,2}:\d{1,2}\.\d+$",
+            Self::BareHm => r"^\d{1,2}:\d{1,2}$",
+            Self::BareHms => r"^\d{1,2}:\d{1,2}:\d{1,2}$",
+            Self::BareHmsu => r"^\d{1,2}:\d{1,2}:\d{1,2}\.\d+$",
+        }
+    }
+
     /// True for the shapes that carry no date component: `T12`, `T12:34`, `12:34`, ...
     fn is_time_only(self) -> bool {
         !matches!(
@@ -1619,52 +1665,9 @@ impl TimestampPattern {
     }
 }
 
-/// The equivalent regular expression for each [`TimestampPattern`], in variant order.
-/// These are only used for the rare non-ASCII input, where the Unicode-aware `\d` class
-/// accepts digits (e.g. Arabic-Indic) that the ASCII classifier below does not.
-///
-/// The `Year` pattern allows only 4-6 digits (not 7) because a bare 7-digit string like
-/// "0119704" is ambiguous and Spark rejects it. The other patterns keep `\d{4,7}` because
-/// the `-` separator disambiguates the year portion, so "0002020-01-01" is validly year
-/// 2020 with leading zeros. `date_parser`'s `is_valid_digits` allows up to 7 year digits
-/// for the same reason.
-const TIMESTAMP_PATTERN_REGEXES: [&str; 14] = [
-    r"^-?\d{4,6}$",
-    r"^-?\d{4,7}-\d{2}$",
-    r"^-?\d{4,7}-\d{2}-\d{2}$",
-    r"^-?\d{4,7}-\d{2}-\d{2}[T ]\d{1,2}$",
-    r"^-?\d{4,7}-\d{2}-\d{2}[T ]\d{2}:\d{2}$",
-    r"^-?\d{4,7}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}$",
-    r"^-?\d{4,7}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}\.\d+$",
-    r"^T\d{1,2}$",
-    r"^T\d{1,2}:\d{1,2}$",
-    r"^T\d{1,2}:\d{1,2}:\d{1,2}$",
-    r"^T\d{1,2}:\d{1,2}:\d{1,2}\.\d+$",
-    r"^\d{1,2}:\d{1,2}$",
-    r"^\d{1,2}:\d{1,2}:\d{1,2}$",
-    r"^\d{1,2}:\d{1,2}:\d{1,2}\.\d+$",
-];
-
-/// [`TimestampPattern`] variants in the same order as [`TIMESTAMP_PATTERN_REGEXES`].
-const TIMESTAMP_PATTERNS: [TimestampPattern; 14] = [
-    TimestampPattern::Year,
-    TimestampPattern::Month,
-    TimestampPattern::Day,
-    TimestampPattern::Hour,
-    TimestampPattern::Minute,
-    TimestampPattern::Second,
-    TimestampPattern::Microsecond,
-    TimestampPattern::TimeOnlyH,
-    TimestampPattern::TimeOnlyHm,
-    TimestampPattern::TimeOnlyHms,
-    TimestampPattern::TimeOnlyHmsu,
-    TimestampPattern::BareHm,
-    TimestampPattern::BareHms,
-    TimestampPattern::BareHmsu,
-];
-
-static TIMESTAMP_PATTERN_SET: LazyLock<RegexSet> =
-    LazyLock::new(|| RegexSet::new(TIMESTAMP_PATTERN_REGEXES).unwrap());
+static TIMESTAMP_PATTERN_SET: LazyLock<RegexSet> = LazyLock::new(|| {
+    RegexSet::new(TimestampPattern::ALL.map(TimestampPattern::regex_str)).unwrap()
+});
 
 /// Returns the shape `value` has, or `None` when it matches none of them.
 ///
@@ -1680,7 +1683,7 @@ fn classify_timestamp_pattern(value: &str) -> Option<TimestampPattern> {
             .matches(value)
             .iter()
             .next()
-            .map(|i| TIMESTAMP_PATTERNS[i])
+            .map(|i| TimestampPattern::ALL[i])
     }
 }
 
@@ -1697,7 +1700,8 @@ fn all_digits(bytes: &[u8]) -> bool {
     !bytes.is_empty() && digit_run(bytes) == bytes.len()
 }
 
-/// ASCII-only equivalent of matching `value` against [`TIMESTAMP_PATTERN_REGEXES`] in order.
+/// ASCII-only equivalent of matching `value` against each [`TimestampPattern::regex_str`] in
+/// order.
 fn classify_ascii_timestamp_pattern(bytes: &[u8]) -> Option<TimestampPattern> {
     // `T`-prefixed time-only shapes.
     if let [b'T', rest @ ..] = bytes {
@@ -2218,21 +2222,21 @@ mod tests {
     /// classifier test inputs.
     const SHAPE_ALPHABET: [u8; 9] = *b"019-:.T +";
 
-    /// The classifier replaced a sequential scan of [`TIMESTAMP_PATTERN_REGEXES`]. The two
+    /// The classifier replaced a sequential scan of [`TimestampPattern::regex_str`]. The two
     /// must agree on every input, so this compares them over an exhaustive enumeration of
     /// short strings over [`SHAPE_ALPHABET`] plus every single-character mutation of a set
     /// of realistic timestamp strings.
     #[test]
     fn test_timestamp_pattern_classifier_matches_regexes() {
-        let regexes: Vec<Regex> = TIMESTAMP_PATTERN_REGEXES
+        let regexes: Vec<Regex> = TimestampPattern::ALL
             .iter()
-            .map(|p| Regex::new(p).unwrap())
+            .map(|p| Regex::new(p.regex_str()).unwrap())
             .collect();
         let check = |value: &str| {
             let expected = regexes
                 .iter()
                 .position(|r| r.is_match(value))
-                .map(|i| TIMESTAMP_PATTERNS[i]);
+                .map(|i| TimestampPattern::ALL[i]);
             assert_eq!(
                 classify_timestamp_pattern(value),
                 expected,
@@ -3061,6 +3065,532 @@ mod tests {
             timestamp_parser("2020-11-01 01:30:00", EvalMode::Legacy, ny_tz, true).unwrap(),
             Some(1604208600000000) // 1604188800 + 5*3600 + 30*60 = 1604208600
         );
+    }
+
+    /// Days from 1970-01-01 for a proleptic-Gregorian civil date (Howard Hinnant's algorithm).
+    ///
+    /// Used to compute the expected values of the ported Spark tests below independently of
+    /// the parser under test. Handles the full year range Spark supports, including negative
+    /// years and years beyond `chrono`'s limits, which the `Long.MinValue`/`MaxValue`
+    /// boundary cases need.
+    fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
+        let y = year - i64::from(month <= 2);
+        // Truncating division, as the algorithm requires - not Rust's `%`-consistent one.
+        let era = if y >= 0 { y } else { y - 399 } / 400;
+        let year_of_era = y - era * 400; // [0, 399]
+        let day_of_year = (153 * (month + if month > 2 { -3 } else { 9 }) + 2) / 5 + day - 1;
+        let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+        era * 146097 + day_of_era - 719468
+    }
+
+    /// Microseconds since the epoch for a UTC civil date-time. The Rust equivalent of the
+    /// `DateTimeTestUtils.date(..., zid = UTC)` helper the Spark tests below use.
+    ///
+    /// Computed in `i128` because the `Long.MinValue` boundary case below is exactly
+    /// `i64::MIN` microseconds, and its intermediate whole-second product overflows `i64`.
+    fn utc_micros(
+        year: i64,
+        month: i64,
+        day: i64,
+        hour: i64,
+        minute: i64,
+        second: i64,
+        micros: i64,
+    ) -> i64 {
+        let seconds = i128::from(days_from_civil(year, month, day)) * 86_400
+            + i128::from(hour) * 3_600
+            + i128::from(minute) * 60
+            + i128::from(second);
+        i64::try_from(seconds * 1_000_000 + i128::from(micros))
+            .expect("expected value should fit in i64")
+    }
+
+    /// Reinterprets a UTC-computed instant as a wall-clock time in a fixed zone
+    /// `offset_seconds` east of UTC. The equivalent of `date(..., zid = getZoneId("+07:30"))`.
+    fn at_offset(utc_micros: i64, offset_seconds: i64) -> i64 {
+        utc_micros - offset_seconds * 1_000_000
+    }
+
+    /// The inputs for which Comet's ANSI mode returns null where Spark raises
+    /// CAST_INVALID_INPUT: a leading `+` that is not followed by a `<digits>-` year.
+    ///
+    /// This predicate exists only to keep the ported Spark tests below honest about the
+    /// divergence rather than skipping the ANSI dimension for them entirely. Tracked by
+    /// <https://github.com/apache/datafusion-comet/issues/5165>.
+    fn ansi_returns_null_instead_of_raising(value: &str) -> bool {
+        let trimmed = value.trim();
+        match trimmed.strip_prefix('+') {
+            None => false,
+            Some(rest) => !matches!(
+                rest.find(|c: char| !c.is_ascii_digit()),
+                Some(i) if i >= 1 && rest.as_bytes()[i] == b'-'
+            ),
+        }
+    }
+
+    /// Asserts `value` parses to `expected` in every eval mode, under session timezone `tz`.
+    ///
+    /// Mirrors `checkStringToTimestamp` in Spark's `DateTimeUtilsSuite`, extended over the
+    /// eval modes Comet has: a `None` expectation additionally requires ANSI mode to raise
+    /// rather than return null.
+    fn check_string_to_timestamp(value: &str, expected: Option<i64>, tz: &str) {
+        let tz = &timezone::Tz::from_str(tz).unwrap();
+        for is_spark4_plus in [false, true] {
+            for eval_mode in [EvalMode::Legacy, EvalMode::Try] {
+                assert_eq!(
+                    timestamp_parser(value, eval_mode, tz, is_spark4_plus).unwrap(),
+                    expected,
+                    "{value:?} in {eval_mode:?} (spark4={is_spark4_plus})"
+                );
+            }
+            let ansi = timestamp_parser(value, EvalMode::Ansi, tz, is_spark4_plus);
+            match expected {
+                Some(_) => assert_eq!(
+                    ansi.unwrap(),
+                    expected,
+                    "{value:?} in ANSI (spark4={is_spark4_plus})"
+                ),
+                // Spark raises CAST_INVALID_INPUT under ANSI for anything it cannot parse,
+                // except that an all-whitespace or empty string is null in every mode.
+                None if value.trim().is_empty() => {
+                    assert_eq!(ansi.unwrap(), None, "{value:?} in ANSI")
+                }
+                // Pre-existing gap, not introduced by the shape classifier: a leading '+'
+                // that is not a year sign returns null in every mode, where Spark raises
+                // under ANSI. Tracked by issue 5165; asserted here so it cannot widen.
+                None if ansi_returns_null_instead_of_raising(value) => {
+                    assert_eq!(ansi.unwrap(), None, "{value:?} in ANSI")
+                }
+                None => assert!(
+                    ansi.is_err(),
+                    "{value:?} should raise in ANSI (spark4={is_spark4_plus})"
+                ),
+            }
+        }
+    }
+
+    /// Port of `test("string to timestamp")` in Spark's `DateTimeUtilsSuite`.
+    ///
+    /// Spark runs its version over `ALL_TIMEZONES`; the session-timezone dimension is covered
+    /// separately by `spark_string_to_timestamp_session_timezone_test` below, so this pins the
+    /// exact expected microseconds under a UTC session timezone.
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn spark_string_to_timestamp_test() {
+        let check =
+            |value: &str, expected: Option<i64>| check_string_to_timestamp(value, expected, "UTC");
+
+        check(
+            "1969-12-31 16:00:00",
+            Some(utc_micros(1969, 12, 31, 16, 0, 0, 0)),
+        );
+        check("0001", Some(utc_micros(1, 1, 1, 0, 0, 0, 0)));
+        check("2015-03", Some(utc_micros(2015, 3, 1, 0, 0, 0, 0)));
+        for value in ["2015-03-18", "2015-03-18 ", " 2015-03-18", " 2015-03-18 "] {
+            check(value, Some(utc_micros(2015, 3, 18, 0, 0, 0, 0)));
+        }
+
+        let expected = Some(utc_micros(2015, 3, 18, 12, 3, 17, 0));
+        check("2015-03-18 12:03:17", expected);
+        check("2015-03-18T12:03:17", expected);
+
+        // When the string carries a timezone, that zone wins over the session timezone.
+        let expected = Some(at_offset(
+            utc_micros(2015, 3, 18, 12, 3, 17, 0),
+            -(13 * 3600 + 53 * 60),
+        ));
+        check("2015-03-18T12:03:17-13:53", expected);
+        check("2015-03-18T12:03:17GMT-13:53", expected);
+        check("2015-03-18T12:03:17-1353", expected);
+
+        let expected = Some(utc_micros(2015, 3, 18, 12, 3, 17, 0));
+        check("2015-03-18T12:03:17Z", expected);
+        check("2015-03-18 12:03:17Z", expected);
+        check("2015-03-18 12:03:17UTC", expected);
+
+        let expected = Some(at_offset(utc_micros(2015, 3, 18, 12, 3, 17, 0), -3600));
+        check("2015-03-18T12:03:17-1:0", expected);
+        check("2015-03-18T12:03:17-01:00", expected);
+        check("2015-03-18T12:03:17GMT-01:00", expected);
+        check("2015-03-18T12:03:17-0100", expected);
+
+        let expected = Some(at_offset(
+            utc_micros(2015, 3, 18, 12, 3, 17, 0),
+            7 * 3600 + 30 * 60,
+        ));
+        check("2015-03-18T12:03:17+07:30", expected);
+        check("2015-03-18T12:03:17 GMT+07:30", expected);
+        check("2015-03-18T12:03:17+0730", expected);
+
+        let expected = Some(at_offset(
+            utc_micros(2015, 3, 18, 12, 3, 17, 0),
+            7 * 3600 + 3 * 60,
+        ));
+        check("2015-03-18T12:03:17+07:03", expected);
+        check("2015-03-18T12:03:17GMT+07:03", expected);
+        check("2015-03-18T12:03:17+0703", expected);
+
+        // Strings including milliseconds.
+        let expected = Some(utc_micros(2015, 3, 18, 12, 3, 17, 123_000));
+        check("2015-03-18 12:03:17.123", expected);
+        check("2015-03-18T12:03:17.123", expected);
+
+        let expected = Some(utc_micros(2015, 3, 18, 12, 3, 17, 456_000));
+        check("2015-03-18T12:03:17.456Z", expected);
+        check("2015-03-18 12:03:17.456Z", expected);
+        check("2015-03-18 12:03:17.456 UTC", expected);
+
+        let expected = Some(at_offset(
+            utc_micros(2015, 3, 18, 12, 3, 17, 123_000),
+            -3600,
+        ));
+        check("2015-03-18T12:03:17.123-1:0", expected);
+        check("2015-03-18T12:03:17.123-01:00", expected);
+        check("2015-03-18T12:03:17.123 GMT-01:00", expected);
+        check("2015-03-18T12:03:17.123-0100", expected);
+
+        let plus_730 = 7 * 3600 + 30 * 60;
+        let expected = Some(at_offset(
+            utc_micros(2015, 3, 18, 12, 3, 17, 123_000),
+            plus_730,
+        ));
+        check("2015-03-18T12:03:17.123+07:30", expected);
+        check("2015-03-18T12:03:17.123 GMT+07:30", expected);
+        check("2015-03-18T12:03:17.123+0730", expected);
+        check("2015-03-18T12:03:17.123GMT+07:30", expected);
+
+        let expected = Some(at_offset(
+            utc_micros(2015, 3, 18, 12, 3, 17, 123_121),
+            plus_730,
+        ));
+        check("2015-03-18T12:03:17.123121+7:30", expected);
+        check("2015-03-18T12:03:17.123121 GMT+0730", expected);
+
+        let expected = Some(at_offset(
+            utc_micros(2015, 3, 18, 12, 3, 17, 123_120),
+            plus_730,
+        ));
+        check("2015-03-18T12:03:17.12312+7:30", expected);
+        check("2015-03-18T12:03:17.12312 UT+07:30", expected);
+        check("2015-03-18T12:03:17.12312+0730", expected);
+
+        // Time-only strings are anchored to the current date, so assert against a
+        // today-relative expectation rather than a fixed instant.
+        let today = chrono::Utc::now().date_naive();
+        let today_micros = |hour: i64, min: i64, sec: i64, micros: i64, offset: i64| {
+            use chrono::Datelike;
+            Some(at_offset(
+                utc_micros(
+                    today.year() as i64,
+                    today.month() as i64,
+                    today.day() as i64,
+                    hour,
+                    min,
+                    sec,
+                    micros,
+                ),
+                offset,
+            ))
+        };
+        check("18:12:15", today_micros(18, 12, 15, 0, 0));
+        let expected = today_micros(18, 12, 15, 123_120, plus_730);
+        check("T18:12:15.12312+7:30", expected);
+        check("T18:12:15.12312 UTC+07:30", expected);
+        check("T18:12:15.12312+0730", expected);
+        check("18:12:15.12312+7:30", expected);
+        check("18:12:15.12312 GMT+07:30", expected);
+        check("18:12:15.12312+0730", expected);
+
+        // A 4-digit fraction is truncated to microseconds, not read as extra precision.
+        check(
+            "2011-05-06 07:08:09.1000",
+            Some(utc_micros(2011, 5, 6, 7, 8, 9, 100_000)),
+        );
+
+        for invalid in [
+            "238",
+            "2015-03-18 123142",
+            "2015-03-18T123123",
+            "2015-03-18X",
+            "2015/03/18",
+            "2015.03.18",
+            "20150318",
+            "2015-031-8",
+            "015-01-18",
+            "2015-03-18T12:03.17-20:0",
+            "2015-03-18T12:03.17-0:70",
+            "2015-03-18T12:03.17-1:0:0",
+            "1999 08 01",
+            "1999-08 01",
+            "1999 08",
+            "",
+            "    ",
+            "+",
+            "T",
+            "2015-03-18T",
+            "12::",
+            "2015-03-18T12:03:17-8:",
+            "2015-03-18T12:03:17-8:30:",
+        ] {
+            check(invalid, None);
+        }
+
+        // Fractional seconds beyond microsecond precision are truncated, not rounded.
+        let expected = Some(utc_micros(2015, 3, 18, 12, 3, 17, 123_456));
+        check("2015-03-18T12:03:17.123456789+0:00", expected);
+        check("2015-03-18T12:03:17.123456789 UTC+0", expected);
+        check("2015-03-18T12:03:17.123456789GMT+00:00", expected);
+
+        // Named zone suffix. Europe/Moscow was UTC+3 in March 2015.
+        check(
+            "2015-03-18T12:03:17.123456 Europe/Moscow",
+            Some(at_offset(
+                utc_micros(2015, 3, 18, 12, 3, 17, 123_456),
+                3 * 3600,
+            )),
+        );
+
+        // Whitespace and control-character permutations.
+        // Pre-existing gap, not introduced by the shape classifier: Spark trims leading and
+        // trailing whitespace *and ISO control* characters before parsing a timestamp
+        // (`SparkDateTimeUtils.getTrimmedStart`/`getTrimmedEnd`), but `timestamp_parser` uses
+        // Rust's `str::trim`, which only strips Unicode whitespace. So a value padded with a
+        // control character such as U+0003 returns null where Spark parses it. Comet's own
+        // `date_parser` already trims both, so this is also internally inconsistent.
+        //
+        // Asserted as-is so the divergence cannot silently widen. Tracked by
+        // <https://github.com/apache/datafusion-comet/issues/5165>.
+        let expected = Some(utc_micros(2015, 3, 18, 12, 3, 17, 0));
+        for value in permute_with_whitespace_and_control(&["2015-03-18 12:03:17"]) {
+            debug_assert!(value.contains('\u{0003}'));
+            check(&value, None);
+        }
+        // Values Spark rejects are rejected here too, control characters or not.
+        for value in permute_with_whitespace_and_control(&[
+            "INVALID_INPUT",
+            "\t",
+            "",
+            "2015-03-18\u{0003}12:03:17",
+            "2015-03-18 12:",
+            "2015-03-18 123",
+        ]) {
+            check(&value, None);
+        }
+        // Whitespace-only padding, which Rust's `trim` does handle, parses as Spark expects.
+        for value in [
+            "2015-03-18 12:03:17",
+            " 2015-03-18 12:03:17",
+            "2015-03-18 12:03:17 ",
+            "  2015-03-18 12:03:17  ",
+            "\t2015-03-18 12:03:17\t",
+        ] {
+            check(value, expected);
+        }
+    }
+
+    /// Port of `permuteWithWhitespaceAndControl` in Spark's `DateTimeUtilsSuite`: every
+    /// permutation of the input interleaved with two control characters and two spaces.
+    ///
+    /// Spark permutes `Seq(input, "", "", " ", " ")`, which - because Scala's
+    /// `permutations` deduplicates equal elements - yields 30 distinct strings per input.
+    fn permute_with_whitespace_and_control(values: &[&str]) -> Vec<String> {
+        let mut out = Vec::new();
+        for value in values {
+            let parts = [*value, "\u{0003}", "\u{0003}", " ", " "];
+            let mut seen = std::collections::HashSet::new();
+            // All 5! orderings; the set collapses the duplicate-element ones, matching Scala.
+            for indices in permutations_of_5() {
+                let joined: String = indices.iter().map(|&i| parts[i]).collect();
+                if seen.insert(joined.clone()) {
+                    out.push(joined);
+                }
+            }
+        }
+        out
+    }
+
+    /// Every ordering of `[0, 1, 2, 3, 4]`.
+    fn permutations_of_5() -> Vec<[usize; 5]> {
+        let mut out = Vec::with_capacity(120);
+        let mut items = [0, 1, 2, 3, 4];
+        permute(&mut items, 0, &mut out);
+        fn permute(items: &mut [usize; 5], k: usize, out: &mut Vec<[usize; 5]>) {
+            if k == 5 {
+                out.push(*items);
+                return;
+            }
+            for i in k..5 {
+                items.swap(k, i);
+                permute(items, k + 1, out);
+                items.swap(k, i);
+            }
+        }
+        out
+    }
+
+    /// Port of `test("SPARK-35780: support full range of timestamp string")`.
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn spark_string_to_timestamp_full_range_test() {
+        let check =
+            |value: &str, expected: Option<i64>| check_string_to_timestamp(value, expected, "UTC");
+
+        check(
+            "-1969-12-31 16:00:00",
+            Some(utc_micros(-1969, 12, 31, 16, 0, 0, 0)),
+        );
+        check(
+            "02015-03-18 16:00:00",
+            Some(utc_micros(2015, 3, 18, 16, 0, 0, 0)),
+        );
+        check("000001", Some(utc_micros(1, 1, 1, 0, 0, 0, 0)));
+        check("-000001", Some(utc_micros(-1, 1, 1, 0, 0, 0, 0)));
+        check("00238", Some(utc_micros(238, 1, 1, 0, 0, 0, 0)));
+        check(
+            "99999-03-01T12:03:17",
+            Some(utc_micros(99999, 3, 1, 12, 3, 17, 0)),
+        );
+        // A leading sign is a year sign, so it is rejected on a time-only string.
+        check("+12:12:12", None);
+        check("-12:12:12", None);
+        check("", None);
+        check("    ", None);
+        check("+", None);
+
+        // i64::MAX microseconds, and one microsecond past it.
+        let max = utc_micros(294_247, 1, 10, 4, 0, 54, 775_807);
+        assert_eq!(
+            max,
+            i64::MAX,
+            "the boundary case should be exactly i64::MAX"
+        );
+        check("294247-01-10T04:00:54.775807Z", Some(max));
+        check("294247-01-10T04:00:54.775808Z", None);
+
+        // i64::MIN microseconds, and one microsecond before it.
+        let min = utc_micros(-290_308, 12, 21, 19, 59, 5, 224_192);
+        assert_eq!(
+            min,
+            i64::MIN,
+            "the boundary case should be exactly i64::MIN"
+        );
+        check("-290308-12-21T19:59:05.224192Z", Some(min));
+        check("-290308-12-21T19:59:05.224191Z", None);
+
+        // Overflow of a single segment.
+        for invalid in [
+            "4294967297",
+            "2021-4294967297-11",
+            "4294967297:30:00",
+            "2021-11-4294967297T12:30:00",
+            "2021-01-01T12:4294967297:00",
+            "2021-01-01T12:30:4294967297",
+            "2021-01-01T12:30:4294967297.123456",
+            "2021-01-01T12:30:4294967297+07:30",
+            "2021-01-01T12:30:4294967297UTC",
+            "2021-01-01T12:30:4294967297+4294967297:30",
+        ] {
+            check(invalid, None);
+        }
+    }
+
+    /// The session-timezone dimension of Spark's `ALL_TIMEZONES` loop: a string with no zone
+    /// of its own is read in the session timezone, and one that carries a zone ignores it.
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn spark_string_to_timestamp_session_timezone_test() {
+        // (session timezone, its offset for each date used below)
+        let cases: &[(&str, i64, i64, i64)] = &[
+            // zone,                Dec 1969,   Mar 1 2015, Mar 18 2015 / May 2011
+            ("UTC", 0, 0, 0),
+            // Los Angeles is PST (-8) until DST starts 2015-03-08, PDT (-7) after.
+            ("America/Los_Angeles", -8 * 3600, -8 * 3600, -7 * 3600),
+            // Tokyo has no DST.
+            ("Asia/Tokyo", 9 * 3600, 9 * 3600, 9 * 3600),
+        ];
+        for &(zone, off_1969, off_mar_1, off_mar_18) in cases {
+            let check = |value: &str, expected: Option<i64>| {
+                check_string_to_timestamp(value, expected, zone)
+            };
+
+            check(
+                "1969-12-31 16:00:00",
+                Some(at_offset(utc_micros(1969, 12, 31, 16, 0, 0, 0), off_1969)),
+            );
+            check(
+                "2015-03",
+                Some(at_offset(utc_micros(2015, 3, 1, 0, 0, 0, 0), off_mar_1)),
+            );
+            check(
+                "2015-03-18",
+                Some(at_offset(utc_micros(2015, 3, 18, 0, 0, 0, 0), off_mar_18)),
+            );
+            check(
+                "2015-03-18 12:03:17",
+                Some(at_offset(utc_micros(2015, 3, 18, 12, 3, 17, 0), off_mar_18)),
+            );
+            check(
+                "2015-03-18T12:03:17.123",
+                Some(at_offset(
+                    utc_micros(2015, 3, 18, 12, 3, 17, 123_000),
+                    off_mar_18,
+                )),
+            );
+            check(
+                "2011-05-06 07:08:09.1000",
+                Some(at_offset(
+                    utc_micros(2011, 5, 6, 7, 8, 9, 100_000),
+                    off_mar_18,
+                )),
+            );
+
+            // A zone in the string overrides the session timezone entirely.
+            check(
+                "2015-03-18T12:03:17Z",
+                Some(utc_micros(2015, 3, 18, 12, 3, 17, 0)),
+            );
+            check(
+                "2015-03-18T12:03:17+07:30",
+                Some(at_offset(
+                    utc_micros(2015, 3, 18, 12, 3, 17, 0),
+                    7 * 3600 + 30 * 60,
+                )),
+            );
+        }
+    }
+
+    /// Port of `test("SPARK-37326: stringToTimestampWithoutTimeZone with allowTimeZone")`.
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn spark_string_to_timestamp_ntz_allow_time_zone_test() {
+        // With a zone allowed, the zone is parsed and then discarded: the local date-time is
+        // kept as written, not shifted.
+        assert_eq!(
+            timestamp_ntz_parser("2021-11-22 10:54:27 +08:00", EvalMode::Legacy, true, true)
+                .unwrap(),
+            Some(utc_micros(2021, 11, 22, 10, 54, 27, 0))
+        );
+        // With a zone disallowed, the same string is rejected.
+        assert_eq!(
+            timestamp_ntz_parser("2021-11-22 10:54:27 +08:00", EvalMode::Legacy, false, true)
+                .unwrap(),
+            None
+        );
+    }
+
+    /// Port of the `stringToTimestamp` half of `test("SPARK-15379: special invalid date
+    /// string")` - dates that are well-formed but do not exist.
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn spark_special_invalid_date_string_timestamp_test() {
+        for value in [
+            "2015-02-29 00:00:00",
+            "2015-04-31 00:00:00",
+            "2015-02-29",
+            "2015-04-31",
+        ] {
+            check_string_to_timestamp(value, None, "UTC");
+        }
     }
 
     /// Asserts every date parses to null in legacy and try mode. When `expect_ansi_error` is set,
