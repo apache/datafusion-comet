@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::conversion_funcs::string::pow10_i128;
+use crate::conversion_funcs::string::{digits_to_i128, div_round_half_up_i128, pow10_i128};
 use crate::conversion_funcs::utils::cast_overflow;
 use crate::conversion_funcs::utils::MICROS_PER_SECOND;
 use crate::{EvalMode, SparkError, SparkResult};
@@ -977,28 +977,20 @@ fn float_to_decimal128(f: f64, precision: u8, scale: i8) -> Option<i128> {
 
     // Shortest round-trip decimal form, same digits as Java's Double.toString
     let mut buf = ryu::Buffer::new();
-    let (mantissa, exp10) = parse_decimal_notation(buf.format_finite(f));
+    let (mantissa, exp10) = parse_decimal_notation(buf.format_finite(f))?;
 
     // value = mantissa * 10^exp10, so unscaled = round(mantissa * 10^(exp10 + scale))
     let shift = exp10 + scale as i32;
     let unscaled = if shift >= 0 {
         // Overflowing i128 here means the result cannot fit any decimal precision
-        mantissa.checked_mul(pow10_i128(shift.try_into().ok()?)?)?
+        mantissa.checked_mul(pow10_i128(shift as u32)?)?
     } else {
         match pow10_i128(-shift as u32) {
             // The mantissa has at most 17 significant digits, so dividing by a power of
             // ten too large for i128 always rounds to zero
             None => 0,
             // Divide with HALF_UP rounding (away from zero on a tie, matching BigDecimal)
-            Some(div) => {
-                let quotient = mantissa / div;
-                let remainder = mantissa % div;
-                if remainder.abs() >= div / 2 {
-                    quotient + mantissa.signum()
-                } else {
-                    quotient
-                }
-            }
+            Some(div) => div_round_half_up_i128(mantissa, div),
         }
     };
 
@@ -1006,32 +998,32 @@ fn float_to_decimal128(f: f64, precision: u8, scale: i8) -> Option<i128> {
 }
 
 /// Parse ryu's `[-]digits[.digits][e[-]digits]` output into an integer mantissa and a
-/// base-10 exponent such that the value equals `mantissa * 10^exp10`. The mantissa of a
-/// shortest-form double has at most 17 significant digits so it cannot overflow i128.
-fn parse_decimal_notation(s: &str) -> (i128, i32) {
+/// base-10 exponent such that the value equals `mantissa * 10^exp10`.
+///
+/// Returns `None` if the mantissa does not fit an `i128`, which cannot happen for ryu
+/// output: a shortest-form double carries at most 17 significant digits.
+fn parse_decimal_notation(s: &str) -> Option<(i128, i32)> {
     let (digits, exp10) = match s.split_once('e') {
         Some((digits, exp)) => (digits, exp.parse::<i32>().expect("exponent from ryu")),
         None => (s, 0),
     };
-    let mut mantissa: i128 = 0;
-    let mut frac_digits = 0;
-    let mut in_fraction = false;
-    for b in digits.bytes() {
-        match b {
-            b'-' => {}
-            b'.' => in_fraction = true,
-            _ => {
-                mantissa = mantissa * 10 + (b - b'0') as i128;
-                if in_fraction {
-                    frac_digits += 1;
-                }
-            }
-        }
-    }
-    if digits.starts_with('-') {
-        mantissa = -mantissa;
-    }
-    (mantissa, exp10 - frac_digits)
+    let (digits, negative) = match digits.strip_prefix('-') {
+        Some(unsigned) => (unsigned, true),
+        None => (digits, false),
+    };
+    let (integral, fractional) = match digits.split_once('.') {
+        Some((integral, fractional)) => (integral, fractional),
+        None => (digits, ""),
+    };
+
+    // value = (integral * 10^frac_digits + fractional) * 10^(exp10 - frac_digits)
+    let frac_digits = fractional.len() as i32;
+    let mantissa = pow10_i128(frac_digits as u32)
+        .and_then(|p| digits_to_i128(integral.as_bytes())?.checked_mul(p))
+        .and_then(|v| v.checked_add(digits_to_i128(fractional.as_bytes())?))?;
+
+    let mantissa = if negative { -mantissa } else { mantissa };
+    Some((mantissa, exp10 - frac_digits))
 }
 
 pub(crate) fn spark_cast_nonintegral_numeric_to_integral(
@@ -1537,6 +1529,39 @@ mod tests {
         assert!(d.is_null(1));
         assert!(d.is_null(2));
         assert!(d.is_null(3));
+    }
+
+    #[test]
+    fn test_parse_decimal_notation_round_trips_ryu_output() {
+        // Every shape ryu can emit: plain integral ("1.0"), plain fractional ("12.34"),
+        // leading-zero fractional ("0.001234", up to 21 fractional digits), single-digit
+        // exponent form ("1e30") and full exponent form ("1.234e33"). The extremes pin
+        // down that the mantissa always fits an i128, so the `None` arm stays unreachable.
+        let mut buf = ryu::Buffer::new();
+        for v in [
+            0.0,
+            1.0,
+            -1.0,
+            12.34,
+            -0.001234,
+            0.5153125,
+            1e16,
+            1e17,
+            1.5e10,
+            1e30,
+            1.2345678901234567e-5,
+            1.2345678901234567e300,
+            f64::MAX,
+            f64::MIN,
+            f64::MIN_POSITIVE,
+            f64::from_bits(1), // smallest subnormal
+        ] {
+            let formatted = buf.format_finite(v);
+            let (mantissa, exp10) =
+                parse_decimal_notation(formatted).expect("ryu mantissa fits i128");
+            let reconstructed: f64 = format!("{mantissa}e{exp10}").parse().unwrap();
+            assert_eq!(reconstructed, v, "{formatted} -> {mantissa}e{exp10}");
+        }
     }
 
     #[test]
