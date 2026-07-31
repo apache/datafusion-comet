@@ -40,6 +40,7 @@ Usage:
 import datetime as dt
 import os
 from decimal import Decimal
+from typing import Iterator
 
 import pyarrow as pa
 import pytest
@@ -235,6 +236,85 @@ def test_map_in_pandas_changes_schema(spark, tmp_path, accelerated):
     assert len(rows) == 50
     for i, row in enumerate(rows):
         assert abs(row["squared"] - float(i) ** 2) < 1e-6
+
+
+@pytest.mark.parametrize(
+    "api", ["applyInPandas", "applyInArrow", "applyInArrowIterator"]
+)
+def test_grouped_apply_spans_comet_batches(spark, tmp_path, accelerated, api):
+    if api == "applyInArrowIterator" and tuple(
+        map(int, spark.version.split(".")[:2])
+    ) < (4, 1):
+        pytest.skip("the grouped RecordBatch iterator API requires Spark 4.1+")
+
+    rows = [(i % 2, i) for i in range(37)]
+    src = str(tmp_path / "src.parquet")
+    spark.createDataFrame(rows, ["key", "value"]).coalesce(1).write.parquet(src)
+
+    def summarize_pandas(pdf):
+        return pdf.head(1).assign(count=len(pdf), total=pdf["value"].sum())[
+            ["key", "count", "total"]
+        ]
+
+    def summarize_arrow(table):
+        return pa.table(
+            {
+                "key": pa.array([table.column("key")[0].as_py()], type=pa.int64()),
+                "count": pa.array([table.num_rows], type=pa.int64()),
+                "total": pa.array(
+                    [sum(table.column("value").to_pylist())], type=pa.int64()
+                ),
+            }
+        )
+
+    def summarize_arrow_batches(
+        batches: Iterator[pa.RecordBatch],
+    ) -> Iterator[pa.RecordBatch]:
+        key = None
+        count = total = batch_count = 0
+        for batch in batches:
+            key = batch.column("key")[0].as_py() if key is None else key
+            count += batch.num_rows
+            total += sum(batch.column("value").to_pylist())
+            batch_count += 1
+        if accelerated:
+            assert batch_count > 1
+        yield pa.RecordBatch.from_pydict(
+            {"key": [key], "count": [count], "total": [total]}
+        )
+
+    previous_batch_size = spark.conf.get("spark.comet.batchSize", "8192")
+    spark.conf.set("spark.comet.batchSize", "4")
+    try:
+        grouped = spark.read.parquet(src).coalesce(1).groupBy("key")
+        method = "applyInArrow" if api == "applyInArrowIterator" else api
+        funcs = {
+            "applyInPandas": summarize_pandas,
+            "applyInArrow": summarize_arrow,
+            "applyInArrowIterator": summarize_arrow_batches,
+        }
+        result_df = getattr(grouped, method)(
+            funcs[api],
+            "key long, count long, total long",
+        )
+        actual = sorted(result_df.collect())
+        plan = _executed_plan(result_df)
+        if accelerated:
+            assert "CometFlatMapGroupsInBatch" in plan, (
+                f"expected grouped Comet Python operator, got:\n{plan}"
+            )
+        else:
+            assert "CometFlatMapGroupsInBatch" not in plan, (
+                f"unexpected grouped Comet Python operator, got:\n{plan}"
+            )
+            assert f"FlatMapGroupsIn{method.removeprefix('applyIn')}" in plan
+
+        assert actual == [
+            (0, 19, sum(range(0, 37, 2))),
+            (1, 18, sum(range(1, 37, 2))),
+        ]
+    finally:
+        spark.conf.set("spark.comet.batchSize", previous_batch_size)
 
 
 def test_map_in_arrow_preserves_nulls(spark, tmp_path, accelerated):

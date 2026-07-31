@@ -22,16 +22,17 @@ package org.apache.spark.sql.comet.shims
 import org.apache.spark.TaskContext
 import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.execution.python.CometArrowPythonRunner
-import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
 trait ShimCometMapInBatch extends Spark4xMapInBatchSupport {
+
+  override protected val framedGroups: Boolean = true
 
   protected def computeArrowPython(
       runnerInputs: RunnerInputs,
       evalType: Int,
       argOffsets: Array[Array[Int]],
-      schema: StructType,
+      inputConfig: CometArrowPythonInputConfig,
       pythonMetrics: Map[String, SQLMetric],
       batchIter: Iterator[Iterator[ColumnarBatch]],
       partitionId: Int,
@@ -40,9 +41,9 @@ trait ShimCometMapInBatch extends Spark4xMapInBatchSupport {
       runnerInputs.chainedFunc,
       evalType,
       argOffsets,
-      schema,
       runnerInputs.pythonRunnerConf,
       pythonMetrics,
       runnerInputs.jobArtifactUUID,
-      None).compute(batchIter, partitionId, context)
+      None,
+      inputConfig).compute(batchIter, partitionId, context)
 }

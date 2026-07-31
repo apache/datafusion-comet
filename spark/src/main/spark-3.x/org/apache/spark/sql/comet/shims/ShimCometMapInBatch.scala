@@ -47,6 +47,16 @@ trait ShimCometMapInBatch {
 
   protected def matchMapInPandas(plan: SparkPlan): Option[MapInBatchInfo] = None
 
+  protected def matchFlatMapGroupsInBatch(plan: SparkPlan): Option[FlatMapGroupsInBatchInfo] =
+    None
+
+  protected def groupedInputConfig(
+      schema: StructType,
+      structInput: Boolean): CometArrowPythonInputConfig =
+    throw new UnsupportedOperationException("Grouped PyArrow UDFs are not supported on Spark 3.x")
+
+  protected def groupedArrowMaxBytesPerBatch(conf: SQLConf): Long = Long.MaxValue
+
   /** Stub; never constructed on Spark 3.x because the matchers always return `None`. */
   protected case class RunnerInputs()
 
@@ -57,7 +67,7 @@ trait ShimCometMapInBatch {
       runnerInputs: RunnerInputs,
       evalType: Int,
       argOffsets: Array[Array[Int]],
-      schema: StructType,
+      inputConfig: CometArrowPythonInputConfig,
       pythonMetrics: Map[String, SQLMetric],
       batchIter: Iterator[Iterator[ColumnarBatch]],
       partitionId: Int,

@@ -29,17 +29,18 @@ import org.apache.arrow.vector.{BaseFixedWidthVector, BaseLargeVariableWidthVect
 import org.apache.arrow.vector.complex.{LargeListVector, ListVector, StructVector}
 import org.apache.arrow.vector.ipc.{ArrowStreamReader, ArrowStreamWriter}
 import org.apache.arrow.vector.types.pojo.{ArrowType, Field, FieldType}
+import org.apache.arrow.vector.util.VectorSchemaRootAppender
 import org.apache.spark.{SparkEnv, TaskContext}
 import org.apache.spark.api.python.{BasePythonRunner, PythonRDD, PythonWorker, SpecialLengths}
+import org.apache.spark.sql.comet.shims.CometArrowPythonInputConfig
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
 import org.apache.spark.unsafe.Platform
 
 import org.apache.comet.CometArrowAllocator
-import org.apache.comet.vector.{CometDecodedVector, CometVector}
+import org.apache.comet.vector.CometVector
 
 /**
  * Shared base for Comet's Arrow Python runners (Spark 4.0 / 4.1 / 4.2).
@@ -74,13 +75,9 @@ private[python] trait CometArrowPythonRunnerBase
   /** Version-specific UDF command serialization. */
   protected def writeUDF(dataOut: DataOutputStream): Unit
 
-  /**
-   * Input schema as Comet hands it to the runner: a single non-nullable struct named "struct"
-   * whose children are the user's input columns. Comet's FFI-imported vectors carry Arrow
-   * `Field`s with null names (Comet uses positional schema), so these names are the source of
-   * truth for the field names written into the IPC stream that the Python worker reads by name.
-   */
-  protected def schema: StructType
+  protected def inputConfig: CometArrowPythonInputConfig
+
+  protected def writeWorkerConf: Boolean = true
 
   override val pythonExec: String =
     SQLConf.get.pysparkWorkerPythonExecutable.getOrElse(funcs.head.funcs.head.pythonExec)
@@ -107,59 +104,125 @@ private[python] trait CometArrowPythonRunnerBase
       private val allocator =
         CometArrowAllocator.newChildAllocator(s"stdout writer for $pythonExec", 0, Long.MaxValue)
       private var currentGroup: Iterator[ColumnarBatch] = _
-      private var arrowWriter: ArrowStreamWriter = _
-      private var writeRoot: VectorSchemaRoot = _
-      private var structVec: StructVector = _
+      private var continuousState: RootState = _
 
-      // The runner's input schema is a single struct column ("struct") whose children are the
-      // user's input columns (see `schema` above). Cast once here rather than at each use site.
-      private lazy val inputStructType = schema.head.dataType.asInstanceOf[StructType]
+      private case class RootState(
+          root: VectorSchemaRoot,
+          vectors: IndexedSeq[FieldVector],
+          structVector: Option[StructVector],
+          writer: Option[ArrowStreamWriter])
 
       context.addTaskCompletionListener[Unit] { _ =>
-        if (writeRoot != null) {
-          writeRoot.close()
+        if (continuousState != null) {
+          continuousState.root.close()
+          continuousState = null
         }
         allocator.close()
       }
 
       protected override def writeCommand(dataOut: DataOutputStream): Unit = {
-        // handleMetadataBeforeExec: write the worker config as key/value string pairs.
-        dataOut.writeInt(workerConf.size)
-        for ((k, v) <- workerConf) {
-          PythonRDD.writeUTF(k, dataOut)
-          PythonRDD.writeUTF(v, dataOut)
+        if (writeWorkerConf) {
+          dataOut.writeInt(workerConf.size)
+          for ((k, v) <- workerConf) {
+            PythonRDD.writeUTF(k, dataOut)
+            PythonRDD.writeUTF(v, dataOut)
+          }
         }
         writeUDF(dataOut)
       }
 
-      /** Build the destination struct root and start the writer from the given child fields. */
-      private def startWriter(childFields: Seq[Field], dataOut: DataOutputStream): Unit = {
-        val structField =
-          new Field(
-            "struct",
-            new FieldType(false, ArrowType.Struct.INSTANCE, null),
-            childFields.asJava)
-        structVec = structField.createVector(allocator).asInstanceOf[StructVector]
-        writeRoot = new VectorSchemaRoot(Seq[FieldVector](structVec).asJava)
-        arrowWriter = new ArrowStreamWriter(writeRoot, null, Channels.newChannel(dataOut))
-        arrowWriter.start()
+      private def startRoot(
+          sample: Option[ColumnarBatch],
+          dataOut: DataOutputStream,
+          withWriter: Boolean): RootState = {
+        val inputSchema = inputConfig.schema
+        val fields = sample match {
+          case Some(batch) =>
+            require(
+              batch.numCols() == inputSchema.length,
+              s"Input column count ${batch.numCols()} does not match ${inputSchema.length}")
+            (0 until batch.numCols()).map { i =>
+              val field = batch.column(i).asInstanceOf[CometVector].getValueVector.getField
+              renamed(field, inputSchema.fields(i).name, forceNullable = true)
+            }
+          case None =>
+            inputSchema.fields.toSeq.map(f =>
+              Utils.toArrowField(f.name, f.dataType, nullable = true, "UTC"))
+        }
+
+        val (root, vectors, structVector) =
+          if (inputConfig.structInput) {
+            val structField =
+              new Field(
+                "struct",
+                new FieldType(false, ArrowType.Struct.INSTANCE, null),
+                fields.asJava)
+            val structVec = structField.createVector(allocator).asInstanceOf[StructVector]
+            (
+              new VectorSchemaRoot(Seq[FieldVector](structVec).asJava),
+              fields.indices
+                .map(i => structVec.getChildByOrdinal(i).asInstanceOf[FieldVector])
+                .toIndexedSeq,
+              Some(structVec))
+          } else {
+            val rootVectors = fields.map(_.createVector(allocator).asInstanceOf[FieldVector])
+            (new VectorSchemaRoot(rootVectors.asJava), rootVectors.toIndexedSeq, None)
+          }
+        val writer =
+          if (withWriter) {
+            val streamWriter =
+              new ArrowStreamWriter(root, null, Channels.newChannel(dataOut))
+            streamWriter.start()
+            Some(streamWriter)
+          } else {
+            None
+          }
+        RootState(root, vectors, structVector, writer)
       }
 
-      override def writeNextInputToStream(dataOut: DataOutputStream): Boolean = {
+      private def copyBatch(batch: ColumnarBatch, state: RootState): Unit = {
+        var i = 0
+        while (i < batch.numCols()) {
+          val src = batch
+            .column(i)
+            .asInstanceOf[CometVector]
+            .getValueVector
+            .asInstanceOf[FieldVector]
+          copyVector(src, state.vectors(i))
+          i += 1
+        }
+        val numRows = batch.numRows()
+        state.structVector.foreach { structVec =>
+          structVec.setValueCount(numRows)
+          val validityBytes = (numRows + 7) / 8
+          Platform.setMemory(
+            structVec.getValidityBuffer.memoryAddress(),
+            0xff.toByte,
+            validityBytes)
+        }
+        state.root.setRowCount(numRows)
+      }
+
+      private def closeInput(batch: ColumnarBatch): Unit = {
+        if (inputConfig.grouped) {
+          batch.close()
+        }
+      }
+
+      private def withInputBatch[T](batch: ColumnarBatch)(f: => T): T =
+        try {
+          f
+        } finally {
+          closeInput(batch)
+        }
+
+      private def writeContinuous(dataOut: DataOutputStream): Boolean = {
         while (currentGroup == null || !currentGroup.hasNext) {
           if (!inputIterator.hasNext) {
-            if (arrowWriter == null) {
-              // No input batch was ever produced (e.g. an upstream filter removed every row).
-              // Still emit a valid, empty Arrow IPC stream so the Python worker's
-              // ArrowStreamReader reads a schema and then sees zero batches, instead of failing
-              // on an absent stream ("Invalid IPC stream: negative continuation token"). There is
-              // no sample batch, so derive the schema from the Spark input schema. The timezone is
-              // irrelevant here because no rows are exchanged.
-              val childFields = inputStructType.fields.toSeq.map(f =>
-                Utils.toArrowField(f.name, f.dataType, nullable = true, "UTC"))
-              startWriter(childFields, dataOut)
+            if (continuousState == null) {
+              continuousState = startRoot(None, dataOut, withWriter = true)
             }
-            arrowWriter.end()
+            continuousState.writer.get.end()
             return false
           }
           currentGroup = inputIterator.next()
@@ -167,52 +230,111 @@ private[python] trait CometArrowPythonRunnerBase
 
         val cometBatch = currentGroup.next()
         val startData = dataOut.size()
-
-        if (arrowWriter == null) {
-          // Build the destination struct root once, sized to the first batch's child fields.
-          // mapInArrow/mapInPandas exchange the columns under a single non-nullable struct.
-          // Comet's FFI-imported vectors leave the Arrow Field name null, so restore the real
-          // column names from the input schema (the worker reads columns by name, and shaded
-          // Arrow rejects a null field name). The field types and child structure are kept as-is
-          // so copyVector still walks the source and destination trees in lockstep. Keeping the
-          // type as-is also means a TimestampType reaches the worker with Comet's UTC time zone
-          // rather than the session zone vanilla Spark would label it with; this is a documented
-          // limitation (see pyarrow-udfs.md), not a value difference, since the stored instant is
-          // identical.
-          val childNames = inputStructType.fieldNames
-          val childFields = (0 until cometBatch.numCols()).map { i =>
-            val vecField =
-              cometBatch.column(i).asInstanceOf[CometDecodedVector].getValueVector.getField
-            renamed(vecField, childNames(i), forceNullable = true)
+        withInputBatch(cometBatch) {
+          if (continuousState == null) {
+            continuousState = startRoot(Some(cometBatch), dataOut, withWriter = true)
           }
-          startWriter(childFields, dataOut)
+          copyBatch(cometBatch, continuousState)
+          continuousState.writer.get.writeBatch()
         }
-
-        var i = 0
-        while (i < cometBatch.numCols()) {
-          val src = cometBatch
-            .column(i)
-            .asInstanceOf[CometDecodedVector]
-            .getValueVector
-            .asInstanceOf[FieldVector]
-          val dst = structVec.getChildByOrdinal(i).asInstanceOf[FieldVector]
-          copyVector(src, dst)
-          i += 1
-        }
-        val numRows = cometBatch.numRows()
-        structVec.setValueCount(numRows)
-        // Mark every row of the struct non-null (all-1 validity). The validity buffer is freshly
-        // allocated and zero-initialised, so without this Python would see an all-null struct.
-        val validityBytes = (numRows + 7) / 8
-        Platform.setMemory(
-          structVec.getValidityBuffer.memoryAddress(),
-          0xff.toByte,
-          validityBytes)
-        writeRoot.setRowCount(numRows)
-        arrowWriter.writeBatch()
-
         pythonMetrics("pythonDataSent") += dataOut.size() - startData
         true
+      }
+
+      private def writeFramedGroup(dataOut: DataOutputStream): Boolean = {
+        if (!inputIterator.hasNext) {
+          dataOut.writeInt(0)
+          return false
+        }
+
+        val startData = dataOut.size()
+        dataOut.writeInt(1)
+        val batches = inputIterator.next()
+        val first = if (batches.hasNext) Some(batches.next()) else None
+        var state: RootState = null
+        try {
+          first match {
+            case Some(batch) =>
+              withInputBatch(batch) {
+                state = startRoot(Some(batch), dataOut, withWriter = true)
+                copyBatch(batch, state)
+                state.writer.get.writeBatch()
+              }
+            case None =>
+              state = startRoot(None, dataOut, withWriter = true)
+          }
+          batches.foreach { batch =>
+            withInputBatch(batch) {
+              copyBatch(batch, state)
+              state.writer.get.writeBatch()
+            }
+          }
+          state.writer.get.end()
+        } finally {
+          if (state != null) {
+            state.root.close()
+          }
+        }
+        pythonMetrics("pythonDataSent") += dataOut.size() - startData
+        true
+      }
+
+      private def writeSingleBatchGroup(dataOut: DataOutputStream): Boolean = {
+        if (!inputIterator.hasNext) {
+          if (continuousState == null) {
+            continuousState = startRoot(None, dataOut, withWriter = true)
+          }
+          continuousState.writer.get.end()
+          return false
+        }
+
+        val startData = dataOut.size()
+        val batches = inputIterator.next()
+        val first = if (batches.hasNext) Some(batches.next()) else None
+        if (continuousState == null) {
+          first match {
+            case Some(batch) =>
+              withInputBatch(batch) {
+                continuousState = startRoot(Some(batch), dataOut, withWriter = true)
+                copyBatch(batch, continuousState)
+              }
+            case None =>
+              continuousState = startRoot(None, dataOut, withWriter = true)
+          }
+        } else {
+          first.foreach { batch =>
+            withInputBatch(batch) {
+              copyBatch(batch, continuousState)
+            }
+          }
+        }
+
+        batches.foreach { batch =>
+          withInputBatch(batch) {
+            val scratch = startRoot(Some(batch), dataOut, withWriter = false)
+            try {
+              copyBatch(batch, scratch)
+              VectorSchemaRootAppender.append(continuousState.root, scratch.root)
+            } finally {
+              scratch.root.close()
+            }
+          }
+        }
+        continuousState.writer.get.writeBatch()
+        continuousState.root.clear()
+        continuousState.root.setRowCount(0)
+        pythonMetrics("pythonDataSent") += dataOut.size() - startData
+        true
+      }
+
+      override def writeNextInputToStream(dataOut: DataOutputStream): Boolean = {
+        if (!inputConfig.grouped) {
+          writeContinuous(dataOut)
+        } else if (inputConfig.framedGroups) {
+          writeFramedGroup(dataOut)
+        } else {
+          writeSingleBatchGroup(dataOut)
+        }
       }
     }
   }

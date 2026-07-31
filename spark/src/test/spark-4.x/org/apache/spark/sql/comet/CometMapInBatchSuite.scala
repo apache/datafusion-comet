@@ -19,6 +19,8 @@
 
 package org.apache.spark.sql.comet
 
+import org.apache.arrow.memory.RootAllocator
+import org.apache.arrow.vector.BigIntVector
 import org.apache.spark.api.python.{PythonAccumulatorV2, PythonBroadcast, PythonEvalType, PythonFunction}
 import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.rdd.RDD
@@ -26,12 +28,13 @@ import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference, ExprId, PythonUDF}
 import org.apache.spark.sql.execution.{ColumnarToRowExec, LeafExecNode}
-import org.apache.spark.sql.execution.python.MapInArrowExec
+import org.apache.spark.sql.execution.python.{FlatMapGroupsInPandasExec, MapInArrowExec}
 import org.apache.spark.sql.types.{LongType, StructField, StructType}
-import org.apache.spark.sql.vectorized.ColumnarBatch
+import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
 
 import org.apache.comet.{CometConf, ExtendedExplainInfo}
 import org.apache.comet.rules.EliminateRedundantTransitions
+import org.apache.comet.vector.CometPlainVector
 
 /** Minimal CometPlan leaf used to anchor the rule's transform without triggering execution. */
 private case class StubCometLeaf(override val output: Seq[Attribute])
@@ -54,6 +57,23 @@ private case class StubCometLeaf(override val output: Seq[Attribute])
  * `PythonUDF` for `MapInArrowExec` to wrap.
  */
 class CometMapInBatchSuite extends CometTestBase {
+
+  private def batch(
+      allocator: RootAllocator,
+      keys: Seq[Long],
+      values: Seq[Long]): ColumnarBatch = {
+    def vector(name: String, data: Seq[Long]): CometPlainVector = {
+      val vector = new BigIntVector(name, allocator)
+      vector.allocateNew()
+      data.zipWithIndex.foreach { case (value, index) => vector.setSafe(index, value) }
+      vector.setValueCount(data.length)
+      new CometPlainVector(vector)
+    }
+
+    new ColumnarBatch(
+      Array[ColumnVector](vector("key", keys), vector("value", values)),
+      keys.length)
+  }
 
   private def stubPythonUDF: PythonUDF = {
     val pyFunc = new PythonFunction {
@@ -93,6 +113,22 @@ class CometMapInBatchSuite extends CometTestBase {
       assert(
         rewritten.exists(_.isInstanceOf[CometMapInBatchExec]),
         s"expected CometMapInBatchExec in rewritten plan:\n$rewritten")
+    }
+  }
+
+  test("rule rewrites FlatMapGroupsInPandasExec over Comet") {
+    withSQLConf(CometConf.COMET_PYARROW_UDF_ENABLED.key -> "true") {
+      val key = AttributeReference("id", LongType)(ExprId(0L))
+      val cometChild = StubCometLeaf(Seq(key))
+      val plan = FlatMapGroupsInPandasExec(
+        Seq(key),
+        stubPythonUDF.copy(evalType = PythonEvalType.SQL_GROUPED_MAP_PANDAS_UDF),
+        Seq(key),
+        ColumnarToRowExec(cometChild))
+      val rewritten = EliminateRedundantTransitions(spark).apply(plan)
+      assert(
+        rewritten.exists(_.isInstanceOf[CometFlatMapGroupsInBatchExec]),
+        s"expected CometFlatMapGroupsInBatchExec in rewritten plan:\n$rewritten")
     }
   }
 
@@ -158,6 +194,37 @@ class CometMapInBatchSuite extends CometTestBase {
       assert(
         cometOps.head.child.isInstanceOf[CometMapInBatchExec],
         s"expected the outer CometMapInBatchExec to consume the inner one directly:\n$rewritten")
+    }
+  }
+
+  test("grouped iterator keeps a group spanning columnar batches together") {
+    val allocator = new RootAllocator(Long.MaxValue)
+    try {
+      val key = AttributeReference("key", LongType, nullable = false)()
+      val value = AttributeReference("value", LongType, nullable = false)()
+      val groups = new CometBatchGroupedIterator(
+        Iterator(
+          batch(allocator, Seq(1, 1), Seq(10, 11)),
+          batch(allocator, Seq.empty, Seq.empty),
+          batch(allocator, Seq(1, 2, 2), Seq(12, 20, 21))),
+        Seq(key),
+        Seq(key, value),
+        Seq(key, value),
+        maxRowsPerBatch = Int.MaxValue,
+        maxBytesPerBatch = 1).map { group =>
+        group.map { batch =>
+          try {
+            (batch.numRows(), (0 until batch.numRows()).map(i => batch.column(1).getLong(i)))
+          } finally {
+            batch.close()
+          }
+        }.toSeq
+      }.toSeq
+
+      assert(groups.map(_.map(_._1)) == Seq(Seq(1, 1, 1), Seq(1, 1)))
+      assert(groups.map(_.flatMap(_._2)) == Seq(Seq(10, 11, 12), Seq(20, 21)))
+    } finally {
+      allocator.close()
     }
   }
 

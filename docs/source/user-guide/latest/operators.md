@@ -122,9 +122,10 @@ omitted from the tables below and may be reconsidered based on demand:
 
 ## Python and UDF
 
-| Operator                                                                                | Status | Notes                                                                                                                        |
-| --------------------------------------------------------------------------------------- | ------ | ---------------------------------------------------------------------------------------------------------------------------- |
-| `ArrowEvalPythonExec`, `MapInArrowExec`, `MapInPandasExec`, `FlatMapGroupsInPandasExec` | 🔜     | Experimental accelerated PyArrow UDF support is in progress ([#4234](https://github.com/apache/datafusion-comet/pull/4234)). |
+| Operator                                                                                           | Status | Notes                                                                                                                   |
+| -------------------------------------------------------------------------------------------------- | ------ | ----------------------------------------------------------------------------------------------------------------------- |
+| `MapInArrowExec`, `MapInPandasExec`, `FlatMapGroupsInArrowExec`, `FlatMapGroupsInPandasExec`       | ⚠️     | Experimental Spark 4.x PyArrow UDF acceleration; disabled by default. See [PyArrow UDF Acceleration](pyarrow-udfs.md). |
+| `ArrowEvalPythonExec`, grouped aggregate/window UDFs, cogrouped maps, and `ArrowEvalPythonUDTFExec` | 🔜     | Fall back to Spark.                                                                                                     |
 
 ## See also
 

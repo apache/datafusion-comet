@@ -235,9 +235,20 @@ class NativeUtil {
    *   A new batch with the sliced vectors
    */
   def takeRows(batch: ColumnarBatch, startIndex: Int, maxNumRows: Int): ColumnarBatch = {
+    takeRows(batch, startIndex, maxNumRows, 0 until batch.numCols())
+  }
+
+  /**
+   * Takes zero-copy slices of selected columns in the input batch.
+   */
+  def takeRows(
+      batch: ColumnarBatch,
+      startIndex: Int,
+      maxNumRows: Int,
+      columnIndices: Seq[Int]): ColumnarBatch = {
     val arrayVectors = mutable.ArrayBuffer.empty[CometVector]
 
-    for (i <- 0 until batch.numCols()) {
+    columnIndices.foreach { i =>
       val column = batch.column(i).asInstanceOf[CometVector]
       arrayVectors += column.slice(startIndex, maxNumRows)
     }
