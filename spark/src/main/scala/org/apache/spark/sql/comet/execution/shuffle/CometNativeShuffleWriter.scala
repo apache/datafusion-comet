@@ -118,7 +118,7 @@ class CometNativeShuffleWriter[K, V](
       "output_rows" -> metricsOutputRows,
       "data_size" -> metrics("dataSize"),
       "write_time" -> metricsWriteTime) ++
-      metrics.filterKeys(detailedMetrics.contains)
+      metrics.filter { case (name, _) => detailedMetrics.contains(name) }
 
     // ShuffleWriter metrics at the root; child's metric tree underneath so the SQL UI's per-node
     // breakdown matches what the split-driver flow showed.

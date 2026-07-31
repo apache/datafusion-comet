@@ -825,7 +825,7 @@ under the License.
                   <javacArg>${java.version}</javacArg>
                   <javacArg>-target</javacArg>
                   <javacArg>${java.version}</javacArg>
-                  <javacArg>-Xlint:all,-serial,-path,-try</javacArg>
+                  <javacArg>-Xlint:all,-serial,-path,-try,-processing</javacArg>
                 </javacArgs>
                 <compilerPlugins>
                   <compilerPlugin>
@@ -922,7 +922,7 @@ under the License.
               <javacArg>${maven.compiler.source}</javacArg>
               <javacArg>-target</javacArg>
               <javacArg>${maven.compiler.target}</javacArg>
-              <javacArg>-Xlint:all,-serial,-path,-try</javacArg>
+              <javacArg>-Xlint:all,-serial,-path,-try,-processing</javacArg>
             </javacArgs>
           </configuration>
         </plugin>
