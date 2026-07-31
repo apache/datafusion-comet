@@ -21,6 +21,7 @@ package org.apache.comet.exec
 
 import java.{util => ju}
 
+import org.apache.arrow.vector.types.pojo.ArrowType
 import org.apache.spark.CometDriverPlugin
 import org.apache.spark.SparkConf
 import org.apache.spark.sql.CometTestBase
@@ -32,8 +33,11 @@ import org.apache.spark.storage.StorageLevel
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
+import org.apache.comet.vector.CometVector
 
 class CometInMemoryCacheSuite extends CometTestBase {
+
+  import testImplicits._
 
   // `InMemoryRelation` resolves `spark.sql.cache.serializer` once per JVM and memoizes the
   // instance in a static field. Test suites share a forked JVM, so whichever suite caches a
@@ -518,6 +522,85 @@ class CometInMemoryCacheSuite extends CometTestBase {
       assert(plan.contains("CometInMemoryTableScan"))
 
       spark.catalog.clearCache()
+    }
+  }
+
+  test("Comet in-memory cache stores timestamps with a UTC schema label") {
+    // Unlike Spark's Arrow cache, whose RecordBatch is deliberately schema-less, CometCachedBatch
+    // stores a full IPC stream including the schema. Labelling TimestampType with the writing
+    // session's timezone would persist a mutable session value into cached data and would make the
+    // row write path disagree with the columnar one, which already encodes with NATIVE_TIMEZONE.
+    // So both paths must write "UTC". This is a label only -- Spark stores timestamps as micros
+    // since the Unix epoch regardless of session timezone -- so values must be unaffected.
+    Seq("America/Los_Angeles", "Asia/Kolkata").foreach { sessionTz =>
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+        CometConf.COMET_SHUFFLE_MODE.key -> "jvm",
+        SQLConf.CACHE_VECTORIZED_READER_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true",
+        "spark.comet.sparkToColumnar.enabled" -> "true",
+        SQLConf.SESSION_LOCAL_TIMEZONE.key -> sessionTz) {
+
+        spark.catalog.clearCache()
+
+        // A local Seq gives a row-based plan, so this exercises
+        // convertInternalRowToCachedBatch rather than the columnar path.
+        val rows = Seq(
+          (1, java.sql.Timestamp.valueOf("2024-01-31 12:34:56.789")),
+          (2, java.sql.Timestamp.valueOf("1970-01-01 00:00:00")),
+          (3, null))
+        rows.toDF("id", "ts").createOrReplaceTempView("ts_cache")
+
+        spark.catalog.cacheTable("ts_cache")
+        assert(spark.table("ts_cache").count() == 3)
+
+        assert(
+          cachedBatchTypes("ts_cache").sameElements(
+            Array("org.apache.spark.sql.comet.execution.arrow.CometCachedBatch")),
+          s"expected Comet cache format for sessionTz=$sessionTz")
+
+        // Decode the cached bytes through the serializer and read the Arrow field metadata back
+        // out. The timezone has to be extracted inside the closure: ColumnarBatch is not
+        // serializable.
+        val relation =
+          spark.sharedState.cacheManager
+            .lookupCachedData(spark.table("ts_cache"))
+            .get
+            .cachedRepresentation
+        val tsIndex = relation.output.indexWhere(_.name == "ts")
+        val labels = relation.cacheBuilder.serializer
+          .convertCachedBatchToColumnarBatch(
+            relation.cacheBuilder.cachedColumnBuffers,
+            relation.output,
+            relation.output,
+            spark.sessionState.conf)
+          .mapPartitions { batches =>
+            batches.take(1).map { batch =>
+              batch.column(tsIndex) match {
+                case v: CometVector =>
+                  v.getValueVector.getField.getType match {
+                    case t: ArrowType.Timestamp => String.valueOf(t.getTimezone)
+                    case other => s"unexpected arrow type $other"
+                  }
+                case other => s"unexpected vector ${other.getClass.getName}"
+              }
+            }
+          }
+          .collect()
+          .distinct
+
+        assert(
+          labels.sameElements(Array("UTC")),
+          s"expected the cached timestamp schema to be labelled UTC for sessionTz=$sessionTz, " +
+            s"got ${labels.mkString("[", ",", "]")}")
+
+        // The label change must not move any values.
+        checkSparkAnswer(spark.sql("SELECT id, ts FROM ts_cache ORDER BY id"))
+        checkSparkAnswer(
+          spark.sql("SELECT id, CAST(ts AS STRING) AS s FROM ts_cache ORDER BY id"))
+
+        spark.catalog.clearCache()
+      }
     }
   }
 

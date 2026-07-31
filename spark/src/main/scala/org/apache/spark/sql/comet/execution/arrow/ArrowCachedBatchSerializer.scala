@@ -363,14 +363,21 @@ class ArrowCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
       fallback.convertInternalRowToCachedBatch(input, schema, storageLevel, conf)
     } else {
       val batchSize = conf.columnBatchSize
-      val sessionTz = conf.sessionLocalTimeZone
 
       input.mapPartitions { rows =>
         val iter = CometArrowConverters.rowToArrowBatchIter(
           rows,
           Utils.fromAttributes(schema),
           batchSize,
-          sessionTz,
+          // NATIVE_TIMEZONE ("UTC"), not conf.sessionLocalTimeZone, so both write paths produce
+          // the same physical format: the columnar path above already encodes with
+          // NATIVE_TIMEZONE. Unlike Spark's Arrow cache, whose RecordBatch is deliberately
+          // schema-less, CometCachedBatch stores a full IPC stream including the schema, so a
+          // session-local label would persist the writing session's mutable timezone into cached
+          // data. This is a label only: Spark's internal timestamp representation is micros since
+          // the Unix epoch regardless of session timezone, so no values are converted. It also
+          // matches Comet's native schema, avoiding a cast at the native boundary.
+          CometArrowStream.NATIVE_TIMEZONE,
           CometArrowAllocator)
 
         encodeBatches(iter, schema)
