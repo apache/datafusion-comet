@@ -246,7 +246,7 @@ jobs:
     uses: ./.github/workflows/spark_sql_test_reusable.yml
     with:
       spark-short: '4.0'
-      spark-full: '4.0.2'
+      spark-full: '4.0.4'
       java: 17
 
   spark_4_1:
