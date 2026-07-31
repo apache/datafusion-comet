@@ -193,6 +193,12 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     // Regression for https://github.com/apache/datafusion-comet/issues/5068.
     // `true` scales to 10^scale, which does not fit in DECIMAL(1,1)/(2,2)/(3,3).
     // Spark returns NULL in legacy/try mode and only throws under ANSI.
+    //
+    // ANSI is covered here by castTest's `testAnsi = true` default: that branch runs the cast
+    // with spark.sql.ansi.enabled and asserts Comet's exception message matches Spark's, which
+    // is what exercises the EvalMode::Ansi throw path in boolean.rs. On Spark 3.4/3.5 the
+    // comparison is exact, so it also pins the reported value to Spark's logical `1` rather
+    // than the scaled 10^scale.
     Seq(
       DataTypes.createDecimalType(1, 1),
       DataTypes.createDecimalType(2, 2),

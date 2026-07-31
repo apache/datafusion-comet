@@ -16,6 +16,7 @@
 // under the License.
 
 use crate::SparkError;
+use crate::{EvalMode, SparkResult};
 use arrow::array::{
     Array, ArrayRef, ArrowPrimitiveType, AsArray, GenericStringArray, PrimitiveArray,
 };
@@ -24,9 +25,37 @@ use arrow::datatypes::{DataType, Int64Type};
 use arrow::error::ArrowError;
 use datafusion::common::cast::as_generic_string_array;
 use num::integer::div_floor;
+use std::fmt::Display;
 use std::sync::Arc;
 
 pub(crate) const MICROS_PER_SECOND: i64 = 1000000;
+
+/// Outcome for a decimal cast whose result does not fit the target precision.
+///
+/// Spark's `Cast` uses `nullOnOverflow = !ansiEnabled`, so ANSI raises and every other eval mode
+/// yields NULL. Returns `Ok(())` when the caller should emit NULL.
+///
+/// `value` must be the **pre-scale** input as the user wrote it, not the scaled internal
+/// representation. Spark's failure path is `Decimal.toPrecision` calling
+/// `cannotChangeDecimalPrecisionError(this, ...)` with the logical value, and the JVM shim
+/// (`ShimSparkErrorConverter`) parses this string straight back into a `Decimal`, so reporting a
+/// scaled value produces a message that differs from Spark's. Routing every decimal-cast overflow
+/// through this one function keeps that convention from drifting between call sites.
+pub(crate) fn decimal_overflow_or_null<T: Display>(
+    value: T,
+    precision: u8,
+    scale: i8,
+    eval_mode: EvalMode,
+) -> SparkResult<()> {
+    match eval_mode {
+        EvalMode::Ansi => Err(SparkError::NumericValueOutOfRange {
+            value: value.to_string(),
+            precision,
+            scale,
+        }),
+        EvalMode::Legacy | EvalMode::Try => Ok(()),
+    }
+}
 
 /// A fork & modified version of Arrow's `unary_dyn` which is being deprecated
 pub fn unary_dyn<F, T>(array: &ArrayRef, op: F) -> Result<ArrayRef, ArrowError>

@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::conversion_funcs::utils::decimal_overflow_or_null;
 use crate::{EvalMode, SparkError, SparkResult};
 use arrow::array::{Array, ArrayRef, AsArray, Decimal128Array, TimestampMicrosecondBuilder};
 use arrow::datatypes::{is_validate_decimal_precision, DataType};
@@ -39,12 +40,13 @@ pub fn cast_boolean_to_decimal(
 
     // Spark's Cast uses `nullOnOverflow = !ansiEnabled`: legacy/try return NULL
     // on overflow, only ANSI raises. `false` maps to 0 which always fits, so
-    // overflow only happens for `true` when 10^scale exceeds `precision`.
+    // overflow only happens for `true` when 10^scale exceeds `precision`. The
+    // domain is two-valued, so one check outside the loop covers every row.
     let overflows = !is_validate_decimal_precision(scaled_val, precision);
-    if overflows && eval_mode == EvalMode::Ansi {
-        return Err(crate::error::decimal_overflow_error(
-            scaled_val, precision, scale,
-        ));
+    if overflows {
+        // Spark reports the logical value being cast, which for `true` is 1 --
+        // not the `10^scale` it would have been stored as.
+        decimal_overflow_or_null(1, precision, scale, eval_mode)?;
     }
 
     let result: Decimal128Array = bool_array

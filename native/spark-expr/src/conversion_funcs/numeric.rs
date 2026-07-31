@@ -16,6 +16,7 @@
 // under the License.
 
 use crate::conversion_funcs::utils::cast_overflow;
+use crate::conversion_funcs::utils::decimal_overflow_or_null;
 use crate::conversion_funcs::utils::MICROS_PER_SECOND;
 use crate::{EvalMode, SparkError, SparkResult};
 use arrow::array::{
@@ -743,32 +744,15 @@ where
             let v = array.value(i).into();
             let scaled = v.checked_mul(multiplier);
             match scaled {
-                Some(scaled) => {
-                    if !is_validate_decimal_precision(scaled, precision) {
-                        match eval_mode {
-                            EvalMode::Ansi => {
-                                return Err(SparkError::NumericValueOutOfRange {
-                                    value: v.to_string(),
-                                    precision,
-                                    scale,
-                                });
-                            }
-                            EvalMode::Try | EvalMode::Legacy => builder.append_null(),
-                        }
-                    } else {
-                        builder.append_value(scaled);
-                    }
+                Some(scaled) if is_validate_decimal_precision(scaled, precision) => {
+                    builder.append_value(scaled)
                 }
-                _ => match eval_mode {
-                    EvalMode::Ansi => {
-                        return Err(SparkError::NumericValueOutOfRange {
-                            value: v.to_string(),
-                            precision,
-                            scale,
-                        })
-                    }
-                    EvalMode::Legacy | EvalMode::Try => builder.append_null(),
-                },
+                // Either the multiply overflowed i128 or the product exceeds `precision`.
+                // Both report the pre-scale input value, as Spark does.
+                _ => {
+                    decimal_overflow_or_null(v, precision, scale, eval_mode)?;
+                    builder.append_null();
+                }
             }
         }
     }
@@ -926,11 +910,7 @@ where
                     .map(|x| is_validate_decimal_precision(x, precision))
                     .unwrap_or(false);
                 if !fits {
-                    return Err(SparkError::NumericValueOutOfRange {
-                        value: input_value.to_string(),
-                        precision,
-                        scale,
-                    });
+                    decimal_overflow_or_null(input_value, precision, scale, eval_mode)?;
                 }
             }
         }
