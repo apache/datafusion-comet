@@ -776,8 +776,10 @@ lengths and commits via Spark’s <code class="docutils literal notranslate"><sp
 </section>
 <section id="single-partition">
 <h3>Single Partition<a class="headerlink" href="#single-partition" title="Link to this heading">#</a></h3>
-<p>The simplest case: all rows go to partition 0. Uses <code class="docutils literal notranslate"><span class="pre">SinglePartitionShufflePartitioner</span></code> which
-simply concatenates batches to reach the configured batch size.</p>
+<p>The simplest case: all rows go to partition 0. Uses <code class="docutils literal notranslate"><span class="pre">SinglePartitionShufflePartitioner</span></code>, which
+streams each batch straight to the writer, whose <code class="docutils literal notranslate"><span class="pre">BatchCoalescer</span></code> combines small batches up to the
+configured batch size. Batches already at least that size pass through unchanged, so a large input
+batch is written as a single block that may exceed the batch size.</p>
 </section>
 <section id="round-robin-partitioning">
 <h3>Round Robin Partitioning<a class="headerlink" href="#round-robin-partitioning" title="Link to this heading">#</a></h3>
