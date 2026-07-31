@@ -219,6 +219,10 @@ impl ShuffleScanExec {
                 .map(|col| unpack_dictionary(col))
                 .collect();
 
+            unsafe {
+                jni_call!(env,
+                    comet_shuffle_block_iterator(iter).inc_records_read(num_rows as i64) -> ())?
+            };
             Ok(InputBatch::new(columns, Some(num_rows)))
         })
     }

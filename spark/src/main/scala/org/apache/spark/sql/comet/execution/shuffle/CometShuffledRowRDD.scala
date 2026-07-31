@@ -92,12 +92,14 @@ class CometShuffledBatchRDD(
     }
   }
 
-  private def createReader(split: Partition, context: TaskContext): CometShuffleReader[_, _] = {
+  private def createReader(
+      split: Partition,
+      context: TaskContext): (CometShuffleReader[_, _], SQLShuffleReadMetricsReporter) = {
     val tempMetrics = context.taskMetrics().createTempShuffleReadMetrics()
     // `SQLShuffleReadMetricsReporter` will update its own metrics for SQL exchange operator,
     // as well as the `tempMetrics` for basic shuffle metrics.
     val sqlMetricsReporter = new SQLShuffleReadMetricsReporter(tempMetrics, metrics)
-    split.asInstanceOf[ShuffledRowRDDPartition].spec match {
+    val reader = split.asInstanceOf[ShuffledRowRDDPartition].spec match {
       case CoalescedPartitionSpec(startReducerIndex, endReducerIndex, _) =>
         SparkEnv.get.shuffleManager
           .getReader(
@@ -144,6 +146,7 @@ class CometShuffledBatchRDD(
             sqlMetricsReporter)
           .asInstanceOf[CometShuffleReader[_, _]]
     }
+    (reader, sqlMetricsReporter)
   }
 
   /**
@@ -153,12 +156,18 @@ class CometShuffledBatchRDD(
   def computeAsShuffleBlockIterator(
       split: Partition,
       context: TaskContext): CometShuffleBlockIterator = {
-    val reader = createReader(split, context)
-    new CometShuffleBlockIterator(reader.readAsRawStream())
+    val readerAndMetrics: (CometShuffleReader[_, _], SQLShuffleReadMetricsReporter) =
+      createReader(split, context)
+    context.addTaskCompletionListener[Unit] { _ =>
+      context.taskMetrics().mergeShuffleReadMetrics()
+    }
+    new CometShuffleBlockIterator(
+      readerAndMetrics._1.readAsRawStream(),
+      readerAndMetrics._2.incRecordsRead)
   }
 
   override def compute(split: Partition, context: TaskContext): Iterator[ColumnarBatch] = {
-    val reader = createReader(split, context)
+    val reader: CometShuffleReader[_, _] = createReader(split, context)._1
     // TODO: Reads IPC by native code
     reader.read().asInstanceOf[Iterator[Product2[Int, ColumnarBatch]]].map(_._2)
   }

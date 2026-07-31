@@ -47,6 +47,7 @@ import org.apache.spark.unsafe.Platform
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.isSpark41Plus
+import org.apache.comet.serde.OperatorOuterClass
 
 class CometTaskMetricsSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
@@ -348,8 +349,9 @@ class CometTaskMetricsSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("per-task native shuffle metrics") {
     withParquetTable((0 until 10000).map(i => (i, (i + 1).toLong)), "tbl") {
-      val df = sql("SELECT * FROM tbl").sortWithinPartitions($"_1".desc)
-      val shuffled = df.repartition(1, $"_1")
+      // Keep a native operator below the exchange so AQE uses ShuffleScan direct read.
+      val shuffled =
+        sql("SELECT * FROM tbl").repartition(1, $"_1").sortWithinPartitions($"_1".desc)
 
       val cometShuffle = find(shuffled.queryExecution.executedPlan) {
         case _: CometShuffleExchangeExec => true
@@ -386,6 +388,15 @@ class CometTaskMetricsSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       // Run the action to trigger the shuffle
       shuffled.collect()
 
+      val shuffleScan = find(shuffled.queryExecution.executedPlan) {
+        case native: CometNativeExec =>
+          native.serializedPlanOpt.plan.exists { bytes =>
+            OperatorOuterClass.Operator.parseFrom(bytes).toString.contains("shuffle_scan")
+          }
+        case _ => false
+      }
+      assert(shuffleScan.isDefined, "native ShuffleScan direct read not found in the final plan")
+
       spark.sparkContext.listenerBus.waitUntilEmpty()
 
       // Check the shuffle write and read metrics
@@ -401,6 +412,7 @@ class CometTaskMetricsSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         assert(metrics.recordsRead > 0)
         assert(metrics.totalBytesRead > 0)
       }
+      assert(shuffleReadMetricsList.map(_.recordsRead).sum == 10000)
     }
   }
 
