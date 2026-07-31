@@ -27,6 +27,7 @@ use arrow::record_batch::RecordBatch;
 use datafusion::common::{DataFusionError, ScalarValue};
 use datafusion::logical_expr::ColumnarValue;
 use datafusion::physical_expr::PhysicalExpr;
+use std::cell::Cell;
 use std::hash::Hash;
 use std::{
     fmt::{Display, Formatter},
@@ -105,8 +106,8 @@ fn precision_bound(precision: u8) -> i128 {
 }
 
 /// Rescale a single i128 value by the given delta (output_scale - input_scale)
-/// and check precision bounds. Returns `Ok(value)` or `Ok(i128::MAX)` as sentinel
-/// for overflow in legacy mode, or `Err` in ANSI mode.
+/// and check precision bounds. In legacy mode, records overflow and returns
+/// `Ok(i128::MAX)` as a sentinel; in ANSI mode, returns `Err`.
 #[inline]
 fn rescale_and_check(
     value: i128,
@@ -114,6 +115,7 @@ fn rescale_and_check(
     scale_factor: i128,
     bound: i128,
     fail_on_error: bool,
+    overflowed: &Cell<bool>,
 ) -> Result<i128, ArrowError> {
     let rescaled = if delta > 0 {
         // Scale up: multiply. Check for overflow.
@@ -125,6 +127,7 @@ fn rescale_and_check(
                         "Decimal overflow during rescale".to_string(),
                     ));
                 }
+                overflowed.set(true);
                 return Ok(i128::MAX); // sentinel
             }
         }
@@ -146,6 +149,7 @@ fn rescale_and_check(
                 "Decimal overflow: value does not fit in precision".to_string(),
             ));
         }
+        overflowed.set(true);
         Ok(i128::MAX) // sentinel for null_if_overflow_precision
     } else {
         Ok(rescaled)
@@ -185,6 +189,7 @@ impl PhysicalExpr for DecimalRescaleCheckOverflow {
         let fail_on_error = self.fail_on_error;
         let p_out = self.output_precision;
         let s_out = self.output_scale;
+        let overflowed = Cell::new(false);
 
         match arg {
             ColumnarValue::Array(array)
@@ -194,15 +199,17 @@ impl PhysicalExpr for DecimalRescaleCheckOverflow {
 
                 let result: Decimal128Array =
                     arrow::compute::kernels::arity::try_unary(decimal_array, |value| {
-                        rescale_and_check(value, delta, scale_factor, bound, fail_on_error)
+                        rescale_and_check(
+                            value,
+                            delta,
+                            scale_factor,
+                            bound,
+                            fail_on_error,
+                            &overflowed,
+                        )
                     })?;
 
-                let result = if !fail_on_error && result.values().contains(&i128::MAX) {
-                    // The rescale pass writes i128::MAX as an overflow sentinel for values that
-                    // do not fit the output precision. In the common no-overflow case, `contains`
-                    // trades the allocating null-masking pass for one full read-only scan. With
-                    // overflow, it short-circuits at the first sentinel before running that pass.
-                    // The fail-on-error path returns an error before this scan.
+                let result = if overflowed.get() {
                     result.null_if_overflow_precision(p_out)
                 } else {
                     result
@@ -217,8 +224,15 @@ impl PhysicalExpr for DecimalRescaleCheckOverflow {
             ColumnarValue::Scalar(ScalarValue::Decimal128(v, _precision, _scale)) => {
                 let new_v = match v {
                     Some(val) => {
-                        let r = rescale_and_check(val, delta, scale_factor, bound, fail_on_error)
-                            .map_err(|e| DataFusionError::ArrowError(Box::new(e), None))?;
+                        let r = rescale_and_check(
+                            val,
+                            delta,
+                            scale_factor,
+                            bound,
+                            fail_on_error,
+                            &overflowed,
+                        )
+                        .map_err(|e| DataFusionError::ArrowError(Box::new(e), None))?;
                         if r == i128::MAX {
                             None
                         } else {
@@ -363,8 +377,7 @@ mod tests {
 
     #[test]
     fn test_all_values_overflow_legacy() {
-        // Every value overflows, so the sentinel sits at index 0: `contains` finds it immediately
-        // and the masking pass nulls the whole array.
+        // Every value overflows, so the masking pass nulls the whole array.
         let batch = make_batch(vec![Some(10_000), Some(20_000), Some(30_000)], 10, 2);
         let result = eval_expr(&batch, 2, 4, 2, false).unwrap();
         let arr = result.as_primitive::<Decimal128Type>();
