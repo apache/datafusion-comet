@@ -15,9 +15,12 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow::array::{Array, GenericListArray, Int32Array, OffsetSizeTrait};
+use arrow::array::{
+    Array, BooleanArray, GenericListArray, Int32Array, OffsetSizeTrait, UInt64Array,
+};
+use arrow::compute::{kernels::zip::zip, take};
 use arrow::datatypes::{DataType, FieldRef, Schema};
-use arrow::{array::MutableArrayData, datatypes::ArrowNativeType, record_batch::RecordBatch};
+use arrow::{datatypes::ArrowNativeType, record_batch::RecordBatch};
 use datafusion::common::{
     cast::{as_int32_array, as_large_list_array, as_list_array},
     internal_err, DataFusionError, Result as DataFusionResult, ScalarValue,
@@ -275,22 +278,20 @@ fn list_extract<O: OffsetSizeTrait>(
 ) -> DataFusionResult<ColumnarValue> {
     let values = list_array.values();
     let offsets = list_array.offsets();
-
-    let data = values.to_data();
-
-    let default_data = default_value.to_array()?.to_data();
-
-    let mut mutable = MutableArrayData::new(vec![&data, &default_data], true, index_array.len());
+    let mut indices = Vec::with_capacity(index_array.len());
+    let mut use_default = Vec::with_capacity(index_array.len());
 
     for (row, (offset_window, index)) in offsets.windows(2).zip(index_array.iter()).enumerate() {
         let start = offset_window[0].as_usize();
         let len = offset_window[1].as_usize() - start;
 
         if list_array.is_null(row) {
-            mutable.extend_nulls(1);
+            indices.push(None);
+            use_default.push(false);
         } else if let Some(index) = index {
             if let Some(i) = adjust_index(index, len)? {
-                mutable.extend(0, start + i, start + i + 1);
+                indices.push(Some((start + i) as u64));
+                use_default.push(false);
             } else if fail_on_error {
                 // Throw appropriate error based on whether this is element_at (one_based=true)
                 // or GetArrayItem (one_based=false)
@@ -309,16 +310,22 @@ fn list_extract<O: OffsetSizeTrait>(
                 };
                 return Err(error_wrapper(error));
             } else {
-                mutable.extend(1, 0, 1);
+                indices.push(None);
+                use_default.push(true);
             }
         } else {
             // index is NULL → result is NULL
-            mutable.extend_nulls(1);
+            indices.push(None);
+            use_default.push(false);
         }
     }
 
-    let data = mutable.freeze();
-    Ok(ColumnarValue::Array(arrow::array::make_array(data)))
+    let taken = take(values.as_ref(), &UInt64Array::from(indices), None)?;
+    Ok(ColumnarValue::Array(zip(
+        &BooleanArray::from(use_default),
+        &default_value.to_scalar()?,
+        &taken,
+    )?))
 }
 
 impl Display for ListExtract {
@@ -436,13 +443,13 @@ mod test {
         ]);
         let indices = Int32Array::from(vec![Some(0), Some(1), Some(2), Some(0), Some(0), None]);
 
-        let null_default = ScalarValue::Int32(None);
+        let zero_default = ScalarValue::Int32(Some(0));
         let error_wrapper = |error: SparkError| DataFusionError::from(error);
 
         let ColumnarValue::Array(result) = list_extract(
             &list,
             &indices,
-            &null_default,
+            &zero_default,
             false,
             false,
             |idx, len| zero_based_index(idx, len, &error_wrapper),
