@@ -228,7 +228,7 @@ jobs:
     uses: ./.github/workflows/spark_sql_test_reusable.yml
     with:
       spark-short: '3.5'
-      spark-full: '3.5.8'
+      spark-full: '3.5.9'
       java: 17
 
   spark_4_0:
@@ -296,7 +296,7 @@ jobs:
       iceberg-short: '1.9'
       iceberg-full: '1.9.1'
       spark-short: '3.5'
-      spark-full: '3.5.8'
+      spark-full: '3.5.9'
       java: 17
 
   iceberg_1_10:
@@ -315,7 +315,7 @@ jobs:
       iceberg-short: '1.10'
       iceberg-full: '1.10.0'
       spark-short: '3.5'
-      spark-full: '3.5.8'
+      spark-full: '3.5.9'
       java: 17
 
   iceberg_1_11:
