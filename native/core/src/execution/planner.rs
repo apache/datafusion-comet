@@ -4461,6 +4461,7 @@ mod tests {
 
     use crate::execution::operators::ExecutionError;
     use crate::execution::planner::literal_to_array_ref;
+    use crate::execution::planner::parse_file_scan_tasks_from_common;
     use crate::parquet::parquet_support::SparkParquetOptions;
     use crate::parquet::schema_adapter::SparkPhysicalExprAdapterFactory;
     use datafusion_comet_proto::spark_expression::expr::ExprStruct;
