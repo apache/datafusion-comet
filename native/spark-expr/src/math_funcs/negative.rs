@@ -20,7 +20,7 @@ use crate::SparkError;
 use arrow::array::RecordBatch;
 use arrow::compute::kernels::numeric::{neg, neg_wrapping};
 use arrow::datatypes::IntervalDayTimeType;
-use arrow::datatypes::{DataType, Schema};
+use arrow::datatypes::{DataType, IntervalUnit, Schema};
 use arrow::error::ArrowError;
 use datafusion::common::{DataFusionError, Result, ScalarValue};
 use datafusion::logical_expr::sort_properties::ExprProperties;
@@ -78,9 +78,9 @@ impl std::fmt::Display for NegativeExpr {
     }
 }
 
-fn map_neg_error(err: ArrowError, type_name: &'static str) -> DataFusionError {
+fn map_neg_error(err: ArrowError, from_type: &'static str) -> DataFusionError {
     match err {
-        ArrowError::ArithmeticOverflow(_) => arithmetic_overflow_error(type_name).into(),
+        ArrowError::ArithmeticOverflow(_) => arithmetic_overflow_error(from_type).into(),
         other => DataFusionError::from(other),
     }
 }
@@ -97,64 +97,50 @@ impl PhysicalExpr for NegativeExpr {
     fn evaluate(&self, batch: &RecordBatch) -> Result<ColumnarValue> {
         let arg = self.arg.evaluate(batch)?;
 
-        // overflow checks only apply in ANSI mode
-        // datatypes supported are byte, short, integer, long, float, interval
+        // Overflow checks only apply in ANSI mode, and only the types listed in the
+        // match below have a Spark overflow message. Everything else (float, decimal,
+        // `Interval(MonthDayNano)`, ...) falls through to `neg_wrapping`.
         match arg {
             ColumnarValue::Array(array) => {
-                if self.fail_on_error {
-                    match array.data_type() {
-                        DataType::Int8 => {
-                            let result =
-                                neg(array.as_ref()).map_err(|e| map_neg_error(e, "-128 caused"))?;
-                            Ok(ColumnarValue::Array(result))
-                        }
-                        DataType::Int16 => {
-                            let result = neg(array.as_ref())
-                                .map_err(|e| map_neg_error(e, "-32768 caused"))?;
-                            Ok(ColumnarValue::Array(result))
-                        }
-                        DataType::Int32 => {
-                            let result =
-                                neg(array.as_ref()).map_err(|e| map_neg_error(e, "integer"))?;
-                            Ok(ColumnarValue::Array(result))
-                        }
-                        DataType::Int64 => {
-                            let result =
-                                neg(array.as_ref()).map_err(|e| map_neg_error(e, "long"))?;
-                            Ok(ColumnarValue::Array(result))
-                        }
-                        DataType::Interval(value) => match value {
-                            arrow::datatypes::IntervalUnit::YearMonth
-                            | arrow::datatypes::IntervalUnit::DayTime => {
-                                let result = neg(array.as_ref())
-                                    .map_err(|e| map_neg_error(e, "interval"))?;
-                                Ok(ColumnarValue::Array(result))
-                            }
-                            arrow::datatypes::IntervalUnit::MonthDayNano => {
-                                // Preserve the existing MonthDayNano dispatch.
-                                let result = neg_wrapping(array.as_ref())?;
-                                Ok(ColumnarValue::Array(result))
-                            }
-                        },
-                        _ => {
-                            // Overflow checks are not supported for other datatypes
-                            let result = neg_wrapping(array.as_ref())?;
-                            Ok(ColumnarValue::Array(result))
-                        }
-                    }
-                } else {
-                    let result = neg_wrapping(array.as_ref())?;
-                    Ok(ColumnarValue::Array(result))
+                if !self.fail_on_error {
+                    return Ok(ColumnarValue::Array(neg_wrapping(array.as_ref())?));
                 }
+                // The shims render this as `{from_type} overflow` under
+                // `ARITHMETIC_OVERFLOW`. For byte/short that is byte-identical to Spark
+                // 4.x, which routes them through `MathUtils.negateExact` ("byte overflow" /
+                // "short overflow"). Spark 3.4/3.5 instead throw
+                // `_LEGACY_ERROR_TEMP_2043` ("- <sqlValue> caused overflow."); that error
+                // class is out of reach here, so no string can match every version.
+                let from_type = match array.data_type() {
+                    DataType::Int8 => "byte",
+                    DataType::Int16 => "short",
+                    DataType::Int32 => "integer",
+                    DataType::Int64 => "long",
+                    // `neg` checks each `DayTime` component, so either `days` or `ms` at
+                    // `i32::MIN` overflows; routing intervals here maps the Arrow overflow
+                    // error onto Spark's, matching the scalar path below.
+                    DataType::Interval(IntervalUnit::YearMonth | IntervalUnit::DayTime) => {
+                        "interval"
+                    }
+                    // Everything else falls through to `neg_wrapping`. Note it wraps only
+                    // for integers: for any other type, `Interval(MonthDayNano)` included,
+                    // it delegates to `neg`, so overflow is still detected -- it just
+                    // surfaces as an Arrow error rather than a Spark one.
+                    _ => return Ok(ColumnarValue::Array(neg_wrapping(array.as_ref())?)),
+                };
+                Ok(ColumnarValue::Array(
+                    neg(array.as_ref()).map_err(|e| map_neg_error(e, from_type))?,
+                ))
             }
             ColumnarValue::Scalar(scalar) => {
                 if self.fail_on_error {
                     match scalar {
+                        // Keep scalar overflow type names aligned with the array path.
                         ScalarValue::Int8(Some(i8::MIN)) => {
-                            return Err(arithmetic_overflow_error(" caused").into());
+                            return Err(arithmetic_overflow_error("byte").into());
                         }
                         ScalarValue::Int16(Some(i16::MIN)) => {
-                            return Err(arithmetic_overflow_error(" caused").into());
+                            return Err(arithmetic_overflow_error("short").into());
                         }
                         ScalarValue::Int32(Some(i32::MIN)) => {
                             return Err(arithmetic_overflow_error("integer").into());
@@ -287,64 +273,51 @@ mod tests {
         );
     }
 
+    /// Negate `[min, other]` in ANSI mode with slot 0 marked null, and assert the
+    /// null slot is skipped instead of raising a spurious overflow.
+    fn assert_null_min_slot_is_skipped<T: ArrowPrimitiveType>(
+        min: T::Native,
+        other: T::Native,
+        negated_other: T::Native,
+    ) {
+        let nulls = NullBuffer::from(vec![false, true]);
+        let array: ArrayRef = Arc::new(PrimitiveArray::<T>::new(
+            vec![min, other].into(),
+            Some(nulls),
+        ));
+        let ColumnarValue::Array(result) = eval_array(array, true).unwrap() else {
+            panic!("expected array result")
+        };
+        let result = result.as_primitive::<T>();
+        assert!(result.is_null(0));
+        assert_eq!(result.value(1), negated_other);
+    }
+
+    /// A MIN sentinel left behind in a null slot (by filter, slice or FFI) must not raise a
+    /// spurious ANSI overflow: the overflow check has to consult the null buffer and skip
+    /// invalid slots. Each case below places `MIN` in a null slot.
     #[test]
     fn test_ansi_null_slot_with_min_values_does_not_overflow() {
-        let nulls = NullBuffer::from(vec![false, true]);
-
-        // Int8
-        let arr_i8: ArrayRef =
-            Arc::new(Int8Array::new(vec![i8::MIN, 7].into(), Some(nulls.clone())));
-        let ColumnarValue::Array(res_i8) = eval_array(arr_i8, true).unwrap() else {
-            panic!()
-        };
-        let p_i8 = res_i8.as_primitive::<Int8Type>();
-        assert!(p_i8.is_null(0));
-        assert_eq!(p_i8.value(1), -7);
-
-        // Int16
-        let arr_i16: ArrayRef = Arc::new(Int16Array::new(
-            vec![i16::MIN, 7].into(),
-            Some(nulls.clone()),
-        ));
-        let ColumnarValue::Array(res_i16) = eval_array(arr_i16, true).unwrap() else {
-            panic!()
-        };
-        let p_i16 = res_i16.as_primitive::<Int16Type>();
-        assert!(p_i16.is_null(0));
-        assert_eq!(p_i16.value(1), -7);
-
-        // Int32
-        let arr_i32: ArrayRef = Arc::new(Int32Array::new(
-            vec![i32::MIN, 7].into(),
-            Some(nulls.clone()),
-        ));
-        let ColumnarValue::Array(res_i32) = eval_array(arr_i32, true).unwrap() else {
-            panic!()
-        };
-        let p_i32 = res_i32.as_primitive::<Int32Type>();
-        assert!(p_i32.is_null(0));
-        assert_eq!(p_i32.value(1), -7);
-
-        // Int64
-        let arr_i64: ArrayRef = Arc::new(Int64Array::new(
-            vec![i64::MIN, 7].into(),
-            Some(nulls.clone()),
-        ));
-        let ColumnarValue::Array(res_i64) = eval_array(arr_i64, true).unwrap() else {
-            panic!()
-        };
-        let p_i64 = res_i64.as_primitive::<Int64Type>();
-        assert!(p_i64.is_null(0));
-        assert_eq!(p_i64.value(1), -7);
+        assert_null_min_slot_is_skipped::<Int8Type>(i8::MIN, 7, -7);
+        assert_null_min_slot_is_skipped::<Int16Type>(i16::MIN, 7, -7);
+        assert_null_min_slot_is_skipped::<Int32Type>(i32::MIN, 7, -7);
+        assert_null_min_slot_is_skipped::<Int64Type>(i64::MIN, 7, -7);
+        assert_null_min_slot_is_skipped::<IntervalYearMonthType>(i32::MIN, 7, -7);
+        // `IntervalDayTime::MIN` is both components at `i32::MIN`.
+        assert_null_min_slot_is_skipped::<IntervalDayTimeType>(
+            IntervalDayTime::MIN,
+            IntervalDayTime::new(1, 2),
+            IntervalDayTime::new(-1, -2),
+        );
     }
 
     #[test]
     fn test_ansi_valid_min_values_raise_exact_spark_overflow_errors() {
         let arr_i8: ArrayRef = Arc::new(Int8Array::from(vec![i8::MIN]));
-        assert_spark_overflow(eval_array(arr_i8, true).unwrap_err(), "-128 caused");
+        assert_spark_overflow(eval_array(arr_i8, true).unwrap_err(), "byte");
 
         let arr_i16: ArrayRef = Arc::new(Int16Array::from(vec![i16::MIN]));
-        assert_spark_overflow(eval_array(arr_i16, true).unwrap_err(), "-32768 caused");
+        assert_spark_overflow(eval_array(arr_i16, true).unwrap_err(), "short");
 
         let arr_i32: ArrayRef = Arc::new(Int32Array::from(vec![i32::MIN]));
         assert_spark_overflow(eval_array(arr_i32, true).unwrap_err(), "integer");
@@ -359,96 +332,41 @@ mod tests {
         assert_spark_overflow(eval_array(arr_dt, true).unwrap_err(), "interval");
     }
 
+    /// A single `DayTime` component at `i32::MIN` overflows: `neg` checks each component
+    /// (`neg_wrapping` delegates to `neg` for every non-integer type,
+    /// `downcast_integer! { ..., _ => neg(array) }`). These surface as Spark overflows like
+    /// every other ANSI overflow in this expression.
     #[test]
-    fn test_ansi_interval_day_time_component_overflow_and_null_controls() {
-        let nulls = NullBuffer::from(vec![false, true]);
+    fn test_ansi_interval_day_time_component_overflow_maps_to_spark_error() {
+        for value in [
+            IntervalDayTime::new(i32::MIN, 0),
+            IntervalDayTime::new(0, i32::MIN),
+        ] {
+            let array: ArrayRef = Arc::new(IntervalDayTimeArray::from(vec![value]));
+            assert_spark_overflow(eval_array(array, true).unwrap_err(), "interval");
+        }
+    }
 
-        // valid (i32::MIN, 0) -> ANSI overflow
-        let valid_days_min: ArrayRef =
-            Arc::new(IntervalDayTimeArray::from(vec![IntervalDayTime::new(
-                i32::MIN,
-                0,
-            )]));
-        assert_spark_overflow(eval_array(valid_days_min, true).unwrap_err(), "interval");
-
-        // valid (0, i32::MIN) -> ANSI overflow
-        let valid_ms_min: ArrayRef =
-            Arc::new(IntervalDayTimeArray::from(vec![IntervalDayTime::new(
-                0,
-                i32::MIN,
-            )]));
-        assert_spark_overflow(eval_array(valid_ms_min, true).unwrap_err(), "interval");
-
-        // null-backed (i32::MIN, 0) -> no error, remains null
-        let null_days_min: ArrayRef = Arc::new(IntervalDayTimeArray::new(
-            vec![
-                IntervalDayTime::new(i32::MIN, 0),
-                IntervalDayTime::new(1, 2),
-            ]
-            .into(),
-            Some(nulls.clone()),
+    /// Negate `[min, null]` in legacy mode and assert `min` wraps to itself.
+    fn assert_legacy_wraps_min<T: ArrowPrimitiveType>(min: T::Native) {
+        let array: ArrayRef = Arc::new(PrimitiveArray::<T>::new(
+            vec![min, T::Native::default()].into(),
+            Some(NullBuffer::from(vec![true, false])),
         ));
-        let ColumnarValue::Array(res_days) = eval_array(null_days_min, true).unwrap() else {
-            panic!()
+        let ColumnarValue::Array(result) = eval_array(array, false).unwrap() else {
+            panic!("expected array result")
         };
-        let p_days = res_days.as_primitive::<IntervalDayTimeType>();
-        assert!(p_days.is_null(0));
-        assert_eq!(p_days.value(1), IntervalDayTime::new(-1, -2));
-
-        // null-backed (0, i32::MIN) -> no error, remains null
-        let null_ms_min: ArrayRef = Arc::new(IntervalDayTimeArray::new(
-            vec![
-                IntervalDayTime::new(0, i32::MIN),
-                IntervalDayTime::new(1, 2),
-            ]
-            .into(),
-            Some(nulls),
-        ));
-        let ColumnarValue::Array(res_ms) = eval_array(null_ms_min, true).unwrap() else {
-            panic!()
-        };
-        let p_ms = res_ms.as_primitive::<IntervalDayTimeType>();
-        assert!(p_ms.is_null(0));
-        assert_eq!(p_ms.value(1), IntervalDayTime::new(-1, -2));
+        let result = result.as_primitive::<T>();
+        assert_eq!(result.value(0), min);
+        assert!(result.is_null(1));
     }
 
     #[test]
     fn test_legacy_mode_wraps_min_values() {
-        // Int8
-        let arr_i8: ArrayRef = Arc::new(Int8Array::from(vec![Some(i8::MIN), None]));
-        let ColumnarValue::Array(res_i8) = eval_array(arr_i8, false).unwrap() else {
-            panic!()
-        };
-        let p_i8 = res_i8.as_primitive::<Int8Type>();
-        assert_eq!(p_i8.value(0), i8::MIN);
-        assert!(p_i8.is_null(1));
-
-        // Int16
-        let arr_i16: ArrayRef = Arc::new(Int16Array::from(vec![Some(i16::MIN), None]));
-        let ColumnarValue::Array(res_i16) = eval_array(arr_i16, false).unwrap() else {
-            panic!()
-        };
-        let p_i16 = res_i16.as_primitive::<Int16Type>();
-        assert_eq!(p_i16.value(0), i16::MIN);
-        assert!(p_i16.is_null(1));
-
-        // Int32
-        let arr_i32: ArrayRef = Arc::new(Int32Array::from(vec![Some(i32::MIN), None]));
-        let ColumnarValue::Array(res_i32) = eval_array(arr_i32, false).unwrap() else {
-            panic!()
-        };
-        let p_i32 = res_i32.as_primitive::<Int32Type>();
-        assert_eq!(p_i32.value(0), i32::MIN);
-        assert!(p_i32.is_null(1));
-
-        // Int64
-        let arr_i64: ArrayRef = Arc::new(Int64Array::from(vec![Some(i64::MIN), None]));
-        let ColumnarValue::Array(res_i64) = eval_array(arr_i64, false).unwrap() else {
-            panic!()
-        };
-        let p_i64 = res_i64.as_primitive::<Int64Type>();
-        assert_eq!(p_i64.value(0), i64::MIN);
-        assert!(p_i64.is_null(1));
+        assert_legacy_wraps_min::<Int8Type>(i8::MIN);
+        assert_legacy_wraps_min::<Int16Type>(i16::MIN);
+        assert_legacy_wraps_min::<Int32Type>(i32::MIN);
+        assert_legacy_wraps_min::<Int64Type>(i64::MIN);
     }
 
     #[test]
@@ -457,7 +375,7 @@ mod tests {
 
         // ANSI mode
         let ColumnarValue::Array(res_ansi) = eval_array(Arc::clone(&arr), true).unwrap() else {
-            panic!()
+            panic!("expected array result")
         };
         assert_eq!(
             res_ansi.as_primitive::<Int32Type>(),
@@ -466,7 +384,7 @@ mod tests {
 
         // Legacy mode
         let ColumnarValue::Array(res_legacy) = eval_array(Arc::clone(&arr), false).unwrap() else {
-            panic!()
+            panic!("expected array result")
         };
         assert_eq!(
             res_legacy.as_primitive::<Int32Type>(),
@@ -481,7 +399,7 @@ mod tests {
             None,
         ]));
         let ColumnarValue::Array(res) = eval_array(arr, true).unwrap() else {
-            panic!()
+            panic!("expected array result")
         };
         let p = res.as_primitive::<IntervalMonthDayNanoType>();
         assert_eq!(p.value(0), IntervalMonthDayNano::new(-1, -2, -3));
@@ -494,36 +412,38 @@ mod tests {
         let ColumnarValue::Scalar(res_valid) =
             eval_scalar(ScalarValue::Int32(Some(42)), true).unwrap()
         else {
-            panic!()
+            panic!("expected scalar result")
         };
         assert_eq!(res_valid, ScalarValue::Int32(Some(-42)));
 
         // Null scalar
         let ColumnarValue::Scalar(res_null) = eval_scalar(ScalarValue::Int32(None), true).unwrap()
         else {
-            panic!()
+            panic!("expected scalar result")
         };
         assert_eq!(res_null, ScalarValue::Int32(None));
 
-        // MIN scalar overflow in ANSI
-        assert_spark_overflow(
-            eval_scalar(ScalarValue::Int32(Some(i32::MIN)), true).unwrap_err(),
-            "integer",
-        );
+        // MIN scalar overflows in ANSI, with the same messages as the array path
+        for (scalar, from_type) in [
+            (ScalarValue::Int8(Some(i8::MIN)), "byte"),
+            (ScalarValue::Int16(Some(i16::MIN)), "short"),
+            (ScalarValue::Int32(Some(i32::MIN)), "integer"),
+            (ScalarValue::Int64(Some(i64::MIN)), "long"),
+        ] {
+            assert_spark_overflow(eval_scalar(scalar, true).unwrap_err(), from_type);
+        }
     }
 
     #[test]
     fn test_map_neg_error_preserves_non_overflow_errors() {
-        let err = ArrowError::InvalidArgumentError("test custom error".to_string());
-        let df_err = map_neg_error(err, "integer");
-        match df_err {
-            DataFusionError::ArrowError(boxed_err, _) => match *boxed_err {
-                ArrowError::InvalidArgumentError(msg) => {
-                    assert_eq!(msg, "test custom error");
-                }
-                _ => panic!("expected InvalidArgumentError, got {:?}", boxed_err),
-            },
-            _ => panic!("expected ArrowError, got {:?}", df_err),
-        }
+        let err = map_neg_error(
+            ArrowError::InvalidArgumentError("test custom error".to_string()),
+            "integer",
+        );
+        assert!(
+            matches!(&err, DataFusionError::ArrowError(inner, _)
+                if matches!(inner.as_ref(), ArrowError::InvalidArgumentError(msg) if msg == "test custom error")),
+            "expected the ArrowError to pass through unchanged, got: {err:?}"
+        );
     }
 }
