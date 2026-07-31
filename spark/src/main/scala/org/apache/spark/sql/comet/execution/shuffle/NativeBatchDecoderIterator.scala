@@ -55,7 +55,7 @@ case class NativeBatchDecoderIterator(
     null
   }
 
-  override def hasNext: Boolean = {
+  def hasNext(): Boolean = {
     if (channel == null || isClosed) {
       return false
     }

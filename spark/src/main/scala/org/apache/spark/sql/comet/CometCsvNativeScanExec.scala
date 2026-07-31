@@ -116,9 +116,9 @@ object CometCsvNativeScanExec extends CometOperatorSerde[CometBatchScanExec] {
     csvScanBuilder.putAllObjectStoreOptions(objectStoreOptions.asJava)
     csvScanBuilder.setCsvOptions(csvOptionsProto)
     csvScanBuilder.addAllFilePartitions(partitionsProto.asJava)
-    csvScanBuilder.addAllDataSchema(dataSchemaProto.toSeq.asJava)
-    csvScanBuilder.addAllProjectionVector(projectionVector.toSeq.asJava)
-    csvScanBuilder.addAllPartitionSchema(partitionSchemaProto.toSeq.asJava)
+    csvScanBuilder.addAllDataSchema(dataSchemaProto.toIterable.asJava)
+    csvScanBuilder.addAllProjectionVector(projectionVector.toIterable.asJava)
+    csvScanBuilder.addAllPartitionSchema(partitionSchemaProto.toIterable.asJava)
     Some(builder.setCsvScan(csvScanBuilder).build())
   }
 

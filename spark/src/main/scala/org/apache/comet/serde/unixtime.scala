@@ -54,7 +54,7 @@ object CometFromUnixTime extends CometExpressionSerde[FromUnixTime] with Codegen
   // only appear on the format argument, and any collated format is a non-default format, which is
   // already `Unsupported` here.
   override def getSupportLevel(expr: FromUnixTime): SupportLevel = {
-    if (expr.format != Literal(TimestampFormatter.defaultPattern())) {
+    if (expr.format != Literal(TimestampFormatter.defaultPattern)) {
       Unsupported(Some(formatReason))
     } else {
       Incompatible(Some(timestampRangeReason))
@@ -73,7 +73,7 @@ object CometFromUnixTime extends CometExpressionSerde[FromUnixTime] with Codegen
     val formatExpr = exprToProtoInternal(Literal("%Y-%m-%d %H:%M:%S"), inputs, binding)
     val timeZone = exprToProtoInternal(Literal(expr.timeZoneId.orNull), inputs, binding)
 
-    if (expr.format != Literal(TimestampFormatter.defaultPattern())) {
+    if (expr.format != Literal(TimestampFormatter.defaultPattern)) {
       withFallbackReason(expr, formatReason)
       None
     } else if (secExpr.isDefined && formatExpr.isDefined) {

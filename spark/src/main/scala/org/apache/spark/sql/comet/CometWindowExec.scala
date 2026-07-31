@@ -69,7 +69,7 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
     if (windowExprProto.forall(_.isDefined) && partitionExprs.forall(_.isDefined)
       && sortOrders.forall(_.isDefined)) {
       val windowBuilder = OperatorOuterClass.Window.newBuilder()
-      windowBuilder.addAllWindowExpr(windowExprProto.map(_.get).toSeq.asJava)
+      windowBuilder.addAllWindowExpr(windowExprProto.map(_.get).toIterable.asJava)
       windowBuilder.addAllPartitionByList(partitionExprs.map(_.get).asJava)
       windowBuilder.addAllOrderByList(sortOrders.map(_.get).asJava)
       Some(builder.setWindow(windowBuilder).build())

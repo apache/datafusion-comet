@@ -598,7 +598,7 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
   test("SPARK-18053: ARRAY equality is broken") {
     withTable("array_tbl") {
       spark.range(10).select(array(col("id")).as("arr")).write.saveAsTable("array_tbl")
-      assert(sql("SELECT * FROM array_tbl where arr = ARRAY(1L)").count() == 1)
+      assert(sql("SELECT * FROM array_tbl where arr = ARRAY(1L)").count == 1)
     }
   }
 
