@@ -346,7 +346,6 @@ class CometNativeShuffleWriter[K, V](
     // declared return type drifts from Spark catalyst (see comet#4515).
     val expectedFields = outputAttributes
       .map(a => StructField(a.name, a.dataType, a.nullable, a.metadata))
-      .toArray
     schema2Proto(expectedFields).foreach(shuffleWriterBuilder.addExpectedOutputSchema)
 
     OperatorOuterClass.Operator

@@ -626,9 +626,9 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
         val info = DataTypeInfo.newBuilder()
         val struct = StructInfo.newBuilder()
 
-        val fieldNames = s.fields.map(_.name).toIterable.asJava
-        val fieldDatatypes = s.fields.map(f => serializeDataType(f.dataType)).toSeq
-        val fieldNullable = s.fields.map(f => Boolean.box(f.nullable)).toIterable.asJava
+        val fieldNames = s.map(_.name).asJava
+        val fieldDatatypes = s.map(f => serializeDataType(f.dataType))
+        val fieldNullable = s.map(f => Boolean.box(f.nullable)).asJava
 
         if (fieldDatatypes.exists(_.isEmpty)) {
           return None
