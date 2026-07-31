@@ -29,7 +29,7 @@ use std::sync::Arc;
 
 use crate::timezone::Tz;
 use arrow::array::types::TimestampMillisecondType;
-use arrow::array::TimestampMicrosecondArray;
+use arrow::compute::{cast_with_options, CastOptions};
 use arrow::datatypes::{MAX_DECIMAL128_FOR_EACH_PRECISION, MIN_DECIMAL128_FOR_EACH_PRECISION};
 use arrow::error::ArrowError;
 use arrow::{
@@ -81,12 +81,8 @@ pub fn array_with_timezone(
                     // so the result has the exact annotation the caller expects.
                     timestamp_ntz_to_timestamp(array, timezone.as_str(), Some(target_tz.as_ref()))
                 }
-                Some(DataType::Timestamp(TimeUnit::Microsecond, None)) => {
-                    // Convert from Timestamp(Millisecond, None) to Timestamp(Microsecond, None)
-                    let millis_array = as_primitive_array::<TimestampMillisecondType>(&array);
-                    let micros_array: TimestampMicrosecondArray =
-                        arrow::compute::kernels::arity::unary(millis_array, |v| v * 1000);
-                    Ok(Arc::new(micros_array))
+                Some(to_type @ DataType::Timestamp(TimeUnit::Microsecond, None)) => {
+                    cast_with_options(array.as_ref(), to_type, &CastOptions::default())
                 }
                 _ => {
                     // Not supported
@@ -376,6 +372,7 @@ pub fn unlikely(b: bool) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use arrow::array::{TimestampMicrosecondArray, TimestampMillisecondArray};
 
     fn array_containing(local_datetime: &str) -> ArrayRef {
         let dt = NaiveDateTime::parse_from_str(local_datetime, "%Y-%m-%d %H:%M:%S").unwrap();
@@ -388,6 +385,25 @@ mod tests {
             .unwrap()
             .and_utc()
             .timestamp_micros()
+    }
+
+    #[test]
+    fn test_array_with_timezone_millis_to_micros() {
+        let input: ArrayRef = Arc::new(TimestampMillisecondArray::from(vec![
+            Some(1234),
+            Some(-1234),
+            None,
+        ]));
+        let target = DataType::Timestamp(TimeUnit::Microsecond, None);
+
+        let output = array_with_timezone(input, "UTC".to_string(), Some(&target)).unwrap();
+        let output = as_primitive_array::<TimestampMicrosecondType>(&output);
+
+        assert_eq!(
+            output.iter().collect::<Vec<_>>(),
+            vec![Some(1_234_000), Some(-1_234_000), None]
+        );
+        assert_eq!(output.timezone(), None);
     }
 
     #[test]
