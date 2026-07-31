@@ -87,11 +87,11 @@ single-column sorts, hash aggregates (`min` / `max` / `sum` / `avg`), `GROUP BY`
 functions. Remaining work is tracked by
 [#5061](https://github.com/apache/datafusion-comet/issues/5061).
 
-| Type                    | Status | Notes                                                                                      |
-| ----------------------- | ------ | ------------------------------------------------------------------------------------------ |
-| `YearMonthIntervalType` | ⚠️     | Parquet scan, single-column sort, aggregate, `GROUP BY`, and window operators fall back.   |
-| `DayTimeIntervalType`   | ⚠️     | Parquet scan, single-column sort, aggregate, `GROUP BY`, and window operators fall back.   |
-| `CalendarIntervalType`  | ⚠️     | Parquet scan, single-column sort, aggregate, `GROUP BY`, and window operators fall back.   |
+| Type                    | Status | Notes                                                                                    |
+| ----------------------- | ------ | ---------------------------------------------------------------------------------------- |
+| `YearMonthIntervalType` | ⚠️     | Parquet scan, single-column sort, aggregate, `GROUP BY`, and window operators fall back. |
+| `DayTimeIntervalType`   | ⚠️     | Parquet scan, single-column sort, aggregate, `GROUP BY`, and window operators fall back. |
+| `CalendarIntervalType`  | ⚠️     | Parquet scan, single-column sort, aggregate, `GROUP BY`, and window operators fall back. |
 
 ## Complex
 
