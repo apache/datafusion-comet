@@ -22,13 +22,14 @@ package org.apache.comet.serde
 import scala.jdk.CollectionConverters._
 
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Literal}
-import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, ApproximatePercentile, Average, BitAndAgg, BitOrAgg, BitXorAgg, BloomFilterAggregate, CentralMomentAgg, CollectList, CollectSet, Corr, Count, Covariance, CovPopulation, CovSample, First, HyperLogLogPlusPlus, Last, Max, Min, Percentile, StddevPop, StddevSamp, Sum, VariancePop, VarianceSamp}
+import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, ApproximatePercentile, Average, BitAndAgg, BitOrAgg, BitXorAgg, BloomFilterAggregate, CentralMomentAgg, CollectList, CollectSet, Corr, Count, Covariance, CovPopulation, CovSample, First, HyperLogLogPlusPlus, Last, Max, Min, Partial, Percentile, StddevPop, StddevSamp, Sum, VariancePop, VarianceSamp}
 import org.apache.spark.sql.catalyst.util.ArrayData
+import org.apache.spark.sql.comet.CometExecUtils
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{BinaryType, BooleanType, ByteType, DataType, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, NumericType, ShortType, StringType, TimestampNTZType, TimestampType}
 
 import org.apache.comet.CometConf.COMET_EXEC_STRICT_FLOATING_POINT
-import org.apache.comet.CometSparkSessionExtensions.{isSpark41Plus, withFallbackReason}
+import org.apache.comet.CometSparkSessionExtensions.{isSpark41Plus, isSpark42Plus, withFallbackReason}
 import org.apache.comet.expressions.CometEvalMode
 import org.apache.comet.serde.QueryPlanSerde.{evalModeToProto, exprToProto, serializeDataType}
 import org.apache.comet.shims.{CometCollectShim, CometEvalModeUtil}
@@ -852,9 +853,9 @@ object CometBloomFilterAggregate extends CometAggregateExpressionSerde[BloomFilt
 object CometCollectSet extends CometAggregateExpressionSerde[CollectSet] {
 
   override def getIncompatibleReasons(): Seq[String] = Seq(
-    "Comet deduplicates NaN values (treats `NaN == NaN`) while Spark treats each NaN as a" +
-      s" distinct value. When `${COMET_EXEC_STRICT_FLOATING_POINT.key}=true`, `collect_set`" +
-      " on floating-point types falls back to Spark unless" +
+    "Before Spark 4.2, Comet deduplicates NaN values (treats `NaN == NaN`) while Spark treats" +
+      s" each NaN as a distinct value. When `${COMET_EXEC_STRICT_FLOATING_POINT.key}=true`," +
+      " `collect_set` on floating-point types falls back to Spark on those versions unless" +
       " `spark.comet.expression.CollectSet.allowIncompatible=true` is set.")
 
   override def getSupportLevel(expr: CollectSet): SupportLevel = {
@@ -865,6 +866,8 @@ object CometCollectSet extends CometAggregateExpressionSerde[CollectSet] {
     // analysis time, and CometCollectShim.ignoreNulls hardcodes true, making this a no-op.
     if (!CometCollectShim.ignoreNulls(expr)) {
       Unsupported(Some("collect_set with RESPECT NULLS (ignoreNulls = false) is not supported"))
+    } else if (isSpark42Plus) {
+      Compatible()
     } else {
       SupportLevel
         .strictFloatingPointReason(
@@ -882,7 +885,12 @@ object CometCollectSet extends CometAggregateExpressionSerde[CollectSet] {
       inputs: Seq[Attribute],
       binding: Boolean,
       conf: SQLConf): Option[ExprOuterClass.AggExpr] = {
-    val child = expr.children.head
+    val child =
+      if (isSpark42Plus && aggExpr.mode == Partial) {
+        CometExecUtils.normalizeFloatingNumbers(expr.children.head)
+      } else {
+        expr.children.head
+      }
     val childExpr = exprToProto(child, inputs, binding)
     val dataType = serializeDataType(expr.dataType)
 
