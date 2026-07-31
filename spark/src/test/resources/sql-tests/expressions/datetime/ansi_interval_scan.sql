@@ -32,3 +32,20 @@ INSERT INTO test_ansi_interval_scan VALUES
 
 query
 SELECT id, ym, dt FROM test_ansi_interval_scan
+
+statement
+CREATE TABLE test_ansi_interval_partition_scan(
+  id INT,
+  ym INTERVAL YEAR TO MONTH,
+  dt INTERVAL DAY TO SECOND)
+USING parquet
+PARTITIONED BY (ym, dt)
+
+statement
+INSERT INTO test_ansi_interval_partition_scan VALUES
+  (1, INTERVAL '1-2' YEAR TO MONTH, INTERVAL '1 02:03:04.5' DAY TO SECOND),
+  (2, INTERVAL '-2-3' YEAR TO MONTH, INTERVAL '-2 03:04:05.6' DAY TO SECOND),
+  (3, NULL, NULL)
+
+query
+SELECT id, ym, dt FROM test_ansi_interval_partition_scan

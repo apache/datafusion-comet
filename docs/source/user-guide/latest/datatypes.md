@@ -81,10 +81,10 @@ the tables below and may be reconsidered based on demand:
 ## Interval
 
 All three interval types are mapped to Arrow and flow through serde, native shuffle, and the
-codegen dispatcher, so interval columns and the interval-producing expressions run natively.
-Comet's V1 native Parquet scan also supports both ANSI interval types. Several operators still
-gate on the type and fall back: single-column sorts, hash aggregates (`min` / `max` / `sum` /
-`avg`), `GROUP BY`, window functions, and hashing a `CalendarInterval`. Remaining work is tracked by
+codegen dispatcher. Comet's native Parquet scan supports both ANSI interval types, including nested
+and partition columns. Several operators still gate on the type and fall back: single-column sorts,
+hash aggregates (`min` / `max` / `sum` / `avg`), `GROUP BY`, window functions, and hashing a
+`CalendarInterval`. Remaining work is tracked by
 [#5061](https://github.com/apache/datafusion-comet/issues/5061).
 
 | Type                    | Status | Notes                                                                                      |
