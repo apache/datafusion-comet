@@ -3869,17 +3869,19 @@ fn parse_file_scan_tasks_from_common(
                             "Failed to deserialize partition type JSON from pool: {e}"
                         ))
                     })?;
-                let spec_id = partition_spec_cache
+                // Recover spec_id from the index-aligned spec JSON's "spec-id" field directly,
+                // rather than from partition_spec_cache: a spec that uses a transform iceberg-rust
+                // doesn't recognize (e.g. forward-compatibility tests) fails to deserialize into a
+                // PartitionSpec, but its "spec-id" is still present in the JSON and its partition
+                // type entry has no usable fields anyway. Falling back to idx keeps ordering
+                // deterministic if the field is somehow absent.
+                let spec_id = proto_common
+                    .partition_spec_pool
                     .get(idx)
-                    .and_then(|opt| opt.as_ref())
-                    .map(|spec| spec.spec_id())
-                    .ok_or_else(|| {
-                        ExecutionError::GeneralError(format!(
-                            "No partition spec at pool index {idx} matching partition_type_pool \
-                             entry; partition_type_pool must be index-aligned with \
-                             partition_spec_pool"
-                        ))
-                    })?;
+                    .and_then(|json| serde_json::from_str::<serde_json::Value>(json).ok())
+                    .and_then(|v| v.get("spec-id").and_then(serde_json::Value::as_i64))
+                    .map(|id| id as i32)
+                    .unwrap_or(idx as i32);
                 Ok((spec_id, struct_type))
             })
             .collect::<Result<Vec<_>, ExecutionError>>()?;
@@ -5656,5 +5658,63 @@ mod tests {
         // pool before spec_id 0's entry.
         assert_eq!(fields[0].name, "region_new");
         assert_eq!(fields[1].name, "category");
+    }
+
+    #[test]
+    fn test_unified_partition_type_tolerates_unparseable_spec() {
+        // Regression for TestForwardCompatibility.testSparkCanReadUnknownTransform: a spec that
+        // uses a transform iceberg-rust doesn't recognize fails to deserialize into a
+        // PartitionSpec, but its partition field is filtered out on the Scala side (unknown type),
+        // so its partition_type_pool entry is an empty struct. Recovering spec_id must not require
+        // the full spec to parse -- the merge must succeed (with no fields) rather than erroring.
+        let schema_json = serde_json::to_string(
+            &iceberg::spec::Schema::builder()
+                .with_schema_id(0)
+                .with_fields(vec![iceberg::spec::NestedField::required(
+                    1,
+                    "id",
+                    iceberg::spec::Type::Primitive(iceberg::spec::PrimitiveType::Int),
+                )
+                .into()])
+                .build()
+                .expect("schema"),
+        )
+        .expect("serialize schema");
+
+        // A spec JSON whose transform iceberg-rust cannot deserialize, paired with an empty type
+        // entry (as Scala produces once the unknown-type field is filtered).
+        let unparseable_spec_json = r#"{"spec-id":7,"fields":[{"source-id":1,"field-id":1000,"name":"x","transform":"totally_unknown[9]"}]}"#;
+        let empty_type_json = r#"{"type":"struct","fields":[]}"#;
+
+        let proto_common = spark_operator::IcebergScanCommon {
+            schema_pool: vec![schema_json],
+            partition_type_pool: vec![empty_type_json.to_string()],
+            partition_spec_pool: vec![unparseable_spec_json.to_string()],
+            project_field_ids_pool: vec![spark_operator::ProjectFieldIdList {
+                field_ids: vec![iceberg::metadata_columns::RESERVED_FIELD_ID_PARTITION],
+            }],
+            ..Default::default()
+        };
+
+        let proto_task = spark_operator::IcebergFileScanTask {
+            data_file_path: "file:///tmp/data.parquet".to_string(),
+            file_size_in_bytes: 100,
+            schema_idx: 0,
+            partition_spec_idx: Some(0),
+            project_field_ids_idx: 0,
+            ..Default::default()
+        };
+
+        let tasks = parse_file_scan_tasks_from_common(&proto_common, &[proto_task])
+            .expect("parse tasks must not error on an unparseable spec");
+        assert_eq!(tasks.len(), 1);
+        assert!(
+            tasks[0]
+                .unified_partition_type
+                .as_ref()
+                .map(|t| t.fields().is_empty())
+                .unwrap_or(true),
+            "unified partition type should have no fields for an all-unknown-transform spec"
+        );
     }
 }
