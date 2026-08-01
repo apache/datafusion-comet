@@ -59,12 +59,13 @@ class ParquetDatetimeRebaseSuite extends CometTestBase {
     }
 
   /** Writes `dates` (plus each date's text as a `label` column) in the given rebase mode. */
-  private def writeDates(path: String, mode: String, dates: String*): Unit =
+  private def writeDates(path: String, mode: String, dates: String*): Unit = {
+    val values = dates.map(d => s"('$d')").mkString(", ")
     writeParquet(
       path,
-      s"SELECT cast(s as date) AS d, s AS label " +
-        s"FROM VALUES ${dates.map(d => s"('$d')").mkString(", ")} AS v(s)",
+      s"SELECT cast(s as date) AS d, s AS label FROM VALUES $values AS v(s)",
       SQLConf.PARQUET_REBASE_MODE_IN_WRITE.key -> mode)
+  }
 
   private def writeLegacyDates(path: String): Unit =
     writeDates(path, "LEGACY", ancientDate, modernDate)
