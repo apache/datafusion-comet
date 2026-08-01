@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-pub mod eager_page_index_reader_factory;
+pub mod comet_parquet_reader_factory;
 pub mod encryption_support;
 
 pub mod parquet_exec;
@@ -24,6 +24,7 @@ pub mod schema_adapter;
 pub mod util;
 
 mod cast_column;
+mod legacy_datetime;
 pub(crate) mod objectstore;
 
 use std::collections::HashMap;
@@ -227,6 +228,9 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_initRecordBat
             // The iceberg-compat path resolves IDs in the JVM via NativeBatchReader,
             // so the native side does not need to do field-ID matching here.
             false,
+            false,
+            // spark.comet.exceptionOnDatetimeRebase is not plumbed through this JNI entry point,
+            // which is driven by the Iceberg integration rather than by CometNativeScan's proto.
             false,
         )?;
 

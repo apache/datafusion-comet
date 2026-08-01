@@ -16,8 +16,9 @@
 // under the License.
 
 use crate::execution::operators::ExecutionError;
-use crate::parquet::eager_page_index_reader_factory::EagerPageIndexReaderFactory;
+use crate::parquet::comet_parquet_reader_factory::CometParquetFileReaderFactory;
 use crate::parquet::encryption_support::{CometEncryptionConfig, ENCRYPTION_FACTORY_ID};
+use crate::parquet::legacy_datetime::reads_date_or_timestamp;
 use crate::parquet::parquet_support::SparkParquetOptions;
 use crate::parquet::schema_adapter::SparkPhysicalExprAdapterFactory;
 use arrow::datatypes::{Field, SchemaRef};
@@ -56,6 +57,10 @@ use std::sync::Arc;
 ///
 ///   `data_filters`: Any predicate that must be applied to the data returned by the scan. If
 /// specified, then `data_schema` must also be specified.
+///
+///   `exception_on_legacy_datetime`: `spark.comet.exceptionOnDatetimeRebase`. When set, and the
+/// scan reads a calendar-sensitive column, a file written in the legacy hybrid calendar fails the
+/// scan instead of returning unrebased values.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn init_datasource_exec(
     required_schema: SchemaRef,
@@ -75,6 +80,7 @@ pub(crate) fn init_datasource_exec(
     encryption_enabled: bool,
     use_field_id: bool,
     ignore_missing_field_id: bool,
+    exception_on_legacy_datetime: bool,
 ) -> Result<Arc<DataSourceExec>, ExecutionError> {
     // Computed once and reused below for `try_pushdown_filters`. `copied_config()` clones only
     // `SessionConfig` (an `Arc<ConfigOptions>` plus a small extensions map); `SessionContext::
@@ -154,9 +160,14 @@ pub(crate) fn init_datasource_exec(
     // a predicate that never resolves to fully-matched by row-group statistics alone (e.g. `IS
     // NOT NULL` on a column whose row groups don't carry `null_count` stats, as with TPC-DS
     // `store_sales`), the page index is re-fetched, uncached, on every open (comet#3978).
-    // `EagerPageIndexReaderFactory` forces the page index to load on the first fetch and be
+    // `CometParquetFileReaderFactory` forces the page index to load on the first fetch and be
     // cached with the footer, at the cost of losing the skip's benefit when it would have
     // applied. Filed upstream as apache/datafusion#23978; revert this once that's fixed.
+    //
+    // The same factory is the enforcement point for `spark.comet.exceptionOnDatetimeRebase`: it
+    // sees each file's footer, which is where the legacy-calendar marker lives. Arm it only when
+    // the scan actually reads a calendar-sensitive column, mirroring Spark, which raises only
+    // when it decodes a date/timestamp that needs rebasing.
     //
     // TODO: metadata I/O is invisible in metrics. `fetch_metadata` reads via `ObjectStore::get_ranges`,
     // bypassing the `get_bytes` path where `bytes_scanned` is counted. A byte-counting ObjectStore
@@ -164,8 +175,10 @@ pub(crate) fn init_datasource_exec(
     let runtime_env = session_ctx.runtime_env();
     let store = runtime_env.object_store(&object_store_url)?;
     let metadata_cache = runtime_env.cache_manager.get_file_metadata_cache();
+    let reject_legacy_calendar =
+        exception_on_legacy_datetime && reads_date_or_timestamp(&required_schema);
     parquet_source = parquet_source.with_parquet_file_reader_factory(Arc::new(
-        EagerPageIndexReaderFactory::new(store, metadata_cache),
+        CometParquetFileReaderFactory::new(store, metadata_cache, reject_legacy_calendar),
     ));
 
     // Route data filters through `try_pushdown_filters` rather than calling
@@ -254,7 +267,7 @@ fn get_options(
         session_parquet_options.max_predicate_cache_size;
     // Only gates whether the page index is used for row-group/page pruning
     // (datafusion's `enable_page_index` check around `page_pruning_predicate`). It does not
-    // stop the index from being fetched: `EagerPageIndexReaderFactory` always forces
+    // stop the index from being fetched: `CometParquetFileReaderFactory` always forces
     // `PageIndexPolicy::Optional` on unencrypted files regardless of the requested policy, so
     // disabling this reduces pruning, not read I/O.
     table_parquet_options.global.enable_page_index = session_parquet_options.enable_page_index;
@@ -352,7 +365,7 @@ mod tests {
     // pruning shows it is still needed (apache/datafusion#22857). That on-demand load bypasses
     // `FileMetadataCache` entirely, so on a predicate that never resolves to fully-matched (e.g.
     // non-null `IS NOT NULL` join keys without row-group `null_count` stats), the page index is
-    // re-fetched, uncached, on every open. `EagerPageIndexReaderFactory` ignores the requested
+    // re-fetched, uncached, on every open. `CometParquetFileReaderFactory` ignores the requested
     // policy and always loads the page index into the cache on the first fetch, so it asserts
     // present here even though this scan has no pruning predicate to request it.
     #[tokio::test]
@@ -400,6 +413,7 @@ mod tests {
             false,
             false,
             &session_ctx,
+            false,
             false,
             false,
             false,

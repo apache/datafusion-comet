@@ -56,11 +56,14 @@ The following limitation may produce incorrect results without falling back to S
   data written before Spark 3.0, using the hybrid Julian/Gregorian calendar), Comet reads them as
   if they were written using the Proleptic Gregorian calendar. This produces silently-wrong
   values for dates before October 15, 1582 in both projections and predicates. Comet also
-  ignores `spark.sql.parquet.datetimeRebaseModeInRead` and the file-level
-  `org.apache.spark.legacyDateTime` metadata that would tell it to rebase. The
-  `spark.comet.exceptionOnDatetimeRebase` config is currently dead code and does not raise on
-  legacy-calendar data. Tracked by
-  [#5010](https://github.com/apache/datafusion-comet/issues/5010).
+  ignores `spark.sql.parquet.datetimeRebaseModeInRead`. Tracked by
+  [#5010](https://github.com/apache/datafusion-comet/issues/5010). Set
+  `spark.comet.exceptionOnDatetimeRebase=true` to fail such a scan instead of returning wrong
+  values: Comet then raises when a scan reads a date or timestamp column from a Parquet file whose
+  footer says it was written in the hybrid calendar (`org.apache.spark.legacyDateTime` or
+  `org.apache.spark.legacyINT96` metadata, or an `org.apache.spark.version` before 3.0). Files
+  with no Spark writer version in the footer carry no rebasing signal, so they are read as-is
+  regardless of this config.
 
 The following limitations raise an error at scan time rather than falling back to Spark:
 

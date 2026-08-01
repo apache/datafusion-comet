@@ -15,9 +15,11 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! A `ParquetFileReaderFactory` that always loads the Parquet page index into the shared
-//! `FileMetadataCache` on the first metadata fetch for a file, instead of deferring to
-//! DataFusion's opener.
+//! Comet's `ParquetFileReaderFactory`. Every native Parquet scan installs it, so it is the one
+//! place guaranteed to see each file's footer exactly once per open. It has two jobs, described
+//! below: eager page-index loading, and legacy-calendar rejection.
+//!
+//! # Eager page-index loading
 //!
 //! DataFusion's opener requests `PageIndexPolicy::Skip` on the initial metadata load and defers
 //! loading the page index until row-group pruning shows it is still needed
@@ -43,9 +45,19 @@
 //! fetch to encrypted scans that have no pruning predicate at all. Encrypted opens get exactly
 //! the caller's requested policy, unchanged from stock behavior.
 //!
-//! Filed upstream as apache/datafusion#23978. Revert this once the opener merges its deferred
-//! page-index load back into `FileMetadataCache` instead of bypassing it.
+//! Filed upstream as apache/datafusion#23978. Revert this behavior once the opener merges its
+//! deferred page-index load back into `FileMetadataCache` instead of bypassing it.
+//!
+//! # Legacy-calendar rejection
+//!
+//! When `spark.comet.exceptionOnDatetimeRebase` is enabled and the scan reads a date or timestamp
+//! column, a file whose footer says its values were written in the legacy hybrid calendar fails
+//! the scan rather than returning silently-unrebased values. See [`crate::parquet::
+//! legacy_datetime`]. The check lives here, rather than in the schema/expression adapter, because
+//! the adapter is only created when the logical and physical schemas differ or a predicate is
+//! pushed down, whereas `get_metadata` runs for every file.
 
+use crate::parquet::legacy_datetime::{legacy_calendar_error, written_in_legacy_calendar};
 use bytes::Bytes;
 use datafusion::common::Result as DFResult;
 use datafusion::datasource::physical_plan::parquet::metadata::DFParquetMetadata;
@@ -66,21 +78,30 @@ use std::ops::Range;
 use std::sync::Arc;
 
 #[derive(Debug)]
-pub struct EagerPageIndexReaderFactory {
+pub struct CometParquetFileReaderFactory {
     store: Arc<dyn ObjectStore>,
     metadata_cache: Arc<dyn FileMetadataCache>,
+    /// Fail the scan on a file written in the legacy hybrid calendar. Already gated on the
+    /// scan actually reading a calendar-sensitive column, so this reader only has to look at
+    /// the footer.
+    reject_legacy_calendar: bool,
 }
 
-impl EagerPageIndexReaderFactory {
-    pub fn new(store: Arc<dyn ObjectStore>, metadata_cache: Arc<dyn FileMetadataCache>) -> Self {
+impl CometParquetFileReaderFactory {
+    pub fn new(
+        store: Arc<dyn ObjectStore>,
+        metadata_cache: Arc<dyn FileMetadataCache>,
+        reject_legacy_calendar: bool,
+    ) -> Self {
         Self {
             store,
             metadata_cache,
+            reject_legacy_calendar,
         }
     }
 }
 
-impl ParquetFileReaderFactory for EagerPageIndexReaderFactory {
+impl ParquetFileReaderFactory for CometParquetFileReaderFactory {
     fn create_reader(
         &self,
         partition_index: usize,
@@ -102,27 +123,29 @@ impl ParquetFileReaderFactory for EagerPageIndexReaderFactory {
             inner = inner.with_footer_size_hint(hint);
         }
 
-        Ok(Box::new(EagerPageIndexReader {
+        Ok(Box::new(CometParquetFileReader {
             file_metrics,
             store: Arc::clone(&self.store),
             inner,
             partitioned_file,
             metadata_cache: Arc::clone(&self.metadata_cache),
             metadata_size_hint,
+            reject_legacy_calendar: self.reject_legacy_calendar,
         }))
     }
 }
 
-struct EagerPageIndexReader {
+struct CometParquetFileReader {
     file_metrics: ParquetFileMetrics,
     store: Arc<dyn ObjectStore>,
     inner: ParquetObjectReader,
     partitioned_file: PartitionedFile,
     metadata_cache: Arc<dyn FileMetadataCache>,
     metadata_size_hint: Option<usize>,
+    reject_legacy_calendar: bool,
 }
 
-impl AsyncFileReader for EagerPageIndexReader {
+impl AsyncFileReader for CometParquetFileReader {
     fn get_bytes(&mut self, range: Range<u64>) -> BoxFuture<'_, parquet::errors::Result<Bytes>> {
         let bytes_scanned = range.end - range.start;
         self.file_metrics.bytes_scanned.add(bytes_scanned as usize);
@@ -151,6 +174,7 @@ impl AsyncFileReader for EagerPageIndexReader {
         let metadata_cache = Arc::clone(&self.metadata_cache);
         let store = Arc::clone(&self.store);
         let metadata_size_hint = self.metadata_size_hint;
+        let reject_legacy_calendar = self.reject_legacy_calendar;
         async move {
             let file_decryption_properties = options
                 .and_then(|o| o.file_decryption_properties())
@@ -161,7 +185,7 @@ impl AsyncFileReader for EagerPageIndexReader {
                 options.map(|o| o.column_index_policy())
             };
 
-            DFParquetMetadata::new(store.as_ref(), &object_meta)
+            let metadata = DFParquetMetadata::new(store.as_ref(), &object_meta)
                 .with_decryption_properties(file_decryption_properties)
                 .with_file_metadata_cache(Some(metadata_cache))
                 .with_metadata_size_hint(metadata_size_hint)
@@ -173,13 +197,19 @@ impl AsyncFileReader for EagerPageIndexReader {
                         "Failed to fetch metadata for file {}: {e}",
                         object_meta.location,
                     ))
-                })
+                })?;
+
+            if reject_legacy_calendar && written_in_legacy_calendar(&metadata) {
+                return Err(legacy_calendar_error());
+            }
+
+            Ok(metadata)
         }
         .boxed()
     }
 }
 
-impl Drop for EagerPageIndexReader {
+impl Drop for CometParquetFileReader {
     fn drop(&mut self) {
         self.file_metrics
             .scan_efficiency_ratio

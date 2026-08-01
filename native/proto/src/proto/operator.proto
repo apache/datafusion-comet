@@ -133,6 +133,11 @@ message NativeScanCommon {
   // SchemaColumnConvertNotSupportedException (Spark 3.x, SPARK-36182). Set
   // from Comet's per-Spark-version constant in ShimCometConf.
   bool allow_timestamp_ltz_to_ntz = 18;
+  // spark.comet.exceptionOnDatetimeRebase. When true, the native scan raises
+  // rather than silently returning unrebased values for a Parquet file whose
+  // footer says its dates/timestamps were written in the legacy hybrid
+  // (Julian + Gregorian) calendar. Comet does not implement rebasing.
+  bool exception_on_legacy_datetime = 19;
 }
 
 message NativeScan {
