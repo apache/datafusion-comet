@@ -138,7 +138,7 @@ class CometBlockStoreShuffleReader[K, C](
 
     // Sort the output if there is a sort ordering defined.
     val resultIter = dep.keyOrdering match {
-      case Some(_: Ordering[K]) =>
+      case Some(_) =>
         throw new UnsupportedOperationException("order not allowed")
       case None =>
         aggregatedIter

@@ -39,6 +39,7 @@ to read more.
 
    Installing Comet <installation>
    Configuration Settings <configs>
+   Upgrading Comet <migration-guide>
 
 .. toctree::
    :maxdepth: 1

@@ -49,7 +49,7 @@ Usage:
     # Build Comet (release for representative numbers):
     make release
 
-    pip install pyspark==3.5.8 pyarrow pandas
+    pip install pyspark==3.5.9 pyarrow pandas
 
     python3 spark/src/test/resources/pyspark/benchmark_pyarrow_udf.py
 

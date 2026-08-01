@@ -104,7 +104,7 @@ The tables below list every Spark built-in expression with its current status.
 | `first_value` | ✅ | Native |  |
 | `grouping` | ✅ | — | Grouping indicator for ROLLUP/CUBE/GROUPING SETS |
 | `grouping_id` | ✅ | — | Grouping indicator for ROLLUP/CUBE/GROUPING SETS |
-| `kurtosis` | 🔜 | — | tracking [#4098](https://github.com/apache/datafusion-comet/issues/4098) |
+| `kurtosis` | 🔜 | — | Not yet implemented natively |
 | `last` | ✅ | Native |  |
 | `last_value` | ✅ | Native |  |
 | `listagg` | 🔜 | — | String aggregation |
@@ -118,16 +118,16 @@ The tables below list every Spark built-in expression with its current status.
 | `percentile` | ✅ | Native | Single literal percentage on numeric input runs natively; array of percentages and a frequency argument fall back to Spark |
 | `percentile_cont` | ✅ | — | Spark 4.0+ `WITHIN GROUP (ORDER BY ...)`; ascending only runs natively, `DESC` falls back to Spark |
 | `percentile_disc` | 🔜 | — | Percentile aggregate |
-| `regr_avgx` | ✅ | — | Native: Spark rewrites to `Average` (tests in [#4551](https://github.com/apache/datafusion-comet/issues/4551)) |
-| `regr_avgy` | ✅ | — | Native: Spark rewrites to `Average` (tests in [#4551](https://github.com/apache/datafusion-comet/issues/4551)) |
-| `regr_count` | ✅ | — | Native: Spark rewrites to `Count` (tests in [#4551](https://github.com/apache/datafusion-comet/issues/4551)) |
+| `regr_avgx` | ✅ | — | Native: Spark rewrites to `Average` (tests in [#4551](https://github.com/apache/datafusion-comet/pull/4551)) |
+| `regr_avgy` | ✅ | — | Native: Spark rewrites to `Average` (tests in [#4551](https://github.com/apache/datafusion-comet/pull/4551)) |
+| `regr_count` | ✅ | — | Native: Spark rewrites to `Count` (tests in [#4551](https://github.com/apache/datafusion-comet/pull/4551)) |
 | `regr_intercept` | 🔜 | — | Falls back; can reuse `covar_pop`/`var_pop` accumulators ([#4552](https://github.com/apache/datafusion-comet/issues/4552)) |
 | `regr_r2` | 🔜 | — | Falls back; can reuse the `corr` accumulator ([#4552](https://github.com/apache/datafusion-comet/issues/4552)) |
 | `regr_slope` | 🔜 | — | Falls back; can reuse `covar_pop`/`var_pop` accumulators ([#4552](https://github.com/apache/datafusion-comet/issues/4552)) |
 | `regr_sxx` | 🔜 | — | Falls back; can reuse `var_pop` accumulator ([#4552](https://github.com/apache/datafusion-comet/issues/4552)) |
 | `regr_sxy` | 🔜 | — | Falls back; can reuse `covar_pop` accumulator ([#4552](https://github.com/apache/datafusion-comet/issues/4552)) |
 | `regr_syy` | 🔜 | — | Falls back; can reuse `var_pop` accumulator ([#4552](https://github.com/apache/datafusion-comet/issues/4552)) |
-| `skewness` | 🔜 | — | tracking [#4098](https://github.com/apache/datafusion-comet/issues/4098) |
+| `skewness` | 🔜 | — | Not yet implemented natively |
 | `some` | ✅ | — |  |
 | `std` | ✅ | Native |  |
 | `stddev` | ✅ | Native |  |
@@ -170,7 +170,7 @@ The tables below list every Spark built-in expression with its current status.
 | `get` | ✅ | — |  |
 | `sequence` | ✅ | Codegen dispatch |  |
 | `shuffle` | ✅ | Native | Binary/struct/map elements fall back |
-| `slice` | ✅ | Native | Native ([#4149](https://github.com/apache/datafusion-comet/issues/4149)) |
+| `slice` | ✅ | Native | Native ([#4149](https://github.com/apache/datafusion-comet/pull/4149)) |
 | `sort_array` | ✅ | Hybrid | Nested struct/null arrays fall back |
 
 ---
@@ -277,7 +277,7 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `localtimestamp` | ✅ | — |  |
 | `make_date` | ✅ | Native |  |
 | `make_dt_interval` | ✅ | Codegen dispatch |  |
-| `make_interval` | 🔜 | — | Produces legacy CalendarInterval; tracked by [#4540](https://github.com/apache/datafusion-comet/issues/4540) |
+| `make_interval` | 🔜 | — | Produces legacy CalendarInterval; tracked by [#5061](https://github.com/apache/datafusion-comet/issues/5061) |
 | `make_time` | 🔜 | — | Spark 4.1 TIME type; tracked by [#4288](https://github.com/apache/datafusion-comet/issues/4288) |
 | `make_timestamp` | ✅ | Hybrid |  |
 | `make_timestamp_ltz` | ✅ | — | 2-arg TIME form falls back |
@@ -305,7 +305,7 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `to_unix_timestamp` | ✅ | Hybrid |  |
 | `to_utc_timestamp` | ✅ | Hybrid | Routes through the JVM codegen dispatcher by default (handles all timezone forms); the native path is opt-in via allowIncompatible ([details](compatibility/expressions/datetime.md)) |
 | `trunc` | ✅ | Hybrid |  |
-| `try_make_interval` | 🔜 | — | Produces legacy CalendarInterval; tracked by [#4540](https://github.com/apache/datafusion-comet/issues/4540) |
+| `try_make_interval` | 🔜 | — | Produces legacy CalendarInterval; tracked by [#5061](https://github.com/apache/datafusion-comet/issues/5061) |
 | `try_make_timestamp` | ✅ | — |  |
 | `try_to_date` | ✅ | — | Rewrites to `Cast`/`GetTimestamp` before Comet sees the plan; same support as `to_date` |
 | `try_to_time` | 🔜 | — | Spark 4.1 TIME type; tracked by [#4288](https://github.com/apache/datafusion-comet/issues/4288) |
@@ -460,7 +460,7 @@ expression-level). The `outer` variants are wired but marked `Incompatible`; the
 | `rand` | ✅ | Native |  |
 | `randn` | ✅ | Native |  |
 | `random` | ✅ | Native | Alias for `rand` (Spark 4.0+); seed must be a literal |
-| `randstr` | 🔜 | — | Random string (Spark 4.0+) |
+| `randstr` | ✅ | Native | Random string (Spark 4.0+); length and seed must be literals |
 | `rint` | ✅ | Native |  |
 | `round` | ✅ | Native | Float/double inputs fall back |
 | `sec` | ✅ | Native |  |
@@ -495,24 +495,24 @@ expression-level). The `outer` variants are wired but marked `Incompatible`; the
 | `current_schema` | ✅ | — | Alias of `current_database`; resolved to a literal by the analyzer |
 | `current_user` | ✅ | — | Resolved to a literal by the analyzer; same as `user` |
 | `equal_null` | ✅ | — | Lowers to `<=>` (`EqualNullSafe`) |
-| `is_variant_null` | 🔜 | — | tracking [#4098](https://github.com/apache/datafusion-comet/issues/4098) |
+| `is_variant_null` | 🔜 | — | Requires `VariantType` support |
 | `monotonically_increasing_id` | ✅ | Native |  |
-| `parse_json` | 🔜 | — | tracking [#4098](https://github.com/apache/datafusion-comet/issues/4098) |
+| `parse_json` | 🔜 | — | Requires `VariantType` support |
 | `raise_error` | 🔜 | — | Raises a runtime error |
 | `rand` | ✅ | Native | Seed must be a literal |
 | `randn` | ✅ | Native | Seed must be a literal |
-| `schema_of_variant` | 🔜 | — | tracking [#4098](https://github.com/apache/datafusion-comet/issues/4098) |
-| `schema_of_variant_agg` | 🔜 | — | tracking [#4098](https://github.com/apache/datafusion-comet/issues/4098) |
+| `schema_of_variant` | 🔜 | — | Requires `VariantType` support |
+| `schema_of_variant_agg` | 🔜 | — | Requires `VariantType` support |
 | `session_user` | ✅ | — | Alias of `current_user`; resolved to a literal by the analyzer |
 | `spark_partition_id` | ✅ | Native |  |
-| `to_variant_object` | 🔜 | — | tracking [#4098](https://github.com/apache/datafusion-comet/issues/4098) |
+| `to_variant_object` | 🔜 | — | Requires `VariantType` support |
 | `try_aes_decrypt` | ✅ | — | Routed through the JVM codegen dispatcher |
-| `try_parse_json` | 🔜 | — | tracking [#4098](https://github.com/apache/datafusion-comet/issues/4098) |
-| `try_variant_get` | 🔜 | — | tracking [#4098](https://github.com/apache/datafusion-comet/issues/4098) |
+| `try_parse_json` | 🔜 | — | Requires `VariantType` support |
+| `try_variant_get` | 🔜 | — | Requires `VariantType` support |
 | `typeof` | ✅ | — | Foldable; resolved to a literal before Comet sees the plan |
 | `user` | ✅ | — | Resolved to a literal by the Spark analyzer before reaching Comet |
-| `uuid` | 🔜 | — | Nondeterministic random UUID |
-| `variant_get` | 🔜 | — | tracking [#4098](https://github.com/apache/datafusion-comet/issues/4098) |
+| `uuid` | ✅ | Native |  |
+| `variant_get` | 🔜 | — | Requires `VariantType` support |
 
 ---
 
@@ -546,74 +546,74 @@ expression-level). The `outer` variants are wired but marked `Incompatible`; the
 
 ## string_funcs
 
-| Function | Status | Implementation | Notes                                                                                                                 |
-| --- | --- | --- |-----------------------------------------------------------------------------------------------------------------------|
-| `ascii` | ✅ | Native |                                                                                                                       |
-| `base64` | ✅ | Native |                                                                                                                       |
-| `bit_length` | ✅ | Native |                                                                                                                       |
-| `btrim` | ✅ | — |                                                                                                                       |
-| `char` | ✅ | Native |                                                                                                                       |
-| `char_length` | ✅ | Native |                                                                                                                       |
-| `character_length` | ✅ | Native |                                                                                                                       |
-| `chr` | ✅ | Native |                                                                                                                       |
-| `collate` | 🔜 | — | Spark collation (umbrella [#2190](https://github.com/apache/datafusion-comet/issues/2190))                            |
-| `collation` | ✅ | — | Constant-folded to a literal (Spark 4.0+)                                                                             |
-| `concat_ws` | ✅ | Native |                                                                                                                       |
-| `contains` | ✅ | — |                                                                                                                       |
-| `decode` | ✅ | — |                                                                                                                       |
-| `elt` | ✅ | Hybrid | Codegen dispatch when spark.sql.ansi.enabled=true                                                                     |
-| `encode` | 🔜 | — | Lowers to `StaticInvoke(encode)` (not allowlisted); falls back                                                        |
-| `endswith` | ✅ | — |                                                                                                                       |
-| `find_in_set` | ✅ | Codegen dispatch |                                                                                                                       |
-| `format_number` | ✅ | Codegen dispatch |                                                                                                                       |
-| `format_string` | ✅ | Codegen dispatch |                                                                                                                       |
-| `initcap` | ✅ | Hybrid |                                                                                                                       |
-| `instr` | ✅ | Native |                                                                                                                       |
-| `lcase` | ✅ | Hybrid |                                                                                                                       |
-| `left` | ✅ | Native |                                                                                                                       |
-| `len` | ✅ | Native |                                                                                                                       |
-| `length` | ✅ | Native |                                                                                                                       |
-| `levenshtein` | ✅ | Native |                                                                                                                       |
-| `locate` | ✅ | Codegen dispatch |                                                                                                                       |
-| `lower` | ✅ | Hybrid |                                                                                                                       |
-| `lpad` | ✅ | — |                                                                                                                       |
-| `ltrim` | ✅ | Native |                                                                                                                       |
-| `luhn_check` | ✅ | — | Native via `StaticInvoke` (tests: luhn_check.sql)                                                                     |
-| `mask` | ✅ | — | Routed through the JVM codegen dispatcher                                                                             |
-| `octet_length` | ✅ | Native |                                                                                                                       |
-| `overlay` | ✅ | Codegen dispatch |                                                                                                                       |
-| `position` | ✅ | Codegen dispatch |                                                                                                                       |
-| `printf` | ✅ | Codegen dispatch |                                                                                                                       |
-| `regexp_count` | ✅ | — | Runs natively (rewrites to `size(regexp_extract_all(...))`)                                                           |
-| `regexp_extract` | ✅ | Native |                                                                                                                       |
-| `regexp_extract_all` | ✅ | Native |                                                                                                                       |
-| `regexp_instr` | ✅ | Codegen dispatch | Routed through the JVM codegen dispatcher                                                                             |
-| `regexp_replace` | ✅ | Hybrid |                                                                                                                       |
-| `regexp_substr` | ✅ | — | Runs natively (rewrites to `nullif(regexp_extract(...), '')`)                                                         |
-| `repeat` | ✅ | Native |                                                                                                                       |
-| `replace` | ✅ | Hybrid |                                                                                                                       |
-| `right` | ✅ | Native |                                                                                                                       |
-| `rpad` | ✅ | — |                                                                                                                       |
-| `rtrim` | ✅ | Native |                                                                                                                       |
-| `soundex` | ✅ | Native |                                                                                                                       |
-| `space` | ✅ | Native |                                                                                                                       |
-| `split` | ✅ | Hybrid |                                                                                                                       |
-| `split_part` | ✅ | — | Spark 4.0+                                                                                                            |
-| `startswith` | ✅ | — |                                                                                                                       |
-| `substr` | ✅ | Native |                                                                                                                       |
-| `substring` | ✅ | Native |                                                                                                                       |
-| `substring_index` | ✅ | Native |                                                                                                                       |
-| `to_binary` | ✅ | — | Hex form accelerated; other formats fall back                                                                         |
-| `to_char` | ✅ | Codegen dispatch |                                                                                                                       |
-| `to_number` | ✅ | Codegen dispatch |                                                                                                                       |
-| `to_varchar` | ✅ | Codegen dispatch |                                                                                                                       |
-| `translate` | ✅ | Native | Falls back by default; opt-in via allowIncompatible ([#4463](https://github.com/apache/datafusion-comet/issues/4463)) |
-| `trim` | ✅ | Native |                                                                                                                       |
-| `try_to_binary` | ✅ | — | Runs natively (rewrites to `try_eval(to_binary(...))`)                                                                |
-| `try_to_number` | ✅ | Codegen dispatch | Routed through the JVM codegen dispatcher                                                                             |
-| `ucase` | ✅ | Hybrid |                                                                                                                       |
-| `unbase64` | ✅ | Codegen dispatch |                                                                                                                       |
-| `upper` | ✅ | Hybrid |                                                                                                                       |
+| Function | Status | Implementation | Notes |
+| --- | --- | --- | --- |
+| `ascii` | ✅ | Native |  |
+| `base64` | ✅ | Native |  |
+| `bit_length` | ✅ | Native |  |
+| `btrim` | ✅ | — |  |
+| `char` | ✅ | Native |  |
+| `char_length` | ✅ | Native |  |
+| `character_length` | ✅ | Native |  |
+| `chr` | ✅ | Native |  |
+| `collate` | 🔜 | — | Spark collation (umbrella [#2190](https://github.com/apache/datafusion-comet/issues/2190)) |
+| `collation` | ✅ | — | Constant-folded to a literal (Spark 4.0+) |
+| `concat_ws` | ✅ | Native |  |
+| `contains` | ✅ | — |  |
+| `decode` | ✅ | — |  |
+| `elt` | ✅ | Codegen dispatch |  |
+| `encode` | 🔜 | — | Lowers to `StaticInvoke(encode)` (not allowlisted); falls back |
+| `endswith` | ✅ | — |  |
+| `find_in_set` | ✅ | Codegen dispatch |  |
+| `format_number` | ✅ | Codegen dispatch |  |
+| `format_string` | ✅ | Codegen dispatch |  |
+| `initcap` | ✅ | Hybrid |  |
+| `instr` | ✅ | Native |  |
+| `lcase` | ✅ | Hybrid |  |
+| `left` | ✅ | Native |  |
+| `len` | ✅ | Native |  |
+| `length` | ✅ | Native |  |
+| `levenshtein` | ✅ | Native |  |
+| `locate` | ✅ | Codegen dispatch |  |
+| `lower` | ✅ | Hybrid |  |
+| `lpad` | ✅ | — |  |
+| `ltrim` | ✅ | Native |  |
+| `luhn_check` | ✅ | — | Native via `StaticInvoke` (tests: luhn_check.sql) |
+| `mask` | ✅ | — | Routed through the JVM codegen dispatcher |
+| `octet_length` | ✅ | Native |  |
+| `overlay` | ✅ | Codegen dispatch |  |
+| `position` | ✅ | Codegen dispatch |  |
+| `printf` | ✅ | Codegen dispatch |  |
+| `regexp_count` | ✅ | — | Runs natively (rewrites to `size(regexp_extract_all(...))`) |
+| `regexp_extract` | ✅ | Native |  |
+| `regexp_extract_all` | ✅ | Native |  |
+| `regexp_instr` | ✅ | Codegen dispatch | Routed through the JVM codegen dispatcher |
+| `regexp_replace` | ✅ | Hybrid |  |
+| `regexp_substr` | ✅ | — | Runs natively (rewrites to `nullif(regexp_extract(...), '')`) |
+| `repeat` | ✅ | Native |  |
+| `replace` | ✅ | Hybrid |  |
+| `right` | ✅ | Native |  |
+| `rpad` | ✅ | — |  |
+| `rtrim` | ✅ | Native |  |
+| `soundex` | ✅ | Native |  |
+| `space` | ✅ | Native |  |
+| `split` | ✅ | Hybrid |  |
+| `split_part` | ✅ | — | Spark 4.0+ |
+| `startswith` | ✅ | — |  |
+| `substr` | ✅ | Native |  |
+| `substring` | ✅ | Native |  |
+| `substring_index` | ✅ | Native |  |
+| `to_binary` | ✅ | — | Hex form accelerated; other formats fall back |
+| `to_char` | ✅ | Codegen dispatch |  |
+| `to_number` | ✅ | Codegen dispatch |  |
+| `to_varchar` | ✅ | Codegen dispatch |  |
+| `translate` | ✅ | Native | DataFusion's `translate` iterates over Unicode graphemes (Spark uses code points) and substitutes U+0000 instead of treating it as a deletion sentinel, so the native path is opt-in via allowIncompatible |
+| `trim` | ✅ | Native |  |
+| `try_to_binary` | ✅ | — | Runs natively (rewrites to `try_eval(to_binary(...))`) |
+| `try_to_number` | ✅ | Codegen dispatch | Routed through the JVM codegen dispatcher |
+| `ucase` | ✅ | Hybrid |  |
+| `unbase64` | ✅ | Codegen dispatch |  |
+| `upper` | ✅ | Hybrid |  |
 
 ---
 

@@ -92,6 +92,8 @@ message Expr {
     JvmScalarUdf jvm_scalar_udf = 70;
     PreciseTimestampConversion precise_timestamp_conversion = 71;
     Shuffle shuffle = 72;
+    RandStr rand_str = 73;
+    Uuid uuid = 74;
   }
 
   reserved 20;
@@ -321,6 +323,12 @@ message MathExpr {
   Expr right = 2;
   DataType return_type = 4;
   EvalMode eval_mode = 5;
+  // Only set for integral_divide: mirrors Spark's IntegralDivide.checkDivideOverflow
+  // (LONG operands with failOnError). When this is set and eval_mode is ANSI, a quotient
+  // that does not fit in a LONG (Long.MinValue div -1) throws ARITHMETIC_OVERFLOW
+  // instead of wrapping around. Never set for DECIMAL operands, which wrap around on
+  // the cast to LONG even in ANSI mode, matching Spark.
+  bool check_divide_overflow = 6;
 }
 
 message Cast {
@@ -560,6 +568,23 @@ message Rand {
 // matching org.apache.spark.sql.catalyst.util.RandomIndicesGenerator.
 message Shuffle {
   Expr child = 1;
+  int64 seed = 2;
+}
+
+// Spark's Uuid returns a random RFC 4122 version 4 UUID string. It is
+// non-deterministic: the resolved random seed is combined with the partition
+// index and seeds a Commons Math3 MersenneTwister, matching
+// org.apache.spark.sql.catalyst.util.RandomUUIDGenerator.
+message Uuid {
+  int64 seed = 1;
+}
+
+// Spark's RandStr (Spark 4.0+) returns a random alphanumeric string of the given
+// length. It is non-deterministic: the resolved random seed is combined with the
+// partition index and seeds an XORShiftRandom, matching
+// org.apache.spark.sql.catalyst.expressions.ExpressionImplUtils.randStr.
+message RandStr {
+  int32 length = 1;
   int64 seed = 2;
 }
 

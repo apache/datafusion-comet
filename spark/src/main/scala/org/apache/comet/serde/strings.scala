@@ -647,7 +647,10 @@ object CometGetJsonObject extends CometCodegenDispatch[GetJsonObject] with Nativ
   override def getIncompatibleReasons(): Seq[String] =
     Seq(
       "Spark allows single-quoted JSON and unescaped control characters" +
-        " which Comet does not support")
+        " which Comet does not support",
+      "For JSON objects containing duplicate keys, Spark returns the value of the first" +
+        " occurrence while Comet's native implementation returns the last occurrence" +
+        " ([#4947](https://github.com/apache/datafusion-comet/issues/4947))")
 
   override def getSupportLevel(expr: GetJsonObject): SupportLevel =
     if (!CometConf.isExprAllowIncompat(getExprConfigName(expr))) {
