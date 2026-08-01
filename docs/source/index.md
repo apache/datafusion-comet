@@ -120,7 +120,7 @@ Runs your existing Spark queries on the Apache DataFusion native engine, no code
 
 <div class="comet-community__col">
 <p class="comet-community__eyebrow">Getting Started</p>
-<p class="comet-community__body">To get started with Apache DataFusion Comet, follow the <a href="user-guide/latest/installation.html">installation instructions</a>. Join the <a href="https://datafusion.apache.org/contributor-guide/communication.html">DataFusion Slack and Discord channels</a> to connect with other users, ask questions, and share your experiences with Comet.</p>
+<p class="comet-community__body">To get started with Apache DataFusion Comet, follow the <a href="user-guide/latest/installation.html">installation instructions</a>. The <a href="faq.html">FAQ</a> answers common questions about performance, compatibility, and supported versions. Join the <a href="https://datafusion.apache.org/contributor-guide/communication.html">DataFusion Slack and Discord channels</a> to connect with other users, ask questions, and share your experiences with Comet.</p>
 </div>
 
 <div class="comet-community__col">
@@ -137,6 +137,7 @@ Runs your existing Spark queries on the Apache DataFusion native engine, no code
 :hidden:
 
 User Guide <user-guide/index>
+FAQ <faq>
 Contributor Guide <contributor-guide/index>
 Changelog <changelog/index>
 About <about/index>
