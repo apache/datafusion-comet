@@ -109,7 +109,9 @@ message Expr {
 // QueryContext provides SQL query context for error messages.
 // Mirrors Spark's SQLQueryContext for rich error reporting.
 message QueryContext {
-  // Full SQL query text
+  // Full SQL query text. Left empty when `sql_text_idx` is set, which is the normal case for a
+  // plan serialized through `CometNativeExec.convertBlock`. Still used by the paths that serialize
+  // an operator directly without interning (e.g. `CometNativeWriteExec`).
   string sql_text = 1;
 
   // Character offset where expression starts (0-based)
@@ -129,6 +131,11 @@ message QueryContext {
 
   // Column position within the line (0-based)
   int32 start_position = 7;
+
+  // Index into the root `Operator.sql_text_pool` holding this context's SQL text. Set instead of
+  // `sql_text` so that a query text shared by many expressions is serialized once per plan rather
+  // than once per expression.
+  optional int32 sql_text_idx = 8;
 }
 
 message AggExpr {

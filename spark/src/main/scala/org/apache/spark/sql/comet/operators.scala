@@ -58,7 +58,7 @@ import org.apache.comet.{CometConf, CometExecIterator, CometRuntimeException, Co
 import org.apache.comet.CometSparkSessionExtensions.{isCometShuffleEnabled, withFallbackReason}
 import org.apache.comet.parquet.CometParquetUtils
 import org.apache.comet.rules.CometExecRule
-import org.apache.comet.serde.{CometOperatorSerde, Compatible, Incompatible, OperatorOuterClass, SupportLevel, Unsupported}
+import org.apache.comet.serde.{CometOperatorSerde, Compatible, Incompatible, OperatorOuterClass, QueryContextInterner, SupportLevel, Unsupported}
 import org.apache.comet.serde.OperatorOuterClass.{AggregateMode => CometAggregateMode, Operator}
 import org.apache.comet.serde.QueryPlanSerde
 import org.apache.comet.serde.QueryPlanSerde.{aggExprToProto, exprToProto, isStringCollationType, supportedSortType}
@@ -326,8 +326,10 @@ private[comet] object NativeScanPlanDataInjector extends PlanDataInjector {
       !op.getNativeScan.hasFilePartition
 
   override def getKey(op: Operator): Option[String] = {
-    // Reconstruct the same sourceKey that was used when storing the data
-    val common = op.getNativeScan.getCommon
+    // Reconstruct the same sourceKey that was used when storing the data. Must mirror
+    // CometNativeScanExec.apply exactly, including stripping query contexts: the plan we are
+    // reading here has been interned, so the context encoding differs from the driver's.
+    val common = QueryContextInterner.stripQueryContexts(op.getNativeScan.getCommon)
     val source = common.getSource
     val keyComponents = Seq(
       common.getRequiredSchemaList.toString,
@@ -869,10 +871,14 @@ abstract class CometNativeExec extends CometExec {
   def convertBlock(): CometNativeExec = {
     def transform(arg: Any): AnyRef = arg match {
       case serializedPlan: SerializedPlan if serializedPlan.isEmpty =>
-        val size = nativeOp.getSerializedSize
+        // Hoist duplicated QueryContext SQL text into a pool on the root operator. This is the
+        // point where the whole native block is in hand, which is what the pool indices are
+        // scoped to.
+        val rootOp = QueryContextInterner.intern(nativeOp)
+        val size = rootOp.getSerializedSize
         val bytes = new Array[Byte](size)
         val codedOutput = CodedOutputStream.newInstance(bytes)
-        nativeOp.writeTo(codedOutput)
+        rootOp.writeTo(codedOutput)
         codedOutput.checkNoSpaceLeft()
         SerializedPlan(Some(bytes))
       case other: AnyRef => other
