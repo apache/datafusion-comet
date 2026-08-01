@@ -511,7 +511,7 @@ expression-level). The `outer` variants are wired but marked `Incompatible`; the
 | `try_variant_get` | 🔜 | — | Requires `VariantType` support |
 | `typeof` | ✅ | — | Foldable; resolved to a literal before Comet sees the plan |
 | `user` | ✅ | — | Resolved to a literal by the Spark analyzer before reaching Comet |
-| `uuid` | 🔜 | — | Nondeterministic random UUID |
+| `uuid` | ✅ | Native |  |
 | `variant_get` | 🔜 | — | Requires `VariantType` support |
 
 ---

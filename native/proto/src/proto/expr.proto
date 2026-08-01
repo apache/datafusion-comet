@@ -93,6 +93,7 @@ message Expr {
     PreciseTimestampConversion precise_timestamp_conversion = 71;
     Shuffle shuffle = 72;
     RandStr rand_str = 73;
+    Uuid uuid = 74;
   }
 
   reserved 20;
@@ -568,6 +569,14 @@ message Rand {
 message Shuffle {
   Expr child = 1;
   int64 seed = 2;
+}
+
+// Spark's Uuid returns a random RFC 4122 version 4 UUID string. It is
+// non-deterministic: the resolved random seed is combined with the partition
+// index and seeds a Commons Math3 MersenneTwister, matching
+// org.apache.spark.sql.catalyst.util.RandomUUIDGenerator.
+message Uuid {
+  int64 seed = 1;
 }
 
 // Spark's RandStr (Spark 4.0+) returns a random alphanumeric string of the given
