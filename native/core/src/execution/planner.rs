@@ -85,7 +85,6 @@ use crate::execution::operators::ExecutionError::GeneralError;
 use crate::execution::shuffle::{CometPartitioning, CompressionCodec};
 use crate::execution::spark_plan::SparkPlan;
 use crate::parquet::parquet_support::prepare_object_store_with_configs;
-use datafusion::common::scalar::ScalarStructBuilder;
 use datafusion::common::{
     tree_node::{Transformed, TransformedResult, TreeNode, TreeNodeRecursion, TreeNodeRewriter},
     JoinType as DFJoinType, NullEquality, ScalarValue,
@@ -390,38 +389,7 @@ impl PhysicalPlanner {
             ExprStruct::Literal(literal) => {
                 let data_type = to_arrow_datatype(literal.datatype.as_ref().unwrap());
                 let scalar_value = if literal.is_null {
-                    match data_type {
-                        DataType::Boolean => ScalarValue::Boolean(None),
-                        DataType::Int8 => ScalarValue::Int8(None),
-                        DataType::Int16 => ScalarValue::Int16(None),
-                        DataType::Int32 => ScalarValue::Int32(None),
-                        DataType::Int64 => ScalarValue::Int64(None),
-                        DataType::Float32 => ScalarValue::Float32(None),
-                        DataType::Float64 => ScalarValue::Float64(None),
-                        DataType::Utf8 => ScalarValue::Utf8(None),
-                        DataType::Date32 => ScalarValue::Date32(None),
-                        DataType::Timestamp(TimeUnit::Microsecond, timezone) => {
-                            ScalarValue::TimestampMicrosecond(None, timezone)
-                        }
-                        DataType::Binary => ScalarValue::Binary(None),
-                        DataType::Decimal128(p, s) => ScalarValue::Decimal128(None, p, s),
-                        DataType::Struct(fields) => ScalarStructBuilder::new_null(fields),
-                        DataType::Map(f, s) => DataType::Map(f, s).try_into()?,
-                        DataType::List(f) => DataType::List(f).try_into()?,
-                        DataType::Null => ScalarValue::Null,
-                        DataType::Time64(TimeUnit::Nanosecond) => {
-                            ScalarValue::Time64Nanosecond(None)
-                        }
-                        DataType::Duration(TimeUnit::Microsecond) => {
-                            ScalarValue::DurationMicrosecond(None)
-                        }
-                        DataType::Interval(arrow::datatypes::IntervalUnit::MonthDayNano) => {
-                            ScalarValue::IntervalMonthDayNano(None)
-                        }
-                        dt => {
-                            return Err(GeneralError(format!("{dt:?} is not supported in Comet")))
-                        }
-                    }
+                    ScalarValue::try_new_null(&data_type)?
                 } else {
                     match literal.value.as_ref().unwrap() {
                         Value::BoolVal(value) => ScalarValue::Boolean(Some(*value)),
