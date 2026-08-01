@@ -43,6 +43,7 @@ futures = { workspace = true }
 twox-hash = "2.1.2"
 rand = { workspace = true }
 base64 = "0.23.0"
+uuid = "1.23.3"
 
 [dev-dependencies]
 arrow = {workspace = true}
@@ -61,6 +62,10 @@ harness = false
 
 [[bench]]
 name = "cast_string_to_date"
+harness = false
+
+[[bench]]
+name = "cast_string_to_timestamp"
 harness = false
 
 [[bench]]
