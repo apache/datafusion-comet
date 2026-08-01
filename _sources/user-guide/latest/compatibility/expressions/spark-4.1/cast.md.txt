@@ -174,8 +174,8 @@ as `"1.23E+4"`).
 | byte | C | C | - | N/A | C | C | C | C | C | C | C | C | N/A |
 | date | N/A | C | C | - | C | C | C | C | C | C | C | C | C |
 | decimal | N/A | C | C | N/A | - | C | C | C | C | C | C | C | N/A |
-| double | N/A | C | C | N/A | I | - | C | C | C | C | C | C | N/A |
-| float | N/A | C | C | N/A | I | C | - | C | C | C | C | C | N/A |
+| double | N/A | C | C | N/A | C | - | C | C | C | C | C | C | N/A |
+| float | N/A | C | C | N/A | C | C | - | C | C | C | C | C | N/A |
 | integer | C | C | C | N/A | C | C | C | - | C | C | C | C | N/A |
 | long | C | C | C | N/A | C | C | C | C | - | C | C | C | N/A |
 | short | C | C | C | N/A | C | C | C | C | C | - | C | C | N/A |
@@ -184,9 +184,9 @@ as `"1.23E+4"`).
 | timestamp_ntz | N/A | N/A | N/A | C | N/A | N/A | N/A | N/A | N/A | N/A | C | C | - |
 
 **Notes:**
-- **double -> decimal**: There can be rounding differences
+- **double -> decimal**: Rounding matches Spark on JDK 19 and later. On older JDKs, Spark's own result may differ for values whose shortest decimal form falls exactly on a rounding tie
 - **double -> string**: String formatting can differ for floating-point values near precision limits or when scientific notation is used
-- **float -> decimal**: There can be rounding differences
+- **float -> decimal**: Rounding matches Spark on JDK 19 and later. On older JDKs, Spark's own result may differ for values whose shortest decimal form falls exactly on a rounding tie
 - **float -> string**: String formatting can differ for floating-point values near precision limits or when scientific notation is used
 - **string -> date**: Only supports years between 262143 BC and 262142 AD
 <!-- prettier-ignore-end -->
@@ -203,8 +203,8 @@ as `"1.23E+4"`).
 | byte | U | C | - | N/A | C | C | C | C | C | C | C | C | N/A |
 | date | N/A | U | U | - | U | U | U | U | U | U | C | C | C |
 | decimal | N/A | C | C | N/A | - | C | C | C | C | C | C | C | N/A |
-| double | N/A | C | C | N/A | I | - | C | C | C | C | C | C | N/A |
-| float | N/A | C | C | N/A | I | C | - | C | C | C | C | C | N/A |
+| double | N/A | C | C | N/A | C | - | C | C | C | C | C | C | N/A |
+| float | N/A | C | C | N/A | C | C | - | C | C | C | C | C | N/A |
 | integer | U | C | C | N/A | C | C | C | - | C | C | C | C | N/A |
 | long | U | C | C | N/A | C | C | C | C | - | C | C | C | N/A |
 | short | U | C | C | N/A | C | C | C | C | C | - | C | C | N/A |
@@ -213,9 +213,9 @@ as `"1.23E+4"`).
 | timestamp_ntz | N/A | N/A | N/A | C | N/A | N/A | N/A | N/A | N/A | N/A | C | C | - |
 
 **Notes:**
-- **double -> decimal**: There can be rounding differences
+- **double -> decimal**: Rounding matches Spark on JDK 19 and later. On older JDKs, Spark's own result may differ for values whose shortest decimal form falls exactly on a rounding tie
 - **double -> string**: String formatting can differ for floating-point values near precision limits or when scientific notation is used
-- **float -> decimal**: There can be rounding differences
+- **float -> decimal**: Rounding matches Spark on JDK 19 and later. On older JDKs, Spark's own result may differ for values whose shortest decimal form falls exactly on a rounding tie
 - **float -> string**: String formatting can differ for floating-point values near precision limits or when scientific notation is used
 - **string -> date**: Only supports years between 262143 BC and 262142 AD
 <!-- prettier-ignore-end -->
@@ -232,8 +232,8 @@ as `"1.23E+4"`).
 | byte | U | C | - | N/A | C | C | C | C | C | C | C | C | N/A |
 | date | N/A | U | U | - | U | U | U | U | U | U | C | C | C |
 | decimal | N/A | C | C | N/A | - | C | C | C | C | C | C | C | N/A |
-| double | N/A | C | C | N/A | I | - | C | C | C | C | C | C | N/A |
-| float | N/A | C | C | N/A | I | C | - | C | C | C | C | C | N/A |
+| double | N/A | C | C | N/A | C | - | C | C | C | C | C | C | N/A |
+| float | N/A | C | C | N/A | C | C | - | C | C | C | C | C | N/A |
 | integer | U | C | C | N/A | C | C | C | - | C | C | C | C | N/A |
 | long | U | C | C | N/A | C | C | C | C | - | C | C | C | N/A |
 | short | U | C | C | N/A | C | C | C | C | C | - | C | C | N/A |
@@ -242,9 +242,9 @@ as `"1.23E+4"`).
 | timestamp_ntz | N/A | N/A | N/A | C | N/A | N/A | N/A | N/A | N/A | N/A | C | C | - |
 
 **Notes:**
-- **double -> decimal**: There can be rounding differences
+- **double -> decimal**: Rounding matches Spark on JDK 19 and later. On older JDKs, Spark's own result may differ for values whose shortest decimal form falls exactly on a rounding tie
 - **double -> string**: String formatting can differ for floating-point values near precision limits or when scientific notation is used
-- **float -> decimal**: There can be rounding differences
+- **float -> decimal**: Rounding matches Spark on JDK 19 and later. On older JDKs, Spark's own result may differ for values whose shortest decimal form falls exactly on a rounding tie
 - **float -> string**: String formatting can differ for floating-point values near precision limits or when scientific notation is used
 - **string -> date**: Only supports years between 262143 BC and 262142 AD
 <!-- prettier-ignore-end -->
