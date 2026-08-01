@@ -33,6 +33,10 @@ import org.apache.spark.sql.types.DecimalType
  * (SPARK-53968) it preserves the per-expression `allowDecimalPrecisionLoss` captured at view
  * creation time. Recomputing from the live `SQLConf` would re-label a stored DEC(38, 17) result
  * as DEC(38, 18) (or vice versa) and shift values by 10x (issue #4124).
+ *
+ * The `CheckOverflow` behavior also follows each expression's captured `evalMode`, since TRY
+ * arithmetic can be nested inside ANSI arithmetic (or vice versa) independently of the live
+ * session ANSI setting.
  */
 object DecimalPrecision {
   def promote(expr: Expression): Expression = {

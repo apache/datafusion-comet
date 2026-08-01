@@ -20,11 +20,11 @@
 package org.apache.spark.sql.comet
 
 import org.apache.spark.sql.CometTestBase
-import org.apache.spark.sql.catalyst.expressions.{Add, AttributeReference, CheckOverflow, EvalMode, NumericEvalContext}
+import org.apache.spark.sql.catalyst.expressions.{Add, AttributeReference, BinaryArithmetic, CheckOverflow, Divide, EvalMode, Expression, Multiply, NumericEvalContext, Remainder, Subtract}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.DecimalType
 
-import org.apache.comet.serde.QueryPlanSerde
+import org.apache.comet.serde.{ExprOuterClass, QueryPlanSerde}
 
 class CometDecimalArithmeticViewSuite extends CometTestBase {
 
@@ -70,20 +70,53 @@ class CometDecimalArithmeticViewSuite extends CometTestBase {
     val left = AttributeReference("a", DecimalType(10, 0))()
     val right = AttributeReference("b", DecimalType(10, 0))()
     val third = AttributeReference("c", DecimalType(10, 0))()
-    val tryAdd =
-      Add(left, right, NumericEvalContext(EvalMode.TRY, allowDecimalPrecisionLoss = true))
-    val ansiAdd =
-      Add(tryAdd, third, NumericEvalContext(EvalMode.ANSI, allowDecimalPrecisionLoss = true))
 
-    withSQLConf(SQLConf.ANSI_ENABLED.key -> "false") {
-      val proto = QueryPlanSerde.exprToProto(ansiAdd, Seq(left, right, third)).get
-      assert(proto.hasCheckOverflow)
-      val ansiOverflow = proto.getCheckOverflow
-      assert(ansiOverflow.getFailOnError)
+    val operations: Seq[(
+        String,
+        (Expression, Expression, NumericEvalContext) => BinaryArithmetic,
+        ExprOuterClass.Expr => ExprOuterClass.MathExpr)] = Seq(
+      ("add", Add.apply, _.getAdd),
+      ("subtract", Subtract.apply, _.getSubtract),
+      ("multiply", Multiply.apply, _.getMultiply),
+      ("divide", Divide.apply, _.getDivide),
+      ("remainder", Remainder.apply, _.getRemainder))
+    val tryContext = NumericEvalContext(EvalMode.TRY, allowDecimalPrecisionLoss = true)
+    val ansiContext = NumericEvalContext(EvalMode.ANSI, allowDecimalPrecisionLoss = true)
+    val expressionTrees = operations.map { case (name, operation, getMathExpr) =>
+      (name, operation(operation(left, right, tryContext), third, ansiContext), getMathExpr)
+    }
 
-      val tryAddProto = ansiOverflow.getChild.getAdd.getLeft
-      assert(tryAddProto.hasCheckOverflow)
-      assert(!tryAddProto.getCheckOverflow.getFailOnError)
+    Seq(false, true).foreach { sessionAnsiEnabled =>
+      withSQLConf(SQLConf.ANSI_ENABLED.key -> sessionAnsiEnabled.toString) {
+        expressionTrees.foreach { case (name, expression, getMathExpr) =>
+          val proto = QueryPlanSerde.exprToProto(expression, Seq(left, right, third)).get
+          assert(proto.hasCheckOverflow, s"$name under session ANSI=$sessionAnsiEnabled")
+          val ansiOverflow = proto.getCheckOverflow
+          assert(ansiOverflow.getFailOnError, s"$name under session ANSI=$sessionAnsiEnabled")
+
+          // Decimal division already adds its own CheckOverflow inside the one added by
+          // DecimalPrecision, so peel that wrapper before inspecting the Divide proto.
+          val mathExprProto =
+            if (name == "divide") {
+              assert(
+                ansiOverflow.getChild.hasCheckOverflow,
+                s"$name under session ANSI=$sessionAnsiEnabled")
+              val divideOverflow = ansiOverflow.getChild.getCheckOverflow
+              assert(
+                divideOverflow.getFailOnError,
+                s"$name under session ANSI=$sessionAnsiEnabled")
+              divideOverflow.getChild
+            } else {
+              ansiOverflow.getChild
+            }
+
+          val tryExprProto = getMathExpr(mathExprProto).getLeft
+          assert(tryExprProto.hasCheckOverflow, s"$name under session ANSI=$sessionAnsiEnabled")
+          assert(
+            !tryExprProto.getCheckOverflow.getFailOnError,
+            s"$name under session ANSI=$sessionAnsiEnabled")
+        }
+      }
     }
   }
 }
