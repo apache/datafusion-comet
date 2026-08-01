@@ -233,6 +233,8 @@ object CometConf extends ShimCometConf {
     createExecEnabledConfig("takeOrderedAndProject", defaultValue = true)
   val COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED: ConfigEntry[Boolean] =
     createExecEnabledConfig("localTableScan", defaultValue = false)
+  val COMET_EXEC_SAMPLE_ENABLED: ConfigEntry[Boolean] =
+    createExecEnabledConfig("sample", defaultValue = true)
 
   val COMET_NATIVE_COLUMNAR_TO_ROW_ENABLED: ConfigEntry[Boolean] =
     conf(s"$COMET_EXEC_CONFIG_PREFIX.columnarToRow.native.enabled")
@@ -240,10 +242,10 @@ object CometConf extends ShimCometConf {
       .doc(
         "Whether to enable native columnar to row conversion. When enabled, Comet will use " +
           "native Rust code to convert Arrow columnar data to Spark UnsafeRow format instead " +
-          "of the JVM implementation. This can improve performance for queries that need to " +
-          "convert between columnar and row formats.")
+          "of the JVM implementation. The native conversion carries a fixed JNI cost per batch " +
+          "and is slower than the JVM implementation for small batches.")
       .booleanConf
-      .createWithDefault(true)
+      .createWithDefault(false)
 
   val COMET_EXEC_SORT_MERGE_JOIN_WITH_JOIN_FILTER_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.exec.sortMergeJoinWithJoinFilter.enabled")
@@ -970,7 +972,7 @@ object ConfigHelpers {
   def timeFromString(str: String, unit: TimeUnit): Long = JavaUtils.timeStringAs(str, unit)
 
   def timeToString(v: Long, unit: TimeUnit): String =
-    TimeUnit.MILLISECONDS.convert(v, unit) + "ms"
+    s"${TimeUnit.MILLISECONDS.convert(v, unit)}ms"
 
   def byteFromString(str: String, unit: ByteUnit): Long = {
     val (input, multiplier) =
@@ -982,7 +984,8 @@ object ConfigHelpers {
     multiplier * JavaUtils.byteStringAs(input, unit)
   }
 
-  def byteToString(v: Long, unit: ByteUnit): String = unit.convertTo(v, ByteUnit.BYTE) + "b"
+  def byteToString(v: Long, unit: ByteUnit): String =
+    s"${unit.convertTo(v, ByteUnit.BYTE)}b"
 }
 
 private class TypedConfigBuilder[T](

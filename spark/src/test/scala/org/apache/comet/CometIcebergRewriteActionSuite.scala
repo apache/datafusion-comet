@@ -585,10 +585,11 @@ class CometIcebergRewriteActionSuite extends CometTestBase with CometIcebergTest
       classOrTarget: AnyRef,
       methodName: String,
       args: (Class[_], Any)*): AnyRef = {
-    val (clazz, target) = classOrTarget match {
-      case c: Class[_] => (c, null)
-      case t => (t.getClass, t)
-    }
+    // A `Class[_]` argument means a static call, so there is no receiver instance.
+    val isStatic = classOrTarget.isInstanceOf[Class[_]]
+    val clazz: Class[_] =
+      if (isStatic) classOrTarget.asInstanceOf[Class[_]] else classOrTarget.getClass
+    val target: AnyRef = if (isStatic) null else classOrTarget
     val (paramTypes, values) = args.unzip
     val method = clazz.getMethod(methodName, paramTypes: _*)
     method.setAccessible(true)

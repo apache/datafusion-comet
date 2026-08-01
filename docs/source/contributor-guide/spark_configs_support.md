@@ -27,8 +27,9 @@ verification has been performed, and any known gaps.
 
 The status column uses these values:
 
-- **Supported** -- Comet runs the affected expressions natively under every value of
-  the config, and produces results matching Spark.
+- **Supported** -- Comet honors every value of the config within the Comet pipeline and
+  produces results matching Spark. The execution path may be native or use the JVM codegen
+  dispatcher, as noted for each config.
 - **Partial** -- Comet runs natively for some values of the config but falls back to
   Spark for others, or runs natively but with documented incompatibilities.
 - **Falls back** -- Comet does not run the affected expressions natively under this
@@ -37,6 +38,12 @@ The status column uses these values:
 
 ## Audited Configurations
 
+- `spark.sql.legacy.followThreeValuedLogicInArrayExists`
+  - Default: `true`
+  - Status: Supported (JVM codegen dispatch)
+  - Affected expression: `exists`
+  - Spark versions checked: 3.4.3, 3.5.8, 4.0.2, 4.1.2
+  - Date: 2026-07-22
 - `spark.sql.legacy.timeParserPolicy`
   - Default: `EXCEPTION`
   - Status: Partial (see notes)
@@ -45,6 +52,29 @@ The status column uses these values:
   - Date: 2026-07-18
 
 ## Audit Notes
+
+### `spark.sql.legacy.followThreeValuedLogicInArrayExists`
+
+**Source.** Spark captures
+`SQLConf.LEGACY_ARRAY_EXISTS_FOLLOWS_THREE_VALUED_LOGIC` in the
+`ArrayExists.followThreeValuedLogic` constructor field. If no predicate result is `true` but at
+least one result is `null`, `exists` returns `null` when the config is `true` and `false` when it
+is `false`. A matching element still returns `true`, while a null input array still returns
+`null`, under either value.
+
+**Comet status.** `CometArrayExists` routes Spark's `ArrayExists` expression through the JVM
+codegen dispatcher. The dispatcher evaluates the Spark expression carrying the captured
+`followThreeValuedLogic` value inside the Comet pipeline, so both config values preserve Spark's
+semantics. If the dispatcher is disabled, the affected Comet operator falls back to Spark rather
+than executing with different semantics.
+
+**Test coverage.** `spark/src/test/resources/sql-tests/expressions/array/exists.sql` uses a
+`ConfigMatrix` to run both values and covers null arrays, empty arrays, matching predicates,
+no-match predicates with a null result, and predicates whose every result is null. The default
+`query` mode compares with Spark and requires a Comet operator. `CometCodegenHOFSuite` separately
+wraps the divergent column-backed case in `assertCodegenRan` and
+`checkSparkAnswerAndOperator`, directly verifying dispatcher activity and preventing the test
+from passing through silent Spark fallback.
 
 ### `spark.sql.legacy.timeParserPolicy`
 
