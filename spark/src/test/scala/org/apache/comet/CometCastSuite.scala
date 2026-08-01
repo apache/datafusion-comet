@@ -501,15 +501,27 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     castTest(generateFloats(), DataTypes.DoubleType)
   }
 
-  ignore("cast FloatType to DecimalType(10,2)") {
-    // // https://github.com/apache/datafusion-comet/issues/1371
+  test("cast FloatType to DecimalType(10,2)") {
     castTest(generateFloats(), DataTypes.createDecimalType(10, 2))
   }
 
-  test("cast FloatType to DecimalType(10,2) - allow incompat") {
-    withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[Cast]) -> "true") {
-      castTest(generateFloats(), DataTypes.createDecimalType(10, 2))
+  // Values whose shortest decimal form sits exactly on a rounding tie while the binary
+  // value is just below it, so rounding the binary value disagrees with Spark's
+  // Double.toString-based rounding (https://github.com/apache/datafusion-comet/issues/1371)
+  private val decimalRoundingEdgeCases =
+    Seq(0.5153125d, -0.5153125d, 0.5203125d, 1.005d, -1.005d, 99.995d, -99.995d, 0.999995d)
+
+  private def castRoundingEdgeCasesTest(input: DataFrame): Unit = {
+    Seq(
+      DataTypes.createDecimalType(10, 2),
+      DataTypes.createDecimalType(8, 6),
+      DataTypes.createDecimalType(4, 2)).foreach { toType =>
+      castTest(input, toType)
     }
+  }
+
+  test("cast FloatType to DecimalType - rounding edge cases") {
+    castRoundingEdgeCasesTest(withNulls(decimalRoundingEdgeCases.map(_.toFloat)).toDF("a"))
   }
 
   test("cast FloatType to StringType") {
@@ -566,15 +578,12 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     castTest(generateDoubles(), DataTypes.FloatType)
   }
 
-  ignore("cast DoubleType to DecimalType(10,2)") {
-    // https://github.com/apache/datafusion-comet/issues/1371
+  test("cast DoubleType to DecimalType(10,2)") {
     castTest(generateDoubles(), DataTypes.createDecimalType(10, 2))
   }
 
-  test("cast DoubleType to DecimalType(10,2) - allow incompat") {
-    withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[Cast]) -> "true") {
-      castTest(generateDoubles(), DataTypes.createDecimalType(10, 2))
-    }
+  test("cast DoubleType to DecimalType - rounding edge cases") {
+    castRoundingEdgeCasesTest(withNulls(decimalRoundingEdgeCases).toDF("a"))
   }
 
   test("cast DoubleType to StringType") {
@@ -1807,16 +1816,25 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("cast MapType propagates Incompatible from inner value cast") {
-    // Float → Decimal is Incompatible due to rounding (see canCastFromFloat).
+    // Negative-scale Decimal → String is Incompatible when
+    // spark.sql.legacy.allowNegativeScaleOfDecimal is disabled (see canCastToString).
     // The Map arm must propagate that Incompatible up rather than silently
     // marking the whole Map → Map cast Compatible.
-    assert(
-      CometCast.isSupported(
-        MapType(IntegerType, FloatType),
-        MapType(IntegerType, DecimalType(10, 2)),
-        None,
-        CometEvalMode.LEGACY) ==
-        Incompatible(Some("There can be rounding differences")))
+    // Note: DecimalType(7, -2) must be constructed while the config is enabled, because
+    // the constructor itself checks the config and throws if negative scale is disallowed.
+    var negScaleType: DecimalType = null
+    withSQLConf("spark.sql.legacy.allowNegativeScaleOfDecimal" -> "true") {
+      negScaleType = DecimalType(7, -2)
+    }
+    withSQLConf("spark.sql.legacy.allowNegativeScaleOfDecimal" -> "false") {
+      assert(
+        CometCast.isSupported(
+          MapType(IntegerType, negScaleType),
+          MapType(IntegerType, StringType),
+          None,
+          CometEvalMode.LEGACY) ==
+          Incompatible(Some(CometCast.negativeScaleDecimalToStringReason)))
+    }
   }
 
   test("cast MapType propagates Unsupported from nested value cast") {
