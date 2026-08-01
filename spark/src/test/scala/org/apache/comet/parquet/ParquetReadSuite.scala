@@ -1284,7 +1284,7 @@ abstract class ParquetReadSuite extends CometTestBase {
     checkAnswer(
       // Decimal column in this file is encoded using plain dictionary
       readResourceParquetFile("test-data/dec-in-fixed-len.parquet"),
-      spark.range(1 << 4).select('id % 10 cast DecimalType(10, 2) as 'fixed_len_dec))
+      spark.range(1 << 4).select($"id" % 10 cast DecimalType(10, 2) as "fixed_len_dec"))
   }
 
   test("read long decimals with precision <= 9") {
