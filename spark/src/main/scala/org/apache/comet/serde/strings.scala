@@ -676,7 +676,17 @@ object CometGetJsonObject extends CometCodegenDispatch[GetJsonObject] with Nativ
     }
 }
 
-object CometElt extends CometScalarFunction[Elt]("elt")
+object CometElt extends CometScalarFunction[Elt]("elt") with CodegenDispatchFallback {
+  override def getIncompatibleReasons(): Seq[String] = Seq(
+    "The elt function does not respect spark.sql.ansi.enabled=true")
+
+  override def getSupportLevel(expr: Elt): SupportLevel = {
+    if (expr.failOnError) {
+      return Incompatible(Some("The elt function does not respect spark.sql.ansi.enabled=true"))
+    }
+    Compatible()
+  }
+}
 
 // Expressions routed through the JVM codegen dispatcher: no native implementation, so Spark's own
 // doGenCode runs inside the Comet pipeline, matching Spark exactly.

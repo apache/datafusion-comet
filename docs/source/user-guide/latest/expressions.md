@@ -561,7 +561,7 @@ expression-level). The `outer` variants are wired but marked `Incompatible`; the
 | `concat_ws` | ✅ | Native |  |
 | `contains` | ✅ | — |  |
 | `decode` | ✅ | — |  |
-| `elt` | ✅ | Codegen dispatch |  |
+| `elt` | ✅ | Hybrid | The elt function does not respect spark.sql.ansi.enabled=true |
 | `encode` | 🔜 | — | Lowers to `StaticInvoke(encode)` (not allowlisted); falls back |
 | `endswith` | ✅ | — |  |
 | `find_in_set` | ✅ | Codegen dispatch |  |
