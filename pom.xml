@@ -675,7 +675,7 @@ under the License.
       <properties>
         <scala.version>2.12.18</scala.version>
         <scala.binary.version>2.12</scala.binary.version>
-        <spark.version>3.5.8</spark.version>
+        <spark.version>3.5.9</spark.version>
         <spark.version.short>3.5</spark.version.short>
         <parquet.version>1.13.1</parquet.version>
         <semanticdb.version>4.8.8</semanticdb.version>
@@ -825,7 +825,7 @@ under the License.
                   <javacArg>${java.version}</javacArg>
                   <javacArg>-target</javacArg>
                   <javacArg>${java.version}</javacArg>
-                  <javacArg>-Xlint:all,-serial,-path,-try</javacArg>
+                  <javacArg>-Xlint:all,-serial,-path,-try,-processing</javacArg>
                 </javacArgs>
                 <compilerPlugins>
                   <compilerPlugin>
@@ -922,7 +922,7 @@ under the License.
               <javacArg>${maven.compiler.source}</javacArg>
               <javacArg>-target</javacArg>
               <javacArg>${maven.compiler.target}</javacArg>
-              <javacArg>-Xlint:all,-serial,-path,-try</javacArg>
+              <javacArg>-Xlint:all,-serial,-path,-try,-processing</javacArg>
             </javacArgs>
           </configuration>
         </plugin>
