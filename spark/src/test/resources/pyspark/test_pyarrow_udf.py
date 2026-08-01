@@ -33,7 +33,7 @@ Usage:
     # explicitly via COMET_JAR:
     export COMET_JAR=$PWD/spark/target/comet-spark-spark3.5_2.12-0.16.0-SNAPSHOT.jar
 
-    pip install pyspark==3.5.8 pyarrow pandas pytest
+    pip install pyspark==3.5.9 pyarrow pandas pytest
     pytest -v spark/src/test/resources/pyspark/test_pyarrow_udf.py
 """
 
