@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow::array::{ArrayRef, Int32Array, ListArray, StringArray};
+use arrow::array::{ArrayRef, Int32Array, ListArray, StringArray, StructArray};
 use arrow::buffer::{NullBuffer, OffsetBuffer};
 use arrow::datatypes::{DataType, Field};
 use criterion::{criterion_group, criterion_main, Criterion};
@@ -71,6 +71,41 @@ fn string_lists(rows: usize, elems_per_row: usize, offset: usize) -> (ArrayRef, 
     )
 }
 
+fn nested_int_lists(rows: usize, elems_per_row: usize) -> (ArrayRef, ArrayRef) {
+    let total = rows * elems_per_row;
+    let build = |offset: i32| {
+        let values: ArrayRef = Arc::new(Int32Array::from_iter_values(
+            (0..total).flat_map(|i| [0, 1, 2, i as i32 + offset]),
+        ));
+        list_of(values, total, 4)
+    };
+    (
+        list_of(build(0), rows, elems_per_row),
+        list_of(build(total as i32), rows, elems_per_row),
+    )
+}
+
+fn struct_lists(rows: usize, elems_per_row: usize) -> (ArrayRef, ArrayRef) {
+    let total = rows * elems_per_row;
+    let build = |offset: i32| -> ArrayRef {
+        let first: ArrayRef = Arc::new(Int32Array::from_value(0, total));
+        let second: ArrayRef = Arc::new(Int32Array::from_iter_values(
+            (0..total).map(|i| i as i32 + offset),
+        ));
+        Arc::new(StructArray::from(vec![
+            (Arc::new(Field::new("first", DataType::Int32, false)), first),
+            (
+                Arc::new(Field::new("second", DataType::Int32, false)),
+                second,
+            ),
+        ]))
+    };
+    (
+        list_of(build(0), rows, elems_per_row),
+        list_of(build(total as i32), rows, elems_per_row),
+    )
+}
+
 fn invoke(udf: &SparkArraysOverlap, left: &ArrayRef, right: &ArrayRef) -> ColumnarValue {
     udf.invoke_with_args(ScalarFunctionArgs {
         args: vec![
@@ -111,6 +146,26 @@ fn criterion_benchmark(c: &mut Criterion) {
 
     let (left, right) = string_lists(1024, 64, 250);
     c.bench_function("spark_arrays_overlap: utf8 long lists", |b| {
+        b.iter(|| black_box(invoke(&udf, black_box(&left), black_box(&right))))
+    });
+
+    let (left, right) = nested_int_lists(rows, 8);
+    c.bench_function("spark_arrays_overlap: nested int32 short lists", |b| {
+        b.iter(|| black_box(invoke(&udf, black_box(&left), black_box(&right))))
+    });
+
+    let (left, right) = nested_int_lists(64, 64);
+    c.bench_function("spark_arrays_overlap: nested int32 long lists", |b| {
+        b.iter(|| black_box(invoke(&udf, black_box(&left), black_box(&right))))
+    });
+
+    let (left, right) = struct_lists(rows, 8);
+    c.bench_function("spark_arrays_overlap: nested struct short lists", |b| {
+        b.iter(|| black_box(invoke(&udf, black_box(&left), black_box(&right))))
+    });
+
+    let (left, right) = struct_lists(64, 64);
+    c.bench_function("spark_arrays_overlap: nested struct long lists", |b| {
         b.iter(|| black_box(invoke(&udf, black_box(&left), black_box(&right))))
     });
 }

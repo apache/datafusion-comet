@@ -388,11 +388,60 @@ where
     }
 }
 
+/// Row overlap for nested element types using one comparator for the full child arrays.
+fn nested_row_overlap<'a>(
+    left: &'a ArrayRef,
+    right: &'a ArrayRef,
+    comparator: &'a dyn Fn(usize, usize) -> Ordering,
+) -> impl FnMut(Range<usize>, Range<usize>) -> bool + 'a {
+    move |left_range, right_range| {
+        let (probe, probe_range, search, search_range, probe_is_left) =
+            if left_range.len() <= right_range.len() {
+                (left, left_range, right, right_range, true)
+            } else {
+                (right, right_range, left, left_range, false)
+            };
+
+        for pi in probe_range {
+            if probe.is_null(pi) {
+                continue;
+            }
+            for si in search_range.clone() {
+                if search.is_null(si) {
+                    continue;
+                }
+                let (li, ri) = if probe_is_left { (pi, si) } else { (si, pi) };
+                if comparator(li, ri) == Ordering::Equal {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+}
+
 /// Fallback for nested and otherwise unhandled element types.
 fn arrays_overlap_list_generic<OffsetSize: OffsetSizeTrait>(
     left: &GenericListArray<OffsetSize>,
     right: &GenericListArray<OffsetSize>,
 ) -> Result<ArrayRef> {
+    let left_values = left.values();
+    let right_values = right.values();
+    if left_values.data_type() == right_values.data_type()
+        && needs_comparator(left_values.data_type())
+    {
+        let comparator = make_comparator(
+            left_values.as_ref(),
+            right_values.as_ref(),
+            SortOptions::default(),
+        )?;
+        return Ok(overlap_rows(
+            left,
+            right,
+            nested_row_overlap(left_values, right_values, comparator.as_ref()),
+        ));
+    }
+
     let len = left.len();
     let mut builder = BooleanArray::builder(len);
 
@@ -428,26 +477,12 @@ fn arrays_overlap_list_generic<OffsetSize: OffsetSizeTrait>(
             (&right_values, &left_values)
         };
 
-        let comparator = if needs_comparator(probe.data_type()) {
-            Some(make_comparator(
-                probe.as_ref(),
-                search.as_ref(),
-                SortOptions::default(),
-            )?)
-        } else {
-            None
-        };
-
         for pi in 0..probe.len() {
             if probe.is_null(pi) {
                 has_null = true;
                 continue;
             }
-            let (found, null_eq) = if let Some(comparator) = &comparator {
-                find_in_array_nested(pi, search, comparator.as_ref())
-            } else {
-                find_in_array_flat(probe, pi, search)?
-            };
+            let (found, null_eq) = find_in_array_flat(probe, pi, search)?;
             if null_eq {
                 has_null = true;
             }
@@ -475,25 +510,6 @@ fn find_in_array_flat(probe: &ArrayRef, pi: usize, search: &ArrayRef) -> Result<
     let eq_result = eq(search, &scalar)
         .map_err(|e| datafusion::error::DataFusionError::ArrowError(Box::new(e), None))?;
     Ok((eq_result.true_count() > 0, eq_result.null_count() > 0))
-}
-
-/// Element-by-element search using Arrow's nested comparator.
-fn find_in_array_nested(
-    pi: usize,
-    search: &ArrayRef,
-    comparator: &dyn Fn(usize, usize) -> Ordering,
-) -> (bool, bool) {
-    let mut has_null = false;
-    for si in 0..search.len() {
-        if search.is_null(si) {
-            has_null = true;
-            continue;
-        }
-        if comparator(pi, si) == Ordering::Equal {
-            return (true, has_null);
-        }
-    }
-    (false, has_null)
 }
 
 fn needs_comparator(dt: &DataType) -> bool {
@@ -706,19 +722,41 @@ mod tests {
 
     #[test]
     fn test_nested_float_total_order() -> Result<()> {
-        // Preserve the existing Arrow total-order behavior: NaN matches itself, while signed
-        // zeros are distinct.
+        // NaN equality matches Spark.
         let left = make_nested_float_list(&[&[f64::NAN]]);
         let right = make_nested_float_list(&[&[f64::NAN]]);
         let result = arrays_overlap_list::<i32>(&left, &right)?;
         let result = result.as_any().downcast_ref::<BooleanArray>().unwrap();
         assert!(result.value(0));
 
+        // Signed-zero equality does not yet match Spark; see #5191.
         let left = make_nested_float_list(&[&[0.0]]);
         let right = make_nested_float_list(&[&[-0.0]]);
         let result = arrays_overlap_list::<i32>(&left, &right)?;
         let result = result.as_any().downcast_ref::<BooleanArray>().unwrap();
         assert!(!result.value(0));
+        Ok(())
+    }
+
+    #[test]
+    fn test_nested_array_sliced_offsets_and_probe_swap() -> Result<()> {
+        let make_rows = |rows: &[&[&[i32]]]| {
+            let mut builder = ListBuilder::new(ListBuilder::new(Int32Builder::new()));
+            for row in rows {
+                for element in *row {
+                    builder.values().values().append_slice(element);
+                    builder.values().append(true);
+                }
+                builder.append(true);
+            }
+            builder.finish()
+        };
+        let left = make_rows(&[&[&[999]], &[&[10]], &[&[50], &[60], &[70]]]).slice(1, 2);
+        let right = make_rows(&[&[&[999]], &[&[20], &[30], &[40]], &[&[60]]]).slice(1, 2);
+
+        let result = arrays_overlap_list::<i32>(&left, &right)?;
+        let result = result.as_any().downcast_ref::<BooleanArray>().unwrap();
+        assert_eq!(result, &BooleanArray::from(vec![false, true]));
         Ok(())
     }
 
