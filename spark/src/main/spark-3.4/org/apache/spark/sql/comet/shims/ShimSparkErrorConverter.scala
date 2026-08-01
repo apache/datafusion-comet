@@ -23,11 +23,10 @@ import java.io.FileNotFoundException
 
 import scala.util.matching.Regex
 
-import org.apache.spark.{QueryContext, SparkDateTimeException, SparkException, SparkUpgradeException}
+import org.apache.spark.{QueryContext, SparkDateTimeException, SparkException}
 import org.apache.spark.sql.catalyst.trees.SQLQueryContext
 import org.apache.spark.sql.errors.QueryExecutionErrors
 import org.apache.spark.sql.execution.datasources.SchemaColumnConvertNotSupportedException
-import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 import org.apache.spark.unsafe.types.UTF8String
 
@@ -300,28 +299,7 @@ trait ShimSparkErrorConverter {
             params("matchedFields").toString))
 
       case "LegacyDatetimeRebase" =>
-        // Comet cannot rebase hybrid-calendar dates/timestamps, so it refuses the read. Spark
-        // raises SparkUpgradeException for the same data, and its FileScanRDD deliberately
-        // rethrows that type rather than wrapping it in FAILED_READ_FILE -- the file is not
-        // corrupt. Classify it the same way, naming Spark's own config in the templated message,
-        // and carry Comet's specific remedy as the cause since the template's "set it to LEGACY /
-        // CORRECTED" advice does not apply to Comet.
-        val rebaseCause = new RuntimeException(
-          params.get("message").map(_.toString).getOrElse("") +
-            params
-              .get("filePath")
-              .map(_.toString)
-              .filter(_.nonEmpty)
-              .map(p => s" File: $p")
-              .getOrElse(""))
-        Some(
-          new SparkUpgradeException(
-            "INCONSISTENT_BEHAVIOR_CROSS_VERSION.READ_ANCIENT_DATETIME",
-            Map(
-              "format" -> "Parquet",
-              "config" -> QueryExecutionErrors.toSQLConf(SQLConf.PARQUET_REBASE_MODE_IN_READ.key),
-              "option" -> QueryExecutionErrors.toDSOption("datetimeRebaseMode")),
-            rebaseCause))
+        Some(CometExceptions.legacyDatetimeRebase(params))
 
       case "ParquetMissingFieldIds" =>
         // Mirror Spark's `ParquetReadSupport.inferSchema`, which throws a plain

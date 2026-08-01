@@ -86,14 +86,14 @@ object SparkErrorConverter extends ShimSparkErrorConverter {
     val json = parse(e.getMessage)
     val errorJson = json.extract[ErrorJson]
     val rawParams = errorJson.params.getOrElse(Map.empty)
-    // CannotReadFile carries the offending file path natively only for the object_store NotFound
-    // case; for corrupt/truncated parquet the native error has no path, so fall back to the
-    // per-task file list threaded in from CometExecIterator. LegacyDatetimeRebase never carries a
-    // path natively (the object-store location it has available is scheme- and slash-normalised),
-    // so it always relies on the same fallback.
-    val pathFromTaskList = Set("CannotReadFile", "LegacyDatetimeRebase")
+    // Any error that declares a `filePath` but left it empty gets the per-task file list threaded
+    // in from CometExecIterator. The native side knows the path only in some cases (e.g.
+    // CannotReadFile for an object_store NotFound); for corrupt/truncated parquet, a
+    // legacy-calendar rejection, or a schema-convert mismatch it does not, and its object-store
+    // location would be scheme- and slash-normalised anyway. Keyed off the payload shape rather
+    // than a list of error-type names, so a new error carrying `filePath` needs no edit here.
     val params =
-      if (pathFromTaskList.contains(errorJson.errorType)
+      if (rawParams.contains("filePath")
         && rawParams.get("filePath").forall(p => p == null || p.toString.isEmpty)
         && taskFilePaths.nonEmpty) {
         rawParams + ("filePath" -> taskFilePaths.mkString(","))

@@ -1711,30 +1711,4 @@ class ParquetReadV1Suite extends ParquetReadSuite with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("reading ancient dates before 1582") {
-    // This file was written by Spark 3.2.0 with datetimeRebaseModeInWrite=LEGACY, so its dates are
-    // in the hybrid Julian calendar. Comet does not implement rebasing, so by default it refuses
-    // the read rather than returning values shifted by up to ten days -- see
-    // ParquetDatetimeRebaseSuite. Opting out with spark.comet.exceptionOnDatetimeRebase=false
-    // restores the unrebased read, which is what this test covers.
-    val file =
-      getResourceParquetFilePath("test-data/before_1582_date_v3_2_0.snappy.parquet")
-
-    withSQLConf(CometConf.COMET_EXCEPTION_ON_LEGACY_DATE_TIMESTAMP.key -> "false") {
-      val df = spark.read.parquet(file)
-
-      // Verify Comet scan is in the plan
-      val plan = df.queryExecution.executedPlan
-      checkCometOperators(plan)
-
-      // Verify all 8 rows are read and contain dates before 1582
-      val rows = df.collect()
-      assert(rows.length == 8, s"Expected 8 rows, got ${rows.length}")
-      rows.foreach { row =>
-        val date = row.getDate(0)
-        assert(date.toLocalDate.getYear < 1582, s"Expected date before 1582, got $date")
-      }
-    }
-  }
-
 }

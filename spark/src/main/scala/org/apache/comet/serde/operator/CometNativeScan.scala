@@ -24,7 +24,6 @@ import scala.jdk.CollectionConverters._
 
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions.{Expression, Literal}
-import org.apache.spark.sql.catalyst.util.RebaseDateTime
 import org.apache.spark.sql.catalyst.util.ResolveDefaultColumns.getExistenceDefaultValues
 import org.apache.spark.sql.comet.{CometNativeExec, CometNativeScanExec, CometScanExec}
 import org.apache.spark.sql.execution.{FileSourceScanExec, InSubqueryExec, SubqueryAdaptiveBroadcastExec}
@@ -223,16 +222,12 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with Logging {
       commonBuilder.setAllowTimestampLtzToNtz(CometConf.COMET_ALLOW_TIMESTAMP_LTZ_AS_NTZ)
 
       // Comet does not implement datetime rebasing, so the native scan fails on a file that
-      // would need it rather than returning silently-shifted values. Send Spark's own rebase
-      // thresholds along with the flag: the native side compares them against Parquet row-group
-      // statistics to tell a legacy-written file that actually holds affected values from one
-      // whose values all rebase to themselves. Taking them from `RebaseDateTime` rather than
-      // hardcoding them natively keeps them exact for whichever Spark version is in use --
-      // `lastSwitchJulianTs` in particular is derived from Spark's per-timezone rebase tables.
+      // would need it rather than returning silently-shifted values. The rebase switch points the
+      // native side compares row-group statistics against are hardcoded there and asserted against
+      // Spark's `RebaseDateTime` by ParquetDatetimeRebaseSuite -- reading them here would force
+      // that object's static initializer, which parses ~590 KB of bundled JSON on the driver.
       commonBuilder.setExceptionOnLegacyDatetime(
         CometConf.COMET_EXCEPTION_ON_LEGACY_DATE_TIMESTAMP.get(scan.conf))
-      commonBuilder.setLegacyDatetimeLastSwitchDay(RebaseDateTime.lastSwitchJulianDay)
-      commonBuilder.setLegacyDatetimeLastSwitchMicros(RebaseDateTime.lastSwitchJulianTs)
       // Spark consults these read modes only for files whose footer records no writer version
       // (Spark 2.4.5 and earlier, plus every non-Spark writer). CORRECTED asserts such a file's
       // values are already Proleptic Gregorian, which lets Comet read them; the EXCEPTION default

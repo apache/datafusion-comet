@@ -18,7 +18,7 @@
 use crate::execution::operators::ExecutionError;
 use crate::parquet::comet_parquet_reader_factory::CometParquetFileReaderFactory;
 use crate::parquet::encryption_support::{CometEncryptionConfig, ENCRYPTION_FACTORY_ID};
-use crate::parquet::legacy_datetime::{LegacyCalendarGuard, ReadModes, RebaseThresholds};
+use crate::parquet::legacy_datetime::LegacyCalendarGuard;
 use crate::parquet::parquet_support::SparkParquetOptions;
 use crate::parquet::schema_adapter::SparkPhysicalExprAdapterFactory;
 use arrow::datatypes::{Field, SchemaRef};
@@ -58,11 +58,8 @@ use std::sync::Arc;
 ///   `data_filters`: Any predicate that must be applied to the data returned by the scan. If
 /// specified, then `data_schema` must also be specified.
 ///
-///   `exception_on_legacy_datetime` / `rebase_thresholds` / `rebase_read_modes`:
-/// `spark.comet.exceptionOnDatetimeRebase`, Spark's rebase switch points, and Spark's
-/// `*RebaseModeInRead` settings. When the config is set and the scan reads a calendar-sensitive
-/// column, a file the footer does not prove Proleptic Gregorian, and which holds a value below
-/// those switch points, fails the scan instead of returning unrebased values.
+///   `legacy_calendar_guard`: `Some` only when `spark.comet.exceptionOnDatetimeRebase` is set and
+/// the scan reads a calendar-sensitive column; see `LegacyCalendarGuard::for_scan`.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn init_datasource_exec(
     required_schema: SchemaRef,
@@ -82,9 +79,7 @@ pub(crate) fn init_datasource_exec(
     encryption_enabled: bool,
     use_field_id: bool,
     ignore_missing_field_id: bool,
-    exception_on_legacy_datetime: bool,
-    rebase_thresholds: RebaseThresholds,
-    rebase_read_modes: ReadModes,
+    legacy_calendar_guard: Option<LegacyCalendarGuard>,
 ) -> Result<Arc<DataSourceExec>, ExecutionError> {
     // Computed once and reused below for `try_pushdown_filters`. `copied_config()` clones only
     // `SessionConfig` (an `Arc<ConfigOptions>` plus a small extensions map); `SessionContext::
@@ -171,8 +166,7 @@ pub(crate) fn init_datasource_exec(
     // The same factory is the enforcement point for `spark.comet.exceptionOnDatetimeRebase`: it
     // sees each file's footer and row-group statistics, which together are what distinguish a
     // legacy-written file that actually holds values needing rebasing from one whose values all
-    // rebase to themselves. `for_scan` returns `None` -- disarming the check entirely -- when the
-    // config is off or the scan reads nothing calendar-sensitive.
+    // rebase to themselves. A `None` guard disarms the check entirely.
     //
     // TODO: metadata I/O is invisible in metrics. `fetch_metadata` reads via `ObjectStore::get_ranges`,
     // bypassing the `get_bytes` path where `bytes_scanned` is counted. A byte-counting ObjectStore
@@ -180,13 +174,6 @@ pub(crate) fn init_datasource_exec(
     let runtime_env = session_ctx.runtime_env();
     let store = runtime_env.object_store(&object_store_url)?;
     let metadata_cache = runtime_env.cache_manager.get_file_metadata_cache();
-    let legacy_calendar_guard = LegacyCalendarGuard::for_scan(
-        exception_on_legacy_datetime,
-        &required_schema,
-        case_sensitive,
-        rebase_thresholds,
-        rebase_read_modes,
-    );
     parquet_source = parquet_source.with_parquet_file_reader_factory(Arc::new(
         CometParquetFileReaderFactory::new(store, metadata_cache, legacy_calendar_guard),
     ));
@@ -426,15 +413,7 @@ mod tests {
             false,
             false,
             false,
-            false,
-            RebaseThresholds {
-                last_switch_day: 0,
-                last_switch_micros: 0,
-            },
-            ReadModes {
-                datetime_corrected: false,
-                int96_corrected: false,
-            },
+            None,
         )
         .unwrap();
 

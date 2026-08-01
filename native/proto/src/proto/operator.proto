@@ -139,16 +139,11 @@ message NativeScanCommon {
   // in its footer and actually holds a value old enough to be rebased. Comet
   // does not implement rebasing.
   bool exception_on_legacy_datetime = 19;
-  // Spark's `RebaseDateTime.lastSwitchJulianDay`: the days-since-epoch value at
-  // and above which julian-to-gregorian date rebasing is the identity
-  // (1582-10-15). Sent from the JVM rather than hardcoded natively so it cannot
-  // drift from the Spark version Comet is running against.
-  int32 legacy_datetime_last_switch_day = 20;
-  // Spark's `RebaseDateTime.lastSwitchJulianTs`: the micros-since-epoch value at
-  // and above which julian-to-gregorian timestamp rebasing is the identity for
-  // every time zone. Computed by Spark from its per-zone rebase tables, so it is
-  // sent from the JVM for the same reason as the day threshold above.
-  int64 legacy_datetime_last_switch_micros = 21;
+  // Field numbers 20 and 21 previously carried Spark's rebase switch points. They
+  // are hardcoded natively now (reading them forced RebaseDateTime's static
+  // initializer, which parses ~590 KB of JSON on the driver) and asserted against
+  // Spark's values by ParquetDatetimeRebaseSuite. Do not reuse the numbers.
+  reserved 20, 21;
   // spark.sql.parquet.datetimeRebaseModeInRead == CORRECTED. Spark applies the read mode only to
   // files whose footer does not record a writer version (Spark 2.4.5 and earlier, and non-Spark
   // writers); CORRECTED asserts their values are already Proleptic Gregorian.

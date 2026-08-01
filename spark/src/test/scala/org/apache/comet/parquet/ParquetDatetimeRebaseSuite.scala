@@ -21,6 +21,7 @@ package org.apache.comet.parquet
 
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.DataFrame
+import org.apache.spark.sql.catalyst.util.RebaseDateTime
 import org.apache.spark.sql.comet.CometNativeScanExec
 import org.apache.spark.sql.internal.SQLConf
 
@@ -51,47 +52,65 @@ class ParquetDatetimeRebaseSuite extends CometTestBase {
   /** What a legacy-written `ancientDate` reads back as when nobody rebases it. */
   private val ancientDateUnrebased = "1000-01-06"
 
-  /** Writes `dates` (plus each date's text as a `label` column) in the given rebase mode. */
-  private def writeDates(path: String, mode: String, dates: String*): Unit = {
-    val values = dates.map(d => s"('$d')").mkString(", ")
-    withSQLConf(SQLConf.PARQUET_REBASE_MODE_IN_WRITE.key -> mode) {
-      spark
-        .sql(s"SELECT cast(s as date) AS d, s AS label FROM VALUES $values AS v(s)")
-        .write
-        .mode("overwrite")
-        .parquet(path)
+  /** Writes the rows `select` produces to `path`, under the given SQL confs. */
+  private def writeParquet(path: String, select: String, confs: (String, String)*): Unit =
+    withSQLConf(confs: _*) {
+      spark.sql(select).write.mode("overwrite").parquet(path)
     }
-  }
+
+  /** Writes `dates` (plus each date's text as a `label` column) in the given rebase mode. */
+  private def writeDates(path: String, mode: String, dates: String*): Unit =
+    writeParquet(
+      path,
+      s"SELECT cast(s as date) AS d, s AS label " +
+        s"FROM VALUES ${dates.map(d => s"('$d')").mkString(", ")} AS v(s)",
+      SQLConf.PARQUET_REBASE_MODE_IN_WRITE.key -> mode)
 
   private def writeLegacyDates(path: String): Unit =
     writeDates(path, "LEGACY", ancientDate, modernDate)
 
-  private def writeCorrectedDates(path: String): Unit =
-    writeDates(path, "CORRECTED", ancientDate, modernDate)
+  /** `checkSparkAnswerAndOperator`, additionally requiring Comet's native Parquet scan. */
+  private def checkNativeScanAnswer(df: => DataFrame): Unit =
+    checkSparkAnswerAndOperator(df, includeClasses = Seq(classOf[CometNativeScanExec]))
 
+  /**
+   * Asserts a native scan without comparing to Spark, for the tests that deliberately expect
+   * Comet to differ from Spark. `stripAQEPlan` mirrors what `checkSparkAnswerAndOperator` does.
+   */
   private def assertNativeScan(df: DataFrame): Unit = {
-    val plan = df.queryExecution.executedPlan
+    val plan = stripAQEPlan(df.queryExecution.executedPlan)
     assert(
       plan.collectLeaves().exists(_.isInstanceOf[CometNativeScanExec]),
       s"expected a CometNativeScanExec, got:\n$plan")
   }
 
-  /** The messages in a throwable's cause chain, for substring assertions. */
-  private def causeChain(t: Throwable): List[String] =
-    Iterator
-      .iterate(t)(_.getCause)
-      .takeWhile(_ != null)
-      .map(e => s"${e.getClass.getName}: ${e.getMessage}")
-      .toList
+  /** A throwable and everything in its cause chain. */
+  private def causeChain(t: Throwable): List[Throwable] =
+    Iterator.iterate(t)(_.getCause).takeWhile(_ != null).toList
+
+  private def render(chain: List[Throwable]): String =
+    chain.map(e => s"${e.getClass.getName}: ${e.getMessage}").mkString("\n  ")
 
   private def assertRaisesOnRebase(df: => DataFrame): Unit = {
     val chain = causeChain(intercept[Throwable](df.collect()))
+    val messages = chain.map(_.getMessage).filter(_ != null)
     assert(
-      chain.exists(_.contains("legacy hybrid (Julian + Gregorian) calendar")),
-      s"expected the legacy-calendar rejection in the cause chain, got:\n  ${chain.mkString("\n  ")}")
+      messages.exists(_.contains("legacy hybrid (Julian + Gregorian) calendar")),
+      s"expected the legacy-calendar rejection in the cause chain, got:\n  ${render(chain)}")
     assert(
-      chain.exists(_.contains(CometConf.COMET_EXCEPTION_ON_LEGACY_DATE_TIMESTAMP.key)),
-      s"expected the message to name the config that raised, got:\n  ${chain.mkString("\n  ")}")
+      messages.exists(_.contains(CometConf.COMET_EXCEPTION_ON_LEGACY_DATE_TIMESTAMP.key)),
+      s"expected the message to name the config that raised, got:\n  ${render(chain)}")
+  }
+
+  test("the native rebase thresholds match Spark's own") {
+    // The native guard hardcodes these rather than receiving them from the JVM, because touching
+    // RebaseDateTime forces a static initializer that parses ~590 KB of bundled JSON and retains
+    // several MB -- a cost every driver would pay on its first native scan. This test is what keeps
+    // the copies honest: if Spark ever moves a switch point, it fails here rather than silently
+    // shifting the threshold. Keep in sync with LAST_SWITCH_JULIAN_DAY / LAST_SWITCH_JULIAN_MICROS
+    // in native/core/src/parquet/legacy_datetime.rs.
+    assert(RebaseDateTime.lastSwitchJulianDay == -141427) // 1582-10-15
+    assert(RebaseDateTime.lastSwitchJulianTs == -2208988800000000L) // 1900-01-01T00:00:00Z
   }
 
   test("ancient legacy-calendar dates raise by default") {
@@ -137,9 +156,7 @@ class ParquetDatetimeRebaseSuite extends CometTestBase {
     withTempPath { dir =>
       val path = dir.getCanonicalPath
       writeLegacyDates(path)
-      val df = spark.read.parquet(path).select("label")
-      assertNativeScan(df)
-      checkSparkAnswerAndOperator(df)
+      checkNativeScanAnswer(spark.read.parquet(path).select("label"))
     }
   }
 
@@ -148,10 +165,8 @@ class ParquetDatetimeRebaseSuite extends CometTestBase {
     // the footer carries no legacy marker and the guard must cost nothing.
     withTempPath { dir =>
       val path = dir.getCanonicalPath
-      writeCorrectedDates(path)
-      val df = spark.read.parquet(path)
-      assertNativeScan(df)
-      checkSparkAnswerAndOperator(df)
+      writeDates(path, "CORRECTED", ancientDate, modernDate)
+      checkNativeScanAnswer(spark.read.parquet(path))
     }
   }
 
@@ -160,15 +175,11 @@ class ParquetDatetimeRebaseSuite extends CometTestBase {
     // cannot prove the file safe. It is rejected conservatively.
     withTempPath { dir =>
       val path = dir.getCanonicalPath
-      withSQLConf(
+      writeParquet(
+        path,
+        "SELECT cast('2020-06-30 12:00:00' as timestamp) AS ts",
         SQLConf.PARQUET_OUTPUT_TIMESTAMP_TYPE.key -> "INT96",
-        SQLConf.PARQUET_INT96_REBASE_MODE_IN_WRITE.key -> "LEGACY") {
-        spark
-          .sql("SELECT cast('2020-06-30 12:00:00' as timestamp) AS ts")
-          .write
-          .mode("overwrite")
-          .parquet(path)
-      }
+        SQLConf.PARQUET_INT96_REBASE_MODE_IN_WRITE.key -> "LEGACY")
       assertRaisesOnRebase(spark.read.parquet(path))
     }
   }
@@ -181,42 +192,30 @@ class ParquetDatetimeRebaseSuite extends CometTestBase {
     withTempPath { dir =>
       val path = dir.getCanonicalPath
       writeDates(path, "LEGACY", modernDate, "2020-06-30")
-      val df = spark.read.parquet(path)
-      assertNativeScan(df)
-      checkSparkAnswerAndOperator(df)
+      checkNativeScanAnswer(spark.read.parquet(path))
     }
   }
 
   test("a legacy-marked file holding only modern timestamps is read normally") {
     withTempPath { dir =>
       val path = dir.getCanonicalPath
-      withSQLConf(
+      writeParquet(
+        path,
+        "SELECT cast('2020-06-30 12:00:00' as timestamp) AS ts",
         SQLConf.PARQUET_OUTPUT_TIMESTAMP_TYPE.key -> "TIMESTAMP_MICROS",
-        SQLConf.PARQUET_REBASE_MODE_IN_WRITE.key -> "LEGACY") {
-        spark
-          .sql("SELECT cast('2020-06-30 12:00:00' as timestamp) AS ts")
-          .write
-          .mode("overwrite")
-          .parquet(path)
-      }
-      val df = spark.read.parquet(path)
-      assertNativeScan(df)
-      checkSparkAnswerAndOperator(df)
+        SQLConf.PARQUET_REBASE_MODE_IN_WRITE.key -> "LEGACY")
+      checkNativeScanAnswer(spark.read.parquet(path))
     }
   }
 
   test("a legacy-marked file holding an ancient timestamp raises") {
     withTempPath { dir =>
       val path = dir.getCanonicalPath
-      withSQLConf(
+      writeParquet(
+        path,
+        "SELECT cast('1800-01-01 12:00:00' as timestamp) AS ts",
         SQLConf.PARQUET_OUTPUT_TIMESTAMP_TYPE.key -> "TIMESTAMP_MICROS",
-        SQLConf.PARQUET_REBASE_MODE_IN_WRITE.key -> "LEGACY") {
-        spark
-          .sql("SELECT cast('1800-01-01 12:00:00' as timestamp) AS ts")
-          .write
-          .mode("overwrite")
-          .parquet(path)
-      }
+        SQLConf.PARQUET_REBASE_MODE_IN_WRITE.key -> "LEGACY")
       assertRaisesOnRebase(spark.read.parquet(path))
     }
   }
@@ -228,9 +227,8 @@ class ParquetDatetimeRebaseSuite extends CometTestBase {
     withTempPath { dir =>
       val path = dir.getCanonicalPath
       writeLegacyDates(path)
-      val e = intercept[Throwable](spark.read.parquet(path).collect())
-      val chain = Iterator.iterate(e)(_.getCause).takeWhile(_ != null).toList
-      val rendered = chain.map(t => s"${t.getClass.getName}: ${t.getMessage}").mkString("\n  ")
+      val chain = causeChain(intercept[Throwable](spark.read.parquet(path).collect()))
+      val rendered = render(chain)
       // Matched by name: SparkUpgradeException is private[spark], so this package cannot name
       // the type.
       assert(
@@ -255,9 +253,7 @@ class ParquetDatetimeRebaseSuite extends CometTestBase {
           .mode("overwrite")
           .parquet(path)
       }
-      val safe = spark.read.parquet(path).select("new_d")
-      assertNativeScan(safe)
-      checkSparkAnswerAndOperator(safe)
+      checkNativeScanAnswer(spark.read.parquet(path).select("new_d"))
 
       assertRaisesOnRebase(spark.read.parquet(path).select("old_d"))
     }
@@ -318,9 +314,7 @@ class ParquetDatetimeRebaseSuite extends CometTestBase {
       // CORRECTED asserts the values are already Proleptic Gregorian, so Spark reads them as-is
       // and no rebasing applies. Comet honors that and must agree with Spark exactly.
       withReadMode("CORRECTED") {
-        val df = spark.read.parquet(fixture(name))
-        assertNativeScan(df)
-        checkSparkAnswerAndOperator(df)
+        checkNativeScanAnswer(spark.read.parquet(fixture(name)))
       }
     }
   }
