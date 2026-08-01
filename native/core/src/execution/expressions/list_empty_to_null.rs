@@ -90,15 +90,30 @@ impl PhysicalExpr for ListEmptyToNullExpr {
 
         let offsets = list.offsets();
         let len = list.len();
+        let existing_nulls = list.nulls();
 
-        // Fast path: no empty rows means the input already satisfies the
-        // outer semantics, so pass it through unchanged.
-        if !offsets.windows(2).any(|w| w[1] == w[0]) {
+        // Fast path: no currently-valid row is empty, so the input already
+        // satisfies outer semantics. `is_valid` returns true when `nulls` is
+        // `None`, so this single scan short-circuits on the first empty
+        // valid row without allocating.
+        let has_valid_empty = (0..len).any(|i| {
+            offsets[i + 1] == offsets[i]
+                && existing_nulls.is_none_or(|n| n.is_valid(i))
+        });
+        if !has_valid_empty {
             return Ok(ColumnarValue::Array(Arc::clone(&array)));
         }
 
         let non_empty = BooleanBuffer::collect_bool(len, |i| offsets[i + 1] > offsets[i]);
-        let new_nulls = NullBuffer::union(list.nulls(), Some(&NullBuffer::new(non_empty)));
+        let new_nulls = match existing_nulls {
+            None => NullBuffer::new(non_empty),
+            Some(existing) => {
+                let combined = existing.inner() & &non_empty;
+                let null_count = len - combined.count_set_bits();
+                // SAFETY: null_count was just derived as len - popcount(combined).
+                unsafe { NullBuffer::new_unchecked(combined, null_count) }
+            }
+        };
 
         let DataType::List(element_field) = list.data_type() else {
             unreachable!("ListArray downcast guarantees DataType::List");
@@ -108,7 +123,7 @@ impl PhysicalExpr for ListEmptyToNullExpr {
             Arc::clone(element_field),
             offsets.clone(),
             Arc::clone(list.values()),
-            new_nulls,
+            Some(new_nulls),
         )?;
 
         Ok(ColumnarValue::Array(Arc::new(result) as ArrayRef))

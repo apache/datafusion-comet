@@ -323,3 +323,115 @@ INSERT INTO test_explode_map VALUES
 
 query expect_fallback(Comet only supports explode/explode_outer for arrays, not maps)
 SELECT id, explode_outer(m) FROM test_explode_map
+
+-- ===== TIMESTAMP_NTZ (Spark 3.4+): distinct Arrow layout (no tz) from LTZ =====
+
+statement
+CREATE TABLE test_explode_ts_ntz(id int, arr array<timestamp_ntz>) USING parquet
+
+statement
+INSERT INTO test_explode_ts_ntz VALUES
+  (1, array(timestamp_ntz '1970-01-01 00:00:00', timestamp_ntz '2024-06-15 12:34:56.789')),
+  (2, array(NULL, timestamp_ntz '9999-12-31 23:59:59.999999')),
+  (3, array()),
+  (4, NULL)
+
+query
+SELECT id, explode_outer(arr) FROM test_explode_ts_ntz
+
+-- ===== array<map<...>> element type: distinct Arrow layout from array<array>/array<struct> =====
+
+statement
+CREATE TABLE test_explode_arr_map(id int, arr array<map<string, int>>) USING parquet
+
+statement
+INSERT INTO test_explode_arr_map VALUES
+  (1, array(map('a', 1, 'b', 2), map('c', 3))),
+  (2, array(map(), NULL)),
+  (3, array()),
+  (4, NULL)
+
+query
+SELECT id, explode_outer(arr) FROM test_explode_arr_map
+
+-- ===== Batches of uniformly empty or uniformly null arrays =====
+
+statement
+CREATE TABLE test_explode_all_empty(id int, arr array<int>) USING parquet
+
+statement
+INSERT INTO test_explode_all_empty VALUES (1, array()), (2, array()), (3, array())
+
+query
+SELECT id, explode_outer(arr) FROM test_explode_all_empty
+
+statement
+CREATE TABLE test_explode_all_null(id int, arr array<int>) USING parquet
+
+statement
+INSERT INTO test_explode_all_null VALUES (1, NULL), (2, NULL), (3, NULL)
+
+query
+SELECT id, explode_outer(arr) FROM test_explode_all_null
+
+-- ===== Stacked LATERAL VIEW OUTER: composition of two GenerateExec outer paths =====
+
+statement
+CREATE TABLE test_explode_stacked(id int, arrs array<array<int>>) USING parquet
+
+statement
+INSERT INTO test_explode_stacked VALUES
+  (1, array(array(1, 2), array())),
+  (2, array(array(), NULL)),
+  (3, array()),
+  (4, NULL)
+
+query
+SELECT id, x, y
+FROM test_explode_stacked
+LATERAL VIEW OUTER explode(arrs) t1 AS x
+LATERAL VIEW OUTER explode(x) t2 AS y
+
+-- ===== Downstream consumers of the exploded (nullable) value column =====
+
+query
+SELECT v, count(*) AS c
+FROM test_explode_int LATERAL VIEW OUTER explode(arr) t AS v
+GROUP BY v
+
+query
+SELECT id, v
+FROM test_explode_int LATERAL VIEW OUTER explode(arr) t AS v
+WHERE v IS NULL
+
+query
+SELECT a.id, b.v
+FROM test_explode_int a
+JOIN (SELECT id, explode_outer(arr) AS v FROM test_explode_int) b
+ON a.id = b.v
+
+-- ===== Interval-typed arrays: expected to fall back at the scan gate =====
+
+statement
+CREATE TABLE test_explode_ym(id int, arr array<interval year to month>) USING parquet
+
+statement
+INSERT INTO test_explode_ym VALUES
+  (1, array(interval '1-2' year to month, interval '-3-4' year to month, NULL)),
+  (2, array()),
+  (3, NULL)
+
+query spark_answer_only
+SELECT id, explode_outer(arr) FROM test_explode_ym
+
+statement
+CREATE TABLE test_explode_dt(id int, arr array<interval day to second>) USING parquet
+
+statement
+INSERT INTO test_explode_dt VALUES
+  (1, array(interval '1 02:03:04' day to second, interval '-5 06:07:08.9' day to second, NULL)),
+  (2, array()),
+  (3, NULL)
+
+query spark_answer_only
+SELECT id, explode_outer(arr) FROM test_explode_dt

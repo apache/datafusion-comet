@@ -254,7 +254,7 @@ consecutively in a plan, they execute as a single fused block.
 | `CometLocalLimit`              | `LocalLimitExec`                                |
 | `CometGlobalLimit`             | `GlobalLimitExec`                               |
 | `CometExpand`                  | `ExpandExec`                                    |
-| `CometExplode`                 | `GenerateExec` (for `explode` and `posexplode`) |
+| `CometExplode`                 | `GenerateExec` (for `explode`, `explode_outer`, `posexplode`, `posexplode_outer`) |
 | `CometHashAggregate`           | `HashAggregateExec`, `ObjectHashAggregateExec`  |
 | `CometHashJoin`                | `ShuffledHashJoinExec`                          |
 | `CometBroadcastHashJoin`       | `BroadcastHashJoinExec`                         |

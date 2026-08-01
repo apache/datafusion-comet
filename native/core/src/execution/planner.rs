@@ -1911,10 +1911,45 @@ impl PhysicalPlanner {
                 // whose list is empty. Spark's `explode_outer`/`posexplode_outer` must emit
                 // exactly one null row in both cases, so we mark empty rows as null before
                 // unnesting. See https://github.com/apache/datafusion/issues/19053.
-                let child_expr: Arc<dyn PhysicalExpr> = if explode.outer {
-                    Arc::new(ListEmptyToNullExpr::new(child_expr))
+                //
+                // The wrapped array is materialized in a pre-projection so `ListPositionsExpr`
+                // and the array passthrough (`posexplode_outer`) share a single evaluation
+                // instead of re-running `ListEmptyToNullExpr` per branch.
+                let child_schema = child.schema();
+                let (child_expr, child_native_plan): (Arc<dyn PhysicalExpr>, _) = if explode.outer
+                {
+                    let wrapped: Arc<dyn PhysicalExpr> =
+                        Arc::new(ListEmptyToNullExpr::new(child_expr));
+                    let wrapped_name = wrapped
+                        .return_field(&child_schema)
+                        .expect("Failed to get field from wrapped array expression")
+                        .name()
+                        .to_string();
+
+                    let mut pre_exprs: Vec<(Arc<dyn PhysicalExpr>, String)> = child_schema
+                        .fields()
+                        .iter()
+                        .enumerate()
+                        .map(|(i, f)| {
+                            (
+                                Arc::new(Column::new(f.name(), i)) as Arc<dyn PhysicalExpr>,
+                                f.name().to_string(),
+                            )
+                        })
+                        .collect();
+                    let wrapped_idx = pre_exprs.len();
+                    pre_exprs.push((wrapped, wrapped_name.clone()));
+
+                    let pre_exec = Arc::new(ProjectionExec::try_new(
+                        pre_exprs,
+                        Arc::clone(&child.native_plan),
+                    )?);
+                    (
+                        Arc::new(Column::new(&wrapped_name, wrapped_idx)),
+                        pre_exec as Arc<dyn ExecutionPlan>,
+                    )
                 } else {
-                    child_expr
+                    (child_expr, Arc::clone(&child.native_plan))
                 };
 
                 // Create projection expressions for other columns
@@ -1926,7 +1961,6 @@ impl PhysicalPlanner {
 
                 // For posexplode, a parallel List<Int32> positions column is added before the
                 // array column so UnnestExec can unnest both in parallel.
-                let child_schema = child.schema();
                 let mut project_exprs: Vec<(Arc<dyn PhysicalExpr>, String)> = projections
                     .iter()
                     .map(|expr| {
@@ -1939,7 +1973,7 @@ impl PhysicalPlanner {
                     .collect();
 
                 let array_field = child_expr
-                    .return_field(&child_schema)
+                    .return_field(&child_native_plan.schema())
                     .expect("Failed to get field from array expression");
                 let array_col_name = array_field.name().to_string();
 
@@ -1952,7 +1986,7 @@ impl PhysicalPlanner {
 
                 let project_exec = Arc::new(ProjectionExec::try_new(
                     project_exprs,
-                    Arc::clone(&child.native_plan),
+                    child_native_plan,
                 )?);
 
                 let project_schema = project_exec.schema();

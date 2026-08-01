@@ -96,3 +96,94 @@ INSERT INTO test_posexplode_map VALUES
 -- posexplode over a map falls back to Spark (Comet only supports array inputs, not maps)
 query expect_fallback(Comet only supports explode/explode_outer for arrays, not maps)
 SELECT id, posexplode(m) FROM test_posexplode_map
+
+-- ===== posexplode_outer across non-int element types =====
+
+-- posexplode_outer with nullable int elements (in-array NULLs plus outer null row)
+query
+SELECT id, posexplode_outer(arr) FROM test_posexplode_nullable
+
+-- posexplode_outer over an array of strings
+query
+SELECT id, posexplode_outer(arr) FROM test_posexplode_str
+
+-- posexplode_outer over an array of structs via LATERAL VIEW OUTER, then project fields
+query
+SELECT id, pos, value.v1 AS v1, value.v2 AS v2
+FROM test_posexplode_struct LATERAL VIEW OUTER posexplode(arr) p AS pos, value
+
+statement
+CREATE TABLE test_posexplode_outer_types(
+  id int,
+  arr_bool array<boolean>,
+  arr_bi array<bigint>,
+  arr_dbl array<double>,
+  arr_dec array<decimal(18,4)>,
+  arr_bin array<binary>,
+  arr_dt array<date>,
+  arr_ts array<timestamp>) USING parquet
+
+statement
+INSERT INTO test_posexplode_outer_types VALUES
+  (1,
+   array(true, false, NULL),
+   array(-9223372036854775808L, 0L, 9223372036854775807L),
+   array(cast('NaN' as double), cast(0.0 as double), cast(-0.0 as double), cast('Infinity' as double), cast('-Infinity' as double)),
+   array(cast('99999999999999.9999' as decimal(18,4)), cast('-99999999999999.9999' as decimal(18,4)), cast(NULL as decimal(18,4))),
+   array(cast('a' as binary), NULL, cast('bc' as binary)),
+   array(date '1970-01-01', date '9999-12-31', NULL),
+   array(timestamp '1970-01-01 00:00:00', timestamp '2024-06-15 12:34:56.789', NULL)),
+  (2, array(), array(), array(), array(), array(), array(), array()),
+  (3, NULL, NULL, NULL, NULL, NULL, NULL, NULL)
+
+query
+SELECT id, posexplode_outer(arr_bool) FROM test_posexplode_outer_types
+
+query
+SELECT id, posexplode_outer(arr_bi) FROM test_posexplode_outer_types
+
+query
+SELECT id, posexplode_outer(arr_dbl) FROM test_posexplode_outer_types
+
+query
+SELECT id, posexplode_outer(arr_dec) FROM test_posexplode_outer_types
+
+query
+SELECT id, posexplode_outer(arr_bin) FROM test_posexplode_outer_types
+
+query
+SELECT id, posexplode_outer(arr_dt) FROM test_posexplode_outer_types
+
+query
+SELECT id, posexplode_outer(arr_ts) FROM test_posexplode_outer_types
+
+-- posexplode_outer over an array of structs (explicit projection form)
+query
+SELECT id, posexplode_outer(arr) FROM test_posexplode_struct
+
+-- LATERAL VIEW OUTER posexplode over int arrays: covers the analyzer's
+-- `MultiAlias(GeneratorOuter(g), names)` branch alongside the direct
+-- `posexplode_outer(...)` projection form above.
+query
+SELECT id, pos, value
+FROM test_posexplode_int LATERAL VIEW OUTER posexplode(arr) p AS pos, value
+
+-- posexplode_outer batch of only-empty arrays exercises the slow path with an
+-- all-zeros non-empty bitmap; only-null exercises the fast-path passthrough.
+statement
+CREATE TABLE test_posexplode_all_empty(id int, arr array<int>) USING parquet
+
+statement
+INSERT INTO test_posexplode_all_empty VALUES (1, array()), (2, array()), (3, array())
+
+query
+SELECT id, posexplode_outer(arr) FROM test_posexplode_all_empty
+
+statement
+CREATE TABLE test_posexplode_all_null(id int, arr array<int>) USING parquet
+
+statement
+INSERT INTO test_posexplode_all_null VALUES (1, NULL), (2, NULL), (3, NULL)
+
+query
+SELECT id, posexplode_outer(arr) FROM test_posexplode_all_null

@@ -379,4 +379,50 @@ class CometGenerateExecSuite extends CometTestBase {
     }
   }
 
+  test("explode_outer across batch boundary with mixed empty/null rows") {
+    // Mix null, empty, and non-empty rows and force multiple small batches so that
+    // `ListEmptyToNullExpr` runs on each batch and its fast/slow path split is exercised
+    // more than once with different offset patterns.
+    withSQLConf(
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_EXPLODE_ENABLED.key -> "true",
+      CometConf.COMET_BATCH_SIZE.key -> "4") {
+      val rows: Seq[(Int, Option[Array[Int]])] = (1 to 40).map { i =>
+        val arr = i % 5 match {
+          case 0 => None
+          case 1 => Some(Array.empty[Int])
+          case _ => Some((0 until (i % 5)).map(j => i * 100 + j).toArray)
+        }
+        (i, arr)
+      }
+      val df = rows
+        .toDF("id", "arr")
+        .selectExpr("id", "explode_outer(arr) as value")
+      checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  test("posexplode_outer across batch boundary with mixed empty/null rows") {
+    // Same shape as the explode_outer counterpart but exercises the parallel positions
+    // branch. With the pre-projection introduced for outer, `ListEmptyToNullExpr` runs once
+    // per batch and both branches share the same materialized array.
+    withSQLConf(
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_EXPLODE_ENABLED.key -> "true",
+      CometConf.COMET_BATCH_SIZE.key -> "4") {
+      val rows: Seq[(Int, Option[Array[Int]])] = (1 to 40).map { i =>
+        val arr = i % 5 match {
+          case 0 => None
+          case 1 => Some(Array.empty[Int])
+          case _ => Some((0 until (i % 5)).map(j => i * 100 + j).toArray)
+        }
+        (i, arr)
+      }
+      val df = rows
+        .toDF("id", "arr")
+        .selectExpr("id", "posexplode_outer(arr) as (pos, value)")
+      checkSparkAnswerAndOperator(df)
+    }
+  }
+
 }
