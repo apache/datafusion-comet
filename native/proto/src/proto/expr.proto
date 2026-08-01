@@ -109,9 +109,11 @@ message Expr {
 // QueryContext provides SQL query context for error messages.
 // Mirrors Spark's SQLQueryContext for rich error reporting.
 message QueryContext {
-  // Full SQL query text. Left empty when `sql_text_idx` is set, which is the normal case for a
-  // plan serialized through `CometNativeExec.convertBlock`. Still used by the paths that serialize
-  // an operator directly without interning (e.g. `CometNativeWriteExec`).
+  // Full SQL query text. Left empty when `sql_text_idx` is set, which is the case for a plan
+  // serialized through `CometNativeExec.convertBlock`. Still used by the paths that serialize an
+  // operator directly without interning (e.g. `CometNativeWriteExec`, the native shuffle writer,
+  // the Iceberg scan's `convertBlock` override) and by the bare-`Expr` Parquet filter path, which
+  // has no root operator to carry a pool.
   string sql_text = 1;
 
   // Character offset where expression starts (0-based)

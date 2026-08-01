@@ -39,7 +39,6 @@ import com.google.common.base.Objects
 
 import org.apache.comet.parquet.CometParquetUtils
 import org.apache.comet.serde.OperatorOuterClass.Operator
-import org.apache.comet.serde.QueryContextInterner
 import org.apache.comet.serde.QueryPlanSerde.exprToProto
 
 /**
@@ -361,17 +360,8 @@ object CometNativeScanExec {
       scan: CometScanExec): CometNativeScanExec = {
     // Generate unique key for this scan so PlanDataInjector can match common+partition data.
     // Multiple scans of same table with different projections/filters get different keys.
-    // Contexts are stripped so the hash matches the one NativeScanPlanDataInjector.getKey
-    // recomputes on the executor, where the plan has been interned (see QueryContextInterner).
-    val common = QueryContextInterner.stripQueryContexts(nativeOp.getNativeScan.getCommon)
-    val source = common.getSource
-    val keyComponents = Seq(
-      common.getRequiredSchemaList.toString,
-      common.getDataFiltersList.toString,
-      common.getProjectionVectorList.toString,
-      common.getFieldsList.toString)
-    val hashCode = keyComponents.mkString("|").hashCode
-    val sourceKey = s"${source}_${hashCode}"
+    // Derived by the injector that will look it up, so the two sides cannot drift apart.
+    val sourceKey = NativeScanPlanDataInjector.sourceKey(nativeOp.getNativeScan.getCommon)
 
     val batchScanExec = CometNativeScanExec(
       nativeOp,

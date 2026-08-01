@@ -54,37 +54,44 @@ object QueryContextInterner {
    * or `op` itself when there is nothing to intern.
    */
   def intern(op: Operator): Operator = {
-    // Already interned: only ever true if a caller serializes the same operator twice.
+    // Defensive no-op so interning is idempotent. Not reachable from the single call site in
+    // `CometNativeExec.convertBlock`, which always starts from the un-interned `nativeOp`.
     if (op.getSqlTextPoolCount > 0) return op
 
-    val pool = mutable.LinkedHashMap.empty[String, Int]
     val builder = op.toBuilder
-    walk(builder, ctx => pooled(ctx, pool))
-    if (pool.isEmpty) {
+    // Each text is appended to the pool the first time it is seen and its position becomes the
+    // index every context referring to it carries, so the pool needs no separate second pass.
+    val indexOf = mutable.Map.empty[String, Int]
+    walk(
+      builder,
+      ctx => {
+        val idx = indexOf.getOrElseUpdate(
+          ctx.getSqlText, {
+            builder.addSqlTextPool(ctx.getSqlText)
+            builder.getSqlTextPoolCount - 1
+          })
+        Some(ctx.toBuilder.clearSqlText().setSqlTextIdx(idx).build())
+      })
+    if (indexOf.isEmpty) {
       // No expression carried a context (e.g. a DataFrame-API query, where Spark records no SQL
-      // text). Return the original to avoid paying for a rebuild that changes nothing.
+      // text). Return the original rather than rebuilding an identical message.
       op
     } else {
-      pool.keys.foreach(builder.addSqlTextPool)
       builder.build()
     }
   }
 
   /**
-   * Returns `message` with every `QueryContext` removed.
+   * Returns `expr` with every `QueryContext` in it removed.
    *
    * Used to derive content hashes that must agree between the driver and the executor even though
-   * only one side sees the interned form. `CometNativeScanExec` hashes a scan's
-   * `NativeScanCommon` on the driver to produce the `sourceKey` that
-   * `NativeScanPlanDataInjector.getKey` recomputes on the executor from the *serialized* plan --
-   * which by then has been interned, so any hash that includes the context encoding would no
-   * longer match. Dropping contexts entirely makes the hash independent of how they happen to be
-   * encoded.
+   * only one side sees the interned form - see `NativeScanPlanDataInjector.sourceKey`. Dropping
+   * contexts makes such a hash independent of how they happen to be encoded.
    */
-  def stripQueryContexts[T <: Message](message: T): T = {
-    val builder = message.toBuilder
+  def stripQueryContexts(expr: ExprOuterClass.Expr): ExprOuterClass.Expr = {
+    val builder = expr.toBuilder
     walk(builder, _ => None)
-    builder.build().asInstanceOf[T]
+    builder.build()
   }
 
   /**
@@ -126,13 +133,5 @@ object QueryContextInterner {
         }
       }
     }
-  }
-
-  /** Replaces `sql_text` with an index into `pool`, adding the text to the pool if it is new. */
-  private def pooled(
-      ctx: ExprOuterClass.QueryContext,
-      pool: mutable.LinkedHashMap[String, Int]): Option[ExprOuterClass.QueryContext] = {
-    val idx = pool.getOrElseUpdate(ctx.getSqlText, pool.size)
-    Some(ctx.toBuilder.clearSqlText().setSqlTextIdx(idx).build())
   }
 }

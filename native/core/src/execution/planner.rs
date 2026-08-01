@@ -137,6 +137,7 @@ use datafusion_comet_spark_expr::{
 };
 use itertools::Itertools;
 use jni::objects::{Global, JObject};
+use log::warn;
 use num::{BigInt, ToPrimitive};
 use object_store::path::Path;
 use std::cmp::max;
@@ -280,20 +281,52 @@ impl PhysicalPlanner {
         self
     }
 
+    /// Register the `QueryContext` carried by a serialized expression, if any, so that native ANSI
+    /// errors raised by it can render Spark's `== SQL ... ==` block. Shared by `create_expr` and
+    /// `create_agg_expr`.
+    fn register_query_context(
+        &self,
+        expr_id: Option<u64>,
+        ctx_proto: Option<&spark_expression::QueryContext>,
+    ) {
+        if let (Some(expr_id), Some(ctx_proto)) = (expr_id, ctx_proto) {
+            self.query_context_registry
+                .register(expr_id, self.build_query_context(ctx_proto));
+        }
+    }
+
     /// Resolve a serialized `QueryContext` into a `QueryContext`, sharing the pooled SQL text
     /// when the context refers to the pool by index. Falls back to the inline `sql_text` for
-    /// plans serialized without interning (e.g. `CometNativeWriteExec`, which serializes its
-    /// operator directly rather than through `convertBlock`).
+    /// plans serialized without interning -- the paths that serialize an operator directly rather
+    /// than through `convertBlock` (e.g. `CometNativeWriteExec`, the native shuffle writer) and
+    /// the bare-`Expr` Parquet filter path, which has no root operator to hang a pool on.
     fn build_query_context(
         &self,
         ctx_proto: &spark_expression::QueryContext,
     ) -> datafusion_comet_spark_expr::QueryContext {
-        let sql_text: Arc<String> = ctx_proto
+        let pooled = ctx_proto
             .sql_text_idx
-            .and_then(|idx| usize::try_from(idx).ok())
-            .and_then(|idx| self.sql_text_pool.get(idx))
-            .map(Arc::clone)
-            .unwrap_or_else(|| Arc::new(ctx_proto.sql_text.clone()));
+            .map(|idx| match usize::try_from(idx).ok() {
+                Some(idx) => self.sql_text_pool.get(idx).map(Arc::clone),
+                None => None,
+            });
+
+        let sql_text: Arc<String> = match pooled {
+            Some(Some(text)) => text,
+            // An index we cannot resolve means the plan was interned against a pool this planner
+            // never saw, so `sql_text` is empty and the error block would silently come out blank.
+            // Warn rather than fail: a degraded error message is better than a failed query.
+            Some(None) => {
+                warn!(
+                    "QueryContext sql_text_idx {:?} is out of range for a SQL text pool of {} \
+                     entries; SQL context will be missing from any error raised by this expression",
+                    ctx_proto.sql_text_idx,
+                    self.sql_text_pool.len()
+                );
+                Arc::new(ctx_proto.sql_text.clone())
+            }
+            None => Arc::new(ctx_proto.sql_text.clone()),
+        };
 
         datafusion_comet_spark_expr::QueryContext::new(
             sql_text,
@@ -389,16 +422,7 @@ impl PhysicalPlanner {
         spark_expr: &Expr,
         input_schema: SchemaRef,
     ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
-        // Register QueryContext if present
-        if let (Some(expr_id), Some(ctx_proto)) =
-            (spark_expr.expr_id, spark_expr.query_context.as_ref())
-        {
-            let query_ctx = self.build_query_context(ctx_proto);
-
-            // Register query context for error reporting
-            let registry = &self.query_context_registry;
-            registry.register(expr_id, query_ctx);
-        }
+        self.register_query_context(spark_expr.expr_id, spark_expr.query_context.as_ref());
 
         // Try to use the modular registry first - this automatically handles any registered expression types
         if ExpressionRegistry::global().can_handle(spark_expr) {
@@ -2426,16 +2450,7 @@ impl PhysicalPlanner {
         spark_expr: &AggExpr,
         schema: SchemaRef,
     ) -> Result<AggregateFunctionExpr, ExecutionError> {
-        // Register QueryContext if present
-        if let (Some(expr_id), Some(ctx_proto)) =
-            (spark_expr.expr_id, spark_expr.query_context.as_ref())
-        {
-            let query_ctx = self.build_query_context(ctx_proto);
-
-            // Register query context for error reporting
-            let registry = &self.query_context_registry;
-            registry.register(expr_id, query_ctx);
-        }
+        self.register_query_context(spark_expr.expr_id, spark_expr.query_context.as_ref());
 
         match spark_expr.expr_struct.as_ref().unwrap() {
             AggExprStruct::Count(expr) => {

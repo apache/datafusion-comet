@@ -23,7 +23,6 @@ import scala.collection.mutable
 
 import org.apache.spark.sql.{CometTestBase, DataFrame}
 import org.apache.spark.sql.comet.CometNativeExec
-import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanExec
 
 import org.apache.comet.serde.{ExprOuterClass, OperatorOuterClass}
 
@@ -66,34 +65,30 @@ class QueryContextInternerSuite extends CometTestBase {
     found.toSeq
   }
 
-  private def nativeBlocks(df: DataFrame): Seq[Array[Byte]] = {
-    val plan = df.queryExecution.executedPlan match {
-      case a: AdaptiveSparkPlanExec => a.executedPlan
-      case p => p
+  /**
+   * Each native block of `df`'s plan, as the un-interned `nativeOp` (what would have been
+   * serialized before interning) paired with the bytes actually serialized for it.
+   */
+  private def nativeBlocks(df: DataFrame): Seq[(OperatorOuterClass.Operator, Array[Byte])] =
+    stripAQEPlan(df.queryExecution.executedPlan).collect {
+      case n: CometNativeExec if n.serializedPlanOpt.isDefined =>
+        (n.nativeOp, n.serializedPlanOpt.plan.get)
     }
-    plan.collect {
-      case n: CometNativeExec if n.serializedPlanOpt.isDefined => n.serializedPlanOpt.plan.get
-    }
-  }
 
   private def withTestTable(f: => Unit): Unit = {
-    withSQLConf(
-      CometConf.COMET_ENABLED.key -> "true",
-      CometConf.COMET_EXEC_ENABLED.key -> "true") {
-      withTempPath { dir =>
-        spark
-          .range(0, 100)
-          .selectExpr(
-            "cast(id % 17 as int) as k1",
-            "cast(id as decimal(20,4)) as d1",
-            "cast(id % 1000 as int) as i1")
-          .write
-          .mode("overwrite")
-          .parquet(dir.getAbsolutePath)
-        withTempView("t1") {
-          spark.read.parquet(dir.getAbsolutePath).createOrReplaceTempView("t1")
-          f
-        }
+    withTempPath { dir =>
+      spark
+        .range(0, 100)
+        .selectExpr(
+          "cast(id % 17 as int) as k1",
+          "cast(id as decimal(20,4)) as d1",
+          "cast(id % 1000 as int) as i1")
+        .write
+        .mode("overwrite")
+        .parquet(dir.getAbsolutePath)
+      withTempView("t1") {
+        spark.read.parquet(dir.getAbsolutePath).createOrReplaceTempView("t1")
+        f
       }
     }
   }
@@ -104,7 +99,7 @@ class QueryContextInternerSuite extends CometTestBase {
       assert(blocks.nonEmpty, "expected at least one serialized native block")
 
       var sawContext = false
-      blocks.foreach { bytes =>
+      blocks.foreach { case (_, bytes) =>
         val root = OperatorOuterClass.Operator.parseFrom(bytes)
         val contexts = collectContexts(root)
         if (contexts.nonEmpty) {
@@ -127,30 +122,24 @@ class QueryContextInternerSuite extends CometTestBase {
 
   test("interning shrinks the serialized plan") {
     withTestTable {
+      // `nativeOp` is never interned - only the bytes written for it are - so its serialized size
+      // is exactly what the plan weighed before this optimization.
       val blocks = nativeBlocks(spark.sql(sqlText))
-      val interned = blocks.map(_.length).sum
-
-      // What the same plan would serialize to with a copy of the text on every context, which is
-      // what was emitted before interning: the UTF-8 text plus its tag/length prefix per context.
-      val expanded = blocks.map { bytes =>
-        val root = OperatorOuterClass.Operator.parseFrom(bytes)
-        val pool = root.getSqlTextPoolList
-        bytes.length + collectContexts(root).map { ctx =>
-          pool.get(ctx.getSqlTextIdx).getBytes("UTF-8").length + 3
-        }.sum
-      }.sum
+      val before = blocks.map { case (nativeOp, _) => nativeOp.getSerializedSize }.sum
+      val after = blocks.map { case (_, bytes) => bytes.length }.sum
 
       assert(
-        expanded > interned * 4,
-        s"expected interning to shrink the plan substantially: $expanded -> $interned")
+        before > after * 4,
+        s"expected interning to shrink the plan substantially: $before -> $after")
     }
   }
 
   test("ANSI error still reports full SQL context after interning") {
-    withSQLConf(
-      CometConf.COMET_ENABLED.key -> "true",
-      CometConf.COMET_EXEC_ENABLED.key -> "true",
-      "spark.sql.ansi.enabled" -> "true") {
+    // Deliberately its own integer-typed table rather than reusing `withTestTable`: integer
+    // division routes through the native `CheckedBinaryExpr`, which is what consults the
+    // QueryContext registry. Decimal division raises a plain compute error with no SQL context,
+    // so it would not exercise this path at all.
+    withSQLConf("spark.sql.ansi.enabled" -> "true") {
       withTempPath { dir =>
         spark
           .range(1, 10)
