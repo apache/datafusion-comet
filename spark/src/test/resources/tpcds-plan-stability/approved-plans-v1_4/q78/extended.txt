@@ -26,9 +26,7 @@ TakeOrderedAndProject
          :     :                 :              +- CometProject
          :     :                 :                 +- CometFilter
          :     :                 :                    +- CometNativeScan parquet spark_catalog.default.store_returns
-         :     :                 +- CometBroadcastExchange
-         :     :                    +- CometFilter
-         :     :                       +- CometNativeScan parquet spark_catalog.default.date_dim
+         :     :                 +- ReusedExchange
          :     +- CometSort
          :        +- CometFilter
          :           +- CometHashAggregate
@@ -49,9 +47,7 @@ TakeOrderedAndProject
          :                          :              +- CometProject
          :                          :                 +- CometFilter
          :                          :                    +- CometNativeScan parquet spark_catalog.default.web_returns
-         :                          +- CometBroadcastExchange
-         :                             +- CometFilter
-         :                                +- CometNativeScan parquet spark_catalog.default.date_dim
+         :                          +- ReusedExchange
          +- CometSort
             +- CometFilter
                +- CometHashAggregate
@@ -72,8 +68,6 @@ TakeOrderedAndProject
                               :              +- CometProject
                               :                 +- CometFilter
                               :                    +- CometNativeScan parquet spark_catalog.default.catalog_returns
-                              +- CometBroadcastExchange
-                                 +- CometFilter
-                                    +- CometNativeScan parquet spark_catalog.default.date_dim
+                              +- ReusedExchange
 
-Comet accelerated 71 out of 76 eligible operators (93%). Final plan contains 1 transitions between Spark and Comet. Accelerated expressions: 10 native, 0 codegen dispatch.
+Comet accelerated 63 out of 65 eligible operators (96%). Final plan contains 1 transitions between Spark and Comet. Accelerated expressions: 10 native, 0 codegen dispatch.

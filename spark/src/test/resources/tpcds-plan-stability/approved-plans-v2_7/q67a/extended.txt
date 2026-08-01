@@ -21,10 +21,7 @@ CometColumnarToRow
                   :              :     :     :              +- CometProject
                   :              :     :     :                 +- CometFilter
                   :              :     :     :                    +- CometNativeScan parquet spark_catalog.default.date_dim
-                  :              :     :     +- CometBroadcastExchange
-                  :              :     :        +- CometProject
-                  :              :     :           +- CometFilter
-                  :              :     :              +- CometNativeScan parquet spark_catalog.default.date_dim
+                  :              :     :     +- ReusedExchange
                   :              :     +- CometBroadcastExchange
                   :              :        +- CometProject
                   :              :           +- CometFilter
@@ -37,249 +34,41 @@ CometColumnarToRow
                   :  +- CometExchange
                   :     +- CometHashAggregate
                   :        +- CometHashAggregate
-                  :           +- CometExchange
-                  :              +- CometHashAggregate
-                  :                 +- CometProject
-                  :                    +- CometBroadcastHashJoin
-                  :                       :- CometProject
-                  :                       :  +- CometBroadcastHashJoin
-                  :                       :     :- CometProject
-                  :                       :     :  +- CometBroadcastHashJoin
-                  :                       :     :     :- CometFilter
-                  :                       :     :     :  +- CometNativeScan parquet spark_catalog.default.store_sales
-                  :                       :     :     :        +- CometSubqueryBroadcast
-                  :                       :     :     :           +- CometBroadcastExchange
-                  :                       :     :     :              +- CometProject
-                  :                       :     :     :                 +- CometFilter
-                  :                       :     :     :                    +- CometNativeScan parquet spark_catalog.default.date_dim
-                  :                       :     :     +- CometBroadcastExchange
-                  :                       :     :        +- CometProject
-                  :                       :     :           +- CometFilter
-                  :                       :     :              +- CometNativeScan parquet spark_catalog.default.date_dim
-                  :                       :     +- CometBroadcastExchange
-                  :                       :        +- CometProject
-                  :                       :           +- CometFilter
-                  :                       :              +- CometNativeScan parquet spark_catalog.default.store
-                  :                       +- CometBroadcastExchange
-                  :                          +- CometProject
-                  :                             +- CometFilter
-                  :                                +- CometNativeScan parquet spark_catalog.default.item
+                  :           +- ReusedExchange
                   :- CometHashAggregate
                   :  +- CometExchange
                   :     +- CometHashAggregate
                   :        +- CometHashAggregate
-                  :           +- CometExchange
-                  :              +- CometHashAggregate
-                  :                 +- CometProject
-                  :                    +- CometBroadcastHashJoin
-                  :                       :- CometProject
-                  :                       :  +- CometBroadcastHashJoin
-                  :                       :     :- CometProject
-                  :                       :     :  +- CometBroadcastHashJoin
-                  :                       :     :     :- CometFilter
-                  :                       :     :     :  +- CometNativeScan parquet spark_catalog.default.store_sales
-                  :                       :     :     :        +- CometSubqueryBroadcast
-                  :                       :     :     :           +- CometBroadcastExchange
-                  :                       :     :     :              +- CometProject
-                  :                       :     :     :                 +- CometFilter
-                  :                       :     :     :                    +- CometNativeScan parquet spark_catalog.default.date_dim
-                  :                       :     :     +- CometBroadcastExchange
-                  :                       :     :        +- CometProject
-                  :                       :     :           +- CometFilter
-                  :                       :     :              +- CometNativeScan parquet spark_catalog.default.date_dim
-                  :                       :     +- CometBroadcastExchange
-                  :                       :        +- CometProject
-                  :                       :           +- CometFilter
-                  :                       :              +- CometNativeScan parquet spark_catalog.default.store
-                  :                       +- CometBroadcastExchange
-                  :                          +- CometProject
-                  :                             +- CometFilter
-                  :                                +- CometNativeScan parquet spark_catalog.default.item
+                  :           +- ReusedExchange
                   :- CometHashAggregate
                   :  +- CometExchange
                   :     +- CometHashAggregate
                   :        +- CometHashAggregate
-                  :           +- CometExchange
-                  :              +- CometHashAggregate
-                  :                 +- CometProject
-                  :                    +- CometBroadcastHashJoin
-                  :                       :- CometProject
-                  :                       :  +- CometBroadcastHashJoin
-                  :                       :     :- CometProject
-                  :                       :     :  +- CometBroadcastHashJoin
-                  :                       :     :     :- CometFilter
-                  :                       :     :     :  +- CometNativeScan parquet spark_catalog.default.store_sales
-                  :                       :     :     :        +- CometSubqueryBroadcast
-                  :                       :     :     :           +- CometBroadcastExchange
-                  :                       :     :     :              +- CometProject
-                  :                       :     :     :                 +- CometFilter
-                  :                       :     :     :                    +- CometNativeScan parquet spark_catalog.default.date_dim
-                  :                       :     :     +- CometBroadcastExchange
-                  :                       :     :        +- CometProject
-                  :                       :     :           +- CometFilter
-                  :                       :     :              +- CometNativeScan parquet spark_catalog.default.date_dim
-                  :                       :     +- CometBroadcastExchange
-                  :                       :        +- CometProject
-                  :                       :           +- CometFilter
-                  :                       :              +- CometNativeScan parquet spark_catalog.default.store
-                  :                       +- CometBroadcastExchange
-                  :                          +- CometProject
-                  :                             +- CometFilter
-                  :                                +- CometNativeScan parquet spark_catalog.default.item
+                  :           +- ReusedExchange
                   :- CometHashAggregate
                   :  +- CometExchange
                   :     +- CometHashAggregate
                   :        +- CometHashAggregate
-                  :           +- CometExchange
-                  :              +- CometHashAggregate
-                  :                 +- CometProject
-                  :                    +- CometBroadcastHashJoin
-                  :                       :- CometProject
-                  :                       :  +- CometBroadcastHashJoin
-                  :                       :     :- CometProject
-                  :                       :     :  +- CometBroadcastHashJoin
-                  :                       :     :     :- CometFilter
-                  :                       :     :     :  +- CometNativeScan parquet spark_catalog.default.store_sales
-                  :                       :     :     :        +- CometSubqueryBroadcast
-                  :                       :     :     :           +- CometBroadcastExchange
-                  :                       :     :     :              +- CometProject
-                  :                       :     :     :                 +- CometFilter
-                  :                       :     :     :                    +- CometNativeScan parquet spark_catalog.default.date_dim
-                  :                       :     :     +- CometBroadcastExchange
-                  :                       :     :        +- CometProject
-                  :                       :     :           +- CometFilter
-                  :                       :     :              +- CometNativeScan parquet spark_catalog.default.date_dim
-                  :                       :     +- CometBroadcastExchange
-                  :                       :        +- CometProject
-                  :                       :           +- CometFilter
-                  :                       :              +- CometNativeScan parquet spark_catalog.default.store
-                  :                       +- CometBroadcastExchange
-                  :                          +- CometProject
-                  :                             +- CometFilter
-                  :                                +- CometNativeScan parquet spark_catalog.default.item
+                  :           +- ReusedExchange
                   :- CometHashAggregate
                   :  +- CometExchange
                   :     +- CometHashAggregate
                   :        +- CometHashAggregate
-                  :           +- CometExchange
-                  :              +- CometHashAggregate
-                  :                 +- CometProject
-                  :                    +- CometBroadcastHashJoin
-                  :                       :- CometProject
-                  :                       :  +- CometBroadcastHashJoin
-                  :                       :     :- CometProject
-                  :                       :     :  +- CometBroadcastHashJoin
-                  :                       :     :     :- CometFilter
-                  :                       :     :     :  +- CometNativeScan parquet spark_catalog.default.store_sales
-                  :                       :     :     :        +- CometSubqueryBroadcast
-                  :                       :     :     :           +- CometBroadcastExchange
-                  :                       :     :     :              +- CometProject
-                  :                       :     :     :                 +- CometFilter
-                  :                       :     :     :                    +- CometNativeScan parquet spark_catalog.default.date_dim
-                  :                       :     :     +- CometBroadcastExchange
-                  :                       :     :        +- CometProject
-                  :                       :     :           +- CometFilter
-                  :                       :     :              +- CometNativeScan parquet spark_catalog.default.date_dim
-                  :                       :     +- CometBroadcastExchange
-                  :                       :        +- CometProject
-                  :                       :           +- CometFilter
-                  :                       :              +- CometNativeScan parquet spark_catalog.default.store
-                  :                       +- CometBroadcastExchange
-                  :                          +- CometProject
-                  :                             +- CometFilter
-                  :                                +- CometNativeScan parquet spark_catalog.default.item
+                  :           +- ReusedExchange
                   :- CometHashAggregate
                   :  +- CometExchange
                   :     +- CometHashAggregate
                   :        +- CometHashAggregate
-                  :           +- CometExchange
-                  :              +- CometHashAggregate
-                  :                 +- CometProject
-                  :                    +- CometBroadcastHashJoin
-                  :                       :- CometProject
-                  :                       :  +- CometBroadcastHashJoin
-                  :                       :     :- CometProject
-                  :                       :     :  +- CometBroadcastHashJoin
-                  :                       :     :     :- CometFilter
-                  :                       :     :     :  +- CometNativeScan parquet spark_catalog.default.store_sales
-                  :                       :     :     :        +- CometSubqueryBroadcast
-                  :                       :     :     :           +- CometBroadcastExchange
-                  :                       :     :     :              +- CometProject
-                  :                       :     :     :                 +- CometFilter
-                  :                       :     :     :                    +- CometNativeScan parquet spark_catalog.default.date_dim
-                  :                       :     :     +- CometBroadcastExchange
-                  :                       :     :        +- CometProject
-                  :                       :     :           +- CometFilter
-                  :                       :     :              +- CometNativeScan parquet spark_catalog.default.date_dim
-                  :                       :     +- CometBroadcastExchange
-                  :                       :        +- CometProject
-                  :                       :           +- CometFilter
-                  :                       :              +- CometNativeScan parquet spark_catalog.default.store
-                  :                       +- CometBroadcastExchange
-                  :                          +- CometProject
-                  :                             +- CometFilter
-                  :                                +- CometNativeScan parquet spark_catalog.default.item
+                  :           +- ReusedExchange
                   :- CometHashAggregate
                   :  +- CometExchange
                   :     +- CometHashAggregate
                   :        +- CometHashAggregate
-                  :           +- CometExchange
-                  :              +- CometHashAggregate
-                  :                 +- CometProject
-                  :                    +- CometBroadcastHashJoin
-                  :                       :- CometProject
-                  :                       :  +- CometBroadcastHashJoin
-                  :                       :     :- CometProject
-                  :                       :     :  +- CometBroadcastHashJoin
-                  :                       :     :     :- CometFilter
-                  :                       :     :     :  +- CometNativeScan parquet spark_catalog.default.store_sales
-                  :                       :     :     :        +- CometSubqueryBroadcast
-                  :                       :     :     :           +- CometBroadcastExchange
-                  :                       :     :     :              +- CometProject
-                  :                       :     :     :                 +- CometFilter
-                  :                       :     :     :                    +- CometNativeScan parquet spark_catalog.default.date_dim
-                  :                       :     :     +- CometBroadcastExchange
-                  :                       :     :        +- CometProject
-                  :                       :     :           +- CometFilter
-                  :                       :     :              +- CometNativeScan parquet spark_catalog.default.date_dim
-                  :                       :     +- CometBroadcastExchange
-                  :                       :        +- CometProject
-                  :                       :           +- CometFilter
-                  :                       :              +- CometNativeScan parquet spark_catalog.default.store
-                  :                       +- CometBroadcastExchange
-                  :                          +- CometProject
-                  :                             +- CometFilter
-                  :                                +- CometNativeScan parquet spark_catalog.default.item
+                  :           +- ReusedExchange
                   +- CometHashAggregate
                      +- CometExchange
                         +- CometHashAggregate
                            +- CometHashAggregate
-                              +- CometExchange
-                                 +- CometHashAggregate
-                                    +- CometProject
-                                       +- CometBroadcastHashJoin
-                                          :- CometProject
-                                          :  +- CometBroadcastHashJoin
-                                          :     :- CometProject
-                                          :     :  +- CometBroadcastHashJoin
-                                          :     :     :- CometFilter
-                                          :     :     :  +- CometNativeScan parquet spark_catalog.default.store_sales
-                                          :     :     :        +- CometSubqueryBroadcast
-                                          :     :     :           +- CometBroadcastExchange
-                                          :     :     :              +- CometProject
-                                          :     :     :                 +- CometFilter
-                                          :     :     :                    +- CometNativeScan parquet spark_catalog.default.date_dim
-                                          :     :     +- CometBroadcastExchange
-                                          :     :        +- CometProject
-                                          :     :           +- CometFilter
-                                          :     :              +- CometNativeScan parquet spark_catalog.default.date_dim
-                                          :     +- CometBroadcastExchange
-                                          :        +- CometProject
-                                          :           +- CometFilter
-                                          :              +- CometNativeScan parquet spark_catalog.default.store
-                                          +- CometBroadcastExchange
-                                             +- CometProject
-                                                +- CometFilter
-                                                   +- CometNativeScan parquet spark_catalog.default.item
+                              +- ReusedExchange
 
-Comet accelerated 273 out of 282 eligible operators (96%). Final plan contains 1 transitions between Spark and Comet. Accelerated expressions: 11 native, 0 codegen dispatch.
+Comet accelerated 62 out of 62 eligible operators (100%). Final plan contains 1 transitions between Spark and Comet. Accelerated expressions: 11 native, 0 codegen dispatch.

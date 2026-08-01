@@ -19,10 +19,7 @@ CometColumnarToRow
                                  :     :              +- CometProject
                                  :     :                 +- CometFilter
                                  :     :                    +- CometNativeScan parquet spark_catalog.default.date_dim
-                                 :     +- CometBroadcastExchange
-                                 :        +- CometProject
-                                 :           +- CometFilter
-                                 :              +- CometNativeScan parquet spark_catalog.default.date_dim
+                                 :     +- ReusedExchange
                                  +- CometBroadcastExchange
                                     +- CometProject
                                        +- CometBroadcastHashJoin
@@ -47,9 +44,6 @@ CometColumnarToRow
                                                                         :        +- CometProject
                                                                         :           +- CometFilter
                                                                         :              +- CometNativeScan parquet spark_catalog.default.store
-                                                                        +- CometBroadcastExchange
-                                                                           +- CometProject
-                                                                              +- CometFilter
-                                                                                 +- CometNativeScan parquet spark_catalog.default.date_dim
+                                                                        +- ReusedExchange
 
-Comet accelerated 50 out of 52 eligible operators (96%). Final plan contains 1 transitions between Spark and Comet. Accelerated expressions: 15 native, 0 codegen dispatch.
+Comet accelerated 43 out of 43 eligible operators (100%). Final plan contains 1 transitions between Spark and Comet. Accelerated expressions: 15 native, 0 codegen dispatch.

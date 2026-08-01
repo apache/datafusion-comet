@@ -28,9 +28,6 @@ CometColumnarToRow
                :        +- CometProject
                :           +- CometFilter
                :              +- CometNativeScan parquet spark_catalog.default.customer_address
-               +- CometBroadcastExchange
-                  +- CometProject
-                     +- CometFilter
-                        +- CometNativeScan parquet spark_catalog.default.date_dim
+               +- ReusedExchange
 
-Comet accelerated 32 out of 33 eligible operators (96%). Final plan contains 1 transitions between Spark and Comet. Accelerated expressions: 9 native, 0 codegen dispatch.
+Comet accelerated 29 out of 29 eligible operators (100%). Final plan contains 1 transitions between Spark and Comet. Accelerated expressions: 9 native, 0 codegen dispatch.
