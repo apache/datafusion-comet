@@ -218,9 +218,7 @@ class CometCodegenSuite
       sql("INSERT INTO t VALUES (3.0, 4.0)")
 
       withSQLConf(
-        CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "true",
         CometConf.COMET_EXPLAIN_CODEGEN_ENABLED.key -> "false",
-        CometConf.COMET_EXEC_PROJECT_ENABLED.key -> "true",
         CometConf.COMET_EXTENDED_EXPLAIN_FORMAT.key ->
           CometConf.COMET_EXTENDED_EXPLAIN_FORMAT_VERBOSE) {
         val df = sql("SELECT abs(a), sqrt(b), hypot(a, b), nanvl(a, b) FROM t")

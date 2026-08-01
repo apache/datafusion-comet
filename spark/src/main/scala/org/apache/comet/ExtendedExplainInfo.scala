@@ -61,13 +61,13 @@ class ExtendedExplainInfo extends ExtendedExplainGenerator {
   /**
    * Names of the expressions in `plan` that Comet lowered to native DataFusion expressions,
    * sorted alphabetically. Names are the expression's `prettyName` (the UDF name for a
-   * `ScalaUDF`) lowercased, so they match the function names in the expression coverage guide.
+   * `ScalaUDF`) lowercased.
    *
    * Structural nodes - attribute references, literals, aliases, bound references - are not
    * reported: they carry no computation and would swamp the interesting names.
    */
   def getNativeExpressions(plan: SparkPlan): Seq[String] = {
-    CometCoverageStats.forPlan(plan).nativeExpressions.toSeq.sorted
+    exprCoverage(plan, CometExplainInfo.NATIVE_EXPRS)
   }
 
   /**
@@ -77,7 +77,11 @@ class ExtendedExplainInfo extends ExtendedExplainGenerator {
    * [[getNativeExpressions]] for how names are derived.
    */
   def getCodegenDispatchExpressions(plan: SparkPlan): Seq[String] = {
-    CometCoverageStats.forPlan(plan).codegenDispatchExpressions.toSeq.sorted
+    exprCoverage(plan, CometExplainInfo.CODEGEN_DISPATCH_EXPRS)
+  }
+
+  private def exprCoverage(plan: SparkPlan, tag: TreeNodeTag[Set[String]]): Seq[String] = {
+    CometExplainInfo.collectTagValues(sortup(plan).toSeq, tag).toSeq.sorted
   }
 
   private[comet] def fallbackReasons(node: TreeNode[_]): Set[String] = {
@@ -228,8 +232,7 @@ class CometCoverageStats {
 
   /**
    * Accumulate the expression coverage that `CometExecRule.rollUpInfoMessages` rolled up onto a
-   * converted Comet plan node. Nodes that carry no such tags (every Spark operator, and any Comet
-   * operator without expressions) contribute nothing.
+   * converted Comet plan node.
    */
   private[comet] def recordExpressions(node: TreeNode[_]): Unit = {
     node.getTagValue(CometExplainInfo.NATIVE_EXPRS).foreach(nativeExpressions ++= _)
@@ -280,13 +283,29 @@ object CometExplainInfo {
   // expression, then rolled up per operator by `CometExecRule.rollUpInfoMessages` onto the
   // converted Comet plan node (where extended explain reads it for coverage stats, and where it
   // becomes one combined `[COMET-INFO: ...]` when `spark.comet.explain.codegen.enabled` is set).
+  // Because the tag accumulates names from descendants as well, it answers "was anything under
+  // here dispatched", not "was this node itself dispatched" - use `DISPATCHED_SELF` for that.
   val CODEGEN_DISPATCH_EXPRS =
     new TreeNodeTag[Set[String]]("CometCodegenDispatchExprs")
+
+  // Marks the one expression that `CometScalaUDF.emitJvmCodegenDispatch` converted, as opposed to
+  // an ancestor that merely carries a descendant's name in `CODEGEN_DISPATCH_EXPRS`. Never rolled
+  // up or lifted, so classifying an expression as native/dispatched does not depend on the order
+  // in which the planner happens to visit it.
+  val DISPATCHED_SELF = new TreeNodeTag[Unit]("CometDispatchedSelf")
 
   // Expression names the serde lowered to native DataFusion expressions. The native counterpart
   // of `CODEGEN_DISPATCH_EXPRS`, rolled up the same way, but never rendered in the tree display:
   // it would repeat what the operator names already say.
   val NATIVE_EXPRS = new TreeNodeTag[Set[String]]("CometNativeExprs")
+
+  /**
+   * Union of a `Set`-valued tag over `nodes`. Used to roll expression coverage names up onto an
+   * operator and to gather them back off a plan.
+   */
+  def collectTagValues(nodes: Seq[TreeNode[_]], tag: TreeNodeTag[Set[String]]): Set[String] = {
+    nodes.flatMap(_.getTagValue(tag).getOrElse(Set.empty[String])).toSet
+  }
 
   /**
    * Name used to report `expr` in explain output.

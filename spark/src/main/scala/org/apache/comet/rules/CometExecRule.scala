@@ -754,25 +754,20 @@ case class CometExecRule(session: SparkSession)
 
     val infos =
       op.getTagValue(CometExplainInfo.EXTENSION_INFO).getOrElse(Set.empty[String]) ++
-        allExprs.flatMap(_.getTagValue(CometExplainInfo.EXTENSION_INFO)).flatten
+        CometExplainInfo.collectTagValues(allExprs, CometExplainInfo.EXTENSION_INFO)
     infos.foreach(msg => withInfo(exec, msg))
 
-    val nativeNames = collectNames(allExprs, CometExplainInfo.NATIVE_EXPRS)
-    if (nativeNames.nonEmpty) {
-      exec.setTagValue(CometExplainInfo.NATIVE_EXPRS, nativeNames)
-    }
+    appendTagValues(
+      exec,
+      CometExplainInfo.NATIVE_EXPRS,
+      CometExplainInfo.collectTagValues(allExprs, CometExplainInfo.NATIVE_EXPRS))
 
-    val routedNames = collectNames(allExprs, CometExplainInfo.CODEGEN_DISPATCH_EXPRS)
-    if (routedNames.nonEmpty) {
-      exec.setTagValue(CometExplainInfo.CODEGEN_DISPATCH_EXPRS, routedNames)
-      if (CometConf.COMET_EXPLAIN_CODEGEN_ENABLED.get()) {
-        withInfo(exec, s"JVM codegen dispatcher: ${routedNames.toSeq.sorted.mkString(", ")}")
-      }
+    val routedNames =
+      CometExplainInfo.collectTagValues(allExprs, CometExplainInfo.CODEGEN_DISPATCH_EXPRS)
+    appendTagValues(exec, CometExplainInfo.CODEGEN_DISPATCH_EXPRS, routedNames)
+    if (routedNames.nonEmpty && CometConf.COMET_EXPLAIN_CODEGEN_ENABLED.get()) {
+      withInfo(exec, s"JVM codegen dispatcher: ${routedNames.toSeq.sorted.mkString(", ")}")
     }
-  }
-
-  private def collectNames(exprs: Seq[Expression], tag: TreeNodeTag[Set[String]]): Set[String] = {
-    exprs.flatMap(_.getTagValue(tag)).flatten.toSet
   }
 
   private def isOperatorEnabled(

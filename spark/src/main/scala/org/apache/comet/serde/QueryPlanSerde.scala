@@ -21,6 +21,7 @@ package org.apache.comet.serde
 
 import java.util.concurrent.atomic.AtomicLong
 
+import scala.collection.mutable
 import scala.collection.mutable.ArrayBuffer
 import scala.jdk.CollectionConverters._
 
@@ -37,7 +38,7 @@ import org.apache.spark.sql.types._
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometExplainInfo
-import org.apache.comet.CometSparkSessionExtensions.{withFallbackReason, withInfo, withNativeExpr}
+import org.apache.comet.CometSparkSessionExtensions.{appendTagValues, withFallbackReason, withInfo, withNativeExpr}
 import org.apache.comet.expressions._
 import org.apache.comet.parquet.CometParquetUtils
 import org.apache.comet.serde.ExprOuterClass.{AggExpr, Expr, ScalarFunc}
@@ -794,20 +795,22 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
     if (!(newExpr eq expr)) {
       // `promote` rebuilt the tree, so the coverage tags landed on copies that the operator does
       // not hold. Lift them onto `expr` so `CometExecRule.rollUpInfoMessages`, which walks the
-      // operator's own expressions, still sees them.
+      // operator's own expressions, still sees them. Skipped in the common case where `promote`
+      // returned the same tree and there is nothing to lift.
       liftCoverageTags(newExpr, expr)
     }
     result
   }
 
   private def liftCoverageTags(from: Expression, to: Expression): Unit = {
-    Seq(CometExplainInfo.NATIVE_EXPRS, CometExplainInfo.CODEGEN_DISPATCH_EXPRS).foreach { tag =>
-      val names =
-        from.collect { case e: Expression => e }.flatMap(_.getTagValue(tag)).flatten.toSet
-      if (names.nonEmpty) {
-        to.setTagValue(tag, to.getTagValue(tag).getOrElse(Set.empty[String]) ++ names)
-      }
+    val native = mutable.Set.empty[String]
+    val dispatched = mutable.Set.empty[String]
+    from.foreach { e =>
+      e.getTagValue(CometExplainInfo.NATIVE_EXPRS).foreach(native ++= _)
+      e.getTagValue(CometExplainInfo.CODEGEN_DISPATCH_EXPRS).foreach(dispatched ++= _)
     }
+    appendTagValues(to, CometExplainInfo.NATIVE_EXPRS, native.toSet)
+    appendTagValues(to, CometExplainInfo.CODEGEN_DISPATCH_EXPRS, dispatched.toSet)
   }
 
   /**
@@ -920,11 +923,11 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       })
       .map { protoExpr =>
         // Record that this expression stayed in the native pipeline, for the expression coverage
-        // stats in extended explain. Expressions routed through the JVM codegen dispatcher tag
-        // themselves in `CometScalaUDF.emitJvmCodegenDispatch`, so anything reaching here without
-        // that tag was lowered to a native DataFusion expression.
+        // stats in extended explain. `CometScalaUDF.emitJvmCodegenDispatch` marks the expressions
+        // it converted, so anything reaching here without that marker was lowered to a native
+        // DataFusion expression.
         if (!isStructuralExpr(expr) &&
-          expr.getTagValue(CometExplainInfo.CODEGEN_DISPATCH_EXPRS).isEmpty) {
+          expr.getTagValue(CometExplainInfo.DISPATCHED_SELF).isEmpty) {
           withNativeExpr(expr, CometExplainInfo.exprDisplayName(expr))
         }
         // Attach QueryContext and expr_id to the expression
@@ -940,9 +943,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
   /**
    * Nodes that carry no computation of their own. They are excluded from the expression coverage
    * stats in extended explain because they appear in nearly every expression tree and would swamp
-   * the names a user actually cares about. `Literal` also covers the closure-serialized payload
-   * that `CometScalaUDF.emitJvmCodegenDispatch` ships as an argument, which is an artifact of the
-   * dispatcher rather than a natively evaluated expression.
+   * the names a user actually cares about.
    */
   private def isStructuralExpr(expr: Expression): Boolean = expr match {
     case _: Attribute | _: BoundReference | _: Literal | _: Alias => true

@@ -144,7 +144,10 @@ object CometScalaUDF extends CometExpressionSerde[ScalaUDF] {
     // Dispatch annotation for extended explain. Rolled up per operator by
     // `CometExecRule.rollUpInfoMessages`, which feeds the expression coverage stats and, when
     // `spark.comet.explain.codegen.enabled` is set, a single `[COMET-INFO: JVM codegen dispatcher:
-    // ...]` line. Informational only - does not trigger fallback.
+    // ...]` line. Informational only - does not trigger fallback. The marker records that this
+    // node itself was dispatched, which the name set alone cannot say once ancestors accumulate
+    // their descendants' names.
+    expr.setTagValue(CometExplainInfo.DISPATCHED_SELF, ())
     withCodegenDispatchExpr(expr, exprName)
     Some(
       ExprOuterClass.Expr
