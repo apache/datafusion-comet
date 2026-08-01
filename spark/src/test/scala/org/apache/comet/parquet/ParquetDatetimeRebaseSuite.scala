@@ -311,6 +311,21 @@ class ParquetDatetimeRebaseSuite extends CometTestBase {
   }
 
   versionlessFixtures.foreach { name =>
+    test(s"$name honors a per-read datetimeRebaseMode option") {
+      // Spark resolves the rebase mode through `ParquetOptions`, so `.option(...)` on the reader
+      // overrides the session conf. Comet reads it from the same place; previously it looked at
+      // the session conf only and ignored the option. Spotted by @peterxcli in #5048.
+      withReadMode("EXCEPTION") {
+        val df = spark.read
+          .option("datetimeRebaseMode", "CORRECTED")
+          .option("int96RebaseMode", "CORRECTED")
+          .parquet(fixture(name))
+        checkNativeScanAnswer(df)
+      }
+    }
+  }
+
+  versionlessFixtures.foreach { name =>
     test(s"$name matches Spark under CORRECTED read mode") {
       // CORRECTED asserts the values are already Proleptic Gregorian, so Spark reads them as-is
       // and no rebasing applies. Comet honors that and must agree with Spark exactly.

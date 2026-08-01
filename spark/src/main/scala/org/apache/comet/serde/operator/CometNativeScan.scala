@@ -27,7 +27,7 @@ import org.apache.spark.sql.catalyst.expressions.{Expression, Literal}
 import org.apache.spark.sql.catalyst.util.ResolveDefaultColumns.getExistenceDefaultValues
 import org.apache.spark.sql.comet.{CometNativeExec, CometNativeScanExec, CometScanExec}
 import org.apache.spark.sql.execution.{FileSourceScanExec, InSubqueryExec, SubqueryAdaptiveBroadcastExec}
-import org.apache.spark.sql.execution.datasources.parquet.ParquetUtils
+import org.apache.spark.sql.execution.datasources.parquet.{ParquetOptions, ParquetUtils}
 import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.{CometConf, ConfigEntry}
@@ -93,7 +93,7 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with Logging {
 
   /**
    * Whether a `*RebaseModeInRead` setting is CORRECTED. Takes the rendered value rather than the
-   * conf entry's type, which is a plain String on Spark 3.x and a `LegacyBehaviorPolicy.Value` on
+   * declared type, which is a plain String on Spark 3.x and a `LegacyBehaviorPolicy.Value` on
    * 4.x.
    */
   private def isCorrected(rebaseMode: String): Boolean =
@@ -231,11 +231,14 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with Logging {
       // Spark consults these read modes only for files whose footer records no writer version
       // (Spark 2.4.5 and earlier, plus every non-Spark writer). CORRECTED asserts such a file's
       // values are already Proleptic Gregorian, which lets Comet read them; the EXCEPTION default
-      // does not, and Spark raises on an ancient value there too.
+      // does not, and Spark raises on an ancient value there too. Read them through
+      // `ParquetOptions`, the same source Spark's own `ParquetFileFormat` uses, so a per-read
+      // `.option("datetimeRebaseMode", ...)` is honored and not just the session conf.
+      val parquetOptions = new ParquetOptions(scan.relation.options, scan.conf)
       commonBuilder.setLegacyDatetimeReadModeCorrected(
-        isCorrected(scan.conf.getConf(SQLConf.PARQUET_REBASE_MODE_IN_READ).toString))
+        isCorrected(parquetOptions.datetimeRebaseModeInRead.toString))
       commonBuilder.setLegacyInt96ReadModeCorrected(
-        isCorrected(scan.conf.getConf(SQLConf.PARQUET_INT96_REBASE_MODE_IN_READ).toString))
+        isCorrected(parquetOptions.int96RebaseModeInRead.toString))
 
       // Collect S3/cloud storage configurations
       val hadoopConf = scan.relation.sparkSession.sessionState
