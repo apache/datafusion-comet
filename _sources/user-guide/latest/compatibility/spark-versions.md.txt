@@ -76,7 +76,7 @@ Spark 4.0.2 is supported with Java 17 and Scala 2.13.
 
 ## Spark 4.1
 
-Spark 4.1.2 is supported with Java 17/21 and Scala 2.13.
+Spark 4.1.3 is supported with Java 17/21 and Scala 2.13.
 
 ### Known Limitations
 
