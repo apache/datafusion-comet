@@ -96,10 +96,8 @@ impl PhysicalExpr for ListEmptyToNullExpr {
         // satisfies outer semantics. `is_valid` returns true when `nulls` is
         // `None`, so this single scan short-circuits on the first empty
         // valid row without allocating.
-        let has_valid_empty = (0..len).any(|i| {
-            offsets[i + 1] == offsets[i]
-                && existing_nulls.is_none_or(|n| n.is_valid(i))
-        });
+        let has_valid_empty = (0..len)
+            .any(|i| offsets[i + 1] == offsets[i] && existing_nulls.is_none_or(|n| n.is_valid(i)));
         if !has_valid_empty {
             return Ok(ColumnarValue::Array(Arc::clone(&array)));
         }

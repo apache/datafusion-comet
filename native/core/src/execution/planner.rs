@@ -1916,8 +1916,7 @@ impl PhysicalPlanner {
                 // and the array passthrough (`posexplode_outer`) share a single evaluation
                 // instead of re-running `ListEmptyToNullExpr` per branch.
                 let child_schema = child.schema();
-                let (child_expr, child_native_plan): (Arc<dyn PhysicalExpr>, _) = if explode.outer
-                {
+                let (child_expr, child_native_plan): (Arc<dyn PhysicalExpr>, _) = if explode.outer {
                     let wrapped: Arc<dyn PhysicalExpr> =
                         Arc::new(ListEmptyToNullExpr::new(child_expr));
                     let wrapped_name = wrapped
@@ -1984,10 +1983,8 @@ impl PhysicalPlanner {
                 }
                 project_exprs.push((Arc::clone(&child_expr), array_col_name.clone()));
 
-                let project_exec = Arc::new(ProjectionExec::try_new(
-                    project_exprs,
-                    child_native_plan,
-                )?);
+                let project_exec =
+                    Arc::new(ProjectionExec::try_new(project_exprs, child_native_plan)?);
 
                 let project_schema = project_exec.schema();
 
