@@ -627,6 +627,14 @@ fn try_classify_file_read_error(error: &DataFusionError) -> Option<SparkError> {
         // error-message text, which DataFusion produces via `{:?}`) tells the two apart. Bail so the
         // underlying error surfaces through the normal native-exception path.
         DFE::ParquetError(pe) if parquet_external_wraps_arrow_error(pe) => None,
+        // A `SparkError` Comet's Parquet reader raised deliberately (the legacy-calendar
+        // rejection) travels as `ParquetError::External`, because `AsyncFileReader::get_metadata`
+        // can only return a `ParquetError`. Recover it by downcast and surface it as itself: it is
+        // a Comet limitation, not a corrupt/truncated file, and must not be relabelled
+        // FAILED_READ_FILE.
+        DFE::ParquetError(pe) if spark_error_in_parquet_error(pe).is_some() => {
+            spark_error_in_parquet_error(pe)
+        }
         // A genuinely-missing file (object_store NotFound) is distinct from a corrupt/truncated
         // one: Spark surfaces it as `readCurrentFileNotFoundError` ("It is possible the underlying
         // files have been updated."), not `cannotReadFilesError`. The NotFound may arrive directly
@@ -686,6 +694,16 @@ fn try_classify_file_read_error(error: &DataFusionError) -> Option<SparkError> {
 /// `ParquetError::General`/`EOF`/`External(io|object_store)` and never wrap an `ArrowError`. Matching
 /// on the wrapped type (rather than the message text DataFusion builds with `{:?}`) keeps the
 /// distinction robust to upstream message changes.
+/// Recover a `SparkError` that Comet boxed into `ParquetError::External`. Typed rather than
+/// message-based, so it cannot be confused with a genuine parquet failure whose prose happens to
+/// look similar.
+fn spark_error_in_parquet_error(pe: &ParquetError) -> Option<SparkError> {
+    match pe {
+        ParquetError::External(inner) => inner.downcast_ref::<SparkError>().cloned(),
+        _ => None,
+    }
+}
+
 fn parquet_external_wraps_arrow_error(pe: &ParquetError) -> bool {
     matches!(pe, ParquetError::External(inner) if inner.downcast_ref::<ArrowError>().is_some())
 }

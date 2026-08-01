@@ -202,6 +202,16 @@ pub enum SparkError {
     #[error("Spark read schema expects field Ids, but Parquet file schema doesn't contain any field Ids. Please remove the field ids from Spark schema or ignore missing ids by setting `spark.sql.parquet.fieldId.read.ignoreMissing = true`")]
     ParquetMissingFieldIds,
 
+    /// A Parquet file holding dates/timestamps written in the legacy hybrid (Julian + Gregorian)
+    /// calendar, which Comet's native scan cannot rebase (#5010). Translated by the JVM shim into
+    /// Spark's `SparkUpgradeException` -- the same exception type Spark itself raises for this
+    /// data, and one Spark's `FileScanRDD` deliberately rethrows rather than wrapping in
+    /// `FAILED_READ_FILE`, since the file is perfectly readable and only Comet's calendar
+    /// handling is at fault. The `file_path` may be empty, in which case the JVM side fills it
+    /// from the per-task file list.
+    #[error("{message}")]
+    LegacyDatetimeRebase { file_path: String, message: String },
+
     /// Schema mismatch when reading a Parquet column under a requested schema
     /// that's incompatible with the physical column type. Translated by the JVM
     /// shim into Spark's `SchemaColumnConvertNotSupportedException`. The
@@ -299,6 +309,7 @@ impl SparkError {
             SparkError::DuplicateFieldCaseInsensitive { .. } => "DuplicateFieldCaseInsensitive",
             SparkError::DuplicateFieldByFieldId { .. } => "DuplicateFieldByFieldId",
             SparkError::ParquetMissingFieldIds => "ParquetMissingFieldIds",
+            SparkError::LegacyDatetimeRebase { .. } => "LegacyDatetimeRebase",
             SparkError::ParquetSchemaConvert { .. } => "ParquetSchemaConvert",
             SparkError::CannotReadFile { .. } => "CannotReadFile",
             SparkError::Arrow(_) => "Arrow",
@@ -544,6 +555,12 @@ impl SparkError {
                     "message": message,
                 })
             }
+            SparkError::LegacyDatetimeRebase { file_path, message } => {
+                serde_json::json!({
+                    "filePath": file_path,
+                    "message": message,
+                })
+            }
             SparkError::Arrow(e) => {
                 serde_json::json!({
                     "message": e.to_string(),
@@ -627,6 +644,10 @@ impl SparkError {
             // matching the `RuntimeException` Spark's ParquetReadSupport throws when the
             // file lacks field ids and `spark.sql.parquet.fieldId.read.ignoreMissing=false`.
             SparkError::ParquetMissingFieldIds => "java/lang/RuntimeException",
+
+            // LegacyDatetimeRebase - converted to SparkUpgradeException by the shim, matching
+            // what Spark raises for hybrid-calendar data it is asked not to rebase.
+            SparkError::LegacyDatetimeRebase { .. } => "org/apache/spark/SparkUpgradeException",
 
             // ParquetSchemaConvert - converted to SchemaColumnConvertNotSupportedException by the shim
             SparkError::ParquetSchemaConvert { .. } => {
@@ -721,6 +742,11 @@ impl SparkError {
 
             // ParquetMissingFieldIds is a plain RuntimeException with no error class.
             SparkError::ParquetMissingFieldIds => None,
+
+            // LegacyDatetimeRebase - the JVM shim supplies Spark's
+            // INCONSISTENT_BEHAVIOR_CROSS_VERSION.READ_ANCIENT_DATETIME class when it builds the
+            // SparkUpgradeException, so none is exposed here.
+            SparkError::LegacyDatetimeRebase { .. } => None,
 
             // Parquet schema mismatch — translated to SchemaColumnConvertNotSupportedException
             // by the JVM shim. The shim wraps it in the version-appropriate

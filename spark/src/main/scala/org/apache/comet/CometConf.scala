@@ -718,16 +718,19 @@ object CometConf extends ShimCometConf {
   val COMET_EXCEPTION_ON_LEGACY_DATE_TIMESTAMP: ConfigEntry[Boolean] =
     conf("spark.comet.exceptionOnDatetimeRebase")
       .category(CATEGORY_SCAN)
-      .doc("Whether to throw exception when seeing dates/timestamps from the legacy hybrid " +
-        "(Julian + Gregorian) calendar. Since Spark 3, dates/timestamps were written according " +
-        "to the Proleptic Gregorian calendar. Comet's native scan does not rebase, so when this " +
-        "is true it instead fails any scan that reads a date or timestamp column from a Parquet " +
-        "file whose footer says it was written by Spark before 3.0, or with " +
-        s"${SQLConf.PARQUET_REBASE_MODE_IN_WRITE.key}=LEGACY, rather than returning wrong " +
-        "values. If this is false, these dates/timestamps will be read as if they were " +
-        s"written to the Proleptic Gregorian calendar and will not be rebased. $COMPAT_GUIDE.")
+      .doc("Whether to fail rather than return incorrect values for dates/timestamps from the " +
+        "legacy hybrid (Julian + Gregorian) calendar. Since Spark 3, dates/timestamps were " +
+        "written according to the Proleptic Gregorian calendar, and Spark rebases older values " +
+        "on read. Comet's native scan does not implement rebasing, so when this is true (the " +
+        "default) it fails any scan that would read an affected value: one from a Parquet file " +
+        "that both carries a legacy-calendar marker in its footer (written by Spark before 3.0, " +
+        s"or with ${SQLConf.PARQUET_REBASE_MODE_IN_WRITE.key}=LEGACY) and actually holds a date " +
+        "before 1582-10-15 or a timestamp before 1900-01-01T00:00:00Z. Legacy-written files " +
+        "whose values are all newer than that rebase to themselves and are read normally. Set " +
+        "this to false to read affected values as-is, without rebasing, which reproduces the " +
+        s"silently-incorrect results of earlier Comet versions. $COMPAT_GUIDE.")
       .booleanConf
-      .createWithDefault(false)
+      .createWithDefault(true)
 
   val COMET_ENABLE_PARTIAL_HASH_AGGREGATE: ConfigEntry[Boolean] =
     conf("spark.comet.testing.aggregate.partialMode.enabled")

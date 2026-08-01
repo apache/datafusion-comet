@@ -24,7 +24,7 @@ pub mod schema_adapter;
 pub mod util;
 
 mod cast_column;
-mod legacy_datetime;
+pub mod legacy_datetime;
 pub(crate) mod objectstore;
 
 use std::collections::HashMap;
@@ -49,6 +49,7 @@ use crate::execution::spark_plan::SparkPlan;
 use crate::execution::utils::SparkArrowConvert;
 use crate::jvm_bridge::JVMClasses;
 use crate::parquet::encryption_support::{CometEncryptionFactory, ENCRYPTION_FACTORY_ID};
+use crate::parquet::legacy_datetime::{ReadModes, RebaseThresholds};
 use crate::parquet::parquet_exec::init_datasource_exec;
 use crate::parquet::parquet_support::prepare_object_store_with_configs;
 use arrow::array::{Array, RecordBatch};
@@ -231,7 +232,16 @@ pub unsafe extern "system" fn Java_org_apache_comet_parquet_Native_initRecordBat
             false,
             // spark.comet.exceptionOnDatetimeRebase is not plumbed through this JNI entry point,
             // which is driven by the Iceberg integration rather than by CometNativeScan's proto.
+            // Disabled, so the thresholds are never consulted.
             false,
+            RebaseThresholds {
+                last_switch_day: 0,
+                last_switch_micros: 0,
+            },
+            ReadModes {
+                datetime_corrected: false,
+                int96_corrected: false,
+            },
         )?;
 
         let partition_index: usize = 0;

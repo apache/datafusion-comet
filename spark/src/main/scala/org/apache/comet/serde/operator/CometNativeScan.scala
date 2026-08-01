@@ -24,6 +24,7 @@ import scala.jdk.CollectionConverters._
 
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions.{Expression, Literal}
+import org.apache.spark.sql.catalyst.util.RebaseDateTime
 import org.apache.spark.sql.catalyst.util.ResolveDefaultColumns.getExistenceDefaultValues
 import org.apache.spark.sql.comet.{CometNativeExec, CometNativeScanExec, CometScanExec}
 import org.apache.spark.sql.execution.{FileSourceScanExec, InSubqueryExec, SubqueryAdaptiveBroadcastExec}
@@ -90,6 +91,14 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with Logging {
     // the scan is supported if no fallback reasons were added to the node
     !hasFallbackReason(scanExec)
   }
+
+  /**
+   * Whether a `*RebaseModeInRead` setting is CORRECTED. Takes the rendered value rather than the
+   * conf entry's type, which is a plain String on Spark 3.x and a `LegacyBehaviorPolicy.Value` on
+   * 4.x.
+   */
+  private def isCorrected(rebaseMode: String): Boolean =
+    rebaseMode.equalsIgnoreCase("CORRECTED")
 
   /** Detects AQE DPP (SubqueryAdaptiveBroadcastExec), as opposed to non-AQE DPP. */
   private def isAqeDynamicPruningFilter(e: Expression): Boolean =
@@ -212,8 +221,26 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with Logging {
 
       commonBuilder.setAllowTypePromotion(CometConf.COMET_SCHEMA_EVOLUTION_ENABLED)
       commonBuilder.setAllowTimestampLtzToNtz(CometConf.COMET_ALLOW_TIMESTAMP_LTZ_AS_NTZ)
+
+      // Comet does not implement datetime rebasing, so the native scan fails on a file that
+      // would need it rather than returning silently-shifted values. Send Spark's own rebase
+      // thresholds along with the flag: the native side compares them against Parquet row-group
+      // statistics to tell a legacy-written file that actually holds affected values from one
+      // whose values all rebase to themselves. Taking them from `RebaseDateTime` rather than
+      // hardcoding them natively keeps them exact for whichever Spark version is in use --
+      // `lastSwitchJulianTs` in particular is derived from Spark's per-timezone rebase tables.
       commonBuilder.setExceptionOnLegacyDatetime(
         CometConf.COMET_EXCEPTION_ON_LEGACY_DATE_TIMESTAMP.get(scan.conf))
+      commonBuilder.setLegacyDatetimeLastSwitchDay(RebaseDateTime.lastSwitchJulianDay)
+      commonBuilder.setLegacyDatetimeLastSwitchMicros(RebaseDateTime.lastSwitchJulianTs)
+      // Spark consults these read modes only for files whose footer records no writer version
+      // (Spark 2.4.5 and earlier, plus every non-Spark writer). CORRECTED asserts such a file's
+      // values are already Proleptic Gregorian, which lets Comet read them; the EXCEPTION default
+      // does not, and Spark raises on an ancient value there too.
+      commonBuilder.setLegacyDatetimeReadModeCorrected(
+        isCorrected(scan.conf.getConf(SQLConf.PARQUET_REBASE_MODE_IN_READ).toString))
+      commonBuilder.setLegacyInt96ReadModeCorrected(
+        isCorrected(scan.conf.getConf(SQLConf.PARQUET_INT96_REBASE_MODE_IN_READ).toString))
 
       // Collect S3/cloud storage configurations
       val hadoopConf = scan.relation.sparkSession.sessionState

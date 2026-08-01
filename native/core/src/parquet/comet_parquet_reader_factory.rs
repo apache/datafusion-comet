@@ -57,7 +57,7 @@
 //! the adapter is only created when the logical and physical schemas differ or a predicate is
 //! pushed down, whereas `get_metadata` runs for every file.
 
-use crate::parquet::legacy_datetime::{legacy_calendar_error, written_in_legacy_calendar};
+use crate::parquet::legacy_datetime::LegacyCalendarGuard;
 use bytes::Bytes;
 use datafusion::common::Result as DFResult;
 use datafusion::datasource::physical_plan::parquet::metadata::DFParquetMetadata;
@@ -81,22 +81,21 @@ use std::sync::Arc;
 pub struct CometParquetFileReaderFactory {
     store: Arc<dyn ObjectStore>,
     metadata_cache: Arc<dyn FileMetadataCache>,
-    /// Fail the scan on a file written in the legacy hybrid calendar. Already gated on the
-    /// scan actually reading a calendar-sensitive column, so this reader only has to look at
-    /// the footer.
-    reject_legacy_calendar: bool,
+    /// `Some` only when `spark.comet.exceptionOnDatetimeRebase` is on *and* this scan reads a
+    /// calendar-sensitive column, so a disarmed guard costs one `Option` check per file.
+    legacy_calendar_guard: Option<LegacyCalendarGuard>,
 }
 
 impl CometParquetFileReaderFactory {
     pub fn new(
         store: Arc<dyn ObjectStore>,
         metadata_cache: Arc<dyn FileMetadataCache>,
-        reject_legacy_calendar: bool,
+        legacy_calendar_guard: Option<LegacyCalendarGuard>,
     ) -> Self {
         Self {
             store,
             metadata_cache,
-            reject_legacy_calendar,
+            legacy_calendar_guard,
         }
     }
 }
@@ -130,7 +129,7 @@ impl ParquetFileReaderFactory for CometParquetFileReaderFactory {
             partitioned_file,
             metadata_cache: Arc::clone(&self.metadata_cache),
             metadata_size_hint,
-            reject_legacy_calendar: self.reject_legacy_calendar,
+            legacy_calendar_guard: self.legacy_calendar_guard.clone(),
         }))
     }
 }
@@ -142,7 +141,7 @@ struct CometParquetFileReader {
     partitioned_file: PartitionedFile,
     metadata_cache: Arc<dyn FileMetadataCache>,
     metadata_size_hint: Option<usize>,
-    reject_legacy_calendar: bool,
+    legacy_calendar_guard: Option<LegacyCalendarGuard>,
 }
 
 impl AsyncFileReader for CometParquetFileReader {
@@ -174,7 +173,7 @@ impl AsyncFileReader for CometParquetFileReader {
         let metadata_cache = Arc::clone(&self.metadata_cache);
         let store = Arc::clone(&self.store);
         let metadata_size_hint = self.metadata_size_hint;
-        let reject_legacy_calendar = self.reject_legacy_calendar;
+        let legacy_calendar_guard = self.legacy_calendar_guard.clone();
         async move {
             let file_decryption_properties = options
                 .and_then(|o| o.file_decryption_properties())
@@ -199,8 +198,8 @@ impl AsyncFileReader for CometParquetFileReader {
                     ))
                 })?;
 
-            if reject_legacy_calendar && written_in_legacy_calendar(&metadata) {
-                return Err(legacy_calendar_error());
+            if let Some(guard) = &legacy_calendar_guard {
+                guard.check(&metadata)?;
             }
 
             Ok(metadata)

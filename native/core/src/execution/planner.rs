@@ -101,6 +101,7 @@ use datafusion::physical_expr::expressions::{Literal, StatsType};
 use datafusion::physical_expr::window::WindowExpr;
 use datafusion::physical_expr::LexOrdering;
 
+use crate::parquet::legacy_datetime::{ReadModes, RebaseThresholds};
 use crate::parquet::parquet_exec::init_datasource_exec;
 use arrow::array::{
     new_empty_array, Array, ArrayRef, BinaryBuilder, BooleanArray, Date32Array, Decimal128Array,
@@ -1554,6 +1555,14 @@ impl PhysicalPlanner {
                     common.use_field_id,
                     common.ignore_missing_field_id,
                     common.exception_on_legacy_datetime,
+                    RebaseThresholds {
+                        last_switch_day: common.legacy_datetime_last_switch_day,
+                        last_switch_micros: common.legacy_datetime_last_switch_micros,
+                    },
+                    ReadModes {
+                        datetime_corrected: common.legacy_datetime_read_mode_corrected,
+                        int96_corrected: common.legacy_int96_read_mode_corrected,
+                    },
                 )?;
                 Ok((
                     vec![],

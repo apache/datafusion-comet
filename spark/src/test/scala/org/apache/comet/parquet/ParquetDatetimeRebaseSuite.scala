@@ -30,45 +30,44 @@ import org.apache.comet.CometConf
  * Tests for `spark.comet.exceptionOnDatetimeRebase`.
  *
  * Comet's native scan does not rebase dates/timestamps written in the legacy hybrid (Julian +
- * Gregorian) calendar, so it silently returns shifted values for dates before 1582-10-15 and
- * timestamps before 1900-01-01T00:00:00Z. Implementing rebasing is tracked by
- * https://github.com/apache/datafusion-comet/issues/5010; this config is the interim safety
- * valve, so a user can choose to fail rather than get wrong answers.
+ * Gregorian) calendar, so reading them unrebased returns values shifted by up to ten days.
+ * Implementing rebasing is tracked by https://github.com/apache/datafusion-comet/issues/5010;
+ * until then Comet fails such a read by default rather than returning wrong answers.
+ *
+ * The interesting cases here are the ones that must NOT fail: Spark stamps the legacy-calendar
+ * marker on a whole file whenever the write mode was LEGACY, but dates from 1582-10-15 onward
+ * rebase to themselves, so a marked file whose values are all modern is read normally.
  *
  * See https://github.com/apache/datafusion-comet/issues/5195
  */
 class ParquetDatetimeRebaseSuite extends CometTestBase {
 
-  /**
-   * A date whose Julian and Proleptic Gregorian representations differ, and one where they agree.
-   */
+  /** A date before the 1582-10-15 switch, so its Julian and Gregorian forms differ. */
   private val ancientDate = "1000-01-01"
+
+  /** Dates from the switch onward rebase to themselves. */
   private val modernDate = "1990-01-01"
 
   /** What a legacy-written `ancientDate` reads back as when nobody rebases it. */
   private val ancientDateUnrebased = "1000-01-06"
 
-  private def writeLegacyDates(path: String): Unit = {
-    withSQLConf(SQLConf.PARQUET_REBASE_MODE_IN_WRITE.key -> "LEGACY") {
+  /** Writes `dates` (plus each date's text as a `label` column) in the given rebase mode. */
+  private def writeDates(path: String, mode: String, dates: String*): Unit = {
+    val values = dates.map(d => s"('$d')").mkString(", ")
+    withSQLConf(SQLConf.PARQUET_REBASE_MODE_IN_WRITE.key -> mode) {
       spark
-        .sql(s"SELECT cast(s as date) AS d, s AS label " +
-          s"FROM VALUES ('$ancientDate'), ('$modernDate') AS v(s)")
+        .sql(s"SELECT cast(s as date) AS d, s AS label FROM VALUES $values AS v(s)")
         .write
         .mode("overwrite")
         .parquet(path)
     }
   }
 
-  private def writeCorrectedDates(path: String): Unit = {
-    withSQLConf(SQLConf.PARQUET_REBASE_MODE_IN_WRITE.key -> "CORRECTED") {
-      spark
-        .sql(s"SELECT cast(s as date) AS d, s AS label " +
-          s"FROM VALUES ('$ancientDate'), ('$modernDate') AS v(s)")
-        .write
-        .mode("overwrite")
-        .parquet(path)
-    }
-  }
+  private def writeLegacyDates(path: String): Unit =
+    writeDates(path, "LEGACY", ancientDate, modernDate)
+
+  private def writeCorrectedDates(path: String): Unit =
+    writeDates(path, "CORRECTED", ancientDate, modernDate)
 
   private def assertNativeScan(df: DataFrame): Unit = {
     val plan = df.queryExecution.executedPlan
@@ -95,25 +94,26 @@ class ParquetDatetimeRebaseSuite extends CometTestBase {
       s"expected the message to name the config that raised, got:\n  ${chain.mkString("\n  ")}")
   }
 
-  test("legacy-calendar dates raise when exceptionOnDatetimeRebase is enabled") {
-    withSQLConf(CometConf.COMET_EXCEPTION_ON_LEGACY_DATE_TIMESTAMP.key -> "true") {
-      withTempPath { dir =>
-        val path = dir.getCanonicalPath
-        writeLegacyDates(path)
-        assertRaisesOnRebase(spark.read.parquet(path))
-        // A projection that only reads the date column still raises.
-        assertRaisesOnRebase(spark.read.parquet(path).select("d"))
-        // So does one that only filters on it: pushed-down filter columns are part of the
-        // required schema, so they are covered too.
-        assertRaisesOnRebase(
-          spark.read.parquet(path).where(s"d > date'$modernDate'").select("label"))
-      }
+  test("ancient legacy-calendar dates raise by default") {
+    // No config set: the guard is on out of the box, which is the point of the default. Comet
+    // must not silently return shifted values.
+    assert(CometConf.COMET_EXCEPTION_ON_LEGACY_DATE_TIMESTAMP.defaultValue.contains(true))
+    withTempPath { dir =>
+      val path = dir.getCanonicalPath
+      writeLegacyDates(path)
+      assertRaisesOnRebase(spark.read.parquet(path))
+      // A projection that only reads the date column still raises.
+      assertRaisesOnRebase(spark.read.parquet(path).select("d"))
+      // So does one that only filters on it: pushed-down filter columns are part of the required
+      // schema, so they are covered too.
+      assertRaisesOnRebase(
+        spark.read.parquet(path).where(s"d > date'$modernDate'").select("label"))
     }
   }
 
   test("legacy-calendar dates are read unrebased when exceptionOnDatetimeRebase is disabled") {
-    // The default. This is the wrong-answer behavior of #5010, asserted here so that wiring the
-    // config up is provably a no-op unless the user opts in.
+    // The opt-out. Pins the pre-guard behaviour of #5010 so it stays reachable for anyone who
+    // needs it, and documents exactly how wrong it is.
     withSQLConf(
       CometConf.COMET_EXCEPTION_ON_LEGACY_DATE_TIMESTAMP.key -> "false",
       // Return java.time.LocalDate rather than java.sql.Date, so `toString` renders the Proleptic
@@ -134,45 +134,217 @@ class ParquetDatetimeRebaseSuite extends CometTestBase {
   test("a projection with no date or timestamp column does not raise") {
     // Nothing else in a Parquet file is calendar-sensitive, and Spark only raises when it
     // decodes an affected value, so a scan that reads no date/timestamp must not be failed.
-    withSQLConf(CometConf.COMET_EXCEPTION_ON_LEGACY_DATE_TIMESTAMP.key -> "true") {
-      withTempPath { dir =>
-        val path = dir.getCanonicalPath
-        writeLegacyDates(path)
-        val df = spark.read.parquet(path).select("label")
-        assertNativeScan(df)
-        checkSparkAnswerAndOperator(df)
-      }
+    withTempPath { dir =>
+      val path = dir.getCanonicalPath
+      writeLegacyDates(path)
+      val df = spark.read.parquet(path).select("label")
+      assertNativeScan(df)
+      checkSparkAnswerAndOperator(df)
     }
   }
 
-  test("proleptic-Gregorian files do not raise when exceptionOnDatetimeRebase is enabled") {
+  test("proleptic-Gregorian files do not raise") {
     // The overwhelmingly common case: written by Spark 3.0+ with the default CORRECTED mode, so
-    // the footer carries no legacy marker and enabling the config must not cost anything.
-    withSQLConf(CometConf.COMET_EXCEPTION_ON_LEGACY_DATE_TIMESTAMP.key -> "true") {
-      withTempPath { dir =>
-        val path = dir.getCanonicalPath
-        writeCorrectedDates(path)
-        val df = spark.read.parquet(path)
+    // the footer carries no legacy marker and the guard must cost nothing.
+    withTempPath { dir =>
+      val path = dir.getCanonicalPath
+      writeCorrectedDates(path)
+      val df = spark.read.parquet(path)
+      assertNativeScan(df)
+      checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  test("legacy-calendar INT96 timestamps raise even when their values look modern") {
+    // INT96 has no meaningful byte ordering, so writers produce no usable min/max and Comet
+    // cannot prove the file safe. It is rejected conservatively.
+    withTempPath { dir =>
+      val path = dir.getCanonicalPath
+      withSQLConf(
+        SQLConf.PARQUET_OUTPUT_TIMESTAMP_TYPE.key -> "INT96",
+        SQLConf.PARQUET_INT96_REBASE_MODE_IN_WRITE.key -> "LEGACY") {
+        spark
+          .sql("SELECT cast('2020-06-30 12:00:00' as timestamp) AS ts")
+          .write
+          .mode("overwrite")
+          .parquet(path)
+      }
+      assertRaisesOnRebase(spark.read.parquet(path))
+    }
+  }
+
+  test("a legacy-marked file holding only modern dates is read normally") {
+    // The case that makes a default-on guard tolerable. Spark stamps the legacy marker on the
+    // whole file whenever the write mode was LEGACY, but 1990-01-01 rebases to itself, so the
+    // values Comet reads are correct and the scan must not be failed. Row-group statistics are
+    // what let Comet tell this file apart from one holding ancient values.
+    withTempPath { dir =>
+      val path = dir.getCanonicalPath
+      writeDates(path, "LEGACY", modernDate, "2020-06-30")
+      val df = spark.read.parquet(path)
+      assertNativeScan(df)
+      checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  test("a legacy-marked file holding only modern timestamps is read normally") {
+    withTempPath { dir =>
+      val path = dir.getCanonicalPath
+      withSQLConf(
+        SQLConf.PARQUET_OUTPUT_TIMESTAMP_TYPE.key -> "TIMESTAMP_MICROS",
+        SQLConf.PARQUET_REBASE_MODE_IN_WRITE.key -> "LEGACY") {
+        spark
+          .sql("SELECT cast('2020-06-30 12:00:00' as timestamp) AS ts")
+          .write
+          .mode("overwrite")
+          .parquet(path)
+      }
+      val df = spark.read.parquet(path)
+      assertNativeScan(df)
+      checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  test("a legacy-marked file holding an ancient timestamp raises") {
+    withTempPath { dir =>
+      val path = dir.getCanonicalPath
+      withSQLConf(
+        SQLConf.PARQUET_OUTPUT_TIMESTAMP_TYPE.key -> "TIMESTAMP_MICROS",
+        SQLConf.PARQUET_REBASE_MODE_IN_WRITE.key -> "LEGACY") {
+        spark
+          .sql("SELECT cast('1800-01-01 12:00:00' as timestamp) AS ts")
+          .write
+          .mode("overwrite")
+          .parquet(path)
+      }
+      assertRaisesOnRebase(spark.read.parquet(path))
+    }
+  }
+
+  test("the rejection surfaces as SparkUpgradeException, not FAILED_READ_FILE") {
+    // Spark raises SparkUpgradeException for this data and its FileScanRDD deliberately rethrows
+    // that type rather than wrapping it in FAILED_READ_FILE, because the file is not corrupt.
+    // Comet classifies it the same way.
+    withTempPath { dir =>
+      val path = dir.getCanonicalPath
+      writeLegacyDates(path)
+      val e = intercept[Throwable](spark.read.parquet(path).collect())
+      val chain = Iterator.iterate(e)(_.getCause).takeWhile(_ != null).toList
+      val rendered = chain.map(t => s"${t.getClass.getName}: ${t.getMessage}").mkString("\n  ")
+      // Matched by name: SparkUpgradeException is private[spark], so this package cannot name
+      // the type.
+      assert(
+        chain.exists(_.getClass.getName == "org.apache.spark.SparkUpgradeException"),
+        s"expected a SparkUpgradeException in the cause chain, got:\n  $rendered")
+      assert(
+        !rendered.contains("Encountered error while reading file"),
+        s"the rejection must not be relabelled FAILED_READ_FILE, got:\n  $rendered")
+    }
+  }
+
+  test("only the requested columns arm the guard") {
+    // Two date columns, only one ancient. Reading the modern one must not fail even though the
+    // file as a whole does hold an affected value.
+    withTempPath { dir =>
+      val path = dir.getCanonicalPath
+      withSQLConf(SQLConf.PARQUET_REBASE_MODE_IN_WRITE.key -> "LEGACY") {
+        spark
+          .sql(
+            s"SELECT cast('$ancientDate' as date) AS old_d, cast('$modernDate' as date) AS new_d")
+          .write
+          .mode("overwrite")
+          .parquet(path)
+      }
+      val safe = spark.read.parquet(path).select("new_d")
+      assertNativeScan(safe)
+      checkSparkAnswerAndOperator(safe)
+
+      assertRaisesOnRebase(spark.read.parquet(path).select("old_d"))
+    }
+  }
+
+  /** Sets both `*RebaseModeInRead` settings, which Spark applies only to version-less files. */
+  private def withReadMode(mode: String)(f: => Unit): Unit =
+    withSQLConf(
+      SQLConf.PARQUET_REBASE_MODE_IN_READ.key -> mode,
+      SQLConf.PARQUET_INT96_REBASE_MODE_IN_READ.key -> mode)(f)
+
+  private def fixture(name: String): String =
+    getResourceParquetFilePath(s"test-data/$name.snappy.parquet")
+
+  /**
+   * Checked-in files holding pre-1582 dates / pre-1900 timestamps, in every physical encoding a
+   * calendar-sensitive column can use.
+   *
+   * Spark 2.4.5 stamped no `org.apache.spark.version`, so those files record no provenance and
+   * Spark resolves them through the `*RebaseModeInRead` settings. Spark 2.4.6 added the version
+   * key, and the v3_2_0 files were written with LEGACY rebase mode, so both of those are
+   * identified from the footer alone and the read modes do not apply to them.
+   */
+  private val versionlessFixtures = Seq(
+    "before_1582_date_v2_4_5",
+    "before_1582_timestamp_micros_v2_4_5",
+    "before_1582_timestamp_millis_v2_4_5",
+    "before_1582_timestamp_int96_plain_v2_4_5",
+    "before_1582_timestamp_int96_dict_v2_4_5")
+
+  private val markedFixtures = Seq(
+    "before_1582_date_v2_4_6",
+    "before_1582_date_v3_2_0",
+    "before_1582_timestamp_micros_v2_4_6",
+    "before_1582_timestamp_micros_v3_2_0",
+    "before_1582_timestamp_millis_v2_4_6",
+    "before_1582_timestamp_millis_v3_2_0",
+    "before_1582_timestamp_int96_plain_v2_4_6",
+    "before_1582_timestamp_int96_plain_v3_2_0",
+    "before_1582_timestamp_int96_dict_v2_4_6",
+    "before_1582_timestamp_int96_dict_v3_2_0")
+
+  private val ancientFixtures = versionlessFixtures ++ markedFixtures
+
+  ancientFixtures.foreach { name =>
+    test(s"$name raises under EXCEPTION read mode") {
+      // EXCEPTION is Spark's own default. For a version-less file Spark raises here too; for a
+      // footer-marked one Spark rebases and returns correct values, which Comet cannot do. Either
+      // way Comet must not return the shifted values.
+      withReadMode("EXCEPTION") {
+        assertRaisesOnRebase(spark.read.parquet(fixture(name)))
+      }
+    }
+  }
+
+  versionlessFixtures.foreach { name =>
+    test(s"$name matches Spark under CORRECTED read mode") {
+      // CORRECTED asserts the values are already Proleptic Gregorian, so Spark reads them as-is
+      // and no rebasing applies. Comet honors that and must agree with Spark exactly.
+      withReadMode("CORRECTED") {
+        val df = spark.read.parquet(fixture(name))
         assertNativeScan(df)
         checkSparkAnswerAndOperator(df)
       }
     }
   }
 
-  test("legacy-calendar INT96 timestamps raise when exceptionOnDatetimeRebase is enabled") {
-    withSQLConf(CometConf.COMET_EXCEPTION_ON_LEGACY_DATE_TIMESTAMP.key -> "true") {
-      withTempPath { dir =>
-        val path = dir.getCanonicalPath
-        withSQLConf(
-          SQLConf.PARQUET_OUTPUT_TIMESTAMP_TYPE.key -> "INT96",
-          SQLConf.PARQUET_INT96_REBASE_MODE_IN_WRITE.key -> "LEGACY") {
-          spark
-            .sql("SELECT cast('1800-01-01 12:00:00' as timestamp) AS ts")
-            .write
-            .mode("overwrite")
-            .parquet(path)
+  markedFixtures.foreach { name =>
+    test(s"$name still raises under CORRECTED read mode") {
+      // The footer records these files' provenance, so Spark ignores the read mode for them and
+      // rebases. Comet cannot, so it keeps refusing regardless of the setting.
+      withReadMode("CORRECTED") {
+        assertRaisesOnRebase(spark.read.parquet(fixture(name)))
+      }
+    }
+  }
+
+  ancientFixtures.foreach { name =>
+    test(s"$name is readable with exceptionOnDatetimeRebase disabled") {
+      // The opt-out has to keep working for every encoding, not just the ones the guard was
+      // easiest to write for.
+      withSQLConf(CometConf.COMET_EXCEPTION_ON_LEGACY_DATE_TIMESTAMP.key -> "false") {
+        withReadMode("EXCEPTION") {
+          val df = spark.read.parquet(fixture(name))
+          assertNativeScan(df)
+          assert(df.collect().length == 8)
         }
-        assertRaisesOnRebase(spark.read.parquet(path))
       }
     }
   }

@@ -49,23 +49,37 @@ The following features are not supported and cause Comet to fall back to Spark:
   `spark.comet.scan.allowDisabledParquetVectorizedReader=true` to opt in to running the
   Comet Parquet scan regardless.
 
-The following limitation may produce incorrect results without falling back to Spark:
-
-- No support for datetime rebasing. When reading Parquet files containing dates or timestamps
-  written with `spark.sql.parquet.datetimeRebaseModeInWrite=LEGACY` (which is Spark's default for
-  data written before Spark 3.0, using the hybrid Julian/Gregorian calendar), Comet reads them as
-  if they were written using the Proleptic Gregorian calendar. This produces silently-wrong
-  values for dates before October 15, 1582 in both projections and predicates. Comet also
-  ignores `spark.sql.parquet.datetimeRebaseModeInRead`. Tracked by
-  [#5010](https://github.com/apache/datafusion-comet/issues/5010). Set
-  `spark.comet.exceptionOnDatetimeRebase=true` to fail such a scan instead of returning wrong
-  values: Comet then raises when a scan reads a date or timestamp column from a Parquet file whose
-  footer says it was written in the hybrid calendar (`org.apache.spark.legacyDateTime` or
-  `org.apache.spark.legacyINT96` metadata, or an `org.apache.spark.version` before 3.0). Files
-  with no Spark writer version in the footer carry no rebasing signal, so they are read as-is
-  regardless of this config.
-
 The following limitations raise an error at scan time rather than falling back to Spark:
+
+- No support for datetime rebasing. Spark writes dates/timestamps in the legacy hybrid
+  Julian/Gregorian calendar when `spark.sql.parquet.datetimeRebaseModeInWrite=LEGACY`, and every
+  Spark before 3.0 did so unconditionally. Spark rebases those values to the Proleptic Gregorian
+  calendar on read; Comet does not implement rebasing, so reading them would return values shifted
+  by up to ten days. Rather than return wrong answers, Comet fails the read. Tracked by
+  [#5010](https://github.com/apache/datafusion-comet/issues/5010).
+
+  Comet only fails a read that would actually be affected, so this does not reject legacy-written
+  data wholesale. A read is refused when all of the following hold:
+
+  1. The scan reads a date or timestamp column (including nested ones). Reading only other columns
+     out of an affected file is fine.
+  2. The Parquet footer does not prove those values are already Proleptic Gregorian. It proves it
+     for an `org.apache.spark.version` of 3.0 or later (3.1 for `INT96`) with no
+     `org.apache.spark.legacyDateTime` / `org.apache.spark.legacyINT96` marker. Files with no
+     recorded writer version — Spark 2.4.5 and earlier, and non-Spark writers — are resolved
+     through `spark.sql.parquet.datetimeRebaseModeInRead` and
+     `spark.sql.parquet.int96RebaseModeInRead` exactly as Spark does, so `CORRECTED` reads them
+     as-is and the `EXCEPTION` default does not clear them.
+  3. Parquet row-group statistics show the column actually holds a date before October 15, 1582 or
+     a timestamp before 1900-01-01T00:00:00Z, or cannot show that it does not. A legacy-written
+     file whose values are all newer than that rebases to itself and is read normally. `INT96`
+     columns have no usable statistics (the Parquet spec gives their bytes no ordering), so they
+     are always refused when the footer does not clear them.
+
+  The failure is a `SparkUpgradeException`, matching what Spark raises for the same data. Set
+  `spark.comet.exceptionOnDatetimeRebase=false` to read affected values as-is, without rebasing;
+  this reproduces the silently-incorrect results of earlier Comet versions. To get correct values,
+  disable Comet for the query so that Spark performs the rebasing.
 
 - Invalid UTF-8 bytes in `STRING` columns. Spark permits arbitrary byte sequences in a `STRING`
   column (for example from `CAST(X'C1' AS STRING)`), but Comet's native execution path is built on

@@ -15,99 +15,340 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Detection of Parquet files whose dates/timestamps were written in the legacy hybrid
-//! (Julian + Gregorian) calendar, for `spark.comet.exceptionOnDatetimeRebase`.
+//! Rejection of Parquet reads that would silently return unrebased dates/timestamps.
 //!
-//! Spark rebases such values back to the Proleptic Gregorian calendar on read. Comet's native
-//! scan does not implement rebasing, so it silently returns shifted values for dates before
-//! 1582-10-15 and timestamps before 1900-01-01T00:00:00Z (#5010). This module supplies the
-//! signal that lets Comet fail such a scan instead, when the user asks for that.
+//! Spark writes dates/timestamps in the legacy hybrid (Julian + Gregorian) calendar when
+//! `spark.sql.parquet.datetimeRebaseModeInWrite=LEGACY`, and every Spark before 3.0 did so
+//! unconditionally. Spark rebases those values back to the Proleptic Gregorian calendar on read.
+//! Comet's native scan does not implement rebasing (#5010), so it would return values shifted by
+//! up to ten days. `spark.comet.exceptionOnDatetimeRebase` (on by default) fails such a read
+//! instead.
+//!
+//! # Why the decision is two-stage
+//!
+//! Footer metadata alone is too coarse in both directions.
+//!
+//! Too strict: Spark stamps `org.apache.spark.legacyDateTime` on a whole file whenever the write
+//! mode was LEGACY, whether or not any value is old enough to rebase -- and dates from 1582-10-15
+//! onward rebase to themselves. Rejecting on the marker alone would fail a large number of reads
+//! that return perfectly correct results.
+//!
+//! Too lax: Spark 2.4.5 and earlier wrote no `org.apache.spark.version` key at all, so the
+//! canonical legacy files carry no marker whatsoever. Spark handles those through
+//! `spark.sql.parquet.datetimeRebaseModeInRead`, whose default of EXCEPTION makes Spark raise when
+//! it decodes an actually-ancient value.
+//!
+//! So the footer is used only to ask whether a column's values are *provably* already Proleptic
+//! Gregorian. Anything it does not clear falls through to Parquet row-group statistics, and is
+//! rejected only when the file demonstrably holds a value below Spark's rebase threshold, or when
+//! statistics cannot prove otherwise. The result lines up with Spark's own defaults: the reads
+//! Comet refuses are, with one narrow exception noted on [`ReadModes`], the reads Spark either
+//! rebases or refuses too.
 
 use arrow::datatypes::{DataType, Fields, Schema};
-use parquet::basic::Type as PhysicalType;
+use datafusion_comet_common::SparkError;
+use parquet::basic::{
+    ConvertedType, LogicalType, TimeUnit as ParquetTimeUnit, Type as PhysicalType,
+};
 use parquet::errors::ParquetError;
 use parquet::file::metadata::{KeyValue, ParquetMetaData};
-use parquet::schema::types::SchemaDescriptor;
+use parquet::file::statistics::Statistics;
+use parquet::schema::types::ColumnDescriptor;
 
 /// Spark's Parquet footer key-value metadata keys, from `org.apache.spark.sql.package`.
 const SPARK_VERSION_METADATA_KEY: &str = "org.apache.spark.version";
 const SPARK_LEGACY_DATETIME_METADATA_KEY: &str = "org.apache.spark.legacyDateTime";
 const SPARK_LEGACY_INT96_METADATA_KEY: &str = "org.apache.spark.legacyINT96";
 
-/// True if this file's dates/timestamps were written in the legacy hybrid calendar and would
-/// need rebasing on read.
+/// The Spark version that switched each encoding to the Proleptic Gregorian calendar. Compared as
+/// plain strings, exactly as Spark's `DataSourceUtils.getRebaseSpec` does -- matching Spark matters
+/// more here than being right about version ordering, and the two only diverge for a hypothetical
+/// major version of 10 or above.
+const DATETIME_GREGORIAN_SINCE: &str = "3.0.0";
+const INT96_GREGORIAN_SINCE: &str = "3.1.0";
+
+/// The points at and above which julian-to-gregorian rebasing is the identity, taken from Spark's
+/// `RebaseDateTime` and passed down by `CometNativeScan` rather than hardcoded, so they track
+/// whichever Spark version Comet is running against. `last_switch_micros` in particular is
+/// derived by Spark from its per-timezone rebase tables (the maximum switch point across all
+/// zones), and is not a constant anyone should be re-deriving here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct RebaseThresholds {
+    /// `RebaseDateTime.lastSwitchJulianDay` -- days since the epoch (1582-10-15 => -141427).
+    pub last_switch_day: i32,
+    /// `RebaseDateTime.lastSwitchJulianTs` -- micros since the epoch.
+    pub last_switch_micros: i64,
+}
+
+/// Whether the user has told Spark to assume Proleptic Gregorian for files whose provenance the
+/// footer does not record, via `spark.sql.parquet.datetimeRebaseModeInRead=CORRECTED` and its INT96
+/// counterpart. Both default to EXCEPTION, under which Spark raises on an ancient value, so the
+/// default leaves Comet and Spark agreeing.
 ///
-/// Mirrors the LEGACY arm of Spark's `DataSourceUtils.getRebaseSpec`, which is driven entirely by
-/// footer metadata: a file needs rebasing if it was written before the version that switched to
-/// the Proleptic Gregorian calendar (3.0.0 for DATE/TIMESTAMP_MILLIS/TIMESTAMP_MICROS, 3.1.0 for
-/// INT96), or if a later writer explicitly opted back in via
-/// `spark.sql.parquet.datetimeRebaseModeInWrite=LEGACY` / `int96RebaseModeInWrite=LEGACY`, which
-/// stamps `legacyDateTime` / `legacyINT96` into the footer.
+/// The one place Comet still diverges from Spark: with a mode of LEGACY, Spark rebases a
+/// version-less file's values and returns them correctly, whereas Comet has no rebasing to do it
+/// with and refuses the read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ReadModes {
+    /// `spark.sql.parquet.datetimeRebaseModeInRead == CORRECTED`.
+    pub datetime_corrected: bool,
+    /// `spark.sql.parquet.int96RebaseModeInRead == CORRECTED`.
+    pub int96_corrected: bool,
+}
+
+/// The armed legacy-calendar guard for one scan. Built once per scan; consulted once per file open.
+#[derive(Debug, Clone)]
+pub struct LegacyCalendarGuard {
+    /// Top-level requested field names that can decode a date or timestamp, already lowercased
+    /// when the scan is case-insensitive. Used to ignore calendar-sensitive columns the scan
+    /// never reads.
+    requested_roots: Vec<String>,
+    case_sensitive: bool,
+    thresholds: RebaseThresholds,
+    read_modes: ReadModes,
+}
+
+impl LegacyCalendarGuard {
+    /// `None` when the guard cannot ever fire for this scan, either because the config is off or
+    /// because nothing calendar-sensitive is being read. `init_datasource_exec` keeps that as
+    /// `None` so a disarmed guard costs a single `Option` check per file rather than any footer
+    /// inspection.
+    pub fn for_scan(
+        enabled: bool,
+        required_schema: &Schema,
+        case_sensitive: bool,
+        thresholds: RebaseThresholds,
+        read_modes: ReadModes,
+    ) -> Option<Self> {
+        if !enabled {
+            return None;
+        }
+        let requested_roots: Vec<String> = required_schema
+            .fields()
+            .iter()
+            .filter(|field| data_type_has_date_or_timestamp(field.data_type()))
+            .map(|field| {
+                if case_sensitive {
+                    field.name().clone()
+                } else {
+                    field.name().to_lowercase()
+                }
+            })
+            .collect();
+        if requested_roots.is_empty() {
+            return None;
+        }
+        Some(Self {
+            requested_roots,
+            case_sensitive,
+            thresholds,
+            read_modes,
+        })
+    }
+
+    /// `Err` if this file must not be read: some calendar-sensitive column the scan reads is not
+    /// provably Proleptic Gregorian, and either holds a value that would need rebasing or cannot be
+    /// shown not to.
+    pub fn check(&self, metadata: &ParquetMetaData) -> Result<(), ParquetError> {
+        if self.reads_unrebasable_values(metadata) {
+            return Err(legacy_calendar_error());
+        }
+        Ok(())
+    }
+
+    fn reads_unrebasable_values(&self, metadata: &ParquetMetaData) -> bool {
+        let file_metadata = metadata.file_metadata();
+        let writer_version = spark_writer_version(file_metadata.key_value_metadata());
+        let descr = file_metadata.schema_descr();
+
+        for (leaf_index, column) in descr.columns().iter().enumerate() {
+            let Some(kind) = calendar_kind(column) else {
+                // Not a date/timestamp: no calendar exposure at all.
+                continue;
+            };
+            if !self.reads(column) {
+                continue;
+            }
+            if provably_gregorian(
+                kind,
+                writer_version,
+                file_metadata.key_value_metadata(),
+                &self.read_modes,
+            ) {
+                continue;
+            }
+            match kind.threshold(&self.thresholds) {
+                // INT96 carries no usable statistics -- the Parquet spec gives its 12 bytes no
+                // meaningful ordering, so writers either omit min/max or write values that must
+                // not be compared. There is nothing to prove safety with.
+                None => return true,
+                Some(threshold) => {
+                    if row_groups_may_hold_values_below(metadata, leaf_index, threshold) {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    /// Whether this leaf column sits under a top-level field the scan actually reads. Comparing
+    /// the root of the column path (rather than the full path) keeps nested date/timestamp fields
+    /// covered without having to reconstruct Parquet's list/map path encodings.
+    fn reads(&self, column: &ColumnDescriptor) -> bool {
+        let Some(root) = column.path().parts().first() else {
+            return false;
+        };
+        if self.case_sensitive {
+            self.requested_roots.iter().any(|name| name == root)
+        } else {
+            self.requested_roots.contains(&root.to_lowercase())
+        }
+    }
+}
+
+/// Which of Spark's two rebase regimes a calendar-sensitive leaf column falls under. Spark tracks
+/// INT96 separately from the other encodings: it switched calendars a release later and has its own
+/// footer marker and read-mode config.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CalendarKind {
+    /// DATE, TIMESTAMP_MILLIS, or TIMESTAMP_MICROS, carried in an INT32/INT64 column whose
+    /// statistics are ordinary signed integers.
+    Datetime(ParquetTimeUnit),
+    /// A DATE column, in days.
+    Date,
+    /// An INT96 timestamp.
+    Int96,
+}
+
+impl CalendarKind {
+    /// The rebase threshold in this column's own physical units, or `None` when statistics cannot
+    /// decide the question.
+    fn threshold(self, thresholds: &RebaseThresholds) -> Option<i64> {
+        match self {
+            CalendarKind::Date => Some(thresholds.last_switch_day as i64),
+            CalendarKind::Datetime(unit) => {
+                Some(timestamp_threshold(unit, thresholds.last_switch_micros))
+            }
+            CalendarKind::Int96 => None,
+        }
+    }
+}
+
+/// Classify a leaf column.
 ///
-/// Files with no `org.apache.spark.version` key were not written by Spark and carry no rebase
-/// signal at all. Spark falls back to `spark.sql.parquet.datetimeRebaseModeInRead` for them
-/// (default EXCEPTION, which then raises only on an actually-ancient value it has decoded).
-/// Comet has no decoded values here — only the footer — so it treats them as not needing
-/// rebasing rather than failing every non-Spark Parquet file.
-pub(crate) fn written_in_legacy_calendar(metadata: &ParquetMetaData) -> bool {
-    let file_metadata = metadata.file_metadata();
-    legacy_calendar_from_footer(file_metadata.key_value_metadata(), || {
-        has_int96_column(file_metadata.schema_descr())
+/// Both `LogicalType` and the deprecated `ConvertedType` are consulted: legacy-calendar files are
+/// by definition old, and files written before Parquet's logical-type rework carry only the
+/// converted type.
+fn calendar_kind(column: &ColumnDescriptor) -> Option<CalendarKind> {
+    if column.physical_type() == PhysicalType::INT96 {
+        return Some(CalendarKind::Int96);
+    }
+    match column.logical_type_ref() {
+        Some(LogicalType::Date) => Some(CalendarKind::Date),
+        Some(LogicalType::Timestamp { unit, .. }) => Some(CalendarKind::Datetime(*unit)),
+        Some(_) => None,
+        // Pre-logical-type files.
+        None => match column.converted_type() {
+            ConvertedType::DATE => Some(CalendarKind::Date),
+            ConvertedType::TIMESTAMP_MILLIS => {
+                Some(CalendarKind::Datetime(ParquetTimeUnit::MILLIS))
+            }
+            ConvertedType::TIMESTAMP_MICROS => {
+                Some(CalendarKind::Datetime(ParquetTimeUnit::MICROS))
+            }
+            _ => None,
+        },
+    }
+}
+
+/// `Some(version)` if this file records the Spark version that wrote it. Absent for non-Spark
+/// writers and for Spark 2.4.5 and earlier, which did not stamp the key.
+fn spark_writer_version(key_value_metadata: Option<&Vec<KeyValue>>) -> Option<&str> {
+    key_value_metadata?
+        .iter()
+        .find(|entry| entry.key == SPARK_VERSION_METADATA_KEY)
+        .and_then(|entry| entry.value.as_deref())
+}
+
+/// Whether the footer proves this column's values are already Proleptic Gregorian, so no rebasing
+/// would apply and Comet can read them as-is.
+///
+/// Mirrors the CORRECTED arm of Spark's `DataSourceUtils.getRebaseSpec`: a writer at or after the
+/// switch version that did not explicitly opt back into LEGACY. A file with no recorded writer
+/// version proves nothing, and falls back to the read-mode config exactly as Spark does.
+fn provably_gregorian(
+    kind: CalendarKind,
+    writer_version: Option<&str>,
+    key_value_metadata: Option<&Vec<KeyValue>>,
+    read_modes: &ReadModes,
+) -> bool {
+    let (gregorian_since, legacy_key, versionless_is_corrected) = match kind {
+        CalendarKind::Int96 => (
+            INT96_GREGORIAN_SINCE,
+            SPARK_LEGACY_INT96_METADATA_KEY,
+            read_modes.int96_corrected,
+        ),
+        CalendarKind::Date | CalendarKind::Datetime(_) => (
+            DATETIME_GREGORIAN_SINCE,
+            SPARK_LEGACY_DATETIME_METADATA_KEY,
+            read_modes.datetime_corrected,
+        ),
+    };
+    let Some(version) = writer_version else {
+        return versionless_is_corrected;
+    };
+    if version < gregorian_since {
+        return false;
+    }
+    !key_value_metadata.is_some_and(|kv| kv.iter().any(|entry| entry.key == legacy_key))
+}
+
+/// Scale the micros threshold into `unit`.
+///
+/// Scaling down to millis rounds toward negative infinity, which is the safe direction: it can
+/// only make the threshold earlier, so a value in the truncated sub-millisecond window is treated
+/// as affected rather than cleared.
+fn timestamp_threshold(unit: ParquetTimeUnit, last_switch_micros: i64) -> i64 {
+    match unit {
+        ParquetTimeUnit::MILLIS => last_switch_micros.div_euclid(1_000),
+        ParquetTimeUnit::MICROS => last_switch_micros,
+        ParquetTimeUnit::NANOS => last_switch_micros.saturating_mul(1_000),
+    }
+}
+
+/// Whether any row group's minimum for this column is below `threshold`, treating "no usable
+/// statistics" as below it. An all-null row group is cleared: it has no value to rebase.
+fn row_groups_may_hold_values_below(
+    metadata: &ParquetMetaData,
+    leaf_index: usize,
+    threshold: i64,
+) -> bool {
+    metadata.row_groups().iter().any(|row_group| {
+        // An empty row group decodes nothing.
+        if row_group.num_rows() == 0 {
+            return false;
+        }
+        let Some(statistics) = row_group.column(leaf_index).statistics() else {
+            return true;
+        };
+        match statistics_min(statistics) {
+            Some(min) => min < threshold,
+            // No minimum. Either the column is entirely null in this row group, in which case
+            // there is nothing to rebase, or the writer omitted the bound and we cannot tell.
+            None => statistics.null_count_opt() != Some(row_group.num_rows() as u64),
+        }
     })
 }
 
-/// The footer-only decision, split out from [`written_in_legacy_calendar`] so it can be tested
-/// without a real file. `has_int96_column` is lazy because the INT96 threshold is only consulted
-/// for writer versions in [3.0.0, 3.1.0).
-fn legacy_calendar_from_footer(
-    key_value_metadata: Option<&Vec<KeyValue>>,
-    has_int96_column: impl FnOnce() -> bool,
-) -> bool {
-    let Some(kv) = key_value_metadata else {
-        return false;
-    };
-    let has_key = |key: &str| kv.iter().any(|entry| entry.key == key);
-    let version = kv
-        .iter()
-        .find(|entry| entry.key == SPARK_VERSION_METADATA_KEY)
-        .and_then(|entry| entry.value.as_deref());
-    let Some(version) = version else {
-        return false;
-    };
-
-    // Spark compares `SPARK_VERSION_SHORT` to the threshold as a plain string, so we do too --
-    // matching Spark matters more here than being right about version ordering, and the two only
-    // diverge for a hypothetical major version of 10 or above.
-    if version < "3.0.0" || has_key(SPARK_LEGACY_DATETIME_METADATA_KEY) {
-        return true;
+/// The minimum of a date/timestamp column's statistics, widened to `i64`. Only the two physical
+/// types those logical types can use are handled; anything else is treated as no minimum.
+fn statistics_min(statistics: &Statistics) -> Option<i64> {
+    match statistics {
+        Statistics::Int32(value) => value.min_opt().map(|min| *min as i64),
+        Statistics::Int64(value) => value.min_opt().copied(),
+        _ => None,
     }
-    // Spark 3.0 rebased INT96 unconditionally; the CORRECTED/LEGACY choice (and the
-    // `legacyINT96` footer key that records it) only arrived in 3.1.0.
-    if has_key(SPARK_LEGACY_INT96_METADATA_KEY) {
-        return true;
-    }
-    version < "3.1.0" && has_int96_column()
-}
-
-fn has_int96_column(schema_descr: &SchemaDescriptor) -> bool {
-    schema_descr
-        .columns()
-        .iter()
-        .any(|col| col.physical_type() == PhysicalType::INT96)
-}
-
-/// True if reading `schema` can decode a date or timestamp, and therefore can be affected by
-/// calendar rebasing. Nothing else in a Parquet file is calendar-sensitive, so a scan that
-/// projects only (say) string columns out of a legacy-calendar file is not at risk and must not
-/// be failed.
-pub(crate) fn reads_date_or_timestamp(schema: &Schema) -> bool {
-    fields_have_date_or_timestamp(schema.fields())
-}
-
-fn fields_have_date_or_timestamp(fields: &Fields) -> bool {
-    fields
-        .iter()
-        .any(|field| data_type_has_date_or_timestamp(field.data_type()))
 }
 
 fn data_type_has_date_or_timestamp(data_type: &DataType) -> bool {
@@ -131,30 +372,55 @@ fn data_type_has_date_or_timestamp(data_type: &DataType) -> bool {
     }
 }
 
-/// The failure raised for a legacy-calendar file when
-/// `spark.comet.exceptionOnDatetimeRebase` is enabled.
-///
-/// This travels out of the Parquet reader as a `ParquetError`, so the JVM side surfaces it as a
-/// `FAILED_READ_FILE` `SparkException` with this text as the cause -- the same envelope Spark's
-/// `FileScanRDD` puts a read-time failure in. That envelope names the offending file, so this
-/// message does not repeat it.
-pub(crate) fn legacy_calendar_error() -> ParquetError {
-    ParquetError::General(
-        "this file was written using the legacy hybrid (Julian + Gregorian) calendar. Comet's \
-         native scan does not rebase dates/timestamps to the Proleptic Gregorian calendar, and so \
-         would return incorrect values for dates before 1582-10-15 and timestamps before \
-         1900-01-01T00:00:00Z. This scan failed instead because \
-         spark.comet.exceptionOnDatetimeRebase is enabled. Set it to false to read these values \
-         as-is without rebasing, or disable Comet for this query so that Spark rebases them."
-            .to_string(),
-    )
+fn fields_have_date_or_timestamp(fields: &Fields) -> bool {
+    fields
+        .iter()
+        .any(|field| data_type_has_date_or_timestamp(field.data_type()))
 }
+
+/// The failure raised for a file that would need rebasing.
+///
+/// Boxed inside `ParquetError::External` so the JNI error layer can recover it by downcast rather
+/// than by matching on message text: `get_metadata` can only return a `ParquetError`, and a bare
+/// `ParquetError::General` would be classified as a corrupt-file read (`FAILED_READ_FILE`), which
+/// this is not. `file_path` is left empty for the JVM side to fill from the per-task file list,
+/// which knows the file's real URI -- the object-store location available here has had its scheme
+/// and leading slash normalised away.
+pub fn legacy_calendar_error() -> ParquetError {
+    ParquetError::External(Box::new(SparkError::LegacyDatetimeRebase {
+        file_path: String::new(),
+        message: LEGACY_CALENDAR_MESSAGE.to_string(),
+    }))
+}
+
+/// The user-facing explanation, defined once here and carried to the JVM in the error payload so
+/// the three per-Spark-version shims do not each restate it.
+const LEGACY_CALENDAR_MESSAGE: &str =
+    "Comet cannot read this Parquet file: it holds dates or timestamps written in the legacy \
+     hybrid (Julian + Gregorian) calendar, which Comet's native scan does not rebase to the \
+     Proleptic Gregorian calendar. Reading it would return values shifted by up to ten days. \
+     Set spark.comet.exceptionOnDatetimeRebase=false to read these values as-is without \
+     rebasing, or disable Comet for this query so that Spark rebases them.";
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use arrow::datatypes::{Field, TimeUnit};
     use std::sync::Arc;
+
+    const THRESHOLDS: RebaseThresholds = RebaseThresholds {
+        // Spark's `RebaseDateTime.lastSwitchJulianDay`: 1582-10-15.
+        last_switch_day: -141427,
+        // Spark's `RebaseDateTime.lastSwitchJulianTs`, near 1900-01-01T00:00:00Z. The exact value
+        // comes from Spark at runtime; this stands in for it.
+        last_switch_micros: -2_208_988_800_000_000,
+    };
+
+    /// Spark's defaults: both read modes EXCEPTION, so neither clears a version-less file.
+    const DEFAULT_MODES: ReadModes = ReadModes {
+        datetime_corrected: false,
+        int96_corrected: false,
+    };
 
     fn kv(pairs: &[(&str, Option<&str>)]) -> Vec<KeyValue> {
         pairs
@@ -166,138 +432,183 @@ mod tests {
             .collect()
     }
 
-    /// `panic` guards that the INT96 probe stays lazy for versions that don't need it.
-    fn legacy(pairs: &[(&str, Option<&str>)]) -> bool {
-        legacy_calendar_from_footer(Some(&kv(pairs)), || panic!("INT96 probe not expected"))
+    /// Whether the footer clears `kind` for a file with this metadata, under Spark's default read
+    /// modes.
+    fn cleared(kind: CalendarKind, pairs: &[(&str, Option<&str>)]) -> bool {
+        let kv = kv(pairs);
+        provably_gregorian(
+            kind,
+            spark_writer_version(Some(&kv)),
+            Some(&kv),
+            &DEFAULT_MODES,
+        )
     }
 
-    fn legacy_with_int96(pairs: &[(&str, Option<&str>)], has_int96: bool) -> bool {
-        legacy_calendar_from_footer(Some(&kv(pairs)), || has_int96)
-    }
-
-    #[test]
-    fn no_footer_metadata_is_not_legacy() {
-        assert!(!legacy_calendar_from_footer(None, || panic!(
-            "INT96 probe not expected"
-        )));
-        assert!(!legacy(&[]));
-    }
+    const DATE: CalendarKind = CalendarKind::Date;
+    const INT96: CalendarKind = CalendarKind::Int96;
 
     #[test]
-    fn non_spark_writer_is_not_legacy() {
-        // No `org.apache.spark.version`: nothing in the footer says the values were rebased on
-        // write, and failing every non-Spark file would make the config unusable.
-        assert!(!legacy_with_int96(
-            &[("parquet-mr version", Some("1.13.1"))],
-            true
-        ));
-    }
-
-    #[test]
-    fn pre_spark_3_writer_is_legacy() {
-        assert!(legacy(&[(SPARK_VERSION_METADATA_KEY, Some("2.4.8"))]));
-        assert!(legacy(&[(SPARK_VERSION_METADATA_KEY, Some("1.6.3"))]));
-    }
-
-    #[test]
-    fn spark_3_plus_writer_is_not_legacy_by_default() {
-        for version in ["3.0.0", "3.1.0", "3.5.9", "4.1.3"] {
+    fn a_modern_corrected_writer_is_cleared() {
+        // The overwhelmingly common case: Spark 3.0+ with the default CORRECTED write mode stamps
+        // its version and no legacy marker, which positively proves the values are Gregorian.
+        for version in ["3.0.0", "3.5.9", "4.1.3"] {
             assert!(
-                !legacy_with_int96(&[(SPARK_VERSION_METADATA_KEY, Some(version))], false),
-                "version {version} should not be legacy"
+                cleared(DATE, &[(SPARK_VERSION_METADATA_KEY, Some(version))]),
+                "date should be cleared for writer {version}"
+            );
+        }
+        for version in ["3.1.0", "3.5.9", "4.1.3"] {
+            assert!(
+                cleared(INT96, &[(SPARK_VERSION_METADATA_KEY, Some(version))]),
+                "INT96 should be cleared for writer {version}"
             );
         }
     }
 
     #[test]
-    fn legacy_datetime_key_marks_a_modern_writer_legacy() {
-        // Written by Spark 4.x with datetimeRebaseModeInWrite=LEGACY. The value Spark stamps is
-        // the empty string; Spark tests for key presence, not for a value.
-        assert!(legacy(&[
+    fn a_pre_switch_writer_is_not_cleared() {
+        assert!(!cleared(
+            DATE,
+            &[(SPARK_VERSION_METADATA_KEY, Some("2.4.6"))]
+        ));
+        // INT96 switched a release later than the other encodings, so Spark 3.0 wrote hybrid INT96
+        // while its DATE values were already Gregorian.
+        assert!(!cleared(
+            INT96,
+            &[(SPARK_VERSION_METADATA_KEY, Some("3.0.3"))]
+        ));
+        assert!(cleared(
+            DATE,
+            &[(SPARK_VERSION_METADATA_KEY, Some("3.0.3"))]
+        ));
+    }
+
+    #[test]
+    fn an_explicit_legacy_marker_is_not_cleared() {
+        // Written by a modern Spark with rebaseModeInWrite=LEGACY. The value Spark stamps is the
+        // empty string; Spark tests for key presence, not for a value.
+        for value in [Some(""), None] {
+            assert!(!cleared(
+                DATE,
+                &[
+                    (SPARK_VERSION_METADATA_KEY, Some("4.1.3")),
+                    (SPARK_LEGACY_DATETIME_METADATA_KEY, value),
+                ]
+            ));
+            assert!(!cleared(
+                INT96,
+                &[
+                    (SPARK_VERSION_METADATA_KEY, Some("4.1.3")),
+                    (SPARK_LEGACY_INT96_METADATA_KEY, value),
+                ]
+            ));
+        }
+    }
+
+    #[test]
+    fn the_two_legacy_markers_are_tracked_separately() {
+        // A modern writer that opted INT96 back into LEGACY says nothing about its DATE columns.
+        let footer = [
+            (SPARK_VERSION_METADATA_KEY, Some("4.1.3")),
+            (SPARK_LEGACY_INT96_METADATA_KEY, Some("")),
+        ];
+        assert!(cleared(DATE, &footer));
+        assert!(!cleared(INT96, &footer));
+    }
+
+    #[test]
+    fn a_file_with_no_writer_version_is_not_cleared_by_default() {
+        // Spark 2.4.5 and earlier stamped no version, and neither do non-Spark writers. Spark
+        // resolves these through datetimeRebaseModeInRead, whose EXCEPTION default raises on an
+        // ancient value -- so leaving them uncleared here is what agrees with Spark. Whether the
+        // read actually fails is then decided by row-group statistics.
+        assert!(!cleared(DATE, &[]));
+        assert!(!cleared(INT96, &[]));
+        assert!(!cleared(DATE, &[("parquet-mr version", Some("1.13.1"))]));
+        assert!(!provably_gregorian(DATE, None, None, &DEFAULT_MODES));
+    }
+
+    #[test]
+    fn a_version_key_with_no_value_is_treated_as_no_version() {
+        assert!(!cleared(DATE, &[(SPARK_VERSION_METADATA_KEY, None)]));
+    }
+
+    #[test]
+    fn corrected_read_mode_clears_a_version_less_file() {
+        // The user has asserted the values are already Gregorian, which is exactly what
+        // datetimeRebaseModeInRead=CORRECTED means to Spark. Comet honors it per encoding.
+        let modes = ReadModes {
+            datetime_corrected: true,
+            int96_corrected: false,
+        };
+        assert!(provably_gregorian(DATE, None, None, &modes));
+        assert!(!provably_gregorian(INT96, None, None, &modes));
+
+        let modes = ReadModes {
+            datetime_corrected: false,
+            int96_corrected: true,
+        };
+        assert!(!provably_gregorian(DATE, None, None, &modes));
+        assert!(provably_gregorian(INT96, None, None, &modes));
+    }
+
+    #[test]
+    fn corrected_read_mode_does_not_override_an_explicit_legacy_marker() {
+        // The footer is authoritative when it records provenance; the read mode only fills the gap
+        // when it does not. This mirrors Spark, which ignores the config for stamped files.
+        let modes = ReadModes {
+            datetime_corrected: true,
+            int96_corrected: true,
+        };
+        let kv = kv(&[
             (SPARK_VERSION_METADATA_KEY, Some("4.1.3")),
             (SPARK_LEGACY_DATETIME_METADATA_KEY, Some("")),
-        ]));
-        assert!(legacy(&[
-            (SPARK_VERSION_METADATA_KEY, Some("4.1.3")),
-            (SPARK_LEGACY_DATETIME_METADATA_KEY, None),
-        ]));
-    }
-
-    #[test]
-    fn legacy_int96_key_marks_a_modern_writer_legacy() {
-        assert!(legacy_with_int96(
-            &[
-                (SPARK_VERSION_METADATA_KEY, Some("3.5.9")),
-                (SPARK_LEGACY_INT96_METADATA_KEY, Some("")),
-            ],
-            false
+        ]);
+        assert!(!provably_gregorian(
+            DATE,
+            spark_writer_version(Some(&kv)),
+            Some(&kv),
+            &modes
         ));
     }
 
     #[test]
-    fn spark_30_int96_is_legacy_only_when_the_file_has_int96_columns() {
-        // Spark 3.0 predates int96RebaseModeInWrite, so it stamps no `legacyINT96` key and its
-        // INT96 values are hybrid-calendar. Its DATE/TIMESTAMP_MICROS values are not.
-        let footer = [(SPARK_VERSION_METADATA_KEY, Some("3.0.3"))];
-        assert!(legacy_with_int96(&footer, true));
-        assert!(!legacy_with_int96(&footer, false));
+    fn int96_statistics_can_never_clear_a_column() {
+        assert_eq!(CalendarKind::Int96.threshold(&THRESHOLDS), None);
     }
 
     #[test]
-    fn version_key_without_a_value_is_not_legacy() {
-        assert!(!legacy_with_int96(
-            &[(SPARK_VERSION_METADATA_KEY, None)],
-            true
-        ));
+    fn date_threshold_is_the_switch_day() {
+        assert_eq!(CalendarKind::Date.threshold(&THRESHOLDS), Some(-141427));
+    }
+
+    fn date_field() -> Field {
+        Field::new("d", DataType::Date32, true)
+    }
+
+    fn string_field() -> Field {
+        Field::new("s", DataType::Utf8, true)
+    }
+
+    fn guard_for(
+        schema: &Schema,
+        enabled: bool,
+        case_sensitive: bool,
+    ) -> Option<LegacyCalendarGuard> {
+        LegacyCalendarGuard::for_scan(enabled, schema, case_sensitive, THRESHOLDS, DEFAULT_MODES)
     }
 
     #[test]
-    fn reads_date_or_timestamp_finds_top_level_and_nested_columns() {
-        let date = || Arc::new(Field::new("d", DataType::Date32, true));
-        let ts = || {
-            Arc::new(Field::new(
-                "t",
-                DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
-                true,
-            ))
-        };
-        let string = || Arc::new(Field::new("s", DataType::Utf8, true));
-
-        assert!(reads_date_or_timestamp(&Schema::new(vec![date()])));
-        assert!(reads_date_or_timestamp(&Schema::new(vec![ts()])));
-        assert!(reads_date_or_timestamp(&Schema::new(vec![Field::new(
-            "l",
-            DataType::List(date()),
-            true
-        )])));
-        assert!(reads_date_or_timestamp(&Schema::new(vec![Field::new(
-            "s",
-            DataType::Struct(vec![string(), date()].into()),
-            true
-        )])));
-        // A map whose *value* is a timestamp: the entries struct is the map's single field.
-        let entries = Arc::new(Field::new(
-            "entries",
-            DataType::Struct(vec![string(), ts()].into()),
-            false,
-        ));
-        assert!(reads_date_or_timestamp(&Schema::new(vec![Field::new(
-            "m",
-            DataType::Map(entries, false),
-            true
-        )])));
-        assert!(reads_date_or_timestamp(&Schema::new(vec![Field::new(
-            "dict",
-            DataType::Dictionary(Box::new(DataType::Int32), Box::new(DataType::Date32)),
-            true
-        )])));
+    fn guard_is_disarmed_when_the_config_is_off() {
+        let schema = Schema::new(vec![date_field()]);
+        assert!(guard_for(&schema, false, true).is_none());
     }
 
     #[test]
-    fn reads_date_or_timestamp_ignores_calendar_insensitive_schemas() {
+    fn guard_is_disarmed_when_no_calendar_sensitive_column_is_read() {
         let schema = Schema::new(vec![
+            string_field(),
             Field::new("i", DataType::Int64, true),
-            Field::new("s", DataType::Utf8, true),
             Field::new(
                 "nested",
                 DataType::Struct(
@@ -314,6 +625,105 @@ mod tests {
                 true,
             ),
         ]);
-        assert!(!reads_date_or_timestamp(&schema));
+        assert!(guard_for(&schema, true, true).is_none());
+    }
+
+    #[test]
+    fn guard_arms_on_top_level_and_nested_date_or_timestamp_columns() {
+        let ts = Field::new(
+            "t",
+            DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
+            true,
+        );
+        for field in [
+            date_field(),
+            ts.clone(),
+            Field::new("l", DataType::List(Arc::new(date_field())), true),
+            Field::new(
+                "st",
+                DataType::Struct(vec![string_field(), date_field()].into()),
+                true,
+            ),
+            Field::new(
+                "m",
+                DataType::Map(
+                    Arc::new(Field::new(
+                        "entries",
+                        DataType::Struct(vec![string_field(), ts].into()),
+                        false,
+                    )),
+                    false,
+                ),
+                true,
+            ),
+            Field::new(
+                "dict",
+                DataType::Dictionary(Box::new(DataType::Int32), Box::new(DataType::Date32)),
+                true,
+            ),
+        ] {
+            let name = field.name().clone();
+            let schema = Schema::new(vec![field]);
+            let guard = guard_for(&schema, true, true);
+            assert!(guard.is_some(), "expected {name} to arm the guard");
+            assert_eq!(guard.unwrap().requested_roots, vec![name]);
+        }
+    }
+
+    #[test]
+    fn guard_only_tracks_the_calendar_sensitive_roots() {
+        let schema = Schema::new(vec![
+            string_field(),
+            date_field(),
+            Field::new("i", DataType::Int64, true),
+        ]);
+        let guard = guard_for(&schema, true, true).unwrap();
+        assert_eq!(guard.requested_roots, vec!["d".to_string()]);
+    }
+
+    #[test]
+    fn case_insensitive_scans_lowercase_the_tracked_roots() {
+        let schema = Schema::new(vec![Field::new("MyDate", DataType::Date32, true)]);
+        let guard = guard_for(&schema, true, false).unwrap();
+        assert_eq!(guard.requested_roots, vec!["mydate".to_string()]);
+    }
+
+    #[test]
+    fn millis_threshold_rounds_toward_the_unsafe_direction() {
+        // Truncating a negative micros threshold must not move it later in time, which would
+        // clear values that actually need rebasing.
+        let scaled = timestamp_threshold(ParquetTimeUnit::MILLIS, -2_208_988_800_000_001);
+        assert_eq!(scaled, -2_208_988_800_001);
+        assert!(scaled * 1_000 <= -2_208_988_800_000_001);
+    }
+
+    #[test]
+    fn micros_and_nanos_thresholds_scale_exactly() {
+        assert_eq!(
+            timestamp_threshold(ParquetTimeUnit::MICROS, -2_208_988_800_000_000),
+            -2_208_988_800_000_000
+        );
+        assert_eq!(
+            timestamp_threshold(ParquetTimeUnit::NANOS, -2_208_988_800_000_000),
+            -2_208_988_800_000_000_000
+        );
+    }
+
+    #[test]
+    fn nanos_threshold_saturates_rather_than_overflowing() {
+        assert_eq!(
+            timestamp_threshold(ParquetTimeUnit::NANOS, i64::MIN),
+            i64::MIN
+        );
+    }
+
+    #[test]
+    fn statistics_min_reads_the_two_physical_types_dates_and_timestamps_use() {
+        let int32 = Statistics::int32(Some(-141_428), Some(0), None, Some(0), false);
+        assert_eq!(statistics_min(&int32), Some(-141_428));
+        let int64 = Statistics::int64(Some(-2_208_988_800_000_001), Some(0), None, Some(0), false);
+        assert_eq!(statistics_min(&int64), Some(-2_208_988_800_000_001));
+        let float = Statistics::float(Some(1.0), Some(2.0), None, Some(0), false);
+        assert_eq!(statistics_min(&float), None);
     }
 }
