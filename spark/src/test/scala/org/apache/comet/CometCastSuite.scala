@@ -811,6 +811,43 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     castTest(testValues, DataTypes.BooleanType)
   }
 
+  /**
+   * Padding used to check that Comet trims exactly the byte set each Spark cast trims. See
+   * `conversion_funcs::trim` in the native crate for the two regimes and their cast targets, and
+   * https://github.com/apache/datafusion-comet/issues/5149. Spark itself is the oracle here, so
+   * the expectations do not need to be spelled out.
+   */
+  private val trimPadding: Seq[String] =
+    ((0x00 to 0x20) ++ // trimmed by both regimes
+      Seq(0x7f) ++ // DELETE: trimmed by the `trimAll` regime only
+      // whitespace to Unicode, but never trimmed by Spark
+      Seq(0x85, 0xa0, 0x1680, 0x2000, 0x2005, 0x200a, 0x2028, 0x2029, 0x202f, 0x205f, 0x3000))
+      .map(_.toChar.toString)
+
+  /**
+   * `value` with each [[trimPadding]] entry in leading, trailing, both and interior position,
+   * plus the padding on its own and the empty string, which trim to nothing.
+   */
+  private def trimPaddedValues(value: String): Seq[String] =
+    "" +: trimPadding.flatMap(pad =>
+      Seq(pad + value, value + pad, pad + value + pad, value.take(1) + pad + value.drop(1), pad))
+
+  test("cast StringType to BooleanType - whitespace trim parity") {
+    castTest(trimPaddedValues("true").toDF("a"), DataTypes.BooleanType)
+  }
+
+  test("cast StringType to integral types - whitespace trim parity") {
+    val values = trimPaddedValues("12").toDF("a")
+    Seq(DataTypes.ByteType, DataTypes.ShortType, DataTypes.IntegerType, DataTypes.LongType)
+      .foreach(castTest(values, _))
+  }
+
+  test("cast StringType to floating point and decimal types - whitespace trim parity") {
+    val values = trimPaddedValues("1.5").toDF("a")
+    Seq(DataTypes.FloatType, DataTypes.DoubleType, DataTypes.createDecimalType(10, 2))
+      .foreach(castTest(values, _))
+  }
+
   private val castStringToIntegralInputs: Seq[String] = Seq(
     "",
     ".",
@@ -1797,7 +1834,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         Unsupported(Some(expectedMessage)))
   }
 
-  test("cast ArrayType(DateType) to unsupported ArrayType falls back") {
+  test("cast ArrayType(DateType) to unsupported ArrayType routes through codegen dispatch") {
     val fromType = ArrayType(DateType)
     val unsupportedElementTypes =
       Seq(BooleanType, ByteType, ShortType, LongType, FloatType, DoubleType, DecimalType(10, 2))
@@ -1814,9 +1851,7 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           assert(
             CometCast.isSupported(fromType, toType, None, CometEvalMode.LEGACY) ==
               Unsupported(Some(expectedMessage)))
-          checkSparkAnswerAndFallbackReason(
-            data.select(col("a").cast(toType).as("converted")),
-            expectedMessage)
+          checkSparkAnswerAndOperator(data.select(col("a").cast(toType).as("converted")))
         }
       }
     }
@@ -1867,6 +1902,26 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> tz) {
         castTimestampTest(generateTimestampNTZ(), DataTypes.TimestampType, assertNative = true)
       }
+    }
+  }
+
+  test("cast to and from VariantType matches Spark") {
+    // VariantType has no native path in Comet and the codegen dispatcher cannot serialize it
+    // either, so the operator falls back to Spark. Guarded on Spark 4.0+ (parse_json / VARIANT
+    // are unavailable in 3.x).
+    assume(CometSparkSessionExtensions.isSpark40Plus, "VariantType requires Spark 4.0+")
+    withTable("variant_cast") {
+      sql("CREATE TABLE variant_cast(id INT, s STRING) USING parquet")
+      sql("""
+          |INSERT INTO variant_cast VALUES
+          |  (1, '{"a": 1}'),
+          |  (2, '{"b": [1, 2, 3]}'),
+          |  (3, cast(null as string))
+          """.stripMargin)
+      checkSparkAnswer(
+        "SELECT id, CAST(parse_json(s) AS STRING) AS v FROM variant_cast ORDER BY id")
+      checkSparkAnswer(
+        "SELECT id, CAST(CAST(s AS VARIANT) AS STRING) AS v FROM variant_cast ORDER BY id")
     }
   }
 

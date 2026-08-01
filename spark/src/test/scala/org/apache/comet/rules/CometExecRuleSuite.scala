@@ -660,7 +660,7 @@ class CometExecRuleSuite extends CometTestBase {
       // Both aggregates fall back to JVM as in the prior test, but the revert optimization is
       // disabled, so the shuffle should still be wrapped in CometColumnarShuffle.
       withSQLConf(
-        CometConf.COMET_EXEC_SHUFFLE_REVERT_REDUNDANT_COLUMNAR_ENABLED.key -> "false",
+        CometConf.COMET_SHUFFLE_REVERT_REDUNDANT_COLUMNAR_ENABLED.key -> "false",
         CometConf.COMET_ENABLE_PARTIAL_HASH_AGGREGATE.key -> "false",
         CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
         val transformedPlan = applyCometExecRule(sparkPlan)

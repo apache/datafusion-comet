@@ -17,7 +17,7 @@
 
 -- MinSparkVersion: 4.1
 -- Config: spark.sql.timeType.enabled=true
--- Config: spark.comet.exec.shuffle.mode=jvm
+-- Config: spark.comet.shuffle.mode=jvm
 
 statement
 CREATE TABLE test_make_time_range_shuffle_jvm(hours int, minutes int, secs decimal(16,6)) USING parquet

@@ -145,7 +145,7 @@ A few things to note:
 The `SupportLevel` sealed trait has three possible values:
 
 - **`Compatible(notes: Option[String] = None)`** - Comet supports this expression with full compatibility with Spark, or may have known differences in specific edge cases unlikely to affect most users. This is the default if you don't override `getSupportLevel`.
-- **`Incompatible(notes: Option[String] = None)`** - Comet supports this expression but results can differ from Spark. The expression will only be used if `spark.comet.expr.allowIncompatible=true` or the expression-specific config `spark.comet.expr.<exprName>.allowIncompatible=true` is set.
+- **`Incompatible(notes: Option[String] = None)`** - Comet supports this expression but results can differ from Spark. The expression will only be used if the expression-specific config `spark.comet.expression.<exprName>.allowIncompatible=true` is set.
 - **`Unsupported(notes: Option[String] = None)`** - Comet does not support this expression under the current conditions. Spark will fall back to its native execution.
 
 All three accept an optional `notes` parameter to provide additional context that is logged for debugging.
@@ -240,11 +240,11 @@ This expression will only be used when users explicitly enable incompatible expr
 
 When the query planner encounters an expression:
 
-1. It first checks if the expression is explicitly disabled via `spark.comet.expr.<exprName>.enabled=false`
+1. It first checks if the expression is explicitly disabled via `spark.comet.expression.<exprName>.enabled=false`
 2. It then calls `getSupportLevel` on the expression handler
 3. Based on the result:
    - `Compatible()`: Expression proceeds to conversion
-   - `Incompatible()`: Expression is skipped unless `spark.comet.expr.allowIncompatible=true` or expression-specific allow config is set
+   - `Incompatible()`: Expression is skipped unless `spark.comet.expression.<exprName>.allowIncompatible=true` is set
    - `Unsupported()`: Expression is skipped and a fallback to Spark occurs
 
 Any notes provided will be logged to help with debugging and understanding why an expression was not used.

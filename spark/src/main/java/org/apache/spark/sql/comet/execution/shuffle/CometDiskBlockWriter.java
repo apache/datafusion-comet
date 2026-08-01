@@ -141,16 +141,15 @@ public final class CometDiskBlockWriter {
     this.file = file;
     this.tracingEnabled = tracingEnabled;
 
-    this.columnarBatchSize = (int) CometConf$.MODULE$.COMET_COLUMNAR_SHUFFLE_BATCH_SIZE().get();
-    this.compressionCodec = CometConf$.MODULE$.COMET_EXEC_SHUFFLE_COMPRESSION_CODEC().get();
-    this.compressionLevel =
-        (int) CometConf$.MODULE$.COMET_EXEC_SHUFFLE_COMPRESSION_ZSTD_LEVEL().get();
+    this.columnarBatchSize = (int) CometConf$.MODULE$.COMET_SHUFFLE_JVM_BATCH_SIZE().get();
+    this.compressionCodec = CometConf$.MODULE$.COMET_SHUFFLE_COMPRESSION_CODEC().get();
+    this.compressionLevel = (int) CometConf$.MODULE$.COMET_SHUFFLE_COMPRESSION_ZSTD_LEVEL().get();
 
     this.numElementsForSpillThreshold =
-        (int) CometConf$.MODULE$.COMET_COLUMNAR_SHUFFLE_SPILL_THRESHOLD().get();
+        (int) CometConf$.MODULE$.COMET_SHUFFLE_JVM_SPILL_THRESHOLD().get();
 
     this.preferDictionaryRatio =
-        (double) CometConf$.MODULE$.COMET_SHUFFLE_PREFER_DICTIONARY_RATIO().get();
+        (double) CometConf$.MODULE$.COMET_SHUFFLE_JVM_PREFER_DICTIONARY_RATIO().get();
 
     this.activeWriter = new ArrowIPCWriter();
 

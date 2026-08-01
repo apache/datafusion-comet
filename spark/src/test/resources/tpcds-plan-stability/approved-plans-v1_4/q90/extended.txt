@@ -1,4 +1,4 @@
-CometNativeColumnarToRow
+CometColumnarToRow
 +- CometProject
    +- CometBroadcastNestedLoopJoin
       :- CometHashAggregate
