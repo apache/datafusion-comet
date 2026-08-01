@@ -17,10 +17,12 @@
 
 use crate::error::decimal_overflow_error;
 use crate::math_funcs::utils::get_precision_scale;
+use arrow::compute::kernels::arity::try_unary;
 use arrow::datatypes::DataType;
+use arrow::error::ArrowError;
 use arrow::{
-    array::{AsArray, Decimal128Builder},
-    datatypes::{validate_decimal_precision, Int64Type},
+    array::{AsArray, Decimal128Array},
+    datatypes::{validate_decimal_precision, Decimal128Type, Int64Type},
 };
 use datafusion::common::{internal_err, DataFusionError, Result as DataFusionResult, ScalarValue};
 use datafusion::physical_plan::ColumnarValue;
@@ -45,14 +47,41 @@ pub fn spark_make_decimal(
         ColumnarValue::Array(a) => match a.data_type() {
             DataType::Int64 => {
                 let arr = a.as_primitive::<Int64Type>();
-                let mut result = Decimal128Builder::new();
-                for v in arr.into_iter() {
-                    result.append_option(long_to_decimal(v, precision, scale, fail_on_error)?)
-                }
                 let result_type = DataType::Decimal128(precision, scale);
+                // The Int64 is already the unscaled Decimal128 value, so we only reinterpret
+                // the bits (an Arrow Int64->Decimal cast would rescale the value). Both arity
+                // helpers reuse the input null buffer and only invoke the closure on valid rows.
+                let result: Decimal128Array = if fail_on_error {
+                    // ANSI mode: overflow is a hard error. `try_unary` surfaces the closure's
+                    // ArrowError; unwrap the ExternalError back to DataFusionError::External so
+                    // the ANSI error variant (not a generic ArrowError) is preserved.
+                    try_unary::<Int64Type, _, Decimal128Type>(arr, |v| {
+                        let v = v as i128;
+                        validate_decimal_precision(v, precision, scale)
+                            .map(|()| v)
+                            .map_err(|_| {
+                                ArrowError::ExternalError(Box::new(decimal_overflow_error(
+                                    v, precision, scale,
+                                )))
+                            })
+                    })
+                    .map_err(|e| match e {
+                        ArrowError::ExternalError(inner) => DataFusionError::External(inner),
+                        other => DataFusionError::from(other),
+                    })?
+                } else {
+                    // Non-ANSI: overflow becomes null. `unary_opt` applies the closure only to
+                    // valid rows and marks a row null wherever the closure returns None.
+                    arr.unary_opt::<_, Decimal128Type>(|v| {
+                        let v = v as i128;
+                        validate_decimal_precision(v, precision, scale)
+                            .ok()
+                            .map(|()| v)
+                    })
+                };
 
                 Ok(ColumnarValue::Array(Arc::new(
-                    result.finish().with_data_type(result_type),
+                    result.with_data_type(result_type),
                 )))
             }
             av => internal_err!("Expected Int64 but found {av:?}"),
@@ -103,6 +132,30 @@ mod tests {
         assert!(
             err.to_string().contains("NUMERIC_VALUE_OUT_OF_RANGE"),
             "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_array_overflow_reports_first_offending_value() {
+        // Two distinct overflowing values with a valid value in front. Both the original
+        // per-row `?` loop and `try_unary` walk rows in index order, so the reported error
+        // must reference the FIRST overflow (111111), not the later one (222222). This locks
+        // the ordering semantics rather than merely "some error occurred".
+        let args = [ColumnarValue::Array(Arc::new(Int64Array::from(vec![
+            Some(99),
+            Some(111111),
+            Some(222222),
+        ])))];
+        let err = spark_make_decimal(&args, &DataType::Decimal128(3, 0), true)
+            .expect_err("overflow should error when fail_on_error is set");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("111111"),
+            "should report first overflow: {msg}"
+        );
+        assert!(
+            !msg.contains("222222"),
+            "should not report later overflow: {msg}"
         );
     }
 

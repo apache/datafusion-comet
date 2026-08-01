@@ -37,10 +37,11 @@
 
 use crate::errors::{CometError, CometResult};
 use arrow::array::types::{
-    ArrowDictionaryKeyType, Int16Type, Int32Type, Int64Type, Int8Type, UInt16Type, UInt32Type,
-    UInt64Type, UInt8Type,
+    ArrowDictionaryKeyType, Decimal128Type, Int16Type, Int32Type, Int64Type, Int8Type, UInt16Type,
+    UInt32Type, UInt64Type, UInt8Type,
 };
 use arrow::array::*;
+use arrow::compute::kernels::arity::unary;
 use arrow::compute::{cast_with_options, CastOptions};
 use arrow::datatypes::{ArrowNativeType, DataType, TimeUnit};
 use std::sync::Arc;
@@ -1055,14 +1056,10 @@ impl ColumnarToRowContext {
                 // Parquet stores small-precision decimals as Int32 for efficiency, and the
                 // reader may surface them as the physical Int32 type. The value is already
                 // scaled (e.g., -1 means -0.01 for scale 2). Reinterpret (not cast) to
-                // Decimal128 preserving the value.
-                let int_array = array.as_any().downcast_ref::<Int32Array>().ok_or_else(|| {
-                    CometError::Internal("Failed to downcast to Int32Array".to_string())
-                })?;
-                let decimal_array: Decimal128Array = int_array
-                    .iter()
-                    .map(|v| v.map(|x| x as i128))
-                    .collect::<Decimal128Array>()
+                // Decimal128 preserving the value. `arity::unary` widens the value and reuses
+                // the input null buffer zero-copy (an Arrow cast would rescale the value).
+                let int_array = array.as_primitive::<Int32Type>();
+                let decimal_array = unary::<_, _, Decimal128Type>(int_array, |x| x as i128)
                     .with_precision_and_scale(*precision, *scale)
                     .map_err(|e| {
                         CometError::Internal(format!("Invalid decimal precision/scale: {}", e))
@@ -1071,13 +1068,8 @@ impl ColumnarToRowContext {
             }
             (DataType::Int64, DataType::Decimal128(precision, scale)) => {
                 // Same as Int32 but for medium-precision decimals stored as Int64.
-                let int_array = array.as_any().downcast_ref::<Int64Array>().ok_or_else(|| {
-                    CometError::Internal("Failed to downcast to Int64Array".to_string())
-                })?;
-                let decimal_array: Decimal128Array = int_array
-                    .iter()
-                    .map(|v| v.map(|x| x as i128))
-                    .collect::<Decimal128Array>()
+                let int_array = array.as_primitive::<Int64Type>();
+                let decimal_array = unary::<_, _, Decimal128Type>(int_array, |x| x as i128)
                     .with_precision_and_scale(*precision, *scale)
                     .map_err(|e| {
                         CometError::Internal(format!("Invalid decimal precision/scale: {}", e))
