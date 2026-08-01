@@ -2076,6 +2076,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "twox-hash",
+ "uuid",
 ]
 
 [[package]]
@@ -3497,7 +3498,7 @@ dependencies = [
 [[package]]
 name = "iceberg"
 version = "0.10.0"
-source = "git+https://github.com/apache/iceberg-rust?rev=4532da8#4532da80f3930cdbda1cf2effe05b50165da9875"
+source = "git+https://github.com/apache/iceberg-rust?rev=3d84c81353b1b23b6e4ae8eea8f8a021cc6927a7#3d84c81353b1b23b6e4ae8eea8f8a021cc6927a7"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -3553,7 +3554,7 @@ dependencies = [
 [[package]]
 name = "iceberg-storage-opendal"
 version = "0.10.0"
-source = "git+https://github.com/apache/iceberg-rust?rev=4532da8#4532da80f3930cdbda1cf2effe05b50165da9875"
+source = "git+https://github.com/apache/iceberg-rust?rev=3d84c81353b1b23b6e4ae8eea8f8a021cc6927a7#3d84c81353b1b23b6e4ae8eea8f8a021cc6927a7"
 dependencies = [
  "anyhow",
  "async-trait",
