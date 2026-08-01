@@ -785,7 +785,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       inputs: Seq[Attribute],
       binding: Boolean = true): Option[Expr] = {
 
-    val newExpr = DecimalPrecision.promote(expr, !SQLConf.get.ansiEnabled)
+    val newExpr = DecimalPrecision.promote(expr)
     exprToProtoInternal(newExpr, inputs, binding)
   }
 
