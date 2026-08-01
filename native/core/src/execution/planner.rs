@@ -25,6 +25,7 @@ use crate::execution::operators::init_csv_datasource_exec;
 use crate::execution::operators::AlignedArrowStreamReader;
 use crate::execution::operators::IcebergScanExec;
 use crate::execution::{
+    expressions::list_empty_to_null::ListEmptyToNullExpr,
     expressions::list_positions::ListPositionsExpr,
     expressions::subquery::Subquery,
     operators::{
@@ -1903,6 +1904,17 @@ impl PhysicalPlanner {
                     return Err(ExecutionError::GeneralError(
                         "Explode operator requires a child expression".to_string(),
                     ));
+                };
+
+                // Bridge Spark's outer semantics: DataFusion's `UnnestExec` with
+                // `preserve_nulls = true` emits one null row for a NULL list but drops rows
+                // whose list is empty. Spark's `explode_outer`/`posexplode_outer` must emit
+                // exactly one null row in both cases, so we mark empty rows as null before
+                // unnesting. See https://github.com/apache/datafusion/issues/19053.
+                let child_expr: Arc<dyn PhysicalExpr> = if explode.outer {
+                    Arc::new(ListEmptyToNullExpr::new(child_expr))
+                } else {
+                    child_expr
                 };
 
                 // Create projection expressions for other columns

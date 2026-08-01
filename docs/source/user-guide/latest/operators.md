@@ -109,7 +109,7 @@ omitted from the tables below and may be reconsidered based on demand:
 
 | Operator       | Status | Notes                                                                                                                      |
 | -------------- | ------ | -------------------------------------------------------------------------------------------------------------------------- |
-| `GenerateExec` | ✅     | Supports `explode` and `posexplode` over arrays. The `_outer` variants are incompatible, and `inline` / `stack` fall back. |
+| `GenerateExec` | ✅     | Supports `explode`, `explode_outer`, `posexplode`, `posexplode_outer` over arrays. `inline` / `stack` fall back.            |
 | `ExpandExec`   | ✅     |                                                                                                                            |
 | `UnionExec`    | ✅     |                                                                                                                            |
 | `CoalesceExec` | ✅     |                                                                                                                            |

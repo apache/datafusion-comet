@@ -1435,11 +1435,6 @@ object CometExplodeExec extends CometOperatorSerde[GenerateExec] {
     if (nodeName != "explode" && nodeName != "posexplode") {
       return Unsupported(Some(s"Unsupported generator: ${op.generator.nodeName}"))
     }
-    if (op.outer) {
-      // DataFusion UnnestExec has different semantics to Spark for this case
-      // https://github.com/apache/datafusion/issues/19053
-      return Incompatible(Some("Empty arrays are not preserved as null outputs when outer=true"))
-    }
     op.generator.children.head.dataType match {
       case _: ArrayType =>
         Compatible()

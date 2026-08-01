@@ -15,9 +15,8 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- posexplode_outer is gated behind allowIncompatible=true (DataFusion #19053).
--- Setting it at file scope does not affect the non-outer cases.
--- Config: spark.comet.operator.GenerateExec.allowIncompatible=true
+-- posexplode_outer is now supported natively; see DataFusion #19053 handling
+-- via ListEmptyToNullExpr in the planner.
 
 statement
 CREATE TABLE test_posexplode_int(id int, arr array<int>) USING parquet
@@ -38,11 +37,10 @@ SELECT id, posexplode(arr) FROM test_posexplode_int
 query
 SELECT id, pos, value FROM test_posexplode_int LATERAL VIEW posexplode(arr) p AS pos, value
 
--- posexplode_outer keeps rows whose array is NULL. Empty arrays are excluded by
--- the WHERE clause because DataFusion #19053 drops empty arrays under
--- preserve_nulls=true; that is the documented Incompatible behavior.
+-- posexplode_outer keeps rows whose array is NULL or empty. Comet emits one
+-- row with a NULL position and NULL value for each such input row.
 query
-SELECT id, posexplode_outer(arr) FROM test_posexplode_int WHERE id != 4
+SELECT id, posexplode_outer(arr) FROM test_posexplode_int
 
 -- posexplode of a literal array (constant folding is disabled by the test runner)
 query
