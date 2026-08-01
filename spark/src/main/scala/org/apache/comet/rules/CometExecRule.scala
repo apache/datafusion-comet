@@ -745,8 +745,9 @@ case class CometExecRule(session: SparkSession)
    * Lift informational (non-fallback) messages tagged on an operator and its expressions onto the
    * converted Comet plan node so they appear in verbose extended explain output. Expression-level
    * hints would otherwise be invisible because explain only traverses plan nodes, not
-   * expressions. `CODEGEN_DISPATCH_EXPRS` names across the tree are aggregated into one combined
-   * info line.
+   * expressions. `NATIVE_EXPRS` and `CODEGEN_DISPATCH_EXPRS` names across the tree are lifted the
+   * same way so that extended explain can report expression coverage; the dispatched ones
+   * additionally become one combined info line when `spark.comet.explain.codegen.enabled` is set.
    */
   private def rollUpInfoMessages(op: SparkPlan, exec: SparkPlan): Unit = {
     val allExprs = op.expressions.flatMap(_.collect { case e: Expression => e })
@@ -756,14 +757,22 @@ case class CometExecRule(session: SparkSession)
         allExprs.flatMap(_.getTagValue(CometExplainInfo.EXTENSION_INFO)).flatten
     infos.foreach(msg => withInfo(exec, msg))
 
-    val routedNames = allExprs
-      .flatMap(_.getTagValue(CometExplainInfo.CODEGEN_DISPATCH_EXPRS))
-      .flatten
-      .distinct
-      .sorted
-    if (routedNames.nonEmpty) {
-      withInfo(exec, s"JVM codegen dispatcher: ${routedNames.mkString(", ")}")
+    val nativeNames = collectNames(allExprs, CometExplainInfo.NATIVE_EXPRS)
+    if (nativeNames.nonEmpty) {
+      exec.setTagValue(CometExplainInfo.NATIVE_EXPRS, nativeNames)
     }
+
+    val routedNames = collectNames(allExprs, CometExplainInfo.CODEGEN_DISPATCH_EXPRS)
+    if (routedNames.nonEmpty) {
+      exec.setTagValue(CometExplainInfo.CODEGEN_DISPATCH_EXPRS, routedNames)
+      if (CometConf.COMET_EXPLAIN_CODEGEN_ENABLED.get()) {
+        withInfo(exec, s"JVM codegen dispatcher: ${routedNames.toSeq.sorted.mkString(", ")}")
+      }
+    }
+  }
+
+  private def collectNames(exprs: Seq[Expression], tag: TreeNodeTag[Set[String]]): Set[String] = {
+    exprs.flatMap(_.getTagValue(tag)).flatten.toSet
   }
 
   private def isOperatorEnabled(

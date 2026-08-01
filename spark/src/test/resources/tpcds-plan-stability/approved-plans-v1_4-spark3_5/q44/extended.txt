@@ -19,13 +19,13 @@ TakeOrderedAndProject
       :     :     :                                +- CometFilter
       :     :     :                                   :  +- Subquery
       :     :     :                                   :     +- CometColumnarToRow
-      :     :     :                                   :        +-  CometHashAggregate [COMET-INFO: A native implementation of Cast is available. Set spark.comet.expression.Cast.allowIncompatible=true to enable it. For more information, refer to the Comet Compatibility Guide (https://datafusion.apache.org/comet/user-guide/latest/compatibility/index.html)]
+      :     :     :                                   :        +-  CometHashAggregate [COMET-INFO: A native implementation of Cast is available. Set spark.comet.expression.Cast.allowIncompatible=true to enable it. For more information, refer to the Comet Compatibility Guide (https://datafusion.apache.org/comet/user-guide/latest/compatibility/index.html), JVM codegen dispatcher: cast]
       :     :     :                                   :           +- CometExchange
       :     :     :                                   :              +- CometHashAggregate
       :     :     :                                   :                 +- CometProject
       :     :     :                                   :                    +- CometFilter
       :     :     :                                   :                       +- CometNativeScan parquet spark_catalog.default.store_sales
-      :     :     :                                   +-  CometHashAggregate [COMET-INFO: A native implementation of Cast is available. Set spark.comet.expression.Cast.allowIncompatible=true to enable it. For more information, refer to the Comet Compatibility Guide (https://datafusion.apache.org/comet/user-guide/latest/compatibility/index.html)]
+      :     :     :                                   +-  CometHashAggregate [COMET-INFO: A native implementation of Cast is available. Set spark.comet.expression.Cast.allowIncompatible=true to enable it. For more information, refer to the Comet Compatibility Guide (https://datafusion.apache.org/comet/user-guide/latest/compatibility/index.html), JVM codegen dispatcher: cast]
       :     :     :                                      +- CometExchange
       :     :     :                                         +- CometHashAggregate
       :     :     :                                            +- CometProject
@@ -44,7 +44,7 @@ TakeOrderedAndProject
       :     :                                   +- CometSort
       :     :                                      +- CometFilter
       :     :                                         :  +- ReusedSubquery
-      :     :                                         +-  CometHashAggregate [COMET-INFO: A native implementation of Cast is available. Set spark.comet.expression.Cast.allowIncompatible=true to enable it. For more information, refer to the Comet Compatibility Guide (https://datafusion.apache.org/comet/user-guide/latest/compatibility/index.html)]
+      :     :                                         +-  CometHashAggregate [COMET-INFO: A native implementation of Cast is available. Set spark.comet.expression.Cast.allowIncompatible=true to enable it. For more information, refer to the Comet Compatibility Guide (https://datafusion.apache.org/comet/user-guide/latest/compatibility/index.html), JVM codegen dispatcher: cast]
       :     :                                            +- CometExchange
       :     :                                               +- CometHashAggregate
       :     :                                                  +- CometProject
@@ -61,4 +61,4 @@ TakeOrderedAndProject
                +- CometFilter
                   +- CometNativeScan parquet spark_catalog.default.item
 
-Comet accelerated 32 out of 55 eligible operators (58%). Final plan contains 7 transitions between Spark and Comet.
+Comet accelerated 32 out of 55 eligible operators (58%). Final plan contains 7 transitions between Spark and Comet. Comet accelerated 13 expressions (13 native, 1 codegen dispatch).

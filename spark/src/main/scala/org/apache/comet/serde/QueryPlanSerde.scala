@@ -36,7 +36,8 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
 import org.apache.comet.CometConf
-import org.apache.comet.CometSparkSessionExtensions.{withFallbackReason, withInfo}
+import org.apache.comet.CometExplainInfo
+import org.apache.comet.CometSparkSessionExtensions.{withFallbackReason, withInfo, withNativeExpr}
 import org.apache.comet.expressions._
 import org.apache.comet.parquet.CometParquetUtils
 import org.apache.comet.serde.ExprOuterClass.{AggExpr, Expr, ScalarFunc}
@@ -732,6 +733,9 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
 
     // Attach QueryContext and expr_id to the aggregate expression
     protoAggExprOpt.flatMap { protoAggExpr =>
+      // Aggregate functions never route through the JVM codegen dispatcher, so reaching here
+      // always means a native lowering. Recorded for the coverage stats in extended explain.
+      withNativeExpr(fn, CometExplainInfo.exprDisplayName(fn))
       val builder = protoAggExpr.toBuilder
       builder.setExprId(nextExprId())
 
@@ -786,7 +790,24 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       binding: Boolean = true): Option[Expr] = {
 
     val newExpr = DecimalPrecision.promote(expr)
-    exprToProtoInternal(newExpr, inputs, binding)
+    val result = exprToProtoInternal(newExpr, inputs, binding)
+    if (!(newExpr eq expr)) {
+      // `promote` rebuilt the tree, so the coverage tags landed on copies that the operator does
+      // not hold. Lift them onto `expr` so `CometExecRule.rollUpInfoMessages`, which walks the
+      // operator's own expressions, still sees them.
+      liftCoverageTags(newExpr, expr)
+    }
+    result
+  }
+
+  private def liftCoverageTags(from: Expression, to: Expression): Unit = {
+    Seq(CometExplainInfo.NATIVE_EXPRS, CometExplainInfo.CODEGEN_DISPATCH_EXPRS).foreach { tag =>
+      val names =
+        from.collect { case e: Expression => e }.flatMap(_.getTagValue(tag)).flatten.toSet
+      if (names.nonEmpty) {
+        to.setTagValue(tag, to.getTagValue(tag).getOrElse(Set.empty[String]) ++ names)
+      }
+    }
   }
 
   /**
@@ -898,6 +919,14 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
           }
       })
       .map { protoExpr =>
+        // Record that this expression stayed in the native pipeline, for the expression coverage
+        // stats in extended explain. Expressions routed through the JVM codegen dispatcher tag
+        // themselves in `CometScalaUDF.emitJvmCodegenDispatch`, so anything reaching here without
+        // that tag was lowered to a native DataFusion expression.
+        if (!isStructuralExpr(expr) &&
+          expr.getTagValue(CometExplainInfo.CODEGEN_DISPATCH_EXPRS).isEmpty) {
+          withNativeExpr(expr, CometExplainInfo.exprDisplayName(expr))
+        }
         // Attach QueryContext and expr_id to the expression
         val builder = protoExpr.toBuilder
         builder.setExprId(nextExprId())
@@ -906,6 +935,18 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
         }
         builder.build()
       }
+  }
+
+  /**
+   * Nodes that carry no computation of their own. They are excluded from the expression coverage
+   * stats in extended explain because they appear in nearly every expression tree and would swamp
+   * the names a user actually cares about. `Literal` also covers the closure-serialized payload
+   * that `CometScalaUDF.emitJvmCodegenDispatch` ships as an argument, which is an artifact of the
+   * dispatcher rather than a natively evaluated expression.
+   */
+  private def isStructuralExpr(expr: Expression): Boolean = expr match {
+    case _: Attribute | _: BoundReference | _: Literal | _: Alias => true
+    case _ => false
   }
 
   /**

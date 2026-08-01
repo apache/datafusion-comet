@@ -208,6 +208,57 @@ class CometCodegenSuite
     }
   }
 
+  test("expression coverage stats split native from codegen-dispatch expressions") {
+    // `abs` and `sqrt` lower to native DataFusion expressions; `hypot` and `nanvl` are
+    // `CometCodegenDispatch` and so run Spark's own codegen inside the Comet pipeline. The
+    // coverage stats and the accessors report the two groups separately, and they do so
+    // regardless of `explain.codegen.enabled` (which only controls the `[COMET-INFO:` line).
+    withTable("t") {
+      sql("CREATE TABLE t (a DOUBLE, b DOUBLE) USING parquet")
+      sql("INSERT INTO t VALUES (3.0, 4.0)")
+
+      withSQLConf(
+        CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "true",
+        CometConf.COMET_EXPLAIN_CODEGEN_ENABLED.key -> "false",
+        CometConf.COMET_EXEC_PROJECT_ENABLED.key -> "true",
+        CometConf.COMET_EXTENDED_EXPLAIN_FORMAT.key ->
+          CometConf.COMET_EXTENDED_EXPLAIN_FORMAT_VERBOSE) {
+        val df = sql("SELECT abs(a), sqrt(b), hypot(a, b), nanvl(a, b) FROM t")
+        checkSparkAnswerAndOperator(df)
+        val plan = df.queryExecution.executedPlan
+        val info = new ExtendedExplainInfo()
+
+        assert(info.getNativeExpressions(plan) === Seq("abs", "sqrt"))
+        assert(info.getCodegenDispatchExpressions(plan) === Seq("hypot", "nanvl"))
+
+        val explain = info.generateExtendedInfo(plan)
+        assert(
+          explain.contains("Comet accelerated 4 expressions (2 native, 2 codegen dispatch)."),
+          s"expected expression coverage in the summary, got:\n$explain")
+        assert(
+          !explain.contains("JVM codegen dispatcher"),
+          s"expected NO codegen-dispatch info with the flag off, got:\n$explain")
+      }
+    }
+  }
+
+  test("expression coverage stats count nothing when the plan falls back entirely") {
+    withSQLConf(
+      CometConf.COMET_ENABLED.key -> "false",
+      CometConf.COMET_EXTENDED_EXPLAIN_FORMAT.key ->
+        CometConf.COMET_EXTENDED_EXPLAIN_FORMAT_VERBOSE) {
+      val df = sql("SELECT abs(1.0)")
+      val plan = df.queryExecution.executedPlan
+      val info = new ExtendedExplainInfo()
+      assert(info.getNativeExpressions(plan).isEmpty)
+      assert(info.getCodegenDispatchExpressions(plan).isEmpty)
+      assert(
+        info
+          .generateExtendedInfo(plan)
+          .contains("Comet accelerated 0 expressions (0 native, 0 codegen dispatch)."))
+    }
+  }
+
   test("codegen dispatch fallback reasons name the expression") {
     // Flag-off short-circuit tags the expression `<name>: <reason>` so distinct expressions
     // don't collapse in the `Set[String]` roll-up.

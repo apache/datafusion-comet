@@ -286,4 +286,4 @@ TakeOrderedAndProject
                                                             +- CometFilter
                                                                +- CometNativeScan parquet spark_catalog.default.item
 
-Comet accelerated 271 out of 285 eligible operators (95%). Final plan contains 2 transitions between Spark and Comet.
+Comet accelerated 271 out of 285 eligible operators (95%). Final plan contains 2 transitions between Spark and Comet. Comet accelerated 11 expressions (11 native, 0 codegen dispatch).

@@ -398,4 +398,20 @@ object CometSparkSessionExtensions extends Logging {
     node
   }
 
+  /**
+   * Record that `node` (typically an `Expression`) was lowered to a native DataFusion expression.
+   * The native counterpart of [[withCodegenDispatchExpr]]: `CometExecRule.rollUpInfoMessages`
+   * collects the names across an operator's expression trees onto the converted Comet plan node,
+   * where extended explain reads them for expression coverage stats.
+   */
+  def withNativeExpr[T <: TreeNode[_]](node: T, name: String): T = {
+    if (name != null && name.nonEmpty) {
+      val existing = node
+        .getTagValue(CometExplainInfo.NATIVE_EXPRS)
+        .getOrElse(Set.empty[String])
+      node.setTagValue(CometExplainInfo.NATIVE_EXPRS, existing + name)
+    }
+    node
+  }
+
 }

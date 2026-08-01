@@ -19,9 +19,12 @@
 
 package org.apache.comet
 
+import java.util.Locale
+
 import scala.collection.mutable
 
 import org.apache.spark.sql.ExtendedExplainGenerator
+import org.apache.spark.sql.catalyst.expressions.{Expression, ScalaUDF}
 import org.apache.spark.sql.catalyst.trees.{TreeNode, TreeNodeTag}
 import org.apache.spark.sql.comet.{CometColumnarToRowExec, CometNativeColumnarToRowExec, CometPlan, CometSparkToColumnarExec}
 import org.apache.spark.sql.execution.{ColumnarToRowExec, InputAdapter, RowToColumnarExec, SparkPlan, WholeStageCodegenExec}
@@ -53,6 +56,28 @@ class ExtendedExplainInfo extends ExtendedExplainGenerator {
 
   def getFallbackReasons(plan: SparkPlan): Seq[String] = {
     fallbackReasons(plan).toSeq.sorted
+  }
+
+  /**
+   * Names of the expressions in `plan` that Comet lowered to native DataFusion expressions,
+   * sorted alphabetically. Names are the expression's `prettyName` (the UDF name for a
+   * `ScalaUDF`) lowercased, so they match the function names in the expression coverage guide.
+   *
+   * Structural nodes - attribute references, literals, aliases, bound references - are not
+   * reported: they carry no computation and would swamp the interesting names.
+   */
+  def getNativeExpressions(plan: SparkPlan): Seq[String] = {
+    CometCoverageStats.forPlan(plan).nativeExpressions.toSeq.sorted
+  }
+
+  /**
+   * Names of the expressions in `plan` that Comet kept inside the native pipeline by routing them
+   * through the JVM codegen dispatcher (Spark's own `doGenCode` compiled into a batch kernel)
+   * rather than lowering them to a native DataFusion expression, sorted alphabetically. See
+   * [[getNativeExpressions]] for how names are derived.
+   */
+  def getCodegenDispatchExpressions(plan: SparkPlan): Seq[String] = {
+    CometCoverageStats.forPlan(plan).codegenDispatchExpressions.toSeq.sorted
   }
 
   private[comet] def fallbackReasons(node: TreeNode[_]): Set[String] = {
@@ -115,6 +140,8 @@ class ExtendedExplainInfo extends ExtendedExplainGenerator {
       case _ =>
         planStats.sparkOperators += 1
     }
+
+    planStats.recordExpressions(node)
 
     outString.append("   " * indent)
     if (depth > 0) {
@@ -193,13 +220,36 @@ class CometCoverageStats {
   var cometOperators: Int = 0
   var transitions: Int = 0
 
+  /** Distinct names of expressions lowered to native DataFusion expressions. */
+  val nativeExpressions: mutable.Set[String] = mutable.HashSet.empty
+
+  /** Distinct names of expressions routed through the JVM codegen dispatcher. */
+  val codegenDispatchExpressions: mutable.Set[String] = mutable.HashSet.empty
+
+  /**
+   * Accumulate the expression coverage that `CometExecRule.rollUpInfoMessages` rolled up onto a
+   * converted Comet plan node. Nodes that carry no such tags (every Spark operator, and any Comet
+   * operator without expressions) contribute nothing.
+   */
+  private[comet] def recordExpressions(node: TreeNode[_]): Unit = {
+    node.getTagValue(CometExplainInfo.NATIVE_EXPRS).foreach(nativeExpressions ++= _)
+    node
+      .getTagValue(CometExplainInfo.CODEGEN_DISPATCH_EXPRS)
+      .foreach(codegenDispatchExpressions ++= _)
+  }
+
   override def toString(): String = {
     val eligible = sparkOperators + cometOperators
     val converted =
       if (eligible == 0) 0.0 else cometOperators.toDouble / eligible * 100.0
+    // The same function can be lowered natively for one set of arguments and dispatched for
+    // another, so a name can appear in both sets. Count the union rather than adding the two.
+    val expressions = (nativeExpressions ++ codegenDispatchExpressions).size
     s"Comet accelerated $cometOperators out of $eligible " +
       s"eligible operators (${converted.toInt}%). " +
-      s"Final plan contains $transitions transitions between Spark and Comet."
+      s"Final plan contains $transitions transitions between Spark and Comet. " +
+      s"Comet accelerated $expressions expressions " +
+      s"(${nativeExpressions.size} native, ${codegenDispatchExpressions.size} codegen dispatch)."
   }
 }
 
@@ -226,10 +276,32 @@ object CometExplainInfo {
   val FALLBACK_REASONS = new TreeNodeTag[Set[String]]("CometFallbackReasons")
   val EXTENSION_INFO = new TreeNodeTag[Set[String]]("CometExtensionInfo")
 
-  // Expression names the serde routed through the JVM codegen dispatcher. Rolled up per
-  // operator by `CometExecRule.rollUpInfoMessages` into one combined `[COMET-INFO: ...]`.
+  // Expression names the serde routed through the JVM codegen dispatcher. Set on each such
+  // expression, then rolled up per operator by `CometExecRule.rollUpInfoMessages` onto the
+  // converted Comet plan node (where extended explain reads it for coverage stats, and where it
+  // becomes one combined `[COMET-INFO: ...]` when `spark.comet.explain.codegen.enabled` is set).
   val CODEGEN_DISPATCH_EXPRS =
     new TreeNodeTag[Set[String]]("CometCodegenDispatchExprs")
+
+  // Expression names the serde lowered to native DataFusion expressions. The native counterpart
+  // of `CODEGEN_DISPATCH_EXPRS`, rolled up the same way, but never rendered in the tree display:
+  // it would repeat what the operator names already say.
+  val NATIVE_EXPRS = new TreeNodeTag[Set[String]]("CometNativeExprs")
+
+  /**
+   * Name used to report `expr` in explain output.
+   *
+   * `BinaryMathExpression` (Hypot, Pow, ...) overrides `prettyName` to raw uppercase; `ScalaUDF`
+   * collapses to `"scalaudf"` for every user UDF. Prefer `ScalaUDF.udfName` when set, then
+   * lowercase to normalize.
+   */
+  def exprDisplayName(expr: Expression): String = {
+    val raw = expr match {
+      case s: ScalaUDF => s.udfName.getOrElse(s.prettyName)
+      case other => other.prettyName
+    }
+    raw.toLowerCase(Locale.ROOT)
+  }
 
   def getActualPlan(node: TreeNode[_]): TreeNode[_] = {
     node match {
