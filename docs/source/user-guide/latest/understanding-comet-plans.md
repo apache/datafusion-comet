@@ -144,7 +144,7 @@ CometColumnarToRow
 +- CometProject [COMET-INFO: JVM codegen dispatcher: hypot, levenshtein]
    +- CometNativeScan parquet spark_catalog.default.t
 
-Comet accelerated 2 out of 2 eligible operators (100%). Final plan contains 1 transitions between Spark and Comet. Comet accelerated 2 expressions (0 native, 2 codegen dispatch).
+Comet accelerated 2 out of 2 eligible operators (100%). Final plan contains 1 transitions between Spark and Comet. Accelerated expressions: 0 native, 2 codegen dispatch.
 ```
 
 Note that the operator is still `CometProject` (Comet-accelerated); only the
@@ -239,7 +239,7 @@ Project [COMET: from_unixtime(eventTime#5L, yyyy-MM-dd HH:mm:ss, Some(GMT)) is n
 +- CometColumnarToRow
    +- CometNativeScan parquet
 
-Comet accelerated 1 out of 2 eligible operators (50%). Final plan contains 1 transitions between Spark and Comet. Comet accelerated 0 expressions (0 native, 0 codegen dispatch).
+Comet accelerated 1 out of 2 eligible operators (50%). Final plan contains 1 transitions between Spark and Comet. Accelerated expressions: 0 native, 0 codegen dispatch.
 ```
 
 ## Comet Operator Reference

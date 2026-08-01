@@ -245,14 +245,14 @@ class CometCoverageStats {
     val eligible = sparkOperators + cometOperators
     val converted =
       if (eligible == 0) 0.0 else cometOperators.toDouble / eligible * 100.0
-    // The same function can be lowered natively for one set of arguments and dispatched for
-    // another, so a name can appear in both sets. Count the union rather than adding the two.
-    val expressions = (nativeExpressions ++ codegenDispatchExpressions).size
+    // Deliberately no combined expression total: the counts are of distinct names, and the same
+    // function can be lowered natively for one set of arguments and dispatched for another, so a
+    // name can be in both. A total would not be the sum and would read as an arithmetic error.
     s"Comet accelerated $cometOperators out of $eligible " +
       s"eligible operators (${converted.toInt}%). " +
       s"Final plan contains $transitions transitions between Spark and Comet. " +
-      s"Comet accelerated $expressions expressions " +
-      s"(${nativeExpressions.size} native, ${codegenDispatchExpressions.size} codegen dispatch)."
+      s"Accelerated expressions: ${nativeExpressions.size} native, " +
+      s"${codegenDispatchExpressions.size} codegen dispatch."
   }
 }
 

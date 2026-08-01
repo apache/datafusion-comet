@@ -231,7 +231,7 @@ class CometCodegenSuite
 
         val explain = info.generateExtendedInfo(plan)
         assert(
-          explain.contains("Comet accelerated 4 expressions (2 native, 2 codegen dispatch)."),
+          explain.contains("Accelerated expressions: 2 native, 2 codegen dispatch."),
           s"expected expression coverage in the summary, got:\n$explain")
         assert(
           !explain.contains("JVM codegen dispatcher"),
@@ -253,7 +253,7 @@ class CometCodegenSuite
       assert(
         info
           .generateExtendedInfo(plan)
-          .contains("Comet accelerated 0 expressions (0 native, 0 codegen dispatch)."))
+          .contains("Accelerated expressions: 0 native, 0 codegen dispatch."))
     }
   }
 
