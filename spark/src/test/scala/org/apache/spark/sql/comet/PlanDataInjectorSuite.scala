@@ -21,9 +21,47 @@ package org.apache.spark.sql.comet
 
 import org.scalatest.funsuite.AnyFunSuite
 
+import org.apache.comet.serde.OperatorOuterClass
 import org.apache.comet.serde.OperatorOuterClass.Operator
 
 class PlanDataInjectorSuite extends AnyFunSuite {
+
+  /** Builds an un-injected IcebergScan operator: hasCommon, zero file_scan_tasks. */
+  private def icebergScanOp(metadataLocation: String, scanHashCode: Int): Operator = {
+    val common = OperatorOuterClass.IcebergScanCommon
+      .newBuilder()
+      .setMetadataLocation(metadataLocation)
+      .setScanHashCode(scanHashCode)
+      .build()
+    val icebergScan = OperatorOuterClass.IcebergScan.newBuilder().setCommon(common).build()
+    Operator.newBuilder().setIcebergScan(icebergScan).build()
+  }
+
+  /** Serialized (commonBytes, partitionBytes) a real CometIcebergNativeScanExec would produce. */
+  private def icebergPlanData(
+      metadataLocation: String,
+      scanHashCode: Int,
+      columnNames: Seq[String],
+      dataFilePath: String): (Array[Byte], Array[Byte]) = {
+    val commonBuilder = OperatorOuterClass.IcebergScanCommon
+      .newBuilder()
+      .setMetadataLocation(metadataLocation)
+      .setScanHashCode(scanHashCode)
+    columnNames.foreach { name =>
+      commonBuilder.addRequiredSchema(
+        OperatorOuterClass.SparkStructField.newBuilder().setName(name).setNullable(true).build())
+    }
+    val commonBytes = commonBuilder.build().toByteArray
+
+    val partitionBytes = OperatorOuterClass.IcebergScan
+      .newBuilder()
+      .addFileScanTasks(
+        OperatorOuterClass.IcebergFileScanTask.newBuilder().setDataFilePath(dataFilePath).build())
+      .build()
+      .toByteArray
+
+    (commonBytes, partitionBytes)
+  }
 
   test("injectPlanData leaves a non-scan operator tree unchanged") {
     // An operator with no injectable scan (here, an empty op_struct, but the same holds for
@@ -49,5 +87,57 @@ class PlanDataInjectorSuite extends AnyFunSuite {
     }
     assert(IcebergPlanDataInjector.opStructCase == Operator.OpStructCase.ICEBERG_SCAN)
     assert(NativeScanPlanDataInjector.opStructCase == Operator.OpStructCase.NATIVE_SCAN)
+  }
+
+  test("two Iceberg scans of the same table with different scan_hash_code get distinct keys") {
+    val targetOp = icebergScanOp("s3://table/metadata/v1.json", scanHashCode = 111)
+    val sourceOp = icebergScanOp("s3://table/metadata/v1.json", scanHashCode = 222)
+
+    assert(IcebergPlanDataInjector.getKey(targetOp) != IcebergPlanDataInjector.getKey(sourceOp))
+  }
+
+  test("two Iceberg scans of the same table with equal scan_hash_code get the same key") {
+    val opA = icebergScanOp("s3://table/metadata/v1.json", scanHashCode = 111)
+    val opB = icebergScanOp("s3://table/metadata/v1.json", scanHashCode = 111)
+
+    assert(IcebergPlanDataInjector.getKey(opA) == IcebergPlanDataInjector.getKey(opB))
+  }
+
+  test(
+    "self-join: scans sharing a metadataLocation but differing scan_hash_code inject their " +
+      "own data, not each other's") {
+    val targetOp = icebergScanOp("s3://table/metadata/v1.json", scanHashCode = 111)
+    val sourceOp = icebergScanOp("s3://table/metadata/v1.json", scanHashCode = 222)
+
+    val (targetCommon, targetPartition) =
+      icebergPlanData(
+        "s3://table/metadata/v1.json",
+        scanHashCode = 111,
+        columnNames = Seq("id", "v", "_file", "_pos"),
+        dataFilePath = "target.parquet")
+    val (sourceCommon, sourcePartition) =
+      icebergPlanData(
+        "s3://table/metadata/v1.json",
+        scanHashCode = 222,
+        columnNames = Seq("id", "v"),
+        dataFilePath = "source.parquet")
+
+    val targetKey = IcebergPlanDataInjector.getKey(targetOp).get
+    val sourceKey = IcebergPlanDataInjector.getKey(sourceOp).get
+    val commonByKey = Map(targetKey -> targetCommon, sourceKey -> sourceCommon)
+    val partitionByKey = Map(targetKey -> targetPartition, sourceKey -> sourcePartition)
+
+    val injectedTarget = PlanDataInjector.injectPlanData(targetOp, commonByKey, partitionByKey)
+    val injectedSource = PlanDataInjector.injectPlanData(sourceOp, commonByKey, partitionByKey)
+
+    assert(
+      injectedTarget.getIcebergScan.getCommon.getRequiredSchemaList
+        .get(0)
+        .getName == "id")
+    assert(injectedTarget.getIcebergScan.getCommon.getRequiredSchemaCount == 4)
+    assert(injectedTarget.getIcebergScan.getFileScanTasks(0).getDataFilePath == "target.parquet")
+
+    assert(injectedSource.getIcebergScan.getCommon.getRequiredSchemaCount == 2)
+    assert(injectedSource.getIcebergScan.getFileScanTasks(0).getDataFilePath == "source.parquet")
   }
 }

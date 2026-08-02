@@ -1,6 +1,6 @@
  Project [COMET: ]
 :  :- Subquery
-:  :  +- CometNativeColumnarToRow
+:  :  +- CometColumnarToRow
 :  :     +- CometProject
 :  :        +- CometHashAggregate
 :  :           +- CometExchange
@@ -11,7 +11,7 @@
 :  :- ReusedSubquery
 :  :- ReusedSubquery
 :  :- Subquery
-:  :  +- CometNativeColumnarToRow
+:  :  +- CometColumnarToRow
 :  :     +- CometProject
 :  :        +- CometHashAggregate
 :  :           +- CometExchange
@@ -22,7 +22,7 @@
 :  :- ReusedSubquery
 :  :- ReusedSubquery
 :  :- Subquery
-:  :  +- CometNativeColumnarToRow
+:  :  +- CometColumnarToRow
 :  :     +- CometProject
 :  :        +- CometHashAggregate
 :  :           +- CometExchange
@@ -33,7 +33,7 @@
 :  :- ReusedSubquery
 :  :- ReusedSubquery
 :  :- Subquery
-:  :  +- CometNativeColumnarToRow
+:  :  +- CometColumnarToRow
 :  :     +- CometProject
 :  :        +- CometHashAggregate
 :  :           +- CometExchange
@@ -44,7 +44,7 @@
 :  :- ReusedSubquery
 :  :- ReusedSubquery
 :  :- Subquery
-:  :  +- CometNativeColumnarToRow
+:  :  +- CometColumnarToRow
 :  :     +- CometProject
 :  :        +- CometHashAggregate
 :  :           +- CometExchange
@@ -54,7 +54,7 @@
 :  :                       +- CometNativeScan parquet spark_catalog.default.store_sales
 :  :- ReusedSubquery
 :  +- ReusedSubquery
-+- CometNativeColumnarToRow
++- CometColumnarToRow
    +- CometFilter
       +- CometNativeScan parquet spark_catalog.default.reason
 

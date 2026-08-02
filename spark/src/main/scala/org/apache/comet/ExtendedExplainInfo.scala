@@ -29,7 +29,9 @@ import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffl
 import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
 
 import org.apache.comet.CometExplainInfo.getActualPlan
+import org.apache.comet.annotation.Public
 
+@Public
 class ExtendedExplainInfo extends ExtendedExplainGenerator {
 
   override def title: String = "Comet"

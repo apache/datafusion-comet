@@ -1,4 +1,4 @@
-CometNativeColumnarToRow
+CometColumnarToRow
 +- CometTakeOrderedAndProject
    +- CometHashAggregate
       +- CometColumnarExchange
@@ -6,7 +6,7 @@ CometNativeColumnarToRow
             +- Project
                +- Filter
                   +-  BroadcastHashJoin [COMET: Unsupported join type ExistenceJoin(exists#1)]
-                     :- CometNativeColumnarToRow
+                     :- CometColumnarToRow
                      :  +- CometProject
                      :     +- CometBroadcastHashJoin
                      :        :- CometProject
@@ -38,7 +38,7 @@ CometNativeColumnarToRow
                      :              +- CometFilter
                      :                 +- CometNativeScan parquet spark_catalog.default.item
                      +- BroadcastExchange
-                        +- CometNativeColumnarToRow
+                        +- CometColumnarToRow
                            +- CometProject
                               +- CometFilter
                                  +- CometNativeScan parquet spark_catalog.default.item
