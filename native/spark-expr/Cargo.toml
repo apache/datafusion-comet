@@ -207,3 +207,7 @@ harness = false
 [[bench]]
 name = "unscaled_value"
 harness = false
+
+[[bench]]
+name = "make_decimal"
+harness = false
