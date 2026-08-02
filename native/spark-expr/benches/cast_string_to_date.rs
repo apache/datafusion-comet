@@ -15,12 +15,15 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow::array::{builder::StringBuilder, RecordBatch};
-use arrow::datatypes::{DataType, Field, Schema};
+use arrow::array::RecordBatch;
+use arrow::datatypes::DataType;
 use criterion::{criterion_group, criterion_main, Criterion};
 use datafusion::physical_expr::{expressions::Column, PhysicalExpr};
 use datafusion_comet_spark_expr::{Cast, EvalMode, SparkCastOptions};
 use std::sync::Arc;
+
+#[path = "common/mod.rs"]
+mod common;
 
 const BATCH_SIZE: usize = 8192;
 
@@ -60,16 +63,7 @@ fn criterion_benchmark(c: &mut Criterion) {
 }
 
 fn create_batch(f: impl Fn(usize) -> String) -> RecordBatch {
-    let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Utf8, true)]));
-    let mut builder = StringBuilder::new();
-    for i in 0..BATCH_SIZE {
-        if i % 17 == 0 {
-            builder.append_null();
-        } else {
-            builder.append_value(f(i));
-        }
-    }
-    RecordBatch::try_new(schema, vec![Arc::new(builder.finish())]).unwrap()
+    common::string_batch(BATCH_SIZE, 17, f)
 }
 
 fn config() -> Criterion {

@@ -354,7 +354,7 @@ class ParquetEncryptionITCase extends CometTestBase with SQLTestUtils {
           "org.apache.parquet.crypto.keytools.mocks.InMemoryKMS",
         InMemoryKMS.KEY_LIST_PROPERTY_NAME ->
           s"footerKey: ${footerKey}, key1: ${key1}, key2: ${key2}",
-        CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true") {
+        CometConf.COMET_SHUFFLE_ENABLED.key -> "true") {
 
         // Write first file with key1
         val inputDF1 = spark
