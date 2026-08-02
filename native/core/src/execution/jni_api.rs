@@ -349,9 +349,13 @@ struct ExecutionContext {
     /// via `jni`'s `Drop` impl.
     pub task_context: Option<Arc<Global<JObject<'static>>>>,
     /// This plan's reference to the task-shared memory pool, for task-shared pool types. Never
-    /// read: it exists so that dropping the context releases the reference. Declared last so it
-    /// drops after `session_ctx`, ensuring the pool's own reservations are all released before the
-    /// last reference removes it from the task-shared map.
+    /// read: it exists so that dropping the context releases the reference.
+    ///
+    /// Keep this declared last. Fields drop in declaration order, and releasing the reference
+    /// before `session_ctx` (and the `root_op`/`stream` that hold reservations against the pool)
+    /// would remove the pool from the task-shared map while it is still in use, so the next plan
+    /// in the same task attempt would build a second pool with a full budget and the task could
+    /// exceed its per-task limit.
     pub _task_shared_pool_ref: Option<TaskSharedPoolRef>,
 }
 
@@ -432,9 +436,8 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
                 memory_limit,
                 memory_limit_per_task,
             )?;
-            // `task_shared_pool_ref` is moved onto the `ExecutionContext` below. Every fallible
-            // step between here and there must leave it owned by this scope so that unwinding
-            // releases the task-shared pool reference rather than stranding it.
+            // Held by this scope until it is moved onto the `ExecutionContext` below, so that
+            // unwinding from any fallible step in between releases the pool reference.
             let (memory_pool, task_shared_pool_ref) =
                 create_memory_pool(&memory_pool_config, task_memory_manager, task_attempt_id);
 
@@ -952,7 +955,7 @@ pub extern "system" fn Java_org_apache_comet_Native_releasePlan(
         // metrics below fails. Dropping it releases this plan's reference to the task-shared
         // memory pool along with every JNI global ref the context holds.
         let mut execution_context: Box<ExecutionContext> =
-            Box::from_raw(get_execution_context(exec_context));
+            Box::from_raw(exec_context as *mut ExecutionContext);
 
         // Unregister this context's pool and emit the remaining total for the thread
         if execution_context.tracing_enabled {

@@ -15,28 +15,17 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::execution::memory_pools::MemoryPoolType;
 use datafusion::execution::memory_pool::MemoryPool;
 use log::warn;
 use once_cell::sync::Lazy;
+use parking_lot::Mutex;
+use std::collections::hash_map::Entry;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::Arc;
 
 /// The per-task memory pools keyed by task attempt id.
 static TASK_SHARED_MEMORY_POOLS: Lazy<Mutex<HashMap<i64, PerTaskMemoryPool>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
-
-/// Locks the pool map, recovering from poisoning rather than propagating it.
-///
-/// A panic while the map is locked would otherwise poison the mutex permanently, and because
-/// every `createPlan` and plan release goes through this map that would take down all subsequent
-/// native execution in the executor. The map holds only a refcount and an `Arc`, so a poisoned
-/// state is still safe to observe.
-fn lock_pools() -> MutexGuard<'static, HashMap<i64, PerTaskMemoryPool>> {
-    TASK_SHARED_MEMORY_POOLS
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-}
 
 struct PerTaskMemoryPool {
     memory_pool: Arc<dyn MemoryPool>,
@@ -55,29 +44,25 @@ struct PerTaskMemoryPool {
 /// the map, and each entry holds a JNI global ref to the task's `CometTaskMemoryManager`, which
 /// transitively pins its `TaskMemoryManager` and `TaskContext`.
 pub(crate) struct TaskSharedPoolRef {
-    pool_type: MemoryPoolType,
     task_attempt_id: i64,
 }
 
 impl Drop for TaskSharedPoolRef {
     fn drop(&mut self) {
-        let mut memory_pool_map = lock_pools();
-        match memory_pool_map.get_mut(&self.task_attempt_id) {
-            Some(per_task_memory_pool) => {
-                // `saturating_sub` rather than `-=`: the refcount is balanced by construction
-                // (one increment per `TaskSharedPoolRef`, one decrement on drop), but underflow
-                // here would panic while holding the map lock.
-                per_task_memory_pool.num_plans = per_task_memory_pool.num_plans.saturating_sub(1);
-                if per_task_memory_pool.num_plans == 0 {
+        match TASK_SHARED_MEMORY_POOLS.lock().entry(self.task_attempt_id) {
+            Entry::Occupied(mut entry) => {
+                let num_plans = entry.get().num_plans.saturating_sub(1);
+                entry.get_mut().num_plans = num_plans;
+                if num_plans == 0 {
                     // Last plan using this pool, so drop it from the map. This releases the
                     // map's `Arc`; the pool itself is freed once the owning session context has
                     // also dropped its clone.
-                    memory_pool_map.remove(&self.task_attempt_id);
+                    entry.remove();
                 }
             }
-            None => warn!(
-                "Task {} released a {:?} memory pool reference but no pool was registered",
-                self.task_attempt_id, self.pool_type
+            Entry::Vacant(_) => warn!(
+                "Task {} released a memory pool reference but no pool was registered",
+                self.task_attempt_id
             ),
         }
     }
@@ -90,13 +75,10 @@ impl Drop for TaskSharedPoolRef {
 /// `create` is only called when no pool exists for the task yet, so the pool size and type come
 /// from the first plan in the task; later plans reuse that pool.
 pub(crate) fn acquire_task_shared_pool(
-    pool_type: MemoryPoolType,
     task_attempt_id: i64,
     create: impl FnOnce() -> Arc<dyn MemoryPool>,
 ) -> (Arc<dyn MemoryPool>, TaskSharedPoolRef) {
-    debug_assert!(pool_type.is_task_shared());
-
-    let mut memory_pool_map = lock_pools();
+    let mut memory_pool_map = TASK_SHARED_MEMORY_POOLS.lock();
     let per_task_memory_pool =
         memory_pool_map
             .entry(task_attempt_id)
@@ -108,10 +90,7 @@ pub(crate) fn acquire_task_shared_pool(
 
     (
         Arc::clone(&per_task_memory_pool.memory_pool),
-        TaskSharedPoolRef {
-            pool_type,
-            task_attempt_id,
-        },
+        TaskSharedPoolRef { task_attempt_id },
     )
 }
 
@@ -122,13 +101,13 @@ mod tests {
 
     /// Tests share the process-wide pool map, so each uses its own task attempt id.
     fn acquire(task_attempt_id: i64) -> (Arc<dyn MemoryPool>, TaskSharedPoolRef) {
-        acquire_task_shared_pool(MemoryPoolType::GreedyTaskShared, task_attempt_id, || {
-            Arc::new(UnboundedMemoryPool::default())
-        })
+        acquire_task_shared_pool(task_attempt_id, || Arc::new(UnboundedMemoryPool::default()))
     }
 
     fn is_registered(task_attempt_id: i64) -> bool {
-        lock_pools().contains_key(&task_attempt_id)
+        TASK_SHARED_MEMORY_POOLS
+            .lock()
+            .contains_key(&task_attempt_id)
     }
 
     #[test]
@@ -136,7 +115,7 @@ mod tests {
         let (first, _first_ref) = acquire(-1001);
         let (second, _second_ref) = acquire(-1001);
         assert!(Arc::ptr_eq(&first, &second));
-        assert_eq!(lock_pools()[&-1001].num_plans, 2);
+        assert_eq!(TASK_SHARED_MEMORY_POOLS.lock()[&-1001].num_plans, 2);
     }
 
     #[test]
@@ -175,7 +154,7 @@ mod tests {
     #[test]
     fn releasing_an_unregistered_pool_does_not_panic() {
         let (_pool, pool_ref) = acquire(-1006);
-        lock_pools().remove(&-1006);
+        TASK_SHARED_MEMORY_POOLS.lock().remove(&-1006);
         drop(pool_ref);
     }
 }

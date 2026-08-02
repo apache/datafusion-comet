@@ -17,7 +17,7 @@
 
 use crate::errors::{CometError, CometResult};
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Copy, Clone, PartialEq, Eq)]
 pub(crate) enum MemoryPoolType {
     GreedyUnified,
     FairUnified,
@@ -28,18 +28,6 @@ pub(crate) enum MemoryPoolType {
     GreedyGlobal,
     FairSpillGlobal,
     Unbounded,
-}
-
-impl MemoryPoolType {
-    pub(crate) fn is_task_shared(&self) -> bool {
-        matches!(
-            self,
-            MemoryPoolType::GreedyTaskShared
-                | MemoryPoolType::FairSpillTaskShared
-                | MemoryPoolType::FairUnified
-                | MemoryPoolType::GreedyUnified
-        )
-    }
 }
 
 pub(crate) struct MemoryPoolConfig {

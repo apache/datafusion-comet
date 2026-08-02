@@ -53,39 +53,36 @@ pub(crate) fn create_memory_pool(
         ))
     }
 
+    /// Acquires the pool shared by every plan in the task, keeping the reference that releases it.
+    fn task_shared(
+        task_attempt_id: i64,
+        create: impl FnOnce() -> Arc<dyn MemoryPool>,
+    ) -> (Arc<dyn MemoryPool>, Option<TaskSharedPoolRef>) {
+        let (pool, pool_ref) = acquire_task_shared_pool(task_attempt_id, create);
+        (pool, Some(pool_ref))
+    }
+
     let pool_type = memory_pool_config.pool_type;
     let pool_size = memory_pool_config.pool_size;
 
     match pool_type {
-        MemoryPoolType::GreedyUnified => {
-            let (pool, pool_ref) = acquire_task_shared_pool(pool_type, task_attempt_id, || {
-                tracked(CometUnifiedMemoryPool::new(
-                    comet_task_memory_manager,
-                    task_attempt_id,
-                ))
-            });
-            (pool, Some(pool_ref))
-        }
-        MemoryPoolType::FairUnified => {
-            let (pool, pool_ref) = acquire_task_shared_pool(pool_type, task_attempt_id, || {
-                tracked(CometFairMemoryPool::new(
-                    comet_task_memory_manager,
-                    pool_size,
-                ))
-            });
-            (pool, Some(pool_ref))
-        }
-        MemoryPoolType::GreedyTaskShared => {
-            let (pool, pool_ref) = acquire_task_shared_pool(pool_type, task_attempt_id, || {
-                tracked(GreedyMemoryPool::new(pool_size))
-            });
-            (pool, Some(pool_ref))
-        }
+        MemoryPoolType::GreedyUnified => task_shared(task_attempt_id, || {
+            tracked(CometUnifiedMemoryPool::new(
+                comet_task_memory_manager,
+                task_attempt_id,
+            ))
+        }),
+        MemoryPoolType::FairUnified => task_shared(task_attempt_id, || {
+            tracked(CometFairMemoryPool::new(
+                comet_task_memory_manager,
+                pool_size,
+            ))
+        }),
+        MemoryPoolType::GreedyTaskShared => task_shared(task_attempt_id, || {
+            tracked(GreedyMemoryPool::new(pool_size))
+        }),
         MemoryPoolType::FairSpillTaskShared => {
-            let (pool, pool_ref) = acquire_task_shared_pool(pool_type, task_attempt_id, || {
-                tracked(FairSpillPool::new(pool_size))
-            });
-            (pool, Some(pool_ref))
+            task_shared(task_attempt_id, || tracked(FairSpillPool::new(pool_size)))
         }
         MemoryPoolType::Greedy => (tracked(GreedyMemoryPool::new(pool_size)), None),
         MemoryPoolType::FairSpill => (tracked(FairSpillPool::new(pool_size)), None),
