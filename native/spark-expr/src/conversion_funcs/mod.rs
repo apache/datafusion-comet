@@ -18,7 +18,6 @@
 mod boolean;
 pub mod cast;
 mod numeric;
-pub(crate) use numeric::format_decimal_str;
 mod string;
 mod temporal;
 mod utils;

@@ -21,7 +21,7 @@ use crate::conversion_funcs::boolean::{
 use crate::conversion_funcs::numeric::{
     cast_decimal128_to_utf8, cast_decimal_to_timestamp, cast_float32_to_decimal128,
     cast_float64_to_decimal128, cast_float_to_timestamp, cast_int_to_decimal128,
-    cast_int_to_timestamp, format_decimal_str, is_df_cast_from_decimal_spark_compatible,
+    cast_int_to_timestamp, is_df_cast_from_decimal_spark_compatible,
     is_df_cast_from_float_spark_compatible, is_df_cast_from_int_spark_compatible,
     spark_cast_decimal_to_boolean, spark_cast_float32_to_utf8, spark_cast_float64_to_utf8,
     spark_cast_int_to_int, spark_cast_nonintegral_numeric_to_integral,
@@ -45,7 +45,9 @@ use arrow::array::{
     new_null_array, BinaryBuilder, DictionaryArray, GenericByteArray, ListArray, MapArray,
     StringArray, StructArray,
 };
-use arrow::datatypes::{ArrowDictionaryKeyType, ArrowNativeType, DataType, Schema};
+use arrow::datatypes::{
+    format_decimal_str, ArrowDictionaryKeyType, ArrowNativeType, DataType, Schema,
+};
 use arrow::datatypes::{Field, Fields, GenericBinaryType};
 use arrow::error::ArrowError;
 use arrow::{
@@ -784,6 +786,8 @@ impl PhysicalExpr for Cast {
     }
 
     fn evaluate(&self, batch: &RecordBatch) -> DataFusionResult<ColumnarValue> {
+        // `CometIntegralDivide` builds its inner `CheckOverflow` without an expression id, so a
+        // bare child `SparkError` deliberately inherits the outer Cast's query context here.
         let result = self
             .child
             .evaluate(batch)
@@ -949,32 +953,52 @@ mod tests {
 
     #[test]
     fn test_cast_decimal_to_decimal_ansi_overflow_returns_spark_error() {
-        let input: ArrayRef = Arc::new(
-            Decimal128Array::from(vec![Some(123_456_789)])
-                .with_data_type(DataType::Decimal128(10, 4)),
-        );
+        let cases = [
+            (
+                vec![None, Some(1), Some(-123_456_789)],
+                DataType::Decimal128(10, 4),
+                DataType::Decimal128(6, 2),
+                "-12345.6789",
+                6,
+                2,
+            ),
+            (
+                vec![None, Some(1), Some(-999)],
+                DataType::Decimal128(3, 0),
+                DataType::Decimal128(3, 2),
+                "-999",
+                3,
+                2,
+            ),
+        ];
 
-        let error = cast_array(
-            input,
-            &DataType::Decimal128(6, 2),
-            &SparkCastOptions::new_without_timezone(EvalMode::Ansi, false),
-        )
-        .unwrap_err();
+        for (values, input_type, output_type, expected_value, expected_precision, expected_scale) in
+            cases
+        {
+            let input: ArrayRef =
+                Arc::new(Decimal128Array::from(values).with_data_type(input_type));
+            let error = cast_array(
+                input,
+                &output_type,
+                &SparkCastOptions::new_without_timezone(EvalMode::Ansi, false),
+            )
+            .unwrap_err();
 
-        match error {
-            DataFusionError::External(error) => match error.downcast_ref::<SparkError>() {
-                Some(SparkError::NumericValueOutOfRange {
-                    value,
-                    precision,
-                    scale,
-                }) => {
-                    assert_eq!(value, "12345.6789");
-                    assert_eq!(*precision, 6);
-                    assert_eq!(*scale, 2);
-                }
-                other => panic!("expected NumericValueOutOfRange, got {other:?}"),
-            },
-            other => panic!("expected external SparkError, got {other:?}"),
+            match error {
+                DataFusionError::External(error) => match error.downcast_ref::<SparkError>() {
+                    Some(SparkError::NumericValueOutOfRange {
+                        value,
+                        precision,
+                        scale,
+                    }) => {
+                        assert_eq!(value, expected_value);
+                        assert_eq!(*precision, expected_precision);
+                        assert_eq!(*scale, expected_scale);
+                    }
+                    other => panic!("expected NumericValueOutOfRange, got {other:?}"),
+                },
+                other => panic!("expected external SparkError, got {other:?}"),
+            }
         }
     }
 

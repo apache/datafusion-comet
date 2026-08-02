@@ -52,6 +52,8 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       .iterate[Throwable](error)(_.getCause)
       .takeWhile(_ != null)
       .collectFirst {
+        // SparkArithmeticException is private[spark] in Spark 3.4, so this cross-version test
+        // cannot pattern match on its type directly.
         case error: SparkThrowable
             if error.getClass.getName == "org.apache.spark.SparkArithmeticException" =>
           error
@@ -1445,6 +1447,8 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           case (Some(sparkExc), Some(cometExc)) =>
             val expected = arithmeticError(sparkExc)
             val actual = arithmeticError(cometExc)
+            // Spark formats its pre-toPrecision Decimal, while Comet formats the rescaled i256
+            // value. This regression covers the structured error fields and query context.
             assert(actual.getErrorClass == expected.getErrorClass)
             assert(actual.getSqlState == expected.getSqlState)
             assert(actual.getQueryContext.exists(_.fragment().contains("_1 * _1")))

@@ -24,8 +24,8 @@ use arrow::array::{
     OffsetSizeTrait, PrimitiveArray, StringBuilder, TimestampMicrosecondBuilder,
 };
 use arrow::datatypes::{
-    i256, is_validate_decimal_precision, ArrowPrimitiveType, DataType, Decimal128Type, Float32Type,
-    Float64Type, Int16Type, Int32Type, Int64Type, Int8Type,
+    format_decimal_str, i256, is_validate_decimal_precision, ArrowPrimitiveType, DataType,
+    Decimal128Type, Float32Type, Float64Type, Int16Type, Int32Type, Int64Type, Int8Type,
 };
 use num::{cast::AsPrimitive, ToPrimitive, Zero};
 use std::sync::Arc;
@@ -557,30 +557,6 @@ macro_rules! cast_decimal_to_int32_up {
         };
         Ok(Arc::new(output_array) as ArrayRef)
     }};
-}
-
-// copied from arrow::dataTypes::Decimal128Type since Decimal128Type::format_decimal can't be called directly
-pub(crate) fn format_decimal_str(value_str: &str, precision: usize, scale: i8) -> String {
-    let (sign, rest) = match value_str.strip_prefix('-') {
-        Some(stripped) => ("-", stripped),
-        None => ("", value_str),
-    };
-    let bound = precision.min(rest.len()) + sign.len();
-    let value_str = &value_str[0..bound];
-
-    if scale == 0 {
-        value_str.to_string()
-    } else if scale < 0 {
-        let padding = value_str.len() + scale.unsigned_abs() as usize;
-        format!("{value_str:0<padding$}")
-    } else if rest.len() > scale as usize {
-        // Decimal separator is in the middle of the string
-        let (whole, decimal) = value_str.split_at(value_str.len() - scale as usize);
-        format!("{whole}.{decimal}")
-    } else {
-        // String has to be padded
-        format!("{}0.{:0>width$}", sign, rest, width = scale as usize)
-    }
 }
 
 /// Casts a Decimal128 array to string using Java's BigDecimal.toString() semantics,
