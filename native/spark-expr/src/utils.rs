@@ -29,7 +29,7 @@ use std::sync::Arc;
 
 use crate::timezone::Tz;
 use arrow::array::types::TimestampMillisecondType;
-use arrow::compute::{cast_with_options, CastOptions};
+use arrow::compute::cast_with_options;
 use arrow::datatypes::{MAX_DECIMAL128_FOR_EACH_PRECISION, MIN_DECIMAL128_FOR_EACH_PRECISION};
 use arrow::error::ArrowError;
 use arrow::{
@@ -37,6 +37,7 @@ use arrow::{
     temporal_conversions::as_datetime,
 };
 use chrono::{DateTime, LocalResult, NaiveDateTime, Offset, TimeZone};
+use datafusion::common::format::DEFAULT_CAST_OPTIONS;
 
 /// Preprocesses input arrays to add timezone information from Spark to Arrow array datatype or
 /// to apply timezone offset.
@@ -82,7 +83,7 @@ pub fn array_with_timezone(
                     timestamp_ntz_to_timestamp(array, timezone.as_str(), Some(target_tz.as_ref()))
                 }
                 Some(to_type @ DataType::Timestamp(TimeUnit::Microsecond, None)) => {
-                    cast_with_options(array.as_ref(), to_type, &CastOptions::default())
+                    cast_with_options(array.as_ref(), to_type, &DEFAULT_CAST_OPTIONS)
                 }
                 _ => {
                     // Not supported
@@ -404,6 +405,9 @@ mod tests {
             vec![Some(1_234_000), Some(-1_234_000), None]
         );
         assert_eq!(output.timezone(), None);
+
+        let overflow: ArrayRef = Arc::new(TimestampMillisecondArray::from(vec![i64::MAX]));
+        assert!(array_with_timezone(overflow, "UTC".to_string(), Some(&target)).is_err());
     }
 
     #[test]

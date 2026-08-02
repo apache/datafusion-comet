@@ -15,9 +15,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow::compute::{cast_with_options, CastOptions};
+use arrow::compute::cast_with_options;
 use arrow::datatypes::DataType;
-use datafusion::common::{utils::take_function_args, Result};
+use datafusion::common::{format::DEFAULT_CAST_OPTIONS, utils::take_function_args, Result};
 use datafusion::logical_expr::{
     ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility,
 };
@@ -64,7 +64,7 @@ impl ScalarUDFImpl for SparkDateFromUnixDate {
             ColumnarValue::Array(arr) => Ok(ColumnarValue::Array(cast_with_options(
                 arr.as_ref(),
                 &DataType::Date32,
-                &CastOptions::default(),
+                &DEFAULT_CAST_OPTIONS,
             )?)),
             ColumnarValue::Scalar(scalar) => {
                 Ok(ColumnarValue::Scalar(scalar.cast_to(&DataType::Date32)?))

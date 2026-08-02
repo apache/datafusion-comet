@@ -15,8 +15,11 @@
 // specific language governing permissions and limitations
 // under the License.
 use arrow::{
-    array::{make_array, Array, ArrayRef, LargeListArray, ListArray, MapArray, StructArray},
-    compute::{cast_with_options, CastOptions},
+    array::{
+        make_array, Array, ArrayRef, LargeListArray, ListArray, MapArray, StructArray,
+        TimestampMicrosecondArray, TimestampMillisecondArray,
+    },
+    compute::CastOptions,
     datatypes::{DataType, FieldRef, Schema, TimeUnit},
     record_batch::RecordBatch,
 };
@@ -242,16 +245,23 @@ impl PhysicalExpr for CometCastColumnExpr {
                 DataType::Timestamp(TimeUnit::Millisecond, target_tz),
             ) => match value {
                 ColumnarValue::Array(array) => {
-                    // Arrow adjusts values when adding a timezone, but Spark only relabels them.
-                    let source_type = DataType::Timestamp(TimeUnit::Microsecond, target_tz.clone());
-                    let array = relabel_array(array, &source_type);
-                    let casted = cast_with_options(&array, target_field, &self.cast_options)?;
-                    Ok(ColumnarValue::Array(casted))
+                    let micros = array
+                        .as_any()
+                        .downcast_ref::<TimestampMicrosecondArray>()
+                        .expect("Expected TimestampMicrosecondArray");
+                    // Spark floors when downscaling negative timestamps; Arrow truncates.
+                    let millis: TimestampMillisecondArray =
+                        arrow::compute::kernels::arity::unary(micros, |v| v.div_euclid(1_000));
+                    // Applying the target timezone as metadata avoids shifting the values.
+                    Ok(ColumnarValue::Array(Arc::new(
+                        millis.with_timezone_opt(target_tz.clone()),
+                    )))
                 }
                 ColumnarValue::Scalar(ScalarValue::TimestampMicrosecond(value, _)) => {
-                    let casted = ScalarValue::TimestampMicrosecond(value, target_tz.clone())
-                        .cast_to_with_options(target_field, &self.cast_options)?;
-                    Ok(ColumnarValue::Scalar(casted))
+                    Ok(ColumnarValue::Scalar(ScalarValue::TimestampMillisecond(
+                        value.map(|v| v.div_euclid(1_000)),
+                        target_tz.clone(),
+                    )))
                 }
                 _ => Ok(value),
             },
@@ -316,51 +326,43 @@ impl PhysicalExpr for CometCastColumnExpr {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::{
-        Array, Int32Array, StringArray, TimestampMicrosecondArray, TimestampMillisecondArray,
-    };
+    use arrow::array::{Array, Int32Array, StringArray};
     use arrow::datatypes::{Field, Fields};
     use datafusion::physical_expr::expressions::Column;
 
     #[test]
     fn test_comet_cast_column_expr_evaluate_micros_to_millis_array() {
-        // Create input schema with TimestampMicrosecond column
-        let input_field = Arc::new(Field::new(
-            "ts",
-            DataType::Timestamp(TimeUnit::Microsecond, None),
-            true,
-        ));
-        let schema = Schema::new(vec![Arc::clone(&input_field)]);
+        for (source_tz, target_tz) in [
+            (None, None),
+            (None, Some(Arc::from("+07:00"))),
+            (Some(Arc::from("UTC")), Some(Arc::from("America/New_York"))),
+        ] {
+            let input_type = DataType::Timestamp(TimeUnit::Microsecond, source_tz.clone());
+            let input_field = Arc::new(Field::new("ts", input_type, true));
+            let schema = Schema::new(vec![Arc::clone(&input_field)]);
+            let target_type = DataType::Timestamp(TimeUnit::Millisecond, target_tz);
+            let target_field = Arc::new(Field::new("ts", target_type.clone(), true));
+            let col_expr: Arc<dyn PhysicalExpr> = Arc::new(Column::new("ts", 0));
+            let cast_expr = CometCastColumnExpr::new(col_expr, input_field, target_field, None);
+            let micros_array =
+                TimestampMicrosecondArray::from(vec![Some(1_500_001), Some(-1_500_001), None])
+                    .with_timezone_opt(source_tz);
+            let batch =
+                RecordBatch::try_new(Arc::new(schema), vec![Arc::new(micros_array)]).unwrap();
 
-        let target_type = DataType::Timestamp(TimeUnit::Millisecond, Some(Arc::from("+07:00")));
-        let target_field = Arc::new(Field::new("ts", target_type.clone(), true));
-
-        // Create a column expression
-        let col_expr: Arc<dyn PhysicalExpr> = Arc::new(Column::new("ts", 0));
-
-        // Create the CometCastColumnExpr
-        let cast_expr = CometCastColumnExpr::new(col_expr, input_field, target_field, None);
-
-        // Create a record batch with TimestampMicrosecond data
-        let micros_array: TimestampMicrosecondArray =
-            vec![Some(1_500_001), Some(-1_500_001), None].into();
-        let batch = RecordBatch::try_new(Arc::new(schema), vec![Arc::new(micros_array)]).unwrap();
-
-        // Evaluate
-        let result = cast_expr.evaluate(&batch).unwrap();
-
-        match result {
-            ColumnarValue::Array(arr) => {
-                let millis_array = arr
-                    .as_any()
-                    .downcast_ref::<TimestampMillisecondArray>()
-                    .expect("Expected TimestampMillisecondArray");
-                assert_eq!(millis_array.value(0), 1500);
-                assert_eq!(millis_array.value(1), -1500);
-                assert!(millis_array.is_null(2));
-                assert_eq!(millis_array.data_type(), &target_type);
+            match cast_expr.evaluate(&batch).unwrap() {
+                ColumnarValue::Array(arr) => {
+                    let millis_array = arr
+                        .as_any()
+                        .downcast_ref::<TimestampMillisecondArray>()
+                        .expect("Expected TimestampMillisecondArray");
+                    assert_eq!(millis_array.value(0), 1500);
+                    assert_eq!(millis_array.value(1), -1501);
+                    assert!(millis_array.is_null(2));
+                    assert_eq!(millis_array.data_type(), &target_type);
+                }
+                _ => panic!("Expected Array result"),
             }
-            _ => panic!("Expected Array result"),
         }
     }
 
@@ -374,7 +376,7 @@ mod tests {
         ));
         let schema = Schema::new(vec![Arc::clone(&input_field)]);
 
-        let target_type = DataType::Timestamp(TimeUnit::Millisecond, Some(Arc::from("+07:00")));
+        let target_type = DataType::Timestamp(TimeUnit::Millisecond, None);
         let target_field = Arc::new(Field::new("ts", target_type.clone(), true));
 
         // Create a literal expression that returns a scalar
@@ -393,10 +395,7 @@ mod tests {
 
         match result {
             ColumnarValue::Scalar(s) => {
-                assert_eq!(
-                    s,
-                    ScalarValue::TimestampMillisecond(Some(-1500), Some(Arc::from("+07:00")))
-                );
+                assert_eq!(s, ScalarValue::TimestampMillisecond(Some(-1501), None));
                 assert_eq!(s.data_type(), target_type);
             }
             _ => panic!("Expected Scalar result"),
