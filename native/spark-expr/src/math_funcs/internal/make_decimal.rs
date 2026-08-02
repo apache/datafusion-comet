@@ -17,12 +17,11 @@
 
 use crate::error::decimal_overflow_error;
 use crate::math_funcs::utils::get_precision_scale;
-use arrow::compute::kernels::arity::try_unary;
+use arrow::compute::kernels::arity::unary;
 use arrow::datatypes::DataType;
-use arrow::error::ArrowError;
 use arrow::{
     array::{AsArray, Decimal128Array},
-    datatypes::{validate_decimal_precision, Decimal128Type, Int64Type},
+    datatypes::{validate_decimal_precision, Decimal128Type, DecimalType, Int64Type},
 };
 use datafusion::common::{internal_err, DataFusionError, Result as DataFusionResult, ScalarValue};
 use datafusion::physical_plan::ColumnarValue;
@@ -48,41 +47,34 @@ pub fn spark_make_decimal(
             DataType::Int64 => {
                 let arr = a.as_primitive::<Int64Type>();
                 let result_type = DataType::Decimal128(precision, scale);
-                // The Int64 is already the unscaled Decimal128 value, so we only reinterpret
-                // the bits (an Arrow Int64->Decimal cast would rescale the value). Both arity
-                // helpers reuse the input null buffer and only invoke the closure on valid rows.
-                let result: Decimal128Array = if fail_on_error {
-                    // ANSI mode: overflow is a hard error. `try_unary` surfaces the closure's
-                    // ArrowError; unwrap the ExternalError back to DataFusionError::External so
-                    // the ANSI error variant (not a generic ArrowError) is preserved.
-                    try_unary::<Int64Type, _, Decimal128Type>(arr, |v| {
-                        let v = v as i128;
-                        validate_decimal_precision(v, precision, scale)
-                            .map(|()| v)
-                            .map_err(|_| {
-                                ArrowError::ExternalError(Box::new(decimal_overflow_error(
-                                    v, precision, scale,
-                                )))
-                            })
-                    })
-                    .map_err(|e| match e {
-                        ArrowError::ExternalError(inner) => DataFusionError::External(inner),
-                        other => DataFusionError::from(other),
-                    })?
-                } else {
-                    // Non-ANSI: overflow becomes null. `unary_opt` applies the closure only to
-                    // valid rows and marks a row null wherever the closure returns None.
-                    arr.unary_opt::<_, Decimal128Type>(|v| {
-                        let v = v as i128;
-                        validate_decimal_precision(v, precision, scale)
-                            .ok()
-                            .map(|()| v)
-                    })
+
+                // The Int64 is already the unscaled Decimal128 value; this widens the bits
+                // (an Arrow Int64->Decimal cast would rescale). Infallible so it vectorizes.
+                let widened: Decimal128Array =
+                    unary::<_, _, Decimal128Type>(arr, |v| v as i128);
+
+                // `.iter().flatten()` skips null slots so garbage under a null cannot
+                // trigger a false overflow. `find` short-circuits like `.all(is_valid)`
+                // while also handing back the value needed for the ANSI error message.
+                let first_offender = widened
+                    .iter()
+                    .flatten()
+                    .find(|v| !Decimal128Type::is_valid_decimal_precision(*v, precision));
+
+                let result = match (first_offender, fail_on_error) {
+                    // No overflow: attach metadata. `with_precision_and_scale` would rescan.
+                    (None, _) => widened.with_data_type(result_type),
+                    (Some(v), true) => {
+                        return Err(DataFusionError::External(Box::new(
+                            decimal_overflow_error(v, precision, scale),
+                        )));
+                    }
+                    (Some(_), false) => widened
+                        .null_if_overflow_precision(precision)
+                        .with_data_type(result_type),
                 };
 
-                Ok(ColumnarValue::Array(Arc::new(
-                    result.with_data_type(result_type),
-                )))
+                Ok(ColumnarValue::Array(Arc::new(result)))
             }
             av => internal_err!("Expected Int64 but found {av:?}"),
         },
