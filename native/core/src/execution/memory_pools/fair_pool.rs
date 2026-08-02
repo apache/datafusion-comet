@@ -44,6 +44,36 @@ struct CometFairPoolState {
     num: usize,
 }
 
+/// Result of the fair-share check for a single `try_grow` request.
+struct FairShareCheck {
+    /// The share of the pool available to each registered consumer.
+    limit: usize,
+    /// Whether the requesting consumer may grow by `additional` without exceeding `limit`.
+    fits: bool,
+}
+
+/// Whether a consumer already holding `reserved` bytes may grow by `additional`, given `num`
+/// consumers sharing `pool_size`.
+///
+/// The share is per consumer, so `reserved` must be the requesting consumer's own usage and not
+/// the pool-wide total: passing the pool-wide total would cap the entire pool at a single
+/// consumer's share, shrinking usable memory linearly as consumers register.
+///
+/// `num` cannot be zero while a reservation exists, because a consumer registers before it can
+/// grow. Fall back to the whole pool rather than dividing by zero if that ever changes.
+fn check_fair_share(
+    pool_size: usize,
+    num: usize,
+    reserved: usize,
+    additional: usize,
+) -> FairShareCheck {
+    let limit = pool_size.checked_div(num).unwrap_or(pool_size);
+    FairShareCheck {
+        limit,
+        fits: reserved.saturating_add(additional) <= limit,
+    }
+}
+
 impl Debug for CometFairMemoryPool {
     fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
         let state = self.state.lock();
@@ -142,23 +172,25 @@ impl MemoryPool for CometFairMemoryPool {
 
     fn try_grow(
         &self,
-        _reservation: &MemoryReservation,
+        reservation: &MemoryReservation,
         additional: usize,
     ) -> Result<(), DataFusionError> {
         if additional > 0 {
             let mut state = self.state.lock();
             let num = state.num;
-            let limit = self
-                .pool_size
-                .checked_div(num)
-                .expect("overflow in checked_div");
-            // We use state.used instead of reservation.size() because DataFusion 53+
-            // calls pool.try_grow() before incrementing the reservation's atomic size,
-            // so reservation.size() would not include prior grows.
-            let used = state.used;
-            if limit < used + additional {
+            // `MemoryReservation::try_grow` calls this method before adding `additional` to the
+            // reservation's atomic size, so `reservation.size()` is this consumer's usage prior
+            // to the current request, which is what the fair share applies to.
+            let check = check_fair_share(self.pool_size, num, reservation.size(), additional);
+            if !check.fits {
                 return resources_err!(
-                    "Failed to acquire {additional} bytes where {used} bytes already reserved and the fair limit is {limit} bytes, {num} registered"
+                    "Failed to acquire {} bytes for {} where {} bytes are already reserved by that consumer and the fair limit is {} bytes, {} registered ({} bytes reserved pool-wide)",
+                    additional,
+                    reservation.consumer().name(),
+                    reservation.size(),
+                    check.limit,
+                    num,
+                    state.used
                 );
             }
 
@@ -186,5 +218,54 @@ impl MemoryPool for CometFairMemoryPool {
 
     fn reserved(&self) -> usize {
         self.state.lock().used
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::check_fair_share;
+
+    const POOL: usize = 1000;
+
+    #[test]
+    fn sole_consumer_may_use_whole_pool() {
+        assert!(check_fair_share(POOL, 1, 0, POOL).fits);
+        assert!(!check_fair_share(POOL, 1, 0, POOL + 1).fits);
+    }
+
+    #[test]
+    fn share_is_divided_evenly_between_consumers() {
+        assert_eq!(check_fair_share(POOL, 1, 0, 1).limit, POOL);
+        assert_eq!(check_fair_share(POOL, 2, 0, 1).limit, POOL / 2);
+        assert_eq!(check_fair_share(POOL, 10, 0, 1).limit, POOL / 10);
+    }
+
+    #[test]
+    fn each_consumer_may_reach_its_own_share() {
+        // Two consumers sharing the pool: each may hold 500 bytes, totalling the full pool.
+        // Regression guard for comparing the pool-wide total against the per-consumer share,
+        // which rejected the second consumer once the first had reached 500 and so capped the
+        // whole pool at 500.
+        assert!(check_fair_share(POOL, 2, 0, 500).fits);
+        assert!(check_fair_share(POOL, 2, 400, 100).fits);
+    }
+
+    #[test]
+    fn consumer_may_not_exceed_its_own_share() {
+        assert!(!check_fair_share(POOL, 2, 500, 1).fits);
+        assert!(!check_fair_share(POOL, 2, 0, 501).fits);
+        assert!(!check_fair_share(POOL, 10, 100, 1).fits);
+    }
+
+    #[test]
+    fn no_registered_consumers_does_not_panic() {
+        // Unreachable in practice -- a consumer registers before it can grow -- but must not
+        // divide by zero if that ever changes.
+        assert_eq!(check_fair_share(POOL, 0, 0, 1).limit, POOL);
+    }
+
+    #[test]
+    fn oversized_request_does_not_overflow() {
+        assert!(!check_fair_share(POOL, 2, usize::MAX - 1, 10).fits);
     }
 }
