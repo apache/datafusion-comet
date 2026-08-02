@@ -347,6 +347,8 @@ fn check_overflow_and_convert(
             let unscaled = result.to_string();
             // Arrow's formatter truncates to its precision argument. This value is already
             // known to overflow, so pass its actual digit count to preserve every digit.
+            // Spark reports the pre-toPrecision value instead; see
+            // https://github.com/apache/datafusion-comet/issues/5211.
             let digits = unscaled.trim_start_matches('-').len();
             return Err(ArrowError::ExternalError(Box::new(
                 SparkError::NumericValueOutOfRange {
