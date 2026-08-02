@@ -57,9 +57,7 @@ The following limitation may produce incorrect results without falling back to S
   if they were written using the Proleptic Gregorian calendar. This produces silently-wrong
   values for dates before October 15, 1582 in both projections and predicates. Comet also
   ignores `spark.sql.parquet.datetimeRebaseModeInRead` and the file-level
-  `org.apache.spark.legacyDateTime` metadata that would tell it to rebase. The
-  `spark.comet.exceptionOnDatetimeRebase` config is currently dead code and does not raise on
-  legacy-calendar data. Tracked by
+  `org.apache.spark.legacyDateTime` metadata that would tell it to rebase. Tracked by
   [#5010](https://github.com/apache/datafusion-comet/issues/5010).
 
 The following limitations raise an error at scan time rather than falling back to Spark:
