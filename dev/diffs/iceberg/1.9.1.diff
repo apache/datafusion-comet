@@ -1631,6 +1631,20 @@ index 578845e3da..3cc1598035 100644
              .enableHiveSupport()
              .getOrCreate();
  
+diff --git a/spark/v3.5/spark-extensions/src/test/java/org/apache/iceberg/spark/extensions/SparkRowLevelOperationsTestBase.java b/spark/v3.5/spark-extensions/src/test/java/org/apache/iceberg/spark/extensions/SparkRowLevelOperationsTestBase.java
+index b5d6415763..0763a723d3 100644
+--- a/spark/v3.5/spark-extensions/src/test/java/org/apache/iceberg/spark/extensions/SparkRowLevelOperationsTestBase.java
++++ b/spark/v3.5/spark-extensions/src/test/java/org/apache/iceberg/spark/extensions/SparkRowLevelOperationsTestBase.java
+@@ -448,7 +448,8 @@ public abstract class SparkRowLevelOperationsTestBase extends ExtensionsTestBase
+ 
+   protected void assertAllBatchScansVectorized(SparkPlan plan) {
+     List<SparkPlan> batchScans = SparkPlanUtil.collectBatchScans(plan);
+-    assertThat(batchScans).hasSizeGreaterThan(0).allMatch(SparkPlan::supportsColumnar);
++    // When Comet is enabled, its native scan replaces BatchScanExec nodes entirely
++    assertThat(batchScans).allMatch(SparkPlan::supportsColumnar);
+   }
+ 
+   protected void createTableWithDeleteGranularity(
 diff --git a/spark/v3.5/spark-extensions/src/test/java/org/apache/iceberg/spark/extensions/TestCallStatementParser.java b/spark/v3.5/spark-extensions/src/test/java/org/apache/iceberg/spark/extensions/TestCallStatementParser.java
 index ecf9e6f8a5..23dbcf7af2 100644
 --- a/spark/v3.5/spark-extensions/src/test/java/org/apache/iceberg/spark/extensions/TestCallStatementParser.java

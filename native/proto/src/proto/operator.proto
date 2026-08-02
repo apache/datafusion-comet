@@ -261,6 +261,11 @@ message IcebergScanCommon {
 
   // Deduplication pools (must contain all entries for cross-partition deduplication)
   repeated string schema_pool = 4;
+  // Index-aligned with partition_spec_pool: entry i is the StructType JSON for the spec at
+  // partition_spec_pool[i]. Native uses this pairing to recover each entry's spec_id when
+  // merging partition types across historical specs (see parse_file_scan_tasks_from_common
+  // in planner.rs), which partition_type_pool cannot express on its own since it is only
+  // resolved field types, not specs.
   repeated string partition_type_pool = 5;
   repeated string partition_spec_pool = 6;
   repeated string name_mapping_pool = 7;
@@ -283,6 +288,12 @@ message IcebergScanCommon {
   // delete file here (rather than embedding copies per delete_files_pool set) keeps the broadcast
   // common message from growing with the number of references.
   repeated IcebergDeleteFile delete_file_pool = 14;
+
+  // Iceberg's SparkScan.hashCode() (folds in pushed filters, snapshot, branch, and read schema).
+  // A self-join/self-merge can read the same table (same metadata_location) twice with different
+  // projections or filters, so PlanDataInjector keys planning data by
+  // (metadata_location, scan_hash_code) rather than metadata_location alone.
+  int32 scan_hash_code = 15;
 }
 
 message IcebergScan {
@@ -326,7 +337,6 @@ message IcebergFileScanTask {
 
   // Indices into IcebergScan deduplication pools
   uint32 schema_idx = 15;
-  optional uint32 partition_type_idx = 16;
   optional uint32 partition_spec_idx = 17;
   optional uint32 name_mapping_idx = 18;
   uint32 project_field_ids_idx = 19;
