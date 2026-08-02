@@ -97,7 +97,7 @@ use tokio::runtime::{Handle, Runtime};
 use tokio::sync::mpsc;
 
 use crate::execution::memory_pools::{
-    create_memory_pool, handle_task_shared_pool_release, parse_memory_pool_config, MemoryPoolConfig,
+    create_memory_pool, parse_memory_pool_config, TaskSharedPoolRef,
 };
 use crate::execution::operators::{ScanExec, ShuffleScanExec};
 use crate::execution::shuffle::{read_ipc_compressed, CompressionCodec};
@@ -301,8 +301,6 @@ fn collect_op_names<'a>(op: &'a Operator, names: &mut std::collections::BTreeSet
 struct ExecutionContext {
     /// The id of the execution context.
     pub id: i64,
-    /// Task attempt id
-    pub task_attempt_id: i64,
     /// The deserialized Spark plan
     pub spark_plan: Operator,
     /// The number of partitions
@@ -335,8 +333,6 @@ struct ExecutionContext {
     pub debug_native: bool,
     /// Whether to write native plans with metrics to stdout
     pub explain_native: bool,
-    /// Memory pool config
-    pub memory_pool_config: MemoryPoolConfig,
     /// Whether to log memory usage on each call to execute_plan
     pub tracing_enabled: bool,
     /// Rust thread ID, used for aggregating tracing metrics per thread
@@ -352,6 +348,11 @@ struct ExecutionContext {
     /// cheap to clone; the underlying `Global<JObject>` releases its JNI global ref on drop
     /// via `jni`'s `Drop` impl.
     pub task_context: Option<Arc<Global<JObject<'static>>>>,
+    /// This plan's reference to the task-shared memory pool, for task-shared pool types. Never
+    /// read: it exists so that dropping the context releases the reference. Declared last so it
+    /// drops after `session_ctx`, ensuring the pool's own reservations are all released before the
+    /// last reference removes it from the task-shared map.
+    pub _task_shared_pool_ref: Option<TaskSharedPoolRef>,
 }
 
 /// Accept serialized query plan and return the address of the native query plan.
@@ -431,7 +432,10 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
                 memory_limit,
                 memory_limit_per_task,
             )?;
-            let memory_pool =
+            // `task_shared_pool_ref` is moved onto the `ExecutionContext` below. Every fallible
+            // step between here and there must leave it owned by this scope so that unwinding
+            // releases the task-shared pool reference rather than stranding it.
+            let (memory_pool, task_shared_pool_ref) =
                 create_memory_pool(&memory_pool_config, task_memory_manager, task_attempt_id);
 
             let memory_pool = if logging_memory_pool {
@@ -511,7 +515,6 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
 
             let exec_context = Box::new(ExecutionContext {
                 id,
-                task_attempt_id,
                 spark_plan,
                 partition_count: partition_count as usize,
                 root_op: None,
@@ -528,7 +531,6 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
                 session_ctx: session,
                 debug_native,
                 explain_native,
-                memory_pool_config,
                 tracing_enabled,
                 rust_thread_id,
                 tracing_memory_metric_name: format!(
@@ -536,6 +538,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
                 ),
                 tracing_event_name,
                 task_context,
+                _task_shared_pool_ref: task_shared_pool_ref,
             });
 
             Ok(Box::into_raw(exec_context) as i64)
@@ -945,15 +948,11 @@ pub extern "system" fn Java_org_apache_comet_Native_releasePlan(
     exec_context: jlong,
 ) {
     try_unwrap_or_throw(&e, |env| unsafe {
-        let execution_context = get_execution_context(exec_context);
-
-        // Update metrics
-        update_metrics(env, execution_context)?;
-
-        handle_task_shared_pool_release(
-            execution_context.memory_pool_config.pool_type,
-            execution_context.task_attempt_id,
-        );
+        // Reclaim ownership of the context up front so that it is always freed, even if updating
+        // metrics below fails. Dropping it releases this plan's reference to the task-shared
+        // memory pool along with every JNI global ref the context holds.
+        let mut execution_context: Box<ExecutionContext> =
+            Box::from_raw(get_execution_context(exec_context));
 
         // Unregister this context's pool and emit the remaining total for the thread
         if execution_context.tracing_enabled {
@@ -965,8 +964,8 @@ pub extern "system" fn Java_org_apache_comet_Native_releasePlan(
             );
         }
 
-        let _: Box<ExecutionContext> = Box::from_raw(execution_context);
-        Ok(())
+        // Flush metrics last, as it is the only fallible step here.
+        update_metrics(env, &mut execution_context)
     })
 }
 

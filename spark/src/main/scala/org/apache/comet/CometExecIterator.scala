@@ -224,6 +224,12 @@ class CometExecIterator(
 
   def close(): Unit = synchronized {
     if (!closed) {
+      // Mark closed before tearing anything down. If a step below throws, this iterator must not
+      // remain eligible for a second close() from the task completion listener, because
+      // releasePlan() frees the native execution context and calling it twice would operate on a
+      // dangling pointer.
+      closed = true
+
       if (currentBatch != null) {
         currentBatch.close()
         currentBatch = null
@@ -240,8 +246,6 @@ class CometExecIterator(
       if (memInUse != 0) {
         logWarning(s"CometExecIterator closed with non-zero memory usage : $memInUse")
       }
-
-      closed = true
     }
   }
 
