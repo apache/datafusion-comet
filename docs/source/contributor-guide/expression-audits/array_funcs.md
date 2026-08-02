@@ -24,7 +24,7 @@
 ## array
 
 - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
-- Spark 3.5.8 (audited 2026-05-27): baseline. `CreateArray(children, useStringTypeWhenEmpty)`; element type is the common type of children. Comet routes via `CometCreateArray` (native `make_array`) and special-cases the empty-array case to dodge a known DataFusion `coerce_types` issue (#3338).
+- Spark 3.5.8 (audited 2026-05-27): baseline. `CreateArray(children, useStringTypeWhenEmpty)`; element type is the common type of children. Comet routes via `CometCreateArray` (native `make_array`) and special-cases the empty-array case to dodge a known DataFusion `coerce_types` issue ([#3338](https://github.com/apache/datafusion-comet/issues/3338)).
 - Spark 4.0.1 (audited 2026-05-27): semantics unchanged.
 - Spark 4.1.1 (audited 2026-05-27): adds `contextIndependentFoldable` override; runtime semantics unchanged.
 
@@ -84,8 +84,8 @@
 ## array_join
 
 - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
-- Spark 3.5.8 (audited 2026-05-27): baseline. `ArrayJoin(array, delimiter, nullReplacement)`. Comet routes via `CometArrayJoin` to DataFusion's `array_to_string` and is unconditionally flagged `Incompatible` ("Null handling may differ from Spark", #3178).
-- Spark 4.0.1 (audited 2026-05-27): `inputTypes` widened to `AbstractArrayType(StringTypeWithCollation(supportsTrimCollation = true))`; non-binary collations not propagated (https://github.com/apache/datafusion-comet/issues/2190).
+- Spark 3.5.8 (audited 2026-05-27): baseline. `ArrayJoin(array, delimiter, nullReplacement)`. Comet routes via `CometArrayJoin` to DataFusion's `array_to_string` and is unconditionally flagged `Incompatible` ("Null handling may differ from Spark", [#3178](https://github.com/apache/datafusion-comet/issues/3178)).
+- Spark 4.0.1 (audited 2026-05-27): `inputTypes` widened to `AbstractArrayType(StringTypeWithCollation(supportsTrimCollation = true))`; non-binary collations not propagated ([#2190](https://github.com/apache/datafusion-comet/issues/2190)).
 - Spark 4.1.1 (audited 2026-05-27): adds `contextIndependentFoldable` override; runtime unchanged.
 
 ## array_max

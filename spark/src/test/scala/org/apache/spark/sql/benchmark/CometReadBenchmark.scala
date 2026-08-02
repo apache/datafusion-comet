@@ -347,7 +347,7 @@ class CometReadBaseBenchmark extends CometBenchmarkBase {
     runBenchmark("SQL Decimal Column Scan") {
       withTempTable(tbl) {
         import spark.implicits._
-        spark.range(1024 * 1024 * 15).map(_ => Random.nextInt).createOrReplaceTempView(tbl)
+        spark.range(1024 * 1024 * 15).map(_ => Random.nextInt()).createOrReplaceTempView(tbl)
 
         Seq((5, 2), (18, 4), (20, 8)).foreach { case (precision, scale) =>
           decimalScanBenchmark(1024 * 1024 * 15, precision, scale)
