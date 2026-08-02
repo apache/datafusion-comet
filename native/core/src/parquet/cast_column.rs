@@ -344,9 +344,14 @@ mod tests {
             let target_field = Arc::new(Field::new("ts", target_type.clone(), true));
             let col_expr: Arc<dyn PhysicalExpr> = Arc::new(Column::new("ts", 0));
             let cast_expr = CometCastColumnExpr::new(col_expr, input_field, target_field, None);
-            let micros_array =
-                TimestampMicrosecondArray::from(vec![Some(1_500_001), Some(-1_500_001), None])
-                    .with_timezone_opt(source_tz);
+            // Includes every case from Spark's DateTimeUtilsSuite.microsToMillis test.
+            let micros_array = TimestampMicrosecondArray::from(vec![
+                Some(-9_223_372_036_844_776_001),
+                Some(-157_700_927_876_544),
+                Some(1_500_001),
+                None,
+            ])
+            .with_timezone_opt(source_tz);
             let batch =
                 RecordBatch::try_new(Arc::new(schema), vec![Arc::new(micros_array)]).unwrap();
 
@@ -356,9 +361,10 @@ mod tests {
                         .as_any()
                         .downcast_ref::<TimestampMillisecondArray>()
                         .expect("Expected TimestampMillisecondArray");
-                    assert_eq!(millis_array.value(0), 1500);
-                    assert_eq!(millis_array.value(1), -1501);
-                    assert!(millis_array.is_null(2));
+                    assert_eq!(millis_array.value(0), -9_223_372_036_844_777);
+                    assert_eq!(millis_array.value(1), -157_700_927_877);
+                    assert_eq!(millis_array.value(2), 1_500);
+                    assert!(millis_array.is_null(3));
                     assert_eq!(millis_array.data_type(), &target_type);
                 }
                 _ => panic!("Expected Array result"),
@@ -380,7 +386,7 @@ mod tests {
         let target_field = Arc::new(Field::new("ts", target_type.clone(), true));
 
         // Create a literal expression that returns a scalar
-        let scalar = ScalarValue::TimestampMicrosecond(Some(-1_500_001), None);
+        let scalar = ScalarValue::TimestampMicrosecond(Some(-157_700_927_876_544), None);
         let literal_expr: Arc<dyn PhysicalExpr> =
             Arc::new(datafusion::physical_expr::expressions::Literal::new(scalar));
 
@@ -395,7 +401,10 @@ mod tests {
 
         match result {
             ColumnarValue::Scalar(s) => {
-                assert_eq!(s, ScalarValue::TimestampMillisecond(Some(-1501), None));
+                assert_eq!(
+                    s,
+                    ScalarValue::TimestampMillisecond(Some(-157_700_927_877), None)
+                );
                 assert_eq!(s.data_type(), target_type);
             }
             _ => panic!("Expected Scalar result"),
