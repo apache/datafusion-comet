@@ -263,7 +263,7 @@ object CometDivide extends CometExpressionSerde[Divide] with MathBase {
     // For now, use NullIf to swap zeros with nulls.
     val rightExpr =
       if (expr.evalMode != EvalMode.ANSI) nullIfWhenPrimitive(expr.right) else expr.right
-    val divideExpr = createMathExpression(
+    createMathExpression(
       expr,
       expr.left,
       rightExpr,
@@ -272,21 +272,6 @@ object CometDivide extends CometExpressionSerde[Divide] with MathBase {
       expr.dataType,
       expr.evalMode,
       (builder, mathExpr) => builder.setDivide(mathExpr))
-
-    // For decimal division Spark applies CheckOverflow after dividing: in ANSI mode overflow
-    // throws NUMERIC_VALUE_OUT_OF_RANGE; in legacy/try mode it returns null.  The Rust
-    // spark_decimal_div_internal uses i128::MAX as a sentinel for overflow, so without this
-    // wrapper an ANSI overflow would silently return a garbage value instead of throwing.
-    if (divideExpr.isDefined && expr.dataType.isInstanceOf[DecimalType] &&
-      serializeDataType(expr.dataType).isDefined) {
-      val builder = ExprOuterClass.CheckOverflow.newBuilder()
-      builder.setChild(divideExpr.get)
-      builder.setFailOnError(expr.evalMode == EvalMode.ANSI)
-      builder.setDatatype(serializeDataType(expr.dataType).get)
-      Some(ExprOuterClass.Expr.newBuilder().setCheckOverflow(builder).build())
-    } else {
-      divideExpr
-    }
   }
 }
 
