@@ -55,6 +55,15 @@ object CometCast
       .getConfString("spark.sql.legacy.castComplexTypesToString.enabled", "false")
       .toBoolean
 
+  // Spark rounds the shortest decimal string form of the value (`Double.toString`) rather
+  // than its binary expansion, and Comet's native cast reproduces that. `Double.toString`
+  // only emits the shortest round-trip form on JDK 19 and later (JDK-4511638); older JDKs
+  // can emit an extra digit, so a value whose shortest form lands exactly on a rounding
+  // tie at the target scale can round differently there.
+  private val floatToDecimalJdkNote: String =
+    "Rounding matches Spark on JDK 19 and later. On older JDKs, Spark's own result may " +
+      "differ for values whose shortest decimal form falls exactly on a rounding tie"
+
   def supportedTypes: Seq[DataType] =
     Seq(
       DataTypes.BooleanType,
@@ -425,8 +434,7 @@ object CometCast
         DataTypes.IntegerType | DataTypes.LongType | DataTypes.TimestampType =>
       Compatible()
     case _: DecimalType =>
-      // https://github.com/apache/datafusion-comet/issues/1371
-      Incompatible(Some("There can be rounding differences"))
+      Compatible(Some(floatToDecimalJdkNote))
     case _ =>
       unsupported(DataTypes.FloatType, toType)
   }
@@ -436,8 +444,7 @@ object CometCast
         DataTypes.IntegerType | DataTypes.LongType | DataTypes.TimestampType =>
       Compatible()
     case _: DecimalType =>
-      // https://github.com/apache/datafusion-comet/issues/1371
-      Incompatible(Some("There can be rounding differences"))
+      Compatible(Some(floatToDecimalJdkNote))
     case _ => unsupported(DataTypes.DoubleType, toType)
   }
 

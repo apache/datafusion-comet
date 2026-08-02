@@ -4,7 +4,7 @@ CometColumnarToRow
    :  :- CometBroadcastNestedLoopJoin
    :  :  :- CometBroadcastNestedLoopJoin
    :  :  :  :- CometBroadcastNestedLoopJoin
-   :  :  :  :  :-  CometHashAggregate [COMET-INFO: A native implementation of Cast is available. Set spark.comet.expression.Cast.allowIncompatible=true to enable it. For more information, refer to the Comet Compatibility Guide (https://datafusion.apache.org/comet/user-guide/latest/compatibility/index.html), JVM codegen dispatcher: cast]
+   :  :  :  :  :- CometHashAggregate
    :  :  :  :  :  +- CometExchange
    :  :  :  :  :     +- CometHashAggregate
    :  :  :  :  :        +- CometHashAggregate
@@ -14,7 +14,7 @@ CometColumnarToRow
    :  :  :  :  :                    +- CometFilter
    :  :  :  :  :                       +- CometNativeScan parquet spark_catalog.default.store_sales
    :  :  :  :  +- CometBroadcastExchange
-   :  :  :  :     +-  CometHashAggregate [COMET-INFO: A native implementation of Cast is available. Set spark.comet.expression.Cast.allowIncompatible=true to enable it. For more information, refer to the Comet Compatibility Guide (https://datafusion.apache.org/comet/user-guide/latest/compatibility/index.html), JVM codegen dispatcher: cast]
+   :  :  :  :     +- CometHashAggregate
    :  :  :  :        +- CometExchange
    :  :  :  :           +- CometHashAggregate
    :  :  :  :              +- CometHashAggregate
@@ -24,7 +24,7 @@ CometColumnarToRow
    :  :  :  :                          +- CometFilter
    :  :  :  :                             +- CometNativeScan parquet spark_catalog.default.store_sales
    :  :  :  +- CometBroadcastExchange
-   :  :  :     +-  CometHashAggregate [COMET-INFO: A native implementation of Cast is available. Set spark.comet.expression.Cast.allowIncompatible=true to enable it. For more information, refer to the Comet Compatibility Guide (https://datafusion.apache.org/comet/user-guide/latest/compatibility/index.html), JVM codegen dispatcher: cast]
+   :  :  :     +- CometHashAggregate
    :  :  :        +- CometExchange
    :  :  :           +- CometHashAggregate
    :  :  :              +- CometHashAggregate
@@ -34,7 +34,7 @@ CometColumnarToRow
    :  :  :                          +- CometFilter
    :  :  :                             +- CometNativeScan parquet spark_catalog.default.store_sales
    :  :  +- CometBroadcastExchange
-   :  :     +-  CometHashAggregate [COMET-INFO: A native implementation of Cast is available. Set spark.comet.expression.Cast.allowIncompatible=true to enable it. For more information, refer to the Comet Compatibility Guide (https://datafusion.apache.org/comet/user-guide/latest/compatibility/index.html), JVM codegen dispatcher: cast]
+   :  :     +- CometHashAggregate
    :  :        +- CometExchange
    :  :           +- CometHashAggregate
    :  :              +- CometHashAggregate
@@ -44,7 +44,7 @@ CometColumnarToRow
    :  :                          +- CometFilter
    :  :                             +- CometNativeScan parquet spark_catalog.default.store_sales
    :  +- CometBroadcastExchange
-   :     +-  CometHashAggregate [COMET-INFO: A native implementation of Cast is available. Set spark.comet.expression.Cast.allowIncompatible=true to enable it. For more information, refer to the Comet Compatibility Guide (https://datafusion.apache.org/comet/user-guide/latest/compatibility/index.html), JVM codegen dispatcher: cast]
+   :     +- CometHashAggregate
    :        +- CometExchange
    :           +- CometHashAggregate
    :              +- CometHashAggregate
@@ -54,7 +54,7 @@ CometColumnarToRow
    :                          +- CometFilter
    :                             +- CometNativeScan parquet spark_catalog.default.store_sales
    +- CometBroadcastExchange
-      +-  CometHashAggregate [COMET-INFO: A native implementation of Cast is available. Set spark.comet.expression.Cast.allowIncompatible=true to enable it. For more information, refer to the Comet Compatibility Guide (https://datafusion.apache.org/comet/user-guide/latest/compatibility/index.html), JVM codegen dispatcher: cast]
+      +- CometHashAggregate
          +- CometExchange
             +- CometHashAggregate
                +- CometHashAggregate
@@ -64,4 +64,4 @@ CometColumnarToRow
                            +- CometFilter
                               +- CometNativeScan parquet spark_catalog.default.store_sales
 
-Comet accelerated 64 out of 64 eligible operators (100%). Final plan contains 1 transitions between Spark and Comet. Accelerated expressions: 8 native, 1 codegen dispatch.
+Comet accelerated 64 out of 64 eligible operators (100%). Final plan contains 1 transitions between Spark and Comet.
