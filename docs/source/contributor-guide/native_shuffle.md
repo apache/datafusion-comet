@@ -43,12 +43,13 @@ Comet Native (columnar) → ColumnarToRowExec → rows → JVM Shuffle → Arrow
 
 Native shuffle (`CometExchange`) is selected when all of the following conditions are met:
 
-1. **Shuffle mode allows native**: `spark.comet.exec.shuffle.mode` is `native` or `auto`.
+1. **Shuffle mode allows native**: `spark.comet.shuffle.mode` is `native` or `auto`.
 
 2. **Child plan is a Comet native operator**: The child must be a `CometPlan` that produces
    columnar output. Row-based Spark operators require JVM shuffle.
 
 3. **Supported partitioning type**: Native shuffle supports:
+
    - `HashPartitioning`
    - `RangePartitioning`
    - `SinglePartition`
@@ -69,8 +70,9 @@ Native shuffle (`CometExchange`) is selected when all of the following condition
                                       ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                         CometNativeShuffleWriter                             │
-│  - Constructs protobuf operator plan                                         │
-│  - Invokes native execution via CometExec.getCometIterator()                 │
+│  - Builds protobuf operator plan: ShuffleWriter(child = childNativeOp)       │
+│  - Reads per-partition leaf iterators from CometNativeShuffleInputIterator   │
+│  - Drives one CometExecIterator per partition                                │
 └─────────────────────────────────────────────────────────────────────────────┘
                                       │
                                       ▼ (JNI)
@@ -103,13 +105,14 @@ Native shuffle (`CometExchange`) is selected when all of the following condition
 
 ### Scala Side
 
-| Class                          | Location                                         | Description                                                                                   |
-| ------------------------------ | ------------------------------------------------ | --------------------------------------------------------------------------------------------- |
-| `CometShuffleExchangeExec`     | `.../shuffle/CometShuffleExchangeExec.scala`     | Physical plan node. Validates types and partitioning, creates `CometShuffleDependency`.       |
-| `CometNativeShuffleWriter`     | `.../shuffle/CometNativeShuffleWriter.scala`     | Implements `ShuffleWriter`. Builds protobuf plan and invokes native execution.                |
-| `CometShuffleDependency`       | `.../shuffle/CometShuffleDependency.scala`       | Extends `ShuffleDependency`. Holds shuffle type, schema, and range partition bounds.          |
-| `CometBlockStoreShuffleReader` | `.../shuffle/CometBlockStoreShuffleReader.scala` | Reads shuffle blocks via `ShuffleBlockFetcherIterator`. Decodes Arrow IPC to `ColumnarBatch`. |
-| `NativeBatchDecoderIterator`   | `.../shuffle/NativeBatchDecoderIterator.scala`   | Reads compressed Arrow IPC from input stream. Calls native decode via JNI.                    |
+| Class                          | Location                                         | Description                                                                                                                                         |
+| ------------------------------ | ------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `CometShuffleExchangeExec`     | `.../shuffle/CometShuffleExchangeExec.scala`     | Physical plan node. Validates types and partitioning, creates `CometShuffleDependency`.                                                             |
+| `CometNativeShuffleWriter`     | `.../shuffle/CometNativeShuffleWriter.scala`     | Implements `ShuffleWriter`. Builds the unified `ShuffleWriter(child = childNativeOp)` plan and runs it in one `CometExecIterator` per partition.    |
+| `CometShuffleDependency`       | `.../shuffle/CometShuffleDependency.scala`       | Extends `ShuffleDependency`. Holds shuffle type, schema, range partition bounds, and (native shuffle only) a `NativeShuffleSpec`.                   |
+| `CometNativeShuffleInputRDD`   | `.../shuffle/CometNativeShuffleInputRDD.scala`   | Thin scheduling-anchor RDD on the native-shuffle path. `compute` returns a `CometNativeShuffleInputIterator` carrying per-partition leaf iterators. |
+| `CometBlockStoreShuffleReader` | `.../shuffle/CometBlockStoreShuffleReader.scala` | Reads shuffle blocks via `ShuffleBlockFetcherIterator`. Decodes Arrow IPC to `ColumnarBatch`.                                                       |
+| `NativeBatchDecoderIterator`   | `.../shuffle/NativeBatchDecoderIterator.scala`   | Reads compressed Arrow IPC from input stream. Calls native decode via JNI.                                                                          |
 
 ### Rust Side
 
@@ -123,13 +126,23 @@ Native shuffle (`CometExchange`) is selected when all of the following condition
 
 ### Write Path
 
-1. **Plan construction**: `CometNativeShuffleWriter` builds a protobuf operator plan containing:
-   - A scan operator reading from the input iterator
-   - A `ShuffleWriter` operator with partitioning config and compression codec
+1. **Plan construction**: `CometNativeShuffleWriter` builds a protobuf operator tree with a
+   `ShuffleWriter` operator at the root and `childNativeOp` as its child. `childNativeOp` takes
+   one of two shapes:
 
-2. **Native execution**: `CometExec.getCometIterator()` executes the plan in Rust.
+   - The child plan's `nativeOp` directly, when `CometShuffleExchangeExec`'s child is a
+     `CometNativeExec` subtree. The upstream operators run inside the same `CometExecIterator`
+     as the writer, with no JVM-to-native batch boundary between them.
+   - A synthetic `Scan("ShuffleWriterInput")` placeholder, when the dep was built via the
+     convenience `prepareShuffleDependency(rdd, ...)` overload (used by
+     `CometCollectLimitExec` and `CometTakeOrderedAndProjectExec`, or when the
+     exchange's child is a non-native `CometPlan` such as `CometSparkToColumnarExec`). Native
+     code reads `ColumnarBatch`es from the JVM input iterator via Arrow C Stream Interface.
+
+2. **Native execution**: A single `CometExecIterator` per partition runs the unified plan.
 
 3. **Partitioning**: `ShuffleWriterExec` receives batches and routes to the appropriate partitioner:
+
    - `MultiPartitionShuffleRepartitioner`: For hash/range/round-robin partitioning
    - `SinglePartitionShufflePartitioner`: For single partition (simpler path)
 
@@ -137,11 +150,13 @@ Native shuffle (`CometExchange`) is selected when all of the following condition
    exceeds the threshold, partitions spill to temporary files.
 
 5. **Encoding**: `ShuffleBlockWriter` encodes each partition's data as compressed Arrow IPC:
+
    - Writes compression type header
    - Writes field count header
    - Writes compressed IPC stream
 
 6. **Output files**: Two files are produced:
+
    - **Data file**: Concatenated partition data
    - **Index file**: Array of 8-byte little-endian offsets marking partition boundaries
 
@@ -153,6 +168,7 @@ Native shuffle (`CometExchange`) is selected when all of the following condition
 1. `CometBlockStoreShuffleReader` fetches shuffle blocks via `ShuffleBlockFetcherIterator`.
 
 2. For each block, `NativeBatchDecoderIterator`:
+
    - Reads the 8-byte compressed length header
    - Reads the 8-byte field count header
    - Reads the compressed IPC data
@@ -183,8 +199,10 @@ For range partitioning:
 
 ### Single Partition
 
-The simplest case: all rows go to partition 0. Uses `SinglePartitionShufflePartitioner` which
-simply concatenates batches to reach the configured batch size.
+The simplest case: all rows go to partition 0. Uses `SinglePartitionShufflePartitioner`, which
+streams each batch straight to the writer, whose `BatchCoalescer` combines small batches up to the
+configured batch size. Batches already at least that size pass through unchanged, so a large input
+batch is written as a single block that may exceed the batch size.
 
 ### Round Robin Partitioning
 
@@ -204,7 +222,9 @@ sizes.
 Native shuffle uses DataFusion's memory management with spilling support:
 
 - **Memory pool**: Tracks memory usage across the shuffle operation.
-- **Spill threshold**: When buffered data exceeds the threshold, partitions spill to disk.
+- **Spill triggers**: Partitions spill to disk when the memory pool denies an allocation, or
+  when the buffered bytes reach `spark.comet.shuffle.native.maxBufferBytes`. That config defaults to
+  0, which disables the fixed limit and leaves memory pressure as the only trigger.
 - **Per-partition spilling**: Each partition has its own spill file. Multiple spills for a
   partition are concatenated when writing the final output.
 - **Scratch space**: Reusable buffers for partition ID computation to reduce allocations.
@@ -218,7 +238,7 @@ The `MultiPartitionShuffleRepartitioner` manages:
 ## Compression
 
 Native shuffle supports multiple compression codecs configured via
-`spark.comet.exec.shuffle.compression.codec`:
+`spark.comet.shuffle.compression.codec`:
 
 | Codec    | Description                                            |
 | -------- | ------------------------------------------------------ |
@@ -232,14 +252,14 @@ independently compressed, allowing parallel decompression during reads.
 
 ## Configuration
 
-| Config                                            | Default | Description                              |
-| ------------------------------------------------- | ------- | ---------------------------------------- |
-| `spark.comet.exec.shuffle.enabled`                | `true`  | Enable Comet shuffle                     |
-| `spark.comet.exec.shuffle.mode`                   | `auto`  | Shuffle mode: `native`, `jvm`, or `auto` |
-| `spark.comet.exec.shuffle.compression.codec`      | `zstd`  | Compression codec                        |
-| `spark.comet.exec.shuffle.compression.zstd.level` | `1`     | Zstd compression level                   |
-| `spark.comet.shuffle.write.buffer.size`           | `1MB`   | Write buffer size                        |
-| `spark.comet.columnar.shuffle.batch.size`         | `8192`  | Target rows per batch                    |
+| Config                                       | Default | Description                              |
+| -------------------------------------------- | ------- | ---------------------------------------- |
+| `spark.comet.shuffle.enabled`                | `true`  | Enable Comet shuffle                     |
+| `spark.comet.shuffle.mode`                   | `auto`  | Shuffle mode: `native`, `jvm`, or `auto` |
+| `spark.comet.shuffle.compression.codec`      | `zstd`  | Compression codec                        |
+| `spark.comet.shuffle.compression.zstd.level` | `1`     | Zstd compression level                   |
+| `spark.comet.shuffle.native.writeBufferSize` | `1MB`   | Write buffer size                        |
+| `spark.comet.shuffle.jvm.batchSize`          | `8192`  | Target rows per batch                    |
 
 ## Comparison with JVM Shuffle
 
