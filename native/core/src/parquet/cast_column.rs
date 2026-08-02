@@ -344,7 +344,8 @@ mod tests {
             let target_field = Arc::new(Field::new("ts", target_type.clone(), true));
             let col_expr: Arc<dyn PhysicalExpr> = Arc::new(Column::new("ts", 0));
             let cast_expr = CometCastColumnExpr::new(col_expr, input_field, target_field, None);
-            // Includes every case from Spark's DateTimeUtilsSuite.microsToMillis test.
+            // Matches the Spark v4.2.0 test cases:
+            // https://github.com/apache/spark/blob/32f7299601108917fb01920a54e084595b7b3bf8/sql/catalyst/src/test/scala/org/apache/spark/sql/catalyst/util/DateTimeUtilsSuite.scala#L969-L972
             let micros_array = TimestampMicrosecondArray::from(vec![
                 Some(-9_223_372_036_844_776_001),
                 Some(-157_700_927_876_544),
