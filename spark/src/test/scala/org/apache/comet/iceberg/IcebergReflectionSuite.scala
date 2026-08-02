@@ -73,14 +73,9 @@ class IcebergReflectionSuite extends AnyFunSuite {
     assert(first.get eq second.get)
   }
 
-  test("findMethod caches the absence of a method") {
-    val first = IcebergReflection.findMethod(classOf[Schema], "noSuchAccessor")
-    val second = IcebergReflection.findMethod(classOf[Schema], "noSuchAccessor")
-    assert(first.isEmpty)
-    assert(second.isEmpty)
-  }
-
-  test("getMethod throws NoSuchMethodException for an absent method") {
+  test("an absent method is a cached miss, and getMethod still throws for it") {
+    assert(IcebergReflection.findMethod(classOf[Schema], "noSuchAccessor").isEmpty)
+    assert(IcebergReflection.findMethod(classOf[Schema], "noSuchAccessor").isEmpty)
     assertThrows[NoSuchMethodException] {
       IcebergReflection.getMethod(classOf[Schema], "noSuchAccessor")
     }
@@ -118,27 +113,26 @@ class IcebergReflectionSuite extends AnyFunSuite {
 
   test("extractFileLocation falls back to path() on Iceberg versions without location()") {
     val file = new PathOnlyFile("s3://bucket/data/f.parquet")
-    // Repeated so the cached "location() is absent" answer is exercised, not just recorded.
-    (1 to 3).foreach { _ =>
-      assert(
-        IcebergReflection.extractFileLocation(classOf[PathOnlyFile], file) ==
-          Some("s3://bucket/data/f.parquet"))
-    }
+    // Called twice: the second call reads the cached "location() is absent" answer.
+    assert(
+      IcebergReflection.extractFileLocation(classOf[PathOnlyFile], file) ==
+        Some("s3://bucket/data/f.parquet"))
+    assert(
+      IcebergReflection.extractFileLocation(classOf[PathOnlyFile], file) ==
+        Some("s3://bucket/data/f.parquet"))
   }
 
   test("extractFileLocation returns None when the class exposes neither accessor") {
     assert(IcebergReflection.extractFileLocation(classOf[Object], new Object).isEmpty)
   }
 
-  test("findAccessibleMethod resolves and caches a method with access checks suppressed") {
-    // Iceberg's bound terms are instances of package-private classes, so the accessors Comet
-    // resolves on them have to be marked accessible before they can be invoked.
-    val first = IcebergReflection.findAccessibleMethod(classOf[HiddenTransform], "transform")
-    val second = IcebergReflection.findAccessibleMethod(classOf[HiddenTransform], "transform")
-    assert(first.isDefined)
-    assert(first.get eq second.get)
-    assert(first.get.invoke(new HiddenTransform).toString == "identity")
-    assert(IcebergReflection.findAccessibleMethod(classOf[HiddenTransform], "nope").isEmpty)
+  test("a resolved method has access checks suppressed") {
+    // Iceberg's bound terms and file impls are instances of package-private classes, so the
+    // accessors Comet resolves on them have to be accessible before they can be invoked.
+    val method = IcebergReflection.findMethod(classOf[HiddenTransform], "transform")
+    assert(method.isDefined)
+    assert(method.get.isAccessible)
+    assert(method.get.invoke(new HiddenTransform).toString == "identity")
   }
 
   /** Mimics a newer Iceberg ContentFile, which exposes location(). */

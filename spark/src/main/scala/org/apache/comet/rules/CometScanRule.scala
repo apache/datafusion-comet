@@ -721,6 +721,8 @@ case class CometScanRule(session: SparkSession)
               val historicSchemas = IcebergReflection.getAllSchemas(metadata.table)
               val contentFileClass =
                 IcebergReflection.loadClass(IcebergReflection.ClassNames.CONTENT_FILE)
+              val deleteFileClass =
+                IcebergReflection.loadClass(IcebergReflection.ClassNames.DELETE_FILE)
               taskValidation.deleteFiles.asScala.foreach { deleteFile =>
                 // iceberg-rust only reads Parquet delete files. Avro/ORC positional or
                 // equality deletes must be applied by Spark.
@@ -738,7 +740,8 @@ case class CometScanRule(session: SparkSession)
                     fallbackReasons += "Could not determine Iceberg delete file format"
                 }
 
-                val equalityFieldIds = IcebergReflection.getEqualityFieldIds(deleteFile)
+                val equalityFieldIds =
+                  IcebergReflection.getEqualityFieldIds(deleteFileClass, deleteFile)
 
                 if (!equalityFieldIds.isEmpty) {
                   equalityFieldIds.asScala.foreach { fieldId =>
@@ -1029,12 +1032,11 @@ object CometScanRule extends Logging {
           if (unboundPredicateClass.isInstance(residual)) {
             val term = termMethod.invoke(residual)
             // A term with no transform() is a simple reference, which is fine.
-            IcebergReflection.findAccessibleMethod(term.getClass, "transform").foreach {
-              transformMethod =>
-                val transformStr = transformMethod.invoke(term).toString
-                if (transformStr != IcebergReflection.Transforms.IDENTITY) {
-                  nonIdentityTransform = Some(transformStr)
-                }
+            IcebergReflection.findMethod(term.getClass, "transform").foreach { transformMethod =>
+              val transformStr = transformMethod.invoke(term).toString
+              if (transformStr != IcebergReflection.Transforms.IDENTITY) {
+                nonIdentityTransform = Some(transformStr)
+              }
             }
           }
         } catch {

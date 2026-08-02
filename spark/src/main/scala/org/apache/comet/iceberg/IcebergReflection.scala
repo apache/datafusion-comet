@@ -143,7 +143,7 @@ object IcebergReflection extends Logging {
   def loadClass(className: String): Class[_] = ClassLoaders.loadClass(className)
 
   /**
-   * Methods resolved by [[findMethod]], [[findAccessibleMethod]] and [[findMethodInHierarchy]],
+   * Methods resolved by [[findMethod]], [[getDeclaredMethod]] and [[findMethodInHierarchy]],
    * keyed by the class the lookup started from and then by the lookup itself.
    *
    * `Class.getMethod` linearly scans the class's public methods and returns a fresh defensive
@@ -167,19 +167,45 @@ object IcebergReflection extends Logging {
     }
 
   private def cachedLookup(clazz: Class[_], key: String)(
-      resolve: => Option[Method]): Option[Method] =
-    methodCache.get(clazz).computeIfAbsent(key, _ => resolve)
+      resolve: => Option[Method]): Option[Method] = {
+    val perClass = methodCache.get(clazz)
+    // Read first: computeIfAbsent allocates the mapping function and can lock the bin even for a
+    // hit, and these lookups are almost always hits.
+    val cached = perClass.get(key)
+    if (cached != null) cached else perClass.computeIfAbsent(key, _ => resolve)
+  }
 
   private def lookupKey(methodName: String, paramTypes: Seq[Class[_]]): String =
     if (paramTypes.isEmpty) methodName
     else paramTypes.map(_.getName).mkString(methodName + "(", ",", ")")
 
+  private def missing(clazz: Class[_], methodName: String, paramTypes: Seq[Class[_]]): Nothing =
+    throw new NoSuchMethodException(s"${clazz.getName}.${lookupKey(methodName, paramTypes)}")
+
   /**
-   * Cached `Class.getMethod`, returning None instead of throwing when the method is absent.
+   * Suppresses access checks so the method can be invoked when its declaring class is
+   * package-private, as Iceberg's concrete file/task/term implementations are. Runs once, when
+   * the method is first resolved. A JVM that refuses (a class in a module that is exported but
+   * not open) leaves the method usable for the public-class case, so the refusal is not fatal
+   * here.
+   */
+  private def makeAccessible(method: Method): Method = {
+    try method.setAccessible(true)
+    catch { case _: RuntimeException => }
+    method
+  }
+
+  private def declaredMethod(clazz: Class[_], methodName: String): Option[Method] =
+    try Some(makeAccessible(clazz.getDeclaredMethod(methodName)))
+    catch { case _: NoSuchMethodException => None }
+
+  /**
+   * Cached `Class.getMethod`, returning None instead of throwing when the method is absent. The
+   * resolved method has access checks suppressed (see [[makeAccessible]]).
    */
   def findMethod(clazz: Class[_], methodName: String, paramTypes: Class[_]*): Option[Method] =
     cachedLookup(clazz, lookupKey(methodName, paramTypes)) {
-      try Some(clazz.getMethod(methodName, paramTypes: _*))
+      try Some(makeAccessible(clazz.getMethod(methodName, paramTypes: _*)))
       catch { case _: NoSuchMethodException => None }
     }
 
@@ -189,44 +215,15 @@ object IcebergReflection extends Logging {
    */
   def getMethod(clazz: Class[_], methodName: String, paramTypes: Class[_]*): Method =
     findMethod(clazz, methodName, paramTypes: _*).getOrElse(
-      throw new NoSuchMethodException(s"${clazz.getName}.$methodName"))
-
-  /**
-   * Like [[findMethod]], but also suppresses access checks on the resolved method, for methods
-   * declared by a package-private class (invoking those otherwise throws IllegalAccessException).
-   * `setAccessible` runs once, when the method is first resolved.
-   */
-  def findAccessibleMethod(
-      clazz: Class[_],
-      methodName: String,
-      paramTypes: Class[_]*): Option[Method] =
-    cachedLookup(clazz, "accessible:" + lookupKey(methodName, paramTypes)) {
-      try {
-        val method = clazz.getMethod(methodName, paramTypes: _*)
-        method.setAccessible(true)
-        Some(method)
-      } catch { case _: NoSuchMethodException => None }
-    }
-
-  /**
-   * Cached [[findAccessibleMethod]], throwing `NoSuchMethodException` when the method is absent.
-   */
-  def getAccessibleMethod(clazz: Class[_], methodName: String, paramTypes: Class[_]*): Method =
-    findAccessibleMethod(clazz, methodName, paramTypes: _*).getOrElse(
-      throw new NoSuchMethodException(s"${clazz.getName}.$methodName"))
+      missing(clazz, methodName, paramTypes))
 
   /**
    * Cached `Class.getDeclaredMethod` with access checks suppressed, throwing
    * `NoSuchMethodException` when the method is absent, like the JDK call it replaces.
    */
   def getDeclaredMethod(clazz: Class[_], methodName: String): Method =
-    cachedLookup(clazz, "declared:" + methodName) {
-      try {
-        val method = clazz.getDeclaredMethod(methodName)
-        method.setAccessible(true)
-        Some(method)
-      } catch { case _: NoSuchMethodException => None }
-    }.getOrElse(throw new NoSuchMethodException(s"${clazz.getName}.$methodName"))
+    cachedLookup(clazz, "declared:" + methodName)(declaredMethod(clazz, methodName))
+      .getOrElse(missing(clazz, methodName, Nil))
 
   /**
    * Searches through class hierarchy to find a method (including protected methods).
@@ -236,13 +233,8 @@ object IcebergReflection extends Logging {
       var current: Class[_] = clazz
       var found: Option[Method] = None
       while (found.isEmpty && current != null) {
-        try {
-          val method = current.getDeclaredMethod(methodName)
-          method.setAccessible(true)
-          found = Some(method)
-        } catch {
-          case _: NoSuchMethodException => current = current.getSuperclass
-        }
+        found = declaredMethod(current, methodName)
+        if (found.isEmpty) current = current.getSuperclass
       }
       found
     }
@@ -296,21 +288,11 @@ object IcebergReflection extends Logging {
     }
   }
 
-  /** The file format of a ContentFile (data or delete file), e.g. "PARQUET", "AVRO", "ORC". */
-  def getFileFormat(file: Any): Option[String] = {
-    try {
-      getFileFormat(loadClass(ClassNames.CONTENT_FILE), file)
-    } catch {
-      case _: Exception => None
-    }
-  }
-
   /**
-   * The file format of a ContentFile, for callers in a loop that already hold the ContentFile
-   * class.
+   * The file format of a ContentFile (data or delete file), e.g. "PARQUET", "AVRO", "ORC".
    *
-   * `contentFileClass` must be the public ContentFile interface: Iceberg's concrete file impls
-   * are package-private, so `format()` resolved on the concrete class throws
+   * `contentFileClass` is the public ContentFile interface, which callers already hold: Iceberg's
+   * concrete file impls are package-private, so `format()` resolved on the concrete class throws
    * IllegalAccessException when invoked.
    */
   def getFileFormat(contentFileClass: Class[_], file: Any): Option[String] = {
@@ -731,16 +713,19 @@ object IcebergReflection extends Logging {
   /**
    * Gets equality field IDs from a delete file.
    *
+   * @param deleteFileClass
+   *   The DeleteFile interface, which callers in a loop already hold
    * @param deleteFile
    *   An Iceberg DeleteFile object
    * @return
    *   List of field IDs used in equality deletes, or empty list for position deletes
    */
-  def getEqualityFieldIds(deleteFile: Any): java.util.List[_] = {
+  def getEqualityFieldIds(deleteFileClass: Class[_], deleteFile: Any): java.util.List[_] = {
     try {
-      val deleteFileClass = loadClass(ClassNames.DELETE_FILE)
-      val equalityFieldIdsMethod = getMethod(deleteFileClass, "equalityFieldIds")
-      val ids = equalityFieldIdsMethod.invoke(deleteFile).asInstanceOf[java.util.List[_]]
+      val ids =
+        getMethod(deleteFileClass, "equalityFieldIds")
+          .invoke(deleteFile)
+          .asInstanceOf[java.util.List[_]]
       if (ids == null) new java.util.ArrayList[Any]() else ids
     } catch {
       case _: Exception =>

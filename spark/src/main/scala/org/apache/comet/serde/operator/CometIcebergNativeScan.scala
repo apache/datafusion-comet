@@ -356,7 +356,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
       task: Any,
       contentScanTaskClass: Class[_],
       fileScanTaskClass: Class[_],
-      partitionSpecToJson: => Method,
+      partitionSpecToJson: Option[Method],
       taskBuilder: OperatorOuterClass.IcebergFileScanTask.Builder,
       commonBuilder: OperatorOuterClass.IcebergScanCommon.Builder,
       partitionSpecToPoolIndex: mutable.HashMap[String, Int],
@@ -426,6 +426,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
         def serializeRealSpec(): Unit = {
           try {
             val partitionSpecJson = partitionSpecToJson
+              .getOrElse(throw new NoSuchMethodException("PartitionSpecParser.toJson"))
               .invoke(null, spec)
               .asInstanceOf[String]
 
@@ -908,19 +909,18 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
       mutable.HashMap[Seq[Int], Int]()
     val residualToPoolIndex = mutable.HashMap[OperatorOuterClass.IcebergPredicate, Int]()
     // Field-id mappings are read out of an Iceberg schema by reflection, one lookup per column, so
-    // memoize them: every task resolves a schema out of the same small pool.
+    // memoize them. Keyed like schemaToPoolIndex above: a task schema that Iceberg materializes
+    // fresh per task misses, but the table/scan schema shared by every task hits.
     val fieldIdMappingCache = mutable.HashMap[AnyRef, Map[String, Int]]()
     def fieldIdMapping(schema: AnyRef): Map[String, Int] =
       fieldIdMappingCache.getOrElseUpdate(schema, IcebergReflection.buildFieldIdMapping(schema))
     // Whether the scan schema references field ids the current table schema no longer has (a
     // dropped column read through VERSION AS OF). Loop-invariant, and lazy so a scan whose tasks
-    // all carry deletes never walks the two schemas at all.
+    // all carry deletes never walks the table schema at all.
     lazy val hasHistoricalColumns = {
-      val scanSchemaFieldIds = fieldIdMapping(
-        metadata.scanSchema.asInstanceOf[AnyRef]).values.toSet
       val tableSchemaFieldIds =
         fieldIdMapping(metadata.tableSchema.asInstanceOf[AnyRef]).values.toSet
-      scanSchemaFieldIds.exists(id => !tableSchemaFieldIds.contains(id))
+      metadata.globalFieldIdMapping.values.exists(id => !tableSchemaFieldIds.contains(id))
     }
     // Columns whose Iceberg type iceberg-rust cannot use for page-index pruning; residual
     // predicates over them are dropped (see icebergExprToProto). Computed once from the full table
@@ -962,16 +962,21 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
       IcebergReflection.loadClass(IcebergReflection.ClassNames.SCHEMA)
     val deleteFileClass =
       IcebergReflection.loadClass(IcebergReflection.ClassNames.DELETE_FILE)
-    // Lazy, and passed by name into serializePartitionData: failing to resolve
-    // PartitionSpecParser.toJson is reported there as a per-task warning that leaves the task
-    // without a partition spec, so it must not turn into an eager failure of the whole scan.
-    lazy val partitionSpecToJson = IcebergReflection.getMethod(
-      IcebergReflection.loadClass(IcebergReflection.ClassNames.PARTITION_SPEC_PARSER),
-      "toJson",
-      IcebergReflection.loadClass(IcebergReflection.ClassNames.PARTITION_SPEC))
+    // Optional rather than required: serializePartitionData reports an unresolvable
+    // PartitionSpecParser.toJson as a per-task warning that leaves the task without a partition
+    // spec, so it must not fail the whole scan here.
+    val partitionSpecToJson =
+      try {
+        Some(
+          IcebergReflection.getMethod(
+            IcebergReflection.loadClass(IcebergReflection.ClassNames.PARTITION_SPEC_PARSER),
+            "toJson",
+            IcebergReflection.loadClass(IcebergReflection.ClassNames.PARTITION_SPEC)))
+      } catch {
+        case _: Exception => None
+      }
 
-    // Resolve method lookups once (they are cached, but the per-task loop should not pay even a
-    // cache lookup for accessors that are the same for every task)
+    // Accessors used by the per-task loop
     val fileMethod = IcebergReflection.getMethod(contentScanTaskClass, "file")
     val startMethod = IcebergReflection.getMethod(contentScanTaskClass, "start")
     val lengthMethod = IcebergReflection.getMethod(contentScanTaskClass, "length")
@@ -982,7 +987,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
     val keyMetadataMethod = IcebergReflection.getMethod(contentFileClass, "keyMetadata")
     val taskSchemaMethod = IcebergReflection.getMethod(fileScanTaskClass, "schema")
     val toJsonMethod =
-      IcebergReflection.getAccessibleMethod(schemaParserClass, "toJson", schemaClass)
+      IcebergReflection.getMethod(schemaParserClass, "toJson", schemaClass)
 
     // Access inputRDD - safe now, DPP is resolved
     scanExec.inputRDD match {
@@ -1055,7 +1060,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
                     // DeleteFilter.fileProjection).
                     val equalityFieldIds = deletes.asScala.flatMap { df =>
                       IcebergReflection
-                        .getEqualityFieldIds(df)
+                        .getEqualityFieldIds(deleteFileClass, df)
                         .asScala
                         .map(_.asInstanceOf[java.lang.Integer].intValue())
                     }.toSeq
