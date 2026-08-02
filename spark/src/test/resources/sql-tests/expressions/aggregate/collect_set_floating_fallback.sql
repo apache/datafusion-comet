@@ -27,7 +27,7 @@ INSERT INTO cs_fallback_float VALUES
   (CAST('NaN' AS FLOAT), 'b'), (CAST('NaN' AS FLOAT), 'b'), (1.0, 'b'),
   (CAST('Infinity' AS FLOAT), 'c'), (CAST('-Infinity' AS FLOAT), 'c'),
   (CAST('Infinity' AS FLOAT), 'c'),
-  (CAST(0.0 AS FLOAT), 'd'), (CAST(-0.0 AS FLOAT), 'd'), (1.0, 'd'), (NULL, 'd')
+  (CAST(0.0 AS FLOAT), 'd'), (CAST('-0.0' AS FLOAT), 'd'), (1.0, 'd'), (NULL, 'd')
 
 query expect_fallback(not fully compatible with Spark)
 SELECT grp, sort_array(collect_set(v))
@@ -42,7 +42,7 @@ INSERT INTO cs_fallback_double VALUES
   (CAST('NaN' AS DOUBLE), 'b'), (CAST('NaN' AS DOUBLE), 'b'), (1.0, 'b'),
   (CAST('Infinity' AS DOUBLE), 'c'), (CAST('-Infinity' AS DOUBLE), 'c'),
   (CAST('Infinity' AS DOUBLE), 'c'),
-  (0.0, 'd'), (-0.0, 'd'), (1.0, 'd'), (NULL, 'd')
+  (0.0, 'd'), (CAST('-0.0' AS DOUBLE), 'd'), (1.0, 'd'), (NULL, 'd')
 
 query expect_fallback(not fully compatible with Spark)
 SELECT grp, sort_array(collect_set(v))
