@@ -1,4 +1,4 @@
-CometNativeColumnarToRow
+CometColumnarToRow
 +- CometTakeOrderedAndProject
    +- CometHashAggregate
       +- CometColumnarExchange
@@ -8,7 +8,7 @@ CometNativeColumnarToRow
                :  +- Exchange
                :     +- HashAggregate
                :        +- Union
-               :           :- CometNativeColumnarToRow
+               :           :- CometColumnarToRow
                :           :  +- CometProject
                :           :     +- CometBroadcastHashJoin
                :           :        :- CometHashAggregate
@@ -53,7 +53,7 @@ CometNativeColumnarToRow
                :           :- Project
                :           :  +- BroadcastNestedLoopJoin
                :           :     :- BroadcastExchange
-               :           :     :  +- CometNativeColumnarToRow
+               :           :     :  +- CometColumnarToRow
                :           :     :     +- CometHashAggregate
                :           :     :        +- CometExchange
                :           :     :           +- CometHashAggregate
@@ -67,7 +67,7 @@ CometNativeColumnarToRow
                :           :     :                             +- CometNativeScan parquet spark_catalog.default.date_dim
                :           :     +- Project
                :           :        :  :- Subquery
-               :           :        :  :  +- CometNativeColumnarToRow
+               :           :        :  :  +- CometColumnarToRow
                :           :        :  :     +- CometProject
                :           :        :  :        +- CometHashAggregate
                :           :        :  :           +- CometExchange
@@ -82,7 +82,7 @@ CometNativeColumnarToRow
                :           :        :  :                                +- CometNativeScan parquet spark_catalog.default.date_dim
                :           :        :  +- ReusedSubquery
                :           :        +-  Scan OneRowRelation [COMET: Scan OneRowRelation is not supported]
-               :           +- CometNativeColumnarToRow
+               :           +- CometColumnarToRow
                :              +- CometProject
                :                 +- CometBroadcastHashJoin
                :                    :- CometHashAggregate
@@ -127,7 +127,7 @@ CometNativeColumnarToRow
                :           +- Exchange
                :              +- HashAggregate
                :                 +- Union
-               :                    :- CometNativeColumnarToRow
+               :                    :- CometColumnarToRow
                :                    :  +- CometProject
                :                    :     +- CometBroadcastHashJoin
                :                    :        :- CometHashAggregate
@@ -172,7 +172,7 @@ CometNativeColumnarToRow
                :                    :- Project
                :                    :  +- BroadcastNestedLoopJoin
                :                    :     :- BroadcastExchange
-               :                    :     :  +- CometNativeColumnarToRow
+               :                    :     :  +- CometColumnarToRow
                :                    :     :     +- CometHashAggregate
                :                    :     :        +- CometExchange
                :                    :     :           +- CometHashAggregate
@@ -186,7 +186,7 @@ CometNativeColumnarToRow
                :                    :     :                             +- CometNativeScan parquet spark_catalog.default.date_dim
                :                    :     +- Project
                :                    :        :  :- Subquery
-               :                    :        :  :  +- CometNativeColumnarToRow
+               :                    :        :  :  +- CometColumnarToRow
                :                    :        :  :     +- CometProject
                :                    :        :  :        +- CometHashAggregate
                :                    :        :  :           +- CometExchange
@@ -201,7 +201,7 @@ CometNativeColumnarToRow
                :                    :        :  :                                +- CometNativeScan parquet spark_catalog.default.date_dim
                :                    :        :  +- ReusedSubquery
                :                    :        +-  Scan OneRowRelation [COMET: Scan OneRowRelation is not supported]
-               :                    +- CometNativeColumnarToRow
+               :                    +- CometColumnarToRow
                :                       +- CometProject
                :                          +- CometBroadcastHashJoin
                :                             :- CometHashAggregate
@@ -246,7 +246,7 @@ CometNativeColumnarToRow
                            +- Exchange
                               +- HashAggregate
                                  +- Union
-                                    :- CometNativeColumnarToRow
+                                    :- CometColumnarToRow
                                     :  +- CometProject
                                     :     +- CometBroadcastHashJoin
                                     :        :- CometHashAggregate
@@ -291,7 +291,7 @@ CometNativeColumnarToRow
                                     :- Project
                                     :  +- BroadcastNestedLoopJoin
                                     :     :- BroadcastExchange
-                                    :     :  +- CometNativeColumnarToRow
+                                    :     :  +- CometColumnarToRow
                                     :     :     +- CometHashAggregate
                                     :     :        +- CometExchange
                                     :     :           +- CometHashAggregate
@@ -305,7 +305,7 @@ CometNativeColumnarToRow
                                     :     :                             +- CometNativeScan parquet spark_catalog.default.date_dim
                                     :     +- Project
                                     :        :  :- Subquery
-                                    :        :  :  +- CometNativeColumnarToRow
+                                    :        :  :  +- CometColumnarToRow
                                     :        :  :     +- CometProject
                                     :        :  :        +- CometHashAggregate
                                     :        :  :           +- CometExchange
@@ -320,7 +320,7 @@ CometNativeColumnarToRow
                                     :        :  :                                +- CometNativeScan parquet spark_catalog.default.date_dim
                                     :        :  +- ReusedSubquery
                                     :        +-  Scan OneRowRelation [COMET: Scan OneRowRelation is not supported]
-                                    +- CometNativeColumnarToRow
+                                    +- CometColumnarToRow
                                        +- CometProject
                                           +- CometBroadcastHashJoin
                                              :- CometHashAggregate

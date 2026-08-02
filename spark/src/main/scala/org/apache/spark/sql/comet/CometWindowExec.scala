@@ -49,12 +49,12 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
       childOp: OperatorOuterClass.Operator*): Option[OperatorOuterClass.Operator] = {
     val output = op.child.output
 
-    val winExprs: Array[WindowExpressionInfo] = op.windowExpression.map { expr =>
+    val winExprs: Seq[WindowExpressionInfo] = op.windowExpression.map { expr =>
       extractWindowExpression(expr).getOrElse {
         withFallbackReason(op, s"Unsupported window expression: $expr", expr)
         return None
       }
-    }.toArray
+    }
 
     if (winExprs.length != op.windowExpression.length) {
       withFallbackReason(op, "Unsupported window expression(s)")
@@ -69,7 +69,7 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
     if (windowExprProto.forall(_.isDefined) && partitionExprs.forall(_.isDefined)
       && sortOrders.forall(_.isDefined)) {
       val windowBuilder = OperatorOuterClass.Window.newBuilder()
-      windowBuilder.addAllWindowExpr(windowExprProto.map(_.get).toIterable.asJava)
+      windowBuilder.addAllWindowExpr(windowExprProto.map(_.get).asJava)
       windowBuilder.addAllPartitionByList(partitionExprs.map(_.get).asJava)
       windowBuilder.addAllOrderByList(sortOrders.map(_.get).asJava)
       Some(builder.setWindow(windowBuilder).build())
