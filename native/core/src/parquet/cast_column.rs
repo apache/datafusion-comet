@@ -19,7 +19,7 @@ use arrow::{
         make_array, Array, ArrayRef, LargeListArray, ListArray, MapArray, StructArray,
         TimestampMicrosecondArray, TimestampMillisecondArray,
     },
-    compute::CastOptions,
+    compute::{kernels::arity, CastOptions},
     datatypes::{DataType, FieldRef, Schema, TimeUnit},
     record_batch::RecordBatch,
 };
@@ -250,8 +250,9 @@ impl PhysicalExpr for CometCastColumnExpr {
                         .downcast_ref::<TimestampMicrosecondArray>()
                         .expect("Expected TimestampMicrosecondArray");
                     // Spark floors when downscaling negative timestamps; Arrow truncates.
+                    // [SparkDateTimeUtils.scala](https://github.com/apache/spark/blob/v4.2.0/sql/api/src/main/scala/org/apache/spark/sql/catalyst/util/SparkDateTimeUtils.scala#L92-L101)
                     let millis: TimestampMillisecondArray =
-                        arrow::compute::kernels::arity::unary(micros, |v| v.div_euclid(1_000));
+                        arity::unary(micros, |v| v.div_euclid(1_000));
                     // Applying the target timezone as metadata avoids shifting the values.
                     Ok(ColumnarValue::Array(Arc::new(
                         millis.with_timezone_opt(target_tz.clone()),
