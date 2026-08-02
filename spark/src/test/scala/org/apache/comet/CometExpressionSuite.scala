@@ -1448,7 +1448,8 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             val expected = arithmeticError(sparkExc)
             val actual = arithmeticError(cometExc)
             // Spark formats its pre-toPrecision Decimal, while Comet formats the rescaled i256
-            // value. This regression covers the structured error fields and query context.
+            // value (https://github.com/apache/datafusion-comet/issues/5211). This regression
+            // covers the structured error fields and query context.
             assert(actual.getErrorClass == expected.getErrorClass)
             assert(actual.getSqlState == expected.getSqlState)
             assert(actual.getQueryContext.exists(_.fragment().contains("_1 * _1")))

@@ -524,7 +524,9 @@ impl PhysicalPlanner {
                 });
 
                 // WideDecimalBinaryExpr already handles overflow — skip redundant check
-                // but only if its output type matches CheckOverflow's declared type
+                // but only if its output type matches CheckOverflow's declared type. A binary
+                // expression with query context is already wrapped in CheckedBinaryExpr, so
+                // inspect through that single layer too.
                 let is_wide_decimal = child.downcast_ref::<WideDecimalBinaryExpr>().is_some()
                     || child
                         .downcast_ref::<CheckedBinaryExpr>()
