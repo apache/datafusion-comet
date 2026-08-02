@@ -65,16 +65,27 @@ The following limitations raise an error at scan time rather than falling back t
      out of an affected file is fine.
   2. The Parquet footer does not prove those values are already Proleptic Gregorian. It proves it
      for an `org.apache.spark.version` of 3.0 or later (3.1 for `INT96`) with no
-     `org.apache.spark.legacyDateTime` / `org.apache.spark.legacyINT96` marker. Files with no
-     recorded writer version — Spark 2.4.5 and earlier, and non-Spark writers — are resolved
-     through `spark.sql.parquet.datetimeRebaseModeInRead` and
-     `spark.sql.parquet.int96RebaseModeInRead` exactly as Spark does, so `CORRECTED` reads them
-     as-is and the `EXCEPTION` default does not clear them.
-  3. Parquet row-group statistics show the column actually holds a date before October 15, 1582 or
-     a timestamp before 1900-01-01T00:00:00Z, or cannot show that it does not. A legacy-written
-     file whose values are all newer than that rebases to itself and is read normally. `INT96`
-     columns have no usable statistics (the Parquet spec gives their bytes no ordering), so they
-     are always refused when the footer does not clear them.
+     `org.apache.spark.legacyDateTime` / `org.apache.spark.legacyINT96` marker, and also when
+     `spark.sql.parquet.datetimeRebaseModeInRead` / `spark.sql.parquet.int96RebaseModeInRead` is set
+     to `CORRECTED`, which Comet honors for version-less files exactly as Spark does.
+  3. Parquet row-group statistics show the column actually holds a date before October 15, 1582 or a
+     timestamp before 1900-01-01T00:00:00Z. A legacy-written file whose values are all newer than
+     that rebases to itself and is read normally.
+
+     How a column with no usable statistics is treated depends on what the footer said. If the
+     footer positively marks the file as legacy — an `org.apache.spark.legacyDateTime` /
+     `org.apache.spark.legacyINT96` marker, or a Spark older than the switch version — the read is
+     refused, and that includes every `INT96` column, whose bytes the Parquet spec gives no
+     ordering. If the footer records no writer version at all, the read goes ahead.
+
+  That last distinction matters for files Spark did not write. Hive, Impala, Trino and plain
+  parquet-mr leave `org.apache.spark.version` unset, and Hive writes `TIMESTAMP` as `INT96`.
+  Refusing every unprovable column would make all such timestamp data unreadable through Comet
+  whatever its values, so Comet refuses only what it can positively show is affected. The
+  consequence is one gap: an `INT96` column, or a column written with statistics disabled, in a file
+  with no recorded writer version _and_ holding genuinely ancient values is read unrebased, where
+  Spark would have raised. Comet's `spark.comet.exceptionOnDatetimeRebase` cannot detect that case;
+  disable Comet for the query if you need Spark's behaviour there.
 
   The failure is a `SparkUpgradeException`, matching what Spark raises for the same data. Set
   `spark.comet.exceptionOnDatetimeRebase=false` to read affected values as-is, without rebasing;

@@ -726,9 +726,11 @@ object CometConf extends ShimCometConf {
         "that both carries a legacy-calendar marker in its footer (written by Spark before 3.0, " +
         s"or with ${SQLConf.PARQUET_REBASE_MODE_IN_WRITE.key}=LEGACY) and actually holds a date " +
         "before 1582-10-15 or a timestamp before 1900-01-01T00:00:00Z. Legacy-written files " +
-        "whose values are all newer than that rebase to themselves and are read normally. Set " +
-        "this to false to read affected values as-is, without rebasing, which reproduces the " +
-        s"silently-incorrect results of earlier Comet versions. $COMPAT_GUIDE.")
+        "whose values are all newer than that rebase to themselves and are read normally, as are " +
+        "files that record no writer version at all (every non-Spark writer) unless row-group " +
+        "statistics positively expose an affected value. Set this to false to read affected " +
+        "values as-is, without rebasing, which reproduces the silently-incorrect results of " +
+        s"earlier Comet versions. $COMPAT_GUIDE.")
       .booleanConf
       .createWithDefault(true)
 

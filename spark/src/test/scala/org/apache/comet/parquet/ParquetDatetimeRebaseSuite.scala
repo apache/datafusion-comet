@@ -172,8 +172,10 @@ class ParquetDatetimeRebaseSuite extends CometTestBase {
   }
 
   test("legacy-calendar INT96 timestamps raise even when their values look modern") {
-    // INT96 has no meaningful byte ordering, so writers produce no usable min/max and Comet
-    // cannot prove the file safe. It is rejected conservatively.
+    // The footer marks this file legacy, and INT96 has no meaningful byte ordering, so writers
+    // produce no usable min/max and nothing can narrow the refusal to the affected rows. A file
+    // that declares itself legacy gets refused whole. (A file that declares no writer at all is
+    // read instead -- see the version-less INT96 fixtures below.)
     withTempPath { dir =>
       val path = dir.getCanonicalPath
       writeParquet(
@@ -218,6 +220,22 @@ class ParquetDatetimeRebaseSuite extends CometTestBase {
         SQLConf.PARQUET_OUTPUT_TIMESTAMP_TYPE.key -> "TIMESTAMP_MICROS",
         SQLConf.PARQUET_REBASE_MODE_IN_WRITE.key -> "LEGACY")
       assertRaisesOnRebase(spark.read.parquet(path))
+    }
+  }
+
+  test("a legacy-marked TIMESTAMP_NTZ column is read even when its values are ancient") {
+    // Spark stamps the legacy marker from the write-mode conf alone, without regard to whether the
+    // schema holds a column the mode could apply to -- and it never rebases NTZ, in either
+    // direction: "TIMESTAMP_NTZ is a new data type and has no legacy files that need to do rebase".
+    // So these values read back exactly as written and Comet must agree with Spark, marker or not.
+    // Mirrors Spark's own "SPARK-46466: write and read TimestampNTZ with legacy rebase mode".
+    withTempPath { dir =>
+      val path = dir.getCanonicalPath
+      writeParquet(
+        path,
+        s"SELECT cast('$ancientDate 01:10:10' as timestamp_ntz) AS ts",
+        SQLConf.PARQUET_REBASE_MODE_IN_WRITE.key -> "LEGACY")
+      checkNativeScanAnswer(spark.read.parquet(path))
     }
   }
 
@@ -277,13 +295,24 @@ class ParquetDatetimeRebaseSuite extends CometTestBase {
    * Spark resolves them through the `*RebaseModeInRead` settings. Spark 2.4.6 added the version
    * key, and the v3_2_0 files were written with LEGACY rebase mode, so both of those are
    * identified from the footer alone and the read modes do not apply to them.
+   *
+   * For a version-less file the guard refuses only what row-group statistics positively expose,
+   * which splits these two ways.
    */
-  private val versionlessFixtures = Seq(
+  private val versionlessProvableFixtures = Seq(
     "before_1582_date_v2_4_5",
     "before_1582_timestamp_micros_v2_4_5",
-    "before_1582_timestamp_millis_v2_4_5",
-    "before_1582_timestamp_int96_plain_v2_4_5",
-    "before_1582_timestamp_int96_dict_v2_4_5")
+    "before_1582_timestamp_millis_v2_4_5")
+
+  /**
+   * The version-less INT96 fixtures, where nothing can be proven: the footer names no writer, and
+   * the Parquet spec gives INT96's 12 bytes no meaningful ordering, so there is no usable
+   * min/max. The guard reads these rather than refusing them -- see the test below for why.
+   */
+  private val versionlessInt96Fixtures =
+    Seq("before_1582_timestamp_int96_plain_v2_4_5", "before_1582_timestamp_int96_dict_v2_4_5")
+
+  private val versionlessFixtures = versionlessProvableFixtures ++ versionlessInt96Fixtures
 
   private val markedFixtures = Seq(
     "before_1582_date_v2_4_6",
@@ -299,13 +328,32 @@ class ParquetDatetimeRebaseSuite extends CometTestBase {
 
   private val ancientFixtures = versionlessFixtures ++ markedFixtures
 
-  ancientFixtures.foreach { name =>
+  (versionlessProvableFixtures ++ markedFixtures).foreach { name =>
     test(s"$name raises under EXCEPTION read mode") {
       // EXCEPTION is Spark's own default. For a version-less file Spark raises here too; for a
       // footer-marked one Spark rebases and returns correct values, which Comet cannot do. Either
       // way Comet must not return the shifted values.
       withReadMode("EXCEPTION") {
         assertRaisesOnRebase(spark.read.parquet(fixture(name)))
+      }
+    }
+  }
+
+  versionlessInt96Fixtures.foreach { name =>
+    test(s"$name is read unrebased under EXCEPTION read mode") {
+      // The guard's one blind spot, and a deliberate trade rather than an oversight. Spark decides
+      // per decoded value, so it raises for these; Comet decides per column, and for a file that
+      // names no writer it refuses only what statistics expose. INT96 has none.
+      //
+      // Assuming the worst instead would refuse every INT96 column in every file no Spark wrote --
+      // which is how Hive writes TIMESTAMP, and Hive, Impala, Trino and plain parquet-mr all leave
+      // the version key unset. Those reads are overwhelmingly of modern values that Spark returns
+      // without complaint, so refusing them all to catch this fixture is the worse trade. Closing
+      // the gap properly needs a per-value check in the decoder, or the rebasing itself (#5010).
+      withReadMode("EXCEPTION") {
+        val df = spark.read.parquet(fixture(name))
+        assertNativeScan(df)
+        assert(df.collect().length == 8)
       }
     }
   }
