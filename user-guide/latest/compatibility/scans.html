@@ -779,9 +779,7 @@ data written before Spark 3.0, using the hybrid Julian/Gregorian calendar), Come
 if they were written using the Proleptic Gregorian calendar. This produces silently-wrong
 values for dates before October 15, 1582 in both projections and predicates. Comet also
 ignores <code class="docutils literal notranslate"><span class="pre">spark.sql.parquet.datetimeRebaseModeInRead</span></code> and the file-level
-<code class="docutils literal notranslate"><span class="pre">org.apache.spark.legacyDateTime</span></code> metadata that would tell it to rebase. The
-<code class="docutils literal notranslate"><span class="pre">spark.comet.exceptionOnDatetimeRebase</span></code> config is currently dead code and does not raise on
-legacy-calendar data. Tracked by
+<code class="docutils literal notranslate"><span class="pre">org.apache.spark.legacyDateTime</span></code> metadata that would tell it to rebase. Tracked by
 <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5010">#5010</a>.</p></li>
 </ul>
 <p>The following limitations raise an error at scan time rather than falling back to Spark:</p>
