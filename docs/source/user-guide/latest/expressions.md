@@ -326,8 +326,8 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 ## generator_funcs
 
 `explode`, `explode_outer`, `posexplode`, and `posexplode_outer` are supported via
-`CometExplodeExec` (operator-level, not expression-level). Requires
-`spark.comet.exec.explode.enabled=true`.
+`CometExplodeExec` (operator-level, not expression-level). Enabled by default via
+`spark.comet.exec.explode.enabled`.
 
 | Function | Status | Implementation | Notes |
 | --- | --- | --- | --- |

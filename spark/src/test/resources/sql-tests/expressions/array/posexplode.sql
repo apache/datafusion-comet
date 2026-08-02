@@ -168,6 +168,22 @@ query
 SELECT id, pos, value
 FROM test_posexplode_int LATERAL VIEW OUTER posexplode(arr) p AS pos, value
 
+-- ===== Pre-projection wiring for posexplode_outer =====
+
+-- Carry the array column through alongside posexplode_outer. The passthrough
+-- `arr` shows the original array (empty rows stay []) while the exploded pos
+-- and value are NULL for empty rows, so this is the only shape where the
+-- difference between the original array and the null-marked copy is
+-- observable at the query level.
+query
+SELECT id, arr, posexplode_outer(arr) FROM test_posexplode_int
+
+-- No passthrough columns. This drives `project_list` to empty in the planner
+-- and covers the codepath where the second projection contains only the
+-- positions column and the exploded array.
+query
+SELECT posexplode_outer(arr) FROM test_posexplode_int
+
 -- posexplode_outer batch of only-empty arrays exercises the slow path with an
 -- all-zeros non-empty bitmap; only-null exercises the fast-path passthrough.
 statement

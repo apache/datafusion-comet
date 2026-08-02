@@ -1898,7 +1898,7 @@ impl PhysicalPlanner {
                     self.create_plan(&children[0], inputs, partition_count)?;
 
                 // Create the expression for the array to explode
-                let child_expr = if let Some(child_expr) = &explode.child {
+                let raw_child_expr = if let Some(child_expr) = &explode.child {
                     self.create_expr(child_expr, child.schema())?
                 } else {
                     return Err(ExecutionError::GeneralError(
@@ -1906,50 +1906,65 @@ impl PhysicalPlanner {
                     ));
                 };
 
+                let child_schema = child.schema();
+                let child_field_name = raw_child_expr
+                    .return_field(&child_schema)
+                    .expect("Failed to get field from child expression")
+                    .name()
+                    .to_string();
+
                 // Bridge Spark's outer semantics: DataFusion's `UnnestExec` with
                 // `preserve_nulls = true` emits one null row for a NULL list but drops rows
                 // whose list is empty. Spark's `explode_outer`/`posexplode_outer` must emit
                 // exactly one null row in both cases, so we mark empty rows as null before
-                // unnesting. See https://github.com/apache/datafusion/issues/19053.
+                // unnesting. See https://github.com/apache/datafusion/issues/19053. Once
+                // that upstream fix lands, `ListEmptyToNullExpr` and the pre-projection
+                // below can be removed (TODO: link the Comet tracking issue here).
                 //
-                // The wrapped array is materialized in a pre-projection so `ListPositionsExpr`
-                // and the array passthrough (`posexplode_outer`) share a single evaluation
-                // instead of re-running `ListEmptyToNullExpr` per branch.
-                let child_schema = child.schema();
-                let (child_expr, child_native_plan): (Arc<dyn PhysicalExpr>, _) = if explode.outer {
-                    let wrapped: Arc<dyn PhysicalExpr> =
-                        Arc::new(ListEmptyToNullExpr::new(child_expr));
-                    let wrapped_name = wrapped
-                        .return_field(&child_schema)
-                        .expect("Failed to get field from wrapped array expression")
-                        .name()
-                        .to_string();
+                // For `posexplode_outer` the wrapped array is materialized in a
+                // pre-projection so `ListPositionsExpr` and the array passthrough share
+                // a single evaluation of `ListEmptyToNullExpr` instead of re-running it
+                // per branch. Plain `explode_outer` references the wrapped array exactly
+                // once, so no pre-projection is needed there.
+                let (child_expr, child_native_plan): (Arc<dyn PhysicalExpr>, _) =
+                    match (explode.outer, explode.position) {
+                        (true, true) => {
+                            let wrapped: Arc<dyn PhysicalExpr> =
+                                Arc::new(ListEmptyToNullExpr::new(raw_child_expr));
+                            let reserved_name =
+                                format!("__comet_explode_outer_{}", child_field_name);
 
-                    let mut pre_exprs: Vec<(Arc<dyn PhysicalExpr>, String)> = child_schema
-                        .fields()
-                        .iter()
-                        .enumerate()
-                        .map(|(i, f)| {
+                            let mut pre_exprs: Vec<(Arc<dyn PhysicalExpr>, String)> = child_schema
+                                .fields()
+                                .iter()
+                                .enumerate()
+                                .map(|(i, f)| {
+                                    (
+                                        Arc::new(Column::new(f.name(), i)) as Arc<dyn PhysicalExpr>,
+                                        f.name().to_string(),
+                                    )
+                                })
+                                .collect();
+                            let wrapped_idx = pre_exprs.len();
+                            pre_exprs.push((wrapped, reserved_name.clone()));
+
+                            let pre_exec = Arc::new(ProjectionExec::try_new(
+                                pre_exprs,
+                                Arc::clone(&child.native_plan),
+                            )?);
                             (
-                                Arc::new(Column::new(f.name(), i)) as Arc<dyn PhysicalExpr>,
-                                f.name().to_string(),
+                                Arc::new(Column::new(&reserved_name, wrapped_idx))
+                                    as Arc<dyn PhysicalExpr>,
+                                pre_exec as Arc<dyn ExecutionPlan>,
                             )
-                        })
-                        .collect();
-                    let wrapped_idx = pre_exprs.len();
-                    pre_exprs.push((wrapped, wrapped_name.clone()));
-
-                    let pre_exec = Arc::new(ProjectionExec::try_new(
-                        pre_exprs,
-                        Arc::clone(&child.native_plan),
-                    )?);
-                    (
-                        Arc::new(Column::new(&wrapped_name, wrapped_idx)),
-                        pre_exec as Arc<dyn ExecutionPlan>,
-                    )
-                } else {
-                    (child_expr, Arc::clone(&child.native_plan))
-                };
+                        }
+                        (true, false) => (
+                            Arc::new(ListEmptyToNullExpr::new(raw_child_expr))
+                                as Arc<dyn PhysicalExpr>,
+                            Arc::clone(&child.native_plan),
+                        ),
+                        (false, _) => (raw_child_expr, Arc::clone(&child.native_plan)),
+                    };
 
                 // Create projection expressions for other columns
                 let projections: Vec<Arc<dyn PhysicalExpr>> = explode
@@ -1971,17 +1986,12 @@ impl PhysicalPlanner {
                     })
                     .collect();
 
-                let array_field = child_expr
-                    .return_field(&child_native_plan.schema())
-                    .expect("Failed to get field from array expression");
-                let array_col_name = array_field.name().to_string();
-
                 if explode.position {
                     let positions_expr: Arc<dyn PhysicalExpr> =
                         Arc::new(ListPositionsExpr::new(Arc::clone(&child_expr)));
                     project_exprs.push((positions_expr, "pos".to_string()));
                 }
-                project_exprs.push((Arc::clone(&child_expr), array_col_name.clone()));
+                project_exprs.push((Arc::clone(&child_expr), child_field_name.clone()));
 
                 let project_exec =
                     Arc::new(ProjectionExec::try_new(project_exprs, child_native_plan)?);
