@@ -132,40 +132,59 @@ private[comet] object PlanDataInjector extends Logging {
    *
    * Supports joins over multiple tables by matching each operator with its corresponding data
    * based on a key (e.g., metadata_location for Iceberg).
+   *
+   * Operators are protobuf messages, hence immutable, so any subtree that needs no injection is
+   * returned by reference rather than rebuilt. Since a plan typically has one or two leaf scans
+   * awaiting injection, this leaves only the root-to-scan paths to rebuild instead of every
+   * operator in the tree -- worth doing because this runs once per task on the executor.
    */
   def injectPlanData(
       op: Operator,
       commonByKey: Map[String, Array[Byte]],
       partitionByKey: Map[String, Array[Byte]]): Operator = {
-    val builder = op.toBuilder
 
     // O(1) by op kind, then a canInject confirm (which may inspect detail fields like `hasCommon`
     // / `!hasFilePartition`). Most operators in any tree are non-scan and skip the lookup body.
-    injectorsByKind.get(op.getOpStructCase) match {
+    val injectedOp = injectorsByKind.get(op.getOpStructCase) match {
       case Some(injector) if injector.canInject(op) =>
         injector.getKey(op) match {
           case Some(key) =>
             (commonByKey.get(key), partitionByKey.get(key)) match {
               case (Some(commonBytes), Some(partitionBytes)) =>
-                val injectedOp = injector.inject(op, commonBytes, partitionBytes)
-                // Copy the injected operator's fields to our builder
-                builder.clear()
-                builder.mergeFrom(injectedOp)
+                injector.inject(op, commonBytes, partitionBytes)
               case _ =>
                 throw new CometRuntimeException(s"Missing planning data for key: $key")
             }
-          case None =>
+          case None => op
         }
-      case _ =>
+      case _ => op
     }
 
-    // Recursively process children
-    builder.clearChildren()
-    op.getChildrenList.asScala.foreach { child =>
-      builder.addChildren(injectPlanData(child, commonByKey, partitionByKey))
+    // Recursively process children, rebuilding this node only if one of them actually changed.
+    // Injectors preserve children, so `injectedOp` has the same child list as `op` either way.
+    val children = injectedOp.getChildrenList
+    val numChildren = children.size()
+    if (numChildren == 0) {
+      injectedOp
+    } else {
+      val injectedChildren = new Array[Operator](numChildren)
+      var childrenChanged = false
+      var i = 0
+      while (i < numChildren) {
+        val child = children.get(i)
+        val injectedChild = injectPlanData(child, commonByKey, partitionByKey)
+        childrenChanged |= (injectedChild ne child)
+        injectedChildren(i) = injectedChild
+        i += 1
+      }
+      if (!childrenChanged) {
+        injectedOp
+      } else {
+        val builder = injectedOp.toBuilder.clearChildren()
+        injectedChildren.foreach(builder.addChildren)
+        builder.build()
+      }
     }
-
-    builder.build()
   }
 
   def serializeOperator(op: Operator): Array[Byte] = {
