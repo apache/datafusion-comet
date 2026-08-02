@@ -18,9 +18,10 @@
 use crate::utils::resolve_local_datetime;
 use crate::{timezone, SparkCastOptions, SparkResult};
 use arrow::array::{ArrayRef, AsArray, TimestampMicrosecondBuilder};
-use arrow::compute::{cast_with_options, CastOptions};
+use arrow::compute::cast_with_options;
 use arrow::datatypes::{DataType, Date32Type, TimeUnit};
 use chrono::NaiveDate;
+use datafusion::common::format::DEFAULT_CAST_OPTIONS;
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -44,7 +45,7 @@ pub(crate) fn cast_date_to_timestamp(
         return Ok(cast_with_options(
             array_ref,
             &DataType::Timestamp(TimeUnit::Microsecond, None),
-            &CastOptions::default(),
+            &DEFAULT_CAST_OPTIONS,
         )?);
     }
 

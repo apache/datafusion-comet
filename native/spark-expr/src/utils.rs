@@ -83,6 +83,12 @@ pub fn array_with_timezone(
                     timestamp_ntz_to_timestamp(array, timezone.as_str(), Some(target_tz.as_ref()))
                 }
                 Some(to_type @ DataType::Timestamp(TimeUnit::Microsecond, None)) => {
+                    // This defensive conversion intentionally errors in every CAST eval mode:
+                    // Spark's vectorized Parquet reader calls `millisToMicros` for both direct
+                    // and dictionary values, independent of CAST evaluation.
+                    // https://github.com/apache/spark/blob/v4.2.0/sql/core/src/main/java/org/apache/spark/sql/execution/datasources/parquet/ParquetVectorUpdaterFactory.java#L817-L833
+                    // `millisToMicros` uses `Math.multiplyExact`:
+                    // https://github.com/apache/spark/blob/v4.2.0/sql/api/src/main/scala/org/apache/spark/sql/catalyst/util/SparkDateTimeUtils.scala#L103-L108
                     cast_with_options(array.as_ref(), to_type, &DEFAULT_CAST_OPTIONS)
                 }
                 _ => {

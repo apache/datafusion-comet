@@ -15,19 +15,15 @@
 // specific language governing permissions and limitations
 // under the License.
 use arrow::{
-    array::{
-        make_array, Array, ArrayRef, LargeListArray, ListArray, MapArray, StructArray,
-        TimestampMicrosecondArray, TimestampMillisecondArray,
-    },
-    compute::{kernels::arity, CastOptions},
+    array::{make_array, Array, ArrayRef, LargeListArray, ListArray, MapArray, StructArray},
+    compute::CastOptions,
     datatypes::{DataType, FieldRef, Schema, TimeUnit},
     record_batch::RecordBatch,
 };
 
 use crate::parquet::parquet_support::{spark_parquet_convert, SparkParquetOptions};
 use datafusion::common::format::DEFAULT_CAST_OPTIONS;
-use datafusion::common::Result as DataFusionResult;
-use datafusion::common::ScalarValue;
+use datafusion::common::{DataFusionError, Result as DataFusionResult};
 use datafusion::logical_expr::ColumnarValue;
 use datafusion::physical_expr::PhysicalExpr;
 use std::{
@@ -180,20 +176,41 @@ impl Hash for CometCastColumnExpr {
 }
 
 impl CometCastColumnExpr {
-    /// Create a new [`CometCastColumnExpr`].
-    pub fn new(
+    /// Try to create a new [`CometCastColumnExpr`].
+    pub fn try_new(
         expr: Arc<dyn PhysicalExpr>,
         physical_field: FieldRef,
         target_field: FieldRef,
         cast_options: Option<CastOptions<'static>>,
-    ) -> Self {
-        Self {
+    ) -> DataFusionResult<Self> {
+        let physical_type = physical_field.data_type();
+        let target_type = target_field.data_type();
+        // `target_field` is the Spark logical field, while `physical_field` comes from the
+        // Parquet or Iceberg file. Comet represents Spark's TimestampType and TimestampNTZType
+        // as Arrow microseconds, and Spark maps both TIMESTAMP_MICROS and TIMESTAMP_MILLIS files
+        // to those logical types. A millisecond target is therefore invalid at this read-adapter
+        // boundary:
+        // https://github.com/apache/spark/blob/v4.2.0/sql/core/src/main/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetSchemaConverter.scala#L318-L324
+        if matches!(
+            (physical_type, target_type),
+            (
+                DataType::Timestamp(TimeUnit::Microsecond, _),
+                DataType::Timestamp(TimeUnit::Millisecond, _)
+            )
+        ) {
+            return Err(DataFusionError::Plan(format!(
+                "Cannot adapt Spark timestamp field '{}' from {physical_type} to {target_type}: Spark read schemas represent logical timestamps in microseconds",
+                physical_field.name()
+            )));
+        }
+
+        Ok(Self {
             expr,
             input_physical_field: physical_field,
             target_field,
             cast_options: cast_options.unwrap_or(DEFAULT_CAST_OPTIONS),
             parquet_options: None,
-        }
+        })
     }
 
     /// Set Spark parquet options to enable complex nested type conversions.
@@ -237,35 +254,7 @@ impl PhysicalExpr for CometCastColumnExpr {
         let input_physical_field = self.input_physical_field.data_type();
         let target_field = self.target_field.data_type();
 
-        // Handle specific type conversions with custom casts
         match (input_physical_field, target_field) {
-            // Timestamp(Microsecond) -> Timestamp(Millisecond)
-            (
-                DataType::Timestamp(TimeUnit::Microsecond, _),
-                DataType::Timestamp(TimeUnit::Millisecond, target_tz),
-            ) => match value {
-                ColumnarValue::Array(array) => {
-                    let micros = array
-                        .as_any()
-                        .downcast_ref::<TimestampMicrosecondArray>()
-                        .expect("Expected TimestampMicrosecondArray");
-                    // Spark floors when downscaling negative timestamps; Arrow truncates.
-                    // [SparkDateTimeUtils.scala](https://github.com/apache/spark/blob/v4.2.0/sql/api/src/main/scala/org/apache/spark/sql/catalyst/util/SparkDateTimeUtils.scala#L92-L101)
-                    let millis: TimestampMillisecondArray =
-                        arity::unary(micros, |v| v.div_euclid(1_000));
-                    // Applying the target timezone as metadata avoids shifting the values.
-                    Ok(ColumnarValue::Array(Arc::new(
-                        millis.with_timezone_opt(target_tz.clone()),
-                    )))
-                }
-                ColumnarValue::Scalar(ScalarValue::TimestampMicrosecond(value, _)) => {
-                    Ok(ColumnarValue::Scalar(ScalarValue::TimestampMillisecond(
-                        value.map(|v| v.div_euclid(1_000)),
-                        target_tz.clone(),
-                    )))
-                }
-                _ => Ok(value),
-            },
             // Nested types that differ only in field names (e.g., List element named
             // "item" vs "element", or Map entries named "key_value" vs "entries").
             // Re-label the array so the DataType metadata matches the logical schema.
@@ -307,12 +296,12 @@ impl PhysicalExpr for CometCastColumnExpr {
     ) -> DataFusionResult<Arc<dyn PhysicalExpr>> {
         assert_eq!(children.len(), 1);
         let child = children.pop().expect("CastColumnExpr child");
-        let mut new_expr = Self::new(
+        let mut new_expr = Self::try_new(
             child,
             Arc::clone(&self.input_physical_field),
             Arc::clone(&self.target_field),
             Some(self.cast_options.clone()),
-        );
+        )?;
         if let Some(opts) = &self.parquet_options {
             new_expr = new_expr.with_parquet_options(opts.clone());
         }
@@ -332,83 +321,27 @@ mod tests {
     use datafusion::physical_expr::expressions::Column;
 
     #[test]
-    fn test_comet_cast_column_expr_evaluate_micros_to_millis_array() {
-        for (source_tz, target_tz) in [
-            (None, None),
-            (None, Some(Arc::from("+07:00"))),
-            (Some(Arc::from("UTC")), Some(Arc::from("America/New_York"))),
-        ] {
-            let input_type = DataType::Timestamp(TimeUnit::Microsecond, source_tz.clone());
-            let input_field = Arc::new(Field::new("ts", input_type, true));
-            let schema = Schema::new(vec![Arc::clone(&input_field)]);
-            let target_type = DataType::Timestamp(TimeUnit::Millisecond, target_tz);
-            let target_field = Arc::new(Field::new("ts", target_type.clone(), true));
-            let col_expr: Arc<dyn PhysicalExpr> = Arc::new(Column::new("ts", 0));
-            let cast_expr = CometCastColumnExpr::new(col_expr, input_field, target_field, None);
-            // https://github.com/apache/spark/blob/v4.2.0/sql/catalyst/src/test/scala/org/apache/spark/sql/catalyst/util/DateTimeUtilsSuite.scala#L969-L972
-            let micros_array = TimestampMicrosecondArray::from(vec![
-                Some(-9_223_372_036_844_776_001),
-                Some(-157_700_927_876_544),
-                Some(1_500_001),
-                None,
-            ])
-            .with_timezone_opt(source_tz);
-            let batch =
-                RecordBatch::try_new(Arc::new(schema), vec![Arc::new(micros_array)]).unwrap();
+    fn test_rejects_millisecond_logical_timestamp() {
+        for timezone in [None, Some(Arc::from("UTC"))] {
+            let input_field = Arc::new(Field::new(
+                "ts",
+                DataType::Timestamp(TimeUnit::Microsecond, timezone.clone()),
+                true,
+            ));
+            let target_field = Arc::new(Field::new(
+                "ts",
+                DataType::Timestamp(TimeUnit::Millisecond, timezone),
+                true,
+            ));
+            let expr: Arc<dyn PhysicalExpr> = Arc::new(Column::new("ts", 0));
 
-            match cast_expr.evaluate(&batch).unwrap() {
-                ColumnarValue::Array(arr) => {
-                    let millis_array = arr
-                        .as_any()
-                        .downcast_ref::<TimestampMillisecondArray>()
-                        .expect("Expected TimestampMillisecondArray");
-                    assert_eq!(millis_array.value(0), -9_223_372_036_844_777);
-                    assert_eq!(millis_array.value(1), -157_700_927_877);
-                    assert_eq!(millis_array.value(2), 1_500);
-                    assert!(millis_array.is_null(3));
-                    assert_eq!(millis_array.data_type(), &target_type);
-                }
-                _ => panic!("Expected Array result"),
-            }
-        }
-    }
-
-    #[test]
-    fn test_comet_cast_column_expr_evaluate_micros_to_millis_scalar() {
-        // Create input schema with TimestampMicrosecond column
-        let input_field = Arc::new(Field::new(
-            "ts",
-            DataType::Timestamp(TimeUnit::Microsecond, None),
-            true,
-        ));
-        let schema = Schema::new(vec![Arc::clone(&input_field)]);
-
-        let target_type = DataType::Timestamp(TimeUnit::Millisecond, None);
-        let target_field = Arc::new(Field::new("ts", target_type.clone(), true));
-
-        // Create a literal expression that returns a scalar
-        let scalar = ScalarValue::TimestampMicrosecond(Some(-157_700_927_876_544), None);
-        let literal_expr: Arc<dyn PhysicalExpr> =
-            Arc::new(datafusion::physical_expr::expressions::Literal::new(scalar));
-
-        // Create the CometCastColumnExpr
-        let cast_expr = CometCastColumnExpr::new(literal_expr, input_field, target_field, None);
-
-        // Create an empty batch (scalar doesn't need data)
-        let batch = RecordBatch::new_empty(Arc::new(schema));
-
-        // Evaluate
-        let result = cast_expr.evaluate(&batch).unwrap();
-
-        match result {
-            ColumnarValue::Scalar(s) => {
-                assert_eq!(
-                    s,
-                    ScalarValue::TimestampMillisecond(Some(-157_700_927_877), None)
-                );
-                assert_eq!(s.data_type(), target_type);
-            }
-            _ => panic!("Expected Scalar result"),
+            let err = CometCastColumnExpr::try_new(expr, input_field, target_field, None)
+                .expect_err("millisecond logical timestamp must be rejected during planning");
+            assert!(matches!(
+                err,
+                DataFusionError::Plan(message)
+                    if message.contains("Spark read schemas represent logical timestamps in microseconds")
+            ));
         }
     }
 
