@@ -18,9 +18,7 @@
 use crate::SparkError;
 use arrow::array::builder::BooleanBuilder;
 use arrow::array::types::Int32Type;
-use arrow::array::{
-    Array, ArrayAccessor, ArrayRef, BooleanArray, RecordBatch, StringArrayType,
-};
+use arrow::array::{Array, ArrayAccessor, ArrayRef, BooleanArray, RecordBatch, StringArrayType};
 use arrow::compute::take;
 use arrow::datatypes::{DataType, Schema};
 use datafusion::common::cast::{
@@ -272,7 +270,11 @@ mod tests {
 
     #[test]
     fn test_rlike_large_utf8_array() {
-        let schema = Arc::new(Schema::new(vec![Field::new("s", DataType::LargeUtf8, true)]));
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "s",
+            DataType::LargeUtf8,
+            true,
+        )]));
         let batch = RecordBatch::try_new(
             Arc::clone(&schema),
             vec![Arc::new(LargeStringArray::from(vec![Some("Rose"), None]))],
