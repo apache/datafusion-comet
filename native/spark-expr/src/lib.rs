@@ -33,8 +33,6 @@ pub use struct_funcs::{CreateNamedStruct, GetStructField};
 mod csv_funcs;
 mod json_funcs;
 pub mod test_common;
-// Re-export Arrow timezone so downstream crates keep `spark_expr::timezone`.
-pub use arrow::array::timezone;
 mod unbound;
 pub use unbound::UnboundColumn;
 mod predicate_funcs;
