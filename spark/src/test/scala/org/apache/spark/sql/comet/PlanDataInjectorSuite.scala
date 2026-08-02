@@ -72,15 +72,13 @@ class PlanDataInjectorSuite extends AnyFunSuite {
 
     val result = PlanDataInjector.injectPlanData(root, Map.empty, Map.empty)
 
-    assert(result == root, "non-scan operator tree should be returned unchanged")
     assert(
       result eq root,
       "a tree with nothing to inject should be returned by reference, not rebuilt")
   }
 
   test("injectPlanData rebuilds only the path to the injected scan") {
-    // Operators are immutable protobuf messages, so subtrees that need no injection are shared
-    // rather than rebuilt. Only the root-to-scan path may be new.
+    // Operators are immutable protobuf messages, so subtrees that need no injection are shared.
     val scanOp = icebergScanOp("s3://table/metadata/v1.json", scanHashCode = 111)
     val (commonBytes, partitionBytes) =
       icebergPlanData(
@@ -109,7 +107,6 @@ class PlanDataInjectorSuite extends AnyFunSuite {
     assert(
       result.getChildren(1) eq untouchedSibling,
       "a sibling subtree with no injectable scan should be shared, not rebuilt")
-    assert(result.getChildren(0) ne filter, "the path to the injected scan must be rebuilt")
     val injectedScan = result.getChildren(0).getChildren(0)
     assert(injectedScan.getIcebergScan.getCommon.getRequiredSchemaCount == 2)
     assert(injectedScan.getIcebergScan.getFileScanTasks(0).getDataFilePath == "data.parquet")
