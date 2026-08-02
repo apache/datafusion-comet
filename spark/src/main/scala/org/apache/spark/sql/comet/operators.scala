@@ -58,7 +58,7 @@ import org.apache.comet.{CometConf, CometExecIterator, CometRuntimeException, Co
 import org.apache.comet.CometSparkSessionExtensions.{isCometShuffleEnabled, withFallbackReason}
 import org.apache.comet.parquet.CometParquetUtils
 import org.apache.comet.rules.CometExecRule
-import org.apache.comet.serde.{CometOperatorSerde, Compatible, Incompatible, OperatorOuterClass, SupportLevel, Unsupported}
+import org.apache.comet.serde.{CometOperatorSerde, Compatible, Incompatible, OperatorOuterClass, QueryContextInterner, SupportLevel, Unsupported}
 import org.apache.comet.serde.OperatorOuterClass.{AggregateMode => CometAggregateMode, Operator}
 import org.apache.comet.serde.QueryPlanSerde
 import org.apache.comet.serde.QueryPlanSerde.{aggExprToProto, exprToProto, isStringCollationType, supportedSortType}
@@ -325,17 +325,28 @@ private[comet] object NativeScanPlanDataInjector extends PlanDataInjector {
       op.getNativeScan.hasCommon &&
       !op.getNativeScan.hasFilePartition
 
-  override def getKey(op: Operator): Option[String] = {
-    // Reconstruct the same sourceKey that was used when storing the data
-    val common = op.getNativeScan.getCommon
-    val source = common.getSource
+  override def getKey(op: Operator): Option[String] = Some(sourceKey(op.getNativeScan.getCommon))
+
+  /**
+   * The key under which a native scan's planning data is stored and looked up. Called on the
+   * driver by `CometNativeScanExec.apply` to store, and on the executor by [[getKey]] to look up
+   * \- both must derive the identical string from the same scan, so this is the single definition
+   * rather than two mirrored copies.
+   *
+   * Data filters are stripped of their `QueryContext` before hashing: the executor reads them
+   * back out of the interned plan (see `QueryContextInterner`) while the driver holds the
+   * un-interned form, so including the context encoding would make the two sides disagree. Only
+   * data filters can carry a context, so the other components are hashed as-is.
+   */
+  private[comet] def sourceKey(common: OperatorOuterClass.NativeScanCommon): String = {
+    val dataFilters = common.getDataFiltersList.asScala
+      .map(QueryContextInterner.stripQueryContexts(_).toString)
     val keyComponents = Seq(
       common.getRequiredSchemaList.toString,
-      common.getDataFiltersList.toString,
+      dataFilters.mkString("[", ", ", "]"),
       common.getProjectionVectorList.toString,
       common.getFieldsList.toString)
-    val hashCode = keyComponents.mkString("|").hashCode
-    Some(s"${source}_${hashCode}")
+    s"${common.getSource}_${keyComponents.mkString("|").hashCode}"
   }
 
   override def inject(
@@ -869,12 +880,10 @@ abstract class CometNativeExec extends CometExec {
   def convertBlock(): CometNativeExec = {
     def transform(arg: Any): AnyRef = arg match {
       case serializedPlan: SerializedPlan if serializedPlan.isEmpty =>
-        val size = nativeOp.getSerializedSize
-        val bytes = new Array[Byte](size)
-        val codedOutput = CodedOutputStream.newInstance(bytes)
-        nativeOp.writeTo(codedOutput)
-        codedOutput.checkNoSpaceLeft()
-        SerializedPlan(Some(bytes))
+        // Hoist duplicated QueryContext SQL text into a pool on the root operator. This is the
+        // point where the whole native block is in hand, which is what the pool indices are
+        // scoped to.
+        SerializedPlan(Some(CometExec.serializeNativePlan(QueryContextInterner.intern(nativeOp))))
       case other: AnyRef => other
       case null => null
     }

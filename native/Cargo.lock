@@ -2071,6 +2071,7 @@ dependencies = [
  "num",
  "rand 0.10.2",
  "regex",
+ "ryu",
  "serde",
  "serde_json",
  "tokio",

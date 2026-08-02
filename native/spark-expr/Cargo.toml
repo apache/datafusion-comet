@@ -43,6 +43,9 @@ futures = { workspace = true }
 twox-hash = "2.1.2"
 rand = { workspace = true }
 base64 = "0.23.0"
+# shortest round-trip float formatting, used to match Spark's Double.toString-based
+# float/double to decimal conversion
+ryu = "1.0"
 uuid = "1.23.3"
 
 [dev-dependencies]

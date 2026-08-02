@@ -69,7 +69,7 @@ under the License.
     <scala.plugin.version>4.9.6</scala.plugin.version>
     <scalatest.version>3.2.16</scalatest.version>
     <scalatest-maven-plugin.version>2.2.0</scalatest-maven-plugin.version>
-    <spark.version>4.1.2</spark.version>
+    <spark.version>4.1.3</spark.version>
     <spark.version.short>4.1</spark.version.short>
     <spark.maven.scope>provided</spark.maven.scope>
     <protobuf.version>3.25.5</protobuf.version>
@@ -694,7 +694,7 @@ under the License.
       <properties>
         <scala.version>2.13.16</scala.version>
         <scala.binary.version>2.13</scala.binary.version>
-        <spark.version>4.0.2</spark.version>
+        <spark.version>4.0.4</spark.version>
         <spark.version.short>4.0</spark.version.short>
         <parquet.version>1.15.2</parquet.version>
         <semanticdb.version>4.13.6</semanticdb.version>
@@ -717,7 +717,7 @@ under the License.
              yet published, so the -Psemanticdb / scalafix lint job is skipped for spark-4.1. -->
         <scala.version>2.13.17</scala.version>
         <scala.binary.version>2.13</scala.binary.version>
-        <spark.version>4.1.2</spark.version>
+        <spark.version>4.1.3</spark.version>
         <spark.version.short>4.1</spark.version.short>
         <parquet.version>1.16.0</parquet.version>
         <semanticdb.version>4.13.6</semanticdb.version>
