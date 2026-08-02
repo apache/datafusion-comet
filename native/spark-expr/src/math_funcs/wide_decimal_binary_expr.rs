@@ -20,14 +20,14 @@
 //! Instead of building a 4-node expression tree (Cast→BinaryExpr→Cast→Cast), this performs
 //! i256 intermediate arithmetic in a single expression, producing only one output array.
 
-use crate::conversion_funcs::format_decimal_str;
+use crate::error::unwrap_arrow_external_error;
 use crate::math_funcs::utils::get_precision_scale;
 use crate::{EvalMode, SparkError};
 use arrow::array::{Array, ArrayRef, AsArray, Decimal128Array};
-use arrow::datatypes::{i256, DataType, Decimal128Type, Schema};
+use arrow::datatypes::{format_decimal_str, i256, DataType, Decimal128Type, Schema};
 use arrow::error::ArrowError;
 use arrow::record_batch::RecordBatch;
-use datafusion::common::{DataFusionError, Result};
+use datafusion::common::Result;
 use datafusion::logical_expr::ColumnarValue;
 use datafusion::physical_expr::PhysicalExpr;
 use std::fmt::{Display, Formatter};
@@ -281,12 +281,7 @@ impl PhysicalExpr for WideDecimalBinaryExpr {
                 })
             }
         };
-        let result = result.map_err(|error| -> DataFusionError {
-            match error {
-                ArrowError::ExternalError(error) => DataFusionError::External(error),
-                error => error.into(),
-            }
-        })?;
+        let result = result.map_err(unwrap_arrow_external_error)?;
 
         let result = if eval_mode != EvalMode::Ansi {
             result.null_if_overflow_precision(p_out)
@@ -350,6 +345,8 @@ fn check_overflow_and_convert(
     if result > bound || result < neg_bound {
         if eval_mode == EvalMode::Ansi {
             let unscaled = result.to_string();
+            // Arrow's formatter truncates to its precision argument. This value is already
+            // known to overflow, so pass its actual digit count to preserve every digit.
             let digits = unscaled.trim_start_matches('-').len();
             return Err(ArrowError::ExternalError(Box::new(
                 SparkError::NumericValueOutOfRange {
@@ -372,6 +369,7 @@ mod tests {
     use arrow::array::Decimal128Array;
     use arrow::datatypes::{Field, Schema};
     use arrow::record_batch::RecordBatch;
+    use datafusion::common::DataFusionError;
     use datafusion::physical_expr::expressions::Column;
 
     fn make_batch(
@@ -525,24 +523,40 @@ mod tests {
 
     #[test]
     fn test_overflow_ansi_mode_returns_spark_error() {
-        // 0.5 + 0.5 = 1.0, which does not fit Decimal(1, 1). The error must report
-        // the scaled decimal value rather than its raw unscaled integer (10).
-        let batch = make_batch(vec![Some(5)], 38, 1, vec![Some(5)], 38, 1);
-        let result = eval_expr(&batch, WideDecimalOp::Add, 1, 1, EvalMode::Ansi);
-        match result {
-            Err(DataFusionError::External(error)) => match error.downcast_ref::<SparkError>() {
-                Some(SparkError::NumericValueOutOfRange {
-                    value,
-                    precision,
-                    scale,
-                }) => {
-                    assert_eq!(value, "1.0");
-                    assert_eq!(*precision, 1);
-                    assert_eq!(*scale, 1);
-                }
-                other => panic!("expected NumericValueOutOfRange, got {other:?}"),
-            },
-            other => panic!("expected external SparkError, got {other:?}"),
+        let cases = [
+            (
+                make_batch(vec![Some(5)], 38, 1, vec![Some(5)], 38, 1),
+                WideDecimalOp::Add,
+                1,
+                1,
+                "1.0",
+            ),
+            (
+                make_batch(vec![Some(99)], 2, 1, vec![Some(10)], 2, 1),
+                WideDecimalOp::Multiply,
+                1,
+                0,
+                "10",
+            ),
+        ];
+
+        for (batch, op, precision, scale, expected_value) in cases {
+            let result = eval_expr(&batch, op, precision, scale, EvalMode::Ansi);
+            match result {
+                Err(DataFusionError::External(error)) => match error.downcast_ref::<SparkError>() {
+                    Some(SparkError::NumericValueOutOfRange {
+                        value,
+                        precision: actual_precision,
+                        scale: actual_scale,
+                    }) => {
+                        assert_eq!(value, expected_value);
+                        assert_eq!(*actual_precision, precision);
+                        assert_eq!(*actual_scale, scale);
+                    }
+                    other => panic!("expected NumericValueOutOfRange, got {other:?}"),
+                },
+                other => panic!("expected external SparkError, got {other:?}"),
+            }
         }
     }
 

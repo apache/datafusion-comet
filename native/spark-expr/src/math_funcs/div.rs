@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::error::unwrap_arrow_external_error;
 use crate::math_funcs::utils::get_precision_scale;
 use crate::{divide_by_zero_error, integral_divide_overflow_error, EvalMode};
 use arrow::array::{Array, Decimal128Array};
@@ -160,10 +161,7 @@ fn spark_decimal_div_internal(
             quotient_to_i128(&res, check_divide_overflow)
         })
     };
-    let result: Decimal128Array = result.map_err(|error| match error {
-        ArrowError::ExternalError(error) => DataFusionError::External(error),
-        error => error.into(),
-    })?;
+    let result: Decimal128Array = result.map_err(unwrap_arrow_external_error)?;
     let result = result.with_data_type(DataType::Decimal128(p3, s3));
     Ok(ColumnarValue::Array(Arc::new(result)))
 }
