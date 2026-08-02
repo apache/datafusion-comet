@@ -22,7 +22,7 @@ package org.apache.comet
 import scala.util.Random
 
 import org.apache.arrow.vector._
-import org.apache.spark.{SparkConf, TaskContext}
+import org.apache.spark.{SparkConf, SparkEnv, TaskContext}
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.api.java.UDF1
 import org.apache.spark.sql.catalyst.expressions.{BoundReference, CreateArray, CreateMap, CreateNamedStruct, Expression, Literal, MapConcat}
@@ -1321,6 +1321,86 @@ class CometCodegenSuite
       assertCodegenRan {
         checkSparkAnswerAndOperator(sql("SELECT idDec30(array_max(flatten(a))) FROM t"))
       }
+    }
+  }
+
+  test("multi-input NullIntolerant tree does not swallow an ANSI error (#5218)") {
+    // `add_months` is NullIntolerant and a plain BinaryExpression, so Spark's `nullSafeCodeGen`
+    // emits the LEFT child's code unconditionally before testing the right child's null. On the
+    // ('notadate', NULL) row Spark therefore evaluates the cast and raises CAST_INVALID_INPUT.
+    // The dispatcher used to short-circuit on the union of input ordinals, see the null on `i`,
+    // and return NULL -- silently losing the error. Note `pmod` / `div` are not witnesses here:
+    // `DivModLike` deliberately evaluates its right child first, so Spark also returns NULL.
+    withTable("t") {
+      sql("CREATE TABLE t (s STRING, i INT) USING parquet")
+      sql("INSERT INTO t VALUES ('notadate', NULL), ('2024-01-31', 1)")
+      withSQLConf("spark.sql.ansi.enabled" -> "true") {
+        CometScalaUDFCodegen.resetStats()
+        val (sparkErr, cometErr) =
+          checkSparkAnswerMaybeThrows(sql("SELECT add_months(CAST(s AS DATE), i) FROM t"))
+        val stats = CometScalaUDFCodegen.stats()
+        assert(
+          stats.compileCount + stats.cacheHitCount >= 1,
+          s"expected the codegen dispatcher to run for this query, got $stats")
+        assert(
+          sparkErr.isDefined,
+          "expected Spark to raise on the invalid ANSI cast; the test row is no longer a witness")
+        assert(
+          cometErr.isDefined,
+          "Comet returned a value where Spark raised: the null short-circuit swallowed the error")
+        assert(
+          cometErr.get.getMessage.contains("CAST_INVALID_INPUT"),
+          s"expected the same CAST_INVALID_INPUT error Spark raises, got: ${cometErr.get}")
+      }
+    }
+  }
+
+  test("single-input NullIntolerant tree still short-circuits nulls") {
+    // Guards against over-correcting #5218: the single-ordinal short-circuit is exact (Spark also
+    // evaluates nothing when that one input is null) and must be preserved.
+    withSubjects("abc", null, "xyz") {
+      assertCodegenRan {
+        checkSparkAnswerAndOperator(sql("SELECT upper(substring(s, 1, 2)) FROM t"))
+      }
+    }
+  }
+
+  test("TIME input column routes through the dispatcher (#5218)") {
+    assume(
+      org.apache.comet.CometSparkSessionExtensions.isSpark41Plus,
+      "TimeType requires Spark 4.1+")
+    // `canHandle` accepts TIME (`isSupportedDataType`) and `emitTypedGetters` emits a getLong
+    // case for `TimeNanoVector`, but `CometScalaUDFCodegen.specFor` used to omit the vector class
+    // and throw `UnsupportedOperationException` at execute time -- after the plan had already
+    // committed to the kernel, so there was no fallback. Driven through the dispatcher directly
+    // because Spark 4.1 still rejects TIME columns in file-based data sources, so no SQL query
+    // can produce a TIME input today.
+    val timeVec = new TimeNanoVector("tm", CometArrowAllocator)
+    val exprVec = new VarBinaryVector("expr", CometArrowAllocator)
+    var out: ValueVector = null
+    try {
+      timeVec.allocateNew()
+      timeVec.setSafe(0, 45296000000000L) // 12:34:56
+      timeVec.setNull(1)
+      timeVec.setValueCount(2)
+
+      val timeType = org.apache.spark.sql.comet.util.Utils.fromArrowField(timeVec.getField)
+      val expr = BoundReference(0, timeType, nullable = true)
+      val serialized = SparkEnv.get.closureSerializer.newInstance().serialize(expr)
+      val bytes = new Array[Byte](serialized.remaining())
+      serialized.get(bytes)
+      exprVec.allocateNew()
+      exprVec.setSafe(0, bytes)
+      exprVec.setValueCount(1)
+
+      out = new CometScalaUDFCodegen().evaluate(Array(exprVec, timeVec), 2)
+      val comet = CometVector.getVector(out.asInstanceOf[FieldVector], null)
+      assert(comet.getLong(0) === 45296000000000L)
+      assert(comet.isNullAt(1))
+    } finally {
+      if (out != null) out.close()
+      exprVec.close()
+      timeVec.close()
     }
   }
 

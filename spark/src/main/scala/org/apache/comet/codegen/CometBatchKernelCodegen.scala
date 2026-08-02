@@ -337,10 +337,9 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim with Come
   }
 
   /**
-   * Per-row body. For `NullIntolerant` expressions where the entire tree propagates nulls,
-   * prepends a short-circuit on the union of input ordinals so the whole `ev.code` cost is
-   * skipped on null rows. Otherwise the standard shape: run `ev.code`, then `setNull` or write
-   * based on `ev.isNull`.
+   * Per-row body. For `NullIntolerant` expressions over a single input ordinal, prepends a
+   * short-circuit on that ordinal so the whole `ev.code` cost is skipped on null rows. Otherwise
+   * the standard shape: run `ev.code`, then `setNull` or write based on `ev.isNull`.
    *
    * `subExprsCode` is the CSE helper-invocation block. It must run before `ev.code`. Inside the
    * short-circuit it lives in the else branch so null rows skip CSE too.
@@ -351,82 +350,94 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim with Come
       ev: ExprCode,
       writeSnippet: String,
       subExprsCode: String): String = {
-    boundExpr match {
-      case _ if isNullIntolerant(boundExpr) && allNullIntolerant(boundExpr) =>
-        // Every node from root to leaf is `NullIntolerant` or a leaf, so "any BoundReference null
-        // -> whole expression null". A non-null-propagating node like `coalesce` or `if` would
-        // make this incorrect (`coalesce(null, x)` is `x`); `allNullIntolerant` rejects those.
-        val inputOrdinals =
-          boundExpr.collect { case b: BoundReference => b.ordinal }.distinct
-        // Primitive Arrow vectors are wrapped in `CometPlainVector` at input-cast time, which
-        // exposes `isNullAt(int)` rather than the raw Arrow `isNull(int)`. Pick the right method
-        // per ordinal so the short-circuit compiles for timestamp / int / float columns too,
-        // not just VarChar / Decimal vectors that stay as raw Arrow types.
-        def nullCheckCall(ord: Int): String = {
-          val method = CometBatchKernelCodegenInput.nullCheckMethod(inputSchema(ord))
-          s"this.col$ord.$method(i)"
-        }
-        val nullCheck =
-          if (inputOrdinals.isEmpty) "false"
-          else inputOrdinals.map(nullCheckCall).mkString(" || ")
-        // `NullIntolerant` only constrains "any input null -> output null"; it does NOT promise
-        // that non-null inputs always produce non-null output. `MakeTimestamp(failOnError=false)`
-        // is `NullIntolerant=true` but its `doGenCode` catches `DateTimeException` for invalid
-        // year/month/day/hour/min/sec components and sets `ev.isNull = true`. Honor `ev.isNull`
-        // post-eval whenever the expression is nullable; skip the guard only when the root is
-        // statically non-nullable (`ev.isNull` is then a literal `false`).
-        if (boundExpr.nullable) {
-          s"""
-             |if ($nullCheck) {
-             |  output.setNull(i);
-             |} else {
-             |  $subExprsCode
-             |  ${ev.code}
-             |  if (${ev.isNull}) {
-             |    output.setNull(i);
-             |  } else {
-             |    $writeSnippet
-             |  }
-             |}
+    val inputOrdinals = boundExpr.collect { case b: BoundReference => b.ordinal }.distinct
+    if (canShortCircuitNulls(boundExpr, inputOrdinals)) {
+      // Primitive Arrow vectors are wrapped in `CometPlainVector` at input-cast time, which
+      // exposes `isNullAt(int)` rather than the raw Arrow `isNull(int)`. Pick the right method
+      // for the ordinal so the short-circuit compiles for timestamp / int / float columns too,
+      // not just VarChar / Decimal vectors that stay as raw Arrow types.
+      val ord = inputOrdinals.head
+      val nullCheck =
+        s"this.col$ord.${CometBatchKernelCodegenInput.nullCheckMethod(inputSchema(ord))}(i)"
+      // `NullIntolerant` only constrains "any input null -> output null"; it does NOT promise
+      // that non-null inputs always produce non-null output. `MakeTimestamp(failOnError=false)`
+      // is `NullIntolerant=true` but its `doGenCode` catches `DateTimeException` for invalid
+      // year/month/day/hour/min/sec components and sets `ev.isNull = true`. Honor `ev.isNull`
+      // post-eval whenever the expression is nullable; skip the guard only when the root is
+      // statically non-nullable (`ev.isNull` is then a literal `false`).
+      if (boundExpr.nullable) {
+        s"""
+           |if ($nullCheck) {
+           |  output.setNull(i);
+           |} else {
+           |  $subExprsCode
+           |  ${ev.code}
+           |  if (${ev.isNull}) {
+           |    output.setNull(i);
+           |  } else {
+           |    $writeSnippet
+           |  }
+           |}
            """.stripMargin
-        } else {
-          s"""
-             |if ($nullCheck) {
-             |  output.setNull(i);
-             |} else {
-             |  $subExprsCode
-             |  ${ev.code}
-             |  $writeSnippet
-             |}
+      } else {
+        s"""
+           |if ($nullCheck) {
+           |  output.setNull(i);
+           |} else {
+           |  $subExprsCode
+           |  ${ev.code}
+           |  $writeSnippet
+           |}
            """.stripMargin
-        }
-      case _ =>
-        // NonNullableOutputShortCircuit: when `nullable = false`, drop the `if (ev.isNull)`
-        // guard at source level rather than relying on JIT folding.
-        if (!boundExpr.nullable) {
-          s"""
-             |$subExprsCode
-             |${ev.code}
-             |$writeSnippet
+      }
+    } else {
+      // NonNullableOutputShortCircuit: when `nullable = false`, drop the `if (ev.isNull)`
+      // guard at source level rather than relying on JIT folding.
+      if (!boundExpr.nullable) {
+        s"""
+           |$subExprsCode
+           |${ev.code}
+           |$writeSnippet
            """.stripMargin
-        } else {
-          s"""
-             |$subExprsCode
-             |${ev.code}
-             |if (${ev.isNull}) {
-             |  output.setNull(i);
-             |} else {
-             |  $writeSnippet
-             |}
+      } else {
+        s"""
+           |$subExprsCode
+           |${ev.code}
+           |if (${ev.isNull}) {
+           |  output.setNull(i);
+           |} else {
+           |  $writeSnippet
+           |}
            """.stripMargin
-        }
+      }
     }
   }
 
   /**
+   * Gates the [[defaultBody]] null short-circuit. Three conditions, all necessary:
+   *
+   *   - The tree reads exactly one input ordinal. Spark's null handling is per-node and
+   *     left-to-right (`BinaryExpression.nullSafeCodeGen` emits the left child's code
+   *     unconditionally, then tests the left child's null, then the right child's), so a
+   *     short-circuit on the union of several ordinals is not equivalent: it skips a subtree that
+   *     Spark would have evaluated, and with it any error that subtree raises. Under ANSI,
+   *     `add_months(cast(s as date), i)` on `('notadate', NULL)` raises `CAST_INVALID_INPUT` in
+   *     Spark, so returning null here would be wrong. With a single ordinal there is nothing left
+   *     for Spark to evaluate ahead of that ordinal's own null check, so the short-circuit is
+   *     exact. (A literal-only subtree that raises would be the one exception, but Catalyst's
+   *     `ConstantFolding` evaluates those at analysis time and never leaves one in the tree.)
+   *   - The root is `NullIntolerant`, so a null input really does mean a null result.
+   *   - Every node in the tree is null-propagating ([[allNullIntolerant]]); a `Coalesce` / `If` /
+   *     `CaseWhen` anywhere would break the chain.
+   */
+  private def canShortCircuitNulls(expr: Expression, inputOrdinals: Seq[Int]): Boolean =
+    inputOrdinals.size == 1 && isNullIntolerant(expr) && allNullIntolerant(expr)
+
+  /**
    * True iff every node in the tree propagates nulls (`NullIntolerant`, `BoundReference`, or
-   * `Literal`). Gates the [[defaultBody]] short-circuit, which is only correct when no node
-   * (`Coalesce`, `If`, `CaseWhen`, `Concat`, ...) breaks the propagation chain.
+   * `Literal`). One of the conditions on [[canShortCircuitNulls]]: the short-circuit is only
+   * correct when no node (`Coalesce`, `If`, `CaseWhen`, `Concat`, ...) breaks the propagation
+   * chain.
    */
   private def allNullIntolerant(expr: Expression): Boolean =
     !expr.exists {
