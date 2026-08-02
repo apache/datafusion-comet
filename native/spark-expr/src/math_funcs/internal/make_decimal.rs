@@ -50,8 +50,7 @@ pub fn spark_make_decimal(
 
                 // The Int64 is already the unscaled Decimal128 value; this widens the bits
                 // (an Arrow Int64->Decimal cast would rescale). Infallible so it vectorizes.
-                let widened: Decimal128Array =
-                    unary::<_, _, Decimal128Type>(arr, |v| v as i128);
+                let widened: Decimal128Array = unary::<_, _, Decimal128Type>(arr, |v| v as i128);
 
                 // `.iter().flatten()` skips null slots so garbage under a null cannot
                 // trigger a false overflow. `find` short-circuits like `.all(is_valid)`
@@ -65,9 +64,9 @@ pub fn spark_make_decimal(
                     // No overflow: attach metadata. `with_precision_and_scale` would rescan.
                     (None, _) => widened.with_data_type(result_type),
                     (Some(v), true) => {
-                        return Err(DataFusionError::External(Box::new(
-                            decimal_overflow_error(v, precision, scale),
-                        )));
+                        return Err(DataFusionError::External(Box::new(decimal_overflow_error(
+                            v, precision, scale,
+                        ))));
                     }
                     (Some(_), false) => widened
                         .null_if_overflow_precision(precision)
@@ -106,7 +105,7 @@ fn long_to_decimal(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::{Array, Int64Array};
+    use arrow::array::{Array, Decimal128Array, Int64Array};
 
     fn overflow_args() -> [ColumnarValue; 1] {
         // 123456 does not fit Decimal128(3, 0)
@@ -183,5 +182,139 @@ mod tests {
             panic!("expected decimal scalar result")
         };
         assert!(v.is_none());
+    }
+
+    #[test]
+    fn test_scalar_valid_value() {
+        // Locks the happy path for the scalar branch: an in-range value round-trips
+        // to the correct Decimal128 with matching precision/scale. Existing scalar
+        // tests only cover overflow and null input.
+        let args = [ColumnarValue::Scalar(ScalarValue::Int64(Some(999)))];
+        let result = spark_make_decimal(&args, &DataType::Decimal128(3, 0), true)
+            .expect("in-range scalar should succeed");
+        let ColumnarValue::Scalar(ScalarValue::Decimal128(v, 3, 0)) = result else {
+            panic!("expected decimal scalar result")
+        };
+        assert_eq!(v, Some(999));
+    }
+
+    #[test]
+    fn test_scalar_overflow_nulls_when_not_fail_on_error() {
+        // Covers `long_to_decimal`'s `Err(_) => Ok(None)` branch through the scalar
+        // path. The array path exercises this branch indirectly via `null_if_overflow_precision`;
+        // the scalar branch has its own code and was previously untested.
+        let args = [ColumnarValue::Scalar(ScalarValue::Int64(Some(123456)))];
+        let result = spark_make_decimal(&args, &DataType::Decimal128(3, 0), false)
+            .expect("scalar overflow without fail_on_error should return null");
+        let ColumnarValue::Scalar(ScalarValue::Decimal128(v, 3, 0)) = result else {
+            panic!("expected decimal scalar result")
+        };
+        assert_eq!(v, None);
+    }
+
+    #[test]
+    fn test_array_no_overflow_fast_path() {
+        // Common path: no overflow, no nulls. Values pass through unchanged and the
+        // output carries the target Decimal128 type. Locks the (None, _) arm that
+        // existing overflow tests never touch.
+        let args = [ColumnarValue::Array(Arc::new(Int64Array::from(vec![
+            Some(1i64),
+            Some(50),
+            Some(999),
+        ])))];
+        let result = spark_make_decimal(&args, &DataType::Decimal128(3, 0), false)
+            .expect("no overflow should succeed");
+        let ColumnarValue::Array(array) = result else {
+            panic!("expected array result")
+        };
+        assert_eq!(array.data_type(), &DataType::Decimal128(3, 0));
+        assert_eq!(array.null_count(), 0);
+        let decimals = array.as_any().downcast_ref::<Decimal128Array>().unwrap();
+        assert_eq!(decimals.value(0), 1);
+        assert_eq!(decimals.value(1), 50);
+        assert_eq!(decimals.value(2), 999);
+    }
+
+    #[test]
+    fn test_array_negative_overflow_nulls() {
+        // `is_valid_decimal_precision` checks both bounds; -1000 is below the
+        // Decimal128(3, 0) lower bound (-999). Guards the negative branch that
+        // existing overflow tests (all positive) do not cover.
+        let args = [ColumnarValue::Array(Arc::new(Int64Array::from(vec![
+            Some(-1000i64),
+            Some(5),
+        ])))];
+        let result = spark_make_decimal(&args, &DataType::Decimal128(3, 0), false)
+            .expect("negative overflow should become null");
+        let ColumnarValue::Array(array) = result else {
+            panic!("expected array result")
+        };
+        assert!(array.is_null(0), "negative overflow should be nulled");
+        assert!(array.is_valid(1));
+    }
+
+    #[test]
+    fn test_array_null_slot_garbage_not_scanned() {
+        // Regression guard for the `.iter().flatten()` decision. `unary` widens
+        // every slot including nulls, so the null slot's underlying storage can
+        // hold arbitrary bits. If the scan ever switched to `.values().iter()`,
+        // i64::MAX under the null would falsely trip Decimal128(3, 0) overflow.
+        use arrow::buffer::{NullBuffer, ScalarBuffer};
+
+        let values = ScalarBuffer::from(vec![10i64, i64::MAX, 20i64]);
+        let nulls = NullBuffer::from(vec![true, false, true]);
+        let arr = Int64Array::new(values, Some(nulls));
+        let args = [ColumnarValue::Array(Arc::new(arr))];
+
+        // Non-ANSI: no overflow detected, null slot stays null (not double-nullified).
+        let result = spark_make_decimal(&args, &DataType::Decimal128(3, 0), false)
+            .expect("null slot garbage must not trigger overflow");
+        let ColumnarValue::Array(array) = result else {
+            panic!("expected array result")
+        };
+        assert!(array.is_valid(0));
+        assert!(array.is_null(1));
+        assert!(array.is_valid(2));
+
+        // ANSI: also must not raise on garbage hidden behind a null.
+        spark_make_decimal(&args, &DataType::Decimal128(3, 0), true)
+            .expect("ANSI mode must not error on null slot garbage");
+    }
+
+    #[test]
+    fn test_array_boundary_precision() {
+        // 999 is exactly the max for Decimal128(3, 0); 1000 is over by one.
+        // Pins the off-by-one on `is_valid_decimal_precision`.
+        let args = [ColumnarValue::Array(Arc::new(Int64Array::from(vec![
+            Some(999i64),
+            Some(1000),
+        ])))];
+        let result = spark_make_decimal(&args, &DataType::Decimal128(3, 0), false)
+            .expect("boundary case should not error in non-ANSI");
+        let ColumnarValue::Array(array) = result else {
+            panic!("expected array result")
+        };
+        assert!(array.is_valid(0));
+        assert!(array.is_null(1));
+    }
+
+    #[test]
+    fn test_array_all_null() {
+        // .iter().flatten() on an all-null array yields nothing, so `find` returns
+        // None and the fast path is taken. Locks that the all-null mask and target
+        // type are preserved.
+        let args = [ColumnarValue::Array(Arc::new(Int64Array::from(vec![
+            None::<i64>,
+            None,
+            None,
+        ])))];
+        let result = spark_make_decimal(&args, &DataType::Decimal128(3, 0), false)
+            .expect("all-null should succeed");
+        let ColumnarValue::Array(array) = result else {
+            panic!("expected array result")
+        };
+        assert_eq!(array.data_type(), &DataType::Decimal128(3, 0));
+        assert_eq!(array.len(), 3);
+        assert_eq!(array.null_count(), 3);
     }
 }
