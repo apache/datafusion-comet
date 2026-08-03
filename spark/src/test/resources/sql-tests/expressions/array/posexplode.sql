@@ -203,3 +203,97 @@ INSERT INTO test_posexplode_all_null VALUES (1, NULL), (2, NULL), (3, NULL)
 
 query
 SELECT id, posexplode_outer(arr) FROM test_posexplode_all_null
+
+-- ===== `pos` column value validation. Existing queries project `pos`
+-- alongside `id`/`value` but never filter, group, or aggregate on it, so a
+-- native `ListPositionsExpr` regression that emitted always-zero, off-by-one,
+-- or NULL-swapped-with-zero indices could still match on golden row order.
+-- These queries force value-level assertions on the position column.
+
+query
+SELECT pos, count(*) AS c
+FROM test_posexplode_int LATERAL VIEW posexplode(arr) p AS pos, value
+GROUP BY pos
+ORDER BY pos
+
+query
+SELECT id, pos, value
+FROM test_posexplode_int LATERAL VIEW posexplode(arr) p AS pos, value
+WHERE pos = 0
+ORDER BY id
+
+query
+SELECT id, pos, value
+FROM test_posexplode_int LATERAL VIEW OUTER posexplode(arr) p AS pos, value
+WHERE pos IS NULL
+ORDER BY id
+
+query
+SELECT id, pos, value
+FROM test_posexplode_int LATERAL VIEW OUTER posexplode(arr) p AS pos, value
+WHERE pos IS NOT NULL
+ORDER BY id, pos
+
+query
+SELECT id, MAX(pos) AS max_pos
+FROM test_posexplode_int LATERAL VIEW posexplode(arr) p AS pos, value
+GROUP BY id
+ORDER BY id
+
+-- Reconstruct the original array by ordering `value` by `pos`: a strong
+-- regression net against pos/value branch misalignment (see #5224).
+query
+SELECT id, collect_list(value) AS values_ordered_by_pos
+FROM (
+  SELECT id, pos, value
+  FROM test_posexplode_int LATERAL VIEW posexplode(arr) p AS pos, value
+  ORDER BY id, pos
+)
+GROUP BY id
+ORDER BY id
+
+-- ===== Stacked LATERAL VIEW OUTER posexplode: two GenerateExec outer paths
+-- composed back-to-back, where the inner `pos` must reset to 0 per outer
+-- element and empty / NULL inner arrays yield (NULL, NULL) against the
+-- correct outer pos. explode.sql covers the plain-explode counterpart; this
+-- exercises the parallel positions branch through two nested unnests.
+
+statement
+CREATE TABLE test_posexplode_stacked(id int, arrs array<array<int>>) USING parquet
+
+statement
+INSERT INTO test_posexplode_stacked VALUES
+  (1, array(array(10, 20), array(), array(30))),
+  (2, array(array(), NULL)),
+  (3, array()),
+  (4, NULL)
+
+query
+SELECT id, p1, p2, y
+FROM test_posexplode_stacked
+LATERAL VIEW OUTER posexplode(arrs) t1 AS p1, x
+LATERAL VIEW OUTER posexplode(x) t2 AS p2, y
+
+-- ===== Non-attribute generator child for posexplode: the array expression is
+-- computed from input columns. Explode has its own coverage of this shape
+-- (see explode.sql); posexplode must exercise it separately because the
+-- serde builds a distinct native operator with the parallel positions branch.
+
+statement
+CREATE TABLE test_posexplode_expr_child(id int, a array<int>, b array<int>) USING parquet
+
+statement
+INSERT INTO test_posexplode_expr_child VALUES
+  (1, array(10, 20), array(30, 40)),
+  (2, array(), array(50)),
+  (3, NULL, array(60, 70)),
+  (4, array(80), NULL)
+
+query
+SELECT id, posexplode(concat(a, b)) FROM test_posexplode_expr_child
+
+query
+SELECT id, posexplode_outer(concat(a, b)) FROM test_posexplode_expr_child
+
+query
+SELECT id, posexplode(slice(concat(a, b), 1, 2)) FROM test_posexplode_expr_child

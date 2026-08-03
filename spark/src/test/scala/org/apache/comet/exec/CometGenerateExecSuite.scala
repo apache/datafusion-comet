@@ -425,4 +425,156 @@ class CometGenerateExecSuite extends CometTestBase {
     }
   }
 
+  // Regression tests for https://github.com/apache/datafusion-comet/issues/5224.
+  //
+  // A native limit with a non-zero offset produces a batch whose `ListArray` has a non-zero
+  // offset base (`LimitStream::poll_and_skip` does `batch.slice(self.skip, ...)`). Before the
+  // fix, `ListPositionsExpr` rebuilt a fresh values array numbered from zero but reused the
+  // input's original offset buffer, so `ListArray::new` panicked with
+  // "Max offset of N exceeds length of values M".
+  //
+  // `spark.sql.leafNodeDefaultParallelism = 1` is required rather than cosmetic: with the
+  // default parallelism each partition produces a one-row batch, `LimitStream` discards whole
+  // batches instead of slicing, and the bug is masked. AQE off just keeps the plan readable.
+
+  test("posexplode over limit with offset") {
+    withSQLConf(
+      "spark.sql.adaptive.enabled" -> "false",
+      "spark.sql.leafNodeDefaultParallelism" -> "1",
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_EXPLODE_ENABLED.key -> "true") {
+      withTempView("t") {
+        Seq((1, Array(1, 2, 3)), (2, Array(4, 5)), (3, Array(6)), (4, Array(7, 8)), (5, Array(9)))
+          .toDF("id", "arr")
+          .createOrReplaceTempView("t")
+        val df = sql("SELECT id, posexplode(arr) FROM (SELECT id, arr FROM t LIMIT 4 OFFSET 1)")
+        checkSparkAnswerAndOperator(df)
+      }
+    }
+  }
+
+  test("posexplode_outer over limit with offset") {
+    withSQLConf(
+      "spark.sql.adaptive.enabled" -> "false",
+      "spark.sql.leafNodeDefaultParallelism" -> "1",
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_EXPLODE_ENABLED.key -> "true") {
+      withTempView("t") {
+        Seq(
+          (1, Some(Array(1, 2, 3))),
+          (2, None),
+          (3, Some(Array.empty[Int])),
+          (4, Some(Array(7, 8))),
+          (5, None))
+          .toDF("id", "arr")
+          .createOrReplaceTempView("t")
+        val df =
+          sql("SELECT id, posexplode_outer(arr) FROM (SELECT id, arr FROM t LIMIT 4 OFFSET 1)")
+        checkSparkAnswerAndOperator(df)
+      }
+    }
+  }
+
+  test("explode over limit with offset") {
+    // Plain `explode` does not build `ListPositionsExpr`, so it did not trigger #5224.
+    // Guarded here so that a future regression in the values path is caught alongside the
+    // posexplode fix.
+    withSQLConf(
+      "spark.sql.adaptive.enabled" -> "false",
+      "spark.sql.leafNodeDefaultParallelism" -> "1",
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_EXPLODE_ENABLED.key -> "true") {
+      withTempView("t") {
+        Seq((1, Array(1, 2, 3)), (2, Array(4, 5)), (3, Array(6)), (4, Array(7, 8)), (5, Array(9)))
+          .toDF("id", "arr")
+          .createOrReplaceTempView("t")
+        val df = sql("SELECT id, explode(arr) FROM (SELECT id, arr FROM t LIMIT 4 OFFSET 1)")
+        checkSparkAnswerAndOperator(df)
+      }
+    }
+  }
+
+  test("explode_outer over limit with offset") {
+    // Exercises `ListEmptyToNullExpr` on a sliced input with a non-zero offset base. The
+    // helper preserves the base offset and passes it through unchanged, so the fix in
+    // `ListPositionsExpr` is what actually keeps the parallel `pos` branch safe. This test
+    // covers the `explode_outer` shape without the `pos` branch.
+    withSQLConf(
+      "spark.sql.adaptive.enabled" -> "false",
+      "spark.sql.leafNodeDefaultParallelism" -> "1",
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_EXPLODE_ENABLED.key -> "true") {
+      withTempView("t") {
+        Seq(
+          (1, Some(Array(1, 2, 3))),
+          (2, None),
+          (3, Some(Array.empty[Int])),
+          (4, Some(Array(7, 8))),
+          (5, None))
+          .toDF("id", "arr")
+          .createOrReplaceTempView("t")
+        val df =
+          sql("SELECT id, explode_outer(arr) FROM (SELECT id, arr FROM t LIMIT 4 OFFSET 1)")
+        checkSparkAnswerAndOperator(df)
+      }
+    }
+  }
+
+  // A single input row whose flattened output exceeds COMET_BATCH_SIZE forces
+  // UnnestExec to emit multiple output batches from one input row. This is a
+  // distinct axis from cross-batch input slicing (covered above): pos values
+  // must remain contiguous across the split, and `explode` / `explode_outer`
+  // must preserve element order. Existing batch-boundary tests use arrays of
+  // at most 5 elements against COMET_BATCH_SIZE=4, so no test forced this
+  // one-input-many-output-batches shape until now.
+
+  test("posexplode single row exceeds batch size") {
+    withSQLConf(
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_EXPLODE_ENABLED.key -> "true",
+      CometConf.COMET_BATCH_SIZE.key -> "8") {
+      val df = Seq(
+        (1, (0 until 30).toArray),
+        (2, Array(100, 101)),
+        (3, Array.empty[Int]),
+        (4, (0 until 20).map(i => 200 + i).toArray))
+        .toDF("id", "arr")
+        .selectExpr("id", "posexplode(arr) as (pos, value)")
+      checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  test("posexplode_outer single row exceeds batch size") {
+    withSQLConf(
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_EXPLODE_ENABLED.key -> "true",
+      CometConf.COMET_BATCH_SIZE.key -> "8") {
+      val df = Seq(
+        (1, Some((0 until 30).toArray)),
+        (2, Some(Array(100, 101))),
+        (3, None),
+        (4, Some(Array.empty[Int])),
+        (5, Some((0 until 20).map(i => 200 + i).toArray)))
+        .toDF("id", "arr")
+        .selectExpr("id", "posexplode_outer(arr) as (pos, value)")
+      checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  test("explode single row exceeds batch size") {
+    withSQLConf(
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_EXPLODE_ENABLED.key -> "true",
+      CometConf.COMET_BATCH_SIZE.key -> "8") {
+      val df = Seq(
+        (1, (0 until 30).toArray),
+        (2, Array(100, 101)),
+        (3, Array.empty[Int]),
+        (4, (0 until 20).map(i => 200 + i).toArray))
+        .toDF("id", "arr")
+        .selectExpr("id", "explode(arr) as value")
+      checkSparkAnswerAndOperator(df)
+    }
+  }
+
 }

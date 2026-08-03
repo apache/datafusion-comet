@@ -451,3 +451,54 @@ INSERT INTO test_explode_dt VALUES
 
 query spark_answer_only
 SELECT id, explode_outer(arr) FROM test_explode_dt
+
+-- ===== Non-attribute generator child: the array expression is computed from
+-- input columns instead of read directly. `CometExplodeExec.convert` routes the
+-- child through `exprToProto` and falls back only when the child fails to
+-- convert. Existing tests only pass bare attributes or a pure-literal array, so
+-- this section pins the column-referencing expression-child path.
+
+statement
+CREATE TABLE test_explode_expr_child(id int, a array<int>, b array<int>) USING parquet
+
+statement
+INSERT INTO test_explode_expr_child VALUES
+  (1, array(1, 2), array(3, 4)),
+  (2, array(), array(5)),
+  (3, NULL, array(6, 7)),
+  (4, array(8), NULL)
+
+query
+SELECT id, explode(concat(a, b)) AS v FROM test_explode_expr_child
+
+query
+SELECT id, explode_outer(concat(a, b)) AS v FROM test_explode_expr_child
+
+query
+SELECT id, explode(slice(concat(a, b), 1, 2)) AS v FROM test_explode_expr_child
+
+statement
+CREATE TABLE test_explode_array_ctor(id int, x int, y int, z int) USING parquet
+
+statement
+INSERT INTO test_explode_array_ctor VALUES
+  (1, 10, 20, 30),
+  (2, NULL, 40, 50),
+  (3, 60, NULL, 70)
+
+query
+SELECT id, explode(array(x, y, z)) AS v FROM test_explode_array_ctor
+
+query
+SELECT id, explode_outer(array(x, y, z)) AS v FROM test_explode_array_ctor
+
+-- ===== Non-deterministic generator child: `CometExplodeExec.getSupportLevel`
+-- rejects the generator when `op.generator.deterministic` is false, and Spark
+-- propagates non-determinism from children, so `explode(array(rand(0)))`
+-- reports the generator as non-deterministic and must fall back to Spark.
+
+query expect_fallback(Only deterministic generators are supported)
+SELECT id, explode(array(rand(0))) FROM test_explode_int WHERE id = 1
+
+query expect_fallback(Only deterministic generators are supported)
+SELECT id, explode(shuffle(arr)) FROM test_explode_int
