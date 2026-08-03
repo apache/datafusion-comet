@@ -385,7 +385,6 @@ object ComparisonUtils {
           .setIn(builder)
           .build())
     } else {
-      val allExprs = list ++ Seq(value)
       None
     }
   }
