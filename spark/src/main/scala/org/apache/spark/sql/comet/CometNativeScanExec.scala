@@ -218,7 +218,11 @@ case class CometNativeScanExec(
     // Serialize each partition's files
     import org.apache.comet.serde.operator.partition2Proto
     val perPartitionBytes = filePartitions.map { filePartition =>
-      val partitionProto = partition2Proto(filePartition, relation.partitionSchema)
+      val partitionProto = partition2Proto(
+        filePartition,
+        relation.partitionSchema,
+        originalPlan.fileConstantMetadataColumns,
+        relation.fileFormat.fileConstantMetadataExtractors)
       val partitionNativeScan = org.apache.comet.serde.OperatorOuterClass.NativeScan
         .newBuilder()
         .setFilePartition(partitionProto)

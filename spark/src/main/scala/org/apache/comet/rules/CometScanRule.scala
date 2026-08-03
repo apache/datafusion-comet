@@ -51,7 +51,7 @@ import org.apache.comet.iceberg.{CometIcebergNativeScanMetadata, IcebergReflecti
 import org.apache.comet.objectstore.NativeConfig
 import org.apache.comet.parquet.CometParquetUtils.{encryptionEnabled, isEncryptionConfigSupported}
 import org.apache.comet.serde.operator.{CometIcebergNativeScan, CometNativeScan}
-import org.apache.comet.shims.{CometTypeShim, ShimCometStreaming, ShimFileFormat, ShimSubqueryBroadcast}
+import org.apache.comet.shims.{CometTypeShim, ShimCometStreaming, ShimSubqueryBroadcast}
 
 /**
  * Spark physical optimizer rule for replacing Spark scans with Comet scans.
@@ -143,11 +143,18 @@ case class CometScanRule(session: SparkSession)
   }
 
   private def transformV1Scan(plan: SparkPlan, scanExec: FileSourceScanExec): SparkPlan = {
-    val metadataColNames = metadataCols(scanExec)
-    if (metadataColNames.nonEmpty) {
+    // fileConstantMetadataColumns (file_path, file_name, file_size, file_block_start,
+    // file_block_length, file_modification_time) are known before opening the file and
+    // supported below via the same projection mechanism as partition columns. Any other
+    // metadata column (currently only `_metadata.row_index`, generated per row by the reader)
+    // is not.
+    val constantMetadataColNames = scanExec.fileConstantMetadataColumns.map(_.name).toSet
+    val unsupportedMetadataColNames =
+      metadataCols(scanExec).filterNot(constantMetadataColNames.contains)
+    if (unsupportedMetadataColNames.nonEmpty) {
       return withFallbackReason(
         scanExec,
-        s"Metadata column(s) ${metadataColNames.mkString(", ")} is not supported")
+        s"Metadata column(s) ${unsupportedMetadataColNames.mkString(", ")} is not supported")
     }
 
     // On Spark 3.4, injectQueryStageOptimizerRule is unavailable, so
@@ -265,10 +272,6 @@ case class CometScanRule(session: SparkSession)
       withFallbackReason(scanExec, "Native Parquet scan does not support encryption")
       return None
     }
-    if (scanExec.fileConstantMetadataColumns.nonEmpty) {
-      withFallbackReason(scanExec, "Native DataFusion scan does not support metadata columns")
-      return None
-    }
     // input_file_name, input_file_block_start, and input_file_block_length read from
     // InputFileBlockHolder, a thread-local set by Spark's FileScanRDD. The native DataFusion
     // scan does not use FileScanRDD, so these expressions would return empty/default values.
@@ -281,10 +284,6 @@ case class CometScanRule(session: SparkSession)
         scanExec,
         "Native DataFusion scan is not compatible with input_file_name, " +
           "input_file_block_start, or input_file_block_length")
-      return None
-    }
-    if (ShimFileFormat.findRowIndexColumnIndexInSchema(scanExec.requiredSchema) >= 0) {
-      withFallbackReason(scanExec, "Native DataFusion scan does not support row index generation")
       return None
     }
     if (!isSchemaSupported(scanExec, r)) {

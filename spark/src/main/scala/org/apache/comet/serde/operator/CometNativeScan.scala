@@ -29,6 +29,7 @@ import org.apache.spark.sql.comet.{CometNativeExec, CometNativeScanExec, CometSc
 import org.apache.spark.sql.execution.{FileSourceScanExec, InSubqueryExec, SubqueryAdaptiveBroadcastExec}
 import org.apache.spark.sql.execution.datasources.parquet.ParquetUtils
 import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.types.StructField
 
 import org.apache.comet.{CometConf, ConfigEntry}
 import org.apache.comet.CometConf.COMET_EXEC_ENABLED
@@ -165,7 +166,18 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with Logging {
         .headOption
         .map(_.getPath.toUri)
 
-      val partitionSchema = schema2Proto(scan.relation.partitionSchema)
+      // Constant metadata columns (file_path, file_name, file_size, file_block_start,
+      // file_block_length, file_modification_time) are known before opening the file and
+      // constant for every row read from it, exactly like partition columns. Spark places
+      // them immediately after partition columns in `scan.output`
+      // (FileSourceStrategy.scala: readDataColumns ++ generatedMetadataColumns ++
+      // partitionColumns ++ constantMetadataColumns), so appending them after the real
+      // partition schema here keeps the two in lockstep.
+      val constantMetadataFields = scan.wrapped.fileConstantMetadataColumns.map(attr =>
+        StructField(attr.name, attr.dataType, attr.nullable))
+      val partitionSchemaFields = scan.relation.partitionSchema.fields.toSeq ++
+        constantMetadataFields
+      val partitionSchema = schema2Proto(partitionSchemaFields)
       val requiredSchema = schema2Proto(scan.requiredSchema)
       val dataSchema = schema2Proto(scan.relation.dataSchema)
 
@@ -173,15 +185,16 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with Logging {
         scan.relation.dataSchema.fieldIndex(field.name)
       })
       val partitionSchemaIndexes = scan.relation.dataSchema.fields.length until
-        (scan.relation.dataSchema.length + scan.relation.partitionSchema.fields.length)
+        (scan.relation.dataSchema.length + partitionSchemaFields.length)
 
       val projectionVector = (dataSchemaIndexes ++ partitionSchemaIndexes).map(idx =>
         idx.toLong.asInstanceOf[java.lang.Long])
 
       commonBuilder.addAllProjectionVector(projectionVector.asJava)
 
-      // In `CometScanRule`, we ensure partitionSchema is supported.
-      assert(partitionSchema.length == scan.relation.partitionSchema.fields.length)
+      // In `CometScanRule`, we ensure partitionSchema (including constant metadata columns)
+      // is supported.
+      assert(partitionSchema.length == partitionSchemaFields.length)
 
       commonBuilder.addAllDataSchema(dataSchema.asJava)
       commonBuilder.addAllRequiredSchema(requiredSchema.asJava)

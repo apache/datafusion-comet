@@ -1526,12 +1526,30 @@ impl PhysicalPlanner {
                     ));
                 }
 
-                // Convert the Spark expressions to Physical expressions
-                let data_filters: Result<Vec<Arc<dyn PhysicalExpr>>, ExecutionError> = common
-                    .data_filters
-                    .iter()
-                    .map(|expr| self.create_expr(expr, Arc::clone(&required_schema)))
-                    .collect();
+                // data_filters may reference partition columns and constant metadata columns
+                // (e.g. `_metadata.file_size`), which the Parquet reader appends after
+                // required_schema's columns once partition_values are projected into the
+                // batch. Bind against the combined schema so `Bound` indices resolve
+                // correctly -- Scala's `exprToProto(filter, scan.output)`
+                // (CometNativeScan.scala) numbers columns against that same ordering.
+                let data_filters: Result<Vec<Arc<dyn PhysicalExpr>>, ExecutionError> =
+                    if common.data_filters.is_empty() {
+                        Ok(vec![])
+                    } else {
+                        let filter_schema: SchemaRef = Arc::new(Schema::new(
+                            required_schema
+                                .fields()
+                                .iter()
+                                .chain(partition_schema.fields().iter())
+                                .cloned()
+                                .collect::<Vec<FieldRef>>(),
+                        ));
+                        common
+                            .data_filters
+                            .iter()
+                            .map(|expr| self.create_expr(expr, Arc::clone(&filter_schema)))
+                            .collect()
+                    };
 
                 let default_values: Option<HashMap<Column, ScalarValue>> = if !common
                     .default_values

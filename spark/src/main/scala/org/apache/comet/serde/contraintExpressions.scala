@@ -19,7 +19,7 @@
 
 package org.apache.comet.serde
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, KnownFloatingPointNormalized, KnownNullable}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, KnownFloatingPointNormalized, KnownNotNull, KnownNullable, TaggingExpression}
 import org.apache.spark.sql.catalyst.optimizer.NormalizeNaNAndZero
 
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithFallbackReason, serializeDataType}
@@ -78,17 +78,40 @@ object CometKnownFloatingPointNormalized
 }
 
 /**
- * `KnownNullable` is a tagging expression that only marks its child as nullable; it is a runtime
- * no-op (`eval` returns the child's value unchanged). Spark's time-window resolution wraps window
- * bounds in `KnownNullable`, so supporting it lets those grouping queries run natively. We simply
- * serialize the child and drop the tag.
+ * `KnownNullable` and `KnownNotNull` (below) are Spark `TaggingExpression`s that only annotate a
+ * child's nullability; both are runtime no-ops whose `eval` returns the child's value unchanged.
+ * We serialize the child directly and drop the tag.
  */
-object CometKnownNullable extends CometExpressionSerde[KnownNullable] {
-  override def convert(
-      expr: KnownNullable,
+private object CometTaggingExpression {
+  def convert(
+      expr: TaggingExpression,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     val optExpr = exprToProtoInternal(expr.child, inputs, binding)
     optExprWithFallbackReason(optExpr, expr, expr.child)
   }
+}
+
+/**
+ * Spark's time-window resolution wraps window bounds in `KnownNullable`, so supporting it lets
+ * those grouping queries run natively.
+ */
+object CometKnownNullable extends CometExpressionSerde[KnownNullable] {
+  override def convert(
+      expr: KnownNullable,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] =
+    CometTaggingExpression.convert(expr, inputs, binding)
+}
+
+/**
+ * Spark's `FileSourceStrategy` wraps the `_metadata` struct in `KnownNotNull` so the schema
+ * advertises it as non-nullable without relying on `CreateStruct`'s own nullability inference.
+ */
+object CometKnownNotNull extends CometExpressionSerde[KnownNotNull] {
+  override def convert(
+      expr: KnownNotNull,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] =
+    CometTaggingExpression.convert(expr, inputs, binding)
 }

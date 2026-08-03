@@ -521,6 +521,85 @@ abstract class ParquetReadSuite extends CometTestBase {
     }
   }
 
+  test("read _metadata constant columns via native scan") {
+    // TODO(https://github.com/apache/datafusion-comet/issues/3432): `_metadata.row_index` is
+    // generated per row by the reader, not constant per file, so it needs DataFusion's
+    // virtual-column mechanism rather than the partition-value path used here. Not covered.
+    withTempPath { dir =>
+      (1 to 100).toDF("id").repartition(1).write.parquet(dir.getCanonicalPath)
+      val df = spark.read
+        .parquet(dir.getCanonicalPath)
+        .select(
+          $"id",
+          $"_metadata.file_path",
+          $"_metadata.file_name",
+          $"_metadata.file_size",
+          $"_metadata.file_block_start",
+          $"_metadata.file_block_length",
+          $"_metadata.file_modification_time")
+      checkSparkAnswerAndOperator(df, Seq(classOf[CometNativeScanExec]))
+    }
+  }
+
+  /**
+   * Writes two Parquet files with distinct row counts (and thus distinct file sizes) into `dir`,
+   * and returns their (file_path, file_size) pairs sorted by size. Discovers them with Comet
+   * disabled so the tests below filter on ground truth rather than hardcoded assumptions.
+   */
+  private def writeTwoFilesAndDiscoverMetadata(dir: File): Array[(String, Long)] = {
+    (1 to 5).toDF("id").repartition(1).write.mode("overwrite").parquet(dir.getCanonicalPath)
+    (1000 to 1999).toDF("id").repartition(1).write.mode("append").parquet(dir.getCanonicalPath)
+    withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+      spark.read
+        .parquet(dir.getCanonicalPath)
+        .select($"_metadata.file_path", $"_metadata.file_size")
+        .distinct()
+        .as[(String, Long)]
+        .collect()
+        .sortBy(_._2)
+    }
+  }
+
+  test("filter on _metadata.file_size selects rows from the matching file only") {
+    withTempPath { dir =>
+      val files = writeTwoFilesAndDiscoverMetadata(dir)
+      assert(files.length == 2, s"expected two distinct files, got ${files.toSeq}")
+      val (_, smallerSize) = files(0)
+
+      val df = spark.read
+        .parquet(dir.getCanonicalPath)
+        .filter($"_metadata.file_size" === smallerSize)
+        .select($"id")
+      checkSparkAnswerAndOperator(df, Seq(classOf[CometNativeScanExec]))
+    }
+  }
+
+  test("filter combining _metadata column and a data column") {
+    withTempPath { dir =>
+      val files = writeTwoFilesAndDiscoverMetadata(dir)
+      val (_, largerSize) = files(1)
+
+      val df = spark.read
+        .parquet(dir.getCanonicalPath)
+        .filter($"_metadata.file_size" === largerSize && $"id" > 1500)
+        .select($"id")
+      checkSparkAnswerAndOperator(df, Seq(classOf[CometNativeScanExec]))
+    }
+  }
+
+  test("filter on _metadata.file_path exact match") {
+    withTempPath { dir =>
+      val files = writeTwoFilesAndDiscoverMetadata(dir)
+      val (targetPath, _) = files(0)
+
+      val df = spark.read
+        .parquet(dir.getCanonicalPath)
+        .filter($"_metadata.file_path" === targetPath)
+        .select($"id")
+      checkSparkAnswerAndOperator(df, Seq(classOf[CometNativeScanExec]))
+    }
+  }
+
   test("fix: string partition column with incorrect offset buffer") {
     def makeRawParquetFile(
         path: Path,
