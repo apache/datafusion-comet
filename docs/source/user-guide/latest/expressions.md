@@ -180,9 +180,9 @@ The tables below list every Spark built-in expression with its current status.
 | Function | Status | Implementation | Notes |
 | --- | --- | --- | --- |
 | `&` | ✅ | Native |  |
-| `<<` | ✅ | — |  |
-| `>>` | ✅ | — |  |
-| `>>>` | ✅ | — | Operator alias for `shiftrightunsigned` (Spark 4.0+) |
+| `<<` | ✅ | Native |  |
+| `>>` | ✅ | Native |  |
+| `>>>` | ✅ | Native | Operator alias for `shiftrightunsigned` (Spark 4.0+) |
 | `^` | ✅ | Native |  |
 | `bit_count` | ✅ | Native |  |
 | `bit_get` | ✅ | Native |  |
@@ -229,7 +229,7 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 
 | Function | Status | Implementation | Notes |
 | --- | --- | --- | --- |
-| `cast` | ✅ | Native | Some casts fall back; float-to-decimal is opt-in ([details](compatibility/expressions/cast.md)) |
+| `cast` | ✅ | Hybrid | Some casts fall back; float-to-decimal is opt-in ([details](compatibility/expressions/cast.md)) |
 
 ---
 
@@ -272,25 +272,25 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `extract` | ✅ | — |  |
 | `from_unixtime` | ✅ | Hybrid |  |
 | `from_utc_timestamp` | ✅ | Hybrid | Routes through the JVM codegen dispatcher by default (handles all timezone forms); the native path is opt-in via allowIncompatible ([details](compatibility/expressions/datetime.md)) |
-| `hour` | ✅ | Native |  |
+| `hour` | ✅ | — |  |
 | `last_day` | ✅ | Native |  |
 | `localtimestamp` | ✅ | — |  |
 | `make_date` | ✅ | Native |  |
 | `make_dt_interval` | ✅ | Codegen dispatch |  |
 | `make_interval` | 🔜 | — | Produces legacy CalendarInterval; tracked by [#5061](https://github.com/apache/datafusion-comet/issues/5061) |
 | `make_time` | 🔜 | — | Spark 4.1 TIME type; tracked by [#4288](https://github.com/apache/datafusion-comet/issues/4288) |
-| `make_timestamp` | ✅ | Hybrid |  |
+| `make_timestamp` | ✅ | — |  |
 | `make_timestamp_ltz` | ✅ | — | 2-arg TIME form falls back |
 | `make_timestamp_ntz` | ✅ | — | 2-arg TIME form falls back |
 | `make_ym_interval` | ✅ | Codegen dispatch |  |
-| `minute` | ✅ | Native |  |
+| `minute` | ✅ | — |  |
 | `month` | ✅ | Native |  |
 | `monthname` | ✅ | — | Abbreviated month name (Spark 4.0+) |
 | `months_between` | ✅ | Codegen dispatch |  |
 | `next_day` | ✅ | Native |  |
 | `now` | ✅ | — | Constant-folded to a literal (alias of `current_timestamp`) |
 | `quarter` | ✅ | Native |  |
-| `second` | ✅ | Native |  |
+| `second` | ✅ | — |  |
 | `session_window` | 🔜 | — | Batch session-window grouping falls back (`UpdatingSessionsExec` is not yet native); tracked by [#4785](https://github.com/apache/datafusion-comet/issues/4785) |
 | `time_diff` | 🔜 | — | Spark 4.1 TIME type; tracked by [#4288](https://github.com/apache/datafusion-comet/issues/4288) |
 | `time_trunc` | 🔜 | — | Spark 4.1 TIME type; tracked by [#4288](https://github.com/apache/datafusion-comet/issues/4288) |
@@ -604,9 +604,9 @@ expression-level). The `outer` variants are wired but marked `Incompatible`; the
 | `substring` | ✅ | Native |  |
 | `substring_index` | ✅ | Native |  |
 | `to_binary` | ✅ | — | Hex form accelerated; other formats fall back |
-| `to_char` | ✅ | Codegen dispatch |  |
+| `to_char` | ✅ | — |  |
 | `to_number` | ✅ | Codegen dispatch |  |
-| `to_varchar` | ✅ | Codegen dispatch |  |
+| `to_varchar` | ✅ | — |  |
 | `translate` | ✅ | Native | DataFusion's `translate` iterates over Unicode graphemes (Spark uses code points) and substitutes U+0000 instead of treating it as a deletion sentinel, so the native path is opt-in via allowIncompatible |
 | `trim` | ✅ | Native |  |
 | `try_to_binary` | ✅ | — | Runs natively (rewrites to `try_eval(to_binary(...))`) |

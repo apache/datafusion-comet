@@ -24,16 +24,54 @@ Comet provides the following configuration settings.
 ## Scan Configuration Settings
 
 <!--BEGIN:CONFIG_TABLE[scan]-->
+<!-- prettier-ignore-start -->
+| Config | Description | Default Value |
+|--------|-------------|---------------|
+| `spark.comet.scan.allowDisabledParquetVectorizedReader` | Whether to allow Comet's native scan to replace the Parquet scan when Spark's spark.sql.parquet.enableVectorizedReader is set to false. By default (false), Comet falls back to Spark in that case, because Comet's native readers mirror Spark's vectorized reader semantics rather than Spark's parquet-mr (non-vectorized) semantics, which permit silent overflow / null-on-narrowing that Comet has no equivalent for. For more information, refer to the [Comet Compatibility Guide](https://datafusion.apache.org/comet/user-guide/latest/compatibility/index.html). | false |
+| `spark.comet.scan.icebergNative.dataFileConcurrencyLimit` | The number of Iceberg data files to read concurrently within a single task. Higher values improve throughput for tables with many small files by overlapping I/O latency, but increase memory usage. Values between 2 and 8 are suggested. | 1 |
+| `spark.comet.scan.icebergNative.enabled` | Whether to enable native Iceberg table scan using iceberg-rust. When enabled, Iceberg tables are read directly through native execution, bypassing Spark's DataSource V2 API for better performance. | true |
+| `spark.comet.scan.unsignedSmallIntSafetyCheck` | Parquet files may contain unsigned 8-bit integers (UINT_8) which Spark maps to ShortType. When this config is true (default), Comet falls back to Spark for ShortType columns because we cannot distinguish signed INT16 (safe) from unsigned UINT_8 (may produce different results). Set to false to allow native execution of ShortType columns if you know your data does not contain unsigned UINT_8 columns from improperly encoded Parquet files. For more information, refer to the [Comet Compatibility Guide](https://datafusion.apache.org/comet/user-guide/latest/compatibility/index.html). | true |
+| `spark.hadoop.fs.comet.libhdfs.schemes` | Defines filesystem schemes (e.g., hdfs, webhdfs) that the native side accesses via libhdfs, separated by commas. Valid only when built with hdfs-opendal feature enabled. | |
+<!-- prettier-ignore-end -->
 <!--END:CONFIG_TABLE-->
 
 ## Parquet Reader Configuration Settings
 
 <!--BEGIN:CONFIG_TABLE[parquet]-->
+<!-- prettier-ignore-start -->
+| Config | Description | Default Value |
+|--------|-------------|---------------|
+| `spark.comet.parquet.rowFilterPushdown.enabled` | When enabled, the native Parquet reader evaluates pushed filters during decode and lazily materializes projected columns for surviving rows (DataFusion's pushdown_filters / late-materialization). Format-level pruning (row-group statistics, page index, bloom filters) is independent of this flag and runs whenever Spark's spark.sql.parquet.filterPushdown is enabled. Disabling this flag still lets format-level pruning work; the per-row eval falls back to the CometFilter operator above the scan. | false |
+<!-- prettier-ignore-end -->
 <!--END:CONFIG_TABLE-->
 
 ## Query Execution Settings
 
 <!--BEGIN:CONFIG_TABLE[exec]-->
+<!-- prettier-ignore-start -->
+| Config | Description | Default Value |
+|--------|-------------|---------------|
+| `spark.comet.caseConversion.enabled` | Java uses locale-specific rules when converting strings to upper or lower case and Rust does not, so we disable upper and lower by default. | false |
+| `spark.comet.convert.csv.enabled` | When enabled, data from Spark (non-native) CSV v1 and v2 scans will be converted to Arrow format. | false |
+| `spark.comet.convert.json.enabled` | When enabled, data from Spark (non-native) JSON v1 and v2 scans will be converted to Arrow format. | false |
+| `spark.comet.convert.parquet.enabled` | When enabled, data from Spark (non-native) Parquet v1 and v2 scans will be converted to Arrow format. | false |
+| `spark.comet.debug.enabled` | Whether to enable debug mode for Comet. When enabled, Comet will do additional checks for debugging purpose. For example, validating array when importing arrays from JVM at native side. Note that these checks may be expensive in performance and should only be enabled for debugging purpose. | false |
+| `spark.comet.enabled` | Whether to enable Comet extension for Spark. When this is turned on, Spark will use Comet to read Parquet data source. Note that to enable native vectorized execution, both this config and `spark.comet.exec.enabled` need to be enabled. It can be overridden by the environment variable `ENABLE_COMET`. | true |
+| `spark.comet.exec.columnarToRow.native.enabled` | Whether to enable native columnar to row conversion. When enabled, Comet will use native Rust code to convert Arrow columnar data to Spark UnsafeRow format instead of the JVM implementation. The native conversion carries a fixed JNI cost per batch and is slower than the JVM implementation for small batches. | false |
+| `spark.comet.exec.enabled` | Whether to enable Comet native vectorized execution for Spark. This controls whether Spark should convert operators into their Comet counterparts and execute them in native space. Note: each operator is associated with a separate config in the format of `spark.comet.exec.<operator_name>.enabled` at the moment, and both the config and this need to be turned on, in order for the operator to be executed in native. | true |
+| `spark.comet.exec.forceShuffledHashJoin` | Experimental feature to force Spark to replace SortMergeJoin with ShuffledHashJoin for improved performance. This feature is not stable yet. For more information, refer to the [Comet Tuning Guide](https://datafusion.apache.org/comet/user-guide/latest/tuning.html). | false |
+| `spark.comet.exec.pyarrowUDF.enabled` | Experimental: whether to enable optimized execution of PyArrow UDFs (mapInArrow/mapInPandas). When enabled, Comet passes Arrow columnar data directly to Python UDFs without the intermediate Arrow-to-Row-to-Arrow conversion that Spark normally performs. Disabled by default while the feature stabilizes. | false |
+| `spark.comet.exec.scalaUDF.codegen.enabled` | Whether to route Spark `ScalaUDF` expressions through Comet's Arrow-direct codegen dispatcher. When enabled, a supported ScalaUDF is compiled into a per-batch kernel that reads and writes Arrow vectors directly from native execution. When disabled, plans containing a ScalaUDF fall back to Spark for the enclosing operator. The same dispatcher backs the regex family (`rlike`, `regexp_replace`, `split`, `regexp_extract`, `regexp_extract_all`, `regexp_instr`) so those route through it by default as well. | true |
+| `spark.comet.exec.strictFloatingPoint` | When enabled, fall back to Spark for floating-point operations that may differ from Spark, such as when comparing or sorting -0.0 and 0.0. For more information, refer to the [Comet Compatibility Guide](https://datafusion.apache.org/comet/user-guide/latest/compatibility/index.html). | false |
+| `spark.comet.exec.transitionRevert.enabled` | When enabled, Comet reverts a query stage to Spark row-based execution if the number of columnar-to-row (C2R) transitions in the stage exceeds the configured threshold. This avoids the overhead of repeated format conversions in stages where many operators fall back to row-based execution. | false |
+| `spark.comet.exec.transitionRevert.maxTransitions` | The maximum number of columnar-to-row (C2R) transitions allowed in a single query stage before Comet reverts the entire stage to Spark row-based execution. When columnar shuffle is enabled, each such C2R typically implies a corresponding row-to-columnar conversion to feed back into the columnar shuffle, so each counted C2R is a useful proxy for the conversion overhead in the stage. Set to 0 to revert any stage with transitions. Only effective when spark.comet.exec.transitionRevert.enabled is true. | 2 |
+| `spark.comet.metrics.enabled` | Whether to enable Comet metrics reporting through Spark's external monitoring system. When enabled, Comet exposes metrics such as native operators, Spark operators, queries planned, transitions, and acceleration ratio. These metrics can be visualized through tools like Grafana when a metrics sink (e.g., Prometheus) is configured. Disabled by default because Spark plan traversal adds overhead and metrics require a sink to be useful. This config must be set before the SparkSession is created to take effect. | false |
+| `spark.comet.metrics.updateInterval` | The interval in milliseconds to update metrics. If interval is negative, metrics will be updated upon task completion. | 3000 |
+| `spark.comet.nativeLoadRequired` | Whether to require Comet native library to load successfully when Comet is enabled. If not, Comet will silently fallback to Spark when it fails to load the native lib. Otherwise, an error will be thrown and the Spark job will be aborted. | false |
+| `spark.comet.operator.DataWritingCommandExec.allowIncompatible` | Whether to allow incompatibility for operator: DataWritingCommandExec. False by default. Can be overridden with SPARK_COMET_OPERATOR_DATAWRITINGCOMMANDEXEC_ALLOWINCOMPATIBLE env variable It can be overridden by the environment variable `SPARK_COMET_OPERATOR_DATAWRITINGCOMMANDEXEC_ALLOWINCOMPATIBLE`. | false |
+| `spark.comet.sparkToColumnar.enabled` | Whether to enable Spark to Arrow columnar conversion. When this is turned on, Comet will convert operators in `spark.comet.sparkToColumnar.supportedOperatorList` into Arrow columnar format before processing. | false |
+| `spark.comet.sparkToColumnar.supportedOperatorList` | A comma-separated list of operators that will be converted to Arrow columnar format when `spark.comet.sparkToColumnar.enabled` is true. | Range,InMemoryTableScan,RDDScan,OneRowRelation |
+<!-- prettier-ignore-end -->
 <!--END:CONFIG_TABLE-->
 
 ## Viewing Explain Plan & Fallback Reasons
@@ -41,34 +79,412 @@ Comet provides the following configuration settings.
 These settings can be used to determine which parts of the plan are accelerated by Comet and to see why some parts of the plan could not be supported by Comet.
 
 <!--BEGIN:CONFIG_TABLE[exec_explain]-->
+<!-- prettier-ignore-start -->
+| Config | Description | Default Value |
+|--------|-------------|---------------|
+| `spark.comet.explain.codegen.enabled` | When enabled, Comet annotates the surrounding Comet operator with a `[COMET-INFO: JVM codegen dispatcher: <names>]` segment listing every expression it routed through the JVM codegen dispatcher. Disabled by default. | false |
+| `spark.comet.explain.fallback.enabled` | When this setting is enabled, Comet will provide logging explaining the reason(s) why a query stage cannot be executed natively. Set this to false to reduce the amount of logging. | false |
+| `spark.comet.explain.fallback.log.enabled` | When this setting is enabled, Comet will log warnings for all fallback reasons. It can be overridden by the environment variable `ENABLE_COMET_LOG_FALLBACK_REASONS`. | false |
+| `spark.comet.explain.format` | Choose extended explain output. The default format of 'verbose' will provide the full query plan annotated with fallback reasons as well as a summary of how much of the plan was accelerated by Comet. The format 'fallback' provides a list of fallback reasons instead. | verbose |
+| `spark.comet.explain.native.enabled` | When this setting is enabled, Comet will provide a tree representation of the native query plan before execution and again after execution, with metrics. | false |
+| `spark.comet.explain.rules` | When this setting is enabled, Comet will log all plan transformations performed in physical optimizer rules. Default: false | false |
+<!-- prettier-ignore-end -->
 <!--END:CONFIG_TABLE-->
 
 ## Shuffle Configuration Settings
 
 <!--BEGIN:CONFIG_TABLE[shuffle]-->
+<!-- prettier-ignore-start -->
+| Config | Description | Default Value |
+|--------|-------------|---------------|
+| `spark.comet.shuffle.compression.codec` | The codec of Comet native shuffle used to compress shuffle data. lz4, zstd, and snappy are supported. Compression can be disabled by setting spark.shuffle.compress=false. | lz4 |
+| `spark.comet.shuffle.compression.zstd.level` | The compression level to use when compressing shuffle files with zstd. | 1 |
+| `spark.comet.shuffle.convertFromSparkPlan.enabled` | When enabled, Comet will convert a Spark `ShuffleExchangeExec` to a Comet columnar shuffle even when its child is a non-Comet (Spark) plan. Disable to leave such shuffles as native Spark shuffles, restricting Comet shuffle to cases where the child is already a Comet plan. | true |
+| `spark.comet.shuffle.directRead.enabled` | When enabled, native operators that consume shuffle output will read compressed shuffle blocks directly in native code, bypassing Arrow FFI. Applies to both native shuffle and JVM columnar shuffle. Requires spark.comet.shuffle.enabled to be true. | true |
+| `spark.comet.shuffle.enabled` | Whether to enable Comet native shuffle. Note that this requires setting `spark.shuffle.manager` to `org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager`. `spark.shuffle.manager` must be set before starting the Spark application and cannot be changed during the application. | true |
+| `spark.comet.shuffle.jvm.batchSize` | Batch size when writing out sorted spill files on the native side. Note that this should not be larger than batch size (i.e., `spark.comet.batchSize`). Otherwise it will produce larger batches than expected in the native operator after shuffle. | 8192 |
+| `spark.comet.shuffle.jvm.maxWritersPerExecutor` | Maximum number of concurrent hash-based shuffle writers per executor. Comet's hash-based (bypass merge sort) columnar shuffle allocates one writer per partition, so `executor cores * numPartitions` writers can be active concurrently. When that product exceeds this cap, Comet falls back to sort-based shuffle to avoid OOM. | 100 |
+| `spark.comet.shuffle.jvm.preferDictionary.ratio` | The ratio of total values to distinct values in a string column to decide whether to prefer dictionary encoding when shuffling the column. If the ratio is higher than this config, dictionary encoding will be used on shuffling string column. This config is effective if it is higher than 1.0. Note that this config is only used when `spark.comet.shuffle.mode` is `jvm`. | 10.0 |
+| `spark.comet.shuffle.native.maxBufferBytes` | Maximum number of bytes that the native shuffle writer will buffer in memory before spilling to disk. The default of 0 disables this limit, in which case spilling is triggered only when the memory pool denies an allocation. Setting a limit caps the writer's memory footprint independently of the size of the memory pool, at the cost of more frequent spilling. | 0b |
+| `spark.comet.shuffle.native.partitioning.hash.enabled` | Whether to enable hash partitioning for Comet native shuffle. | true |
+| `spark.comet.shuffle.native.partitioning.range.enabled` | Whether to enable range partitioning for Comet native shuffle. | true |
+| `spark.comet.shuffle.native.partitioning.roundrobin.enabled` | Whether to enable round robin partitioning for Comet native shuffle. This is disabled by default because Comet's round-robin produces different partition assignments than Spark. Spark sorts rows by their binary UnsafeRow representation before assigning partitions, but Comet uses Arrow format which has a different binary layout. Instead, Comet implements round-robin as hash partitioning on all columns, which achieves the same goals: even distribution, deterministic output (for fault tolerance), and no semantic grouping. Sorted output will be identical to Spark, but unsorted row ordering may differ. | false |
+| `spark.comet.shuffle.native.partitioning.roundrobin.maxHashColumns` | The maximum number of columns to hash for round robin partitioning. When set to 0 (the default), all columns are hashed. When set to a positive value, only the first N columns are used for hashing, which can improve performance for wide tables while still providing reasonable distribution. | 0 |
+| `spark.comet.shuffle.native.writeBufferSize` | Size of the write buffer in bytes used by the native shuffle writer when writing shuffle data to disk. Larger values may improve write performance by reducing the number of system calls, but will use more memory. The default is 1MB which provides a good balance between performance and memory usage. | 1048576b |
+| `spark.comet.shuffle.revertRedundantColumnar.enabled` | When enabled, Comet reverts a `CometShuffleExchangeExec` with `CometColumnarShuffle` back to Spark's `ShuffleExchangeExec` when both its parent and child are non-Comet hash aggregate operators. This avoids a redundant row -> Arrow -> shuffle -> Arrow -> row conversion when no Comet operator on either side can consume columnar output. Disable to keep Comet columnar shuffle even in that case, which preserves Comet's off-heap shuffle memory accounting at the cost of the extra conversion. | true |
+| `spark.comet.shuffle.sizeInBytesMultiplier` | Comet reports smaller sizes for shuffle due to using Arrow's columnar memory format and this can result in Spark choosing a different join strategy due to the estimated size of the exchange being smaller. Comet will multiple sizeInBytes by this amount to avoid regressions in join strategy. | 1.0 |
+<!-- prettier-ignore-end -->
 <!--END:CONFIG_TABLE-->
 
 ## Memory & Tuning Configuration Settings
 
 <!--BEGIN:CONFIG_TABLE[tuning]-->
+<!-- prettier-ignore-start -->
+| Config | Description | Default Value |
+|--------|-------------|---------------|
+| `spark.comet.batchSize` | The columnar batch size, i.e., the maximum number of rows that a batch can contain. | 8192 |
+| `spark.comet.exec.memoryPool` | The type of memory pool to be used for Comet native execution when running Spark in off-heap mode. Available pool types are `greedy_unified` and `fair_unified`. For more information, refer to the [Comet Tuning Guide](https://datafusion.apache.org/comet/user-guide/latest/tuning.html). | fair_unified |
+| `spark.comet.exec.memoryPool.fraction` | Fraction of off-heap memory pool that is available to Comet. Only applies to off-heap mode. For more information, refer to the [Comet Tuning Guide](https://datafusion.apache.org/comet/user-guide/latest/tuning.html). | 1.0 |
+| `spark.comet.maxTempDirectorySize` | The maximum amount of data (in bytes) stored inside the temporary directories used by native operators when spilling. Applied per Spark task, so an executor running N concurrent tasks may use up to N times this value on shared local disks. Once the limit is reached, further spills will fail and the query will error out. | 107374182400b |
+| `spark.comet.tracing.enabled` | Enable fine-grained tracing of events and memory usage. For more information, refer to the [Comet Tracing Guide](https://datafusion.apache.org/comet/contributor-guide/tracing.html). | false |
+<!-- prettier-ignore-end -->
 <!--END:CONFIG_TABLE-->
 
 ## Development & Testing Settings
 
 <!--BEGIN:CONFIG_TABLE[testing]-->
+<!-- prettier-ignore-start -->
+| Config | Description | Default Value |
+|--------|-------------|---------------|
+| `spark.comet.debug.memory` | When enabled, log all native memory pool interactions. For more information, refer to the Comet Debugging Guide (https://datafusion.apache.org/comet/contributor-guide/debugging.html). | false |
+| `spark.comet.exec.onHeap.enabled` | Whether to allow Comet to run in on-heap mode. Required for running Spark SQL tests. It can be overridden by the environment variable `ENABLE_COMET_ONHEAP`. | false |
+| `spark.comet.exec.onHeap.memoryPool` | The type of memory pool to be used for Comet native execution when running Spark in on-heap mode. Available pool types are `greedy`, `fair_spill`, `greedy_task_shared`, `fair_spill_task_shared`, `greedy_global`, `fair_spill_global`, and `unbounded`. | greedy_task_shared |
+| `spark.comet.exec.respectDataFusionConfigs` | Development and testing configuration option to allow DataFusion configs set in Spark configuration settings starting with `spark.comet.datafusion.` to be passed into native execution. | false |
+| `spark.comet.memoryOverhead` | The amount of additional memory to be allocated per executor process for Comet, in MiB, when running Spark in on-heap mode. | 1024 MiB |
+| `spark.comet.parquet.write.enabled` | Whether to enable native Parquet write through Comet. When enabled, Comet will intercept Parquet write operations and execute them natively. This feature is highly experimental and only partially implemented. It should not be used in production. It can be overridden by the environment variable `ENABLE_COMET_WRITE`. | false |
+| `spark.comet.scan.csv.v2.enabled` | Whether to use the native Comet V2 CSV reader for improved performance. Default: false (uses standard Spark CSV reader) Experimental: Performance benefits are workload-dependent. | false |
+| `spark.comet.scan.enabled` | Whether to enable native scans. Intended for use in Comet's own test suites to selectively disable native scans; not intended for production use. | true |
+| `spark.comet.shuffle.jvm.memoryFactor` | Fraction of Comet memory to be allocated per executor process for JVM (columnar) shuffle when running in on-heap mode. For more information, refer to the [Comet Tuning Guide](https://datafusion.apache.org/comet/user-guide/latest/tuning.html). | 1.0 |
+| `spark.comet.testing.strict` | Experimental option to enable strict testing, which will fail tests that could be more comprehensive, such as checking for a specific fallback reason. It can be overridden by the environment variable `ENABLE_COMET_STRICT_TESTING`. | false |
+<!-- prettier-ignore-end -->
 <!--END:CONFIG_TABLE-->
 
 ## Enabling or Disabling Individual Operators
 
 <!--BEGIN:CONFIG_TABLE[enable_exec]-->
+<!-- prettier-ignore-start -->
+| Config | Description | Default Value |
+|--------|-------------|---------------|
+| `spark.comet.exec.aggregate.enabled` | Whether to enable aggregate by default. | true |
+| `spark.comet.exec.broadcastExchange.enabled` | Whether to enable broadcastExchange by default. | true |
+| `spark.comet.exec.broadcastHashJoin.enabled` | Whether to enable broadcastHashJoin by default. | true |
+| `spark.comet.exec.broadcastNestedLoopJoin.enabled` | Whether to enable broadcastNestedLoopJoin by default. | true |
+| `spark.comet.exec.coalesce.enabled` | Whether to enable coalesce by default. | true |
+| `spark.comet.exec.collectLimit.enabled` | Whether to enable collectLimit by default. | true |
+| `spark.comet.exec.expand.enabled` | Whether to enable expand by default. | true |
+| `spark.comet.exec.explode.enabled` | Whether to enable explode by default. | true |
+| `spark.comet.exec.filter.enabled` | Whether to enable filter by default. | true |
+| `spark.comet.exec.globalLimit.enabled` | Whether to enable globalLimit by default. | true |
+| `spark.comet.exec.hashJoin.enabled` | Whether to enable hashJoin by default. | true |
+| `spark.comet.exec.localLimit.enabled` | Whether to enable localLimit by default. | true |
+| `spark.comet.exec.localTableScan.enabled` | Whether to enable localTableScan by default. | false |
+| `spark.comet.exec.project.enabled` | Whether to enable project by default. | true |
+| `spark.comet.exec.sample.enabled` | Whether to enable sample by default. | true |
+| `spark.comet.exec.sort.enabled` | Whether to enable sort by default. | true |
+| `spark.comet.exec.sortMergeJoin.enabled` | Whether to enable sortMergeJoin by default. | true |
+| `spark.comet.exec.sortMergeJoinWithJoinFilter.enabled` | Support for Sort Merge Join with filter. Deprecated: this config will be removed in a future release. | true |
+| `spark.comet.exec.takeOrderedAndProject.enabled` | Whether to enable takeOrderedAndProject by default. | true |
+| `spark.comet.exec.union.enabled` | Whether to enable union by default. | true |
+| `spark.comet.exec.window.enabled` | Whether to enable window by default. | true |
+<!-- prettier-ignore-end -->
 <!--END:CONFIG_TABLE-->
 
 ## Enabling or Disabling Individual Scalar Expressions
 
 <!--BEGIN:CONFIG_TABLE[enable_expr]-->
+<!-- prettier-ignore-start -->
+| Config | Description | Default Value |
+|--------|-------------|---------------|
+| `spark.comet.expression.Abs.enabled` | Enable Comet acceleration for `Abs` | true |
+| `spark.comet.expression.Acos.enabled` | Enable Comet acceleration for `Acos` | true |
+| `spark.comet.expression.Acosh.enabled` | Enable Comet acceleration for `Acosh` | true |
+| `spark.comet.expression.Add.enabled` | Enable Comet acceleration for `Add` | true |
+| `spark.comet.expression.AddMonths.enabled` | Enable Comet acceleration for `AddMonths` | true |
+| `spark.comet.expression.Alias.enabled` | Enable Comet acceleration for `Alias` | true |
+| `spark.comet.expression.And.enabled` | Enable Comet acceleration for `And` | true |
+| `spark.comet.expression.ArrayAggregate.enabled` | Enable Comet acceleration for `ArrayAggregate` | true |
+| `spark.comet.expression.ArrayAppend.enabled` | Enable Comet acceleration for `ArrayAppend` | true |
+| `spark.comet.expression.ArrayContains.enabled` | Enable Comet acceleration for `ArrayContains` | true |
+| `spark.comet.expression.ArrayDistinct.enabled` | Enable Comet acceleration for `ArrayDistinct` | true |
+| `spark.comet.expression.ArrayExcept.enabled` | Enable Comet acceleration for `ArrayExcept` | true |
+| `spark.comet.expression.ArrayExists.enabled` | Enable Comet acceleration for `ArrayExists` | true |
+| `spark.comet.expression.ArrayFilter.enabled` | Enable Comet acceleration for `ArrayFilter` | true |
+| `spark.comet.expression.ArrayForAll.enabled` | Enable Comet acceleration for `ArrayForAll` | true |
+| `spark.comet.expression.ArrayInsert.enabled` | Enable Comet acceleration for `ArrayInsert` | true |
+| `spark.comet.expression.ArrayIntersect.enabled` | Enable Comet acceleration for `ArrayIntersect` | true |
+| `spark.comet.expression.ArrayJoin.enabled` | Enable Comet acceleration for `ArrayJoin` | true |
+| `spark.comet.expression.ArrayMax.enabled` | Enable Comet acceleration for `ArrayMax` | true |
+| `spark.comet.expression.ArrayMin.enabled` | Enable Comet acceleration for `ArrayMin` | true |
+| `spark.comet.expression.ArrayPosition.enabled` | Enable Comet acceleration for `ArrayPosition` | true |
+| `spark.comet.expression.ArrayRemove.enabled` | Enable Comet acceleration for `ArrayRemove` | true |
+| `spark.comet.expression.ArrayRepeat.enabled` | Enable Comet acceleration for `ArrayRepeat` | true |
+| `spark.comet.expression.ArraySort.enabled` | Enable Comet acceleration for `ArraySort` | true |
+| `spark.comet.expression.ArrayTransform.enabled` | Enable Comet acceleration for `ArrayTransform` | true |
+| `spark.comet.expression.ArrayUnion.enabled` | Enable Comet acceleration for `ArrayUnion` | true |
+| `spark.comet.expression.ArraysOverlap.enabled` | Enable Comet acceleration for `ArraysOverlap` | true |
+| `spark.comet.expression.ArraysZip.enabled` | Enable Comet acceleration for `ArraysZip` | true |
+| `spark.comet.expression.Ascii.enabled` | Enable Comet acceleration for `Ascii` | true |
+| `spark.comet.expression.Asin.enabled` | Enable Comet acceleration for `Asin` | true |
+| `spark.comet.expression.Asinh.enabled` | Enable Comet acceleration for `Asinh` | true |
+| `spark.comet.expression.Atan.enabled` | Enable Comet acceleration for `Atan` | true |
+| `spark.comet.expression.Atan2.enabled` | Enable Comet acceleration for `Atan2` | true |
+| `spark.comet.expression.Atanh.enabled` | Enable Comet acceleration for `Atanh` | true |
+| `spark.comet.expression.AttributeReference.enabled` | Enable Comet acceleration for `AttributeReference` | true |
+| `spark.comet.expression.BRound.enabled` | Enable Comet acceleration for `BRound` | true |
+| `spark.comet.expression.Base64.enabled` | Enable Comet acceleration for `Base64` | true |
+| `spark.comet.expression.Bin.enabled` | Enable Comet acceleration for `Bin` | true |
+| `spark.comet.expression.BitLength.enabled` | Enable Comet acceleration for `BitLength` | true |
+| `spark.comet.expression.BitwiseAnd.enabled` | Enable Comet acceleration for `BitwiseAnd` | true |
+| `spark.comet.expression.BitwiseCount.enabled` | Enable Comet acceleration for `BitwiseCount` | true |
+| `spark.comet.expression.BitwiseGet.enabled` | Enable Comet acceleration for `BitwiseGet` | true |
+| `spark.comet.expression.BitwiseNot.enabled` | Enable Comet acceleration for `BitwiseNot` | true |
+| `spark.comet.expression.BitwiseOr.enabled` | Enable Comet acceleration for `BitwiseOr` | true |
+| `spark.comet.expression.BitwiseXor.enabled` | Enable Comet acceleration for `BitwiseXor` | true |
+| `spark.comet.expression.BloomFilterMightContain.enabled` | Enable Comet acceleration for `BloomFilterMightContain` | true |
+| `spark.comet.expression.CaseWhen.enabled` | Enable Comet acceleration for `CaseWhen` | true |
+| `spark.comet.expression.Cast.enabled` | Enable Comet acceleration for `Cast` | true |
+| `spark.comet.expression.Cbrt.enabled` | Enable Comet acceleration for `Cbrt` | true |
+| `spark.comet.expression.Ceil.enabled` | Enable Comet acceleration for `Ceil` | true |
+| `spark.comet.expression.CheckOverflow.enabled` | Enable Comet acceleration for `CheckOverflow` | true |
+| `spark.comet.expression.Chr.enabled` | Enable Comet acceleration for `Chr` | true |
+| `spark.comet.expression.Coalesce.enabled` | Enable Comet acceleration for `Coalesce` | true |
+| `spark.comet.expression.Concat.enabled` | Enable Comet acceleration for `Concat` | true |
+| `spark.comet.expression.ConcatWs.enabled` | Enable Comet acceleration for `ConcatWs` | true |
+| `spark.comet.expression.Contains.enabled` | Enable Comet acceleration for `Contains` | true |
+| `spark.comet.expression.Conv.enabled` | Enable Comet acceleration for `Conv` | true |
+| `spark.comet.expression.ConvertTimezone.enabled` | Enable Comet acceleration for `ConvertTimezone` | true |
+| `spark.comet.expression.Cos.enabled` | Enable Comet acceleration for `Cos` | true |
+| `spark.comet.expression.Cosh.enabled` | Enable Comet acceleration for `Cosh` | true |
+| `spark.comet.expression.Cot.enabled` | Enable Comet acceleration for `Cot` | true |
+| `spark.comet.expression.Crc32.enabled` | Enable Comet acceleration for `Crc32` | true |
+| `spark.comet.expression.CreateArray.enabled` | Enable Comet acceleration for `CreateArray` | true |
+| `spark.comet.expression.CreateMap.enabled` | Enable Comet acceleration for `CreateMap` | true |
+| `spark.comet.expression.CreateNamedStruct.enabled` | Enable Comet acceleration for `CreateNamedStruct` | true |
+| `spark.comet.expression.Csc.enabled` | Enable Comet acceleration for `Csc` | true |
+| `spark.comet.expression.CsvToStructs.enabled` | Enable Comet acceleration for `CsvToStructs` | true |
+| `spark.comet.expression.DateAdd.enabled` | Enable Comet acceleration for `DateAdd` | true |
+| `spark.comet.expression.DateDiff.enabled` | Enable Comet acceleration for `DateDiff` | true |
+| `spark.comet.expression.DateFormatClass.enabled` | Enable Comet acceleration for `DateFormatClass` | true |
+| `spark.comet.expression.DateFromUnixDate.enabled` | Enable Comet acceleration for `DateFromUnixDate` | true |
+| `spark.comet.expression.DateSub.enabled` | Enable Comet acceleration for `DateSub` | true |
+| `spark.comet.expression.DayOfMonth.enabled` | Enable Comet acceleration for `DayOfMonth` | true |
+| `spark.comet.expression.DayOfWeek.enabled` | Enable Comet acceleration for `DayOfWeek` | true |
+| `spark.comet.expression.DayOfYear.enabled` | Enable Comet acceleration for `DayOfYear` | true |
+| `spark.comet.expression.Days.enabled` | Enable Comet acceleration for `Days` | true |
+| `spark.comet.expression.Divide.enabled` | Enable Comet acceleration for `Divide` | true |
+| `spark.comet.expression.ElementAt.enabled` | Enable Comet acceleration for `ElementAt` | true |
+| `spark.comet.expression.Elt.enabled` | Enable Comet acceleration for `Elt` | true |
+| `spark.comet.expression.Empty2Null.enabled` | Enable Comet acceleration for `Empty2Null` | true |
+| `spark.comet.expression.EndsWith.enabled` | Enable Comet acceleration for `EndsWith` | true |
+| `spark.comet.expression.EqualNullSafe.enabled` | Enable Comet acceleration for `EqualNullSafe` | true |
+| `spark.comet.expression.EqualTo.enabled` | Enable Comet acceleration for `EqualTo` | true |
+| `spark.comet.expression.Exp.enabled` | Enable Comet acceleration for `Exp` | true |
+| `spark.comet.expression.Expm1.enabled` | Enable Comet acceleration for `Expm1` | true |
+| `spark.comet.expression.Factorial.enabled` | Enable Comet acceleration for `Factorial` | true |
+| `spark.comet.expression.FindInSet.enabled` | Enable Comet acceleration for `FindInSet` | true |
+| `spark.comet.expression.Flatten.enabled` | Enable Comet acceleration for `Flatten` | true |
+| `spark.comet.expression.Floor.enabled` | Enable Comet acceleration for `Floor` | true |
+| `spark.comet.expression.FormatNumber.enabled` | Enable Comet acceleration for `FormatNumber` | true |
+| `spark.comet.expression.FormatString.enabled` | Enable Comet acceleration for `FormatString` | true |
+| `spark.comet.expression.FromUTCTimestamp.enabled` | Enable Comet acceleration for `FromUTCTimestamp` | true |
+| `spark.comet.expression.FromUnixTime.enabled` | Enable Comet acceleration for `FromUnixTime` | true |
+| `spark.comet.expression.GetArrayItem.enabled` | Enable Comet acceleration for `GetArrayItem` | true |
+| `spark.comet.expression.GetArrayStructFields.enabled` | Enable Comet acceleration for `GetArrayStructFields` | true |
+| `spark.comet.expression.GetJsonObject.enabled` | Enable Comet acceleration for `GetJsonObject` | true |
+| `spark.comet.expression.GetMapValue.enabled` | Enable Comet acceleration for `GetMapValue` | true |
+| `spark.comet.expression.GetStructField.enabled` | Enable Comet acceleration for `GetStructField` | true |
+| `spark.comet.expression.GetTimestamp.enabled` | Enable Comet acceleration for `GetTimestamp` | true |
+| `spark.comet.expression.GreaterThan.enabled` | Enable Comet acceleration for `GreaterThan` | true |
+| `spark.comet.expression.GreaterThanOrEqual.enabled` | Enable Comet acceleration for `GreaterThanOrEqual` | true |
+| `spark.comet.expression.Greatest.enabled` | Enable Comet acceleration for `Greatest` | true |
+| `spark.comet.expression.Hex.enabled` | Enable Comet acceleration for `Hex` | true |
+| `spark.comet.expression.Hour.enabled` | Enable Comet acceleration for `Hour` | true |
+| `spark.comet.expression.Hours.enabled` | Enable Comet acceleration for `Hours` | true |
+| `spark.comet.expression.Hypot.enabled` | Enable Comet acceleration for `Hypot` | true |
+| `spark.comet.expression.If.enabled` | Enable Comet acceleration for `If` | true |
+| `spark.comet.expression.In.enabled` | Enable Comet acceleration for `In` | true |
+| `spark.comet.expression.InSet.enabled` | Enable Comet acceleration for `InSet` | true |
+| `spark.comet.expression.InitCap.enabled` | Enable Comet acceleration for `InitCap` | true |
+| `spark.comet.expression.IntegralDivide.enabled` | Enable Comet acceleration for `IntegralDivide` | true |
+| `spark.comet.expression.IsNaN.enabled` | Enable Comet acceleration for `IsNaN` | true |
+| `spark.comet.expression.IsNotNull.enabled` | Enable Comet acceleration for `IsNotNull` | true |
+| `spark.comet.expression.IsNull.enabled` | Enable Comet acceleration for `IsNull` | true |
+| `spark.comet.expression.JsonObjectKeys.enabled` | Enable Comet acceleration for `JsonObjectKeys` | true |
+| `spark.comet.expression.JsonToStructs.enabled` | Enable Comet acceleration for `JsonToStructs` | true |
+| `spark.comet.expression.KnownFloatingPointNormalized.enabled` | Enable Comet acceleration for `KnownFloatingPointNormalized` | true |
+| `spark.comet.expression.KnownNullable.enabled` | Enable Comet acceleration for `KnownNullable` | true |
+| `spark.comet.expression.LastDay.enabled` | Enable Comet acceleration for `LastDay` | true |
+| `spark.comet.expression.Least.enabled` | Enable Comet acceleration for `Least` | true |
+| `spark.comet.expression.Left.enabled` | Enable Comet acceleration for `Left` | true |
+| `spark.comet.expression.Length.enabled` | Enable Comet acceleration for `Length` | true |
+| `spark.comet.expression.LengthOfJsonArray.enabled` | Enable Comet acceleration for `LengthOfJsonArray` | true |
+| `spark.comet.expression.LessThan.enabled` | Enable Comet acceleration for `LessThan` | true |
+| `spark.comet.expression.LessThanOrEqual.enabled` | Enable Comet acceleration for `LessThanOrEqual` | true |
+| `spark.comet.expression.Levenshtein.enabled` | Enable Comet acceleration for `Levenshtein` | true |
+| `spark.comet.expression.Like.enabled` | Enable Comet acceleration for `Like` | true |
+| `spark.comet.expression.Literal.enabled` | Enable Comet acceleration for `Literal` | true |
+| `spark.comet.expression.Log.enabled` | Enable Comet acceleration for `Log` | true |
+| `spark.comet.expression.Log10.enabled` | Enable Comet acceleration for `Log10` | true |
+| `spark.comet.expression.Log1p.enabled` | Enable Comet acceleration for `Log1p` | true |
+| `spark.comet.expression.Log2.enabled` | Enable Comet acceleration for `Log2` | true |
+| `spark.comet.expression.Logarithm.enabled` | Enable Comet acceleration for `Logarithm` | true |
+| `spark.comet.expression.Lower.enabled` | Enable Comet acceleration for `Lower` | true |
+| `spark.comet.expression.MakeDTInterval.enabled` | Enable Comet acceleration for `MakeDTInterval` | true |
+| `spark.comet.expression.MakeDate.enabled` | Enable Comet acceleration for `MakeDate` | true |
+| `spark.comet.expression.MakeDecimal.enabled` | Enable Comet acceleration for `MakeDecimal` | true |
+| `spark.comet.expression.MakeTimestamp.enabled` | Enable Comet acceleration for `MakeTimestamp` | true |
+| `spark.comet.expression.MakeYMInterval.enabled` | Enable Comet acceleration for `MakeYMInterval` | true |
+| `spark.comet.expression.MapConcat.enabled` | Enable Comet acceleration for `MapConcat` | true |
+| `spark.comet.expression.MapEntries.enabled` | Enable Comet acceleration for `MapEntries` | true |
+| `spark.comet.expression.MapFilter.enabled` | Enable Comet acceleration for `MapFilter` | true |
+| `spark.comet.expression.MapFromArrays.enabled` | Enable Comet acceleration for `MapFromArrays` | true |
+| `spark.comet.expression.MapFromEntries.enabled` | Enable Comet acceleration for `MapFromEntries` | true |
+| `spark.comet.expression.MapKeys.enabled` | Enable Comet acceleration for `MapKeys` | true |
+| `spark.comet.expression.MapSort.enabled` | Enable Comet acceleration for `MapSort` | true |
+| `spark.comet.expression.MapValues.enabled` | Enable Comet acceleration for `MapValues` | true |
+| `spark.comet.expression.MapZipWith.enabled` | Enable Comet acceleration for `MapZipWith` | true |
+| `spark.comet.expression.Mask.enabled` | Enable Comet acceleration for `Mask` | true |
+| `spark.comet.expression.Md5.enabled` | Enable Comet acceleration for `Md5` | true |
+| `spark.comet.expression.MicrosToTimestamp.enabled` | Enable Comet acceleration for `MicrosToTimestamp` | true |
+| `spark.comet.expression.MillisToTimestamp.enabled` | Enable Comet acceleration for `MillisToTimestamp` | true |
+| `spark.comet.expression.Minute.enabled` | Enable Comet acceleration for `Minute` | true |
+| `spark.comet.expression.MonotonicallyIncreasingID.enabled` | Enable Comet acceleration for `MonotonicallyIncreasingID` | true |
+| `spark.comet.expression.Month.enabled` | Enable Comet acceleration for `Month` | true |
+| `spark.comet.expression.MonthsBetween.enabled` | Enable Comet acceleration for `MonthsBetween` | true |
+| `spark.comet.expression.Multiply.enabled` | Enable Comet acceleration for `Multiply` | true |
+| `spark.comet.expression.MultiplyDTInterval.enabled` | Enable Comet acceleration for `MultiplyDTInterval` | true |
+| `spark.comet.expression.Murmur3Hash.enabled` | Enable Comet acceleration for `Murmur3Hash` | true |
+| `spark.comet.expression.NaNvl.enabled` | Enable Comet acceleration for `NaNvl` | true |
+| `spark.comet.expression.NextDay.enabled` | Enable Comet acceleration for `NextDay` | true |
+| `spark.comet.expression.Not.enabled` | Enable Comet acceleration for `Not` | true |
+| `spark.comet.expression.OctetLength.enabled` | Enable Comet acceleration for `OctetLength` | true |
+| `spark.comet.expression.Or.enabled` | Enable Comet acceleration for `Or` | true |
+| `spark.comet.expression.Overlay.enabled` | Enable Comet acceleration for `Overlay` | true |
+| `spark.comet.expression.ParseUrl.enabled` | Enable Comet acceleration for `ParseUrl` | true |
+| `spark.comet.expression.Pi.enabled` | Enable Comet acceleration for `Pi` | true |
+| `spark.comet.expression.Pmod.enabled` | Enable Comet acceleration for `Pmod` | true |
+| `spark.comet.expression.Pow.enabled` | Enable Comet acceleration for `Pow` | true |
+| `spark.comet.expression.PreciseTimestampConversion.enabled` | Enable Comet acceleration for `PreciseTimestampConversion` | true |
+| `spark.comet.expression.Quarter.enabled` | Enable Comet acceleration for `Quarter` | true |
+| `spark.comet.expression.RLike.enabled` | Enable Comet acceleration for `RLike` | true |
+| `spark.comet.expression.Rand.enabled` | Enable Comet acceleration for `Rand` | true |
+| `spark.comet.expression.RandStr.enabled` | Enable Comet acceleration for `RandStr` | true |
+| `spark.comet.expression.Randn.enabled` | Enable Comet acceleration for `Randn` | true |
+| `spark.comet.expression.RegExpExtract.enabled` | Enable Comet acceleration for `RegExpExtract` | true |
+| `spark.comet.expression.RegExpExtractAll.enabled` | Enable Comet acceleration for `RegExpExtractAll` | true |
+| `spark.comet.expression.RegExpInStr.enabled` | Enable Comet acceleration for `RegExpInStr` | true |
+| `spark.comet.expression.RegExpReplace.enabled` | Enable Comet acceleration for `RegExpReplace` | true |
+| `spark.comet.expression.Remainder.enabled` | Enable Comet acceleration for `Remainder` | true |
+| `spark.comet.expression.Reverse.enabled` | Enable Comet acceleration for `Reverse` | true |
+| `spark.comet.expression.Right.enabled` | Enable Comet acceleration for `Right` | true |
+| `spark.comet.expression.Rint.enabled` | Enable Comet acceleration for `Rint` | true |
+| `spark.comet.expression.Round.enabled` | Enable Comet acceleration for `Round` | true |
+| `spark.comet.expression.ScalaUDF.enabled` | Enable Comet acceleration for `ScalaUDF` | true |
+| `spark.comet.expression.ScalarSubquery.enabled` | Enable Comet acceleration for `ScalarSubquery` | true |
+| `spark.comet.expression.SchemaOfCsv.enabled` | Enable Comet acceleration for `SchemaOfCsv` | true |
+| `spark.comet.expression.SchemaOfJson.enabled` | Enable Comet acceleration for `SchemaOfJson` | true |
+| `spark.comet.expression.Sec.enabled` | Enable Comet acceleration for `Sec` | true |
+| `spark.comet.expression.Second.enabled` | Enable Comet acceleration for `Second` | true |
+| `spark.comet.expression.SecondsToTimestamp.enabled` | Enable Comet acceleration for `SecondsToTimestamp` | true |
+| `spark.comet.expression.Sequence.enabled` | Enable Comet acceleration for `Sequence` | true |
+| `spark.comet.expression.Sha1.enabled` | Enable Comet acceleration for `Sha1` | true |
+| `spark.comet.expression.Sha2.enabled` | Enable Comet acceleration for `Sha2` | true |
+| `spark.comet.expression.ShiftLeft.enabled` | Enable Comet acceleration for `ShiftLeft` | true |
+| `spark.comet.expression.ShiftRight.enabled` | Enable Comet acceleration for `ShiftRight` | true |
+| `spark.comet.expression.ShiftRightUnsigned.enabled` | Enable Comet acceleration for `ShiftRightUnsigned` | true |
+| `spark.comet.expression.Shuffle.enabled` | Enable Comet acceleration for `Shuffle` | true |
+| `spark.comet.expression.Signum.enabled` | Enable Comet acceleration for `Signum` | true |
+| `spark.comet.expression.Sin.enabled` | Enable Comet acceleration for `Sin` | true |
+| `spark.comet.expression.Sinh.enabled` | Enable Comet acceleration for `Sinh` | true |
+| `spark.comet.expression.Size.enabled` | Enable Comet acceleration for `Size` | true |
+| `spark.comet.expression.Slice.enabled` | Enable Comet acceleration for `Slice` | true |
+| `spark.comet.expression.SortArray.enabled` | Enable Comet acceleration for `SortArray` | true |
+| `spark.comet.expression.SortOrder.enabled` | Enable Comet acceleration for `SortOrder` | true |
+| `spark.comet.expression.SoundEx.enabled` | Enable Comet acceleration for `SoundEx` | true |
+| `spark.comet.expression.SparkPartitionID.enabled` | Enable Comet acceleration for `SparkPartitionID` | true |
+| `spark.comet.expression.Sqrt.enabled` | Enable Comet acceleration for `Sqrt` | true |
+| `spark.comet.expression.StartsWith.enabled` | Enable Comet acceleration for `StartsWith` | true |
+| `spark.comet.expression.StaticInvoke.enabled` | Enable Comet acceleration for `StaticInvoke` | true |
+| `spark.comet.expression.StringInstr.enabled` | Enable Comet acceleration for `StringInstr` | true |
+| `spark.comet.expression.StringLPad.enabled` | Enable Comet acceleration for `StringLPad` | true |
+| `spark.comet.expression.StringLocate.enabled` | Enable Comet acceleration for `StringLocate` | true |
+| `spark.comet.expression.StringRPad.enabled` | Enable Comet acceleration for `StringRPad` | true |
+| `spark.comet.expression.StringRepeat.enabled` | Enable Comet acceleration for `StringRepeat` | true |
+| `spark.comet.expression.StringReplace.enabled` | Enable Comet acceleration for `StringReplace` | true |
+| `spark.comet.expression.StringSpace.enabled` | Enable Comet acceleration for `StringSpace` | true |
+| `spark.comet.expression.StringSplit.enabled` | Enable Comet acceleration for `StringSplit` | true |
+| `spark.comet.expression.StringToMap.enabled` | Enable Comet acceleration for `StringToMap` | true |
+| `spark.comet.expression.StringTranslate.enabled` | Enable Comet acceleration for `StringTranslate` | true |
+| `spark.comet.expression.StringTrim.enabled` | Enable Comet acceleration for `StringTrim` | true |
+| `spark.comet.expression.StringTrimLeft.enabled` | Enable Comet acceleration for `StringTrimLeft` | true |
+| `spark.comet.expression.StringTrimRight.enabled` | Enable Comet acceleration for `StringTrimRight` | true |
+| `spark.comet.expression.StructsToCsv.enabled` | Enable Comet acceleration for `StructsToCsv` | true |
+| `spark.comet.expression.StructsToJson.enabled` | Enable Comet acceleration for `StructsToJson` | true |
+| `spark.comet.expression.Substring.enabled` | Enable Comet acceleration for `Substring` | true |
+| `spark.comet.expression.SubstringIndex.enabled` | Enable Comet acceleration for `SubstringIndex` | true |
+| `spark.comet.expression.Subtract.enabled` | Enable Comet acceleration for `Subtract` | true |
+| `spark.comet.expression.Tan.enabled` | Enable Comet acceleration for `Tan` | true |
+| `spark.comet.expression.Tanh.enabled` | Enable Comet acceleration for `Tanh` | true |
+| `spark.comet.expression.ToCharacter.enabled` | Enable Comet acceleration for `ToCharacter` | true |
+| `spark.comet.expression.ToDegrees.enabled` | Enable Comet acceleration for `ToDegrees` | true |
+| `spark.comet.expression.ToNumber.enabled` | Enable Comet acceleration for `ToNumber` | true |
+| `spark.comet.expression.ToPrettyString.enabled` | Enable Comet acceleration for `ToPrettyString` | true |
+| `spark.comet.expression.ToRadians.enabled` | Enable Comet acceleration for `ToRadians` | true |
+| `spark.comet.expression.ToUTCTimestamp.enabled` | Enable Comet acceleration for `ToUTCTimestamp` | true |
+| `spark.comet.expression.ToUnixTimestamp.enabled` | Enable Comet acceleration for `ToUnixTimestamp` | true |
+| `spark.comet.expression.TransformKeys.enabled` | Enable Comet acceleration for `TransformKeys` | true |
+| `spark.comet.expression.TransformValues.enabled` | Enable Comet acceleration for `TransformValues` | true |
+| `spark.comet.expression.TruncDate.enabled` | Enable Comet acceleration for `TruncDate` | true |
+| `spark.comet.expression.TruncTimestamp.enabled` | Enable Comet acceleration for `TruncTimestamp` | true |
+| `spark.comet.expression.TryEval.enabled` | Enable Comet acceleration for `TryEval` | true |
+| `spark.comet.expression.TryToNumber.enabled` | Enable Comet acceleration for `TryToNumber` | true |
+| `spark.comet.expression.UnBase64.enabled` | Enable Comet acceleration for `UnBase64` | true |
+| `spark.comet.expression.UnaryMinus.enabled` | Enable Comet acceleration for `UnaryMinus` | true |
+| `spark.comet.expression.UnaryPositive.enabled` | Enable Comet acceleration for `UnaryPositive` | true |
+| `spark.comet.expression.Unhex.enabled` | Enable Comet acceleration for `Unhex` | true |
+| `spark.comet.expression.UnixDate.enabled` | Enable Comet acceleration for `UnixDate` | true |
+| `spark.comet.expression.UnixMicros.enabled` | Enable Comet acceleration for `UnixMicros` | true |
+| `spark.comet.expression.UnixMillis.enabled` | Enable Comet acceleration for `UnixMillis` | true |
+| `spark.comet.expression.UnixSeconds.enabled` | Enable Comet acceleration for `UnixSeconds` | true |
+| `spark.comet.expression.UnixTimestamp.enabled` | Enable Comet acceleration for `UnixTimestamp` | true |
+| `spark.comet.expression.UnscaledValue.enabled` | Enable Comet acceleration for `UnscaledValue` | true |
+| `spark.comet.expression.Upper.enabled` | Enable Comet acceleration for `Upper` | true |
+| `spark.comet.expression.Uuid.enabled` | Enable Comet acceleration for `Uuid` | true |
+| `spark.comet.expression.WeekDay.enabled` | Enable Comet acceleration for `WeekDay` | true |
+| `spark.comet.expression.WeekOfYear.enabled` | Enable Comet acceleration for `WeekOfYear` | true |
+| `spark.comet.expression.WidthBucket.enabled` | Enable Comet acceleration for `WidthBucket` | true |
+| `spark.comet.expression.XPathBoolean.enabled` | Enable Comet acceleration for `XPathBoolean` | true |
+| `spark.comet.expression.XPathDouble.enabled` | Enable Comet acceleration for `XPathDouble` | true |
+| `spark.comet.expression.XPathFloat.enabled` | Enable Comet acceleration for `XPathFloat` | true |
+| `spark.comet.expression.XPathInt.enabled` | Enable Comet acceleration for `XPathInt` | true |
+| `spark.comet.expression.XPathList.enabled` | Enable Comet acceleration for `XPathList` | true |
+| `spark.comet.expression.XPathLong.enabled` | Enable Comet acceleration for `XPathLong` | true |
+| `spark.comet.expression.XPathShort.enabled` | Enable Comet acceleration for `XPathShort` | true |
+| `spark.comet.expression.XPathString.enabled` | Enable Comet acceleration for `XPathString` | true |
+| `spark.comet.expression.XxHash64.enabled` | Enable Comet acceleration for `XxHash64` | true |
+| `spark.comet.expression.Year.enabled` | Enable Comet acceleration for `Year` | true |
+| `spark.comet.expression.ZipWith.enabled` | Enable Comet acceleration for `ZipWith` | true |
+<!-- prettier-ignore-end -->
 <!--END:CONFIG_TABLE-->
 
 ## Enabling or Disabling Individual Aggregate Expressions
 
 <!--BEGIN:CONFIG_TABLE[enable_agg_expr]-->
+<!-- prettier-ignore-start -->
+| Config | Description | Default Value |
+|--------|-------------|---------------|
+| `spark.comet.expression.ApproximatePercentile.enabled` | Enable Comet acceleration for `ApproximatePercentile` | true |
+| `spark.comet.expression.Average.enabled` | Enable Comet acceleration for `Average` | true |
+| `spark.comet.expression.BitAndAgg.enabled` | Enable Comet acceleration for `BitAndAgg` | true |
+| `spark.comet.expression.BitOrAgg.enabled` | Enable Comet acceleration for `BitOrAgg` | true |
+| `spark.comet.expression.BitXorAgg.enabled` | Enable Comet acceleration for `BitXorAgg` | true |
+| `spark.comet.expression.BloomFilterAggregate.enabled` | Enable Comet acceleration for `BloomFilterAggregate` | true |
+| `spark.comet.expression.CollectList.enabled` | Enable Comet acceleration for `CollectList` | true |
+| `spark.comet.expression.CollectSet.enabled` | Enable Comet acceleration for `CollectSet` | true |
+| `spark.comet.expression.Corr.enabled` | Enable Comet acceleration for `Corr` | true |
+| `spark.comet.expression.Count.enabled` | Enable Comet acceleration for `Count` | true |
+| `spark.comet.expression.CovPopulation.enabled` | Enable Comet acceleration for `CovPopulation` | true |
+| `spark.comet.expression.CovSample.enabled` | Enable Comet acceleration for `CovSample` | true |
+| `spark.comet.expression.First.enabled` | Enable Comet acceleration for `First` | true |
+| `spark.comet.expression.HyperLogLogPlusPlus.enabled` | Enable Comet acceleration for `HyperLogLogPlusPlus` | true |
+| `spark.comet.expression.Last.enabled` | Enable Comet acceleration for `Last` | true |
+| `spark.comet.expression.Max.enabled` | Enable Comet acceleration for `Max` | true |
+| `spark.comet.expression.Min.enabled` | Enable Comet acceleration for `Min` | true |
+| `spark.comet.expression.Percentile.enabled` | Enable Comet acceleration for `Percentile` | true |
+| `spark.comet.expression.StddevPop.enabled` | Enable Comet acceleration for `StddevPop` | true |
+| `spark.comet.expression.StddevSamp.enabled` | Enable Comet acceleration for `StddevSamp` | true |
+| `spark.comet.expression.Sum.enabled` | Enable Comet acceleration for `Sum` | true |
+| `spark.comet.expression.VariancePop.enabled` | Enable Comet acceleration for `VariancePop` | true |
+| `spark.comet.expression.VarianceSamp.enabled` | Enable Comet acceleration for `VarianceSamp` | true |
+<!-- prettier-ignore-end -->
 <!--END:CONFIG_TABLE-->
