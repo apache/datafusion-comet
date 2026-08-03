@@ -23,6 +23,7 @@ mod arrays_zip;
 mod flatten;
 mod get_array_struct_fields;
 mod list_extract;
+mod nested_float_normalize;
 mod size;
 
 pub use array_insert::ArrayInsert;
