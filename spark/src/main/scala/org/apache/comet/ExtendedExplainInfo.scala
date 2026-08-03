@@ -24,7 +24,7 @@ import java.util.Locale
 import scala.collection.mutable
 
 import org.apache.spark.sql.ExtendedExplainGenerator
-import org.apache.spark.sql.catalyst.expressions.{Expression, ScalaUDF}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, BoundReference, Expression, Literal, ScalaUDF}
 import org.apache.spark.sql.catalyst.trees.{TreeNode, TreeNodeTag}
 import org.apache.spark.sql.comet.{CometColumnarToRowExec, CometNativeColumnarToRowExec, CometPlan, CometSparkToColumnarExec}
 import org.apache.spark.sql.execution.{ColumnarToRowExec, InputAdapter, RowToColumnarExec, SparkPlan, WholeStageCodegenExec}
@@ -305,6 +305,38 @@ object CometExplainInfo {
    */
   def collectTagValues(nodes: Seq[TreeNode[_]], tag: TreeNodeTag[Set[String]]): Set[String] = {
     nodes.flatMap(_.getTagValue(tag).getOrElse(Set.empty[String])).toSet
+  }
+
+  /**
+   * Union of a `Set`-valued tag over `exprs`, skipping nodes the serde never tags.
+   *
+   * Catalyst copies a rewritten node's tags onto its replacement (`TreeNode.copyTagsFrom`, which
+   * copies whenever the replacement has no tags of its own). Rewriting a tagged expression into a
+   * process-wide singleton such as `Literal.TrueLiteral` therefore brands that singleton for the
+   * lifetime of the JVM, and every plan built afterwards that contains it -
+   * `dynamicpruningexpression(true)` on a partitioned scan, say - would report a name or an info
+   * message belonging to an unrelated query. Reading back only the nodes the serde actually
+   * writes to closes that path.
+   *
+   * See https://github.com/apache/datafusion-comet/issues/5229.
+   */
+  def collectExprTagValues(exprs: Seq[Expression], tag: TreeNodeTag[Set[String]]): Set[String] = {
+    collectTagValues(exprs.filterNot(isNeverTagged), tag)
+  }
+
+  /**
+   * Nodes that never carry a Comet tag of their own, so anything found on one arrived by the
+   * copying described in [[collectExprTagValues]]. `Literal` is the node that matters, being the
+   * only one with JVM-wide singletons (`Literal.TrueLiteral`, `Literal.FalseLiteral`); the other
+   * two are listed because nothing legitimate can live on them either.
+   *
+   * `Alias` is deliberately absent even though the serde does not tag one directly:
+   * `QueryPlanSerde.liftCoverageTags` lands names on whichever node the operator holds, and for a
+   * projection that is an `Alias`.
+   */
+  private def isNeverTagged(expr: Expression): Boolean = expr match {
+    case _: Attribute | _: BoundReference | _: Literal => true
+    case _ => false
   }
 
   /**
