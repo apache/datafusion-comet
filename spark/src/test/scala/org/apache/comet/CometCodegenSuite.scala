@@ -30,6 +30,7 @@ import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.types._
 import org.apache.spark.unsafe.types.UTF8String
 
+import org.apache.comet.CometSparkSessionExtensions.isSpark41Plus
 import org.apache.comet.codegen.CometBatchKernelCodegen
 import org.apache.comet.codegen.CometBatchKernelCodegen.ArrowColumnSpec
 import org.apache.comet.udf.codegen.CometScalaUDFCodegen
@@ -1388,10 +1389,15 @@ class CometCodegenSuite
 
   test("leaf-only short-circuit preserves ANSI remainder-by-zero behaviour (#5218)") {
     // The one shape where a `NullIntolerant` root's error check is not simply gated behind
-    // "all inputs non-null": `Pmod.doGenCode` evaluates the divisor first and throws
-    // REMAINDER_BY_ZERO under ANSI. It still tests the dividend's null *before* that throw, so
+    // "all inputs non-null": `Pmod.doGenCode` evaluates the divisor first and throws on a zero
+    // divisor under ANSI. It still tests the dividend's null *before* that throw, so
     // `pmod(NULL, 0)` returns NULL in Spark and the union short-circuit stays exact. The
     // (NULL, 0) row pins the non-raising case, the (7, 0) row the raising one.
+    //
+    // Spark 4.1 introduced REMAINDER_BY_ZERO; older versions raise DIVIDE_BY_ZERO for `pmod`.
+    // The error comes from Spark's own generated code running inside the kernel, so the class
+    // tracks the Spark version under test.
+    val expectedError = if (isSpark41Plus) "REMAINDER_BY_ZERO" else "DIVIDE_BY_ZERO"
     spark.udf.register("idInt", (i: Integer) => i)
     withTable("t") {
       sql("CREATE TABLE t (a INT, b INT) USING parquet")
@@ -1412,16 +1418,17 @@ class CometCodegenSuite
           cometErr.isDefined,
           "Comet returned a value where Spark raised: the null short-circuit swallowed the error")
         assert(
-          cometErr.get.getMessage.contains("REMAINDER_BY_ZERO"),
-          s"expected the same REMAINDER_BY_ZERO error Spark raises, got: ${cometErr.get}")
+          cometErr.get.getMessage.contains(expectedError),
+          s"expected the same $expectedError error Spark raises, got: ${cometErr.get}")
+        assert(
+          sparkErr.get.getMessage.contains(expectedError),
+          s"expected Spark to raise $expectedError, got: ${sparkErr.get}")
       }
     }
   }
 
   test("TIME input column routes through the dispatcher (#5218)") {
-    assume(
-      org.apache.comet.CometSparkSessionExtensions.isSpark41Plus,
-      "TimeType requires Spark 4.1+")
+    assume(isSpark41Plus, "TimeType requires Spark 4.1+")
     // `canHandle` accepts TIME (`isSupportedDataType`) and `emitTypedGetters` emits a getLong
     // case for `TimeNanoVector`, but `CometScalaUDFCodegen.specFor` used to omit the vector class
     // and throw `UnsupportedOperationException` at execute time -- after the plan had already
