@@ -1365,6 +1365,59 @@ class CometCodegenSuite
     }
   }
 
+  test("multi-input leaf-only NullIntolerant tree short-circuits nulls correctly (#5218)") {
+    // The leaf-only-children shape keeps the union-of-ordinals short-circuit, because the only
+    // code Spark runs ahead of its own null checks is `BoundReference` reads. Exercises every
+    // null combination across two ordinals to confirm the disjunction matches Spark's per-node
+    // left-to-right null handling row for row. Wrapped in a UDF so the argument expression is
+    // guaranteed to route through the dispatcher rather than Comet's native path.
+    spark.udf.register("idInt", (i: Integer) => i)
+    withTable("t") {
+      sql("CREATE TABLE t (a INT, b INT) USING parquet")
+      sql(
+        "INSERT INTO t VALUES (7, 3), (NULL, 3), (7, NULL), (NULL, NULL), " +
+          "(-7, 3), (7, -3), (0, 3)")
+      assertCodegenRan {
+        checkSparkAnswerAndOperator(sql("SELECT idInt(pmod(a, b)) FROM t"))
+      }
+      assertCodegenRan {
+        checkSparkAnswerAndOperator(sql("SELECT idInt(a + b) FROM t"))
+      }
+    }
+  }
+
+  test("leaf-only short-circuit preserves ANSI remainder-by-zero behaviour (#5218)") {
+    // The one shape where a `NullIntolerant` root's error check is not simply gated behind
+    // "all inputs non-null": `Pmod.doGenCode` evaluates the divisor first and throws
+    // REMAINDER_BY_ZERO under ANSI. It still tests the dividend's null *before* that throw, so
+    // `pmod(NULL, 0)` returns NULL in Spark and the union short-circuit stays exact. The
+    // (NULL, 0) row pins the non-raising case, the (7, 0) row the raising one.
+    spark.udf.register("idInt", (i: Integer) => i)
+    withTable("t") {
+      sql("CREATE TABLE t (a INT, b INT) USING parquet")
+      sql("INSERT INTO t VALUES (NULL, 0)")
+      withSQLConf("spark.sql.ansi.enabled" -> "true") {
+        assertCodegenRan {
+          checkSparkAnswerAndOperator(sql("SELECT idInt(pmod(a, b)) FROM t"))
+        }
+      }
+      sql("INSERT INTO t VALUES (7, 0)")
+      withSQLConf("spark.sql.ansi.enabled" -> "true") {
+        val (sparkErr, cometErr) =
+          checkSparkAnswerMaybeThrows(sql("SELECT idInt(pmod(a, b)) FROM t"))
+        assert(
+          sparkErr.isDefined,
+          "expected Spark to raise on pmod by zero under ANSI; the test row is no longer a witness")
+        assert(
+          cometErr.isDefined,
+          "Comet returned a value where Spark raised: the null short-circuit swallowed the error")
+        assert(
+          cometErr.get.getMessage.contains("REMAINDER_BY_ZERO"),
+          s"expected the same REMAINDER_BY_ZERO error Spark raises, got: ${cometErr.get}")
+      }
+    }
+  }
+
   test("TIME input column routes through the dispatcher (#5218)") {
     assume(
       org.apache.comet.CometSparkSessionExtensions.isSpark41Plus,
