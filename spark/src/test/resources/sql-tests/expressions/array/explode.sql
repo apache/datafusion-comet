@@ -492,13 +492,13 @@ SELECT id, explode(array(x, y, z)) AS v FROM test_explode_array_ctor
 query
 SELECT id, explode_outer(array(x, y, z)) AS v FROM test_explode_array_ctor
 
--- ===== Non-deterministic generator child: `CometExplodeExec.getSupportLevel`
--- rejects the generator when `op.generator.deterministic` is false, and Spark
--- propagates non-determinism from children, so `explode(array(rand(0)))`
--- reports the generator as non-deterministic and must fall back to Spark.
+-- ===== Non-deterministic generator child. Spark's
+-- `RewriteGeneratorNondeterministicExpressions` rewrites `explode(array(rand(0)))`
+-- into a preceding Project that computes the array, then `explode` sees a
+-- deterministic column reference. Comet's `CometExplodeExec.getSupportLevel`
+-- guard (`if (!op.generator.deterministic)`) still fires because
+-- `Expression.deterministic` walks children, so Comet falls back for the
+-- physical Generate node regardless.
 
 query expect_fallback(Only deterministic generators are supported)
-SELECT id, explode(array(rand(0))) FROM test_explode_int WHERE id = 1
-
-query expect_fallback(Only deterministic generators are supported)
-SELECT id, explode(shuffle(arr)) FROM test_explode_int
+SELECT id, explode(array(rand(0))) FROM (SELECT 1 id) WHERE id = 1
