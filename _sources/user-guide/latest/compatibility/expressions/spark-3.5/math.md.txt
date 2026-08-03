@@ -27,12 +27,6 @@ The following cases are not supported by Comet and always fall back to Spark, re
 
 - Only integral, floating-point, and decimal types are supported
 
-## IntegralDivide
-
-The following differences from Spark are always present and do not require any additional configuration:
-
-- On `LongType` input, `Long.MinValue div -1` does not overflow-check: Comet's decimal-backed path returns the wrapped value `Long.MinValue` under legacy mode and silently returns the same wrapped value under ANSI, where Spark raises `ARITHMETIC_OVERFLOW` ([#5065](https://github.com/apache/datafusion-comet/issues/5065)).
-
 ## Rand
 
 The following cases are not supported by Comet and always fall back to Spark, regardless of any `allowIncompatible` setting:
@@ -44,10 +38,4 @@ The following cases are not supported by Comet and always fall back to Spark, re
 The following cases are not supported by Comet and always fall back to Spark, regardless of any `allowIncompatible` setting:
 
 - The `seed` argument must be a literal value
-
-## Round
-
-The following differences from Spark are always present and do not require any additional configuration:
-
-- On `LongType` input with a negative `scale` of `-19` or lower, `10^(-scale)` overflows the native integer type and Comet returns `0` instead of Spark's overflowed value. Under ANSI mode Spark raises `ARITHMETIC_OVERFLOW` at the same input; Comet still returns `0` ([#5070](https://github.com/apache/datafusion-comet/issues/5070)).
 <!--END:EXPR_COMPAT-->

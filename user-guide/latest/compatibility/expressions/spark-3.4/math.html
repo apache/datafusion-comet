@@ -756,13 +756,6 @@ under the License.
 <li><p>Only integral, floating-point, and decimal types are supported</p></li>
 </ul>
 </section>
-<section id="integraldivide">
-<h2>IntegralDivide<a class="headerlink" href="#integraldivide" title="Link to this heading">#</a></h2>
-<p>The following differences from Spark are always present and do not require any additional configuration:</p>
-<ul class="simple">
-<li><p>On <code class="docutils literal notranslate"><span class="pre">LongType</span></code> input, <code class="docutils literal notranslate"><span class="pre">Long.MinValue</span> <span class="pre">div</span> <span class="pre">-1</span></code> does not overflow-check: Comet’s decimal-backed path returns the wrapped value <code class="docutils literal notranslate"><span class="pre">Long.MinValue</span></code> under legacy mode and silently returns the same wrapped value under ANSI, where Spark raises <code class="docutils literal notranslate"><span class="pre">ARITHMETIC_OVERFLOW</span></code> (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5065">#5065</a>).</p></li>
-</ul>
-</section>
 <section id="rand">
 <h2>Rand<a class="headerlink" href="#rand" title="Link to this heading">#</a></h2>
 <p>The following cases are not supported by Comet and always fall back to Spark, regardless of any <code class="docutils literal notranslate"><span class="pre">allowIncompatible</span></code> setting:</p>
@@ -775,13 +768,6 @@ under the License.
 <p>The following cases are not supported by Comet and always fall back to Spark, regardless of any <code class="docutils literal notranslate"><span class="pre">allowIncompatible</span></code> setting:</p>
 <ul class="simple">
 <li><p>The <code class="docutils literal notranslate"><span class="pre">seed</span></code> argument must be a literal value</p></li>
-</ul>
-</section>
-<section id="round">
-<h2>Round<a class="headerlink" href="#round" title="Link to this heading">#</a></h2>
-<p>The following differences from Spark are always present and do not require any additional configuration:</p>
-<ul class="simple">
-<li><p>On <code class="docutils literal notranslate"><span class="pre">LongType</span></code> input with a negative <code class="docutils literal notranslate"><span class="pre">scale</span></code> of <code class="docutils literal notranslate"><span class="pre">-19</span></code> or lower, <code class="docutils literal notranslate"><span class="pre">10^(-scale)</span></code> overflows the native integer type and Comet returns <code class="docutils literal notranslate"><span class="pre">0</span></code> instead of Spark’s overflowed value. Under ANSI mode Spark raises <code class="docutils literal notranslate"><span class="pre">ARITHMETIC_OVERFLOW</span></code> at the same input; Comet still returns <code class="docutils literal notranslate"><span class="pre">0</span></code> (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5070">#5070</a>).</p></li>
 </ul>
 <!--END:EXPR_COMPAT-->
 </section>
@@ -835,10 +821,8 @@ under the License.
   <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="visible nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#abs">Abs</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#integraldivide">IntegralDivide</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#rand">Rand</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#randn">Randn</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#round">Round</a></li>
 </ul>
   </nav></div>
 
