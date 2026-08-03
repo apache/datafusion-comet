@@ -178,6 +178,17 @@ inline in the UI. Earlier Spark versions do not have the
 `extendedExplainProviders` extension point, so this provider is not used and
 the config has no effect there.
 
+Not every node in the plan is an eligible operator. The following are excluded
+from both operator counts:
+
+- Transition nodes (`CometColumnarToRow`, `CometNativeColumnarToRow`,
+  `CometSparkRowToColumnar`, `ColumnarToRow`, `RowToColumnar`), which are
+  reported separately as the transition count.
+- Wrappers that do no work of their own: `AdaptiveSparkPlan`, `InputAdapter`,
+  `WholeStageCodegen`, query stages, and `AQEShuffleRead`.
+- The reuse marker `ReusedSubquery`. The subquery it points at is counted where
+  that subquery is shown, so the marker itself does not add to the totals.
+
 ### `spark.comet.explain.native.enabled`
 
 When enabled, each executor task logs the DataFusion plan it executes,
