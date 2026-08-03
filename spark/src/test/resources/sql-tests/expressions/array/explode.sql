@@ -24,6 +24,8 @@
 
 -- ===== INT arrays: null id, null / empty / non-empty arrays =====
 
+-- MinSparkVersion: 3.5
+
 statement
 CREATE TABLE test_explode_int(id int, arr array<int>) USING parquet
 
@@ -500,5 +502,5 @@ SELECT id, explode_outer(array(x, y, z)) AS v FROM test_explode_array_ctor
 -- `Expression.deterministic` walks children, so Comet falls back for the
 -- physical Generate node regardless.
 
-query expect_fallback(Only deterministic generators are supported)
+query expect_fallback(nondeterministic expressions)
 SELECT id, explode(array(rand(0))) FROM (SELECT 1 id) WHERE id = 1
