@@ -502,5 +502,5 @@ SELECT id, explode_outer(array(x, y, z)) AS v FROM test_explode_array_ctor
 -- `Expression.deterministic` walks children, so Comet falls back for the
 -- physical Generate node regardless.
 
-query expect_fallback(nondeterministic expressions)
+query expect_fallback(Only deterministic generators are supported)
 SELECT id, explode(array(rand(0))) FROM (SELECT 1 id) WHERE id = 1
