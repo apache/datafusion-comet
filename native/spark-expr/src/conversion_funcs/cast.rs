@@ -45,13 +45,13 @@ use arrow::array::{
     new_null_array, BinaryBuilder, DictionaryArray, GenericByteArray, ListArray, MapArray,
     StringArray, StructArray,
 };
-use arrow::datatypes::{ArrowDictionaryKeyType, ArrowNativeType, DataType, Schema};
+use arrow::datatypes::{DataType, Schema};
 use arrow::datatypes::{Field, Fields, GenericBinaryType};
 use arrow::error::ArrowError;
 use arrow::{
     array::{
         cast::AsArray, types::Int32Type, Array, ArrayRef, Int16Array, Int32Array, Int64Array,
-        Int8Array, OffsetSizeTrait, PrimitiveArray,
+        Int8Array, OffsetSizeTrait,
     },
     compute::{cast_with_options, take, CastOptions},
     record_batch::RecordBatch,
@@ -213,40 +213,6 @@ pub fn spark_cast(
     Ok(result)
 }
 
-// copied from datafusion common scalar/mod.rs
-fn dict_from_values<K: ArrowDictionaryKeyType>(
-    values_array: ArrayRef,
-) -> datafusion::common::Result<ArrayRef> {
-    // Create a key array with `size` elements of 0..array_len for all
-    // non-null value elements
-    let key_array: PrimitiveArray<K> = (0..values_array.len())
-        .map(|index| {
-            if values_array.is_valid(index) {
-                let native_index = K::Native::from_usize(index).ok_or_else(|| {
-                    DataFusionError::Internal(format!(
-                        "Can not create index of type {} from value {}",
-                        K::DATA_TYPE,
-                        index
-                    ))
-                })?;
-                Ok(Some(native_index))
-            } else {
-                Ok(None)
-            }
-        })
-        .collect::<datafusion::common::Result<Vec<_>>>()?
-        .into_iter()
-        .collect();
-
-    // create a new DictionaryArray
-    //
-    // Note: this path could be made faster by using the ArrayData
-    // APIs and skipping validation, if it every comes up in
-    // performance traces.
-    let dict_array = DictionaryArray::<K>::try_new(key_array, values_array)?;
-    Ok(Arc::new(dict_array))
-}
-
 pub(crate) fn cast_array(
     array: ArrayRef,
     to_type: &DataType,
@@ -301,13 +267,11 @@ pub(crate) fn cast_array(
             return Ok(spark_cast_postprocess(casted_result, &from_type, to_type));
         }
         _ => {
-            if let Dictionary(_, _) = to_type {
-                let dict_array = dict_from_values::<Int32Type>(array)?;
-                let casted_result = cast_array(dict_array, to_type, cast_options)?;
-                return Ok(spark_cast_postprocess(casted_result, &from_type, to_type));
-            } else {
-                array
+            if let Dictionary(_, value_type) = to_type {
+                let values = cast_array(array, value_type, cast_options)?;
+                return Ok(arrow::compute::cast(&values, to_type)?);
             }
+            array
         }
     };
 
@@ -908,10 +872,32 @@ fn cast_binary_to_string<O: OffsetSizeTrait>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::{BinaryArray, ListArray, NullArray, StringArray};
+    use arrow::array::{BinaryArray, ListArray, NullArray, PrimitiveArray, StringArray};
     use arrow::buffer::OffsetBuffer;
     use arrow::datatypes::TimestampMicrosecondType;
     use arrow::datatypes::{Field, Fields};
+
+    #[test]
+    fn test_cast_to_dictionary_deduplicates_casted_values() {
+        let input: ArrayRef = Arc::new(StringArray::from(vec![Some("0.2"), Some("."), None]));
+        let data_type = DataType::Dictionary(Box::new(DataType::Int32), Box::new(DataType::Int32));
+
+        let result = cast_array(
+            input,
+            &data_type,
+            &SparkCastOptions::new(EvalMode::Legacy, "UTC", false),
+        )
+        .unwrap();
+        let dictionary = result.as_dictionary::<Int32Type>();
+
+        assert_eq!(
+            dictionary.keys().iter().collect::<Vec<_>>(),
+            vec![Some(0), Some(0), None]
+        );
+        let values = dictionary.values().as_primitive::<Int32Type>();
+        assert_eq!(values.len(), 1);
+        assert_eq!(values.value(0), 0);
+    }
 
     #[test]
     fn test_cast_binary_to_string_replaces_invalid_utf8_jvm_compatibly() {

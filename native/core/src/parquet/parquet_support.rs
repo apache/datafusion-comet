@@ -22,10 +22,10 @@ use arrow::compute::can_cast_types;
 use arrow::datatypes::{FieldRef, Fields};
 use arrow::{
     array::{
-        cast::AsArray, new_null_array, types::Int32Type, types::TimestampMicrosecondType, Array,
-        ArrayRef, DictionaryArray, StructArray,
+        cast::AsArray, new_null_array, types::TimestampMicrosecondType, Array, ArrayRef,
+        StructArray,
     },
-    compute::{cast_with_options, take, CastOptions},
+    compute::{cast_with_options, CastOptions},
     datatypes::{DataType, TimeUnit},
     util::display::FormatOptions,
 };
@@ -169,31 +169,6 @@ fn parquet_convert_array(
     parquet_options: &SparkParquetOptions,
 ) -> DataFusionResult<ArrayRef> {
     use DataType::*;
-    let from_type = array.data_type().clone();
-
-    let array = match &from_type {
-        Dictionary(key_type, value_type)
-            if key_type.as_ref() == &Int32
-                && (value_type.as_ref() == &Utf8 || value_type.as_ref() == &LargeUtf8) =>
-        {
-            let dict_array = array
-                .as_any()
-                .downcast_ref::<DictionaryArray<Int32Type>>()
-                .expect("Expected a dictionary array");
-
-            let casted_dictionary = DictionaryArray::<Int32Type>::new(
-                dict_array.keys().clone(),
-                parquet_convert_array(Arc::clone(dict_array.values()), to_type, parquet_options)?,
-            );
-
-            let casted_result = match to_type {
-                Dictionary(_, _) => Arc::new(casted_dictionary.clone()),
-                _ => take(casted_dictionary.values().as_ref(), dict_array.keys(), None)?,
-            };
-            return Ok(casted_result);
-        }
-        _ => array,
-    };
     let from_type = array.data_type();
 
     // Try Comet specific handlers first, then arrow-rs cast if supported,
@@ -621,7 +596,6 @@ mod tests {
     use datafusion::execution::runtime_env::RuntimeEnv;
     #[cfg(not(feature = "hdfs-opendal"))]
     use object_store::path::Path;
-    #[cfg(not(feature = "hdfs-opendal"))]
     use std::sync::Arc;
     #[cfg(not(feature = "hdfs-opendal"))]
     use url::Url;
@@ -630,6 +604,33 @@ mod tests {
     use crate::execution::operators::ExecutionError;
     #[cfg(not(feature = "hdfs-opendal"))]
     use std::collections::HashMap;
+
+    #[test]
+    fn test_parquet_convert_dictionary_to_dictionary() {
+        use arrow::array::{DictionaryArray, Int32Array, LargeStringArray, StringArray};
+        use arrow::datatypes::{DataType, Int32Type};
+
+        let array = Arc::new(DictionaryArray::<Int32Type>::new(
+            Int32Array::from(vec![Some(0), None, Some(1), Some(0)]),
+            Arc::new(StringArray::from(vec!["a", "b"])),
+        ));
+        let data_type =
+            DataType::Dictionary(Box::new(DataType::Int16), Box::new(DataType::LargeUtf8));
+
+        let result = super::parquet_convert_array(
+            array,
+            &data_type,
+            &super::SparkParquetOptions::new_without_timezone(super::EvalMode::Legacy, false),
+        )
+        .unwrap();
+
+        assert_eq!(result.data_type(), &data_type);
+        let values = arrow::compute::cast(&result, &DataType::LargeUtf8).unwrap();
+        assert_eq!(
+            values.as_any().downcast_ref::<LargeStringArray>().unwrap(),
+            &LargeStringArray::from(vec![Some("a"), None, Some("b"), Some("a")])
+        );
+    }
 
     /// Parses the url, registers the object store, and returns a tuple of the object store url and object store path
     #[cfg(not(feature = "hdfs-opendal"))]
