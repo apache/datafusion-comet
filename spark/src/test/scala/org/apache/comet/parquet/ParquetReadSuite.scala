@@ -542,6 +542,17 @@ abstract class ParquetReadSuite extends CometTestBase {
   }
 
   /**
+   * Two tiny files easily fit in one Spark partition by data volume, but
+   * spark.sql.files.minPartitionNum defaults to the session's target parallelism, which pushes
+   * maxSplitBytes down to spark.sql.files.openCostInBytes; a single file's own virtual open-cost
+   * surcharge then already consumes that budget, so Spark schedules one file per task instead of
+   * packing both together. Forcing minPartitionNum to 1 is what actually gets both files into one
+   * partition, so partition2Proto's multi-file loop is exercised instead of one file per task.
+   */
+  private val forceSinglePartitionConf: (String, String) =
+    SQLConf.FILES_MIN_PARTITION_NUM.key -> "1"
+
+  /**
    * Writes two Parquet files with distinct row counts (and thus distinct file sizes) into `dir`,
    * and returns their (file_path, file_size) pairs sorted by size. Discovers them with Comet
    * disabled so the tests below filter on ground truth rather than hardcoded assumptions.
@@ -549,14 +560,20 @@ abstract class ParquetReadSuite extends CometTestBase {
   private def writeTwoFilesAndDiscoverMetadata(dir: File): Array[(String, Long)] = {
     (1 to 5).toDF("id").repartition(1).write.mode("overwrite").parquet(dir.getCanonicalPath)
     (1000 to 1999).toDF("id").repartition(1).write.mode("append").parquet(dir.getCanonicalPath)
-    withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-      spark.read
-        .parquet(dir.getCanonicalPath)
-        .select($"_metadata.file_path", $"_metadata.file_size")
-        .distinct()
-        .as[(String, Long)]
-        .collect()
-        .sortBy(_._2)
+    withSQLConf(forceSinglePartitionConf) {
+      assert(
+        spark.read.parquet(dir.getCanonicalPath).rdd.getNumPartitions == 1,
+        "expected both files to be packed into the same Spark partition, to exercise " +
+          "partition2Proto's multi-file loop rather than one file per task")
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        spark.read
+          .parquet(dir.getCanonicalPath)
+          .select($"_metadata.file_path", $"_metadata.file_size")
+          .distinct()
+          .as[(String, Long)]
+          .collect()
+          .sortBy(_._2)
+      }
     }
   }
 
@@ -566,11 +583,28 @@ abstract class ParquetReadSuite extends CometTestBase {
       assert(files.length == 2, s"expected two distinct files, got ${files.toSeq}")
       val (_, smallerSize) = files(0)
 
-      val df = spark.read
-        .parquet(dir.getCanonicalPath)
-        .filter($"_metadata.file_size" === smallerSize)
-        .select($"id")
-      checkSparkAnswerAndOperator(df, Seq(classOf[CometNativeScanExec]))
+      withSQLConf(forceSinglePartitionConf) {
+        val df = spark.read
+          .parquet(dir.getCanonicalPath)
+          .filter($"_metadata.file_size" === smallerSize)
+          .select($"id")
+        checkSparkAnswerAndOperator(df, Seq(classOf[CometNativeScanExec]))
+      }
+    }
+  }
+
+  test("filter on _metadata.file_size using a range predicate") {
+    withTempPath { dir =>
+      val files = writeTwoFilesAndDiscoverMetadata(dir)
+      val (_, smallerSize) = files(0)
+
+      withSQLConf(forceSinglePartitionConf) {
+        val df = spark.read
+          .parquet(dir.getCanonicalPath)
+          .filter($"_metadata.file_size" > smallerSize)
+          .select($"id")
+        checkSparkAnswerAndOperator(df, Seq(classOf[CometNativeScanExec]))
+      }
     }
   }
 
@@ -579,11 +613,13 @@ abstract class ParquetReadSuite extends CometTestBase {
       val files = writeTwoFilesAndDiscoverMetadata(dir)
       val (_, largerSize) = files(1)
 
-      val df = spark.read
-        .parquet(dir.getCanonicalPath)
-        .filter($"_metadata.file_size" === largerSize && $"id" > 1500)
-        .select($"id")
-      checkSparkAnswerAndOperator(df, Seq(classOf[CometNativeScanExec]))
+      withSQLConf(forceSinglePartitionConf) {
+        val df = spark.read
+          .parquet(dir.getCanonicalPath)
+          .filter($"_metadata.file_size" === largerSize && $"id" > 1500)
+          .select($"id")
+        checkSparkAnswerAndOperator(df, Seq(classOf[CometNativeScanExec]))
+      }
     }
   }
 
@@ -592,9 +628,42 @@ abstract class ParquetReadSuite extends CometTestBase {
       val files = writeTwoFilesAndDiscoverMetadata(dir)
       val (targetPath, _) = files(0)
 
+      withSQLConf(forceSinglePartitionConf) {
+        val df = spark.read
+          .parquet(dir.getCanonicalPath)
+          .filter($"_metadata.file_path" === targetPath)
+          .select($"id")
+        checkSparkAnswerAndOperator(df, Seq(classOf[CometNativeScanExec]))
+      }
+    }
+  }
+
+  test("read _metadata constant columns together with a real Hive partition column") {
+    withTempPath { dir =>
+      Seq((1, "a"), (2, "a"), (3, "b"), (4, "b"))
+        .toDF("id", "pcol")
+        .repartition(1)
+        .write
+        .partitionBy("pcol")
+        .parquet(dir.getCanonicalPath)
       val df = spark.read
         .parquet(dir.getCanonicalPath)
-        .filter($"_metadata.file_path" === targetPath)
+        .select($"id", $"pcol", $"_metadata.file_path", $"_metadata.file_size")
+      checkSparkAnswerAndOperator(df, Seq(classOf[CometNativeScanExec]))
+    }
+  }
+
+  test("filter combining a real Hive partition column and a metadata column") {
+    withTempPath { dir =>
+      Seq((1, "a"), (2, "a"), (3, "b"), (4, "b"))
+        .toDF("id", "pcol")
+        .repartition(1)
+        .write
+        .partitionBy("pcol")
+        .parquet(dir.getCanonicalPath)
+      val df = spark.read
+        .parquet(dir.getCanonicalPath)
+        .filter($"pcol" === "b" && $"_metadata.file_size" > 0)
         .select($"id")
       checkSparkAnswerAndOperator(df, Seq(classOf[CometNativeScanExec]))
     }
