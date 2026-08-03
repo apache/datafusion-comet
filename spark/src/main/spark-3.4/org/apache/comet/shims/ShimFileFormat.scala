@@ -19,7 +19,9 @@
 
 package org.apache.comet.shims
 
-import org.apache.spark.sql.execution.datasources.{FileFormat, RowIndexUtil}
+import org.apache.hadoop.fs.Path
+import org.apache.spark.sql.catalyst.expressions.Literal
+import org.apache.spark.sql.execution.datasources.{FileFormat, PartitionedFile, RowIndexUtil}
 import org.apache.spark.sql.types.StructType
 
 object ShimFileFormat {
@@ -30,4 +32,32 @@ object ShimFileFormat {
 
   def findRowIndexColumnIndexInSchema(sparkSchema: StructType): Int =
     RowIndexUtil.findRowIndexColumnIndexInSchema(sparkSchema)
+
+  // Spark 3.4 has no per-format metadata extractor concept (added in Spark 3.5, SPARK-43868);
+  // it derives these values inline in FileFormat.updateMetadataInternalRow. Replicate that
+  // logic here so callers can use the same extractor-map shape across all Spark versions.
+  private val baseMetadataExtractors: Map[String, PartitionedFile => Any] = Map(
+    FileFormat.FILE_PATH -> { pf: PartitionedFile =>
+      // Use `new Path(Path.toString)` as a form of canonicalization
+      new Path(pf.filePath.toPath.toString).toUri.toString
+    },
+    FileFormat.FILE_NAME -> { pf: PartitionedFile =>
+      pf.filePath.toUri.getRawPath.split("/").lastOption.getOrElse("")
+    },
+    FileFormat.FILE_SIZE -> { pf: PartitionedFile => pf.fileSize },
+    FileFormat.FILE_BLOCK_START -> { pf: PartitionedFile => pf.start },
+    FileFormat.FILE_BLOCK_LENGTH -> { pf: PartitionedFile => pf.length },
+    // The modificationTime from the file has millisecond granularity, but the TimestampType for
+    // `file_modification_time` has microsecond granularity.
+    FileFormat.FILE_MODIFICATION_TIME -> { pf: PartitionedFile => pf.modificationTime * 1000 })
+
+  def fileConstantMetadataExtractors(
+      fileFormat: FileFormat): Map[String, PartitionedFile => Any] =
+    baseMetadataExtractors
+
+  def getFileConstantMetadataColumnValue(
+      name: String,
+      file: PartitionedFile,
+      extractors: Map[String, PartitionedFile => Any]): Literal =
+    Literal(extractors(name)(file))
 }

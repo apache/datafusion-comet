@@ -20,12 +20,13 @@
 package org.apache.comet.serde
 
 import org.apache.spark.sql.catalyst.expressions.{AttributeReference, Literal}
-import org.apache.spark.sql.execution.datasources.{FileFormat, FilePartition, PartitionedFile}
+import org.apache.spark.sql.execution.datasources.{FilePartition, PartitionedFile}
 import org.apache.spark.sql.execution.datasources.parquet.ParquetUtils
 import org.apache.spark.sql.types.{StructField, StructType}
 
 import org.apache.comet.parquet.CometParquetUtils
 import org.apache.comet.serde.QueryPlanSerde.{exprToProto, serializeDataType}
+import org.apache.comet.shims.ShimFileFormat
 
 package object operator {
 
@@ -49,8 +50,8 @@ package object operator {
       partition: FilePartition,
       partitionSchema: StructType,
       constantMetadataColumns: Seq[AttributeReference] = Seq.empty,
-      fileConstantMetadataExtractors: Map[String, PartitionedFile => Any] =
-        FileFormat.BASE_METADATA_EXTRACTORS): OperatorOuterClass.SparkFilePartition = {
+      fileConstantMetadataExtractors: Map[String, PartitionedFile => Any] = Map.empty)
+      : OperatorOuterClass.SparkFilePartition = {
     val partitionBuilder = OperatorOuterClass.SparkFilePartition.newBuilder()
     partition.files.foreach(file => {
       // Process the partition values
@@ -74,7 +75,7 @@ package object operator {
       // dataType, exactly as Spark's own FileFormat.updateMetadataInternalRow does
       // (`row.update(i, literal.value)`).
       val metadataVals = constantMetadataColumns.map { attr =>
-        val value = FileFormat
+        val value = ShimFileFormat
           .getFileConstantMetadataColumnValue(attr.name, file, fileConstantMetadataExtractors)
           .value
         literalToProto(Literal(value, attr.dataType), s"metadata column value for ${attr.name}")

@@ -19,6 +19,8 @@
 
 package org.apache.comet.shims
 
+import org.apache.spark.sql.catalyst.expressions.Literal
+import org.apache.spark.sql.execution.datasources.{FileFormat, PartitionedFile}
 import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
 import org.apache.spark.sql.execution.datasources.parquet.ParquetRowIndexUtil
 import org.apache.spark.sql.types.StructType
@@ -30,4 +32,14 @@ object ShimFileFormat {
 
   def findRowIndexColumnIndexInSchema(sparkSchema: StructType): Int =
     ParquetRowIndexUtil.findRowIndexColumnIndexInSchema(sparkSchema)
+
+  def fileConstantMetadataExtractors(
+      fileFormat: FileFormat): Map[String, PartitionedFile => Any] =
+    fileFormat.fileConstantMetadataExtractors
+
+  def getFileConstantMetadataColumnValue(
+      name: String,
+      file: PartitionedFile,
+      extractors: Map[String, PartitionedFile => Any]): Literal =
+    FileFormat.getFileConstantMetadataColumnValue(name, file, extractors)
 }
