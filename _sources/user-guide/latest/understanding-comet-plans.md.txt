@@ -178,6 +178,27 @@ inline in the UI. Earlier Spark versions do not have the
 `extendedExplainProviders` extension point, so this provider is not used and
 the config has no effect there.
 
+Not every node in the plan is an eligible operator. The following are excluded
+from both operator counts:
+
+- Transition nodes (`CometColumnarToRow`, `CometNativeColumnarToRow`,
+  `CometSparkRowToColumnar`, `CometSparkColumnarToColumnar`, `ColumnarToRow`,
+  `RowToColumnar`), which are reported separately as the transition count.
+  `CometSparkRowToColumnar` and `CometSparkColumnarToColumnar` are the two names
+  a single operator renders under, depending on whether its child already
+  produces columnar data, and both are excluded.
+- Wrappers that do no work of their own: `AdaptiveSparkPlan`, `InputAdapter`,
+  `WholeStageCodegen`, query stages, and `AQEShuffleRead`.
+- The reuse marker `ReusedSubquery`. The subquery it points at is counted where
+  that subquery is shown, so the marker itself does not add to the totals.
+- `ReusedExchange`, but with a caveat: it is not cleanly excluded the way the
+  wrappers above are. The node itself is skipped, and yet walking the plan
+  replaces it with the exchange it reuses, so the reused subtree is counted once
+  per reference rather than once for the whole plan. A plan that reuses one
+  exchange in three places contributes that subtree's operators three times.
+  Counting reused exchanges once is tracked as item 3 of
+  [#5203](https://github.com/apache/datafusion-comet/issues/5203).
+
 ### `spark.comet.explain.native.enabled`
 
 When enabled, each executor task logs the DataFusion plan it executes,

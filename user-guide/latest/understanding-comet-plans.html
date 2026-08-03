@@ -913,6 +913,27 @@ literals, aliases) are excluded.</p></li>
 inline in the UI. Earlier Spark versions do not have the
 <code class="docutils literal notranslate"><span class="pre">extendedExplainProviders</span></code> extension point, so this provider is not used and
 the config has no effect there.</p>
+<p>Not every node in the plan is an eligible operator. The following are excluded
+from both operator counts:</p>
+<ul class="simple">
+<li><p>Transition nodes (<code class="docutils literal notranslate"><span class="pre">CometColumnarToRow</span></code>, <code class="docutils literal notranslate"><span class="pre">CometNativeColumnarToRow</span></code>,
+<code class="docutils literal notranslate"><span class="pre">CometSparkRowToColumnar</span></code>, <code class="docutils literal notranslate"><span class="pre">CometSparkColumnarToColumnar</span></code>, <code class="docutils literal notranslate"><span class="pre">ColumnarToRow</span></code>,
+<code class="docutils literal notranslate"><span class="pre">RowToColumnar</span></code>), which are reported separately as the transition count.
+<code class="docutils literal notranslate"><span class="pre">CometSparkRowToColumnar</span></code> and <code class="docutils literal notranslate"><span class="pre">CometSparkColumnarToColumnar</span></code> are the two names
+a single operator renders under, depending on whether its child already
+produces columnar data, and both are excluded.</p></li>
+<li><p>Wrappers that do no work of their own: <code class="docutils literal notranslate"><span class="pre">AdaptiveSparkPlan</span></code>, <code class="docutils literal notranslate"><span class="pre">InputAdapter</span></code>,
+<code class="docutils literal notranslate"><span class="pre">WholeStageCodegen</span></code>, query stages, and <code class="docutils literal notranslate"><span class="pre">AQEShuffleRead</span></code>.</p></li>
+<li><p>The reuse marker <code class="docutils literal notranslate"><span class="pre">ReusedSubquery</span></code>. The subquery it points at is counted where
+that subquery is shown, so the marker itself does not add to the totals.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">ReusedExchange</span></code>, but with a caveat: it is not cleanly excluded the way the
+wrappers above are. The node itself is skipped, and yet walking the plan
+replaces it with the exchange it reuses, so the reused subtree is counted once
+per reference rather than once for the whole plan. A plan that reuses one
+exchange in three places contributes that subtree’s operators three times.
+Counting reused exchanges once is tracked as item 3 of
+<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5203">#5203</a>.</p></li>
+</ul>
 </section>
 <section id="spark-comet-explain-native-enabled">
 <h3><code class="docutils literal notranslate"><span class="pre">spark.comet.explain.native.enabled</span></code><a class="headerlink" href="#spark-comet-explain-native-enabled" title="Link to this heading">#</a></h3>
