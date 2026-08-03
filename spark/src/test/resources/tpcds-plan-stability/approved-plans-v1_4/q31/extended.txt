@@ -120,4 +120,4 @@ CometColumnarToRow
                                  +- CometFilter
                                     +- CometNativeScan parquet spark_catalog.default.customer_address
 
-Comet accelerated 114 out of 120 eligible operators (95%). Final plan contains 1 transitions between Spark and Comet.
+Comet accelerated 114 out of 120 eligible operators (95%). Final plan contains 1 transitions between Spark and Comet. Accelerated expressions: 11 native, 0 codegen dispatch.
