@@ -54,17 +54,6 @@ The following features are not supported and cause Comet to fall back to Spark:
   `spark.comet.scan.allowDisabledParquetVectorizedReader=true` to opt in to running the
   Comet Parquet scan regardless.
 
-The following limitation may produce incorrect results without falling back to Spark:
-
-- No support for datetime rebasing. When reading Parquet files containing dates or timestamps
-  written with `spark.sql.parquet.datetimeRebaseModeInWrite=LEGACY` (which is Spark's default for
-  data written before Spark 3.0, using the hybrid Julian/Gregorian calendar), Comet reads them as
-  if they were written using the Proleptic Gregorian calendar. This produces silently-wrong
-  values for dates before October 15, 1582 in both projections and predicates. Comet also
-  ignores `spark.sql.parquet.datetimeRebaseModeInRead` and the file-level
-  `org.apache.spark.legacyDateTime` metadata that would tell it to rebase. Tracked by
-  [#5010](https://github.com/apache/datafusion-comet/issues/5010).
-
 The following limitations raise an error at scan time rather than falling back to Spark:
 
 - Invalid UTF-8 bytes in `STRING` columns. Spark permits arbitrary byte sequences in a `STRING`

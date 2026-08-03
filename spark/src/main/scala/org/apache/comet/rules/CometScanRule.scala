@@ -36,7 +36,7 @@ import org.apache.spark.sql.catalyst.expressions.{Attribute, DynamicPruningExpre
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.util.{sideBySide, ArrayBasedMapData, GenericArrayData, MetadataColumnHelper}
 import org.apache.spark.sql.catalyst.util.ResolveDefaultColumns.getExistenceDefaultValues
-import org.apache.spark.sql.comet.{CometBatchScanExec, CometScanExec}
+import org.apache.spark.sql.comet.{CometBatchScanExec, CometScanExec, CometScanUtils}
 import org.apache.spark.sql.execution.{FileSourceScanExec, InSubqueryExec, SparkPlan, SubqueryAdaptiveBroadcastExec}
 import org.apache.spark.sql.execution.datasources.HadoopFsRelation
 import org.apache.spark.sql.execution.datasources.parquet.ParquetOptions
@@ -51,7 +51,7 @@ import org.apache.comet.CometSparkSessionExtensions.{isCometLoaded, isSpark35Plu
 import org.apache.comet.DataTypeSupport.isComplexType
 import org.apache.comet.iceberg.{CometIcebergNativeScanMetadata, IcebergReflection}
 import org.apache.comet.objectstore.NativeConfig
-import org.apache.comet.parquet.CometParquetUtils.{encryptionEnabled, isEncryptionConfigSupported, requiresDatetimeRebase}
+import org.apache.comet.parquet.CometParquetUtils.{encryptionEnabled, isEncryptionConfigSupported}
 import org.apache.comet.serde.SupportLevel
 import org.apache.comet.serde.operator.{CometIcebergNativeScan, CometNativeScan}
 import org.apache.comet.shims.{CometTypeShim, ShimCometStreaming, ShimFileFormat, ShimSubqueryBroadcast}
@@ -295,16 +295,16 @@ case class CometScanRule(session: SparkSession)
     }
     val cometScan = CometScanExec(scanExec, session)
     val hasDate = SupportLevel.containsType(scanExec.requiredSchema, classOf[DateType])
-    val hasTimestamp = SupportLevel.containsType(
-      scanExec.requiredSchema,
-      classOf[TimestampType],
-      classOf[TimestampNTZType])
+    val hasTimestamp =
+      SupportLevel.containsType(scanExec.requiredSchema, classOf[TimestampType]) ||
+        (COMET_SCHEMA_EVOLUTION_ENABLED &&
+          SupportLevel.containsType(scanExec.requiredSchema, classOf[TimestampNTZType]))
     if (hasDate || hasTimestamp) {
       val options = new ParquetOptions(r.options, conf)
       val paths =
         cometScan.selectedPartitions.iterator.flatMap(_.files.iterator.map(_.getPath)).toSeq
       try {
-        if (requiresDatetimeRebase(
+        if (CometScanUtils.requiresDatetimeRebase(
             paths,
             hadoopConf,
             options.datetimeRebaseModeInRead,
