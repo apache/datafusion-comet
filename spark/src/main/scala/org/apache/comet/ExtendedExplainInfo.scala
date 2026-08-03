@@ -31,7 +31,7 @@ import org.apache.spark.sql.execution.{ColumnarToRowExec, InputAdapter, ReusedSu
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffleReadExec, QueryStageExec}
 import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
 
-import org.apache.comet.CometExplainInfo.{actualPlanForCoverage, getActualPlan}
+import org.apache.comet.CometExplainInfo.getActualPlan
 import org.apache.comet.annotation.Public
 
 @Public
@@ -46,7 +46,7 @@ class ExtendedExplainInfo extends ExtendedExplainGenerator {
         // extended information in a tree display.
         val planStats = new CometCoverageStats()
         val outString = new StringBuilder()
-        generateTreeString(actualPlanForCoverage(plan), 0, Seq(), 0, outString, planStats)
+        generateTreeString(getActualPlan(plan), 0, Seq(), 0, outString, planStats)
         s"${outString.toString()}\n$planStats"
       case CometConf.COMET_EXTENDED_EXPLAIN_FORMAT_FALLBACK =>
         // Generates the extended info as a list of fallback reasons
@@ -136,10 +136,9 @@ class ExtendedExplainInfo extends ExtendedExplainGenerator {
       case _: AdaptiveSparkPlanExec | _: InputAdapter | _: QueryStageExec |
           _: WholeStageCodegenExec | _: ReusedExchangeExec | _: ReusedSubqueryExec |
           _: AQEShuffleReadExec =>
-      // Ignore. These nodes either wrap another plan without doing work of their own, or are
-      // pure reuse bookkeeping: the operators they refer to are counted at the site the plan
-      // they reference is shown, so counting them again here would either invent an
-      // un-accelerated Spark operator or double count an accelerated subtree.
+      // Ignore. These nodes wrap another plan without doing work of their own. `ReusedSubqueryExec`
+      // is pure reuse bookkeeping: the subquery it points at is counted where that subquery is
+      // shown, so counting the wrapper too would invent an un-accelerated Spark operator.
       case _: RowToColumnarExec | _: ColumnarToRowExec | _: CometColumnarToRowExec |
           _: CometNativeColumnarToRowExec | _: CometSparkToColumnarExec =>
         planStats.transitions += 1
@@ -180,7 +179,7 @@ class ExtendedExplainInfo extends ExtendedExplainGenerator {
       innerChildrenLocal.init.foreach {
         case c @ (_: TreeNode[_]) =>
           generateTreeString(
-            actualPlanForCoverage(c),
+            getActualPlan(c),
             depth + 2,
             lastChildren :+ node.children.isEmpty :+ false,
             indent,
@@ -189,7 +188,7 @@ class ExtendedExplainInfo extends ExtendedExplainGenerator {
         case _ =>
       }
       generateTreeString(
-        actualPlanForCoverage(innerChildrenLocal.last),
+        getActualPlan(innerChildrenLocal.last),
         depth + 2,
         lastChildren :+ node.children.isEmpty :+ true,
         indent,
@@ -200,7 +199,7 @@ class ExtendedExplainInfo extends ExtendedExplainGenerator {
       node.children.init.foreach {
         case c @ (_: TreeNode[_]) =>
           generateTreeString(
-            actualPlanForCoverage(c),
+            getActualPlan(c),
             depth + 1,
             lastChildren :+ false,
             indent,
@@ -211,7 +210,7 @@ class ExtendedExplainInfo extends ExtendedExplainGenerator {
       node.children.last match {
         case c @ (_: TreeNode[_]) =>
           generateTreeString(
-            actualPlanForCoverage(c),
+            getActualPlan(c),
             depth + 1,
             lastChildren :+ true,
             indent,
@@ -269,7 +268,7 @@ object CometCoverageStats {
     val stats = new CometCoverageStats()
     val explainInfo = new ExtendedExplainInfo()
     explainInfo.generateTreeString(
-      CometExplainInfo.actualPlanForCoverage(plan),
+      CometExplainInfo.getActualPlan(plan),
       0,
       Seq(),
       0,
@@ -359,32 +358,15 @@ object CometExplainInfo {
   }
 
   def getActualPlan(node: TreeNode[_]): TreeNode[_] = {
-    unwrap(node, unwrapReusedExchange = true)
-  }
-
-  /**
-   * Variant of [[getActualPlan]] used by the coverage traversal in
-   * [[ExtendedExplainInfo.generateTreeString]]. It leaves `ReusedExchangeExec` in place instead
-   * of replacing it with the exchange it points at.
-   *
-   * `ReusedExchangeExec` is a `LeafExecNode`, so keeping the wrapper renders a `ReusedExchange`
-   * leaf and stops the walk there. The reused subtree is then counted once, at the site the
-   * exchange is defined, rather than once per reference. This matches how `ReusedSubqueryExec` is
-   * handled and keeps the rendered tree consistent with the counts reported below it.
-   */
-  def actualPlanForCoverage(node: TreeNode[_]): TreeNode[_] = {
-    unwrap(node, unwrapReusedExchange = false)
-  }
-
-  private def unwrap(node: TreeNode[_], unwrapReusedExchange: Boolean): TreeNode[_] = {
     node match {
-      case p: AdaptiveSparkPlanExec => unwrap(p.executedPlan, unwrapReusedExchange)
-      case p: InputAdapter => unwrap(p.child, unwrapReusedExchange)
-      case p: QueryStageExec => unwrap(p.plan, unwrapReusedExchange)
-      case p: WholeStageCodegenExec => unwrap(p.child, unwrapReusedExchange)
-      case p: ReusedExchangeExec if unwrapReusedExchange => unwrap(p.child, unwrapReusedExchange)
+      case p: AdaptiveSparkPlanExec => getActualPlan(p.executedPlan)
+      case p: InputAdapter => getActualPlan(p.child)
+      case p: QueryStageExec => getActualPlan(p.plan)
+      case p: WholeStageCodegenExec => getActualPlan(p.child)
+      case p: ReusedExchangeExec => getActualPlan(p.child)
       case p => p
     }
+
   }
 
 }

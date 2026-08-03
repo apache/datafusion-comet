@@ -19,7 +19,10 @@ CometColumnarToRow
          :     :     :                 :              +- CometProject
          :     :     :                 :                 +- CometFilter
          :     :     :                 :                    +- CometNativeScan parquet spark_catalog.default.date_dim
-         :     :     :                 +- ReusedExchange
+         :     :     :                 +- CometBroadcastExchange
+         :     :     :                    +- CometProject
+         :     :     :                       +- CometFilter
+         :     :     :                          +- CometNativeScan parquet spark_catalog.default.date_dim
          :     :     +- CometBroadcastExchange
          :     :        +- CometFilter
          :     :           +- CometHashAggregate
@@ -33,7 +36,10 @@ CometColumnarToRow
          :     :                                   :- CometFilter
          :     :                                   :  +- CometNativeScan parquet spark_catalog.default.store_returns
          :     :                                   :        +- ReusedSubquery
-         :     :                                   +- ReusedExchange
+         :     :                                   +- CometBroadcastExchange
+         :     :                                      +- CometProject
+         :     :                                         +- CometFilter
+         :     :                                            +- CometNativeScan parquet spark_catalog.default.date_dim
          :     +- CometBroadcastExchange
          :        +- CometProject
          :           +- CometFilter
@@ -43,4 +49,4 @@ CometColumnarToRow
                +- CometFilter
                   +- CometNativeScan parquet spark_catalog.default.customer
 
-Comet accelerated 40 out of 40 eligible operators (100%). Final plan contains 1 transitions between Spark and Comet. Accelerated expressions: 13 native, 0 codegen dispatch.
+Comet accelerated 48 out of 48 eligible operators (100%). Final plan contains 1 transitions between Spark and Comet. Accelerated expressions: 13 native, 0 codegen dispatch.
