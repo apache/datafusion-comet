@@ -15,8 +15,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow::array::builder::Int32Builder;
-use arrow::array::{Array, ArrayRef, GenericListArray, Int32Array, OffsetSizeTrait};
+use arrow::array::{Array, ArrayRef, Int32Array};
+use arrow::compute::kernels::length::length;
+use arrow::compute::{cast_with_options, CastOptions};
 use arrow::datatypes::{DataType, Field};
 use datafusion::common::{exec_err, DataFusionError, Result as DataFusionResult, ScalarValue};
 use datafusion::logical_expr::{
@@ -91,99 +92,108 @@ impl ScalarUDFImpl for SparkSizeFunc {
 }
 
 fn spark_size_array(array: &ArrayRef) -> Result<ArrayRef, DataFusionError> {
-    let mut builder = Int32Array::builder(array.len());
-
     match array.data_type() {
-        DataType::List(_) => {
-            let list_array = array
-                .as_any()
-                .downcast_ref::<arrow::array::ListArray>()
-                .ok_or_else(|| DataFusionError::Internal("Expected ListArray".to_string()))?;
-            append_list_sizes(&mut builder, list_array);
+        // List / LargeList / FixedSizeList: reuse Arrow's vectorized length kernel.
+        DataType::List(_) | DataType::LargeList(_) | DataType::FixedSizeList(..) => {
+            spark_size_list_like(array)
         }
-        DataType::LargeList(_) => {
-            let list_array = array
-                .as_any()
-                .downcast_ref::<arrow::array::LargeListArray>()
-                .ok_or_else(|| DataFusionError::Internal("Expected LargeListArray".to_string()))?;
-            append_list_sizes(&mut builder, list_array);
-        }
-        DataType::FixedSizeList(_, size) => {
-            let fixed_list_array = array
-                .as_any()
-                .downcast_ref::<arrow::array::FixedSizeListArray>()
-                .ok_or_else(|| {
-                    DataFusionError::Internal("Expected FixedSizeListArray".to_string())
-                })?;
-
-            for i in 0..fixed_list_array.len() {
-                if fixed_list_array.is_null(i) {
-                    builder.append_value(-1); // Spark behavior: return -1 for null
-                } else {
-                    builder.append_value(*size);
-                }
-            }
-        }
+        // Map is not supported by the length kernel; keep the offset-based path.
         DataType::Map(_, _) => {
             let map_array = array
                 .as_any()
                 .downcast_ref::<arrow::array::MapArray>()
                 .ok_or_else(|| DataFusionError::Internal("Expected MapArray".to_string()))?;
 
+            let mut builder = Int32Array::builder(map_array.len());
             for i in 0..map_array.len() {
                 if map_array.is_null(i) {
                     builder.append_value(-1); // Spark behavior: return -1 for null
                 } else {
-                    let map_len = map_array.value_length(i);
-                    builder.append_value(map_len);
+                    builder.append_value(map_array.value_length(i));
                 }
             }
+            Ok(Arc::new(builder.finish()))
         }
         _ => {
-            return exec_err!(
+            exec_err!(
                 "size function only supports arrays and maps, got: {:?}",
                 array.data_type()
-            );
+            )
         }
     }
-
-    Ok(Arc::new(builder.finish()))
 }
 
-/// Append the element count of each list row to `builder`, using `-1` for null
-/// rows (Spark's behavior). `value_length` reads the row's element count from the
-/// offset buffer, avoiding the per-row allocation that `value(i).len()` would incur
-/// from materializing a sliced array.
-fn append_list_sizes<O: OffsetSizeTrait>(
-    builder: &mut Int32Builder,
-    list_array: &GenericListArray<O>,
-) {
-    for i in 0..list_array.len() {
-        if list_array.is_null(i) {
-            builder.append_value(-1); // Spark behavior: return -1 for null
-        } else {
-            builder.append_value(list_array.value_length(i).as_usize() as i32);
+/// Compute Spark `size()` for list-like arrays via Arrow's `length` kernel, then
+/// rewrite null inputs to `-1` (Spark's legacy/compatible size-of-null behavior
+/// for this UDF). LargeList lengths are Int64 and are cast to Int32.
+///
+/// Null rewriting patches the values buffer rather than using `zip`: `zip` goes
+/// through `MutableArrayData` and roughly doubled runtime on the `array_size`
+/// criterion shapes.
+fn spark_size_list_like(array: &ArrayRef) -> Result<ArrayRef, DataFusionError> {
+    let lengths = length(array.as_ref())?;
+    let lengths = match lengths.data_type() {
+        DataType::Int32 => lengths,
+        // Unsafe cast: overflow must error, not become null then get rewritten to -1.
+        DataType::Int64 => cast_with_options(
+            lengths.as_ref(),
+            &DataType::Int32,
+            &CastOptions {
+                safe: false,
+                ..Default::default()
+            },
+        )?,
+        other => {
+            return exec_err!("unexpected type from length kernel: {other:?}");
+        }
+    };
+
+    // No nulls: lengths are already non-null Int32 sizes.
+    if array.null_count() == 0 {
+        return Ok(lengths);
+    }
+
+    let int_lengths = lengths
+        .as_any()
+        .downcast_ref::<Int32Array>()
+        .ok_or_else(|| DataFusionError::Internal("Expected Int32Array from length".to_string()))?;
+    let nulls = int_lengths
+        .nulls()
+        .expect("null_count > 0 implies a null buffer");
+
+    // length() preserves input nulls; Spark size emits -1 for those rows.
+    let mut values = int_lengths.values().to_vec();
+    for (i, is_valid) in nulls.iter().enumerate() {
+        if !is_valid {
+            values[i] = -1;
         }
     }
+    Ok(Arc::new(Int32Array::from(values)))
 }
 
 fn spark_size_scalar(scalar: &ScalarValue) -> Result<ScalarValue, DataFusionError> {
     match scalar {
+        // ScalarValue::{List,LargeList,FixedSizeList,Map} each wrap an array with
+        // exactly one row; read the row's element count from the offset buffer
+        // (matches the array path, avoids `value(0)` slicing).
         ScalarValue::List(array) => {
-            // ScalarValue::List contains a ListArray with exactly one row.
-            // We need the length of that row's contents, not the row count.
             if array.is_null(0) {
                 Ok(ScalarValue::Int32(Some(-1))) // Spark behavior: return -1 for null
             } else {
-                let len = array.value(0).len() as i32;
-                Ok(ScalarValue::Int32(Some(len)))
+                Ok(ScalarValue::Int32(Some(array.value_length(0))))
             }
         }
         ScalarValue::LargeList(array) => {
             if array.is_null(0) {
                 Ok(ScalarValue::Int32(Some(-1)))
             } else {
-                let len = array.value(0).len() as i32;
+                // Spark arrays are capped near Integer.MAX_VALUE; overflow shouldn't
+                // happen in practice but must error rather than silently wrap.
+                let len = i32::try_from(array.value_length(0)).map_err(|_| {
+                    DataFusionError::Execution(
+                        "size(): list length exceeds i32::MAX".to_string(),
+                    )
+                })?;
                 Ok(ScalarValue::Int32(Some(len)))
             }
         }
@@ -191,16 +201,14 @@ fn spark_size_scalar(scalar: &ScalarValue) -> Result<ScalarValue, DataFusionErro
             if array.is_null(0) {
                 Ok(ScalarValue::Int32(Some(-1)))
             } else {
-                let len = array.value(0).len() as i32;
-                Ok(ScalarValue::Int32(Some(len)))
+                Ok(ScalarValue::Int32(Some(array.value_length())))
             }
         }
         ScalarValue::Map(array) => {
             if array.is_null(0) {
                 Ok(ScalarValue::Int32(Some(-1)))
             } else {
-                let len = array.value_length(0);
-                Ok(ScalarValue::Int32(Some(len)))
+                Ok(ScalarValue::Int32(Some(array.value_length(0))))
             }
         }
         ScalarValue::Null => {
@@ -252,6 +260,27 @@ mod tests {
         assert_eq!(result.value(1), 2); // [4, 5] has 2 elements
         assert_eq!(result.value(2), -1); // null returns -1
         assert_eq!(result.value(3), 0); // [] has 0 elements
+    }
+
+    #[test]
+    fn test_spark_size_array_no_nulls() {
+        // Fast path: null_count() == 0 returns the length kernel output directly.
+        let value_data = Int32Array::from(vec![1, 2, 3, 4, 5, 6]);
+        let value_offsets = arrow::buffer::OffsetBuffer::new(vec![0, 3, 5, 5, 6].into());
+        let field = Arc::new(Field::new("item", DataType::Int32, true));
+        let list_array =
+            ListArray::try_new(field, value_offsets, Arc::new(value_data), None).unwrap();
+
+        let array_ref: ArrayRef = Arc::new(list_array);
+        let result = spark_size_array(&array_ref).unwrap();
+        let result = result.as_any().downcast_ref::<Int32Array>().unwrap();
+
+        // Expected: [3, 2, 0, 1]; no null buffer on the output.
+        assert_eq!(result.null_count(), 0);
+        assert_eq!(result.value(0), 3);
+        assert_eq!(result.value(1), 2);
+        assert_eq!(result.value(2), 0);
+        assert_eq!(result.value(3), 1);
     }
 
     #[test]
