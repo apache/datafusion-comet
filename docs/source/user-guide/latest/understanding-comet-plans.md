@@ -144,7 +144,7 @@ CometColumnarToRow
 +- CometProject [COMET-INFO: JVM codegen dispatcher: hypot, levenshtein]
    +- CometNativeScan parquet spark_catalog.default.t
 
-Comet accelerated 2 out of 2 eligible operators (100%). Final plan contains 1 transitions between Spark and Comet.
+Comet accelerated 2 out of 2 eligible operators (100%). Final plan contains 1 transitions between Spark and Comet. Accelerated expressions: 0 native, 2 codegen dispatch.
 ```
 
 Note that the operator is still `CometProject` (Comet-accelerated); only the
@@ -165,7 +165,12 @@ The Spark SQL UI then shows an additional section under the detailed plan.
 The format is controlled by `spark.comet.explain.format`:
 
 - `verbose` (default): the full plan annotated with fallback reasons, plus a
-  summary of how much of the plan is accelerated.
+  summary of how much of the plan is accelerated. The summary reports operator
+  coverage, the number of Spark/Comet transitions, and how many distinct
+  expressions Comet accelerated - split into those lowered to native DataFusion
+  expressions and those routed through the JVM codegen dispatcher. Expression
+  names are counted once per plan, and structural nodes (attribute references,
+  literals, aliases) are excluded.
 - `fallback`: a list of fallback reasons only.
 
 This is the most convenient option on Spark 4.0 because the output is shown
@@ -201,11 +206,21 @@ val info = new ExtendedExplainInfo()
 // Sorted, deduplicated list of fallback reasons across the whole plan.
 val reasons: Seq[String] = info.getFallbackReasons(plan)
 
+// Sorted, deduplicated names of the expressions Comet accelerated, split by how
+// they run. Structural nodes (attribute references, literals, aliases) are not
+// reported.
+val native: Seq[String] = info.getNativeExpressions(plan)
+val dispatched: Seq[String] = info.getCodegenDispatchExpressions(plan)
+
 // Formatted string. Honors spark.comet.explain.format:
 //   - "verbose"  -> the full plan annotated with per-node fallback reasons
 //   - "fallback" -> just the list of reasons
 val formatted: String = info.generateExtendedInfo(plan)
 ```
+
+A name can appear in both lists: the same function may be lowered natively for
+one set of arguments and routed through the dispatcher for another elsewhere in
+the same plan.
 
 Example:
 
@@ -224,7 +239,7 @@ Project [COMET: from_unixtime(eventTime#5L, yyyy-MM-dd HH:mm:ss, Some(GMT)) is n
 +- CometColumnarToRow
    +- CometNativeScan parquet
 
-Comet accelerated 1 out of 2 eligible operators (50%). Final plan contains 1 transitions between Spark and Comet.
+Comet accelerated 1 out of 2 eligible operators (50%). Final plan contains 1 transitions between Spark and Comet. Accelerated expressions: 0 native, 0 codegen dispatch.
 ```
 
 ## Comet Operator Reference
