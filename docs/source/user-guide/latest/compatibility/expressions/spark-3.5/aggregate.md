@@ -70,4 +70,5 @@ The following cases are not supported by Comet and always fall back to Spark, re
 - A frequency argument is not supported.
 - Descending order in `WITHIN GROUP (ORDER BY ... DESC)` is not supported.
 - Only numeric input types are supported.
+
 <!--END:EXPR_COMPAT-->

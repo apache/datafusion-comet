@@ -52,4 +52,5 @@ The following cases are not supported by Comet and always fall back to Spark, re
 By default, `SortArray` is evaluated in the JVM using Spark's own code-generated implementation (run inside the Comet pipeline), which matches Spark exactly. Set `spark.comet.expression.SortArray.allowIncompatible=true` to opt into Comet's native implementation instead, which has the following differences from Spark:
 
 - When `spark.comet.exec.strictFloatingPoint=true`, sorting on floating-point types is not 100% compatible with Spark
+
 <!--END:EXPR_COMPAT-->

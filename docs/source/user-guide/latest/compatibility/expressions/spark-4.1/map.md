@@ -70,4 +70,5 @@ By default, `StringToMap` is evaluated in the JVM using Spark's own code-generat
 
 - `spark.sql.legacy.truncateForEmptyRegexSplit` is enabled, so trailing empty split entries may differ from Spark.
 - `str_to_map` does not support non-UTF8_BINARY collations on the input string or delimiters.
+
 <!--END:EXPR_COMPAT-->

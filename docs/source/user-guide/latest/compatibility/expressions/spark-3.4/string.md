@@ -161,4 +161,5 @@ The following incompatibilities cause `StringTranslate` to fall back to Spark by
 By default, `Upper` is evaluated in the JVM using Spark's own code-generated implementation (run inside the Comet pipeline), which matches Spark exactly. Set `spark.comet.caseConversion.enabled=true` to opt into Comet's native implementation instead, which has the following differences from Spark:
 
 - Results can vary depending on locale and character set
+
 <!--END:EXPR_COMPAT-->

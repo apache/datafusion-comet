@@ -168,4 +168,5 @@ The following incompatibilities cause `UnixTimestamp` to fall back to Spark by d
 The following cases are not supported by Comet and always fall back to Spark, regardless of any `allowIncompatible` setting:
 
 - Only `DateType`, `TimestampType`, and `TimestampNTZType` inputs are supported.
+
 <!--END:EXPR_COMPAT-->

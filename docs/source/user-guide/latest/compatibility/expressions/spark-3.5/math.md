@@ -38,4 +38,5 @@ The following cases are not supported by Comet and always fall back to Spark, re
 The following cases are not supported by Comet and always fall back to Spark, regardless of any `allowIncompatible` setting:
 
 - The `seed` argument must be a literal value
+
 <!--END:EXPR_COMPAT-->
