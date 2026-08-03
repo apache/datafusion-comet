@@ -392,7 +392,7 @@ index 085dbcd8046..3090d321b6c 100644
  
        withTempView("t0", "t1", "t2") {
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/DataFrameAggregateSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/DataFrameAggregateSuite.scala
-index 5b8154d2900..f35da2951af 100644
+index 5b8154d2900..632274c7fc8 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/DataFrameAggregateSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/DataFrameAggregateSuite.scala
 @@ -30,8 +30,9 @@ import org.apache.spark.sql.catalyst.util.AUTO_GENERATED_ALIAS
@@ -406,18 +406,7 @@ index 5b8154d2900..f35da2951af 100644
  import org.apache.spark.sql.expressions.Window
  import org.apache.spark.sql.functions._
  import org.apache.spark.sql.internal.SQLConf
-@@ -667,7 +668,9 @@ class DataFrameAggregateSuite extends SharedSparkSession
-       df.selectExpr("sort_array(collect_set(b) RESPECT NULLS)"), Seq(Row(Seq(null, 2))))
-   }
- 
--  test("SPARK-57298: collect_set normalizes NaN and -0.0 for floating-point types") {
-+  test("SPARK-57298: collect_set normalizes NaN and -0.0 for floating-point types",
-+    // Comet's native collect_set does not yet normalize NaN / -0.0.
-+    IgnoreComet("https://github.com/apache/datafusion-comet/issues/4966")) {
-     checkAnswer(
-       sql("SELECT collect_set(v) FROM VALUES (double('NaN')), (double('NaN')) AS t(v)"),
-       Row(Seq(Double.NaN)))
-@@ -932,7 +935,9 @@ class DataFrameAggregateSuite extends SharedSparkSession
+@@ -932,7 +933,9 @@ class DataFrameAggregateSuite extends SharedSparkSession
              case _ => false
            }.isDefined)
          } else {
@@ -428,7 +417,7 @@ index 5b8154d2900..f35da2951af 100644
          }
  
          // test case for ObjectHashAggregate and SortAggregate
-@@ -996,7 +1001,7 @@ class DataFrameAggregateSuite extends SharedSparkSession
+@@ -996,7 +999,7 @@ class DataFrameAggregateSuite extends SharedSparkSession
        assert(objHashAggPlans.nonEmpty)
  
        val exchangePlans = collect(aggPlan) {
