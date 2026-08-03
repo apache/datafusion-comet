@@ -29,9 +29,7 @@ object CometAlias extends CometExpressionSerde[Alias] {
       a: Alias,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val r = exprToProtoInternal(a.child, inputs, binding)
-    if (r.isEmpty) {}
-    r
+    exprToProtoInternal(a.child, inputs, binding)
   }
 }
 

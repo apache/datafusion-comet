@@ -35,8 +35,8 @@ import org.apache.spark.sql.execution.datasources.parquet.ParquetUtils
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
-import org.apache.comet.CometConf
-import org.apache.comet.CometSparkSessionExtensions.{withFallbackReason, withInfo}
+import org.apache.comet.{CometConf, CometExplainInfo}
+import org.apache.comet.CometSparkSessionExtensions.{withFallbackReason, withFallbackReasons, withInfo}
 import org.apache.comet.expressions._
 import org.apache.comet.parquet.CometParquetUtils
 import org.apache.comet.serde.ExprOuterClass.{AggExpr, Expr, ScalarFunc}
@@ -782,7 +782,23 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       binding: Boolean = true): Option[Expr] = {
 
     val newExpr = DecimalPrecision.promote(expr)
-    exprToProtoInternal(newExpr, inputs, binding)
+    val result = exprToProtoInternal(newExpr, inputs, binding)
+    if (result.isEmpty && !newExpr.eq(expr)) {
+      // `promote` rewrites decimal arithmetic, and `transformUp` rebuilds every node on the path
+      // to a rewritten one. Any fallback reason recorded while converting therefore landed on a
+      // copy that is not in the plan, where neither explain nor
+      // `CometExecRule.rollUpFallbackReasons` can see it. Lift the reasons onto the original node.
+      // Same copy-back the `Invoke` / `StaticInvoke` rewrites in `Spark4xCometExprShim` do.
+      val reasons = newExpr
+        .collect { case e: Expression => e }
+        .flatMap(_.getTagValue(CometExplainInfo.FALLBACK_REASONS))
+        .flatten
+        .toSet
+      if (reasons.nonEmpty) {
+        withFallbackReasons(expr, reasons)
+      }
+    }
+    result
   }
 
   /**
