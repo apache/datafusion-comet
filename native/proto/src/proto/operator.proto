@@ -36,6 +36,16 @@ message Operator {
   // Spark plan ID
   uint32 plan_id = 2;
 
+  // Pool of distinct SQL texts referenced by `QueryContext.sql_text_idx`. Every expression that
+  // carries a QueryContext needs the full query text to render Spark's `== SQL ... ==` error
+  // block, and in a typical plan they all want the *same* text -- embedding it per expression made
+  // the query text over 95% of the serialized plan. The JVM interns the texts into this pool on
+  // the root operator of each serialized native block (see `QueryContextInterner`) and leaves
+  // `QueryContext.sql_text` empty.
+  //
+  // Only populated on the root operator; nested operators leave it empty.
+  repeated string sql_text_pool = 3;
+
   oneof op_struct {
     Scan scan = 100;
     Projection projection = 101;

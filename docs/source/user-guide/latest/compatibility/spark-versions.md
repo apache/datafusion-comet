@@ -67,7 +67,7 @@ We recommend moving to JDK 17 or later.
 
 ## Spark 4.0
 
-Spark 4.0.2 is supported with Java 17 and Scala 2.13.
+Spark 4.0.4 is supported with Java 17 and Scala 2.13.
 
 ### Known Limitations
 

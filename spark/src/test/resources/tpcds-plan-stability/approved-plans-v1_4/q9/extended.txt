@@ -2,7 +2,7 @@
 :  :- Subquery
 :  :  +- CometColumnarToRow
 :  :     +- CometProject
-:  :        +-  CometHashAggregate [COMET-INFO: A native implementation of Cast is available. Set spark.comet.expression.Cast.allowIncompatible=true to enable it. For more information, refer to the Comet Compatibility Guide (https://datafusion.apache.org/comet/user-guide/latest/compatibility/index.html), JVM codegen dispatcher: cast]
+:  :        +- CometHashAggregate
 :  :           +- CometExchange
 :  :              +- CometHashAggregate
 :  :                 +- CometProject
@@ -13,7 +13,7 @@
 :  :- Subquery
 :  :  +- CometColumnarToRow
 :  :     +- CometProject
-:  :        +-  CometHashAggregate [COMET-INFO: A native implementation of Cast is available. Set spark.comet.expression.Cast.allowIncompatible=true to enable it. For more information, refer to the Comet Compatibility Guide (https://datafusion.apache.org/comet/user-guide/latest/compatibility/index.html), JVM codegen dispatcher: cast]
+:  :        +- CometHashAggregate
 :  :           +- CometExchange
 :  :              +- CometHashAggregate
 :  :                 +- CometProject
@@ -24,7 +24,7 @@
 :  :- Subquery
 :  :  +- CometColumnarToRow
 :  :     +- CometProject
-:  :        +-  CometHashAggregate [COMET-INFO: A native implementation of Cast is available. Set spark.comet.expression.Cast.allowIncompatible=true to enable it. For more information, refer to the Comet Compatibility Guide (https://datafusion.apache.org/comet/user-guide/latest/compatibility/index.html), JVM codegen dispatcher: cast]
+:  :        +- CometHashAggregate
 :  :           +- CometExchange
 :  :              +- CometHashAggregate
 :  :                 +- CometProject
@@ -35,7 +35,7 @@
 :  :- Subquery
 :  :  +- CometColumnarToRow
 :  :     +- CometProject
-:  :        +-  CometHashAggregate [COMET-INFO: A native implementation of Cast is available. Set spark.comet.expression.Cast.allowIncompatible=true to enable it. For more information, refer to the Comet Compatibility Guide (https://datafusion.apache.org/comet/user-guide/latest/compatibility/index.html), JVM codegen dispatcher: cast]
+:  :        +- CometHashAggregate
 :  :           +- CometExchange
 :  :              +- CometHashAggregate
 :  :                 +- CometProject
@@ -46,7 +46,7 @@
 :  :- Subquery
 :  :  +- CometColumnarToRow
 :  :     +- CometProject
-:  :        +-  CometHashAggregate [COMET-INFO: A native implementation of Cast is available. Set spark.comet.expression.Cast.allowIncompatible=true to enable it. For more information, refer to the Comet Compatibility Guide (https://datafusion.apache.org/comet/user-guide/latest/compatibility/index.html), JVM codegen dispatcher: cast]
+:  :        +- CometHashAggregate
 :  :           +- CometExchange
 :  :              +- CometHashAggregate
 :  :                 +- CometProject
@@ -58,4 +58,4 @@
    +- CometFilter
       +- CometNativeScan parquet spark_catalog.default.reason
 
-Comet accelerated 37 out of 43 eligible operators (86%). Final plan contains 6 transitions between Spark and Comet. Accelerated expressions: 9 native, 1 codegen dispatch.
+Comet accelerated 37 out of 43 eligible operators (86%). Final plan contains 6 transitions between Spark and Comet. Accelerated expressions: 11 native, 0 codegen dispatch.

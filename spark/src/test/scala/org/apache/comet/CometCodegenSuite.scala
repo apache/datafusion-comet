@@ -27,6 +27,7 @@ import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.api.java.UDF1
 import org.apache.spark.sql.catalyst.expressions.{BoundReference, CreateArray, CreateMap, CreateNamedStruct, Expression, Literal, MapConcat}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
+import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 import org.apache.spark.unsafe.types.UTF8String
 
@@ -237,6 +238,75 @@ class CometCodegenSuite
           !explain.contains("JVM codegen dispatcher"),
           s"expected NO codegen-dispatch info with the flag off, got:\n$explain")
       }
+    }
+  }
+
+  test("expression coverage stats survive the decimal promotion rewrite") {
+    // `DecimalPrecision.promote` rebuilds the expression tree before serde runs, wrapping decimal
+    // arithmetic in a synthesized `CheckOverflow`, so the coverage tags land on a copy the
+    // operator does not hold. `QueryPlanSerde.liftCoverageTags` moves them back onto the tree the
+    // operator holds, which for a projection is the `Alias`.
+    //
+    // `checkoverflow` is the name that pins that lift: `promote` reuses the original `Add`
+    // instance as the wrapper's child, so `add` stays reachable from the untouched tree and would
+    // be reported either way. The wrapper exists only on the rebuilt copy.
+    withTable("t") {
+      sql("CREATE TABLE t (a DECIMAL(10, 2), b DECIMAL(12, 4)) USING parquet")
+      sql("INSERT INTO t VALUES (1.23, 4.5678)")
+
+      withSQLConf(
+        CometConf.COMET_EXTENDED_EXPLAIN_FORMAT.key ->
+          CometConf.COMET_EXTENDED_EXPLAIN_FORMAT_VERBOSE) {
+        val df = sql("SELECT a + b FROM t")
+        checkSparkAnswerAndOperator(df)
+        val native =
+          new ExtendedExplainInfo().getNativeExpressions(df.queryExecution.executedPlan)
+        assert(native.contains("checkoverflow"), s"expected the promoted wrapper, got: $native")
+        assert(native.contains("add"), s"expected the arithmetic expression, got: $native")
+      }
+    }
+  }
+
+  test("tags copied onto the shared TrueLiteral do not leak into unrelated plans") {
+    // Catalyst copies a rewritten node's tags onto its replacement, so a tagged expression that an
+    // earlier query rewrote into `Literal.TrueLiteral` brands that process-wide singleton for the
+    // lifetime of the JVM. Planting the tags stands in for that history. The `fact` scan below
+    // carries a cleaned-up dynamic pruning filter, `dynamicpruningexpression(true)`, which is that
+    // very singleton, so before https://github.com/apache/datafusion-comet/issues/5229 the
+    // operator reported a name and an info message belonging to some unrelated query.
+    val planted = Literal.TrueLiteral
+    planted.setTagValue(CometExplainInfo.EXTENSION_INFO, Set("PLANTED_INFO"))
+    planted.setTagValue(CometExplainInfo.NATIVE_EXPRS, Set("plantedexpr"))
+    try {
+      withSQLConf(
+        CometConf.COMET_EXTENDED_EXPLAIN_FORMAT.key ->
+          CometConf.COMET_EXTENDED_EXPLAIN_FORMAT_VERBOSE,
+        SQLConf.DYNAMIC_PARTITION_PRUNING_ENABLED.key -> "true",
+        SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+        withTable("fact", "dim") {
+          sql("CREATE TABLE fact (v INT, p INT) USING parquet PARTITIONED BY (p)")
+          sql("INSERT INTO fact VALUES (1, 1), (2, 2)")
+          sql("CREATE TABLE dim (k INT, s STRING) USING parquet")
+          sql("INSERT INTO dim VALUES (1, 'a'), (2, 'b')")
+
+          val plan = sql(
+            "SELECT * FROM fact JOIN dim ON fact.p = dim.k WHERE dim.s = 'a'").queryExecution.executedPlan
+
+          // Guard against the test going vacuous if planning stops producing the singleton.
+          assert(
+            plan.exists(_.expressions.exists(_.exists(_ eq planted))),
+            s"expected a plan holding Literal.TrueLiteral, got:\n$plan")
+
+          val info = new ExtendedExplainInfo()
+          assert(!info.getNativeExpressions(plan).contains("plantedexpr"))
+          val explain = info.generateExtendedInfo(plan)
+          assert(!explain.contains("PLANTED_INFO"), s"tag leaked into:\n$explain")
+        }
+      }
+    } finally {
+      planted.unsetTagValue(CometExplainInfo.EXTENSION_INFO)
+      planted.unsetTagValue(CometExplainInfo.NATIVE_EXPRS)
     }
   }
 

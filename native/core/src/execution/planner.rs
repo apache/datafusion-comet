@@ -137,6 +137,7 @@ use datafusion_comet_spark_expr::{
 };
 use itertools::Itertools;
 use jni::objects::{Global, JObject};
+use log::warn;
 use num::{BigInt, ToPrimitive};
 use object_store::path::Path;
 use std::cmp::max;
@@ -240,6 +241,11 @@ pub struct PhysicalPlanner {
     partition: i32,
     session_ctx: Arc<SessionContext>,
     query_context_registry: Arc<datafusion_comet_spark_expr::QueryContextMap>,
+    /// SQL texts referenced by `QueryContext.sql_text_idx`, taken from the root operator's
+    /// `sql_text_pool`. Held as `Arc`s so that every context in the plan shares one allocation
+    /// rather than each cloning the full query text out of the proto. Empty when the plan was
+    /// serialized without interning, in which case contexts carry `sql_text` inline.
+    sql_text_pool: Vec<Arc<String>>,
     /// Captured at `createPlan` time on `ExecutionContext`; see that struct for the
     /// propagation rationale. `None` when no driving Spark task is available.
     task_context: Option<Arc<Global<JObject<'static>>>>,
@@ -258,8 +264,79 @@ impl PhysicalPlanner {
             session_ctx,
             partition,
             query_context_registry: datafusion_comet_spark_expr::create_query_context_map(),
+            sql_text_pool: vec![],
             task_context: None,
         }
+    }
+
+    /// Load the SQL text pool from the root operator of the plan about to be planned. Must be
+    /// called with the *root* operator: the JVM only populates the pool there, and
+    /// `QueryContext.sql_text_idx` values are indices into it.
+    pub fn with_sql_text_pool(mut self, root: &Operator) -> Self {
+        self.sql_text_pool = root
+            .sql_text_pool
+            .iter()
+            .map(|text| Arc::new(text.clone()))
+            .collect();
+        self
+    }
+
+    /// Register the `QueryContext` carried by a serialized expression, if any, so that native ANSI
+    /// errors raised by it can render Spark's `== SQL ... ==` block. Shared by `create_expr` and
+    /// `create_agg_expr`.
+    fn register_query_context(
+        &self,
+        expr_id: Option<u64>,
+        ctx_proto: Option<&spark_expression::QueryContext>,
+    ) {
+        if let (Some(expr_id), Some(ctx_proto)) = (expr_id, ctx_proto) {
+            self.query_context_registry
+                .register(expr_id, self.build_query_context(ctx_proto));
+        }
+    }
+
+    /// Resolve a serialized `QueryContext` into a `QueryContext`, sharing the pooled SQL text
+    /// when the context refers to the pool by index. Falls back to the inline `sql_text` for
+    /// plans serialized without interning -- the paths that serialize an operator directly rather
+    /// than through `convertBlock` (e.g. `CometNativeWriteExec`, the native shuffle writer) and
+    /// the bare-`Expr` Parquet filter path, which has no root operator to hang a pool on.
+    fn build_query_context(
+        &self,
+        ctx_proto: &spark_expression::QueryContext,
+    ) -> datafusion_comet_spark_expr::QueryContext {
+        let pooled = ctx_proto
+            .sql_text_idx
+            .map(|idx| match usize::try_from(idx).ok() {
+                Some(idx) => self.sql_text_pool.get(idx).map(Arc::clone),
+                None => None,
+            });
+
+        let sql_text: Arc<String> = match pooled {
+            Some(Some(text)) => text,
+            // An index we cannot resolve means the plan was interned against a pool this planner
+            // never saw, so `sql_text` is empty and the error block would silently come out blank.
+            // Warn rather than fail: a degraded error message is better than a failed query.
+            Some(None) => {
+                warn!(
+                    "QueryContext sql_text_idx {:?} is out of range for a SQL text pool of {} \
+                     entries; SQL context will be missing from any error raised by this expression",
+                    ctx_proto.sql_text_idx,
+                    self.sql_text_pool.len()
+                );
+                Arc::new(ctx_proto.sql_text.clone())
+            }
+            None => Arc::new(ctx_proto.sql_text.clone()),
+        };
+
+        datafusion_comet_spark_expr::QueryContext::new(
+            sql_text,
+            ctx_proto.start_index,
+            ctx_proto.stop_index,
+            ctx_proto.object_type.clone(),
+            ctx_proto.object_name.clone(),
+            ctx_proto.line,
+            ctx_proto.start_position,
+        )
     }
 
     pub fn with_exec_id(mut self, exec_context_id: i64) -> Self {
@@ -345,25 +422,7 @@ impl PhysicalPlanner {
         spark_expr: &Expr,
         input_schema: SchemaRef,
     ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
-        // Register QueryContext if present
-        if let (Some(expr_id), Some(ctx_proto)) =
-            (spark_expr.expr_id, spark_expr.query_context.as_ref())
-        {
-            // Deserialize QueryContext from protobuf
-            let query_ctx = datafusion_comet_spark_expr::QueryContext::new(
-                ctx_proto.sql_text.clone(),
-                ctx_proto.start_index,
-                ctx_proto.stop_index,
-                ctx_proto.object_type.clone(),
-                ctx_proto.object_name.clone(),
-                ctx_proto.line,
-                ctx_proto.start_position,
-            );
-
-            // Register query context for error reporting
-            let registry = &self.query_context_registry;
-            registry.register(expr_id, query_ctx);
-        }
+        self.register_query_context(spark_expr.expr_id, spark_expr.query_context.as_ref());
 
         // Try to use the modular registry first - this automatically handles any registered expression types
         if ExpressionRegistry::global().can_handle(spark_expr) {
@@ -2391,25 +2450,7 @@ impl PhysicalPlanner {
         spark_expr: &AggExpr,
         schema: SchemaRef,
     ) -> Result<AggregateFunctionExpr, ExecutionError> {
-        // Register QueryContext if present
-        if let (Some(expr_id), Some(ctx_proto)) =
-            (spark_expr.expr_id, spark_expr.query_context.as_ref())
-        {
-            // Deserialize QueryContext from protobuf
-            let query_ctx = datafusion_comet_spark_expr::QueryContext::new(
-                ctx_proto.sql_text.clone(),
-                ctx_proto.start_index,
-                ctx_proto.stop_index,
-                ctx_proto.object_type.clone(),
-                ctx_proto.object_name.clone(),
-                ctx_proto.line,
-                ctx_proto.start_position,
-            );
-
-            // Register query context for error reporting
-            let registry = &self.query_context_registry;
-            registry.register(expr_id, query_ctx);
-        }
+        self.register_query_context(spark_expr.expr_id, spark_expr.query_context.as_ref());
 
         match spark_expr.expr_struct.as_ref().unwrap() {
             AggExprStruct::Count(expr) => {
@@ -4481,6 +4522,7 @@ mod tests {
     fn test_unpack_dictionary_primitive() {
         let op_scan = Operator {
             plan_id: 0,
+            sql_text_pool: vec![],
             children: vec![],
             op_struct: Some(OpStruct::Scan(spark_operator::Scan {
                 fields: vec![spark_expression::DataType {
@@ -4546,6 +4588,7 @@ mod tests {
     fn test_unpack_dictionary_string() {
         let op_scan = Operator {
             plan_id: 0,
+            sql_text_pool: vec![],
             children: vec![],
             op_struct: Some(OpStruct::Scan(spark_operator::Scan {
                 fields: vec![spark_expression::DataType {
@@ -4696,6 +4739,7 @@ mod tests {
 
         Operator {
             plan_id: 0,
+            sql_text_pool: vec![],
             children: vec![child_op],
             op_struct: Some(OpStruct::Filter(spark_operator::Filter {
                 predicate: Some(expr),
@@ -4722,6 +4766,7 @@ mod tests {
         let op_scan = create_scan();
         let op_join = Operator {
             plan_id: 0,
+            sql_text_pool: vec![],
             children: vec![op_scan.clone(), op_scan.clone()],
             op_struct: Some(OpStruct::HashJoin(spark_operator::HashJoin {
                 left_join_keys: vec![create_bound_reference(0)],
@@ -4758,6 +4803,7 @@ mod tests {
     fn create_scan() -> Operator {
         Operator {
             plan_id: 0,
+            sql_text_pool: vec![],
             children: vec![],
             op_struct: Some(OpStruct::Scan(spark_operator::Scan {
                 fields: vec![create_proto_datatype()],
@@ -4787,6 +4833,7 @@ mod tests {
         // ScanExec: source=[CometScan parquet  (unknown)], schema=[col_0: Int32]
         let op_scan = Operator {
             plan_id: 0,
+            sql_text_pool: vec![],
             children: vec![],
             op_struct: Some(OpStruct::Scan(spark_operator::Scan {
                 fields: vec![
@@ -4834,6 +4881,7 @@ mod tests {
         let projection = Operator {
             children: vec![op_scan],
             plan_id: 0,
+            sql_text_pool: vec![],
             op_struct: Some(OpStruct::Projection(spark_operator::Projection {
                 project_list: vec![spark_expression::Expr {
                     expr_struct: Some(ExprStruct::ScalarFunc(spark_expression::ScalarFunc {
@@ -4908,6 +4956,7 @@ mod tests {
         // Mock scan operator with 3 INT32 columns
         let op_scan = Operator {
             plan_id: 0,
+            sql_text_pool: vec![],
             children: vec![],
             op_struct: Some(OpStruct::Scan(spark_operator::Scan {
                 fields: vec![
@@ -4958,6 +5007,7 @@ mod tests {
         let projection = Operator {
             children: vec![op_scan],
             plan_id: 0,
+            sql_text_pool: vec![],
             op_struct: Some(OpStruct::Projection(spark_operator::Projection {
                 project_list: vec![spark_expression::Expr {
                     expr_struct: Some(ExprStruct::ScalarFunc(spark_expression::ScalarFunc {
@@ -5394,6 +5444,7 @@ mod tests {
         // Create a Scan operator with Date32 (DATE) and Int8 (TINYINT) columns
         let op_scan = Operator {
             plan_id: 0,
+            sql_text_pool: vec![],
             children: vec![],
             op_struct: Some(OpStruct::Scan(spark_operator::Scan {
                 fields: vec![
@@ -5458,6 +5509,7 @@ mod tests {
         let projection = Operator {
             children: vec![op_scan],
             plan_id: 1,
+            sql_text_pool: vec![],
             op_struct: Some(OpStruct::Projection(spark_operator::Projection {
                 project_list: vec![subtract_expr],
             })),

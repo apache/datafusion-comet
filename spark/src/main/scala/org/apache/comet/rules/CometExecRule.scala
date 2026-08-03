@@ -754,16 +754,16 @@ case class CometExecRule(session: SparkSession)
 
     val infos =
       op.getTagValue(CometExplainInfo.EXTENSION_INFO).getOrElse(Set.empty[String]) ++
-        CometExplainInfo.collectTagValues(allExprs, CometExplainInfo.EXTENSION_INFO)
+        CometExplainInfo.collectExprTagValues(allExprs, CometExplainInfo.EXTENSION_INFO)
     infos.foreach(msg => withInfo(exec, msg))
 
     appendTagValues(
       exec,
       CometExplainInfo.NATIVE_EXPRS,
-      CometExplainInfo.collectTagValues(allExprs, CometExplainInfo.NATIVE_EXPRS))
+      CometExplainInfo.collectExprTagValues(allExprs, CometExplainInfo.NATIVE_EXPRS))
 
     val routedNames =
-      CometExplainInfo.collectTagValues(allExprs, CometExplainInfo.CODEGEN_DISPATCH_EXPRS)
+      CometExplainInfo.collectExprTagValues(allExprs, CometExplainInfo.CODEGEN_DISPATCH_EXPRS)
     appendTagValues(exec, CometExplainInfo.CODEGEN_DISPATCH_EXPRS, routedNames)
     if (routedNames.nonEmpty && CometConf.COMET_EXPLAIN_CODEGEN_ENABLED.get()) {
       withInfo(exec, s"JVM codegen dispatcher: ${routedNames.toSeq.sorted.mkString(", ")}")

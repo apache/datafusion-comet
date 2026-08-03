@@ -1,7 +1,7 @@
 CometColumnarToRow
 +- CometTakeOrderedAndProject
    +- CometUnion
-      :-  CometHashAggregate [COMET-INFO: A native implementation of Cast is available. Set spark.comet.expression.Cast.allowIncompatible=true to enable it. For more information, refer to the Comet Compatibility Guide (https://datafusion.apache.org/comet/user-guide/latest/compatibility/index.html), JVM codegen dispatcher: cast]
+      :- CometHashAggregate
       :  +- CometExchange
       :     +- CometHashAggregate
       :        +- CometProject
@@ -32,7 +32,7 @@ CometColumnarToRow
       :                 +- CometProject
       :                    +- CometFilter
       :                       +- CometNativeScan parquet spark_catalog.default.item
-      :-  CometHashAggregate [COMET-INFO: A native implementation of Cast is available. Set spark.comet.expression.Cast.allowIncompatible=true to enable it. For more information, refer to the Comet Compatibility Guide (https://datafusion.apache.org/comet/user-guide/latest/compatibility/index.html), JVM codegen dispatcher: cast]
+      :- CometHashAggregate
       :  +- CometExchange
       :     +- CometHashAggregate
       :        +- CometProject
@@ -53,7 +53,7 @@ CometColumnarToRow
       :              :           +- CometFilter
       :              :              +- CometNativeScan parquet spark_catalog.default.store
       :              +- ReusedExchange
-      +-  CometHashAggregate [COMET-INFO: A native implementation of Cast is available. Set spark.comet.expression.Cast.allowIncompatible=true to enable it. For more information, refer to the Comet Compatibility Guide (https://datafusion.apache.org/comet/user-guide/latest/compatibility/index.html), JVM codegen dispatcher: cast]
+      +- CometHashAggregate
          +- CometExchange
             +- CometHashAggregate
                +- CometProject
@@ -74,4 +74,4 @@ CometColumnarToRow
                         +- CometFilter
                            +- CometNativeScan parquet spark_catalog.default.item
 
-Comet accelerated 65 out of 65 eligible operators (100%). Final plan contains 1 transitions between Spark and Comet. Accelerated expressions: 7 native, 1 codegen dispatch.
+Comet accelerated 65 out of 65 eligible operators (100%). Final plan contains 1 transitions between Spark and Comet. Accelerated expressions: 9 native, 0 codegen dispatch.
