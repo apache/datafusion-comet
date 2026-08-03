@@ -560,13 +560,14 @@ abstract class ParquetReadSuite extends CometTestBase {
   private def writeTwoFilesAndDiscoverMetadata(dir: File): Array[(String, Long)] = {
     (1 to 5).toDF("id").repartition(1).write.mode("overwrite").parquet(dir.getCanonicalPath)
     (1000 to 1999).toDF("id").repartition(1).write.mode("append").parquet(dir.getCanonicalPath)
+    var files: Array[(String, Long)] = null
     withSQLConf(forceSinglePartitionConf) {
       assert(
         spark.read.parquet(dir.getCanonicalPath).rdd.getNumPartitions == 1,
         "expected both files to be packed into the same Spark partition, to exercise " +
           "partition2Proto's multi-file loop rather than one file per task")
       withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-        spark.read
+        files = spark.read
           .parquet(dir.getCanonicalPath)
           .select($"_metadata.file_path", $"_metadata.file_size")
           .distinct()
@@ -575,6 +576,7 @@ abstract class ParquetReadSuite extends CometTestBase {
           .sortBy(_._2)
       }
     }
+    files
   }
 
   test("filter on _metadata.file_size selects rows from the matching file only") {
