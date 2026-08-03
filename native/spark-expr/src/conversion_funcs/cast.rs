@@ -467,9 +467,13 @@ pub(crate) fn cast_array(
             Ok(cast_with_options(&array, to_type, &native_cast_options)?)
         }
         _ => {
-            // we should never reach this code because the Scala code should be checking
-            // for supported cast operations and falling back to Spark for anything that
-            // is not yet supported
+            // This invariant is upheld by two independent callers, not one shared gate:
+            // - the expression path, where `CometCast.isSupported` (Scala) checks before a
+            //   `Cast` node is ever emitted into the plan;
+            // - the scan schema-adapter path (schema_adapter.rs), which checks against
+            //   Spark's vectorized-reader legality instead, for pairs arising from Parquet
+            //   schema evolution rather than a `CAST()` expression.
+            // Reaching this arm means one of those callers let an unsupported pair through.
             Err(SparkError::Internal(format!(
                 "Native cast invoked for unsupported cast from {from_type:?} to {to_type:?}"
             )))

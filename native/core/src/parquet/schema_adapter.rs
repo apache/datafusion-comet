@@ -623,6 +623,16 @@ impl SparkPhysicalExprAdapter {
     }
 
     /// Replace CastExpr (DataFusion's cast) with Spark's Cast expression.
+    ///
+    /// The accept/reject logic below mirrors Spark's vectorized Parquet reader
+    /// (`ParquetVectorUpdaterFactory.getUpdater`), not `CometCast.isSupported`. Those are
+    /// different Spark surfaces: this function reconciles a file's physical schema against
+    /// the table's declared schema (schema evolution), a decision Spark itself makes inside
+    /// the vectorized reader and never routes through Catalyst's `Cast` expression or
+    /// codegen. `CometCast.isSupported` governs actual `Cast` expression nodes (explicit
+    /// `CAST()`, implicit analyzer casts) and has no bearing here. When extending the
+    /// accept/reject rules below, check them against the vectorized reader's updater
+    /// matrix, not the cast-expression compatibility matrix in `CometCast.scala`.
     fn replace_with_spark_cast(
         &self,
         expr: Arc<dyn PhysicalExpr>,
