@@ -793,13 +793,13 @@ copies that remain.</p>
 <section id="configuration">
 <h2>Configuration<a class="headerlink" href="#configuration" title="Link to this heading">#</a></h2>
 <p>The optimization is experimental and disabled by default. Enable it with:</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">spark</span><span class="o">.</span><span class="n">comet</span><span class="o">.</span><span class="n">exec</span><span class="o">.</span><span class="n">pyarrowUdf</span><span class="o">.</span><span class="n">enabled</span><span class="o">=</span><span class="n">true</span>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">spark</span><span class="o">.</span><span class="n">comet</span><span class="o">.</span><span class="n">exec</span><span class="o">.</span><span class="n">pyarrowUDF</span><span class="o">.</span><span class="n">enabled</span><span class="o">=</span><span class="n">true</span>
 </pre></div>
 </div>
 <p>The default is <code class="docutils literal notranslate"><span class="pre">false</span></code> while the feature stabilizes.</p>
 <section id="relationship-to-spark-s-pyspark-arrow-conversion-conf">
 <h3>Relationship to Spark’s PySpark Arrow conversion conf<a class="headerlink" href="#relationship-to-spark-s-pyspark-arrow-conversion-conf" title="Link to this heading">#</a></h3>
-<p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.pyarrowUdf.enabled</span></code> is <strong>not</strong> the same as PySpark’s
+<p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.pyarrowUDF.enabled</span></code> is <strong>not</strong> the same as PySpark’s
 <a class="reference external" href="https://spark.apache.org/docs/latest/api/python/tutorial/sql/arrow_pandas.html#enabling-for-conversion-to-from-pandas"><code class="docutils literal notranslate"><span class="pre">spark.sql.execution.arrow.pyspark.enabled</span></code></a>.
 That conf controls whether Spark uses Arrow when materializing a DataFrame to a Pandas DataFrame
 (<code class="docutils literal notranslate"><span class="pre">toPandas()</span></code>) or constructing one from Pandas. The Comet conf controls a planner rewrite for
@@ -846,7 +846,7 @@ worker. Both confs can be set independently.</p>
     <span class="o">.</span><span class="n">config</span><span class="p">(</span><span class="s2">&quot;spark.plugins&quot;</span><span class="p">,</span> <span class="s2">&quot;org.apache.spark.CometPlugin&quot;</span><span class="p">)</span> \
     <span class="o">.</span><span class="n">config</span><span class="p">(</span><span class="s2">&quot;spark.comet.enabled&quot;</span><span class="p">,</span> <span class="s2">&quot;true&quot;</span><span class="p">)</span> \
     <span class="o">.</span><span class="n">config</span><span class="p">(</span><span class="s2">&quot;spark.comet.exec.enabled&quot;</span><span class="p">,</span> <span class="s2">&quot;true&quot;</span><span class="p">)</span> \
-    <span class="o">.</span><span class="n">config</span><span class="p">(</span><span class="s2">&quot;spark.comet.exec.pyarrowUdf.enabled&quot;</span><span class="p">,</span> <span class="s2">&quot;true&quot;</span><span class="p">)</span> \
+    <span class="o">.</span><span class="n">config</span><span class="p">(</span><span class="s2">&quot;spark.comet.exec.pyarrowUDF.enabled&quot;</span><span class="p">,</span> <span class="s2">&quot;true&quot;</span><span class="p">)</span> \
     <span class="o">.</span><span class="n">config</span><span class="p">(</span><span class="s2">&quot;spark.memory.offHeap.enabled&quot;</span><span class="p">,</span> <span class="s2">&quot;true&quot;</span><span class="p">)</span> \
     <span class="o">.</span><span class="n">config</span><span class="p">(</span><span class="s2">&quot;spark.memory.offHeap.size&quot;</span><span class="p">,</span> <span class="s2">&quot;2g&quot;</span><span class="p">)</span> \
     <span class="o">.</span><span class="n">getOrCreate</span><span class="p">()</span>
@@ -931,7 +931,7 @@ passthrough or value-based UDF round-trips identically. The difference is only o
 UDF that reads the Arrow field’s time zone or localizes to wall-clock time (for example a
 <code class="docutils literal notranslate"><span class="pre">mapInPandas</span></code> UDF that strips the tz and treats the value as naive local time): under a non-UTC
 session time zone such a UDF can diverge from the unoptimized path. Set
-<code class="docutils literal notranslate"><span class="pre">spark.comet.exec.pyarrowUdf.enabled=false</span></code> for those UDFs.</p></li>
+<code class="docutils literal notranslate"><span class="pre">spark.comet.exec.pyarrowUDF.enabled=false</span></code> for those UDFs.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">spark.sql.execution.arrow.useLargeVarTypes=true</span></code> is not supported. With this conf enabled,
 Spark widens <code class="docutils literal notranslate"><span class="pre">StringType</span></code> and <code class="docutils literal notranslate"><span class="pre">BinaryType</span></code> to Arrow’s 8-byte-offset variants in the
 destination IPC root, while Comet’s source vectors always use 4-byte offsets. The buffer-copy

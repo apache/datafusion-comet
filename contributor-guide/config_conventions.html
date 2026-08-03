@@ -560,9 +560,9 @@ broadest (the prefix) to narrowest (the specific setting).</p>
 prefix like <code class="docutils literal notranslate"><span class="pre">spark.sql.comet.</span></code>.</p></li>
 <li><p><strong>Category segment.</strong> The first segment after the prefix names a broad area:
 <code class="docutils literal notranslate"><span class="pre">exec</span></code> (execution and expressions), <code class="docutils literal notranslate"><span class="pre">scan</span></code> (source readers), <code class="docutils literal notranslate"><span class="pre">parquet</span></code> (Parquet-specific
-settings), <code class="docutils literal notranslate"><span class="pre">shuffle</span></code> (shuffle behavior), <code class="docutils literal notranslate"><span class="pre">columnar</span></code> (columnar shuffle), <code class="docutils literal notranslate"><span class="pre">explain</span></code> (plan
-explain/logging), <code class="docutils literal notranslate"><span class="pre">metrics</span></code>, <code class="docutils literal notranslate"><span class="pre">tracing</span></code>, <code class="docutils literal notranslate"><span class="pre">testing</span></code>, <code class="docutils literal notranslate"><span class="pre">convert</span></code> (Spark → Comet source
-conversion), or <code class="docutils literal notranslate"><span class="pre">expression</span></code> / <code class="docutils literal notranslate"><span class="pre">operator</span></code> (per-expression / per-operator flags).</p></li>
+settings), <code class="docutils literal notranslate"><span class="pre">shuffle</span></code> (shuffle behavior), <code class="docutils literal notranslate"><span class="pre">explain</span></code> (plan explain/logging), <code class="docutils literal notranslate"><span class="pre">metrics</span></code>,
+<code class="docutils literal notranslate"><span class="pre">tracing</span></code>, <code class="docutils literal notranslate"><span class="pre">debug</span></code>, <code class="docutils literal notranslate"><span class="pre">testing</span></code>, <code class="docutils literal notranslate"><span class="pre">convert</span></code> (Spark → Comet source conversion), or
+<code class="docutils literal notranslate"><span class="pre">expression</span></code> / <code class="docutils literal notranslate"><span class="pre">operator</span></code> (per-expression / per-operator flags).</p></li>
 <li><p><strong>Segment casing.</strong> Multi-word segments use <code class="docutils literal notranslate"><span class="pre">camelCase</span></code>, not dot- or kebab-separated.
 Prefer <code class="docutils literal notranslate"><span class="pre">spark.comet.foo.maxThreadNum</span></code> over <code class="docutils literal notranslate"><span class="pre">spark.comet.foo.max.thread.num</span></code> or
 <code class="docutils literal notranslate"><span class="pre">spark.comet.foo.max-thread-num</span></code>.</p></li>
@@ -572,8 +572,8 @@ in <code class="docutils literal notranslate"><span class="pre">.enabled</span><
 a verb (<code class="docutils literal notranslate"><span class="pre">force...</span></code>, <code class="docutils literal notranslate"><span class="pre">allow...</span></code>) can omit <code class="docutils literal notranslate"><span class="pre">.enabled</span></code> because the verb already encodes
 the action — for example <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.forceShuffledHashJoin</span></code>.</p></li>
 <li><p><strong>Acronyms.</strong> Treat acronyms consistently as <code class="docutils literal notranslate"><span class="pre">UDF</span></code>, <code class="docutils literal notranslate"><span class="pre">SHJ</span></code>, <code class="docutils literal notranslate"><span class="pre">SMJ</span></code>, <code class="docutils literal notranslate"><span class="pre">IO</span></code> — either all-caps
-or camelCase, but do not mix within one key (<code class="docutils literal notranslate"><span class="pre">pyarrowUdf</span></code> and <code class="docutils literal notranslate"><span class="pre">scalaUDF</span></code> in the same
-cluster is a red flag).</p></li>
+or camelCase, but do not mix within one cluster (<code class="docutils literal notranslate"><span class="pre">pyarrowUdf</span></code> alongside <code class="docutils literal notranslate"><span class="pre">scalaUDF</span></code> would
+be a red flag; both spell it <code class="docutils literal notranslate"><span class="pre">UDF</span></code>).</p></li>
 </ul>
 </section>
 <section id="symbol-naming-scala">
@@ -595,7 +595,7 @@ cluster is a red flag).</p></li>
 <td><p><code class="docutils literal notranslate"><span class="pre">COMET_FORCE_SHJ</span></code></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.parquet.rowFilterPushdown.enabled</span></code></p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">COMET_ROW_FILTER_PUSHDOWN</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED</span></code></p></td>
 </tr>
 </tbody>
 </table>
@@ -667,9 +667,10 @@ the previous behavior:</p>
 </pre></div>
 </div>
 <p>Naming follows the usual conventions: <code class="docutils literal notranslate"><span class="pre">spark.comet.legacy.</span></code> prefix, <code class="docutils literal notranslate"><span class="pre">camelCase</span></code> final segment, and
-a <code class="docutils literal notranslate"><span class="pre">COMET_LEGACY_*</span></code> Scala symbol. The doc string must state which release changed the behavior and
-what the old behavior was, so that <code class="docutils literal notranslate"><span class="pre">configs.md</span></code> is self-explanatory without cross-referencing the
-upgrade guide.</p>
+a <code class="docutils literal notranslate"><span class="pre">COMET_LEGACY_*</span></code> Scala symbol. No legacy config exists yet, so the first one to land must also add
+the <code class="docutils literal notranslate"><span class="pre">CATEGORY_LEGACY</span></code> constant to <code class="docutils literal notranslate"><span class="pre">CometConf.scala</span></code> and a corresponding section to <code class="docutils literal notranslate"><span class="pre">configs.md</span></code>. The
+doc string must state which release changed the behavior and what the old behavior was, so that
+<code class="docutils literal notranslate"><span class="pre">configs.md</span></code> is self-explanatory without cross-referencing the upgrade guide.</p>
 <p>The checklist for a behavior change:</p>
 <ol class="arabic simple">
 <li><p>Make the behavior change itself, gated on the new legacy config.</p></li>
