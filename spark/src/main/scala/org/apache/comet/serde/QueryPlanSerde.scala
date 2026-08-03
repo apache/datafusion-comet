@@ -723,10 +723,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
             aggHandler.convert(aggExpr, fn, inputs, binding, conf)
         }
       case _ =>
-        withFallbackReason(
-          aggExpr,
-          s"unsupported Spark aggregate function: ${fn.prettyName}",
-          fn.children: _*)
+        withFallbackReason(aggExpr, s"unsupported Spark aggregate function: ${fn.prettyName}")
         None
     }
 
@@ -740,7 +737,6 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       if (aggExpr.filter.isDefined && aggExpr.mode == Partial) {
         val filterProto = exprToProto(aggExpr.filter.get, inputs, binding)
         if (filterProto.isEmpty) {
-          withFallbackReason(aggExpr, aggExpr.filter.get)
           return None
         }
         builder.setFilter(filterProto.get)
@@ -893,7 +889,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
             case Some(handler) =>
               convert(expr, handler.asInstanceOf[CometExpressionSerde[Expression]])
             case _ =>
-              withFallbackReason(expr, s"${expr.prettyName} is not supported", expr.children: _*)
+              withFallbackReason(expr, s"${expr.prettyName} is not supported")
               None
           }
       })
@@ -944,7 +940,6 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
             .newBuilder(),
           inner).build())
     } else {
-      withFallbackReason(expr, child)
       None
     }
   }
@@ -974,7 +969,6 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
             .newBuilder(),
           inner).build())
     } else {
-      withFallbackReason(expr, left, right)
       None
     }
   }
@@ -1003,7 +997,6 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       : Option[ExprOuterClass.Expr] = {
     val protos = operands.map(exprToProtoInternal(_, inputs, binding))
     if (protos.exists(_.isEmpty)) {
-      withFallbackReason(expr, operands: _*)
       None
     } else {
       val leaves = protos.map(_.get).toIndexedSeq
@@ -1084,20 +1077,6 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
         return None
     }
     Some(ExprOuterClass.Expr.newBuilder().setScalarFunc(builder).build())
-  }
-
-  // Utility method. Adds fallback reason if the result of calling exprToProto is None
-  def optExprWithFallbackReason(
-      optExpr: Option[Expr],
-      expr: Expression,
-      childExpr: Expression*): Option[Expr] = {
-    optExpr match {
-      case None =>
-        withFallbackReason(expr, childExpr: _*)
-        None
-      case o => o
-    }
-
   }
 
   /**

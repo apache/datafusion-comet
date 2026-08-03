@@ -22,7 +22,7 @@ package org.apache.comet.serde
 import org.apache.spark.sql.catalyst.expressions.{Attribute, MakeDecimal, UnscaledValue}
 import org.apache.spark.sql.types.{DecimalType, LongType}
 
-import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithFallbackReason, scalarFunctionExprToProtoWithReturnType}
+import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, scalarFunctionExprToProtoWithReturnType}
 
 object CometUnscaledValue extends CometExpressionSerde[UnscaledValue] {
   override def convert(
@@ -32,7 +32,7 @@ object CometUnscaledValue extends CometExpressionSerde[UnscaledValue] {
     val childExpr = exprToProtoInternal(expr.child, inputs, binding)
     val optExpr =
       scalarFunctionExprToProtoWithReturnType("unscaled_value", LongType, false, childExpr)
-    optExprWithFallbackReason(optExpr, expr, expr.child)
+    optExpr
 
   }
 }
@@ -66,7 +66,7 @@ object CometMakeDecimal extends CometExpressionSerde[MakeDecimal] {
       DecimalType(expr.precision, expr.scale),
       failOnError = !expr.nullOnOverflow,
       childExpr)
-    optExprWithFallbackReason(optExpr, expr, expr.child)
+    optExpr
 
   }
 }

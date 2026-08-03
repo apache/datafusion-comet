@@ -28,7 +28,7 @@ import org.apache.spark.sql.catalyst.expressions.xml.{XmlExpressionEvalUtils, XP
 import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 import org.apache.comet.serde.CometScalaUDF
 import org.apache.comet.serde.ExprOuterClass.Expr
-import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, hasNonDefaultStringCollation, optExprWithFallbackReason, scalarFunctionExprToProtoWithReturnType}
+import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, hasNonDefaultStringCollation, scalarFunctionExprToProtoWithReturnType}
 
 /**
  * Expression conversions shared across all Spark 4.x minor versions, compiled from the
@@ -58,12 +58,12 @@ trait CometExprShim4x {
       val childExpr = exprToProtoInternal(d.child, inputs, binding)
       val nameExpr =
         scalarFunctionExprToProtoWithReturnType("dayname", d.dataType, false, childExpr)
-      optExprWithFallbackReason(nameExpr, d, d.child)
+      nameExpr
     case m: MonthName =>
       val childExpr = exprToProtoInternal(m.child, inputs, binding)
       val nameExpr =
         scalarFunctionExprToProtoWithReturnType("monthname", m.dataType, false, childExpr)
-      optExprWithFallbackReason(nameExpr, m, m.child)
+      nameExpr
     case _ => None
   }
 
@@ -90,7 +90,7 @@ trait CometExprShim4x {
       false,
       strExpr,
       delimiterExpr)
-    optExprWithFallbackReason(splitExpr, expr, expr.str, expr.delimiter)
+    splitExpr
   }
 
   // Spark 4.x lowers the RuntimeReplaceable structured-text functions to an evaluator-backed

@@ -26,7 +26,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.BooleanType
 
 import org.apache.comet.CometConf
-import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus, withFallbackReason}
+import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus}
 import org.apache.comet.serde.ExprOuterClass.Expr
 import org.apache.comet.serde.QueryPlanSerde._
 
@@ -244,7 +244,7 @@ object CometIsNaN extends CometExpressionSerde[IsNaN] {
     val childExpr = exprToProtoInternal(expr.child, inputs, binding)
     val optExpr = scalarFunctionExprToProtoWithReturnType("isnan", BooleanType, false, childExpr)
 
-    optExprWithFallbackReason(optExpr, expr, expr.child)
+    optExpr
   }
 }
 
@@ -386,7 +386,6 @@ object ComparisonUtils {
           .build())
     } else {
       val allExprs = list ++ Seq(value)
-      withFallbackReason(expr, allExprs: _*)
       None
     }
   }
