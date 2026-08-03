@@ -190,9 +190,7 @@ fn spark_size_scalar(scalar: &ScalarValue) -> Result<ScalarValue, DataFusionErro
                 // Spark arrays are capped near Integer.MAX_VALUE; overflow shouldn't
                 // happen in practice but must error rather than silently wrap.
                 let len = i32::try_from(array.value_length(0)).map_err(|_| {
-                    DataFusionError::Execution(
-                        "size(): list length exceeds i32::MAX".to_string(),
-                    )
+                    DataFusionError::Execution("size(): list length exceeds i32::MAX".to_string())
                 })?;
                 Ok(ScalarValue::Int32(Some(len)))
             }
