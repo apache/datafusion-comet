@@ -33,6 +33,8 @@ use num::Float;
 use std::cmp::Ordering;
 use std::sync::Arc;
 
+use super::nested_float_normalize::normalize_negative_zero;
+
 /// Spark array_position() function that returns the 1-based position of an element in an array.
 /// Returns 0 if the element is not found (Spark behavior differs from DataFusion which returns null).
 fn spark_array_position(args: &[ColumnarValue]) -> Result<ColumnarValue, DataFusionError> {
@@ -273,7 +275,13 @@ fn position_fallback<O: OffsetSizeTrait>(
     let num_rows = list_array.len();
     let nulls = combined_nulls(list_array.nulls(), element.nulls());
     let mut result = vec![0i64; num_rows];
-    let comparator = make_comparator(values.as_ref(), element.as_ref(), SortOptions::default())?;
+    let values_normalized = normalize_negative_zero(values);
+    let element_normalized = normalize_negative_zero(element);
+    let comparator = make_comparator(
+        values_normalized.as_ref(),
+        element_normalized.as_ref(),
+        SortOptions::default(),
+    )?;
 
     for (row_index, w) in offsets.windows(2).enumerate() {
         if nulls.as_ref().is_some_and(|n| n.is_null(row_index)) {
@@ -301,8 +309,6 @@ mod tests {
 
     #[test]
     fn test_nested_float_and_null_position() -> DataFusionResult<()> {
-        // Arrow and the previous ScalarValue fallback distinguish signed zeros, so the second
-        // row matches at position 2 rather than position 1.
         let values = ListArray::from_iter_primitive::<Float64Type, _, _>([
             Some(vec![Some(1.0)]),
             Some(vec![Some(f64::NAN)]),
@@ -324,7 +330,44 @@ mod tests {
 
         let result = array_position_inner(&[Arc::new(array), Arc::new(element)])?;
         let result = result.as_any().downcast_ref::<Int64Array>().unwrap();
-        assert_eq!(result, &Int64Array::from(vec![2, 2, 1]));
+        assert_eq!(result, &Int64Array::from(vec![2, 1, 1]));
+        Ok(())
+    }
+
+    #[test]
+    fn test_struct_float_field_signed_zero_position() -> DataFusionResult<()> {
+        use arrow::array::{Float64Builder, StructBuilder};
+
+        let fields = vec![Arc::new(Field::new("a", DataType::Float64, true))];
+        let mut values_builder =
+            StructBuilder::new(fields.clone(), vec![Box::new(Float64Builder::new())]);
+        for v in [-0.0, 1.0] {
+            values_builder
+                .field_builder::<Float64Builder>(0)
+                .unwrap()
+                .append_value(v);
+            values_builder.append(true);
+        }
+        let values = Arc::new(values_builder.finish());
+        let array = ListArray::new(
+            Arc::new(Field::new("item", values.data_type().clone(), true)),
+            OffsetBuffer::new(vec![0, 2].into()),
+            values,
+            None,
+        );
+
+        let mut element_builder = StructBuilder::new(fields, vec![Box::new(Float64Builder::new())]);
+        element_builder
+            .field_builder::<Float64Builder>(0)
+            .unwrap()
+            .append_value(0.0);
+        element_builder.append(true);
+        let element = element_builder.finish();
+
+        let result = array_position_inner(&[Arc::new(array), Arc::new(element)])?;
+        let result = result.as_any().downcast_ref::<Int64Array>().unwrap();
+        // {-0.0} is the first element and now matches {0.0}, matching Spark.
+        assert_eq!(result, &Int64Array::from(vec![1]));
         Ok(())
     }
 }
