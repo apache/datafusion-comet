@@ -241,6 +241,32 @@ class CometCodegenSuite
     }
   }
 
+  test("expression coverage stats survive the decimal promotion rewrite") {
+    // `DecimalPrecision.promote` rebuilds the expression tree before serde runs, wrapping decimal
+    // arithmetic in a synthesized `CheckOverflow`, so the coverage tags land on a copy the
+    // operator does not hold. `QueryPlanSerde.liftCoverageTags` moves them back onto the tree the
+    // operator holds, which for a projection is the `Alias`.
+    //
+    // `checkoverflow` is the name that pins that lift: `promote` reuses the original `Add`
+    // instance as the wrapper's child, so `add` stays reachable from the untouched tree and would
+    // be reported either way. The wrapper exists only on the rebuilt copy.
+    withTable("t") {
+      sql("CREATE TABLE t (a DECIMAL(10, 2), b DECIMAL(12, 4)) USING parquet")
+      sql("INSERT INTO t VALUES (1.23, 4.5678)")
+
+      withSQLConf(
+        CometConf.COMET_EXTENDED_EXPLAIN_FORMAT.key ->
+          CometConf.COMET_EXTENDED_EXPLAIN_FORMAT_VERBOSE) {
+        val df = sql("SELECT a + b FROM t")
+        checkSparkAnswerAndOperator(df)
+        val native =
+          new ExtendedExplainInfo().getNativeExpressions(df.queryExecution.executedPlan)
+        assert(native.contains("checkoverflow"), s"expected the promoted wrapper, got: $native")
+        assert(native.contains("add"), s"expected the arithmetic expression, got: $native")
+      }
+    }
+  }
+
   test("tags copied onto the shared TrueLiteral do not leak into unrelated plans") {
     // Catalyst copies a rewritten node's tags onto its replacement, so a tagged expression that an
     // earlier query rewrote into `Literal.TrueLiteral` brands that process-wide singleton for the
