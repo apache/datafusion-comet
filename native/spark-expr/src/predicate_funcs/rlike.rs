@@ -36,7 +36,6 @@ use std::sync::Arc;
 /// regular expression engine, which are documented at:
 ///
 /// https://docs.oracle.com/javase/8/docs/api/java/util/regex/Pattern.html
-///
 #[derive(Debug)]
 pub struct RLike {
     child: Arc<dyn PhysicalExpr>,
@@ -304,6 +303,9 @@ mod tests {
 
         let utf8_values: ArrayRef = Arc::new(StringArray::from(vec!["Rose", "Daisy"]));
         let utf8_view_values: ArrayRef = Arc::new(StringViewArray::from(vec!["Rose", "Daisy"]));
+        // Null in dictionary values (keys all valid): is_match emits null, take carries it.
+        let utf8_values_with_null: ArrayRef =
+            Arc::new(StringArray::from(vec![Some("Rose"), None, Some("Daisy")]));
 
         let cases: Vec<(DataType, ArrayRef)> = vec![
             (
@@ -325,6 +327,13 @@ mod tests {
                 Arc::new(DictionaryArray::<Int8Type>::new(
                     Int8Array::from(vec![Some(0), None, Some(1)]),
                     Arc::clone(&utf8_values),
+                )),
+            ),
+            (
+                DataType::Dictionary(Box::new(DataType::Int32), Box::new(DataType::Utf8)),
+                Arc::new(DictionaryArray::<Int32Type>::new(
+                    Int32Array::from(vec![Some(0), Some(1), Some(2)]),
+                    utf8_values_with_null,
                 )),
             ),
         ];
