@@ -91,7 +91,7 @@ jni = { version = "0.22.4", features = ["invocation"] }
 lazy_static = "1.4"
 assertables = "10"
 hex = "0.4.3"
-datafusion-functions-nested = { version = "54.1.0" }
+datafusion-functions-nested = { git = "https://github.com/apache/datafusion.git", rev = "bc8b1a7a9323f69970fe728c95f3930cfbd5ad41" }
 
 [features]
 backtrace = ["datafusion/backtrace"]
