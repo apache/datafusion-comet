@@ -46,6 +46,6 @@ class CometRustUdfSignatureException(msg: String) extends CometRuntimeException(
 class CometRustUdfNotEvaluatedException(name: String)
     extends CometRuntimeException(
       s"Rust UDF '$name' must run inside Comet native execution; the JVM " +
-        s"stub was invoked, which means Comet did not replace this expression " +
-        s"with a native call. Check that Comet is enabled for the operator " +
-        s"hosting this expression.")
+        "stub was invoked, which means Comet did not replace this expression " +
+        "with a native call. Check that Comet is enabled for the operator " +
+        "hosting this expression.")

@@ -123,7 +123,7 @@ object CometRustUDF {
       case n =>
         throw new IllegalArgumentException(
           s"Rust UDF '$name' arity $n not supported by stub. Reduce arity " +
-            s"or open a feature request to extend stub coverage.")
+            "or open a feature request to extend stub coverage.")
     }
     val finalUdf = if (deterministic) u else u.asNondeterministic()
     spark.udf.register(name, finalUdf)
