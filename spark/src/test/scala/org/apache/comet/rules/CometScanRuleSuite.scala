@@ -137,16 +137,19 @@ class CometScanRuleSuite extends CometTestBase {
   test("CometScanRule should fallback to Spark for unsupported _metadata columns") {
     withTempPath { path =>
       createTestDataFrame.write.parquet(path.toString)
-      withTempView("test_data") {
-        spark.read.parquet(path.toString).createOrReplaceTempView("test_data")
 
-        for (query <- Seq(
-            "SELECT id, _metadata FROM test_data",
-            "SELECT id, _metadata.row_index FROM test_data")) {
-          val transformedPlan = applyCometScanRule(createSparkPlan(spark, query))
-          assert(countOperators(transformedPlan, classOf[FileSourceScanExec]) == 1)
-          assert(countOperators(transformedPlan, classOf[CometScanExec]) == 0)
+      // A temp view's output schema is fixed at creation time (here [id, name]), so
+      // `_metadata` cannot resolve through one; query the relation directly.
+      for (df <- Seq(
+          spark.read.parquet(path.toString).select("id", "_metadata"),
+          spark.read.parquet(path.toString).selectExpr("id", "_metadata.row_index"))) {
+        var sparkPlan: SparkPlan = null
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          sparkPlan = df.queryExecution.executedPlan
         }
+        val transformedPlan = applyCometScanRule(stripAQEPlan(sparkPlan))
+        assert(countOperators(transformedPlan, classOf[FileSourceScanExec]) == 1)
+        assert(countOperators(transformedPlan, classOf[CometScanExec]) == 0)
       }
     }
   }
