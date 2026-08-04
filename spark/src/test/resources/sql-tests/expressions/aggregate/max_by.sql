@@ -229,3 +229,32 @@ INSERT INTO mb_bool VALUES
 
 query
 SELECT grp, max_by(v, ord) FROM mb_bool GROUP BY grp ORDER BY grp
+
+-- ============================================================
+-- Signed zeros in the ordering
+--
+-- Spark compares the ordering with SQLOrderingUtil.compareDoubles, whose `if (x == y) 0`
+-- short-circuit ties -0.0 with 0.0. Arrow's row format instead ranks -0.0 strictly below 0.0, so
+-- the native side canonicalizes the ordering column before encoding it.
+--
+-- The tied rows deliberately share the same value (v), which keeps this query deterministic. A
+-- fixture that gave the tied rows different values could not be asserted here: which tied row wins
+-- depends on the inter-partition merge order, and this table spans several partitions, so max_by is
+-- genuinely non-deterministic in that case (as Spark documents). The order-dependent behaviour is
+-- pinned in the Rust unit tests in max_min_by.rs instead, where row order is explicit. This case
+-- still exercises the canonicalization path end to end.
+--
+-- Negative zero must be written as -0.0D: an unsuffixed -0.0 is a DecimalType literal, and Decimal
+-- has no signed zero, so CAST(-0.0 AS DOUBLE) would silently store +0.0.
+-- ============================================================
+
+statement
+CREATE TABLE mb_signed_zero(v int, ord double, grp string) USING parquet
+
+statement
+INSERT INTO mb_signed_zero VALUES
+  (1, -0.0D, 'g1'), (1, 0.0D, 'g1'), (2, -5.0D, 'g1'),
+  (3, 0.0D, 'g2'), (3, -0.0D, 'g2'), (4, -5.0D, 'g2')
+
+query
+SELECT grp, max_by(v, ord) FROM mb_signed_zero GROUP BY grp ORDER BY grp

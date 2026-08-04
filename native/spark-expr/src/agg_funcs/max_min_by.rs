@@ -15,9 +15,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow::array::{new_null_array, Array, ArrayRef, BooleanArray};
+use arrow::array::{new_null_array, Array, ArrayRef, AsArray, BooleanArray};
 use arrow::compute::SortOptions;
-use arrow::datatypes::{DataType, Field, FieldRef};
+use arrow::datatypes::{DataType, Field, FieldRef, Float32Type, Float64Type};
 use arrow::row::{OwnedRow, RowConverter, SortField};
 use datafusion::common::{Result, ScalarValue};
 use datafusion::logical_expr::function::{AccumulatorArgs, StateFieldsArgs};
@@ -145,30 +145,83 @@ fn extremum_sort_options(is_max: bool) -> SortOptions {
     }
 }
 
+/// Canonicalize a floating-point ordering column so that Arrow's row-format byte order reproduces
+/// Spark's comparison for this aggregate.
+///
+/// Spark compares the ordering with `SQLOrderingUtil.compareDoubles`/`compareFloats`, wired in via
+/// `PhysicalDoubleType.ordering`/`PhysicalFloatType.ordering`. That is
+/// `if (x == y) 0 else java.lang.Double.compare(x, y)`, which has two consequences Arrow's row
+/// format does not share:
+///
+/// * `-0.0` and `0.0` tie, because the `x == y` short-circuit is IEEE equality. Arrow encodes
+///   floats by flipping the bits off the sign, a total order placing `-0.0` strictly below `0.0`.
+/// * every `NaN` is one value and sorts above `+Infinity`, because `Double.compare` goes through
+///   `doubleToLongBits`. Arrow uses the raw bits, so a sign-bit-set `NaN` would sort below
+///   `-Infinity` instead.
+///
+/// Folding `-0.0` into `0.0` and every `NaN` into the canonical `NaN` makes the row bytes agree
+/// with `compareDoubles` on both counts. This is verified identical on Spark 3.4 through master.
+///
+/// Note this is the opposite of what `mode` needs: `mode` keys a hash map via
+/// `OpenHashSet`'s `equals` (`java.lang.Double.equals`), which distinguishes `-0.0` from `0.0`, so
+/// it must *not* fold them. Same two input values, different Spark comparison path, opposite
+/// correct behaviour.
+fn canonicalize_float_ordering(array: &ArrayRef) -> ArrayRef {
+    match array.data_type() {
+        DataType::Float32 => Arc::new(array.as_primitive::<Float32Type>().unary::<_, Float32Type>(
+            |v| {
+                if v.is_nan() {
+                    f32::NAN
+                } else if v == 0.0 {
+                    // `-0.0 == 0.0` in IEEE 754, so this catches negative zero only.
+                    0.0
+                } else {
+                    v
+                }
+            },
+        )),
+        DataType::Float64 => Arc::new(array.as_primitive::<Float64Type>().unary::<_, Float64Type>(
+            |v| {
+                if v.is_nan() {
+                    f64::NAN
+                } else if v == 0.0 {
+                    0.0
+                } else {
+                    v
+                }
+            },
+        )),
+        _ => Arc::clone(array),
+    }
+}
+
 /// Accumulator that tracks the running `(value, ordering)` pair for the extremum ordering.
 #[derive(Debug)]
 struct MaxMinByAccumulator {
+    /// Converts the ordering column into Arrow's byte-comparable row format. Held as a field so a
+    /// batch update does not pay a `RowConverter` construction, matching the grouped accumulator.
+    ordering_converter: RowConverter,
+    /// Ordering type, needed to produce a null ordering scalar in `state` before any row is seen.
+    ordering_type: DataType,
     /// The value paired with the current extremum ordering. May be null.
     value: ScalarValue,
-    /// The current extremum ordering. Null means no non-null ordering has been seen yet.
-    ordering: ScalarValue,
-    /// `true` for `max_by`, `false` for `min_by`.
-    is_max: bool,
+    /// Row bytes of the current extremum ordering. `None` until a non-null ordering is seen, so
+    /// comparing against the running extremum is a byte compare with no allocation.
+    best_ordering: Option<OwnedRow>,
 }
 
 impl MaxMinByAccumulator {
     fn try_new(value_type: DataType, ordering_type: DataType, is_max: bool) -> Result<Self> {
+        let ordering_converter = RowConverter::new(vec![SortField::new_with_options(
+            ordering_type.clone(),
+            extremum_sort_options(is_max),
+        )])?;
         Ok(Self {
+            ordering_converter,
+            ordering_type,
             value: ScalarValue::try_from(&value_type)?,
-            ordering: ScalarValue::try_from(&ordering_type)?,
-            is_max,
+            best_ordering: None,
         })
-    }
-
-    fn sort_options(&self) -> SortOptions {
-        // Encode the ordering column into arrow's row format so that the extremum can be
-        // found for any orderable type with a single comparison.
-        extremum_sort_options(self.is_max)
     }
 
     /// Apply a batch of `(value, ordering)` columns, keeping the value paired with the
@@ -178,14 +231,18 @@ impl MaxMinByAccumulator {
             return Ok(());
         }
 
-        let converter = RowConverter::new(vec![SortField::new_with_options(
-            ordering_arr.data_type().clone(),
-            self.sort_options(),
-        )])?;
-        let rows = converter.convert_columns(&[Arc::clone(ordering_arr)])?;
+        let ordering_arr = canonicalize_float_ordering(ordering_arr);
+        let rows = self
+            .ordering_converter
+            .convert_columns(&[Arc::clone(&ordering_arr)])?;
 
-        // Find the index of the extremum ordering in this batch (last one wins on a tie,
-        // matching Spark's sequential row processing), ignoring null orderings.
+        // Find the index of the extremum ordering in this batch, ignoring null orderings. `>=`
+        // makes the later row win a tie, which is what Spark's update does: it evaluates
+        // `If(predicate(extremumOrdering, orderingExpr), valueWithExtremumOrdering, valueExpr)`
+        // where `predicate` is the strict `oldExpr > newExpr` for `max_by` (`<` for `min_by`), so
+        // an equal ordering makes the predicate false and the *new* row's value is kept
+        // (`MaxByAndMinBy.scala`). The same strictness is why the signed-zero canonicalization
+        // above matters: without it Arrow sees a strict inequality where Spark sees a tie.
         let mut best: Option<usize> = None;
         for i in 0..ordering_arr.len() {
             if ordering_arr.is_null(i) {
@@ -202,26 +259,31 @@ impl MaxMinByAccumulator {
             return Ok(());
         };
 
-        let candidate_ordering = ScalarValue::try_from_array(ordering_arr, b)?;
-        let take = if self.ordering.is_null() {
-            true
-        } else {
-            // Compare the batch's extremum ordering against the running extremum using the
-            // same row encoding. Build a two-row array [running, candidate] and compare.
-            let pair = ScalarValue::iter_to_array(vec![
-                self.ordering.clone(),
-                candidate_ordering.clone(),
-            ])?;
-            let pair_rows = converter.convert_columns(&[pair])?;
-            pair_rows.row(1) >= pair_rows.row(0)
+        let candidate = rows.row(b);
+        let take = match &self.best_ordering {
+            None => true,
+            Some(running) => candidate >= running.row(),
         };
 
         if take {
             self.value = ScalarValue::try_from_array(value_arr, b)?;
-            self.ordering = candidate_ordering;
+            self.best_ordering = Some(candidate.owned());
         }
 
         Ok(())
+    }
+
+    /// The running extremum ordering as a scalar, for the aggregation state.
+    fn ordering_scalar(&self) -> Result<ScalarValue> {
+        match &self.best_ordering {
+            Some(row) => {
+                let arrays = self
+                    .ordering_converter
+                    .convert_rows(std::iter::once(row.row()))?;
+                ScalarValue::try_from_array(&arrays[0], 0)
+            }
+            None => ScalarValue::try_from(&self.ordering_type),
+        }
     }
 }
 
@@ -236,7 +298,7 @@ impl Accumulator for MaxMinByAccumulator {
     }
 
     fn state(&mut self) -> Result<Vec<ScalarValue>> {
-        Ok(vec![self.value.clone(), self.ordering.clone()])
+        Ok(vec![self.value.clone(), self.ordering_scalar()?])
     }
 
     fn evaluate(&mut self) -> Result<ScalarValue> {
@@ -244,7 +306,12 @@ impl Accumulator for MaxMinByAccumulator {
     }
 
     fn size(&self) -> usize {
-        size_of_val(self) + self.value.size() + self.ordering.size()
+        size_of_val(self)
+            + self.value.size()
+            + self
+                .best_ordering
+                .as_ref()
+                .map_or(0, |r| r.row().as_ref().len())
     }
 }
 
@@ -309,7 +376,8 @@ impl MaxMinByGroupsAccumulator {
     }
 
     /// Shared update/merge logic: `values[0]` is the value column, `values[1]` the ordering
-    /// column. Rows with a null ordering are ignored; on a tie the later row wins.
+    /// column. Rows with a null ordering are ignored; on a tie the later row wins, matching the
+    /// strict predicate in Spark's update (see `MaxMinByAccumulator::update_from`).
     fn update_groups(
         &mut self,
         values: &[ArrayRef],
@@ -321,10 +389,10 @@ impl MaxMinByGroupsAccumulator {
         let value_rows = self
             .value_converter
             .convert_columns(&[Arc::clone(&values[0])])?;
-        let ordering_arr = &values[1];
+        let ordering_arr = canonicalize_float_ordering(&values[1]);
         let ordering_rows = self
             .ordering_converter
-            .convert_columns(&[Arc::clone(ordering_arr)])?;
+            .convert_columns(&[Arc::clone(&ordering_arr)])?;
 
         for (idx, &group_index) in group_indices.iter().enumerate() {
             if let Some(filter) = opt_filter {
@@ -407,7 +475,7 @@ impl GroupsAccumulator for MaxMinByGroupsAccumulator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::{AsArray, Float64Array, Int32Array, StringArray};
+    use arrow::array::{AsArray, Float32Array, Float64Array, Int32Array, StringArray};
 
     fn max_by_acc(value_type: DataType, ordering_type: DataType) -> MaxMinByAccumulator {
         MaxMinByAccumulator::try_new(value_type, ordering_type, true).unwrap()
@@ -478,6 +546,118 @@ mod tests {
         acc.update_batch(&[values, ordering]).unwrap();
         // Spark treats NaN as the largest value, matching arrow's row ordering.
         assert_eq!(acc.evaluate().unwrap(), ScalarValue::from("b"));
+    }
+
+    #[test]
+    fn max_by_sign_bit_nan_is_still_largest() {
+        // `Double.compare` goes through `doubleToLongBits`, so a sign-bit-set NaN is the same
+        // value as a positive NaN and still sorts above every finite ordering. Arrow's raw-bit
+        // encoding would otherwise place it below -Infinity.
+        let mut acc = max_by_acc(DataType::Utf8, DataType::Float64);
+        let values: ArrayRef = Arc::new(StringArray::from(vec!["a", "b", "c"]));
+        let ordering: ArrayRef = Arc::new(Float64Array::from(vec![1.0, -f64::NAN, 2.0]));
+        acc.update_batch(&[values, ordering]).unwrap();
+        assert_eq!(acc.evaluate().unwrap(), ScalarValue::from("b"));
+    }
+
+    #[test]
+    fn max_by_ties_signed_zeros_and_keeps_last_row() {
+        // Spark compares the ordering with `SQLOrderingUtil.compareDoubles`, which ties
+        // `-0.0 == 0.0`, and its update keeps the *new* row on a tie. So both orders below must
+        // return the later row. Without the canonicalization, arrow's row format ranks
+        // `0.0 > -0.0` strictly and the second case would return "a".
+        for (ordering, expected) in [
+            (vec![0.0_f64, -0.0_f64], "b"),
+            (vec![-0.0_f64, 0.0_f64], "b"),
+        ] {
+            let mut acc = max_by_acc(DataType::Utf8, DataType::Float64);
+            let values: ArrayRef = Arc::new(StringArray::from(vec!["a", "b"]));
+            let ordering_arr: ArrayRef = Arc::new(Float64Array::from(ordering.clone()));
+            acc.update_batch(&[values, ordering_arr]).unwrap();
+            assert_eq!(
+                acc.evaluate().unwrap(),
+                ScalarValue::from(expected),
+                "max_by over ordering {ordering:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn min_by_ties_signed_zeros_and_keeps_last_row() {
+        // `min_by`'s predicate is the strict `oldExpr < newExpr`, so a tie likewise keeps the new
+        // row. The signed zeros must not break the tie in either direction.
+        for (ordering, expected) in [
+            (vec![0.0_f64, -0.0_f64], "b"),
+            (vec![-0.0_f64, 0.0_f64], "b"),
+        ] {
+            let mut acc = min_by_acc(DataType::Utf8, DataType::Float64);
+            let values: ArrayRef = Arc::new(StringArray::from(vec!["a", "b"]));
+            let ordering_arr: ArrayRef = Arc::new(Float64Array::from(ordering.clone()));
+            acc.update_batch(&[values, ordering_arr]).unwrap();
+            assert_eq!(
+                acc.evaluate().unwrap(),
+                ScalarValue::from(expected),
+                "min_by over ordering {ordering:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn signed_zero_tie_holds_across_batches() {
+        // The running extremum is compared against the next batch's extremum with the same
+        // encoding, so the tie must survive the batch boundary too: a second batch whose ordering
+        // is the other zero still displaces the first batch's value.
+        let mut acc = max_by_acc(DataType::Utf8, DataType::Float64);
+        acc.update_batch(&[
+            Arc::new(StringArray::from(vec!["a"])) as ArrayRef,
+            Arc::new(Float64Array::from(vec![0.0_f64])) as ArrayRef,
+        ])
+        .unwrap();
+        acc.update_batch(&[
+            Arc::new(StringArray::from(vec!["b"])) as ArrayRef,
+            Arc::new(Float64Array::from(vec![-0.0_f64])) as ArrayRef,
+        ])
+        .unwrap();
+        assert_eq!(acc.evaluate().unwrap(), ScalarValue::from("b"));
+    }
+
+    #[test]
+    fn float32_signed_zero_tie() {
+        // `compareFloats` has the same shape as `compareDoubles`, so Float32 orderings need the
+        // same treatment. Both orders are checked: the `(-0.0, 0.0)` order alone would pass even
+        // without the canonicalization, because arrow's ranking happens to pick the later row too.
+        for (ordering, expected) in [
+            (vec![0.0_f32, -0.0_f32], "b"),
+            (vec![-0.0_f32, 0.0_f32], "b"),
+        ] {
+            let mut acc = max_by_acc(DataType::Utf8, DataType::Float32);
+            let values: ArrayRef = Arc::new(StringArray::from(vec!["a", "b"]));
+            let ordering_arr: ArrayRef = Arc::new(Float32Array::from(ordering.clone()));
+            acc.update_batch(&[values, ordering_arr]).unwrap();
+            assert_eq!(
+                acc.evaluate().unwrap(),
+                ScalarValue::from(expected),
+                "max_by over f32 ordering {ordering:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn groups_signed_zero_tie() {
+        // Same invariant in the grouped accumulator: group 0 sees (0.0, -0.0) and group 1 sees
+        // (-0.0, 0.0); both must keep the later row.
+        let mut acc =
+            MaxMinByGroupsAccumulator::try_new(DataType::Utf8, DataType::Float64, true).unwrap();
+        let values: ArrayRef = Arc::new(StringArray::from(vec!["a", "b", "c", "d"]));
+        let ordering: ArrayRef = Arc::new(Float64Array::from(vec![
+            0.0_f64, -0.0_f64, -0.0_f64, 0.0_f64,
+        ]));
+        acc.update_batch(&[values, ordering], &[0, 0, 1, 1], None, 2)
+            .unwrap();
+        let result = acc.evaluate(EmitTo::All).unwrap();
+        let result = result.as_string::<i32>();
+        assert_eq!(result.value(0), "b");
+        assert_eq!(result.value(1), "d");
     }
 
     #[test]
