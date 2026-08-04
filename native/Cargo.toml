@@ -17,11 +17,11 @@
 
 [workspace]
 default-members = ["core", "spark-expr", "common", "proto", "jni-bridge", "shuffle"]
-members = ["core", "spark-expr", "common", "proto", "jni-bridge", "shuffle", "hdfs", "fs-hdfs"]
+members = ["core", "spark-expr", "common", "proto", "jni-bridge", "shuffle"]
 resolver = "2"
 
 [workspace.package]
-version = "1.0.0"
+version = "1.1.0"
 homepage = "https://datafusion.apache.org/comet"
 repository = "https://github.com/apache/datafusion-comet"
 authors = ["Apache DataFusion <dev@datafusion.apache.org>"]
@@ -38,10 +38,10 @@ arrow = { version = "59.1.0", features = ["prettyprint", "ffi", "chrono-tz"] }
 async-trait = { version = "0.1" }
 bytes = { version = "1.11.1" }
 parquet = { version = "59.1.0", default-features = false, features = ["experimental"] }
-datafusion = { git = "https://github.com/apache/datafusion", rev = "88365ddd62b17c1eabd20ed0b064f626f9e77686", default-features = false, features = ["unicode_expressions", "crypto_expressions", "nested_expressions", "parquet"] }
-datafusion-datasource = { git = "https://github.com/apache/datafusion", rev = "88365ddd62b17c1eabd20ed0b064f626f9e77686" }
-datafusion-physical-expr-adapter = { git = "https://github.com/apache/datafusion", rev = "88365ddd62b17c1eabd20ed0b064f626f9e77686" }
-datafusion-spark = { git = "https://github.com/apache/datafusion", rev = "88365ddd62b17c1eabd20ed0b064f626f9e77686", features = ["core"] }
+datafusion = { git = "https://github.com/apache/datafusion", rev = "179b32c9b60103d9c4e6a4364f10f6286c963904", default-features = false, features = ["unicode_expressions", "crypto_expressions", "nested_expressions", "parquet"] }
+datafusion-datasource = { git = "https://github.com/apache/datafusion", rev = "179b32c9b60103d9c4e6a4364f10f6286c963904" }
+datafusion-physical-expr-adapter = { git = "https://github.com/apache/datafusion", rev = "179b32c9b60103d9c4e6a4364f10f6286c963904" }
+datafusion-spark = { git = "https://github.com/apache/datafusion", rev = "179b32c9b60103d9c4e6a4364f10f6286c963904", features = ["core"] }
 datafusion-comet-spark-expr = { path = "spark-expr" }
 datafusion-comet-common = { path = "common" }
 datafusion-comet-jni-bridge = { path = "jni-bridge" }
@@ -58,8 +58,8 @@ object_store = { version = "0.13.2", features = ["gcp", "azure", "aws", "http"] 
 url = "2.2"
 aws-config = "1.8.18"
 aws-credential-types = "1.2.13"
-iceberg = { git = "https://github.com/apache/iceberg-rust", rev = "ff678ca" }
-iceberg-storage-opendal = { git = "https://github.com/apache/iceberg-rust", rev = "ff678ca", features = ["opendal-memory", "opendal-fs", "opendal-s3", "opendal-gcs", "opendal-oss", "opendal-azdls"] }
+iceberg = { git = "https://github.com/apache/iceberg-rust", rev = "3d84c81353b1b23b6e4ae8eea8f8a021cc6927a7" }
+iceberg-storage-opendal = { git = "https://github.com/apache/iceberg-rust", rev = "3d84c81353b1b23b6e4ae8eea8f8a021cc6927a7", features = ["opendal-memory", "opendal-fs", "opendal-s3", "opendal-gcs", "opendal-oss", "opendal-azdls"] }
 reqsign-core = "3"
 
 [profile.release]

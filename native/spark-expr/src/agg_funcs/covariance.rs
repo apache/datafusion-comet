@@ -17,6 +17,7 @@
  * under the License.
  */
 
+use super::convert_to_state::convert_to_state_per_row;
 use arrow::array::{Array, ArrayRef, AsArray, BooleanArray, Float64Array};
 use arrow::buffer::NullBuffer;
 use arrow::compute::cast;
@@ -464,6 +465,18 @@ impl GroupsAccumulator for CovarianceGroupsAccumulator {
             Arc::new(Float64Array::new(mean2s.into(), None)),
             Arc::new(Float64Array::new(cs.into(), None)),
         ])
+    }
+
+    fn convert_to_state(
+        &self,
+        values: &[ArrayRef],
+        opt_filter: Option<&BooleanArray>,
+    ) -> Result<Vec<ArrayRef>> {
+        convert_to_state_per_row(
+            Self::new(self.stats_type, self.null_on_divide_by_zero),
+            values,
+            opt_filter,
+        )
     }
 
     fn size(&self) -> usize {

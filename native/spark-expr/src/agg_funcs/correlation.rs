@@ -20,6 +20,7 @@ use arrow::compute::{and, is_not_null};
 use arrow::datatypes::{DataType, Field, FieldRef};
 use std::sync::Arc;
 
+use crate::agg_funcs::convert_to_state::convert_to_state_per_row;
 use crate::agg_funcs::covariance::{CovarianceAccumulator, CovarianceGroupsAccumulator};
 use crate::agg_funcs::stddev::StddevAccumulator;
 use crate::agg_funcs::variance::VarianceGroupsAccumulator;
@@ -439,6 +440,14 @@ impl GroupsAccumulator for CorrelationGroupsAccumulator {
             Arc::clone(&var1_state[2]),
             Arc::clone(&var2_state[2]),
         ])
+    }
+
+    fn convert_to_state(
+        &self,
+        values: &[ArrayRef],
+        opt_filter: Option<&BooleanArray>,
+    ) -> Result<Vec<ArrayRef>> {
+        convert_to_state_per_row(Self::new(self.null_on_divide_by_zero), values, opt_filter)
     }
 
     fn size(&self) -> usize {

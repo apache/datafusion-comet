@@ -339,6 +339,43 @@ where
         ])
     }
 
+    fn convert_to_state(
+        &self,
+        values: &[ArrayRef],
+        opt_filter: Option<&arrow::array::BooleanArray>,
+    ) -> Result<Vec<ArrayRef>> {
+        assert_eq!(values.len(), 1, "single argument to convert_to_state");
+        let values = values[0].as_primitive::<T>();
+        let num_rows = values.len();
+
+        // Each row becomes its own group, so its partial sum is the value itself and
+        // its partial count is 1. Null and filtered-out rows contribute nothing, the
+        // same way `update_batch` skips them.
+        let mut sums = vec![T::default_value(); num_rows];
+        let mut counts = vec![0i64; num_rows];
+        for (idx, (sum, count)) in sums.iter_mut().zip(counts.iter_mut()).enumerate() {
+            if let Some(f) = opt_filter {
+                if !f.is_valid(idx) || !f.value(idx) {
+                    continue;
+                }
+            }
+            if values.is_null(idx) {
+                continue;
+            }
+            *sum = values.value(idx);
+            *count = 1;
+        }
+
+        let sums = PrimitiveArray::<T>::new(sums.into(), None)
+            .with_data_type(self.return_data_type.clone());
+        let counts = Int64Array::new(counts.into(), None);
+
+        Ok(vec![
+            Arc::new(sums) as ArrayRef,
+            Arc::new(counts) as ArrayRef,
+        ])
+    }
+
     fn size(&self) -> usize {
         self.counts.capacity() * std::mem::size_of::<i64>()
             + self.sums.capacity() * std::mem::size_of::<T>()

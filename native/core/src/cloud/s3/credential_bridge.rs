@@ -22,16 +22,21 @@
 use crate::execution::operators::ExecutionError;
 use crate::jvm_bridge::{jni_new_global_ref, jni_static_call, JVMClasses};
 use async_trait::async_trait;
+#[cfg(feature = "iceberg-scan")]
 use iceberg_storage_opendal::AwsCredential as IcebergAwsCredential;
 use jni::objects::{Global, JFieldID, JObject, JString, JValue};
 use jni::signature::{Primitive, ReturnType};
 use jni::strings::JNIString;
 use jni::sys::jint;
+#[cfg(feature = "iceberg-scan")]
 use log::warn;
 use object_store::aws::AwsCredential;
 use object_store::CredentialProvider;
+#[cfg(feature = "iceberg-scan")]
 use once_cell::sync::OnceCell;
+#[cfg(feature = "iceberg-scan")]
 use reqsign_core::time::Timestamp;
+#[cfg(feature = "iceberg-scan")]
 use reqsign_core::{
     Context, Error as ReqsignError, ErrorKind as ReqsignErrorKind,
     ProvideCredential as IcebergProvideCredential,
@@ -39,14 +44,17 @@ use reqsign_core::{
 use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
+#[cfg(feature = "iceberg-scan")]
 use std::time::Duration;
 
 /// Cap on opendal's credential cache when the provider does not report an expiry. Prevents the
 /// executor from holding a stale credential for the entire job lifetime.
+#[cfg(feature = "iceberg-scan")]
 const DEFAULT_EXPIRY_WHEN_UNKNOWN: Duration = Duration::from_secs(300);
 
 /// Once-per-process latch for the "missing expiry" warning. Bridges are per-scan, so a per-bridge
 /// latch would re-log on every scan.
+#[cfg(feature = "iceberg-scan")]
 static WARNED_MISSING_EXPIRY: OnceCell<()> = OnceCell::new();
 
 /// Access intent forwarded to the Java SPI. Ordinal must match the JVM `CometS3AccessMode` enum.
@@ -269,7 +277,9 @@ struct RawCredentials {
     access_key_id: String,
     secret_access_key: String,
     session_token: Option<String>,
-    /// Absolute expiry. `0` means the provider did not report one.
+    /// Absolute expiry. `0` means the provider did not report one. Only consumed by the
+    /// Iceberg credential path.
+    #[cfg_attr(not(feature = "iceberg-scan"), allow(dead_code))]
     expiration_epoch_millis: i64,
 }
 
@@ -290,6 +300,7 @@ impl CredentialProvider for CometS3CredentialBridge {
     }
 }
 
+#[cfg(feature = "iceberg-scan")]
 impl IcebergProvideCredential for CometS3CredentialBridge {
     type Credential = IcebergAwsCredential;
 

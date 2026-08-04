@@ -51,7 +51,7 @@ import org.apache.comet.serde.operator.CometIcebergNativeScan
  * `expressions` walk picks up the contained `DynamicPruningExpression(InSubqueryExec(...))`, and
  * the standard `prepare -> prepareSubqueries -> waitForSubqueries` lifecycle resolves it. The
  * lifecycle is invoked via `CometLeafExec.ensureSubqueriesResolved`, called from
- * `CometNativeExec.findAllPlanData` before `commonData` is read.
+ * `PlanDataInjector.findAllPlanData` before `commonData` is read.
  */
 case class CometIcebergNativeScanExec(
     override val nativeOp: Operator,
@@ -70,12 +70,12 @@ case class CometIcebergNativeScanExec(
 
   /**
    * Lazy partition serialization, deferred until execution time. Triggered from `commonData` /
-   * `perPartitionData` (via `CometNativeExec.findAllPlanData`) and from `LazyIcebergMetric.value`
-   * (via Iceberg planning metrics). Lazy val semantics ensure single evaluation across entry
-   * points.
+   * `perPartitionData` (via `PlanDataInjector.findAllPlanData`) and from
+   * `LazyIcebergMetric.value` (via Iceberg planning metrics). Lazy val semantics ensure single
+   * evaluation across entry points.
    *
    * DPP InSubqueryExec values must already be resolved by the time this lazy val runs.
-   * `CometNativeExec.findAllPlanData` calls `ensureSubqueriesResolved` (which invokes Spark's
+   * `PlanDataInjector.findAllPlanData` calls `ensureSubqueriesResolved` (which invokes Spark's
    * `prepare -> waitForSubqueries`) before reading `commonData`. The `serializePartitions` call
    * below reads `originalPlan.runtimeFilters` indirectly through `inputRDD -> filteredPartitions`
    * and applies the resolved values to Iceberg's runtime filtering. `originalPlan.runtimeFilters`
@@ -220,11 +220,15 @@ case class CometIcebergNativeScanExec(
   override def doExecuteColumnar(): RDD[ColumnarBatch] = {
     val nativeMetrics = CometMetricNode.fromCometPlan(this)
     val serializedPlan = CometExec.serializeNativePlan(nativeOp)
+    // Key by the same (metadata_location, scan_hash_code) pair PlanDataInjector.injectPlanData
+    // looks up via IcebergPlanDataInjector.getKey (see the scan_hash_code field comment in
+    // operator.proto for why metadata_location alone cannot identify a scan).
+    val injectorKey = IcebergPlanDataInjector.getKey(nativeOp).getOrElse(metadataLocation)
     new CometExecRDD(
       sparkContext,
       inputRDDs = Seq.empty,
-      commonByKey = Map(metadataLocation -> commonData),
-      perPartitionByKey = Map(metadataLocation -> perPartitionData),
+      commonByKey = Map(injectorKey -> commonData),
+      perPartitionByKey = Map(injectorKey -> perPartitionData),
       serializedPlan = serializedPlan,
       defaultNumPartitions = perPartitionData.length,
       numOutputCols = output.length,

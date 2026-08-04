@@ -19,7 +19,7 @@ use arrow::array::{
     builder::PrimitiveBuilder,
     cast::AsArray,
     types::{Decimal128Type, Int64Type},
-    Array, ArrayRef, Decimal128Array, Int64Array, PrimitiveArray,
+    Array, ArrayRef, BooleanArray, Decimal128Array, Int64Array, PrimitiveArray,
 };
 use arrow::datatypes::{DataType, Field, FieldRef};
 use arrow::{array::BooleanBufferBuilder, buffer::NullBuffer, compute::sum};
@@ -30,6 +30,7 @@ use datafusion::logical_expr::{
 use datafusion::physical_expr::expressions::format_state_name;
 use std::sync::Arc;
 
+use super::convert_to_state::convert_to_state_per_row;
 use crate::utils::{build_bool_state, is_valid_decimal_precision, unlikely};
 use crate::{decimal_sum_overflow_error, EvalMode, SparkErrorWithContext};
 use arrow::array::ArrowNativeTypeOp;
@@ -361,7 +362,14 @@ impl Accumulator for AvgDecimalAccumulator {
     fn evaluate(&mut self) -> Result<ScalarValue> {
         // Check for overflow during sum accumulation in ANSI mode.
         // This matches Spark's DecimalDivideWithOverflowCheck behavior.
-        if self.sum.is_none() && !self.is_empty && self.eval_mode == EvalMode::Ansi {
+        // `count` guards against reporting an overflow when there was nothing to sum: an
+        // empty or all-null input also leaves `sum` as None, and `is_empty` cannot
+        // distinguish those cases because the counts merged in `merge_batch` are never null.
+        if self.sum.is_none()
+            && !self.is_empty
+            && self.count > 0
+            && self.eval_mode == EvalMode::Ansi
+        {
             let error = decimal_sum_overflow_error("avg");
             return Err(self.wrap_error_with_context(error));
         }
@@ -642,6 +650,28 @@ impl GroupsAccumulator for AvgDecimalGroupsAccumulator {
             Arc::new(sums) as ArrayRef,
             Arc::new(counts) as ArrayRef,
         ])
+    }
+
+    fn convert_to_state(
+        &self,
+        values: &[ArrayRef],
+        opt_filter: Option<&BooleanArray>,
+    ) -> Result<Vec<ArrayRef>> {
+        convert_to_state_per_row(
+            Self::new(
+                &self.return_data_type,
+                &self.sum_data_type,
+                self.target_precision,
+                self.target_scale,
+                self.sum_precision,
+                self.sum_scale,
+                self.eval_mode,
+                self.expr_id,
+                Arc::clone(&self.registry),
+            ),
+            values,
+            opt_filter,
+        )
     }
 
     fn size(&self) -> usize {

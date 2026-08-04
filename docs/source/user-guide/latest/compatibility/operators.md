@@ -19,6 +19,22 @@ under the License.
 
 # Operator Compatibility
 
+## Sampling
+
+Comet runs `SampleExec` natively when sampling is performed without replacement, which covers
+`DataFrame.sample`, SQL `TABLESAMPLE`, and `DataFrame.randomSplit`. The native implementation
+reproduces Spark's per-row `XORShiftRandom` draw sequence, so for a given seed it selects the same
+rows as Spark.
+
+Because the sampler consumes one random value per row, sampling directly above a scan, filter, or
+projection reproduces Spark's selection. Above an operator where Comet may emit rows in a different
+order than Spark, such as a join or an aggregate, the result is still a valid sample of the same
+expected size, but not necessarily the same rows.
+
+Sampling with replacement (`df.sample(withReplacement = true, ...)`) falls back to Spark, because
+it draws from a Poisson distribution that Comet does not implement natively
+([#5109](https://github.com/apache/datafusion-comet/issues/5109)).
+
 ## Window Functions
 
 Comet runs `WindowExec` natively and it is enabled by default (`spark.comet.exec.window.enabled`). A broad set of
@@ -62,7 +78,7 @@ incorrect result. When any single window expression in a `WindowExec` falls back
 
 Comet's native shuffle implementation of round-robin partitioning (`df.repartition(n)`) is not compatible with
 Spark's implementation and is disabled by default. It can be enabled by setting
-`spark.comet.native.shuffle.partitioning.roundrobin.enabled=true`.
+`spark.comet.shuffle.native.partitioning.roundrobin.enabled=true`.
 
 **Why the incompatibility exists:**
 

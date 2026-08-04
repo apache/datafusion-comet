@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use super::convert_to_state::convert_to_state_per_row;
 use crate::utils::is_valid_decimal_precision;
 use crate::{decimal_sum_overflow_error, EvalMode, SparkErrorWithContext};
 use arrow::array::{
@@ -601,6 +602,24 @@ impl GroupsAccumulator for SumDecimalGroupsAccumulator {
         }
 
         Ok(())
+    }
+
+    fn convert_to_state(
+        &self,
+        values: &[ArrayRef],
+        opt_filter: Option<&BooleanArray>,
+    ) -> DFResult<Vec<ArrayRef>> {
+        convert_to_state_per_row(
+            Self::new(
+                self.result_type.clone(),
+                self.precision,
+                self.eval_mode,
+                self.expr_id,
+                Arc::clone(&self.registry),
+            ),
+            values,
+            opt_filter,
+        )
     }
 
     fn size(&self) -> usize {

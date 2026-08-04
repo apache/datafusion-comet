@@ -36,7 +36,8 @@ publish = false
 
 [dependencies]
 arrow = { workspace = true }
-parquet = { workspace = true, default-features = false, features = ["experimental", "arrow"] }
+bytes = { workspace = true }
+parquet = { workspace = true, default-features = false, features = ["experimental", "arrow", "snap", "lz4", "zstd", "flate2-zlib-rs"] }
 futures = { workspace = true }
 mimalloc = { version = "*", default-features = false, optional = true }
 tikv-jemallocator = { version = "0.6.1", optional = true, features = ["disable_initial_exec_tls"] }
@@ -67,13 +68,12 @@ url = { workspace = true }
 aws-config = { workspace = true }
 aws-credential-types = { workspace = true }
 parking_lot = "0.12.5"
-datafusion-comet-objectstore-hdfs = { path = "../hdfs", optional = true, default-features = false, features = ["hdfs"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots", "http2"] }
 object_store_opendal = { version = "0.57.0", optional = true }
 hdfs-sys = {version = "0.3", optional = true, features = ["hdfs_3_3"]}
 opendal = { version = "0.57.0", optional = true, features = ["services-hdfs"] }
-iceberg = { workspace = true }
-iceberg-storage-opendal = { workspace = true }
+iceberg = { workspace = true, optional = true }
+iceberg-storage-opendal = { workspace = true, optional = true }
 reqsign-core = { workspace = true }
 serde_json = "1.0"
 uuid = "1.23.3"
@@ -91,13 +91,17 @@ jni = { version = "0.22.4", features = ["invocation"] }
 lazy_static = "1.4"
 assertables = "10"
 hex = "0.4.3"
-datafusion-functions-nested = { git = "https://github.com/apache/datafusion", rev = "88365ddd62b17c1eabd20ed0b064f626f9e77686" }
+datafusion-functions-nested = { git = "https://github.com/apache/datafusion", rev = "179b32c9b60103d9c4e6a4364f10f6286c963904" }
 
 [features]
 backtrace = ["datafusion/backtrace"]
 default = ["hdfs-opendal"]
-hdfs = ["datafusion-comet-objectstore-hdfs"]
 hdfs-opendal = ["opendal", "object_store_opendal", "hdfs-sys"]
+# The native Iceberg scan. Off by default while this branch tracks DataFusion main:
+# iceberg-rust is still on arrow 58, so its `RecordBatch` does not unify with the
+# arrow 59 that DataFusion main requires. Re-enable (and make this a default
+# feature again) once iceberg-rust upgrades to arrow 59.
+iceberg-scan = ["iceberg", "iceberg-storage-opendal"]
 jemalloc = ["tikv-jemallocator", "tikv-jemalloc-ctl"]
 
 # exclude optional packages from cargo machete verifications

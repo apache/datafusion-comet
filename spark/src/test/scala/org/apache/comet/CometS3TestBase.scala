@@ -29,6 +29,8 @@ import org.testcontainers.utility.DockerImageName
 import org.apache.spark.SparkConf
 import org.apache.spark.sql.CometTestBase
 
+import org.apache.comet.CometSparkSessionExtensions.isSpark42Plus
+
 import software.amazon.awssdk.auth.credentials.{AwsBasicCredentials, StaticCredentialsProvider}
 import software.amazon.awssdk.services.s3.S3Client
 import software.amazon.awssdk.services.s3.model.{CreateBucketRequest, HeadBucketRequest}
@@ -66,12 +68,17 @@ trait CometS3TestBase extends CometTestBase {
     conf.set("spark.hadoop.fs.s3a.path.style.access", "true")
   }
 
+  // Spark 4.2 has no published Iceberg spark-runtime yet; the build reuses the 4.0 runtime, whose
+  // `SparkView` is binary-incompatible with Spark 4.2's `connector.catalog.View` (now a class, not
+  // an interface), so treat Iceberg as unavailable on 4.2.
   protected def icebergAvailable: Boolean = {
-    try {
-      Class.forName("org.apache.iceberg.catalog.Catalog")
-      true
-    } catch {
-      case _: ClassNotFoundException => false
+    !isSpark42Plus && {
+      try {
+        Class.forName("org.apache.iceberg.catalog.Catalog")
+        true
+      } catch {
+        case _: ClassNotFoundException => false
+      }
     }
   }
 

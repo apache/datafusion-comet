@@ -71,7 +71,8 @@ case class CometNativeScanExec(
     sourceKey: String) // Key for PlanDataInjector to match common+partition data at runtime
     extends CometLeafExec
     with DataSourceScanExec
-    with ShimStreamSourceAwareSparkPlan {
+    with ShimStreamSourceAwareSparkPlan
+    with CometScanWithPlanData {
 
   override lazy val metadata: Map[String, String] =
     if (originalPlan != null) originalPlan.metadata else Map.empty
@@ -159,7 +160,7 @@ case class CometNativeScanExec(
     // Outer partitionFilters (wrapper) DPP is resolved by Spark's standard
     // prepare -> waitForSubqueries lifecycle, triggered explicitly via
     // CometLeafExec.ensureSubqueriesResolved called from
-    // CometNativeExec.findAllPlanData before commonData is read.
+    // PlanDataInjector.findAllPlanData before commonData is read.
     //
     // Inner scan.partitionFilters holds a SEPARATE InSubqueryExec instance that
     // Spark's expressions walk does not see (scan is @transient and not a sibling
@@ -359,15 +360,8 @@ object CometNativeScanExec {
       scan: CometScanExec): CometNativeScanExec = {
     // Generate unique key for this scan so PlanDataInjector can match common+partition data.
     // Multiple scans of same table with different projections/filters get different keys.
-    val common = nativeOp.getNativeScan.getCommon
-    val source = common.getSource
-    val keyComponents = Seq(
-      common.getRequiredSchemaList.toString,
-      common.getDataFiltersList.toString,
-      common.getProjectionVectorList.toString,
-      common.getFieldsList.toString)
-    val hashCode = keyComponents.mkString("|").hashCode
-    val sourceKey = s"${source}_${hashCode}"
+    // Derived by the injector that will look it up, so the two sides cannot drift apart.
+    val sourceKey = NativeScanPlanDataInjector.sourceKey(nativeOp.getNativeScan.getCommon)
 
     val batchScanExec = CometNativeScanExec(
       nativeOp,

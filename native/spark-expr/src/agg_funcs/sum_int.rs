@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use super::convert_to_state::convert_to_state_per_row;
 use crate::{arithmetic_overflow_error, EvalMode};
 use arrow::array::{
     as_primitive_array, cast::AsArray, Array, ArrayRef, ArrowNativeTypeOp, ArrowPrimitiveType,
@@ -523,6 +524,14 @@ impl GroupsAccumulator for SumIntGroupsAccumulatorLegacy {
         Ok(())
     }
 
+    fn convert_to_state(
+        &self,
+        values: &[ArrayRef],
+        opt_filter: Option<&BooleanArray>,
+    ) -> DFResult<Vec<ArrayRef>> {
+        convert_to_state_per_row(Self::new(), values, opt_filter)
+    }
+
     fn size(&self) -> usize {
         std::mem::size_of_val(self)
     }
@@ -666,6 +675,14 @@ impl GroupsAccumulator for SumIntGroupsAccumulatorAnsi {
             }
         }
         Ok(())
+    }
+
+    fn convert_to_state(
+        &self,
+        values: &[ArrayRef],
+        opt_filter: Option<&BooleanArray>,
+    ) -> DFResult<Vec<ArrayRef>> {
+        convert_to_state_per_row(Self::new(), values, opt_filter)
     }
 
     fn size(&self) -> usize {
@@ -866,6 +883,14 @@ impl GroupsAccumulator for SumIntGroupsAccumulatorTry {
             }
         }
         Ok(())
+    }
+
+    fn convert_to_state(
+        &self,
+        values: &[ArrayRef],
+        opt_filter: Option<&BooleanArray>,
+    ) -> DFResult<Vec<ArrayRef>> {
+        convert_to_state_per_row(Self::new(), values, opt_filter)
     }
 
     fn size(&self) -> usize {

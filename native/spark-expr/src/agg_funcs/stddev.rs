@@ -249,6 +249,15 @@ impl GroupsAccumulator for StddevGroupsAccumulator {
         self.inner.state(emit_to)
     }
 
+    fn convert_to_state(
+        &self,
+        values: &[ArrayRef],
+        opt_filter: Option<&BooleanArray>,
+    ) -> Result<Vec<ArrayRef>> {
+        // State is identical to variance, so the inner accumulator can produce it.
+        self.inner.convert_to_state(values, opt_filter)
+    }
+
     fn size(&self) -> usize {
         self.inner.size()
     }

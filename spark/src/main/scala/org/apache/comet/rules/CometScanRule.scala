@@ -88,12 +88,6 @@ case class CometScanRule(session: SparkSession)
       case _ => false
     }
 
-    def metadataCols(plan: SparkPlan): Seq[String] = {
-      plan.expressions.collect {
-        case a: Attribute if a.isMetadataCol => a.name
-      }
-    }
-
     def isIcebergMetadataTable(scanExec: BatchScanExec): Boolean = {
       // List of Iceberg metadata tables:
       // https://iceberg.apache.org/docs/latest/spark-queries/#inspecting-tables
@@ -111,7 +105,12 @@ case class CometScanRule(session: SparkSession)
         "all_entries",
         "all_manifests")
 
-      metadataTableSuffix.exists(suffix => scanExec.table.name().endsWith(suffix))
+      // Match case-insensitively: metadata tables surface lowercase via the path form
+      // (...metadata.json#all_manifests) but uppercase via the catalog-identifier form
+      // (db.table.ALL_DATA_FILES), and the latter must hit this gate too rather than fall through
+      // to reflection that fails on the metadata-table class.
+      val name = scanExec.table.name().toLowerCase(Locale.ROOT)
+      metadataTableSuffix.exists(name.endsWith)
     }
 
     val fullPlan = plan
@@ -124,11 +123,6 @@ case class CometScanRule(session: SparkSession)
 
       case scan if !CometConf.COMET_NATIVE_SCAN_ENABLED.get(conf) =>
         withFallbackReason(scan, "Comet Scan is not enabled")
-
-      case scan if metadataCols(scan).nonEmpty =>
-        withFallbackReason(
-          scan,
-          s"Metadata column(s) ${metadataCols(scan).mkString(", ")} is not supported")
 
       // data source V1
       case scanExec: FileSourceScanExec =>
@@ -149,6 +143,12 @@ case class CometScanRule(session: SparkSession)
   }
 
   private def transformV1Scan(plan: SparkPlan, scanExec: FileSourceScanExec): SparkPlan = {
+    val metadataColNames = metadataCols(scanExec)
+    if (metadataColNames.nonEmpty) {
+      return withFallbackReason(
+        scanExec,
+        s"Metadata column(s) ${metadataColNames.mkString(", ")} is not supported")
+    }
 
     // On Spark 3.4, injectQueryStageOptimizerRule is unavailable, so
     // CometPlanAdaptiveDynamicPruningFilters cannot run. Fall back this scan to Spark so that
@@ -297,6 +297,11 @@ case class CometScanRule(session: SparkSession)
 
     scanExec.scan match {
       case scan: CSVScan if COMET_CSV_V2_NATIVE_ENABLED.get() =>
+        if (scanExec.output.exists(_.isMetadataCol)) {
+          return withFallbackReason(
+            scanExec,
+            "Metadata columns are not supported for CSV V2 scans")
+        }
         val fallbackReasons = new ListBuffer[String]()
         val schemaSupported =
           CometBatchScanExec.isSchemaSupported(scan.readDataSchema, fallbackReasons)
@@ -356,9 +361,30 @@ case class CometScanRule(session: SparkSession)
           return withFallbackReasons(scanExec, fallbackReasons.toSet)
         }
 
+        // Check for unsupported metadata columns in Iceberg scans
+        val unsupportedMetadataCols = scanExec.output.filter(_.isMetadataCol).filterNot { attr =>
+          CometIcebergNativeScan.MetadataFieldIds.keySet.contains(attr.name)
+        }
+        if (unsupportedMetadataCols.nonEmpty) {
+          fallbackReasons += "Unsupported Iceberg metadata columns: " +
+            unsupportedMetadataCols.map(_.name).mkString(", ")
+          return withFallbackReasons(scanExec, fallbackReasons.toSet)
+        }
+
         val typeChecker = CometScanTypeChecker()
+        // Filter out metadata columns from schema check -- their types are handled
+        // by iceberg-rust directly (e.g., _partition can be an empty struct for
+        // unpartitioned tables which the general type checker rejects).
+        val metadataColNames = scanExec.output.filter(_.isMetadataCol).map(_.name).toSet
+        val dataSchema = if (metadataColNames.nonEmpty) {
+          val filtered =
+            scanExec.scan.readSchema().filter(f => !metadataColNames.contains(f.name))
+          new org.apache.spark.sql.types.StructType(filtered.toArray)
+        } else {
+          scanExec.scan.readSchema()
+        }
         val schemaSupported =
-          typeChecker.isSchemaSupported(scanExec.scan.readSchema(), fallbackReasons)
+          typeChecker.isSchemaSupported(dataSchema, fallbackReasons)
 
         if (!schemaSupported) {
           fallbackReasons += "Comet extension is not enabled for " +
@@ -446,15 +472,17 @@ case class CometScanRule(session: SparkSession)
         }
 
         // Now perform all validation using the pre-extracted metadata
-        // Check if table uses a FileIO implementation compatible with iceberg-rust
-
+        // Check if table uses a FileIO implementation compatible with iceberg-rust.
+        // Comet's native reader bypasses Iceberg Java's FileIO entirely and reads through
+        // iceberg-rust's own storage layer instead. Only allow known-compatible implementations
+        // whose backing storage that layer can reach via standard URL schemes.
         val fileIOCompatible = IcebergReflection.getFileIO(metadata.table) match {
-          case Some(fileIO)
-              if fileIO.getClass.getName == "org.apache.iceberg.inmemory.InMemoryFileIO" =>
-            fallbackReasons += "InMemoryFileIO is not supported by Comet's native reader"
-            false
-          case Some(_) =>
+          case Some(fileIO) if IcebergReflection.isCompatibleFileIO(fileIO) =>
             true
+          case Some(fileIO) =>
+            fallbackReasons += s"FileIO ${fileIO.getClass.getName} is not supported by " +
+              "Comet's native reader (bypasses Iceberg Java FileIO)"
+            false
           case None =>
             fallbackReasons += "Could not check FileIO compatibility"
             false
@@ -462,12 +490,18 @@ case class CometScanRule(session: SparkSession)
 
         // Check Iceberg table format version
 
-        val formatVersionSupported = IcebergReflection.getFormatVersion(metadata.table) match {
-          case Some(formatVersion) =>
-            if (formatVersion > 2) {
+        // V3 adds column types iceberg-rust cannot read (variant, geometry, geography, unknown)
+        // and column default values; those are handled by the allow-list and default-value checks
+        // below, which fall back per-table. This gate only bounds the format version. Deletion
+        // vectors (a V3 delete feature) are handled by the delete-file gate, which still falls back
+        // for non-Parquet (Puffin) deletes since native deletion-vector reads are not yet wired.
+        val formatVersion = IcebergReflection.getFormatVersion(metadata.table)
+        val formatVersionSupported = formatVersion match {
+          case Some(v) =>
+            if (v > 3) {
               fallbackReasons += "Iceberg table format version " +
-                s"$formatVersion is not supported. " +
-                "Comet only supports Iceberg table format V1 and V2"
+                s"$v is not supported. " +
+                "Comet supports Iceberg table format V1, V2, and V3"
               false
             } else {
               true
@@ -476,6 +510,68 @@ case class CometScanRule(session: SparkSession)
             fallbackReasons += "Could not verify Iceberg table format version"
             false
         }
+
+        // Column default values are a V3 feature, so V1/V2 tables cannot have them and need no
+        // check. Only inspect V3 tables. iceberg-rust does not synthesize a V3 initial-default for
+        // a column absent from a data file, so a scan projecting such a column must fall back. A V3
+        // table implies an Iceberg version new enough to expose initialDefault(), so a reflection
+        // failure here is unexpected and also falls back rather than risk a crash.
+        val defaultValuesSupported =
+          if (!formatVersion.exists(_ >= 3)) {
+            true
+          } else {
+            try {
+              val defaulted = IcebergReflection.columnsWithInitialDefault(metadata.scanSchema)
+              if (defaulted.nonEmpty) {
+                fallbackReasons += "Iceberg column(s) with V3 default values are not yet " +
+                  s"supported by Comet's native reader: ${defaulted.mkString(", ")}"
+                false
+              } else {
+                true
+              }
+            } catch {
+              case e: Exception =>
+                fallbackReasons += "Iceberg reflection failure: could not verify V3 default " +
+                  s"values: ${e.getMessage}"
+                false
+            }
+          }
+
+        // Comet serializes the whole table/scan schema to native, not just projected columns, so a
+        // type the native reader does not support (e.g. variant) breaks the scan even when that
+        // column is not projected. The readSchema allow-list only covers projected columns, so run
+        // the same allow-list over the full schema Comet may serialize. Reflection failure also
+        // falls back.
+        val schemaTypesSupported =
+          try {
+            val fullSchema = IcebergReflection.toSparkSchema(metadata.tableSchema)
+            typeChecker.isSchemaSupported(fullSchema, fallbackReasons)
+          } catch {
+            case e: Exception =>
+              fallbackReasons += "Iceberg reflection failure: could not verify column " +
+                s"types: ${e.getMessage}"
+              false
+          }
+
+        // The native Parquet reader decrypts 128-bit and 256-bit AES-GCM data keys (16- or
+        // 32-byte). 192-bit is unsupported because the underlying crypto has no AES-192-GCM. Fall
+        // back for anything else. None means the table is unencrypted. Reflection failure also
+        // falls back.
+        val encryptionKeyLengthSupported =
+          try {
+            IcebergReflection.encryptionDataKeyLength(metadata.table) match {
+              case Some(len) if len != 16 && len != 32 =>
+                fallbackReasons += s"Iceberg table encryption with a ${len * 8}-bit data key is " +
+                  "not yet supported by Comet's native reader (only 128-bit and 256-bit AES-GCM)"
+                false
+              case _ => true
+            }
+          } catch {
+            case e: Exception =>
+              fallbackReasons += "Iceberg reflection failure: could not verify encryption key " +
+                s"length: ${e.getMessage}"
+              false
+          }
 
         // Single-pass validation of all FileScanTasks
         val taskValidation =
@@ -529,6 +625,25 @@ case class CometScanRule(session: SparkSession)
           fallbackReasons += msg
           false
         }
+
+        // The `_partition` metadata column projects the table's unified partition type -- the
+        // merge of all historical specs. iceberg-rust computes that merge at scan time and errors
+        // (DataInvalid) when specs bind one field id to incompatible source/transform pairs (only
+        // possible in V1 tables, which do not keep partition field ids unique across specs). That
+        // error would fail the native scan with no chance to fall back, so when `_partition` is
+        // projected we run Iceberg Java's equivalent check here and fall back if it cannot merge.
+        val unifiedPartitionTypeSupported =
+          if (scanExec.output.exists(a => a.isMetadataCol && a.name == "_partition")) {
+            IcebergReflection.validateUnifiedPartitionType(metadata.table) match {
+              case Some(reason) =>
+                fallbackReasons += "Iceberg table has partition specs whose unified partition " +
+                  s"type cannot be computed for the _partition metadata column: $reason"
+                false
+              case None => true
+            }
+          } else {
+            true
+          }
 
         // Get filter expressions for complex predicates check
         val filterExpressionsOpt = IcebergReflection.getFilterExpressions(scanExec.scan)
@@ -713,7 +828,9 @@ case class CometScanRule(session: SparkSession)
         }
 
         if (schemaSupported && fileIOCompatible && formatVersionSupported &&
+          defaultValuesSupported && schemaTypesSupported && encryptionKeyLengthSupported &&
           taskValidation.allParquet && allSupportedFilesystems && partitionTypesSupported &&
+          unifiedPartitionTypeSupported &&
           complexTypePredicatesSupported && transformFunctionsSupported &&
           deleteFileTypesSupported && dppSubqueriesSupported) {
           CometBatchScanExec(
@@ -749,6 +866,12 @@ case class CometScanRule(session: SparkSession)
       case sub: InSubqueryExec => sub.plan.isInstanceOf[SubqueryAdaptiveBroadcastExec]
       case _ => false
     }
+
+  private def metadataCols(plan: SparkPlan): Seq[String] = {
+    plan.expressions.collect {
+      case a: Attribute if a.isMetadataCol => a.name
+    }
+  }
 
   private def isSchemaSupported(scanExec: FileSourceScanExec, r: HadoopFsRelation): Boolean = {
     val fallbackReasons = new ListBuffer[String]()

@@ -28,8 +28,9 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.internal.config.{EXECUTOR_MEMORY, EXECUTOR_MEMORY_OVERHEAD, EXECUTOR_MEMORY_OVERHEAD_FACTOR}
 import org.apache.spark.sql.internal.StaticSQLConf
 
-import org.apache.comet.{CometSparkSessionExtensions, NativeBase}
+import org.apache.comet.{COMET_VERSION, CometSparkSessionExtensions, NativeBase}
 import org.apache.comet.CometConf.{COMET_METRICS_ENABLED, COMET_ONHEAP_ENABLED}
+import org.apache.comet.annotation.Public
 
 /**
  * Comet driver plugin. This class is loaded by Spark's plugin framework. It will be instantiated
@@ -47,6 +48,12 @@ class CometDriverPlugin extends DriverPlugin with Logging with ShimCometDriverPl
 
   override def init(sc: SparkContext, pluginContext: PluginContext): ju.Map[String, String] = {
     logInfo("CometDriverPlugin init")
+
+    // Expose the Comet build version as a Spark config so it can be queried at runtime, e.g.
+    // `spark.conf.get("spark.comet.version")` or `SET spark.comet.version` in SQL. This is set
+    // before the off-heap check below so the version is reported even when Comet is otherwise
+    // disabled.
+    sc.conf.set(CometDriverPlugin.COMET_VERSION_CONFIG, COMET_VERSION)
 
     if (!CometSparkSessionExtensions.isOffHeapEnabled(sc.getConf) &&
       !sc.getConf.getBoolean(COMET_ONHEAP_ENABLED.key, false)) {
@@ -106,6 +113,10 @@ class CometDriverPlugin extends DriverPlugin with Logging with ShimCometDriverPl
 }
 
 object CometDriverPlugin extends Logging {
+
+  /** Spark config key under which the loaded Comet version is exposed at runtime. */
+  val COMET_VERSION_CONFIG = "spark.comet.version"
+
   def registerCometMetrics(sc: SparkContext): Unit = {
     if (sc.getConf.getBoolean(
         COMET_METRICS_ENABLED.key,
@@ -172,6 +183,7 @@ class CometExecutorPlugin extends ExecutorPlugin with Logging {
  * The Comet plugin for Spark. To enable this plugin, set the config "spark.plugins" to
  * `org.apache.spark.CometPlugin`
  */
+@Public
 class CometPlugin extends SparkPlugin with Logging {
   override def driverPlugin(): DriverPlugin = new CometDriverPlugin
 

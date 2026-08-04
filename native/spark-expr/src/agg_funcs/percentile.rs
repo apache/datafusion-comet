@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use super::convert_to_state::convert_to_state_per_row;
 use arrow::array::{
     Array, ArrayRef, AsArray, BooleanArray, Float64Array, Float64Builder, ListArray,
 };
@@ -265,6 +266,14 @@ impl GroupsAccumulator for SparkPercentileGroupsAccumulator {
             builder.append_option(spark_percentile(values.as_mut_slice(), self.percentile));
         }
         Ok(Arc::new(builder.finish()))
+    }
+
+    fn convert_to_state(
+        &self,
+        values: &[ArrayRef],
+        opt_filter: Option<&BooleanArray>,
+    ) -> Result<Vec<ArrayRef>> {
+        convert_to_state_per_row(Self::new(self.percentile), values, opt_filter)
     }
 
     fn size(&self) -> usize {

@@ -23,6 +23,7 @@ use arrow::array::{ArrayRef, OffsetSizeTrait};
 use arrow::datatypes::DataType;
 use datafusion::common::{cast::as_generic_string_array, DataFusionError, ScalarValue};
 use datafusion::physical_plan::ColumnarValue;
+use std::fmt::Write;
 use std::sync::Arc;
 
 const SPACE: &str = " ";
@@ -195,36 +196,37 @@ fn spark_read_side_padding_internal<T: OffsetSizeTrait>(
 ) -> Result<ColumnarValue, DataFusionError> {
     let string_array = as_generic_string_array::<T>(array)?;
 
-    // Pre-compute pad characters once to avoid repeated iteration
-    let pad_chars: Vec<char> = pad_string.chars().collect();
-
     match pad_type {
         ColumnarValue::Array(array_int) => {
             let int_pad_array = array_int.as_primitive::<Int32Type>();
 
+            // Every row is padded to its target length, so the sum of the target
+            // lengths sizes the output (exactly, for ASCII input), except when a
+            // row is longer than its target and passes through untruncated.
+            let mut data_capacity = 0usize;
+            let mut max_length = 0usize;
+            for length in int_pad_array.values() {
+                let length = (*length).max(0) as usize;
+                data_capacity = data_capacity.saturating_add(length);
+                max_length = max_length.max(length);
+            }
             let mut builder = GenericStringBuilder::<T>::with_capacity(
                 string_array.len(),
-                string_array.len() * int_pad_array.len(),
+                data_capacity.max(string_array.value_data().len()),
             );
-
-            // Reusable buffer to avoid per-element allocations
-            let mut buffer = String::with_capacity(pad_chars.len());
+            let padder = Padder {
+                pad: PadPattern::new(pad_string, max_length),
+                ascii: string_array.is_ascii(),
+                truncate,
+                is_left_pad,
+            };
 
             for (string, length) in string_array.iter().zip(int_pad_array) {
                 let length = length.unwrap();
                 match string {
                     Some(string) => {
                         if length >= 0 {
-                            buffer.clear();
-                            write_padded_string(
-                                &mut buffer,
-                                string,
-                                length as usize,
-                                truncate,
-                                &pad_chars,
-                                is_left_pad,
-                            );
-                            builder.append_value(&buffer);
+                            padder.append(&mut builder, string, length as usize);
                         } else {
                             builder.append_value("");
                         }
@@ -239,26 +241,18 @@ fn spark_read_side_padding_internal<T: OffsetSizeTrait>(
 
             let mut builder = GenericStringBuilder::<T>::with_capacity(
                 string_array.len(),
-                string_array.len() * length,
+                string_array.len().saturating_mul(length),
             );
-
-            // Reusable buffer to avoid per-element allocations
-            let mut buffer = String::with_capacity(length);
+            let padder = Padder {
+                pad: PadPattern::new(pad_string, length),
+                ascii: string_array.is_ascii(),
+                truncate,
+                is_left_pad,
+            };
 
             for string in string_array.iter() {
                 match string {
-                    Some(string) => {
-                        buffer.clear();
-                        write_padded_string(
-                            &mut buffer,
-                            string,
-                            length,
-                            truncate,
-                            &pad_chars,
-                            is_left_pad,
-                        );
-                        builder.append_value(&buffer);
-                    }
+                    Some(string) => padder.append(&mut builder, string, length),
                     _ => builder.append_null(),
                 }
             }
@@ -267,74 +261,235 @@ fn spark_read_side_padding_internal<T: OffsetSizeTrait>(
     }
 }
 
-/// Writes a padded string to the provided buffer, avoiding allocations.
-///
-/// The buffer is assumed to be cleared before calling this function.
-/// Padding characters are written directly to the buffer without intermediate allocations.
-#[inline]
-fn write_padded_string(
-    buffer: &mut String,
-    string: &str,
-    length: usize,
-    truncate: bool,
-    pad_chars: &[char],
-    is_left_pad: bool,
-) {
-    // Spark's UTF8String uses char count, not grapheme count
-    // https://stackoverflow.com/a/46290728
-    let char_len = string.chars().count();
+/// The padding pattern, materialized as a repeating buffer so that padding a row
+/// is a single copy of a slice rather than a character-at-a-time loop.
+struct PadPattern<'a> {
+    /// One repetition of the pattern.
+    pattern: &'a str,
+    /// Byte offset of the first `i` characters of one repetition, for every `i` in
+    /// `0..=pattern.chars().count()`.
+    char_offsets: Vec<usize>,
+    /// The pattern repeated enough times to supply the longest padding needed.
+    buffer: String,
+}
 
-    if length <= char_len {
-        if truncate {
-            // Find byte index for the truncation point
-            let idx = string
-                .char_indices()
-                .nth(length)
-                .map(|(i, _)| i)
-                .unwrap_or(string.len());
-            buffer.push_str(&string[..idx]);
+impl<'a> PadPattern<'a> {
+    /// Builds a pattern that can supply up to `max_chars` padding characters.
+    fn new(pattern: &'a str, max_chars: usize) -> Self {
+        let char_offsets: Vec<usize> = pattern
+            .char_indices()
+            .map(|(i, _)| i)
+            .chain(std::iter::once(pattern.len()))
+            .collect();
+        let pattern_chars = char_offsets.len() - 1;
+        let buffer = if pattern_chars == 0 {
+            String::new()
         } else {
-            buffer.push_str(string);
+            pattern.repeat(max_chars.div_ceil(pattern_chars))
+        };
+        Self {
+            pattern,
+            char_offsets,
+            buffer,
         }
-    } else {
-        let pad_needed = length - char_len;
+    }
 
-        if is_left_pad {
-            // Write padding first, then string
-            write_padding_chars(buffer, pad_chars, pad_needed);
-            buffer.push_str(string);
-        } else {
-            // Write string first, then padding
-            buffer.push_str(string);
-            write_padding_chars(buffer, pad_chars, pad_needed);
+    /// Returns a slice holding exactly `chars` characters of the repeating pattern,
+    /// or an empty slice if the pattern itself is empty. `chars` must not exceed the
+    /// `max_chars` the pattern was built with.
+    #[inline]
+    fn slice(&self, chars: usize) -> &str {
+        let pattern_chars = self.char_offsets.len() - 1;
+        if pattern_chars == 0 {
+            return "";
         }
+        let bytes = if self.pattern.len() == pattern_chars {
+            // One byte per character (the default single space), so no offset lookup.
+            chars
+        } else {
+            (chars / pattern_chars) * self.pattern.len() + self.char_offsets[chars % pattern_chars]
+        };
+        &self.buffer[..bytes]
     }
 }
 
-/// Writes `count` characters from the cycling pad pattern directly to the buffer.
-#[inline]
-fn write_padding_chars(buffer: &mut String, pad_chars: &[char], count: usize) {
-    if pad_chars.is_empty() {
-        return;
+/// Pads rows of a single string array, holding the settings that are constant
+/// across the array.
+struct Padder<'a> {
+    pad: PadPattern<'a>,
+    /// Whether every value in the array is ASCII, which lets character counts and
+    /// truncation points be read off byte offsets directly.
+    ascii: bool,
+    truncate: bool,
+    is_left_pad: bool,
+}
+
+impl Padder<'_> {
+    /// Appends `string`, padded or truncated to `length` characters, to `builder`.
+    #[inline]
+    fn append<T: OffsetSizeTrait>(
+        &self,
+        builder: &mut GenericStringBuilder<T>,
+        string: &str,
+        length: usize,
+    ) {
+        // Spark's UTF8String uses char count, not grapheme count
+        // https://stackoverflow.com/a/46290728
+        let char_len = if self.ascii {
+            string.len()
+        } else {
+            string.chars().count()
+        };
+
+        if length <= char_len {
+            if self.truncate {
+                let idx = if self.ascii {
+                    length
+                } else {
+                    string
+                        .char_indices()
+                        .nth(length)
+                        .map(|(i, _)| i)
+                        .unwrap_or(string.len())
+                };
+                builder.append_value(&string[..idx]);
+            } else {
+                builder.append_value(string);
+            }
+            return;
+        }
+
+        let padding = self.pad.slice(length - char_len);
+        let (first, second) = if self.is_left_pad {
+            (padding, string)
+        } else {
+            (string, padding)
+        };
+        // Writing through `fmt::Write` appends to the value in progress, so the two
+        // pieces are copied once each rather than staged in a temporary `String`.
+        let _ = builder.write_str(first);
+        let _ = builder.write_str(second);
+        builder.append_value("");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arrow::array::{Int32Array, StringArray};
+
+    fn utf8(values: &[Option<&str>]) -> ColumnarValue {
+        ColumnarValue::Array(Arc::new(StringArray::from(values.to_vec())) as ArrayRef)
     }
 
-    // Optimize for the common single-character padding case
-    if pad_chars.len() == 1 {
-        let ch = pad_chars[0];
-        for _ in 0..count {
-            buffer.push(ch);
-        }
-    } else {
-        // Multi-character padding: cycle through pad_chars
-        let mut remaining = count;
-        while remaining > 0 {
-            for &ch in pad_chars {
-                if remaining == 0 {
-                    break;
-                }
-                buffer.push(ch);
-                remaining -= 1;
-            }
-        }
+    fn result_values(col: ColumnarValue) -> Vec<Option<String>> {
+        let array = col.to_array(0).unwrap();
+        array
+            .as_string::<i32>()
+            .iter()
+            .map(|v| v.map(|s| s.to_string()))
+            .collect()
+    }
+
+    fn len_scalar(length: i32) -> ColumnarValue {
+        ColumnarValue::Scalar(ScalarValue::Int32(Some(length)))
+    }
+
+    fn pad_scalar(pad: &str) -> ColumnarValue {
+        ColumnarValue::Scalar(ScalarValue::Utf8(Some(pad.to_string())))
+    }
+
+    #[test]
+    fn rpad_default_padding() {
+        let args = vec![
+            utf8(&[Some("abc"), None, Some(""), Some("abcdef")]),
+            len_scalar(5),
+        ];
+        assert_eq!(
+            result_values(spark_rpad(&args).unwrap()),
+            vec![
+                Some("abc  ".to_string()),
+                None,
+                Some("     ".to_string()),
+                Some("abcde".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn lpad_default_padding() {
+        let args = vec![utf8(&[Some("abc"), None, Some("abcdef")]), len_scalar(5)];
+        assert_eq!(
+            result_values(spark_lpad(&args).unwrap()),
+            vec![Some("  abc".to_string()), None, Some("abcde".to_string()),]
+        );
+    }
+
+    #[test]
+    fn read_side_padding_does_not_truncate() {
+        let args = vec![utf8(&[Some("abcdef")]), len_scalar(3)];
+        assert_eq!(
+            result_values(spark_read_side_padding(&args).unwrap()),
+            vec![Some("abcdef".to_string())]
+        );
+    }
+
+    #[test]
+    fn multi_char_pattern_cycles() {
+        let args = vec![utf8(&[Some("x")]), len_scalar(8), pad_scalar("ab")];
+        assert_eq!(
+            result_values(spark_rpad(&args).unwrap()),
+            vec![Some("xabababa".to_string())]
+        );
+        let args = vec![utf8(&[Some("x")]), len_scalar(8), pad_scalar("ab")];
+        assert_eq!(
+            result_values(spark_lpad(&args).unwrap()),
+            vec![Some("abababax".to_string())]
+        );
+    }
+
+    #[test]
+    fn padding_counts_chars_not_bytes() {
+        // multi-byte characters count as one character each
+        let args = vec![utf8(&[Some("úñî")]), len_scalar(5), pad_scalar("ö")];
+        assert_eq!(
+            result_values(spark_rpad(&args).unwrap()),
+            vec![Some("úñîöö".to_string())]
+        );
+        // truncation is by character, not byte
+        let args = vec![utf8(&[Some("úñîçö")]), len_scalar(2)];
+        assert_eq!(
+            result_values(spark_rpad(&args).unwrap()),
+            vec![Some("úñ".to_string())]
+        );
+    }
+
+    #[test]
+    fn empty_pad_string_leaves_value_unchanged() {
+        let args = vec![utf8(&[Some("abc")]), len_scalar(6), pad_scalar("")];
+        assert_eq!(
+            result_values(spark_rpad(&args).unwrap()),
+            vec![Some("abc".to_string())]
+        );
+    }
+
+    #[test]
+    fn negative_length_yields_empty_string() {
+        let lengths = ColumnarValue::Array(Arc::new(Int32Array::from(vec![-1, 4])) as ArrayRef);
+        let args = vec![utf8(&[Some("abc"), Some("abc")]), lengths];
+        assert_eq!(
+            result_values(spark_rpad(&args).unwrap()),
+            vec![Some("".to_string()), Some("abc ".to_string())]
+        );
+    }
+
+    #[test]
+    fn length_from_array() {
+        let lengths = ColumnarValue::Array(Arc::new(Int32Array::from(vec![1, 5, 3])) as ArrayRef);
+        let args = vec![utf8(&[Some("abc"), Some("abc"), None]), lengths];
+        assert_eq!(
+            result_values(spark_lpad(&args).unwrap()),
+            vec![Some("a".to_string()), Some("  abc".to_string()), None]
+        );
     }
 }

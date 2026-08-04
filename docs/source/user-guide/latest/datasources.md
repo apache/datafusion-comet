@@ -71,7 +71,7 @@ Provide the JRE linker path in `RUSTFLAGS`, the path can vary depending on the s
 
 ```shell
 export JAVA_HOME="/opt/homebrew/opt/openjdk@17"
-make release PROFILES="-Pspark-4.1" COMET_FEATURES=hdfs RUSTFLAGS="-L $JAVA_HOME/libexec/openjdk.jdk/Contents/Home/lib/server"
+make release PROFILES="-Pspark-4.1" RUSTFLAGS="-L $JAVA_HOME/libexec/openjdk.jdk/Contents/Home/lib/server"
 ```
 
 Start Comet with HDFS support as [described](installation.md/#run-spark-shell-with-comet-enabled)
@@ -110,7 +110,7 @@ Arguments: [id#0, first_name#1, personal_info#4]
 Input [3]: [id#0, first_name#1, personal_info#4]
 
 
-25/01/30 16:50:44 INFO fs-hdfs-0.1.12/src/hdfs.rs: Connecting to Namenode (hdfs://namenode:9000)
+25/01/30 16:50:44 INFO opendal::services::hdfs: Connecting to Namenode (hdfs://namenode:9000)
 +---+----------+-----------------+
 |id |first_name|personal_info    |
 +---+----------+-----------------+
@@ -123,8 +123,6 @@ Input [3]: [id#0, first_name#1, personal_info#4]
 ```
 
 Verify the scan type should be `CometNativeScan`.
-
-More on [HDFS Reader](https://github.com/apache/datafusion-comet/blob/main/native/hdfs/README.md)
 
 ### Local HDFS development
 
@@ -145,7 +143,7 @@ docker compose -f kube/local/hdfs-docker-compose.yml up
 - Build a project with HDFS support
 
 ```shell
-JAVA_HOME="/opt/homebrew/opt/openjdk@17" make release PROFILES="-Pspark-4.1" COMET_FEATURES=hdfs RUSTFLAGS="-L /opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home/lib/server"
+JAVA_HOME="/opt/homebrew/opt/openjdk@17" make release PROFILES="-Pspark-4.1" RUSTFLAGS="-L /opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home/lib/server"
 ```
 
 - Run local test
@@ -254,7 +252,7 @@ Comet's S3 support has the following limitations:
 
 1. **Partial Hadoop S3A configuration support**: Not all Hadoop S3A configurations are currently supported. Only the configurations listed in the tables above are translated and applied to the underlying `object_store` crate.
 
-2. **Custom credential providers**: Custom implementations of AWS credential providers are not supported. The implementation only supports the standard credential providers listed in the table above. We are planning to add support for custom credential providers through a JNI-based adapter that will allow calling Java credential providers from Rust code. See [issue #1829](https://github.com/apache/datafusion-comet/issues/1829) for more details.
+2. **Custom credential providers**: Custom implementations of AWS credential providers are not supported. The implementation only supports the standard credential providers listed in the table above. We are planning to add support for custom credential providers through a JNI-based adapter that will allow calling Java credential providers from Rust code. See [#1829](https://github.com/apache/datafusion-comet/issues/1829) for more details.
 
 ## Azure
 

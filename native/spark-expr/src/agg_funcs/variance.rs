@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use super::convert_to_state::convert_to_state_per_row;
 use arrow::array::{Array, ArrayRef, AsArray, BooleanArray, Float64Array};
 use arrow::buffer::NullBuffer;
 use arrow::datatypes::{DataType, Field, FieldRef, Float64Type};
@@ -384,6 +385,18 @@ impl GroupsAccumulator for VarianceGroupsAccumulator {
             Arc::new(Float64Array::new(means.into(), None)),
             Arc::new(Float64Array::new(m2s.into(), None)),
         ])
+    }
+
+    fn convert_to_state(
+        &self,
+        values: &[ArrayRef],
+        opt_filter: Option<&BooleanArray>,
+    ) -> Result<Vec<ArrayRef>> {
+        convert_to_state_per_row(
+            Self::new(self.stats_type, self.null_on_divide_by_zero),
+            values,
+            opt_filter,
+        )
     }
 
     fn size(&self) -> usize {

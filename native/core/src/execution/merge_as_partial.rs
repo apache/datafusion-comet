@@ -233,6 +233,18 @@ impl GroupsAccumulator for MergeAsPartialGroupsAccumulator {
         self.inner.state(emit_to)
     }
 
+    fn convert_to_state(
+        &self,
+        values: &[ArrayRef],
+        _opt_filter: Option<&BooleanArray>,
+    ) -> Result<Vec<ArrayRef>> {
+        // The input to this accumulator is already the inner accumulator's intermediate
+        // state (that is the point of redirecting update to merge), so the state for a
+        // group of one row is that row itself. The filter is ignored here for the same
+        // reason it is ignored in `update_batch`.
+        Ok(values.to_vec())
+    }
+
     fn size(&self) -> usize {
         self.inner.size()
     }
