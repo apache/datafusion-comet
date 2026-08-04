@@ -19,6 +19,9 @@
 
 package org.apache.comet
 
+import java.io.File
+import java.util.Locale
+
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.types._
 
@@ -27,7 +30,8 @@ import org.apache.comet.udf.CometRustUDF
 /**
  * End-to-end integration suite: register a Rust UDF, run a Spark query, verify the result.
  *
- * Requires the test cdylib at the path given by the system property `comet.test.udfs.lib`.
+ * Requires the `comet-test-udfs` cdylib, which is found automatically under `native/target` and
+ * can be overridden with `-Dcomet.test.udfs.lib=<path>`.
  *
  * Note that these tests are self-guarding on native execution: `CometRustUDF.register` installs a
  * catalog stub that throws if Spark ever evaluates the UDF itself, so a silent fallback to Spark
@@ -36,18 +40,31 @@ import org.apache.comet.udf.CometRustUDF
  * To run locally:
  * {{{
  *   cargo build -p comet-test-udfs --manifest-path native/Cargo.toml
- *   ./mvnw test -Dsuites="org.apache.comet.CometRustUdfSuite" -Dtest=none \
- *     -Dcomet.test.udfs.lib=$PWD/native/target/debug/libcomet_test_udfs.dylib
+ *   ./mvnw test -Dsuites="org.apache.comet.CometRustUdfSuite" -Dtest=none
  * }}}
  */
 class CometRustUdfSuite extends CometTestBase {
 
   private lazy val libPath: String = {
-    val p = System.getProperty("comet.test.udfs.lib")
-    if (p == null) {
-      cancel("set -Dcomet.test.udfs.lib=<path to libcomet_test_udfs>; skipping without cdylib")
+    val overridden = Option(System.getProperty("comet.test.udfs.lib"))
+      // An undefined Maven property reaches the forked JVM as the literal "null", and an
+      // unsubstituted one as "${comet.test.udfs.lib}". Neither is a path.
+      .map(_.trim)
+      .filter(p => p.nonEmpty && p != "null" && !p.startsWith("$"))
+
+    overridden.orElse(CometRustUdfSuite.discoverBuiltLibrary()).getOrElse {
+      if (sys.env.contains("CI")) {
+        // In CI the cdylib is staged alongside libcomet, so its absence means the native build or
+        // the artifact upload changed, not that someone forgot a flag. Fail rather than skip.
+        fail(
+          s"${CometRustUdfSuite.libraryFileName} was not found under native/target. CI stages it " +
+            "next to libcomet, so a missing library means the native build or the artifact " +
+            "upload has changed.")
+      } else {
+        cancel(s"${CometRustUdfSuite.libraryFileName} not built; run " +
+          "`cargo build -p comet-test-udfs --manifest-path native/Cargo.toml` to run this suite")
+      }
     }
-    p
   }
 
   test("add_one_c returns id + 1 for a range") {
@@ -230,5 +247,35 @@ class CometRustUdfSuite extends CometTestBase {
     intercept[Exception] {
       spark.range(0, 2).selectExpr("echo_c(id, id) AS y").collect()
     }
+  }
+}
+
+object CometRustUdfSuite {
+
+  /** Platform file name of the test cdylib built by the `comet-test-udfs` crate. */
+  val libraryFileName: String =
+    if (System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("mac")) {
+      "libcomet_test_udfs.dylib"
+    } else {
+      "libcomet_test_udfs.so"
+    }
+
+  /**
+   * Locate the test cdylib under `native/target`.
+   *
+   * The working directory differs between a reactor build and a single-module run, so walk up a
+   * few levels looking for the `native/target` tree. `release` is where CI stages the downloaded
+   * artifact, `ci` and `debug` cover local builds.
+   */
+  def discoverBuiltLibrary(): Option[String] = {
+    val roots = Iterator
+      .iterate(new File(".").getCanonicalFile)(_.getParentFile)
+      .takeWhile(_ != null)
+      .take(4)
+    val candidates = for {
+      root <- roots
+      profile <- Seq("release", "ci", "debug")
+    } yield new File(root, s"native/target/$profile/$libraryFileName")
+    candidates.find(_.isFile).map(_.getAbsolutePath)
   }
 }
