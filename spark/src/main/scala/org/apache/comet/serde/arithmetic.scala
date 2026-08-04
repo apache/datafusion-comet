@@ -251,8 +251,16 @@ object CometMultiply extends CometExpressionSerde[Multiply] with MathBase {
 
 object CometDivide extends CometExpressionSerde[Divide] with MathBase {
 
-  override def getSupportLevel(expr: Divide): SupportLevel =
-    mathDataTypeSupportLevel(expr.left.dataType)
+  override def getSupportLevel(expr: Divide): SupportLevel = {
+    if (expr.dataType.isInstanceOf[DecimalType] &&
+      (!expr.left.dataType.isInstanceOf[DecimalType] ||
+        !expr.right.dataType.isInstanceOf[DecimalType])) {
+      // This is just a sanity check. Spark should not allow this case to be created cause type coercion.
+      Unsupported(Some("Decimal division with a decimal result requires decimal operands"))
+    } else {
+      mathDataTypeSupportLevel(expr.left.dataType)
+    }
+  }
 
   override def convert(
       expr: Divide,

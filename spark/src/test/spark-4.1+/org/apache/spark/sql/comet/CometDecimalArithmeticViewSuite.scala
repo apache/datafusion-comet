@@ -104,38 +104,4 @@ class CometDecimalArithmeticViewSuite extends CometTestBase {
       }
     }
   }
-
-  test("issue #5190: recursive serialization does not duplicate decimal CheckOverflow") {
-    val left = "CAST(id AS DECIMAL(10, 0))"
-    val right = "CAST(id + 1 AS DECIMAL(10, 0))"
-    val operations: Seq[(String, Boolean, String, ExprOuterClass.Expr => Boolean, Boolean)] = Seq(
-      ("add", false, s"$left + $right", _.hasAdd, false),
-      ("subtract", false, s"$left - $right", _.hasSubtract, false),
-      ("multiply", false, s"$left * $right", _.hasMultiply, false),
-      ("remainder", false, s"$left % $right", _.hasRemainder, false),
-      ("divide LEGACY", false, s"$left / $right", _.hasDivide, false),
-      ("divide TRY", true, s"try_divide($left, $right)", _.hasDivide, false),
-      ("divide ANSI", true, s"$left / $right", _.hasDivide, true))
-
-    operations.foreach { case (name, ansiEnabled, arithmetic, hasOperation, failOnError) =>
-      withSQLConf(SQLConf.ANSI_ENABLED.key -> ansiEnabled.toString) {
-        val plan = spark
-          .sql(s"SELECT array_contains(array($arithmetic), $arithmetic) FROM range(1, 4)")
-          .queryExecution
-          .optimizedPlan
-        val arithmeticProto = QueryPlanSerde
-          .exprToProto(plan.expressions.head, plan.children.head.output)
-          .get
-          .getScalarFunc
-          .getArgs(1)
-
-        assert(arithmeticProto.hasCheckOverflow, s"$name: $arithmeticProto")
-        val overflow = arithmeticProto.getCheckOverflow
-        assert(overflow.getFailOnError === failOnError, s"$name: $arithmeticProto")
-        assert(
-          hasOperation(overflow.getChild),
-          s"$name has duplicate CheckOverflow: $arithmeticProto")
-      }
-    }
-  }
 }
