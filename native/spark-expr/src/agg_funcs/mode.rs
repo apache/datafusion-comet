@@ -37,8 +37,25 @@ use std::sync::Arc;
 /// Comet resolves ties deterministically by returning the smallest value, so this function is
 /// registered as `Incompatible` on the Scala side and is opt-in via `allowIncompatible`.
 ///
-/// Float keys are normalized before counting (`-0.0` becomes `0.0` and every `NaN` becomes a
-/// canonical `NaN`) to match Spark's `NormalizeFloatingNumbers` behaviour so that counts agree.
+/// # Float keys
+///
+/// Spark keys the frequency map on the boxed input value and compares keys with
+/// `OpenHashSet`'s `_data(pos) equals k` (`core/.../util/collection/OpenHashSet.scala:122`), i.e.
+/// `java.lang.Double.equals`, which is defined via `doubleToLongBits`. That collapses every `NaN`
+/// bit pattern to one key but keeps `-0.0` and `0.0` apart. Note that
+/// `NormalizeFloatingNumbers` does *not* apply here: its `apply` only rewrites `WINDOW` and
+/// `JOIN` patterns, so an aggregate's argument reaches `Mode` un-normalized.
+///
+/// Spark 4.2.0 changed this. SPARK-57329 ("mode() returns incorrect result when input contains
+/// both -0.0 and 0.0") treats the split `-0.0`/`0.0` counts as a bug and normalizes the key at
+/// update time, so from 4.2.0 on the two fold into a single key. `normalize_neg_zero` therefore
+/// tracks the Spark version Comet is running against: it is `false` for Spark 3.4 through 4.1 and
+/// `true` for 4.2.0+. `NaN` canonicalization is unconditional because every supported version
+/// collapses `NaN` via `doubleToLongBits`.
+///
+/// Do not "simplify" this to always normalize: `max_by`/`min_by` need the opposite treatment,
+/// because they compare the ordering column with `SQLOrderingUtil.compareDoubles`, which ties
+/// `-0.0 == 0.0` on every version.
 ///
 /// Spark's `Mode` is a `TypedImperativeAggregate` with a single aggregation-buffer attribute, so
 /// the intermediate state is a single struct field `{ values: list<T>, counts: list<i64> }` (a
@@ -49,14 +66,17 @@ pub struct Mode {
     name: String,
     signature: Signature,
     data_type: DataType,
+    /// Whether `-0.0` folds into `0.0` before being used as a key (Spark 4.2.0+; SPARK-57329).
+    normalize_neg_zero: bool,
 }
 
 impl Mode {
-    pub fn new(data_type: DataType) -> Self {
+    pub fn new(data_type: DataType, normalize_neg_zero: bool) -> Self {
         Self {
             name: "mode".to_string(),
             signature: Signature::any(1, Volatility::Immutable),
             data_type,
+            normalize_neg_zero,
         }
     }
 }
@@ -113,12 +133,11 @@ impl AggregateUDFImpl for Mode {
         Ok(self.data_type.clone())
     }
 
-    fn default_value(&self, _data_type: &DataType) -> Result<ScalarValue> {
-        ScalarValue::try_from(&self.data_type)
-    }
-
     fn accumulator(&self, _acc_args: AccumulatorArgs) -> Result<Box<dyn Accumulator>> {
-        Ok(Box::new(ModeAccumulator::new(self.data_type.clone())))
+        Ok(Box::new(ModeAccumulator::new(
+            self.data_type.clone(),
+            self.normalize_neg_zero,
+        )))
     }
 
     fn state_fields(&self, _args: StateFieldsArgs) -> Result<Vec<FieldRef>> {
@@ -137,20 +156,28 @@ impl AggregateUDFImpl for Mode {
         &self,
         _args: AccumulatorArgs,
     ) -> Result<Box<dyn GroupsAccumulator>> {
-        Ok(Box::new(ModeGroupsAccumulator::new(self.data_type.clone())))
+        Ok(Box::new(ModeGroupsAccumulator::new(
+            self.data_type.clone(),
+            self.normalize_neg_zero,
+        )))
     }
 }
 
-/// Normalize a scalar key so that Spark's floating-point normalization is honoured: `-0.0` and
-/// `0.0` collapse to the same key and all `NaN` bit patterns collapse to a canonical `NaN`.
-fn normalize_key(value: ScalarValue) -> ScalarValue {
-    /// Collapse `-0.0`/`0.0` and every `NaN` to a canonical form for one float variant.
+/// Canonicalize a float key so that map lookups reproduce Spark's key equality.
+///
+/// `ScalarValue`'s `PartialEq`/`Hash` for `Float32`/`Float64` are both defined on `to_bits()`, so
+/// distinct `NaN` bit patterns would otherwise be distinct keys and `-0.0` is naturally kept apart
+/// from `0.0`. Collapsing `NaN` to one canonical value therefore reproduces `doubleToLongBits`
+/// equality, which is what Spark's `OpenHashSet` uses. `-0.0` is folded into `0.0` only when
+/// `normalize_neg_zero` is set, i.e. only on Spark 4.2.0+ (SPARK-57329); see [`Mode`].
+fn normalize_key(value: ScalarValue, normalize_neg_zero: bool) -> ScalarValue {
     macro_rules! normalize_float {
         ($variant:path, $f:expr, $nan:expr) => {
-            if $f == 0.0 {
-                $variant(Some(0.0))
-            } else if $f.is_nan() {
+            if $f.is_nan() {
                 $variant(Some($nan))
+            } else if normalize_neg_zero && $f == 0.0 {
+                // `-0.0 == 0.0` in IEEE 754, so this catches negative zero only.
+                $variant(Some(0.0))
             } else {
                 $variant(Some($f))
             }
@@ -163,12 +190,22 @@ fn normalize_key(value: ScalarValue) -> ScalarValue {
     }
 }
 
-/// Add each non-null value in `array` to `map`, normalizing float keys.
-fn count_values(map: &mut HashMap<ScalarValue, i64>, array: &ArrayRef, idx: usize) -> Result<()> {
+/// Add each non-null value in `array` to `map`, canonicalizing float keys.
+///
+/// The map is intentionally keyed on the type-generic `ScalarValue` rather than a monomorphized
+/// `HashMap<Hashable<T::Native>, _>`: `mode` supports every primitive type plus decimal, string and
+/// the temporal types, so one generic map is simpler than a kernel per type. Revisit if the hot
+/// primitive paths ever show up in a profile.
+fn count_values(
+    map: &mut HashMap<ScalarValue, i64>,
+    array: &ArrayRef,
+    idx: usize,
+    normalize_neg_zero: bool,
+) -> Result<()> {
     if array.is_null(idx) {
         return Ok(());
     }
-    let key = normalize_key(ScalarValue::try_from_array(array, idx)?);
+    let key = normalize_key(ScalarValue::try_from_array(array, idx)?, normalize_neg_zero);
     *map.entry(key).or_insert(0) += 1;
     Ok(())
 }
@@ -179,6 +216,7 @@ fn merge_state_row(
     values_list: &arrow::array::ListArray,
     counts_list: &arrow::array::ListArray,
     row: usize,
+    normalize_neg_zero: bool,
 ) -> Result<()> {
     if values_list.is_null(row) {
         return Ok(());
@@ -192,7 +230,7 @@ fn merge_state_row(
         if values.is_null(i) {
             continue;
         }
-        let key = normalize_key(ScalarValue::try_from_array(&values, i)?);
+        let key = normalize_key(ScalarValue::try_from_array(&values, i)?, normalize_neg_zero);
         *map.entry(key).or_insert(0) += counts.value(i);
     }
     Ok(())
@@ -221,18 +259,33 @@ fn eval_mode(counts: &HashMap<ScalarValue, i64>, data_type: &DataType) -> Result
     }
 }
 
+/// Heap bytes held by the frequency map's keys, on top of the map's own slot allocation.
+///
+/// `HashMap::capacity` only accounts for the inline `(ScalarValue, i64)` slots, which misses the
+/// `String`/`Vec<u8>`/boxed-decimal payloads behind variable-length keys. Under-reporting those
+/// would hide real memory from the pool that drives spill decisions.
+fn map_size(map: &HashMap<ScalarValue, i64>) -> usize {
+    map.capacity() * size_of::<(ScalarValue, i64)>()
+        + map
+            .keys()
+            .map(|k| k.size().saturating_sub(size_of::<ScalarValue>()))
+            .sum::<usize>()
+}
+
 /// Non-grouped accumulator backing global `mode` aggregation.
 #[derive(Debug)]
 pub struct ModeAccumulator {
     counts: HashMap<ScalarValue, i64>,
     data_type: DataType,
+    normalize_neg_zero: bool,
 }
 
 impl ModeAccumulator {
-    fn new(data_type: DataType) -> Self {
+    fn new(data_type: DataType, normalize_neg_zero: bool) -> Self {
         Self {
             counts: HashMap::new(),
             data_type,
+            normalize_neg_zero,
         }
     }
 }
@@ -241,7 +294,7 @@ impl Accumulator for ModeAccumulator {
     fn update_batch(&mut self, values: &[ArrayRef]) -> Result<()> {
         let array = &values[0];
         for i in 0..array.len() {
-            count_values(&mut self.counts, array, i)?;
+            count_values(&mut self.counts, array, i, self.normalize_neg_zero)?;
         }
         Ok(())
     }
@@ -251,7 +304,13 @@ impl Accumulator for ModeAccumulator {
         let values_list = structs.column(0).as_list::<i32>();
         let counts_list = structs.column(1).as_list::<i32>();
         for row in 0..structs.len() {
-            merge_state_row(&mut self.counts, values_list, counts_list, row)?;
+            merge_state_row(
+                &mut self.counts,
+                values_list,
+                counts_list,
+                row,
+                self.normalize_neg_zero,
+            )?;
         }
         Ok(())
     }
@@ -266,7 +325,7 @@ impl Accumulator for ModeAccumulator {
     }
 
     fn size(&self) -> usize {
-        size_of_val(self) + self.counts.capacity() * size_of::<(ScalarValue, i64)>()
+        size_of_val(self) + map_size(&self.counts)
     }
 }
 
@@ -275,13 +334,15 @@ impl Accumulator for ModeAccumulator {
 pub struct ModeGroupsAccumulator {
     groups: Vec<HashMap<ScalarValue, i64>>,
     data_type: DataType,
+    normalize_neg_zero: bool,
 }
 
 impl ModeGroupsAccumulator {
-    fn new(data_type: DataType) -> Self {
+    fn new(data_type: DataType, normalize_neg_zero: bool) -> Self {
         Self {
             groups: Vec::new(),
             data_type,
+            normalize_neg_zero,
         }
     }
 
@@ -308,7 +369,12 @@ impl GroupsAccumulator for ModeGroupsAccumulator {
                     continue;
                 }
             }
-            count_values(&mut self.groups[group_index], array, idx)?;
+            count_values(
+                &mut self.groups[group_index],
+                array,
+                idx,
+                self.normalize_neg_zero,
+            )?;
         }
         Ok(())
     }
@@ -325,13 +391,23 @@ impl GroupsAccumulator for ModeGroupsAccumulator {
         let values_list = structs.column(0).as_list::<i32>();
         let counts_list = structs.column(1).as_list::<i32>();
         for (row, &group_index) in group_indices.iter().enumerate() {
-            merge_state_row(&mut self.groups[group_index], values_list, counts_list, row)?;
+            merge_state_row(
+                &mut self.groups[group_index],
+                values_list,
+                counts_list,
+                row,
+                self.normalize_neg_zero,
+            )?;
         }
         Ok(())
     }
 
     fn evaluate(&mut self, emit_to: EmitTo) -> Result<ArrayRef> {
         let emitted = emit_to.take_needed(&mut self.groups);
+        // `ScalarValue::iter_to_array` errors on an empty iterator. The grouped-aggregate stream
+        // never emits zero groups, so this is unreachable; assert it rather than leaving the
+        // dependency implicit.
+        debug_assert!(!emitted.is_empty(), "mode: evaluate called with no groups");
         let mut results = Vec::with_capacity(emitted.len());
         for map in &emitted {
             results.push(eval_mode(map, &self.data_type)?);
@@ -341,17 +417,15 @@ impl GroupsAccumulator for ModeGroupsAccumulator {
 
     fn state(&mut self, emit_to: EmitTo) -> Result<Vec<ArrayRef>> {
         let emitted = emit_to.take_needed(&mut self.groups);
+        // As in `evaluate`: `build_state` funnels into `ScalarValue::iter_to_array`, which needs a
+        // non-empty iterator.
+        debug_assert!(!emitted.is_empty(), "mode: state called with no groups");
         let refs: Vec<&HashMap<ScalarValue, i64>> = emitted.iter().collect();
         Ok(vec![Arc::new(build_state(&self.data_type, &refs)?)])
     }
 
     fn size(&self) -> usize {
-        size_of_val(self)
-            + self
-                .groups
-                .iter()
-                .map(|m| m.capacity() * size_of::<(ScalarValue, i64)>())
-                .sum::<usize>()
+        size_of_val(self) + self.groups.iter().map(map_size).sum::<usize>()
     }
 }
 
@@ -371,7 +445,7 @@ mod tests {
 
     #[test]
     fn most_frequent_value() {
-        let mut acc = ModeAccumulator::new(DataType::Int32);
+        let mut acc = ModeAccumulator::new(DataType::Int32, false);
         acc.update_batch(&[i32_array(vec![Some(0), Some(10), Some(10)])])
             .unwrap();
         assert_eq!(eval_acc(&mut acc), ScalarValue::Int32(Some(10)));
@@ -379,7 +453,7 @@ mod tests {
 
     #[test]
     fn nulls_are_ignored() {
-        let mut acc = ModeAccumulator::new(DataType::Int32);
+        let mut acc = ModeAccumulator::new(DataType::Int32, false);
         acc.update_batch(&[i32_array(vec![
             Some(10),
             None,
@@ -394,14 +468,14 @@ mod tests {
 
     #[test]
     fn empty_input_is_null() {
-        let mut acc = ModeAccumulator::new(DataType::Int32);
+        let mut acc = ModeAccumulator::new(DataType::Int32, false);
         acc.update_batch(&[i32_array(vec![None, None])]).unwrap();
         assert_eq!(eval_acc(&mut acc), ScalarValue::Int32(None));
     }
 
     #[test]
     fn ties_break_to_smallest() {
-        let mut acc = ModeAccumulator::new(DataType::Int32);
+        let mut acc = ModeAccumulator::new(DataType::Int32, false);
         // 10 and 20 each appear twice; Comet returns the smallest tied value.
         acc.update_batch(&[i32_array(vec![Some(20), Some(10), Some(10), Some(20)])])
             .unwrap();
@@ -420,7 +494,7 @@ mod tests {
     #[test]
     fn merge_matches_single_shot() {
         let single = {
-            let mut a = ModeAccumulator::new(DataType::Int32);
+            let mut a = ModeAccumulator::new(DataType::Int32, false);
             a.update_batch(&[i32_array(vec![
                 Some(1),
                 Some(1),
@@ -433,40 +507,109 @@ mod tests {
             eval_acc(&mut a)
         };
 
-        let mut left = ModeAccumulator::new(DataType::Int32);
+        let mut left = ModeAccumulator::new(DataType::Int32, false);
         left.update_batch(&[i32_array(vec![Some(1), Some(1), Some(3)])])
             .unwrap();
         let lstate = state_arrays(&mut left);
 
-        let mut right = ModeAccumulator::new(DataType::Int32);
+        let mut right = ModeAccumulator::new(DataType::Int32, false);
         right
             .update_batch(&[i32_array(vec![Some(2), Some(3), Some(3)])])
             .unwrap();
         let rstate = state_arrays(&mut right);
 
-        let mut merged = ModeAccumulator::new(DataType::Int32);
+        let mut merged = ModeAccumulator::new(DataType::Int32, false);
         merged.merge_batch(&lstate).unwrap();
         merged.merge_batch(&rstate).unwrap();
         assert_eq!(eval_acc(&mut merged), single);
     }
 
-    #[test]
-    fn float_zero_and_nan_normalized() {
-        let mut acc = ModeAccumulator::new(DataType::Float64);
-        // -0.0 and 0.0 must count as one key.
-        let arr: ArrayRef = Arc::new(Float64Array::from(vec![
+    /// Input from the SPARK-57329 report: `-0.0` x2, `0.0` x2, `5.0` x3. The winner differs
+    /// depending on whether the two zeros share a key, so it pins each version's behaviour
+    /// without depending on how `-0.0` and `0.0` compare.
+    fn signed_zero_input() -> ArrayRef {
+        Arc::new(Float64Array::from(vec![
+            Some(-0.0),
             Some(-0.0),
             Some(0.0),
             Some(0.0),
-            Some(1.5),
-        ]));
-        acc.update_batch(&[arr]).unwrap();
+            Some(5.0),
+            Some(5.0),
+            Some(5.0),
+        ]))
+    }
+
+    #[test]
+    fn signed_zeros_are_distinct_keys_before_spark_42() {
+        // Spark 3.4-4.1 key on `java.lang.Double.equals`, so counts are -0.0:2, 0.0:2, 5.0:3 and
+        // 5.0 wins outright.
+        let mut acc = ModeAccumulator::new(DataType::Float64, false);
+        acc.update_batch(&[signed_zero_input()]).unwrap();
+        assert_eq!(eval_acc(&mut acc), ScalarValue::Float64(Some(5.0)));
+    }
+
+    #[test]
+    fn signed_zeros_share_a_key_from_spark_42() {
+        // Spark 4.2.0+ normalizes the key (SPARK-57329), so counts are 0.0:4, 5.0:3 and the
+        // zero wins.
+        let mut acc = ModeAccumulator::new(DataType::Float64, true);
+        acc.update_batch(&[signed_zero_input()]).unwrap();
         assert_eq!(eval_acc(&mut acc), ScalarValue::Float64(Some(0.0)));
     }
 
     #[test]
+    fn nan_collapses_on_every_version() {
+        // `doubleToLongBits` maps every NaN to one key on all supported versions, so the two NaNs
+        // outvote the single 1.0 regardless of the -0.0 setting.
+        for normalize_neg_zero in [false, true] {
+            let mut acc = ModeAccumulator::new(DataType::Float64, normalize_neg_zero);
+            let arr: ArrayRef = Arc::new(Float64Array::from(vec![
+                Some(f64::NAN),
+                Some(-f64::NAN),
+                Some(1.0),
+            ]));
+            acc.update_batch(&[arr]).unwrap();
+            match eval_acc(&mut acc) {
+                ScalarValue::Float64(Some(v)) => assert!(
+                    v.is_nan(),
+                    "expected NaN with normalize_neg_zero={normalize_neg_zero}, got {v}"
+                ),
+                other => panic!("expected Float64(NaN), got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn signed_zero_key_survives_merge() {
+        // The partial/final split must not lose the distinction: each side sees one -0.0 and one
+        // 0.0, and 5.0 only wins if they stay separate through the merge.
+        let mut left = ModeAccumulator::new(DataType::Float64, false);
+        left.update_batch(&[
+            Arc::new(Float64Array::from(vec![Some(-0.0), Some(0.0), Some(5.0)])) as ArrayRef,
+        ])
+        .unwrap();
+        let lstate = state_arrays(&mut left);
+
+        let mut right = ModeAccumulator::new(DataType::Float64, false);
+        right
+            .update_batch(&[Arc::new(Float64Array::from(vec![
+                Some(-0.0),
+                Some(0.0),
+                Some(5.0),
+                Some(5.0),
+            ])) as ArrayRef])
+            .unwrap();
+        let rstate = state_arrays(&mut right);
+
+        let mut merged = ModeAccumulator::new(DataType::Float64, false);
+        merged.merge_batch(&lstate).unwrap();
+        merged.merge_batch(&rstate).unwrap();
+        assert_eq!(eval_acc(&mut merged), ScalarValue::Float64(Some(5.0)));
+    }
+
+    #[test]
     fn groups_accumulator_per_group_mode() {
-        let mut acc = ModeGroupsAccumulator::new(DataType::Int32);
+        let mut acc = ModeGroupsAccumulator::new(DataType::Int32, false);
         let values = i32_array(vec![Some(5), Some(5), Some(9), Some(9), Some(9)]);
         acc.update_batch(&[values], &[0, 0, 1, 1, 1], None, 2)
             .unwrap();
@@ -479,14 +622,14 @@ mod tests {
     #[test]
     fn groups_accumulator_merge_roundtrip() {
         // Partial over two groups, then merge its state into a fresh accumulator.
-        let mut partial = ModeGroupsAccumulator::new(DataType::Int32);
+        let mut partial = ModeGroupsAccumulator::new(DataType::Int32, false);
         let values = i32_array(vec![Some(5), Some(5), Some(7), Some(9), Some(9), Some(9)]);
         partial
             .update_batch(&[values], &[0, 0, 0, 1, 1, 1], None, 2)
             .unwrap();
         let state = partial.state(EmitTo::All).unwrap();
 
-        let mut final_acc = ModeGroupsAccumulator::new(DataType::Int32);
+        let mut final_acc = ModeGroupsAccumulator::new(DataType::Int32, false);
         final_acc.merge_batch(&state, &[0, 1], None, 2).unwrap();
         let result = final_acc.evaluate(EmitTo::All).unwrap();
         let result = result.as_primitive::<Int32Type>();

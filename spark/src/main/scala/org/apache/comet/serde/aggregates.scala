@@ -27,7 +27,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{BooleanType, ByteType, DataType, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, NumericType, ShortType, StringType, TimestampNTZType, TimestampType}
 
 import org.apache.comet.CometConf.COMET_EXEC_STRICT_FLOATING_POINT
-import org.apache.comet.CometSparkSessionExtensions.{isSpark41Plus, withFallbackReason}
+import org.apache.comet.CometSparkSessionExtensions.{isSpark41Plus, isSpark42Plus, withFallbackReason}
 import org.apache.comet.serde.QueryPlanSerde.{evalModeToProto, exprToProto, serializeDataType}
 import org.apache.comet.shims.{CometEvalModeUtil, CometTypeShim}
 
@@ -846,6 +846,9 @@ object CometMode extends CometAggregateExpressionSerde[Mode] with CometTypeShim 
     if (modeHasUnsupportedOrdering(expr)) {
       // `mode(col, deterministic)` and `mode() WITHIN GROUP (ORDER BY col)` carry deterministic
       // ordered tie-breaking that Comet does not implement yet (Spark 4.0+ only).
+      // TODO the ASC form (`reverseOpt = Some(false)`) returns the smallest tied value, which is
+      // exactly Comet's tie-break, so it could be served natively as `Compatible`.
+      // https://github.com/apache/datafusion-comet/issues/3970
       Unsupported(
         Some("mode with a deterministic flag or WITHIN GROUP ordering is not supported"))
     } else if (hasNonDefaultStringCollation(expr.child.dataType)) {
@@ -876,6 +879,10 @@ object CometMode extends CometAggregateExpressionSerde[Mode] with CometTypeShim 
       val builder = ExprOuterClass.Mode.newBuilder()
       builder.setChild(childExpr.get)
       builder.setDatatype(dataType.get)
+      // Spark 4.2.0 (SPARK-57329) normalizes `-0.0` to `0.0` before keying the frequency map;
+      // earlier versions key the raw boxed value, where `java.lang.Double.equals` keeps `-0.0`
+      // and `0.0` apart. The native side has to match whichever Spark we are running against.
+      builder.setNormalizeNegZero(isSpark42Plus)
       Some(
         ExprOuterClass.AggExpr
           .newBuilder()
