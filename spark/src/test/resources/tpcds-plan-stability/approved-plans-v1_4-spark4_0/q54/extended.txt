@@ -104,4 +104,4 @@ CometColumnarToRow
                                                             +- CometFilter
                                                                +- CometNativeScan parquet spark_catalog.default.date_dim
 
-Comet accelerated 89 out of 100 eligible operators (89%). Final plan contains 5 transitions between Spark and Comet. Accelerated expressions: 17 native, 0 codegen dispatch.
+Comet accelerated 91 out of 95 eligible operators (95%). Final plan contains 5 transitions between Spark and Comet. Accelerated expressions: 17 native, 0 codegen dispatch.

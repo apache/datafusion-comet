@@ -27,7 +27,7 @@ import org.apache.spark.sql.ExtendedExplainGenerator
 import org.apache.spark.sql.catalyst.expressions.{Attribute, BoundReference, Expression, Literal, ScalaUDF}
 import org.apache.spark.sql.catalyst.trees.{TreeNode, TreeNodeTag}
 import org.apache.spark.sql.comet.{CometColumnarToRowExec, CometNativeColumnarToRowExec, CometPlan, CometSparkToColumnarExec}
-import org.apache.spark.sql.execution.{ColumnarToRowExec, InputAdapter, RowToColumnarExec, SparkPlan, WholeStageCodegenExec}
+import org.apache.spark.sql.execution.{ColumnarToRowExec, InputAdapter, ReusedSubqueryExec, RowToColumnarExec, SparkPlan, WholeStageCodegenExec}
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffleReadExec, QueryStageExec}
 import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
 
@@ -134,8 +134,11 @@ class ExtendedExplainInfo extends ExtendedExplainGenerator {
 
     node match {
       case _: AdaptiveSparkPlanExec | _: InputAdapter | _: QueryStageExec |
-          _: WholeStageCodegenExec | _: ReusedExchangeExec | _: AQEShuffleReadExec =>
-      // ignore
+          _: WholeStageCodegenExec | _: ReusedExchangeExec | _: ReusedSubqueryExec |
+          _: AQEShuffleReadExec =>
+      // Ignore. These nodes wrap another plan without doing work of their own. `ReusedSubqueryExec`
+      // is pure reuse bookkeeping: the subquery it points at is counted where that subquery is
+      // shown, so counting the wrapper too would invent an un-accelerated Spark operator.
       case _: RowToColumnarExec | _: ColumnarToRowExec | _: CometColumnarToRowExec |
           _: CometNativeColumnarToRowExec | _: CometSparkToColumnarExec =>
         planStats.transitions += 1
