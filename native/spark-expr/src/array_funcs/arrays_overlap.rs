@@ -51,7 +51,7 @@ use std::hash::Hash;
 use std::ops::Range;
 use std::sync::Arc;
 
-use super::nested_float_normalize::normalize_negative_zero;
+use super::nested_float_normalize::{has_float_leaf, normalize_nested_floats};
 
 #[derive(Debug, PartialEq, Eq, Hash)]
 pub struct SparkArraysOverlap {
@@ -390,11 +390,34 @@ where
     }
 }
 
+fn normalize_list_element_floats<OffsetSize: OffsetSizeTrait>(
+    list: &GenericListArray<OffsetSize>,
+) -> GenericListArray<OffsetSize> {
+    let field = match list.data_type() {
+        DataType::List(f) | DataType::LargeList(f) => Arc::clone(f),
+        _ => unreachable!("GenericListArray always has List or LargeList data type"),
+    };
+    let normalized_values = normalize_nested_floats(list.values());
+    GenericListArray::new(
+        field,
+        list.offsets().clone(),
+        normalized_values,
+        list.nulls().cloned(),
+    )
+}
+
 /// Fallback for nested and otherwise unhandled element types.
 fn arrays_overlap_list_generic<OffsetSize: OffsetSizeTrait>(
     left: &GenericListArray<OffsetSize>,
     right: &GenericListArray<OffsetSize>,
 ) -> Result<ArrayRef> {
+    let left_owned =
+        has_float_leaf(left.values().data_type()).then(|| normalize_list_element_floats(left));
+    let left: &GenericListArray<OffsetSize> = left_owned.as_ref().unwrap_or(left);
+    let right_owned =
+        has_float_leaf(right.values().data_type()).then(|| normalize_list_element_floats(right));
+    let right: &GenericListArray<OffsetSize> = right_owned.as_ref().unwrap_or(right);
+
     let len = left.len();
     let mut builder = BooleanArray::builder(len);
 
@@ -431,11 +454,9 @@ fn arrays_overlap_list_generic<OffsetSize: OffsetSizeTrait>(
         };
 
         let comparator = if needs_comparator(probe.data_type()) {
-            let probe_normalized = normalize_negative_zero(probe);
-            let search_normalized = normalize_negative_zero(search);
             Some(make_comparator(
-                probe_normalized.as_ref(),
-                search_normalized.as_ref(),
+                probe.as_ref(),
+                search.as_ref(),
                 SortOptions::default(),
             )?)
         } else {
@@ -719,6 +740,17 @@ mod tests {
 
         let left = make_nested_float_list(&[&[0.0]]);
         let right = make_nested_float_list(&[&[-0.0]]);
+        let result = arrays_overlap_list::<i32>(&left, &right)?;
+        let result = result.as_any().downcast_ref::<BooleanArray>().unwrap();
+        assert!(result.value(0));
+        Ok(())
+    }
+
+    #[test]
+    fn test_nested_float_signed_nan_total_order() -> Result<()> {
+        // [[-NaN]] vs [[NaN]] => true
+        let left = make_nested_float_list(&[&[-f64::NAN]]);
+        let right = make_nested_float_list(&[&[f64::NAN]]);
         let result = arrays_overlap_list::<i32>(&left, &right)?;
         let result = result.as_any().downcast_ref::<BooleanArray>().unwrap();
         assert!(result.value(0));
