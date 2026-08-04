@@ -325,18 +325,18 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 
 ## generator_funcs
 
-`explode` and `posexplode` are supported via `CometExplodeExec` (operator-level, not
-expression-level). The `outer` variants are wired but marked `Incompatible`; they require
-`spark.comet.exec.explode.enabled=true` and `allowIncompatible`.
+`explode`, `explode_outer`, `posexplode`, and `posexplode_outer` are supported via
+`CometExplodeExec` (operator-level, not expression-level). Enabled by default via
+`spark.comet.exec.explode.enabled`.
 
 | Function | Status | Implementation | Notes |
 | --- | --- | --- | --- |
 | `explode` | ✅ | — | via `CometExplodeExec` |
-| `explode_outer` | ✅ | — | outer=true falls back (Incompatible) ([audit](../../contributor-guide/expression-audits/generator_funcs.md#explode_outer)) |
+| `explode_outer` | ✅ | — | via `CometExplodeExec` ([audit](../../contributor-guide/expression-audits/generator_funcs.md#explode_outer)) |
 | `inline` | 🔜 | — | Operator-level generator (like `explode`) |
 | `inline_outer` | 🔜 | — | Operator-level generator (like `explode`) |
 | `posexplode` | ✅ | — | via `CometExplodeExec` |
-| `posexplode_outer` | ✅ | — | outer=true falls back (Incompatible) ([audit](../../contributor-guide/expression-audits/generator_funcs.md#posexplode_outer)) |
+| `posexplode_outer` | ✅ | — | via `CometExplodeExec` ([audit](../../contributor-guide/expression-audits/generator_funcs.md#posexplode_outer)) |
 | `stack` | 🔜 | — | Operator-level generator |
 
 ---
@@ -511,7 +511,7 @@ expression-level). The `outer` variants are wired but marked `Incompatible`; the
 | `try_variant_get` | 🔜 | — | Requires `VariantType` support |
 | `typeof` | ✅ | — | Foldable; resolved to a literal before Comet sees the plan |
 | `user` | ✅ | — | Resolved to a literal by the Spark analyzer before reaching Comet |
-| `uuid` | 🔜 | — | Nondeterministic random UUID |
+| `uuid` | ✅ | Native |  |
 | `variant_get` | 🔜 | — | Requires `VariantType` support |
 
 ---

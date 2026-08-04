@@ -19,7 +19,9 @@
 
 package org.apache.comet.serde
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, Literal, MonotonicallyIncreasingID, Rand, Randn, SparkPartitionID}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, Literal, MonotonicallyIncreasingID, Rand, Randn, SparkPartitionID, Uuid}
+
+import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 
 object CometSparkPartitionId extends CometExpressionSerde[SparkPartitionID] {
   override def convert(
@@ -64,6 +66,30 @@ sealed abstract class CometRandCommonSerde[T <: Expression] extends CometExpress
       case Literal(seed: Long, _) => Some(seed)
       case Literal(null, _) => Some(0L)
       case _ => None
+    }
+  }
+}
+
+object CometUuid extends CometExpressionSerde[Uuid] {
+
+  // Comet reproduces Spark's UUIDs exactly: the resolved seed is combined with the partition index
+  // and seeds the same Commons Math3 MersenneTwister that drives
+  // org.apache.spark.sql.catalyst.util.RandomUUIDGenerator, so results match Spark bit for bit.
+  override def convert(
+      expr: Uuid,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    // In a resolved plan `randomSeed` is always defined (resolution requires it). Guard anyway.
+    expr.randomSeed match {
+      case Some(seed) =>
+        Some(
+          ExprOuterClass.Expr
+            .newBuilder()
+            .setUuid(ExprOuterClass.Uuid.newBuilder().setSeed(seed))
+            .build())
+      case None =>
+        withFallbackReason(expr, "uuid requires a resolved random seed")
+        None
     }
   }
 }
