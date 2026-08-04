@@ -16,41 +16,26 @@
 // under the License.
 
 //! Loader: open a UDF cdylib via libloading, validate the ABI version,
-//! discover UDFs via the C-ABI and/or datafusion-ffi entry points, and
-//! produce DataFusion `ScalarUDFImpl` impls for each.
+//! discover UDFs via the C-ABI entry point, and produce DataFusion
+//! `ScalarUDFImpl` impls for each.
 //!
-//! See `super::mod.rs` for an overview of the two flavors.
+//! See `super::mod.rs` for an overview of the ABI.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use comet_udf_sdk::c_abi::CometCScalarKernelList;
-use comet_udf_sdk::df_abi::CometDfUdfList;
-use comet_udf_sdk::{
-    ABI_VERSION_SYMBOL, COMET_UDF_ABI_VERSION, C_ABI_DISCOVERY_SYMBOL, DF_ABI_DISCOVERY_SYMBOL,
-};
+use comet_udf_sdk::{ABI_VERSION_SYMBOL, COMET_UDF_ABI_VERSION, C_ABI_DISCOVERY_SYMBOL};
 use datafusion::logical_expr::ScalarUDFImpl;
-use datafusion_ffi::udf::FFI_ScalarUDF;
 use libloading::{Library, Symbol};
 
 use super::imported_c::ImportedCScalarUdf;
 
-/// Which ABI flavor a given UDF was loaded through.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum UdfAbi {
-    /// Loaded via the pure-C arrow-ffi flavor (sedona-style).
-    C,
-    /// Loaded via datafusion-ffi (`FFI_ScalarUDF`).
-    DataFusion,
-}
-
-/// One loaded UDF: name, ABI flavor, and a `ScalarUDFImpl` ready to plug
-/// into the planner.
+/// One loaded UDF: name plus a `ScalarUDFImpl` ready to plug into the
+/// planner.
 pub struct LoadedUdf {
     /// UDF name as exposed by the cdylib.
     pub name: String,
-    /// Which ABI this UDF was discovered through.
-    pub abi: UdfAbi,
     /// The `ScalarUDFImpl` adapter the planner will wrap.
     pub udf_impl: Arc<dyn ScalarUDFImpl>,
 }
@@ -59,7 +44,6 @@ impl std::fmt::Debug for LoadedUdf {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("LoadedUdf")
             .field("name", &self.name)
-            .field("abi", &self.abi)
             .finish()
     }
 }
@@ -104,14 +88,13 @@ pub enum LoaderError {
         /// Version this host expects.
         expected: u32,
     },
-    /// Library exposes neither `comet_c_udf_list_v1` nor
-    /// `comet_df_udf_list_v1`.
+    /// Library does not expose `comet_c_udf_list_v1`.
     NoDiscovery {
         /// Path of the offending library.
         path: PathBuf,
     },
-    /// One of the discovery functions returned a non-zero rc, or a
-    /// kernel/UDF entry was malformed.
+    /// The discovery function returned a non-zero rc, or a kernel entry
+    /// was malformed.
     Discovery {
         /// Path of the library.
         path: PathBuf,
@@ -143,8 +126,7 @@ impl std::fmt::Display for LoaderError {
             },
             NoDiscovery { path } => write!(
                 f,
-                "{} exposes neither {C_ABI_DISCOVERY_SYMBOL} nor \
-                 {DF_ABI_DISCOVERY_SYMBOL}",
+                "{} does not export {C_ABI_DISCOVERY_SYMBOL}",
                 path.display()
             ),
             Discovery { path, reason } => write!(f, "{}: {reason}", path.display()),
@@ -182,30 +164,10 @@ pub fn load(path: impl AsRef<Path>) -> Result<LoadedLibrary, LoaderError> {
         });
     }
 
-    let mut udfs: Vec<LoadedUdf> = Vec::new();
-    let mut have_any = false;
-
-    if let Some(c_kernels) = read_c_kernels(&library, &path)? {
-        have_any = true;
-        for udf in c_kernels {
-            udfs.push(udf);
-        }
-    }
-
-    if let Some(df_udfs) = read_df_udfs(&library, &path)? {
-        have_any = true;
-        for udf in df_udfs {
-            // Prefer C-ABI registration on collision.
-            if udfs.iter().any(|u| u.name == udf.name) {
-                continue;
-            }
-            udfs.push(udf);
-        }
-    }
-
-    if !have_any {
-        return Err(LoaderError::NoDiscovery { path });
-    }
+    let udfs = match read_c_kernels(&library, &path)? {
+        Some(udfs) => udfs,
+        None => return Err(LoaderError::NoDiscovery { path }),
+    };
 
     Ok(LoadedLibrary {
         path,
@@ -268,51 +230,11 @@ fn read_c_kernels(lib: &Library, path: &Path) -> Result<Option<Vec<LoadedUdf>>, 
             })?;
             udfs.push(LoadedUdf {
                 name: imported.name().to_string(),
-                abi: UdfAbi::C,
                 udf_impl: Arc::new(imported),
             });
         }
     }
     // list's Drop releases the array storage.
-    drop(list);
-    Ok(Some(udfs))
-}
-
-fn read_df_udfs(lib: &Library, path: &Path) -> Result<Option<Vec<LoadedUdf>>, LoaderError> {
-    let sym: Symbol<unsafe extern "C" fn(*mut CometDfUdfList) -> i32> =
-        match unsafe { lib.get(DF_ABI_DISCOVERY_SYMBOL.as_bytes()) } {
-            Ok(s) => s,
-            Err(_) => return Ok(None),
-        };
-    let mut list = CometDfUdfList::default();
-    // SAFETY: list is caller-allocated; the cdylib writes into it.
-    let rc = unsafe { sym(&mut list) };
-    if rc != 0 {
-        return Err(LoaderError::Discovery {
-            path: path.to_path_buf(),
-            reason: format!("{DF_ABI_DISCOVERY_SYMBOL} returned rc={rc}"),
-        });
-    }
-    let mut udfs = Vec::with_capacity(list.len.max(0) as usize);
-    if !list.udfs.is_null() && list.len > 0 {
-        let len = list.len as usize;
-        for i in 0..len {
-            // SAFETY: the FFI_ScalarUDF array was produced by the cdylib's
-            // `comet_df_udf_export!` and contains `len` valid entries.
-            let entry: &FFI_ScalarUDF = unsafe { &*list.udfs.add(i) };
-            // Convert to ScalarUDFImpl via the canonical From impl;
-            // the resulting Arc clones the FFI wrapper internally.
-            let imp: Arc<dyn ScalarUDFImpl> = entry.into();
-            udfs.push(LoadedUdf {
-                name: imp.name().to_string(),
-                abi: UdfAbi::DataFusion,
-                udf_impl: imp,
-            });
-        }
-    }
-    // list's Drop releases the array storage; each FFI_ScalarUDF entry
-    // remains valid for the lifetime of the loaded Library, since the
-    // resulting ScalarUDFImpls cloned the wrappers via the From impl.
     drop(list);
     Ok(Some(udfs))
 }
@@ -327,7 +249,6 @@ mod tests {
         let lib = load(test_udfs_path()).expect("load");
         let names: Vec<_> = lib.udfs.iter().map(|u| u.name.as_str()).collect();
         assert!(names.contains(&"add_one_c"), "names: {names:?}");
-        assert!(names.contains(&"add_one_df"), "names: {names:?}");
     }
 
     #[test]
@@ -336,12 +257,13 @@ mod tests {
         assert!(matches!(err, LoaderError::Open { .. }), "got: {err:?}");
     }
 
+    /// A library exporting several kernels surfaces all of them.
     #[test]
-    fn c_and_df_abi_have_expected_flavors() {
+    fn all_exported_kernels_are_discovered() {
         let lib = load(test_udfs_path()).expect("load");
-        let c_udf = lib.udfs.iter().find(|u| u.name == "add_one_c").unwrap();
-        let df_udf = lib.udfs.iter().find(|u| u.name == "add_one_df").unwrap();
-        assert_eq!(c_udf.abi, UdfAbi::C);
-        assert_eq!(df_udf.abi, UdfAbi::DataFusion);
+        let names: Vec<_> = lib.udfs.iter().map(|u| u.name.as_str()).collect();
+        for expected in ["add_one_c", "panics_on_invoke", "panics_on_return_field"] {
+            assert!(names.contains(&expected), "missing {expected} in {names:?}");
+        }
     }
 }

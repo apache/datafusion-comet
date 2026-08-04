@@ -32,11 +32,11 @@ import com.fasterxml.jackson.databind.node.ObjectNode
 /**
  * Public entry point for registering Rust scalar UDFs with Comet.
  *
- * Two ABI flavors are supported transparently -- the cdylib registers each UDF under one of:
- *   - `c-abi`: pure C / Arrow C Data Interface (sedona-style)
- *   - `datafusion-ffi`: `FFI_ScalarUDF`
+ * The UDF cdylib is built against the `comet-udf-sdk` crate and exposes its functions through an
+ * ABI built only on the Arrow C Data Interface, so a compiled UDF is not tied to Comet's
+ * DataFusion version.
  *
- * The user always calls `register` / `registerAll`; the native side picks the right ABI by name.
+ * This is an experimental API and may change without the usual deprecation cycle.
  */
 object CometRustUDF {
 
@@ -70,7 +70,7 @@ object CometRustUDF {
 
   // -------- internals --------
 
-  private case class Described(name: String, abi: String)
+  private case class Described(name: String)
 
   private def describeOne(libraryPath: String, name: String): Described = {
     val json =
@@ -84,13 +84,13 @@ object CometRustUDF {
 
   private def parseDescribed(json: String): Described = {
     val node = mapper.readTree(json).asInstanceOf[ObjectNode]
-    Described(name = node.get("name").asText(), abi = node.get("abi").asText())
+    Described(name = node.get("name").asText())
   }
 
   private def classifyNativeError(libraryPath: String, t: Throwable): RuntimeException = {
     val m = Option(t.getMessage).getOrElse("")
     if (m.contains("ABI") || m.contains("missing required symbol") ||
-      m.contains("comet_udf_abi_version") || m.contains("exposes neither")) {
+      m.contains("comet_udf_abi_version") || m.contains("does not export")) {
       new CometRustUdfAbiException(m)
     } else if (m.contains("not found in")) {
       new java.util.NoSuchElementException(m)

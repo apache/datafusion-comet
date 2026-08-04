@@ -17,11 +17,11 @@
 
 //! Test UDF cdylib for Comet's Rust UDF host tests.
 //!
-//! Exports the same `add_one` semantics through both ABI flavors so the
-//! host can verify them side-by-side:
+//! Exports `add_one_c`, an `(Int64) -> Int64` scalar function, through the
+//! Comet UDF C ABI.
 //!
-//! - `add_one_c` — exposed via the C ABI (arrow-only FFI, sedona-style)
-//! - `add_one_df` — exposed via the datafusion-ffi ABI (`FFI_ScalarUDF`)
+//! Note that this crate depends only on `arrow` and `comet-udf-sdk` — no
+//! DataFusion dependency — which is the point of the ABI.
 //!
 //! Built as `libcomet_test_udfs.{so,dylib}`.
 
@@ -29,16 +29,9 @@ use std::sync::Arc;
 
 use arrow::array::{ArrayRef, Int64Array};
 use arrow::datatypes::{DataType, Field};
-use datafusion::common::DataFusionError;
-use datafusion::logical_expr::{
-    ColumnarValue, ScalarFunctionArgs, ScalarUDF, ScalarUDFImpl, Signature, TypeSignature,
-    Volatility,
-};
 
 use comet_udf_sdk::c_abi::CometCScalarUdf;
-use comet_udf_sdk::{comet_c_udf_export, comet_df_udf_export};
-
-// ---------- C ABI implementation ------------------------------------
+use comet_udf_sdk::comet_c_udf_export;
 
 /// `add_one` exposed via the C ABI.
 pub struct AddOneC;
@@ -77,62 +70,43 @@ impl CometCScalarUdf for AddOneC {
     }
 }
 
-// ---------- datafusion-ffi implementation ---------------------------
+/// Panics unconditionally when invoked, so host tests can verify that a
+/// panic inside user code is caught at the FFI boundary and surfaced as a
+/// query error rather than unwinding into the host.
+#[derive(Default)]
+pub struct PanicsOnInvoke;
 
-/// `add_one` exposed via datafusion-ffi.
-#[derive(Debug, PartialEq, Eq, Hash)]
-pub struct AddOneDf {
-    signature: Signature,
-}
-
-impl AddOneDf {
-    fn new() -> Self {
-        Self {
-            signature: Signature::new(
-                TypeSignature::Exact(vec![DataType::Int64]),
-                Volatility::Immutable,
-            ),
-        }
-    }
-}
-
-impl ScalarUDFImpl for AddOneDf {
+impl CometCScalarUdf for PanicsOnInvoke {
     fn name(&self) -> &str {
-        "add_one_df"
+        "panics_on_invoke"
     }
-    fn signature(&self) -> &Signature {
-        &self.signature
+
+    fn return_field(&self, _args: &[Field]) -> Result<Field, String> {
+        Ok(Field::new("panics_on_invoke", DataType::Int64, true))
     }
-    fn return_type(&self, _args: &[DataType]) -> datafusion::common::Result<DataType> {
-        Ok(DataType::Int64)
-    }
-    fn invoke_with_args(
-        &self,
-        args: ScalarFunctionArgs,
-    ) -> datafusion::common::Result<ColumnarValue> {
-        let arr: ArrayRef = match &args.args[0] {
-            ColumnarValue::Array(a) => Arc::clone(a),
-            ColumnarValue::Scalar(s) => s.to_array_of_size(args.number_rows)?,
-        };
-        let a = arr
-            .as_any()
-            .downcast_ref::<Int64Array>()
-            .ok_or_else(|| DataFusionError::Execution("expected Int64".into()))?;
-        let out: Int64Array = a.iter().map(|v| v.map(|x| x + 1)).collect();
-        Ok(ColumnarValue::Array(Arc::new(out)))
+
+    fn invoke(&self, _args: &[ArrayRef], _n_rows: usize) -> Result<ArrayRef, String> {
+        panic!("deliberate panic from user UDF code")
     }
 }
 
-/// Factory used by the discovery macro.
-pub fn make_add_one_df() -> Arc<ScalarUDF> {
-    Arc::new(ScalarUDF::from(AddOneDf::new()))
+/// Panics inside `return_field`, i.e. during planning rather than
+/// execution, exercising the other side of the FFI panic boundary.
+#[derive(Default)]
+pub struct PanicsOnReturnField;
+
+impl CometCScalarUdf for PanicsOnReturnField {
+    fn name(&self) -> &str {
+        "panics_on_return_field"
+    }
+
+    fn return_field(&self, _args: &[Field]) -> Result<Field, String> {
+        panic!("deliberate panic from user return_field")
+    }
+
+    fn invoke(&self, _args: &[ArrayRef], _n_rows: usize) -> Result<ArrayRef, String> {
+        unreachable!("return_field panics first")
+    }
 }
 
-// ---------- discovery exports --------------------------------------
-
-// `comet_c_udf_export!` emits both `comet_c_udf_list_v1` and
-// `comet_udf_abi_version`. `comet_df_udf_export!` would emit
-// `comet_udf_abi_version` again, so we use the `no_abi_version` form to
-// avoid the duplicate symbol.
-comet_c_udf_export!(AddOneC);
-comet_df_udf_export!(no_abi_version => make_add_one_df);
+comet_c_udf_export!(AddOneC, PanicsOnInvoke, PanicsOnReturnField);

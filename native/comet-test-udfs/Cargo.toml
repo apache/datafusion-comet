@@ -32,5 +32,4 @@ crate-type = ["cdylib"]
 
 [dependencies]
 arrow = { workspace = true }
-datafusion = { workspace = true }
 comet-udf-sdk = { path = "../comet-udf-sdk" }

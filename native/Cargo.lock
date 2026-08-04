@@ -521,12 +521,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "async-ffi"
-version = "0.5.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "39cd9de47399986d5b216c6bef9434dfff1689ab61ba8d1e2720dc5fe5c84083"
-
-[[package]]
 name = "async-global-executor"
 version = "2.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1482,7 +1476,6 @@ version = "1.1.0"
 dependencies = [
  "arrow",
  "comet-udf-sdk",
- "datafusion",
 ]
 
 [[package]]
@@ -1490,8 +1483,6 @@ name = "comet-udf-sdk"
 version = "1.1.0"
 dependencies = [
  "arrow",
- "datafusion",
- "datafusion-ffi",
 ]
 
 [[package]]
@@ -1977,7 +1968,6 @@ dependencies = [
  "datafusion-comet-shuffle",
  "datafusion-comet-spark-expr",
  "datafusion-datasource",
- "datafusion-ffi",
  "datafusion-functions-nested",
  "datafusion-physical-expr-adapter",
  "datafusion-spark",
@@ -1990,7 +1980,7 @@ dependencies = [
  "itertools 0.15.0",
  "jni 0.22.4",
  "lazy_static",
- "libloading 0.8.9",
+ "libloading",
  "log",
  "log4rs",
  "mimalloc",
@@ -2345,39 +2335,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "datafusion-ffi"
-version = "54.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d9a4a09f24f1387408810acca070207a9cf6c7fc2368122982a8e7671f643d1e"
-dependencies = [
- "arrow",
- "arrow-schema",
- "async-ffi",
- "async-trait",
- "chrono",
- "datafusion-catalog",
- "datafusion-common",
- "datafusion-datasource",
- "datafusion-execution",
- "datafusion-expr",
- "datafusion-functions-aggregate-common",
- "datafusion-physical-expr",
- "datafusion-physical-expr-common",
- "datafusion-physical-optimizer",
- "datafusion-physical-plan",
- "datafusion-proto",
- "datafusion-proto-common",
- "datafusion-session",
- "futures",
- "libloading 0.9.0",
- "log",
- "prost",
- "semver",
- "stabby",
- "tokio",
-]
-
-[[package]]
 name = "datafusion-functions"
 version = "54.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2642,44 +2599,6 @@ dependencies = [
  "parking_lot",
  "pin-project-lite",
  "tokio",
-]
-
-[[package]]
-name = "datafusion-proto"
-version = "54.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "67791dcfacd142a9d95f8f73c2a161094cc936d231d80c235f5017dacf24e84e"
-dependencies = [
- "arrow",
- "chrono",
- "datafusion-catalog",
- "datafusion-catalog-listing",
- "datafusion-common",
- "datafusion-datasource",
- "datafusion-datasource-arrow",
- "datafusion-datasource-csv",
- "datafusion-datasource-json",
- "datafusion-datasource-parquet",
- "datafusion-execution",
- "datafusion-expr",
- "datafusion-functions-table",
- "datafusion-physical-expr",
- "datafusion-physical-expr-common",
- "datafusion-physical-plan",
- "datafusion-proto-common",
- "object_store",
- "prost",
-]
-
-[[package]]
-name = "datafusion-proto-common"
-version = "54.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b8cd9e80d637891645d074db0f6c650b591117367247deb313fdfb78dff559cb"
-dependencies = [
- "arrow",
- "datafusion-common",
- "prost",
 ]
 
 [[package]]
@@ -3990,7 +3909,7 @@ dependencies = [
  "java-locator",
  "jni-macros",
  "jni-sys 0.4.1",
- "libloading 0.8.9",
+ "libloading",
  "log",
  "simd_cesu8",
  "thiserror 2.0.19",
@@ -4152,16 +4071,6 @@ name = "libloading"
 version = "0.8.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d7c4b02199fee7c5d21a5ae7d8cfa79a6ef5bb2fc834d6e9058e89c825efdc55"
-dependencies = [
- "cfg-if",
- "windows-link",
-]
-
-[[package]]
-name = "libloading"
-version = "0.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "754ca22de805bb5744484a5b151a9e1a8e837d5dc232c2d7d8c2e3492edc8b60"
 dependencies = [
  "cfg-if",
  "windows-link",
@@ -5272,15 +5181,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "proc-macro-crate"
-version = "3.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e67ba7e9b2b56446f1d419b1d807906278ffa1a658a8a5d8a39dcb1f5a78614f"
-dependencies = [
- "toml_edit",
-]
-
-[[package]]
 name = "proc-macro2"
 version = "1.0.107"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6313,12 +6213,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "sha2-const-stable"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5f179d4e11094a893b82fff208f74d448a7512f99f5a0acbd5c679b705f83ed9"
-
-[[package]]
 name = "shlex"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6441,40 +6335,6 @@ version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a6dd45d8fc1c79299bfbb7190e42ccbbdf6a5f52e4a6ad98d92357ea965bd289"
 dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.119",
-]
-
-[[package]]
-name = "stabby"
-version = "72.1.16"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3d53d2428934c46277fafd2d41e39357595aa1e47954c75db2b14ed90632f3cc"
-dependencies = [
- "rustversion",
- "stabby-abi",
-]
-
-[[package]]
-name = "stabby-abi"
-version = "72.1.16"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f375eae680bb54203ee5e47d4cd2ae7b79c0a79ed90919279f38f500ad53f190"
-dependencies = [
- "rustc_version",
- "rustversion",
- "sha2-const-stable",
- "stabby-macros",
-]
-
-[[package]]
-name = "stabby-macros"
-version = "72.1.16"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ea664671a576c5f7e32fee291ac123d82af5e92b0689beb3555347c00c76eef1"
-dependencies = [
- "proc-macro-crate",
  "proc-macro2",
  "quote",
  "syn 2.0.119",
@@ -6836,36 +6696,6 @@ dependencies = [
  "libc",
  "pin-project-lite",
  "tokio",
-]
-
-[[package]]
-name = "toml_datetime"
-version = "1.1.1+spec-1.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3165f65f62e28e0115a00b2ebdd37eb6f3b641855f9d636d3cd4103767159ad7"
-dependencies = [
- "serde_core",
-]
-
-[[package]]
-name = "toml_edit"
-version = "0.25.13+spec-1.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6975367e4d2ef766d86af01ffad14b622fecc8d4357a998fbc4deb6e9bacaf9b"
-dependencies = [
- "indexmap 2.14.0",
- "toml_datetime",
- "toml_parser",
- "winnow",
-]
-
-[[package]]
-name = "toml_parser"
-version = "1.1.3+spec-1.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1d38ac1cf9b95face32296c0a3ede1fdc270627c9d9c02a7274dd6d960dc4d56"
-dependencies = [
- "winnow",
 ]
 
 [[package]]
@@ -7520,15 +7350,6 @@ name = "windows_x86_64_msvc"
 version = "0.52.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "589f6da84c646204747d1270a2a5661ea66ed1cced2631d546fdfb155959f9ec"
-
-[[package]]
-name = "winnow"
-version = "1.0.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "23b97319f7b8343df12cc98938e5c3eb436064524c8d2b4e30a1d3a36eecdf81"
-dependencies = [
- "memchr",
-]
 
 [[package]]
 name = "wit-bindgen"

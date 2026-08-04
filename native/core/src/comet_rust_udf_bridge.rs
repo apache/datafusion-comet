@@ -25,18 +25,14 @@ use jni::objects::{JClass, JString};
 use jni::sys::jobject;
 use jni::EnvUnowned;
 
-/// Best-effort serialization of a single discovered UDF as JSON. The
-/// `args`/`return_type` fields require calling the C-ABI kernel's `init`
-/// to discover a return type — for the comparison PR we punt on that and
-/// return only the bits the Scala registry needs (`name`, `abi`).
+/// Best-effort serialization of a single discovered UDF as JSON.
+///
+/// Reporting `args`/`return_type` would require calling the kernel's
+/// `init` to discover a return type; that is deferred, so this returns
+/// only what the Scala registry needs today (`name`).
 fn udf_to_json(udf: &LoadedUdf) -> serde_json::Value {
-    let abi = match udf.abi {
-        crate::execution::rust_udf::loader::UdfAbi::C => "c-abi",
-        crate::execution::rust_udf::loader::UdfAbi::DataFusion => "datafusion-ffi",
-    };
     serde_json::json!({
         "name": udf.name,
-        "abi": abi,
     })
 }
 

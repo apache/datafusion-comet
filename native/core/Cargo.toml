@@ -56,7 +56,6 @@ paste = "1.0.14"
 datafusion = { workspace = true, features = ["parquet_encryption", "sql"] }
 datafusion-physical-expr-adapter = { workspace = true }
 datafusion-datasource = { workspace = true }
-datafusion-ffi = { workspace = true }
 datafusion-spark = { workspace = true }
 once_cell = "1.18.0"
 datafusion-comet-common = { workspace = true }

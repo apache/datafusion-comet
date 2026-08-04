@@ -18,25 +18,35 @@
 //! SDK for writing scalar UDFs in Rust that are loaded and executed by
 //! Apache DataFusion Comet, using only Arrow's stable FFI surface.
 //!
-//! Two ABI flavors are available, behind cargo features:
+//! The ABI is a pure C-callable struct of function pointers built only on
+//! the Arrow C Data Interface (`FFI_ArrowSchema` / `FFI_ArrowArray`),
+//! modeled on Apache Sedona's `SedonaCScalarKernel`. See [`c_abi`] for the
+//! authoring guide.
 //!
-//! - **C ABI** (`c-abi` feature, on by default) — pure C-callable struct of
-//!   function pointers built only on the Arrow C Data Interface
-//!   (`FFI_ArrowSchema` / `FFI_ArrowArray`). Modeled on Apache Sedona's
-//!   `SedonaCScalarKernel`. Works with any Arrow producer that speaks the
-//!   C Data Interface — including C/C++ implementations.
+//! # Why not `datafusion-ffi`?
 //!
-//! - **DataFusion FFI ABI** (`df-abi` feature, on by default) — wraps the
-//!   user's `ScalarUDFImpl` as `datafusion_ffi::udf::FFI_ScalarUDF`. Larger
-//!   surface, full DataFusion features (variadic signatures, type coercion,
-//!   metadata-aware return types) for free, but the user's library is
-//!   coupled to the matching `datafusion-ffi` major version.
+//! Wrapping the user's `ScalarUDFImpl` as `datafusion_ffi::udf::FFI_ScalarUDF`
+//! is the obvious alternative, and it hands the author a much larger surface
+//! for free: variadic signatures, type coercion, metadata-aware return types.
+//! Comet deliberately does not expose it, for one reason: it would couple
+//! every user's cdylib to Comet's DataFusion major version.
 //!
-//! A single library may export either or both ABIs; the host loader tries
-//! both discovery functions and prefers the C ABI on duplicate names.
+//! That is not a hypothetical cost. A prototype carried both ABIs side by
+//! side; upgrading Comet from DataFusion 53 to 54 removed `as_any` from
+//! `ScalarUDFImpl`, which would have forced an edit and a recompile on every
+//! user library built against the `datafusion-ffi` flavor. The C ABI here
+//! needed no change, because no DataFusion type appears in it.
 //!
-//! See `docs/source/user-guide/latest/custom-rust-udfs.md` for an
-//! end-to-end walkthrough.
+//! Comet tracks DataFusion closely and upgrades often, so a UDF ABI pinned to
+//! the DataFusion version would break users on a cadence they do not control
+//! and cannot opt out of. Keeping the FFI surface to Arrow's C Data Interface
+//! means a UDF compiled today keeps working across Comet upgrades, and the
+//! same ABI is implementable from C, C++, or any language that speaks the
+//! Arrow C Data Interface.
+//!
+//! The tradeoff is a smaller surface: authors implement [`c_abi::CometCScalarUdf`]
+//! and get scalar functions over Arrow arrays, not the full `ScalarUDFImpl`
+//! feature set.
 
 #![warn(missing_docs)]
 
@@ -44,18 +54,10 @@
 /// the discovery entry-point signatures or to the FFI structs they yield.
 pub const COMET_UDF_ABI_VERSION: u32 = 1;
 
-#[cfg(feature = "c-abi")]
 pub mod c_abi;
 
-#[cfg(feature = "df-abi")]
-pub mod df_abi;
-
-/// Symbol name of the discovery entry point exported by C-ABI cdylibs.
+/// Symbol name of the discovery entry point exported by every cdylib.
 pub const C_ABI_DISCOVERY_SYMBOL: &str = "comet_c_udf_list_v1";
-
-/// Symbol name of the discovery entry point exported by datafusion-ffi
-/// cdylibs.
-pub const DF_ABI_DISCOVERY_SYMBOL: &str = "comet_df_udf_list_v1";
 
 /// Symbol name of the ABI version probe exported by every cdylib.
 pub const ABI_VERSION_SYMBOL: &str = "comet_udf_abi_version";

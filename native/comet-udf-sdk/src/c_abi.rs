@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Pure C ABI flavor — sedona-style.
+//! The Comet UDF C ABI — sedona-style.
 //!
 //! The wire format is two `#[repr(C)]` structs of function pointers,
 //! parameterized only by Arrow's C Data Interface
@@ -25,8 +25,9 @@
 //!
 //! # Authoring a UDF
 //!
-//! Implement [`CometCScalarUdf`] for a unit struct and use the
-//! [`comet_c_udf_export!`] macro to emit the discovery entry point:
+//! Implement [`CometCScalarUdf`] for a type that also implements `Default`,
+//! then use the [`comet_c_udf_export!`] macro to emit the discovery entry
+//! point:
 //!
 //! ```ignore
 //! use comet_udf_sdk::c_abi::*;
@@ -34,6 +35,7 @@
 //! use arrow::datatypes::{DataType, Field};
 //! use std::sync::Arc;
 //!
+//! #[derive(Default)]
 //! pub struct AddOne;
 //! impl CometCScalarUdf for AddOne {
 //!     fn name(&self) -> &str { "add_one_c" }
@@ -60,6 +62,44 @@ use arrow::ffi::{FFI_ArrowArray, FFI_ArrowSchema};
 /// failure. The host treats any non-zero return as an error and calls
 /// `get_last_error` for the message; the specific code is informational.
 const C_ABI_ERR: c_int = 1;
+
+// -- panic containment -----------------------------------------------------
+//
+// Every `extern "C"` function in this module is an unwind boundary. A panic
+// that escapes one aborts the whole process (Rust's default `extern "C"`
+// unwind behavior since 1.81), which for Comet means killing the executor
+// JVM and losing every task on it -- not just the query that used the UDF.
+//
+// User UDF code is arbitrary and panicking is idiomatic Rust (`unwrap`,
+// slice indexing, integer overflow in debug), so the SDK treats a panic in
+// user code as an ordinary error: catch it at the boundary, convert it to a
+// message, and report it through the same `get_last_error` channel as a
+// returned `Err`. The query fails; the executor survives.
+
+/// Render a caught panic payload as an error message.
+fn panic_message(panic: Box<dyn std::any::Any + Send>) -> String {
+    let detail = panic
+        .downcast_ref::<&'static str>()
+        .map(|s| s.to_string())
+        .or_else(|| panic.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "<non-string panic payload>".to_string());
+    format!("panic in UDF code: {detail}")
+}
+
+/// Run `f`, converting a panic into `Err(message)`.
+fn catch_panic<T>(f: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
+        Ok(result) => result,
+        Err(panic) => Err(panic_message(panic)),
+    }
+}
+
+/// Run an infallible `f` (typically a release/cleanup callback), swallowing
+/// any panic. Used where the ABI gives us no way to report an error and
+/// aborting would be a worse outcome than leaking.
+fn catch_panic_infallible(f: impl FnOnce()) {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
+}
 
 // -- factory struct --------------------------------------------------------
 
@@ -317,15 +357,19 @@ unsafe extern "C" fn c_factory_new_impl(
     debug_assert!(!out.is_null());
     let this = unsafe { &*this };
     let exp = unsafe { &*(this.private_data as *const ExportedScalarKernel) };
-    let impl_state = ExportedScalarKernelImpl {
-        inner: std::sync::Arc::clone(&exp.inner),
-        last_arg_fields: None,
-        last_return_field: None,
-        last_error: std::ffi::CString::default(),
-    };
-    unsafe {
-        std::ptr::write(out, CometCScalarKernelImpl::from(impl_state));
-    }
+    // On panic, leave `out` as the default (all callbacks None). The host
+    // detects the missing `init` and reports it as a load error.
+    catch_panic_infallible(|| {
+        let impl_state = ExportedScalarKernelImpl {
+            inner: std::sync::Arc::clone(&exp.inner),
+            last_arg_fields: None,
+            last_return_field: None,
+            last_error: std::ffi::CString::default(),
+        };
+        unsafe {
+            std::ptr::write(out, CometCScalarKernelImpl::from(impl_state));
+        }
+    });
 }
 
 unsafe extern "C" fn c_factory_release(this: *mut CometCScalarKernel) {
@@ -333,9 +377,11 @@ unsafe extern "C" fn c_factory_release(this: *mut CometCScalarKernel) {
     let this_ref = unsafe { &mut *this };
     if !this_ref.private_data.is_null() {
         // SAFETY: private_data was set via Box::into_raw in
-        // From<ExportedScalarKernel>; reclaim and drop.
-        let _ = unsafe { Box::from_raw(this_ref.private_data as *mut ExportedScalarKernel) };
+        // From<ExportedScalarKernel>; reclaim and drop. Dropping runs the
+        // user type's Drop, which may panic; contain it rather than abort.
+        let raw = this_ref.private_data as *mut ExportedScalarKernel;
         this_ref.private_data = std::ptr::null_mut();
+        catch_panic_infallible(|| drop(unsafe { Box::from_raw(raw) }));
     }
     this_ref.function_name = None;
     this_ref.new_impl = None;
@@ -397,7 +443,8 @@ unsafe extern "C" fn c_kernel_init(
         }
     }
 
-    match priv_ref.inner.return_field(&fields) {
+    // `return_field` is user code: contain any panic (see "panic containment").
+    match catch_panic(|| priv_ref.inner.return_field(&fields)) {
         Ok(ret_field) => match FFI_ArrowSchema::try_from(&ret_field) {
             Ok(ffi_schema) => {
                 unsafe { std::ptr::write(out, ffi_schema) };
@@ -476,22 +523,10 @@ unsafe extern "C" fn c_kernel_execute(
         arrays.push(arrow::array::make_array(data));
     }
 
-    let result = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        priv_ref.inner.invoke(&arrays, n_rows as usize)
-    })) {
-        Ok(Ok(arr)) => arr,
-        Ok(Err(msg)) => {
-            priv_ref.last_error = std::ffi::CString::new(msg).unwrap_or_default();
-            return C_ABI_ERR;
-        }
-        Err(panic) => {
-            let msg = match panic.downcast_ref::<&'static str>() {
-                Some(s) => format!("panic: {s}"),
-                None => match panic.downcast_ref::<String>() {
-                    Some(s) => format!("panic: {s}"),
-                    None => "panic: <non-string payload>".to_string(),
-                },
-            };
+    // `invoke` is user code: contain any panic (see "panic containment").
+    let result = match catch_panic(|| priv_ref.inner.invoke(&arrays, n_rows as usize)) {
+        Ok(arr) => arr,
+        Err(msg) => {
             priv_ref.last_error = std::ffi::CString::new(msg).unwrap_or_default();
             return C_ABI_ERR;
         }
@@ -517,8 +552,10 @@ unsafe extern "C" fn c_kernel_release(this: *mut CometCScalarKernelImpl) {
     debug_assert!(!this.is_null());
     let this_ref = unsafe { &mut *this };
     if !this_ref.private_data.is_null() {
-        let _ = unsafe { Box::from_raw(this_ref.private_data as *mut ExportedScalarKernelImpl) };
+        // Dropping may run user Drop code, which may panic; contain it.
+        let raw = this_ref.private_data as *mut ExportedScalarKernelImpl;
         this_ref.private_data = std::ptr::null_mut();
+        catch_panic_infallible(|| drop(unsafe { Box::from_raw(raw) }));
     }
     this_ref.init = None;
     this_ref.execute = None;
@@ -554,13 +591,17 @@ unsafe extern "C" fn c_list_release(list: *mut CometCScalarKernelList) {
         return;
     }
     let len = list_ref.len as usize;
-    // SAFETY: kernels was a Box<[CometCScalarKernel]> turned into raw ptr +
-    // forgotten in build_kernel_list; reconstruct and drop. Each kernel's
-    // own Drop runs its `release` callback.
-    let _ = unsafe { Box::from_raw(std::ptr::slice_from_raw_parts_mut(list_ref.kernels, len)) };
+    let kernels = list_ref.kernels;
     list_ref.kernels = std::ptr::null_mut();
     list_ref.len = 0;
     list_ref.release = None;
+    // SAFETY: kernels was a Box<[CometCScalarKernel]> turned into raw ptr +
+    // forgotten in build_kernel_list; reconstruct and drop. Each kernel's
+    // own Drop runs its `release` callback, which may reach user Drop code,
+    // so contain any panic rather than abort.
+    catch_panic_infallible(|| {
+        drop(unsafe { Box::from_raw(std::ptr::slice_from_raw_parts_mut(kernels, len)) })
+    });
 }
 
 // -- export macro ---------------------------------------------------------
@@ -572,6 +613,10 @@ unsafe extern "C" fn c_list_release(list: *mut CometCScalarKernelList) {
 ///
 /// - `extern "C" fn comet_udf_abi_version() -> u32`
 /// - `extern "C" fn comet_c_udf_list_v1(out: *mut CometCScalarKernelList) -> i32`
+///
+/// Construction runs your `Default` impl and reads your `name()`, so it is
+/// wrapped in a panic guard: a panic there is reported to the host as a
+/// load failure rather than aborting the process.
 ///
 /// Your `Cargo.toml` must declare `crate-type = ["cdylib"]`.
 #[macro_export]
@@ -588,16 +633,25 @@ macro_rules! comet_c_udf_export {
                 out: *mut $crate::c_abi::CometCScalarKernelList,
             ) -> i32 {
                 if out.is_null() { return -1; }
-                let kernels: Vec<$crate::c_abi::CometCScalarKernel> = vec![
-                    $(
-                        $crate::c_abi::CometCScalarKernel::from(
-                            $crate::c_abi::ExportedScalarKernel::new(<$ty as Default>::default())
-                        ),
-                    )+
-                ];
-                let list = $crate::c_abi::build_kernel_list(kernels);
-                std::ptr::write(out, list);
-                0
+                let built = std::panic::catch_unwind(|| {
+                    let kernels: Vec<$crate::c_abi::CometCScalarKernel> = vec![
+                        $(
+                            $crate::c_abi::CometCScalarKernel::from(
+                                $crate::c_abi::ExportedScalarKernel::new(
+                                    <$ty as Default>::default()
+                                )
+                            ),
+                        )+
+                    ];
+                    $crate::c_abi::build_kernel_list(kernels)
+                });
+                match built {
+                    Ok(list) => {
+                        std::ptr::write(out, list);
+                        0
+                    }
+                    Err(_) => -1,
+                }
             }
         };
     };
@@ -690,5 +744,92 @@ mod tests {
         // their function pointers are cleared.
         drop(impl_state);
         drop(kernel);
+    }
+
+    /// A UDF that panics wherever it is told to.
+    struct Panicky {
+        in_return_field: bool,
+    }
+
+    impl CometCScalarUdf for Panicky {
+        fn name(&self) -> &str {
+            "panicky"
+        }
+        fn return_field(&self, _args: &[Field]) -> Result<Field, String> {
+            assert!(!self.in_return_field, "boom in return_field");
+            Ok(Field::new("panicky", DataType::Int64, true))
+        }
+        fn invoke(&self, _args: &[ArrayRef], _n: usize) -> Result<ArrayRef, String> {
+            panic!("boom in invoke")
+        }
+    }
+
+    /// Build a kernel + initialized impl for `udf`, returning the init rc.
+    fn init_panicky(in_return_field: bool) -> (CometCScalarKernel, CometCScalarKernelImpl, c_int) {
+        let kernel: CometCScalarKernel =
+            ExportedScalarKernel::new(Panicky { in_return_field }).into();
+        let mut impl_state = CometCScalarKernelImpl::default();
+        unsafe {
+            (kernel.new_impl.unwrap())(&kernel, &mut impl_state);
+        }
+        let arg_field = Field::new("x", DataType::Int64, true);
+        let arg_schema = FFI_ArrowSchema::try_from(&arg_field).unwrap();
+        let arg_schema_ptr: *const FFI_ArrowSchema = &arg_schema;
+        let mut out_schema = FFI_ArrowSchema::empty();
+        let rc = unsafe {
+            (impl_state.init.unwrap())(
+                &mut impl_state,
+                &arg_schema_ptr as *const *const FFI_ArrowSchema,
+                std::ptr::null(),
+                1,
+                &mut out_schema,
+            )
+        };
+        (kernel, impl_state, rc)
+    }
+
+    fn last_error(impl_state: &mut CometCScalarKernelImpl) -> String {
+        let ptr = unsafe { (impl_state.get_last_error.unwrap())(impl_state) };
+        assert!(!ptr.is_null(), "expected an error message");
+        unsafe { std::ffi::CStr::from_ptr(ptr) }
+            .to_str()
+            .unwrap()
+            .to_string()
+    }
+
+    /// A panic in `return_field` must come back as an error code plus a
+    /// message, not unwind across the `extern "C"` boundary.
+    #[test]
+    fn panic_in_return_field_is_contained() {
+        let (_kernel, mut impl_state, rc) = init_panicky(true);
+        assert_eq!(rc, C_ABI_ERR);
+        let msg = last_error(&mut impl_state);
+        assert!(msg.contains("panic in UDF code"), "msg: {msg}");
+        assert!(msg.contains("boom in return_field"), "msg: {msg}");
+    }
+
+    /// Same for a panic in `invoke`.
+    #[test]
+    fn panic_in_invoke_is_contained() {
+        let (_kernel, mut impl_state, rc) = init_panicky(false);
+        assert_eq!(rc, 0, "init should succeed for this case");
+
+        let input: Arc<dyn arrow::array::Array> = Arc::new(Int64Array::from(vec![1, 2, 3]));
+        let mut input_ffi = FFI_ArrowArray::new(&input.to_data());
+        let input_ffi_ptr: *mut FFI_ArrowArray = &mut input_ffi;
+        let mut out_arr = FFI_ArrowArray::empty();
+        let rc = unsafe {
+            (impl_state.execute.unwrap())(
+                &mut impl_state,
+                &input_ffi_ptr as *const *mut FFI_ArrowArray,
+                1,
+                3,
+                &mut out_arr,
+            )
+        };
+        assert_eq!(rc, C_ABI_ERR);
+        let msg = last_error(&mut impl_state);
+        assert!(msg.contains("panic in UDF code"), "msg: {msg}");
+        assert!(msg.contains("boom in invoke"), "msg: {msg}");
     }
 }

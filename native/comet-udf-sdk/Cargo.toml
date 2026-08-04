@@ -28,14 +28,5 @@ description = "SDK for writing custom Rust UDFs that run inside Apache DataFusio
 
 publish = false
 
-[features]
-# Enable the C ABI flavor (Arrow C Data Interface only, sedona-style).
-c-abi = []
-# Enable the datafusion-ffi flavor (FFI_ScalarUDF / ForeignScalarUDF).
-df-abi = ["dep:datafusion", "dep:datafusion-ffi"]
-default = ["c-abi", "df-abi"]
-
 [dependencies]
 arrow = { workspace = true }
-datafusion = { workspace = true, optional = true }
-datafusion-ffi = { workspace = true, optional = true }
