@@ -22,7 +22,7 @@ package org.apache.comet.shims
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.catalyst.expressions.Literal
 import org.apache.spark.sql.execution.datasources.{FileFormat, PartitionedFile, RowIndexUtil}
-import org.apache.spark.sql.types.StructType
+import org.apache.spark.sql.types.{DataType, StructType}
 
 object ShimFileFormat {
 
@@ -55,9 +55,13 @@ object ShimFileFormat {
       fileFormat: FileFormat): Map[String, PartitionedFile => Any] =
     baseMetadataExtractors
 
+  // dataType is unused on this Spark version; getFileConstantMetadataColumnValue only gained
+  // a dataType parameter in Spark 4.2 (SPARK-56931). Accepted here so callers can pass it
+  // uniformly across Spark versions.
   def getFileConstantMetadataColumnValue(
       name: String,
       file: PartitionedFile,
-      extractors: Map[String, PartitionedFile => Any]): Literal =
+      extractors: Map[String, PartitionedFile => Any],
+      dataType: DataType): Literal =
     Literal(extractors(name)(file))
 }

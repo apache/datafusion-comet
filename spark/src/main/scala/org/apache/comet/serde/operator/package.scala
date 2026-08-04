@@ -76,7 +76,11 @@ package object operator {
       // (`row.update(i, literal.value)`).
       val metadataVals = constantMetadataColumns.map { attr =>
         val value = ShimFileFormat
-          .getFileConstantMetadataColumnValue(attr.name, file, fileConstantMetadataExtractors)
+          .getFileConstantMetadataColumnValue(
+            attr.name,
+            file,
+            fileConstantMetadataExtractors,
+            attr.dataType)
           .value
         literalToProto(Literal(value, attr.dataType), s"metadata column value for ${attr.name}")
       }

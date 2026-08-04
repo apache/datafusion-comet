@@ -51,7 +51,7 @@ import org.apache.comet.iceberg.{CometIcebergNativeScanMetadata, IcebergReflecti
 import org.apache.comet.objectstore.NativeConfig
 import org.apache.comet.parquet.CometParquetUtils.{encryptionEnabled, isEncryptionConfigSupported}
 import org.apache.comet.serde.operator.{CometIcebergNativeScan, CometNativeScan}
-import org.apache.comet.shims.{CometTypeShim, ShimCometStreaming, ShimSubqueryBroadcast}
+import org.apache.comet.shims.{CometTypeShim, ShimCometStreaming, ShimFileFormat, ShimSubqueryBroadcast}
 
 /**
  * Spark physical optimizer rule for replacing Spark scans with Comet scans.
@@ -282,8 +282,12 @@ case class CometScanRule(session: SparkSession)
         }))) {
       withFallbackReason(
         scanExec,
-        "Native DataFusion scan is not compatible with input_file_name, " +
+        "Native Parquet scan is not compatible with input_file_name, " +
           "input_file_block_start, or input_file_block_length")
+      return None
+    }
+    if (ShimFileFormat.findRowIndexColumnIndexInSchema(scanExec.requiredSchema) >= 0) {
+      withFallbackReason(scanExec, "Native Parquet scan does not support row index generation")
       return None
     }
     if (!isSchemaSupported(scanExec, r)) {

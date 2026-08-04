@@ -23,7 +23,7 @@ import org.apache.spark.sql.catalyst.expressions.Literal
 import org.apache.spark.sql.execution.datasources.{FileFormat, PartitionedFile}
 import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
 import org.apache.spark.sql.execution.datasources.parquet.ParquetRowIndexUtil
-import org.apache.spark.sql.types.StructType
+import org.apache.spark.sql.types.{DataType, StructType}
 
 object ShimFileFormat {
   // A name for a temporary column that holds row indexes computed by the file format reader
@@ -37,9 +37,12 @@ object ShimFileFormat {
       fileFormat: FileFormat): Map[String, PartitionedFile => Any] =
     fileFormat.fileConstantMetadataExtractors
 
+  // Spark 4.2 (SPARK-56931) added a required dataType parameter so complex constant metadata
+  // values go through Literal.create instead of Literal.apply's type inference.
   def getFileConstantMetadataColumnValue(
       name: String,
       file: PartitionedFile,
-      extractors: Map[String, PartitionedFile => Any]): Literal =
-    FileFormat.getFileConstantMetadataColumnValue(name, file, extractors)
+      extractors: Map[String, PartitionedFile => Any],
+      dataType: DataType): Literal =
+    FileFormat.getFileConstantMetadataColumnValue(name, file, extractors, dataType)
 }
