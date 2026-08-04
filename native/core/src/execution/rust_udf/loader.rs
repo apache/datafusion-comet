@@ -53,11 +53,16 @@ impl std::fmt::Debug for LoadedUdf {
 pub struct LoadedLibrary {
     /// Canonicalized path the library was loaded from.
     pub path: PathBuf,
+    /// One entry per UDF, with name and ScalarUDFImpl already built.
+    ///
+    /// Declared before `library` on purpose. Struct fields drop in
+    /// declaration order, and each UDF's drop calls a `release` callback
+    /// that lives in the library's text: unloading first would call
+    /// through a dangling pointer.
+    pub udfs: Vec<LoadedUdf>,
     /// The loaded `Library`. Held inside an `Arc` so loaded UDFs can
     /// outlive lookups. Library is never unloaded for the process lifetime.
     pub library: Arc<Library>,
-    /// One entry per UDF, with name and ScalarUDFImpl already built.
-    pub udfs: Vec<LoadedUdf>,
 }
 
 impl std::fmt::Debug for LoadedLibrary {
