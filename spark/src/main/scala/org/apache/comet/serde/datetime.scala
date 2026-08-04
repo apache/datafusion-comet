@@ -79,7 +79,7 @@ trait CometExprGetDateField[T <: GetDateField] {
               .build())
           .build()
       })
-    optExprWithFallbackReason(optExpr, expr, expr.child)
+    optExpr
   }
 }
 
@@ -137,7 +137,7 @@ object CometDayOfWeek
           .build()
       }
       .headOption
-    optExprWithFallbackReason(optExpr, expr, expr.child)
+    optExpr
   }
 }
 
@@ -166,7 +166,7 @@ object CometWeekDay extends CometExpressionSerde[WeekDay] with CometExprGetDateF
           .build()
       }
       .headOption
-    optExprWithFallbackReason(optExpr, expr, expr.child)
+    optExpr
   }
 }
 
@@ -222,7 +222,6 @@ object CometHour extends CometExpressionSerde[Hour] {
           .setHour(builder)
           .build())
     } else {
-      withFallbackReason(expr, expr.child)
       None
     }
   }
@@ -249,7 +248,6 @@ object CometMinute extends CometExpressionSerde[Minute] {
           .setMinute(builder)
           .build())
     } else {
-      withFallbackReason(expr, expr.child)
       None
     }
   }
@@ -276,7 +274,6 @@ object CometSecond extends CometExpressionSerde[Second] {
           .setSecond(builder)
           .build())
     } else {
-      withFallbackReason(expr, expr.child)
       None
     }
   }
@@ -348,7 +345,6 @@ object CometUnixTimestamp extends CometExpressionSerde[UnixTimestamp] {
           .setUnixTimestamp(builder)
           .build())
     } else {
-      withFallbackReason(expr, expr.children.head)
       None
     }
   }
@@ -383,7 +379,7 @@ object CometFromUTCTimestamp
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     val childExprs = expr.children.map(exprToProtoInternal(_, inputs, binding))
     val optExpr = scalarFunctionExprToProto("from_utc_timestamp", childExprs: _*)
-    optExprWithFallbackReason(optExpr, expr, expr.children: _*)
+    optExpr
   }
 }
 
@@ -403,7 +399,7 @@ object CometToUTCTimestamp
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     val childExprs = expr.children.map(exprToProtoInternal(_, inputs, binding))
     val optExpr = scalarFunctionExprToProto("to_utc_timestamp", childExprs: _*)
-    optExprWithFallbackReason(optExpr, expr, expr.children: _*)
+    optExpr
   }
 }
 
@@ -434,7 +430,7 @@ object CometConvertTimezone
     val ts = exprToProtoInternal(expr.sourceTs, inputs, binding)
     val toUtc = scalarFunctionExprToProto("to_utc_timestamp", ts, srcTz)
     val fromUtc = scalarFunctionExprToProto("from_utc_timestamp", toUtc, tgtTz)
-    optExprWithFallbackReason(fromUtc, expr, expr.children: _*)
+    fromUtc
   }
 }
 
@@ -450,6 +446,12 @@ object CometNextDay extends CometExpressionSerde[NextDay] {
   override def getIncompatibleReasons(): Seq[String] =
     DatetimeCollation.incompatibleReasons("next_day")
 
+  override def getCompatibleNotes(): Seq[String] = Seq(
+    "Under ANSI mode, an invalid `dayOfWeek` surfaces as `CometNativeException` rather than" +
+      " Spark's `SparkIllegalArgumentException` with error class `ILLEGAL_DAY_OF_WEEK`. The" +
+      " throw/NULL decision is correct; only the exception class and error class differ" +
+      " ([#5073](https://github.com/apache/datafusion-comet/issues/5073)).")
+
   override def getSupportLevel(expr: NextDay): SupportLevel = {
     if (DatetimeCollation.hasNonDefaultCollation(expr)) {
       Incompatible(Some(collationReason))
@@ -464,7 +466,7 @@ object CometNextDay extends CometExpressionSerde[NextDay] {
       DateType,
       expr.failOnError,
       childExpr: _*)
-    optExprWithFallbackReason(optExpr, expr, expr.children: _*)
+    optExpr
   }
 }
 
@@ -475,6 +477,14 @@ object CometMakeDate extends CometExpressionSerde[MakeDate] {
    * `(year, month, day)` triple rather than returning NULL. The resolved flag is passed to native
    * via the `ScalarFunc.fail_on_error` field.
    */
+
+  override def getCompatibleNotes(): Seq[String] = Seq(
+    "Under ANSI mode, an out-of-range `(year, month, day)` triple surfaces as" +
+      " `CometNativeException` rather than Spark's `SparkDateTimeException` with error class" +
+      " `DATETIME_FIELD_OUT_OF_BOUNDS.WITH_SUGGESTION`. The throw/NULL decision is correct;" +
+      " only the exception class and error class differ" +
+      " ([#5073](https://github.com/apache/datafusion-comet/issues/5073)).")
+
   override def convert(expr: MakeDate, inputs: Seq[Attribute], binding: Boolean): Option[Expr] = {
     val childExpr = expr.children.map(exprToProtoInternal(_, inputs, binding))
     val optExpr = scalarFunctionExprToProtoWithReturnType(
@@ -482,7 +492,7 @@ object CometMakeDate extends CometExpressionSerde[MakeDate] {
       DateType,
       expr.failOnError,
       childExpr: _*)
-    optExprWithFallbackReason(optExpr, expr, expr.children: _*)
+    optExpr
   }
 }
 
@@ -529,7 +539,7 @@ object CometUnixDate extends CometExpressionSerde[UnixDate] {
             .build())
         .build()
     }
-    optExprWithFallbackReason(optExpr, expr, expr.child)
+    optExpr
   }
 }
 
@@ -583,7 +593,7 @@ object CometTruncDate extends CometExpressionSerde[TruncDate] with CodegenDispat
         false,
         childExpr,
         formatExpr)
-    optExprWithFallbackReason(optExpr, expr, expr.date, expr.format)
+    optExpr
   }
 }
 
@@ -673,7 +683,6 @@ object CometTruncTimestamp
           .setTruncTimestamp(builder)
           .build())
     } else {
-      withFallbackReason(expr, expr.timestamp, expr.format)
       None
     }
   }
@@ -797,7 +806,7 @@ object CometDateFormat
         false,
         childExpr,
         formatExpr)
-      optExprWithFallbackReason(optExpr, expr, expr.left, expr.right)
+      optExpr
     } else {
       // Hand the full `DateFormatClass` (with `timeZoneId` already stamped by `ResolveTimeZone`)
       // to the codegen dispatcher. It closure-serializes the bound tree, so non-UTC timezones
@@ -837,7 +846,7 @@ object CometHours extends CometExpressionSerde[Hours] {
         .setHoursTransform(builder)
         .build()
     }
-    optExprWithFallbackReason(optExpr, expr, expr.child)
+    optExpr
   }
 }
 
@@ -894,7 +903,7 @@ object CometDays extends CometExpressionSerde[Days] {
         .build()
     }
 
-    optExprWithFallbackReason(optExpr, expr, expr.child)
+    optExpr
   }
 }
 
@@ -1003,6 +1012,6 @@ object CometPreciseTimestampConversion extends CometExpressionSerde[PreciseTimes
         .setDatatype(dataType)
       ExprOuterClass.Expr.newBuilder().setPreciseTimestampConversion(builder).build()
     }
-    optExprWithFallbackReason(optExpr, expr, expr.child)
+    optExpr
   }
 }

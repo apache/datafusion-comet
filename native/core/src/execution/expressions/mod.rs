@@ -20,6 +20,7 @@
 pub mod arithmetic;
 pub mod bitwise;
 pub mod comparison;
+pub mod list_empty_to_null;
 pub mod list_positions;
 pub mod logical;
 pub mod nullcheck;
