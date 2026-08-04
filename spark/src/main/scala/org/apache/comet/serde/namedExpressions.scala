@@ -21,7 +21,7 @@ package org.apache.comet.serde
 
 import org.apache.spark.sql.catalyst.expressions.{Alias, Attribute, AttributeReference, BindReferences, BoundReference}
 
-import org.apache.comet.CometSparkSessionExtensions.withInfo
+import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, serializeDataType}
 
 object CometAlias extends CometExpressionSerde[Alias] {
@@ -31,60 +31,62 @@ object CometAlias extends CometExpressionSerde[Alias] {
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     val r = exprToProtoInternal(a.child, inputs, binding)
     if (r.isEmpty) {
-      withInfo(a, a.child)
+      withFallbackReason(a, a.child)
     }
     r
   }
 }
 
 object CometAttributeReference extends CometExpressionSerde[AttributeReference] {
+  override def getSupportLevel(attr: AttributeReference): SupportLevel = {
+    if (serializeDataType(attr.dataType).isDefined) {
+      Compatible()
+    } else {
+      Unsupported(Some(s"unsupported datatype: ${attr.dataType}"))
+    }
+  }
+
   override def convert(
       attr: AttributeReference,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val dataType = serializeDataType(attr.dataType)
+    val dataType = serializeDataType(attr.dataType).get
 
-    if (dataType.isDefined) {
-      if (binding) {
-        // Spark may produce unresolvable attributes in some cases,
-        // for example https://github.com/apache/datafusion-comet/issues/925.
-        // So, we allow the binding to fail.
-        val boundRef: Any = BindReferences
-          .bindReference(attr, inputs, allowFailures = true)
+    if (binding) {
+      // Spark may produce unresolvable attributes in some cases,
+      // for example https://github.com/apache/datafusion-comet/issues/925.
+      // So, we allow the binding to fail.
+      val boundRef: Any = BindReferences
+        .bindReference(attr, inputs, allowFailures = true)
 
-        if (boundRef.isInstanceOf[AttributeReference]) {
-          withInfo(attr, s"cannot resolve $attr among ${inputs.mkString(", ")}")
-          return None
-        }
-
-        val boundExpr = ExprOuterClass.BoundReference
-          .newBuilder()
-          .setIndex(boundRef.asInstanceOf[BoundReference].ordinal)
-          .setDatatype(dataType.get)
-          .build()
-
-        Some(
-          ExprOuterClass.Expr
-            .newBuilder()
-            .setBound(boundExpr)
-            .build())
-      } else {
-        val unboundRef = ExprOuterClass.UnboundReference
-          .newBuilder()
-          .setName(attr.name)
-          .setDatatype(dataType.get)
-          .build()
-
-        Some(
-          ExprOuterClass.Expr
-            .newBuilder()
-            .setUnbound(unboundRef)
-            .build())
+      if (boundRef.isInstanceOf[AttributeReference]) {
+        withFallbackReason(attr, s"cannot resolve $attr among ${inputs.mkString(", ")}")
+        return None
       }
-    } else {
-      withInfo(attr, s"unsupported datatype: ${attr.dataType}")
-      None
-    }
 
+      val boundExpr = ExprOuterClass.BoundReference
+        .newBuilder()
+        .setIndex(boundRef.asInstanceOf[BoundReference].ordinal)
+        .setDatatype(dataType)
+        .build()
+
+      Some(
+        ExprOuterClass.Expr
+          .newBuilder()
+          .setBound(boundExpr)
+          .build())
+    } else {
+      val unboundRef = ExprOuterClass.UnboundReference
+        .newBuilder()
+        .setName(attr.name)
+        .setDatatype(dataType)
+        .build()
+
+      Some(
+        ExprOuterClass.Expr
+          .newBuilder()
+          .setUnbound(unboundRef)
+          .build())
+    }
   }
 }

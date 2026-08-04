@@ -19,18 +19,22 @@
 
 pub use crate::errors::ExecutionError;
 
+pub use aligned_stream_reader::*;
 pub use copy::*;
 pub use iceberg_scan::*;
 pub use scan::*;
 
+mod aligned_stream_reader;
 mod copy;
 mod expand;
 pub use expand::ExpandExec;
 mod iceberg_scan;
 mod parquet_writer;
-pub use parquet_writer::ParquetWriterExec;
+pub use parquet_writer::{ParquetCompression, ParquetWriterExec};
 mod csv_scan;
 pub mod projection;
+mod sample;
+pub use sample::SampleExec;
 mod scan;
 mod shuffle_scan;
 pub use csv_scan::init_csv_datasource_exec;

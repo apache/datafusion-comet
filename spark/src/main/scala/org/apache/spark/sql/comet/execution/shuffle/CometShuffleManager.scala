@@ -231,6 +231,7 @@ class CometShuffleManager(conf: SparkConf) extends ShuffleManager with Logging {
       case cometShuffleHandle: CometNativeShuffleHandle[K @unchecked, V @unchecked] =>
         val dep = cometShuffleHandle.dependency.asInstanceOf[CometShuffleDependency[_, _, _]]
         new CometNativeShuffleWriter(
+          dep.nativeShuffleSpec.get,
           dep.outputPartitioning.get,
           dep.outputAttributes,
           dep.shuffleWriteMetrics,
@@ -302,9 +303,10 @@ object CometShuffleManager extends Logging {
       val partitionCond = SortShuffleWriter.shouldBypassMergeSort(conf, dep)
 
       // Bypass merge sort if we have partition * cores fewer than
-      // `spark.comet.columnar.shuffle.async.max.thread.num`
+      // `spark.comet.shuffle.jvm.maxWritersPerExecutor`
       val executorCores = conf.get(config.EXECUTOR_CORES)
-      val maxThreads = CometConf.COMET_COLUMNAR_SHUFFLE_ASYNC_MAX_THREAD_NUM.get(SQLConf.get)
+      val maxThreads =
+        CometConf.COMET_SHUFFLE_JVM_MAX_WRITERS_PER_EXECUTOR.get(SQLConf.get)
       val threadCond = dep.partitioner.numPartitions * executorCores <= maxThreads
 
       // Comet columnar shuffle buffers rows in memory. If too many cores are used with

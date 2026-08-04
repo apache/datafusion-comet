@@ -16,7 +16,9 @@
 // under the License.
 
 mod from_json;
+mod json_array_length;
 mod to_json;
 
 pub use from_json::FromJson;
+pub use json_array_length::JsonArrayLength;
 pub use to_json::ToJson;

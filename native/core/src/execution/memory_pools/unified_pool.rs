@@ -16,7 +16,7 @@
 // under the License.
 
 use std::{
-    fmt::{Debug, Formatter, Result as FmtResult},
+    fmt::{Debug, Display, Formatter, Result as FmtResult},
     sync::{
         atomic::{AtomicUsize, Ordering::Relaxed},
         Arc,
@@ -90,10 +90,24 @@ impl Drop for CometUnifiedMemoryPool {
     }
 }
 
+impl Display for CometUnifiedMemoryPool {
+    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
+        write!(
+            f,
+            "CometUnifiedMemoryPool(used={})",
+            self.used.load(Relaxed)
+        )
+    }
+}
+
 unsafe impl Send for CometUnifiedMemoryPool {}
 unsafe impl Sync for CometUnifiedMemoryPool {}
 
 impl MemoryPool for CometUnifiedMemoryPool {
+    fn name(&self) -> &str {
+        "CometUnifiedMemoryPool"
+    }
+
     fn grow(&self, reservation: &MemoryReservation, additional: usize) {
         self.try_grow(reservation, additional).unwrap();
     }

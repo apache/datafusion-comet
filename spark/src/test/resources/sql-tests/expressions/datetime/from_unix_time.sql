@@ -15,21 +15,23 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
+-- Routes from_unixtime through the codegen dispatcher so it stays native and matches Spark.
+
 statement
 CREATE TABLE test_from_unix_time(t long) USING parquet
 
 statement
 INSERT INTO test_from_unix_time VALUES (0), (1718451045), (-1), (NULL), (2147483647)
 
-query expect_fallback(not fully compatible with Spark)
+query
 SELECT from_unixtime(t) FROM test_from_unix_time
 
-query expect_fallback(not fully compatible with Spark)
+query
 SELECT from_unixtime(t, 'yyyy-MM-dd') FROM test_from_unix_time
 
 -- literal arguments
-query expect_fallback(not fully compatible with Spark)
+query
 SELECT from_unixtime(0)
 
-query expect_fallback(not fully compatible with Spark)
+query
 SELECT from_unixtime(1718451045, 'yyyy-MM-dd')

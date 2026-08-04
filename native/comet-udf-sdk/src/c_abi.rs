@@ -84,9 +84,8 @@ pub struct CometCScalarKernel {
 
     /// Initialize a new [`CometCScalarKernelImpl`] into `out`. Called once
     /// per execution, on the thread that will then drive `init`/`execute`.
-    pub new_impl: Option<
-        unsafe extern "C" fn(*const CometCScalarKernel, out: *mut CometCScalarKernelImpl),
-    >,
+    pub new_impl:
+        Option<unsafe extern "C" fn(*const CometCScalarKernel, out: *mut CometCScalarKernelImpl)>,
 
     /// Release this kernel. After release, all callbacks must be set to
     /// `None`. Called when the host's `LoadedLibrary` is dropped.
@@ -176,8 +175,7 @@ pub struct CometCScalarKernelImpl {
     ///
     /// Returns NULL if there is no error. The pointer is valid until the
     /// next call to any method on this instance (or `release`).
-    pub get_last_error:
-        Option<unsafe extern "C" fn(*mut CometCScalarKernelImpl) -> *const c_char>,
+    pub get_last_error: Option<unsafe extern "C" fn(*mut CometCScalarKernelImpl) -> *const c_char>,
 
     /// Release this instance. After release `release` must be `None`.
     pub release: Option<unsafe extern "C" fn(*mut CometCScalarKernelImpl)>,
@@ -228,7 +226,11 @@ pub struct CometCScalarKernelList {
 
 impl Default for CometCScalarKernelList {
     fn default() -> Self {
-        Self { kernels: std::ptr::null_mut(), len: 0, release: None }
+        Self {
+            kernels: std::ptr::null_mut(),
+            len: 0,
+            release: None,
+        }
     }
 }
 
@@ -332,9 +334,7 @@ unsafe extern "C" fn c_factory_release(this: *mut CometCScalarKernel) {
     if !this_ref.private_data.is_null() {
         // SAFETY: private_data was set via Box::into_raw in
         // From<ExportedScalarKernel>; reclaim and drop.
-        let _ = unsafe {
-            Box::from_raw(this_ref.private_data as *mut ExportedScalarKernel)
-        };
+        let _ = unsafe { Box::from_raw(this_ref.private_data as *mut ExportedScalarKernel) };
         this_ref.private_data = std::ptr::null_mut();
     }
     this_ref.function_name = None;
@@ -398,23 +398,19 @@ unsafe extern "C" fn c_kernel_init(
     }
 
     match priv_ref.inner.return_field(&fields) {
-        Ok(ret_field) => {
-            match FFI_ArrowSchema::try_from(&ret_field) {
-                Ok(ffi_schema) => {
-                    unsafe { std::ptr::write(out, ffi_schema) };
-                    priv_ref.last_arg_fields = Some(fields);
-                    priv_ref.last_return_field = Some(ret_field);
-                    0
-                }
-                Err(e) => {
-                    priv_ref.last_error = std::ffi::CString::new(format!(
-                        "encoding return type: {e}"
-                    ))
-                    .unwrap_or_default();
-                    C_ABI_ERR
-                }
+        Ok(ret_field) => match FFI_ArrowSchema::try_from(&ret_field) {
+            Ok(ffi_schema) => {
+                unsafe { std::ptr::write(out, ffi_schema) };
+                priv_ref.last_arg_fields = Some(fields);
+                priv_ref.last_return_field = Some(ret_field);
+                0
             }
-        }
+            Err(e) => {
+                priv_ref.last_error = std::ffi::CString::new(format!("encoding return type: {e}"))
+                    .unwrap_or_default();
+                C_ABI_ERR
+            }
+        },
         Err(msg) => {
             priv_ref.last_error = std::ffi::CString::new(msg).unwrap_or_default();
             C_ABI_ERR
@@ -456,7 +452,7 @@ unsafe extern "C" fn c_kernel_execute(
     // Take ownership of each input FFI_ArrowArray.
     let n = n_args as usize;
     let mut arrays: Vec<ArrayRef> = Vec::with_capacity(n);
-    for i in 0..n {
+    for (i, arg_field) in arg_fields.iter().enumerate().take(n) {
         let raw = unsafe { *args.add(i) };
         if raw.is_null() {
             priv_ref.last_error =
@@ -468,14 +464,12 @@ unsafe extern "C" fn c_kernel_execute(
         // take ownership by reading and zeroing it.
         let owned = unsafe { std::ptr::read(raw) };
         unsafe { std::ptr::write(raw, FFI_ArrowArray::empty()) };
-        let dt = arg_fields[i].data_type().clone();
+        let dt = arg_field.data_type().clone();
         let data = match unsafe { arrow::ffi::from_ffi_and_data_type(owned, dt) } {
             Ok(d) => d,
             Err(e) => {
-                priv_ref.last_error = std::ffi::CString::new(format!(
-                    "arg #{i} from_ffi: {e}"
-                ))
-                .unwrap_or_default();
+                priv_ref.last_error =
+                    std::ffi::CString::new(format!("arg #{i} from_ffi: {e}")).unwrap_or_default();
                 return C_ABI_ERR;
             }
         };
@@ -508,9 +502,7 @@ unsafe extern "C" fn c_kernel_execute(
     0
 }
 
-unsafe extern "C" fn c_kernel_get_last_error(
-    this: *mut CometCScalarKernelImpl,
-) -> *const c_char {
+unsafe extern "C" fn c_kernel_get_last_error(this: *mut CometCScalarKernelImpl) -> *const c_char {
     debug_assert!(!this.is_null());
     let this_ref = unsafe { &*this };
     let priv_ptr = this_ref.private_data as *mut ExportedScalarKernelImpl;
@@ -525,9 +517,7 @@ unsafe extern "C" fn c_kernel_release(this: *mut CometCScalarKernelImpl) {
     debug_assert!(!this.is_null());
     let this_ref = unsafe { &mut *this };
     if !this_ref.private_data.is_null() {
-        let _ = unsafe {
-            Box::from_raw(this_ref.private_data as *mut ExportedScalarKernelImpl)
-        };
+        let _ = unsafe { Box::from_raw(this_ref.private_data as *mut ExportedScalarKernelImpl) };
         this_ref.private_data = std::ptr::null_mut();
     }
     this_ref.init = None;
@@ -567,9 +557,7 @@ unsafe extern "C" fn c_list_release(list: *mut CometCScalarKernelList) {
     // SAFETY: kernels was a Box<[CometCScalarKernel]> turned into raw ptr +
     // forgotten in build_kernel_list; reconstruct and drop. Each kernel's
     // own Drop runs its `release` callback.
-    let _ = unsafe {
-        Box::from_raw(std::slice::from_raw_parts_mut(list_ref.kernels, len))
-    };
+    let _ = unsafe { Box::from_raw(std::ptr::slice_from_raw_parts_mut(list_ref.kernels, len)) };
     list_ref.kernels = std::ptr::null_mut();
     list_ref.len = 0;
     list_ref.release = None;
@@ -678,8 +666,7 @@ mod tests {
         assert_eq!(out_field.data_type(), &DataType::Int64);
 
         // execute.
-        let input: Arc<dyn arrow::array::Array> =
-            Arc::new(Int64Array::from(vec![1, 2, 3]));
+        let input: Arc<dyn arrow::array::Array> = Arc::new(Int64Array::from(vec![1, 2, 3]));
         let mut input_ffi = FFI_ArrowArray::new(&input.to_data());
         let input_ffi_ptr: *mut FFI_ArrowArray = &mut input_ffi;
         let mut out_arr = FFI_ArrowArray::empty();

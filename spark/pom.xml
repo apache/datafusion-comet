@@ -26,7 +26,7 @@ under the License.
   <parent>
     <groupId>org.apache.datafusion</groupId>
     <artifactId>comet-parent-spark${spark.version.short}_${scala.binary.version}</artifactId>
-    <version>0.17.0-SNAPSHOT</version>
+    <version>1.1.0-SNAPSHOT</version>
     <relativePath>../pom.xml</relativePath>
   </parent>
 
@@ -106,6 +106,13 @@ under the License.
       <groupId>org.apache.spark</groupId>
       <artifactId>spark-hadoop-cloud_${scala.binary.version}</artifactId>
       <classifier>tests</classifier>
+    </dependency>
+    <dependency>
+      <!-- Test-only: provides an embedded Hive metastore so Iceberg's type=hive catalog can
+           create encrypted tables (only Hive wires the KMS-backed EncryptionManager). Version and
+           scope come from the parent pom's dependencyManagement. -->
+      <groupId>org.apache.spark</groupId>
+      <artifactId>spark-hive_${scala.binary.version}</artifactId>
     </dependency>
     <dependency>
       <groupId>junit</groupId>
@@ -203,7 +210,7 @@ under the License.
   </dependencies>
 
   <profiles>
-    <!-- Iceberg dependencies vary by Spark version (Iceberg 1.8.1 for Spark 3.x, 1.10.0 for Spark 4.0) -->
+    <!-- Iceberg dependencies vary by Spark version (Iceberg 1.8.1 for Spark 3.x, 1.10.0 for Spark 4.0, 1.11.0 for Spark 4.1) -->
     <profile>
       <id>spark-3.4</id>
       <dependencies>
@@ -284,14 +291,13 @@ under the License.
         <activeByDefault>true</activeByDefault>
       </activation>
       <dependencies>
-        <!-- iceberg-spark-runtime-4.1 is not yet published; reuse the 4.0 runtime -->
         <dependency>
           <groupId>org.apache.iceberg</groupId>
-          <artifactId>iceberg-spark-runtime-4.0_${scala.binary.version}</artifactId>
-          <version>1.10.0</version>
+          <artifactId>iceberg-spark-runtime-${spark.version.short}_${scala.binary.version}</artifactId>
+          <version>1.11.0</version>
           <scope>test</scope>
         </dependency>
-        <!-- Jetty 11.x for Spark 4.1 (jakarta.servlet); matches Spark 4.1.1's jetty.version -->
+        <!-- Jetty 11.x for Spark 4.1 (jakarta.servlet); matches Spark 4.1.3's jetty.version -->
         <dependency>
           <groupId>org.eclipse.jetty</groupId>
           <artifactId>jetty-server</artifactId>
@@ -316,7 +322,9 @@ under the License.
           <version>1.10.0</version>
           <scope>test</scope>
         </dependency>
-        <!-- Jetty 11.x for Spark 4.2 (jakarta.servlet); matches Spark 4.2.0-preview4's jetty.version -->
+        <!-- Jetty 11.x for Spark 4.2 (jakarta.servlet). Spark 4.2.0 itself ships Jetty 12, but
+             the Iceberg REST catalog test helper needs jetty-servlet, which Jetty 12 replaced
+             with the jetty-ee10-servlet artifact, so the test classpath stays on 11.x. -->
         <dependency>
           <groupId>org.eclipse.jetty</groupId>
           <artifactId>jetty-server</artifactId>
@@ -469,14 +477,13 @@ under the License.
                   <pattern>org.apache.arrow</pattern>
                   <shadedPattern>${comet.shade.packageName}.arrow</shadedPattern>
                   <excludes>
-                    <!-- These classes are referenced from Arrow JNI native code and must stay
-                       at their original package paths. They have no extra dependencies so the
-                       exclusion is safe. -->
-                    <exclude>org/apache/arrow/c/jni/JniWrapper</exclude>
-                    <exclude>org/apache/arrow/c/jni/PrivateData</exclude>
-                    <exclude>org/apache/arrow/c/jni/CDataJniException</exclude>
-                    <!-- Also required by JNI per upstream Arrow C++ jni_wrapper.cc -->
-                    <exclude>org/apache/arrow/c/ArrayStreamExporter$ExportedArrayStreamPrivateData</exclude>
+                    <!-- Keep the entire C Data Interface unshaded. Spark does not ship
+                       arrow-c-data, so no classpath clash is possible. Shading a subset
+                       splits package-private access between the shaded and original
+                       packages (e.g. Data -> ArrayStreamExporter constructor) and breaks
+                       JNI lookups in jni_wrapper.cc that reference these classes by literal
+                       name. -->
+                    <exclude>org/apache/arrow/c/**</exclude>
                   </excludes>
                 </relocation>
                 <relocation>
@@ -529,6 +536,7 @@ under the License.
             <configuration>
               <sources>
                 <source>src/test/${shims.majorVerSrc}</source>
+                <source>src/test/${shims.minorPlusVerSrc}</source>
                 <source>src/test/${shims.minorVerSrc}</source>
               </sources>
             </configuration>
@@ -542,6 +550,7 @@ under the License.
             <configuration>
               <sources>
                 <source>src/main/${shims.majorVerSrc}</source>
+                <source>src/main/${shims.minorPlusVerSrc}</source>
                 <source>src/main/${shims.minorVerSrc}</source>
               </sources>
             </configuration>

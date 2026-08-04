@@ -57,15 +57,12 @@ pub extern "system" fn Java_org_apache_comet_udf_CometRustUdfBridge_validateLibr
         let name: String = expected_name
             .try_to_string(env)
             .map_err(|e| CometError::Internal(e.to_string()))?;
-        let lib = get_or_load(&path)
-            .map_err(|e| CometError::Internal(e.to_string()))?;
+        let lib = get_or_load(&path).map_err(|e| CometError::Internal(e.to_string()))?;
         let udf = lib
             .udfs
             .iter()
             .find(|u| u.name == name)
-            .ok_or_else(|| {
-                CometError::Internal(format!("UDF '{name}' not found in {path}"))
-            })?;
+            .ok_or_else(|| CometError::Internal(format!("UDF '{name}' not found in {path}")))?;
         let json = udf_to_json(udf).to_string();
         let jstr = env
             .new_string(json)
@@ -85,8 +82,7 @@ pub extern "system" fn Java_org_apache_comet_udf_CometRustUdfBridge_listUdfs(
         let path: String = library_path
             .try_to_string(env)
             .map_err(|e| CometError::Internal(e.to_string()))?;
-        let lib = get_or_load(&path)
-            .map_err(|e| CometError::Internal(e.to_string()))?;
+        let lib = get_or_load(&path).map_err(|e| CometError::Internal(e.to_string()))?;
         let entries: Vec<serde_json::Value> = lib.udfs.iter().map(udf_to_json).collect();
         let json = serde_json::Value::Array(entries).to_string();
         let jstr = env

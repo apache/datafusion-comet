@@ -125,7 +125,11 @@ impl std::fmt::Display for LoaderError {
         use LoaderError::*;
         match self {
             Open { path, source } => write!(f, "failed to open {}: {source}", path.display()),
-            AbiMismatch { path, found, expected } => match found {
+            AbiMismatch {
+                path,
+                found,
+                expected,
+            } => match found {
                 Some(v) => write!(
                     f,
                     "{} reports ABI v{v}, host expects v{expected}",
@@ -163,8 +167,10 @@ pub fn load(path: impl AsRef<Path>) -> Result<LoadedLibrary, LoaderError> {
     // SAFETY: `Library::new` runs the cdylib's static initializers. We
     // accept this risk because user UDF cdylibs are explicitly registered
     // by an operator via `CometRustUDF.register`.
-    let library = unsafe { Library::new(&path) }
-        .map_err(|source| LoaderError::Open { path: path.clone(), source })?;
+    let library = unsafe { Library::new(&path) }.map_err(|source| LoaderError::Open {
+        path: path.clone(),
+        source,
+    })?;
 
     // ABI version probe.
     let v = read_abi_version(&library, &path)?;
@@ -209,27 +215,24 @@ pub fn load(path: impl AsRef<Path>) -> Result<LoadedLibrary, LoaderError> {
 }
 
 fn read_abi_version(lib: &Library, path: &Path) -> Result<u32, LoaderError> {
-    let sym: Symbol<unsafe extern "C" fn() -> u32> =
-        unsafe { lib.get(ABI_VERSION_SYMBOL.as_bytes()) }
-            .map_err(|_| LoaderError::AbiMismatch {
-                path: path.to_path_buf(),
-                found: None,
-                expected: COMET_UDF_ABI_VERSION,
-            })?;
+    let sym: Symbol<unsafe extern "C" fn() -> u32> = unsafe {
+        lib.get(ABI_VERSION_SYMBOL.as_bytes())
+    }
+    .map_err(|_| LoaderError::AbiMismatch {
+        path: path.to_path_buf(),
+        found: None,
+        expected: COMET_UDF_ABI_VERSION,
+    })?;
     // SAFETY: comet_udf_abi_version takes no arguments, returns u32, no side effects.
     Ok(unsafe { sym() })
 }
 
-fn read_c_kernels(
-    lib: &Library,
-    path: &Path,
-) -> Result<Option<Vec<LoadedUdf>>, LoaderError> {
-    let sym: Symbol<
-        unsafe extern "C" fn(*mut CometCScalarKernelList) -> i32,
-    > = match unsafe { lib.get(C_ABI_DISCOVERY_SYMBOL.as_bytes()) } {
-        Ok(s) => s,
-        Err(_) => return Ok(None),
-    };
+fn read_c_kernels(lib: &Library, path: &Path) -> Result<Option<Vec<LoadedUdf>>, LoaderError> {
+    let sym: Symbol<unsafe extern "C" fn(*mut CometCScalarKernelList) -> i32> =
+        match unsafe { lib.get(C_ABI_DISCOVERY_SYMBOL.as_bytes()) } {
+            Ok(s) => s,
+            Err(_) => return Ok(None),
+        };
     let mut list = CometCScalarKernelList::default();
     // SAFETY: list is caller-allocated; the cdylib writes into it via `out`.
     let rc = unsafe { sym(&mut list) };
@@ -255,10 +258,7 @@ fn read_c_kernels(
             // Replace the slot with a default kernel (no callbacks) so
             // the array's release doesn't double-free.
             unsafe {
-                std::ptr::write(
-                    raw,
-                    comet_udf_sdk::c_abi::CometCScalarKernel::default(),
-                );
+                std::ptr::write(raw, comet_udf_sdk::c_abi::CometCScalarKernel::default());
             }
             let imported = ImportedCScalarUdf::try_new(Box::new(kernel)).map_err(|e| {
                 LoaderError::Discovery {
@@ -278,10 +278,7 @@ fn read_c_kernels(
     Ok(Some(udfs))
 }
 
-fn read_df_udfs(
-    lib: &Library,
-    path: &Path,
-) -> Result<Option<Vec<LoadedUdf>>, LoaderError> {
+fn read_df_udfs(lib: &Library, path: &Path) -> Result<Option<Vec<LoadedUdf>>, LoaderError> {
     let sym: Symbol<unsafe extern "C" fn(*mut CometDfUdfList) -> i32> =
         match unsafe { lib.get(DF_ABI_DISCOVERY_SYMBOL.as_bytes()) } {
             Ok(s) => s,

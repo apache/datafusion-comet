@@ -40,3 +40,34 @@ SELECT make_timestamp(y, mo, d, h, mi, s, 'UTC') FROM test_make_timestamp
 -- literal arguments
 query
 SELECT make_timestamp(2024, 6, 15, 10, 30, 45.000)
+
+-- Invalid components: with the default failOnError=false (ANSI off), out-of-range values must
+-- return NULL, not garbage. The codegen dispatcher previously skipped MakeTimestamp's post-eval
+-- `ev.isNull` guard for this null-intolerant expression and wrote stale ev.value bytes; this
+-- regressed try_make_timestamp (which rewrites to MakeTimestamp(failOnError=false)) and the
+-- non-ANSI MakeTimestamp path. See issue #4554.
+statement
+CREATE TABLE test_make_timestamp_invalid(y int, mo int, d int, h int, mi int, s decimal(8,6)) USING parquet
+
+statement
+INSERT INTO test_make_timestamp_invalid VALUES
+  (2024, 13, 1, 0, 0, 0.0),
+  (2024, 2, 30, 0, 0, 0.0),
+  (2024, 6, 32, 0, 0, 0.0),
+  (2024, 6, 15, 25, 0, 0.0),
+  (2024, 6, 15, 0, 60, 0.0),
+  (2024, 6, 15, 10, 30, 45.0)
+
+query
+SELECT make_timestamp(y, mo, d, h, mi, s) FROM test_make_timestamp_invalid
+
+-- Invalid literal components must also return NULL (not throw, not return garbage).
+query
+SELECT make_timestamp(2024, 13, 1, 0, 0, 0.0)
+
+query
+SELECT make_timestamp(2024, 2, 30, 0, 0, 0.0)
+
+query
+SELECT make_timestamp(2024, 6, 15, 25, 0, 0.0)
+

@@ -106,6 +106,10 @@ struct Args {
     #[arg(long, default_value_t = 1048576)]
     write_buffer_size: usize,
 
+    /// Maximum bytes buffered in memory before spilling (unset = spill on memory pressure only)
+    #[arg(long)]
+    max_buffer_bytes: Option<usize>,
+
     /// Limit rows processed per iteration (0 = no limit)
     #[arg(long, default_value_t = 0)]
     limit: usize,
@@ -277,6 +281,9 @@ fn print_shuffle_metrics(metrics: &MetricsSet, total_wall_time_secs: f64) {
     if let Some(nanos) = get_metric("repart_time") {
         println!("  repart time:      {}", fmt_time(nanos));
     }
+    if let Some(nanos) = get_metric("interleave_time") {
+        println!("  interleave time:  {}", fmt_time(nanos));
+    }
     if let Some(nanos) = get_metric("encode_time") {
         println!("  encode time:      {}", fmt_time(nanos));
     }
@@ -410,6 +417,7 @@ fn run_shuffle_write(
             args.batch_size,
             args.memory_limit,
             args.write_buffer_size,
+            args.max_buffer_bytes,
             args.limit,
             data_file.to_string(),
             index_file.to_string(),
@@ -433,6 +441,7 @@ async fn execute_shuffle_write(
     batch_size: usize,
     memory_limit: Option<usize>,
     write_buffer_size: usize,
+    max_buffer_bytes: Option<usize>,
     limit: usize,
     data_file: String,
     index_file: String,
@@ -477,6 +486,7 @@ async fn execute_shuffle_write(
         index_file,
         false,
         write_buffer_size,
+        max_buffer_bytes,
     )
     .expect("Failed to create ShuffleWriterExec");
 
@@ -540,6 +550,7 @@ fn run_concurrent_shuffle_writes(
             let batch_size = args.batch_size;
             let memory_limit = args.memory_limit;
             let write_buffer_size = args.write_buffer_size;
+            let max_buffer_bytes = args.max_buffer_bytes;
             let limit = args.limit;
 
             handles.push(tokio::spawn(async move {
@@ -550,6 +561,7 @@ fn run_concurrent_shuffle_writes(
                     batch_size,
                     memory_limit,
                     write_buffer_size,
+                    max_buffer_bytes,
                     limit,
                     data_file,
                     index_file,

@@ -72,3 +72,8 @@ SELECT next_day(date('2023-01-01'), 'Monday'), next_day(date('2023-01-01'), 'Sun
 -- null handling
 query
 SELECT next_day(NULL, 'Monday'), next_day(date('2023-01-01'), NULL)
+
+-- whitespace is NOT trimmed before matching the day name (Spark matches character-for-character),
+-- so a padded value does not match any day and yields NULL (non-ANSI), same as Spark.
+query
+SELECT next_day(date('2024-01-01'), ' MO '), next_day(date('2024-01-01'), 'MO ')

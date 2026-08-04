@@ -39,6 +39,7 @@ to read more.
 
    Installing Comet <installation>
    Configuration Settings <configs>
+   Upgrading Comet <migration-guide>
 
 .. toctree::
    :maxdepth: 1
@@ -62,6 +63,7 @@ to read more.
    compatibility/regex
    compatibility/operators
    compatibility/expressions/index
+   compatibility/json
    compatibility/spark-versions
 
 .. toctree::
@@ -72,6 +74,7 @@ to read more.
    Understanding Comet Plans <understanding-comet-plans>
    Tuning Guide <tuning>
    Metrics Guide <metrics>
+   PyArrow UDF Acceleration <pyarrow-udfs>
 
 .. toctree::
    :maxdepth: 1
@@ -79,6 +82,7 @@ to read more.
    :hidden:
 
    Iceberg Guide <iceberg>
+   S3 Credential Providers <s3-credential-providers>
    Kubernetes Guide <kubernetes>
 
 .. toctree::

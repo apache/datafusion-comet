@@ -25,7 +25,6 @@
 //!
 //! Built as `libcomet_test_udfs.{so,dylib}`.
 
-use std::any::Any;
 use std::sync::Arc;
 
 use arrow::array::{ArrayRef, Int64Array};
@@ -98,9 +97,6 @@ impl AddOneDf {
 }
 
 impl ScalarUDFImpl for AddOneDf {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
     fn name(&self) -> &str {
         "add_one_df"
     }

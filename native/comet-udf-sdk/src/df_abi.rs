@@ -67,7 +67,11 @@ pub struct CometDfUdfList {
 
 impl Default for CometDfUdfList {
     fn default() -> Self {
-        Self { udfs: std::ptr::null_mut(), len: 0, release: None }
+        Self {
+            udfs: std::ptr::null_mut(),
+            len: 0,
+            release: None,
+        }
     }
 }
 
@@ -87,8 +91,7 @@ pub fn build_udf_list(udfs: Vec<Arc<ScalarUDF>>) -> CometDfUdfList {
     if udfs.is_empty() {
         return CometDfUdfList::default();
     }
-    let ffi_udfs: Vec<FFI_ScalarUDF> =
-        udfs.into_iter().map(FFI_ScalarUDF::from).collect();
+    let ffi_udfs: Vec<FFI_ScalarUDF> = udfs.into_iter().map(FFI_ScalarUDF::from).collect();
     let mut boxed = ffi_udfs.into_boxed_slice();
     let len = boxed.len() as i64;
     let udfs_ptr = boxed.as_mut_ptr();
@@ -111,9 +114,7 @@ unsafe extern "C" fn c_list_release(list: *mut CometDfUdfList) {
     // SAFETY: udfs was a Box<[FFI_ScalarUDF]> turned into raw ptr +
     // forgotten in build_udf_list. Reconstruct and drop. Each
     // FFI_ScalarUDF entry's Drop runs its own release callback.
-    let _ = unsafe {
-        Box::from_raw(std::slice::from_raw_parts_mut(list_ref.udfs, len))
-    };
+    let _ = unsafe { Box::from_raw(std::ptr::slice_from_raw_parts_mut(list_ref.udfs, len)) };
     list_ref.udfs = std::ptr::null_mut();
     list_ref.len = 0;
     list_ref.release = None;
@@ -172,7 +173,6 @@ mod tests {
         ColumnarValue, ScalarFunctionArgs, ScalarUDF, ScalarUDFImpl, Signature, TypeSignature,
         Volatility,
     };
-    use std::any::Any;
 
     #[derive(Debug, PartialEq, Eq, Hash)]
     struct AddOne {
@@ -189,9 +189,6 @@ mod tests {
         }
     }
     impl ScalarUDFImpl for AddOne {
-        fn as_any(&self) -> &dyn Any {
-            self
-        }
         fn name(&self) -> &str {
             "add_one_df"
         }

@@ -22,7 +22,7 @@ package org.apache.comet.serde
 import org.apache.spark.sql.catalyst.expressions.{Ascending, Attribute, Descending, NullsFirst, NullsLast, SortOrder}
 
 import org.apache.comet.CometConf
-import org.apache.comet.CometSparkSessionExtensions.withInfo
+import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 import org.apache.comet.serde.QueryPlanSerde.exprToProtoInternal
 
 object CometSortOrder extends CometExpressionSerde[SortOrder] {
@@ -32,18 +32,11 @@ object CometSortOrder extends CometExpressionSerde[SortOrder] {
       " floating-point types is not 100% compatible with Spark")
 
   override def getSupportLevel(expr: SortOrder): SupportLevel = {
-
-    if (CometConf.COMET_EXEC_STRICT_FLOATING_POINT.get() &&
-      SupportLevel.containsFloatingPoint(expr.child.dataType)) {
-      // https://github.com/apache/datafusion-comet/issues/2626
-      Incompatible(
-        Some(
-          "Sorting on floating-point is not 100% compatible with Spark, and Comet is running " +
-            s"with ${CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key}=true. " +
-            s"${CometConf.COMPAT_GUIDE}"))
-    } else {
-      Compatible()
-    }
+    // https://github.com/apache/datafusion-comet/issues/2626
+    SupportLevel
+      .strictFloatingPointReason(expr.child.dataType, "Sorting on floating-point")
+      .map(reason => Incompatible(Some(reason)))
+      .getOrElse(Compatible())
   }
 
   override def convert(
@@ -73,7 +66,7 @@ object CometSortOrder extends CometExpressionSerde[SortOrder] {
           .setSortOrder(sortOrderBuilder)
           .build())
     } else {
-      withInfo(expr, expr.child)
+      withFallbackReason(expr, expr.child)
       None
     }
   }

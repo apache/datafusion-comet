@@ -55,13 +55,13 @@ export DF_BENCH=`pwd`
 
 ## Install Spark
 
-Install Apache Spark. This example refers to 4.1.1 version.
+Install Apache Spark. This example refers to 4.1.3 version.
 
 ```shell
-wget https://archive.apache.org/dist/spark/spark-4.1.1/spark-4.1.1-bin-hadoop3.tgz
-tar xzf spark-4.1.1-bin-hadoop3.tgz
-sudo mv spark-4.1.1-bin-hadoop3 /opt
-export SPARK_HOME=/opt/spark-4.1.1-bin-hadoop3/
+wget https://archive.apache.org/dist/spark/spark-4.1.3/spark-4.1.3-bin-hadoop3.tgz
+tar xzf spark-4.1.3-bin-hadoop3.tgz
+sudo mv spark-4.1.3-bin-hadoop3 /opt
+export SPARK_HOME=/opt/spark-4.1.3-bin-hadoop3/
 ```
 
 Start Spark in standalone mode:
@@ -152,10 +152,8 @@ $SPARK_HOME/bin/spark-submit \
     --conf spark.plugins=org.apache.spark.CometPlugin \
     --conf spark.shuffle.manager=org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager \
     --conf spark.comet.enabled=true \
-    --conf spark.comet.exec.shuffle.enableFastEncoding=true \
-    --conf spark.comet.exec.shuffle.fallbackToColumnar=true \
-    --conf spark.comet.exec.replaceSortMergeJoin=true \
-    --conf spark.comet.expression.allowIncompatible=true \
+    --conf spark.comet.shuffle.enabled=true \
+    --conf spark.comet.exec.forceShuffledHashJoin=true \
     $DF_BENCH/runners/datafusion-comet/tpcbench.py \
     --benchmark tpch \
     --data $BENCH_DATA/tpch-data/ \

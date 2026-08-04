@@ -20,27 +20,31 @@
 package org.apache.spark.sql.comet
 
 import java.util.Locale
+import java.util.ServiceLoader
 
 import scala.collection.mutable
 import scala.collection.mutable.ArrayBuffer
 import scala.jdk.CollectionConverters._
+import scala.util.control.NonFatal
 
 import org.apache.spark.{Partition, TaskContext}
 import org.apache.spark.broadcast.Broadcast
+import org.apache.spark.internal.Logging
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Ascending, Attribute, AttributeSet, Expression, ExpressionSet, Generator, NamedExpression, SortOrder}
-import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, AggregateMode, CollectSet, Final, First, Last, Partial, PartialMerge}
+import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, AggregateMode, CollectList, CollectSet, Final, First, Last, Partial, PartialMerge, Percentile}
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide}
 import org.apache.spark.sql.catalyst.plans._
 import org.apache.spark.sql.catalyst.plans.physical._
+import org.apache.spark.sql.comet.execution.arrow.{CometArrowStream, CometNativeArrowSource}
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.{AQEShuffleReadExec, BroadcastQueryStageExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, HashAggregateExec, ObjectHashAggregateExec}
 import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
-import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, HashJoin, ShuffledHashJoinExec, SortMergeJoinExec}
+import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, BroadcastNestedLoopJoinExec, HashJoin, ShuffledHashJoinExec, SortMergeJoinExec}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.types.{ArrayType, BooleanType, ByteType, DataType, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, MapType, ShortType, StringType, TimestampNTZType, TimestampType}
 import org.apache.spark.sql.vectorized.ColumnarBatch
@@ -51,10 +55,10 @@ import com.google.common.base.Objects
 import com.google.protobuf.CodedOutputStream
 
 import org.apache.comet.{CometConf, CometExecIterator, CometRuntimeException, ConfigEntry}
-import org.apache.comet.CometSparkSessionExtensions.{isCometShuffleEnabled, withInfo}
+import org.apache.comet.CometSparkSessionExtensions.{isCometShuffleEnabled, withFallbackReason}
 import org.apache.comet.parquet.CometParquetUtils
 import org.apache.comet.rules.CometExecRule
-import org.apache.comet.serde.{CometOperatorSerde, Compatible, Incompatible, OperatorOuterClass, SupportLevel, Unsupported}
+import org.apache.comet.serde.{CometOperatorSerde, Compatible, Incompatible, OperatorOuterClass, QueryContextInterner, SupportLevel, Unsupported}
 import org.apache.comet.serde.OperatorOuterClass.{AggregateMode => CometAggregateMode, Operator}
 import org.apache.comet.serde.QueryPlanSerde
 import org.apache.comet.serde.QueryPlanSerde.{aggExprToProto, exprToProto, isStringCollationType, supportedSortType}
@@ -67,27 +71,66 @@ import org.apache.comet.serde.operator.CometSink
  */
 private[comet] trait PlanDataInjector {
 
+  /**
+   * Which `OpStructCase` this injector handles. Used by `injectPlanData` for an O(1) pre-filter
+   * so we don't run every injector's `canInject` against every operator in the tree.
+   */
+  def opStructCase: Operator.OpStructCase
+
   /** Check if this injector can handle the given operator. */
   def canInject(op: Operator): Boolean
 
   /** Extract the key used to look up planning data for this operator. */
   def getKey(op: Operator): Option[String]
 
-  /** Inject common + partition data into the operator node. */
+  /**
+   * Inject common + partition data into the operator node.
+   *
+   * Implementations must return the node with its child list unchanged -- `injectPlanData` walks
+   * the returned node's children, and relies on child reference identity to decide which
+   * operators need rebuilding.
+   */
   def inject(op: Operator, commonBytes: Array[Byte], partitionBytes: Array[Byte]): Operator
 }
 
 /**
  * Registry and utilities for injecting per-partition planning data into operator trees.
  */
-private[comet] object PlanDataInjector {
+private[comet] object PlanDataInjector extends Logging {
 
-  // Registry of injectors for different operator types
-  private val injectors: Seq[PlanDataInjector] = Seq(
-    IcebergPlanDataInjector,
-    NativeScanPlanDataInjector
-    // Future: DeltaPlanDataInjector, HudiPlanDataInjector, etc.
-  )
+  // Registry of injectors for different operator types. The built-in injectors live in core.
+  // Out-of-tree contribs (e.g. contrib-delta's `DeltaPlanDataInjector`) are discovered via the
+  // standard JDK `ServiceLoader`: a contrib ships a
+  // `META-INF/services/org.apache.spark.sql.comet.PlanDataInjector` resource naming its
+  // implementation, so it joins the registry without core holding any compile-time reference or
+  // contrib-specific code. Default builds carry no such service file, so discovery yields nothing
+  // and the registry is exactly the built-ins -- zero contrib surface at runtime.
+  private[comet] val injectors: Seq[PlanDataInjector] = {
+    val builtin: Seq[PlanDataInjector] = Seq(IcebergPlanDataInjector, NativeScanPlanDataInjector)
+    val discovered: Seq[PlanDataInjector] =
+      try {
+        ServiceLoader.load(classOf[PlanDataInjector], getClass.getClassLoader).asScala.toSeq
+      } catch {
+        // A misbuilt contrib jar -- a malformed service file, or a listed provider that can't be
+        // instantiated -- surfaces as ServiceConfigurationError while the iterator is forced.
+        // Warn so it's diagnosable, then continue with the built-ins so the planner stays alive.
+        // NonFatal covers ServiceConfigurationError (it is not a LinkageError).
+        case NonFatal(e) =>
+          logWarning(
+            "Failed to load contrib PlanDataInjector services; " +
+              "continuing with built-in injectors only",
+            e)
+          Seq.empty
+      }
+    builtin ++ discovered
+  }
+
+  // O(1) lookup by op kind: most operators in any tree don't match any injector, so the per-op
+  // `for (injector <- injectors if injector.canInject(op))` walk was paying N*M canInject calls
+  // (N operators, M injectors) just to find no match. Keying by OpStructCase lets us skip the
+  // iteration entirely for non-scan operators.
+  private val injectorsByKind: Map[Operator.OpStructCase, PlanDataInjector] =
+    injectors.map(i => i.opStructCase -> i).toMap
 
   /**
    * Injects planning data into an Operator tree by finding nodes that need injection and applying
@@ -95,37 +138,51 @@ private[comet] object PlanDataInjector {
    *
    * Supports joins over multiple tables by matching each operator with its corresponding data
    * based on a key (e.g., metadata_location for Iceberg).
+   *
+   * Operators are immutable protobuf messages, so any subtree needing no injection is returned by
+   * reference rather than rebuilt; only the root-to-scan paths are rebuilt.
    */
   def injectPlanData(
       op: Operator,
       commonByKey: Map[String, Array[Byte]],
       partitionByKey: Map[String, Array[Byte]]): Operator = {
-    val builder = op.toBuilder
 
-    // Try each injector to see if it can handle this operator
-    for (injector <- injectors if injector.canInject(op)) {
-      injector.getKey(op) match {
-        case Some(key) =>
-          (commonByKey.get(key), partitionByKey.get(key)) match {
-            case (Some(commonBytes), Some(partitionBytes)) =>
-              val injectedOp = injector.inject(op, commonBytes, partitionBytes)
-              // Copy the injected operator's fields to our builder
-              builder.clear()
-              builder.mergeFrom(injectedOp)
-            case _ =>
-              throw new CometRuntimeException(s"Missing planning data for key: $key")
-          }
-        case None =>
+    // O(1) by op kind, then a canInject confirm (which may inspect detail fields like `hasCommon`
+    // / `!hasFilePartition`). Most operators in any tree are non-scan and skip the lookup body.
+    val injectedOp = injectorsByKind.get(op.getOpStructCase) match {
+      case Some(injector) if injector.canInject(op) =>
+        injector.getKey(op) match {
+          case Some(key) =>
+            (commonByKey.get(key), partitionByKey.get(key)) match {
+              case (Some(commonBytes), Some(partitionBytes)) =>
+                injector.inject(op, commonBytes, partitionBytes)
+              case _ =>
+                throw new CometRuntimeException(s"Missing planning data for key: $key")
+            }
+          case None => op
+        }
+      case _ => op
+    }
+
+    // Recursively process children, rebuilding this node only if one of them actually changed.
+    // Injectors preserve children, so `injectedOp` has the same child list as `op` either way.
+    // The builder is created on the first changed child, so unchanged nodes allocate nothing.
+    val children = injectedOp.getChildrenList
+    val numChildren = children.size()
+    var builder: Operator.Builder = null
+    var i = 0
+    while (i < numChildren) {
+      val child = children.get(i)
+      val injectedChild = injectPlanData(child, commonByKey, partitionByKey)
+      if (injectedChild ne child) {
+        if (builder == null) {
+          builder = injectedOp.toBuilder
+        }
+        builder.setChildren(i, injectedChild)
       }
+      i += 1
     }
-
-    // Recursively process children
-    builder.clearChildren()
-    op.getChildrenList.asScala.foreach { child =>
-      builder.addChildren(injectPlanData(child, commonByKey, partitionByKey))
-    }
-
-    builder.build()
+    if (builder == null) injectedOp else builder.build()
   }
 
   def serializeOperator(op: Operator): Array[Byte] = {
@@ -135,6 +192,81 @@ private[comet] object PlanDataInjector {
     op.writeTo(codedOutput)
     codedOutput.checkNoSpaceLeft()
     bytes
+  }
+
+  /**
+   * Find all plan nodes with per-partition planning data in the plan tree. Returns two maps keyed
+   * by a unique identifier: one for common data (shared across partitions) and one for
+   * per-partition data.
+   *
+   * Recognises Iceberg scans (keyed by metadata_location) plus any leaf scan that surfaces its
+   * data via the [[CometScanWithPlanData]] trait (`CometNativeScanExec` and out-of-tree contrib
+   * scans such as the Delta contrib's `CometDeltaNativeScanExec`).
+   *
+   * Stops at stage boundaries (shuffle exchanges, etc.) because partition indices are only valid
+   * within the same stage.
+   *
+   * @return
+   *   (commonByKey, perPartitionByKey) - common data is shared, per-partition varies
+   */
+  private[comet] def findAllPlanData(
+      plan: SparkPlan): (Map[String, Array[Byte]], Map[String, Array[Array[Byte]]]) = {
+    plan match {
+      case iceberg: CometIcebergNativeScanExec =>
+        // Trigger Spark's standard prepare -> waitForSubqueries lifecycle so DPP
+        // InSubqueryExec values are resolved before commonData is read. Without this,
+        // the parent CometNativeExec.executeQuery flow never invokes the scan's
+        // executeQuery, leaving DPP unresolved and forcing a sync-on-this await inside
+        // the serializedPartitionData lazy val initializer (a known deadlock surface).
+        iceberg.ensureSubqueriesResolved()
+        if (iceberg.commonData.nonEmpty && iceberg.perPartitionData.nonEmpty) {
+          // A self-join/self-merge can put two scans of the same table (same metadata_location)
+          // in one native plan. Computing the key via IcebergPlanDataInjector.getKey, the same
+          // function injectPlanData uses to look it up, keeps the two sides from drifting apart
+          // (see the scan_hash_code field comment in operator.proto for why metadata_location
+          // alone cannot distinguish them).
+          IcebergPlanDataInjector.getKey(iceberg.nativeOp) match {
+            case Some(key) =>
+              (Map(key -> iceberg.commonData), Map(key -> iceberg.perPartitionData))
+            case None =>
+              (Map.empty, Map.empty)
+          }
+        } else {
+          (Map.empty, Map.empty)
+        }
+
+      // Generic path for leaf scans that surface planning data via the
+      // `CometScanWithPlanData` trait. Catches `CometNativeScanExec` and any contrib
+      // leaf scan (e.g. the Delta contrib's `CometDeltaNativeScanExec`) without
+      // requiring core to compile-time reference contrib classes. The trait's
+      // `self: CometLeafExec` self-type guarantees this is also a `CometLeafExec`, so
+      // the compound pattern always matches and we can drive the subquery lifecycle
+      // directly -- there is no silent "not a leaf" skip.
+      case s: CometLeafExec with CometScanWithPlanData =>
+        s.ensureSubqueriesResolved()
+        if (s.commonData.nonEmpty && s.perPartitionData.nonEmpty) {
+          (Map(s.sourceKey -> s.commonData), Map(s.sourceKey -> s.perPartitionData))
+        } else {
+          (Map.empty, Map.empty)
+        }
+
+      // Broadcast stages are boundaries - don't collect per-partition data from inside them.
+      // After DPP filtering, broadcast scans may have different partition counts than the
+      // probe side, causing ArrayIndexOutOfBoundsException in CometExecRDD.getPartitions.
+      case _: BroadcastQueryStageExec | _: CometBroadcastExchangeExec =>
+        (Map.empty, Map.empty)
+
+      // Stage boundaries - stop searching (partition indices won't align after these)
+      case _: ShuffleQueryStageExec | _: AQEShuffleReadExec | _: CometShuffleExchangeExec |
+          _: CometUnionExec | _: CometTakeOrderedAndProjectExec | _: CometCoalesceExec |
+          _: ReusedExchangeExec | _: CometSparkToColumnarExec =>
+        (Map.empty, Map.empty)
+
+      // Continue searching through other operators, combining results from all children
+      case _ =>
+        val results = plan.children.map(findAllPlanData)
+        (results.flatMap(_._1).toMap, results.flatMap(_._2).toMap)
+    }
   }
 }
 
@@ -160,13 +292,17 @@ private[comet] object IcebergPlanDataInjector extends PlanDataInjector {
       }
     })
 
+  override val opStructCase: Operator.OpStructCase = Operator.OpStructCase.ICEBERG_SCAN
+
   override def canInject(op: Operator): Boolean =
     op.hasIcebergScan &&
       op.getIcebergScan.getFileScanTasksCount == 0 &&
       op.getIcebergScan.hasCommon
 
-  override def getKey(op: Operator): Option[String] =
-    Some(op.getIcebergScan.getCommon.getMetadataLocation)
+  override def getKey(op: Operator): Option[String] = {
+    val common = op.getIcebergScan.getCommon
+    Some(s"${common.getMetadataLocation}_${common.getScanHashCode}")
+  }
 
   override def inject(
       op: Operator,
@@ -199,22 +335,35 @@ private[comet] object IcebergPlanDataInjector extends PlanDataInjector {
  */
 private[comet] object NativeScanPlanDataInjector extends PlanDataInjector {
 
+  override val opStructCase: Operator.OpStructCase = Operator.OpStructCase.NATIVE_SCAN
+
   override def canInject(op: Operator): Boolean =
     op.hasNativeScan &&
       op.getNativeScan.hasCommon &&
       !op.getNativeScan.hasFilePartition
 
-  override def getKey(op: Operator): Option[String] = {
-    // Reconstruct the same sourceKey that was used when storing the data
-    val common = op.getNativeScan.getCommon
-    val source = common.getSource
+  override def getKey(op: Operator): Option[String] = Some(sourceKey(op.getNativeScan.getCommon))
+
+  /**
+   * The key under which a native scan's planning data is stored and looked up. Called on the
+   * driver by `CometNativeScanExec.apply` to store, and on the executor by [[getKey]] to look up
+   * \- both must derive the identical string from the same scan, so this is the single definition
+   * rather than two mirrored copies.
+   *
+   * Data filters are stripped of their `QueryContext` before hashing: the executor reads them
+   * back out of the interned plan (see `QueryContextInterner`) while the driver holds the
+   * un-interned form, so including the context encoding would make the two sides disagree. Only
+   * data filters can carry a context, so the other components are hashed as-is.
+   */
+  private[comet] def sourceKey(common: OperatorOuterClass.NativeScanCommon): String = {
+    val dataFilters = common.getDataFiltersList.asScala
+      .map(QueryContextInterner.stripQueryContexts(_).toString)
     val keyComponents = Seq(
       common.getRequiredSchemaList.toString,
-      common.getDataFiltersList.toString,
+      dataFilters.mkString("[", ", ", "]"),
       common.getProjectionVectorList.toString,
       common.getFieldsList.toString)
-    val hashCode = keyComponents.mkString("|").hashCode
-    Some(s"${source}_${hashCode}")
+    s"${common.getSource}_${keyComponents.mkString("|").hashCode}"
   }
 
   override def inject(
@@ -311,13 +460,13 @@ object CometExec {
   }
 
   def getCometIterator(
-      inputs: Seq[Iterator[ColumnarBatch]],
+      inputObjects: Array[Object],
       numOutputCols: Int,
       nativePlan: Operator,
       numParts: Int,
       partitionIdx: Int): CometExecIterator = {
     getCometIterator(
-      inputs,
+      inputObjects,
       numOutputCols,
       nativePlan,
       CometMetricNode(Map.empty),
@@ -332,14 +481,14 @@ object CometExec {
    * executing the same plan across multiple partitions to avoid serializing the plan repeatedly.
    */
   def getCometIterator(
-      inputs: Seq[Iterator[ColumnarBatch]],
+      inputObjects: Array[Object],
       numOutputCols: Int,
       serializedPlan: Array[Byte],
       numParts: Int,
       partitionIdx: Int): CometExecIterator = {
     new CometExecIterator(
       newIterId,
-      inputs,
+      inputObjects,
       numOutputCols,
       serializedPlan,
       CometMetricNode(Map.empty),
@@ -350,7 +499,7 @@ object CometExec {
   }
 
   def getCometIterator(
-      inputs: Seq[Iterator[ColumnarBatch]],
+      inputObjects: Array[Object],
       numOutputCols: Int,
       nativePlan: Operator,
       nativeMetrics: CometMetricNode,
@@ -361,7 +510,7 @@ object CometExec {
     val bytes = serializeNativePlan(nativePlan)
     new CometExecIterator(
       newIterId,
-      inputs,
+      inputObjects,
       numOutputCols,
       bytes,
       nativeMetrics,
@@ -379,6 +528,33 @@ object CometExec {
       Utils.serializeBatches(iter)
     }
   }
+}
+
+/**
+ * Per-partition execution context for a native subtree rooted at a [[CometNativeExec]] boundary.
+ * Built once on the driver from the SparkPlan tree, then consumed by either
+ * [[CometNativeExec.executeColumnarWithContext]] (to build a [[CometExecRDD]]) or the
+ * native-shuffle path (to drive [[CometNativeShuffleWriter]]). Captures broadcast partition
+ * alignment, plan-data, subqueries, and encryption options so each consumer doesn't re-walk the
+ * tree.
+ */
+private[comet] case class NativeExecContext(
+    inputs: Seq[RDD[_]],
+    numPartitions: Int,
+    subqueries: Seq[ScalarSubquery],
+    broadcastedHadoopConfForEncryption: Option[Broadcast[SerializableConfiguration]],
+    encryptedFilePaths: Seq[String],
+    commonByKey: Map[String, Array[Byte]],
+    perPartitionByKey: Map[String, Array[Array[Byte]]],
+    shuffleScanIndices: Set[Int],
+    hasScanInput: Boolean) {
+  // Catch shape divergence (e.g. broadcast scans with different partition counts after DPP
+  // filtering) at construction so consumers don't trip ArrayIndexOutOfBoundsException at
+  // partition idx access time.
+  require(
+    perPartitionByKey.values.forall(_.length == numPartitions),
+    s"All per-partition arrays must have length $numPartitions, but found: " +
+      perPartitionByKey.map { case (key, arr) => s"$key -> ${arr.length}" }.mkString(", "))
 }
 
 /**
@@ -419,171 +595,234 @@ abstract class CometNativeExec extends CometExec {
     runningSubqueries.clear()
   }
 
-  override def doExecuteColumnar(): RDD[ColumnarBatch] = {
-    serializedPlanOpt.plan match {
-      case None =>
-        // This is in the middle of a native execution, it should not be executed directly.
-        throw new CometRuntimeException(
-          s"CometNativeExec should not be executed directly without a serialized plan: $this")
-      case Some(serializedPlan) =>
-        val serializedPlanCopy = serializedPlan
-        // TODO: support native metrics for all operators.
-        val nativeMetrics = CometMetricNode.fromCometPlan(this)
+  override def doExecuteColumnar(): RDD[ColumnarBatch] =
+    executeColumnarWithContext(buildNativeContext())
 
-        // Go over all the native scans, in order to see if they need encryption options.
-        // For each relation in a CometNativeScan generate a hadoopConf,
-        // for each file path in a relation associate with hadoopConf
-        // This is done per native plan, so only count scans until a comet input is reached.
-        val encryptionOptions =
-          mutable.ArrayBuffer.empty[(Broadcast[SerializableConfiguration], Seq[String])]
-        foreachUntilCometInput(this) {
-          case scan: CometNativeScanExec =>
-            // This creates a hadoopConf that brings in any SQLConf "spark.hadoop.*" configs and
-            // per-relation configs since different tables might have different decryption
-            // properties.
-            val hadoopConf = scan.relation.sparkSession.sessionState
-              .newHadoopConfWithOptions(scan.relation.options)
-            val encryptionEnabled = CometParquetUtils.encryptionEnabled(hadoopConf)
-            if (encryptionEnabled) {
-              // hadoopConf isn't serializable, so we have to do a broadcasted config.
-              val broadcastedConf =
-                scan.relation.sparkSession.sparkContext
-                  .broadcast(new SerializableConfiguration(hadoopConf))
+  /**
+   * Build a [[CometExecRDD]] from a precomputed [[NativeExecContext]]. Public so the native
+   * shuffle path can sample (RangePartitioning) without re-walking the SparkPlan tree and
+   * re-broadcasting the encryption Hadoop conf.
+   */
+  private[comet] def executeColumnarWithContext(ctx: NativeExecContext): RDD[ColumnarBatch] = {
+    val serializedPlan = serializedPlanOpt.plan.getOrElse(
+      throw new CometRuntimeException(
+        s"CometNativeExec should not be executed directly without a serialized plan: $this"))
+    val nativeMetrics = CometMetricNode.fromCometPlan(this)
 
-              val optsTuple: (Broadcast[SerializableConfiguration], Seq[String]) =
-                (broadcastedConf, scan.relation.inputFiles.toSeq)
-              encryptionOptions += optsTuple
-            }
-          case _ => // no-op
+    new CometExecRDD(
+      sparkContext,
+      ctx.inputs,
+      ctx.commonByKey,
+      ctx.perPartitionByKey,
+      serializedPlan,
+      ctx.numPartitions,
+      output.length,
+      nativeMetrics,
+      ctx.subqueries,
+      ctx.broadcastedHadoopConfForEncryption,
+      ctx.encryptedFilePaths,
+      ctx.shuffleScanIndices) {
+      override def compute(split: Partition, context: TaskContext): Iterator[ColumnarBatch] = {
+        val res = super.compute(split, context)
+        if (ctx.hasScanInput) {
+          Option(context).foreach(nativeMetrics.reportScanInputMetrics)
         }
-        assert(
-          encryptionOptions.size <= 1,
-          "We expect one native scan that requires encryption reading in a Comet plan," +
-            " since we will broadcast one hadoopConf.")
-        // If this assumption changes in the future, you can look at the commit history of #2447
-        // to see how there used to be a map of relations to broadcasted confs in case multiple
-        // relations in a single plan. The example that came up was UNION. See discussion at:
-        // https://github.com/apache/datafusion-comet/pull/2447#discussion_r2406118264
-        val (broadcastedHadoopConfForEncryption, encryptedFilePaths) =
-          encryptionOptions.headOption match {
-            case Some((conf, paths)) => (Some(conf), paths)
-            case None => (None, Seq.empty)
-          }
-
-        // Find planning data within this stage (stops at shuffle boundaries).
-        val (commonByKey, perPartitionByKey) = findAllPlanData(this)
-
-        // Collect the input ColumnarBatches from the child operators and create a CometExecIterator
-        // to execute the native plan.
-        val sparkPlans = ArrayBuffer.empty[SparkPlan]
-        val inputs = ArrayBuffer.empty[RDD[ColumnarBatch]]
-
-        foreachUntilCometInput(this)(sparkPlans += _)
-
-        // Find the first non broadcast plan
-        val firstNonBroadcastPlan = sparkPlans.zipWithIndex.find {
-          case (_: CometBroadcastExchangeExec, _) => false
-          case (BroadcastQueryStageExec(_, _: CometBroadcastExchangeExec, _), _) => false
-          case (BroadcastQueryStageExec(_, _: ReusedExchangeExec, _), _) => false
-          case (ReusedExchangeExec(_, _: CometBroadcastExchangeExec), _) => false
-          case _ => true
-        }
-
-        val containsBroadcastInput = sparkPlans.exists {
-          case _: CometBroadcastExchangeExec => true
-          case BroadcastQueryStageExec(_, _: CometBroadcastExchangeExec, _) => true
-          case BroadcastQueryStageExec(_, _: ReusedExchangeExec, _) => true
-          case ReusedExchangeExec(_, _: CometBroadcastExchangeExec) => true
-          case _ => false
-        }
-
-        // If the first non broadcast plan is not found, it means all the plans are broadcast plans.
-        // This is not expected, so throw an exception.
-        if (containsBroadcastInput && firstNonBroadcastPlan.isEmpty) {
-          throw new CometRuntimeException(s"Cannot find the first non broadcast plan: $this")
-        }
-
-        // If the first non broadcast plan is found, we need to adjust the partition number of
-        // the broadcast plans to make sure they have the same partition number as the first non
-        // broadcast plan.
-        val (firstNonBroadcastPlanRDD, firstNonBroadcastPlanNumPartitions) =
-          firstNonBroadcastPlan.get._1 match {
-            case plan: CometNativeExec =>
-              (null, plan.outputPartitioning.numPartitions)
-            case plan =>
-              val rdd = plan.executeColumnar()
-              (rdd, rdd.getNumPartitions)
-          }
-
-        // Spark doesn't need to zip Broadcast RDDs, so it doesn't schedule Broadcast RDDs with
-        // same partition number. But for Comet, we need to zip them so we need to adjust the
-        // partition number of Broadcast RDDs to make sure they have the same partition number.
-        sparkPlans.zipWithIndex.foreach { case (plan, idx) =>
-          plan match {
-            case c: CometBroadcastExchangeExec =>
-              inputs += c.executeColumnar(firstNonBroadcastPlanNumPartitions)
-            case BroadcastQueryStageExec(_, c: CometBroadcastExchangeExec, _) =>
-              inputs += c.executeColumnar(firstNonBroadcastPlanNumPartitions)
-            case ReusedExchangeExec(_, c: CometBroadcastExchangeExec) =>
-              inputs += c.executeColumnar(firstNonBroadcastPlanNumPartitions)
-            case BroadcastQueryStageExec(
-                  _,
-                  ReusedExchangeExec(_, c: CometBroadcastExchangeExec),
-                  _) =>
-              inputs += c.executeColumnar(firstNonBroadcastPlanNumPartitions)
-            case _: CometNativeExec =>
-            // no-op
-            case _ if idx == firstNonBroadcastPlan.get._2 =>
-              inputs += firstNonBroadcastPlanRDD
-            case _ =>
-              val rdd = plan.executeColumnar()
-              if (rdd.getNumPartitions != firstNonBroadcastPlanNumPartitions) {
-                throw new CometRuntimeException(
-                  s"Partition number mismatch: ${rdd.getNumPartitions} != " +
-                    s"$firstNonBroadcastPlanNumPartitions")
-              } else {
-                inputs += rdd
-              }
-          }
-        }
-
-        if (inputs.isEmpty && !sparkPlans.forall(_.isInstanceOf[CometNativeExec])) {
-          throw new CometRuntimeException(s"No input for CometNativeExec:\n $this")
-        }
-
-        // Detect ShuffleScan indices for direct read in CometExecRDD
-        val shuffleScanIndices = findShuffleScanIndices(serializedPlanCopy)
-
-        // Unified RDD creation - CometExecRDD handles all cases
-        val subqueries = collectSubqueries(this)
-        val hasScanInput = sparkPlans.exists(_.isInstanceOf[CometNativeScanExec])
-        new CometExecRDD(
-          sparkContext,
-          inputs.toSeq,
-          commonByKey,
-          perPartitionByKey,
-          serializedPlanCopy,
-          firstNonBroadcastPlanNumPartitions,
-          output.length,
-          nativeMetrics,
-          subqueries,
-          broadcastedHadoopConfForEncryption,
-          encryptedFilePaths,
-          shuffleScanIndices) {
-          override def compute(
-              split: Partition,
-              context: TaskContext): Iterator[ColumnarBatch] = {
-            val res = super.compute(split, context)
-
-            // Report scan input metrics only when the native plan contains a scan.
-            if (hasScanInput) {
-              Option(context).foreach(nativeMetrics.reportScanInputMetrics)
-            }
-
-            res
-          }
-        }
+        res
+      }
     }
+  }
+
+  /**
+   * Walk this CometNativeExec subtree once and gather everything needed to launch native
+   * execution. See [[NativeExecContext]] for the field set.
+   */
+  private[comet] def buildNativeContext(): NativeExecContext = {
+    // Find native scans that need encryption: build a hadoopConf per relation, broadcast it once
+    // so executors can decrypt on read. Capped at one because we only broadcast one conf per
+    // CometExecIterator (see #2447 for history of the per-relation map approach).
+    val encryptionOptions =
+      mutable.ArrayBuffer.empty[(Broadcast[SerializableConfiguration], Seq[String])]
+    foreachUntilCometInput(this) {
+      case scan: CometNativeScanExec =>
+        // Bring in any SQLConf "spark.hadoop.*" configs and the per-relation options, since
+        // different tables may have different decryption properties.
+        val hadoopConf = scan.relation.sparkSession.sessionState
+          .newHadoopConfWithOptions(scan.relation.options)
+        if (CometParquetUtils.encryptionEnabled(hadoopConf)) {
+          // hadoopConf isn't serializable, so ship it to executors via a broadcast.
+          val broadcastedConf = scan.relation.sparkSession.sparkContext
+            .broadcast(new SerializableConfiguration(hadoopConf))
+          encryptionOptions += ((broadcastedConf, scan.relation.inputFiles.toSeq))
+        }
+      case _ =>
+    }
+    assert(
+      encryptionOptions.size <= 1,
+      "We expect one native scan that requires encryption reading in a Comet plan," +
+        " since we will broadcast one hadoopConf.")
+    val (broadcastedHadoopConfForEncryption, encryptedFilePaths) =
+      encryptionOptions.headOption match {
+        case Some((conf, paths)) => (Some(conf), paths)
+        case None => (None, Seq.empty)
+      }
+
+    // Find planning data within this stage (stops at shuffle boundaries).
+    val (commonByKey, perPartitionByKey) = PlanDataInjector.findAllPlanData(this)
+
+    // Collect the input batches from the child operators. Non-shuffle inputs become
+    // RDD[ArrowArrayStream] (one stream per partition, exported via the C Stream Interface
+    // for native consumption); shuffle inputs stay as CometShuffledBatchRDD.
+    val sparkPlans = ArrayBuffer.empty[SparkPlan]
+    val inputs = ArrayBuffer.empty[RDD[_]]
+
+    foreachUntilCometInput(this)(sparkPlans += _)
+
+    // Find the first non broadcast plan
+    val firstNonBroadcastPlan = sparkPlans.zipWithIndex.find {
+      case (_: CometBroadcastExchangeExec, _) => false
+      case (BroadcastQueryStageExec(_, _: CometBroadcastExchangeExec, _), _) => false
+      case (BroadcastQueryStageExec(_, _: ReusedExchangeExec, _), _) => false
+      case (ReusedExchangeExec(_, _: CometBroadcastExchangeExec), _) => false
+      case _ => true
+    }
+
+    val containsBroadcastInput = sparkPlans.exists {
+      case _: CometBroadcastExchangeExec => true
+      case BroadcastQueryStageExec(_, _: CometBroadcastExchangeExec, _) => true
+      case BroadcastQueryStageExec(_, _: ReusedExchangeExec, _) => true
+      case ReusedExchangeExec(_, _: CometBroadcastExchangeExec) => true
+      case _ => false
+    }
+
+    // If the first non broadcast plan is not found, it means all the plans are broadcast plans.
+    // This is not expected, so throw an exception.
+    if (containsBroadcastInput && firstNonBroadcastPlan.isEmpty) {
+      throw new CometRuntimeException(s"Cannot find the first non broadcast plan: $this")
+    }
+
+    def isShuffleScanInput(plan: SparkPlan): Boolean = plan match {
+      case _: CometShuffleExchangeExec | _: ShuffleQueryStageExec | _: AQEShuffleReadExec =>
+        true
+      case ReusedExchangeExec(_, _: CometShuffleExchangeExec) => true
+      case _ => false
+    }
+
+    // The protobuf is the source of truth for whether a slot is a ShuffleScan or a regular
+    // Scan: `CometExchangeSink.shouldUseShuffleScan` only fires for AQE wrappers
+    // (`ShuffleQueryStageExec`), so a bare non-AQE `CometShuffleExchangeExec` always serializes
+    // as a regular Scan regardless of `COMET_SHUFFLE_DIRECT_READ_ENABLED`. Driving the JVM
+    // dispatch from `shuffleScanIndices` instead of the conf keeps the two aligned.
+    val shuffleScanIndices = findShuffleScanIndices(nativeOp)
+
+    def isBroadcastInput(plan: SparkPlan): Boolean = plan match {
+      case _: CometBroadcastExchangeExec => true
+      case BroadcastQueryStageExec(_, _: CometBroadcastExchangeExec, _) => true
+      case BroadcastQueryStageExec(_, _: ReusedExchangeExec, _) => true
+      case ReusedExchangeExec(_, _: CometBroadcastExchangeExec) => true
+      case _ => false
+    }
+
+    // Unwrap any number of AQE / reuse wrappers to find a CometBroadcastExchangeExec, if
+    // present. Returns the unwrapped exchange for input wiring -- broadcast partition counts
+    // are coerced to match firstNonBroadcastPlanNumPartitions, so we always read from the
+    // underlying exchange directly.
+    def asBroadcastExchange(plan: SparkPlan): Option[CometBroadcastExchangeExec] =
+      plan match {
+        case c: CometBroadcastExchangeExec => Some(c)
+        case BroadcastQueryStageExec(_, c: CometBroadcastExchangeExec, _) => Some(c)
+        case ReusedExchangeExec(_, c: CometBroadcastExchangeExec) => Some(c)
+        case BroadcastQueryStageExec(
+              _,
+              ReusedExchangeExec(_, c: CometBroadcastExchangeExec),
+              _) =>
+          Some(c)
+        case _ => None
+      }
+
+    def asArrowStreamRDD(plan: SparkPlan, partitionCount: Int, scanSlot: Int): RDD[_] =
+      plan match {
+        case s: CometNativeArrowSource =>
+          s.doExecuteAsArrowStream()
+        case _ =>
+          asBroadcastExchange(plan) match {
+            case Some(c) =>
+              CometArrowStream.wrapColumnarBatchRDD(
+                c.executeColumnar(partitionCount),
+                c.schema,
+                CometArrowStream.NATIVE_TIMEZONE,
+                c.nodeName)
+            case None if isShuffleScanInput(plan) && shuffleScanIndices.contains(scanSlot) =>
+              // Direct-read shuffle: `CometShuffledBatchRDD` reaches native via
+              // CometShuffleBlockIterator. Other shuffle slots fall through and get wrapped.
+              plan.executeColumnar()
+            case None =>
+              CometArrowStream.wrapColumnarBatchRDD(
+                plan.executeColumnar(),
+                plan.schema,
+                CometArrowStream.NATIVE_TIMEZONE,
+                plan.nodeName)
+          }
+      }
+
+    // Walk-order: count how many non-CometNativeExec plans come before the firstNonBroadcast
+    // plan in `sparkPlans`. That's the slot index it will occupy in `inputs`, and therefore
+    // the protobuf scan-slot index whose Scan vs ShuffleScan classification governs whether
+    // it should be wrapped or direct-read.
+    val firstNonBroadcastSlot = sparkPlans
+      .take(firstNonBroadcastPlan.get._2)
+      .count(p => !p.isInstanceOf[CometNativeExec])
+
+    // If the first non broadcast plan is found, we need to adjust the partition number of
+    // the broadcast plans to make sure they have the same partition number as the first non
+    // broadcast plan.
+    val (firstNonBroadcastPlanRDD, firstNonBroadcastPlanNumPartitions) =
+      firstNonBroadcastPlan.get._1 match {
+        case plan: CometNativeExec =>
+          (null.asInstanceOf[RDD[Any]], plan.outputPartitioning.numPartitions)
+        case plan =>
+          val rdd = asArrowStreamRDD(plan, 0, firstNonBroadcastSlot).asInstanceOf[RDD[Any]]
+          (rdd, rdd.getNumPartitions)
+      }
+
+    // Spark doesn't need to zip Broadcast RDDs, so it doesn't schedule Broadcast RDDs with
+    // same partition number. But for Comet, we need to zip them so we need to adjust the
+    // partition number of Broadcast RDDs to make sure they have the same partition number.
+    sparkPlans.zipWithIndex.foreach { case (plan, idx) =>
+      plan match {
+        case _: CometNativeExec =>
+        // no-op
+        case _ if idx == firstNonBroadcastPlan.get._2 =>
+          inputs += firstNonBroadcastPlanRDD
+        case _ =>
+          // Each plan we add to `inputs` corresponds to the next protobuf scan slot, in
+          // walk order. `inputs.size` is the slot index this plan will occupy.
+          val scanSlot = inputs.size
+          val rdd = asArrowStreamRDD(plan, firstNonBroadcastPlanNumPartitions, scanSlot)
+          if (!isBroadcastInput(plan) &&
+            rdd.getNumPartitions != firstNonBroadcastPlanNumPartitions) {
+            throw new CometRuntimeException(
+              s"Partition number mismatch: ${rdd.getNumPartitions} != " +
+                s"$firstNonBroadcastPlanNumPartitions")
+          } else {
+            inputs += rdd
+          }
+      }
+    }
+
+    if (inputs.isEmpty && !sparkPlans.forall(_.isInstanceOf[CometNativeExec])) {
+      throw new CometRuntimeException(s"No input for CometNativeExec:\n $this")
+    }
+
+    NativeExecContext(
+      inputs = inputs.toSeq,
+      numPartitions = firstNonBroadcastPlanNumPartitions,
+      subqueries = collectSubqueries(this),
+      broadcastedHadoopConfForEncryption = broadcastedHadoopConfForEncryption,
+      encryptedFilePaths = encryptedFilePaths,
+      commonByKey = commonByKey,
+      perPartitionByKey = perPartitionByKey,
+      shuffleScanIndices = shuffleScanIndices,
+      hasScanInput = sparkPlans.exists(_.isInstanceOf[CometNativeScanExec]))
   }
 
   /**
@@ -607,8 +846,16 @@ abstract class CometNativeExec extends CometExec {
    */
   def foreachUntilCometInput(plan: SparkPlan)(func: SparkPlan => Unit): Unit = {
     plan match {
-      case _: CometNativeScanExec | _: CometScanExec | _: CometBatchScanExec |
-          _: CometIcebergNativeScanExec | _: CometCsvNativeScanExec | _: ShuffleQueryStageExec |
+      // Match `CometLeafExec` first so contrib leaf scans (e.g. the Delta
+      // contrib's `CometDeltaNativeScanExec`) are recognised as input boundaries
+      // without requiring a core compile-time reference to the contrib class.
+      // All built-in leaf scans (`CometNativeScanExec`, `CometIcebergNativeScanExec`,
+      // `CometCsvNativeScanExec`) also extend `CometLeafExec`, so this is a
+      // strict superset of the previous enumeration -- it just generalises the
+      // input-boundary concept from "this fixed list" to "any leaf Comet exec".
+      case _: CometLeafExec =>
+        func(plan)
+      case _: CometScanExec | _: CometBatchScanExec | _: ShuffleQueryStageExec |
           _: AQEShuffleReadExec | _: CometShuffleExchangeExec | _: CometUnionExec |
           _: CometTakeOrderedAndProjectExec | _: CometCoalesceExec | _: ReusedExchangeExec |
           _: CometBroadcastExchangeExec | _: BroadcastQueryStageExec |
@@ -623,11 +870,10 @@ abstract class CometNativeExec extends CometExec {
   }
 
   /**
-   * Walk the serialized protobuf plan depth-first to find which input indices correspond to
+   * Walk the protobuf operator tree depth-first to find which input indices correspond to
    * ShuffleScan vs Scan leaf nodes. Each Scan or ShuffleScan leaf consumes one input in order.
    */
-  private def findShuffleScanIndices(planBytes: Array[Byte]): Set[Int] = {
-    val plan = OperatorOuterClass.Operator.parseFrom(planBytes)
+  private def findShuffleScanIndices(plan: OperatorOuterClass.Operator): Set[Int] = {
     var scanIndex = 0
     val indices = mutable.Set.empty[Int]
     def walk(op: OperatorOuterClass.Operator): Unit = {
@@ -645,75 +891,16 @@ abstract class CometNativeExec extends CometExec {
   }
 
   /**
-   * Find all plan nodes with per-partition planning data in the plan tree. Returns two maps keyed
-   * by a unique identifier: one for common data (shared across partitions) and one for
-   * per-partition data.
-   *
-   * Currently supports Iceberg scans (keyed by metadata_location). Additional scan types can be
-   * added by extending this method.
-   *
-   * Stops at stage boundaries (shuffle exchanges, etc.) because partition indices are only valid
-   * within the same stage.
-   *
-   * @return
-   *   (commonByKey, perPartitionByKey) - common data is shared, per-partition varies
-   */
-  private def findAllPlanData(
-      plan: SparkPlan): (Map[String, Array[Byte]], Map[String, Array[Array[Byte]]]) = {
-    plan match {
-      case iceberg: CometIcebergNativeScanExec =>
-        // Trigger Spark's standard prepare -> waitForSubqueries lifecycle so DPP
-        // InSubqueryExec values are resolved before commonData is read. Without this,
-        // the parent CometNativeExec.executeQuery flow never invokes the scan's
-        // executeQuery, leaving DPP unresolved and forcing a sync-on-this await inside
-        // the serializedPartitionData lazy val initializer (a known deadlock surface).
-        iceberg.ensureSubqueriesResolved()
-        if (iceberg.commonData.nonEmpty && iceberg.perPartitionData.nonEmpty) {
-          (
-            Map(iceberg.metadataLocation -> iceberg.commonData),
-            Map(iceberg.metadataLocation -> iceberg.perPartitionData))
-        } else {
-          (Map.empty, Map.empty)
-        }
-
-      case nativeScan: CometNativeScanExec =>
-        nativeScan.ensureSubqueriesResolved()
-        (
-          Map(nativeScan.sourceKey -> nativeScan.commonData),
-          Map(nativeScan.sourceKey -> nativeScan.perPartitionData))
-
-      // Broadcast stages are boundaries - don't collect per-partition data from inside them.
-      // After DPP filtering, broadcast scans may have different partition counts than the
-      // probe side, causing ArrayIndexOutOfBoundsException in CometExecRDD.getPartitions.
-      case _: BroadcastQueryStageExec | _: CometBroadcastExchangeExec =>
-        (Map.empty, Map.empty)
-
-      // Stage boundaries - stop searching (partition indices won't align after these)
-      case _: ShuffleQueryStageExec | _: AQEShuffleReadExec | _: CometShuffleExchangeExec |
-          _: CometUnionExec | _: CometTakeOrderedAndProjectExec | _: CometCoalesceExec |
-          _: ReusedExchangeExec | _: CometSparkToColumnarExec =>
-        (Map.empty, Map.empty)
-
-      // Continue searching through other operators, combining results from all children
-      case _ =>
-        val results = plan.children.map(findAllPlanData)
-        (results.flatMap(_._1).toMap, results.flatMap(_._2).toMap)
-    }
-  }
-
-  /**
    * Converts this native Comet operator and its children into a native block which can be
    * executed as a whole (i.e., in a single JNI call) from the native side.
    */
   def convertBlock(): CometNativeExec = {
     def transform(arg: Any): AnyRef = arg match {
       case serializedPlan: SerializedPlan if serializedPlan.isEmpty =>
-        val size = nativeOp.getSerializedSize
-        val bytes = new Array[Byte](size)
-        val codedOutput = CodedOutputStream.newInstance(bytes)
-        nativeOp.writeTo(codedOutput)
-        codedOutput.checkNoSpaceLeft()
-        SerializedPlan(Some(bytes))
+        // Hoist duplicated QueryContext SQL text into a pool on the root operator. This is the
+        // point where the whole native block is in hand, which is what the pool indices are
+        // scoped to.
+        SerializedPlan(Some(CometExec.serializeNativePlan(QueryContextInterner.intern(nativeOp))))
       case other: AnyRef => other
       case null => null
     }
@@ -791,6 +978,52 @@ abstract class CometLeafExec extends CometNativeExec with LeafExecNode {
   }
 }
 
+/**
+ * Marker trait for scan execs that surface planning data (a `commonData` block + per-partition
+ * task bytes keyed by `sourceKey`) so that a parent `CometNativeExec` can find and inject the
+ * data when the scan is fused into a larger native subtree.
+ *
+ * Implemented by `CometNativeScanExec` and the contrib's `CometDeltaNativeScanExec` -- without
+ * it, [[PlanDataInjector.findAllPlanData]] cannot collect the per-partition tasks and the
+ * parent's native execution receives an empty input. (`CometIcebergNativeScanExec` does NOT use
+ * this trait; it has a dedicated `findAllPlanData` case.)
+ *
+ * Each implementation also resolves its own DPP subqueries via `ensureSubqueriesResolved` before
+ * `commonData`/`perPartitionData` are read. That method lives on [[CometLeafExec]], so the `self:
+ * CometLeafExec` self-type below makes "is a leaf scan" a compile-time requirement: an
+ * implementer cannot forget to extend [[CometLeafExec]] (which would otherwise compile and then
+ * silently skip subquery resolution -- the deadlock surface `ensureSubqueriesResolved` exists to
+ * prevent). It also lets [[PlanDataInjector.findAllPlanData]] drive the lifecycle without a
+ * runtime "not a leaf" fallback.
+ */
+trait CometScanWithPlanData { self: CometLeafExec =>
+  def sourceKey: String
+  def commonData: Array[Byte]
+  def perPartitionData: Array[Array[Byte]]
+
+  // DPP / partition filters that may carry AQE SubqueryAdaptiveBroadcast
+  // subqueries needing rewrite by CometPlanAdaptiveDynamicPruningFilters.
+  // Default empty: scans with dedicated handling (CometNativeScanExec,
+  // CometIcebergNativeScanExec) don't use this path.
+  def dynamicPruningFilters: Seq[Expression] = Nil
+
+  // Install rewritten DPP filters on this scan. Implementers whose filters live
+  // in a @transient field (which TreeNode.makeCopy can't carry, #3510) update
+  // them via a transient side-channel and return `this` -- so the optimizer
+  // rule's rewrite lands on the SAME instance that executes, instead of a copy
+  // that gets dropped when the enclosing native block is rebuilt. Only called
+  // when `dynamicPruningFilters` is non-empty, so the default is never reached
+  // for scans that leave it empty.
+  //
+  // TODO(#3510): once TreeNode.makeCopy preserves @transient fields, the
+  // mutate-and-return-`this` workaround can collapse back to a normal copy, mirroring
+  // the matching TODO in CometPlanAdaptiveDynamicPruningFilters.
+  def withDynamicPruningFilters(filters: Seq[Expression]): SparkPlan =
+    throw new UnsupportedOperationException(
+      s"${getClass.getSimpleName} exposes dynamicPruningFilters but does not " +
+        "override withDynamicPruningFilters")
+}
+
 abstract class CometUnaryExec extends CometNativeExec with UnaryExecNode
 
 abstract class CometBinaryExec extends CometNativeExec with BinaryExecNode
@@ -823,7 +1056,7 @@ object CometProjectExec extends CometOperatorSerde[ProjectExec] {
         .addAllProjectList(exprs.map(_.get).asJava)
       Some(builder.setProjection(projectBuilder).build())
     } else {
-      withInfo(op, op.projectList: _*)
+      withFallbackReason(op, op.projectList: _*)
       None
     }
   }
@@ -883,7 +1116,7 @@ object CometFilterExec extends CometOperatorSerde[FilterExec] {
         .setPredicate(cond.get)
       Some(builder.setFilter(filterBuilder).build())
     } else {
-      withInfo(op, op.condition, op.child)
+      withFallbackReason(op, op.condition, op.child)
       None
     }
   }
@@ -944,7 +1177,7 @@ object CometSortExec extends CometOperatorSerde[SortExec] {
       builder: Operator.Builder,
       childOp: Operator*): Option[OperatorOuterClass.Operator] = {
     if (!supportedSortType(op, op.sortOrder)) {
-      withInfo(op, "Unsupported data type in sort expressions")
+      withFallbackReason(op, "Unsupported data type in sort expressions")
       return None
     }
 
@@ -956,7 +1189,7 @@ object CometSortExec extends CometOperatorSerde[SortExec] {
         .addAllSortOrders(sortOrders.map(_.get).asJava)
       Some(builder.setSort(sortBuilder).build())
     } else {
-      withInfo(op, "sort order not supported", op.sortOrder: _*)
+      withFallbackReason(op, "sort order not supported", op.sortOrder: _*)
       None
     }
   }
@@ -1029,7 +1262,7 @@ object CometLocalLimitExec extends CometOperatorSerde[LocalLimitExec] {
         .setOffset(0)
       Some(builder.setLimit(limitBuilder).build())
     } else {
-      withInfo(op, "No child operator")
+      withFallbackReason(op, "No child operator")
       None
     }
   }
@@ -1090,7 +1323,7 @@ object CometGlobalLimitExec extends CometOperatorSerde[GlobalLimitExec] {
 
       Some(builder.setLimit(limitBuilder).build())
     } else {
-      withInfo(op, "No child operator")
+      withFallbackReason(op, "No child operator")
       None
     }
   }
@@ -1159,7 +1392,7 @@ object CometExpandExec extends CometOperatorSerde[ExpandExec] {
         .setNumExprPerProject(op.projections.head.size)
       Some(builder.setExpand(expandBuilder).build())
     } else {
-      withInfo(op, allProjExprs: _*)
+      withFallbackReason(op, allProjExprs: _*)
       None
     }
   }
@@ -1244,7 +1477,7 @@ object CometExplodeExec extends CometOperatorSerde[GenerateExec] {
     val childExprProto = exprToProto(childExpr, op.child.output)
 
     if (childExprProto.isEmpty) {
-      withInfo(op, childExpr)
+      withFallbackReason(op, childExpr)
       return None
     }
 
@@ -1256,7 +1489,7 @@ object CometExplodeExec extends CometOperatorSerde[GenerateExec] {
     }
 
     if (projectExprs.exists(_.isEmpty) || childOp.isEmpty) {
-      withInfo(op, op.output: _*)
+      withFallbackReason(op, op.output: _*)
       return None
     }
 
@@ -1416,30 +1649,41 @@ trait CometBaseAggregate {
     // In distinct aggregates there can be a combination of modes.
     // We support {Partial, PartialMerge} mix; other combinations are rejected.
     val multiMode = modes.size > 1 && modeSet != Set(Partial, PartialMerge)
-    // For a final mode HashAggregate, we only need to transform the HashAggregate
-    // if there is Comet partial aggregation, unless all aggregates have compatible
-    // intermediate buffer formats (safe for mixed Spark/Comet execution).
-    val sparkFinalMode = modes.contains(Final) && findCometPartialAgg(aggregate.child).isEmpty
+    // An aggregate that consumes intermediate buffers (Final, or the PartialMerge stages of a
+    // distinct-aggregate rewrite) must have a Comet aggregate producing those buffers below it.
+    // Otherwise Comet would try to read a Spark partial's buffer, which is only safe when every
+    // aggregate has a buffer format compatible between Spark and Comet. This guards the
+    // Spark-Partial to Comet-Merge direction; the Comet-Partial to Spark-Final direction is
+    // guarded by the COMET_UNSAFE_PARTIAL tagging pass in CometExecRule. See issues #1389, #4813.
+    val consumesBuffers = modes.contains(Final) || modes.contains(PartialMerge)
+    val missingCometProducer = consumesBuffers && findCometPartialAgg(aggregate.child).isEmpty
 
     if (multiMode) {
-      withInfo(aggregate, s"Unsupported mixed aggregation modes: ${modes.mkString(", ")}")
+      withFallbackReason(
+        aggregate,
+        s"Unsupported mixed aggregation modes: ${modes.mkString(", ")}")
       return None
     }
 
-    if (sparkFinalMode &&
-      !QueryPlanSerde.allAggsSupportMixedExecution(aggregate.aggregateExpressions)) {
-      withInfo(
-        aggregate,
-        "Spark Final aggregate without Comet Partial requires compatible " +
-          "intermediate buffer formats")
-      return None
+    if (missingCometProducer) {
+      val incompatibleAggs =
+        QueryPlanSerde.aggsNotSupportingMixedExecution(aggregate.aggregateExpressions)
+      if (incompatibleAggs.nonEmpty) {
+        val names = incompatibleAggs.map(_.prettyName).distinct.sorted.mkString(", ")
+        withFallbackReason(
+          aggregate,
+          "Comet aggregate that merges intermediate buffers requires a Comet child aggregate " +
+            "when the intermediate buffer formats are incompatible with Spark. " +
+            s"Incompatible aggregate function(s): $names")
+        return None
+      }
     }
 
     // Check if this aggregate has been tagged as unsafe for mixed execution
     // (Comet partial + Spark final with incompatible intermediate buffers)
     val unsafeReason = aggregate.getTagValue(CometExecRule.COMET_UNSAFE_PARTIAL)
     if (unsafeReason.isDefined) {
-      withInfo(aggregate, unsafeReason.get)
+      withFallbackReason(aggregate, unsafeReason.get)
       return None
     }
 
@@ -1450,12 +1694,13 @@ trait CometBaseAggregate {
     val child = aggregate.child
 
     if (groupingExpressions.isEmpty && aggregateExpressions.isEmpty) {
-      withInfo(aggregate, "No group by or aggregation")
+      withFallbackReason(aggregate, "No group by or aggregation")
       return None
     }
 
-    if (groupingExpressions.exists(expr => QueryPlanSerde.containsMapType(expr.dataType))) {
-      withInfo(aggregate, "Grouping on map-containing types is not supported")
+    if (groupingExpressions.exists(expr =>
+        SupportLevel.containsType(expr.dataType, classOf[MapType]))) {
+      withFallbackReason(aggregate, "Grouping on map-containing types is not supported")
       return None
     }
 
@@ -1463,7 +1708,7 @@ trait CometBaseAggregate {
       // Collation-aware grouping requires collation-aware hashing/equality; Comet only
       // compares raw bytes, which would put rows that compare equal under the collation
       // into different groups.
-      withInfo(aggregate, "Grouping on non-default collated strings is not supported")
+      withFallbackReason(aggregate, "Grouping on non-default collated strings is not supported")
       return None
     }
 
@@ -1475,7 +1720,9 @@ trait CometBaseAggregate {
     }
 
     if (emptyExprs.nonEmpty) {
-      withInfo(aggregate, s"Unsupported group expressions: ${emptyExprs.mkString(", ")}")
+      withFallbackReason(
+        aggregate,
+        s"Unsupported group expressions: ${emptyExprs.mkString(", ")}")
       return None
     }
 
@@ -1498,17 +1745,12 @@ trait CometBaseAggregate {
     if (aggregateExpressions.isEmpty) {
       val hashAggBuilder = OperatorOuterClass.HashAggregate.newBuilder()
       hashAggBuilder.addAllGroupingExprs(groupingExprs.map(_.get).asJava)
-      val attributes = groupingExpressions.map(_.toAttribute) ++ aggregateAttributes
-      val resultExprs = resultExpressions.map(exprToProto(_, attributes))
-      if (resultExprs.exists(_.isEmpty)) {
-        withInfo(
-          aggregate,
-          s"Unsupported result expressions found in: $resultExpressions",
-          resultExpressions: _*)
-        return None
-      }
-      hashAggBuilder.addAllResultExprs(resultExprs.map(_.get).asJava)
-      Some(builder.setHashAgg(hashAggBuilder).build())
+      buildAggOp(
+        builder,
+        hashAggBuilder,
+        groupingExpressions.map(_.toAttribute),
+        resultExpressions,
+        aggregate)
     } else {
       // Validate mode combinations. We support:
       // - All Partial
@@ -1517,7 +1759,9 @@ trait CometBaseAggregate {
       // - Mixed {Partial, PartialMerge} (for distinct aggregate plans)
       val isMixedPartialMerge = modeSet == Set(Partial, PartialMerge)
       if (modes.size > 1 && !isMixedPartialMerge) {
-        withInfo(aggregate, s"Unsupported mixed aggregation modes: ${modes.mkString(", ")}")
+        withFallbackReason(
+          aggregate,
+          s"Unsupported mixed aggregation modes: ${modes.mkString(", ")}")
         return None
       }
 
@@ -1532,7 +1776,7 @@ trait CometBaseAggregate {
           case Final => CometAggregateMode.Final
           case PartialMerge => CometAggregateMode.PartialMerge
           case _ =>
-            withInfo(aggregate, s"Unsupported aggregation mode ${modes.head}")
+            withFallbackReason(aggregate, s"Unsupported aggregation mode ${modes.head}")
             return None
         }
       }
@@ -1548,7 +1792,7 @@ trait CometBaseAggregate {
             a.aggregateFunction.isInstanceOf[Last])
         }
         if (unsupportedAggs.nonEmpty) {
-          withInfo(
+          withFallbackReason(
             aggregate,
             "PartialMerge not supported for aggregates: " +
               unsupportedAggs.map(_.aggregateFunction.prettyName).mkString(", "))
@@ -1565,7 +1809,7 @@ trait CometBaseAggregate {
       }
 
       if (aggExprs.exists(_.isEmpty)) {
-        withInfo(
+        withFallbackReason(
           aggregate,
           "Unsupported aggregate expression(s)",
           aggregateExpressions ++ aggregateExpressions.map(_.aggregateFunction): _*)
@@ -1577,18 +1821,6 @@ trait CometBaseAggregate {
         val hashAggBuilder = OperatorOuterClass.HashAggregate.newBuilder()
         hashAggBuilder.addAllGroupingExprs(groupingExprs.map(_.get).asJava)
         hashAggBuilder.addAllAggExprs(aggExprs.map(_.get).asJava)
-        if (mode == CometAggregateMode.Final) {
-          val attributes = groupingExpressions.map(_.toAttribute) ++ aggregateAttributes
-          val resultExprs = resultExpressions.map(exprToProto(_, attributes))
-          if (resultExprs.exists(_.isEmpty)) {
-            withInfo(
-              aggregate,
-              s"Unsupported result expressions found in: $resultExpressions",
-              resultExpressions: _*)
-            return None
-          }
-          hashAggBuilder.addAllResultExprs(resultExprs.map(_.get).asJava)
-        }
         hashAggBuilder.setModeValue(mode.getNumber)
 
         // Send per-expression modes and buffer offset for PartialMerge handling
@@ -1599,7 +1831,7 @@ trait CometBaseAggregate {
               case PartialMerge => CometAggregateMode.PartialMerge
               case Final => CometAggregateMode.Final
               case other =>
-                withInfo(aggregate, s"Unsupported aggregation mode $other")
+                withFallbackReason(aggregate, s"Unsupported aggregation mode $other")
                 return None
             }
           }
@@ -1607,15 +1839,116 @@ trait CometBaseAggregate {
           hashAggBuilder.setInitialInputBufferOffset(aggregate.initialInputBufferOffset)
         }
 
-        Some(builder.setHashAgg(hashAggBuilder).build())
+        // Final aggregations may carry a result projection (e.g. `COUNT(col) + 1`) that
+        // catalyst encodes via `resultExpressions`. Partial / PartialMerge aggregates emit
+        // raw state buffers and never need it.
+        if (mode == CometAggregateMode.Final) {
+          buildAggOp(
+            builder,
+            hashAggBuilder,
+            groupingExpressions.map(_.toAttribute) ++ aggregateAttributes,
+            resultExpressions,
+            aggregate)
+        } else {
+          Some(builder.setHashAgg(hashAggBuilder).build())
+        }
       } else {
         val allChildren: Seq[Expression] =
           groupingExpressions ++ aggregateExpressions ++ aggregateAttributes
-        withInfo(aggregate, allChildren: _*)
+        withFallbackReason(aggregate, allChildren: _*)
         None
       }
     }
 
+  }
+
+  /**
+   * Serialize a HashAggregate, wrapping it in an explicit `Projection` op when Spark's declared
+   * output (`resultExpressions`) differs from the aggregate's natural output. DataFusion's hash
+   * aggregate emits only its natural shape (group keys + agg results), so any reshape catalyst
+   * declared - alias renames, `COUNT(col) + 1`, or empty output for catalyst-pruned EXISTS /
+   * row-existence-only subqueries - is expressed as a separate Projection above the HashAgg. Both
+   * ops share the caller's `plan_id` so the aggregate's native metrics roll up under the same
+   * Spark operator.
+   */
+  private def buildAggOp(
+      builder: Operator.Builder,
+      hashAggBuilder: OperatorOuterClass.HashAggregate.Builder,
+      naturalOutput: Seq[Attribute],
+      resultExpressions: Seq[NamedExpression],
+      aggregate: BaseAggregateExec): Option[Operator] = {
+    if (resultExpressions.map(_.toAttribute) == naturalOutput) {
+      return Some(builder.setHashAgg(hashAggBuilder).build())
+    }
+    val resultExprs = resultExpressions.map(exprToProto(_, naturalOutput))
+    if (resultExprs.exists(_.isEmpty)) {
+      withFallbackReason(
+        aggregate,
+        s"Unsupported result expressions found in: $resultExpressions",
+        resultExpressions: _*)
+      return None
+    }
+    val planId = builder.getPlanId
+    val hashAggOp = OperatorOuterClass.Operator
+      .newBuilder()
+      .setPlanId(planId)
+      .addAllChildren(builder.getChildrenList)
+      .setHashAgg(hashAggBuilder)
+      .build()
+    val projection = OperatorOuterClass.Projection
+      .newBuilder()
+      .addAllProjectList(resultExprs.map(_.get).asJava)
+    Some(
+      OperatorOuterClass.Operator
+        .newBuilder()
+        .setPlanId(planId)
+        .addChildren(hashAggOp)
+        .setProjection(projection)
+        .build())
+  }
+
+  /**
+   * For partial-like aggregates containing TypedImperativeAggregate functions (like CollectSet,
+   * CollectList, and Percentile), the Spark-side output declares buffer columns as BinaryType
+   * because Spark serializes state to binary. Native Comet emits the actual state type, so fix
+   * the exposed output schema before shuffle/exchange code consumes it.
+   *
+   * NOTE: If a new TypedImperativeAggregate function is added natively, add a case branch here
+   * mapping it to the native state type.
+   */
+  protected def adjustOutputForNativeState(op: BaseAggregateExec): Seq[Attribute] = {
+    val modeSet = op.aggregateExpressions.map(_.mode).toSet
+    if (modeSet.isEmpty || !modeSet.subsetOf(Set(Partial, PartialMerge))) {
+      return op.output
+    }
+
+    val numGrouping = op.groupingExpressions.length
+    val output = op.output.toArray
+
+    var bufferIdx = numGrouping
+    for (aggExpr <- op.aggregateExpressions) {
+      val aggFunc = aggExpr.aggregateFunction
+      val bufferAttrs = aggFunc.aggBufferAttributes
+      aggFunc match {
+        case cs: CollectSet =>
+          val elementType = cs.children.head.dataType
+          val nativeStateType = ArrayType(elementType, containsNull = true)
+          output(bufferIdx) = output(bufferIdx).withDataType(nativeStateType)
+        case cl: CollectList =>
+          val elementType = cl.children.head.dataType
+          val nativeStateType = ArrayType(elementType, containsNull = true)
+          output(bufferIdx) = output(bufferIdx).withDataType(nativeStateType)
+        case _: Percentile =>
+          // Comet's native percentile UDAF keeps all values in a List<Float64> partial state.
+          // Comet casts the child to double, so the native state is ArrayType(DoubleType).
+          val nativeStateType = ArrayType(DoubleType, containsNull = true)
+          output(bufferIdx) = output(bufferIdx).withDataType(nativeStateType)
+        case _ =>
+      }
+      bufferIdx += bufferAttrs.length
+    }
+
+    output.toSeq
   }
 
   /**
@@ -1733,43 +2066,6 @@ object CometObjectHashAggregateExec
       op.child,
       SerializedPlan(None))
   }
-
-  /**
-   * For Partial mode aggregates containing TypedImperativeAggregate functions (like CollectSet),
-   * the Spark-side output declares buffer columns as BinaryType (since Spark serializes state to
-   * binary). However, the native Comet aggregate produces the actual state type (e.g.,
-   * ArrayType(elementType) for CollectSet). This method corrects the output schema to match the
-   * native state types so the shuffle exchange schema is consistent with the actual data.
-   *
-   * NOTE: If a new TypedImperativeAggregate function (e.g., CollectList) is added natively, add a
-   * case branch here mapping it to the native state type.
-   */
-  private def adjustOutputForNativeState(op: ObjectHashAggregateExec): Seq[Attribute] = {
-    // This adjustment only applies to pure-Partial aggregates (checked below).
-    val modes = op.aggregateExpressions.map(_.mode).distinct
-    if (modes != Seq(Partial)) {
-      return op.output
-    }
-
-    val numGrouping = op.groupingExpressions.length
-    val output = op.output.toArray
-
-    var bufferIdx = numGrouping
-    for (aggExpr <- op.aggregateExpressions) {
-      val aggFunc = aggExpr.aggregateFunction
-      val bufferAttrs = aggFunc.aggBufferAttributes
-      aggFunc match {
-        case cs: CollectSet =>
-          val elementType = cs.children.head.dataType
-          val nativeStateType = ArrayType(elementType, containsNull = true)
-          output(bufferIdx) = output(bufferIdx).withDataType(nativeStateType)
-        case _ =>
-      }
-      bufferIdx += bufferAttrs.length
-    }
-
-    output.toSeq
-  }
 }
 
 case class CometHashAggregateExec(
@@ -1840,7 +2136,7 @@ trait CometHashJoin {
         join.isInstanceOf[ShuffledHashJoinExec]) &&
       !(CometConf.COMET_EXEC_BROADCAST_HASH_JOIN_ENABLED.get(join.conf) &&
         join.isInstanceOf[BroadcastHashJoinExec])) {
-      withInfo(join, s"Invalid hash join type ${join.nodeName}")
+      withFallbackReason(join, s"Invalid hash join type ${join.nodeName}")
       return None
     }
 
@@ -1852,7 +2148,7 @@ trait CometHashJoin {
 
     val joinKeys = join.leftKeys ++ join.rightKeys
     if (joinKeys.exists(key => isStringCollationType(key.dataType))) {
-      withInfo(join, "unsupported non-default collated string join keys")
+      withFallbackReason(join, "unsupported non-default collated string join keys")
       return None
     }
 
@@ -1863,7 +2159,7 @@ trait CometHashJoin {
       (join.leftKeys.length != 1 || join.rightKeys.length != 1 ||
         join.joinType != LeftAnti || join.buildSide != BuildRight ||
         join.condition.isDefined)) {
-      withInfo(
+      withFallbackReason(
         join,
         "null-aware anti-join requires single-column LeftAnti BuildRight with no condition")
       return None
@@ -1872,7 +2168,7 @@ trait CometHashJoin {
     val condition = join.condition.map { cond =>
       val condProto = exprToProto(cond, join.left.output ++ join.right.output)
       if (condProto.isEmpty) {
-        withInfo(join, cond)
+        withFallbackReason(join, cond)
         return None
       }
       condProto.get
@@ -1889,7 +2185,7 @@ trait CometHashJoin {
         case LeftAnti => JoinType.LeftAnti
         case _ =>
           // Spark doesn't support other join types
-          withInfo(join, s"Unsupported join type ${join.joinType}")
+          withFallbackReason(join, s"Unsupported join type ${join.joinType}")
           return None
       }
     }
@@ -1912,9 +2208,164 @@ trait CometHashJoin {
       Some(builder.setHashJoin(joinBuilder).build())
     } else {
       val allExprs: Seq[Expression] = joinKeys
-      withInfo(join, allExprs: _*)
+      withFallbackReason(join, allExprs: _*)
       None
     }
+  }
+}
+
+case class CometBroadcastNestedLoopJoinExec(
+    override val nativeOp: Operator,
+    override val originalPlan: SparkPlan,
+    override val output: Seq[Attribute],
+    override val outputOrdering: Seq[SortOrder],
+    joinType: JoinType,
+    condition: Option[Expression],
+    buildSide: BuildSide,
+    override val left: SparkPlan,
+    override val right: SparkPlan,
+    override val serializedPlanOpt: SerializedPlan)
+    extends CometBinaryExec {
+
+  // Mirror Spark's BroadcastNestedLoopJoinExec: output partitioning derives from the streamed
+  // (non-broadcast) side. Reading from live left/right rather than originalPlan keeps this
+  // correct after an AQE child swap.
+  private def streamedPlan: SparkPlan = buildSide match {
+    case BuildLeft => right
+    case BuildRight => left
+  }
+
+  override def outputPartitioning: Partitioning = streamedPlan.outputPartitioning
+
+  override def withNewChildrenInternal(newLeft: SparkPlan, newRight: SparkPlan): SparkPlan =
+    this.copy(left = newLeft, right = newRight)
+
+  override def stringArgs: Iterator[Any] =
+    Iterator(joinType, buildSide, condition, left, right)
+
+  override def equals(obj: Any): Boolean = {
+    obj match {
+      case other: CometBroadcastNestedLoopJoinExec =>
+        this.output == other.output &&
+        this.joinType == other.joinType &&
+        this.condition == other.condition &&
+        this.buildSide == other.buildSide &&
+        this.left == other.left &&
+        this.right == other.right &&
+        this.serializedPlanOpt == other.serializedPlanOpt
+      case _ =>
+        false
+    }
+  }
+
+  override def hashCode(): Int =
+    Objects.hashCode(output, joinType, condition, buildSide, left, right)
+
+  override lazy val metrics: Map[String, SQLMetric] =
+    CometMetricNode.joinMetrics(sparkContext)
+}
+
+object CometBroadcastNestedLoopJoinExec extends CometOperatorSerde[BroadcastNestedLoopJoinExec] {
+
+  /**
+   * Get the optional Comet configuration entry that is used to enable or disable native support
+   * for this operator.
+   */
+  override def enabledConfig: Option[ConfigEntry[Boolean]] = {
+    Some(CometConf.COMET_EXEC_BROADCAST_NESTED_LOOP_JOIN_ENABLED)
+  }
+
+  private val broadcastBuildReplicationReason =
+    "BNLJ combinations that emit per-build-row results need a cross-partition merge that" +
+      " DataFusion's NestedLoopJoinExec does not provide. Affects: LeftOuter+BuildLeft," +
+      " RightOuter+BuildRight, FullOuter, LeftSemi+BuildLeft, LeftAnti+BuildLeft."
+
+  override def getSupportLevel(op: BroadcastNestedLoopJoinExec): SupportLevel =
+    (op.joinType, op.buildSide) match {
+      case (Inner, _) | (LeftOuter, BuildRight) | (RightOuter, BuildLeft) |
+          (LeftSemi, BuildRight) | (LeftAnti, BuildRight) =>
+        Compatible(None)
+      case (LeftOuter | RightOuter | FullOuter | LeftSemi | LeftAnti, _) =>
+        Unsupported(Some(broadcastBuildReplicationReason))
+      case _ => Unsupported(Some(s"Join type ${op.joinType} is not supported"))
+    }
+
+  /**
+   * Convert a Spark operator into a protocol buffer representation that can be passed into native
+   * code.
+   *
+   * @param op
+   *   The Spark operator.
+   * @param builder
+   *   The protobuf builder for the operator.
+   * @param childOp
+   *   Child operators that have already been converted to Comet.
+   * @return
+   *   Protocol buffer representation, or None if the operator could not be converted. In this
+   *   case it is expected that the input operator will have been tagged with reasons why it could
+   *   not be converted.
+   */
+  override def convert(
+      op: BroadcastNestedLoopJoinExec,
+      builder: Operator.Builder,
+      childOp: Operator*): Option[Operator] = {
+
+    val buildSide = op.buildSide match {
+      case BuildLeft => OperatorOuterClass.BuildSide.BuildLeft
+      case BuildRight => OperatorOuterClass.BuildSide.BuildRight
+    }
+
+    val join = op.joinType
+    val joinType = {
+      import OperatorOuterClass.JoinType
+      join match {
+        case Inner => JoinType.Inner
+        case LeftOuter => JoinType.LeftOuter
+        case RightOuter => JoinType.RightOuter
+        case FullOuter => JoinType.FullOuter
+        case LeftSemi => JoinType.LeftSemi
+        case LeftAnti => JoinType.LeftAnti
+        case _ =>
+          // Spark doesn't support other join types
+          withFallbackReason(op, s"Unsupported join type $join")
+          return None
+      }
+    }
+
+    val joinCondition = op.condition.map({ cond =>
+      val condProto = exprToProto(cond, op.left.output ++ op.right.output)
+      if (condProto.isEmpty) {
+        withFallbackReason(op, cond)
+        return None
+      }
+      condProto.get
+    })
+
+    val joinBuilder = OperatorOuterClass.BroadcastNestedLoopJoin
+      .newBuilder()
+      .setJoinType(joinType)
+      .setBuildSide(buildSide)
+
+    joinCondition.foreach(joinBuilder.setCondition)
+
+    Some(builder.setBroadcastNestedLoopJoin(joinBuilder).build())
+  }
+
+  override def createExec(
+      nativeOp: Operator,
+      op: BroadcastNestedLoopJoinExec): CometNativeExec = {
+
+    CometBroadcastNestedLoopJoinExec(
+      nativeOp,
+      op,
+      op.output,
+      op.outputOrdering,
+      op.joinType,
+      op.condition,
+      op.buildSide,
+      op.left,
+      op.right,
+      SerializedPlan(None))
   }
 }
 
@@ -2026,7 +2477,7 @@ case class CometHashJoinExec(
     Objects.hashCode(output, leftKeys, rightKeys, condition, buildSide, left, right)
 
   override lazy val metrics: Map[String, SQLMetric] =
-    CometMetricNode.hashJoinMetrics(sparkContext)
+    CometMetricNode.joinMetrics(sparkContext)
 }
 
 case class CometBroadcastHashJoinExec(
@@ -2167,7 +2618,7 @@ case class CometBroadcastHashJoinExec(
     Objects.hashCode(output, leftKeys, rightKeys, condition, buildSide, left, right)
 
   override lazy val metrics: Map[String, SQLMetric] =
-    CometMetricNode.hashJoinMetrics(sparkContext)
+    CometMetricNode.joinMetrics(sparkContext)
 }
 
 object CometSortMergeJoinExec extends CometOperatorSerde[SortMergeJoinExec] {
@@ -2200,7 +2651,7 @@ object CometSortMergeJoinExec extends CometOperatorSerde[SortMergeJoinExec] {
     if (join.condition.isDefined &&
       !CometConf.COMET_EXEC_SORT_MERGE_JOIN_WITH_JOIN_FILTER_ENABLED
         .get(join.conf)) {
-      withInfo(
+      withFallbackReason(
         join,
         s"${CometConf.COMET_EXEC_SORT_MERGE_JOIN_WITH_JOIN_FILTER_ENABLED.key} is not enabled",
         join.condition.get)
@@ -2210,7 +2661,7 @@ object CometSortMergeJoinExec extends CometOperatorSerde[SortMergeJoinExec] {
     val condition = join.condition.map { cond =>
       val condProto = exprToProto(cond, join.left.output ++ join.right.output)
       if (condProto.isEmpty) {
-        withInfo(join, cond)
+        withFallbackReason(join, cond)
         return None
       }
       condProto.get
@@ -2227,14 +2678,14 @@ object CometSortMergeJoinExec extends CometOperatorSerde[SortMergeJoinExec] {
         case LeftAnti => JoinType.LeftAnti
         case _ =>
           // Spark doesn't support other join types
-          withInfo(join, s"Unsupported join type ${join.joinType}")
+          withFallbackReason(join, s"Unsupported join type ${join.joinType}")
           return None
       }
     }
 
     val joinKeys = join.leftKeys ++ join.rightKeys
     if (joinKeys.exists(key => isStringCollationType(key.dataType))) {
-      withInfo(join, "unsupported non-default collated string join keys")
+      withFallbackReason(join, "unsupported non-default collated string join keys")
       return None
     }
 
@@ -2248,7 +2699,7 @@ object CometSortMergeJoinExec extends CometOperatorSerde[SortMergeJoinExec] {
     }
 
     if (errorMsgs.nonEmpty) {
-      withInfo(join, errorMsgs.mkString("\n"))
+      withFallbackReason(join, errorMsgs.mkString("\n"))
       return None
     }
 
@@ -2272,7 +2723,7 @@ object CometSortMergeJoinExec extends CometOperatorSerde[SortMergeJoinExec] {
       Some(builder.setSortMergeJoin(joinBuilder).build())
     } else {
       val allExprs: Seq[Expression] = joinKeys
-      withInfo(join, allExprs: _*)
+      withFallbackReason(join, allExprs: _*)
       None
     }
   }

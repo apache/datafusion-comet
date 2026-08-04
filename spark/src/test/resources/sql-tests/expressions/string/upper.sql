@@ -15,15 +15,29 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
+-- Routes Upper through the codegen dispatcher so behavior matches Spark exactly,
+-- including locale-specific case mappings that the Rust scalar function does not implement.
+-- Config: spark.comet.exec.scalaUDF.codegen.enabled=true
+
 statement
 CREATE TABLE test_upper(s string) USING parquet
 
 statement
 INSERT INTO test_upper VALUES ('hello'), ('HELLO'), ('Hello World'), (''), (NULL), ('123abc')
 
-query expect_fallback(case conversion)
+query
 SELECT upper(s) FROM test_upper
 
 -- literal arguments
-query expect_fallback(case conversion)
+query
 SELECT upper('hello'), upper(''), upper(NULL)
+
+-- locale-sensitive characters: German sharp s and Turkish dotted/dotless I
+statement
+CREATE TABLE test_upper_unicode(s string) USING parquet
+
+statement
+INSERT INTO test_upper_unicode VALUES ('straße'), ('istanbul'), ('İstanbul'), ('ﬁnish')
+
+query
+SELECT upper(s) FROM test_upper_unicode

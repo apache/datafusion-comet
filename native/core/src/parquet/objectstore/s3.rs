@@ -20,6 +20,7 @@ use std::collections::HashMap;
 use std::sync::OnceLock;
 use url::Url;
 
+use crate::cloud::s3::credential_bridge::{AccessMode, CometS3CredentialBridge};
 use crate::execution::jni_api::get_runtime;
 use async_trait::async_trait;
 use aws_config::{
@@ -78,11 +79,32 @@ pub fn create_store(
         source: "Missing bucket name in S3 URL".into(),
     })?;
 
-    let credential_provider =
-        get_runtime().block_on(build_credential_provider(configs, bucket, min_ttl))?;
-    builder = match credential_provider {
-        Some(provider) => builder.with_credentials(Arc::new(provider)),
-        None => builder.with_skip_signature(true),
+    // Parquet path: catalog_properties is empty; vendors here read from Hadoop conf.
+    let empty_props: HashMap<String, String> = HashMap::new();
+    builder = match lookup_provider_class(configs, bucket) {
+        Some(provider_class) => {
+            // Fail rather than fall back to the default chain, which could resolve to the wrong
+            // identity for a user who explicitly named a provider.
+            let bridge = CometS3CredentialBridge::new(
+                provider_class,
+                bucket,
+                bucket,
+                url.path(),
+                AccessMode::Read,
+                &empty_props,
+            )
+            .map_err(|e| object_store::Error::Generic {
+                store: "S3",
+                source: format!("CometS3CredentialBridge init failed for {bucket}: {e}").into(),
+            })?;
+            builder.with_credentials(Arc::new(bridge))
+        }
+        None => {
+            match get_runtime().block_on(build_credential_provider(configs, bucket, min_ttl))? {
+                Some(provider) => builder.with_credentials(Arc::new(provider)),
+                None => builder.with_skip_signature(true),
+            }
+        }
     };
 
     let s3_configs = extract_s3_config_options(configs, bucket);
@@ -287,12 +309,23 @@ fn get_config<'a>(
     })
 }
 
-fn get_config_trimmed<'a>(
+pub(super) fn get_config_trimmed<'a>(
     configs: &'a HashMap<String, String>,
     bucket: &str,
     property: &str,
 ) -> Option<&'a str> {
     get_config(configs, bucket, property).map(|s| s.trim())
+}
+
+/// Activation key (without `fs.s3a.` prefix) naming the vendor `CometS3CredentialProvider` FQCN.
+/// Per-bucket override is honored via [`get_config_trimmed`].
+const PROVIDER_CLASS_PROPERTY: &str = "comet.credential.provider.class";
+
+fn lookup_provider_class<'a>(
+    configs: &'a HashMap<String, String>,
+    bucket: &str,
+) -> Option<&'a str> {
+    get_config_trimmed(configs, bucket, PROVIDER_CLASS_PROPERTY).filter(|s| !s.is_empty())
 }
 
 // Hadoop S3A credential provider constants

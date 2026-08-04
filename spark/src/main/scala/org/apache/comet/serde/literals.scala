@@ -24,12 +24,12 @@ import java.lang
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Literal}
 import org.apache.spark.sql.catalyst.util.ArrayData
-import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType, DateType, Decimal, DecimalType, DoubleType, FloatType, IntegerType, LongType, NullType, ShortType, StringType, TimestampNTZType, TimestampType}
+import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType, DateType, DayTimeIntervalType, Decimal, DecimalType, DoubleType, FloatType, IntegerType, LongType, NullType, ShortType, StringType, TimestampNTZType, TimestampType}
 import org.apache.spark.unsafe.types.UTF8String
 
 import com.google.protobuf.ByteString
 
-import org.apache.comet.CometSparkSessionExtensions.withInfo
+import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 import org.apache.comet.DataTypeSupport.isComplexType
 import org.apache.comet.serde.{CometExpressionSerde, Compatible, ExprOuterClass, LiteralOuterClass, SupportLevel, Unsupported}
 import org.apache.comet.serde.QueryPlanSerde.{isTimeType, serializeDataType, supportedDataType}
@@ -56,7 +56,10 @@ object CometLiteral extends CometExpressionSerde[Literal] with Logging {
             .isInstanceOf[ArrayType])))) {
       Compatible(None)
     } else {
-      Unsupported(Some(s"Unsupported data type ${expr.dataType}"))
+      expr.dataType match {
+        case _: DayTimeIntervalType => Compatible(None)
+        case _ => Unsupported(Some(s"Unsupported data type ${expr.dataType}"))
+      }
     }
   }
 
@@ -78,7 +81,7 @@ object CometLiteral extends CometExpressionSerde[Literal] with Logging {
         case _: ByteType => exprBuilder.setByteVal(value.asInstanceOf[Byte])
         case _: ShortType => exprBuilder.setShortVal(value.asInstanceOf[Short])
         case _: IntegerType | _: DateType => exprBuilder.setIntVal(value.asInstanceOf[Int])
-        case _: LongType | _: TimestampType | _: TimestampNTZType =>
+        case _: LongType | _: TimestampType | _: TimestampNTZType | _: DayTimeIntervalType =>
           exprBuilder.setLongVal(value.asInstanceOf[Long])
         case dt if isTimeType(dt) =>
           exprBuilder.setLongVal(value.asInstanceOf[Long])
@@ -101,7 +104,7 @@ object CometLiteral extends CometExpressionSerde[Literal] with Logging {
           exprBuilder.setListVal(listLiteralBuilder.build())
           exprBuilder.setDatatype(serializeDataType(dataType).get)
         case dt =>
-          withInfo(expr, s"Unexpected datatype '$dt' for literal value '$value'")
+          withFallbackReason(expr, s"Unexpected datatype '$dt' for literal value '$value'")
           return None
       }
     }
@@ -117,7 +120,7 @@ object CometLiteral extends CometExpressionSerde[Literal] with Logging {
           .setLiteral(exprBuilder)
           .build())
     } else {
-      withInfo(expr, s"Unsupported datatype $dataType")
+      withFallbackReason(expr, s"Unsupported datatype $dataType")
       None
     }
 

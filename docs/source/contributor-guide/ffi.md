@@ -21,10 +21,14 @@ under the License.
 
 ## Overview
 
-Comet uses the [Arrow C Data Interface](https://arrow.apache.org/docs/format/CDataInterface.html) for zero-copy data transfer in two directions:
+Comet transfers Arrow data across the JVM/native boundary in two directions:
 
-1. **JVM → Native**: Native code pulls batches from JVM using `CometBatchIterator`
-2. **Native → JVM**: JVM pulls batches from native code using `CometExecIterator`
+1. **JVM → Native**: Native code pulls batches from the JVM over the
+   [Arrow C Stream Interface](https://arrow.apache.org/docs/format/CStreamInterface.html). The JVM exports each
+   per-partition iterator once as an `ArrowArrayStream`, and native pulls every batch through a single C callback.
+2. **Native → JVM**: JVM pulls batches from native code using `CometExecIterator`, via the
+   [Arrow C Data Interface](https://arrow.apache.org/docs/format/CDataInterface.html) (one `ArrowArray`/`ArrowSchema`
+   pair per batch).
 
 The following diagram shows an example of the end-to-end flow for a query stage.
 
@@ -39,6 +43,11 @@ The Arrow C Data Interface defines two C structures:
 - `ArrowArray`: Contains pointers to data buffers and metadata
 - `ArrowSchema`: Contains type information
 
+The Arrow C Stream Interface builds on these with a third structure:
+
+- `ArrowArrayStream`: A stream of `ArrowArray`s sharing one `ArrowSchema`, pulled one at a time through a
+  `get_next` C callback. This is how Comet transfers JVM-sourced input (see below).
+
 ### Key Characteristics
 
 - **Zero-copy**: Data buffers can be shared across language boundaries without copying
@@ -49,24 +58,27 @@ The Arrow C Data Interface defines two C structures:
 
 ### Architecture
 
-When native code needs data from the JVM, it uses `ScanExec` which calls into `CometBatchIterator`:
+When native code needs data from the JVM, it uses `ScanExec`, which is backed by an Arrow C Stream that the JVM
+exports once per partition:
 
 ```
 ┌─────────────────┐
 │  Spark/Scala    │
-│ CometExecIter   │
+│ Iterator of     │
+│ batches or rows │
 └────────┬────────┘
-         │ produces batches
+         │ wrapped in an ArrowReader, exported once
+         │ via Data.exportArrayStream
          ▼
 ┌─────────────────┐
-│ CometBatchIter  │ ◄─── JNI call from native
-│  (JVM side)     │
+│ ArrowArrayStream│ ── JVM side: one C stream struct per partition
+│  (C struct)     │
 └────────┬────────┘
-         │ Arrow FFI
-         │ (transfers ArrowArray/ArrowSchema pointers)
+         │ Arrow C Stream Interface
+         │ (native pulls each batch via the get_next callback)
          ▼
 ┌─────────────────┐
-│    ScanExec     │
+│    ScanExec     │ ── owns an AlignedArrowStreamReader
 │  (Rust/native)  │
 └────────┬────────┘
          │
@@ -77,32 +89,38 @@ When native code needs data from the JVM, it uses `ScanExec` which calls into `C
 └─────────────────┘
 ```
 
-### FFI Transfer Process
+### Stream Export and Import
 
-The data transfer happens in `ScanExec::get_next()`:
+On the JVM side, `CometArrowStream` (in `execution/arrow/CometNativeArrowSource.scala`) wraps each per-partition
+input in an `org.apache.arrow.vector.ipc.ArrowReader` and exports it once with `Data.exportArrayStream`. The reader
+implementation depends on the source of the data:
 
-```rust
-// 1. Allocate FFI structures on native side (Rust heap)
-for _ in 0..num_cols {
-    let arrow_array = Rc::new(FFI_ArrowArray::empty());
-    let arrow_schema = Rc::new(FFI_ArrowSchema::empty());
-    let array_ptr = Rc::into_raw(arrow_array) as i64;
-    let schema_ptr = Rc::into_raw(arrow_schema) as i64;
-    // Store pointers...
-}
+- `RowArrowReader`: a Spark `Iterator[InternalRow]` (row input)
+- `SparkColumnarArrowReader`: a non-Arrow Spark `ColumnarBatch`
+- `ColumnarBatchArrowReader`: an Arrow-backed `ColumnarBatch` (transfers `VectorSchemaRoot` ownership)
 
-// 2. Call JVM to populate FFI structures
-let num_rows: i32 = unsafe {
-    jni_call!(env, comet_batch_iterator(iter).next(array_obj, schema_obj) -> i32)?
-};
+The exported `ArrowArrayStream`s are boxed into the `Array[Object]` that `CometExecIterator` / `CometExecRDD` pass
+to native `createPlan` (one slot per scan input; shuffle inputs pass a `CometShuffleBlockIterator` instead).
 
-// 3. Import data from FFI structures
-for i in 0..num_cols {
-    let array_data = ArrayData::from_spark((array_ptr, schema_ptr))?;
-    let array = make_array(array_data);
-    // ... process array
-}
-```
+On the native side, `planner.rs` reads each stream's `memoryAddress` and takes ownership through
+`AlignedArrowStreamReader::from_raw`, importing the schema once. `ScanExec::get_next_batch` then pulls each batch
+through the stream's `get_next` callback. There is no per-batch JNI call and no per-column FFI export.
+
+### Buffer Alignment (AlignedArrowStreamReader)
+
+`AlignedArrowStreamReader` (in `execution/operators/aligned_stream_reader.rs`) wraps the imported stream and calls
+`align_buffers` on every batch before constructing typed arrays. This works around the fact that Java's allocator
+hands back `Decimal128` buffers at 8-byte (not 16-byte) alignment, which the stock `ArrowArrayStreamReader` rejects
+([apache/arrow-rs#10028](https://github.com/apache/arrow-rs/issues/10028)). The fix
+([apache/arrow-rs#10030](https://github.com/apache/arrow-rs/pull/10030)) makes import align internally and ships in
+arrow 59.0.0; once Comet is on arrow >= 59 this reader can be dropped for the stock `ArrowArrayStreamReader`.
+
+### Schema Reconciliation
+
+`CometArrowStream.reconcileStreamSchema` advertises the stream's schema from the actual `CometVector` types in the
+first batch rather than the consumer's Spark-declared types. Native `ScanExec` already casts its input to the
+declared scan-input schema in `build_record_batch`, so the truthful first-batch schema lets that cast fire; if the
+two differ, it logs one deduplicated warning naming the operator, column, and type drift.
 
 ### Memory Layout
 
@@ -126,68 +144,19 @@ Off-heap Memory:                            │
 └──────────────────┘
 ```
 
-**Key Point**: The actual data buffers can be off-heap, but the `ArrowArray` and `ArrowSchema` wrapper objects are **always allocated on the JVM heap**.
+**Key Point**: The actual data buffers are shared zero-copy; native only takes pointers to the off-heap buffers.
 
-### Wrapper Object Lifecycle
+### Ownership and Lifecycle
 
-When arrays are created in the JVM and passed to native code, the JVM creates the array data off-heap and creates
-wrapper objects `ArrowArray` and `ArrowSchema` on-heap. These wrapper objects can consume significant memory over
-time.
+The Arrow C Stream Interface transfers ownership by reference count: native takes ownership of each imported batch,
+so it is safe to buffer batches in operators such as `SortExec` or `ShuffleWriterExec` without a deep copy.
 
-```
-Per batch overhead on JVM heap:
-- ArrowArray object: ~100 bytes
-- ArrowSchema object: ~100 bytes
-- Per column: ~200 bytes
-- 100 columns × 1000 batches = ~20 MB of wrapper objects
-```
-
-When native code pulls batches from the JVM, the JVM wrapper objects are kept alive until the native code drops
-all references to the arrays.
-
-When operators such as `SortExec` fetch many batches and buffer them in native code, the number of wrapper objects
-in Java on-heap memory keeps growing until the batches are released in native code at the end of the sort operation.
-
-### Ownership Transfer
-
-The Arrow C data interface supports ownership transfer by registering callbacks in the C struct that is passed over
-the JNI boundary for the function to delete the array data. For example, the `ArrowArray` struct has:
-
-```c
-// Release callback
-void (*release)(struct ArrowArray*);
-```
-
-Comet currently does not always follow best practice around ownership transfer because there are some cases where
-Comet JVM code will retain references to arrays after passing them to native code and may mutate the underlying
-buffers. There is an `arrow_ffi_safe` flag in the protocol buffer definition of `Scan` that indicates whether
-ownership is being transferred according to the Arrow C data interface specification.
-
-```protobuf
-message Scan {
-  repeated spark.spark_expression.DataType fields = 1;
-  // The source of the scan (e.g. file scan, broadcast exchange, shuffle, etc). This
-  // is purely for informational purposes when viewing native query plans in
-  // debug mode.
-  string source = 2;
-  // Whether native code can assume ownership of batches that it receives
-  bool arrow_ffi_safe = 3;
-}
-```
-
-#### When ownership is NOT transferred to native:
-
-If the data originates from a scan that uses mutable buffers
-then ownership is not transferred to native and the JVM may re-use the underlying buffers in the future.
-
-It is critical that the native code performs a deep copy of the arrays if the arrays are to be buffered by
-operators such as `SortExec` or `ShuffleWriterExec`, otherwise data corruption is likely to occur.
-
-#### When ownership IS transferred to native:
-
-When ownership is transferred, it is safe to buffer batches in native. However, JVM wrapper objects will not be
-released until the native batches are dropped. This can lead to OOM or GC pressure if there is not enough Java
-heap memory configured.
+The whole per-partition stream is exported once, so the JVM allocates one `ArrowArrayStream` per partition rather
+than a per-batch, per-column `ArrowArray`/`ArrowSchema` wrapper object pair. Lifecycle is anchored at the stream: when
+`ScanExec` drops its `AlignedArrowStreamReader`, the stream's release callback fires synchronously back into the JVM
+and closes the `ArrowReader` and its `VectorSchemaRoot`, releasing the off-heap buffers. Because native holds those
+buffers until the reader drops, an operator that buffers many batches keeps the corresponding JVM-side data alive
+until then.
 
 ## Native → JVM Data Flow (CometExecIterator)
 
@@ -342,10 +311,9 @@ arrowBuf.close();  // → calls native release_batch()
 
 ### JVM → Native
 
-| Scenario           | `arrow_ffi_safe` | Ownership   | Action Required                        |
-| ------------------ | ---------------- | ----------- | -------------------------------------- |
-| Temporary scan     | `false`          | JVM keeps   | **Must deep copy** to avoid corruption |
-| Ownership transfer | `true`           | Native owns | Copy only to unpack dictionaries       |
+| Scenario  | Ownership   | Action Required                                                                                                                              |
+| --------- | ----------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| All cases | Native owns | None; the C Stream transfers ownership by reference count (copy only to unpack dictionaries). Dropping the reader releases the JVM-side data |
 
 ### Native → JVM
 
@@ -356,5 +324,6 @@ arrowBuf.close();  // → calls native release_batch()
 ## Further Reading
 
 - [Arrow C Data Interface Specification](https://arrow.apache.org/docs/format/CDataInterface.html)
+- [Arrow C Stream Interface Specification](https://arrow.apache.org/docs/format/CStreamInterface.html)
 - [Arrow Java FFI Implementation](https://github.com/apache/arrow/tree/main/java/c)
 - [Arrow Rust FFI Implementation](https://docs.rs/arrow/latest/arrow/ffi/)

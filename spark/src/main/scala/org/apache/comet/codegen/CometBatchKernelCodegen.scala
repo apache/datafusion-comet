@@ -23,12 +23,12 @@ import org.apache.arrow.vector._
 import org.apache.arrow.vector.complex.{ListVector, MapVector, StructVector}
 import org.apache.arrow.vector.types.pojo.Field
 import org.apache.spark.internal.Logging
-import org.apache.spark.sql.catalyst.expressions.{BoundReference, Expression, HigherOrderFunction, LambdaFunction, Literal, NamedLambdaVariable, Unevaluable}
+import org.apache.spark.sql.catalyst.expressions.{BoundReference, Expression, Literal, Unevaluable}
 import org.apache.spark.sql.catalyst.expressions.codegen._
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
-import org.apache.comet.shims.CometExprTraitShim
+import org.apache.comet.shims.{CometExprTraitShim, CometTypeShim}
 
 /**
  * Compiles a bound [[Expression]] plus an Arrow input schema into a [[CometBatchKernel]] that
@@ -49,7 +49,7 @@ import org.apache.comet.shims.CometExprTraitShim
  * The generated kernel is the `InternalRow` that Spark's `BoundReference.genCode` reads from. See
  * [[generateSource]] for how the wiring is set up.
  */
-object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
+object CometBatchKernelCodegen extends Logging with CometExprTraitShim with CometTypeShim {
 
   /**
    * Resolve an Arrow vector class by simple name through the codegen object's own classloader.
@@ -67,10 +67,14 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
     case "Float8Vector" => classOf[Float8Vector]
     case "DecimalVector" => classOf[DecimalVector]
     case "DateDayVector" => classOf[DateDayVector]
+    case "TimeNanoVector" => classOf[TimeNanoVector]
     case "TimeStampMicroVector" => classOf[TimeStampMicroVector]
     case "TimeStampMicroTZVector" => classOf[TimeStampMicroTZVector]
     case "VarCharVector" => classOf[VarCharVector]
     case "VarBinaryVector" => classOf[VarBinaryVector]
+    case "IntervalYearVector" => classOf[IntervalYearVector]
+    case "DurationVector" => classOf[DurationVector]
+    case "IntervalMonthDayNanoVector" => classOf[IntervalMonthDayNanoVector]
     case other => throw new IllegalArgumentException(s"unknown Arrow vector class: $other")
   }
 
@@ -84,6 +88,8 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
     case _: DecimalType => true
     case _: StringType | _: BinaryType => true
     case DateType | TimestampType | TimestampNTZType => true
+    case dt if isTimeType(dt) => true
+    case _: YearMonthIntervalType | _: DayTimeIntervalType | CalendarIntervalType => true
     case ArrayType(inner, _) => isSupportedDataType(inner)
     case st: StructType => st.fields.forall(f => isSupportedDataType(f.dataType))
     case mt: MapType => isSupportedDataType(mt.keyType) && isSupportedDataType(mt.valueType)
@@ -103,13 +109,12 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
 
   /**
    * Plan-time predicate. `None` greenlights the serde to emit the codegen proto; `Some(reason)`
-   * forces a Spark fallback (typically `withInfo(...) + None`) so the operator falls back cleanly
-   * rather than crashing the Janino compile at execute time.
+   * forces a Spark fallback (typically `withFallbackReason(...) + None`) so the operator falls
+   * back cleanly rather than crashing the Janino compile at execute time.
    *
    * Checks every `BoundReference`'s data type and the root `expr.dataType` against
-   * [[isSupportedDataType]], rejects aggregates / generators / `CodegenFallback` (other than
-   * HOFs, which are admitted), and gates total nested-field count on
-   * `spark.sql.codegen.maxFields`.
+   * [[isSupportedDataType]], rejects aggregates / generators / `Unevaluable`, and gates total
+   * nested-field count on `spark.sql.codegen.maxFields`.
    */
   def canHandle(boundExpr: Expression): Option[String] = {
     if (!isSupportedDataType(boundExpr.dataType)) {
@@ -127,12 +132,15 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
         s"codegen dispatch: too many nested fields ($totalFields > " +
           s"spark.sql.codegen.maxFields=$maxFields)")
     }
-    // HOFs are `CodegenFallback` but admitted: `CodegenFallback.doGenCode` emits one
-    // `((Expression) references[N]).eval(row)` call site per HOF. The kernel dispatches to the
-    // HOF's interpreted `eval`, which mutates `NamedLambdaVariable.value` per element and reads
-    // the input array through the kernel's typed Arrow getters. Per-task `boundExpr` isolation
-    // in `CometScalaUDFCodegen.kernelCache` prevents concurrent partitions from racing on the
-    // lambda variable's `AtomicReference`. See `CometCodegenHOFSuite`.
+    // `CodegenFallback` expressions are admitted. `CodegenFallback.doGenCode` emits one
+    // `((Expression) references[N]).eval(row)` call site per expression. The kernel dispatches
+    // to the expression's interpreted `eval` against `row` aliased to `this`, so the eval reads
+    // through the kernel's typed Arrow getters. This covers `HigherOrderFunction` (which mutates
+    // `NamedLambdaVariable.value` per element; see `CometCodegenHOFSuite`) as well as other
+    // CodegenFallback expressions like `JsonToStructs` / `StructsToJson` whose `eval(row)`
+    // simply calls `row.get(0, dataType)`. Per-task `boundExpr` isolation in
+    // `CometScalaUDFCodegen.kernelCache` prevents concurrent partitions from racing on shared
+    // state inside the expression.
     //
     // Nondeterministic / stateful expressions are accepted: each cache entry holds one kernel
     // instance with a single `init(partitionIndex)` call, so `Rand` / `MonotonicallyIncreasingID`
@@ -150,10 +158,6 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
     boundExpr.find {
       case _: org.apache.spark.sql.catalyst.expressions.aggregate.AggregateFunction => true
       case _: org.apache.spark.sql.catalyst.expressions.Generator => true
-      case _: HigherOrderFunction => false
-      case _: LambdaFunction => false
-      case _: NamedLambdaVariable => false
-      case _: CodegenFallback => true
       case u: Unevaluable if isCodegenInertUnevaluable(u) => false
       case _: Unevaluable => true
       case _ => false
@@ -161,7 +165,7 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
       case Some(bad) =>
         return Some(
           s"codegen dispatch: expression ${bad.getClass.getSimpleName} not supported " +
-            "(aggregate, generator, codegen-fallback, or unevaluable)")
+            "(aggregate, generator, or unevaluable)")
       case None =>
     }
     val badRef = boundExpr.collectFirst {
@@ -199,7 +203,7 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
             t)
           throw t
       }
-    logInfo(
+    logDebug(
       s"CometBatchKernelCodegen: compiled ${boundExpr.getClass.getSimpleName} " +
         s"-> ${boundExpr.dataType}  inputs=" +
         inputSchema
@@ -333,10 +337,10 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
   }
 
   /**
-   * Per-row body. For `NullIntolerant` expressions where the entire tree propagates nulls,
-   * prepends a short-circuit on the union of input ordinals so the whole `ev.code` cost is
-   * skipped on null rows. Otherwise the standard shape: run `ev.code`, then `setNull` or write
-   * based on `ev.isNull`.
+   * Per-row body. For `NullIntolerant` expressions whose input nulls fully determine a null
+   * output (see [[canShortCircuitNulls]]), prepends a short-circuit on those ordinals so the
+   * whole `ev.code` cost is skipped on null rows. Otherwise the standard shape: run `ev.code`,
+   * then `setNull` or write based on `ev.isNull`.
    *
    * `subExprsCode` is the CSE helper-invocation block. It must run before `ev.code`. Inside the
    * short-circuit it lives in the else branch so null rows skip CSE too.
@@ -347,24 +351,40 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
       ev: ExprCode,
       writeSnippet: String,
       subExprsCode: String): String = {
-    boundExpr match {
-      case _ if isNullIntolerant(boundExpr) && allNullIntolerant(boundExpr) =>
-        // Every node from root to leaf is `NullIntolerant` or a leaf, so "any BoundReference null
-        // -> whole expression null". A non-null-propagating node like `coalesce` or `if` would
-        // make this incorrect (`coalesce(null, x)` is `x`); `allNullIntolerant` rejects those.
-        val inputOrdinals =
-          boundExpr.collect { case b: BoundReference => b.ordinal }.distinct
-        // Primitive Arrow vectors are wrapped in `CometPlainVector` at input-cast time, which
-        // exposes `isNullAt(int)` rather than the raw Arrow `isNull(int)`. Pick the right method
-        // per ordinal so the short-circuit compiles for timestamp / int / float columns too,
-        // not just VarChar / Decimal vectors that stay as raw Arrow types.
-        def nullCheckCall(ord: Int): String = {
-          val method = CometBatchKernelCodegenInput.nullCheckMethod(inputSchema(ord))
-          s"this.col$ord.$method(i)"
-        }
-        val nullCheck =
-          if (inputOrdinals.isEmpty) "false"
-          else inputOrdinals.map(nullCheckCall).mkString(" || ")
+    val inputOrdinals = boundExpr.collect { case b: BoundReference => b.ordinal }.distinct
+    if (canShortCircuitNulls(boundExpr, inputOrdinals)) {
+      // Primitive Arrow vectors are wrapped in `CometPlainVector` at input-cast time, which
+      // exposes `isNullAt(int)` rather than the raw Arrow `isNull(int)`. Pick the right method
+      // for the ordinal so the short-circuit compiles for timestamp / int / float columns too,
+      // not just VarChar / Decimal vectors that stay as raw Arrow types.
+      //
+      // Multi-ordinal trees test the disjunction of their ordinals. That is only reachable for
+      // leaf-only-children roots, where it is exact; see [[canShortCircuitNulls]].
+      val nullCheck = inputOrdinals
+        .map(ord =>
+          s"this.col$ord.${CometBatchKernelCodegenInput.nullCheckMethod(inputSchema(ord))}(i)")
+        .mkString(" || ")
+      // `NullIntolerant` only constrains "any input null -> output null"; it does NOT promise
+      // that non-null inputs always produce non-null output. `MakeTimestamp(failOnError=false)`
+      // is `NullIntolerant=true` but its `doGenCode` catches `DateTimeException` for invalid
+      // year/month/day/hour/min/sec components and sets `ev.isNull = true`. Honor `ev.isNull`
+      // post-eval whenever the expression is nullable; skip the guard only when the root is
+      // statically non-nullable (`ev.isNull` is then a literal `false`).
+      if (boundExpr.nullable) {
+        s"""
+           |if ($nullCheck) {
+           |  output.setNull(i);
+           |} else {
+           |  $subExprsCode
+           |  ${ev.code}
+           |  if (${ev.isNull}) {
+           |    output.setNull(i);
+           |  } else {
+           |    $writeSnippet
+           |  }
+           |}
+           """.stripMargin
+      } else {
         s"""
            |if ($nullCheck) {
            |  output.setNull(i);
@@ -373,34 +393,89 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim {
            |  ${ev.code}
            |  $writeSnippet
            |}
-         """.stripMargin
-      case _ =>
-        // NonNullableOutputShortCircuit: when `nullable = false`, drop the `if (ev.isNull)`
-        // guard at source level rather than relying on JIT folding.
-        if (!boundExpr.nullable) {
-          s"""
-             |$subExprsCode
-             |${ev.code}
-             |$writeSnippet
            """.stripMargin
-        } else {
-          s"""
-             |$subExprsCode
-             |${ev.code}
-             |if (${ev.isNull}) {
-             |  output.setNull(i);
-             |} else {
-             |  $writeSnippet
-             |}
+      }
+    } else {
+      // NonNullableOutputShortCircuit: when `nullable = false`, drop the `if (ev.isNull)`
+      // guard at source level rather than relying on JIT folding.
+      if (!boundExpr.nullable) {
+        s"""
+           |$subExprsCode
+           |${ev.code}
+           |$writeSnippet
            """.stripMargin
-        }
+      } else {
+        s"""
+           |$subExprsCode
+           |${ev.code}
+           |if (${ev.isNull}) {
+           |  output.setNull(i);
+           |} else {
+           |  $writeSnippet
+           |}
+           """.stripMargin
+      }
     }
   }
 
   /**
+   * Gates the [[defaultBody]] null short-circuit ("any input null implies null output", tested as
+   * the disjunction of the tree's input ordinals before `ev.code` runs).
+   *
+   * The short-circuit is only equivalent to Spark when no subtree that Spark would have evaluated
+   * ahead of a null check gets skipped. Spark's null handling is per-node and left-to-right:
+   * `BinaryExpression.nullSafeCodeGen` emits the left child's code unconditionally, then tests
+   * the left child's null, then the right child's. So for `add_months(cast(s as date), i)` on
+   * `('notadate', NULL)` Spark evaluates the cast and, under ANSI, raises `CAST_INVALID_INPUT`; a
+   * short-circuit on the union of ordinals would skip the cast and return null, swallowing the
+   * error (#5218).
+   *
+   * Conditions, all necessary:
+   *
+   *   - The tree reads at least one input ordinal. A literal-only tree has nothing to test.
+   *     (Catalyst's `ConstantFolding` evaluates those at analysis time, so this is defensive.)
+   *   - The root is `NullIntolerant`, so a null input really does mean a null result.
+   *   - Every node in the tree is null-propagating ([[allNullIntolerant]]); a `Coalesce` / `If` /
+   *     `CaseWhen` anywhere would break the chain.
+   *   - Either the tree reads exactly one ordinal, or every direct child of the root is a leaf
+   *     ([[rootChildrenAreLeaves]]). Both shapes make the short-circuit exact:
+   *     - One ordinal: there is nothing left for Spark to evaluate ahead of that ordinal's own
+   *       null check.
+   *     - Leaf-only children: the tree is one level deep, so the only code Spark runs ahead of
+   *       its null checks is `BoundReference` / `Literal` reads, which cannot raise. Any error
+   *       comes from the root's own logic, which runs only once every input is known non-null --
+   *       in both Spark's shape and ours. This keeps the fast path for the common no-cast
+   *       multi-argument case (`pmod(a, b)`, `conv(a, b, c)`, `make_timestamp(y, m, d, h, mi,
+   *       s)`) across the ~70 expressions that route through this dispatcher.
+   *
+   * The leaf-only rule relies on a `NullIntolerant` root not raising before it has checked every
+   * input for null. Spark's own generated code honors that even where it reorders children: the
+   * divide/remainder family (`DivModLike.doGenCode`, and `Pmod.doGenCode`, which carries its own
+   * copy of the same shape) evaluates the divisor first, but still tests the dividend's null
+   * *before* its divide/remainder-by-zero throw, so `pmod(NULL, 0)` returns null rather than
+   * raising. A root that raised ahead of its null checks would contradict `NullIntolerant`.
+   */
+  private def canShortCircuitNulls(expr: Expression, inputOrdinals: Seq[Int]): Boolean =
+    inputOrdinals.nonEmpty && isNullIntolerant(expr) && allNullIntolerant(expr) &&
+      (inputOrdinals.size == 1 || rootChildrenAreLeaves(expr))
+
+  /**
+   * True iff every direct child of the root is a leaf (`BoundReference` or `Literal`), i.e. the
+   * tree is one level deep with no subtree between the root and its inputs. One of the conditions
+   * on [[canShortCircuitNulls]]: it is what makes a multi-ordinal short-circuit exact, because a
+   * leaf read cannot raise an error that Spark's left-to-right evaluation would have surfaced.
+   */
+  private def rootChildrenAreLeaves(expr: Expression): Boolean =
+    expr.children.forall {
+      case _: BoundReference | _: Literal => true
+      case _ => false
+    }
+
+  /**
    * True iff every node in the tree propagates nulls (`NullIntolerant`, `BoundReference`, or
-   * `Literal`). Gates the [[defaultBody]] short-circuit, which is only correct when no node
-   * (`Coalesce`, `If`, `CaseWhen`, `Concat`, ...) breaks the propagation chain.
+   * `Literal`). One of the conditions on [[canShortCircuitNulls]]: the short-circuit is only
+   * correct when no node (`Coalesce`, `If`, `CaseWhen`, `Concat`, ...) breaks the propagation
+   * chain.
    */
   private def allNullIntolerant(expr: Expression): Boolean =
     !expr.exists {

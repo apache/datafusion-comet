@@ -26,7 +26,6 @@
 //! 3. Call `execute` once with the batch.
 //! 4. Drop the impl (its `release` callback runs).
 
-use std::any::Any;
 use std::ffi::CStr;
 use std::sync::Mutex;
 
@@ -115,10 +114,6 @@ impl std::hash::Hash for ImportedCScalarUdf {
 }
 
 impl ScalarUDFImpl for ImportedCScalarUdf {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn name(&self) -> &str {
         &self.name
     }
@@ -272,10 +267,8 @@ impl ScalarUDFImpl for ImportedCScalarUdf {
 
         // Import result.
         // SAFETY: out_arr was filled by the cdylib.
-        let data = unsafe {
-            from_ffi_and_data_type(out_arr, return_field.data_type().clone())
-        }
-        .map_err(|e| DataFusionError::Execution(format!("from_ffi: {e}")))?;
+        let data = unsafe { from_ffi_and_data_type(out_arr, return_field.data_type().clone()) }
+            .map_err(|e| DataFusionError::Execution(format!("from_ffi: {e}")))?;
         let array = arrow::array::make_array(data);
         if array.len() != n_rows {
             return Err(DataFusionError::Execution(format!(

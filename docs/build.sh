@@ -28,14 +28,37 @@ cp -rf source/* temp/
 rm -rf comet-0.13
 rm -rf comet-0.14
 rm -rf comet-0.15
+rm -rf comet-0.16
 python3 generate-versions.py
 
 # Generate dynamic content (configs, compatibility matrices) for latest docs
-# This runs GenerateDocs against the temp copy, not source files
+# This runs GenerateDocs against the temp copy, not source files. Each supported Spark
+# profile gets its own copy of the compatibility/expressions templates so that the
+# generated content can differ per Spark version (some expressions are only registered
+# through version-specific shims).
 echo "Generating dynamic documentation content..."
 cd ..
-./mvnw -q package -Pgenerate-docs -DskipTests -Dmaven.test.skip=true \
-  -Dexec.arguments="$(pwd)/docs/temp/user-guide/latest/"
+
+LATEST_USER_GUIDE="$(pwd)/docs/temp/user-guide/latest"
+COMPAT_EXPR_DIR="${LATEST_USER_GUIDE}/compatibility/expressions"
+TEMPLATE_DIR="${COMPAT_EXPR_DIR}/_category_template"
+
+# Spark profiles for which we publish per-version compatibility pages. Add or remove
+# entries here when adding/dropping support for a Spark version. Each entry must match
+# both a Maven profile id (-P<profile>) and a source-tree subdirectory under
+# docs/source/user-guide/latest/compatibility/expressions/.
+SPARK_PROFILES=(spark-3.4 spark-3.5 spark-4.0 spark-4.1)
+
+for profile in "${SPARK_PROFILES[@]}"; do
+  echo "Generating compatibility pages for ${profile}..."
+  mkdir -p "${COMPAT_EXPR_DIR}/${profile}"
+  cp "${TEMPLATE_DIR}"/*.md "${COMPAT_EXPR_DIR}/${profile}/"
+  ./mvnw -q package -P${profile} -Pgenerate-docs -DskipTests -Dmaven.test.skip=true \
+    -Dexec.arguments="${LATEST_USER_GUIDE},${profile}"
+done
+
+# Templates aren't a real doc page; remove from the build input so Sphinx doesn't see them.
+rm -rf "${TEMPLATE_DIR}"
 cd docs
 
 make SOURCEDIR=`pwd`/temp html

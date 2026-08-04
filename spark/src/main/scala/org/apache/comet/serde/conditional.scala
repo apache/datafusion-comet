@@ -23,7 +23,7 @@ import scala.jdk.CollectionConverters._
 
 import org.apache.spark.sql.catalyst.expressions.{Attribute, CaseWhen, Coalesce, Expression, If, IsNotNull}
 
-import org.apache.comet.CometSparkSessionExtensions.withInfo
+import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 import org.apache.comet.serde.QueryPlanSerde.exprToProtoInternal
 
 object CometIf extends CometExpressionSerde[If] {
@@ -45,7 +45,7 @@ object CometIf extends CometExpressionSerde[If] {
           .setIf(builder)
           .build())
     } else {
-      withInfo(expr, expr.predicate, expr.trueValue, expr.falseValue)
+      withFallbackReason(expr, expr.predicate, expr.trueValue, expr.falseValue)
       None
     }
   }
@@ -76,7 +76,7 @@ object CometCaseWhen extends CometExpressionSerde[CaseWhen] {
         if (elseValueExpr.isDefined) {
           builder.setElseExpr(elseValueExpr.get)
         } else {
-          withInfo(expr, expr.elseValue.get)
+          withFallbackReason(expr, expr.elseValue.get)
           return None
         }
       }
@@ -86,7 +86,7 @@ object CometCaseWhen extends CometExpressionSerde[CaseWhen] {
           .setCaseWhen(builder)
           .build())
     } else {
-      withInfo(expr, allBranches: _*)
+      withFallbackReason(expr, allBranches: _*)
       None
     }
   }
@@ -116,7 +116,7 @@ object CometCoalesce extends CometExpressionSerde[Coalesce] {
       if (elseValueExpr.isDefined) {
         builder.setElseExpr(elseValueExpr.get)
       } else {
-        withInfo(expr, elseValue)
+        withFallbackReason(expr, elseValue)
         return None
       }
       Some(
@@ -125,7 +125,7 @@ object CometCoalesce extends CometExpressionSerde[Coalesce] {
           .setCaseWhen(builder)
           .build())
     } else {
-      withInfo(expr, branches.map(_._2): _*)
+      withFallbackReason(expr, branches.map(_._2): _*)
       None
     }
   }

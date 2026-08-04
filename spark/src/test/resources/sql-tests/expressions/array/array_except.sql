@@ -37,3 +37,40 @@ SELECT array_except(array(1, 2, 3), b) FROM test_array_except
 -- literal + literal
 query ignore(https://github.com/apache/datafusion-comet/issues/3646)
 SELECT array_except(array(1, 2, 3), array(2, 3, 4)), array_except(array(1, 2), array()), array_except(array(), array(1)), array_except(cast(NULL as array<int>), array(1))
+
+-- double arrays with NaN/Infinity/-0.0
+statement
+CREATE TABLE test_except_dbl(a array<double>, b array<double>) USING parquet
+
+statement
+INSERT INTO test_except_dbl VALUES
+  (array(1.0, 2.0, double('NaN')), array(2.0, double('NaN'))),
+  (array(double('NaN'), 1.0, 2.0), array(1.0)),
+  (array(double('NaN'), double('NaN'), 1.0), array(double('NaN'))),
+  (array(1.0, 2.0), array(double('NaN'))),
+  (array(double('NaN'), 1.0), array(2.0)),
+  (array(double('Infinity'), 1.0, double('-Infinity')), array(double('Infinity'))),
+  (array(double('Infinity'), double('-Infinity')), array(double('-Infinity'))),
+  (array(0.0, -0.0, 1.0), array(0.0)),
+  (array(0.0, 1.0), array(-0.0)),
+  (array(1.0, 2.0, NULL), array(2.0, NULL)),
+  (array(double('NaN'), NULL), array(NULL))
+
+query
+SELECT a, b, array_except(a, b) FROM test_except_dbl
+
+-- float arrays with NaN/Infinity/-0.0
+statement
+CREATE TABLE test_except_float(a array<float>, b array<float>) USING parquet
+
+statement
+INSERT INTO test_except_float VALUES
+  (array(cast(1.0 as float), cast(2.0 as float), float('NaN')), array(cast(2.0 as float), float('NaN'))),
+  (array(float('NaN'), float('NaN'), cast(1.0 as float)), array(float('NaN'))),
+  (array(cast(1.0 as float), cast(2.0 as float)), array(float('NaN'))),
+  (array(float('Infinity'), cast(1.0 as float), float('-Infinity')), array(float('Infinity'))),
+  (array(cast(0.0 as float), cast(-0.0 as float), cast(1.0 as float)), array(cast(0.0 as float))),
+  (array(cast(1.0 as float), cast(2.0 as float), NULL), array(cast(2.0 as float), NULL))
+
+query
+SELECT a, b, array_except(a, b) FROM test_except_float

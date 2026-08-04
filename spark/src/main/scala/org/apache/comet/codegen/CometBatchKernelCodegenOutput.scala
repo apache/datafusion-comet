@@ -31,13 +31,14 @@ import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.types._
 
 import org.apache.comet.CometArrowAllocator
+import org.apache.comet.shims.CometTypeShim
 
 /**
  * Output-side emitters for the codegen kernel: [[allocateOutput]], [[emitOutputWriter]]
  * (top-level write entry), [[emitWrite]] (recursive per-type write), the output vector-class
  * lookup. Paired with [[CometBatchKernelCodegenInput]] on the read side.
  */
-private[codegen] object CometBatchKernelCodegenOutput {
+private[codegen] object CometBatchKernelCodegenOutput extends CometTypeShim {
 
   /**
    * Spark `DataType` to an Arrow `Field` with names Comet expects on FFI export. Spark's
@@ -169,8 +170,12 @@ private[codegen] object CometBatchKernelCodegenOutput {
     case _: StringType => classOf[VarCharVector].getName
     case BinaryType => classOf[VarBinaryVector].getName
     case DateType => classOf[DateDayVector].getName
+    case dt if isTimeType(dt) => classOf[TimeNanoVector].getName
     case TimestampType => classOf[TimeStampMicroTZVector].getName
     case TimestampNTZType => classOf[TimeStampMicroVector].getName
+    case _: YearMonthIntervalType => classOf[IntervalYearVector].getName
+    case _: DayTimeIntervalType => classOf[DurationVector].getName
+    case CalendarIntervalType => classOf[IntervalMonthDayNanoVector].getName
     case _: ArrayType => classOf[ListVector].getName
     case _: StructType => classOf[StructVector].getName
     case _: MapType => classOf[MapVector].getName
@@ -186,19 +191,45 @@ private[codegen] object CometBatchKernelCodegenOutput {
    *
    * Scalars emit `perRow` only. Complex types emit both. Inner setup bubbles up so deep child
    * casts land at the batch prelude.
+   *
+   * `nested` distinguishes the root output vector from a child of a List / Map / Struct.
+   * `allocateOutput` pre-sizes the root to exactly `numRows` and the kernel writes one scalar per
+   * row, so the root's fixed-width `set` is always in bounds. A child's element count is instead
+   * the data-dependent sum of per-row collection sizes, which `numRows` does not bound. We cannot
+   * pre-size the child either: each row's `ArrayData` / `MapData` is produced by Spark's
+   * generated `ev.code` inside the write loop, so the total is unknown until we have already
+   * evaluated every row (counting it first would mean evaluating the tree twice). Nested
+   * fixed-width writes therefore grow on demand with `setSafe`; the String / Binary / Decimal
+   * branches already do, for the same reason.
    */
   private def emitWrite(
       targetVec: String,
       idx: String,
       source: String,
       dataType: DataType,
-      ctx: CodegenContext): OutputEmit = dataType match {
+      ctx: CodegenContext,
+      nested: Boolean = false): OutputEmit = dataType match {
     case BooleanType =>
-      OutputEmit("", s"$targetVec.set($idx, $source ? 1 : 0);")
+      val set = if (nested) "setSafe" else "set"
+      OutputEmit("", s"$targetVec.$set($idx, $source ? 1 : 0);")
     case ByteType | ShortType | IntegerType | LongType | FloatType | DoubleType | DateType |
-        TimestampType | TimestampNTZType =>
+        TimestampType | TimestampNTZType | _: YearMonthIntervalType | _: DayTimeIntervalType =>
       // Spark codegen emits the matching primitive Java type; Arrow `set` overloads accept it.
-      OutputEmit("", s"$targetVec.set($idx, $source);")
+      // YearMonthIntervalType -> IntervalYearVector.set(int, int months);
+      // DayTimeIntervalType -> DurationVector.set(int, long micros).
+      val set = if (nested) "setSafe" else "set"
+      OutputEmit("", s"$targetVec.$set($idx, $source);")
+    case CalendarIntervalType =>
+      val set = if (nested) "setSafe" else "set"
+      val interval = ctx.freshName("interval")
+      OutputEmit(
+        "",
+        s"""org.apache.spark.unsafe.types.CalendarInterval $interval = $source;
+           |$targetVec.$set($idx, $interval.months, $interval.days,
+           |    java.lang.Math.multiplyExact($interval.microseconds, 1000L));""".stripMargin)
+    case dt if isTimeType(dt) =>
+      val set = if (nested) "setSafe" else "set"
+      OutputEmit("", s"$targetVec.$set($idx, $source);")
     case dt: DecimalType =>
       // DecimalOutputShortFastPath: precision <= 18 fits in a signed long, so pass the unscaled
       // value to `setSafe(int, long)` and skip the BigDecimal allocation.
@@ -250,7 +281,8 @@ private[codegen] object CometBatchKernelCodegenOutput {
       val childIdx = ctx.freshName("cidx")
       val jVar = ctx.freshName("j")
       val elemSource = emitSpecializedGetterExpr(arrVar, jVar, elementType)
-      val inner = emitWrite(childVar, s"$childIdx + $jVar", elemSource, elementType, ctx)
+      val inner =
+        emitWrite(childVar, s"$childIdx + $jVar", elemSource, elementType, ctx, nested = true)
       val setup =
         (s"$childClass $childVar = ($childClass) $targetVec.getDataVector();" +:
           Seq(inner.setup).filter(_.nonEmpty)).mkString("\n")
@@ -285,7 +317,11 @@ private[codegen] object CometBatchKernelCodegenOutput {
         val childDecl =
           s"$childClass $childVar = ($childClass) $targetVec.getChildByOrdinal($fi);"
         val fieldSource = emitSpecializedGetterExpr(rowVar, fi.toString, field.dataType)
-        val inner = emitWrite(childVar, idx, fieldSource, field.dataType, ctx)
+        // Struct fields are co-indexed with the struct (written at the same `idx`), so a field is
+        // nested exactly when the struct is: top-level struct fields land at the row index and are
+        // pre-sized to numRows (bare `set` is in bounds); a struct nested in an array/map inherits
+        // that parent's cumulative, unbounded index and needs `setSafe`.
+        val inner = emitWrite(childVar, idx, fieldSource, field.dataType, ctx, nested = nested)
         val write =
           if (!field.nullable) {
             inner.perRow
@@ -327,8 +363,10 @@ private[codegen] object CometBatchKernelCodegenOutput {
       val valClass = outputVectorClass(mt.valueType)
       val keySrcExpr = emitSpecializedGetterExpr(keyArr, jVar, mt.keyType)
       val valSrcExpr = emitSpecializedGetterExpr(valArr, jVar, mt.valueType)
-      val keyEmit = emitWrite(keyVar, s"$childIdx + $jVar", keySrcExpr, mt.keyType, ctx)
-      val valEmit = emitWrite(valVar, s"$childIdx + $jVar", valSrcExpr, mt.valueType, ctx)
+      val keyEmit =
+        emitWrite(keyVar, s"$childIdx + $jVar", keySrcExpr, mt.keyType, ctx, nested = true)
+      val valEmit =
+        emitWrite(valVar, s"$childIdx + $jVar", valSrcExpr, mt.valueType, ctx, nested = true)
       val setup =
         (Seq(
           s"$structClass $entriesVar = ($structClass) $targetVec.getDataVector();",
@@ -372,8 +410,11 @@ private[codegen] object CometBatchKernelCodegenOutput {
       case BooleanType => s"$target.getBoolean($idx)"
       case ByteType => s"$target.getByte($idx)"
       case ShortType => s"$target.getShort($idx)"
-      case IntegerType | DateType => s"$target.getInt($idx)"
-      case LongType | TimestampType | TimestampNTZType => s"$target.getLong($idx)"
+      case IntegerType | DateType | _: YearMonthIntervalType => s"$target.getInt($idx)"
+      case LongType | TimestampType | TimestampNTZType | _: DayTimeIntervalType =>
+        s"$target.getLong($idx)"
+      case CalendarIntervalType => s"$target.getInterval($idx)"
+      case dt if isTimeType(dt) => s"$target.getLong($idx)"
       case FloatType => s"$target.getFloat($idx)"
       case DoubleType => s"$target.getDouble($idx)"
       case dt: DecimalType => s"$target.getDecimal($idx, ${dt.precision}, ${dt.scale})"

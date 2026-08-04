@@ -35,6 +35,7 @@ import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.DecimalType
 
+import org.apache.comet.CometSparkSessionExtensions.isSpark42Plus
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator, SchemaGenOptions}
 
 class CometFuzzIcebergBase extends CometTestBase with AdaptiveSparkPlanHelper {
@@ -42,17 +43,22 @@ class CometFuzzIcebergBase extends CometTestBase with AdaptiveSparkPlanHelper {
   var warehouseDir: File = null
   val icebergTableName: String = "hadoop_catalog.db.fuzz_test"
 
-  // Skip these tests if Iceberg is not available in classpath
+  // Skip these tests if Iceberg is not available in classpath. Spark 4.2 has no published Iceberg
+  // spark-runtime yet; the build reuses the 4.0 runtime, whose `SparkView` is binary-incompatible
+  // with Spark 4.2's `connector.catalog.View` (now a class, not an interface), so treat Iceberg as
+  // unavailable on 4.2.
   private def icebergAvailable: Boolean = {
-    try {
-      Class.forName("org.apache.iceberg.catalog.Catalog")
-      true
-    } catch {
-      case _: ClassNotFoundException => false
+    !isSpark42Plus && {
+      try {
+        Class.forName("org.apache.iceberg.catalog.Catalog")
+        true
+      } catch {
+        case _: ClassNotFoundException => false
+      }
     }
   }
 
-  private def isIcebergVersionLessThan(targetVersion: String): Boolean = {
+  protected def isIcebergVersionLessThan(targetVersion: String): Boolean = {
     try {
       val icebergVersion = org.apache.iceberg.IcebergBuild.version()
       // Parse version strings like "1.5.2" or "1.6.0-SNAPSHOT"
@@ -88,7 +94,11 @@ class CometFuzzIcebergBase extends CometTestBase with AdaptiveSparkPlanHelper {
 
   override def beforeAll(): Unit = {
     super.beforeAll()
-    assume(icebergAvailable, "Iceberg not available in classpath")
+    // Skip Iceberg setup when Iceberg is unavailable (e.g. on Spark 4.2, which has no compatible
+    // runtime). `assume` cannot be used here: cancelling from beforeAll aborts the whole suite.
+    // Each test carries its own `assume(icebergAvailable)` (see the `test` override) so the tests
+    // report as cancelled instead.
+    if (!icebergAvailable) return
     warehouseDir = Files.createTempDirectory("comet-iceberg-fuzz-test").toFile
     val random = new Random(42)
     withSQLConf(
@@ -146,6 +156,7 @@ class CometFuzzIcebergBase extends CometTestBase with AdaptiveSparkPlanHelper {
   override protected def test(testName: String, testTags: Tag*)(testFun: => Any)(implicit
       pos: Position): Unit = {
     super.test(testName, testTags: _*) {
+      assume(icebergAvailable, "Iceberg not available in classpath")
       withSQLConf(
         "spark.sql.catalog.hadoop_catalog" -> "org.apache.iceberg.spark.SparkCatalog",
         "spark.sql.catalog.hadoop_catalog.type" -> "hadoop",

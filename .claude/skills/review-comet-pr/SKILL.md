@@ -4,6 +4,25 @@ description: Review a DataFusion Comet pull request for Spark compatibility and 
 argument-hint: <pr-number>
 ---
 
+<!--
+Licensed to the Apache Software Foundation (ASF) under one
+or more contributor license agreements.  See the NOTICE file
+distributed with this work for additional information
+regarding copyright ownership.  The ASF licenses this file
+to you under the Apache License, Version 2.0 (the
+"License"); you may not use this file except in compliance
+with the License.  You may obtain a copy of the License at
+
+  http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing,
+software distributed under the License is distributed on an
+"AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+KIND, either express or implied.  See the License for the
+specific language governing permissions and limitations
+under the License.
+-->
+
 Review Comet PR #$ARGUMENTS
 
 ## Before You Start
@@ -279,6 +298,19 @@ If the PR adds a new expression but does not update `expressions.md`, flag that.
 
 ---
 
+## Review Bar
+
+Hold a high bar. Several rounds of review and revision before merge are normal and expected. Prefer iterating on the PR over merging it and trusting a follow-up, because follow-ups that are not filed as issues do not get done. Treat "we can fix that later" as "that will not get fixed."
+
+Every finding must be actionable. Before writing a comment, decide whether it is worth addressing before merge. If it is, raise it and expect a response. If it is not, cut it. There is no third tier.
+
+- Never label feedback as "not a blocker", "nit", "minor", "optional", "low priority", or "feel free to ignore". Either raise it as something to address or drop it. That label tells the author to skip it and leaves nobody accountable for it.
+- If a finding is real but genuinely belongs in separate work, say that plainly and ask for a tracking issue, then reference the issue link in the review. Do not leave it as a floating remark.
+- Bikeshedding is worse than silence. A preference with no correctness, performance, compatibility, or maintainability argument behind it does not go in the review.
+- This bar is about what gets raised, not about how it is worded. Keep the tone below. A question you expect an answer to still counts as something the author needs to address.
+
+---
+
 ## Output Format
 
 Present your review as guidance for the reviewer. Structure your output as:
@@ -286,7 +318,7 @@ Present your review as guidance for the reviewer. Structure your output as:
 1. **PR Summary** - Brief description of what the PR does
 2. **CI Status** - Summary of CI check results
 3. **Findings** - Your analysis organized by area (Spark compatibility, implementation, tests, etc.)
-4. **Suggested Review Comments** - Specific comments the reviewer could leave on the PR, with file and line references where applicable
+4. **Suggested Review Comments** - Specific comments the reviewer could leave on the PR, with file and line references where applicable. Everything here is something you expect the author to address. Anything that did not clear that bar should not appear.
 
 ## Review Tone and Style
 

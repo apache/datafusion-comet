@@ -22,7 +22,7 @@ package org.apache.comet.serde
 import org.apache.spark.sql.catalyst.expressions.Attribute
 import org.apache.spark.sql.execution.ScalarSubquery
 
-import org.apache.comet.CometSparkSessionExtensions.withInfo
+import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 import org.apache.comet.serde.QueryPlanSerde.{serializeDataType, supportedDataType}
 
 object CometScalarSubquery extends CometExpressionSerde[ScalarSubquery] {
@@ -33,7 +33,9 @@ object CometScalarSubquery extends CometExpressionSerde[ScalarSubquery] {
     if (supportedDataType(expr.dataType)) {
       val dataType = serializeDataType(expr.dataType)
       if (dataType.isEmpty) {
-        withInfo(expr, s"Failed to serialize datatype ${expr.dataType} for scalar subquery")
+        withFallbackReason(
+          expr,
+          s"Failed to serialize datatype ${expr.dataType} for scalar subquery")
         return None
       }
 
@@ -43,7 +45,7 @@ object CometScalarSubquery extends CometExpressionSerde[ScalarSubquery] {
         .setDatatype(dataType.get)
       Some(ExprOuterClass.Expr.newBuilder().setSubquery(builder).build())
     } else {
-      withInfo(expr, s"Unsupported data type: ${expr.dataType}")
+      withFallbackReason(expr, s"Unsupported data type: ${expr.dataType}")
       None
     }
 

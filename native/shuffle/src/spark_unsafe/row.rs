@@ -28,8 +28,9 @@ use arrow::array::{
     builder::{
         ArrayBuilder, BinaryBuilder, BinaryDictionaryBuilder, BooleanBuilder, Date32Builder,
         Decimal128Builder, Float32Builder, Float64Builder, Int16Builder, Int32Builder,
-        Int64Builder, Int8Builder, ListBuilder, MapBuilder, StringBuilder, StringDictionaryBuilder,
-        StructBuilder, TimestampMicrosecondBuilder,
+        Int64Builder, Int8Builder, ListBuilder, MapBuilder, NullBuilder, StringBuilder,
+        StringDictionaryBuilder, StructBuilder, Time64NanosecondBuilder,
+        TimestampMicrosecondBuilder,
     },
     types::Int32Type,
     Array, ArrayRef, RecordBatch, RecordBatchOptions,
@@ -267,11 +268,21 @@ pub(super) fn append_field(
             append_field_to_builder!(Date32Builder, |builder: &mut Date32Builder| builder
                 .append_value(row.get_date(idx)));
         }
+        DataType::Null => {
+            let field_builder = get_field_builder!(struct_builder, NullBuilder, idx);
+            field_builder.append_null();
+        }
         DataType::Timestamp(TimeUnit::Microsecond, _) => {
             append_field_to_builder!(
                 TimestampMicrosecondBuilder,
                 |builder: &mut TimestampMicrosecondBuilder| builder
                     .append_value(row.get_timestamp(idx))
+            );
+        }
+        DataType::Time64(TimeUnit::Nanosecond) => {
+            append_field_to_builder!(
+                Time64NanosecondBuilder,
+                |builder: &mut Time64NanosecondBuilder| builder.append_value(row.get_long(idx))
             );
         }
         DataType::Binary => {
@@ -433,6 +444,13 @@ fn append_nested_struct_fields_field_major(
                     TimestampMicrosecondBuilder,
                     field_idx,
                     |row: &SparkUnsafeRow, idx| row.get_timestamp(idx)
+                );
+            }
+            DataType::Time64(TimeUnit::Nanosecond) => {
+                process_field!(
+                    Time64NanosecondBuilder,
+                    field_idx,
+                    |row: &SparkUnsafeRow, idx| row.get_long(idx)
                 );
             }
             DataType::Binary => {
@@ -651,6 +669,9 @@ fn append_list_column_batch(
         }
         DataType::Timestamp(TimeUnit::Microsecond, _) => {
             process_primitive_lists!(TimestampMicrosecondBuilder, append_timestamps_to_builder);
+        }
+        DataType::Time64(TimeUnit::Nanosecond) => {
+            process_primitive_lists!(Time64NanosecondBuilder, append_time64s_to_builder);
         }
         // For complex element types, fall back to per-row dispatch
         _ => {
@@ -874,6 +895,13 @@ fn append_struct_fields_field_major(
                     TimestampMicrosecondBuilder,
                     field_idx,
                     |row: &SparkUnsafeRow, idx| row.get_timestamp(idx)
+                );
+            }
+            DataType::Time64(TimeUnit::Nanosecond) => {
+                process_field!(
+                    Time64NanosecondBuilder,
+                    field_idx,
+                    |row: &SparkUnsafeRow, idx| row.get_long(idx)
                 );
             }
             DataType::Binary => {
@@ -1148,11 +1176,24 @@ fn append_columns(
                     .append_value(row.get_date(idx))
             );
         }
+        DataType::Null => {
+            let null_builder = downcast_builder_ref!(NullBuilder, builder);
+            for _ in row_start..row_end {
+                null_builder.append_null();
+            }
+        }
         DataType::Timestamp(TimeUnit::Microsecond, _) => {
             append_column_to_builder!(
                 TimestampMicrosecondBuilder,
                 |builder: &mut TimestampMicrosecondBuilder, row: &SparkUnsafeRow, idx| builder
                     .append_value(row.get_timestamp(idx))
+            );
+        }
+        DataType::Time64(TimeUnit::Nanosecond) => {
+            append_column_to_builder!(
+                Time64NanosecondBuilder,
+                |builder: &mut Time64NanosecondBuilder, row: &SparkUnsafeRow, idx| builder
+                    .append_value(row.get_long(idx))
             );
         }
         DataType::Map(field, _) => {
@@ -1252,8 +1293,12 @@ fn make_builders(
             }
         }
         DataType::Date32 => Box::new(Date32Builder::with_capacity(row_num)),
+        DataType::Null => Box::new(NullBuilder::new()),
         DataType::Timestamp(TimeUnit::Microsecond, _) => {
             Box::new(TimestampMicrosecondBuilder::with_capacity(row_num).with_data_type(dt.clone()))
+        }
+        DataType::Time64(TimeUnit::Nanosecond) => {
+            Box::new(Time64NanosecondBuilder::with_capacity(row_num))
         }
         DataType::Map(field, _) => {
             let (key_field, value_field, map_field_names) = get_map_key_value_fields(field)?;
@@ -1497,5 +1542,32 @@ mod test {
         let struct_array = struct_builder.finish();
         assert_eq!(struct_array.len(), 1);
         assert!(struct_array.is_null(0));
+    }
+
+    // Spark's `UnsafeRow.getUTF8String` performs no UTF-8 validation, and
+    // `cast(BinaryType -> StringType)` is a zero-copy reinterpret -- so a StringType field can
+    // hold arbitrary non-UTF-8 bytes. `get_string` must not panic on those; it should decode
+    // lossily, matching Spark treating the bytes as opaque.
+    #[test]
+    fn get_string_tolerates_non_utf8_bytes() {
+        // One string field. Row layout: 8-byte null bitset + an 8-byte (offset<<32 | len) slot,
+        // then the variable-length region. 8-byte aligned to match a real Spark UnsafeRow.
+        #[repr(align(8))]
+        struct Aligned([u8; 24]);
+        let mut data = Aligned([0u8; 24]);
+        // Invalid UTF-8 bytes at offset 16: 0xFF, 0xFE, then ASCII 'A'.
+        data.0[16] = 0xFF;
+        data.0[17] = 0xFE;
+        data.0[18] = b'A';
+        // Field 0 slot: offset = 16, len = 3.
+        let offset_and_len: i64 = (16i64 << 32) | 3;
+        data.0[8..16].copy_from_slice(&offset_and_len.to_ne_bytes());
+
+        let mut row = SparkUnsafeRow::new_with_num_fields(1);
+        row.point_to_slice(&data.0);
+
+        // Strict `from_utf8(..).unwrap()` panics here; lossy decode replaces each invalid byte
+        // with U+FFFD. `&*` works whether get_string returns `&str` or `Cow<str>`.
+        assert_eq!(&*row.get_string(0), "\u{FFFD}\u{FFFD}A");
     }
 }

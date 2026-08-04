@@ -27,6 +27,7 @@ import org.apache.spark.sql.catalyst.expressions.{BoundReference, Expression}
 import org.apache.spark.sql.types._
 
 import org.apache.comet.codegen.CometBatchKernelCodegen.{ArrayColumnSpec, ArrowColumnSpec, MapColumnSpec, ScalarColumnSpec, StructColumnSpec}
+import org.apache.comet.shims.CometTypeShim
 import org.apache.comet.vector.CometPlainVector
 
 /**
@@ -44,7 +45,7 @@ import org.apache.comet.vector.CometPlainVector
  * stashing references in an `OpenHashSet`) get distinct identities, and JIT escape analysis
  * usually scalarizes the allocation when the value is consumed locally.
  */
-private[codegen] object CometBatchKernelCodegenInput {
+private[codegen] object CometBatchKernelCodegenInput extends CometTypeShim {
 
   /**
    * Primitive Arrow vector classes wrapped in [[CometPlainVector]] at input-cast time so per-row
@@ -61,8 +62,12 @@ private[codegen] object CometBatchKernelCodegenInput {
     classOf[Float4Vector],
     classOf[Float8Vector],
     classOf[DateDayVector],
+    classOf[DurationVector],
+    classOf[TimeNanoVector],
     classOf[TimeStampMicroVector],
-    classOf[TimeStampMicroTZVector])
+    classOf[TimeStampMicroTZVector],
+    classOf[IntervalYearVector],
+    classOf[IntervalMonthDayNanoVector])
   private val cometPlainVectorName: String = classOf[CometPlainVector].getName
 
   /** Emit kernel typed-vector field declarations for every level of every input column. */
@@ -127,15 +132,22 @@ private[codegen] object CometBatchKernelCodegenInput {
     }
     val intCases = withOrd.collect {
       case (ArrowColumnSpec(cls, _), ord)
-          if cls == classOf[IntVector] || cls == classOf[DateDayVector] =>
+          if cls == classOf[IntVector] || cls == classOf[DateDayVector] ||
+            cls == classOf[IntervalYearVector] =>
         s"      case $ord: return this.col$ord.getInt(this.rowIdx);"
     }
     val longCases = withOrd.collect {
       case (ArrowColumnSpec(cls, _), ord)
           if cls == classOf[BigIntVector] ||
+            cls == classOf[DurationVector] ||
+            cls == classOf[TimeNanoVector] ||
             cls == classOf[TimeStampMicroVector] ||
             cls == classOf[TimeStampMicroTZVector] =>
         s"      case $ord: return this.col$ord.getLong(this.rowIdx);"
+    }
+    val intervalCases = withOrd.collect {
+      case (ArrowColumnSpec(cls, _), ord) if cls == classOf[IntervalMonthDayNanoVector] =>
+        s"      case $ord: return this.col$ord.getInterval(this.rowIdx);"
     }
     val floatCases = withOrd.collect {
       case (ArrowColumnSpec(cls, _), ord) if cls == classOf[Float4Vector] =>
@@ -196,6 +208,10 @@ private[codegen] object CometBatchKernelCodegenInput {
       emitOrdinalSwitch("public long getLong(int ordinal)", "getLong", longCases),
       emitOrdinalSwitch("public float getFloat(int ordinal)", "getFloat", floatCases),
       emitOrdinalSwitch("public double getDouble(int ordinal)", "getDouble", doubleCases),
+      emitOrdinalSwitch(
+        "public org.apache.spark.unsafe.types.CalendarInterval getInterval(int ordinal)",
+        "getInterval",
+        intervalCases),
       emitOrdinalSwitch(
         "public org.apache.spark.sql.types.Decimal getDecimal(" +
           "int ordinal, int precision, int scale)",
@@ -526,6 +542,7 @@ private[codegen] object CometBatchKernelCodegenInput {
          |        return $elemPath.${nullCheckMethod(spec.element)}(startIndex + i);
          |      }""".stripMargin
     val elementGetter = emitArrayElementGetter(path, spec)
+    val copy = emitArrayCopyMethod(spec)
     s"""  private final class InputArray_$path extends $baseClassName {
        |    private final int startIndex;
        |    private final int length;
@@ -543,8 +560,78 @@ private[codegen] object CometBatchKernelCodegenInput {
        |$isNullAt
        |
        |$elementGetter
+       |
+       |$copy
        |  }
        |""".stripMargin
+  }
+
+  /**
+   * Emit `copy()` for an `InputArray_${path}`. These views read straight off the off-heap Arrow
+   * buffers, which are only valid for the current batch, so Spark's `InternalRow.copyValue`
+   * (invoked by e.g. `ArrayTransform.nullSafeEval` when a lambda passes a complex element
+   * through) must deep-materialize into on-heap `GenericArrayData`. Scalars autobox, strings
+   * clone off the Arrow buffer, and nested array/struct/map elements recurse through their own
+   * `copy()`.
+   */
+  private def emitArrayCopyMethod(spec: ArrayColumnSpec): String = {
+    val getter = elementGetterCall(spec.elementSparkType, "__i")
+    val copyExpr = copyValueExpr(getter, spec.elementSparkType)
+    val assign =
+      if (spec.element.nullable) {
+        s"""        if (isNullAt(__i)) {
+           |          __vals[__i] = null;
+           |        } else {
+           |          __vals[__i] = $copyExpr;
+           |        }""".stripMargin
+      } else {
+        s"        __vals[__i] = $copyExpr;"
+      }
+    s"""      @Override
+       |      public org.apache.spark.sql.catalyst.util.ArrayData copy() {
+       |        int __n = numElements();
+       |        Object[] __vals = new Object[__n];
+       |        for (int __i = 0; __i < __n; __i++) {
+       |$assign
+       |        }
+       |        return new org.apache.spark.sql.catalyst.util.GenericArrayData(__vals);
+       |      }""".stripMargin
+  }
+
+  /**
+   * The typed getter call (`getX(idx)`) used to read a value of `dt` out of a nested array
+   * element or struct field. `idx` is the index/ordinal token (e.g. `"__i"` or `"3"`).
+   */
+  private def elementGetterCall(dt: DataType, idx: String): String = dt match {
+    case BooleanType => s"getBoolean($idx)"
+    case ByteType => s"getByte($idx)"
+    case ShortType => s"getShort($idx)"
+    case IntegerType | DateType | _: YearMonthIntervalType => s"getInt($idx)"
+    case LongType | TimestampType | TimestampNTZType | _: DayTimeIntervalType =>
+      s"getLong($idx)"
+    case CalendarIntervalType => s"getInterval($idx)"
+    case dt if isTimeType(dt) => s"getLong($idx)"
+    case FloatType => s"getFloat($idx)"
+    case DoubleType => s"getDouble($idx)"
+    case d: DecimalType => s"getDecimal($idx, ${d.precision}, ${d.scale})"
+    case _: StringType => s"getUTF8String($idx)"
+    case BinaryType => s"getBinary($idx)"
+    case _: ArrayType => s"getArray($idx)"
+    case _: StructType => s"getStruct($idx, ${dt.asInstanceOf[StructType].fields.length})"
+    case _: MapType => s"getMap($idx)"
+    case other =>
+      throw new UnsupportedOperationException(s"nested copy: unsupported type $other")
+  }
+
+  /**
+   * Wrap a non-null getter expression so the produced value is detached from the Arrow buffers:
+   * primitives/decimals/binary are already by-value, strings clone, and nested complex values
+   * recurse through their own `copy()`.
+   */
+  private def copyValueExpr(getter: String, dt: DataType): String = dt match {
+    case _: StringType => s"$getter.clone()"
+    case _: ArrayType | _: StructType | _: MapType => s"$getter.copy()"
+    case _ => getter
   }
 
   /**
@@ -619,12 +706,22 @@ private[codegen] object CometBatchKernelCodegenInput {
            |      public short getShort(int i) {
            |        return $childField.getShort(startIndex + i);
            |      }""".stripMargin
-      case IntegerType | DateType =>
+      case IntegerType | DateType | _: YearMonthIntervalType =>
         s"""      @Override
            |      public int getInt(int i) {
            |        return $childField.getInt(startIndex + i);
            |      }""".stripMargin
-      case LongType | TimestampType | TimestampNTZType =>
+      case LongType | TimestampType | TimestampNTZType | _: DayTimeIntervalType =>
+        s"""      @Override
+           |      public long getLong(int i) {
+           |        return $childField.getLong(startIndex + i);
+           |      }""".stripMargin
+      case CalendarIntervalType =>
+        s"""      @Override
+           |      public org.apache.spark.unsafe.types.CalendarInterval getInterval(int i) {
+           |$nullGuard        return $childField.getInterval(startIndex + i);
+           |      }""".stripMargin
+      case dt if isTimeType(dt) =>
         s"""      @Override
            |      public long getLong(int i) {
            |        return $childField.getLong(startIndex + i);
@@ -690,6 +787,7 @@ private[codegen] object CometBatchKernelCodegenInput {
     }
     val scalarGetters = emitStructScalarGetters(path, spec)
     val complexGetters = emitStructComplexGetters(path, spec)
+    val copy = emitStructCopyMethod(spec)
     s"""  private final class InputStruct_$path extends $baseClassName {
        |    private final int rowIdx;
        |
@@ -713,8 +811,38 @@ private[codegen] object CometBatchKernelCodegenInput {
        |
        |$scalarGetters
        |$complexGetters
+       |
+       |$copy
        |  }
        |""".stripMargin
+  }
+
+  /**
+   * Emit `copy()` for an `InputStruct_${path}`. Deep-materializes into an on-heap
+   * `GenericInternalRow` so Spark's `InternalRow.copyValue` (e.g. a lambda passing a struct
+   * element through) detaches it from the per-batch Arrow buffers. Mirrors
+   * [[emitArrayCopyMethod]].
+   */
+  private def emitStructCopyMethod(spec: StructColumnSpec): String = {
+    val assigns = spec.fields.zipWithIndex.map { case (f, fi) =>
+      val getter = elementGetterCall(f.sparkType, fi.toString)
+      val copyExpr = copyValueExpr(getter, f.sparkType)
+      if (f.nullable) {
+        s"""        if (isNullAt($fi)) {
+           |          __vals[$fi] = null;
+           |        } else {
+           |          __vals[$fi] = $copyExpr;
+           |        }""".stripMargin
+      } else {
+        s"        __vals[$fi] = $copyExpr;"
+      }
+    }
+    s"""      @Override
+       |      public org.apache.spark.sql.catalyst.InternalRow copy() {
+       |        Object[] __vals = new Object[${spec.fields.length}];
+       |${assigns.mkString("\n")}
+       |        return new org.apache.spark.sql.catalyst.expressions.GenericInternalRow(__vals);
+       |      }""".stripMargin
   }
 
   // Scalar-read body templates parameterized on row-index expression (`idx`), cached buffer
@@ -744,9 +872,15 @@ private[codegen] object CometBatchKernelCodegenInput {
           s"        case $fi: return ${path}_f$fi.getByte(this.rowIdx);"
         case ShortType =>
           s"        case $fi: return ${path}_f$fi.getShort(this.rowIdx);"
-        case IntegerType | DateType =>
+        case IntegerType | DateType | _: YearMonthIntervalType =>
           s"        case $fi: return ${path}_f$fi.getInt(this.rowIdx);"
-        case LongType | TimestampType | TimestampNTZType =>
+        case LongType | TimestampType | TimestampNTZType | _: DayTimeIntervalType =>
+          s"        case $fi: return ${path}_f$fi.getLong(this.rowIdx);"
+        case CalendarIntervalType =>
+          s"""        case $fi: {
+             |$guard          return ${path}_f$fi.getInterval(this.rowIdx);
+             |        }""".stripMargin
+        case dt if isTimeType(dt) =>
           s"        case $fi: return ${path}_f$fi.getLong(this.rowIdx);"
         case FloatType =>
           s"        case $fi: return ${path}_f$fi.getFloat(this.rowIdx);"
@@ -792,14 +926,22 @@ private[codegen] object CometBatchKernelCodegenInput {
           fieldReadScalar(fi, ShortType, f.nullable)
       }
     val intCases = scalarOrd.collect {
-      case (f, fi) if f.sparkType == IntegerType || f.sparkType == DateType =>
+      case (f, fi)
+          if f.sparkType == IntegerType || f.sparkType == DateType ||
+            f.sparkType.isInstanceOf[YearMonthIntervalType] =>
         fieldReadScalar(fi, IntegerType, f.nullable)
     }
     val longCases = scalarOrd.collect {
       case (f, fi)
           if f.sparkType == LongType || f.sparkType == TimestampType ||
-            f.sparkType == TimestampNTZType =>
-        fieldReadScalar(fi, LongType, f.nullable)
+            f.sparkType == TimestampNTZType ||
+            f.sparkType.isInstanceOf[DayTimeIntervalType] ||
+            isTimeType(f.sparkType) =>
+        fieldReadScalar(fi, f.sparkType, f.nullable)
+    }
+    val intervalCases = scalarOrd.collect {
+      case (f, fi) if f.sparkType == CalendarIntervalType =>
+        fieldReadScalar(fi, CalendarIntervalType, f.nullable)
     }
     val floatCases =
       scalarOrd.collect {
@@ -845,6 +987,10 @@ private[codegen] object CometBatchKernelCodegenInput {
       structSwitch("public long getLong(int ordinal)", "getLong", longCases),
       structSwitch("public float getFloat(int ordinal)", "getFloat", floatCases),
       structSwitch("public double getDouble(int ordinal)", "getDouble", doubleCases),
+      structSwitch(
+        "public org.apache.spark.unsafe.types.CalendarInterval getInterval(int ordinal)",
+        "getInterval",
+        intervalCases),
       structSwitch(
         "public org.apache.spark.sql.types.Decimal getDecimal(" +
           "int ordinal, int precision, int scale)",
@@ -940,6 +1086,12 @@ private[codegen] object CometBatchKernelCodegenInput {
        |    @Override
        |    public org.apache.spark.sql.catalyst.util.ArrayData valueArray() {
        |      return new InputArray_$valPath(this.startIndex, this.length);
+       |    }
+       |
+       |    @Override
+       |    public org.apache.spark.sql.catalyst.util.MapData copy() {
+       |      return new org.apache.spark.sql.catalyst.util.ArrayBasedMapData(
+       |          keyArray().copy(), valueArray().copy());
        |    }
        |  }
        |""".stripMargin

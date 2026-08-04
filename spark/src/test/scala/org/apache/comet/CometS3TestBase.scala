@@ -29,6 +29,8 @@ import org.testcontainers.utility.DockerImageName
 import org.apache.spark.SparkConf
 import org.apache.spark.sql.CometTestBase
 
+import org.apache.comet.CometSparkSessionExtensions.isSpark42Plus
+
 import software.amazon.awssdk.auth.credentials.{AwsBasicCredentials, StaticCredentialsProvider}
 import software.amazon.awssdk.services.s3.S3Client
 import software.amazon.awssdk.services.s3.model.{CreateBucketRequest, HeadBucketRequest}
@@ -64,6 +66,31 @@ trait CometS3TestBase extends CometTestBase {
     conf.set("spark.hadoop.fs.s3a.secret.key", password)
     conf.set("spark.hadoop.fs.s3a.endpoint", minioContainer.getS3URL)
     conf.set("spark.hadoop.fs.s3a.path.style.access", "true")
+  }
+
+  // Spark 4.2 has no published Iceberg spark-runtime yet; the build reuses the 4.0 runtime, whose
+  // `SparkView` is binary-incompatible with Spark 4.2's `connector.catalog.View` (now a class, not
+  // an interface), so treat Iceberg as unavailable on 4.2.
+  protected def icebergAvailable: Boolean = {
+    !isSpark42Plus && {
+      try {
+        Class.forName("org.apache.iceberg.catalog.Catalog")
+        true
+      } catch {
+        case _: ClassNotFoundException => false
+      }
+    }
+  }
+
+  /**
+   * Apply the S3 properties Comet's native Iceberg reader requires on the given catalog.
+   * iceberg-rust / opendal disables region auto-detection when a custom credential loader is
+   * wired in, so the region/endpoint/path-style triple has to be set explicitly.
+   */
+  protected def applyS3CatalogProps(conf: SparkConf, catalogName: String): Unit = {
+    conf.set(s"spark.sql.catalog.$catalogName.s3.endpoint", minioContainer.getS3URL)
+    conf.set(s"spark.sql.catalog.$catalogName.s3.region", "us-east-1")
+    conf.set(s"spark.sql.catalog.$catalogName.s3.path-style-access", "true")
   }
 
   protected def createBucketIfNotExists(bucketName: String): Unit = {

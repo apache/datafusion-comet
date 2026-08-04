@@ -46,7 +46,7 @@ pub fn get_or_load(path: impl AsRef<Path>) -> Result<Arc<LoadedLibrary>, LoaderE
     let canonical = raw.canonicalize().unwrap_or_else(|_| raw.clone());
     if canonical != raw {
         if let Some(lib) = cache().read().unwrap().get(&canonical).cloned() {
-            cache().write().unwrap().insert(raw, lib.clone());
+            cache().write().unwrap().insert(raw, Arc::clone(&lib));
             return Ok(lib);
         }
     }
@@ -54,14 +54,14 @@ pub fn get_or_load(path: impl AsRef<Path>) -> Result<Arc<LoadedLibrary>, LoaderE
     let mut w = cache().write().unwrap();
     if let Some(lib) = w.get(&canonical).cloned() {
         if canonical != raw {
-            w.insert(raw, lib.clone());
+            w.insert(raw, Arc::clone(&lib));
         }
         return Ok(lib);
     }
     let loaded = Arc::new(load(&canonical)?);
-    w.insert(canonical.clone(), loaded.clone());
+    w.insert(canonical.clone(), Arc::clone(&loaded));
     if canonical != raw {
-        w.insert(raw, loaded.clone());
+        w.insert(raw, Arc::clone(&loaded));
     }
     Ok(loaded)
 }

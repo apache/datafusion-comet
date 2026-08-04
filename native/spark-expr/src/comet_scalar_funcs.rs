@@ -16,18 +16,20 @@
 // under the License.
 
 use crate::hash_funcs::*;
+use crate::json_funcs::JsonArrayLength;
 use crate::map_funcs::spark_map_sort;
 use crate::math_funcs::abs::abs;
 use crate::math_funcs::checked_arithmetic::{checked_add, checked_div, checked_mul, checked_sub};
 use crate::math_funcs::log::spark_log;
 use crate::math_funcs::modulo_expr::spark_modulo;
+use crate::math_funcs::pow::spark_pow;
 use crate::{
-    spark_ceil, spark_decimal_div, spark_decimal_integral_div, spark_floor, spark_isnan,
-    spark_lpad, spark_make_decimal, spark_read_side_padding, spark_round, spark_rpad,
-    spark_to_time, spark_unhex, spark_unscaled_value, EvalMode, SparkArrayCompact,
-    SparkArrayPositionFunc, SparkArraysOverlap, SparkContains, SparkDateDiff,
-    SparkDateFromUnixDate, SparkDateTrunc, SparkMakeDate, SparkMakeTime, SparkSecondsToTimestamp,
-    SparkSizeFunc,
+    spark_ceil, spark_day_name, spark_decimal_div, spark_decimal_integral_div, spark_floor,
+    spark_isnan, spark_lpad, spark_make_decimal, spark_month_name, spark_read_side_padding,
+    spark_round, spark_rpad, spark_to_time, spark_unhex, spark_unscaled_value, EvalMode,
+    SparkArrayPositionFunc, SparkArraySlice, SparkArraysOverlap, SparkContains, SparkDateDiff,
+    SparkDateFromUnixDate, SparkDateTrunc, SparkFlatten, SparkMakeDate, SparkMakeTime,
+    SparkNextDay, SparkSecondsToTimestamp, SparkSizeFunc,
 };
 use arrow::datatypes::DataType;
 use datafusion::common::{DataFusionError, Result as DataFusionResult};
@@ -37,7 +39,6 @@ use datafusion::logical_expr::{
     Volatility,
 };
 use datafusion::physical_plan::ColumnarValue;
-use std::any::Any;
 use std::fmt::Debug;
 use std::sync::Arc;
 
@@ -75,6 +76,15 @@ macro_rules! make_comet_scalar_udf {
             Signature::variadic_any(Volatility::Immutable),
             $data_type.clone(),
             Arc::new(move |args| $func(args, &$data_type, $eval_mode)),
+        );
+        Ok(Arc::new(ScalarUDF::new_from_impl(scalar_func)))
+    }};
+    ($name:expr, $func:ident, $data_type:ident, $eval_mode:ident, $fail_on_error:ident) => {{
+        let scalar_func = CometScalarFunction::new(
+            $name.to_string(),
+            Signature::variadic_any(Volatility::Immutable),
+            $data_type.clone(),
+            Arc::new(move |args| $func(args, &$data_type, $eval_mode, $fail_on_error)),
         );
         Ok(Arc::new(ScalarUDF::new_from_impl(scalar_func)))
     }};
@@ -116,6 +126,14 @@ pub fn create_comet_physical_fun_with_eval_mode(
             let func = Arc::new(spark_read_side_padding);
             make_comet_scalar_udf!("read_side_padding", func, without data_type)
         }
+        "dayname" => {
+            let func = Arc::new(spark_day_name);
+            make_comet_scalar_udf!("dayname", func, without data_type)
+        }
+        "monthname" => {
+            let func = Arc::new(spark_month_name);
+            make_comet_scalar_udf!("monthname", func, without data_type)
+        }
         "rpad" => {
             let func = Arc::new(spark_rpad);
             make_comet_scalar_udf!("rpad", func, without data_type)
@@ -132,7 +150,9 @@ pub fn create_comet_physical_fun_with_eval_mode(
             make_comet_scalar_udf!("unscaled_value", func, without data_type)
         }
         "make_decimal" => {
-            make_comet_scalar_udf!("make_decimal", spark_make_decimal, data_type)
+            // fail_on_error corresponds to Spark's nullOnOverflow = false (ANSI mode): the
+            // unscaled long must fit the target precision or the query fails.
+            make_comet_scalar_udf!("make_decimal", spark_make_decimal, data_type, fail_on_error)
         }
         "unhex" => {
             let func = Arc::new(spark_unhex);
@@ -142,11 +162,15 @@ pub fn create_comet_physical_fun_with_eval_mode(
             make_comet_scalar_udf!("decimal_div", spark_decimal_div, data_type, eval_mode)
         }
         "decimal_integral_div" => {
+            // the planner repurposes the fail_on_error slot to carry check_divide_overflow
+            // (see MathExpr.check_divide_overflow in expr.proto)
+            let check_divide_overflow = fail_on_error;
             make_comet_scalar_udf!(
                 "decimal_integral_div",
                 spark_decimal_integral_div,
                 data_type,
-                eval_mode
+                eval_mode,
+                check_divide_overflow
             )
         }
         "checked_add" => {
@@ -185,9 +209,29 @@ pub fn create_comet_physical_fun_with_eval_mode(
             let func = Arc::new(spark_log);
             make_comet_scalar_udf!("spark_log", func, without data_type)
         }
+        "pow" => {
+            let func = Arc::new(spark_pow);
+            make_comet_scalar_udf!("pow", func, without data_type)
+        }
+        "base64" => {
+            let func = Arc::new(crate::string_funcs::spark_base64);
+            make_comet_scalar_udf!("base64", func, without data_type)
+        }
         "split" => {
             let func = Arc::new(crate::string_funcs::spark_split);
             make_comet_scalar_udf!("split", func, without data_type)
+        }
+        "split_sql" => {
+            let func = Arc::new(crate::string_funcs::spark_split_sql);
+            make_comet_scalar_udf!("split_sql", func, without data_type)
+        }
+        "regexp_extract" => {
+            let func = Arc::new(crate::string_funcs::spark_regexp_extract);
+            make_comet_scalar_udf!("regexp_extract", func, without data_type)
+        }
+        "regexp_extract_all" => {
+            let func = Arc::new(crate::string_funcs::spark_regexp_extract_all);
+            make_comet_scalar_udf!("regexp_extract_all", func, without data_type)
         }
         "get_json_object" => {
             let func = Arc::new(crate::string_funcs::spark_get_json_object);
@@ -200,6 +244,19 @@ pub fn create_comet_physical_fun_with_eval_mode(
         "to_time" => {
             make_comet_scalar_udf!("to_time", spark_to_time, without data_type, fail_on_error)
         }
+        "flatten" => Ok(Arc::new(ScalarUDF::new_from_impl(SparkFlatten::new()))),
+        // make_date and next_day must be constructed with the ANSI flag (fail_on_error) so they
+        // throw on invalid input under ANSI rather than returning NULL.
+        "make_date" => Ok(Arc::new(ScalarUDF::new_from_impl(SparkMakeDate::new(
+            fail_on_error,
+        )))),
+        "next_day" => Ok(Arc::new(ScalarUDF::new_from_impl(SparkNextDay::new(
+            fail_on_error,
+        )))),
+        "levenshtein" => {
+            let func = Arc::new(crate::string_funcs::spark_levenshtein);
+            make_comet_scalar_udf!("levenshtein", func, without data_type)
+        }
         _ => registry.udf(fun_name).map_err(|e| {
             DataFusionError::Execution(format!(
                 "Function {fun_name} not found in the registry: {e}",
@@ -210,17 +267,20 @@ pub fn create_comet_physical_fun_with_eval_mode(
 
 fn all_scalar_functions() -> Vec<Arc<ScalarUDF>> {
     vec![
-        Arc::new(ScalarUDF::new_from_impl(SparkArrayCompact::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkArrayPositionFunc::default())),
+        Arc::new(ScalarUDF::new_from_impl(SparkArraySlice::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkArraysOverlap::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkContains::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkDateDiff::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkDateFromUnixDate::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkDateTrunc::default())),
+        Arc::new(ScalarUDF::new_from_impl(SparkFlatten::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkMakeDate::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkMakeTime::default())),
+        Arc::new(ScalarUDF::new_from_impl(SparkNextDay::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkSecondsToTimestamp::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkSizeFunc::default())),
+        Arc::new(ScalarUDF::new_from_impl(JsonArrayLength::default())),
     ]
 }
 
@@ -288,10 +348,6 @@ impl CometScalarFunction {
 }
 
 impl ScalarUDFImpl for CometScalarFunction {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn name(&self) -> &str {
         self.name.as_str()
     }

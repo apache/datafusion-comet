@@ -39,6 +39,39 @@ INSERT INTO test_array_insert VALUES
 query
 SELECT array_insert(arr, pos, val) FROM test_array_insert
 
+statement
+CREATE TABLE test_array_insert_short_circuit(
+  arr ARRAY<INT>,
+  idx INT
+) USING parquet
+
+statement
+INSERT INTO test_array_insert_short_circuit VALUES
+  (NULL, 0),
+  (array(1), 1)
+
+-- null source array short-circuits position evaluation
+query
+SELECT array_insert(arr, element_at(array(1), idx), 9)
+FROM test_array_insert_short_circuit
+
+statement
+CREATE TABLE test_array_insert_null_pos_short_circuit(
+  arr ARRAY<INT>,
+  idx INT
+) USING parquet
+
+statement
+INSERT INTO test_array_insert_null_pos_short_circuit VALUES
+  (array(1), 0),
+  (array(1), 1),
+  (array(1), 2)
+
+-- null position short-circuits item evaluation
+query
+SELECT array_insert(arr, CAST(NULL AS INT), element_at(array(1), idx))
+FROM test_array_insert_null_pos_short_circuit
+
 -- ============================================================
 -- Literal arguments (all-literal queries test native eval
 -- because CometSqlFileTestSuite disables constant folding)

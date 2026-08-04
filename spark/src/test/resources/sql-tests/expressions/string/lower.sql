@@ -15,15 +15,29 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
+-- Routes Lower through the codegen dispatcher so behavior matches Spark exactly,
+-- including locale-specific case mappings that the Rust scalar function does not implement.
+-- Config: spark.comet.exec.scalaUDF.codegen.enabled=true
+
 statement
 CREATE TABLE test_lower(s string) USING parquet
 
 statement
 INSERT INTO test_lower VALUES ('HELLO'), ('hello'), ('Hello World'), (''), (NULL), ('123ABC')
 
-query expect_fallback(case conversion)
+query
 SELECT lower(s) FROM test_lower
 
 -- literal arguments
-query expect_fallback(case conversion)
+query
 SELECT lower('HELLO'), lower(''), lower(NULL)
+
+-- locale-sensitive characters: Greek sigma and Turkish dotted I
+statement
+CREATE TABLE test_lower_unicode(s string) USING parquet
+
+statement
+INSERT INTO test_lower_unicode VALUES ('ΣIGMA'), ('İSTANBUL'), ('GROSSE'), ('CAFÉ')
+
+query
+SELECT lower(s) FROM test_lower_unicode
