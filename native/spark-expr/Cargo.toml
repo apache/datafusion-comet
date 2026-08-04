@@ -214,3 +214,7 @@ harness = false
 [[bench]]
 name = "unscaled_value"
 harness = false
+
+[[bench]]
+name = "levenshtein"
+harness = false
