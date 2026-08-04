@@ -62,10 +62,8 @@ object CometScanUtils {
           try {
             val metadata = reader.getFooter.getFileMetaData.getKeyValueMetaData
             val version = Option(metadata.get("org.apache.spark.version"))
-            val cometCorrected =
-              Option(metadata.get("org.apache.comet.datetimeRebaseMode")).contains("CORRECTED")
             def needsRebase(mode: String, minVersion: String, legacyKey: String): Boolean =
-              version.fold(!cometCorrected && mode != "CORRECTED")(v =>
+              version.fold(mode != "CORRECTED")(v =>
                 v < minVersion || metadata.containsKey(legacyKey))
 
             (hasDate &&

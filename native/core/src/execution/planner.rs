@@ -1828,6 +1828,7 @@ impl PhysicalPlanner {
                     codec,
                     self.partition,
                     writer.column_names.clone(),
+                    writer.spark_version.clone(),
                     object_store_options,
                 )?);
 

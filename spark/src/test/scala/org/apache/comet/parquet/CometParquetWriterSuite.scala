@@ -28,6 +28,7 @@ import org.apache.hadoop.fs.{FileSystem, Path}
 import org.apache.parquet.hadoop.ParquetFileReader
 import org.apache.parquet.hadoop.metadata.CompressionCodecName
 import org.apache.parquet.hadoop.util.HadoopInputFile
+import org.apache.spark.SPARK_VERSION_SHORT
 import org.apache.spark.sql.{AnalysisException, CometTestBase, DataFrame, Row, SaveMode}
 import org.apache.spark.sql.comet.{CometBatchScanExec, CometNativeScanExec, CometNativeWriteExec, CometScanExec}
 import org.apache.spark.sql.execution.{FileSourceScanExec, QueryExecution, SparkPlan}
@@ -811,6 +812,16 @@ class CometParquetWriterSuite extends CometTestBase {
     val partFiles = outputDir.listFiles().filter(_.getName.startsWith("part-"))
     // With 1000 rows and default parallelism, we should get multiple partitions
     assert(partFiles.length > 1, "Expected multiple part files to be created")
+
+    val conf = spark.sparkContext.hadoopConfiguration
+    partFiles.foreach { partFile =>
+      val inputFile = HadoopInputFile.fromPath(new Path(partFile.getAbsolutePath), conf)
+      Using.resource(ParquetFileReader.open(inputFile)) { reader =>
+        val metadata = reader.getFooter.getFileMetaData.getKeyValueMetaData
+        assert(metadata.get("org.apache.spark.version") == SPARK_VERSION_SHORT)
+        assert(!metadata.containsKey("org.apache.comet.datetimeRebaseMode"))
+      }
+    }
 
     // read with and without Comet and compare
     val sparkRows = readSparkRows(outputPath)

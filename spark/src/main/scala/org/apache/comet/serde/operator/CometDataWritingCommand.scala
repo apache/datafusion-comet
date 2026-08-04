@@ -25,7 +25,7 @@ import java.util.Locale
 import scala.jdk.CollectionConverters._
 
 import org.apache.parquet.hadoop.ParquetOutputFormat
-import org.apache.spark.SparkException
+import org.apache.spark.{SPARK_VERSION_SHORT, SparkException}
 import org.apache.spark.sql.comet.{CometNativeExec, CometNativeWriteExec}
 import org.apache.spark.sql.execution.command.DataWritingCommandExec
 import org.apache.spark.sql.execution.datasources.{InsertIntoHadoopFsRelationCommand, WriteFilesExec}
@@ -134,6 +134,7 @@ object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec
         .newBuilder()
         .setOutputPath(outputPath)
         .setCompression(codec)
+        .setSparkVersion(SPARK_VERSION_SHORT)
         .addAllColumnNames(cmd.query.output.map(_.name).asJava)
       // Note: work_dir, job_id, and task_attempt_id will be set at execution time
       // in CometNativeWriteExec, as they depend on the Spark task context
