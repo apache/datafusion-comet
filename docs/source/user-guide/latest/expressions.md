@@ -254,8 +254,8 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `current_time` | 🔜 | — | Blocked on Spark 4.1 TIME type support ([#4288](https://github.com/apache/datafusion-comet/issues/4288)) |
 | `current_timestamp` | ✅ | — | Constant-folded to a literal before Comet sees the plan |
 | `current_timezone` | ✅ | — |  |
-| `date_add` | ✅ | Native | The 2-argument form is native; the `date_add(UNIT, n, ts)` form parses to `timestampadd` and runs through codegen dispatch |
-| `date_diff` | ✅ | Native | The 2-argument form is native; the `date_diff(UNIT, start, end)` form parses to `timestampdiff` and runs through codegen dispatch |
+| `date_add` | ✅ | Native | The 2-argument form is native; the `date_add(UNIT, n, ts)` form (Spark 3.5+) parses to `timestampadd` and runs through codegen dispatch |
+| `date_diff` | ✅ | Native | The 2-argument form is native; the `date_diff(UNIT, start, end)` form (Spark 3.5+) parses to `timestampdiff` and runs through codegen dispatch |
 | `date_format` | ✅ | Hybrid |  |
 | `date_from_unix_date` | ✅ | Native |  |
 | `date_part` | ✅ | — |  |
