@@ -448,17 +448,15 @@ class CometInMemoryCacheSuite extends CometTestBase {
           spark.sql("SELECT key, value FROM prune_conf_cache WHERE key >= 900 AND key < 905")
         checkSparkAnswer(df)
 
+        // checkSparkAnswer takes its argument by name and executes its own copies of the query,
+        // so this df's plan instance has not run and its metrics are all still zero. Force this
+        // exact plan before reading them, or the comparison below passes vacuously with 0 == 0.
+        df.collect()
+
         val scans = df.queryExecution.executedPlan.collect {
           case s: org.apache.spark.sql.comet.CometInMemoryTableScanExec => s
         }
         assert(scans.length == 1, s"expected one CometInMemoryTableScan, got ${scans.length}")
-        // scalastyle:off println
-        println(
-          "DIAG rows=" + df.collect().length + " metrics=" + scans.head.metrics
-            .map { case (k, v) => k + "=" + v.value }
-            .mkString(","))
-        println("DIAG plan=" + df.queryExecution.executedPlan.getClass.getName)
-        // scalastyle:on println
         result = (scans.head.metrics("numOutputRows").value, totalRows)
         spark.catalog.clearCache()
       }
@@ -954,7 +952,9 @@ class CometInMemoryCacheSuite extends CometTestBase {
           "if(id % 5 = 0, null, array(id, id + 1)) as a",
           "named_struct('x', id, 'y', cast(id as string)) as st",
           "if(id % 7 = 0, null, map(cast(id as string), id)) as m",
-          "cast(id as binary) as b")
+          // via string: ANSI mode (on by default in Spark 4.x) rejects a direct bigint -> binary
+          // cast.
+          "cast(cast(id as string) as binary) as b")
         .write
         .parquet(path)
     } {
