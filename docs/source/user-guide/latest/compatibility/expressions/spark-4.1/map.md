@@ -1,0 +1,74 @@
+<!---
+Licensed to the Apache Software Foundation (ASF) under one
+or more contributor license agreements.  See the NOTICE file
+distributed with this work for additional information
+regarding copyright ownership.  The ASF licenses this file
+to you under the Apache License, Version 2.0 (the
+"License"); you may not use this file except in compliance
+with the License.  You may obtain a copy of the License at
+
+http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing,
+software distributed under the License is distributed on an
+"AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+KIND, either express or implied.  See the License for the
+specific language governing permissions and limitations
+under the License.
+-->
+
+# Map Expressions
+
+## MapSort (Spark 4.0+)
+
+Spark 4.0 inserts `MapSort` to normalize map values when they appear in shuffle hash partitioning
+keys, in `try_element_at`, and in other contexts where map ordering must be deterministic. Comet
+runs `MapSort` natively, so map shuffle and group-by-on-map stay on Comet under Spark 4.0.
+
+When `spark.comet.exec.strictFloatingPoint=true`, `MapSort` falls back to Spark for maps whose
+keys contain `Float` or `Double` (consistent with `SortOrder` and `SortArray`). Arrow's sort uses
+IEEE total ordering for floating-point, which differs from Spark's `Double.compare` semantics for
+`NaN` and `-0.0`.
+
+<!--BEGIN:EXPR_COMPAT[map]-->
+
+## MapFromArrays
+
+The following differences from Spark are always present and do not require any additional configuration:
+
+- Spark rejects a `NULL` element inside the keys array with a `RuntimeException` (`Cannot use null as map key`); Comet's native `map_from_arrays` / `map_from_entries` does not detect a per-element `NULL` key and produces a map with a `NULL` key instead ([#4680](https://github.com/apache/datafusion-comet/issues/4680)).
+
+The following incompatibilities cause `MapFromArrays` to fall back to Spark by default. Set `spark.comet.expression.MapFromArrays.allowIncompatible=true` to enable Comet acceleration despite these differences.
+
+- `spark.sql.mapKeyDedupPolicy` is set to `LAST_WIN`; Comet's native map construction does not implement LAST_WIN dedup semantics.
+
+## MapFromEntries
+
+The following differences from Spark are always present and do not require any additional configuration:
+
+- Spark rejects a `NULL` element inside the keys array with a `RuntimeException` (`Cannot use null as map key`); Comet's native `map_from_arrays` / `map_from_entries` does not detect a per-element `NULL` key and produces a map with a `NULL` key instead ([#4680](https://github.com/apache/datafusion-comet/issues/4680)).
+
+By default, `MapFromEntries` is evaluated in the JVM using Spark's own code-generated implementation (run inside the Comet pipeline), which matches Spark exactly. Set `spark.comet.expression.MapFromEntries.allowIncompatible=true` to opt into Comet's native implementation instead, which has the following differences from Spark:
+
+- `BinaryType` is not supported as a map key in `map_from_entries`
+- `BinaryType` is not supported as a map value in `map_from_entries`
+- `spark.sql.mapKeyDedupPolicy` is set to `LAST_WIN`; Comet's native map construction does not implement LAST_WIN dedup semantics.
+
+## MapSort
+
+The following incompatibilities cause `MapSort` to fall back to Spark by default. Set `spark.comet.expression.MapSort.allowIncompatible=true` to enable Comet acceleration despite these differences.
+
+- MapSort on floating-point keys is not 100% compatible with Spark when `spark.comet.exec.strictFloatingPoint=true`.
+
+The following cases are not supported by Comet and always fall back to Spark, regardless of any `allowIncompatible` setting:
+
+- MapSort is unsupported for non-scalar key types (struct, array, map, etc.).
+
+## StringToMap
+
+By default, `StringToMap` is evaluated in the JVM using Spark's own code-generated implementation (run inside the Comet pipeline), which matches Spark exactly. Set `spark.comet.expression.StringToMap.allowIncompatible=true` to opt into Comet's native implementation instead, which has the following differences from Spark:
+
+- `spark.sql.legacy.truncateForEmptyRegexSplit` is enabled, so trailing empty split entries may differ from Spark.
+- `str_to_map` does not support non-UTF8_BINARY collations on the input string or delimiters.
+
+<!--END:EXPR_COMPAT-->
