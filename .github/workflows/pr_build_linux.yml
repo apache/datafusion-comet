@@ -345,6 +345,7 @@ jobs:
               org.apache.comet.DirectColumnarToRowConverterSuite
               org.apache.comet.CometConfSuite
               org.apache.comet.CometPublicApiSuite
+              org.apache.comet.QueryContextInternerSuite
               org.apache.comet.CometSetOpWithGroupBySuite
               org.apache.comet.CometSparkSessionExtensionsSuite
               org.apache.spark.CometPluginsSuite
@@ -397,12 +398,15 @@ jobs:
               org.apache.comet.expressions.conditional.CometCaseWhenSuite
               org.apache.comet.CometRegExpJvmSuite
               org.apache.comet.CometCodegenSuite
+              org.apache.comet.CometCoverageStatsSuite
               org.apache.comet.CometCodegenSourceSuite
               org.apache.comet.CometCodegenHOFSuite
               org.apache.comet.CometFuzzMathSuite
               org.apache.comet.CometCodegenFuzzSuite
+              org.apache.comet.codegen.CometSpecializedGettersDispatchSuite
               org.apache.comet.CometStringDecodeSuite
               org.apache.comet.CometWidthBucketSuite
+              org.apache.comet.CometUuidExpressionSuite
       fail-fast: false
     name: ${{ matrix.profile.name }} [${{ matrix.suite.name }}]
     runs-on: ubuntu-24.04

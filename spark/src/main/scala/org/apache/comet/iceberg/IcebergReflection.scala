@@ -52,6 +52,8 @@ object IcebergReflection extends Logging {
     val SPARK_BATCH_QUERY_SCAN = "org.apache.iceberg.spark.source.SparkBatchQueryScan"
     val SPARK_STAGED_SCAN = "org.apache.iceberg.spark.source.SparkStagedScan"
     val SPARK_SCHEMA_UTIL = "org.apache.iceberg.spark.SparkSchemaUtil"
+    val TABLE = "org.apache.iceberg.Table"
+    val PARTITIONING = "org.apache.iceberg.Partitioning"
   }
 
   /**
@@ -65,6 +67,37 @@ object IcebergReflection extends Logging {
     Set(ClassNames.SPARK_BATCH_QUERY_SCAN, ClassNames.SPARK_STAGED_SCAN)
 
   def isIcebergScanClass(name: String): Boolean = ICEBERG_SCAN_CLASSES.contains(name)
+
+  // Iceberg FileIO implementations whose backing storage Comet's native reader can reach.
+  // Custom/test FileIO classes (e.g. CustomFileIO in TestSparkExecutorCache) are not compatible
+  // because Comet's native reader bypasses Java FileIO entirely.
+  val COMPATIBLE_FILE_IO_CLASSES: Set[String] = Set(
+    "org.apache.iceberg.hadoop.HadoopFileIO",
+    "org.apache.iceberg.aws.s3.S3FileIO",
+    "org.apache.iceberg.gcp.gcs.GCSFileIO",
+    "org.apache.iceberg.io.ResolvingFileIO",
+    "org.apache.iceberg.spark.SparkFileIO",
+    "org.apache.iceberg.azure.adlsv2.ADLSFileIO",
+    "org.apache.iceberg.CachingFileIO")
+
+  // Prefix of the EncryptingFileIO family. An encrypted table's io() is not the bare
+  // EncryptingFileIO but a nested variant chosen from the wrapped delegate's capabilities
+  // (e.g. EncryptingFileIO$WithSupportsPrefixOperations when the delegate is HadoopFileIO), so
+  // an exact class-name match misses it. Comet forwards each file's key_metadata to iceberg-rust
+  // and reads the ciphertext through iceberg-rust's own storage layer, so any EncryptingFileIO
+  // variant is compatible.
+  private val ENCRYPTING_FILE_IO_PREFIX = "org.apache.iceberg.encryption.EncryptingFileIO"
+
+  /**
+   * True if `fileIO` is a FileIO whose backing storage Comet's native reader can reach. Matches
+   * on `fileIO`'s own class hierarchy (via [[classNameInHierarchy]]) rather than its exact leaf
+   * class, so a subclass that only adds metrics/retry/credential-routing on top of a known-
+   * compatible FileIO (e.g. a custom S3FileIO subclass) still matches, instead of silently
+   * falling back to Spark.
+   */
+  def isCompatibleFileIO(fileIO: Any): Boolean =
+    classNameInHierarchy(fileIO.getClass, COMPATIBLE_FILE_IO_CLASSES) ||
+      fileIO.getClass.getName.startsWith(ENCRYPTING_FILE_IO_PREFIX)
 
   /**
    * Iceberg content types.
@@ -123,6 +156,23 @@ object IcebergReflection extends Logging {
       }
     }
     None
+  }
+
+  /**
+   * True if `clazz` or any of its superclasses has a name in `names`. Walks the already-loaded
+   * class object's own hierarchy, so unlike [[loadClass]] it never risks a
+   * `ClassNotFoundException` for a candidate name that isn't on this JVM's classpath (e.g.
+   * checking for a GCS/Azure FileIO class when only iceberg-aws is bundled).
+   */
+  def classNameInHierarchy(clazz: Class[_], names: Set[String]): Boolean = {
+    var current: Class[_] = clazz
+    while (current != null) {
+      if (names.contains(current.getName)) {
+        return true
+      }
+      current = current.getSuperclass
+    }
+    false
   }
 
   /**
@@ -458,6 +508,40 @@ object IcebergReflection extends Logging {
         logError(
           s"Iceberg reflection failure: Failed to get partition spec from table: ${e.getMessage}")
         None
+    }
+  }
+
+  /**
+   * Validates that the table's unified partition type can be computed -- the merge of every
+   * historical partition spec, which is what the `_partition` metadata column projects.
+   *
+   * Iceberg Java's `Partitioning.partitionType(table)` runs the same cross-spec compatibility
+   * check that iceberg-rust does natively: a V1 table does not guarantee partition field ids are
+   * unique across specs, so two specs can bind the same id to incompatible source/transform
+   * pairs, which cannot be merged into one struct field. iceberg-rust returns a DataInvalid error
+   * in that case, but only at scan time -- too late for Comet to fall back. Calling the Java
+   * check here, at plan time, lets `CometScanRule` fall back to Spark instead of failing inside
+   * the native reader.
+   *
+   * Returns None when the unified type is computable, or Some(reason) when it is not -- either
+   * the specs conflict or the reflection call itself failed. Both mean Comet cannot safely serve
+   * `_partition`, so both map to a fallback.
+   */
+  def validateUnifiedPartitionType(table: Any): Option[String] = {
+    try {
+      val tableClass = loadClass(ClassNames.TABLE)
+      val partitioningClass = loadClass(ClassNames.PARTITIONING)
+      partitioningClass
+        .getMethod("partitionType", tableClass)
+        .invoke(null, table.asInstanceOf[AnyRef])
+      None
+    } catch {
+      // A conflict surfaces as the ValidationException thrown by partitionType(), wrapped by
+      // reflection in InvocationTargetException; unwrap it for a meaningful reason.
+      case e: java.lang.reflect.InvocationTargetException =>
+        Some(Option(e.getCause).getOrElse(e).getMessage)
+      case e: Exception =>
+        Some(e.getMessage)
     }
   }
 

@@ -36,6 +36,16 @@ message Operator {
   // Spark plan ID
   uint32 plan_id = 2;
 
+  // Pool of distinct SQL texts referenced by `QueryContext.sql_text_idx`. Every expression that
+  // carries a QueryContext needs the full query text to render Spark's `== SQL ... ==` error
+  // block, and in a typical plan they all want the *same* text -- embedding it per expression made
+  // the query text over 95% of the serialized plan. The JVM interns the texts into this pool on
+  // the root operator of each serialized native block (see `QueryContextInterner`) and leaves
+  // `QueryContext.sql_text` empty.
+  //
+  // Only populated on the root operator; nested operators leave it empty.
+  repeated string sql_text_pool = 3;
+
   oneof op_struct {
     Scan scan = 100;
     Projection projection = 101;
@@ -55,6 +65,7 @@ message Operator {
     CsvScan csv_scan = 115;
     ShuffleScan shuffle_scan = 116;
     BroadcastNestedLoopJoin broadcast_nested_loop_join = 117;
+    Sample sample = 118;
   }
 }
 
@@ -260,6 +271,11 @@ message IcebergScanCommon {
 
   // Deduplication pools (must contain all entries for cross-partition deduplication)
   repeated string schema_pool = 4;
+  // Index-aligned with partition_spec_pool: entry i is the StructType JSON for the spec at
+  // partition_spec_pool[i]. Native uses this pairing to recover each entry's spec_id when
+  // merging partition types across historical specs (see parse_file_scan_tasks_from_common
+  // in planner.rs), which partition_type_pool cannot express on its own since it is only
+  // resolved field types, not specs.
   repeated string partition_type_pool = 5;
   repeated string partition_spec_pool = 6;
   repeated string name_mapping_pool = 7;
@@ -282,6 +298,12 @@ message IcebergScanCommon {
   // delete file here (rather than embedding copies per delete_files_pool set) keeps the broadcast
   // common message from growing with the number of references.
   repeated IcebergDeleteFile delete_file_pool = 14;
+
+  // Iceberg's SparkScan.hashCode() (folds in pushed filters, snapshot, branch, and read schema).
+  // A self-join/self-merge can read the same table (same metadata_location) twice with different
+  // projections or filters, so PlanDataInjector keys planning data by
+  // (metadata_location, scan_hash_code) rather than metadata_location alone.
+  int32 scan_hash_code = 15;
 }
 
 message IcebergScan {
@@ -325,7 +347,6 @@ message IcebergFileScanTask {
 
   // Indices into IcebergScan deduplication pools
   uint32 schema_idx = 15;
-  optional uint32 partition_type_idx = 16;
   optional uint32 partition_spec_idx = 17;
   optional uint32 name_mapping_idx = 18;
   uint32 project_field_ids_idx = 19;
@@ -394,6 +415,16 @@ message HashAggregate {
 message Limit {
   int32 limit = 1;
   int32 offset = 2;
+}
+
+// Sampling without replacement. Spark's SampleExec also supports sampling with
+// replacement, but that path is not serialized to native yet, so there is no
+// `with_replacement` field.
+message Sample {
+  double lower_bound = 1;
+  double upper_bound = 2;
+  // Seed before the partition index is added, which happens on the native side.
+  int64 seed = 3;
 }
 
 enum CompressionCodec {

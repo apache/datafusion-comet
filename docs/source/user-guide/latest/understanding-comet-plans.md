@@ -140,11 +140,11 @@ println(new org.apache.comet.ExtendedExplainInfo()
 Output:
 
 ```
-CometNativeColumnarToRow
+CometColumnarToRow
 +- CometProject [COMET-INFO: JVM codegen dispatcher: hypot, levenshtein]
    +- CometNativeScan parquet spark_catalog.default.t
 
-Comet accelerated 2 out of 2 eligible operators (100%). Final plan contains 1 transitions between Spark and Comet.
+Comet accelerated 2 out of 2 eligible operators (100%). Final plan contains 1 transitions between Spark and Comet. Accelerated expressions: 0 native, 2 codegen dispatch.
 ```
 
 Note that the operator is still `CometProject` (Comet-accelerated); only the
@@ -165,13 +165,39 @@ The Spark SQL UI then shows an additional section under the detailed plan.
 The format is controlled by `spark.comet.explain.format`:
 
 - `verbose` (default): the full plan annotated with fallback reasons, plus a
-  summary of how much of the plan is accelerated.
+  summary of how much of the plan is accelerated. The summary reports operator
+  coverage, the number of Spark/Comet transitions, and how many distinct
+  expressions Comet accelerated - split into those lowered to native DataFusion
+  expressions and those routed through the JVM codegen dispatcher. Expression
+  names are counted once per plan, and structural nodes (attribute references,
+  literals, aliases) are excluded.
 - `fallback`: a list of fallback reasons only.
 
 This is the most convenient option on Spark 4.0 because the output is shown
 inline in the UI. Earlier Spark versions do not have the
 `extendedExplainProviders` extension point, so this provider is not used and
 the config has no effect there.
+
+Not every node in the plan is an eligible operator. The following are excluded
+from both operator counts:
+
+- Transition nodes (`CometColumnarToRow`, `CometNativeColumnarToRow`,
+  `CometSparkRowToColumnar`, `CometSparkColumnarToColumnar`, `ColumnarToRow`,
+  `RowToColumnar`), which are reported separately as the transition count.
+  `CometSparkRowToColumnar` and `CometSparkColumnarToColumnar` are the two names
+  a single operator renders under, depending on whether its child already
+  produces columnar data, and both are excluded.
+- Wrappers that do no work of their own: `AdaptiveSparkPlan`, `InputAdapter`,
+  `WholeStageCodegen`, query stages, and `AQEShuffleRead`.
+- The reuse marker `ReusedSubquery`. The subquery it points at is counted where
+  that subquery is shown, so the marker itself does not add to the totals.
+- `ReusedExchange`, but with a caveat: it is not cleanly excluded the way the
+  wrappers above are. The node itself is skipped, and yet walking the plan
+  replaces it with the exchange it reuses, so the reused subtree is counted once
+  per reference rather than once for the whole plan. A plan that reuses one
+  exchange in three places contributes that subtree's operators three times.
+  Counting reused exchanges once is tracked as item 3 of
+  [#5203](https://github.com/apache/datafusion-comet/issues/5203).
 
 ### `spark.comet.explain.native.enabled`
 
@@ -201,11 +227,21 @@ val info = new ExtendedExplainInfo()
 // Sorted, deduplicated list of fallback reasons across the whole plan.
 val reasons: Seq[String] = info.getFallbackReasons(plan)
 
+// Sorted, deduplicated names of the expressions Comet accelerated, split by how
+// they run. Structural nodes (attribute references, literals, aliases) are not
+// reported.
+val native: Seq[String] = info.getNativeExpressions(plan)
+val dispatched: Seq[String] = info.getCodegenDispatchExpressions(plan)
+
 // Formatted string. Honors spark.comet.explain.format:
 //   - "verbose"  -> the full plan annotated with per-node fallback reasons
 //   - "fallback" -> just the list of reasons
 val formatted: String = info.generateExtendedInfo(plan)
 ```
+
+A name can appear in both lists: the same function may be lowered natively for
+one set of arguments and routed through the dispatcher for another elsewhere in
+the same plan.
 
 Example:
 
@@ -221,10 +257,10 @@ Output
 
 ```
 Project [COMET: from_unixtime(eventTime#5L, yyyy-MM-dd HH:mm:ss, Some(GMT)) is not fully compatible with Spark. To enable it anyway, set spark.comet.expression.FromUnixTime.allowIncompatible=true. For more information, refer to the Comet Compatibility Guide (https://datafusion.apache.org/comet/user-guide/compatibility.html).]
-+- CometNativeColumnarToRow
++- CometColumnarToRow
    +- CometNativeScan parquet
 
-Comet accelerated 1 out of 2 eligible operators (50%). Final plan contains 1 transitions between Spark and Comet.
+Comet accelerated 1 out of 2 eligible operators (50%). Final plan contains 1 transitions between Spark and Comet. Accelerated expressions: 0 native, 0 codegen dispatch.
 ```
 
 ## Comet Operator Reference
@@ -309,12 +345,12 @@ Comet inserts these nodes wherever data has to cross the columnar/row boundary.
 Multiple implementations exist because the optimal strategy depends on what
 produced the columnar data.
 
-| Node                           | Direction           | Notes                                                                                                                                                                                                                             |
-| ------------------------------ | ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `CometColumnarToRow`           | columnar → row      | JVM-based row conversion. A fork of Spark's `ColumnarToRowExec` that includes the SPARK-50235 fix.                                                                                                                                |
-| `CometNativeColumnarToRow`     | columnar → row      | Rust-based row conversion that decodes broadcast Arrow batches via `NativeColumnarToRowConverter`. Used downstream of `CometBroadcastExchange`. Zero-copy for variable-length types and avoids an extra JVM materialization step. |
-| `CometSparkColumnarToColumnar` | columnar → columnar | Converts a Spark columnar input (a non-Comet `ColumnarBatch`) into Comet's Arrow batches.                                                                                                                                         |
-| `CometSparkRowToColumnar`      | row → columnar      | Converts a Spark row input into Comet's Arrow batches.                                                                                                                                                                            |
+| Node                           | Direction           | Notes                                                                                                                                                                                                                                               |
+| ------------------------------ | ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `CometColumnarToRow`           | columnar → row      | JVM-based row conversion. A fork of Spark's `ColumnarToRowExec` that includes the SPARK-50235 fix. This is the default.                                                                                                                             |
+| `CometNativeColumnarToRow`     | columnar → row      | Rust-based row conversion via `NativeColumnarToRowConverter`. Disabled by default; enable with `spark.comet.exec.columnarToRow.native.enabled=true`. It carries a fixed JNI cost per batch and is slower than the JVM conversion for small batches. |
+| `CometSparkColumnarToColumnar` | columnar → columnar | Converts a Spark columnar input (a non-Comet `ColumnarBatch`) into Comet's Arrow batches.                                                                                                                                                           |
+| `CometSparkRowToColumnar`      | row → columnar      | Converts a Spark row input into Comet's Arrow batches.                                                                                                                                                                                              |
 
 The two `CometSpark*` names come from a single `CometSparkToColumnarExec`
 operator that picks the node name based on whether its child supports
