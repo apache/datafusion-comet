@@ -42,18 +42,17 @@ use crate::{cast_whole_num_to_binary, BinaryOutputStyle};
 use crate::{EvalMode, SparkError};
 use arrow::array::builder::{GenericStringBuilder, StringBuilder};
 use arrow::array::{
-    new_null_array, BinaryBuilder, DictionaryArray, GenericByteArray, ListArray, MapArray,
-    StringArray, StructArray,
+    new_null_array, BinaryBuilder, GenericByteArray, ListArray, MapArray, StringArray, StructArray,
 };
 use arrow::datatypes::{DataType, Schema};
 use arrow::datatypes::{Field, Fields, GenericBinaryType};
 use arrow::error::ArrowError;
 use arrow::{
     array::{
-        cast::AsArray, types::Int32Type, Array, ArrayRef, Int16Array, Int32Array, Int64Array,
-        Int8Array, OffsetSizeTrait,
+        cast::AsArray, Array, ArrayRef, Int16Array, Int32Array, Int64Array, Int8Array,
+        OffsetSizeTrait,
     },
-    compute::{cast_with_options, take, CastOptions},
+    compute::{cast_with_options, CastOptions},
     record_batch::RecordBatch,
     util::display::FormatOptions,
 };
@@ -221,6 +220,12 @@ pub(crate) fn cast_array(
     use DataType::*;
     let from_type = array.data_type().clone();
 
+    // Spark's SQL data-type grammar cannot express Dictionary as a cast target:
+    // https://github.com/apache/spark/blob/v4.2.0/sql/api/src/main/antlr4/org/apache/spark/sql/catalyst/parser/SqlBaseParser.g4#L1477-L1525
+    if matches!(to_type, Dictionary(_, _)) {
+        return internal_err!("Spark cannot specify dictionary types as cast targets");
+    }
+
     if &from_type == to_type {
         return Ok(Arc::new(array));
     }
@@ -235,45 +240,18 @@ pub(crate) fn cast_array(
             .with_timestamp_format(TIMESTAMP_FORMAT),
     };
 
-    let array = match &from_type {
-        Dictionary(key_type, value_type)
-            if key_type.as_ref() == &Int32
-                && (value_type.as_ref() == &Utf8
-                    || value_type.as_ref() == &LargeUtf8
-                    || value_type.as_ref() == &Binary
-                    || value_type.as_ref() == &LargeBinary) =>
-        {
-            let dict_array = array
-                .as_any()
-                .downcast_ref::<DictionaryArray<Int32Type>>()
-                .expect("Expected a dictionary array");
-
-            let casted_result = match to_type {
-                Dictionary(_, to_value_type) => {
-                    let casted_dictionary = DictionaryArray::<Int32Type>::new(
-                        dict_array.keys().clone(),
-                        cast_array(Arc::clone(dict_array.values()), to_value_type, cast_options)?,
-                    );
-                    Arc::new(casted_dictionary.clone())
-                }
-                _ => {
-                    let casted_dictionary = DictionaryArray::<Int32Type>::new(
-                        dict_array.keys().clone(),
-                        cast_array(Arc::clone(dict_array.values()), to_type, cast_options)?,
-                    );
-                    take(casted_dictionary.values().as_ref(), dict_array.keys(), None)?
-                }
-            };
+    // Spark infers Parquet schemas from its own metadata or the Parquet MessageType, not
+    // ARROW:schema, so Arrow can expose a dictionary source while Spark requests its value type:
+    // https://github.com/apache/spark/blob/v4.2.0/sql/core/src/main/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetFileFormat.scala#L585-L599
+    if let Dictionary(_, value_type) = &from_type {
+        if matches!(value_type.as_ref(), Utf8 | LargeUtf8 | Binary | LargeBinary) {
+            let dictionary = array.as_any_dictionary();
+            let values = cast_array(Arc::clone(dictionary.values()), to_type, cast_options)?;
+            let dictionary = dictionary.with_values(values);
+            let casted_result = cast_with_options(&dictionary, to_type, &native_cast_options)?;
             return Ok(spark_cast_postprocess(casted_result, &from_type, to_type));
         }
-        _ => {
-            if let Dictionary(_, value_type) = to_type {
-                let values = cast_array(array, value_type, cast_options)?;
-                return Ok(arrow::compute::cast(&values, to_type)?);
-            }
-            array
-        }
-    };
+    }
 
     let cast_result = match (&from_type, to_type) {
         // Null arrays carry no concrete values, so Arrow's native cast can change only the
@@ -874,29 +852,20 @@ mod tests {
     use super::*;
     use arrow::array::{BinaryArray, ListArray, NullArray, PrimitiveArray, StringArray};
     use arrow::buffer::OffsetBuffer;
-    use arrow::datatypes::TimestampMicrosecondType;
-    use arrow::datatypes::{Field, Fields};
+    use arrow::datatypes::{Field, Fields, Int32Type, TimestampMicrosecondType};
 
     #[test]
-    fn test_cast_to_dictionary_deduplicates_casted_values() {
-        let input: ArrayRef = Arc::new(StringArray::from(vec![Some("0.2"), Some("."), None]));
-        let data_type = DataType::Dictionary(Box::new(DataType::Int32), Box::new(DataType::Int32));
-
-        let result = cast_array(
-            input,
-            &data_type,
+    fn test_cast_to_dictionary_is_rejected() {
+        let error = cast_array(
+            Arc::new(StringArray::from(vec!["a"])),
+            &DataType::Dictionary(Box::new(DataType::Int32), Box::new(DataType::Utf8)),
             &SparkCastOptions::new(EvalMode::Legacy, "UTC", false),
         )
-        .unwrap();
-        let dictionary = result.as_dictionary::<Int32Type>();
+        .unwrap_err();
 
-        assert_eq!(
-            dictionary.keys().iter().collect::<Vec<_>>(),
-            vec![Some(0), Some(0), None]
-        );
-        let values = dictionary.values().as_primitive::<Int32Type>();
-        assert_eq!(values.len(), 1);
-        assert_eq!(values.value(0), 0);
+        assert!(error
+            .to_string()
+            .contains("Spark cannot specify dictionary types as cast targets"));
     }
 
     #[test]
