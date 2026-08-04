@@ -134,14 +134,29 @@ The function is then callable from SQL or the DataFrame API like any other:
 spark.range(0, 5).selectExpr("add_one(id) AS y").show()
 ```
 
-The declared `inputTypes` and `returnType` must match what the Rust `return_field` accepts and
-returns. They are what Spark uses for analysis and planning; the Rust side is what actually runs.
-If the two disagree, the query fails with an error naming both types.
-
-Watch for Spark's own type promotion here: `cast(id as decimal(10,2)) + 0.25` has type
-`decimal(11,2)`, not `decimal(10,2)`, so registering the latter is a mismatch.
-
 Set `deterministic = false` when the function is not a pure function of its arguments.
+
+## Return types
+
+A UDF does not have one fixed return type. Its `return_field` is called with the actual argument
+types and computes the output type on demand, so a single kernel can serve many signatures: the
+`echo_c` UDF in Comet's own test library returns whatever type it is given, for every type in the
+table below.
+
+What is fixed is the type you declare to `register`, because Spark needs a concrete `DataType` at
+analysis time in order to plan the query. That declaration is per-registration, not per-kernel:
+re-registering the same function under different types is supported, and the kernel computes the
+matching return type each time.
+
+The two must agree. Comet checks the declared type against what `return_field` reports at planning
+time and fails with both types named if they differ, rather than letting it surface as a type
+assertion partway through execution. Nested nullability (`containsNull`, struct field nullability)
+is not part of that comparison, since Spark and Arrow disagree about it harmlessly, but everything
+that changes how bytes are read is: decimal precision and scale, timestamp unit, and struct field
+names and order.
+
+Watch for Spark's own type promotion when declaring: `cast(id as decimal(10,2)) + 0.25` has type
+`decimal(11,2)`, not `decimal(10,2)`, so registering the latter is a mismatch.
 
 ## Supported types
 
@@ -163,10 +178,19 @@ Arguments and return values may be any of:
 | `TimestampType`     | `Timestamp(Microsecond)` |
 | `TimestampNTZType`  | `Timestamp(Microsecond)` |
 
+Complex types are supported and may be nested arbitrarily:
+
+| Spark type                | Arrow type            |
+| ------------------------- | --------------------- |
+| `ArrayType(t)`            | `List(t)`             |
+| `StructType(f1, f2, ...)` | `Struct(f1, f2, ...)` |
+| `MapType(k, v)`           | `Map(k, v)`           |
+
 Nulls are preserved in both directions; a null input row arrives as a null slot in the Arrow array
 and your output nulls come back to Spark as nulls.
 
-Complex types (`ArrayType`, `StructType`, `MapType`) are not supported yet.
+Not yet supported: `CalendarIntervalType`, `NullType`, `UserDefinedType`, and Arrow extension types
+such as Variant and Geometry.
 
 ## Error handling
 
@@ -182,8 +206,6 @@ flow mechanism: prefer returning `Err`, which produces a much better message.
 This feature is at an early stage. The current limitations are:
 
 - **Scalar functions only.** Aggregate, window, and table functions are not supported.
-- **Non-nested types only.** See [Supported types](#supported-types); complex types are future
-  work.
 - **The library must already be present on every executor**, at the same absolute path given to
   `register`. Comet does not distribute it for you: stage it with your image, a mounted volume, or
   your cluster's own file distribution, and pass a path that is valid cluster-wide. A path that

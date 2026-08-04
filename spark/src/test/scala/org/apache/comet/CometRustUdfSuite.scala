@@ -88,12 +88,14 @@ class CometRustUdfSuite extends CometTestBase {
   // ---------- type coverage ----------
 
   /**
-   * One case per supported non-nested Spark type: the type itself, and a SQL expression producing
-   * a value of that type from the `id` column of `spark.range`.
+   * One case per supported Spark type: the type itself, and a SQL expression producing a value of
+   * that type from the `id` column of `spark.range`.
    *
-   * Complex types (array, struct, map) are not supported yet and are deliberately absent.
+   * The declared type is asserted against the frame's real schema before it is registered, so a
+   * case whose expression does not produce the type it claims fails loudly rather than testing
+   * the wrong thing.
    */
-  private val primitiveTypeCases: Seq[(DataType, String)] = Seq(
+  private val typeCases: Seq[(DataType, String)] = Seq(
     (BooleanType, "id % 2 = 0"),
     (ByteType, "cast(id as byte)"),
     (ShortType, "cast(id as short)"),
@@ -108,7 +110,30 @@ class CometRustUdfSuite extends CometTestBase {
     (TimestampNTZType, "cast(timestamp_ntz'2024-01-01 12:00:00' as timestamp_ntz)"),
     // The outer cast pins the result to decimal(10,2): Spark widens the precision of the addition
     // itself to decimal(11,2), which would not match the type registered below.
-    (DecimalType(10, 2), "cast(cast(id as decimal(10,2)) + 0.25 as decimal(10,2))"))
+    (DecimalType(10, 2), "cast(cast(id as decimal(10,2)) + 0.25 as decimal(10,2))"),
+    // Complex types. `containsNull` / `valueContainsNull` / field nullability are part of the type
+    // and must match what the expression actually produces, hence the explicit constructors.
+    (ArrayType(IntegerType, containsNull = false), "array(cast(id as int), cast(id + 1 as int))"),
+    (ArrayType(StringType, containsNull = false), "array(concat('s', cast(id as string)))"),
+    (
+      MapType(StringType, IntegerType, valueContainsNull = false),
+      "map('k', cast(id as int), 'j', cast(id + 1 as int))"),
+    (
+      StructType(
+        Seq(
+          StructField("a", IntegerType, nullable = false),
+          StructField("b", StringType, nullable = false))),
+      "named_struct('a', cast(id as int), 'b', concat('s', cast(id as string)))"),
+    // One level of nesting, to check the FFI carries child arrays rather than just top-level ones.
+    (
+      ArrayType(
+        StructType(Seq(StructField("a", IntegerType, nullable = false))),
+        containsNull = false),
+      "array(named_struct('a', cast(id as int)))"),
+    (
+      StructType(
+        Seq(StructField("xs", ArrayType(IntegerType, containsNull = false), nullable = false))),
+      "named_struct('xs', array(cast(id as int), cast(id + 1 as int)))"))
 
   /**
    * A 4-row frame with a single column `c` of the given type, where the last row is null so every
@@ -123,10 +148,13 @@ class CometRustUdfSuite extends CometTestBase {
     case other => other
   }
 
-  for ((dataType, valueExpr) <- primitiveTypeCases) {
+  for ((dataType, valueExpr) <- typeCases) {
     test(s"echo_c round-trips ${dataType.simpleString} including nulls") {
-      CometRustUDF.register(spark, "echo_c", libPath, Seq(dataType), dataType)
       val df = typedFrame(valueExpr)
+      assert(
+        df.schema.head.dataType == dataType,
+        s"test expression produced ${df.schema.head.dataType}, not $dataType")
+      CometRustUDF.register(spark, "echo_c", libPath, Seq(dataType), dataType)
       val expected = df.collect().map(r => normalize(r.get(0))).toSeq
       val actual = df.selectExpr("echo_c(c) AS y").collect().map(r => normalize(r.get(0))).toSeq
       assert(actual == expected, s"round trip changed values for ${dataType.simpleString}")
@@ -154,6 +182,36 @@ class CometRustUdfSuite extends CometTestBase {
         }
       }
     }
+  }
+
+  test("one kernel computes its return type on demand and serves many types") {
+    // echo_c has no fixed return type of its own: its return_field derives one from the argument
+    // types on every call. The type declared to `register` is what Spark plans against, so it is
+    // per-registration rather than per-kernel, and the same kernel serves a different type after
+    // re-registering.
+    CometRustUDF.register(spark, "echo_c", libPath, Seq(LongType), LongType)
+    assert(
+      spark.range(0, 3).selectExpr("echo_c(id) AS y").collect().map(_.getLong(0)).toSeq ==
+        Seq(0L, 1L, 2L))
+
+    CometRustUDF.register(spark, "echo_c", libPath, Seq(StringType), StringType)
+    val strings = spark
+      .range(0, 3)
+      .selectExpr("echo_c(concat('s', cast(id as string))) AS y")
+      .collect()
+      .map(_.getString(0))
+      .toSeq
+    assert(strings == Seq("s0", "s1", "s2"))
+
+    val arrayType = ArrayType(IntegerType, containsNull = false)
+    CometRustUDF.register(spark, "echo_c", libPath, Seq(arrayType), arrayType)
+    val arrays = spark
+      .range(0, 2)
+      .selectExpr("echo_c(array(cast(id as int), cast(id + 1 as int))) AS y")
+      .collect()
+      .map(_.getSeq[Int](0))
+      .toSeq
+    assert(arrays == Seq(Seq(0, 1), Seq(1, 2)))
   }
 
   test("a declared return type that disagrees with the UDF names both types") {

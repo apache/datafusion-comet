@@ -932,7 +932,10 @@ impl PhysicalPlanner {
                     .map(|e| e.data_type(input_schema.as_ref()))
                     .collect::<Result<Vec<_>, _>>()?;
                 let kernel_return_type = loaded.udf_impl.return_type(&arg_types)?;
-                if kernel_return_type != return_type {
+                if !crate::execution::rust_udf::return_types_compatible(
+                    &return_type,
+                    &kernel_return_type,
+                ) {
                     return Err(GeneralError(format!(
                         "Rust UDF '{}' was registered as returning {return_type} but its \
                          return_field reports {kernel_return_type} for argument types {arg_types:?}. \
@@ -941,7 +944,10 @@ impl PhysicalPlanner {
                     )));
                 }
 
-                let return_field = Arc::new(Field::new(&call.name, return_type, true));
+                // Promise DataFusion the kernel's own type rather than the declared one. The two
+                // agree up to nested nullability, and using the kernel's avoids tripping
+                // DataFusion's exact-match assertion on the returned batch.
+                let return_field = Arc::new(Field::new(&call.name, kernel_return_type, true));
                 let expr = Arc::new(ScalarFunctionExpr::new(
                     &call.name,
                     udf,
