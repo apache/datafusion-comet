@@ -81,6 +81,12 @@ impl ImportedCScalarUdf {
         // Use UserDefined signature: per-call init() is what decides
         // whether the input types are acceptable. `coerce_types` is not
         // implemented; user must pass exact types from the JVM register call.
+        //
+        // Volatility is always Immutable. The signature is built once per
+        // library load, while determinism is declared per registration, so
+        // the two do not line up: `CometRustUDF.register` rejects
+        // `deterministic = false` rather than let a volatile function be
+        // planned as if it were pure.
         let signature = Signature::new(TypeSignature::UserDefined, Volatility::Immutable);
 
         Ok(Self {

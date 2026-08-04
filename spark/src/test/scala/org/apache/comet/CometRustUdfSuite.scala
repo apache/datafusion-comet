@@ -248,6 +248,37 @@ class CometRustUdfSuite extends CometTestBase {
       spark.range(0, 2).selectExpr("echo_c(id, id) AS y").collect()
     }
   }
+
+  test("registering a nondeterministic UDF is refused") {
+    // Comet plans every Rust UDF as immutable, so accepting this would let the optimizer
+    // constant-fold or CSE a call the caller told us was not safe to reuse. Refuse at
+    // registration rather than silently ignore the flag.
+    val e = intercept[IllegalArgumentException] {
+      CometRustUDF.register(
+        spark,
+        "echo_c",
+        libPath,
+        Seq(LongType),
+        LongType,
+        deterministic = false)
+    }
+    assert(e.getMessage.contains("deterministic = false is not supported"), s"unclear: $e")
+
+    // The check runs before any library work, so it fires on a path that does not exist
+    // rather than reporting a load failure first.
+    val early = intercept[IllegalArgumentException] {
+      CometRustUDF.register(
+        spark,
+        "echo_c",
+        "/no/such/library.so",
+        Seq(LongType),
+        LongType,
+        deterministic = false)
+    }
+    assert(
+      early.getMessage.contains("deterministic = false is not supported"),
+      s"unclear: $early")
+  }
 }
 
 object CometRustUdfSuite {

@@ -636,5 +636,10 @@ message RustUdfCall {
   // Expected return type, declared at register time on the JVM side.
   DataType return_type = 4;
   // Whether the call is deterministic (mirrors Spark's deterministic flag).
+  //
+  // Always true today: registration rejects deterministic = false, because the
+  // native side plans every Rust UDF with Volatility::Immutable and has no way
+  // to express a volatile one. The field is carried so that honoring it later
+  // does not need a wire change.
   bool deterministic = 5;
 }

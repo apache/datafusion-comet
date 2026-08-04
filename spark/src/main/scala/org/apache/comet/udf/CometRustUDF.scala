@@ -30,13 +30,17 @@ import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.databind.node.ObjectNode
 
 /**
- * Public entry point for registering Rust scalar UDFs with Comet.
+ * Entry point for registering Rust scalar UDFs with Comet.
  *
  * The UDF cdylib is built against the `comet-udf-sdk` crate and exposes its functions through an
  * ABI built only on the Arrow C Data Interface, so a compiled UDF is not tied to Comet's
  * DataFusion version.
  *
- * This is an experimental API and may change without the usual deprecation cycle.
+ * This is an experimental API. It is deliberately not annotated
+ * `org.apache.comet.annotation.Public`, so it sits outside the enumerated public API in Comet's
+ * [[https://datafusion.apache.org/comet/about/versioning_policy.html versioning policy]] and
+ * carries no compatibility guarantee: it may change or be removed in any release, including a
+ * patch release, with no deprecation cycle.
  */
 object CometRustUDF {
 
@@ -52,6 +56,10 @@ object CometRustUDF {
    * Executors do not consult the driver's registry: the library path travels with the plan in the
    * `RustUdfCall` proto, and each executor loads the library itself on first use. The path must
    * therefore be valid on every executor, not just the driver.
+   *
+   * `deterministic` must be `true`. Comet plans every imported kernel as immutable, so a
+   * nondeterministic UDF cannot yet be expressed; passing `false` fails here rather than silently
+   * planning the function as pure.
    */
   def register(
       spark: SparkSession,
@@ -60,6 +68,17 @@ object CometRustUDF {
       inputTypes: Seq[DataType],
       returnType: DataType,
       deterministic: Boolean = true): Unit = {
+    if (!deterministic) {
+      // The native signature is built once per library load with
+      // Volatility::Immutable, while determinism is declared per registration, so the
+      // flag cannot be honored without reworking how kernels are cached. Until then a
+      // `false` here would let DataFusion constant-fold or CSE a call the user told us
+      // was not safe to reuse.
+      throw new IllegalArgumentException(
+        s"Rust UDF '$name': deterministic = false is not supported yet. Comet plans Rust UDFs " +
+          "as immutable, so a nondeterministic function may be constant-folded or eliminated " +
+          "as a common subexpression. See https://github.com/apache/datafusion-comet/issues/5249")
+    }
     val described = describeOne(libraryPath, name)
     require(described.name == name, s"unexpected name from native: ${described.name}")
     installCatalogStub(spark, name, inputTypes, returnType, deterministic)
