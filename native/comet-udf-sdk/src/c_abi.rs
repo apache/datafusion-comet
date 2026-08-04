@@ -15,13 +15,36 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! The Comet UDF C ABI — sedona-style.
+//! The Comet UDF C ABI, sedona-style.
 //!
 //! The wire format is two `#[repr(C)]` structs of function pointers,
 //! parameterized only by Arrow's C Data Interface
 //! (`FFI_ArrowSchema` / `FFI_ArrowArray`). No DataFusion types appear in
 //! the FFI surface, so the user's cdylib only needs a matching `arrow`
 //! crate, not a matching `datafusion` version.
+//!
+//! # Stability
+//!
+//! These structs are **specific to one Comet version and are not yet ABI
+//! stable across Comet releases**. The layouts here may change in any
+//! release, including a patch release, with no deprecation cycle: they are
+//! internal types under Comet's
+//! [versioning policy](https://datafusion.apache.org/comet/about/versioning_policy.html),
+//! like every other type the native crates ship. `comet_udf_abi_version`
+//! is checked strictly at load time, so a stale cdylib is refused with an
+//! explicit error rather than loaded unsafely, but the practical
+//! consequence is that a UDF library must be rebuilt against the SDK from
+//! the Comet release it will run on.
+//!
+//! What does *not* have to match is the host's own dependency versions.
+//! Only `FFI_ArrowArray` and `FFI_ArrowSchema` cross the boundary, and
+//! those are `#[repr(C)]` renderings of the Arrow C Data Interface, which
+//! is stable across `arrow` versions. So a cdylib and the Comet host that
+//! loads it may be built against different `arrow` versions, and the
+//! cdylib needs no `datafusion` dependency at all. The binding constraint
+//! is what `comet-udf-sdk` itself compiles against: the SDK is built into
+//! your cdylib, so Cargo must be able to unify its `arrow` requirement
+//! with yours.
 //!
 //! # Authoring a UDF
 //!
@@ -94,11 +117,18 @@ fn catch_panic<T>(f: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
     }
 }
 
-/// Run an infallible `f` (typically a release/cleanup callback), swallowing
+/// Run an infallible `f` (typically a release/cleanup callback), containing
 /// any panic. Used where the ABI gives us no way to report an error and
 /// aborting would be a worse outcome than leaking.
-fn catch_panic_infallible(f: impl FnOnce()) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
+///
+/// There is no error channel to return this on and no logging facade in the
+/// SDK's dependencies (`arrow` is the only one, deliberately), so the panic
+/// is reported on stderr. Silently swallowing it would leave a leaked
+/// allocation or a half-run destructor with nothing at all to show for it.
+fn catch_panic_infallible(context: &str, f: impl FnOnce()) {
+    if let Err(panic) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
+        eprintln!("comet-udf-sdk: {context}: {}", panic_message(panic));
+    }
 }
 
 // -- factory struct --------------------------------------------------------
@@ -292,6 +322,21 @@ use arrow::datatypes::Field;
 /// High-level Rust trait the user implements to author a UDF.
 ///
 /// Adapted to the C ABI by [`ExportedScalarKernel`].
+///
+/// # Only immutable functions are supported
+///
+/// Comet registers every imported kernel with DataFusion's
+/// `Volatility::Immutable`, which asserts that the same inputs always
+/// produce the same output. The planner is entitled to act on that: it may
+/// evaluate a call once and reuse the result, fold a call over constants at
+/// plan time, or eliminate a repeated call as a common subexpression.
+///
+/// So `invoke` must be a pure function of its arguments. A kernel that
+/// reads a clock, draws from an RNG, or accumulates state across batches
+/// will produce results that depend on decisions the optimizer is free to
+/// change between releases. There is currently no way to declare such a
+/// kernel: `CometRustUDF.register` rejects `deterministic = false` rather
+/// than registering a function whose volatility Comet would then ignore.
 pub trait CometCScalarUdf: Send + Sync {
     /// Stable function name. Returned via `function_name` over the FFI.
     fn name(&self) -> &str;
@@ -344,7 +389,9 @@ impl From<ExportedScalarKernel> for CometCScalarKernel {
 unsafe extern "C" fn c_factory_function_name(this: *const CometCScalarKernel) -> *const c_char {
     debug_assert!(!this.is_null());
     let this = unsafe { &*this };
-    debug_assert!(!this.private_data.is_null());
+    // A released kernel has null private_data and `release: None`; checking
+    // both catches a call made after release, not just an uninitialized one.
+    debug_assert!(!this.private_data.is_null() && this.release.is_some());
     let exp = unsafe { &*(this.private_data as *const ExportedScalarKernel) };
     exp.name_c.as_ptr()
 }
@@ -356,10 +403,11 @@ unsafe extern "C" fn c_factory_new_impl(
     debug_assert!(!this.is_null());
     debug_assert!(!out.is_null());
     let this = unsafe { &*this };
+    debug_assert!(!this.private_data.is_null() && this.release.is_some());
     let exp = unsafe { &*(this.private_data as *const ExportedScalarKernel) };
     // On panic, leave `out` as the default (all callbacks None). The host
     // detects the missing `init` and reports it as a load error.
-    catch_panic_infallible(|| {
+    catch_panic_infallible("constructing kernel impl", || {
         let impl_state = ExportedScalarKernelImpl {
             inner: std::sync::Arc::clone(&exp.inner),
             last_arg_fields: None,
@@ -381,7 +429,7 @@ unsafe extern "C" fn c_factory_release(this: *mut CometCScalarKernel) {
         // user type's Drop, which may panic; contain it rather than abort.
         let raw = this_ref.private_data as *mut ExportedScalarKernel;
         this_ref.private_data = std::ptr::null_mut();
-        catch_panic_infallible(|| drop(unsafe { Box::from_raw(raw) }));
+        catch_panic_infallible("releasing kernel", || drop(unsafe { Box::from_raw(raw) }));
     }
     this_ref.function_name = None;
     this_ref.new_impl = None;
@@ -418,6 +466,7 @@ unsafe extern "C" fn c_kernel_init(
 ) -> c_int {
     debug_assert!(!this.is_null());
     let this_ref = unsafe { &mut *this };
+    debug_assert!(this_ref.release.is_some(), "init after release");
     let priv_ptr = this_ref.private_data as *mut ExportedScalarKernelImpl;
     debug_assert!(!priv_ptr.is_null());
     let priv_ref = unsafe { &mut *priv_ptr };
@@ -474,6 +523,7 @@ unsafe extern "C" fn c_kernel_execute(
 ) -> c_int {
     debug_assert!(!this.is_null());
     let this_ref = unsafe { &mut *this };
+    debug_assert!(this_ref.release.is_some(), "execute after release");
     let priv_ptr = this_ref.private_data as *mut ExportedScalarKernelImpl;
     debug_assert!(!priv_ptr.is_null());
     let priv_ref = unsafe { &mut *priv_ptr };
@@ -555,7 +605,9 @@ unsafe extern "C" fn c_kernel_release(this: *mut CometCScalarKernelImpl) {
         // Dropping may run user Drop code, which may panic; contain it.
         let raw = this_ref.private_data as *mut ExportedScalarKernelImpl;
         this_ref.private_data = std::ptr::null_mut();
-        catch_panic_infallible(|| drop(unsafe { Box::from_raw(raw) }));
+        catch_panic_infallible("releasing kernel impl", || {
+            drop(unsafe { Box::from_raw(raw) })
+        });
     }
     this_ref.init = None;
     this_ref.execute = None;
@@ -599,7 +651,7 @@ unsafe extern "C" fn c_list_release(list: *mut CometCScalarKernelList) {
     // forgotten in build_kernel_list; reconstruct and drop. Each kernel's
     // own Drop runs its `release` callback, which may reach user Drop code,
     // so contain any panic rather than abort.
-    catch_panic_infallible(|| {
+    catch_panic_infallible("releasing kernel list", || {
         drop(unsafe { Box::from_raw(std::ptr::slice_from_raw_parts_mut(kernels, len)) })
     });
 }

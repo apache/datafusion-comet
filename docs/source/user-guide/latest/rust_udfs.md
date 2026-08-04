@@ -26,10 +26,13 @@ This is different from [Scala UDF and Java UDF Support](scala_java_udfs.md), whe
 function stays on the JVM and Comet dispatches into it. Here the function is compiled Rust that
 operates directly on Arrow arrays.
 
-> **Experimental.** This feature and the ABI it depends on are experimental. The API, the ABI, and
-> the registration mechanism may change in any release, without the usual deprecation cycle, and a
-> UDF library built against one Comet version may need changes to work with the next. It is not yet
-> recommended for production use. See [Limitations](#limitations) before adopting it.
+> **Experimental.** This feature and the ABI it depends on are experimental. Neither
+> `comet-udf-sdk` nor `CometRustUDF` is part of Comet's supported API: they fall under
+> [everything else is internal](../../about/versioning_policy.md#everything-else-is-internal) in the
+> [versioning policy](../../about/versioning_policy.md), so they may change or be removed in any
+> release, including a patch release, with no deprecation cycle. Expect to rebuild your UDF library
+> against the SDK from each Comet release you upgrade to. It is not yet recommended for production
+> use. See [Limitations](#limitations) before adopting it.
 
 ## Writing a UDF
 
@@ -134,7 +137,17 @@ The function is then callable from SQL or the DataFrame API like any other:
 spark.range(0, 5).selectExpr("add_one(id) AS y").show()
 ```
 
-Set `deterministic = false` when the function is not a pure function of its arguments.
+Your function must be a pure function of its arguments. Comet plans every Rust UDF as immutable,
+which lets the optimizer fold a call over constants, evaluate it once and reuse the result, or drop
+a repeated call as a common subexpression. `register` therefore rejects `deterministic = false`
+rather than accept a function whose volatility it would go on to ignore.
+
+`libraryPath` is passed to the platform's dynamic loader. An absolute path is what you want in
+practice, and it is what the rest of this page assumes, but a bare library name resolves the same
+way it would for any other shared object, through `LD_LIBRARY_PATH` on Linux and
+`DYLD_LIBRARY_PATH` on macOS. That is a convenience, not a sandbox: Comet does not restrict which
+paths may be loaded, so it makes no difference to the trust decision described under
+[Limitations](#limitations).
 
 ## Return types
 
@@ -206,6 +219,10 @@ flow mechanism: prefer returning `Err`, which produces a much better message.
 This feature is at an early stage. The current limitations are:
 
 - **Scalar functions only.** Aggregate, window, and table functions are not supported.
+- **Immutable functions only.** A UDF must return the same output for the same input. Comet plans
+  every Rust UDF with DataFusion's `Volatility::Immutable`, so a function that reads a clock, draws
+  from an RNG, or carries state across batches may be folded at plan time, evaluated once and
+  reused, or eliminated as a common subexpression. `register` rejects `deterministic = false`.
 - **The library must already be present on every executor**, at the same absolute path given to
   `register`. Comet does not distribute it for you: stage it with your image, a mounted volume, or
   your cluster's own file distribution, and pass a path that is valid cluster-wide. A path that
