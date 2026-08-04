@@ -102,11 +102,9 @@ impl PhysicalExpr for ListEmptyToNullExpr {
             return Ok(ColumnarValue::Array(Arc::clone(&array)));
         }
 
-        let non_empty = BooleanBuffer::collect_bool(len, |i| offsets[i + 1] > offsets[i]);
-        let combined = match existing_nulls {
-            None => non_empty,
-            Some(existing) => existing.inner() & &non_empty,
-        };
+        let combined = BooleanBuffer::collect_bool(len, |i| {
+            offsets[i + 1] > offsets[i] && existing_nulls.is_none_or(|n| n.is_valid(i))
+        });
         let new_nulls = NullBuffer::new(combined);
 
         let DataType::List(element_field) = list.data_type() else {

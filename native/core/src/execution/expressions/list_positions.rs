@@ -111,9 +111,7 @@ impl PhysicalExpr for ListPositionsExpr {
         for window in offsets.windows(2) {
             let start = window[0];
             let end = window[1];
-            for i in 0..(end - start) {
-                values.push(i);
-            }
+            values.extend(0..(end - start));
         }
 
         let rebased_offsets = if base == 0 {

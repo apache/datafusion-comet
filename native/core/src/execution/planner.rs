@@ -1918,8 +1918,11 @@ impl PhysicalPlanner {
                 // whose list is empty. Spark's `explode_outer`/`posexplode_outer` must emit
                 // exactly one null row in both cases, so we mark empty rows as null before
                 // unnesting. See https://github.com/apache/datafusion/issues/19053. Once
-                // that upstream fix lands, `ListEmptyToNullExpr` and the pre-projection
-                // below can be removed (TODO: link the Comet tracking issue here).
+                // Comet moves to a DataFusion release carrying
+                // https://github.com/apache/datafusion/pull/22100, `ListEmptyToNullExpr`
+                // and the pre-projection below can be removed in favor of
+                // `NullHandling::PreserveAndExpandEmpty`. See
+                // https://github.com/apache/datafusion-comet/issues/5210.
                 //
                 // For `posexplode_outer` the wrapped array is materialized in a
                 // pre-projection so `ListPositionsExpr` and the array passthrough share
