@@ -706,7 +706,10 @@ case class CometExecRule(session: SparkSession)
     if (converted.isEmpty) {
       // Comet looked at this operator and declined it, so it stays in the Spark plan. Lift any
       // reasons recorded on its expressions onto the operator itself - see
-      // `rollUpFallbackReasons` for why this is needed - and make sure something was recorded.
+      // `rollUpFallbackReasons` for why this is needed - and then make sure something was
+      // recorded. The order is required, not incidental: `reportUnexplainedFallback` inspects only
+      // the operator's own tag, so a reason still sitting on an expression would look like no
+      // reason at all and trip the strict check.
       rollUpFallbackReasons(op)
       reportUnexplainedFallback(op)
     }
@@ -776,6 +779,8 @@ case class CometExecRule(session: SparkSession)
    * that actually failed conversion. That matters because some expression instances
    * (`AttributeReference`s, DPP subquery expressions) are shared across operators, so an unscoped
    * roll-up could surface one expression's reason under several unrelated operators.
+   *
+   * [[reportUnexplainedFallback]] relies on this having run first; the two must not be separated.
    */
   private def rollUpFallbackReasons(op: SparkPlan): Unit = {
     val reasons = op.expressions
@@ -797,8 +802,18 @@ case class CometExecRule(session: SparkSession)
    * own test suites) that is a hard failure; otherwise fall back to a generic message so users
    * still see something. The generic message is what used to mask this whole class of bug, which
    * is why the strict check exists.
+   *
+   * Must run *after* [[rollUpFallbackReasons]] for the same operator. The check reads only `op`'s
+   * own tag, because `hasFallbackReason` deliberately does not traverse expressions (it is a
+   * planning control signal, not explain output), so an expression-level reason that has not been
+   * lifted yet would be mistaken for no reason at all. [[convertToComet]] is the only production
+   * caller and keeps the two calls together.
+   *
+   * Package-visible so `CometExecRuleSuite` can drive the strict failure directly: no serde in
+   * the tree reaches this state, which is exactly what the check enforces, so the only way to
+   * test it is to construct the shape by hand.
    */
-  private def reportUnexplainedFallback(op: SparkPlan): Unit = {
+  private[comet] def reportUnexplainedFallback(op: SparkPlan): Unit = {
     if (op.children.forall(_.isInstanceOf[CometNativeExec]) && !hasFallbackReason(op)) {
       if (CometConf.COMET_STRICT_FALLBACK_REASONS.get(op.conf)) {
         throw new IllegalStateException(

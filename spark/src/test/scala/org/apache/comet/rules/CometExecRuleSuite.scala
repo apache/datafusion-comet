@@ -82,6 +82,8 @@ class CometExecRuleSuite extends CometTestBase {
     // invisible unless CometExecRule lifts it onto the enclosing operator. Disabling a single
     // expression makes the Project fall back with the reason living on the Multiply node.
     // See https://github.com/apache/datafusion-comet/issues/5230.
+    // This also pins the ordering inside `convertToComet`: strict mode is on in CometTestBase, so
+    // if the roll-up stopped running before the strict check, planning here would throw.
     withTempView("test_data") {
       createTestDataFrame.createOrReplaceTempView("test_data")
 
@@ -104,6 +106,44 @@ class CometExecRuleSuite extends CometTestBase {
         assert(
           !reasons.exists(_.contains("is not supported")),
           s"a real reason was available but the generic message was used too: $reasons")
+      }
+    }
+  }
+
+  test("strict mode fails an operator that Comet declined without recording a reason") {
+    // The bug this guards against is a serde returning None and forgetting to say why, which the
+    // generic "<operator> is not supported" message used to hide. No serde in the tree is in that
+    // state (the whole test corpus runs with strict mode on, which is what enforces it), so drive
+    // the check directly with the shape such a serde produces: a handled operator whose children
+    // are all native and which carries no reason on itself or its expressions.
+    withTempView("test_data") {
+      createTestDataFrame.createOrReplaceTempView("test_data")
+
+      val sparkPlan = createSparkPlan(spark, "SELECT id * 2 as doubled FROM test_data")
+      withSQLConf(CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+        val nativeChild = stripAQEPlan(applyCometExecRule(sparkPlan)).collectFirst {
+          case op: CometNativeExec => op
+        }.get
+        val rule = CometExecRule(spark)
+
+        // ProjectExec has a registered serde, so Comet did attempt this operator.
+        val strictOp = ProjectExec(nativeChild.output, nativeChild)
+        assert(CometExecRule.allExecs.contains(strictOp.getClass))
+        val e = intercept[IllegalStateException] {
+          rule.reportUnexplainedFallback(strictOp)
+        }
+        assert(e.getMessage.contains("recorded no fallback reason"))
+        assert(e.getMessage.contains(strictOp.nodeName))
+
+        // Production default: no throw, and the generic message so users still see something.
+        withSQLConf(CometConf.COMET_STRICT_FALLBACK_REASONS.key -> "false") {
+          val lenientOp = ProjectExec(nativeChild.output, nativeChild)
+          rule.reportUnexplainedFallback(lenientOp)
+          val reasons = lenientOp
+            .getTagValue(CometExplainInfo.FALLBACK_REASONS)
+            .getOrElse(Set.empty[String])
+          assert(reasons == Set(s"${lenientOp.nodeName} is not supported"))
+        }
       }
     }
   }
