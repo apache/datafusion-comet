@@ -561,7 +561,7 @@ under the License.
 <section id="explode-outer">
 <h2>explode_outer<a class="headerlink" href="#explode-outer" title="Link to this heading">#</a></h2>
 <ul class="simple">
-<li><p>Same <code class="docutils literal notranslate"><span class="pre">CometExplodeExec</span></code> path as <code class="docutils literal notranslate"><span class="pre">explode</span></code>, but the <code class="docutils literal notranslate"><span class="pre">outer=true</span></code> case is <code class="docutils literal notranslate"><span class="pre">Incompatible</span></code> (empty arrays are not preserved as null outputs) and falls back unless <code class="docutils literal notranslate"><span class="pre">spark.comet.operator.GenerateExec.allowIncompatible=true</span></code> (<a class="reference external" href="https://github.com/apache/datafusion/issues/19053">datafusion#19053</a>).</p></li>
+<li><p>Same <code class="docutils literal notranslate"><span class="pre">CometExplodeExec</span></code> path as <code class="docutils literal notranslate"><span class="pre">explode</span></code>. Compatible for array inputs; empty and NULL arrays both emit one null-valued row per Spark’s <code class="docutils literal notranslate"><span class="pre">outer</span></code> semantics via the <code class="docutils literal notranslate"><span class="pre">ListEmptyToNullExpr</span></code> planner bridge (works around <a class="reference external" href="https://github.com/apache/datafusion/issues/19053">datafusion#19053</a>). Map inputs fall back.</p></li>
 </ul>
 </section>
 <section id="posexplode">
@@ -573,7 +573,7 @@ under the License.
 <section id="posexplode-outer">
 <h2>posexplode_outer<a class="headerlink" href="#posexplode-outer" title="Link to this heading">#</a></h2>
 <ul class="simple">
-<li><p>Same <code class="docutils literal notranslate"><span class="pre">CometExplodeExec</span></code> path as <code class="docutils literal notranslate"><span class="pre">posexplode</span></code>, but the <code class="docutils literal notranslate"><span class="pre">outer=true</span></code> case is <code class="docutils literal notranslate"><span class="pre">Incompatible</span></code> and falls back unless <code class="docutils literal notranslate"><span class="pre">spark.comet.operator.GenerateExec.allowIncompatible=true</span></code> (<a class="reference external" href="https://github.com/apache/datafusion/issues/19053">datafusion#19053</a>).</p></li>
+<li><p>Same <code class="docutils literal notranslate"><span class="pre">CometExplodeExec</span></code> path as <code class="docutils literal notranslate"><span class="pre">posexplode</span></code>. Compatible for array inputs; empty and NULL arrays both emit one row with null <code class="docutils literal notranslate"><span class="pre">pos</span></code> and null <code class="docutils literal notranslate"><span class="pre">value</span></code> per Spark’s <code class="docutils literal notranslate"><span class="pre">outer</span></code> semantics via the <code class="docutils literal notranslate"><span class="pre">ListEmptyToNullExpr</span></code> planner bridge (works around <a class="reference external" href="https://github.com/apache/datafusion/issues/19053">datafusion#19053</a>).</p></li>
 </ul>
 </section>
 </section>
