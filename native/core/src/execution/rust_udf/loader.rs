@@ -262,7 +262,13 @@ mod tests {
     fn all_exported_kernels_are_discovered() {
         let lib = load(test_udfs_path()).expect("load");
         let names: Vec<_> = lib.udfs.iter().map(|u| u.name.as_str()).collect();
-        for expected in ["add_one_c", "panics_on_invoke", "panics_on_return_field"] {
+        for expected in [
+            "add_one_c",
+            "echo_c",
+            "stringify_c",
+            "panics_on_invoke",
+            "panics_on_return_field",
+        ] {
             assert!(names.contains(&expected), "missing {expected} in {names:?}");
         }
     }

@@ -20,7 +20,7 @@
 package org.apache.comet
 
 import org.apache.spark.sql.CometTestBase
-import org.apache.spark.sql.types.LongType
+import org.apache.spark.sql.types._
 
 import org.apache.comet.udf.CometRustUDF
 
@@ -83,5 +83,94 @@ class CometRustUdfSuite extends CometTestBase {
       .iterate(e)(_.getCause)
       .takeWhile(_ != null)
       .exists(t => Option(t.getMessage).exists(_.contains(needle)))
+  }
+
+  // ---------- type coverage ----------
+
+  /**
+   * One case per supported non-nested Spark type: the type itself, and a SQL expression producing
+   * a value of that type from the `id` column of `spark.range`.
+   *
+   * Complex types (array, struct, map) are not supported yet and are deliberately absent.
+   */
+  private val primitiveTypeCases: Seq[(DataType, String)] = Seq(
+    (BooleanType, "id % 2 = 0"),
+    (ByteType, "cast(id as byte)"),
+    (ShortType, "cast(id as short)"),
+    (IntegerType, "cast(id as int)"),
+    (LongType, "id"),
+    (FloatType, "cast(id as float) + 0.5f"),
+    (DoubleType, "cast(id as double) + 0.5"),
+    (StringType, "concat('s', cast(id as string))"),
+    (BinaryType, "cast(concat('b', cast(id as string)) as binary)"),
+    (DateType, "date_add(date'2024-01-01', cast(id as int))"),
+    (TimestampType, "cast(date_add(date'2024-01-01', cast(id as int)) as timestamp)"),
+    (TimestampNTZType, "cast(timestamp_ntz'2024-01-01 12:00:00' as timestamp_ntz)"),
+    // The outer cast pins the result to decimal(10,2): Spark widens the precision of the addition
+    // itself to decimal(11,2), which would not match the type registered below.
+    (DecimalType(10, 2), "cast(cast(id as decimal(10,2)) + 0.25 as decimal(10,2))"))
+
+  /**
+   * A 4-row frame with a single column `c` of the given type, where the last row is null so every
+   * case also covers null handling across the FFI boundary.
+   */
+  private def typedFrame(valueExpr: String) =
+    spark.range(0, 4).selectExpr(s"case when id = 3 then null else $valueExpr end as c")
+
+  /** Normalize for comparison: byte arrays do not compare by value as `Any`. */
+  private def normalize(v: Any): Any = v match {
+    case b: Array[Byte] => b.toSeq
+    case other => other
+  }
+
+  for ((dataType, valueExpr) <- primitiveTypeCases) {
+    test(s"echo_c round-trips ${dataType.simpleString} including nulls") {
+      CometRustUDF.register(spark, "echo_c", libPath, Seq(dataType), dataType)
+      val df = typedFrame(valueExpr)
+      val expected = df.collect().map(r => normalize(r.get(0))).toSeq
+      val actual = df.selectExpr("echo_c(c) AS y").collect().map(r => normalize(r.get(0))).toSeq
+      assert(actual == expected, s"round trip changed values for ${dataType.simpleString}")
+      assert(expected.last == null, "expected a null in the last row")
+    }
+
+    test(s"stringify_c reads ${dataType.simpleString} values") {
+      CometRustUDF.register(spark, "stringify_c", libPath, Seq(dataType), StringType)
+      val df = typedFrame(valueExpr)
+      val inputs = df.collect().map(r => normalize(r.get(0))).toSeq
+      val rendered = df.selectExpr("stringify_c(c) AS y").collect().map(r => r.get(0)).toSeq
+
+      assert(rendered.length == inputs.length)
+      // The UDF must decode each value, so a non-null input yields a non-empty rendering and a
+      // null input stays null. The exact text is arrow's formatting, not Spark's, so it is not
+      // asserted here.
+      inputs.zip(rendered).foreach { case (in, out) =>
+        if (in == null) {
+          assert(out == null, s"null input rendered as $out for ${dataType.simpleString}")
+        } else {
+          assert(out != null, s"non-null input $in rendered as null")
+          assert(
+            out.asInstanceOf[String].nonEmpty,
+            s"non-null input $in rendered empty for ${dataType.simpleString}")
+        }
+      }
+    }
+  }
+
+  test("a declared return type that disagrees with the UDF names both types") {
+    // echo_c returns its argument's type, so declaring a different return type is a mismatch.
+    CometRustUDF.register(spark, "echo_c", libPath, Seq(LongType), StringType)
+    val e = intercept[Exception] {
+      spark.range(0, 4).selectExpr("echo_c(id) AS y").collect()
+    }
+    assert(stackTraceContains(e, "was registered as returning"), s"unhelpful error: $e")
+    assert(stackTraceContains(e, "CometRustUDF.register"), s"error lacks guidance: $e")
+  }
+
+  test("echo_c rejects a call whose argument count it does not accept") {
+    CometRustUDF.register(spark, "echo_c", libPath, Seq(LongType), LongType)
+    // The catalog stub is arity-1, so a 2-arg call is rejected during analysis.
+    intercept[Exception] {
+      spark.range(0, 2).selectExpr("echo_c(id, id) AS y").collect()
+    }
   }
 }

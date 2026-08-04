@@ -17,8 +17,14 @@
 
 //! Test UDF cdylib for Comet's Rust UDF host tests.
 //!
-//! Exports `add_one_c`, an `(Int64) -> Int64` scalar function, through the
-//! Comet UDF C ABI.
+//! Exports, through the Comet UDF C ABI:
+//!
+//! - `add_one_c` — `(Int64) -> Int64`, the basic compute path
+//! - `echo_c` — identity over any type, used to check that each supported
+//!   Spark type survives the round trip through the ABI with its nulls
+//! - `stringify_c` — `(any) -> Utf8`, which forces the UDF to actually
+//!   decode the values rather than hand the array straight back
+//! - `panics_on_invoke` / `panics_on_return_field` — panic containment
 //!
 //! Note that this crate depends only on `arrow` and `comet-udf-sdk` — no
 //! DataFusion dependency — which is the point of the ABI.
@@ -27,8 +33,9 @@
 
 use std::sync::Arc;
 
-use arrow::array::{ArrayRef, Int64Array};
+use arrow::array::{Array, ArrayRef, Int64Array, StringArray};
 use arrow::datatypes::{DataType, Field};
+use arrow::util::display::{ArrayFormatter, FormatOptions};
 
 use comet_udf_sdk::c_abi::CometCScalarUdf;
 use comet_udf_sdk::comet_c_udf_export;
@@ -67,6 +74,71 @@ impl CometCScalarUdf for AddOneC {
             .ok_or_else(|| "expected Int64Array".to_string())?;
         let out: Int64Array = arr.iter().map(|v| v.map(|x| x + 1)).collect();
         Ok(Arc::new(out))
+    }
+}
+
+/// Identity over any input type: declares the argument's own type as the
+/// return type and hands the array back.
+///
+/// Used to check that every supported Spark type survives the trip out to
+/// the UDF and back through the Arrow C Data Interface, nulls included.
+#[derive(Default)]
+pub struct EchoC;
+
+impl CometCScalarUdf for EchoC {
+    fn name(&self) -> &str {
+        "echo_c"
+    }
+
+    fn return_field(&self, args: &[Field]) -> Result<Field, String> {
+        if args.len() != 1 {
+            return Err(format!("echo_c expects 1 arg, got {}", args.len()));
+        }
+        // Echo the argument's own type, so this works for every type
+        // including the parameterized ones (decimal, timestamp with tz).
+        Ok(Field::new("echo_c", args[0].data_type().clone(), true))
+    }
+
+    fn invoke(&self, args: &[ArrayRef], _n_rows: usize) -> Result<ArrayRef, String> {
+        Ok(Arc::clone(&args[0]))
+    }
+}
+
+/// Renders any input array as strings, one per row, preserving nulls.
+///
+/// Where `echo_c` only proves the array survives the round trip, this
+/// forces the UDF to decode each value, so it catches a type that arrives
+/// with the right `DataType` but an unreadable layout.
+#[derive(Default)]
+pub struct StringifyC;
+
+impl CometCScalarUdf for StringifyC {
+    fn name(&self) -> &str {
+        "stringify_c"
+    }
+
+    fn return_field(&self, args: &[Field]) -> Result<Field, String> {
+        if args.len() != 1 {
+            return Err(format!("stringify_c expects 1 arg, got {}", args.len()));
+        }
+        Ok(Field::new("stringify_c", DataType::Utf8, true))
+    }
+
+    fn invoke(&self, args: &[ArrayRef], _n_rows: usize) -> Result<ArrayRef, String> {
+        let array = &args[0];
+        let options = FormatOptions::default().with_null("__NULL__");
+        let formatter = ArrayFormatter::try_new(array.as_ref(), &options)
+            .map_err(|e| format!("stringify_c cannot format {}: {e}", array.data_type()))?;
+        let values: StringArray = (0..array.len())
+            .map(|i| {
+                if array.is_null(i) {
+                    None
+                } else {
+                    Some(formatter.value(i).to_string())
+                }
+            })
+            .collect();
+        Ok(Arc::new(values))
     }
 }
 
@@ -109,4 +181,10 @@ impl CometCScalarUdf for PanicsOnReturnField {
     }
 }
 
-comet_c_udf_export!(AddOneC, PanicsOnInvoke, PanicsOnReturnField);
+comet_c_udf_export!(
+    AddOneC,
+    EchoC,
+    StringifyC,
+    PanicsOnInvoke,
+    PanicsOnReturnField
+);

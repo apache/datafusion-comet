@@ -136,8 +136,37 @@ spark.range(0, 5).selectExpr("add_one(id) AS y").show()
 
 The declared `inputTypes` and `returnType` must match what the Rust `return_field` accepts and
 returns. They are what Spark uses for analysis and planning; the Rust side is what actually runs.
+If the two disagree, the query fails with an error naming both types.
+
+Watch for Spark's own type promotion here: `cast(id as decimal(10,2)) + 0.25` has type
+`decimal(11,2)`, not `decimal(10,2)`, so registering the latter is a mismatch.
 
 Set `deterministic = false` when the function is not a pure function of its arguments.
+
+## Supported types
+
+Arguments and return values may be any of:
+
+| Spark type          | Arrow type               |
+| ------------------- | ------------------------ |
+| `BooleanType`       | `Boolean`                |
+| `ByteType`          | `Int8`                   |
+| `ShortType`         | `Int16`                  |
+| `IntegerType`       | `Int32`                  |
+| `LongType`          | `Int64`                  |
+| `FloatType`         | `Float32`                |
+| `DoubleType`        | `Float64`                |
+| `DecimalType(p, s)` | `Decimal128(p, s)`       |
+| `StringType`        | `Utf8`                   |
+| `BinaryType`        | `Binary`                 |
+| `DateType`          | `Date32`                 |
+| `TimestampType`     | `Timestamp(Microsecond)` |
+| `TimestampNTZType`  | `Timestamp(Microsecond)` |
+
+Nulls are preserved in both directions; a null input row arrives as a null slot in the Arrow array
+and your output nulls come back to Spark as nulls.
+
+Complex types (`ArrayType`, `StructType`, `MapType`) are not supported yet.
 
 ## Error handling
 
@@ -153,6 +182,8 @@ flow mechanism: prefer returning `Err`, which produces a much better message.
 This feature is at an early stage. The current limitations are:
 
 - **Scalar functions only.** Aggregate, window, and table functions are not supported.
+- **Non-nested types only.** See [Supported types](#supported-types); complex types are future
+  work.
 - **The library must already be present on every executor**, at the same absolute path given to
   `register`. Comet does not distribute it for you: stage it with your image, a mounted volume, or
   your cluster's own file distribution, and pass a path that is valid cluster-wide. A path that

@@ -922,6 +922,25 @@ impl PhysicalPlanner {
                         .as_ref()
                         .ok_or_else(|| GeneralError("RustUdfCall missing return_type".into()))?,
                 );
+
+                // The declared return type comes from the JVM-side `CometRustUDF.register` call
+                // and is what Spark planned against; the kernel's own `return_field` is what will
+                // actually be produced. If they disagree, fail here with both types named rather
+                // than letting it surface later as a bare type assertion mid-execution.
+                let arg_types = arg_exprs
+                    .iter()
+                    .map(|e| e.data_type(input_schema.as_ref()))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let kernel_return_type = loaded.udf_impl.return_type(&arg_types)?;
+                if kernel_return_type != return_type {
+                    return Err(GeneralError(format!(
+                        "Rust UDF '{}' was registered as returning {return_type} but its \
+                         return_field reports {kernel_return_type} for argument types {arg_types:?}. \
+                         Make the type passed to CometRustUDF.register match what the UDF returns.",
+                        call.name
+                    )));
+                }
+
                 let return_field = Arc::new(Field::new(&call.name, return_type, true));
                 let expr = Arc::new(ScalarFunctionExpr::new(
                     &call.name,
