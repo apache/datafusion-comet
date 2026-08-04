@@ -93,7 +93,7 @@ class CometDecimalPromotionSuite extends CometTestBase {
   }
 
   test("decimal Divide with a non-decimal operand is unsupported") {
-    // This is just a sanity check. Spark should not allow this case to be created cause type coercion
+    // This is only a sanity check; Spark's type coercion should prevent this case.
     val decimal = AttributeReference("decimal", DecimalType(10, 0))()
     val integer = AttributeReference("integer", IntegerType)()
     val divide = Divide(decimal, integer, EvalMode.LEGACY)
