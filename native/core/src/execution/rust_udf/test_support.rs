@@ -17,6 +17,11 @@
 
 //! Test helpers shared across the rust_udf submodules.
 
+/// `comet-test-udfs` is `crate-type = ["cdylib"]` and has no test targets, so a
+/// test build compiles it without emitting the shared library these tests
+/// dlopen. Name the fix in the failure rather than leaving a bare dlopen error.
+pub(crate) const BUILD_HINT: &str = "run `cargo build -p comet-test-udfs` first";
+
 /// Path to the `comet-test-udfs` cdylib, baked in at build time by
 /// `core/build.rs`.
 pub(crate) fn test_udfs_path() -> std::path::PathBuf {

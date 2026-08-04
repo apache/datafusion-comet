@@ -247,11 +247,11 @@ fn read_c_kernels(lib: &Library, path: &Path) -> Result<Option<Vec<LoadedUdf>>, 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::execution::rust_udf::test_support::test_udfs_path;
+    use crate::execution::rust_udf::test_support::{test_udfs_path, BUILD_HINT};
 
     #[test]
     fn load_test_udfs_succeeds() {
-        let lib = load(test_udfs_path()).expect("load");
+        let lib = load(test_udfs_path()).expect(BUILD_HINT);
         let names: Vec<_> = lib.udfs.iter().map(|u| u.name.as_str()).collect();
         assert!(names.contains(&"add_one_c"), "names: {names:?}");
     }
@@ -265,7 +265,7 @@ mod tests {
     /// A library exporting several kernels surfaces all of them.
     #[test]
     fn all_exported_kernels_are_discovered() {
-        let lib = load(test_udfs_path()).expect("load");
+        let lib = load(test_udfs_path()).expect(BUILD_HINT);
         let names: Vec<_> = lib.udfs.iter().map(|u| u.name.as_str()).collect();
         for expected in [
             "add_one_c",

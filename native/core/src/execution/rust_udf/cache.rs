@@ -69,13 +69,13 @@ pub fn get_or_load(path: impl AsRef<Path>) -> Result<Arc<LoadedLibrary>, LoaderE
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::execution::rust_udf::test_support::test_udfs_path;
+    use crate::execution::rust_udf::test_support::{test_udfs_path, BUILD_HINT};
 
     #[test]
     fn same_path_returns_same_arc() {
         let p = test_udfs_path();
-        let a = get_or_load(&p).unwrap();
-        let b = get_or_load(&p).unwrap();
+        let a = get_or_load(&p).expect(BUILD_HINT);
+        let b = get_or_load(&p).expect(BUILD_HINT);
         assert!(Arc::ptr_eq(&a, &b));
     }
 
