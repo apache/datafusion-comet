@@ -494,13 +494,7 @@ SELECT id, explode(array(x, y, z)) AS v FROM test_explode_array_ctor
 query
 SELECT id, explode_outer(array(x, y, z)) AS v FROM test_explode_array_ctor
 
--- ===== Non-deterministic generator child. Spark's
--- `RewriteGeneratorNondeterministicExpressions` rewrites `explode(array(rand(0)))`
--- into a preceding Project that computes the array, then `explode` sees a
--- deterministic column reference. Comet's `CometExplodeExec.getSupportLevel`
--- guard (`if (!op.generator.deterministic)`) still fires because
--- `Expression.deterministic` walks children, so Comet falls back for the
--- physical Generate node regardless.
-
+-- Spark 3.5+ supports non determenistic functions in generators
+-- https://github.com/apache/datafusion-comet/issues/5238
 query expect_fallback(Only deterministic generators are supported)
 SELECT id, explode(array(rand(0))) FROM (SELECT 1 id) WHERE id = 1
