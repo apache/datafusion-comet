@@ -21,6 +21,7 @@ package org.apache.comet.serde
 
 import java.util.concurrent.atomic.AtomicLong
 
+import scala.collection.mutable
 import scala.collection.mutable.ArrayBuffer
 import scala.jdk.CollectionConverters._
 
@@ -35,8 +36,9 @@ import org.apache.spark.sql.execution.datasources.parquet.ParquetUtils
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
-import org.apache.comet.{CometConf, CometExplainInfo}
-import org.apache.comet.CometSparkSessionExtensions.{withFallbackReason, withFallbackReasons, withInfo}
+import org.apache.comet.CometConf
+import org.apache.comet.CometExplainInfo
+import org.apache.comet.CometSparkSessionExtensions.{appendTagValues, withFallbackReason, withFallbackReasons, withInfo, withNativeExpr}
 import org.apache.comet.expressions._
 import org.apache.comet.parquet.CometParquetUtils
 import org.apache.comet.serde.ExprOuterClass.{AggExpr, Expr, ScalarFunc}
@@ -729,6 +731,9 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
 
     // Attach QueryContext and expr_id to the aggregate expression
     protoAggExprOpt.flatMap { protoAggExpr =>
+      // Aggregate functions never route through the JVM codegen dispatcher, so reaching here
+      // always means a native lowering. Recorded for the coverage stats in extended explain.
+      withNativeExpr(fn, CometExplainInfo.exprDisplayName(fn))
       val builder = protoAggExpr.toBuilder
       builder.setExprId(nextExprId())
 
@@ -783,22 +788,49 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
 
     val newExpr = DecimalPrecision.promote(expr)
     val result = exprToProtoInternal(newExpr, inputs, binding)
-    if (result.isEmpty && !newExpr.eq(expr)) {
-      // `promote` rewrites decimal arithmetic, and `transformUp` rebuilds every node on the path
-      // to a rewritten one. Any fallback reason recorded while converting therefore landed on a
-      // copy that is not in the plan, where neither explain nor
-      // `CometExecRule.rollUpFallbackReasons` can see it. Lift the reasons onto the original node.
-      // Same copy-back the `Invoke` / `StaticInvoke` rewrites in `Spark4xCometExprShim` do.
-      val reasons = newExpr
-        .collect { case e: Expression => e }
-        .flatMap(_.getTagValue(CometExplainInfo.FALLBACK_REASONS))
-        .flatten
-        .toSet
-      if (reasons.nonEmpty) {
-        withFallbackReasons(expr, reasons)
+    if (!(newExpr eq expr)) {
+      // `promote` rebuilt the tree, so the tags landed on copies that the operator does not hold.
+      // Lift them onto `expr` so the roll-ups in `CometExecRule`, which walk the operator's own
+      // expressions, still see them. Skipped in the common case where `promote` returned the same
+      // tree and there is nothing to lift.
+      liftCoverageTags(newExpr, expr)
+      if (result.isEmpty) {
+        liftFallbackReasons(newExpr, expr)
       }
     }
     result
+  }
+
+  private def liftCoverageTags(from: Expression, to: Expression): Unit = {
+    val native = mutable.Set.empty[String]
+    val dispatched = mutable.Set.empty[String]
+    from.foreach { e =>
+      e.getTagValue(CometExplainInfo.NATIVE_EXPRS).foreach(native ++= _)
+      e.getTagValue(CometExplainInfo.CODEGEN_DISPATCH_EXPRS).foreach(dispatched ++= _)
+    }
+    appendTagValues(to, CometExplainInfo.NATIVE_EXPRS, native.toSet)
+    appendTagValues(to, CometExplainInfo.CODEGEN_DISPATCH_EXPRS, dispatched.toSet)
+  }
+
+  /**
+   * Lift fallback reasons recorded anywhere in the rewritten tree onto the original node, so that
+   * `CometExecRule.rollUpFallbackReasons` and extended explain can see them. Without this the
+   * reason is attached to a copy that is not in the plan and is lost entirely - see
+   * https://github.com/apache/datafusion-comet/issues/5230. Same copy-back that the `Invoke` /
+   * `StaticInvoke` rewrites in `Spark4xCometExprShim` do.
+   *
+   * Only called when conversion failed: a fallback reason states why an expression could not be
+   * converted, so lifting one off a tree that converted fine would attribute a stale reason to an
+   * operator that has no problem.
+   */
+  private def liftFallbackReasons(from: Expression, to: Expression): Unit = {
+    val reasons = mutable.Set.empty[String]
+    from.foreach { e =>
+      e.getTagValue(CometExplainInfo.FALLBACK_REASONS).foreach(reasons ++= _)
+    }
+    if (reasons.nonEmpty) {
+      withFallbackReasons(to, reasons.toSet)
+    }
   }
 
   /**
@@ -910,6 +942,14 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
           }
       })
       .map { protoExpr =>
+        // Record that this expression stayed in the native pipeline, for the expression coverage
+        // stats in extended explain. `CometScalaUDF.emitJvmCodegenDispatch` marks the expressions
+        // it converted, so anything reaching here without that marker was lowered to a native
+        // DataFusion expression.
+        if (!isStructuralExpr(expr) &&
+          expr.getTagValue(CometExplainInfo.DISPATCHED_SELF).isEmpty) {
+          withNativeExpr(expr, CometExplainInfo.exprDisplayName(expr))
+        }
         // Attach QueryContext and expr_id to the expression
         val builder = protoExpr.toBuilder
         builder.setExprId(nextExprId())
@@ -918,6 +958,16 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
         }
         builder.build()
       }
+  }
+
+  /**
+   * Nodes that carry no computation of their own. They are excluded from the expression coverage
+   * stats in extended explain because they appear in nearly every expression tree and would swamp
+   * the names a user actually cares about.
+   */
+  private def isStructuralExpr(expr: Expression): Boolean = expr match {
+    case _: Attribute | _: BoundReference | _: Literal | _: Alias => true
+    case _ => false
   }
 
   /**
