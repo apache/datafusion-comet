@@ -26,7 +26,7 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.network.util.ByteUnit
 import org.apache.spark.sql.{SparkSession, SparkSessionExtensions}
 import org.apache.spark.sql.catalyst.rules.Rule
-import org.apache.spark.sql.catalyst.trees.TreeNode
+import org.apache.spark.sql.catalyst.trees.{TreeNode, TreeNodeTag}
 import org.apache.spark.sql.comet._
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.internal.SQLConf
@@ -132,12 +132,12 @@ object CometSparkSessionExtensions extends Logging {
       return false
     }
 
-    if (COMET_EXEC_SHUFFLE_ENABLED.get(conf) && !isCometShuffleManagerEnabled(conf)) {
+    if (COMET_SHUFFLE_ENABLED.get(conf) && !isCometShuffleManagerEnabled(conf)) {
       logWarning(
         "Comet extension is disabled because spark.shuffle.manager is not set to " +
           "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager. " +
           "Comet provides limited benefit without its shuffle manager. " +
-          s"Set ${COMET_EXEC_SHUFFLE_ENABLED.key}=false to keep Comet enabled with " +
+          s"Set ${COMET_SHUFFLE_ENABLED.key}=false to keep Comet enabled with " +
           "Spark's default shuffle manager.")
       return false
     }
@@ -172,11 +172,11 @@ object CometSparkSessionExtensions extends Logging {
   }
 
   // Check whether Comet shuffle is enabled:
-  // 1. `COMET_EXEC_SHUFFLE_ENABLED` is true
+  // 1. `COMET_SHUFFLE_ENABLED` is true
   // 2. `spark.shuffle.manager` is set to `CometShuffleManager`
   // 3. Off-heap memory is enabled || Spark/Comet unit testing
   def isCometShuffleEnabled(conf: SQLConf): Boolean =
-    COMET_EXEC_SHUFFLE_ENABLED.get(conf) && isCometShuffleManagerEnabled(conf)
+    COMET_SHUFFLE_ENABLED.get(conf) && isCometShuffleManagerEnabled(conf)
 
   def isCometShuffleManagerEnabled(conf: SQLConf): Boolean = {
     conf.contains("spark.shuffle.manager") && conf.getConfString("spark.shuffle.manager") ==
@@ -210,7 +210,7 @@ object CometSparkSessionExtensions extends Logging {
    */
   def shouldOverrideMemoryConf(conf: SparkConf): Boolean = {
     val cometEnabled = getBooleanConf(conf, CometConf.COMET_ENABLED)
-    val cometShuffleEnabled = getBooleanConf(conf, CometConf.COMET_EXEC_SHUFFLE_ENABLED)
+    val cometShuffleEnabled = getBooleanConf(conf, CometConf.COMET_SHUFFLE_ENABLED)
     val cometExecEnabled = getBooleanConf(conf, CometConf.COMET_EXEC_ENABLED)
     val offHeapMode = CometSparkSessionExtensions.isOffHeapEnabled(conf)
     cometEnabled && (cometShuffleEnabled || cometExecEnabled) && !offHeapMode
@@ -253,7 +253,7 @@ object CometSparkSessionExtensions extends Logging {
 
     val cometMemoryOverhead = getCometMemoryOverheadInMiB(sparkConf)
 
-    val overheadFactor = COMET_ONHEAP_SHUFFLE_MEMORY_FACTOR.get(conf)
+    val overheadFactor = COMET_SHUFFLE_JVM_MEMORY_FACTOR.get(conf)
 
     val shuffleMemorySize = (overheadFactor * cometMemoryOverhead).toLong
     if (shuffleMemorySize > cometMemoryOverhead) {
@@ -273,9 +273,9 @@ object CometSparkSessionExtensions extends Logging {
   /**
    * Record a fallback reason on a `TreeNode` (a Spark operator or expression) explaining why
    * Comet cannot accelerate it. Reasons recorded here are surfaced in extended explain output
-   * (see `ExtendedExplainInfo`) and, when `COMET_LOG_FALLBACK_REASONS` is enabled, logged as
-   * warnings. The reasons are also rolled up from child nodes so that the operator that remains
-   * in the Spark plan carries the reasons from its converted-away subtree.
+   * (see `ExtendedExplainInfo`) and, when `COMET_EXPLAIN_FALLBACK_LOG_ENABLED` is enabled, logged
+   * as warnings. The reasons are also rolled up from child nodes so that the operator that
+   * remains in the Spark plan carries the reasons from its converted-away subtree.
    *
    * Call this in any code path where Comet decides not to convert a given node - serde `convert`
    * methods returning `None`, unsupported data types, disabled configs, etc. Do not use this for
@@ -311,8 +311,8 @@ object CometSparkSessionExtensions extends Logging {
    * contract.
    *
    * Reasons are accumulated (never overwritten) on the node's `FALLBACK_REASONS` tag and are
-   * surfaced in extended explain output. When `COMET_LOG_FALLBACK_REASONS` is enabled, each new
-   * reason is also emitted as a warning.
+   * surfaced in extended explain output. When `COMET_EXPLAIN_FALLBACK_LOG_ENABLED` is enabled,
+   * each new reason is also emitted as a warning.
    *
    * @param node
    *   The Spark operator or expression that is falling back to Spark.
@@ -327,7 +327,7 @@ object CometSparkSessionExtensions extends Logging {
    *   `node` with fallback reasons attached (as a side effect on its tag map).
    */
   def withFallbackReasons[T <: TreeNode[_]](node: T, info: Set[String], exprs: T*): T = {
-    if (CometConf.COMET_LOG_FALLBACK_REASONS.get()) {
+    if (CometConf.COMET_EXPLAIN_FALLBACK_LOG_ENABLED.get()) {
       for (reason <- info) {
         logWarning(s"Comet cannot accelerate ${node.getClass.getSimpleName} because: $reason")
       }
@@ -375,12 +375,7 @@ object CometSparkSessionExtensions extends Logging {
    * implementation gated behind a config.
    */
   def withInfo[T <: TreeNode[_]](node: T, message: String): T = {
-    if (message != null && message.nonEmpty) {
-      val existing =
-        node.getTagValue(CometExplainInfo.EXTENSION_INFO).getOrElse(Set.empty[String])
-      node.setTagValue(CometExplainInfo.EXTENSION_INFO, existing + message)
-    }
-    node
+    appendTagValue(node, CometExplainInfo.EXTENSION_INFO, message)
   }
 
   /**
@@ -389,11 +384,41 @@ object CometSparkSessionExtensions extends Logging {
    * and emits one combined `[COMET-INFO: ...]` segment.
    */
   def withCodegenDispatchExpr[T <: TreeNode[_]](node: T, name: String): T = {
-    if (name != null && name.nonEmpty) {
-      val existing = node
-        .getTagValue(CometExplainInfo.CODEGEN_DISPATCH_EXPRS)
-        .getOrElse(Set.empty[String])
-      node.setTagValue(CometExplainInfo.CODEGEN_DISPATCH_EXPRS, existing + name)
+    appendTagValue(node, CometExplainInfo.CODEGEN_DISPATCH_EXPRS, name)
+  }
+
+  /**
+   * Record that `node` (typically an `Expression`) was lowered to a native DataFusion expression.
+   * The native counterpart of [[withCodegenDispatchExpr]]: `CometExecRule.rollUpInfoMessages`
+   * collects the names across an operator's expression trees onto the converted Comet plan node,
+   * where extended explain reads them for expression coverage stats.
+   */
+  def withNativeExpr[T <: TreeNode[_]](node: T, name: String): T = {
+    appendTagValue(node, CometExplainInfo.NATIVE_EXPRS, name)
+  }
+
+  /**
+   * Add `value` to a `Set`-valued `TreeNodeTag`, accumulating rather than overwriting. Null and
+   * empty values are dropped so callers do not have to guard. Shared by [[withInfo]] and the
+   * expression coverage tags.
+   */
+  private def appendTagValue[T <: TreeNode[_]](
+      node: T,
+      tag: TreeNodeTag[Set[String]],
+      value: String): T = {
+    if (value != null && value.nonEmpty) {
+      appendTagValues(node, tag, Set(value))
+    }
+    node
+  }
+
+  /** Bulk form of [[appendTagValue]], for lifting a whole name set onto another node. */
+  private[comet] def appendTagValues[T <: TreeNode[_]](
+      node: T,
+      tag: TreeNodeTag[Set[String]],
+      values: Set[String]): T = {
+    if (values.nonEmpty) {
+      node.setTagValue(tag, node.getTagValue(tag).getOrElse(Set.empty[String]) ++ values)
     }
     node
   }

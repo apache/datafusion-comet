@@ -73,4 +73,4 @@ RUN make release-nogit
 
 # The entrypoint copies the built JAR to /output (bind-mounted from host).
 RUN mkdir -p /output
-CMD ["sh", "-c", "cp spark/target/comet-spark-spark3.5_2.12-*-SNAPSHOT.jar /output/ && echo 'Comet JAR copied to /output/' && ls -lh /output/*.jar"]
+CMD ["sh", "-c", "cp spark/target/comet-spark-spark3.5_2.12-*.jar /output/ && echo 'Comet JAR copied to /output/' && ls -lh /output/*.jar"]

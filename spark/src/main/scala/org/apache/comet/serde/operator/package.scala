@@ -29,7 +29,7 @@ import org.apache.comet.serde.QueryPlanSerde.{exprToProto, serializeDataType}
 
 package object operator {
 
-  def schema2Proto(fields: Array[StructField]): Array[OperatorOuterClass.SparkStructField] = {
+  def schema2Proto(fields: Seq[StructField]): Seq[OperatorOuterClass.SparkStructField] = {
     val fieldBuilder = OperatorOuterClass.SparkStructField.newBuilder()
     fields.map { field =>
       fieldBuilder.setName(field.name)
