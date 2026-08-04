@@ -68,7 +68,7 @@ object CometArrowConverters extends Logging {
         val root = VectorSchemaRoot.create(arrowSchema, allocator)
         // Same ownership rule as columnarBatchToArrowBatch: the caller only owns the batch that
         // rootAsBatch returns, so a throw from writing a row has to release the root here.
-        try {
+        closingRootOnFailure(root) {
           val writer = ArrowWriter.create(root)
           var rowCount = 0L
           while (rowIter.hasNext &&
@@ -78,10 +78,6 @@ object CometArrowConverters extends Logging {
           }
           writer.finish()
           NativeUtil.rootAsBatch(root)
-        } catch {
-          case NonFatal(e) =>
-            root.close()
-            throw e
         }
       }
     }
@@ -133,12 +129,32 @@ object CometArrowConverters extends Logging {
     val root = VectorSchemaRoot.create(arrowSchema, allocator)
     // The caller only owns the returned batch, so anything that throws before `rootAsBatch` wraps
     // the root has to release it here or the allocation leaks.
-    try {
+    closingRootOnFailure(root) {
       writeColumns(root, batch, 0, batch.numRows())
       NativeUtil.rootAsBatch(root)
+    }
+  }
+
+  /**
+   * Run `body`, closing `root` if it throws. On success the returned batch takes ownership of
+   * `root`, so it is deliberately left open.
+   *
+   * A failing `close` is attached as a suppressed exception rather than replacing the original,
+   * following `SparkErrorUtils.tryWithSafeFinally`: releasing an Arrow root can itself throw
+   * (e.g. `IllegalStateException` for outstanding child allocations), and that is the less
+   * informative of the two failures.
+   */
+  private def closingRootOnFailure(root: VectorSchemaRoot)(
+      body: => ColumnarBatch): ColumnarBatch = {
+    try {
+      body
     } catch {
       case NonFatal(e) =>
-        root.close()
+        try {
+          root.close()
+        } catch {
+          case NonFatal(closeError) => e.addSuppressed(closeError)
+        }
         throw e
     }
   }
