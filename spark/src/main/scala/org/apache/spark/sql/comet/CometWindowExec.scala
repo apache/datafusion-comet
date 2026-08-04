@@ -196,6 +196,16 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
 
     val aggregateExpressions: Array[AggregateExpression] = windowExpr.flatMap { expr =>
       expr match {
+        // Spark 4.2 allows FILTER (WHERE ...) on a window aggregate. DataFusion window
+        // expressions have no filter, and the aggregate proto's filter field is only honored by
+        // the native aggregate operator, so serializing this window expression would silently
+        // evaluate the aggregate over every row of the frame and produce wrong results.
+        case agg: AggregateExpression if agg.filter.isDefined =>
+          withFallbackReason(
+            windowExpr,
+            "window aggregate with a FILTER (WHERE ...) clause is not supported",
+            expr)
+          None
         case agg: AggregateExpression =>
           agg.aggregateFunction match {
             case _: Count =>

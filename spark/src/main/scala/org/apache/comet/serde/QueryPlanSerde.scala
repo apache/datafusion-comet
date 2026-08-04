@@ -741,8 +741,19 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       builder.setExprId(nextExprId())
 
       // Serialize FILTER (WHERE ...) clause if present.
-      // The filter is only meaningful in Partial mode; Final/PartialMerge never set it.
-      if (aggExpr.filter.isDefined && aggExpr.mode == Partial) {
+      // Spark only attaches the filter to Partial mode aggregates in an aggregate operator;
+      // Final/PartialMerge never set it. Only the native aggregate operator honors the filter, so
+      // decline any other mode carrying one rather than silently evaluating the aggregate over
+      // the unfiltered input (window aggregates, which are Complete mode, are declined earlier in
+      // CometWindowExec).
+      if (aggExpr.filter.isDefined) {
+        if (aggExpr.mode != Partial) {
+          withFallbackReason(
+            aggExpr,
+            s"FILTER (WHERE ...) is not supported for aggregate mode ${aggExpr.mode}",
+            aggExpr.filter.get)
+          return None
+        }
         val filterProto = exprToProto(aggExpr.filter.get, inputs, binding)
         if (filterProto.isEmpty) {
           withFallbackReason(aggExpr, aggExpr.filter.get)
