@@ -19,12 +19,15 @@
 
 package org.apache.comet.iceberg
 
+import java.lang.reflect.Modifier
 import java.util.Collections
 
 import org.scalatest.funsuite.AnyFunSuite
 
 import org.apache.iceberg.BaseMetastoreTableOperations
 import org.apache.iceberg.BaseTable
+import org.apache.iceberg.DataFiles
+import org.apache.iceberg.PartitionSpec
 import org.apache.iceberg.Schema
 import org.apache.iceberg.TableMetadata
 import org.apache.iceberg.io.FileIO
@@ -44,7 +47,7 @@ class IcebergReflectionSuite extends AnyFunSuite {
     val schema = new Schema(Types.NestedField.required(1, "id", Types.IntegerType.get()))
     val expectedMetadata = TableMetadata.newTableMetadata(
       schema,
-      org.apache.iceberg.PartitionSpec.unpartitioned(),
+      PartitionSpec.unpartitioned(),
       "file:///tmp/test-table",
       Collections.emptyMap[String, String]())
     val metadataField = classOf[BaseMetastoreTableOperations]
@@ -127,12 +130,24 @@ class IcebergReflectionSuite extends AnyFunSuite {
   }
 
   test("a resolved method has access checks suppressed") {
-    // Iceberg's bound terms and file impls are instances of package-private classes, so the
-    // accessors Comet resolves on them have to be accessible before they can be invoked.
-    val method = IcebergReflection.findMethod(classOf[HiddenTransform], "transform")
+    // Iceberg's concrete file impls are package-private (a built DataFile is a GenericDataFile,
+    // and its accessors are declared on the equally package-private BaseFile), so an accessor
+    // resolved on one is not invocable from Comet's package until setAccessible has run. The
+    // modifier assertions keep the test from going vacuous if Iceberg ever makes them public.
+    val file = DataFiles
+      .builder(PartitionSpec.unpartitioned())
+      .withPath("/tmp/data/f.parquet")
+      .withFileSizeInBytes(10)
+      .withRecordCount(1)
+      .withFormat("PARQUET")
+      .build()
+    assert(!Modifier.isPublic(file.getClass.getModifiers))
+
+    val method = IcebergReflection.findMethod(file.getClass, "path")
     assert(method.isDefined)
-    assert(method.get.isAccessible)
-    assert(method.get.invoke(new HiddenTransform).toString == "identity")
+    assert(!Modifier.isPublic(method.get.getDeclaringClass.getModifiers))
+    // Without makeAccessible this invoke throws IllegalAccessException.
+    assert(method.get.invoke(file).toString == "/tmp/data/f.parquet")
   }
 
   /** Mimics a newer Iceberg ContentFile, which exposes location(). */
@@ -143,10 +158,5 @@ class IcebergReflectionSuite extends AnyFunSuite {
   /** Mimics Iceberg before 1.7, where ContentFile only exposed path(): CharSequence. */
   class PathOnlyFile(p: String) {
     def path(): CharSequence = p
-  }
-
-  /** Mimics an Iceberg bound term carrying a transform(). */
-  class HiddenTransform {
-    def transform(): String = "identity"
   }
 }
