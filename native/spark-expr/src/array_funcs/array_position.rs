@@ -33,7 +33,7 @@ use num::Float;
 use std::cmp::Ordering;
 use std::sync::Arc;
 
-use super::nested_float_normalize::normalize_negative_zero;
+use super::nested_float_normalize::{has_float_leaf, normalize_nested_floats};
 
 /// Spark array_position() function that returns the 1-based position of an element in an array.
 /// Returns 0 if the element is not found (Spark behavior differs from DataFusion which returns null).
@@ -275,11 +275,13 @@ fn position_fallback<O: OffsetSizeTrait>(
     let num_rows = list_array.len();
     let nulls = combined_nulls(list_array.nulls(), element.nulls());
     let mut result = vec![0i64; num_rows];
-    let values_normalized = normalize_negative_zero(values);
-    let element_normalized = normalize_negative_zero(element);
+    let values_normalized =
+        has_float_leaf(values.data_type()).then(|| normalize_nested_floats(values));
+    let element_normalized =
+        has_float_leaf(element.data_type()).then(|| normalize_nested_floats(element));
     let comparator = make_comparator(
-        values_normalized.as_ref(),
-        element_normalized.as_ref(),
+        values_normalized.as_ref().unwrap_or(values).as_ref(),
+        element_normalized.as_ref().unwrap_or(element).as_ref(),
         SortOptions::default(),
     )?;
 
