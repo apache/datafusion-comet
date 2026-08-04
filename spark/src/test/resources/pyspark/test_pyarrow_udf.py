@@ -20,9 +20,9 @@
 Pytest-driven integration tests for Comet's PyArrow UDF acceleration.
 
 Each test runs against two execution paths:
-  - "accelerated": spark.comet.exec.pyarrowUdf.enabled=true
+  - "accelerated": spark.comet.exec.pyarrowUDF.enabled=true
                    (plan should contain CometMapInBatch and no ColumnarToRow)
-  - "fallback":    spark.comet.exec.pyarrowUdf.enabled=false
+  - "fallback":    spark.comet.exec.pyarrowUDF.enabled=false
                    (plan should contain vanilla PythonMapInArrow / MapInArrow)
 
 Usage:
@@ -33,7 +33,7 @@ Usage:
     # explicitly via COMET_JAR:
     export COMET_JAR=$PWD/spark/target/comet-spark-spark3.5_2.12-0.16.0-SNAPSHOT.jar
 
-    pip install pyspark==3.5.8 pyarrow pandas pytest
+    pip install pyspark==3.5.9 pyarrow pandas pytest
     pytest -v spark/src/test/resources/pyspark/test_pyarrow_udf.py
 """
 
@@ -63,12 +63,12 @@ def spark():
         .config("spark.plugins", "org.apache.spark.CometPlugin")
         .config("spark.comet.enabled", "true")
         .config("spark.comet.exec.enabled", "true")
-        # spark.comet.exec.shuffle.enabled defaults to true, and
+        # spark.comet.shuffle.enabled defaults to true, and
         # CometSparkSessionExtensions.isCometLoaded refuses to register Comet's rules
         # at all when shuffle is on but spark.shuffle.manager is not the Comet manager.
         # These tests do not need Comet shuffle, so disable it explicitly to keep
         # Comet's scan and exec rules active without configuring shuffle.
-        .config("spark.comet.exec.shuffle.enabled", "false")
+        .config("spark.comet.shuffle.enabled", "false")
         .config("spark.memory.offHeap.enabled", "true")
         .config("spark.memory.offHeap.size", "2g")
         .getOrCreate()
@@ -82,7 +82,7 @@ def spark():
 @pytest.fixture(params=[True, False], ids=["accelerated", "fallback"])
 def accelerated(request, spark) -> bool:
     spark.conf.set(
-        "spark.comet.exec.pyarrowUdf.enabled",
+        "spark.comet.exec.pyarrowUDF.enabled",
         "true" if request.param else "false",
     )
     return request.param
@@ -957,7 +957,7 @@ def test_map_in_arrow_falls_back_when_use_large_var_types(spark, tmp_path):
     setBytes per buffer and would corrupt the offset buffer in this configuration.
     EliminateRedundantTransitions must skip the rewrite in that case so vanilla Spark
     handles the operation. This test does not use the `accelerated` fixture: it sets
-    pyarrowUdf.enabled=true AND useLargeVarTypes=true and asserts the plan still falls
+    pyarrowUDF.enabled=true AND useLargeVarTypes=true and asserts the plan still falls
     back to vanilla MapInArrow.
     """
     schema_in = T.StructType(
@@ -974,9 +974,9 @@ def test_map_in_arrow_falls_back_when_use_large_var_types(spark, tmp_path):
         for batch in iterator:
             yield batch
 
-    prev_pyarrow = spark.conf.get("spark.comet.exec.pyarrowUdf.enabled", "false")
+    prev_pyarrow = spark.conf.get("spark.comet.exec.pyarrowUDF.enabled", "false")
     prev_large = spark.conf.get("spark.sql.execution.arrow.useLargeVarTypes", "false")
-    spark.conf.set("spark.comet.exec.pyarrowUdf.enabled", "true")
+    spark.conf.set("spark.comet.exec.pyarrowUDF.enabled", "true")
     spark.conf.set("spark.sql.execution.arrow.useLargeVarTypes", "true")
     try:
         result_df = spark.read.parquet(src).mapInArrow(passthrough, schema_in)
@@ -991,7 +991,7 @@ def test_map_in_arrow_falls_back_when_use_large_var_types(spark, tmp_path):
         out = sorted((r["id"], r["name"]) for r in result_df.collect())
         assert out == sorted(rows)
     finally:
-        spark.conf.set("spark.comet.exec.pyarrowUdf.enabled", prev_pyarrow)
+        spark.conf.set("spark.comet.exec.pyarrowUDF.enabled", prev_pyarrow)
         spark.conf.set("spark.sql.execution.arrow.useLargeVarTypes", prev_large)
 
 

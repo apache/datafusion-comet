@@ -289,7 +289,7 @@ case class CometNativeWriteExec(
                   // Commit the task and add message to accumulator
                   val message = committer.commitTask(ctx)
                   capturedAccumulator.add(message)
-                  logInfo(s"Task ${ctx.getTaskAttemptID} committed successfully")
+                  logDebug(s"Task ${ctx.getTaskAttemptID} committed successfully")
                 } else {
                   // Abort the task
                   committer.abortTask(ctx)

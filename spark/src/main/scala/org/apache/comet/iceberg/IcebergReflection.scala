@@ -51,6 +51,9 @@ object IcebergReflection extends Logging {
     val UNBOUND_PREDICATE = "org.apache.iceberg.expressions.UnboundPredicate"
     val SPARK_BATCH_QUERY_SCAN = "org.apache.iceberg.spark.source.SparkBatchQueryScan"
     val SPARK_STAGED_SCAN = "org.apache.iceberg.spark.source.SparkStagedScan"
+    val SPARK_SCHEMA_UTIL = "org.apache.iceberg.spark.SparkSchemaUtil"
+    val TABLE = "org.apache.iceberg.Table"
+    val PARTITIONING = "org.apache.iceberg.Partitioning"
   }
 
   /**
@@ -64,6 +67,37 @@ object IcebergReflection extends Logging {
     Set(ClassNames.SPARK_BATCH_QUERY_SCAN, ClassNames.SPARK_STAGED_SCAN)
 
   def isIcebergScanClass(name: String): Boolean = ICEBERG_SCAN_CLASSES.contains(name)
+
+  // Iceberg FileIO implementations whose backing storage Comet's native reader can reach.
+  // Custom/test FileIO classes (e.g. CustomFileIO in TestSparkExecutorCache) are not compatible
+  // because Comet's native reader bypasses Java FileIO entirely.
+  val COMPATIBLE_FILE_IO_CLASSES: Set[String] = Set(
+    "org.apache.iceberg.hadoop.HadoopFileIO",
+    "org.apache.iceberg.aws.s3.S3FileIO",
+    "org.apache.iceberg.gcp.gcs.GCSFileIO",
+    "org.apache.iceberg.io.ResolvingFileIO",
+    "org.apache.iceberg.spark.SparkFileIO",
+    "org.apache.iceberg.azure.adlsv2.ADLSFileIO",
+    "org.apache.iceberg.CachingFileIO")
+
+  // Prefix of the EncryptingFileIO family. An encrypted table's io() is not the bare
+  // EncryptingFileIO but a nested variant chosen from the wrapped delegate's capabilities
+  // (e.g. EncryptingFileIO$WithSupportsPrefixOperations when the delegate is HadoopFileIO), so
+  // an exact class-name match misses it. Comet forwards each file's key_metadata to iceberg-rust
+  // and reads the ciphertext through iceberg-rust's own storage layer, so any EncryptingFileIO
+  // variant is compatible.
+  private val ENCRYPTING_FILE_IO_PREFIX = "org.apache.iceberg.encryption.EncryptingFileIO"
+
+  /**
+   * True if `fileIO` is a FileIO whose backing storage Comet's native reader can reach. Matches
+   * on `fileIO`'s own class hierarchy (via [[classNameInHierarchy]]) rather than its exact leaf
+   * class, so a subclass that only adds metrics/retry/credential-routing on top of a known-
+   * compatible FileIO (e.g. a custom S3FileIO subclass) still matches, instead of silently
+   * falling back to Spark.
+   */
+  def isCompatibleFileIO(fileIO: Any): Boolean =
+    classNameInHierarchy(fileIO.getClass, COMPATIBLE_FILE_IO_CLASSES) ||
+      fileIO.getClass.getName.startsWith(ENCRYPTING_FILE_IO_PREFIX)
 
   /**
    * Iceberg content types.
@@ -122,6 +156,23 @@ object IcebergReflection extends Logging {
       }
     }
     None
+  }
+
+  /**
+   * True if `clazz` or any of its superclasses has a name in `names`. Walks the already-loaded
+   * class object's own hierarchy, so unlike [[loadClass]] it never risks a
+   * `ClassNotFoundException` for a candidate name that isn't on this JVM's classpath (e.g.
+   * checking for a GCS/Azure FileIO class when only iceberg-aws is bundled).
+   */
+  def classNameInHierarchy(clazz: Class[_], names: Set[String]): Boolean = {
+    var current: Class[_] = clazz
+    while (current != null) {
+      if (names.contains(current.getName)) {
+        return true
+      }
+      current = current.getSuperclass
+    }
+    false
   }
 
   /**
@@ -461,6 +512,40 @@ object IcebergReflection extends Logging {
   }
 
   /**
+   * Validates that the table's unified partition type can be computed -- the merge of every
+   * historical partition spec, which is what the `_partition` metadata column projects.
+   *
+   * Iceberg Java's `Partitioning.partitionType(table)` runs the same cross-spec compatibility
+   * check that iceberg-rust does natively: a V1 table does not guarantee partition field ids are
+   * unique across specs, so two specs can bind the same id to incompatible source/transform
+   * pairs, which cannot be merged into one struct field. iceberg-rust returns a DataInvalid error
+   * in that case, but only at scan time -- too late for Comet to fall back. Calling the Java
+   * check here, at plan time, lets `CometScanRule` fall back to Spark instead of failing inside
+   * the native reader.
+   *
+   * Returns None when the unified type is computable, or Some(reason) when it is not -- either
+   * the specs conflict or the reflection call itself failed. Both mean Comet cannot safely serve
+   * `_partition`, so both map to a fallback.
+   */
+  def validateUnifiedPartitionType(table: Any): Option[String] = {
+    try {
+      val tableClass = loadClass(ClassNames.TABLE)
+      val partitioningClass = loadClass(ClassNames.PARTITIONING)
+      partitioningClass
+        .getMethod("partitionType", tableClass)
+        .invoke(null, table.asInstanceOf[AnyRef])
+      None
+    } catch {
+      // A conflict surfaces as the ValidationException thrown by partitionType(), wrapped by
+      // reflection in InvocationTargetException; unwrap it for a meaningful reason.
+      case e: java.lang.reflect.InvocationTargetException =>
+        Some(Option(e.getCause).getOrElse(e).getMessage)
+      case e: Exception =>
+        Some(e.getMessage)
+    }
+  }
+
+  /**
    * Gets the table metadata from an Iceberg table.
    *
    * @param table
@@ -675,6 +760,42 @@ object IcebergReflection extends Logging {
   }
 
   /**
+   * Top-level column names whose Iceberg type iceberg-rust's page-index evaluator cannot prune
+   * over, so callers must not push a residual predicate on them, not even the IS NOT NULL that
+   * Iceberg adds for every filtered column. Two physical layouts fail (page_index_evaluator.rs):
+   *   - FIXED_LEN_BYTE_ARRAY (decimal, uuid, fixed): rejected outright as an unsupported index
+   *     type, which fails the native scan.
+   *   - BYTE_ARRAY backing a binary column: the evaluator decodes column-index min/max as UTF-8
+   *     (String::from_utf8(..).unwrap()) before the predicate closure runs, so non-UTF-8 bounds
+   *     panic the native scan even for a bare IS [NOT] NULL. Extend this set as Iceberg adds
+   *     types with either layout (e.g. geometry).
+   */
+  def pageIndexUnsupportedColumns(schema: Any): Set[String] = {
+    import scala.jdk.CollectionConverters._
+    try {
+      val columns = schema.getClass
+        .getMethod("columns")
+        .invoke(schema)
+        .asInstanceOf[java.util.List[_]]
+      columns.asScala.flatMap { column =>
+        val name = column.getClass.getMethod("name").invoke(column).asInstanceOf[String]
+        val typeStr = column.getClass.getMethod("type").invoke(column).toString
+        if (typeStr.startsWith("decimal(") || typeStr == "uuid" || typeStr.startsWith("fixed[") ||
+          typeStr == "binary") {
+          Some(name)
+        } else {
+          None
+        }
+      }.toSet
+    } catch {
+      case e: Exception =>
+        logWarning(
+          s"Failed to inspect schema for page-index-unsupported columns: ${e.getMessage}")
+        Set.empty[String]
+    }
+  }
+
+  /**
    * Validates partition column types for compatibility with iceberg-rust.
    *
    * iceberg-rust's Literal::try_from_json() has incomplete type support: - Binary/fixed types:
@@ -735,6 +856,68 @@ object IcebergReflection extends Logging {
 
     unsupportedTypes.toList
   }
+
+  /**
+   * Returns the names of schema columns (including nested struct/list/map fields) that declare a
+   * V3 initial-default value. iceberg-rust does not synthesize default values for columns absent
+   * from a data file, so reads projecting such columns must fall back. Throws on reflection
+   * failure so the caller can fall back rather than risk a native crash.
+   */
+  def columnsWithInitialDefault(schema: Any): List[String] = {
+    import scala.jdk.CollectionConverters._
+    val columns =
+      schema.getClass.getMethod("columns").invoke(schema).asInstanceOf[java.util.List[_]]
+    columns.asScala.flatMap(walkFieldForDefault).toList
+  }
+
+  private def walkFieldForDefault(field: Any): List[String] = {
+    import scala.jdk.CollectionConverters._
+    val name = field.getClass.getMethod("name").invoke(field).asInstanceOf[String]
+    val here =
+      if (field.getClass.getMethod("initialDefault").invoke(field) != null) List(name) else Nil
+    val fieldType = field.getClass.getMethod("type").invoke(field)
+    val nested =
+      if (fieldType.getClass.getMethod("isNestedType").invoke(fieldType).asInstanceOf[Boolean]) {
+        val nestedType = fieldType.getClass.getMethod("asNestedType").invoke(fieldType)
+        val fields =
+          nestedType.getClass
+            .getMethod("fields")
+            .invoke(nestedType)
+            .asInstanceOf[java.util.List[_]]
+        fields.asScala.flatMap(walkFieldForDefault).toList
+      } else {
+        Nil
+      }
+    here ++ nested
+  }
+
+  /**
+   * Converts an Iceberg `Schema` to the Spark `StructType` it reads as, via
+   * `SparkSchemaUtil.convert`. Comet serializes the whole table/scan schema to native (not just
+   * projected columns), so callers use this to run the schema through Comet's existing type
+   * allow-list and fall back if any column is a type the native reader does not support (e.g.
+   * variant). Throws on reflection failure so the caller can fall back.
+   */
+  def toSparkSchema(schema: Any): org.apache.spark.sql.types.StructType = {
+    val sparkSchemaUtil = loadClass(ClassNames.SPARK_SCHEMA_UTIL)
+    val schemaClass = loadClass(ClassNames.SCHEMA)
+    val convert = sparkSchemaUtil.getMethod("convert", schemaClass)
+    convert
+      .invoke(null, schema.asInstanceOf[AnyRef])
+      .asInstanceOf[org.apache.spark.sql.types.StructType]
+  }
+
+  /**
+   * The configured AES data-key length in bytes for an encrypted table (Iceberg's
+   * `encryption.data-key-length`, default 16), or None if the table is not encrypted. Comet's
+   * native Parquet reader supports 128-bit (16-byte) and 256-bit (32-byte) keys but not 192-bit
+   * (the underlying crypto has no AES-192-GCM), so callers fall back for anything else. Throws on
+   * reflection failure so the caller can fall back.
+   */
+  def encryptionDataKeyLength(table: Any): Option[Int] =
+    getTableProperties(table).filter(_.containsKey("encryption.key-id")).map { props =>
+      Option(props.get("encryption.data-key-length")).map(_.toInt).getOrElse(16)
+    }
 }
 
 /**

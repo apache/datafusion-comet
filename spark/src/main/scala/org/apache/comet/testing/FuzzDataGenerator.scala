@@ -28,11 +28,12 @@ import java.time.{Instant, LocalDateTime, ZoneId}
 import scala.collection.mutable.ListBuffer
 import scala.util.Random
 
-import org.apache.commons.lang3.RandomStringUtils
 import org.apache.spark.sql.{DataFrame, Row, SparkSession}
 import org.apache.spark.sql.types._
 
 object FuzzDataGenerator {
+
+  private val alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
 
   /**
    * Date to use as base for generating temporal columns. Random integers will be added to or
@@ -263,7 +264,7 @@ object FuzzDataGenerator {
             case 1 => r.nextInt().toByte.toString
             case 2 => r.nextLong().toString
             case 3 => r.nextDouble().toString
-            case 4 => RandomStringUtils.randomAlphabetic(options.maxStringLength)
+            case 4 => randomAlphabetic(r, options.maxStringLength)
             case 5 =>
               // use a constant value to trigger dictionary encoding
               "dict_encode_me!"
@@ -291,6 +292,18 @@ object FuzzDataGenerator {
             ZoneId.systemDefault()))
       case _ => throw new IllegalStateException(s"Cannot generate data for $dataType yet")
     }
+  }
+
+  /**
+   * Generate a random string of ASCII letters. Unlike `Random.nextString`, which draws from the
+   * whole UTF-16 range, this stays within `[A-Za-z]`.
+   */
+  private def randomAlphabetic(r: Random, length: Int): String = {
+    val sb = new StringBuilder(length)
+    while (sb.length < length) {
+      sb.append(alphabet.charAt(r.nextInt(alphabet.length)))
+    }
+    sb.toString
   }
 
   private def randomChoice[T](list: Seq[T], r: Random): T = {

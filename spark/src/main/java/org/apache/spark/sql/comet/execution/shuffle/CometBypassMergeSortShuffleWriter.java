@@ -25,7 +25,6 @@ import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.channels.FileChannel;
 import java.util.Optional;
-import java.util.concurrent.ExecutorService;
 import javax.annotation.Nullable;
 
 import scala.*;
@@ -103,13 +102,6 @@ final class CometBypassMergeSortShuffleWriter<K, V> extends ShuffleWriter<K, V>
   /** Checksum calculator for each partition. Empty when shuffle checksum disabled. */
   private final long[] partitionChecksums;
 
-  private final boolean isAsync;
-
-  private final int asyncThreadNum;
-
-  /** Thread pool shared across all partition writers, for async write batch */
-  private final ExecutorService threadPool;
-
   /**
    * Are we in the process of stopping? Because map tasks can call stop() with success = true and
    * then call stop() with success = false if they get an exception, we want to make sure we don't
@@ -152,17 +144,7 @@ final class CometBypassMergeSortShuffleWriter<K, V> extends ShuffleWriter<K, V>
     this.schema = ((CometShuffleDependency<?, ?, ?>) dep).schema().get();
     this.partitionChecksums = createPartitionChecksums(numPartitions, conf);
 
-    this.isAsync = (boolean) CometConf$.MODULE$.COMET_COLUMNAR_SHUFFLE_ASYNC_ENABLED().get();
-    this.asyncThreadNum = (int) CometConf$.MODULE$.COMET_COLUMNAR_SHUFFLE_ASYNC_THREAD_NUM().get();
     this.tracingEnabled = (boolean) CometConf$.MODULE$.COMET_TRACING_ENABLED().get();
-
-    if (isAsync) {
-      logger.info("Async shuffle writer enabled");
-      this.threadPool = ShuffleThreadPool.getThreadPool();
-    } else {
-      logger.info("Async shuffle writer disabled");
-      this.threadPool = null;
-    }
     this.encodeTimeMetric = encodeTimeMetric;
   }
 
@@ -208,9 +190,6 @@ final class CometBypassMergeSortShuffleWriter<K, V> extends ShuffleWriter<K, V>
                 schema,
                 writeMetrics,
                 conf,
-                isAsync,
-                asyncThreadNum,
-                threadPool,
                 tracingEnabled);
         if (partitionChecksums.length > 0) {
           writer.setChecksum(partitionChecksums[i]);

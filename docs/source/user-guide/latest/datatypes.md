@@ -80,14 +80,18 @@ the tables below and may be reconsidered based on demand:
 
 ## Interval
 
-Interval types fall back to Spark today. Native acceleration is tracked by
-[#4540](https://github.com/apache/datafusion-comet/issues/4540).
+All three interval types are mapped to Arrow and flow through serde, native shuffle, and the
+codegen dispatcher, so interval columns and the interval-producing expressions run natively.
+Several operators still gate on the type and fall back: Parquet scans of ANSI interval columns,
+single-column sorts, hash aggregates (`min` / `max` / `sum` / `avg`), `GROUP BY`, window
+functions, and hashing a `CalendarInterval`. Remaining work is tracked by
+[#5061](https://github.com/apache/datafusion-comet/issues/5061).
 
-| Type                    | Status | Notes             |
-| ----------------------- | ------ | ----------------- |
-| `YearMonthIntervalType` | 🔜     | Tracked by #4540. |
-| `DayTimeIntervalType`   | 🔜     | Tracked by #4540. |
-| `CalendarIntervalType`  | 🔜     | Tracked by #4540. |
+| Type                    | Status | Notes                                                                                      |
+| ----------------------- | ------ | ------------------------------------------------------------------------------------------ |
+| `YearMonthIntervalType` | ⚠️     | Parquet scan, single-column sort, aggregate, `GROUP BY`, and window operators fall back.   |
+| `DayTimeIntervalType`   | ⚠️     | Parquet scan, single-column sort, aggregate, `GROUP BY`, and window operators fall back.   |
+| `CalendarIntervalType`  | ⚠️     | As above, plus `hash` / `xxhash64` of a `CalendarInterval` fails rather than falling back. |
 
 ## Complex
 

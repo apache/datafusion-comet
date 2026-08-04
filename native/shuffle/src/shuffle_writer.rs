@@ -67,6 +67,8 @@ pub struct ShuffleWriterExec {
     tracing_enabled: bool,
     /// Size of the write buffer in bytes
     write_buffer_size: usize,
+    /// Maximum bytes buffered in memory before spilling; `None` disables the limit
+    max_buffer_bytes: Option<usize>,
 }
 
 impl ShuffleWriterExec {
@@ -80,6 +82,7 @@ impl ShuffleWriterExec {
         output_index_file: String,
         tracing_enabled: bool,
         write_buffer_size: usize,
+        max_buffer_bytes: Option<usize>,
     ) -> Result<Self> {
         let cache = Arc::new(PlanProperties::new(
             EquivalenceProperties::new(Arc::clone(&input.schema())),
@@ -98,6 +101,7 @@ impl ShuffleWriterExec {
             codec,
             tracing_enabled,
             write_buffer_size,
+            max_buffer_bytes,
         })
     }
 }
@@ -153,6 +157,7 @@ impl ExecutionPlan for ShuffleWriterExec {
                 self.output_index_file.clone(),
                 self.tracing_enabled,
                 self.write_buffer_size,
+                self.max_buffer_bytes,
             )?)),
             _ => panic!("ShuffleWriterExec wrong number of children"),
         }
@@ -182,6 +187,7 @@ impl ExecutionPlan for ShuffleWriterExec {
                 self.codec.clone(),
                 self.tracing_enabled,
                 self.write_buffer_size,
+                self.max_buffer_bytes,
             ))
             .try_flatten(),
         )))
@@ -200,6 +206,7 @@ async fn external_shuffle(
     codec: CompressionCodec,
     tracing_enabled: bool,
     write_buffer_size: usize,
+    max_buffer_bytes: Option<usize>,
 ) -> Result<SendableRecordBatchStream> {
     let schema = input.schema();
 
@@ -224,11 +231,10 @@ async fn external_shuffle(
                 metrics,
             )?)
         }
-        any if any.partition_count() == 1 => Box::new(SinglePartitionShufflePartitioner::try_new(
+        any if any.partition_count() == 1 => Box::new(SinglePartitionShufflePartitioner::new(
             local_partition_writer,
             metrics,
-            context.session_config().batch_size(),
-        )?),
+        )),
         _ => Box::new(MultiPartitionShuffleRepartitioner::try_new(
             partition,
             local_partition_writer,
@@ -237,6 +243,7 @@ async fn external_shuffle(
             context.runtime_env(),
             context.session_config().batch_size(),
             tracing_enabled,
+            max_buffer_bytes,
         )?),
     };
 
@@ -305,6 +312,44 @@ mod test {
         }
     }
 
+    /// A dictionary-typed column must roundtrip. Such schemas take the `StreamWriter` fallback
+    /// (rather than the pre-encoded schema path), because dictionary encoding requires the schema
+    /// and record batch to share a dictionary tracker.
+    #[test]
+    #[cfg_attr(miri, ignore)] // miri can't call foreign function `ZSTD_createCCtx`
+    fn roundtrip_ipc_dictionary() {
+        use arrow::array::DictionaryArray;
+        use arrow::datatypes::Int32Type;
+
+        let values: Vec<String> = (0..8192).map(|i| format!("v{}", i % 7)).collect();
+        let dict: DictionaryArray<Int32Type> = values.iter().map(|s| s.as_str()).collect();
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "d",
+            dict.data_type().clone(),
+            false,
+        )]));
+        let batch =
+            RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(dict) as Arc<dyn Array>])
+                .unwrap();
+
+        for codec in &[
+            CompressionCodec::None,
+            CompressionCodec::Zstd(1),
+            CompressionCodec::Snappy,
+            CompressionCodec::Lz4Frame,
+        ] {
+            let mut output = vec![];
+            let mut cursor = Cursor::new(&mut output);
+            let writer = ShuffleBlockWriter::try_new(schema.as_ref(), codec.clone()).unwrap();
+            writer
+                .write_batch(&batch, &mut cursor, &Time::default())
+                .unwrap();
+
+            let batch2 = read_ipc_compressed(&output[16..]).unwrap();
+            assert_eq!(batch, batch2);
+        }
+    }
+
     #[test]
     #[cfg_attr(miri, ignore)] // miri can't call foreign function `ZSTD_createCCtx`
     fn test_single_partition_shuffle_writer() {
@@ -369,6 +414,7 @@ mod test {
             runtime_env,
             1024,
             false,
+            None,
         )
         .unwrap();
 
@@ -440,6 +486,7 @@ mod test {
             runtime_env,
             batch_size,
             false,
+            None,
         )
         .unwrap();
 
@@ -454,6 +501,148 @@ mod test {
             spill_count.value(),
             0,
             "one buffer under the memory limit must not spill once per chunk"
+        );
+    }
+
+    /// Buffer `num_batches` batches through a `MultiPartitionShuffleRepartitioner` configured
+    /// with `max_buffer_bytes`, against a memory pool large enough that `try_grow` never fails,
+    /// and return how many times it spilled.
+    async fn spill_count_with_max_buffer_bytes(
+        max_buffer_bytes: Option<usize>,
+        num_batches: usize,
+    ) -> usize {
+        let batch = create_batch(1000);
+        let num_partitions = 4;
+        // Far larger than anything these batches can reserve, so pool pressure never triggers
+        // a spill and any spill observed must come from the max_buffer_bytes limit.
+        let runtime_env = create_runtime(1024 * 1024 * 1024);
+        let metrics_set = ExecutionPlanMetricsSet::new();
+        let metrics = ShufflePartitionerMetrics::new(&metrics_set, 0);
+        let spill_count = metrics.spill_count.clone();
+        let dir = tempfile::tempdir().unwrap();
+        let shuffle_block_writer =
+            ShuffleBlockWriter::try_new(batch.schema().as_ref(), CompressionCodec::Lz4Frame)
+                .unwrap();
+        let local_partition_writer = LocalPartitionWriter::try_new(
+            dir.path().join("data.out").to_str().unwrap().to_string(),
+            dir.path().join("index.out").to_str().unwrap().to_string(),
+            shuffle_block_writer,
+            num_partitions,
+            1024,
+            1024 * 1024,
+            Arc::clone(&runtime_env),
+        )
+        .unwrap();
+        let mut repartitioner = MultiPartitionShuffleRepartitioner::try_new(
+            0,
+            local_partition_writer,
+            CometPartitioning::Hash(vec![Arc::new(Column::new("a", 0))], num_partitions),
+            metrics,
+            runtime_env,
+            1024,
+            false,
+            max_buffer_bytes,
+        )
+        .unwrap();
+
+        for _ in 0..num_batches {
+            repartitioner.insert_batch(batch.clone()).await.unwrap();
+        }
+        repartitioner.shuffle_write().unwrap();
+
+        spill_count.value()
+    }
+
+    #[tokio::test]
+    #[cfg_attr(miri, ignore)] // miri can't call foreign function `ZSTD_createCCtx`
+    async fn max_buffer_bytes_triggers_spill_without_memory_pressure() {
+        // A limit far below what 20 batches buffer must spill, even though the pool never
+        // denies an allocation. The paired zero case pins that the spills come from the new
+        // limit and not from the pre-existing memory-pressure trigger.
+        let spills = spill_count_with_max_buffer_bytes(Some(8 * 1024), 20).await;
+        assert!(
+            spills > 0,
+            "a max_buffer_bytes limit below the buffered size must trigger spilling, got {spills}"
+        );
+    }
+
+    #[tokio::test]
+    #[cfg_attr(miri, ignore)] // miri can't call foreign function `ZSTD_createCCtx`
+    async fn max_buffer_bytes_none_leaves_spilling_to_memory_pressure() {
+        let spills = spill_count_with_max_buffer_bytes(None, 20).await;
+        assert_eq!(
+            spills, 0,
+            "an unset max_buffer_bytes disables the limit, and this pool never denies an allocation"
+        );
+    }
+
+    /// Run a shuffle end-to-end through `ShuffleWriterExec` with the given `max_buffer_bytes`
+    /// and return the shuffled rows in output-file order.
+    fn shuffle_output_with_max_buffer_bytes(
+        dir: &std::path::Path,
+        tag: &str,
+        max_buffer_bytes: Option<usize>,
+    ) -> Vec<String> {
+        let batch = create_batch(1000);
+        let batches = (0..20).map(|_| batch.clone()).collect::<Vec<_>>();
+        let data_file = dir.join(format!("{tag}_data.out"));
+        let index_file = dir.join(format!("{tag}_index.out"));
+
+        let exec = ShuffleWriterExec::try_new(
+            Arc::new(DataSourceExec::new(Arc::new(
+                MemorySourceConfig::try_new(std::slice::from_ref(&batches), batch.schema(), None)
+                    .unwrap(),
+            ))),
+            CometPartitioning::Hash(vec![Arc::new(Column::new("a", 0))], 16),
+            CompressionCodec::Zstd(1),
+            data_file.to_str().unwrap().to_string(),
+            index_file.to_str().unwrap().to_string(),
+            false,
+            1024 * 1024,
+            max_buffer_bytes,
+        )
+        .unwrap();
+
+        // Large enough that the pool never denies an allocation, so only max_buffer_bytes
+        // decides whether this run spills.
+        let runtime_env = create_runtime(1024 * 1024 * 1024);
+        let ctx = SessionContext::new_with_config_rt(SessionConfig::new(), runtime_env);
+        let stream = exec.execute(0, ctx.task_ctx()).unwrap();
+        Runtime::new().unwrap().block_on(collect(stream)).unwrap();
+
+        read_all_ipc_batches(&std::fs::read(&data_file).unwrap())
+            .iter()
+            .flat_map(|batch| {
+                let column = batch
+                    .column(0)
+                    .as_any()
+                    .downcast_ref::<StringArray>()
+                    .unwrap();
+                column
+                    .iter()
+                    .map(|v| v.unwrap().to_string())
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)] // miri can't call foreign function `ZSTD_createCCtx`
+    fn max_buffer_bytes_preserves_output() {
+        // End-to-end through ShuffleWriterExec: a small limit forces repeated spills, and the
+        // shuffled rows must come out in the same order as an unlimited writer produces.
+        let dir = tempfile::tempdir().unwrap();
+        let unlimited = shuffle_output_with_max_buffer_bytes(dir.path(), "unlimited", None);
+        let limited = shuffle_output_with_max_buffer_bytes(dir.path(), "limited", Some(8 * 1024));
+
+        assert_eq!(
+            unlimited.len(),
+            20 * 1000,
+            "every input row must be written"
+        );
+        assert_eq!(
+            limited, unlimited,
+            "spilling on the max_buffer_bytes limit must not change the shuffled output"
         );
     }
 
@@ -535,6 +724,7 @@ mod test {
                 "/tmp/index.out".to_string(),
                 false,
                 1024 * 1024, // write_buffer_size: 1MB default
+                None,
             )
             .unwrap();
 
@@ -594,6 +784,7 @@ mod test {
                 index_file.clone(),
                 false,
                 1024 * 1024,
+                None,
             )
             .unwrap();
 
@@ -741,11 +932,11 @@ mod test {
         );
     }
 
-    /// Read all IPC blocks from a byte buffer written by BufBatchWriter/ShuffleBlockWriter,
-    /// returning the total number of rows.
-    fn read_all_ipc_blocks(data: &[u8]) -> usize {
+    /// Decode every IPC block in a byte buffer written by BufBatchWriter/ShuffleBlockWriter,
+    /// in file order.
+    fn read_all_ipc_batches(data: &[u8]) -> Vec<RecordBatch> {
         let mut offset = 0;
-        let mut total_rows = 0;
+        let mut batches = vec![];
         while offset < data.len() {
             // First 8 bytes are the IPC length (little-endian u64)
             let ipc_length =
@@ -756,11 +947,181 @@ mod test {
             // read_ipc_compressed expects data starting after the 16-byte header
             // (i.e., after length + field_count), at the codec tag
             let ipc_data = &data[block_start + 8..block_end];
-            let batch = read_ipc_compressed(ipc_data).unwrap();
-            total_rows += batch.num_rows();
+            batches.push(read_ipc_compressed(ipc_data).unwrap());
             offset = block_end;
         }
-        total_rows
+        batches
+    }
+
+    /// Total number of rows across all IPC blocks in a byte buffer.
+    fn read_all_ipc_blocks(data: &[u8]) -> usize {
+        read_all_ipc_batches(data)
+            .iter()
+            .map(|b| b.num_rows())
+            .sum()
+    }
+
+    /// Batches that are already at least `batch_size` rows should bypass the
+    /// coalescer, being written one-block-per-batch, while smaller batches are
+    /// still coalesced. In both cases the data must roundtrip exactly, in order.
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn test_full_batches_bypass_coalescer() {
+        use crate::writers::BufBatchWriter;
+        use arrow::array::Int32Array;
+
+        let schema = Arc::new(Schema::new(vec![Field::new("v", DataType::Int32, false)]));
+        let batch_size = 100;
+
+        let make_batch = |start: i32, len: i32| {
+            let values: Vec<i32> = (start..start + len).collect();
+            RecordBatch::try_new(
+                Arc::clone(&schema),
+                vec![Arc::new(Int32Array::from(values)) as Arc<dyn Array>],
+            )
+            .unwrap()
+        };
+
+        // Sequence: a full batch (bypass), an oversized batch (bypass, emitted whole),
+        // a partial batch (buffered), then a full batch (must not bypass because the
+        // coalescer still holds buffered rows).
+        //
+        // The 150-row batch is the case that distinguishes the fast path: the
+        // coalescer alone would split it into a 100-row block plus 50 buffered rows,
+        // so it can only appear as a single 150-row block when the passthrough fires.
+        let inputs = vec![
+            make_batch(0, batch_size),   // rows 0..100   -> bypass (100-row block)
+            make_batch(batch_size, 150), // rows 100..250 -> oversized bypass (150-row block)
+            make_batch(250, 30),         // rows 250..280 -> buffered
+            make_batch(280, batch_size), // rows 280..380 -> coalesced with buffered 30
+        ];
+
+        let codec = CompressionCodec::Lz4Frame;
+        let encode_time = Time::default();
+        let write_time = Time::default();
+
+        let mut output = Vec::new();
+        {
+            let mut writer = ShuffleBlockWriter::try_new(schema.as_ref(), codec.clone()).unwrap();
+            let mut buf_writer = BufBatchWriter::new(
+                &mut writer,
+                Cursor::new(&mut output),
+                1024 * 1024,
+                batch_size as usize,
+            );
+            for batch in &inputs {
+                buf_writer.write(batch, &encode_time, &write_time).unwrap();
+            }
+            buf_writer.flush(&encode_time, &write_time).unwrap();
+        }
+
+        let blocks = read_all_ipc_batches(&output);
+
+        // The full and oversized batches are emitted verbatim as their own blocks,
+        // then the partial+full pair coalesces into a full block plus a 30-row tail.
+        let block_rows: Vec<usize> = blocks.iter().map(|b| b.num_rows()).collect();
+        assert_eq!(
+            block_rows,
+            vec![100, 150, 100, 30],
+            "unexpected block boundaries"
+        );
+
+        // All 380 rows must roundtrip in order (0..380).
+        let mut roundtripped = Vec::new();
+        for block in &blocks {
+            let col = block
+                .column(0)
+                .as_any()
+                .downcast_ref::<Int32Array>()
+                .unwrap();
+            roundtripped.extend(col.values().iter().copied());
+        }
+        let expected: Vec<i32> = (0..380).collect();
+        assert_eq!(roundtripped, expected, "rows not preserved in order");
+    }
+
+    /// The single-partition partitioner streams batches straight to the writer's
+    /// `BatchCoalescer` without any concat/buffer layer of its own. A `>= batch_size`
+    /// batch landing on an empty buffer is passed through as a single (possibly oversized)
+    /// block, while smaller batches are coalesced up to `batch_size`. Every row must
+    /// roundtrip in order regardless of how the input is chunked.
+    #[tokio::test]
+    #[cfg_attr(miri, ignore)]
+    async fn single_partition_passthrough_oversized_and_coalesces_small() {
+        use crate::metrics::ShufflePartitionerMetrics;
+        use crate::partitioners::ShufflePartitioner;
+        use arrow::array::Int32Array;
+        use std::fs;
+
+        let schema = Arc::new(Schema::new(vec![Field::new("v", DataType::Int32, false)]));
+        let batch_size = 100;
+
+        let make_batch = |start: i32, len: i32| {
+            let values: Vec<i32> = (start..start + len).collect();
+            RecordBatch::try_new(
+                Arc::clone(&schema),
+                vec![Arc::new(Int32Array::from(values)) as Arc<dyn Array>],
+            )
+            .unwrap()
+        };
+
+        let dir = tempfile::tempdir().unwrap();
+        let data_file = dir.path().join("data.out").to_str().unwrap().to_string();
+        let index_file = dir.path().join("index.out").to_str().unwrap().to_string();
+
+        let block_writer =
+            ShuffleBlockWriter::try_new(schema.as_ref(), CompressionCodec::Lz4Frame).unwrap();
+        let writer = LocalPartitionWriter::try_new(
+            data_file.clone(),
+            index_file,
+            block_writer,
+            1, // single partition
+            batch_size,
+            1024 * 1024,
+            create_runtime(10 * 1024 * 1024),
+        )
+        .unwrap();
+
+        let metrics = ShufflePartitionerMetrics::new(&ExecutionPlanMetricsSet::new(), 0);
+        let mut partitioner = SinglePartitionShufflePartitioner::new(writer, metrics);
+
+        // Lead with a larger-than-batch-size batch on an empty buffer: this is the
+        // case that distinguishes the coalescer bypass from plain coalescing. Without
+        // the passthrough the coalescer would split the 250-row batch into 100/100/50;
+        // it can only appear as a single 250-row block when the bypass fires.
+        partitioner.insert_batch(make_batch(0, 250)).await.unwrap(); // rows 0..250 -> 250 block (passthrough)
+        partitioner.insert_batch(make_batch(250, 30)).await.unwrap(); // rows 250..280 -> buffered
+        partitioner
+            .insert_batch(make_batch(280, 100))
+            .await
+            .unwrap(); // rows 280..380 -> coalesced with buffered 30
+        partitioner.shuffle_write().unwrap();
+
+        let data = fs::read(&data_file).unwrap();
+        let blocks = read_all_ipc_batches(&data);
+
+        // The oversized batch passes through as one 250-row block; the 30 buffered rows
+        // then coalesce with the following 100-row batch into a 100-row block plus a
+        // 30-row tail.
+        let block_rows: Vec<usize> = blocks.iter().map(|b| b.num_rows()).collect();
+        assert_eq!(block_rows, vec![250, 100, 30], "unexpected block sizes");
+
+        let roundtripped: Vec<i32> = blocks
+            .iter()
+            .flat_map(|block| {
+                block
+                    .column(0)
+                    .as_any()
+                    .downcast_ref::<Int32Array>()
+                    .unwrap()
+                    .values()
+                    .iter()
+                    .copied()
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        let expected: Vec<i32> = (0..380).collect();
+        assert_eq!(roundtripped, expected, "rows not preserved in order");
     }
 
     #[test]
@@ -798,6 +1159,7 @@ mod test {
             index_file.to_str().unwrap().to_string(),
             false,
             1024 * 1024,
+            None,
         )
         .unwrap();
 
@@ -886,6 +1248,7 @@ mod test {
             index_file.to_str().unwrap().to_string(),
             false,
             1024 * 1024,
+            None,
         )
         .unwrap();
 

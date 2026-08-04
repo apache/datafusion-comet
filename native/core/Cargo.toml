@@ -36,6 +36,7 @@ publish = false
 
 [dependencies]
 arrow = { workspace = true }
+bytes = { workspace = true }
 parquet = { workspace = true, default-features = false, features = ["experimental", "arrow", "snap", "lz4", "zstd", "flate2-zlib-rs"] }
 futures = { workspace = true }
 mimalloc = { version = "*", default-features = false, optional = true }
@@ -90,7 +91,7 @@ jni = { version = "0.22.4", features = ["invocation"] }
 lazy_static = "1.4"
 assertables = "10"
 hex = "0.4.3"
-datafusion-functions-nested = { version = "54.0.0" }
+datafusion-functions-nested = { version = "54.1.0" }
 
 [features]
 backtrace = ["datafusion/backtrace"]

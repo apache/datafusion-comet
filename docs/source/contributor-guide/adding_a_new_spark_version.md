@@ -116,7 +116,7 @@ version from blocking unrelated PRs.
 
 When CI capacity is constrained (the macOS runners in particular), it is
 acceptable to drop an older minor version from the macOS PR matrix while a
-preview version is being stabilized. PR #4104 ("ci: reduce macOS PR matrix
+preview version is being stabilized. PR [#4104](https://github.com/apache/datafusion-comet/pull/4104) ("ci: reduce macOS PR matrix
 to single Spark 4.0 profile") is a precedent for this kind of trim.
 
 ### What to Avoid in Stage 1

@@ -21,7 +21,7 @@ under the License.
 
 ## Spark SQL Metrics
 
-Set `spark.comet.metrics.detailed=true` to see all available Comet metrics.
+Comet operators report the following metrics in the Spark SQL UI.
 
 ### CometScanExec
 

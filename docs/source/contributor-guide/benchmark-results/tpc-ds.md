@@ -67,5 +67,5 @@ spark.executor.memory=64G
 spark.executor.memoryOverhead=10G
 spark.memory.offHeap.enabled=true
 spark.memory.offHeap.size=32G
-spark.comet.memoryPool.fraction=0.8
+spark.comet.exec.memoryPool.fraction=0.8
 ```

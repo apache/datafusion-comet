@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+pub mod eager_page_index_reader_factory;
 pub mod encryption_support;
 
 pub mod parquet_exec;
