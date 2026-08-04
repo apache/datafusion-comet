@@ -21,6 +21,7 @@ package org.apache.comet.serde
 
 import java.util.concurrent.atomic.AtomicLong
 
+import scala.collection.mutable
 import scala.collection.mutable.ArrayBuffer
 import scala.jdk.CollectionConverters._
 
@@ -36,7 +37,8 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
 import org.apache.comet.CometConf
-import org.apache.comet.CometSparkSessionExtensions.{withFallbackReason, withInfo}
+import org.apache.comet.CometExplainInfo
+import org.apache.comet.CometSparkSessionExtensions.{appendTagValues, withFallbackReason, withInfo, withNativeExpr}
 import org.apache.comet.expressions._
 import org.apache.comet.parquet.CometParquetUtils
 import org.apache.comet.serde.ExprOuterClass.{AggExpr, Expr, ScalarFunc}
@@ -372,7 +374,8 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       classOf[SortOrder] -> CometSortOrder,
       classOf[StaticInvoke] -> CometStaticInvoke,
       classOf[TryEval] -> CometTryEval,
-      classOf[UnscaledValue] -> CometUnscaledValue)
+      classOf[UnscaledValue] -> CometUnscaledValue,
+      classOf[Uuid] -> CometUuid)
     base ++ sparkVersionSpecificMiscExpressions
   }
 
@@ -627,9 +630,9 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
         val info = DataTypeInfo.newBuilder()
         val struct = StructInfo.newBuilder()
 
-        val fieldNames = s.fields.map(_.name).toIterable.asJava
-        val fieldDatatypes = s.fields.map(f => serializeDataType(f.dataType)).toSeq
-        val fieldNullable = s.fields.map(f => Boolean.box(f.nullable)).toIterable.asJava
+        val fieldNames = s.map(_.name).asJava
+        val fieldDatatypes = s.map(f => serializeDataType(f.dataType))
+        val fieldNullable = s.map(f => Boolean.box(f.nullable)).asJava
 
         if (fieldDatatypes.exists(_.isEmpty)) {
           return None
@@ -732,6 +735,9 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
 
     // Attach QueryContext and expr_id to the aggregate expression
     protoAggExprOpt.flatMap { protoAggExpr =>
+      // Aggregate functions never route through the JVM codegen dispatcher, so reaching here
+      // always means a native lowering. Recorded for the coverage stats in extended explain.
+      withNativeExpr(fn, CometExplainInfo.exprDisplayName(fn))
       val builder = protoAggExpr.toBuilder
       builder.setExprId(nextExprId())
 
@@ -785,8 +791,27 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       inputs: Seq[Attribute],
       binding: Boolean = true): Option[Expr] = {
 
-    val newExpr = DecimalPrecision.promote(expr, !SQLConf.get.ansiEnabled)
-    exprToProtoInternal(newExpr, inputs, binding)
+    val newExpr = DecimalPrecision.promote(expr)
+    val result = exprToProtoInternal(newExpr, inputs, binding)
+    if (!(newExpr eq expr)) {
+      // `promote` rebuilt the tree, so the coverage tags landed on copies that the operator does
+      // not hold. Lift them onto `expr` so `CometExecRule.rollUpInfoMessages`, which walks the
+      // operator's own expressions, still sees them. Skipped in the common case where `promote`
+      // returned the same tree and there is nothing to lift.
+      liftCoverageTags(newExpr, expr)
+    }
+    result
+  }
+
+  private def liftCoverageTags(from: Expression, to: Expression): Unit = {
+    val native = mutable.Set.empty[String]
+    val dispatched = mutable.Set.empty[String]
+    from.foreach { e =>
+      e.getTagValue(CometExplainInfo.NATIVE_EXPRS).foreach(native ++= _)
+      e.getTagValue(CometExplainInfo.CODEGEN_DISPATCH_EXPRS).foreach(dispatched ++= _)
+    }
+    appendTagValues(to, CometExplainInfo.NATIVE_EXPRS, native.toSet)
+    appendTagValues(to, CometExplainInfo.CODEGEN_DISPATCH_EXPRS, dispatched.toSet)
   }
 
   /**
@@ -898,6 +923,14 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
           }
       })
       .map { protoExpr =>
+        // Record that this expression stayed in the native pipeline, for the expression coverage
+        // stats in extended explain. `CometScalaUDF.emitJvmCodegenDispatch` marks the expressions
+        // it converted, so anything reaching here without that marker was lowered to a native
+        // DataFusion expression.
+        if (!isStructuralExpr(expr) &&
+          expr.getTagValue(CometExplainInfo.DISPATCHED_SELF).isEmpty) {
+          withNativeExpr(expr, CometExplainInfo.exprDisplayName(expr))
+        }
         // Attach QueryContext and expr_id to the expression
         val builder = protoExpr.toBuilder
         builder.setExprId(nextExprId())
@@ -906,6 +939,16 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
         }
         builder.build()
       }
+  }
+
+  /**
+   * Nodes that carry no computation of their own. They are excluded from the expression coverage
+   * stats in extended explain because they appear in nearly every expression tree and would swamp
+   * the names a user actually cares about.
+   */
+  private def isStructuralExpr(expr: Expression): Boolean = expr match {
+    case _: Attribute | _: BoundReference | _: Literal | _: Alias => true
+    case _ => false
   }
 
   /**
