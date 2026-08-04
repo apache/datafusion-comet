@@ -129,7 +129,7 @@ object CometConf extends ShimCometConf {
           "into Comet's two-operator shape: a file writer exec (inside AQE) and a committer " +
           "(outside AQE).")
       .booleanConf
-      .createWithDefault(false)
+      .createWithDefault(true)
 
   val COMET_ICEBERG_DATA_FILE_CONCURRENCY_LIMIT: ConfigEntry[Int] =
     conf("spark.comet.scan.icebergNative.dataFileConcurrencyLimit")

@@ -19,8 +19,9 @@
 
 # Iceberg Writes: Comet's Split-Operator Plan (Experimental)
 
-**This feature is experimental and disabled by default.** Enable it only after validating it
-against your own workloads.
+**This feature is experimental and enabled by default.** Set
+`spark.comet.write.iceberg.splitOperator.enabled=false` to restore Spark's stock combined
+write operator.
 
 ## Overview
 
@@ -45,7 +46,8 @@ planned follow-up in which Comet writes the data files natively via
 
 ## Configuration
 
-Standard Comet + Iceberg setup (see [`iceberg.md`](iceberg.md)) plus the write-side toggle:
+Standard Comet + Iceberg setup (see [`iceberg.md`](iceberg.md)) is all that is required; the
+split-operator plan is applied automatically. To turn it off:
 
 ```
 # Standard Comet / Iceberg wiring
@@ -55,8 +57,8 @@ spark.sql.catalog.<name>=org.apache.iceberg.spark.SparkCatalog
 spark.sql.catalog.<name>.type=hadoop                          # or hive / glue / rest / ...
 spark.sql.catalog.<name>.warehouse=...
 
-# Split-operator plan (experimental, off by default)
-spark.comet.write.iceberg.splitOperator.enabled=true
+# Split-operator plan (experimental, on by default); set to false to opt out
+spark.comet.write.iceberg.splitOperator.enabled=false
 ```
 
 ## Supported operations
@@ -78,7 +80,7 @@ operations is the same either way.
 
 The rewrite is skipped — and the write runs through Spark's stock combined operator — when:
 
-- `spark.comet.write.iceberg.splitOperator.enabled` is `false` (the default);
+- `spark.comet.write.iceberg.splitOperator.enabled` is `false`;
 - the write is not an Iceberg `SparkWrite` (any other V2 data source);
 - the table uses merge-on-read: delta writes (Iceberg `WriteDelta`) are not intercepted;
 - the write requires Spark's commit coordinator, which Comet's per-task commit protocol does
