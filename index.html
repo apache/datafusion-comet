@@ -404,7 +404,7 @@ Runs your existing Spark queries on the Apache DataFusion native engine, no code
 </div>
 <pre class="comet-terminal__body"><span class="term-line term-comment"># Add the Comet jar to your existing Spark job — no code changes</span>
 <span class="term-line"><span class="term-prompt">$</span> $SPARK_HOME/bin/spark-shell \</span>
-<span class="term-line term-indent">--jars comet-spark-spark4.1_2.13-1.0.0-SNAPSHOT.jar \</span>
+<span class="term-line term-indent">--jars comet-spark-spark4.1_2.13-1.1.0-SNAPSHOT.jar \</span>
 <span class="term-line term-indent">--conf spark.plugins=org.apache.spark.CometPlugin \</span>
 <span class="term-line term-indent">--conf spark.shuffle.manager=org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager \</span>
 <span class="term-line term-indent">--conf spark.memory.offHeap.enabled=true \</span>
