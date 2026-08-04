@@ -17,17 +17,16 @@
 
 -- MinSparkVersion: 4.0
 
--- Spark 4.0+ applies collation-aware delimiter matching in str_to_map. Comet's native
--- implementation matches raw delimiter bytes, so non-UTF8_BINARY collations must fall back.
+-- Spark 4.0+ applies collation-aware delimiter matching in str_to_map.
 
 -- collated input string
-query expect_fallback(`str_to_map` does not support non-UTF8_BINARY collations)
+query
 SELECT str_to_map('a:1,b:2' COLLATE UTF8_LCASE, ',', ':')
 
 -- collated pair delimiter
-query expect_fallback(`str_to_map` does not support non-UTF8_BINARY collations)
+query
 SELECT str_to_map('aX1,bX2', 'x' COLLATE UTF8_LCASE, ':')
 
 -- collated key-value delimiter
-query expect_fallback(`str_to_map` does not support non-UTF8_BINARY collations)
+query
 SELECT str_to_map('aX1,bX2', ',', 'x' COLLATE UTF8_LCASE)

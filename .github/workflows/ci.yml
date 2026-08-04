@@ -72,7 +72,7 @@ jobs:
         run: ./mvnw -B -N apache-rat:check
 
       - name: Setup Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version: '24'
 
@@ -228,7 +228,7 @@ jobs:
     uses: ./.github/workflows/spark_sql_test_reusable.yml
     with:
       spark-short: '3.5'
-      spark-full: '3.5.8'
+      spark-full: '3.5.9'
       java: 17
 
   spark_4_0:
@@ -246,7 +246,7 @@ jobs:
     uses: ./.github/workflows/spark_sql_test_reusable.yml
     with:
       spark-short: '4.0'
-      spark-full: '4.0.2'
+      spark-full: '4.0.4'
       java: 17
 
   spark_4_1:
@@ -260,7 +260,7 @@ jobs:
     uses: ./.github/workflows/spark_sql_test_reusable.yml
     with:
       spark-short: '4.1'
-      spark-full: '4.1.2'
+      spark-full: '4.1.3'
       java: 17
 
   iceberg_1_8:
@@ -296,7 +296,7 @@ jobs:
       iceberg-short: '1.9'
       iceberg-full: '1.9.1'
       spark-short: '3.5'
-      spark-full: '3.5.8'
+      spark-full: '3.5.9'
       java: 17
 
   iceberg_1_10:
@@ -315,7 +315,7 @@ jobs:
       iceberg-short: '1.10'
       iceberg-full: '1.10.0'
       spark-short: '3.5'
-      spark-full: '3.5.8'
+      spark-full: '3.5.9'
       java: 17
 
   iceberg_1_11:
@@ -332,5 +332,5 @@ jobs:
       iceberg-short: '1.11'
       iceberg-full: '1.11.0'
       spark-short: '4.1'
-      spark-full: '4.1.2'
+      spark-full: '4.1.3'
       java: 17

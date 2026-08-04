@@ -74,6 +74,6 @@ spark.memory.offHeap.size=32G
 ### Comet (Tuned)
 
 ```properties
-spark.comet.exec.replaceSortMergeJoin=true
-spark.comet.memoryPool.fraction=0.8
+spark.comet.exec.forceShuffledHashJoin=true
+spark.comet.exec.memoryPool.fraction=0.8
 ```

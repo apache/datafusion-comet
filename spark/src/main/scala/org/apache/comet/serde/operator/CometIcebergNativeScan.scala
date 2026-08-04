@@ -19,6 +19,11 @@
 
 package org.apache.comet.serde.operator
 
+import java.math.BigDecimal
+import java.nio.ByteBuffer
+import java.nio.charset.StandardCharsets.UTF_8
+import java.util.{Base64, UUID}
+
 import scala.collection.mutable
 import scala.jdk.CollectionConverters._
 
@@ -32,12 +37,13 @@ import org.apache.spark.sql.comet.shims.ShimDataSourceRDDPartition
 import org.apache.spark.sql.execution.datasources.v2.{BatchScanExec, DataSourceRDD, DataSourceRDDPartition}
 import org.apache.spark.sql.types._
 
+import com.google.protobuf.ByteString
+
 import org.apache.comet.{CometConf, ConfigEntry}
 import org.apache.comet.iceberg.{CometIcebergNativeScanMetadata, IcebergReflection}
 import org.apache.comet.serde.{CometOperatorSerde, OperatorOuterClass}
-import org.apache.comet.serde.ExprOuterClass.Expr
 import org.apache.comet.serde.OperatorOuterClass.{Operator, SparkStructField}
-import org.apache.comet.serde.QueryPlanSerde.{exprToProto, serializeDataType}
+import org.apache.comet.serde.QueryPlanSerde.serializeDataType
 
 object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] with Logging {
 
@@ -59,7 +65,6 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
       val GT = "GT"
       val GT_EQ = "GT_EQ"
       val IN = "IN"
-      val NOT_IN = "NOT_IN"
     }
 
     // Iceberg expression class name suffixes
@@ -71,22 +76,57 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
     }
   }
 
+  /** Iceberg binary comparison operation names mapped to their IcebergPredicate operator. */
+  private val binaryOps: Map[String, OperatorOuterClass.IcebergPredicateOperator] = Map(
+    Constants.Operations.EQ -> OperatorOuterClass.IcebergPredicateOperator.Eq,
+    Constants.Operations.NOT_EQ -> OperatorOuterClass.IcebergPredicateOperator.NotEq,
+    Constants.Operations.LT -> OperatorOuterClass.IcebergPredicateOperator.LessThan,
+    Constants.Operations.LT_EQ -> OperatorOuterClass.IcebergPredicateOperator.LessThanOrEq,
+    Constants.Operations.GT -> OperatorOuterClass.IcebergPredicateOperator.GreaterThan,
+    Constants.Operations.GT_EQ -> OperatorOuterClass.IcebergPredicateOperator.GreaterThanOrEq)
+
+  // Iceberg reserved field IDs for metadata columns.
+  // These must match iceberg-rust's constants in crates/iceberg/src/metadata_columns.rs:
+  //   RESERVED_FIELD_ID_FILE      = i32::MAX - 1  (2147483646)
+  //   RESERVED_FIELD_ID_POS       = i32::MAX - 2  (2147483645)
+  //   RESERVED_FIELD_ID_SPEC_ID   = i32::MAX - 4  (2147483643)
+  //   RESERVED_FIELD_ID_PARTITION = i32::MAX - 5  (2147483642)
+  // Scala's Int.MaxValue == 2^31 - 1 == Rust's i32::MAX.
+  val MetadataFieldIds: Map[String, Int] =
+    Map(
+      "_file" -> (Int.MaxValue - 1),
+      "_pos" -> (Int.MaxValue - 2),
+      "_spec_id" -> (Int.MaxValue - 4),
+      "_partition" -> (Int.MaxValue - 5))
+
   /**
-   * Converts an Iceberg partition value to protobuf format. Protobuf is less verbose than JSON.
-   * The following types are also serialized as integer values instead of as strings - Timestamps,
-   * Dates, Decimals, FieldIDs
+   * Wraps an Iceberg partition value (a typed primitive) in a PartitionValue. The value encoding
+   * is shared with predicate literals via [[icebergLiteralToProto]].
    */
   private def partitionValueToProto(
       fieldId: Int,
       fieldTypeStr: String,
-      value: Any): OperatorOuterClass.PartitionValue = {
-    val builder = OperatorOuterClass.PartitionValue.newBuilder()
-    builder.setFieldId(fieldId)
+      value: Any): OperatorOuterClass.PartitionValue =
+    OperatorOuterClass.PartitionValue
+      .newBuilder()
+      .setFieldId(fieldId)
+      .setLiteral(icebergLiteralToProto(fieldTypeStr, value))
+      .build()
+
+  /**
+   * Converts an Iceberg primitive value to a typed IcebergLiteral, keyed on the Iceberg type
+   * name. Protobuf is less verbose than JSON; timestamps/dates/decimals are serialized as their
+   * integer or byte encodings rather than strings. Shared by partition values and predicate
+   * literals.
+   */
+  private def icebergLiteralToProto(
+      fieldTypeStr: String,
+      value: Any): OperatorOuterClass.IcebergLiteral = {
+    val builder = OperatorOuterClass.IcebergLiteral.newBuilder()
 
     if (value == null) {
       builder.setIsNull(true)
     } else {
-      builder.setIsNull(false)
       fieldTypeStr match {
         case t if t.startsWith("timestamp") =>
           val micros = value match {
@@ -105,13 +145,17 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
           builder.setDateVal(days)
 
         case d if d.startsWith("decimal(") =>
-          // Serialize as unscaled BigInteger bytes
           val bigDecimal = value match {
-            case bd: java.math.BigDecimal => bd
-            case _ => new java.math.BigDecimal(value.toString)
+            case bd: BigDecimal => bd
+            case _ => new BigDecimal(value.toString)
           }
-          val unscaledBytes = bigDecimal.unscaledValue().toByteArray
-          builder.setDecimalVal(com.google.protobuf.ByteString.copyFrom(unscaledBytes))
+          builder.setDecimalVal(
+            OperatorOuterClass.IcebergDecimal
+              .newBuilder()
+              .setUnscaled(ByteString.copyFrom(bigDecimal.unscaledValue().toByteArray))
+              .setPrecision(bigDecimal.precision())
+              .setScale(bigDecimal.scale())
+              .build())
 
         case "string" =>
           builder.setStringVal(value.toString)
@@ -158,20 +202,20 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
         case "uuid" =>
           // UUID as bytes (16 bytes) or string
           val uuidBytes = value match {
-            case uuid: java.util.UUID =>
-              val bb = java.nio.ByteBuffer.wrap(new Array[Byte](16))
+            case uuid: UUID =>
+              val bb = ByteBuffer.wrap(new Array[Byte](16))
               bb.putLong(uuid.getMostSignificantBits)
               bb.putLong(uuid.getLeastSignificantBits)
               bb.array()
             case _ =>
               // Parse UUID string and convert to bytes
-              val uuid = java.util.UUID.fromString(value.toString)
-              val bb = java.nio.ByteBuffer.wrap(new Array[Byte](16))
+              val uuid = UUID.fromString(value.toString)
+              val bb = ByteBuffer.wrap(new Array[Byte](16))
               bb.putLong(uuid.getMostSignificantBits)
               bb.putLong(uuid.getLeastSignificantBits)
               bb.array()
           }
-          builder.setUuidVal(com.google.protobuf.ByteString.copyFrom(uuidBytes))
+          builder.setUuidVal(ByteString.copyFrom(uuidBytes))
 
         case t if t.startsWith("fixed[") || t.startsWith("binary") =>
           val bytes = value match {
@@ -179,9 +223,9 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
             case _ => value.toString.getBytes("UTF-8")
           }
           if (t.startsWith("fixed")) {
-            builder.setFixedVal(com.google.protobuf.ByteString.copyFrom(bytes))
+            builder.setFixedVal(ByteString.copyFrom(bytes))
           } else {
-            builder.setBinaryVal(com.google.protobuf.ByteString.copyFrom(bytes))
+            builder.setBinaryVal(ByteString.copyFrom(bytes))
           }
 
         // Fallback: infer type from Java type ?
@@ -202,22 +246,20 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
   }
 
   /**
-   * Helper to extract a literal from an Iceberg expression and build a binary predicate.
+   * An encrypted ContentFile's plaintext StandardKeyMetadata blob as a protobuf ByteString, or
+   * None for an unencrypted file (keyMetadata() returns null). `method` is the cached
+   * ContentFile.keyMetadata() accessor. A reflection failure here is intentionally not caught: by
+   * serde time the plan is already committed to the native scan, so there is no fallback, and
+   * silently dropping the key of an encrypted file would fail obscurely in the native reader.
    */
-  private def buildBinaryPredicate(
-      exprClass: Class[_],
-      icebergExpr: Any,
-      attribute: Attribute,
-      builder: (Expression, Expression) => Expression): Option[Expression] = {
-    try {
-      val literalMethod = exprClass.getMethod("literal")
-      val literal = literalMethod.invoke(icebergExpr)
-      val value = convertIcebergLiteral(literal, attribute.dataType)
-      Some(builder(attribute, value))
-    } catch {
-      case _: Exception => None
+  private def keyMetadataBytes(
+      method: java.lang.reflect.Method,
+      contentFile: Any): Option[com.google.protobuf.ByteString] =
+    method.invoke(contentFile) match {
+      case buf: java.nio.ByteBuffer if buf.remaining() > 0 =>
+        Some(com.google.protobuf.ByteString.copyFrom(buf.duplicate()))
+      case _ => None
     }
-  }
 
   /**
    * Extracts delete files from an Iceberg FileScanTask as a list (for deduplication).
@@ -232,6 +274,8 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
       fileScanTaskClass: Class[_]): Seq[OperatorOuterClass.IcebergDeleteFile] = {
     try {
       val deleteFileClass = IcebergReflection.loadClass(IcebergReflection.ClassNames.DELETE_FILE)
+      // keyMetadata() is declared on ContentFile; present across all supported Iceberg versions.
+      val keyMetadataMethod = contentFileClass.getMethod("keyMetadata")
 
       val deletes = IcebergReflection.getDeleteFilesFromTask(task, fileScanTaskClass)
 
@@ -283,6 +327,10 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
           case _: Exception =>
         }
 
+        // Encrypted delete files carry a plaintext StandardKeyMetadata blob; forward it verbatim.
+        // Unencrypted delete files leave the field unset.
+        keyMetadataBytes(keyMetadataMethod, deleteFile).foreach(deleteBuilder.setKeyMetadata)
+
         deleteBuilder.build()
       }.toSeq
     } catch {
@@ -309,7 +357,6 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
       fileScanTaskClass: Class[_],
       taskBuilder: OperatorOuterClass.IcebergFileScanTask.Builder,
       commonBuilder: OperatorOuterClass.IcebergScanCommon.Builder,
-      partitionTypeToPoolIndex: mutable.HashMap[String, Int],
       partitionSpecToPoolIndex: mutable.HashMap[String, Int],
       partitionDataToPoolIndex: mutable.HashMap[String, Int]): Unit = {
     try {
@@ -317,27 +364,96 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
       val spec = specMethod.invoke(task)
 
       if (spec != null) {
-        // Deduplicate partition spec
-        try {
-          val partitionSpecParserClass =
-            IcebergReflection.loadClass(IcebergReflection.ClassNames.PARTITION_SPEC_PARSER)
-          val toJsonMethod = partitionSpecParserClass.getMethod(
-            "toJson",
-            IcebergReflection.loadClass(IcebergReflection.ClassNames.PARTITION_SPEC))
-          val partitionSpecJson = toJsonMethod
-            .invoke(null, spec)
-            .asInstanceOf[String]
+        // Get the partition type/schema from the spec. Needed regardless of whether this task
+        // ends up value-less below.
+        val partitionTypeMethod = spec.getClass.getMethod("partitionType")
+        val partitionType = partitionTypeMethod.invoke(spec)
+        val fieldsMethod = partitionType.getClass.getMethod("fields")
+        val fields = fieldsMethod
+          .invoke(partitionType)
+          .asInstanceOf[java.util.List[_]]
 
-          val specIdx = partitionSpecToPoolIndex.getOrElseUpdate(
-            partitionSpecJson, {
-              val idx = partitionSpecToPoolIndex.size
-              commonBuilder.addPartitionSpecPool(partitionSpecJson)
-              idx
-            })
-          taskBuilder.setPartitionSpecIdx(specIdx)
-        } catch {
-          case e: Exception =>
-            logWarning(s"Failed to serialize partition spec to JSON: ${e.getMessage}")
+        // Helper to get field type string (shared by both type and data serialization)
+        def getFieldType(field: Any): String = {
+          val typeMethod = field.getClass.getMethod("type")
+          typeMethod.invoke(field).toString
+        }
+
+        // Filter out fields with unknown types (dropped partition fields).
+        // Unknown type fields represent partition columns that have been dropped
+        // from the schema. Per the Iceberg spec, unknown type fields are not
+        // stored in data files and iceberg-rust doesn't support deserializing
+        // them. Since these columns are dropped, we don't need to expose their
+        // partition values when reading.
+        val fieldsJson = fields.asScala.flatMap { field =>
+          val fieldTypeStr = getFieldType(field)
+
+          // Skip fields with unknown type (dropped partition columns)
+          if (fieldTypeStr == IcebergReflection.TypeNames.UNKNOWN) {
+            None
+          } else {
+            val fieldIdMethod = field.getClass.getMethod("fieldId")
+            val fieldId = fieldIdMethod.invoke(field).asInstanceOf[Int]
+
+            val nameMethod = field.getClass.getMethod("name")
+            val fieldName = nameMethod.invoke(field).asInstanceOf[String]
+
+            val isOptionalMethod = field.getClass.getMethod("isOptional")
+            val isOptional =
+              isOptionalMethod.invoke(field).asInstanceOf[Boolean]
+            val required = !isOptional
+
+            Some(
+              ("id" -> fieldId) ~
+                ("name" -> fieldName) ~
+                ("required" -> required) ~
+                ("type" -> fieldTypeStr))
+          }
+        }.toList
+
+        // Serializes the file's real partition spec plus its paired partition-type-pool entry,
+        // then points the task at that pool index. Only invoked for tasks that actually carry
+        // partition values: a value-less task (partition evolution) takes the empty-spec path
+        // below instead, so this avoids the toJson reflection call and pool intern that would
+        // otherwise be computed and then immediately overwritten.
+        //
+        // The spec and type pools are index-aligned: native correlates the two by index to
+        // recover, per spec, the spec_id needed to merge partition types across historical specs
+        // in the same order Iceberg Java's Partitioning.partitionType()/iceberg-rust's
+        // compute_unified_partition_type do (newest spec_id first); see
+        // parse_file_scan_tasks_from_common in planner.rs. Every path that adds a spec-pool entry
+        // adds its type-pool entry in the same block to keep them aligned.
+        def serializeRealSpec(): Unit = {
+          try {
+            val partitionSpecParserClass =
+              IcebergReflection.loadClass(IcebergReflection.ClassNames.PARTITION_SPEC_PARSER)
+            val toJsonMethod = partitionSpecParserClass.getMethod(
+              "toJson",
+              IcebergReflection.loadClass(IcebergReflection.ClassNames.PARTITION_SPEC))
+            val partitionSpecJson = toJsonMethod
+              .invoke(null, spec)
+              .asInstanceOf[String]
+
+            val specIdx = partitionSpecToPoolIndex.getOrElseUpdate(
+              partitionSpecJson, {
+                val idx = partitionSpecToPoolIndex.size
+                commonBuilder.addPartitionSpecPool(partitionSpecJson)
+                // Manually build StructType JSON to match iceberg-rust expectations.
+                // Using Iceberg's SchemaParser.toJson() would include schema-level
+                // metadata (e.g., "schema-id") that iceberg-rust's StructType
+                // deserializer rejects. We need pure StructType format:
+                // {"type":"struct","fields":[...]}
+                val partitionTypeJson = compact(
+                  render(("type" -> "struct") ~
+                    ("fields" -> fieldsJson)))
+                commonBuilder.addPartitionTypePool(partitionTypeJson)
+                idx
+              })
+            taskBuilder.setPartitionSpecIdx(specIdx)
+          } catch {
+            case e: Exception =>
+              logWarning(s"Failed to serialize partition spec to JSON: ${e.getMessage}")
+          }
         }
 
         // Get partition data from the task (via file().partition())
@@ -345,84 +461,6 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
         val partitionData = partitionMethod.invoke(task)
 
         if (partitionData != null) {
-          // Get the partition type/schema from the spec
-          val partitionTypeMethod = spec.getClass.getMethod("partitionType")
-          val partitionType = partitionTypeMethod.invoke(spec)
-
-          // Check if partition type has any fields before serializing
-          val fieldsMethod = partitionType.getClass.getMethod("fields")
-          val fields = fieldsMethod
-            .invoke(partitionType)
-            .asInstanceOf[java.util.List[_]]
-
-          // Helper to get field type string (shared by both type and data serialization)
-          def getFieldType(field: Any): String = {
-            val typeMethod = field.getClass.getMethod("type")
-            typeMethod.invoke(field).toString
-          }
-
-          // Only serialize partition type if there are actual partition fields
-          if (!fields.isEmpty) {
-            try {
-              // Manually build StructType JSON to match iceberg-rust expectations.
-              // Using Iceberg's SchemaParser.toJson() would include schema-level
-              // metadata (e.g., "schema-id") that iceberg-rust's StructType
-              // deserializer rejects. We need pure StructType format:
-              // {"type":"struct","fields":[...]}
-
-              // Filter out fields with unknown types (dropped partition fields).
-              // Unknown type fields represent partition columns that have been dropped
-              // from the schema. Per the Iceberg spec, unknown type fields are not
-              // stored in data files and iceberg-rust doesn't support deserializing
-              // them. Since these columns are dropped, we don't need to expose their
-              // partition values when reading.
-              val fieldsJson = fields.asScala.flatMap { field =>
-                val fieldTypeStr = getFieldType(field)
-
-                // Skip fields with unknown type (dropped partition columns)
-                if (fieldTypeStr == IcebergReflection.TypeNames.UNKNOWN) {
-                  None
-                } else {
-                  val fieldIdMethod = field.getClass.getMethod("fieldId")
-                  val fieldId = fieldIdMethod.invoke(field).asInstanceOf[Int]
-
-                  val nameMethod = field.getClass.getMethod("name")
-                  val fieldName = nameMethod.invoke(field).asInstanceOf[String]
-
-                  val isOptionalMethod = field.getClass.getMethod("isOptional")
-                  val isOptional =
-                    isOptionalMethod.invoke(field).asInstanceOf[Boolean]
-                  val required = !isOptional
-
-                  Some(
-                    ("id" -> fieldId) ~
-                      ("name" -> fieldName) ~
-                      ("required" -> required) ~
-                      ("type" -> fieldTypeStr))
-                }
-              }.toList
-
-              // Only serialize if we have non-unknown fields
-              if (fieldsJson.nonEmpty) {
-                val partitionTypeJson = compact(
-                  render(
-                    ("type" -> "struct") ~
-                      ("fields" -> fieldsJson)))
-
-                val typeIdx = partitionTypeToPoolIndex.getOrElseUpdate(
-                  partitionTypeJson, {
-                    val idx = partitionTypeToPoolIndex.size
-                    commonBuilder.addPartitionTypePool(partitionTypeJson)
-                    idx
-                  })
-                taskBuilder.setPartitionTypeIdx(typeIdx)
-              }
-            } catch {
-              case e: Exception =>
-                logWarning(s"Failed to serialize partition type to JSON: ${e.getMessage}")
-            }
-          }
-
           // Serialize partition data to protobuf for native execution.
           // The native execution engine uses partition_data protobuf messages to
           // build a constants_map, which provides partition values to identity-
@@ -453,25 +491,65 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
               }
             }.toSeq
 
-          // Only serialize partition data if we have non-unknown fields
-          if (partitionValues.nonEmpty) {
-            val partitionDataProto = OperatorOuterClass.PartitionData
-              .newBuilder()
-              .addAllValues(partitionValues.asJava)
-              .build()
-
-            // Deduplicate by protobuf bytes (use Base64 string as key)
-            val partitionDataBytes = partitionDataProto.toByteArray
-            val partitionDataKey = java.util.Base64.getEncoder.encodeToString(partitionDataBytes)
-
-            val partitionDataIdx = partitionDataToPoolIndex.getOrElseUpdate(
-              partitionDataKey, {
-                val idx = partitionDataToPoolIndex.size
-                commonBuilder.addPartitionDataPool(partitionDataProto)
+          // Native requires a task to carry both a partition spec and partition data, or neither:
+          // iceberg-rust errors when the unified partition type has fields but a task is missing
+          // its spec/data. A file written while a partition field was dropped (partition
+          // evolution) has no partition values, so partitionValues is empty here.
+          //
+          // For that value-less case we must NOT send the file's real spec: it may retain a void
+          // field whose id collides with a unified field, which would make iceberg-rust index the
+          // empty partition data out of range. Instead send an empty-fields spec that keeps the
+          // real spec id (so _spec_id stays correct) plus empty data, so native fills every
+          // unified _partition field with null -- matching Spark and the pre-tightening behaviour.
+          // Pair it with an empty partition-type-pool entry too, keeping the two pools aligned.
+          //
+          // Only the value-carrying path serializes the real spec (serializeRealSpec), so the
+          // value-less path never does the reflection/intern work just to overwrite it.
+          if (partitionValues.isEmpty) {
+            val specId = spec.getClass.getMethod("specId").invoke(spec).asInstanceOf[Int]
+            val emptySpecJson =
+              compact(
+                render(("spec-id" -> specId) ~ ("fields" -> List.empty[org.json4s.JObject])))
+            val emptySpecIdx = partitionSpecToPoolIndex.getOrElseUpdate(
+              emptySpecJson, {
+                val idx = partitionSpecToPoolIndex.size
+                commonBuilder.addPartitionSpecPool(emptySpecJson)
+                val emptyTypeJson = compact(
+                  render(("type" -> "struct") ~
+                    ("fields" -> List.empty[org.json4s.JObject])))
+                commonBuilder.addPartitionTypePool(emptyTypeJson)
                 idx
               })
-            taskBuilder.setPartitionDataIdx(partitionDataIdx)
+            taskBuilder.setPartitionSpecIdx(emptySpecIdx)
+          } else {
+            serializeRealSpec()
           }
+
+          // Always send partition data (empty when there are no values) so native never sees a
+          // spec without data. Native uses it to build the identity-transform constants_map and,
+          // together with the spec above, the _partition column.
+          val partitionDataProto = OperatorOuterClass.PartitionData
+            .newBuilder()
+            .addAllValues(partitionValues.asJava)
+            .build()
+
+          // Deduplicate by protobuf bytes (use Base64 string as key)
+          val partitionDataBytes = partitionDataProto.toByteArray
+          val partitionDataKey = Base64.getEncoder.encodeToString(partitionDataBytes)
+
+          val partitionDataIdx = partitionDataToPoolIndex.getOrElseUpdate(
+            partitionDataKey, {
+              val idx = partitionDataToPoolIndex.size
+              commonBuilder.addPartitionDataPool(partitionDataProto)
+              idx
+            })
+          taskBuilder.setPartitionDataIdx(partitionDataIdx)
+        } else {
+          // Defensive: ContentScanTask.partition() returns an empty struct (never null) for
+          // unpartitioned tables in practice. If it is ever null we cannot compute values, so
+          // just register the file's real spec (preserving the pre-refactor behaviour) to keep
+          // _spec_id correct.
+          serializeRealSpec()
         }
       }
     } catch {
@@ -532,137 +610,216 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
   }
 
   /**
-   * Converts Iceberg Expression objects to Spark Catalyst expressions.
+   * Converts an Iceberg residual Expression into an IcebergPredicate for native row-group
+   * pruning.
    *
-   * This is used to extract per-file residual expressions from Iceberg FileScanTasks. Residuals
-   * are created by Iceberg's ResidualEvaluator through partial evaluation of scan filters against
-   * each file's partition data. These residuals enable row-group level filtering in the Parquet
-   * reader.
-   *
-   * The conversion uses reflection because Iceberg expressions are not directly accessible from
-   * Spark's classpath during query planning.
+   * Residuals come from Iceberg's ResidualEvaluator (partial evaluation of the scan filter
+   * against each file's partition data). This is only a pruning hint: the CometFilter above the
+   * scan enforces correctness, so any node or literal we cannot represent yields None (no
+   * pushdown). Predicates over `pageIndexUnsupportedColumns` also yield None (iceberg-rust cannot
+   * use those columns in the page index). Uses reflection because Iceberg's expression classes
+   * are not on Spark's classpath at planning time; residuals are unbound predicates carrying a
+   * NamedReference (column name) and a literal.
    */
-  def convertIcebergExpression(icebergExpr: Any, output: Seq[Attribute]): Option[Expression] = {
+  def icebergExprToProto(
+      icebergExpr: Any,
+      output: Seq[Attribute],
+      pageIndexUnsupportedColumns: Set[String]): Option[OperatorOuterClass.IcebergPredicate] = {
     try {
       val exprClass = icebergExpr.getClass
       val attributeMap = output.map(attr => attr.name -> attr).toMap
 
-      // Check for UnboundPredicate
       if (exprClass.getName.endsWith(Constants.ExpressionTypes.UNBOUND_PREDICATE)) {
-        val opMethod = exprClass.getMethod("op")
-        val termMethod = exprClass.getMethod("term")
-        val operation = opMethod.invoke(icebergExpr)
-        val term = termMethod.invoke(icebergExpr)
+        val operation = exprClass.getMethod("op").invoke(icebergExpr).toString
+        val term = exprClass.getMethod("term").invoke(icebergExpr)
+        val ref = term.getClass.getMethod("ref").invoke(term)
+        val columnName = ref.getClass.getMethod("name").invoke(ref).asInstanceOf[String]
 
-        // Get column name from term
-        val refMethod = term.getClass.getMethod("ref")
-        val ref = refMethod.invoke(term)
-        val nameMethod = ref.getClass.getMethod("name")
-        val columnName = nameMethod.invoke(ref).asInstanceOf[String]
-
-        val attr = attributeMap.get(columnName)
-
-        val opName = operation.toString
-
-        attr.flatMap { attribute =>
-          opName match {
-            case Constants.Operations.IS_NULL =>
-              Some(IsNull(attribute))
-
-            case Constants.Operations.IS_NOT_NULL | Constants.Operations.NOT_NULL =>
-              Some(IsNotNull(attribute))
-
-            case Constants.Operations.EQ =>
-              buildBinaryPredicate(exprClass, icebergExpr, attribute, EqualTo)
-
-            case Constants.Operations.NOT_EQ =>
-              buildBinaryPredicate(
-                exprClass,
-                icebergExpr,
-                attribute,
-                (a, v) => Not(EqualTo(a, v)))
-
-            case Constants.Operations.LT =>
-              buildBinaryPredicate(exprClass, icebergExpr, attribute, LessThan)
-
-            case Constants.Operations.LT_EQ =>
-              buildBinaryPredicate(exprClass, icebergExpr, attribute, LessThanOrEqual)
-
-            case Constants.Operations.GT =>
-              buildBinaryPredicate(exprClass, icebergExpr, attribute, GreaterThan)
-
-            case Constants.Operations.GT_EQ =>
-              buildBinaryPredicate(exprClass, icebergExpr, attribute, GreaterThanOrEqual)
-
-            case Constants.Operations.IN =>
-              val literalsMethod = exprClass.getMethod("literals")
-              val literals = literalsMethod.invoke(icebergExpr).asInstanceOf[java.util.List[_]]
-              val values =
-                literals.asScala.map(lit => convertIcebergLiteral(lit, attribute.dataType))
-              Some(In(attribute, values.toSeq))
-
-            case Constants.Operations.NOT_IN =>
-              val literalsMethod = exprClass.getMethod("literals")
-              val literals = literalsMethod.invoke(icebergExpr).asInstanceOf[java.util.List[_]]
-              val values =
-                literals.asScala.map(lit => convertIcebergLiteral(lit, attribute.dataType))
-              Some(Not(In(attribute, values.toSeq)))
-
-            case _ =>
-              None
+        // Iceberg names a nested reference by its dotted path ("struct.field"), which never matches
+        // a top-level scan output attribute, so a residual on a nested field drops here. That miss
+        // is also why the top-level-only pageIndexUnsupportedColumns gate below stays sound.
+        attributeMap.get(columnName).flatMap { attribute =>
+          import Constants.Operations._
+          import OperatorOuterClass.IcebergPredicateOperator
+          if (pageIndexUnsupportedColumns.contains(columnName)) {
+            // Any predicate on this column, including a unary IS [NOT] NULL, would reach the page
+            // index and fail, so drop the whole predicate; the post-scan CometFilter enforces it.
+            None
+          } else {
+            operation match {
+              case IS_NULL => Some(unaryPredicate(columnName, IcebergPredicateOperator.IsNull))
+              case IS_NOT_NULL | NOT_NULL =>
+                Some(unaryPredicate(columnName, IcebergPredicateOperator.NotNull))
+              case op if binaryOps.contains(op) =>
+                binaryPredicate(exprClass, icebergExpr, columnName, attribute, binaryOps(op))
+              case IN => setPredicate(exprClass, icebergExpr, columnName, attribute)
+              // NOT_IN is inherently unprunable from column stats, so it is not pushed.
+              case _ => None
+            }
           }
         }
       } else if (exprClass.getName.endsWith(Constants.ExpressionTypes.AND)) {
-        val leftMethod = exprClass.getMethod("left")
-        val rightMethod = exprClass.getMethod("right")
-        val left = leftMethod.invoke(icebergExpr)
-        val right = rightMethod.invoke(icebergExpr)
-
-        (convertIcebergExpression(left, output), convertIcebergExpression(right, output)) match {
-          case (Some(l), Some(r)) => Some(And(l, r))
+        val left = icebergExprToProto(
+          exprClass.getMethod("left").invoke(icebergExpr),
+          output,
+          pageIndexUnsupportedColumns)
+        val right = icebergExprToProto(
+          exprClass.getMethod("right").invoke(icebergExpr),
+          output,
+          pageIndexUnsupportedColumns)
+        (left, right) match {
+          // Push the residual only if it converts whole. Dropping a conjunct is safe in positive
+          // position but strengthens the predicate under a NOT (De Morgan), which would wrongly
+          // prune, and tracking polarity across arbitrary nesting is error prone. So an
+          // unconvertible conjunct elides the whole residual; the post-scan CometFilter is exact.
+          case (Some(l), Some(r)) => Some(logicalPredicate(isAnd = true, l, r))
           case _ => None
         }
       } else if (exprClass.getName.endsWith(Constants.ExpressionTypes.OR)) {
-        val leftMethod = exprClass.getMethod("left")
-        val rightMethod = exprClass.getMethod("right")
-        val left = leftMethod.invoke(icebergExpr)
-        val right = rightMethod.invoke(icebergExpr)
-
-        (convertIcebergExpression(left, output), convertIcebergExpression(right, output)) match {
-          case (Some(l), Some(r)) => Some(Or(l, r))
+        val left = icebergExprToProto(
+          exprClass.getMethod("left").invoke(icebergExpr),
+          output,
+          pageIndexUnsupportedColumns)
+        val right = icebergExprToProto(
+          exprClass.getMethod("right").invoke(icebergExpr),
+          output,
+          pageIndexUnsupportedColumns)
+        // Dropping a disjunct would strengthen the predicate and wrongly prune, so require both.
+        (left, right) match {
+          case (Some(l), Some(r)) => Some(logicalPredicate(isAnd = false, l, r))
           case _ => None
         }
       } else if (exprClass.getName.endsWith(Constants.ExpressionTypes.NOT)) {
-        val childMethod = exprClass.getMethod("child")
-        val child = childMethod.invoke(icebergExpr)
-
-        convertIcebergExpression(child, output).map(Not)
+        val child = exprClass.getMethod("child").invoke(icebergExpr)
+        icebergExprToProto(child, output, pageIndexUnsupportedColumns).map(notPredicate)
       } else {
         None
       }
     } catch {
-      case _: Exception =>
+      // Reflection over Iceberg's expression classes can fail on an unexpected shape (e.g. an
+      // Iceberg version change). A residual is only a pruning hint, so skip pushdown rather than
+      // fail the scan, but log it: a persistent warning here signals a real API drift to fix.
+      case e: Exception =>
+        logWarning(
+          "Skipping Iceberg residual pushdown; could not convert expression: " +
+            s"${e.getMessage}")
         None
     }
   }
 
-  /**
-   * Converts an Iceberg Literal to a Spark Literal
-   */
-  private def convertIcebergLiteral(icebergLiteral: Any, sparkType: DataType): Literal = {
-    // Load Literal interface to get value() method (use interface to avoid package-private issues)
-    val literalClass = IcebergReflection.loadClass(IcebergReflection.ClassNames.LITERAL)
-    val valueMethod = literalClass.getMethod("value")
-    val value = valueMethod.invoke(icebergLiteral)
+  private def unaryPredicate(
+      column: String,
+      op: OperatorOuterClass.IcebergPredicateOperator): OperatorOuterClass.IcebergPredicate =
+    OperatorOuterClass.IcebergPredicate
+      .newBuilder()
+      .setUnary(OperatorOuterClass.IcebergUnaryPredicate.newBuilder().setColumn(column).setOp(op))
+      .build()
 
-    // Convert Java types to Spark internal types
-    val sparkValue = (value, sparkType) match {
-      case (s: String, _: StringType) =>
-        org.apache.spark.unsafe.types.UTF8String.fromString(s)
-      case (v, _) => v
+  private def binaryPredicate(
+      exprClass: Class[_],
+      icebergExpr: Any,
+      column: String,
+      attribute: Attribute,
+      op: OperatorOuterClass.IcebergPredicateOperator)
+      : Option[OperatorOuterClass.IcebergPredicate] = {
+    val literal = exprClass.getMethod("literal").invoke(icebergExpr)
+    predicateLiteralToProto(attribute.dataType, icebergLiteralValue(literal)).map { lit =>
+      OperatorOuterClass.IcebergPredicate
+        .newBuilder()
+        .setBinary(
+          OperatorOuterClass.IcebergBinaryPredicate
+            .newBuilder()
+            .setColumn(column)
+            .setOp(op)
+            .setValue(lit))
+        .build()
     }
+  }
 
-    Literal(sparkValue, sparkType)
+  private def setPredicate(
+      exprClass: Class[_],
+      icebergExpr: Any,
+      column: String,
+      attribute: Attribute): Option[OperatorOuterClass.IcebergPredicate] = {
+    val literals =
+      exprClass.getMethod("literals").invoke(icebergExpr).asInstanceOf[java.util.List[_]]
+    val protoLiterals =
+      literals.asScala.map(l =>
+        predicateLiteralToProto(attribute.dataType, icebergLiteralValue(l)))
+    if (protoLiterals.isEmpty || protoLiterals.exists(_.isEmpty)) {
+      None
+    } else {
+      val setBuilder = OperatorOuterClass.IcebergSetPredicate
+        .newBuilder()
+        .setColumn(column)
+        .setOp(OperatorOuterClass.IcebergPredicateOperator.In)
+      // Sort literals so an IN list that Iceberg happens to iterate in a different order per file
+      // still deduplicates in the residual pool. Encode each key once (sortBy re-invokes its key
+      // function per comparison).
+      protoLiterals.flatten
+        .map(lit => (Base64.getEncoder.encodeToString(lit.toByteArray), lit))
+        .sortBy(_._1)
+        .foreach { case (_, lit) => setBuilder.addValues(lit) }
+      Some(OperatorOuterClass.IcebergPredicate.newBuilder().setSet(setBuilder).build())
+    }
+  }
+
+  private def logicalPredicate(
+      isAnd: Boolean,
+      left: OperatorOuterClass.IcebergPredicate,
+      right: OperatorOuterClass.IcebergPredicate): OperatorOuterClass.IcebergPredicate = {
+    val logical = OperatorOuterClass.IcebergLogicalPredicate
+      .newBuilder()
+      .setLeft(left)
+      .setRight(right)
+    val builder = OperatorOuterClass.IcebergPredicate.newBuilder()
+    if (isAnd) builder.setAnd(logical) else builder.setOr(logical)
+    builder.build()
+  }
+
+  private def notPredicate(
+      child: OperatorOuterClass.IcebergPredicate): OperatorOuterClass.IcebergPredicate =
+    OperatorOuterClass.IcebergPredicate.newBuilder().setNot(child).build()
+
+  /** Extracts the raw Java value from an Iceberg Literal via reflection. */
+  private def icebergLiteralValue(icebergLiteral: Any): Any = {
+    val literalClass = IcebergReflection.loadClass(IcebergReflection.ClassNames.LITERAL)
+    literalClass.getMethod("value").invoke(icebergLiteral)
+  }
+
+  /**
+   * Builds a predicate literal from its Iceberg value and the column's Spark type. Returns None
+   * for null (IS NULL is a separate op) and for Spark types this serde does not map to an
+   * IcebergLiteral, so the predicate degrades to no pushdown rather than an incorrect one.
+   * Columns backed by Parquet FIXED_LEN_BYTE_ARRAY (decimal/uuid/fixed) or BYTE_ARRAY (binary)
+   * are dropped earlier by the column gate in icebergExprToProto and never reach here.
+   */
+  private def predicateLiteralToProto(
+      sparkType: DataType,
+      value: Any): Option[OperatorOuterClass.IcebergLiteral] = {
+    if (value == null) {
+      return None
+    }
+    val builder = OperatorOuterClass.IcebergLiteral.newBuilder()
+    sparkType match {
+      case _: BooleanType => builder.setBoolVal(value.asInstanceOf[java.lang.Boolean])
+      // Spark byte/short map to Iceberg int (32-bit); iceberg-rust has no narrower integer type, so
+      // widening to int_val matches how it stores and prunes these columns.
+      case _: ByteType | _: ShortType | _: IntegerType =>
+        builder.setIntVal(value.asInstanceOf[java.lang.Number].intValue())
+      case _: LongType => builder.setLongVal(value.asInstanceOf[java.lang.Number].longValue())
+      case _: FloatType => builder.setFloatVal(value.asInstanceOf[java.lang.Number].floatValue())
+      case _: DoubleType =>
+        builder.setDoubleVal(value.asInstanceOf[java.lang.Number].doubleValue())
+      case _: DateType => builder.setDateVal(value.asInstanceOf[java.lang.Number].intValue())
+      case _: StringType => builder.setStringVal(value.toString)
+      case _: TimestampType =>
+        builder.setTimestampTzVal(value.asInstanceOf[java.lang.Number].longValue())
+      case _: TimestampNTZType =>
+        builder.setTimestampVal(value.asInstanceOf[java.lang.Number].longValue())
+      case _ => return None
+    }
+    Some(builder.build())
   }
 
   /**
@@ -686,10 +843,12 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
     val icebergScanBuilder = OperatorOuterClass.IcebergScan.newBuilder()
     val commonBuilder = OperatorOuterClass.IcebergScanCommon.newBuilder()
 
-    // Only set metadata_location - used for matching in PlanDataInjector.
-    // All other fields (catalog_properties, required_schema, pools) are set by
-    // serializePartitions() at execution time, so setting them here would be wasted work.
+    // metadata_location and scan_hash_code are set here for PlanDataInjector's key (see the
+    // scan_hash_code field comment in operator.proto). Everything else (catalog_properties,
+    // required_schema, pools) is set by serializePartitions() at execution time, so setting it
+    // here would be wasted work.
     commonBuilder.setMetadataLocation(metadata.metadataLocation)
+    commonBuilder.setScanHashCode(scan.scan.hashCode())
 
     icebergScanBuilder.setCommon(commonBuilder.build())
     // partition field intentionally empty - will be populated at execution time
@@ -703,6 +862,19 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
    *
    * Called after doPrepare() has resolved DPP subqueries. Builds pools and per-partition data in
    * one pass from the DPP-filtered partitions.
+   *
+   * The result splits into a common block plus one block per Spark partition. The common block
+   * holds everything shared across partitions and is broadcast once per executor in the stage
+   * task binary; each per-partition block ships with its task. Protobuf serializes by value and
+   * shares nothing between repeated fields, so shared values (schemas, specs, partition data,
+   * residuals, delete files) are interned into pools in the common block and referenced by index.
+   * Pooling also keeps a message under protobuf's 2 GiB limit (getSerializedSize returns int and
+   * wraps past it), which matters for anything that scales with the number of tasks.
+   *
+   * Delete files use two levels: a flat pool of unique files, plus a per-task list of indices
+   * into it. One delete file applies to many data files under Iceberg's default partition delete
+   * granularity, so this stores each file once and references it many times, as Iceberg's own
+   * DeleteFileIndex does.
    *
    * @param scanExec
    *   The BatchScanExec whose inputRDD contains the DPP-filtered partitions
@@ -722,14 +894,23 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
 
     // Deduplication structures - map unique values to pool indices
     val schemaToPoolIndex = mutable.HashMap[AnyRef, Int]()
-    val partitionTypeToPoolIndex = mutable.HashMap[String, Int]()
     val partitionSpecToPoolIndex = mutable.HashMap[String, Int]()
     val nameMappingToPoolIndex = mutable.HashMap[String, Int]()
     val projectFieldIdsToPoolIndex = mutable.HashMap[Seq[Int], Int]()
     val partitionDataToPoolIndex = mutable.HashMap[String, Int]()
+    // Individual delete files are interned into a flat pool keyed by path (a delete file's path is
+    // its identity); deleteFilesToPoolIndex then dedups the per-task sets as lists of indices into
+    // that pool. One delete file applies to many data files under Iceberg's default partition
+    // delete granularity, so interning avoids re-serializing it once per referencing FileScanTask.
+    val deleteFileToPoolIndex = mutable.HashMap[String, Int]()
     val deleteFilesToPoolIndex =
-      mutable.HashMap[Seq[OperatorOuterClass.IcebergDeleteFile], Int]()
-    val residualToPoolIndex = mutable.HashMap[Option[Expr], Int]()
+      mutable.HashMap[Seq[Int], Int]()
+    val residualToPoolIndex = mutable.HashMap[OperatorOuterClass.IcebergPredicate, Int]()
+    // Columns whose Iceberg type iceberg-rust cannot use for page-index pruning; residual
+    // predicates over them are dropped (see icebergExprToProto). Computed once from the full table
+    // schema so a filter column projected out of the scan output is still recognized.
+    val pageIndexUnsupportedColumns =
+      IcebergReflection.pageIndexUnsupportedColumns(metadata.tableSchema)
 
     val perPartitionBuilders = mutable.ArrayBuffer[OperatorOuterClass.IcebergScan]()
 
@@ -770,6 +951,9 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
     val lengthMethod = contentScanTaskClass.getMethod("length")
     val residualMethod = contentScanTaskClass.getMethod("residual")
     val fileSizeInBytesMethod = contentFileClass.getMethod("fileSizeInBytes")
+    // keyMetadata() is declared on ContentFile (present across all supported Iceberg versions).
+    // For encrypted tables it returns the plaintext StandardKeyMetadata blob; null otherwise.
+    val keyMetadataMethod = contentFileClass.getMethod("keyMetadata")
     val taskSchemaMethod = fileScanTaskClass.getMethod("schema")
     val toJsonMethod = schemaParserClass.getMethod("toJson", schemaClass)
     toJsonMethod.setAccessible(true)
@@ -827,6 +1011,10 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
                   fileSizeInBytesMethod.invoke(dataFile).asInstanceOf[Long]
                 taskBuilder.setFileSizeInBytes(fileSizeInBytes)
 
+                // Encrypted data files carry a plaintext StandardKeyMetadata blob; forward it
+                // verbatim for iceberg-rust to decode. Unencrypted files leave the field unset.
+                keyMetadataBytes(keyMetadataMethod, dataFile).foreach(taskBuilder.setKeyMetadata)
+
                 val taskSchema = taskSchemaMethod.invoke(task)
 
                 val deletes =
@@ -883,14 +1071,16 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
 
                 val nameToFieldId = IcebergReflection.buildFieldIdMapping(schema)
 
-                val projectFieldIds = output.flatMap { attr =>
+                val projectFieldIds = output.map { attr =>
                   nameToFieldId
                     .get(attr.name)
                     .orElse(metadata.globalFieldIdMapping.get(attr.name))
-                    .orElse {
-                      logWarning(s"Column '${attr.name}' not found in task or scan schema, " +
-                        "skipping projection")
-                      None
+                    .orElse(CometIcebergNativeScan.MetadataFieldIds.get(attr.name))
+                    .getOrElse {
+                      throw new IllegalStateException(
+                        s"Column '${attr.name}' not found in task schema, global schema, " +
+                          "or metadata field IDs. This indicates a bug in CometScanRule " +
+                          "validation -- all output columns should be resolvable.")
                     }
                 }
 
@@ -907,11 +1097,21 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
                 val deleteFilesList =
                   extractDeleteFilesList(task, contentFileClass, fileScanTaskClass)
                 if (deleteFilesList.nonEmpty) {
+                  // Intern each delete file into the flat pool, then dedup this task's set as the
+                  // resulting list of pool indices.
+                  val deleteFileIndices = deleteFilesList.map { df =>
+                    deleteFileToPoolIndex.getOrElseUpdate(
+                      df.getFilePath, {
+                        val idx = deleteFileToPoolIndex.size
+                        commonBuilder.addDeleteFilePool(df)
+                        idx
+                      })
+                  }
                   val deleteFilesIdx = deleteFilesToPoolIndex.getOrElseUpdate(
-                    deleteFilesList, {
+                    deleteFileIndices, {
                       val idx = deleteFilesToPoolIndex.size
                       val listBuilder = OperatorOuterClass.DeleteFileList.newBuilder()
-                      deleteFilesList.foreach(df => listBuilder.addDeleteFiles(df))
+                      deleteFileIndices.foreach(idx => listBuilder.addDeleteFileIndices(idx))
                       commonBuilder.addDeleteFilesPool(listBuilder.build())
                       idx
                     })
@@ -920,11 +1120,10 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
 
                 val residualExprOpt =
                   try {
-                    val residualExpr = residualMethod.invoke(task)
-                    val catalystExpr = convertIcebergExpression(residualExpr, output)
-                    catalystExpr.flatMap { expr =>
-                      exprToProto(expr, output, binding = false)
-                    }
+                    icebergExprToProto(
+                      residualMethod.invoke(task),
+                      output,
+                      pageIndexUnsupportedColumns)
                   } catch {
                     case e: Exception =>
                       logWarning(
@@ -933,11 +1132,11 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
                       None
                   }
 
-                residualExprOpt.foreach { residualExpr =>
+                residualExprOpt.foreach { residual =>
                   val residualIdx = residualToPoolIndex.getOrElseUpdate(
-                    Some(residualExpr), {
+                    residual, {
                       val idx = residualToPoolIndex.size
-                      commonBuilder.addResidualPool(residualExpr)
+                      commonBuilder.addResidualPool(residual)
                       idx
                     })
                   taskBuilder.setResidualIdx(residualIdx)
@@ -949,7 +1148,6 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
                   fileScanTaskClass,
                   taskBuilder,
                   commonBuilder,
-                  partitionTypeToPoolIndex,
                   partitionSpecToPoolIndex,
                   partitionDataToPoolIndex)
 
@@ -991,11 +1189,11 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
     // Log deduplication summary
     val allPoolSizes = Seq(
       schemaToPoolIndex.size,
-      partitionTypeToPoolIndex.size,
       partitionSpecToPoolIndex.size,
       nameMappingToPoolIndex.size,
       projectFieldIdsToPoolIndex.size,
       partitionDataToPoolIndex.size,
+      deleteFileToPoolIndex.size,
       deleteFilesToPoolIndex.size,
       residualToPoolIndex.size)
 
@@ -1011,16 +1209,67 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
       }
     }
 
-    val partitionDataPoolBytes = commonBuilder.getPartitionDataPoolList.asScala
-      .map(_.getSerializedSize)
-      .sum
+    // Per-pool byte sizes to diagnose an oversized common message. Sizes sum as Long because a
+    // single pool at or past protobuf's 2 GiB message limit overflows the int getSerializedSize,
+    // and the logging runs before toByteArray so the breakdown survives even if that allocation
+    // fails. String pools carry JSON, whose serialized size is its UTF-8 length.
+    def sumSizes(sizes: Iterator[Int]): Long = sizes.map(_.toLong).sum
+    def sumStrBytes(strings: mutable.Buffer[String]): Long =
+      strings.iterator.map(_.getBytes(UTF_8).length.toLong).sum
+    val commonPoolBytes: Seq[(String, Int, Long)] = Seq(
+      (
+        "schema",
+        commonBuilder.getSchemaPoolCount,
+        sumStrBytes(commonBuilder.getSchemaPoolList.asScala)),
+      (
+        "partition_type",
+        commonBuilder.getPartitionTypePoolCount,
+        sumStrBytes(commonBuilder.getPartitionTypePoolList.asScala)),
+      (
+        "partition_spec",
+        commonBuilder.getPartitionSpecPoolCount,
+        sumStrBytes(commonBuilder.getPartitionSpecPoolList.asScala)),
+      (
+        "name_mapping",
+        commonBuilder.getNameMappingPoolCount,
+        sumStrBytes(commonBuilder.getNameMappingPoolList.asScala)),
+      (
+        "project_field_ids",
+        commonBuilder.getProjectFieldIdsPoolCount,
+        sumSizes(
+          commonBuilder.getProjectFieldIdsPoolList.asScala.iterator.map(_.getSerializedSize))),
+      (
+        "partition_data",
+        commonBuilder.getPartitionDataPoolCount,
+        sumSizes(
+          commonBuilder.getPartitionDataPoolList.asScala.iterator.map(_.getSerializedSize))),
+      (
+        "delete_file",
+        commonBuilder.getDeleteFilePoolCount,
+        sumSizes(commonBuilder.getDeleteFilePoolList.asScala.iterator.map(_.getSerializedSize))),
+      (
+        "delete_files_set",
+        commonBuilder.getDeleteFilesPoolCount,
+        sumSizes(commonBuilder.getDeleteFilesPoolList.asScala.iterator.map(_.getSerializedSize))),
+      (
+        "residual",
+        commonBuilder.getResidualPoolCount,
+        sumSizes(commonBuilder.getResidualPoolList.asScala.iterator.map(_.getSerializedSize))))
+
+    val perPartitionSizes = perPartitionBuilders.map(_.getSerializedSize.toLong)
+    val perPartitionTotal = perPartitionSizes.sum
+    val perPartitionMax = if (perPartitionSizes.isEmpty) 0L else perPartitionSizes.max
 
     logInfo(s"IcebergScan: $totalTasks tasks, ${allPoolSizes.size} pools ($avgDedup% avg dedup)")
-    if (partitionDataToPoolIndex.nonEmpty) {
-      logInfo(
-        s"  Partition data pool: ${partitionDataToPoolIndex.size} unique values, " +
-          s"$partitionDataPoolBytes bytes (protobuf)")
-    }
+    logInfo(
+      "  Common pools (unique/bytes): " +
+        commonPoolBytes
+          .map { case (name, count, bytes) => s"$name=$count/$bytes" }
+          .mkString(", ") +
+        s"; total=${commonPoolBytes.map(_._3).sum} bytes")
+    logInfo(
+      s"  Per-partition messages: ${perPartitionBuilders.size}, " +
+        s"total=$perPartitionTotal bytes, max=$perPartitionMax bytes")
 
     val commonBytes = commonBuilder.build().toByteArray
     val perPartitionBytes = perPartitionBuilders.map(_.toByteArray).toArray

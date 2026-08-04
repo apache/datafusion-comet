@@ -107,7 +107,7 @@ impl PhysicalExpr for NormalizeNaNAndZero {
 /// Normalize a floating point value by converting all NaN representations to a canonical NaN
 /// and negative zero to positive zero. This is used for Spark's comparison semantics.
 #[inline]
-fn normalize_float<T: num::Float>(v: T) -> T {
+pub(crate) fn normalize_float<T: num::Float>(v: T) -> T {
     if v.is_nan() {
         T::nan()
     } else if v == T::neg_zero() {

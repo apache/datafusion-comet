@@ -86,6 +86,7 @@ object CometExecRule {
       classOf[SortMergeJoinExec] -> CometSortMergeJoinExec,
       classOf[SortExec] -> CometSortExec,
       classOf[LocalTableScanExec] -> CometLocalTableScanExec,
+      classOf[SampleExec] -> CometSampleExec,
       classOf[WindowExec] -> CometWindowExec)
 
   /**
@@ -371,9 +372,14 @@ case class CometExecRule(session: SparkSession)
         op match {
           case _: CometPlan | _: AQEShuffleReadExec | _: BroadcastExchangeExec |
               _: BroadcastQueryStageExec | _: AdaptiveSparkPlanExec | _: ExecutedCommandExec |
-              _: V2CommandExec =>
+              _: V2CommandExec | _: WriteFilesExec =>
             // Some execs should never be replaced. We include
-            // these cases specially here so we do not add a misleading 'info' message
+            // these cases specially here so we do not add a misleading 'info' message.
+            // WriteFilesExec is always wrapped by DataWritingCommandExec (via Spark's V1Writes
+            // rule); the parent case converts the whole write to CometNativeWriteExec and
+            // unwraps WriteFilesExec inside convertToComet. Tagging WriteFilesExec here would
+            // produce a spurious "WriteFilesExec is not supported" fallback reason (and a warning
+            // when COMET_EXPLAIN_FALLBACK_LOG_ENABLED=true) even when the write is fully native.
             op
           case _ =>
             // The operator was not converted to a Comet plan. Possible reasons for this happening:
@@ -435,10 +441,20 @@ case class CometExecRule(session: SparkSession)
       case sub: SubqueryBroadcastExec =>
         sub.child match {
           case b: BroadcastExchangeExec =>
-            // The BroadcastExchangeExec child is CometNativeColumnarToRowExec wrapping
+            // The BroadcastExchangeExec child is a Comet columnar-to-row transition wrapping
             // a Comet plan. Strip the row transition to get the columnar Comet plan.
+            // CometColumnarToRowExec is CodegenSupport, so by the time this rule sees the
+            // subquery plan it is compiled into WholeStageCodegenExec(CometColumnarToRowExec(
+            // InputAdapter(cometPlan))); CometNativeColumnarToRowExec is not CodegenSupport and
+            // sits directly under the exchange.
             val cometChild = b.child match {
               case c2r: CometNativeColumnarToRowExec => c2r.child
+              case c2r: CometColumnarToRowExec => c2r.child
+              case WholeStageCodegenExec(c2r: CometColumnarToRowExec) =>
+                c2r.child match {
+                  case InputAdapter(child) => child
+                  case other => other
+                }
               case other => other
             }
             if (cometChild.isInstanceOf[CometNativeExec]) {
@@ -568,7 +584,7 @@ case class CometExecRule(session: SparkSession)
     } else {
       val normalizedPlan = normalizePlan(plan)
 
-      val planWithJoinRewritten = if (CometConf.COMET_REPLACE_SMJ.get()) {
+      val planWithJoinRewritten = if (CometConf.COMET_FORCE_SHJ.get()) {
         normalizedPlan.transformUp { case p =>
           RewriteJoin.rewrite(p)
         }
@@ -606,7 +622,7 @@ case class CometExecRule(session: SparkSession)
       // Revert CometColumnarShuffle to Spark's ShuffleExchangeExec when both its parent and child
       // are non-Comet HashAggregate/ObjectHashAggregate operators that remained JVM after the main
       // transform pass. See https://github.com/apache/datafusion-comet/issues/4004.
-      if (CometConf.COMET_EXEC_SHUFFLE_REVERT_REDUNDANT_COLUMNAR_ENABLED.get()) {
+      if (CometConf.COMET_SHUFFLE_REVERT_REDUNDANT_COLUMNAR_ENABLED.get()) {
         newPlan = revertRedundantColumnarShuffle(newPlan)
       }
 
@@ -729,14 +745,29 @@ case class CometExecRule(session: SparkSession)
    * Lift informational (non-fallback) messages tagged on an operator and its expressions onto the
    * converted Comet plan node so they appear in verbose extended explain output. Expression-level
    * hints would otherwise be invisible because explain only traverses plan nodes, not
-   * expressions.
+   * expressions. `NATIVE_EXPRS` and `CODEGEN_DISPATCH_EXPRS` names across the tree are lifted the
+   * same way so that extended explain can report expression coverage; the dispatched ones
+   * additionally become one combined info line when `spark.comet.explain.codegen.enabled` is set.
    */
   private def rollUpInfoMessages(op: SparkPlan, exec: SparkPlan): Unit = {
-    val fromOp = op.getTagValue(CometExplainInfo.EXTENSION_INFO).getOrElse(Set.empty[String])
-    val fromExprs = op.expressions
-      .flatMap(_.collect { case e: Expression => e })
-      .flatMap(_.getTagValue(CometExplainInfo.EXTENSION_INFO).getOrElse(Set.empty[String]))
-    (fromOp ++ fromExprs).foreach(msg => withInfo(exec, msg))
+    val allExprs = op.expressions.flatMap(_.collect { case e: Expression => e })
+
+    val infos =
+      op.getTagValue(CometExplainInfo.EXTENSION_INFO).getOrElse(Set.empty[String]) ++
+        CometExplainInfo.collectExprTagValues(allExprs, CometExplainInfo.EXTENSION_INFO)
+    infos.foreach(msg => withInfo(exec, msg))
+
+    appendTagValues(
+      exec,
+      CometExplainInfo.NATIVE_EXPRS,
+      CometExplainInfo.collectExprTagValues(allExprs, CometExplainInfo.NATIVE_EXPRS))
+
+    val routedNames =
+      CometExplainInfo.collectExprTagValues(allExprs, CometExplainInfo.CODEGEN_DISPATCH_EXPRS)
+    appendTagValues(exec, CometExplainInfo.CODEGEN_DISPATCH_EXPRS, routedNames)
+    if (routedNames.nonEmpty && CometConf.COMET_EXPLAIN_CODEGEN_ENABLED.get()) {
+      withInfo(exec, s"JVM codegen dispatcher: ${routedNames.toSeq.sorted.mkString(", ")}")
+    }
   }
 
   private def isOperatorEnabled(
@@ -857,6 +888,29 @@ case class CometExecRule(session: SparkSession)
                 CometExecRule.COMET_UNSAFE_PARTIAL,
                 "Partial aggregate disabled: corresponding final aggregate " +
                   "cannot be converted to Comet and intermediate buffer formats are incompatible")
+            }
+          }
+        }
+
+        // CollectList/CollectSet round-trip an ArrayType buffer that Spark declares as BinaryType.
+        // In a multi-stage aggregate with a PartialMerge stage (e.g. Spark's distinct-aggregate
+        // rewrite), Comet cannot represent that buffer consistently across the intermediate stages
+        // (issue #4724), so a fully-native pipeline crashes. Force the whole chain to fall back to
+        // Spark by tagging the feeding pure-Partial; the PartialMerge/Final stages then fall back
+        // via the buffer-source check in doConvert.
+        //
+        // This block is intentionally separate from the tagging block just above: that one only
+        // fires when the Final itself cannot be converted, but `canAggregateBeConverted` skips
+        // the child-native check, so an all-native distinct `collect_list` chain converts its
+        // Final and slips past the earlier tagging pass. This block catches that case.
+        if (agg.aggregateExpressions.exists(_.mode == PartialMerge) &&
+          QueryPlanSerde.hasNativeArrayBufferAgg(agg.aggregateExpressions)) {
+          findPartialAggInPlan(agg.child).foreach { partial =>
+            if (canAggregateBeConverted(partial, Partial)) {
+              partial.setTagValue(
+                CometExecRule.COMET_UNSAFE_PARTIAL,
+                "Partial aggregate disabled: part of a multi-stage CollectList/CollectSet " +
+                  "aggregate whose intermediate buffer cannot round-trip in Comet (issue #4724)")
             }
           }
         }

@@ -124,7 +124,7 @@ jobs:
           ./mvnw -B package -DskipTests scalafix:scalafix -Dscalafix.mode=CHECK -Psemanticdb ${{ matrix.profile.maven_opts }}
 
       - name: Setup Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version: '24'
 
@@ -312,6 +312,7 @@ jobs:
               org.apache.spark.sql.comet.ParquetEncryptionITCase
               org.apache.comet.exec.CometNativeReaderSuite
               org.apache.comet.CometIcebergNativeSuite
+              org.apache.comet.CometIcebergEncryptionSuite
               org.apache.comet.CometIcebergRewriteActionSuite
               org.apache.comet.iceberg.IcebergReflectionSuite
               org.apache.comet.csv.CometCsvNativeReadSuite
@@ -340,6 +341,9 @@ jobs:
               org.apache.comet.exec.CometJoinSuite
               org.apache.spark.sql.comet.CometMapInBatchSuite
               org.apache.comet.CometNativeSuite
+              org.apache.comet.CometConfSuite
+              org.apache.comet.CometPublicApiSuite
+              org.apache.comet.QueryContextInternerSuite
               org.apache.comet.CometSetOpWithGroupBySuite
               org.apache.comet.CometSparkSessionExtensionsSuite
               org.apache.spark.CometPluginsSuite
@@ -362,6 +366,7 @@ jobs:
               org.apache.spark.sql.comet.CometDecimalArithmeticViewSuite
               org.apache.spark.sql.comet.CometScanWithPlanDataSuite
               org.apache.spark.sql.comet.util.UtilsSuite
+              org.apache.comet.vector.NativeUtilSuite
               org.apache.comet.objectstore.NativeConfigSuite
               org.apache.spark.sql.CometToPrettyStringSuite
               org.apache.spark.sql.CometCollationSuite
@@ -391,12 +396,15 @@ jobs:
               org.apache.comet.expressions.conditional.CometCaseWhenSuite
               org.apache.comet.CometRegExpJvmSuite
               org.apache.comet.CometCodegenSuite
+              org.apache.comet.CometCoverageStatsSuite
               org.apache.comet.CometCodegenSourceSuite
               org.apache.comet.CometCodegenHOFSuite
               org.apache.comet.CometFuzzMathSuite
               org.apache.comet.CometCodegenFuzzSuite
+              org.apache.comet.codegen.CometSpecializedGettersDispatchSuite
               org.apache.comet.CometStringDecodeSuite
               org.apache.comet.CometWidthBucketSuite
+              org.apache.comet.CometUuidExpressionSuite
       fail-fast: false
     name: ${{ matrix.profile.name }} [${{ matrix.suite.name }}]
     runs-on: ubuntu-24.04
