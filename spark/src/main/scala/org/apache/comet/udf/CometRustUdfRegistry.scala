@@ -21,8 +21,6 @@ package org.apache.comet.udf
 
 import java.util.concurrent.ConcurrentHashMap
 
-import scala.jdk.CollectionConverters._
-
 import org.apache.spark.sql.types.DataType
 
 /** Metadata for a registered Rust UDF. */
@@ -46,10 +44,6 @@ class CometRustUdfRegistry {
   /** Return metadata for a name, if registered. */
   def get(name: String): Option[RustUdfMetadata] =
     Option(byName.get(name))
-
-  /** Snapshot the registered set as an immutable Map. */
-  def snapshot: Map[String, RustUdfMetadata] =
-    byName.asScala.toMap
 }
 
 object CometRustUdfRegistry {

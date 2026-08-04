@@ -40,18 +40,18 @@ import com.fasterxml.jackson.databind.node.ObjectNode
  */
 object CometRustUDF {
 
-  /** Spark conf key under which registered Rust UDF entries are propagated to executors. */
-  val RUST_UDFS_CONF_KEY = "spark.comet.rustUdfs"
-
   private val mapper: ObjectMapper = new ObjectMapper()
 
   /**
    * Register a single Rust UDF with an explicit signature.
    *
    * Validates the library on the driver (loads it, confirms a UDF named `name` exists). On
-   * success a stub Spark catalog UDF is installed (so SQL/DataFrame name resolution succeeds),
-   * the driver-side registry is updated, and `spark.comet.rustUdfs` is updated so executors see
-   * the registration.
+   * success a stub Spark catalog UDF is installed (so SQL/DataFrame name resolution succeeds) and
+   * the driver-side registry is updated.
+   *
+   * Executors do not consult the driver's registry: the library path travels with the plan in the
+   * `RustUdfCall` proto, and each executor loads the library itself on first use. The path must
+   * therefore be valid on every executor, not just the driver.
    */
   def register(
       spark: SparkSession,
@@ -65,7 +65,6 @@ object CometRustUDF {
     installCatalogStub(spark, name, inputTypes, returnType, deterministic)
     val meta = RustUdfMetadata(libraryPath, inputTypes, returnType, deterministic)
     CometRustUdfRegistry.instance.register(name, meta)
-    propagateConf(spark)
   }
 
   // -------- internals --------
@@ -128,13 +127,5 @@ object CometRustUDF {
     }
     val finalUdf = if (deterministic) u else u.asNondeterministic()
     spark.udf.register(name, finalUdf)
-  }
-
-  private def propagateConf(spark: SparkSession): Unit = {
-    val snapshot = CometRustUdfRegistry.instance.snapshot
-    val entries = snapshot.toSeq.map { case (name, meta) =>
-      mapper.writeValueAsString(java.util.Map.of("name", name, "libraryPath", meta.libraryPath))
-    }
-    spark.conf.set(RUST_UDFS_CONF_KEY, entries.mkString(";"))
   }
 }
