@@ -537,7 +537,7 @@ abstract class ParquetReadSuite extends CometTestBase {
           $"_metadata.file_block_start",
           $"_metadata.file_block_length",
           $"_metadata.file_modification_time")
-      checkSparkAnswerAndOperator(df, Seq(classOf[CometNativeScanExec]))
+      checkSparkAnswerAndOperator(df)
     }
   }
 
@@ -590,7 +590,7 @@ abstract class ParquetReadSuite extends CometTestBase {
           .parquet(dir.getCanonicalPath)
           .filter($"_metadata.file_size" === smallerSize)
           .select($"id")
-        checkSparkAnswerAndOperator(df, Seq(classOf[CometNativeScanExec]))
+        checkSparkAnswerAndOperator(df)
       }
     }
   }
@@ -605,7 +605,7 @@ abstract class ParquetReadSuite extends CometTestBase {
           .parquet(dir.getCanonicalPath)
           .filter($"_metadata.file_size" > smallerSize)
           .select($"id")
-        checkSparkAnswerAndOperator(df, Seq(classOf[CometNativeScanExec]))
+        checkSparkAnswerAndOperator(df)
       }
     }
   }
@@ -620,7 +620,7 @@ abstract class ParquetReadSuite extends CometTestBase {
           .parquet(dir.getCanonicalPath)
           .filter($"_metadata.file_size" === largerSize && $"id" > 1500)
           .select($"id")
-        checkSparkAnswerAndOperator(df, Seq(classOf[CometNativeScanExec]))
+        checkSparkAnswerAndOperator(df)
       }
     }
   }
@@ -635,7 +635,7 @@ abstract class ParquetReadSuite extends CometTestBase {
           .parquet(dir.getCanonicalPath)
           .filter($"_metadata.file_path" === targetPath)
           .select($"id")
-        checkSparkAnswerAndOperator(df, Seq(classOf[CometNativeScanExec]))
+        checkSparkAnswerAndOperator(df)
       }
     }
   }
@@ -651,7 +651,7 @@ abstract class ParquetReadSuite extends CometTestBase {
       val df = spark.read
         .parquet(dir.getCanonicalPath)
         .select($"id", $"pcol", $"_metadata.file_path", $"_metadata.file_size")
-      checkSparkAnswerAndOperator(df, Seq(classOf[CometNativeScanExec]))
+      checkSparkAnswerAndOperator(df)
     }
   }
 
@@ -667,7 +667,47 @@ abstract class ParquetReadSuite extends CometTestBase {
         .parquet(dir.getCanonicalPath)
         .filter($"pcol" === "b" && $"_metadata.file_size" > 0)
         .select($"id")
-      checkSparkAnswerAndOperator(df, Seq(classOf[CometNativeScanExec]))
+      checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  test("_metadata.file_path and file_name are url-encoded for a directory with a space") {
+    withTempDir { parent =>
+      val dir = new File(parent, "dir with space")
+      (1 to 10).toDF("id").repartition(1).write.parquet(dir.getCanonicalPath)
+      val df = spark.read
+        .parquet(dir.getCanonicalPath)
+        .select($"id", $"_metadata.file_path", $"_metadata.file_name")
+      checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  test("_metadata column does not collide with a data column of the same name") {
+    withTempPath { dir =>
+      Seq((1L, 10), (2L, 20))
+        .toDF("file_size", "x")
+        .repartition(1)
+        .write
+        .parquet(dir.getCanonicalPath)
+      val df = spark.read
+        .parquet(dir.getCanonicalPath)
+        .select($"file_size", $"x", $"_metadata.file_size".as("meta_size"))
+      checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  test("_metadata column does not collide with a partition column of the same name") {
+    withTempPath { dir =>
+      Seq((1, 100L), (2, 200L))
+        .toDF("id", "file_size")
+        .repartition(1)
+        .write
+        .partitionBy("file_size")
+        .parquet(dir.getCanonicalPath)
+      val df = spark.read
+        .parquet(dir.getCanonicalPath)
+        .select($"id", $"file_size", $"_metadata.file_size")
+      checkSparkAnswerAndOperator(df)
     }
   }
 

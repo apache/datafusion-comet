@@ -134,4 +134,21 @@ class CometScanRuleSuite extends CometTestBase {
     }
   }
 
+  test("CometScanRule should fallback to Spark for unsupported _metadata columns") {
+    withTempPath { path =>
+      createTestDataFrame.write.parquet(path.toString)
+      withTempView("test_data") {
+        spark.read.parquet(path.toString).createOrReplaceTempView("test_data")
+
+        for (query <- Seq(
+            "SELECT id, _metadata FROM test_data",
+            "SELECT id, _metadata.row_index FROM test_data")) {
+          val transformedPlan = applyCometScanRule(createSparkPlan(spark, query))
+          assert(countOperators(transformedPlan, classOf[FileSourceScanExec]) == 1)
+          assert(countOperators(transformedPlan, classOf[CometScanExec]) == 0)
+        }
+      }
+    }
+  }
+
 }

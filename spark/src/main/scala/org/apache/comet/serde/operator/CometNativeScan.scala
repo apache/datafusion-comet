@@ -46,6 +46,10 @@ import org.apache.comet.serde.QueryPlanSerde.{exprToProto, serializeDataType}
  */
 object CometNativeScan extends CometOperatorSerde[CometScanExec] with Logging {
 
+  // DataFusion's table_partition_cols literal substitution matches by name, so a bare name
+  // like "file_size" could collide with a real column of the same name. Prefix to avoid it.
+  private val constantMetadataFieldPrefix = "_comet_metadata_"
+
   /** Determine whether the scan is supported and tag the Spark plan with any fallback reasons */
   def isSupported(scanExec: FileSourceScanExec): Boolean = {
 
@@ -174,7 +178,7 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with Logging {
       // partitionColumns ++ constantMetadataColumns), so appending them after the real
       // partition schema here keeps the two in lockstep.
       val constantMetadataFields = scan.wrapped.fileConstantMetadataColumns.map(attr =>
-        StructField(attr.name, attr.dataType, attr.nullable))
+        StructField(s"$constantMetadataFieldPrefix${attr.name}", attr.dataType, attr.nullable))
       val partitionSchemaFields = scan.relation.partitionSchema.fields.toSeq ++
         constantMetadataFields
       val partitionSchema = schema2Proto(partitionSchemaFields)
