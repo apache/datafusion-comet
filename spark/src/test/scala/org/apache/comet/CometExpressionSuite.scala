@@ -1435,10 +1435,8 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("scalar decimal overflow - ANSI mode throws ArithmeticException") {
-    // 1.1e19 * 1.1e19 = 1.21e38 overflows DECIMAL(38,0). With ANSI mode on, both Spark and
-    // Comet must throw — Comet must not panic or silently return null. Spark reports
-    // NUMERIC_VALUE_OUT_OF_RANGE; Comet's WideDecimalBinaryExpr catches the overflow first
-    // and must surface the same structured Spark error.
+    // 1.1e19 * 1.1e19 overflows Decimal(38, 6); ANSI must raise NUMERIC_VALUE_OUT_OF_RANGE
+    // with the same pre-toPrecision `value` as Spark (#5211).
     withSQLConf(CometConf.COMET_ENABLED.key -> "true", SQLConf.ANSI_ENABLED.key -> "true") {
       withParquetTable(Seq((BigDecimal("11000000000000000000"), 0)), "tbl") {
         val res = sql("SELECT _1 * _1 FROM tbl")
@@ -1447,12 +1445,15 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           case (Some(sparkExc), Some(cometExc)) =>
             val expected = arithmeticError(sparkExc)
             val actual = arithmeticError(cometExc)
-            // Spark formats its pre-toPrecision Decimal, while Comet formats the rescaled i256
-            // value (https://github.com/apache/datafusion-comet/issues/5211). This regression
-            // covers the structured error fields and query context.
             assert(actual.getErrorClass == expected.getErrorClass)
             assert(actual.getSqlState == expected.getSqlState)
             assert(actual.getQueryContext.exists(_.fragment().contains("_1 * _1")))
+            val actualValue = actual.getMessageParameters.get("value")
+            val expectedValue = expected.getMessageParameters.get("value")
+            assert(
+              actualValue == expectedValue,
+              s"value mismatch: comet=$actualValue spark=$expectedValue")
+            assert(!actualValue.contains(".000000"))
           case _ =>
             fail("Expected exception for decimal overflow in ANSI mode")
         }
