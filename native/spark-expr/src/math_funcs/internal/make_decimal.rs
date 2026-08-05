@@ -15,13 +15,14 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::error::decimal_overflow_error;
 use crate::math_funcs::utils::get_precision_scale;
 use arrow::datatypes::DataType;
 use arrow::{
     array::{AsArray, Decimal128Builder},
     datatypes::{validate_decimal_precision, Int64Type},
 };
-use datafusion::common::{internal_err, Result as DataFusionResult, ScalarValue};
+use datafusion::common::{internal_err, DataFusionError, Result as DataFusionResult, ScalarValue};
 use datafusion::physical_plan::ColumnarValue;
 use std::sync::Arc;
 
@@ -29,12 +30,13 @@ use std::sync::Arc;
 pub fn spark_make_decimal(
     args: &[ColumnarValue],
     data_type: &DataType,
+    fail_on_error: bool,
 ) -> DataFusionResult<ColumnarValue> {
     let (precision, scale) = get_precision_scale(data_type);
     match &args[0] {
         ColumnarValue::Scalar(v) => match v {
             ScalarValue::Int64(n) => Ok(ColumnarValue::Scalar(ScalarValue::Decimal128(
-                long_to_decimal(n, precision, scale),
+                long_to_decimal(*n, precision, scale, fail_on_error)?,
                 precision,
                 scale,
             ))),
@@ -45,7 +47,7 @@ pub fn spark_make_decimal(
                 let arr = a.as_primitive::<Int64Type>();
                 let mut result = Decimal128Builder::new();
                 for v in arr.into_iter() {
-                    result.append_option(long_to_decimal(&v, precision, scale))
+                    result.append_option(long_to_decimal(v, precision, scale, fail_on_error)?)
                 }
                 let result_type = DataType::Decimal128(precision, scale);
 
@@ -58,14 +60,83 @@ pub fn spark_make_decimal(
     }
 }
 
-/// Convert the input long to decimal with the given maximum precision. If overflows, returns null
-/// instead.
+/// Convert the input long to decimal with the given maximum precision. On overflow, errors when
+/// `fail_on_error` is set (Spark's `nullOnOverflow = false`, i.e. ANSI mode) and returns null
+/// otherwise.
 #[inline]
-fn long_to_decimal(v: &Option<i64>, precision: u8, scale: i8) -> Option<i128> {
-    match v {
-        Some(v) if validate_decimal_precision(*v as i128, precision, scale).is_ok() => {
-            Some(*v as i128)
+fn long_to_decimal(
+    v: Option<i64>,
+    precision: u8,
+    scale: i8,
+    fail_on_error: bool,
+) -> DataFusionResult<Option<i128>> {
+    v.map_or(Ok(None), |v| {
+        let v = v as i128;
+        match validate_decimal_precision(v, precision, scale) {
+            Ok(()) => Ok(Some(v)),
+            Err(_) if fail_on_error => Err(DataFusionError::External(Box::new(
+                decimal_overflow_error(v, precision, scale),
+            ))),
+            Err(_) => Ok(None),
         }
-        _ => None,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arrow::array::{Array, Int64Array};
+
+    fn overflow_args() -> [ColumnarValue; 1] {
+        // 123456 does not fit Decimal128(3, 0)
+        [ColumnarValue::Array(Arc::new(Int64Array::from(vec![
+            Some(123456),
+            None,
+            Some(99),
+        ])))]
+    }
+
+    #[test]
+    fn test_array_overflow_errors_when_fail_on_error() {
+        let err = spark_make_decimal(&overflow_args(), &DataType::Decimal128(3, 0), true)
+            .expect_err("overflow should error when fail_on_error is set");
+        assert!(
+            err.to_string().contains("NUMERIC_VALUE_OUT_OF_RANGE"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_array_overflow_nulls_when_not_fail_on_error() {
+        let result = spark_make_decimal(&overflow_args(), &DataType::Decimal128(3, 0), false)
+            .expect("overflow should become null without fail_on_error");
+        let ColumnarValue::Array(array) = result else {
+            panic!("expected array result")
+        };
+        assert!(array.is_null(0));
+        assert!(array.is_null(1));
+        assert!(array.is_valid(2));
+    }
+
+    #[test]
+    fn test_scalar_overflow_errors_when_fail_on_error() {
+        let args = [ColumnarValue::Scalar(ScalarValue::Int64(Some(123456)))];
+        let err = spark_make_decimal(&args, &DataType::Decimal128(3, 0), true)
+            .expect_err("overflow should error when fail_on_error is set");
+        assert!(
+            err.to_string().contains("NUMERIC_VALUE_OUT_OF_RANGE"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_scalar_null_is_not_an_error() {
+        let args = [ColumnarValue::Scalar(ScalarValue::Int64(None))];
+        let result = spark_make_decimal(&args, &DataType::Decimal128(3, 0), true)
+            .expect("null input should not error");
+        let ColumnarValue::Scalar(ScalarValue::Decimal128(v, 3, 0)) = result else {
+            panic!("expected decimal scalar result")
+        };
+        assert!(v.is_none());
     }
 }

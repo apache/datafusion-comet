@@ -22,7 +22,7 @@ package org.apache.comet.serde
 import org.apache.spark.sql.catalyst.expressions.{Attribute, KnownFloatingPointNormalized, KnownNullable}
 import org.apache.spark.sql.catalyst.optimizer.NormalizeNaNAndZero
 
-import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithFallbackReason, serializeDataType}
+import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, serializeDataType}
 
 object CometKnownFloatingPointNormalized
     extends CometExpressionSerde[KnownFloatingPointNormalized] {
@@ -63,7 +63,7 @@ object CometKnownFloatingPointNormalized
             .setDatatype(dataType)
           ExprOuterClass.Expr.newBuilder().setNormalizeNanAndZero(builder).build()
         }
-        optExprWithFallbackReason(optExpr, expr, wrapped)
+        optExpr
 
       case child =>
         // Nested normalization (array / struct / map). Spark 4.2 normalizes the inputs to
@@ -72,7 +72,7 @@ object CometKnownFloatingPointNormalized
         // `KnownFloatingPointNormalized` is a runtime no-op tag, so serialize the child directly
         // and let its serde (e.g. the ArrayTransform codegen dispatcher) carry the normalization.
         val optExpr = exprToProtoInternal(child, inputs, binding)
-        optExprWithFallbackReason(optExpr, expr, child)
+        optExpr
     }
   }
 }
@@ -89,6 +89,6 @@ object CometKnownNullable extends CometExpressionSerde[KnownNullable] {
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     val optExpr = exprToProtoInternal(expr.child, inputs, binding)
-    optExprWithFallbackReason(optExpr, expr, expr.child)
+    optExpr
   }
 }

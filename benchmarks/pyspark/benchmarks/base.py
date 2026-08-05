@@ -107,7 +107,7 @@ class Benchmark(ABC):
         conf = self.spark.sparkContext.getConf()
         print(f"Shuffle manager: {conf.get('spark.shuffle.manager', 'default')}")
         print(f"Comet enabled: {conf.get('spark.comet.enabled', 'false')}")
-        print(f"Comet shuffle enabled: {conf.get('spark.comet.exec.shuffle.enabled', 'false')}")
+        print(f"Comet shuffle enabled: {conf.get('spark.comet.shuffle.enabled', 'false')}")
         print(f"Comet shuffle mode: {conf.get('spark.comet.shuffle.mode', 'not set')}")
         print(f"Spark UI: {self.spark.sparkContext.uiWebUrl}")
 

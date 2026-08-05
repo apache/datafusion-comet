@@ -53,9 +53,10 @@ object CometShuffleBenchmark extends CometBenchmarkBase {
       .set(
         "spark.shuffle.manager",
         "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
-      .set("spark.comet.columnar.shuffle.spill.threshold", "30000")
+      .set("spark.comet.shuffle.jvm.spillThreshold", "30000")
 
-    val sparkSession = SparkSession.builder
+    val sparkSession = SparkSession
+      .builder()
       .config(conf)
       .withExtensions(new CometSparkSessionExtensions)
       .getOrCreate()
@@ -93,7 +94,7 @@ object CometShuffleBenchmark extends CometBenchmarkBase {
           withSQLConf(
             CometConf.COMET_ENABLED.key -> "true",
             CometConf.COMET_EXEC_ENABLED.key -> "true",
-            CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "false") {
+            CometConf.COMET_SHUFFLE_ENABLED.key -> "false") {
             spark
               .sql(
                 s"SELECT ARRAY_REPEAT(CAST(1 AS ${dataType.sql}), 10) AS c1 FROM parquetV1Table")
@@ -106,8 +107,8 @@ object CometShuffleBenchmark extends CometBenchmarkBase {
           withSQLConf(
             CometConf.COMET_ENABLED.key -> "true",
             CometConf.COMET_EXEC_ENABLED.key -> "true",
-            CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
-            CometConf.COMET_SHUFFLE_PREFER_DICTIONARY_RATIO.key -> "1.0",
+            CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
+            CometConf.COMET_SHUFFLE_JVM_PREFER_DICTIONARY_RATIO.key -> "1.0",
             CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
             spark
               .sql(
@@ -147,7 +148,7 @@ object CometShuffleBenchmark extends CometBenchmarkBase {
           withSQLConf(
             CometConf.COMET_ENABLED.key -> "true",
             CometConf.COMET_EXEC_ENABLED.key -> "true",
-            CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "false") {
+            CometConf.COMET_SHUFFLE_ENABLED.key -> "false") {
             spark
               .sql(
                 s"SELECT STRUCT(CAST(c1 AS ${dataType.sql})," +
@@ -162,8 +163,8 @@ object CometShuffleBenchmark extends CometBenchmarkBase {
           withSQLConf(
             CometConf.COMET_ENABLED.key -> "true",
             CometConf.COMET_EXEC_ENABLED.key -> "true",
-            CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
-            CometConf.COMET_SHUFFLE_PREFER_DICTIONARY_RATIO.key -> "1.0",
+            CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
+            CometConf.COMET_SHUFFLE_JVM_PREFER_DICTIONARY_RATIO.key -> "1.0",
             CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
             spark
               .sql(
@@ -204,7 +205,7 @@ object CometShuffleBenchmark extends CometBenchmarkBase {
           withSQLConf(
             CometConf.COMET_ENABLED.key -> "true",
             CometConf.COMET_EXEC_ENABLED.key -> "true",
-            CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "false") {
+            CometConf.COMET_SHUFFLE_ENABLED.key -> "false") {
             spark
               .sql("select c1 from parquetV1Table")
               .repartition(partitionNum, Column("c1"))
@@ -216,8 +217,8 @@ object CometShuffleBenchmark extends CometBenchmarkBase {
           withSQLConf(
             CometConf.COMET_ENABLED.key -> "true",
             CometConf.COMET_EXEC_ENABLED.key -> "true",
-            CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
-            CometConf.COMET_SHUFFLE_PREFER_DICTIONARY_RATIO.key -> "1.0",
+            CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
+            CometConf.COMET_SHUFFLE_JVM_PREFER_DICTIONARY_RATIO.key -> "1.0",
             CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
             spark
               .sql("select c1 from parquetV1Table")
@@ -230,8 +231,8 @@ object CometShuffleBenchmark extends CometBenchmarkBase {
           withSQLConf(
             CometConf.COMET_ENABLED.key -> "true",
             CometConf.COMET_EXEC_ENABLED.key -> "true",
-            CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
-            CometConf.COMET_SHUFFLE_PREFER_DICTIONARY_RATIO.key -> "2.0",
+            CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
+            CometConf.COMET_SHUFFLE_JVM_PREFER_DICTIONARY_RATIO.key -> "2.0",
             CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
             spark
               .sql("select c1 from parquetV1Table")
@@ -244,8 +245,8 @@ object CometShuffleBenchmark extends CometBenchmarkBase {
           withSQLConf(
             CometConf.COMET_ENABLED.key -> "true",
             CometConf.COMET_EXEC_ENABLED.key -> "true",
-            CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
-            CometConf.COMET_SHUFFLE_PREFER_DICTIONARY_RATIO.key -> "1000000000.0",
+            CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
+            CometConf.COMET_SHUFFLE_JVM_PREFER_DICTIONARY_RATIO.key -> "1000000000.0",
             CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
             spark
               .sql("select c1 from parquetV1Table")
@@ -297,7 +298,7 @@ object CometShuffleBenchmark extends CometBenchmarkBase {
           withSQLConf(
             CometConf.COMET_ENABLED.key -> "true",
             CometConf.COMET_EXEC_ENABLED.key -> "true",
-            CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "false") {
+            CometConf.COMET_SHUFFLE_ENABLED.key -> "false") {
             spark
               .sql("select c1 from parquetV1Table")
               .repartition(partitionNum, Column("c1"))
@@ -309,7 +310,7 @@ object CometShuffleBenchmark extends CometBenchmarkBase {
           withSQLConf(
             CometConf.COMET_ENABLED.key -> "true",
             CometConf.COMET_EXEC_ENABLED.key -> "true",
-            CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+            CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
             CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
             spark
               .sql("select c1 from parquetV1Table")
@@ -322,7 +323,7 @@ object CometShuffleBenchmark extends CometBenchmarkBase {
           withSQLConf(
             CometConf.COMET_ENABLED.key -> "true",
             CometConf.COMET_EXEC_ENABLED.key -> "true",
-            CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true") {
+            CometConf.COMET_SHUFFLE_ENABLED.key -> "true") {
             spark
               .sql("select c1 from parquetV1Table")
               .repartition(partitionNum, Column("c1"))
@@ -366,7 +367,7 @@ object CometShuffleBenchmark extends CometBenchmarkBase {
           withSQLConf(
             CometConf.COMET_ENABLED.key -> "true",
             CometConf.COMET_EXEC_ENABLED.key -> "true",
-            CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "false") {
+            CometConf.COMET_SHUFFLE_ENABLED.key -> "false") {
             spark
               .sql(s"select $columns from parquetV1Table")
               .repartition(partitionNum, Column("c1"))
@@ -378,7 +379,7 @@ object CometShuffleBenchmark extends CometBenchmarkBase {
           withSQLConf(
             CometConf.COMET_ENABLED.key -> "true",
             CometConf.COMET_EXEC_ENABLED.key -> "true",
-            CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+            CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
             CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
             spark
               .sql(s"select $columns from parquetV1Table")
@@ -391,7 +392,7 @@ object CometShuffleBenchmark extends CometBenchmarkBase {
           withSQLConf(
             CometConf.COMET_ENABLED.key -> "true",
             CometConf.COMET_EXEC_ENABLED.key -> "true",
-            CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+            CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
             CometConf.COMET_SHUFFLE_MODE.key -> "native") {
             spark
               .sql(s"select $columns from parquetV1Table")
@@ -436,7 +437,7 @@ object CometShuffleBenchmark extends CometBenchmarkBase {
           withSQLConf(
             CometConf.COMET_ENABLED.key -> "true",
             CometConf.COMET_EXEC_ENABLED.key -> "true",
-            CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "false") {
+            CometConf.COMET_SHUFFLE_ENABLED.key -> "false") {
             spark
               .sql(s"select $columns from parquetV1Table")
               .repartitionByRange(partitionNum, Column("c1"))
@@ -448,7 +449,7 @@ object CometShuffleBenchmark extends CometBenchmarkBase {
           withSQLConf(
             CometConf.COMET_ENABLED.key -> "true",
             CometConf.COMET_EXEC_ENABLED.key -> "true",
-            CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+            CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
             CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
             spark
               .sql(s"select $columns from parquetV1Table")
@@ -461,7 +462,7 @@ object CometShuffleBenchmark extends CometBenchmarkBase {
           withSQLConf(
             CometConf.COMET_ENABLED.key -> "true",
             CometConf.COMET_EXEC_ENABLED.key -> "true",
-            CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+            CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
             CometConf.COMET_SHUFFLE_MODE.key -> "native") {
             spark
               .sql(s"select $columns from parquetV1Table")
@@ -498,7 +499,7 @@ object CometShuffleBenchmark extends CometBenchmarkBase {
         withSQLConf(
           CometConf.COMET_ENABLED.key -> "true",
           CometConf.COMET_EXEC_ENABLED.key -> "true",
-          CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "false") {
+          CometConf.COMET_SHUFFLE_ENABLED.key -> "false") {
           spark
             .sql(sql)
             .repartition(partitionNum)
@@ -511,7 +512,7 @@ object CometShuffleBenchmark extends CometBenchmarkBase {
           withSQLConf(
             CometConf.COMET_ENABLED.key -> "true",
             CometConf.COMET_EXEC_ENABLED.key -> "true",
-            CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
+            CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
             CometConf.COMET_SHUFFLE_MODE.key -> shuffle) {
             spark
               .sql(sql)

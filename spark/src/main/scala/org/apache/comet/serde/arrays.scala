@@ -95,7 +95,6 @@ object CometArrayAppend extends CometExpressionSerde[ArrayAppend] {
           .setCaseWhen(caseWhenExpr)
           .build())
     } else {
-      withFallbackReason(expr, expr.children: _*)
       None
     }
   }
@@ -171,7 +170,7 @@ object CometSortArray extends CometExpressionSerde[SortArray] with CodegenDispat
         arrayExprProto,
         sortDirectionExprProto,
         nullOrderingExprProto)
-    optExprWithFallbackReason(sortArrayScalarExpr, expr, expr.children: _*)
+    sortArrayScalarExpr
   }
 }
 
@@ -212,7 +211,7 @@ object CometArrayIntersect
 
     val arraysIntersectScalarExpr =
       scalarFunctionExprToProto("array_intersect", leftArrayExprProto, rightArrayExprProto)
-    optExprWithFallbackReason(arraysIntersectScalarExpr, expr, expr.children: _*)
+    arraysIntersectScalarExpr
   }
 }
 
@@ -225,7 +224,7 @@ object CometArrayMax extends CometExpressionSerde[ArrayMax] {
 
     val arrayMaxScalarExpr =
       scalarFunctionExprToProto("array_max", arrayExprProto)
-    optExprWithFallbackReason(arrayMaxScalarExpr, expr)
+    arrayMaxScalarExpr
   }
 }
 
@@ -237,7 +236,7 @@ object CometArrayMin extends CometExpressionSerde[ArrayMin] {
     val arrayExprProto = exprToProto(expr.children.head, inputs, binding)
 
     val arrayMinScalarExpr = scalarFunctionExprToProto("array_min", arrayExprProto)
-    optExprWithFallbackReason(arrayMinScalarExpr, expr)
+    arrayMinScalarExpr
   }
 }
 
@@ -255,7 +254,7 @@ object CometArraysOverlap extends CometExpressionSerde[ArraysOverlap] {
       false,
       leftArrayExprProto,
       rightArrayExprProto)
-    optExprWithFallbackReason(arraysOverlapScalarExpr, expr, expr.children: _*)
+    arraysOverlapScalarExpr
   }
 }
 
@@ -269,7 +268,7 @@ object CometArrayCompact extends CometExpressionSerde[Expression] {
     val arrayExprProto = exprToProto(child, inputs, binding)
 
     val arrayCompactScalarExpr = scalarFunctionExprToProto("array_compact", arrayExprProto)
-    optExprWithFallbackReason(arrayCompactScalarExpr, expr, expr.children: _*)
+    arrayCompactScalarExpr
   }
 }
 
@@ -327,7 +326,7 @@ object CometArrayExcept
 
     val arrayExceptScalarExpr =
       scalarFunctionExprToProto("array_except", leftArrayExprProto, rightArrayExprProto)
-    optExprWithFallbackReason(arrayExceptScalarExpr, expr, expr.children: _*)
+    arrayExceptScalarExpr
   }
 }
 
@@ -375,17 +374,12 @@ object CometArrayJoin
           delimiterExprProto,
           nullReplacementExprProto)
 
-        optExprWithFallbackReason(
-          arrayJoinScalarExpr,
-          expr,
-          arrayExpr,
-          arrayExpr.delimiter,
-          nullReplacementExpr)
+        arrayJoinScalarExpr
       case None =>
         val arrayJoinScalarExpr =
           scalarFunctionExprToProto("array_to_string", arrayExprProto, delimiterExprProto)
 
-        optExprWithFallbackReason(arrayJoinScalarExpr, expr, arrayExpr, arrayExpr.delimiter)
+        arrayJoinScalarExpr
     }
   }
 }
@@ -417,12 +411,7 @@ object CometArrayInsert extends CometExpressionSerde[ArrayInsert] {
           .setArrayInsert(arrayInsertBuilder)
           .build())
     } else {
-      withFallbackReason(
-        expr,
-        "unsupported arguments for ArrayInsert",
-        expr.children.head,
-        expr.children(1),
-        expr.children(2))
+      withFallbackReason(expr, "unsupported arguments for ArrayInsert")
       None
     }
   }
@@ -448,7 +437,7 @@ object CometSlice extends CometExpressionSerde[Slice] {
         arrayExprProto,
         startExprProto,
         lengthExprProto)
-    optExprWithFallbackReason(sliceScalarExpr, expr, expr.children: _*)
+    sliceScalarExpr
   }
 }
 
@@ -462,7 +451,7 @@ object CometArrayUnion extends CometExpressionSerde[ArrayUnion] {
 
     val arraysUnionScalarExpr =
       scalarFunctionExprToProto("array_union", leftArrayExprProto, rightArrayExprProto)
-    optExprWithFallbackReason(arraysUnionScalarExpr, expr, expr.children: _*)
+    arraysUnionScalarExpr
   }
 }
 
@@ -498,8 +487,7 @@ object CometCreateArray extends CometExpressionSerde[CreateArray] {
       withFallbackReason(
         expr,
         "CreateArray children have mismatched data types: " +
-          children.map(_.dataType).distinct.mkString(", "),
-        children: _*)
+          children.map(_.dataType).distinct.mkString(", "))
       return None
     }
 
@@ -508,7 +496,7 @@ object CometCreateArray extends CometExpressionSerde[CreateArray] {
     if (childExprs.forall(_.isDefined)) {
       scalarFunctionExprToProto("make_array", childExprs: _*)
     } else {
-      withFallbackReason(expr, "unsupported arguments for CreateArray", children: _*)
+      withFallbackReason(expr, "unsupported arguments for CreateArray")
       None
     }
   }
@@ -557,7 +545,7 @@ object CometGetArrayItem extends CometExpressionSerde[GetArrayItem] {
           .setListExtract(listExtractBuilder)
           .build())
     } else {
-      withFallbackReason(expr, "unsupported arguments for GetArrayItem", expr.child, expr.ordinal)
+      withFallbackReason(expr, "unsupported arguments for GetArrayItem")
       None
     }
   }
@@ -595,7 +583,7 @@ object CometArrayReverse extends CometExpressionSerde[Reverse] with ArraysBase {
     }
     val reverseExprProto = exprToProto(expr.child, inputs, binding)
     val reverseScalarExpr = scalarFunctionExprToProto("array_reverse", reverseExprProto)
-    optExprWithFallbackReason(reverseScalarExpr, expr, expr.children: _*)
+    reverseScalarExpr
   }
 
 }
@@ -620,7 +608,7 @@ object CometElementAt extends CometExpressionSerde[ElementAt] {
     expr.left.dataType match {
       case _: MapType =>
         val mapExtractExpr = scalarFunctionExprToProto("map_extract", childExpr, ordinalExpr)
-        optExprWithFallbackReason(mapExtractExpr, expr, expr.left, expr.right)
+        mapExtractExpr
       case _ =>
         val defaultExpr =
           expr.defaultValueOutOfBound.flatMap(exprToProtoInternal(_, inputs, binding))
@@ -642,7 +630,7 @@ object CometElementAt extends CometExpressionSerde[ElementAt] {
               .setListExtract(arrayExtractBuilder)
               .build())
         } else {
-          withFallbackReason(expr, "unsupported arguments for ElementAt", expr.left, expr.right)
+          withFallbackReason(expr, "unsupported arguments for ElementAt")
           None
         }
     }
@@ -659,7 +647,7 @@ object CometFlatten extends CometExpressionSerde[Flatten] with ArraysBase {
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     val flattenExprProto = exprToProto(expr.child, inputs, binding)
     val flattenScalarExpr = scalarFunctionExprToProto("flatten", flattenExprProto)
-    optExprWithFallbackReason(flattenScalarExpr, expr, expr.children: _*)
+    flattenScalarExpr
   }
 }
 
@@ -762,7 +750,7 @@ object CometArrayPosition extends CometExpressionSerde[ArrayPosition] with Array
     // (matching Spark's behavior)
     val optExpr =
       scalarFunctionExprToProto("spark_array_position", arrayExprProto, elementExprProto)
-    optExprWithFallbackReason(optExpr, expr, expr.left, expr.right)
+    optExpr
   }
 }
 
@@ -829,10 +817,7 @@ object CometArraysZip extends CometExpressionSerde[ArraysZip] {
           .build())
 
     } else {
-      withFallbackReason(
-        expr,
-        "unsupported arguments for ArraysZip",
-        expr.children ++ expr.names: _*)
+      withFallbackReason(expr, "unsupported arguments for ArraysZip")
       None
     }
   }
