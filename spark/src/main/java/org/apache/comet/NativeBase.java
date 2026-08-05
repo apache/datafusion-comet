@@ -56,9 +56,9 @@ public abstract class NativeBase {
    * Force the native library to load when a subclass (`Native`) is instantiated. Native execution
    * paths that need JNI always go through `new Native()`, so this is the natural point to trigger
    * the load. Loading is deliberately deferred out of the static initializer so that classes that
-   * merely reference `NativeBase` (e.g. the plugin's shutdown path) do not eagerly load the
-   * library and log the "Comet native library version ... initialized" message when Comet is
-   * otherwise disabled.
+   * merely reference `NativeBase` (e.g. the plugin's shutdown path) do not eagerly load the library
+   * and log the "Comet native library version ... initialized" message when Comet is otherwise
+   * disabled.
    */
   protected NativeBase() {
     ensureLoaded();
@@ -339,10 +339,10 @@ public abstract class NativeBase {
    */
   public static boolean isFeatureEnabled(String featureName) {
     ensureLoaded();
-    return nativeIsFeatureEnabled(featureName);
+    return isFeatureEnabledImpl(featureName);
   }
 
-  private static native boolean nativeIsFeatureEnabled(String featureName);
+  private static native boolean isFeatureEnabledImpl(String featureName);
 
   /**
    * Check whether Comet's native object_store layer recognizes the given URL's scheme (i.e. the
@@ -355,8 +355,8 @@ public abstract class NativeBase {
    */
   public static boolean isObjectStoreSchemeSupported(String url) {
     ensureLoaded();
-    return nativeIsObjectStoreSchemeSupported(url);
+    return isObjectStoreSchemeSupportedImpl(url);
   }
 
-  private static native boolean nativeIsObjectStoreSchemeSupported(String url);
+  private static native boolean isObjectStoreSchemeSupportedImpl(String url);
 }
