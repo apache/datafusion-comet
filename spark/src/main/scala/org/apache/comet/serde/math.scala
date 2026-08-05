@@ -229,7 +229,7 @@ object CometSqrt extends CometExpressionSerde[Sqrt] {
     val childExpr = exprToProtoInternal(expr.child, inputs, binding)
     val optExpr =
       scalarFunctionExprToProtoWithReturnType("spark_sqrt", DoubleType, false, childExpr)
-    optExprWithFallbackReason(optExpr, expr, expr.child)
+    optExpr
   }
 }
 
