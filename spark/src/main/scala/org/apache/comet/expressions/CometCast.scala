@@ -118,7 +118,6 @@ object CometCast
           if (childExpr.isDefined) {
             castToProto(cast, cast.timeZoneId, cast.dataType, childExpr.get, cometEvalMode)
           } else {
-            withFallbackReason(cast, cast.child)
             None
           }
         }

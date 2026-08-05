@@ -96,6 +96,10 @@ name = "padding"
 harness = false
 
 [[bench]]
+name = "base64"
+harness = false
+
+[[bench]]
 name = "date_trunc"
 harness = false
 
@@ -213,4 +217,8 @@ harness = false
 
 [[bench]]
 name = "make_decimal"
+harness = false
+
+[[bench]]
+name = "cast_int_to_decimal"
 harness = false
