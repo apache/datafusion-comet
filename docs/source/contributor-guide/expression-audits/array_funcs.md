@@ -182,10 +182,6 @@
 - Spark 4.0.1 (audited 2026-07-02): adds the two-argument constructor `Shuffle(child, seed: Expression)`, exposing `shuffle(array, seed)` in SQL (seed must be an integer/long literal). `RandomIndicesGenerator` and the eval logic are unchanged.
 - Spark 4.1.1 (audited 2026-07-02): identical to 4.0.1. Comet routes via `CometShuffle` and a dedicated stateful `ShuffleExpr` that reproduces the same MersenneTwister and inside-out Fisher-Yates, so results match Spark bit for bit. `childTypesSupportLevel` falls back for binary/struct/map element types, consistent with the other array expressions.
 
-## size
-
-- Performance (tuned 2026-08-03, issue [#5099](https://github.com/apache/datafusion-comet/issues/5099)): List/LargeList/FixedSizeList sizes use Arrow's `length` kernel, then patch null slots to `-1` in the values buffer (avoiding `zip`/`MutableArrayData`, which regressed ~2x). ~2.1x faster on the existing `array_size` shapes. Map still uses the manual offset loop. Benchmark: `benches/array_size.rs`.
-
 ## sort_array
 
 - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
