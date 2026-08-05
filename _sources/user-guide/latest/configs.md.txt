@@ -302,6 +302,7 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.expression.JsonObjectKeys.enabled` | Enable Comet acceleration for `JsonObjectKeys` | true |
 | `spark.comet.expression.JsonToStructs.enabled` | Enable Comet acceleration for `JsonToStructs` | true |
 | `spark.comet.expression.KnownFloatingPointNormalized.enabled` | Enable Comet acceleration for `KnownFloatingPointNormalized` | true |
+| `spark.comet.expression.KnownNotNull.enabled` | Enable Comet acceleration for `KnownNotNull` | true |
 | `spark.comet.expression.KnownNullable.enabled` | Enable Comet acceleration for `KnownNullable` | true |
 | `spark.comet.expression.LastDay.enabled` | Enable Comet acceleration for `LastDay` | true |
 | `spark.comet.expression.Least.enabled` | Enable Comet acceleration for `Least` | true |
@@ -415,6 +416,8 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.expression.Subtract.enabled` | Enable Comet acceleration for `Subtract` | true |
 | `spark.comet.expression.Tan.enabled` | Enable Comet acceleration for `Tan` | true |
 | `spark.comet.expression.Tanh.enabled` | Enable Comet acceleration for `Tanh` | true |
+| `spark.comet.expression.TimestampAdd.enabled` | Enable Comet acceleration for `TimestampAdd` | true |
+| `spark.comet.expression.TimestampDiff.enabled` | Enable Comet acceleration for `TimestampDiff` | true |
 | `spark.comet.expression.ToCharacter.enabled` | Enable Comet acceleration for `ToCharacter` | true |
 | `spark.comet.expression.ToDegrees.enabled` | Enable Comet acceleration for `ToDegrees` | true |
 | `spark.comet.expression.ToNumber.enabled` | Enable Comet acceleration for `ToNumber` | true |

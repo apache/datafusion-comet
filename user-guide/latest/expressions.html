@@ -1557,12 +1557,12 @@ expressions. The following function families are <strong>not currently planned</
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">date_add</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>Native</p></td>
-<td><p></p></td>
+<td><p>The 2-argument form is native; the <code class="docutils literal notranslate"><span class="pre">date_add(UNIT,</span> <span class="pre">n,</span> <span class="pre">ts)</span></code> form (Spark 3.5+) parses to <code class="docutils literal notranslate"><span class="pre">timestampadd</span></code> and runs through codegen dispatch</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">date_diff</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>Native</p></td>
-<td><p></p></td>
+<td><p>The 2-argument form is native; the <code class="docutils literal notranslate"><span class="pre">date_diff(UNIT,</span> <span class="pre">start,</span> <span class="pre">end)</span></code> form (Spark 3.5+) parses to <code class="docutils literal notranslate"><span class="pre">timestampdiff</span></code> and runs through codegen dispatch</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">date_format</span></code></p></td>
 <td><p>✅</p></td>
@@ -1592,12 +1592,12 @@ expressions. The following function families are <strong>not currently planned</
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">dateadd</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>Native</p></td>
-<td><p></p></td>
+<td><p>The 2-argument form is native; the <code class="docutils literal notranslate"><span class="pre">dateadd(UNIT,</span> <span class="pre">n,</span> <span class="pre">ts)</span></code> form parses to <code class="docutils literal notranslate"><span class="pre">timestampadd</span></code> and runs through codegen dispatch</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">datediff</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>Native</p></td>
-<td><p></p></td>
+<td><p>The 2-argument form is native; the <code class="docutils literal notranslate"><span class="pre">datediff(UNIT,</span> <span class="pre">start,</span> <span class="pre">end)</span></code> form parses to <code class="docutils literal notranslate"><span class="pre">timestampdiff</span></code> and runs through codegen dispatch</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">datepart</span></code></p></td>
 <td><p>✅</p></td>
@@ -1754,132 +1754,147 @@ expressions. The following function families are <strong>not currently planned</
 <td><p>—</p></td>
 <td><p>Spark 4.1 TIME type; tracked by <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4288">#4288</a></p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">timestamp_micros</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">timediff</span></code></p></td>
+<td><p>✅</p></td>
+<td><p>—</p></td>
+<td><p>Spark 4.0+ grammar alias that parses to <code class="docutils literal notranslate"><span class="pre">timestampdiff</span></code>; runs through codegen dispatch</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">timestamp_micros</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>Codegen dispatch</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">timestamp_millis</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">timestamp_millis</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>Codegen dispatch</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">timestamp_seconds</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">timestamp_seconds</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>Native</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">to_date</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">timestampadd</span></code></p></td>
+<td><p>✅</p></td>
+<td><p>—</p></td>
+<td><p>Reached through the grammar rather than the function registry; runs through codegen dispatch</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">timestampdiff</span></code></p></td>
+<td><p>✅</p></td>
+<td><p>—</p></td>
+<td><p>Reached through the grammar rather than the function registry; runs through codegen dispatch</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">to_date</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>—</p></td>
 <td><p>Rewrites to <code class="docutils literal notranslate"><span class="pre">Cast</span></code> (or <code class="docutils literal notranslate"><span class="pre">Cast(GetTimestamp)</span></code> with a format) before Comet sees the plan</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">to_time</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">to_time</span></code></p></td>
 <td><p>🔜</p></td>
 <td><p>—</p></td>
 <td><p>Spark 4.1 TIME type; tracked by <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4288">#4288</a></p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">to_timestamp</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">to_timestamp</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>—</p></td>
 <td><p>Rewrites to <code class="docutils literal notranslate"><span class="pre">Cast</span></code> (or <code class="docutils literal notranslate"><span class="pre">GetTimestamp</span></code> with a format) before Comet sees the plan</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">to_timestamp_ltz</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">to_timestamp_ltz</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>—</p></td>
 <td><p>Rewrites to <code class="docutils literal notranslate"><span class="pre">to_timestamp</span></code> (<code class="docutils literal notranslate"><span class="pre">TimestampType</span></code>)</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">to_timestamp_ntz</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">to_timestamp_ntz</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>—</p></td>
 <td><p>Rewrites to <code class="docutils literal notranslate"><span class="pre">to_timestamp</span></code> (<code class="docutils literal notranslate"><span class="pre">TimestampNTZType</span></code>)</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">to_unix_timestamp</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">to_unix_timestamp</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>Hybrid</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">to_utc_timestamp</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">to_utc_timestamp</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>Hybrid</p></td>
 <td><p>Routes through the JVM codegen dispatcher by default (handles all timezone forms); the native path is opt-in via allowIncompatible (<a class="reference internal" href="#compatibility/expressions/datetime.md"><span class="xref myst">details</span></a>)</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">trunc</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">trunc</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>Hybrid</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">try_make_interval</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">try_make_interval</span></code></p></td>
 <td><p>🔜</p></td>
 <td><p>—</p></td>
 <td><p>Produces legacy CalendarInterval; tracked by <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5061">#5061</a></p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">try_make_timestamp</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">try_make_timestamp</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>—</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">try_to_date</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">try_to_date</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>—</p></td>
 <td><p>Rewrites to <code class="docutils literal notranslate"><span class="pre">Cast</span></code>/<code class="docutils literal notranslate"><span class="pre">GetTimestamp</span></code> before Comet sees the plan; same support as <code class="docutils literal notranslate"><span class="pre">to_date</span></code></p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">try_to_time</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">try_to_time</span></code></p></td>
 <td><p>🔜</p></td>
 <td><p>—</p></td>
 <td><p>Spark 4.1 TIME type; tracked by <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4288">#4288</a></p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">try_to_timestamp</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">try_to_timestamp</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>—</p></td>
 <td><p>Rewrites to <code class="docutils literal notranslate"><span class="pre">Cast</span></code>/<code class="docutils literal notranslate"><span class="pre">GetTimestamp</span></code> before Comet sees the plan; same support as <code class="docutils literal notranslate"><span class="pre">to_timestamp</span></code></p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">unix_date</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">unix_date</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>Native</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">unix_micros</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">unix_micros</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>Codegen dispatch</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">unix_millis</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">unix_millis</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>Codegen dispatch</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">unix_seconds</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">unix_seconds</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>Codegen dispatch</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">unix_timestamp</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">unix_timestamp</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>Native</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">weekday</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">weekday</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>Native</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">weekofyear</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">weekofyear</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>Native</p></td>
 <td><p></p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">window</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">window</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>—</p></td>
 <td><p>Batch tumbling and sliding time-window grouping runs natively</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">window_time</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">window_time</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>—</p></td>
 <td><p>Batch time-window grouping runs natively</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">year</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">year</span></code></p></td>
 <td><p>✅</p></td>
 <td><p>Native</p></td>
 <td><p></p></td>
