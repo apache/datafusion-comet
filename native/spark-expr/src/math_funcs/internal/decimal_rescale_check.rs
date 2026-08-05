@@ -20,8 +20,10 @@
 //! Replaces the pattern `CheckOverflow(Cast(expr, Decimal128(p2,s2)), Decimal128(p2,s2))`
 //! with a single expression that rescales and validates precision in one pass.
 
+use crate::error::unwrap_arrow_external_error;
+use crate::SparkError;
 use arrow::array::{as_primitive_array, Array, ArrayRef, Decimal128Array};
-use arrow::datatypes::{DataType, Decimal128Type, Schema};
+use arrow::datatypes::{format_decimal_str, DataType, Decimal128Type, Schema};
 use arrow::error::ArrowError;
 use arrow::record_batch::RecordBatch;
 use datafusion::common::{DataFusionError, ScalarValue};
@@ -110,20 +112,33 @@ fn precision_bound(precision: u8) -> i128 {
 #[inline]
 fn rescale_and_check(
     value: i128,
-    delta: i8,
-    scale_factor: i128,
+    input_scale: i8,
+    scale_factor: Option<i128>,
     bound: i128,
+    output_precision: u8,
+    output_scale: i8,
     fail_on_error: bool,
 ) -> Result<i128, ArrowError> {
+    let overflow_error = || {
+        let unscaled = value.to_string();
+        // Preserve every digit of the value that is already known to overflow.
+        let digits = unscaled.trim_start_matches('-').len();
+        ArrowError::ExternalError(Box::new(SparkError::NumericValueOutOfRange {
+            value: format_decimal_str(&unscaled, digits, input_scale),
+            precision: output_precision,
+            scale: output_scale,
+        }))
+    };
+    let delta = output_scale as i16 - input_scale as i16;
+
     let rescaled = if delta > 0 {
         // Scale up: multiply. Check for overflow.
-        match value.checked_mul(scale_factor) {
+        match scale_factor.and_then(|factor| value.checked_mul(factor)) {
             Some(v) => v,
+            None if value == 0 => 0,
             None => {
                 if fail_on_error {
-                    return Err(ArrowError::ComputeError(
-                        "Decimal overflow during rescale".to_string(),
-                    ));
+                    return Err(overflow_error());
                 }
                 return Ok(i128::MAX); // sentinel
             }
@@ -131,10 +146,14 @@ fn rescale_and_check(
     } else if delta < 0 {
         // Scale down with HALF_UP rounding
         // divisor = 10^(-delta), half = divisor / 2
-        let divisor = scale_factor; // already 10^abs(delta)
-        let half = divisor / 2;
-        let sign = value.signum();
-        (value + sign * half) / divisor
+        match scale_factor {
+            Some(divisor) => {
+                let half = divisor / 2;
+                let sign = value.signum();
+                (value + sign * half) / divisor
+            }
+            None => 0,
+        }
     } else {
         value
     };
@@ -142,9 +161,7 @@ fn rescale_and_check(
     // Precision check
     if rescaled.abs() > bound {
         if fail_on_error {
-            return Err(ArrowError::ComputeError(
-                "Decimal overflow: value does not fit in precision".to_string(),
-            ));
+            return Err(overflow_error());
         }
         Ok(i128::MAX) // sentinel for null_if_overflow_precision
     } else {
@@ -170,17 +187,9 @@ impl PhysicalExpr for DecimalRescaleCheckOverflow {
 
     fn evaluate(&self, batch: &RecordBatch) -> datafusion::common::Result<ColumnarValue> {
         let arg = self.child.evaluate(batch)?;
-        let delta = self.output_scale - self.input_scale;
+        let delta = self.output_scale as i16 - self.input_scale as i16;
         let abs_delta = delta.unsigned_abs();
-        // If abs_delta > 38, the scale factor overflows i128. In that case,
-        // any non-zero value will overflow the output precision, so we treat
-        // it as an immediate overflow condition.
-        if abs_delta > 38 {
-            return Err(DataFusionError::Execution(format!(
-                "DecimalRescaleCheckOverflow: scale delta {delta} exceeds maximum supported range"
-            )));
-        }
-        let scale_factor = 10i128.pow(abs_delta as u32);
+        let scale_factor = (abs_delta <= 38).then(|| 10i128.pow(abs_delta as u32));
         let bound = precision_bound(self.output_precision);
         let fail_on_error = self.fail_on_error;
         let p_out = self.output_precision;
@@ -194,8 +203,17 @@ impl PhysicalExpr for DecimalRescaleCheckOverflow {
 
                 let result: Decimal128Array =
                     arrow::compute::kernels::arity::try_unary(decimal_array, |value| {
-                        rescale_and_check(value, delta, scale_factor, bound, fail_on_error)
-                    })?;
+                        rescale_and_check(
+                            value,
+                            self.input_scale,
+                            scale_factor,
+                            bound,
+                            p_out,
+                            s_out,
+                            fail_on_error,
+                        )
+                    })
+                    .map_err(unwrap_arrow_external_error)?;
 
                 let result = if !fail_on_error && result.values().contains(&i128::MAX) {
                     // The rescale pass writes i128::MAX as an overflow sentinel for values that
@@ -218,8 +236,16 @@ impl PhysicalExpr for DecimalRescaleCheckOverflow {
             ColumnarValue::Scalar(ScalarValue::Decimal128(v, _precision, _scale)) => {
                 let new_v = match v {
                     Some(val) => {
-                        let r = rescale_and_check(val, delta, scale_factor, bound, fail_on_error)
-                            .map_err(|e| DataFusionError::ArrowError(Box::new(e), None))?;
+                        let r = rescale_and_check(
+                            val,
+                            self.input_scale,
+                            scale_factor,
+                            bound,
+                            p_out,
+                            s_out,
+                            fail_on_error,
+                        )
+                        .map_err(unwrap_arrow_external_error)?;
                         if r == i128::MAX {
                             None
                         } else {
@@ -269,6 +295,29 @@ mod tests {
     use arrow::datatypes::{Field, Schema};
     use arrow::record_batch::RecordBatch;
     use datafusion::physical_expr::expressions::Column;
+
+    fn assert_numeric_value_out_of_range(
+        error: DataFusionError,
+        expected_value: &str,
+        expected_precision: u8,
+        expected_scale: i8,
+    ) {
+        match error {
+            DataFusionError::External(error) => match error.downcast_ref::<SparkError>() {
+                Some(SparkError::NumericValueOutOfRange {
+                    value,
+                    precision,
+                    scale,
+                }) => {
+                    assert_eq!(value, expected_value);
+                    assert_eq!(*precision, expected_precision);
+                    assert_eq!(*scale, expected_scale);
+                }
+                other => panic!("expected NumericValueOutOfRange, got {other:?}"),
+            },
+            other => panic!("expected external SparkError, got {other:?}"),
+        }
+    }
 
     fn make_batch(values: Vec<Option<i128>>, precision: u8, scale: i8) -> RecordBatch {
         let arr =
@@ -344,9 +393,9 @@ mod tests {
 
     #[test]
     fn test_overflow_error_in_ansi_mode() {
-        let batch = make_batch(vec![Some(10)], 38, 0);
-        let result = eval_expr(&batch, 0, 3, 2, true);
-        assert!(result.is_err());
+        let batch = make_batch(vec![Some(-1000)], 10, 2);
+        let error = eval_expr(&batch, 2, 3, 2, true).unwrap_err();
+        assert_numeric_value_out_of_range(error, "-10.00", 3, 2);
     }
 
     #[test]
@@ -491,26 +540,34 @@ mod tests {
 
     #[test]
     fn test_scalar_overflow_ansi_returns_error() {
-        // fail_on_error=true must propagate the error, not silently return None
         let schema = Schema::new(vec![Field::new("col", DataType::Decimal128(38, 0), true)]);
         let batch = RecordBatch::new_empty(Arc::new(schema));
+        let value = 10i128.pow(38) - 1;
         let expr = DecimalRescaleCheckOverflow::new(
-            Arc::new(ScalarChild(Some(10), 38, 0)),
+            Arc::new(ScalarChild(Some(value), 38, 0)),
             0,
-            3,
-            2,
-            true, // fail_on_error = true
+            38,
+            1,
+            true,
         );
-        let result = expr.evaluate(&batch);
-        assert!(result.is_err()); // must be error, not Ok(None)
+        let error = expr.evaluate(&batch).unwrap_err();
+        assert_numeric_value_out_of_range(error, &value.to_string(), 38, 1);
     }
 
     #[test]
-    fn test_large_scale_delta_returns_error() {
-        // delta = output_scale - input_scale = 38 - (-1) = 39
-        // 10i128.pow(39) would overflow, so we must reject gracefully
-        let batch = make_batch(vec![Some(1)], 38, -1);
-        let result = eval_expr(&batch, -1, 38, 38, false);
-        assert!(result.is_err());
+    fn test_large_scale_delta() {
+        let scale_up = make_batch(vec![Some(1), Some(0), None], 38, -1);
+        let result = eval_expr(&scale_up, -1, 38, 38, false).unwrap();
+        let result = result.as_primitive::<Decimal128Type>();
+        assert!(result.is_null(0));
+        assert_eq!(result.value(1), 0);
+        assert!(result.is_null(2));
+
+        let error = eval_expr(&scale_up, -1, 38, 38, true).unwrap_err();
+        assert_numeric_value_out_of_range(error, "10", 38, 38);
+
+        let scale_down = make_batch(vec![Some(1)], 38, 38);
+        let result = eval_expr(&scale_down, 38, 38, -1, false).unwrap();
+        assert_eq!(result.as_primitive::<Decimal128Type>().value(0), 0);
     }
 }

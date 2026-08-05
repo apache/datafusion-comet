@@ -105,7 +105,8 @@ trait ShimSparkErrorConverter {
         Some(QueryExecutionErrors.overflowInSumOfDecimalError(sqlCtx(context)))
 
       case "NumericValueOutOfRange" =>
-        val decimal = Decimal(params("value").toString)
+        // Use Java BigDecimal to avoid Scala BigDecimal's DECIMAL128 MathContext rewriting.
+        val decimal = Decimal(new java.math.BigDecimal(params("value").toString))
         Some(
           QueryExecutionErrors.cannotChangeDecimalPrecisionError(
             decimal,
