@@ -52,13 +52,31 @@ public abstract class NativeBase {
   private static final String searchPattern = "libcomet-";
   private static final AtomicBoolean released = new AtomicBoolean(false);
 
+  static {
+    // Arrow reads `arrow.enable_unsafe_memory_access` and `arrow.enable_null_check_for_get` in
+    // the static initializers of `BoundsChecking` and `NullCheckingForGet`. Once those Arrow
+    // classes are class-loaded the properties are latched and later writes are silently ignored.
+    // These are pure JVM system properties and do not require the native library, so set them
+    // here at `NativeBase` class-load time -- the earliest point Comet code runs -- rather than
+    // deferring to `load()` where the ordering would depend on which Comet path happens to run
+    // first on each executor.
+    if (!(boolean) CometConf.COMET_DEBUG_ENABLED().get()) {
+      setArrowProperties();
+    }
+  }
+
   /**
    * Force the native library to load when a subclass (`Native`) is instantiated. Native execution
    * paths that need JNI always go through `new Native()`, so this is the natural point to trigger
    * the load. Loading is deliberately deferred out of the static initializer so that classes that
    * merely reference `NativeBase` (e.g. the plugin's shutdown path) do not eagerly load the library
    * and log the "Comet native library version ... initialized" message when Comet is otherwise
-   * disabled.
+   * disabled. This lazy design also matches Spark's `DriverPlugin.init` guidance to postpone
+   * expensive work until the application is actually using the feature.
+   *
+   * The library loads at most once per JVM per classloader: `ensureLoaded()` short-circuits on
+   * `loaded || loadErr != null` and `load()` short-circuits on `loaded`, so any concurrent or
+   * repeat `new Native()` after the first is a guarded no-op.
    */
   protected NativeBase() {
     ensureLoaded();
@@ -89,6 +107,9 @@ public abstract class NativeBase {
   // Only for testing
   static synchronized void setLoaded(boolean b) {
     loaded = b;
+    // Reset the cached load failure too, otherwise a prior forced-failure test would leave a
+    // sticky throwable that later `isLoaded()` / `ensureLoaded()` calls rethrow.
+    loadErr = null;
   }
 
   static synchronized void load() {
@@ -117,10 +138,6 @@ public abstract class NativeBase {
     }
 
     initWithLogConf();
-    // Only set the Arrow properties when debugging mode is off
-    if (!(boolean) CometConf.COMET_DEBUG_ENABLED().get()) {
-      setArrowProperties();
-    }
   }
 
   /**
