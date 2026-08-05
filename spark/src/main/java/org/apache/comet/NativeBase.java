@@ -53,30 +53,19 @@ public abstract class NativeBase {
   private static final AtomicBoolean released = new AtomicBoolean(false);
 
   static {
-    // Arrow reads `arrow.enable_unsafe_memory_access` and `arrow.enable_null_check_for_get` in
-    // the static initializers of `BoundsChecking` and `NullCheckingForGet`. Once those Arrow
-    // classes are class-loaded the properties are latched and later writes are silently ignored.
-    // These are pure JVM system properties and do not require the native library, so set them
-    // here at `NativeBase` class-load time -- the earliest point Comet code runs -- rather than
-    // deferring to `load()` where the ordering would depend on which Comet path happens to run
-    // first on each executor.
+    // Arrow's BoundsChecking / NullCheckingForGet latch these in their static initializers, so
+    // later writes are silently ignored. Set them here (not in load()) so ordering does not
+    // depend on which Comet path runs first. These are pure JVM properties, no native lib needed.
     if (!(boolean) CometConf.COMET_DEBUG_ENABLED().get()) {
       setArrowProperties();
     }
   }
 
   /**
-   * Force the native library to load when a subclass (`Native`) is instantiated. Native execution
-   * paths that need JNI always go through `new Native()`, so this is the natural point to trigger
-   * the load. Loading is deliberately deferred out of the static initializer so that classes that
-   * merely reference `NativeBase` (e.g. the plugin's shutdown path) do not eagerly load the library
-   * and log the "Comet native library version ... initialized" message when Comet is otherwise
-   * disabled. This lazy design also matches Spark's `DriverPlugin.init` guidance to postpone
-   * expensive work until the application is actually using the feature.
-   *
-   * The library loads at most once per JVM per classloader: `ensureLoaded()` short-circuits on
-   * `loaded || loadErr != null` and `load()` short-circuits on `loaded`, so any concurrent or
-   * repeat `new Native()` after the first is a guarded no-op.
+   * Loading is deferred out of the static initializer so that merely referencing `NativeBase` (e.g.
+   * from the plugin's shutdown path) does not fire the JNI init and its "initialized" log when
+   * Comet is disabled. `new Native()` is the entry point for every native code path, so its
+   * super-constructor is the natural trigger. Loads at most once per JVM per classloader.
    */
   protected NativeBase() {
     ensureLoaded();
@@ -107,8 +96,7 @@ public abstract class NativeBase {
   // Only for testing
   static synchronized void setLoaded(boolean b) {
     loaded = b;
-    // Reset the cached load failure too, otherwise a prior forced-failure test would leave a
-    // sticky throwable that later `isLoaded()` / `ensureLoaded()` calls rethrow.
+    // Also reset loadErr so a prior forced-failure test does not leave a sticky throwable.
     loadErr = null;
   }
 
@@ -333,9 +321,8 @@ public abstract class NativeBase {
 
   /** Release native resources */
   public static void releaseNative() {
-    // Do not trigger a lazy load just to release. If the library was never loaded on this JVM
-    // (e.g. Comet was disabled) there is nothing to release, and forcing a load here would emit
-    // the native "initialized" log at shutdown when the user has already opted out of Comet.
+    // Do not go through isLoaded() -- that would lazy-load the library at shutdown just to
+    // release it, defeating the whole point of deferred loading when Comet is disabled.
     if (!loaded) {
       return;
     }
