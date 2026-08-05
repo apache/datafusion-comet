@@ -60,5 +60,8 @@ SELECT make_interval(0, 0, 0, 0, 0, 0, 999999999.999999)
 query ignore(https://github.com/apache/datafusion-comet/issues/5131)
 SELECT make_interval(0, 0, 0, 0, 0, 0, 999999999.000001)
 
+query ignore(https://github.com/apache/datafusion-comet/issues/5131)
+SELECT make_interval(0, 0, 0, 0, 2562048)
+
 query
 SELECT make_interval(0, 0, 0, 0, 0, 0, 1234567890123456789)

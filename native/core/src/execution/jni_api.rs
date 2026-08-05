@@ -43,7 +43,6 @@ use datafusion::{
 };
 use datafusion_comet_proto::spark_operator::Operator;
 use datafusion_comet_spark_expr::url_funcs::{CometParseUrl, CometTryParseUrl};
-use datafusion_comet_spark_expr::SparkMakeInterval;
 use datafusion_spark::function::array::array_contains::SparkArrayContains;
 use datafusion_spark::function::array::repeat::SparkArrayRepeat;
 use datafusion_spark::function::bitwise::bit_count::SparkBitCount;
@@ -624,7 +623,6 @@ fn register_datafusion_spark_function(session_ctx: &SessionContext) {
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkDateSub::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkFromUtcTimestamp::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkLastDay::default()));
-    session_ctx.register_udf(ScalarUDF::new_from_impl(SparkMakeInterval::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkToUtcTimestamp::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkSha1::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkConcat::default()));

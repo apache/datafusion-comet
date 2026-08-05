@@ -968,11 +968,11 @@ object CometMakeYMInterval extends CometCodegenDispatch[MakeYMInterval]
 
 object CometMakeDTInterval extends CometCodegenDispatch[MakeDTInterval]
 
-object CometMakeInterval extends CometExpressionSerde[MakeInterval] {
+object CometMakeInterval extends CometExpressionSerde[MakeInterval] with CodegenDispatchFallback {
   private val incompatReason =
     "The native implementation converts seconds to `Float64`, which can lose microsecond" +
-      " precision, and stores time in nanoseconds, which overflows for large seconds values" +
-      " that Spark can represent."
+      " precision, and stores time in nanoseconds, which overflows for large time components" +
+      " (hours, minutes, seconds) that Spark can represent."
 
   override def getIncompatibleReasons(): Seq[String] = Seq(incompatReason)
 

@@ -37,12 +37,6 @@ impl SparkMakeInterval {
     }
 }
 
-impl Default for SparkMakeInterval {
-    fn default() -> Self {
-        Self::new(false)
-    }
-}
-
 impl ScalarUDFImpl for SparkMakeInterval {
     fn name(&self) -> &str {
         self.inner.name()
@@ -82,6 +76,8 @@ impl ScalarUDFImpl for SparkMakeInterval {
                 ColumnarValue::Scalar(value) => value.is_null() && inputs_are_valid(0),
             };
             if overflow {
+                // Spark identifies the integer or long operation that overflowed. The native
+                // wrapper only sees the result null mask, so it can only report interval overflow.
                 return Err(arithmetic_overflow_error("interval").into());
             }
         }

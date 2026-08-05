@@ -277,7 +277,7 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `localtimestamp` | ✅ | — |  |
 | `make_date` | ✅ | Native |  |
 | `make_dt_interval` | ✅ | Codegen dispatch |  |
-| `make_interval` | ✅ | Native | Falls back by default; opt-in via allowIncompatible ([details](compatibility/expressions/datetime.md)) |
+| `make_interval` | ✅ | Hybrid | Routes through the JVM codegen dispatcher by default; the native path is opt-in via allowIncompatible ([details](compatibility/expressions/datetime.md)) |
 | `make_time` | 🔜 | — | Spark 4.1 TIME type; tracked by [#4288](https://github.com/apache/datafusion-comet/issues/4288) |
 | `make_timestamp` | ✅ | Hybrid |  |
 | `make_timestamp_ltz` | ✅ | — | 2-arg TIME form falls back |
@@ -305,7 +305,7 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `to_unix_timestamp` | ✅ | Hybrid |  |
 | `to_utc_timestamp` | ✅ | Hybrid | Routes through the JVM codegen dispatcher by default (handles all timezone forms); the native path is opt-in via allowIncompatible ([details](compatibility/expressions/datetime.md)) |
 | `trunc` | ✅ | Hybrid |  |
-| `try_make_interval` | 🔜 | — | Produces legacy CalendarInterval; tracked by [#5061](https://github.com/apache/datafusion-comet/issues/5061) |
+| `try_make_interval` | ✅ | — | Rewrites to `MakeInterval`; same support as `make_interval` (Spark 4.0+) |
 | `try_make_timestamp` | ✅ | — |  |
 | `try_to_date` | ✅ | — | Rewrites to `Cast`/`GetTimestamp` before Comet sees the plan; same support as `to_date` |
 | `try_to_time` | 🔜 | — | Spark 4.1 TIME type; tracked by [#4288](https://github.com/apache/datafusion-comet/issues/4288) |

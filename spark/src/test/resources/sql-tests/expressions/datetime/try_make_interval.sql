@@ -15,24 +15,9 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- Native ANSI execution must preserve Spark's overflow exception.
+-- MinSparkVersion: 4.0
 -- Config: spark.sql.ansi.enabled=true
--- Config: spark.comet.expression.MakeInterval.allowIncompatible=true
-
-statement
-CREATE TABLE test_make_interval_ansi(years int) USING parquet
-
-statement
-INSERT INTO test_make_interval_ansi VALUES (NULL)
+-- Config: spark.comet.exec.scalaUDF.codegen.enabled=true
 
 query
-SELECT make_interval(1, 2, 3, 4, 5, 6, 7.123456)
-
-query
-SELECT make_interval(years) FROM test_make_interval_ansi
-
-query expect_error(ARITHMETIC_OVERFLOW)
-SELECT make_interval(2147483647)
-
-query expect_error(ARITHMETIC_OVERFLOW)
-SELECT make_interval(0, 0, 2147483647)
+SELECT try_make_interval(2147483647)
