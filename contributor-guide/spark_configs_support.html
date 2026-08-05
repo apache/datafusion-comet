@@ -637,7 +637,7 @@ across Spark 3.4, 3.5, 4.0, and 4.1. Three expression classes mix in
 <code class="docutils literal notranslate"><span class="pre">to_date</span></code>, and Spark 4’s <code class="docutils literal notranslate"><span class="pre">try_to_timestamp</span></code>)</p></li>
 </ul>
 <p><code class="docutils literal notranslate"><span class="pre">Cast</span></code> between strings and date / timestamp also reads the policy via the default
-formatters but is tested separately by <code class="docutils literal notranslate"><span class="pre">CometCastSuite</span></code> and is out of scope here.</p>
+formatters but is tested separately by <code class="docutils literal notranslate"><span class="pre">CometNativeCastSuite</span></code> and is out of scope here.</p>
 <p><strong>Comet status.</strong> None of the native implementations consult
 <code class="docutils literal notranslate"><span class="pre">legacyTimeParserPolicy</span></code> directly. Comet instead uses native implementations only for
 policy-independent cases and routes policy-sensitive expressions through Spark’s own

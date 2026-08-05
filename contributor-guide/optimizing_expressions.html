@@ -701,17 +701,21 @@ for the lightest one that fits.</p>
 </tr>
 <tr class="row-odd"><td><p><strong>Read from the offset buffer directly</strong></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">list_array.value(i)</span></code> allocating a sliced <code class="docutils literal notranslate"><span class="pre">ArrayRef</span></code> per row</p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">spark_size</span></code>: compute list lengths from offsets, zero allocation</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">spark_size</span></code> Map path and scalar path: <code class="docutils literal notranslate"><span class="pre">value_length</span></code> / offsets instead of materializing a sliced array</p></td>
 </tr>
-<tr class="row-even"><td><p><strong>Typed scans over flat values buffers + hash probe</strong></p></td>
+<tr class="row-even"><td><p><strong>Reuse Arrow <code class="docutils literal notranslate"><span class="pre">length</span></code> kernel + cheap null rewrite</strong></p></td>
+<td><p>Per-row <code class="docutils literal notranslate"><span class="pre">value_length</span></code> / builder loop, or <code class="docutils literal notranslate"><span class="pre">zip</span></code> via <code class="docutils literal notranslate"><span class="pre">MutableArrayData</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">spark_size</span></code> (~12x on no-null List): <code class="docutils literal notranslate"><span class="pre">length</span></code> for List/LargeList/FixedSizeList, then <code class="docutils literal notranslate"><span class="pre">into_parts</span></code> + <code class="docutils literal notranslate"><span class="pre">set_indices</span></code> to patch null slots to <code class="docutils literal notranslate"><span class="pre">-1</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><strong>Typed scans over flat values buffers + hash probe</strong></p></td>
 <td><p>A per-element Arrow <code class="docutils literal notranslate"><span class="pre">eq</span></code>/compute kernel that allocates per call</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">spark_arrays_overlap</span></code> (up to 18x): scan buffers directly, hash probe for large lists</p></td>
 </tr>
-<tr class="row-odd"><td><p><strong>ASCII / byte-offset fast path</strong></p></td>
+<tr class="row-even"><td><p><strong>ASCII / byte-offset fast path</strong></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">chars().count()</span></code> and per-char UTF-8 decoding</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">substring</span></code> (up to 10x), <code class="docutils literal notranslate"><span class="pre">spark_lpad</span></code> (2x): slice by byte offset when input is ASCII</p></td>
 </tr>
-<tr class="row-even"><td><p><strong><code class="docutils literal notranslate"><span class="pre">memcpy</span></code> from a precomputed buffer</strong></p></td>
+<tr class="row-odd"><td><p><strong><code class="docutils literal notranslate"><span class="pre">memcpy</span></code> from a precomputed buffer</strong></p></td>
 <td><p>Char-by-char <code class="docutils literal notranslate"><span class="pre">push</span></code> into a scratch <code class="docutils literal notranslate"><span class="pre">String</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">spark_lpad</span></code>: pad from a precomputed repeating pad buffer, write directly into the builder</p></td>
 </tr>

@@ -824,10 +824,10 @@ and <code class="docutils literal notranslate"><span class="pre">-Dtest=none</sp
 ./mvnw<span class="w"> </span><span class="nb">test</span><span class="w"> </span>-Dtest<span class="o">=</span>none<span class="w"> </span>-Dsuites<span class="o">=</span><span class="s2">&quot;org.apache.comet.CometArrayExpressionSuite&quot;</span>
 
 <span class="c1"># Run multiple suites (comma-separated, fully qualified)</span>
-./mvnw<span class="w"> </span><span class="nb">test</span><span class="w"> </span>-Dtest<span class="o">=</span>none<span class="w"> </span>-Dsuites<span class="o">=</span><span class="s2">&quot;org.apache.comet.CometCastSuite,org.apache.comet.CometArrayExpressionSuite&quot;</span>
+./mvnw<span class="w"> </span><span class="nb">test</span><span class="w"> </span>-Dtest<span class="o">=</span>none<span class="w"> </span>-Dsuites<span class="o">=</span><span class="s2">&quot;org.apache.comet.CometNativeCastSuite,org.apache.comet.CometArrayExpressionSuite&quot;</span>
 
 <span class="c1"># Run only tests whose name contains &quot;valid&quot; inside one suite</span>
-./mvnw<span class="w"> </span><span class="nb">test</span><span class="w"> </span>-Dtest<span class="o">=</span>none<span class="w"> </span>-Dsuites<span class="o">=</span><span class="s2">&quot;org.apache.comet.CometCastSuite valid&quot;</span>
+./mvnw<span class="w"> </span><span class="nb">test</span><span class="w"> </span>-Dtest<span class="o">=</span>none<span class="w"> </span>-Dsuites<span class="o">=</span><span class="s2">&quot;org.apache.comet.CometNativeCastSuite valid&quot;</span>
 </pre></div>
 </div>
 <p><code class="docutils literal notranslate"><span class="pre">-Dtest=none</span></code> tells the Surefire (JUnit) plugin to skip its tests; without it, Surefire still
@@ -1003,8 +1003,8 @@ However if the tests is related to the native side. Please make sure to run <cod
 <h3>Running Tests from command line<a class="headerlink" href="#running-tests-from-command-line" title="Link to this heading">#</a></h3>
 <p>Specify which ScalaTest suites to run with the <code class="docutils literal notranslate"><span class="pre">suites</span></code> argument and disable Surefire’s JUnit
 discovery with <code class="docutils literal notranslate"><span class="pre">-Dtest=none</span></code>. For example, to run only the test cases containing <em>valid</em> in
-their name from <code class="docutils literal notranslate"><span class="pre">org.apache.comet.CometCastSuite</span></code>:</p>
-<div class="highlight-sh notranslate"><div class="highlight"><pre><span></span>./mvnw<span class="w"> </span><span class="nb">test</span><span class="w"> </span>-Dtest<span class="o">=</span>none<span class="w"> </span>-Dsuites<span class="o">=</span><span class="s2">&quot;org.apache.comet.CometCastSuite valid&quot;</span>
+their name from <code class="docutils literal notranslate"><span class="pre">org.apache.comet.CometNativeCastSuite</span></code>:</p>
+<div class="highlight-sh notranslate"><div class="highlight"><pre><span></span>./mvnw<span class="w"> </span><span class="nb">test</span><span class="w"> </span>-Dtest<span class="o">=</span>none<span class="w"> </span>-Dsuites<span class="o">=</span><span class="s2">&quot;org.apache.comet.CometNativeCastSuite valid&quot;</span>
 </pre></div>
 </div>
 <p>See <a class="reference internal" href="#running-a-specific-scalatest-suite">Running a Specific ScalaTest Suite</a> above for the full
