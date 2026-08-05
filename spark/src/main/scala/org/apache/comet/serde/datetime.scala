@@ -986,7 +986,7 @@ object CometMakeInterval extends CometExpressionSerde[MakeInterval] with Codegen
       CalendarIntervalType,
       expr.failOnError,
       childExprs: _*)
-    optExprWithFallbackReason(optExpr, expr, children: _*)
+    optExpr
   }
 }
 
