@@ -52,7 +52,22 @@ public abstract class NativeBase {
   private static final String searchPattern = "libcomet-";
   private static final AtomicBoolean released = new AtomicBoolean(false);
 
-  static {
+  /**
+   * Force the native library to load when a subclass (`Native`) is instantiated. Native execution
+   * paths that need JNI always go through `new Native()`, so this is the natural point to trigger
+   * the load. Loading is deliberately deferred out of the static initializer so that classes that
+   * merely reference `NativeBase` (e.g. the plugin's shutdown path) do not eagerly load the
+   * library and log the "Comet native library version ... initialized" message when Comet is
+   * otherwise disabled.
+   */
+  protected NativeBase() {
+    ensureLoaded();
+  }
+
+  private static synchronized void ensureLoaded() {
+    if (loaded || loadErr != null) {
+      return;
+    }
     try {
       load();
     } catch (Throwable th) {
@@ -64,6 +79,7 @@ public abstract class NativeBase {
   }
 
   public static synchronized boolean isLoaded() throws Throwable {
+    ensureLoaded();
     if (loadErr != null) {
       throw loadErr;
     }
@@ -299,13 +315,19 @@ public abstract class NativeBase {
   static native void release();
 
   /** Release native resources */
-  public static void releaseNative() throws Throwable {
-    if (!isLoaded()) {
+  public static void releaseNative() {
+    // Do not trigger a lazy load just to release. If the library was never loaded on this JVM
+    // (e.g. Comet was disabled) there is nothing to release, and forcing a load here would emit
+    // the native "initialized" log at shutdown when the user has already opted out of Comet.
+    if (!loaded) {
       return;
     }
-
     if (released.compareAndSet(false, true)) {
-      release();
+      try {
+        release();
+      } catch (Throwable th) {
+        LOG.warn("Failed to release comet library", th);
+      }
     }
   }
 
@@ -315,7 +337,12 @@ public abstract class NativeBase {
    * @param featureName The name of the feature to check (e.g., "jemalloc", "hdfs-opendal")
    * @return true if the feature is enabled, false otherwise
    */
-  public static native boolean isFeatureEnabled(String featureName);
+  public static boolean isFeatureEnabled(String featureName) {
+    ensureLoaded();
+    return nativeIsFeatureEnabled(featureName);
+  }
+
+  private static native boolean nativeIsFeatureEnabled(String featureName);
 
   /**
    * Check whether Comet's native object_store layer recognizes the given URL's scheme (i.e. the
@@ -326,5 +353,10 @@ public abstract class NativeBase {
    * @param url a fully-qualified URL whose scheme should be checked (e.g. "s3://bucket/path")
    * @return true if object_store can construct a store for this scheme, false otherwise
    */
-  public static native boolean isObjectStoreSchemeSupported(String url);
+  public static boolean isObjectStoreSchemeSupported(String url) {
+    ensureLoaded();
+    return nativeIsObjectStoreSchemeSupported(url);
+  }
+
+  private static native boolean nativeIsObjectStoreSchemeSupported(String url);
 }

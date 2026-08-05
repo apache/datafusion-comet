@@ -142,7 +142,7 @@ const LOG_PATTERN: &str = "{d(%y/%m/%d %H:%M:%S)} {l} {f}: {m}{n}";
 /// * `1` (true) if the feature is enabled
 /// * `0` (false) if the feature is disabled or unknown
 #[no_mangle]
-pub extern "system" fn Java_org_apache_comet_NativeBase_isFeatureEnabled(
+pub extern "system" fn Java_org_apache_comet_NativeBase_nativeIsFeatureEnabled(
     env: EnvUnowned,
     _: JClass,
     feature_name: JString,
@@ -170,7 +170,7 @@ pub extern "system" fn Java_org_apache_comet_NativeBase_isFeatureEnabled(
 /// hardcoding -- and drifting from -- the object_store-supported scheme set. (hdfs / libhdfs
 /// schemes are handled separately on the JVM side via the user's libhdfs scheme config.)
 #[no_mangle]
-pub extern "system" fn Java_org_apache_comet_NativeBase_isObjectStoreSchemeSupported(
+pub extern "system" fn Java_org_apache_comet_NativeBase_nativeIsObjectStoreSchemeSupported(
     env: EnvUnowned,
     _: JClass,
     url: JString,
