@@ -128,10 +128,10 @@ mod tests {
 
     #[test]
     fn test_array_overflow_reports_first_offending_value() {
-        // Two distinct overflowing values with a valid value in front. Both the original
-        // per-row `?` loop and `try_unary` walk rows in index order, so the reported error
-        // must reference the FIRST overflow (111111), not the later one (222222). This locks
-        // the ordering semantics rather than merely "some error occurred".
+        // Two distinct overflowing values with a valid value in front. The
+        // `.iter().flatten().find(...)` scan walks rows in index order, so the reported
+        // error must reference the FIRST overflow (111111), not the later one (222222).
+        // This locks the ordering semantics rather than merely "some error occurred".
         let args = [ColumnarValue::Array(Arc::new(Int64Array::from(vec![
             Some(99),
             Some(111111),
@@ -296,6 +296,27 @@ mod tests {
         };
         assert!(array.is_valid(0));
         assert!(array.is_null(1));
+    }
+
+    #[test]
+    fn test_scalar_boundary_precision() {
+        // Same off-by-one as `test_array_boundary_precision`, but through the scalar path
+        // (`validate_decimal_precision`). Locks the two Arrow entry points together.
+        let ok = [ColumnarValue::Scalar(ScalarValue::Int64(Some(999)))];
+        let result = spark_make_decimal(&ok, &DataType::Decimal128(3, 0), false)
+            .expect("999 should fit Decimal128(3, 0)");
+        let ColumnarValue::Scalar(ScalarValue::Decimal128(v, 3, 0)) = result else {
+            panic!("expected decimal scalar result")
+        };
+        assert_eq!(v, Some(999));
+
+        let over = [ColumnarValue::Scalar(ScalarValue::Int64(Some(1000)))];
+        let result = spark_make_decimal(&over, &DataType::Decimal128(3, 0), false)
+            .expect("1000 should null without fail_on_error");
+        let ColumnarValue::Scalar(ScalarValue::Decimal128(v, 3, 0)) = result else {
+            panic!("expected decimal scalar result")
+        };
+        assert_eq!(v, None);
     }
 
     #[test]
