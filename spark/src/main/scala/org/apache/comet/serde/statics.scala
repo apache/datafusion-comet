@@ -25,7 +25,7 @@ import org.apache.spark.sql.catalyst.util.CharVarcharCodegenUtils
 import org.apache.spark.sql.types.StringType
 
 import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
-import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithFallbackReason, scalarFunctionExprToProto, scalarFunctionExprToProtoWithReturnType}
+import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, scalarFunctionExprToProto, scalarFunctionExprToProtoWithReturnType}
 
 object CometStaticInvoke extends CometExpressionSerde[StaticInvoke] {
 
@@ -61,8 +61,7 @@ object CometStaticInvoke extends CometExpressionSerde[StaticInvoke] {
       case None =>
         withFallbackReason(
           expr,
-          s"Static invoke expression: ${expr.functionName} is not supported",
-          expr.children: _*)
+          s"Static invoke expression: ${expr.functionName} is not supported")
         None
     }
   }
@@ -75,7 +74,7 @@ object CometUrlEncodeStaticInvoke extends CometExpressionSerde[StaticInvoke] {
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     val childExpr = exprToProtoInternal(expr.children.head, inputs, binding)
     val optExpr = scalarFunctionExprToProto("url_encode", childExpr)
-    optExprWithFallbackReason(optExpr, expr, expr.children: _*)
+    optExpr
   }
 }
 
@@ -91,7 +90,7 @@ object CometUrlDecodeStaticInvoke extends CometExpressionSerde[StaticInvoke] {
     val funcName = if (failOnError) "url_decode" else "try_url_decode"
     val childExpr = exprToProtoInternal(expr.children.head, inputs, binding)
     val optExpr = scalarFunctionExprToProto(funcName, childExpr)
-    optExprWithFallbackReason(optExpr, expr, expr.children: _*)
+    optExpr
   }
 }
 
@@ -113,7 +112,7 @@ object CometBase64StaticInvoke extends CometExpressionSerde[StaticInvoke] {
       failOnError = false,
       childExpr,
       chunkExpr)
-    optExprWithFallbackReason(optExpr, expr, expr.arguments: _*)
+    optExpr
   }
 }
 
