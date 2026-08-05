@@ -63,7 +63,7 @@ class CometDecimalPromotionSuite extends CometTestBase {
           s"$name promotion is not idempotent: $promoted")
 
         // This proto-shape check relies on CometArrayContains re-entering exprToProto for its
-        // children. If https://github.com/apache/datafusion-comet/issues/5248 changes that, 
+        // children. If https://github.com/apache/datafusion-comet/issues/5248 changes that,
         // re-point it to another recursively serializing serde.
         val arithmeticProto = QueryPlanSerde
           .exprToProto(expression, plan.children.head.output)
