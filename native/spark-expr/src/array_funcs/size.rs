@@ -127,7 +127,7 @@ fn spark_size_array(array: &ArrayRef) -> Result<ArrayRef, DataFusionError> {
 /// rewrite null inputs to `-1` (Spark's legacy/compatible size-of-null behavior
 /// for this UDF). LargeList lengths are Int64 and are cast to Int32.
 ///
-/// Null rewriting patches the values buffer rather than using `zip`: `zip` goes
+/// Patches the values buffer in place rather than using `zip`; `zip` goes
 /// through `MutableArrayData` and roughly doubled runtime on the `array_size`
 /// criterion shapes.
 fn spark_size_list_like(array: &ArrayRef) -> Result<ArrayRef, DataFusionError> {
@@ -148,7 +148,10 @@ fn spark_size_list_like(array: &ArrayRef) -> Result<ArrayRef, DataFusionError> {
         }
     };
 
-    // No nulls: lengths are already non-null Int32 sizes.
+    // Fast path for the production shape: `CometSize.convert` wraps size() in a
+    // `CASE WHEN isnotnull(child)` that filters null rows out before the THEN
+    // branch runs, so this function only ever sees a null-free array in a real
+    // Comet plan. Return the length kernel output as-is.
     if array.null_count() == 0 {
         return Ok(lengths);
     }
@@ -157,16 +160,17 @@ fn spark_size_list_like(array: &ArrayRef) -> Result<ArrayRef, DataFusionError> {
         .as_any()
         .downcast_ref::<Int32Array>()
         .ok_or_else(|| DataFusionError::Internal("Expected Int32Array from length".to_string()))?;
-    let nulls = int_lengths
-        .nulls()
-        .expect("null_count > 0 implies a null buffer");
 
-    // length() preserves input nulls; Spark size emits -1 for those rows.
-    let mut values = int_lengths.values().to_vec();
-    for (i, is_valid) in nulls.iter().enumerate() {
-        if !is_valid {
-            values[i] = -1;
-        }
+    // `into_parts` moves the values buffer without copying; `set_indices()` on
+    // the inverted validity iterates only the null slots (O(null_count), not
+    // O(n)), so sparse-null batches skip almost all the work.
+    let (_, values, nulls) = int_lengths.clone().into_parts();
+    let Some(nulls) = nulls else {
+        return Ok(Arc::new(Int32Array::new(values, None)));
+    };
+    let mut values = values.to_vec();
+    for i in (!nulls.inner()).set_indices() {
+        values[i] = -1;
     }
     Ok(Arc::new(Int32Array::from(values)))
 }
@@ -262,7 +266,9 @@ mod tests {
 
     #[test]
     fn test_spark_size_array_no_nulls() {
-        // Fast path: null_count() == 0 returns the length kernel output directly.
+        // Fast path (the shape Comet actually runs after the CASE-WHEN filter):
+        // input has no nulls, so spark_size_list_like returns the length kernel
+        // output directly without touching the values buffer.
         let value_data = Int32Array::from(vec![1, 2, 3, 4, 5, 6]);
         let value_offsets = arrow::buffer::OffsetBuffer::new(vec![0, 3, 5, 5, 6].into());
         let field = Arc::new(Field::new("item", DataType::Int32, true));
@@ -510,5 +516,105 @@ mod tests {
         assert_eq!(result.value(1), 1); // [5] has 1 element
         assert_eq!(result.value(2), -1); // null returns -1
         assert_eq!(result.value(3), 0); // [] has 0 elements
+    }
+
+    #[test]
+    fn test_spark_size_sliced_list_array() {
+        // Slicing is the classic trap for buffer-level ops: the null buffer, values
+        // buffer, and offsets all logically start at `array.offset()`, not 0. Pin the
+        // behavior so a future edit that touches buffers directly cannot regress it.
+        //
+        // Full array: [[1, 2], [3], [4, 5, 6], null, [7]]
+        let value_data = Int32Array::from(vec![1, 2, 3, 4, 5, 6, 7]);
+        let value_offsets = arrow::buffer::OffsetBuffer::new(vec![0, 2, 3, 6, 6, 7].into());
+        let field = Arc::new(Field::new("item", DataType::Int32, true));
+
+        let mut null_buffer = NullBufferBuilder::new(5);
+        null_buffer.append(true);
+        null_buffer.append(true);
+        null_buffer.append(true);
+        null_buffer.append(false);
+        null_buffer.append(true);
+
+        let list_array = ListArray::try_new(
+            field,
+            value_offsets,
+            Arc::new(value_data),
+            null_buffer.finish(),
+        )
+        .unwrap();
+
+        // Skip the first two rows: sliced view is [[4, 5, 6], null, [7]].
+        let sliced: ArrayRef = Arc::new(list_array.slice(2, 3));
+        let result = spark_size_array(&sliced).unwrap();
+        let result = result.as_any().downcast_ref::<Int32Array>().unwrap();
+
+        assert_eq!(result.len(), 3);
+        assert_eq!(result.value(0), 3);
+        assert_eq!(result.value(1), -1);
+        assert_eq!(result.value(2), 1);
+    }
+
+    #[test]
+    fn test_spark_size_scalar_large_list() {
+        use arrow::array::LargeListArray;
+
+        // Non-null LargeList: [10, 20, 30, 40] → 4
+        let values = Int32Array::from(vec![10, 20, 30, 40]);
+        let offsets = arrow::buffer::OffsetBuffer::new(vec![0i64, 4].into());
+        let field = Arc::new(Field::new("item", DataType::Int32, true));
+        let large_list_array =
+            LargeListArray::try_new(Arc::clone(&field), offsets, Arc::new(values), None).unwrap();
+        let scalar = ScalarValue::LargeList(Arc::new(large_list_array));
+        assert_eq!(
+            spark_size_scalar(&scalar).unwrap(),
+            ScalarValue::Int32(Some(4))
+        );
+
+        // Null LargeList row → -1
+        let empty_values = Int32Array::from(Vec::<i32>::new());
+        let null_offsets = arrow::buffer::OffsetBuffer::new(vec![0i64, 0].into());
+        let mut null_buffer = NullBufferBuilder::new(1);
+        null_buffer.append(false);
+        let null_large_list = LargeListArray::try_new(
+            field,
+            null_offsets,
+            Arc::new(empty_values),
+            null_buffer.finish(),
+        )
+        .unwrap();
+        let scalar = ScalarValue::LargeList(Arc::new(null_large_list));
+        assert_eq!(
+            spark_size_scalar(&scalar).unwrap(),
+            ScalarValue::Int32(Some(-1))
+        );
+    }
+
+    #[test]
+    fn test_spark_size_scalar_fixed_size_list() {
+        use arrow::array::FixedSizeListArray;
+
+        // Non-null FixedSizeList of size 4 → 4. `value_length()` on FSL takes no index,
+        // unlike `value_length(i)` on List/LargeList — pin the correct API is called.
+        let values = Int32Array::from(vec![10, 20, 30, 40]);
+        let field = Arc::new(Field::new("item", DataType::Int32, true));
+        let fsl_array = FixedSizeListArray::new(Arc::clone(&field), 4, Arc::new(values), None);
+        let scalar = ScalarValue::FixedSizeList(Arc::new(fsl_array));
+        assert_eq!(
+            spark_size_scalar(&scalar).unwrap(),
+            ScalarValue::Int32(Some(4))
+        );
+
+        // Null FSL row → -1
+        let null_values = Int32Array::from(vec![0, 0, 0, 0]);
+        let mut null_buffer = NullBufferBuilder::new(1);
+        null_buffer.append(false);
+        let null_fsl_array =
+            FixedSizeListArray::new(field, 4, Arc::new(null_values), null_buffer.finish());
+        let scalar = ScalarValue::FixedSizeList(Arc::new(null_fsl_array));
+        assert_eq!(
+            spark_size_scalar(&scalar).unwrap(),
+            ScalarValue::Int32(Some(-1))
+        );
     }
 }
