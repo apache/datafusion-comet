@@ -44,13 +44,23 @@ pub struct Stats {
     pub delta: i64,
 }
 
+/// Reusable workspace owned by an accumulator rather than by each summary.
+#[derive(Debug, Default)]
+pub(crate) struct QuantileSummariesScratch {
+    sampled: Vec<Stats>,
+}
+
+impl QuantileSummariesScratch {
+    pub(crate) fn heap_size(&self) -> usize {
+        self.sampled.capacity() * std::mem::size_of::<Stats>()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct QuantileSummaries {
     compress_threshold: usize,
     relative_error: f64,
     sampled: Vec<Stats>,
-    /// Scratch space alternated with `sampled` by flush, compress, and merge.
-    sampled_buffer: Vec<Stats>,
     count: i64,
     compressed: bool,
     head_sampled: Vec<f64>,
@@ -67,7 +77,6 @@ impl QuantileSummaries {
             compress_threshold,
             relative_error,
             sampled: Vec::new(),
-            sampled_buffer: Vec::new(),
             count: 0,
             compressed: true,
             head_sampled: Vec::new(),
@@ -81,7 +90,6 @@ impl QuantileSummaries {
     /// Heap bytes held by this summary (excluding the struct itself).
     pub fn heap_size(&self) -> usize {
         self.sampled.capacity() * std::mem::size_of::<Stats>()
-            + self.sampled_buffer.capacity() * std::mem::size_of::<Stats>()
             + self.head_sampled.capacity() * std::mem::size_of::<f64>()
     }
 
@@ -91,18 +99,18 @@ impl QuantileSummaries {
         self.head_sampled.reserve(additional);
     }
 
-    pub fn insert(&mut self, x: f64) {
+    pub(crate) fn insert(&mut self, x: f64, scratch: &mut QuantileSummariesScratch) {
         self.head_sampled.push(x);
         self.compressed = false;
         if self.head_sampled.len() >= Self::DEFAULT_HEAD_SIZE {
-            self.with_head_buffer_inserted();
+            self.with_head_buffer_inserted(scratch);
             if self.sampled.len() >= self.compress_threshold {
-                self.compress();
+                self.compress(scratch);
             }
         }
     }
 
-    fn with_head_buffer_inserted(&mut self) {
+    fn with_head_buffer_inserted(&mut self, scratch: &mut QuantileSummariesScratch) {
         if self.head_sampled.is_empty() {
             return;
         }
@@ -113,9 +121,8 @@ impl QuantileSummaries {
         // irrelevant; `total_cmp` gives a deterministic total order.
         sorted.sort_unstable_by(|a, b| a.total_cmp(b));
 
-        let mut new_samples = std::mem::take(&mut self.sampled_buffer);
-        new_samples.clear();
-        new_samples.reserve(self.sampled.len() + sorted.len());
+        scratch.sampled.clear();
+        scratch.sampled.reserve(self.sampled.len() + sorted.len());
         let mut sample_idx = 0usize;
         let mut ops_idx = 0usize;
         while ops_idx < sorted.len() {
@@ -123,11 +130,11 @@ impl QuantileSummaries {
             while sample_idx < self.sampled.len()
                 && self.sampled[sample_idx].value <= current_sample
             {
-                new_samples.push(self.sampled[sample_idx]);
+                scratch.sampled.push(self.sampled[sample_idx]);
                 sample_idx += 1;
             }
             current_count += 1;
-            let delta = if new_samples.is_empty()
+            let delta = if scratch.sampled.is_empty()
                 || (sample_idx == self.sampled.len() && ops_idx == sorted.len() - 1)
             {
                 0
@@ -136,7 +143,7 @@ impl QuantileSummaries {
                 // (verified `.toLong` in 3.4/3.5/4.0/4.1), matching our i64.
                 (2.0 * self.relative_error * current_count as f64).floor() as i64
             };
-            new_samples.push(Stats {
+            scratch.sampled.push(Stats {
                 value: current_sample,
                 g: 1,
                 delta,
@@ -144,18 +151,15 @@ impl QuantileSummaries {
             ops_idx += 1;
         }
         while sample_idx < self.sampled.len() {
-            new_samples.push(self.sampled[sample_idx]);
+            scratch.sampled.push(self.sampled[sample_idx]);
             sample_idx += 1;
         }
-        let mut old_samples = std::mem::replace(&mut self.sampled, new_samples);
-        old_samples.clear();
-        self.sampled_buffer = old_samples;
-        sorted.clear();
-        self.head_sampled = sorted;
+        std::mem::swap(&mut self.sampled, &mut scratch.sampled);
+        scratch.sampled.clear();
         self.count = current_count;
     }
 
-    pub fn compress(&mut self) {
+    pub(crate) fn compress(&mut self, scratch: &mut QuantileSummariesScratch) {
         // Already compressed and the head buffer is empty (insert clears the
         // flag whenever it stages a value), so there is nothing to do. This
         // mirrors Spark's `PercentileDigest.isCompressed` guard, which also
@@ -163,19 +167,16 @@ impl QuantileSummaries {
         if self.compressed {
             return;
         }
-        self.with_head_buffer_inserted();
+        self.with_head_buffer_inserted(scratch);
         let merge_threshold = 2.0 * self.relative_error * self.count as f64;
-        let mut compressed = std::mem::take(&mut self.sampled_buffer);
-        Self::compress_immut(&self.sampled, merge_threshold, &mut compressed);
-        let mut old_samples = std::mem::replace(&mut self.sampled, compressed);
-        old_samples.clear();
-        self.sampled_buffer = old_samples;
+        Self::compress_immut(&self.sampled, merge_threshold, &mut scratch.sampled);
+        std::mem::swap(&mut self.sampled, &mut scratch.sampled);
+        scratch.sampled.clear();
         self.compressed = true;
     }
 
     fn compress_immut(current_samples: &[Stats], merge_threshold: f64, res: &mut Vec<Stats>) {
         res.clear();
-        res.reserve(current_samples.len());
         if current_samples.is_empty() {
             return;
         }
@@ -203,7 +204,11 @@ impl QuantileSummaries {
         res.reverse();
     }
 
-    pub fn merge(&mut self, other: &QuantileSummaries) {
+    pub(crate) fn merge(
+        &mut self,
+        other: &QuantileSummaries,
+        scratch: &mut QuantileSummariesScratch,
+    ) {
         debug_assert!(self.head_sampled.is_empty(), "compress before merge");
         debug_assert!(other.head_sampled.is_empty(), "compress before merge");
         if other.count == 0 {
@@ -225,9 +230,10 @@ impl QuantileSummaries {
             (2.0 * other.relative_error * other.count as f64).floor() as i64;
         let additional_other_delta = (2.0 * self.relative_error * self.count as f64).floor() as i64;
 
-        let mut merged_sampled = std::mem::take(&mut self.sampled_buffer);
-        merged_sampled.clear();
-        merged_sampled.reserve(self.sampled.len() + other.sampled.len());
+        scratch.sampled.clear();
+        scratch
+            .sampled
+            .reserve(self.sampled.len() + other.sampled.len());
         let mut self_idx = 0usize;
         let mut other_idx = 0usize;
         while self_idx < self.sampled.len() && other_idx < other.sampled.len() {
@@ -255,27 +261,24 @@ impl QuantileSummaries {
                 )
             };
             next_sample.delta += additional_delta;
-            merged_sampled.push(next_sample);
+            scratch.sampled.push(next_sample);
         }
         while self_idx < self.sampled.len() {
-            merged_sampled.push(self.sampled[self_idx]);
+            scratch.sampled.push(self.sampled[self_idx]);
             self_idx += 1;
         }
         while other_idx < other.sampled.len() {
-            merged_sampled.push(other.sampled[other_idx]);
+            scratch.sampled.push(other.sampled[other_idx]);
             other_idx += 1;
         }
-        let mut compressed = std::mem::take(&mut self.sampled);
         Self::compress_immut(
-            &merged_sampled,
+            &scratch.sampled,
             2.0 * merged_relative_error * merged_count as f64,
-            &mut compressed,
+            &mut self.sampled,
         );
-        merged_sampled.clear();
+        scratch.sampled.clear();
         self.compress_threshold = other.compress_threshold;
         self.relative_error = merged_relative_error;
-        self.sampled = compressed;
-        self.sampled_buffer = merged_sampled;
         self.count = merged_count;
         self.compressed = true;
     }
@@ -382,7 +385,6 @@ impl QuantileSummaries {
             compress_threshold,
             relative_error,
             sampled,
-            sampled_buffer: Vec::new(),
             count,
             compressed: true,
             head_sampled: Vec::new(),
@@ -397,11 +399,19 @@ mod tests {
     const EPS: f64 = 1.0 / 10000.0;
 
     fn summary_of(values: &[f64]) -> QuantileSummaries {
-        let mut qs = QuantileSummaries::new(QuantileSummaries::DEFAULT_COMPRESS_THRESHOLD, EPS);
+        summary_of_with_error(values, EPS)
+    }
+
+    fn summary_of_with_error(values: &[f64], relative_error: f64) -> QuantileSummaries {
+        let mut qs = QuantileSummaries::new(
+            QuantileSummaries::DEFAULT_COMPRESS_THRESHOLD,
+            relative_error,
+        );
+        let mut scratch = QuantileSummariesScratch::default();
         for &v in values {
-            qs.insert(v);
+            qs.insert(v, &mut scratch);
         }
-        qs.compress();
+        qs.compress(&mut scratch);
         qs
     }
 
@@ -464,8 +474,9 @@ mod tests {
         let middle: Vec<f64> = (5001..=10000).map(|i| i as f64).collect();
         let right: Vec<f64> = (10001..=15000).map(|i| i as f64).collect();
         let mut merged = summary_of(&left);
-        merged.merge(&summary_of(&middle));
-        merged.merge(&summary_of(&right));
+        let mut scratch = QuantileSummariesScratch::default();
+        merged.merge(&summary_of(&middle), &mut scratch);
+        merged.merge(&summary_of(&right), &mut scratch);
         let mut all: Vec<f64> = left
             .iter()
             .chain(middle.iter())
@@ -479,34 +490,42 @@ mod tests {
     }
 
     #[test]
-    fn flush_and_merge_reuse_sampled_buffers() {
+    fn flush_reuses_shared_sample_buffer_and_drops_head() {
+        let mut scratch = QuantileSummariesScratch::default();
         let mut summary = summary_of(&(1..=100).map(|i| i as f64).collect::<Vec<_>>());
-        summary.insert(50.5);
-        summary
-            .sampled_buffer
+        summary.insert(50.5, &mut scratch);
+        scratch
+            .sampled
             .reserve(summary.sampled.len() + summary.head_sampled.len());
         let sampled_ptr = summary.sampled.as_ptr();
-        let buffer_ptr = summary.sampled_buffer.as_ptr();
+        let buffer_ptr = scratch.sampled.as_ptr();
 
-        summary.with_head_buffer_inserted();
+        summary.with_head_buffer_inserted(&mut scratch);
 
         assert_eq!(summary.sampled.as_ptr(), buffer_ptr);
-        assert_eq!(summary.sampled_buffer.as_ptr(), sampled_ptr);
+        assert_eq!(scratch.sampled.as_ptr(), sampled_ptr);
+        assert_eq!(summary.head_sampled.capacity(), 0);
+    }
 
-        summary.compress();
-        let other = summary_of(&(101..=200).map(|i| i as f64).collect::<Vec<_>>());
+    #[test]
+    fn merge_keeps_uncompressed_capacity_in_shared_scratch() {
+        let error = 0.01;
+        let mut summary =
+            summary_of_with_error(&(1..=10_000).map(|i| i as f64).collect::<Vec<_>>(), error);
+        let other = summary_of_with_error(
+            &(10_001..=20_000).map(|i| i as f64).collect::<Vec<_>>(),
+            error,
+        );
         let merged_len = summary.sampled.len() + other.sampled.len();
-        summary
-            .sampled
-            .reserve(merged_len.saturating_sub(summary.sampled.len()));
-        summary.sampled_buffer.reserve(merged_len);
-        let sampled_ptr = summary.sampled.as_ptr();
-        let buffer_ptr = summary.sampled_buffer.as_ptr();
+        let mut scratch = QuantileSummariesScratch::default();
+        scratch.sampled.reserve(merged_len);
+        let buffer_ptr = scratch.sampled.as_ptr();
 
-        summary.merge(&other);
+        summary.merge(&other, &mut scratch);
 
-        assert_eq!(summary.sampled.as_ptr(), sampled_ptr);
-        assert_eq!(summary.sampled_buffer.as_ptr(), buffer_ptr);
+        assert_eq!(scratch.sampled.as_ptr(), buffer_ptr);
+        assert!(scratch.heap_size() >= merged_len * std::mem::size_of::<Stats>());
+        assert!(summary.sampled.capacity() < merged_len);
     }
 
     #[test]
