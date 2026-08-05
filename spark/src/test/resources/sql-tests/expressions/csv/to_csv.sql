@@ -48,9 +48,11 @@ SELECT to_csv(named_struct('a', a, 'b', b, 'c', c), map('sep', ';')) FROM test_t
 
 -- timestampFormat over date and timestamp fields: these are the #3232 types that were
 -- Incompatible before this change and now route through the dispatcher.
--- BinaryType is the other #3232 type but is deliberately absent: Spark's CSV converter renders it
--- with Java's default Object.toString(), e.g. "[B@10bc15e4", an identity hash that differs between
--- any two evaluations, so the value is not assertable by any engine including Spark itself.
+-- BinaryType is the other #3232 type but is deliberately absent: on Spark 3.4 / 3.5 the CSV
+-- converter has no binary branch and renders it with Java's default Object.toString(), e.g.
+-- "[B@10bc15e4", an identity hash that differs between any two evaluations, so the value is not
+-- assertable by any engine including Spark itself. (Spark 4.0 added a real binary formatter, but
+-- this fixture runs on every supported version.)
 statement
 CREATE TABLE test_to_csv_temporal(d date, t timestamp) USING parquet
 
@@ -66,12 +68,42 @@ SELECT to_csv(named_struct('d', d, 't', t)) FROM test_to_csv_temporal
 query
 SELECT to_csv(named_struct('d', d, 't', t), map('timestampFormat', 'yyyy/MM/dd HH:mm', 'dateFormat', 'dd-MM-yyyy')) FROM test_to_csv_temporal
 
--- Complex field types (arrays, maps, nested structs) are deliberately not asserted here.
--- StructsToCsv.checkInputDataTypes accepts them, so they reach the converter, but Spark's own
--- output for them is not a value that can be compared: a non-null array/map/struct renders as a
--- Java identity string such as "org.apache.spark.sql.vectorized.ColumnarArray@1ada50f0", and any
--- null complex value throws NullPointerException inside Spark's UnsafeWriter.write. Both were
--- confirmed against Spark 3.5 with Comet disabled entirely, so they are Spark behavior, not
--- Comet's. Before this change these schemas were Unsupported and fell the projection back to
--- Spark; now they reach the dispatcher, which runs the same Spark code, so the observable result
--- is unchanged either way.
+-- Complex field types (arrays, maps, nested structs). `StructsToCsv.checkInputDataTypes` accepts
+-- them and `CometBatchKernelCodegen.isSupportedDataType` recurses into them, so they pass the
+-- plan-time gate and reach the runtime dispatch. That is the accepted-at-plan-time /
+-- rejected-at-runtime shape #5219 found for TIME types: `canHandle` greenlights the expression
+-- before the plan commits, so a runtime gap is an execute-time failure with no fallback left.
+--
+-- Only non-nullness is asserted here, because the rendered value is not comparable on every
+-- supported Spark version. Spark 3.4 / 3.5's `UnivocityGenerator.makeConverter` has no branch for
+-- complex types and lands on `getter.get(ordinal, dataType).toString`, an identity string such as
+-- "org.apache.spark.sql.vectorized.ColumnarArray@1ada50f0" whose hash differs between any two
+-- evaluations and whose class differs between Spark's converter input (`ColumnarArray` /
+-- `UnsafeArrayData`) and the kernel's (`InputArray_*`). That generic `get` is exactly what
+-- `CometSpecializedGettersDispatch` implements for `CometInternalRow` / `CometArrayData`, so on
+-- those versions these queries are the coverage for it. Spark 4.0 added real array/map/struct
+-- converters, which render deterministically; `to_csv_nested.sql` asserts those values in full.
+statement
+CREATE TABLE test_to_csv_nested(s struct<i: int, arr: array<int>, m: map<string, int>, n: struct<x: int, y: string>>) USING parquet
+
+statement
+INSERT INTO test_to_csv_nested VALUES
+  (named_struct('i', 1, 'arr', array(1, 2, 3), 'm', map('k', 10), 'n', named_struct('x', 5, 'y', 'z'))),
+  (named_struct('i', NULL, 'arr', CAST(NULL AS array<int>), 'm', CAST(NULL AS map<string, int>), 'n', CAST(NULL AS struct<x: int, y: string>))),
+  (CAST(NULL AS struct<i: int, arr: array<int>, m: map<string, int>, n: struct<x: int, y: string>>))
+
+-- Struct column straight from the scan: the kernel reads it with getStruct, so the converter's
+-- per-field reads of the array / map / struct fields all land on `CometInternalRow`. The all-null
+-- and null-struct rows keep the assertion from collapsing to a constant true.
+query
+SELECT to_csv(s) IS NOT NULL FROM test_to_csv_nested
+
+-- named_struct over the complex fields: the kernel's array / map / struct readers produce the
+-- values that CreateNamedStruct stores into the row the converter then reads.
+query
+SELECT to_csv(named_struct('arr', s.arr, 'm', s.m, 'n', s.n)) IS NOT NULL FROM test_to_csv_nested
+
+-- Complex types nested inside complex types, so the converter recurses through the kernel's
+-- element getters rather than stopping at the first level.
+query
+SELECT to_csv(named_struct('aa', array(array(1, 2), array(3)), 'ms', map('k', named_struct('x', 1)))) IS NOT NULL FROM test_to_csv_nested
