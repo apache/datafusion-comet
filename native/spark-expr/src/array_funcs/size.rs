@@ -161,9 +161,10 @@ fn spark_size_list_like(array: &ArrayRef) -> Result<ArrayRef, DataFusionError> {
         .downcast_ref::<Int32Array>()
         .ok_or_else(|| DataFusionError::Internal("Expected Int32Array from length".to_string()))?;
 
-    // `into_parts` moves the values buffer without copying; `set_indices()` on
-    // the inverted validity iterates only the null slots (O(null_count), not
-    // O(n)), so sparse-null batches skip almost all the work.
+    // `set_indices()` on the inverted validity visits only null slots
+    // (O(null_count)). We still `to_vec()` the values buffer (O(n)) so we can
+    // write `-1` into those slots; `into_parts` avoids an extra values-buffer
+    // clone beyond that copy. Prefer this over scanning every validity bit.
     let (_, values, nulls) = int_lengths.clone().into_parts();
     let Some(nulls) = nulls else {
         return Ok(Arc::new(Int32Array::new(values, None)));
