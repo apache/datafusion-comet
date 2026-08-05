@@ -40,7 +40,28 @@ import org.apache.comet.expressions.{CometCast, CometEvalMode}
 import org.apache.comet.rules.CometScanTypeChecker
 import org.apache.comet.serde.{Compatible, Incompatible, Unsupported}
 
-class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
+/**
+ * Spark-parity coverage for Comet's **native** `Cast` implementation, and for the
+ * `CometCast.isSupported` matrix that decides which casts reach it.
+ *
+ * Scope: for every `(from, to)` type pair that `CometCast` reports as `Compatible` or
+ * `Incompatible`, run the cast against Spark as the oracle and assert both that the results match
+ * and — via `checkSparkAnswerAndOperator` — that the native kernel actually executed. Support
+ * decisions themselves (`Compatible` / `Incompatible` / `Unsupported`, and the reason strings)
+ * are asserted directly against `CometCast.isSupported`.
+ *
+ * Out of scope: the JVM codegen dispatch path. `CometCast` mixes in `CodegenDispatchFallback`, so
+ * a cast that `isSupported` rejects still runs inside the Comet operator by way of the
+ * Arrow-direct codegen dispatcher, evaluating Spark's own `Cast` against Arrow vectors. That path
+ * is covered by `CometCodegenSuite` and friends. Where this suite touches it at all, it does so
+ * only to pin that an `Unsupported` cast keeps the enclosing operator native rather than falling
+ * back to Spark; it does not attempt to cover dispatch semantics.
+ *
+ * Because of that split, a cast marked `Unsupported` here is not untested overall — it is tested
+ * through the dispatcher instead. Adding a native cast implementation therefore means moving a
+ * pair out of the `Unsupported` assertions and into the parity matrix below.
+ */
+class CometNativeCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   import testImplicits._
 
@@ -1853,6 +1874,9 @@ class CometCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("cast ArrayType(DateType) to unsupported ArrayType routes through codegen dispatch") {
+    // Boundary case rather than dispatch coverage: these pairs have no native cast, so all this
+    // asserts is that `Unsupported` keeps the operator native via `CodegenDispatchFallback`
+    // instead of falling back to Spark. Dispatch semantics belong in the codegen suites.
     val fromType = ArrayType(DateType)
     val unsupportedElementTypes =
       Seq(BooleanType, ByteType, ShortType, LongType, FloatType, DoubleType, DecimalType(10, 2))

@@ -61,10 +61,9 @@ object CometMin extends CometAggregateExpressionSerde[Min] {
           .setMin(builder)
           .build())
     } else if (dataType.isEmpty) {
-      withFallbackReason(aggExpr, s"datatype ${expr.dataType} is not supported", child)
+      withFallbackReason(aggExpr, s"datatype ${expr.dataType} is not supported")
       None
     } else {
-      withFallbackReason(aggExpr, child)
       None
     }
   }
@@ -98,10 +97,9 @@ object CometMax extends CometAggregateExpressionSerde[Max] {
           .setMax(builder)
           .build())
     } else if (dataType.isEmpty) {
-      withFallbackReason(aggExpr, s"datatype ${expr.dataType} is not supported", child)
+      withFallbackReason(aggExpr, s"datatype ${expr.dataType} is not supported")
       None
     } else {
-      withFallbackReason(aggExpr, child)
       None
     }
   }
@@ -124,7 +122,6 @@ object CometCount extends CometAggregateExpressionSerde[Count] {
           .setCount(builder)
           .build())
     } else {
-      withFallbackReason(aggExpr, expr.children: _*)
       None
     }
   }
@@ -182,10 +179,9 @@ object CometAverage extends CometAggregateExpressionSerde[Average] {
           .setAvg(builder)
           .build())
     } else if (dataType.isEmpty) {
-      withFallbackReason(aggExpr, s"datatype ${avg.dataType} is not supported", child)
+      withFallbackReason(aggExpr, s"datatype ${avg.dataType} is not supported")
       None
     } else {
-      withFallbackReason(aggExpr, child)
       None
     }
   }
@@ -232,9 +228,7 @@ object CometSum extends CometAggregateExpressionSerde[Sum] {
           .build())
     } else {
       if (dataType.isEmpty) {
-        withFallbackReason(aggExpr, s"datatype ${sum.dataType} is not supported", sum.child)
-      } else {
-        withFallbackReason(aggExpr, sum.child)
+        withFallbackReason(aggExpr, s"datatype ${sum.dataType} is not supported")
       }
       None
     }
@@ -268,10 +262,9 @@ object CometFirst extends CometAggregateExpressionSerde[First] {
           .setFirst(builder)
           .build())
     } else if (dataType.isEmpty) {
-      withFallbackReason(aggExpr, s"datatype ${first.dataType} is not supported", child)
+      withFallbackReason(aggExpr, s"datatype ${first.dataType} is not supported")
       None
     } else {
-      withFallbackReason(aggExpr, child)
       None
     }
   }
@@ -304,10 +297,9 @@ object CometLast extends CometAggregateExpressionSerde[Last] {
           .setLast(builder)
           .build())
     } else if (dataType.isEmpty) {
-      withFallbackReason(aggExpr, s"datatype ${last.dataType} is not supported", child)
+      withFallbackReason(aggExpr, s"datatype ${last.dataType} is not supported")
       None
     } else {
-      withFallbackReason(aggExpr, child)
       None
     }
   }
@@ -343,10 +335,9 @@ object CometBitAndAgg extends CometAggregateExpressionSerde[BitAndAgg] {
           .setBitAndAgg(builder)
           .build())
     } else if (dataType.isEmpty) {
-      withFallbackReason(aggExpr, s"datatype ${bitAnd.dataType} is not supported", child)
+      withFallbackReason(aggExpr, s"datatype ${bitAnd.dataType} is not supported")
       None
     } else {
-      withFallbackReason(aggExpr, child)
       None
     }
   }
@@ -382,10 +373,9 @@ object CometBitOrAgg extends CometAggregateExpressionSerde[BitOrAgg] {
           .setBitOrAgg(builder)
           .build())
     } else if (dataType.isEmpty) {
-      withFallbackReason(aggExpr, s"datatype ${bitOr.dataType} is not supported", child)
+      withFallbackReason(aggExpr, s"datatype ${bitOr.dataType} is not supported")
       None
     } else {
-      withFallbackReason(aggExpr, child)
       None
     }
   }
@@ -421,10 +411,9 @@ object CometBitXOrAgg extends CometAggregateExpressionSerde[BitXorAgg] {
           .setBitXorAgg(builder)
           .build())
     } else if (dataType.isEmpty) {
-      withFallbackReason(aggExpr, s"datatype ${bitXor.dataType} is not supported", child)
+      withFallbackReason(aggExpr, s"datatype ${bitXor.dataType} is not supported")
       None
     } else {
-      withFallbackReason(aggExpr, child)
       None
     }
   }
@@ -523,7 +512,6 @@ trait CometVariance {
           .setVariance(builder)
           .build())
     } else {
-      withFallbackReason(aggExpr, expr.child)
       None
     }
   }
@@ -578,7 +566,6 @@ trait CometStddev {
           .setStddev(builder)
           .build())
     } else {
-      withFallbackReason(aggExpr, child)
       None
     }
   }
@@ -671,7 +658,6 @@ object CometPercentile extends CometAggregateExpressionSerde[Percentile] {
           .setPercentile(builder)
           .build())
     } else {
-      withFallbackReason(aggExpr, percentile.child)
       None
     }
   }
@@ -719,14 +705,14 @@ object CometApproxPercentile extends CometAggregateExpressionSerde[ApproximatePe
       case d: Double => (Seq(d), false)
       case arr: ArrayData => (arr.toDoubleArray().toSeq, true)
       case other =>
-        withFallbackReason(aggExpr, s"Unsupported percentage literal: $other", expr.child)
+        withFallbackReason(aggExpr, s"Unsupported percentage literal: $other")
         return None
     }
     val accuracy = expr.accuracyExpression.eval() match {
       case i: Int => i.toLong
       case l: Long => l
       case other =>
-        withFallbackReason(aggExpr, s"Unsupported accuracy literal: $other", expr.child)
+        withFallbackReason(aggExpr, s"Unsupported accuracy literal: $other")
         return None
     }
 
@@ -743,7 +729,6 @@ object CometApproxPercentile extends CometAggregateExpressionSerde[ApproximatePe
           .setApproxPercentile(builder)
           .build())
     } else {
-      withFallbackReason(aggExpr, expr.child)
       None
     }
   }
@@ -773,7 +758,6 @@ object CometCorr extends CometAggregateExpressionSerde[Corr] {
           .setCorrelation(builder)
           .build())
     } else {
-      withFallbackReason(aggExpr, corr.x, corr.y)
       None
     }
   }
@@ -839,11 +823,6 @@ object CometBloomFilterAggregate extends CometAggregateExpressionSerde[BloomFilt
           .setBloomFilterAgg(builder)
           .build())
     } else {
-      withFallbackReason(
-        aggExpr,
-        bloomFilter.child,
-        bloomFilter.estimatedNumItemsExpression,
-        bloomFilter.numBitsExpression)
       None
     }
   }
@@ -897,10 +876,9 @@ object CometCollectSet extends CometAggregateExpressionSerde[CollectSet] {
           .setCollectSet(builder)
           .build())
     } else if (dataType.isEmpty) {
-      withFallbackReason(aggExpr, s"datatype ${expr.dataType} is not supported", child)
+      withFallbackReason(aggExpr, s"datatype ${expr.dataType} is not supported")
       None
     } else {
-      withFallbackReason(aggExpr, child)
       None
     }
   }
@@ -943,10 +921,9 @@ object CometCollectList extends CometAggregateExpressionSerde[CollectList] {
           .setCollectList(builder)
           .build())
     } else if (dataType.isEmpty) {
-      withFallbackReason(aggExpr, s"datatype ${expr.dataType} is not supported", child)
+      withFallbackReason(aggExpr, s"datatype ${expr.dataType} is not supported")
       None
     } else {
-      withFallbackReason(aggExpr, child)
       None
     }
   }
@@ -1009,7 +986,6 @@ object CometApproxCountDistinct extends CometAggregateExpressionSerde[HyperLogLo
           .setHllpp(builder)
           .build())
     } else {
-      withFallbackReason(aggExpr, expr.child)
       None
     }
   }

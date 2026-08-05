@@ -2202,7 +2202,7 @@ mod tests {
     /// The codepoint matrix from
     /// <https://github.com/apache/datafusion-comet/issues/5149>: the ASCII control bytes and
     /// DELETE, plus the non-ASCII codepoints that are whitespace to Unicode but that no Spark
-    /// cast trims. `CometCastSuite` runs the same matrix with Spark itself as the oracle.
+    /// cast trims. `CometNativeCastSuite` runs the same matrix with Spark itself as the oracle.
     fn trim_pads() -> Vec<String> {
         let mut pads: Vec<String> = (0x00u8..=0x20).map(|b| String::from(b as char)).collect();
         pads.push("\u{7f}".to_string());
@@ -2306,7 +2306,7 @@ mod tests {
     /// than change behaviour silently. `timestamp_parser` and `timestamp_ntz_parser` still use
     /// `str::trim`, so they accept the non-ASCII whitespace that Spark's
     /// `SparkDateTimeUtils.getTrimmedStart` / `getTrimmedEnd` leave in place, where Spark returns
-    /// NULL. `CometCastSuite` cannot cover this, because Spark is the oracle there and Comet does
+    /// NULL. `CometNativeCastSuite` cannot cover this, because Spark is the oracle there and Comet does
     /// not fall back -- it silently returns a value.
     #[test]
     fn test_cast_string_to_timestamp_unicode_whitespace_divergence() {
