@@ -15,27 +15,35 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- Native ANSI execution must preserve Spark's overflow exception.
--- Config: spark.sql.ansi.enabled=true
--- Config: spark.comet.expression.MakeInterval.allowIncompatible=true
+-- With allowIncompatible unset, MakeInterval uses Spark's JVM codegen dispatcher.
 
 statement
-CREATE TABLE test_make_interval_ansi(years int) USING parquet
+CREATE TABLE test_make_interval_dispatch(
+  years int,
+  months int,
+  weeks int,
+  days int,
+  hours int,
+  mins int,
+  secs decimal(18, 6)) USING parquet
 
 statement
-INSERT INTO test_make_interval_ansi VALUES (NULL)
+INSERT INTO test_make_interval_dispatch VALUES
+  (1, 2, 3, 4, 5, 6, 7.123456),
+  (0, 1, 0, 1, 0, 0, 100.000001),
+  (-1, -2, -1, -1, -1, -1, -1.500000),
+  (NULL, 1, 2, 3, 4, 5, 6.000000),
+  (2, NULL, 2, 3, 4, 5, 6.000000),
+  (3, 1, 2, 3, 4, 5, NULL),
+  (0, 0, 0, 0, 2562048, 0, 0.000000)
 
 query
-SELECT make_interval(1, 2, 3, 4, 5, 6, 7.123456)
+SELECT make_interval(years, months, weeks, days, hours, mins, secs)
+FROM test_make_interval_dispatch
+WHERE hours != 2562048
+ORDER BY years
 
-query
-SELECT make_interval(years) FROM test_make_interval_ansi
-
-query expect_error(overflow. If necessary set)
-SELECT make_interval(2147483647)
-
-query expect_error(overflow. If necessary set)
-SELECT make_interval(0, 0, 2147483647)
-
-query ignore(https://github.com/apache/datafusion-comet/issues/5131)
-SELECT make_interval(0, 0, 0, 0, 2562048)
+query ignore(https://github.com/apache/datafusion-comet/issues/5279)
+SELECT make_interval(0, 0, 0, 0, hours)
+FROM test_make_interval_dispatch
+WHERE hours = 2562048

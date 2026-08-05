@@ -1132,16 +1132,9 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
   }
 
   def scalarFunctionExprToProto(funcName: String, args: Option[Expr]*): Option[Expr] = {
-    scalarFunctionExprToProto(funcName, false, args: _*)
-  }
-
-  def scalarFunctionExprToProto(
-      funcName: String,
-      failOnError: Boolean,
-      args: Option[Expr]*): Option[Expr] = {
     val builder = ExprOuterClass.ScalarFunc.newBuilder()
     builder.setFunc(funcName)
-    builder.setFailOnError(failOnError)
+    builder.setFailOnError(false)
     scalarFunctionExprToProto0(builder, args: _*)
   }
 

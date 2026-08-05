@@ -969,6 +969,12 @@ object CometMakeInterval extends CometExpressionSerde[MakeInterval] with Codegen
       " precision, and stores time in nanoseconds, which overflows for large time components" +
       " (hours, minutes, seconds) that Spark can represent."
 
+  override def getCompatibleNotes(): Seq[String] = Seq(
+    "Both the default JVM codegen-dispatch path and the native path encode elapsed time as" +
+      " Arrow nanoseconds. Spark intervals whose microseconds cannot be multiplied by 1,000" +
+      " in an `i64` are not supported" +
+      " ([#5279](https://github.com/apache/datafusion-comet/issues/5279)).")
+
   override def getIncompatibleReasons(): Seq[String] = Seq(incompatReason)
 
   override def getSupportLevel(expr: MakeInterval): SupportLevel =
@@ -979,7 +985,7 @@ object CometMakeInterval extends CometExpressionSerde[MakeInterval] with Codegen
       inputs: Seq[Attribute],
       binding: Boolean): Option[Expr] = {
     // The explicit return type skips DataFusion's registry coercion, but its kernel needs Float64.
-    val children = expr.children.updated(6, Cast(expr.children(6), DoubleType))
+    val children = expr.children.updated(6, Cast(expr.secs, DoubleType))
     val childExprs = children.map(exprToProtoInternal(_, inputs, binding))
     val optExpr = scalarFunctionExprToProtoWithReturnType(
       "make_interval",

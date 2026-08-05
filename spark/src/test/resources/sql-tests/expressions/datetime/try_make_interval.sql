@@ -16,8 +16,24 @@
 -- under the License.
 
 -- MinSparkVersion: 4.0
--- Config: spark.sql.ansi.enabled=true
--- Config: spark.comet.exec.scalaUDF.codegen.enabled=true
+-- ConfigMatrix: spark.sql.ansi.enabled=true,false
+
+statement
+CREATE TABLE test_try_make_interval(
+  years int,
+  months int,
+  weeks int,
+  days int,
+  hours int,
+  mins int,
+  secs decimal(18, 6)) USING parquet
+
+statement
+INSERT INTO test_try_make_interval VALUES
+  (1, 2, 3, 4, 5, 6, 7.123456),
+  (2147483647, 0, 0, 0, 0, 0, 0.000000)
 
 query
-SELECT try_make_interval(2147483647)
+SELECT try_make_interval(years, months, weeks, days, hours, mins, secs)
+FROM test_try_make_interval
+ORDER BY years
