@@ -336,6 +336,9 @@ mod tests {
         Ok(())
     }
 
+    // array_position over array<struct<...>> currently falls back to Spark
+    // (ArraysBase.isTypeSupported rejects StructType, see #1307), so this only
+    // exercises position_fallback directly and isn't reachable from a SQL query.
     #[test]
     fn test_struct_float_field_signed_zero_position() -> DataFusionResult<()> {
         use arrow::array::{Float64Builder, StructBuilder};

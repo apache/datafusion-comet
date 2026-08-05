@@ -414,6 +414,10 @@ fn normalize_list_element_floats<OffsetSize: OffsetSizeTrait>(
 }
 
 /// Fallback for nested and otherwise unhandled element types.
+///
+/// note: Spark's flat arrays_overlap (HashSet<Double>) treats -0.0 and 0.0 as different,
+/// only the nested path here treats them as equal. this normalization can't move into the
+/// flat fast path in arrays_overlap_list without breaking that difference.
 fn arrays_overlap_list_generic<OffsetSize: OffsetSizeTrait>(
     left: &GenericListArray<OffsetSize>,
     right: &GenericListArray<OffsetSize>,
