@@ -1,6 +1,6 @@
 CometColumnarToRow
 +- CometTakeOrderedAndProject
-   +-  CometHashAggregate [COMET-INFO: A native implementation of Cast is available. Set spark.comet.expression.Cast.allowIncompatible=true to enable it. For more information, refer to the Comet Compatibility Guide (https://datafusion.apache.org/comet/user-guide/latest/compatibility/index.html)]
+   +- CometHashAggregate
       +- CometExchange
          +- CometHashAggregate
             +- CometExpand
@@ -36,4 +36,4 @@ CometColumnarToRow
                            +- CometFilter
                               +- CometNativeScan parquet spark_catalog.default.item
 
-Comet accelerated 35 out of 36 eligible operators (97%). Final plan contains 1 transitions between Spark and Comet.
+Comet accelerated 36 out of 36 eligible operators (100%). Final plan contains 1 transitions between Spark and Comet. Accelerated expressions: 11 native, 0 codegen dispatch.

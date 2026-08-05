@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+pub(crate) mod mersenne;
 mod rand_utils;
 
 pub use rand_utils::evaluate_batch_for_rand;

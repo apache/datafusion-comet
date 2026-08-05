@@ -24,9 +24,8 @@ import scala.math.min
 import org.apache.spark.sql.catalyst.expressions.{Add, Attribute, Cast, Divide, EmptyRow, EqualTo, EvalMode, Expression, If, IntegralDivide, Literal, Multiply, Remainder, Round, Subtract, UnaryMinus}
 import org.apache.spark.sql.types.{ByteType, DataType, DecimalType, DoubleType, FloatType, IntegerType, LongType, ShortType}
 
-import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 import org.apache.comet.expressions.{CometCast, CometEvalMode}
-import org.apache.comet.serde.QueryPlanSerde.{evalModeToProto, exprToProtoInternal, flattenAssociative, optExprWithFallbackReason, scalarFunctionExprToProtoWithReturnType, serializeDataType}
+import org.apache.comet.serde.QueryPlanSerde.{evalModeToProto, exprToProtoInternal, flattenAssociative, scalarFunctionExprToProtoWithReturnType, serializeDataType}
 import org.apache.comet.shims.CometEvalModeUtil
 
 trait MathBase {
@@ -62,7 +61,6 @@ trait MathBase {
             .newBuilder(),
           inner).build())
     } else {
-      withFallbackReason(expr, left, right)
       None
     }
   }
@@ -127,7 +125,6 @@ trait MathBase {
       : Option[ExprOuterClass.Expr] = {
     val protos = operands.map(exprToProtoInternal(_, inputs, binding))
     if (protos.exists(_.isEmpty)) {
-      withFallbackReason(expr, operands: _*)
       None
     } else {
       val returnType = serializeDataType(dataType)
@@ -292,12 +289,6 @@ object CometDivide extends CometExpressionSerde[Divide] with MathBase {
 
 object CometIntegralDivide extends CometExpressionSerde[IntegralDivide] with MathBase {
 
-  override def getCompatibleNotes(): Seq[String] = Seq(
-    "On `LongType` input, `Long.MinValue div -1` does not overflow-check: Comet's decimal-backed" +
-      " path returns the wrapped value `Long.MinValue` under legacy mode and silently returns" +
-      " the same wrapped value under ANSI, where Spark raises `ARITHMETIC_OVERFLOW`" +
-      " ([#5065](https://github.com/apache/datafusion-comet/issues/5065)).")
-
   override def getSupportLevel(expr: IntegralDivide): SupportLevel =
     mathDataTypeSupportLevel(expr.left.dataType)
 
@@ -385,12 +376,6 @@ object CometRemainder extends CometExpressionSerde[Remainder] with MathBase {
 
 object CometRound extends CometExpressionSerde[Round] {
 
-  override def getCompatibleNotes(): Seq[String] = Seq(
-    "On `LongType` input with a negative `scale` of `-19` or lower, `10^(-scale)` overflows the" +
-      " native integer type and Comet returns `0` instead of Spark's overflowed value. Under" +
-      " ANSI mode Spark raises `ARITHMETIC_OVERFLOW` at the same input; Comet still returns `0`" +
-      " ([#5070](https://github.com/apache/datafusion-comet/issues/5070)).")
-
   override def getSupportLevel(expr: Round): SupportLevel = expr.child.dataType match {
     case t: DecimalType if t.scale < 0 => // Spark disallows negative scale SPARK-30252
       Unsupported(Some("Decimal type has negative scale"))
@@ -438,7 +423,7 @@ object CometRound extends CometExpressionSerde[Round] {
             r.ansiEnabled,
             childExpr,
             scaleExpr)
-        optExprWithFallbackReason(optExpr, r, r.child)
+        optExpr
     }
 
   }
@@ -463,7 +448,6 @@ object CometUnaryMinus extends CometExpressionSerde[UnaryMinus] with MathBase {
           .setUnaryMinus(builder)
           .build())
     } else {
-      withFallbackReason(expr, expr.child)
       None
     }
   }

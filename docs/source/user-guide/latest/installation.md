@@ -53,9 +53,9 @@ We recommend moving to JDK 17 or later and Spark 3.5 or later.
 | Spark Version | Java Version | Scala Version | Comet Tests in CI | Spark SQL Tests in CI |
 | ------------- | ------------ | ------------- | ----------------- | --------------------- |
 | 3.4.3         | 11/17        | 2.12/2.13     | Yes               | Yes                   |
-| 3.5.8         | 11/17        | 2.12/2.13     | Yes               | Yes                   |
-| 4.0.2         | 17/21        | 2.13          | Yes               | Yes                   |
-| 4.1.2         | 17/21        | 2.13          | Yes               | Yes                   |
+| 3.5.9         | 11/17        | 2.12/2.13     | Yes               | Yes                   |
+| 4.0.4         | 17/21        | 2.13          | Yes               | Yes                   |
+| 4.1.3         | 17/21        | 2.13          | Yes               | Yes                   |
 
 Note that we do not test the full matrix of supported Java and Scala versions in CI for every Spark version.
 

@@ -63,7 +63,7 @@ object CometCreateNamedStruct extends CometExpressionSerde[CreateNamedStruct] {
           .setCreateNamedStruct(structBuilder)
           .build())
     } else {
-      withFallbackReason(expr, "unsupported arguments for CreateNamedStruct", expr.valExprs: _*)
+      withFallbackReason(expr, "unsupported arguments for CreateNamedStruct")
       None
     }
 
@@ -108,7 +108,7 @@ object CometGetArrayStructFields extends CometExpressionSerde[GetArrayStructFiel
           .setGetArrayStructFields(arrayStructFieldsBuilder)
           .build())
     } else {
-      withFallbackReason(expr, "unsupported arguments for GetArrayStructFields", expr.child)
+      withFallbackReason(expr, "unsupported arguments for GetArrayStructFields")
       None
     }
   }
@@ -160,7 +160,6 @@ object CometStructsToJson extends CometCodegenDispatch[StructsToJson] with Nativ
               .setToJson(toJson)
               .build())
         case _ =>
-          withFallbackReason(expr, expr.child)
           None
       }
     } else {
