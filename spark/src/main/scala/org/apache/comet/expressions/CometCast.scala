@@ -37,7 +37,7 @@ object CometCast
     with CometTypeShim
     with CodegenDispatchFallback {
 
-  // Shared with CometCastSuite so the asserted reason cannot drift from production.
+  // Shared with CometNativeCastSuite so the asserted reason cannot drift from production.
   private[comet] val negativeScaleDecimalToStringReason: String =
     "Negative-scale decimal requires spark.sql.legacy.allowNegativeScaleOfDecimal=true"
 
@@ -118,7 +118,6 @@ object CometCast
           if (childExpr.isDefined) {
             castToProto(cast, cast.timeZoneId, cast.dataType, childExpr.get, cometEvalMode)
           } else {
-            withFallbackReason(cast, cast.child)
             None
           }
         }
