@@ -126,22 +126,6 @@ class ArrowWriter(val root: VectorSchemaRoot, fields: Array[ArrowFieldWriter]) {
     count = input.numElements()
   }
 
-  def writeColUnsafe(input: ColumnarArray, columnIndex: Int): Unit = {
-    fields(columnIndex) match {
-      case fixedWidth: FixedWidthArrowFieldWriter => fixedWidth.writeColUnsafe(input)
-      case field => field.writeCol(input)
-    }
-    count = input.numElements()
-  }
-
-  def writeColNoNullUnsafe(input: ColumnarArray, columnIndex: Int): Unit = {
-    fields(columnIndex) match {
-      case fixedWidth: FixedWidthArrowFieldWriter => fixedWidth.writeColNoNullUnsafe(input)
-      case field => field.writeColNoNull(input)
-    }
-    count = input.numElements()
-  }
-
   def finish(): Unit = {
     root.setRowCount(count)
     fields.foreach(_.finish())
@@ -222,9 +206,11 @@ private[arrow] abstract class FixedWidthArrowFieldWriter extends ArrowFieldWrite
     BitVectorHelper.unsetBit(valueVector.getValidityBuffer, count)
   }
 
-  def writeColUnsafe(input: ColumnarArray): Unit = {
+  override def writeCol(input: ColumnarArray): Unit = {
     val inputNumElements = input.numElements()
-    assert(inputNumElements <= valueVector.getValueCapacity)
+    while (valueVector.getValueCapacity < inputNumElements) {
+      valueVector.reAlloc()
+    }
     while (count < inputNumElements) {
       if (input.isNullAt(count)) {
         setNullUnsafe()
@@ -235,9 +221,11 @@ private[arrow] abstract class FixedWidthArrowFieldWriter extends ArrowFieldWrite
     }
   }
 
-  def writeColNoNullUnsafe(input: ColumnarArray): Unit = {
+  override def writeColNoNull(input: ColumnarArray): Unit = {
     val inputNumElements = input.numElements()
-    assert(inputNumElements <= valueVector.getValueCapacity)
+    while (valueVector.getValueCapacity < inputNumElements) {
+      valueVector.reAlloc()
+    }
     while (count < inputNumElements) {
       setValueUnsafe(input, count)
       count += 1

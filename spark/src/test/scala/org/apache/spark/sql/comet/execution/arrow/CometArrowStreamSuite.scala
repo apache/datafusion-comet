@@ -25,13 +25,13 @@ import org.scalatest.funsuite.AnyFunSuite
 import org.scalatest.matchers.should.Matchers
 
 import org.apache.arrow.memory.{AllocationListener, RootAllocator}
-import org.apache.arrow.vector.{BaseValueVector, BigIntVector, IntervalMonthDayNanoVector, IntVector, VectorSchemaRoot}
+import org.apache.arrow.vector.{BaseValueVector, BigIntVector, BitVector, DecimalVector, IntervalMonthDayNanoVector, IntVector, VectorSchemaRoot}
 import org.apache.arrow.vector.types.pojo.{ArrowType, Field, FieldType, Schema}
 import org.apache.spark.sql.catalyst.expressions.GenericInternalRow
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution.vectorized.OnHeapColumnVector
-import org.apache.spark.sql.types.{CalendarIntervalType, IntegerType, StructField, StructType}
-import org.apache.spark.sql.vectorized.ColumnarBatch
+import org.apache.spark.sql.types.{BooleanType, CalendarIntervalType, Decimal, DecimalType, IntegerType, StructField, StructType}
+import org.apache.spark.sql.vectorized.{ColumnarArray, ColumnarBatch}
 import org.apache.spark.unsafe.types.CalendarInterval
 
 import org.apache.comet.vector.{CometPlainVector, CometVector}
@@ -91,13 +91,19 @@ class CometArrowStreamSuite extends AnyFunSuite with Matchers {
       },
       Long.MaxValue)
     val numRows = BaseValueVector.INITIAL_VALUE_ALLOCATION + 1
+    val decimalType = DecimalType(5, 2)
     val schema = StructType(
       Seq(
         StructField("nullable_int", IntegerType, nullable = true),
-        StructField("required_int", IntegerType, nullable = false)))
+        StructField("required_int", IntegerType, nullable = false),
+        StructField("required_boolean", BooleanType, nullable = false),
+        StructField("required_decimal", decimalType, nullable = false)))
     val nullableInput = new OnHeapColumnVector(numRows, IntegerType)
     val requiredInput = new OnHeapColumnVector(numRows, IntegerType)
-    val inputBatch = new ColumnarBatch(Array(nullableInput, requiredInput), numRows)
+    val booleanInput = new OnHeapColumnVector(numRows, BooleanType)
+    val decimalInput = new OnHeapColumnVector(numRows, decimalType)
+    val inputBatch =
+      new ColumnarBatch(Array(nullableInput, requiredInput, booleanInput, decimalInput), numRows)
     val reader = new SparkColumnarArrowReader(
       allocator,
       Utils.toArrowSchema(schema, "UTC"),
@@ -113,6 +119,9 @@ class CometArrowStreamSuite extends AnyFunSuite with Matchers {
           nullableInput.putInt(i, i)
         }
         requiredInput.putInt(i, -i)
+        booleanInput.putBoolean(i, (i & 1) == 0)
+        val decimal = Decimal(i % 10000, decimalType.precision, decimalType.scale)
+        decimalInput.putDecimal(i, decimal, decimalType.precision)
         i += 1
       }
 
@@ -120,17 +129,82 @@ class CometArrowStreamSuite extends AnyFunSuite with Matchers {
       val root = reader.getVectorSchemaRoot
       val nullableArrow = root.getVector(0).asInstanceOf[IntVector]
       val requiredArrow = root.getVector(1).asInstanceOf[IntVector]
+      val booleanArrow = root.getVector(2).asInstanceOf[BitVector]
+      val decimalArrow = root.getVector(3).asInstanceOf[DecimalVector]
       root.getRowCount shouldBe numRows
       nullableArrow.getValueCapacity should be >= numRows
       requiredArrow.getValueCapacity should be >= numRows
-      nullableArrow.get(1) shouldBe 1
-      nullableArrow.isNull(numRows - 1) shouldBe true
-      requiredArrow.get(numRows - 1) shouldBe -(numRows - 1)
+      booleanArrow.getValueCapacity should be >= numRows
+      decimalArrow.getValueCapacity should be >= numRows
+      i = 0
+      while (i < numRows) {
+        nullableArrow.isNull(i) shouldBe ((i & 1) == 0)
+        if ((i & 1) != 0) {
+          nullableArrow.get(i) shouldBe i
+        }
+        requiredArrow.get(i) shouldBe -i
+        booleanArrow.get(i) shouldBe (if ((i & 1) == 0) 1 else 0)
+        decimalArrow.getObject(i) shouldBe
+          Decimal(i % 10000, decimalType.precision, decimalType.scale).toJavaBigDecimal
+        i += 1
+      }
+      // A realloc frees the old buffers, so cumulative allocations would exceed live memory.
       allocatedBytes shouldBe allocator.getAllocatedMemory
     } finally {
       reader.close()
       nullableInput.close()
       requiredInput.close()
+      booleanInput.close()
+      decimalInput.close()
+      allocator.close()
+    }
+  }
+
+  test("fixed-width decimal write clears validity on precision overflow") {
+    val allocator = new RootAllocator(Long.MaxValue)
+    val vector = new DecimalVector("decimal", allocator, 5, 2)
+    vector.allocateNew(1)
+    vector.set(0, Decimal(0, 5, 2).toJavaBigDecimal)
+    class TestDecimalWriter extends DecimalWriter(vector, 5, 2) {
+      def setValueUnsafeForTest(input: GenericInternalRow): Unit = setValueUnsafe(input, 0)
+    }
+    val writer = new TestDecimalWriter
+
+    try {
+      vector.isNull(0) shouldBe false
+      writer.setValueUnsafeForTest(new GenericInternalRow(Array[Any](Decimal(123456L, 6, 2))))
+      vector.isNull(0) shouldBe true
+    } finally {
+      vector.close()
+      allocator.close()
+    }
+  }
+
+  test("fixed-width column write grows an undersized vector") {
+    val allocator = new RootAllocator(Long.MaxValue)
+    val numRows = BaseValueVector.INITIAL_VALUE_ALLOCATION + 1
+    val input = new OnHeapColumnVector(numRows, IntegerType)
+    val schema = StructType(Seq(StructField("int", IntegerType, nullable = false)))
+    val root = VectorSchemaRoot.create(Utils.toArrowSchema(schema, "UTC"), allocator)
+
+    try {
+      var i = 0
+      while (i < numRows) {
+        input.putInt(i, i)
+        i += 1
+      }
+      val writer = ArrowWriter.create(root)
+      val vector = root.getVector(0).asInstanceOf[IntVector]
+      vector.getValueCapacity should be < numRows
+
+      writer.writeColNoNull(new ColumnarArray(input, 0, numRows), 0)
+      writer.finish()
+
+      vector.getValueCapacity should be >= numRows
+      vector.get(numRows - 1) shouldBe numRows - 1
+    } finally {
+      root.close()
+      input.close()
       allocator.close()
     }
   }

@@ -27,8 +27,9 @@ import org.apache.spark.sql.vectorized.{ColumnarArray, ColumnarBatch}
 /**
  * `ArrowReader` over an iterator of Spark-side `ColumnarBatch`es (not Arrow-backed). Slices up to
  * `maxRecordsPerBatch` rows per `loadNextBatch` from the current Spark batch into the reader's
- * stable VSR via `ArrowWriter.writeCol`. Spark's `ColumnVector` implementations aren't Arrow
- * buffers, so this reader necessarily copies element values into Arrow format.
+ * stable VSR via `ArrowWriter.writeCol` and `ArrowWriter.writeColNoNull`. Spark's `ColumnVector`
+ * implementations aren't Arrow buffers, so this reader necessarily copies element values into
+ * Arrow format.
  */
 private[comet] class SparkColumnarArrowReader(
     allocator: BufferAllocator,
@@ -82,9 +83,9 @@ private[comet] class SparkColumnarArrowReader(
       val column = current.column(col)
       val columnArray = new ColumnarArray(column, rowsConsumedInCurrent, rowsToProduce)
       if (column.hasNull) {
-        writer.writeColUnsafe(columnArray, col)
+        writer.writeCol(columnArray, col)
       } else {
-        writer.writeColNoNullUnsafe(columnArray, col)
+        writer.writeColNoNull(columnArray, col)
       }
       col += 1
     }
