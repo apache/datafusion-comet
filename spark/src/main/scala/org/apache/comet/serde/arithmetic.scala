@@ -24,9 +24,8 @@ import scala.math.min
 import org.apache.spark.sql.catalyst.expressions.{Add, Attribute, Cast, Divide, EmptyRow, EqualTo, EvalMode, Expression, If, IntegralDivide, Literal, Multiply, Remainder, Round, Subtract, UnaryMinus}
 import org.apache.spark.sql.types.{ByteType, DataType, DecimalType, DoubleType, FloatType, IntegerType, LongType, ShortType}
 
-import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 import org.apache.comet.expressions.{CometCast, CometEvalMode}
-import org.apache.comet.serde.QueryPlanSerde.{evalModeToProto, exprToProtoInternal, flattenAssociative, optExprWithFallbackReason, scalarFunctionExprToProtoWithReturnType, serializeDataType}
+import org.apache.comet.serde.QueryPlanSerde.{evalModeToProto, exprToProtoInternal, flattenAssociative, scalarFunctionExprToProtoWithReturnType, serializeDataType}
 import org.apache.comet.shims.CometEvalModeUtil
 
 trait MathBase {
@@ -38,8 +37,8 @@ trait MathBase {
       binding: Boolean,
       dataType: DataType,
       evalMode: EvalMode.Value,
-      f: (ExprOuterClass.Expr.Builder, ExprOuterClass.MathExpr) => ExprOuterClass.Expr.Builder)
-      : Option[ExprOuterClass.Expr] = {
+      f: (ExprOuterClass.Expr.Builder, ExprOuterClass.MathExpr) => ExprOuterClass.Expr.Builder,
+      checkDivideOverflow: Boolean = false): Option[ExprOuterClass.Expr] = {
     val leftExpr = exprToProtoInternal(left, inputs, binding)
     val rightExpr = exprToProtoInternal(right, inputs, binding)
 
@@ -49,6 +48,7 @@ trait MathBase {
       builder.setLeft(leftExpr.get)
       builder.setRight(rightExpr.get)
       builder.setEvalMode(evalModeToProto(CometEvalModeUtil.fromSparkEvalMode(evalMode)))
+      builder.setCheckDivideOverflow(checkDivideOverflow)
       serializeDataType(dataType).foreach { t =>
         builder.setReturnType(t)
       }
@@ -61,7 +61,6 @@ trait MathBase {
             .newBuilder(),
           inner).build())
     } else {
-      withFallbackReason(expr, left, right)
       None
     }
   }
@@ -126,7 +125,6 @@ trait MathBase {
       : Option[ExprOuterClass.Expr] = {
     val protos = operands.map(exprToProtoInternal(_, inputs, binding))
     if (protos.exists(_.isEmpty)) {
-      withFallbackReason(expr, operands: _*)
       None
     } else {
       val returnType = serializeDataType(dataType)
@@ -326,7 +324,10 @@ object CometIntegralDivide extends CometExpressionSerde[IntegralDivide] with Mat
       binding,
       dataType,
       expr.evalMode,
-      (builder, mathExpr) => builder.setIntegralDivide(mathExpr))
+      (builder, mathExpr) => builder.setIntegralDivide(mathExpr),
+      // Spark only checks integral divide overflow (Long.MinValue div -1) for LONG
+      // operands; DECIMAL operands wrap around on the cast to LONG even in ANSI mode
+      checkDivideOverflow = expr.checkDivideOverflow)
 
     if (divideExpr.isDefined) {
       val childExpr = if (dataType.isInstanceOf[DecimalType]) {
@@ -422,7 +423,7 @@ object CometRound extends CometExpressionSerde[Round] {
             r.ansiEnabled,
             childExpr,
             scaleExpr)
-        optExprWithFallbackReason(optExpr, r, r.child)
+        optExpr
     }
 
   }
@@ -447,7 +448,6 @@ object CometUnaryMinus extends CometExpressionSerde[UnaryMinus] with MathBase {
           .setUnaryMinus(builder)
           .build())
     } else {
-      withFallbackReason(expr, expr.child)
       None
     }
   }

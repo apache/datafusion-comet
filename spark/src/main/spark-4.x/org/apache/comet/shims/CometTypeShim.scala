@@ -20,7 +20,7 @@
 package org.apache.comet.shims
 
 import org.apache.spark.sql.execution.datasources.VariantMetadata
-import org.apache.spark.sql.types.{ArrayType, DataType, MapType, StringType, StructType}
+import org.apache.spark.sql.types.{ArrayType, DataType, MapType, StringType, StructType, VariantType}
 
 trait CometTypeShim {
   // A `StringType` carries collation metadata in Spark 4.0. Only non-default (non-UTF8_BINARY)
@@ -53,6 +53,12 @@ trait CometTypeShim {
   // variant shredding layout, so reading such a struct natively returns nulls. Detect the marker
   // and force scan fallback.
   def isVariantStruct(s: StructType): Boolean = VariantMetadata.isVariantStruct(s)
+
+  // Comet has no native execution path for Spark 4's `VariantType` (introduced in
+  // SPARK-45827). Serdes call this to route casts/expressions touching the type back to Spark
+  // rather than serializing an unsupported datatype into the native plan. Stubbed to `false` in
+  // Spark 3.x where `VariantType` does not exist.
+  def isVariantType(dt: DataType): Boolean = dt.isInstanceOf[VariantType]
 
   def isTimeType(dt: DataType): Boolean =
     dt.getClass.getSimpleName.startsWith("TimeType")

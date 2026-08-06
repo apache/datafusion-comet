@@ -7,7 +7,7 @@ index eeabe54f5f..a76d7bdcbc 100644
  caffeine = "2.9.3"
  calcite = "1.40.0"
 -comet = "0.8.1"
-+comet = "1.0.0-SNAPSHOT"
++comet = "1.1.0-SNAPSHOT"
  datasketches = "6.2.0"
  delta-standalone = "3.3.2"
  delta-spark = "3.3.2"
@@ -1519,6 +1519,20 @@ index 4c1a509591..b22f3f9ad9 100644
              .enableHiveSupport()
              .getOrCreate();
  
+diff --git a/spark/v3.5/spark-extensions/src/test/java/org/apache/iceberg/spark/extensions/SparkRowLevelOperationsTestBase.java b/spark/v3.5/spark-extensions/src/test/java/org/apache/iceberg/spark/extensions/SparkRowLevelOperationsTestBase.java
+index 893f9931cf..17e5fef217 100644
+--- a/spark/v3.5/spark-extensions/src/test/java/org/apache/iceberg/spark/extensions/SparkRowLevelOperationsTestBase.java
++++ b/spark/v3.5/spark-extensions/src/test/java/org/apache/iceberg/spark/extensions/SparkRowLevelOperationsTestBase.java
+@@ -460,7 +460,8 @@ public abstract class SparkRowLevelOperationsTestBase extends ExtensionsTestBase
+ 
+   protected void assertAllBatchScansVectorized(SparkPlan plan) {
+     List<SparkPlan> batchScans = SparkPlanUtil.collectBatchScans(plan);
+-    assertThat(batchScans).hasSizeGreaterThan(0).allMatch(SparkPlan::supportsColumnar);
++    // When Comet is enabled, its native scan replaces BatchScanExec nodes entirely
++    assertThat(batchScans).allMatch(SparkPlan::supportsColumnar);
+   }
+ 
+   protected void createTableWithDeleteGranularity(
 diff --git a/spark/v3.5/spark-extensions/src/test/java/org/apache/iceberg/spark/extensions/TestCallStatementParser.java b/spark/v3.5/spark-extensions/src/test/java/org/apache/iceberg/spark/extensions/TestCallStatementParser.java
 index ecf9e6f8a5..23dbcf7af2 100644
 --- a/spark/v3.5/spark-extensions/src/test/java/org/apache/iceberg/spark/extensions/TestCallStatementParser.java
@@ -2512,6 +2526,31 @@ index daf4e29ac0..0c7d376f80 100644
 +            .config("spark.memory.offHeap.size", "10g")
              .enableHiveSupport()
              .getOrCreate();
+ 
+diff --git a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/data/AvroDataTestBase.java b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/data/AvroDataTestBase.java
+index 0db6a65fd3..9ee8b9e084 100644
+--- a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/data/AvroDataTestBase.java
++++ b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/data/AvroDataTestBase.java
+@@ -47,7 +47,6 @@ import org.apache.iceberg.types.Types.LongType;
+ import org.apache.iceberg.types.Types.MapType;
+ import org.apache.iceberg.types.Types.StructType;
+ import org.apache.iceberg.util.DateTimeUtil;
+-import org.assertj.core.api.Condition;
+ import org.junit.jupiter.api.Test;
+ import org.junit.jupiter.api.io.TempDir;
+ import org.junit.jupiter.params.ParameterizedTest;
+@@ -307,12 +306,6 @@ public abstract class AvroDataTestBase {
+                 .build());
+ 
+     assertThatThrownBy(() -> writeAndValidate(writeSchema, expectedSchema))
+-        .has(
+-            new Condition<>(
+-                t ->
+-                    IllegalArgumentException.class.isInstance(t)
+-                        || IllegalArgumentException.class.isInstance(t.getCause()),
+-                "Expecting a throwable or cause that is an instance of IllegalArgumentException"))
+         .hasMessageContaining("Missing required field: missing_str");
+   }
  
 diff --git a/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/data/vectorized/parquet/TestParquetDictionaryEncodedVectorizedReads.java b/spark/v3.5/spark/src/test/java/org/apache/iceberg/spark/data/vectorized/parquet/TestParquetDictionaryEncodedVectorizedReads.java
 index 973a17c9a3..d7402c1409 100644

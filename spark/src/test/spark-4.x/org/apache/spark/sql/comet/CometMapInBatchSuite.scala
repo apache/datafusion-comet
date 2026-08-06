@@ -30,7 +30,7 @@ import org.apache.spark.sql.execution.python.MapInArrowExec
 import org.apache.spark.sql.types.{LongType, StructField, StructType}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
-import org.apache.comet.CometConf
+import org.apache.comet.{CometConf, ExtendedExplainInfo}
 import org.apache.comet.rules.EliminateRedundantTransitions
 
 /** Minimal CometPlan leaf used to anchor the rule's transform without triggering execution. */
@@ -102,6 +102,27 @@ class CometMapInBatchSuite extends CometTestBase {
       assert(
         !rewritten.exists(_.isInstanceOf[CometMapInBatchExec]),
         s"unexpected CometMapInBatchExec when disabled:\n$rewritten")
+    }
+  }
+
+  test("rule annotates operator with opt-in hint when feature is disabled") {
+    withSQLConf(CometConf.COMET_PYARROW_UDF_ENABLED.key -> "false") {
+      val rewritten = EliminateRedundantTransitions(spark).apply(buildPlan())
+      val info = new ExtendedExplainInfo().generateExtendedInfo(rewritten)
+      assert(info.contains("[COMET-INFO:"), s"expected a [COMET-INFO: hint in:\n$info")
+      assert(
+        info.contains(CometConf.COMET_PYARROW_UDF_ENABLED.key),
+        s"expected the opt-in config key in the hint:\n$info")
+    }
+  }
+
+  test("rule emits no opt-in hint when feature is enabled") {
+    withSQLConf(CometConf.COMET_PYARROW_UDF_ENABLED.key -> "true") {
+      val rewritten = EliminateRedundantTransitions(spark).apply(buildPlan())
+      val info = new ExtendedExplainInfo().generateExtendedInfo(rewritten)
+      assert(
+        !info.contains(CometConf.COMET_PYARROW_UDF_ENABLED.key),
+        s"unexpected opt-in hint when feature is enabled:\n$info")
     }
   }
 

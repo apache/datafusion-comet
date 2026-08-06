@@ -33,7 +33,7 @@ import org.apache.spark.sql.execution.aggregate.{HashAggregateExec, ObjectHashAg
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ShuffleExchangeExec}
 import org.apache.spark.sql.types.{DataTypes, StructField, StructType}
 
-import org.apache.comet.CometConf
+import org.apache.comet.{CometConf, CometExplainInfo}
 import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus, isSpark42Plus}
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
 
@@ -75,6 +75,104 @@ class CometExecRuleSuite extends CometTestBase {
         countOperators(stage.plan, opClass)
       case op if op.getClass.isAssignableFrom(opClass) => 1
     }.sum
+  }
+
+  test("expression-level fallback reasons are rolled up onto the operator that falls back") {
+    // Extended explain only walks plan nodes, so a reason recorded on a sub-expression is
+    // invisible unless CometExecRule lifts it onto the enclosing operator. Disabling a single
+    // expression makes the Project fall back with the reason living on the Multiply node.
+    // See https://github.com/apache/datafusion-comet/issues/5230.
+    // This also pins the ordering inside `convertToComet`: strict mode is on in CometTestBase, so
+    // if the roll-up stopped running before the strict check, planning here would throw.
+    withTempView("test_data") {
+      createTestDataFrame.createOrReplaceTempView("test_data")
+
+      val sparkPlan = createSparkPlan(spark, "SELECT id * 2 as doubled FROM test_data")
+      assert(countOperators(sparkPlan, classOf[ProjectExec]) == 1)
+
+      withSQLConf(
+        CometConf.getExprEnabledConfigKey("Multiply") -> "false",
+        CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+        val transformedPlan = applyCometExecRule(sparkPlan)
+        val project = stripAQEPlan(transformedPlan).collectFirst { case p: ProjectExec => p }.get
+
+        val reasons = project
+          .getTagValue(CometExplainInfo.FALLBACK_REASONS)
+          .getOrElse(Set.empty[String])
+        assert(
+          reasons.exists(_.contains("Multiply")),
+          s"expected the Multiply reason on the ProjectExec, got: $reasons")
+        // The generic catch-all message must not appear: a real reason was available.
+        assert(
+          !reasons.exists(_.contains("is not supported")),
+          s"a real reason was available but the generic message was used too: $reasons")
+      }
+    }
+  }
+
+  test("strict mode fails an operator that Comet declined without recording a reason") {
+    // The bug this guards against is a serde returning None and forgetting to say why, which the
+    // generic "<operator> is not supported" message used to hide. No serde in the tree is in that
+    // state (the whole test corpus runs with strict mode on, which is what enforces it), so drive
+    // the check directly with the shape such a serde produces: a handled operator whose children
+    // are all native and which carries no reason on itself or its expressions.
+    withTempView("test_data") {
+      createTestDataFrame.createOrReplaceTempView("test_data")
+
+      val sparkPlan = createSparkPlan(spark, "SELECT id * 2 as doubled FROM test_data")
+      withSQLConf(CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+        val nativeChild = stripAQEPlan(applyCometExecRule(sparkPlan)).collectFirst {
+          case op: CometNativeExec => op
+        }.get
+        val rule = CometExecRule(spark)
+
+        // ProjectExec has a registered serde, so Comet did attempt this operator.
+        val strictOp = ProjectExec(nativeChild.output, nativeChild)
+        assert(CometExecRule.allExecs.contains(strictOp.getClass))
+        val e = intercept[IllegalStateException] {
+          rule.reportUnexplainedFallback(strictOp)
+        }
+        assert(e.getMessage.contains("recorded no fallback reason"))
+        assert(e.getMessage.contains(strictOp.nodeName))
+
+        // Production default: no throw, and the generic message so users still see something.
+        withSQLConf(CometConf.COMET_STRICT_FALLBACK_REASONS.key -> "false") {
+          val lenientOp = ProjectExec(nativeChild.output, nativeChild)
+          rule.reportUnexplainedFallback(lenientOp)
+          val reasons = lenientOp
+            .getTagValue(CometExplainInfo.FALLBACK_REASONS)
+            .getOrElse(Set.empty[String])
+          assert(reasons == Set(s"${lenientOp.nodeName} is not supported"))
+        }
+      }
+    }
+  }
+
+  test("strict fallback reason checking is off by default and on for Comet's own suites") {
+    // The strict check turns "a serde returned None without saying why" into a hard failure. It
+    // must stay off in production, where the generic "<operator> is not supported" message is the
+    // right user-facing behaviour, and on for every Comet suite so the bug class cannot ship
+    // again. Enabling it in CometTestBase is what actually exercises it: the whole test corpus
+    // runs with it on. See https://github.com/apache/datafusion-comet/issues/5230.
+    assert(!CometConf.COMET_STRICT_FALLBACK_REASONS.defaultValue.get)
+    assert(CometConf.COMET_STRICT_FALLBACK_REASONS.get(spark.sessionState.conf))
+  }
+
+  test("strict mode does not fire for operators Comet never attempted to convert") {
+    // Strict mode must only fire when a serde actually attempted the operator and declined. An
+    // operator Comet has no handler for was never attempted, so demanding a specific reason
+    // would be wrong - it keeps the generic message.
+    withTempView("test_data") {
+      createTestDataFrame.createOrReplaceTempView("test_data")
+
+      val sparkPlan = createSparkPlan(spark, "SELECT id FROM test_data")
+      withSQLConf(CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "false") {
+        // With local table scan disabled the leaf has no Comet handler applied, and planning
+        // must complete rather than throw.
+        val transformedPlan = applyCometExecRule(sparkPlan)
+        assert(transformedPlan != null)
+      }
+    }
   }
 
   test(
@@ -492,6 +590,54 @@ class CometExecRuleSuite extends CometTestBase {
     }
   }
 
+  test("CometExecRule should allow approx_count_distinct mixed Comet partial and Spark final") {
+    withTempView("test_data") {
+      createTestDataFrame.createOrReplaceTempView("test_data")
+
+      // approx_count_distinct stores its registers in Spark's identical packed-Long buffer, so
+      // it is mixed-safe: the Comet partial can feed a Spark final.
+      val sparkPlan =
+        createSparkPlan(
+          spark,
+          "SELECT approx_count_distinct(id) FROM test_data GROUP BY (id % 3)")
+
+      val originalHashAggCount = countOperators(sparkPlan, classOf[HashAggregateExec])
+      assert(originalHashAggCount == 2)
+
+      withSQLConf(
+        CometConf.COMET_ENABLE_FINAL_HASH_AGGREGATE.key -> "false",
+        CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+        val transformedPlan = applyCometExecRule(sparkPlan)
+
+        assert(countOperators(transformedPlan, classOf[HashAggregateExec]) == 1) // final only
+        assert(countOperators(transformedPlan, classOf[CometHashAggregateExec]) == 1) // partial
+      }
+    }
+  }
+
+  test("CometExecRule should allow approx_count_distinct mixed Spark partial and Comet final") {
+    withTempView("test_data") {
+      createTestDataFrame.createOrReplaceTempView("test_data")
+
+      val sparkPlan =
+        createSparkPlan(
+          spark,
+          "SELECT approx_count_distinct(id) FROM test_data GROUP BY (id % 3)")
+
+      val originalHashAggCount = countOperators(sparkPlan, classOf[HashAggregateExec])
+      assert(originalHashAggCount == 2)
+
+      withSQLConf(
+        CometConf.COMET_ENABLE_PARTIAL_HASH_AGGREGATE.key -> "false",
+        CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+        val transformedPlan = applyCometExecRule(sparkPlan)
+
+        assert(countOperators(transformedPlan, classOf[HashAggregateExec]) == 1) // partial only
+        assert(countOperators(transformedPlan, classOf[CometHashAggregateExec]) == 1) // final
+      }
+    }
+  }
+
   test("CometExecRule should not convert hash aggregate when grouping key contains map type") {
     // Spark 3.4/3.5 reject `array<map<...>>` as a grouping key in the analyzer (not orderable),
     // so the plan never reaches CometExecRule on those versions. The guard we're exercising
@@ -612,7 +758,7 @@ class CometExecRuleSuite extends CometTestBase {
       // Both aggregates fall back to JVM as in the prior test, but the revert optimization is
       // disabled, so the shuffle should still be wrapped in CometColumnarShuffle.
       withSQLConf(
-        CometConf.COMET_EXEC_SHUFFLE_REVERT_REDUNDANT_COLUMNAR_ENABLED.key -> "false",
+        CometConf.COMET_SHUFFLE_REVERT_REDUNDANT_COLUMNAR_ENABLED.key -> "false",
         CometConf.COMET_ENABLE_PARTIAL_HASH_AGGREGATE.key -> "false",
         CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
         val transformedPlan = applyCometExecRule(sparkPlan)
