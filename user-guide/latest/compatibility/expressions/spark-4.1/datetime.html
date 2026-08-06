@@ -831,6 +831,17 @@ with Spark. For dates beyond this range, functions that involve timezone-aware c
 <li><p>Under ANSI mode, an out-of-range <code class="docutils literal notranslate"><span class="pre">(year,</span> <span class="pre">month,</span> <span class="pre">day)</span></code> triple surfaces as <code class="docutils literal notranslate"><span class="pre">CometNativeException</span></code> rather than Spark’s <code class="docutils literal notranslate"><span class="pre">SparkDateTimeException</span></code> with error class <code class="docutils literal notranslate"><span class="pre">DATETIME_FIELD_OUT_OF_BOUNDS.WITH_SUGGESTION</span></code>. The throw/NULL decision is correct; only the exception class and error class differ (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5073">#5073</a>).</p></li>
 </ul>
 </section>
+<section id="makeinterval">
+<h2>MakeInterval<a class="headerlink" href="#makeinterval" title="Link to this heading">#</a></h2>
+<p>The following differences from Spark are always present and do not require any additional configuration:</p>
+<ul class="simple">
+<li><p>Both the default JVM codegen-dispatch path and the native path currently limit the elapsed-time component to about 292 years in either direction. This only affects extreme intervals and is tracked in <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5279">#5279</a>.</p></li>
+</ul>
+<p>By default, <code class="docutils literal notranslate"><span class="pre">MakeInterval</span></code> is evaluated in the JVM using Spark’s own code-generated implementation (run inside the Comet pipeline), which matches Spark exactly. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.MakeInterval.allowIncompatible=true</span></code> to opt into Comet’s native implementation instead, which has the following differences from Spark:</p>
+<ul class="simple">
+<li><p>The native implementation converts seconds to <code class="docutils literal notranslate"><span class="pre">Float64</span></code>, which can lose microsecond precision, and stores time in nanoseconds, which overflows for large time components (hours, minutes, seconds) that Spark can represent.</p></li>
+</ul>
+</section>
 <section id="maketimestamp">
 <h2>MakeTimestamp<a class="headerlink" href="#maketimestamp" title="Link to this heading">#</a></h2>
 <p>By default, <code class="docutils literal notranslate"><span class="pre">MakeTimestamp</span></code> is evaluated in the JVM using Spark’s own code-generated implementation (run inside the Comet pipeline), which matches Spark exactly. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.MakeTimestamp.allowIncompatible=true</span></code> to opt into Comet’s native implementation instead, which has the following differences from Spark:</p>
@@ -971,6 +982,7 @@ with Spark. For dates beyond this range, functions that involve timezone-aware c
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#fromunixtime">FromUnixTime</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#hours">Hours</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#makedate">MakeDate</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#makeinterval">MakeInterval</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#maketimestamp">MakeTimestamp</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#nextday">NextDay</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#precisetimestampconversion">PreciseTimestampConversion</a></li>

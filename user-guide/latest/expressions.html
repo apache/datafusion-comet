@@ -1670,9 +1670,9 @@ expressions. The following function families are <strong>not currently planned</
 <td><p></p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">make_interval</span></code></p></td>
-<td><p>🔜</p></td>
-<td><p>—</p></td>
-<td><p>Produces legacy CalendarInterval; tracked by <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5061">#5061</a></p></td>
+<td><p>✅</p></td>
+<td><p>Hybrid</p></td>
+<td><p>Routes through the JVM codegen dispatcher by default; intervals outside Arrow’s nanosecond range are tracked by <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5279">#5279</a>; the native path is opt-in via allowIncompatible (<a class="reference internal" href="#compatibility/expressions/datetime.md"><span class="xref myst">details</span></a>)</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">make_time</span></code></p></td>
 <td><p>🔜</p></td>
@@ -1825,9 +1825,9 @@ expressions. The following function families are <strong>not currently planned</
 <td><p></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">try_make_interval</span></code></p></td>
-<td><p>🔜</p></td>
+<td><p>✅</p></td>
 <td><p>—</p></td>
-<td><p>Produces legacy CalendarInterval; tracked by <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5061">#5061</a></p></td>
+<td><p>Rewrites to <code class="docutils literal notranslate"><span class="pre">MakeInterval</span></code>; same support as <code class="docutils literal notranslate"><span class="pre">make_interval</span></code> (Spark 4.0+)</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">try_make_timestamp</span></code></p></td>
 <td><p>✅</p></td>

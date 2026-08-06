@@ -96,6 +96,16 @@ The following differences from Spark are always present and do not require any a
 
 - Under ANSI mode, an out-of-range `(year, month, day)` triple surfaces as `CometNativeException` rather than Spark's `SparkDateTimeException` with error class `DATETIME_FIELD_OUT_OF_BOUNDS.WITH_SUGGESTION`. The throw/NULL decision is correct; only the exception class and error class differ ([#5073](https://github.com/apache/datafusion-comet/issues/5073)).
 
+## MakeInterval
+
+The following differences from Spark are always present and do not require any additional configuration:
+
+- Both the default JVM codegen-dispatch path and the native path currently limit the elapsed-time component to about 292 years in either direction. This only affects extreme intervals and is tracked in [#5279](https://github.com/apache/datafusion-comet/issues/5279).
+
+By default, `MakeInterval` is evaluated in the JVM using Spark's own code-generated implementation (run inside the Comet pipeline), which matches Spark exactly. Set `spark.comet.expression.MakeInterval.allowIncompatible=true` to opt into Comet's native implementation instead, which has the following differences from Spark:
+
+- The native implementation converts seconds to `Float64`, which can lose microsecond precision, and stores time in nanoseconds, which overflows for large time components (hours, minutes, seconds) that Spark can represent.
+
 ## MakeTimestamp
 
 By default, `MakeTimestamp` is evaluated in the JVM using Spark's own code-generated implementation (run inside the Comet pipeline), which matches Spark exactly. Set `spark.comet.expression.MakeTimestamp.allowIncompatible=true` to opt into Comet's native implementation instead, which has the following differences from Spark:

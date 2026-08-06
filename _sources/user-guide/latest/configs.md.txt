@@ -323,6 +323,7 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.expression.MakeDTInterval.enabled` | Enable Comet acceleration for `MakeDTInterval` | true |
 | `spark.comet.expression.MakeDate.enabled` | Enable Comet acceleration for `MakeDate` | true |
 | `spark.comet.expression.MakeDecimal.enabled` | Enable Comet acceleration for `MakeDecimal` | true |
+| `spark.comet.expression.MakeInterval.enabled` | Enable Comet acceleration for `MakeInterval` | true |
 | `spark.comet.expression.MakeTimestamp.enabled` | Enable Comet acceleration for `MakeTimestamp` | true |
 | `spark.comet.expression.MakeYMInterval.enabled` | Enable Comet acceleration for `MakeYMInterval` | true |
 | `spark.comet.expression.MapConcat.enabled` | Enable Comet acceleration for `MapConcat` | true |
