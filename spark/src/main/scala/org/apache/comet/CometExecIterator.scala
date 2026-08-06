@@ -84,6 +84,15 @@ class CometExecIterator(
   private val taskCPUs = TaskContext.get().cpus()
   private val cometTaskMemoryManager = new CometTaskMemoryManager(id, taskAttemptId)
 
+  /**
+   * Context ClassLoader of the Spark task thread that constructs this iterator. Spark installs
+   * the executor's user ClassLoader (which holds `--jars` / `spark.jars` classes) on task threads
+   * only, so it has to be read here rather than from a Tokio worker. Falls back to the
+   * ClassLoader that loaded Comet when the task thread has none.
+   */
+  private val taskClassLoader: ClassLoader =
+    Option(Thread.currentThread().getContextClassLoader).getOrElse(getClass.getClassLoader)
+
   private val plan = {
     val conf = SparkEnv.get.conf
     val localDiskDirs = SparkEnv.get.blockManager.getLocalDiskDirs
@@ -126,7 +135,11 @@ class CometExecIterator(
       keyUnwrapper,
       // Propagated to Tokio workers running JVM UDFs so they see this Spark task's
       // TaskContext. See CometUdfBridge.evaluate.
-      TaskContext.get())
+      TaskContext.get(),
+      // Likewise for this task thread's context ClassLoader, which is what reaches classes
+      // from user jars (--jars / spark.jars). Captured here because `CometExecIterator` is
+      // constructed on the Spark task thread; a JNI-attached Tokio worker has none.
+      taskClassLoader)
   }
 
   private var nextBatch: Option[ColumnarBatch] = None

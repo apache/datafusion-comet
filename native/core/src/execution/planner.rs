@@ -250,6 +250,10 @@ pub struct PhysicalPlanner {
     /// Captured at `createPlan` time on `ExecutionContext`; see that struct for the
     /// propagation rationale. `None` when no driving Spark task is available.
     task_context: Option<Arc<Global<JObject<'static>>>>,
+    /// Context `ClassLoader` of the driving Spark task thread, captured at `createPlan` time on
+    /// `ExecutionContext`; see that struct for the propagation rationale. `None` when no driving
+    /// Spark task is available.
+    class_loader: Option<Arc<Global<JObject<'static>>>>,
 }
 
 impl Default for PhysicalPlanner {
@@ -267,6 +271,7 @@ impl PhysicalPlanner {
             query_context_registry: datafusion_comet_spark_expr::create_query_context_map(),
             sql_text_pool: vec![],
             task_context: None,
+            class_loader: None,
         }
     }
 
@@ -353,6 +358,18 @@ impl PhysicalPlanner {
         task_context: Option<Arc<Global<JObject<'static>>>>,
     ) -> Self {
         self.task_context = task_context;
+        self
+    }
+
+    /// Attach the driving Spark task thread's context `ClassLoader` as a global reference. Called
+    /// by the JNI `executePlan` entry with whatever was captured at `createPlan` time. The planner
+    /// clones this `Option` into every `JvmScalarUdfExpr` it builds so the JNI bridge can install
+    /// it on the Tokio worker, which has no context `ClassLoader` of its own.
+    pub fn with_class_loader(
+        mut self,
+        class_loader: Option<Arc<Global<JObject<'static>>>>,
+    ) -> Self {
+        self.class_loader = class_loader;
         self
     }
 
@@ -876,12 +893,17 @@ impl PhysicalPlanner {
                     to_arrow_datatype(udf.return_type.as_ref().ok_or_else(|| {
                         GeneralError("JvmScalarUdf missing return_type".to_string())
                     })?);
-                // Invariant: task_context is propagated for every JvmScalarUdfExpr built during
-                // normal execution. The TEST_EXEC_CONTEXT_ID path is the only context in which
-                // task_context may legitimately be None (unit tests, direct native driver runs).
+                // Invariant: task_context and class_loader are propagated for every
+                // JvmScalarUdfExpr built during normal execution. The TEST_EXEC_CONTEXT_ID path is
+                // the only context in which they may legitimately be None (unit tests, direct
+                // native driver runs).
                 debug_assert!(
                     self.task_context.is_some() || self.exec_context_id == TEST_EXEC_CONTEXT_ID,
                     "task_context must be set for non-test execution"
+                );
+                debug_assert!(
+                    self.class_loader.is_some() || self.exec_context_id == TEST_EXEC_CONTEXT_ID,
+                    "class_loader must be set for non-test execution"
                 );
                 Ok(Arc::new(JvmScalarUdfExpr::new(
                     udf.class_name.clone(),
@@ -889,6 +911,7 @@ impl PhysicalPlanner {
                     return_type,
                     udf.return_nullable,
                     self.task_context.clone(),
+                    self.class_loader.clone(),
                 )))
             }
             expr => Err(GeneralError(format!("Not implemented: {expr:?}"))),

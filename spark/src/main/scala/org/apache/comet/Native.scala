@@ -48,6 +48,12 @@ class Native extends NativeBase {
    * @param taskMemoryManager
    *   the task-level memory manager that is responsible for tracking memory usage across JVM and
    *   native side.
+   * @param taskContext
+   *   the driving Spark task's `TaskContext`, propagated to Tokio workers running JVM UDFs.
+   * @param classLoader
+   *   the calling Spark task thread's context ClassLoader, propagated to Tokio workers running
+   *   JVM UDFs. Must be captured on the task thread: Tokio workers attach through JNI and have no
+   *   context ClassLoader of their own, so without this they cannot reach classes from user jars.
    * @return
    *   the address to native query plan.
    */
@@ -70,7 +76,8 @@ class Native extends NativeBase {
       taskAttemptId: Long,
       taskCPUs: Long,
       keyUnwrapper: CometFileKeyUnwrapper,
-      taskContext: TaskContext): Long
+      taskContext: TaskContext,
+      classLoader: ClassLoader): Long
   // scalastyle:on
 
   /**
