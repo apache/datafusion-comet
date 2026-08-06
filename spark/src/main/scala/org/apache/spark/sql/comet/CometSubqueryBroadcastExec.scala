@@ -59,7 +59,8 @@ case class CometSubqueryBroadcastExec(
     buildKeys: Seq[Expression],
     child: SparkPlan)
     extends BaseSubqueryExec
-    with UnaryExecNode {
+    with UnaryExecNode
+    with CometPlan {
 
   override def output: Seq[Attribute] = {
     indices.map { idx =>
