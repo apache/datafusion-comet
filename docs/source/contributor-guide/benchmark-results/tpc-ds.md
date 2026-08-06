@@ -17,7 +17,7 @@ specific language governing permissions and limitations
 under the License.
 -->
 
-# Apache DataFusion Comet: Benchmarks Derived From TPC-DS
+# TPC-DS
 
 The following benchmarks were performed on an EKS cluster (`r6i.24xlarge` instances with EBS storage) with data stored in S3.
 
