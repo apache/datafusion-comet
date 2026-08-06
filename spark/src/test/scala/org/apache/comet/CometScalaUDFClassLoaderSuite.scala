@@ -22,7 +22,7 @@ package org.apache.comet
 import java.io.File
 import java.net.URLClassLoader
 import java.nio.charset.StandardCharsets.UTF_8
-import java.nio.file.{Files, Path}
+import java.nio.file.{Files, Path, Paths}
 import javax.tools.ToolProvider
 
 import org.apache.spark.SparkConf
@@ -149,7 +149,10 @@ object CometScalaUDFClassLoaderSuite {
   }
 
   private def compileHiddenClass(): Path = {
-    val workDir = Files.createTempDirectory("comet-hidden-udf")
+    // createTempDirectory does not create its parent (java.io.tmpdir, pinned to target/tmp by the
+    // pom), which does not exist yet on a fresh checkout, so make it up front.
+    val tmpRoot = Files.createDirectories(Paths.get(System.getProperty("java.io.tmpdir")))
+    val workDir = Files.createTempDirectory(tmpRoot, "comet-hidden-udf")
     val src = workDir.resolve("HiddenUdf.java")
     // The intersection cast is what makes the lambda serializable, and therefore what makes
     // `hidden.HiddenUdf` the capturing class recorded in the SerializedLambda.
