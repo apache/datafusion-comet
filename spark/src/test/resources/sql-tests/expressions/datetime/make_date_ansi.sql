@@ -16,11 +16,11 @@
 -- under the License.
 
 -- ANSI mode: Spark's MakeDate wraps the java.time.DateTimeException raised by LocalDate.of in
--- ansiDateTimeArgumentOutOfRange (DATETIME_FIELD_OUT_OF_BOUNDS on 4.0 and
--- DATETIME_FIELD_OUT_OF_BOUNDS.WITH_SUGGESTION on 4.1+) / ansiDateTimeError (3.x) when
--- spark.sql.ansi.enabled=true. Comet's native SparkMakeDate now throws the same
--- java.time-style message under ANSI instead of returning NULL. The expect_error patterns below
--- are substrings of that message and match across Spark versions.
+-- ansiDateTimeArgumentOutOfRange (4.x) / ansiDateTimeError (3.x) when
+-- spark.sql.ansi.enabled=true. The DATETIME_FIELD_OUT_OF_BOUNDS subclass and message parameters
+-- vary by Spark version. Comet's native SparkMakeDate throws the same java.time-style message
+-- under ANSI instead of returning NULL. The expect_error patterns below are substrings of that
+-- message and match across Spark versions.
 -- Config: spark.sql.ansi.enabled=true
 
 -- Sentinel: a valid date must still execute natively under ANSI. This guards against the

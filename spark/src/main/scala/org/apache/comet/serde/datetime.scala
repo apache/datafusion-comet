@@ -476,6 +476,12 @@ object CometMakeDate extends CometExpressionSerde[MakeDate] {
    * via the `ScalarFunc.fail_on_error` field.
    */
 
+  override def getCompatibleNotes(): Seq[String] = Seq(
+    "Native `make_date` is limited to chrono's year range `[-262143, 262142]`; Spark accepts" +
+      " wider years (for example, `300000`), so Comet returns `NULL` or throws under ANSI mode" +
+      " for dates Spark accepts" +
+      " ([#5208](https://github.com/apache/datafusion-comet/issues/5208)).")
+
   override def convert(expr: MakeDate, inputs: Seq[Attribute], binding: Boolean): Option[Expr] = {
     val childExpr = expr.children.map(exprToProtoInternal(_, inputs, binding))
     val optExpr = scalarFunctionExprToProtoWithReturnType(

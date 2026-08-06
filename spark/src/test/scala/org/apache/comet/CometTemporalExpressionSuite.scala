@@ -55,7 +55,11 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
       SQLConf.ANSI_ENABLED.key -> "true",
       SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
         "org.apache.spark.sql.catalyst.optimizer.ConstantFolding") {
-      Seq("SELECT next_day(date('2024-01-01'), 'NOT_A_DAY')", "SELECT make_date(2024, 13, 1)")
+      Seq(
+        "SELECT next_day(date('2024-01-01'), 'NOT_A_DAY')",
+        "SELECT make_date(2024, 13, 1)",
+        "SELECT make_date(1000000000, 1, 1)",
+        "SELECT make_date(1000000000, 13, 0)")
         .foreach { query =>
           val df = sql(query)
           checkCometOperators(stripAQEPlan(df.queryExecution.executedPlan))
@@ -69,6 +73,8 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
           assert(actual.getClass == expected.getClass)
           assert(actual.getErrorClass == expected.getErrorClass)
           assert(actual.getSqlState == expected.getSqlState)
+          assert(actual.getMessageParameters == expected.getMessageParameters)
+          assert(actual.getMessage == expected.getMessage)
           assert(!causeChain(cometFailure).exists(_.isInstanceOf[CometNativeException]))
         }
     }
