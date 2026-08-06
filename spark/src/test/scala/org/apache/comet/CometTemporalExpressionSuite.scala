@@ -58,6 +58,7 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
       Seq(
         "SELECT next_day(date('2024-01-01'), 'NOT_A_DAY')",
         "SELECT make_date(2024, 13, 1)",
+        // 999999999 instead overflows the epoch-day conversion as a plain ArithmeticException.
         "SELECT make_date(1000000000, 1, 1)",
         "SELECT make_date(1000000000, 13, 0)")
         .foreach { query =>
