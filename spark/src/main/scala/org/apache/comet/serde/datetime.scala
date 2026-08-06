@@ -970,10 +970,10 @@ object CometMakeInterval extends CometExpressionSerde[MakeInterval] with Codegen
       " (hours, minutes, seconds) that Spark can represent."
 
   override def getCompatibleNotes(): Seq[String] = Seq(
-    "Both the default JVM codegen-dispatch path and the native path encode elapsed time as" +
-      " Arrow nanoseconds. Spark intervals whose microseconds cannot be multiplied by 1,000" +
-      " in an `i64` are not supported" +
-      " ([#5279](https://github.com/apache/datafusion-comet/issues/5279)).")
+    "Both the default JVM codegen-dispatch path and the native path currently limit the" +
+      " elapsed-time component to about 292 years in either direction. This only affects" +
+      " extreme intervals and is tracked in" +
+      " [#5279](https://github.com/apache/datafusion-comet/issues/5279).")
 
   override def getIncompatibleReasons(): Seq[String] = Seq(incompatReason)
 
