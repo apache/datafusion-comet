@@ -446,12 +446,6 @@ object CometNextDay extends CometExpressionSerde[NextDay] {
   override def getIncompatibleReasons(): Seq[String] =
     DatetimeCollation.incompatibleReasons("next_day")
 
-  override def getCompatibleNotes(): Seq[String] = Seq(
-    "Under ANSI mode, an invalid `dayOfWeek` surfaces as `CometNativeException` rather than" +
-      " Spark's `SparkIllegalArgumentException` with error class `ILLEGAL_DAY_OF_WEEK`. The" +
-      " throw/NULL decision is correct; only the exception class and error class differ" +
-      " ([#5073](https://github.com/apache/datafusion-comet/issues/5073)).")
-
   override def getSupportLevel(expr: NextDay): SupportLevel = {
     if (DatetimeCollation.hasNonDefaultCollation(expr)) {
       Incompatible(Some(collationReason))
@@ -479,11 +473,11 @@ object CometMakeDate extends CometExpressionSerde[MakeDate] {
    */
 
   override def getCompatibleNotes(): Seq[String] = Seq(
-    "Under ANSI mode, an out-of-range `(year, month, day)` triple surfaces as" +
-      " `CometNativeException` rather than Spark's `SparkDateTimeException` with error class" +
-      " `DATETIME_FIELD_OUT_OF_BOUNDS.WITH_SUGGESTION`. The throw/NULL decision is correct;" +
-      " only the exception class and error class differ" +
-      " ([#5073](https://github.com/apache/datafusion-comet/issues/5073)).")
+    "Native `make_date` is limited to chrono's year range `[-262143, 262142]`; Spark accepts" +
+      " wider years (for example, `300000`), so Comet returns `NULL` or throws under ANSI mode" +
+      " for dates Spark accepts, and may incorrectly report valid dates as invalid (for example," +
+      " `300000-02-29` is falsely reported as not a leap year)" +
+      " ([#5208](https://github.com/apache/datafusion-comet/issues/5208)).")
 
   override def convert(expr: MakeDate, inputs: Seq[Attribute], binding: Boolean): Option[Expr] = {
     val childExpr = expr.children.map(exprToProtoInternal(_, inputs, binding))
