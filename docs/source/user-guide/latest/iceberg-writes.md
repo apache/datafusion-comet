@@ -86,6 +86,8 @@ The rewrite is skipped — and the write runs through Spark's stock combined ope
 - `spark.comet.write.iceberg.splitOperator.enabled` is `false` (the default);
 - the write is not an Iceberg `SparkWrite` (any other V2 data source);
 - the table uses merge-on-read: delta writes (Iceberg `WriteDelta`) are not intercepted;
+- the statement is CTAS / RTAS on Spark 3.4, where the staged exec writes inline; on Spark
+  3.5+ those statements re-plan their inner append, which is intercepted normally;
 - the write requires Spark's commit coordinator, which Comet's per-task commit protocol does
   not use;
 - Comet cannot reflect the Iceberg internals needed to build the two-operator plan (for
