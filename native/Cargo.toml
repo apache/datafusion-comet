@@ -38,10 +38,10 @@ arrow = { version = "59.1.0", features = ["prettyprint", "ffi", "chrono-tz"] }
 async-trait = { version = "0.1" }
 bytes = { version = "1.11.1" }
 parquet = { version = "59.1.0", default-features = false, features = ["experimental"] }
-datafusion = { git = "https://github.com/apache/datafusion.git", rev = "bc8b1a7a9323f69970fe728c95f3930cfbd5ad41", default-features = false, features = ["unicode_expressions", "crypto_expressions", "nested_expressions", "parquet"] }
-datafusion-datasource = { git = "https://github.com/apache/datafusion.git", rev = "bc8b1a7a9323f69970fe728c95f3930cfbd5ad41" }
-datafusion-physical-expr-adapter = { git = "https://github.com/apache/datafusion.git", rev = "bc8b1a7a9323f69970fe728c95f3930cfbd5ad41" }
-datafusion-spark = { git = "https://github.com/apache/datafusion.git", rev = "bc8b1a7a9323f69970fe728c95f3930cfbd5ad41", features = ["core"] }
+datafusion = { git = "https://github.com/apache/datafusion.git", rev = "70c26a06716eb552f0fc1d2115957a4089504f11", default-features = false, features = ["unicode_expressions", "crypto_expressions", "nested_expressions", "parquet"] }
+datafusion-datasource = { git = "https://github.com/apache/datafusion.git", rev = "70c26a06716eb552f0fc1d2115957a4089504f11" }
+datafusion-physical-expr-adapter = { git = "https://github.com/apache/datafusion.git", rev = "70c26a06716eb552f0fc1d2115957a4089504f11" }
+datafusion-spark = { git = "https://github.com/apache/datafusion.git", rev = "70c26a06716eb552f0fc1d2115957a4089504f11", features = ["core"] }
 datafusion-comet-spark-expr = { path = "spark-expr" }
 datafusion-comet-common = { path = "common" }
 datafusion-comet-jni-bridge = { path = "jni-bridge" }
