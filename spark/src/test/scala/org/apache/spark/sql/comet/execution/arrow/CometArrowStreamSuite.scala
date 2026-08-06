@@ -63,7 +63,7 @@ class CometArrowStreamSuite extends AnyFunSuite with Matchers {
     val root = VectorSchemaRoot.create(new Schema(Seq(field).asJava), allocator)
     try {
       val expected = new CalendarInterval(14, -3, 1234567L)
-      val writer = ArrowWriter.create(root)
+      val writer = ArrowWriter.create(root, 2)
       writer.write(new GenericInternalRow(Array[Any](expected)))
       writer.write(new GenericInternalRow(Array[Any](null)))
       writer.finish()
@@ -193,7 +193,7 @@ class CometArrowStreamSuite extends AnyFunSuite with Matchers {
         input.putInt(i, i)
         i += 1
       }
-      val writer = ArrowWriter.create(root)
+      val writer = ArrowWriter.create(root, BaseValueVector.INITIAL_VALUE_ALLOCATION)
       val vector = root.getVector(0).asInstanceOf[IntVector]
       vector.getValueCapacity should be < numRows
 

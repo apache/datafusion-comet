@@ -39,18 +39,12 @@ import org.apache.spark.sql.vectorized.ColumnarArray
  * directly.
  */
 private[arrow] object ArrowWriter {
-  def create(root: VectorSchemaRoot): ArrowWriter = create(root, None)
-
   def create(root: VectorSchemaRoot, fixedWidthCapacity: Int): ArrowWriter = {
     require(fixedWidthCapacity >= 0, "Fixed-width capacity must be non-negative")
-    create(root, Some(fixedWidthCapacity))
-  }
-
-  private def create(root: VectorSchemaRoot, fixedWidthCapacity: Option[Int]): ArrowWriter = {
     val children = root.getFieldVectors().asScala.map { vector =>
-      (vector, fixedWidthCapacity) match {
-        case (fixedWidth: BaseFixedWidthVector, Some(capacity)) =>
-          fixedWidth.allocateNew(capacity)
+      vector match {
+        case fixedWidth: BaseFixedWidthVector =>
+          fixedWidth.allocateNew(fixedWidthCapacity)
         case _ =>
           vector.allocateNew()
       }
