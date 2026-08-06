@@ -352,14 +352,10 @@ struct ExecutionContext {
     /// cheap to clone; the underlying `Global<JObject>` releases its JNI global ref on drop
     /// via `jni`'s `Drop` impl.
     pub task_context: Option<Arc<Global<JObject<'static>>>>,
-    /// Context `ClassLoader` of the driving Spark task thread, captured at `createPlan` time.
-    /// Threaded into every JVM scalar UDF the planner builds so the JNI bridge can install it on
-    /// the Tokio worker running the UDF. Tokio workers attach through JNI and an attached thread
-    /// has no context `ClassLoader`, so without this the bridge cannot see classes from user jars
-    /// (`--jars` / `spark.jars`): deserializing a `ScalaUDF` closure captured by a user class
-    /// fails, as does resolving a user-supplied `CometUDF` implementation. `None` when no driving
-    /// Spark task is present (unit tests, direct native driver runs). The `Arc` is cheap to clone;
-    /// the underlying `Global<JObject>` releases its JNI global ref on drop.
+    /// Context `ClassLoader` of the driving Spark task thread, captured at `createPlan` time and
+    /// threaded into every JVM scalar UDF the planner builds; see `CometUdfBridge.evaluate` for why
+    /// it has to travel with the plan. `None` when no driving Spark task is present (unit tests,
+    /// direct native driver runs). Lifetime is as for `task_context` above.
     pub class_loader: Option<Arc<Global<JObject<'static>>>>,
 }
 

@@ -52,8 +52,7 @@ class Native extends NativeBase {
    *   the driving Spark task's `TaskContext`, propagated to Tokio workers running JVM UDFs.
    * @param classLoader
    *   the calling Spark task thread's context ClassLoader, propagated to Tokio workers running
-   *   JVM UDFs. Must be captured on the task thread: Tokio workers attach through JNI and have no
-   *   context ClassLoader of their own, so without this they cannot reach classes from user jars.
+   *   JVM UDFs. Must be read on the task thread; see `CometUdfBridge.evaluate`.
    * @return
    *   the address to native query plan.
    */

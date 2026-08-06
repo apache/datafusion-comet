@@ -361,10 +361,9 @@ impl PhysicalPlanner {
         self
     }
 
-    /// Attach the driving Spark task thread's context `ClassLoader` as a global reference. Called
-    /// by the JNI `executePlan` entry with whatever was captured at `createPlan` time. The planner
-    /// clones this `Option` into every `JvmScalarUdfExpr` it builds so the JNI bridge can install
-    /// it on the Tokio worker, which has no context `ClassLoader` of its own.
+    /// Attach the driving Spark task thread's context `ClassLoader` as a global reference. Mirrors
+    /// `with_task_context`: called by the JNI `executePlan` entry with whatever was captured at
+    /// `createPlan` time, and cloned into every `JvmScalarUdfExpr` the planner builds.
     pub fn with_class_loader(
         mut self,
         class_loader: Option<Arc<Global<JObject<'static>>>>,
@@ -898,12 +897,9 @@ impl PhysicalPlanner {
                 // the only context in which they may legitimately be None (unit tests, direct
                 // native driver runs).
                 debug_assert!(
-                    self.task_context.is_some() || self.exec_context_id == TEST_EXEC_CONTEXT_ID,
-                    "task_context must be set for non-test execution"
-                );
-                debug_assert!(
-                    self.class_loader.is_some() || self.exec_context_id == TEST_EXEC_CONTEXT_ID,
-                    "class_loader must be set for non-test execution"
+                    (self.task_context.is_some() && self.class_loader.is_some())
+                        || self.exec_context_id == TEST_EXEC_CONTEXT_ID,
+                    "task_context and class_loader must be set for non-test execution"
                 );
                 Ok(Arc::new(JvmScalarUdfExpr::new(
                     udf.class_name.clone(),

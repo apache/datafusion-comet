@@ -49,11 +49,9 @@ pub struct JvmScalarUdfExpr {
     /// returns in place.
     task_context: Option<Arc<Global<JObject<'static>>>>,
     /// Context `ClassLoader` of the driving Spark task thread, captured at `createPlan` time and
-    /// threaded here by the planner. Tokio workers attach to the JVM through JNI and an attached
-    /// thread has no context `ClassLoader`, so without this the bridge cannot reach classes that
-    /// live in user jars (`--jars` / `spark.jars`) - deserializing a `ScalaUDF` closure captured
-    /// by a user class then fails. `None` when no driving Spark task is available (unit tests,
-    /// direct native driver runs); the bridge then leaves the worker's `ClassLoader` alone.
+    /// threaded here by the planner. See `CometUdfBridge.evaluate`, which installs it for the
+    /// duration of the call. `None` when no driving Spark task is available (unit tests, direct
+    /// native driver runs); the bridge then installs nothing.
     class_loader: Option<Arc<Global<JObject<'static>>>>,
 }
 
@@ -207,9 +205,8 @@ impl PhysicalExpr for JvmScalarUdfExpr {
                 .map_err(|e| CometError::JNI { source: e })?;
 
             // Resolve the TaskContext and ClassLoader references once before building the arg
-            // array so the borrows live until `call_static_method_unchecked` returns. When
-            // neither was propagated, pass a null object so the bridge's null-guards leave the
-            // worker thread's thread-local / ClassLoader alone.
+            // array so the borrows live until `call_static_method_unchecked` returns. Absent
+            // values are passed as a null object, which the bridge's null-guards skip.
             let null_obj = JObject::null();
             let task_context_ref: &JObject = match &self.task_context {
                 Some(gref) => gref.as_obj(),

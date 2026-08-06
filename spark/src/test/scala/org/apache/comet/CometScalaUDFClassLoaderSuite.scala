@@ -19,21 +19,19 @@
 
 package org.apache.comet
 
-import java.io.{File, FileOutputStream}
+import java.io.File
 import java.net.URLClassLoader
+import java.nio.charset.StandardCharsets.UTF_8
 import java.nio.file.{Files, Path}
-import java.util.jar.{JarEntry, JarOutputStream}
 import javax.tools.ToolProvider
 
-import scala.jdk.CollectionConverters._
-
 import org.apache.spark.SparkConf
-import org.apache.spark.sql.CometTestBase
+import org.apache.spark.sql.{CometTestBase, Encoders}
 import org.apache.spark.sql.catalyst.expressions.Expression
 
 /**
- * Regression coverage for UDF closures whose capturing class lives in a user jar. Before the
- * task-thread ClassLoader was propagated to Tokio workers, these queries failed with:
+ * Regression coverage for UDF closures whose capturing class lives in a user jar, which used to
+ * fail with:
  *
  * {{{
  * java.lang.ClassCastException: cannot assign instance of java.lang.invoke.SerializedLambda
@@ -41,25 +39,16 @@ import org.apache.spark.sql.catalyst.expressions.Expression
  *   at org.apache.comet.udf.codegen.CometScalaUDFCodegen.lookupOrCompile
  * }}}
  *
- * It took two conditions together:
+ * That exception is a masked `ClassNotFoundException`: when the deserializing ClassLoader cannot
+ * resolve a lambda's capturing class, `ObjectInputStream` records the CNFE against the object
+ * handle, therefore skips `SerializedLambda.readResolve`, and the raw `SerializedLambda` then
+ * fails the field-type check in `defaultCheckFieldValues`. The classloading rationale lives on
+ * `CometUdfBridge.evaluate`.
  *
- *   1. The class that captured the UDF lambda lives in a user jar, so it is reachable from
- *      Spark's executor ClassLoader but not from the ClassLoader that loaded Comet and
- *      spark-catalyst. `spark.executor.extraClassPath` is the local-mode equivalent of a `--jars`
- *      submission: `LocalSchedulerBackend` feeds it into the executor's `MutableURLClassLoader`,
- *      which becomes the task thread's context ClassLoader.
- *   1. The dispatcher's `evaluate` runs on a Tokio worker rather than the Spark task thread.
- *      Tokio workers attach to the JVM through JNI and an attached thread has no context
- *      ClassLoader of its own, so `CometScalaUDFCodegen.lookupOrCompile` fell back to
- *      `classOf[Expression].getClassLoader`, which cannot see the user jar. That is the normal
- *      case when the stage's leaf is a native scan (`CometNativeScan`, `CometIcebergNativeScan`).
- *
- * The underlying `ClassNotFoundException` on the capturing class was masked: `ObjectInputStream`
- * records it against the handle, skips `SerializedLambda.readResolve`, and the raw
- * `SerializedLambda` then fails the field-type check in `defaultCheckFieldValues`.
- *
- * `CometExecIterator` now captures the task thread's context ClassLoader and `CometUdfBridge`
- * installs it on the calling thread for the duration of each UDF call.
+ * The fixture puts the capturing class on `spark.executor.extraClassPath`, the local-mode
+ * equivalent of a `--jars` submission: `LocalSchedulerBackend` feeds it into the executor's
+ * `MutableURLClassLoader`, which becomes the task thread's context ClassLoader while staying
+ * invisible to the ClassLoader that loaded Comet.
  */
 class CometScalaUDFClassLoaderSuite extends CometTestBase {
 
@@ -68,47 +57,40 @@ class CometScalaUDFClassLoaderSuite extends CometTestBase {
   override protected def sparkConf: SparkConf =
     super.sparkConf
       .set(CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key, "true")
-      // Visible to executor task threads, invisible to Comet's own ClassLoader.
-      .set("spark.executor.extraClassPath", hiddenJar.getAbsolutePath)
+      .set("spark.executor.extraClassPath", hiddenClassesDir.toString)
 
-  /** Registers a UDF whose lambda was captured by a class living only in the user jar. */
-  private def withHiddenUdf(name: String)(f: => Unit): Unit = {
-    val loader = new URLClassLoader(Array(hiddenJar.toURI.toURL), getClass.getClassLoader)
-    val fn = loader
-      .loadClass(HiddenClassName)
-      .getMethod("make")
-      .invoke(null)
-      .asInstanceOf[String => String]
-    spark.udf.register(name, fn)
-    try f
-    finally loader.close()
+  private def withHiddenUdfTable(f: => Unit): Unit = {
+    spark.udf.register("hiddenUdf", hiddenFn)
+    withTable("t") {
+      sql("CREATE TABLE t (s STRING) USING parquet")
+      sql("INSERT INTO t VALUES ('a'), ('b'), (NULL)")
+      f
+    }
   }
 
-  test("sanity: the hidden class is reachable from task threads but not from Comet's loader") {
-    // `classOf[Expression].getClassLoader` is exactly the fallback `lookupOrCompile` uses when the
-    // calling thread has no context ClassLoader.
+  test("fixture: hidden class reachable from task threads, not from Comet's ClassLoader") {
+    // Guards the tests below from passing vacuously. `classOf[Expression].getClassLoader` is the
+    // fallback `lookupOrCompile` uses when the calling thread has no context ClassLoader.
     intercept[ClassNotFoundException] {
       Class.forName(HiddenClassName, false, classOf[Expression].getClassLoader)
     }
     val reachable = spark
       .range(4)
       .repartition(2)
-      .mapPartitions(_ => Iterator(canLoadHiddenClassOnThisThread))(
-        org.apache.spark.sql.Encoders.scalaBoolean)
+      .mapPartitions(_ => Iterator(canLoadHiddenClass))(Encoders.scalaBoolean)
       .collect()
     assert(reachable.forall(identity), s"task threads could not load $HiddenClassName")
   }
 
-  test("ScalaUDF whose capturing class is only in the user jar, native scan leaf") {
-    // Fails without ClassLoader propagation: the dispatcher deserializes the closure on a Tokio
-    // worker, which sees no user jar, and the resulting ClassNotFoundException surfaces as
-    // `cannot assign instance of java.lang.invoke.SerializedLambda to field ScalaUDF.f`.
-    withHiddenUdf("hiddenUdf") {
-      withTable("t") {
-        sql("CREATE TABLE t (s STRING) USING parquet")
-        sql("INSERT INTO t VALUES ('a'), ('b'), (NULL)")
-        // Stage leaf is CometNativeScan, so the dispatcher runs on a Tokio worker.
-        checkSparkAnswer(sql("SELECT hiddenUdf(s) FROM t"))
+  // Both leaf shapes matter. With the native scan the dispatcher runs on a Tokio worker, which has
+  // no context ClassLoader of its own and depends on the propagated one; without it the dispatcher
+  // runs on the Spark task thread, which already has the executor's ClassLoader installed.
+  Seq(true, false).foreach { nativeScan =>
+    test(s"ScalaUDF closure captured by a user-jar class, nativeScan=$nativeScan") {
+      withSQLConf(CometConf.COMET_NATIVE_SCAN_ENABLED.key -> nativeScan.toString) {
+        withHiddenUdfTable {
+          checkSparkAnswer(sql("SELECT hiddenUdf(s) FROM t"))
+        }
       }
     }
   }
@@ -117,27 +99,11 @@ class CometScalaUDFClassLoaderSuite extends CometTestBase {
     // Pins the propagation itself rather than its symptom: the UDF body reports whether the
     // ClassLoader installed on whatever thread invoked it can reach the user jar.
     spark.udf.register("loaderProbe", (_: String) => loaderReport())
-    withTable("t") {
-      sql("CREATE TABLE t (s STRING) USING parquet")
-      sql("INSERT INTO t VALUES ('a'), ('b'), ('c'), ('d')")
+    withHiddenUdfTable {
       val reports = sql("SELECT loaderProbe(s) FROM t").collect().map(_.getString(0)).distinct
       assert(
         reports.forall(_.startsWith("loaded|")),
         s"UDF thread could not load $HiddenClassName: ${reports.mkString(", ")}")
-    }
-  }
-
-  test("control: same UDF evaluated on the Spark task thread") {
-    // With the native scan disabled the dispatcher runs on the task thread, whose context
-    // ClassLoader includes the user jar, so deserialization resolves the capturing class.
-    withSQLConf(CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "false") {
-      withHiddenUdf("hiddenUdf2") {
-        withTable("t2") {
-          sql("CREATE TABLE t2 (s STRING) USING parquet")
-          sql("INSERT INTO t2 VALUES ('a'), ('b'), (NULL)")
-          checkSparkAnswer(sql("SELECT hiddenUdf2(s) FROM t2"))
-        }
-      }
     }
   }
 }
@@ -147,25 +113,25 @@ object CometScalaUDFClassLoaderSuite {
   val HiddenClassName = "hidden.HiddenUdf"
 
   /**
-   * Jar holding a serializable `scala.Function1` lambda. The lambda's capturing class exists only
-   * inside this jar, so it is visible only to ClassLoaders the jar is wired into. Built once,
-   * before the SparkSession starts, because `spark.executor.extraClassPath` is read at session
-   * creation.
+   * Directory holding the compiled capturing class. Compiled once per JVM, before the
+   * SparkSession starts, because `spark.executor.extraClassPath` is read at session creation. A
+   * directory works as a classpath entry, so there is no need to package a jar.
    */
-  lazy val hiddenJar: File = buildHiddenUdfJar(Files.createTempDirectory("comet-hidden-udf"))
+  lazy val hiddenClassesDir: Path = compileHiddenClass()
 
   /**
-   * Reports whether the current thread's context ClassLoader can reach the user jar, tagged with
-   * the thread name so a failure says which thread was missing it. Kept on the companion so the
-   * UDF closure captures nothing from the suite.
+   * The UDF, obtained through a ClassLoader over `hiddenClassesDir` alone. Deliberately not
+   * closed: the loaded class stays live in the registered UDF for the rest of the JVM's life.
    */
-  def loaderReport(): String = {
-    val status = if (canLoadHiddenClassOnThisThread) "loaded" else "MISSING"
-    s"$status|${Thread.currentThread().getName}"
-  }
+  lazy val hiddenFn: String => String =
+    new URLClassLoader(Array(hiddenClassesDir.toUri.toURL), getClass.getClassLoader)
+      .loadClass(HiddenClassName)
+      .getMethod("make")
+      .invoke(null)
+      .asInstanceOf[String => String]
 
-  /** Runs on a Spark task thread; kept on the companion so the closure captures nothing. */
-  def canLoadHiddenClassOnThisThread: Boolean =
+  /** Runs on Spark threads; kept on the companion so the closures capture nothing. */
+  def canLoadHiddenClass: Boolean =
     try {
       Class.forName(HiddenClassName, false, Thread.currentThread().getContextClassLoader)
       true
@@ -173,55 +139,54 @@ object CometScalaUDFClassLoaderSuite {
       case _: ClassNotFoundException => false
     }
 
-  private def buildHiddenUdfJar(workDir: Path): File = {
+  /**
+   * Reports whether the current thread's context ClassLoader reaches the user jar, tagged with
+   * the thread name so a failure says which thread was missing it.
+   */
+  def loaderReport(): String = {
+    val status = if (canLoadHiddenClass) "loaded" else "MISSING"
+    s"$status|${Thread.currentThread().getName}"
+  }
+
+  private def compileHiddenClass(): Path = {
+    val workDir = Files.createTempDirectory("comet-hidden-udf")
     val src = workDir.resolve("HiddenUdf.java")
+    // The intersection cast is what makes the lambda serializable, and therefore what makes
+    // `hidden.HiddenUdf` the capturing class recorded in the SerializedLambda.
     Files.write(
       src,
-      ("""package hidden;
+      """package hidden;
         |
         |import java.io.Serializable;
         |import scala.Function1;
         |
         |public class HiddenUdf {
-        |  public interface SerFn extends Function1<Object, Object>, Serializable {}
-        |
         |  public static Function1<Object, Object> make() {
-        |    return (SerFn) (Object o) -> (o == null ? null : "hidden:" + o);
+        |    return (Function1<Object, Object> & Serializable)
+        |        (Object o) -> (o == null ? null : "hidden:" + o);
         |  }
         |}
-        |""".stripMargin).getBytes("UTF-8"))
+        |""".stripMargin.getBytes(UTF_8))
 
     val classesDir = Files.createDirectories(workDir.resolve("classes"))
     val compiler = ToolProvider.getSystemJavaCompiler
     assert(compiler != null, "test must run on a JDK (needs the javax.tools compiler)")
-    val rc = compiler.run(
-      null,
-      null,
-      null,
-      "-cp",
-      System.getProperty("java.class.path"),
-      "-d",
-      classesDir.toString,
-      src.toString)
+    // Only scala-library is needed. Handing javac the whole test classpath makes it open and index
+    // every jar on it, which costs more than the compile itself.
+    val classpath = Option(classOf[Function1[_, _]].getProtectionDomain.getCodeSource)
+      .map(_.getLocation.getPath)
+      .getOrElse(System.getProperty("java.class.path"))
+    val rc =
+      compiler.run(null, null, null, "-cp", classpath, "-d", classesDir.toString, src.toString)
     assert(rc == 0, s"javac failed with exit code $rc")
 
-    val jar = workDir.resolve("hidden-udf.jar").toFile
-    val jos = new JarOutputStream(new FileOutputStream(jar))
-    try {
-      Files
-        .walk(classesDir)
-        .iterator()
-        .asScala
-        .filter(Files.isRegularFile(_))
-        .foreach { p =>
-          jos.putNextEntry(new JarEntry(classesDir.relativize(p).toString))
-          jos.write(Files.readAllBytes(p))
-          jos.closeEntry()
-        }
-    } finally {
-      jos.close()
-    }
-    jar.deleteOnExit()
-    jar
+    deleteOnExitRecursively(workDir.toFile)
+    classesDir
+  }
+
+  /** Parents are registered before children, and deletion runs in reverse registration order. */
+  private def deleteOnExitRecursively(file: File): Unit = {
+    file.deleteOnExit()
+    Option(file.listFiles()).foreach(_.foreach(deleteOnExitRecursively))
   }
 }
