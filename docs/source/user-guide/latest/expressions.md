@@ -104,7 +104,7 @@ The tables below list every Spark built-in expression with its current status.
 | `first_value` | ✅ | Native |  |
 | `grouping` | ✅ | — | Grouping indicator for ROLLUP/CUBE/GROUPING SETS |
 | `grouping_id` | ✅ | — | Grouping indicator for ROLLUP/CUBE/GROUPING SETS |
-| `kurtosis` | 🔜 | — | tracking [#4098](https://github.com/apache/datafusion-comet/issues/4098) |
+| `kurtosis` | 🔜 | — | Not yet implemented natively |
 | `last` | ✅ | Native |  |
 | `last_value` | ✅ | Native |  |
 | `listagg` | 🔜 | — | String aggregation |
@@ -118,16 +118,16 @@ The tables below list every Spark built-in expression with its current status.
 | `percentile` | ✅ | Native | Single literal percentage on numeric input runs natively; array of percentages and a frequency argument fall back to Spark |
 | `percentile_cont` | ✅ | — | Spark 4.0+ `WITHIN GROUP (ORDER BY ...)`; ascending only runs natively, `DESC` falls back to Spark |
 | `percentile_disc` | 🔜 | — | Percentile aggregate |
-| `regr_avgx` | ✅ | — | Native: Spark rewrites to `Average` (tests in [#4551](https://github.com/apache/datafusion-comet/issues/4551)) |
-| `regr_avgy` | ✅ | — | Native: Spark rewrites to `Average` (tests in [#4551](https://github.com/apache/datafusion-comet/issues/4551)) |
-| `regr_count` | ✅ | — | Native: Spark rewrites to `Count` (tests in [#4551](https://github.com/apache/datafusion-comet/issues/4551)) |
+| `regr_avgx` | ✅ | — | Native: Spark rewrites to `Average` (tests in [#4551](https://github.com/apache/datafusion-comet/pull/4551)) |
+| `regr_avgy` | ✅ | — | Native: Spark rewrites to `Average` (tests in [#4551](https://github.com/apache/datafusion-comet/pull/4551)) |
+| `regr_count` | ✅ | — | Native: Spark rewrites to `Count` (tests in [#4551](https://github.com/apache/datafusion-comet/pull/4551)) |
 | `regr_intercept` | 🔜 | — | Falls back; can reuse `covar_pop`/`var_pop` accumulators ([#4552](https://github.com/apache/datafusion-comet/issues/4552)) |
 | `regr_r2` | 🔜 | — | Falls back; can reuse the `corr` accumulator ([#4552](https://github.com/apache/datafusion-comet/issues/4552)) |
 | `regr_slope` | 🔜 | — | Falls back; can reuse `covar_pop`/`var_pop` accumulators ([#4552](https://github.com/apache/datafusion-comet/issues/4552)) |
 | `regr_sxx` | 🔜 | — | Falls back; can reuse `var_pop` accumulator ([#4552](https://github.com/apache/datafusion-comet/issues/4552)) |
 | `regr_sxy` | 🔜 | — | Falls back; can reuse `covar_pop` accumulator ([#4552](https://github.com/apache/datafusion-comet/issues/4552)) |
 | `regr_syy` | 🔜 | — | Falls back; can reuse `var_pop` accumulator ([#4552](https://github.com/apache/datafusion-comet/issues/4552)) |
-| `skewness` | 🔜 | — | tracking [#4098](https://github.com/apache/datafusion-comet/issues/4098) |
+| `skewness` | 🔜 | — | Not yet implemented natively |
 | `some` | ✅ | — |  |
 | `std` | ✅ | Native |  |
 | `stddev` | ✅ | Native |  |
@@ -170,7 +170,7 @@ The tables below list every Spark built-in expression with its current status.
 | `get` | ✅ | — |  |
 | `sequence` | ✅ | Codegen dispatch |  |
 | `shuffle` | ✅ | Native | Binary/struct/map elements fall back |
-| `slice` | ✅ | Native | Native ([#4149](https://github.com/apache/datafusion-comet/issues/4149)) |
+| `slice` | ✅ | Native | Native ([#4149](https://github.com/apache/datafusion-comet/pull/4149)) |
 | `sort_array` | ✅ | Hybrid | Nested struct/null arrays fall back |
 
 ---
@@ -254,15 +254,15 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `current_time` | 🔜 | — | Blocked on Spark 4.1 TIME type support ([#4288](https://github.com/apache/datafusion-comet/issues/4288)) |
 | `current_timestamp` | ✅ | — | Constant-folded to a literal before Comet sees the plan |
 | `current_timezone` | ✅ | — |  |
-| `date_add` | ✅ | Native |  |
-| `date_diff` | ✅ | Native |  |
+| `date_add` | ✅ | Native | The 2-argument form is native; the `date_add(UNIT, n, ts)` form (Spark 3.5+) parses to `timestampadd` and runs through codegen dispatch |
+| `date_diff` | ✅ | Native | The 2-argument form is native; the `date_diff(UNIT, start, end)` form (Spark 3.5+) parses to `timestampdiff` and runs through codegen dispatch |
 | `date_format` | ✅ | Hybrid |  |
 | `date_from_unix_date` | ✅ | Native |  |
 | `date_part` | ✅ | — |  |
 | `date_sub` | ✅ | Native |  |
 | `date_trunc` | ✅ | Hybrid |  |
-| `dateadd` | ✅ | Native |  |
-| `datediff` | ✅ | Native |  |
+| `dateadd` | ✅ | Native | The 2-argument form is native; the `dateadd(UNIT, n, ts)` form parses to `timestampadd` and runs through codegen dispatch |
+| `datediff` | ✅ | Native | The 2-argument form is native; the `datediff(UNIT, start, end)` form parses to `timestampdiff` and runs through codegen dispatch |
 | `datepart` | ✅ | — |  |
 | `day` | ✅ | Native |  |
 | `dayname` | ✅ | — | Abbreviated day name (Spark 4.0+) |
@@ -277,7 +277,7 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `localtimestamp` | ✅ | — |  |
 | `make_date` | ✅ | Native |  |
 | `make_dt_interval` | ✅ | Codegen dispatch |  |
-| `make_interval` | 🔜 | — | Produces legacy CalendarInterval; tracked by [#4540](https://github.com/apache/datafusion-comet/issues/4540) |
+| `make_interval` | ✅ | Hybrid | Routes through the JVM codegen dispatcher by default; intervals outside Arrow's nanosecond range are tracked by [#5279](https://github.com/apache/datafusion-comet/issues/5279); the native path is opt-in via allowIncompatible ([details](compatibility/expressions/datetime.md)) |
 | `make_time` | 🔜 | — | Spark 4.1 TIME type; tracked by [#4288](https://github.com/apache/datafusion-comet/issues/4288) |
 | `make_timestamp` | ✅ | Hybrid |  |
 | `make_timestamp_ltz` | ✅ | — | 2-arg TIME form falls back |
@@ -294,9 +294,12 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `session_window` | 🔜 | — | Batch session-window grouping falls back (`UpdatingSessionsExec` is not yet native); tracked by [#4785](https://github.com/apache/datafusion-comet/issues/4785) |
 | `time_diff` | 🔜 | — | Spark 4.1 TIME type; tracked by [#4288](https://github.com/apache/datafusion-comet/issues/4288) |
 | `time_trunc` | 🔜 | — | Spark 4.1 TIME type; tracked by [#4288](https://github.com/apache/datafusion-comet/issues/4288) |
+| `timediff` | ✅ | — | Spark 4.0+ grammar alias that parses to `timestampdiff`; runs through codegen dispatch |
 | `timestamp_micros` | ✅ | Codegen dispatch |  |
 | `timestamp_millis` | ✅ | Codegen dispatch |  |
 | `timestamp_seconds` | ✅ | Native |  |
+| `timestampadd` | ✅ | — | Reached through the grammar rather than the function registry; runs through codegen dispatch |
+| `timestampdiff` | ✅ | — | Reached through the grammar rather than the function registry; runs through codegen dispatch |
 | `to_date` | ✅ | — | Rewrites to `Cast` (or `Cast(GetTimestamp)` with a format) before Comet sees the plan |
 | `to_time` | 🔜 | — | Spark 4.1 TIME type; tracked by [#4288](https://github.com/apache/datafusion-comet/issues/4288) |
 | `to_timestamp` | ✅ | — | Rewrites to `Cast` (or `GetTimestamp` with a format) before Comet sees the plan |
@@ -305,7 +308,7 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `to_unix_timestamp` | ✅ | Hybrid |  |
 | `to_utc_timestamp` | ✅ | Hybrid | Routes through the JVM codegen dispatcher by default (handles all timezone forms); the native path is opt-in via allowIncompatible ([details](compatibility/expressions/datetime.md)) |
 | `trunc` | ✅ | Hybrid |  |
-| `try_make_interval` | 🔜 | — | Produces legacy CalendarInterval; tracked by [#4540](https://github.com/apache/datafusion-comet/issues/4540) |
+| `try_make_interval` | ✅ | — | Rewrites to `MakeInterval`; same support as `make_interval` (Spark 4.0+) |
 | `try_make_timestamp` | ✅ | — |  |
 | `try_to_date` | ✅ | — | Rewrites to `Cast`/`GetTimestamp` before Comet sees the plan; same support as `to_date` |
 | `try_to_time` | 🔜 | — | Spark 4.1 TIME type; tracked by [#4288](https://github.com/apache/datafusion-comet/issues/4288) |
@@ -325,18 +328,18 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 
 ## generator_funcs
 
-`explode` and `posexplode` are supported via `CometExplodeExec` (operator-level, not
-expression-level). The `outer` variants are wired but marked `Incompatible`; they require
-`spark.comet.exec.explode.enabled=true` and `allowIncompatible`.
+`explode`, `explode_outer`, `posexplode`, and `posexplode_outer` are supported via
+`CometExplodeExec` (operator-level, not expression-level). Enabled by default via
+`spark.comet.exec.explode.enabled`.
 
 | Function | Status | Implementation | Notes |
 | --- | --- | --- | --- |
 | `explode` | ✅ | — | via `CometExplodeExec` |
-| `explode_outer` | ✅ | — | outer=true falls back (Incompatible) ([audit](../../contributor-guide/expression-audits/generator_funcs.md#explode_outer)) |
+| `explode_outer` | ✅ | — | via `CometExplodeExec` ([audit](../../contributor-guide/expression-audits/generator_funcs.md#explode_outer)) |
 | `inline` | 🔜 | — | Operator-level generator (like `explode`) |
 | `inline_outer` | 🔜 | — | Operator-level generator (like `explode`) |
 | `posexplode` | ✅ | — | via `CometExplodeExec` |
-| `posexplode_outer` | ✅ | — | outer=true falls back (Incompatible) ([audit](../../contributor-guide/expression-audits/generator_funcs.md#posexplode_outer)) |
+| `posexplode_outer` | ✅ | — | via `CometExplodeExec` ([audit](../../contributor-guide/expression-audits/generator_funcs.md#posexplode_outer)) |
 | `stack` | 🔜 | — | Operator-level generator |
 
 ---
@@ -495,24 +498,24 @@ expression-level). The `outer` variants are wired but marked `Incompatible`; the
 | `current_schema` | ✅ | — | Alias of `current_database`; resolved to a literal by the analyzer |
 | `current_user` | ✅ | — | Resolved to a literal by the analyzer; same as `user` |
 | `equal_null` | ✅ | — | Lowers to `<=>` (`EqualNullSafe`) |
-| `is_variant_null` | 🔜 | — | tracking [#4098](https://github.com/apache/datafusion-comet/issues/4098) |
+| `is_variant_null` | 🔜 | — | Requires `VariantType` support |
 | `monotonically_increasing_id` | ✅ | Native |  |
-| `parse_json` | 🔜 | — | tracking [#4098](https://github.com/apache/datafusion-comet/issues/4098) |
+| `parse_json` | 🔜 | — | Requires `VariantType` support |
 | `raise_error` | 🔜 | — | Raises a runtime error |
 | `rand` | ✅ | Native | Seed must be a literal |
 | `randn` | ✅ | Native | Seed must be a literal |
-| `schema_of_variant` | 🔜 | — | tracking [#4098](https://github.com/apache/datafusion-comet/issues/4098) |
-| `schema_of_variant_agg` | 🔜 | — | tracking [#4098](https://github.com/apache/datafusion-comet/issues/4098) |
+| `schema_of_variant` | 🔜 | — | Requires `VariantType` support |
+| `schema_of_variant_agg` | 🔜 | — | Requires `VariantType` support |
 | `session_user` | ✅ | — | Alias of `current_user`; resolved to a literal by the analyzer |
 | `spark_partition_id` | ✅ | Native |  |
-| `to_variant_object` | 🔜 | — | tracking [#4098](https://github.com/apache/datafusion-comet/issues/4098) |
+| `to_variant_object` | 🔜 | — | Requires `VariantType` support |
 | `try_aes_decrypt` | ✅ | — | Routed through the JVM codegen dispatcher |
-| `try_parse_json` | 🔜 | — | tracking [#4098](https://github.com/apache/datafusion-comet/issues/4098) |
-| `try_variant_get` | 🔜 | — | tracking [#4098](https://github.com/apache/datafusion-comet/issues/4098) |
+| `try_parse_json` | 🔜 | — | Requires `VariantType` support |
+| `try_variant_get` | 🔜 | — | Requires `VariantType` support |
 | `typeof` | ✅ | — | Foldable; resolved to a literal before Comet sees the plan |
 | `user` | ✅ | — | Resolved to a literal by the Spark analyzer before reaching Comet |
-| `uuid` | 🔜 | — | Nondeterministic random UUID |
-| `variant_get` | 🔜 | — | tracking [#4098](https://github.com/apache/datafusion-comet/issues/4098) |
+| `uuid` | ✅ | Native |  |
+| `variant_get` | 🔜 | — | Requires `VariantType` support |
 
 ---
 
@@ -607,7 +610,7 @@ expression-level). The `outer` variants are wired but marked `Incompatible`; the
 | `to_char` | ✅ | Codegen dispatch |  |
 | `to_number` | ✅ | Codegen dispatch |  |
 | `to_varchar` | ✅ | Codegen dispatch |  |
-| `translate` | ✅ | Native | Falls back by default; opt-in via allowIncompatible ([#4463](https://github.com/apache/datafusion-comet/issues/4463)) |
+| `translate` | ✅ | Native | DataFusion's `translate` iterates over Unicode graphemes (Spark uses code points) and substitutes U+0000 instead of treating it as a deletion sentinel, so the native path is opt-in via allowIncompatible |
 | `trim` | ✅ | Native |  |
 | `try_to_binary` | ✅ | — | Runs natively (rewrites to `try_eval(to_binary(...))`) |
 | `try_to_number` | ✅ | Codegen dispatch | Routed through the JVM codegen dispatcher |

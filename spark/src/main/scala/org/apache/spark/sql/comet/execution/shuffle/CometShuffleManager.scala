@@ -303,10 +303,10 @@ object CometShuffleManager extends Logging {
       val partitionCond = SortShuffleWriter.shouldBypassMergeSort(conf, dep)
 
       // Bypass merge sort if we have partition * cores fewer than
-      // `spark.comet.columnar.shuffle.max.writers.per.executor`
+      // `spark.comet.shuffle.jvm.maxWritersPerExecutor`
       val executorCores = conf.get(config.EXECUTOR_CORES)
       val maxThreads =
-        CometConf.COMET_COLUMNAR_SHUFFLE_MAX_WRITERS_PER_EXECUTOR.get(SQLConf.get)
+        CometConf.COMET_SHUFFLE_JVM_MAX_WRITERS_PER_EXECUTOR.get(SQLConf.get)
       val threadCond = dep.partitioner.numPartitions * executorCores <= maxThreads
 
       // Comet columnar shuffle buffers rows in memory. If too many cores are used with

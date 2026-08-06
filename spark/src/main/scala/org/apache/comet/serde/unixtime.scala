@@ -23,7 +23,7 @@ import org.apache.spark.sql.catalyst.expressions.{Attribute, FromUnixTime, Liter
 import org.apache.spark.sql.catalyst.util.TimestampFormatter
 
 import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
-import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithFallbackReason, scalarFunctionExprToProto}
+import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, scalarFunctionExprToProto}
 
 // TODO: DataFusion supports only -8334601211038 <= sec <= 8210266876799
 // https://github.com/apache/datafusion/issues/16594
@@ -54,7 +54,7 @@ object CometFromUnixTime extends CometExpressionSerde[FromUnixTime] with Codegen
   // only appear on the format argument, and any collated format is a non-default format, which is
   // already `Unsupported` here.
   override def getSupportLevel(expr: FromUnixTime): SupportLevel = {
-    if (expr.format != Literal(TimestampFormatter.defaultPattern)) {
+    if (expr.format != Literal(TimestampFormatter.defaultPattern())) {
       Unsupported(Some(formatReason))
     } else {
       Incompatible(Some(timestampRangeReason))
@@ -73,16 +73,15 @@ object CometFromUnixTime extends CometExpressionSerde[FromUnixTime] with Codegen
     val formatExpr = exprToProtoInternal(Literal("%Y-%m-%d %H:%M:%S"), inputs, binding)
     val timeZone = exprToProtoInternal(Literal(expr.timeZoneId.orNull), inputs, binding)
 
-    if (expr.format != Literal(TimestampFormatter.defaultPattern)) {
+    if (expr.format != Literal(TimestampFormatter.defaultPattern())) {
       withFallbackReason(expr, formatReason)
       None
     } else if (secExpr.isDefined && formatExpr.isDefined) {
       val timestampExpr =
         scalarFunctionExprToProto("from_unixtime", Seq(secExpr, timeZone): _*)
       val optExpr = scalarFunctionExprToProto("to_char", Seq(timestampExpr, formatExpr): _*)
-      optExprWithFallbackReason(optExpr, expr, expr.sec, expr.format)
+      optExpr
     } else {
-      withFallbackReason(expr, expr.sec, expr.format)
       None
     }
   }

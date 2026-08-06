@@ -410,8 +410,9 @@ private[codegen] object CometBatchKernelCodegenOutput extends CometTypeShim {
       case BooleanType => s"$target.getBoolean($idx)"
       case ByteType => s"$target.getByte($idx)"
       case ShortType => s"$target.getShort($idx)"
-      case IntegerType | DateType => s"$target.getInt($idx)"
-      case LongType | TimestampType | TimestampNTZType => s"$target.getLong($idx)"
+      case IntegerType | DateType | _: YearMonthIntervalType => s"$target.getInt($idx)"
+      case LongType | TimestampType | TimestampNTZType | _: DayTimeIntervalType =>
+        s"$target.getLong($idx)"
       case CalendarIntervalType => s"$target.getInterval($idx)"
       case dt if isTimeType(dt) => s"$target.getLong($idx)"
       case FloatType => s"$target.getFloat($idx)"
