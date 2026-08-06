@@ -1012,14 +1012,12 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       val query = sql(s"select cast(id as string) from $table")
       val (_, cometPlan) = checkSparkAnswerAndOperator(query)
       val project = stripAQEPlan(cometPlan).collectFirst { case p: CometProjectExec => p }.get
-      val id = project.expressions.head
-      CometSparkSessionExtensions.withFallbackReason(id, "reason 1")
-      CometSparkSessionExtensions.withFallbackReason(project, "reason 2")
-      CometSparkSessionExtensions.withFallbackReason(project, "reason 3", id)
-      CometSparkSessionExtensions.withFallbackReason(project, id)
-      CometSparkSessionExtensions.withFallbackReason(project, "reason 4")
-      CometSparkSessionExtensions.withFallbackReason(project, "reason 5", id)
-      CometSparkSessionExtensions.withFallbackReason(project, id)
+      // Reasons accumulate on the node they are recorded against, and are never overwritten.
+      // There is no roll-up here: a reason tagged on an expression is lifted onto the enclosing
+      // operator centrally by CometExecRule, not by withFallbackReason.
+      CometSparkSessionExtensions.withFallbackReason(project, "reason 1")
+      CometSparkSessionExtensions.withFallbackReason(project, "reason 2\nreason 3")
+      CometSparkSessionExtensions.withFallbackReasons(project, Set("reason 4", "reason 5"))
       CometSparkSessionExtensions.withFallbackReason(project, "reason 6")
       val explain = new ExtendedExplainInfo().generateExtendedInfo(project)
       for (i <- 1 until 7) {
