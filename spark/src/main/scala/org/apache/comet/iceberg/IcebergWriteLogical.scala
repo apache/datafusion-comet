@@ -22,7 +22,7 @@ package org.apache.comet.iceberg
 import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference}
 import org.apache.spark.sql.catalyst.plans.logical.{LogicalPlan, UnaryNode}
 import org.apache.spark.sql.comet.IcebergWriteExec
-import org.apache.spark.sql.connector.write.{BatchWrite, Write}
+import org.apache.spark.sql.connector.write.BatchWrite
 import org.apache.spark.sql.types.BinaryType
 
 /** Logical anchor for the writer. See `IcebergWriteStrategy` for the rationale. */
@@ -30,7 +30,6 @@ case class IcebergWriteLogical(
     child: LogicalPlan,
     // Driver-side only: AQE re-planning is driver-local and write commands aren't cached.
     @transient batchWrite: BatchWrite,
-    @transient write: Write,
     replaceDataDispatch: Option[ReplaceDataDispatchInfo] = None)
     extends UnaryNode {
 

@@ -64,8 +64,8 @@ case class IcebergWriteStrategy(session: SparkSession) extends SparkStrategy {
           }
           .toList
       // Hit by AQE.
-      case l @ IcebergWriteLogical(child, batchWrite, write, replaceDataDispatch) =>
-        Seq(IcebergWriteExec(batchWrite, write, l.output, planLater(child), replaceDataDispatch))
+      case l @ IcebergWriteLogical(child, batchWrite, replaceDataDispatch) =>
+        Seq(IcebergWriteExec(batchWrite, l.output, planLater(child), replaceDataDispatch))
       case _ => Nil
     }
   }
@@ -117,6 +117,6 @@ case class IcebergWriteStrategy(session: SparkSession) extends SparkStrategy {
         write,
         refresh,
         // `replaceDataDispatch` may project the data into the format the writer expects.
-        planLater(IcebergWriteLogical(query, batchWrite, write, replaceDataDispatch))))
+        planLater(IcebergWriteLogical(query, batchWrite, replaceDataDispatch))))
   }
 }

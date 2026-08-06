@@ -25,9 +25,9 @@ import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.Attribute
 import org.apache.spark.sql.catalyst.expressions.UnsafeProjection
 import org.apache.spark.sql.catalyst.plans.physical.{Distribution, UnspecifiedDistribution}
-import org.apache.spark.sql.connector.write.{BatchWrite, DataWriter, PhysicalWriteInfoImpl, Write, WriterCommitMessage}
+import org.apache.spark.sql.connector.write.{BatchWrite, DataWriter, PhysicalWriteInfoImpl, WriterCommitMessage}
 import org.apache.spark.sql.execution.{SparkPlan, UnaryExecNode}
-import org.apache.spark.sql.execution.metric.{CustomMetrics, SQLMetric, SQLMetrics}
+import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.types.{BinaryType, StructField, StructType}
 import org.apache.spark.util.Utils
 
@@ -39,8 +39,6 @@ import org.apache.comet.iceberg.ReplaceDataDispatchInfo
 case class IcebergWriteExec(
     // `batchWrite` only stored driver side, only the writer factory is shipped to executors.
     @transient batchWrite: BatchWrite,
-    // Driver-side only; used to declare the write's custom task metrics.
-    @transient write: Write,
     override val output: Seq[Attribute],
     child: SparkPlan,
     replaceDataDispatch: Option[ReplaceDataDispatchInfo] = None)
@@ -49,11 +47,11 @@ case class IcebergWriteExec(
   // Spark already adds a distribution for the V2 write; adding another here is redundant.
   override def requiredChildDistribution: Seq[Distribution] = Seq(UnspecifiedDistribution)
 
+  // The write's custom metrics are registered on IcebergCommitExec only: Iceberg reports them
+  // through the driver-side commit report, and its DataWriters expose no task-level values.
+  // Registering them here too would double-count them in the SQL UI.
   override lazy val metrics: Map[String, SQLMetric] =
-    Map("numOutputRows" -> SQLMetrics.createMetric(sparkContext, "number of output rows")) ++
-      write
-        .supportedCustomMetrics()
-        .map(m => m.name -> SQLMetrics.createV2CustomMetric(sparkContext, m))
+    Map("numOutputRows" -> SQLMetrics.createMetric(sparkContext, "number of output rows"))
 
   override protected def doExecute(): RDD[InternalRow] = {
     val rdd = {
@@ -73,7 +71,6 @@ case class IcebergWriteExec(
         "require Spark's commit coordinator; received: " + batchWrite.getClass.getName)
 
     val rowsMetric = longMetric("numOutputRows")
-    val customMetrics = metrics.filter { case (name, _) => name != "numOutputRows" }
     val schemaTypes = output.map(_.dataType).toArray
     val capturedReplaceDataDispatch = replaceDataDispatch
     rdd.mapPartitionsInternal { iter =>
@@ -85,7 +82,6 @@ case class IcebergWriteExec(
         writer,
         iter,
         rowsMetric,
-        customMetrics,
         projection,
         capturedReplaceDataDispatch)
     }
@@ -109,11 +105,12 @@ object IcebergWriteExec {
       writer: DataWriter[InternalRow],
       iter: Iterator[InternalRow],
       rowsMetric: SQLMetric,
-      customMetrics: Map[String, SQLMetric],
       projection: UnsafeProjection,
       replaceDataDispatch: Option[ReplaceDataDispatchInfo]): Iterator[InternalRow] = {
-    val iterWithMetrics = new IteratorWithMetrics(iter, writer, customMetrics, rowsMetric)
-    val message = Utils.tryWithSafeFinallyAndFailureCallbacks(block = {
+    val iterWithMetrics = new IteratorWithMetrics(iter, rowsMetric)
+    // Serialization happens inside the guarded block: if the commit message cannot be
+    // serialised the task must abort so the already-finalised data files get deleted.
+    val messageBytes = Utils.tryWithSafeFinallyAndFailureCallbacks(block = {
       if (replaceDataDispatch.isDefined) {
         runReplaceDataWriter(writer, iterWithMetrics, replaceDataDispatch.get)
       } else {
@@ -121,8 +118,7 @@ object IcebergWriteExec {
           writer.write(iterWithMetrics.next())
         }
       }
-      CustomMetrics.updateMetrics(writer.currentMetricsValues.toSeq, customMetrics)
-      writer.commit()
+      serializeMessage(writer.commit())
     })(
       catchBlock = {
         writer.abort()
@@ -131,24 +127,15 @@ object IcebergWriteExec {
         writer.close()
       })
 
-    Iterator.single(projection(InternalRow(serializeMessage(message))).copy())
+    Iterator.single(projection(InternalRow(messageBytes)).copy())
   }
 
-  private class IteratorWithMetrics(
-      iter: Iterator[InternalRow],
-      dataWriter: DataWriter[InternalRow],
-      customMetrics: Map[String, SQLMetric],
-      rowsMetric: SQLMetric)
+  private class IteratorWithMetrics(iter: Iterator[InternalRow], rowsMetric: SQLMetric)
       extends Iterator[InternalRow] {
-    private var count = 0L
 
     override def hasNext: Boolean = iter.hasNext
 
     override def next(): InternalRow = {
-      if (count % CustomMetrics.NUM_ROWS_PER_UPDATE == 0) {
-        CustomMetrics.updateMetrics(dataWriter.currentMetricsValues.toSeq, customMetrics)
-      }
-      count += 1
       rowsMetric.add(1L)
       iter.next()
     }
@@ -159,12 +146,6 @@ object IcebergWriteExec {
   // take the plain write(row) loop instead, so this dispatch is never reached there.
   private val WRITE_OPERATION = 5
   private val WRITE_WITH_METADATA_OPERATION = 6
-
-  // Spark has different `DataWriter#write` methods across versions.
-  @transient private lazy val dataWriterWriteWithMetadataMethod
-      : Option[java.lang.reflect.Method] =
-    try Some(classOf[DataWriter[_]].getMethod("write", classOf[Object], classOf[Object]))
-    catch { case _: NoSuchMethodException => None }
 
   def serializeMessage(message: WriterCommitMessage): Array[Byte] =
     Utils.serialize(message)
@@ -187,11 +168,7 @@ object IcebergWriteExec {
         case WRITE_WITH_METADATA_OPERATION =>
           rowProjection.project(row)
           if (metadataProjection != null) metadataProjection.project(row)
-          val writeWithMetadata = dataWriterWriteWithMetadataMethod.getOrElse(
-            throw new UnsupportedOperationException(
-              "DataWriter.write(metadata, row) is not available in this Spark version but the " +
-                s"analyzer emitted operation code $WRITE_WITH_METADATA_OPERATION"))
-          writeWithMetadata.invoke(writer, metadataProjection, rowProjection)
+          IcebergDataWriterShim.writeWithMetadata(writer, metadataProjection, rowProjection)
         case other =>
           throw new IllegalArgumentException(
             s"Unexpected ReplaceData operation code $other; supported: " +
