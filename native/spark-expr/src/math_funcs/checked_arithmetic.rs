@@ -20,6 +20,7 @@ use arrow::array::{ArrayRef, AsArray};
 
 use crate::{divide_by_zero_error, EvalMode, SparkError};
 use arrow::buffer::NullBuffer;
+use arrow::compute::kernels::{arity, numeric};
 use arrow::datatypes::{
     ArrowPrimitiveType, DataType, Float16Type, Float32Type, Float64Type, Int16Type, Int32Type,
     Int64Type, Int8Type,
@@ -29,32 +30,58 @@ use datafusion::common::DataFusionError;
 use datafusion::physical_plan::ColumnarValue;
 use std::sync::Arc;
 
-pub fn try_arithmetic_kernel<T>(
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MathOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+}
+
+fn try_arithmetic_kernel<T>(
     left: &PrimitiveArray<T>,
     right: &PrimitiveArray<T>,
-    op: &str,
     is_ansi_mode: bool,
+    op: MathOp,
 ) -> Result<ArrayRef, DataFusionError>
 where
     T: ArrowPrimitiveType,
 {
     match op {
-        "checked_add" => checked_binary(left, right, is_ansi_mode, false, |l, r| l.add_checked(r)),
-        "checked_sub" => checked_binary(left, right, is_ansi_mode, false, |l, r| l.sub_checked(r)),
-        "checked_mul" => checked_binary(left, right, is_ansi_mode, false, |l, r| l.mul_checked(r)),
-        "checked_div" => checked_binary(left, right, is_ansi_mode, true, |l, r| l.div_checked(r)),
-        _ => Err(DataFusionError::Internal(format!(
-            "Unsupported operation: {:?}",
-            op
-        ))),
+        MathOp::Add => checked_binary(left, right, is_ansi_mode, |l, r| l.add_checked(r)),
+        MathOp::Sub => checked_binary(left, right, is_ansi_mode, |l, r| l.sub_checked(r)),
+        MathOp::Mul => checked_binary(left, right, is_ansi_mode, |l, r| l.mul_checked(r)),
+        MathOp::Div => checked_binary(left, right, is_ansi_mode, |l, r| l.div_checked(r)),
     }
+}
+
+fn ansi_arithmetic_kernel<T>(
+    left: &PrimitiveArray<T>,
+    right: &PrimitiveArray<T>,
+    op: MathOp,
+) -> Result<ArrayRef, DataFusionError>
+where
+    T: ArrowPrimitiveType,
+{
+    let result_array = match op {
+        MathOp::Add => numeric::add(left, right),
+        MathOp::Sub => numeric::sub(left, right),
+        MathOp::Mul => numeric::mul(left, right),
+        MathOp::Div => numeric::div(left, right),
+    };
+
+    result_array.map_err(|e| match e {
+        ArrowError::DivideByZero => divide_by_zero_error().into(),
+        _ => DataFusionError::from(SparkError::ArithmeticOverflow {
+            from_type: String::from("integer"),
+        }),
+    })
 }
 
 fn checked_binary<T, F>(
     left: &PrimitiveArray<T>,
     right: &PrimitiveArray<T>,
     is_ansi_mode: bool,
-    is_div: bool,
     op: F,
 ) -> Result<ArrayRef, DataFusionError>
 where
@@ -62,7 +89,7 @@ where
     F: Fn(T::Native, T::Native) -> Result<T::Native, ArrowError>,
 {
     if is_ansi_mode {
-        return arrow::compute::kernels::arity::try_binary::<_, _, _, T>(left, right, op)
+        return arity::try_binary::<_, _, _, T>(left, right, op)
             .map(|array| Arc::new(array) as ArrayRef)
             .map_err(|e| match e {
                 ArrowError::DivideByZero => divide_by_zero_error().into(),
@@ -84,18 +111,7 @@ where
         match op(l, r) {
             Ok(v) => *out = v,
             Err(_) => {
-                if !is_ansi_mode {
-                    overflowed.push(i);
-                } else if nulls.as_ref().is_none_or(|n| n.is_valid(i)) {
-                    return if is_div && r.is_zero() {
-                        Err(divide_by_zero_error().into())
-                    } else {
-                        Err(SparkError::ArithmeticOverflow {
-                            from_type: String::from("integer"),
-                        }
-                        .into())
-                    };
-                }
+                overflowed.push(i);
             }
         }
     }
@@ -126,12 +142,13 @@ where
 
     Ok(Arc::new(PrimitiveArray::<T>::new(values.into(), nulls)) as ArrayRef)
 }
+
 pub fn checked_add(
     args: &[ColumnarValue],
     data_type: &DataType,
     eval_mode: EvalMode,
 ) -> Result<ColumnarValue, DataFusionError> {
-    checked_arithmetic_internal(args, data_type, "checked_add", eval_mode)
+    checked_arithmetic_internal(args, data_type, MathOp::Add, eval_mode)
 }
 
 pub fn checked_sub(
@@ -139,7 +156,7 @@ pub fn checked_sub(
     data_type: &DataType,
     eval_mode: EvalMode,
 ) -> Result<ColumnarValue, DataFusionError> {
-    checked_arithmetic_internal(args, data_type, "checked_sub", eval_mode)
+    checked_arithmetic_internal(args, data_type, MathOp::Sub, eval_mode)
 }
 
 pub fn checked_mul(
@@ -147,7 +164,7 @@ pub fn checked_mul(
     data_type: &DataType,
     eval_mode: EvalMode,
 ) -> Result<ColumnarValue, DataFusionError> {
-    checked_arithmetic_internal(args, data_type, "checked_mul", eval_mode)
+    checked_arithmetic_internal(args, data_type, MathOp::Mul, eval_mode)
 }
 
 pub fn checked_div(
@@ -155,13 +172,13 @@ pub fn checked_div(
     data_type: &DataType,
     eval_mode: EvalMode,
 ) -> Result<ColumnarValue, DataFusionError> {
-    checked_arithmetic_internal(args, data_type, "checked_div", eval_mode)
+    checked_arithmetic_internal(args, data_type, MathOp::Div, eval_mode)
 }
 
 fn checked_arithmetic_internal(
     args: &[ColumnarValue],
     data_type: &DataType,
-    op: &str,
+    op: MathOp,
     eval_mode: EvalMode,
 ) -> Result<ColumnarValue, DataFusionError> {
     let left = &args[0];
@@ -189,50 +206,68 @@ fn checked_arithmetic_internal(
         (ColumnarValue::Scalar(l), ColumnarValue::Scalar(r)) => (l.to_array()?, r.to_array()?),
     };
 
-    // Rust only supports checked_arithmetic on numeric types
     let result_array = match data_type {
-        DataType::Int8 => try_arithmetic_kernel::<Int8Type>(
+        DataType::Int8 if is_ansi_mode => ansi_arithmetic_kernel(
             left_arr.as_primitive::<Int8Type>(),
             right_arr.as_primitive::<Int8Type>(),
             op,
+        ),
+        DataType::Int8 => try_arithmetic_kernel::<Int8Type>(
+            left_arr.as_primitive::<Int8Type>(),
+            right_arr.as_primitive::<Int8Type>(),
             is_ansi_mode,
+            op,
+        ),
+        DataType::Int16 if is_ansi_mode => ansi_arithmetic_kernel(
+            left_arr.as_primitive::<Int16Type>(),
+            right_arr.as_primitive::<Int16Type>(),
+            op,
         ),
         DataType::Int16 => try_arithmetic_kernel::<Int16Type>(
             left_arr.as_primitive::<Int16Type>(),
             right_arr.as_primitive::<Int16Type>(),
-            op,
             is_ansi_mode,
+            op,
+        ),
+        DataType::Int32 if is_ansi_mode => ansi_arithmetic_kernel(
+            left_arr.as_primitive::<Int32Type>(),
+            right_arr.as_primitive::<Int32Type>(),
+            op,
         ),
         DataType::Int32 => try_arithmetic_kernel::<Int32Type>(
             left_arr.as_primitive::<Int32Type>(),
             right_arr.as_primitive::<Int32Type>(),
-            op,
             is_ansi_mode,
+            op,
+        ),
+        DataType::Int64 if is_ansi_mode => ansi_arithmetic_kernel(
+            left_arr.as_primitive::<Int64Type>(),
+            right_arr.as_primitive::<Int64Type>(),
+            op,
         ),
         DataType::Int64 => try_arithmetic_kernel::<Int64Type>(
             left_arr.as_primitive::<Int64Type>(),
             right_arr.as_primitive::<Int64Type>(),
-            op,
             is_ansi_mode,
+            op,
         ),
-        // Spark always casts division operands to floats
-        DataType::Float16 if (op == "checked_div") => try_arithmetic_kernel::<Float16Type>(
+        DataType::Float16 if op == MathOp::Div => try_arithmetic_kernel::<Float16Type>(
             left_arr.as_primitive::<Float16Type>(),
             right_arr.as_primitive::<Float16Type>(),
-            op,
             is_ansi_mode,
+            op,
         ),
-        DataType::Float32 if (op == "checked_div") => try_arithmetic_kernel::<Float32Type>(
+        DataType::Float32 if op == MathOp::Div => try_arithmetic_kernel::<Float32Type>(
             left_arr.as_primitive::<Float32Type>(),
             right_arr.as_primitive::<Float32Type>(),
-            op,
             is_ansi_mode,
+            op,
         ),
-        DataType::Float64 if (op == "checked_div") => try_arithmetic_kernel::<Float64Type>(
+        DataType::Float64 if op == MathOp::Div => try_arithmetic_kernel::<Float64Type>(
             left_arr.as_primitive::<Float64Type>(),
             right_arr.as_primitive::<Float64Type>(),
-            op,
             is_ansi_mode,
+            op,
         ),
         _ => Err(DataFusionError::Internal(format!(
             "Unsupported data type: {:?}",
