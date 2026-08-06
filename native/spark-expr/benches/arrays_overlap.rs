@@ -71,17 +71,17 @@ fn string_lists(rows: usize, elems_per_row: usize, offset: usize) -> (ArrayRef, 
     )
 }
 
-fn nested_int_lists(rows: usize, elems_per_row: usize) -> (ArrayRef, ArrayRef) {
+fn nested_int_lists(rows: usize, elems_per_row: usize, offset: i32) -> (ArrayRef, ArrayRef) {
     let total = rows * elems_per_row;
-    let build = |offset: i32| {
+    let build = |value_offset: i32| {
         let values: ArrayRef = Arc::new(Int32Array::from_iter_values(
-            (0..total).flat_map(|i| [0, 1, 2, i as i32 + offset]),
+            (0..total).flat_map(|i| [0, 1, 2, i as i32 + value_offset]),
         ));
         list_of(values, total, 4)
     };
     (
         list_of(build(0), rows, elems_per_row),
-        list_of(build(total as i32), rows, elems_per_row),
+        list_of(build(offset), rows, elems_per_row),
     )
 }
 
@@ -149,13 +149,18 @@ fn criterion_benchmark(c: &mut Criterion) {
         b.iter(|| black_box(invoke(&udf, black_box(&left), black_box(&right))))
     });
 
-    let (left, right) = nested_int_lists(rows, 8);
+    let (left, right) = nested_int_lists(rows, 8, (rows * 8) as i32);
     c.bench_function("spark_arrays_overlap: nested int32 short lists", |b| {
         b.iter(|| black_box(invoke(&udf, black_box(&left), black_box(&right))))
     });
 
-    let (left, right) = nested_int_lists(64, 64);
+    let (left, right) = nested_int_lists(64, 64, 64 * 64);
     c.bench_function("spark_arrays_overlap: nested int32 long lists", |b| {
+        b.iter(|| black_box(invoke(&udf, black_box(&left), black_box(&right))))
+    });
+
+    let (left, right) = nested_int_lists(rows, 8, 4);
+    c.bench_function("spark_arrays_overlap: nested int32 early match", |b| {
         b.iter(|| black_box(invoke(&udf, black_box(&left), black_box(&right))))
     });
 

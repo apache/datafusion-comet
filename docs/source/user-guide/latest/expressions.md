@@ -158,12 +158,12 @@ The tables below list every Spark built-in expression with its current status.
 | `array_join` | ✅ | Hybrid | Routes through the JVM codegen dispatcher by default; the incompatible native path is opt-in via allowIncompatible ([details](compatibility/expressions/array.md)) |
 | `array_max` | ✅ | Native | NaN ordering may differ ([details](compatibility/floating-point.md)) |
 | `array_min` | ✅ | Native | NaN ordering may differ ([details](compatibility/floating-point.md)) |
-| `array_position` | ✅ | Native | Binary/struct/map/null elements fall back |
+| `array_position` | ✅ | Native | Binary/struct/map/null elements fall back; nested floating-point signed-zero handling differs ([#5191](https://github.com/apache/datafusion-comet/issues/5191)) |
 | `array_prepend` | ✅ | — |  |
 | `array_remove` | ✅ | Native |  |
 | `array_repeat` | ✅ | Native |  |
 | `array_union` | ✅ | Native | NaN/signed-zero handling may differ ([details](compatibility/floating-point.md)) |
-| `arrays_overlap` | ✅ | Native |  |
+| `arrays_overlap` | ✅ | Native | Nested floating-point signed-zero handling differs ([#5191](https://github.com/apache/datafusion-comet/issues/5191)) |
 | `arrays_zip` | ✅ | Native |  |
 | `element_at` | ✅ | Native |  |
 | `flatten` | ✅ | Native | Binary/struct/map elements fall back |

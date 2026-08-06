@@ -221,6 +221,18 @@ fn arrays_overlap_list<OffsetSize: OffsetSizeTrait>(
             left_values.as_string::<i64>(),
             right_values.as_string::<i64>()
         ),
+        dt if needs_comparator(dt) => {
+            let comparator = make_comparator(
+                left_values.as_ref(),
+                right_values.as_ref(),
+                SortOptions::default(),
+            )?;
+            Ok(overlap_rows(
+                left,
+                right,
+                nested_row_overlap(left_values, right_values, comparator.as_ref()),
+            ))
+        }
         _ => arrays_overlap_list_generic(left, right),
     }
 }
@@ -395,22 +407,14 @@ fn nested_row_overlap<'a>(
     comparator: &'a dyn Fn(usize, usize) -> Ordering,
 ) -> impl FnMut(Range<usize>, Range<usize>) -> bool + 'a {
     move |left_range, right_range| {
-        let (probe, probe_range, search, search_range, probe_is_left) =
-            if left_range.len() <= right_range.len() {
-                (left, left_range, right, right_range, true)
-            } else {
-                (right, right_range, left, left_range, false)
-            };
-
-        for pi in probe_range {
-            if probe.is_null(pi) {
+        for li in left_range {
+            if left.is_null(li) {
                 continue;
             }
-            for si in search_range.clone() {
-                if search.is_null(si) {
+            for ri in right_range.clone() {
+                if right.is_null(ri) {
                     continue;
                 }
-                let (li, ri) = if probe_is_left { (pi, si) } else { (si, pi) };
                 if comparator(li, ri) == Ordering::Equal {
                     return true;
                 }
@@ -420,28 +424,11 @@ fn nested_row_overlap<'a>(
     }
 }
 
-/// Fallback for nested and otherwise unhandled element types.
+/// Fallback for otherwise unhandled element types.
 fn arrays_overlap_list_generic<OffsetSize: OffsetSizeTrait>(
     left: &GenericListArray<OffsetSize>,
     right: &GenericListArray<OffsetSize>,
 ) -> Result<ArrayRef> {
-    let left_values = left.values();
-    let right_values = right.values();
-    if left_values.data_type() == right_values.data_type()
-        && needs_comparator(left_values.data_type())
-    {
-        let comparator = make_comparator(
-            left_values.as_ref(),
-            right_values.as_ref(),
-            SortOptions::default(),
-        )?;
-        return Ok(overlap_rows(
-            left,
-            right,
-            nested_row_overlap(left_values, right_values, comparator.as_ref()),
-        ));
-    }
-
     let len = left.len();
     let mut builder = BooleanArray::builder(len);
 
@@ -739,24 +726,43 @@ mod tests {
     }
 
     #[test]
-    fn test_nested_array_sliced_offsets_and_probe_swap() -> Result<()> {
-        let make_rows = |rows: &[&[&[i32]]]| {
+    fn test_nested_array_sliced_offsets_and_nulls() -> Result<()> {
+        let make_rows = |rows: &[&[Option<&[i32]>]]| {
             let mut builder = ListBuilder::new(ListBuilder::new(Int32Builder::new()));
             for row in rows {
                 for element in *row {
-                    builder.values().values().append_slice(element);
-                    builder.values().append(true);
+                    if let Some(values) = element {
+                        builder.values().values().append_slice(values);
+                        builder.values().append(true);
+                    } else {
+                        builder.values().append(false);
+                    }
                 }
                 builder.append(true);
             }
             builder.finish()
         };
-        let left = make_rows(&[&[&[999]], &[&[10]], &[&[50], &[60], &[70]]]).slice(1, 2);
-        let right = make_rows(&[&[&[999]], &[&[20], &[30], &[40]], &[&[60]]]).slice(1, 2);
+        let left = make_rows(&[
+            &[Some(&[999])],
+            &[Some(&[10])],
+            &[Some(&[10]), None],
+            &[Some(&[50]), Some(&[60]), Some(&[70])],
+        ])
+        .slice(1, 3);
+        let right = make_rows(&[
+            &[Some(&[999])],
+            &[Some(&[20]), Some(&[30]), Some(&[40])],
+            &[Some(&[20])],
+            &[Some(&[60])],
+        ])
+        .slice(1, 3);
 
         let result = arrays_overlap_list::<i32>(&left, &right)?;
         let result = result.as_any().downcast_ref::<BooleanArray>().unwrap();
-        assert_eq!(result, &BooleanArray::from(vec![false, true]));
+        assert_eq!(
+            result,
+            &BooleanArray::from(vec![Some(false), None, Some(true)])
+        );
         Ok(())
     }
 
