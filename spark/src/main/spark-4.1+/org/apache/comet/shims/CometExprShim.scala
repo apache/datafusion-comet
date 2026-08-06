@@ -28,7 +28,7 @@ import org.apache.spark.sql.types.TimeType
 
 import org.apache.comet.expressions.CometEvalMode
 import org.apache.comet.serde.ExprOuterClass.{BinaryOutputStyle, Expr}
-import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, optExprWithFallbackReason, scalarFunctionExprToProtoWithReturnType}
+import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, scalarFunctionExprToProtoWithReturnType}
 
 /**
  * `CometExprShim` acts as a shim for parsing expressions from different Spark versions.
@@ -64,7 +64,7 @@ trait CometExprShim extends Spark4xCometExprShim {
         val childExprs = s.arguments.map(exprToProtoInternal(_, inputs, binding))
         val optExpr =
           scalarFunctionExprToProtoWithReturnType("make_time", s.dataType, true, childExprs: _*)
-        optExprWithFallbackReason(optExpr, expr, s.arguments: _*)
+        optExpr
 
       case i: Invoke =>
         (i.targetObject, i.functionName, i.arguments) match {
@@ -73,7 +73,7 @@ trait CometExprShim extends Spark4xCometExprShim {
             val childExprs = args.map(exprToProtoInternal(_, inputs, binding))
             val optExpr =
               scalarFunctionExprToProtoWithReturnType("to_time", i.dataType, true, childExprs: _*)
-            optExprWithFallbackReason(optExpr, i, args: _*)
+            optExpr
           case _ =>
             super.sparkVersionSpecificExprToProtoInternal(expr, inputs, binding)
         }
@@ -89,7 +89,7 @@ trait CometExprShim extends Spark4xCometExprShim {
               i.dataType,
               false,
               childExprs: _*)
-            optExprWithFallbackReason(optExpr, expr, args: _*)
+            optExpr
           case _ =>
             super.sparkVersionSpecificExprToProtoInternal(expr, inputs, binding)
         }

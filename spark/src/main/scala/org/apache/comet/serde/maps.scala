@@ -23,7 +23,7 @@ import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
-import org.apache.comet.serde.QueryPlanSerde.{createBinaryExpr, exprToProtoInternal, optExprWithFallbackReason, scalarFunctionExprToProto}
+import org.apache.comet.serde.QueryPlanSerde.{createBinaryExpr, exprToProtoInternal, scalarFunctionExprToProto}
 import org.apache.comet.shims.CometTypeShim
 
 object CometMapKeys extends CometExpressionSerde[MapKeys] {
@@ -34,7 +34,7 @@ object CometMapKeys extends CometExpressionSerde[MapKeys] {
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     val childExpr = exprToProtoInternal(expr.child, inputs, binding)
     val mapKeysScalarExpr = scalarFunctionExprToProto("map_keys", childExpr)
-    optExprWithFallbackReason(mapKeysScalarExpr, expr, expr.children: _*)
+    mapKeysScalarExpr
   }
 }
 
@@ -46,7 +46,7 @@ object CometMapEntries extends CometExpressionSerde[MapEntries] {
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     val childExpr = exprToProtoInternal(expr.child, inputs, binding)
     val mapEntriesScalarExpr = scalarFunctionExprToProto("map_entries", childExpr)
-    optExprWithFallbackReason(mapEntriesScalarExpr, expr, expr.children: _*)
+    mapEntriesScalarExpr
   }
 }
 
@@ -58,7 +58,7 @@ object CometMapValues extends CometExpressionSerde[MapValues] {
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     val childExpr = exprToProtoInternal(expr.child, inputs, binding)
     val mapValuesScalarExpr = scalarFunctionExprToProto("map_values", childExpr)
-    optExprWithFallbackReason(mapValuesScalarExpr, expr, expr.children: _*)
+    mapValuesScalarExpr
   }
 }
 
@@ -71,7 +71,7 @@ object CometMapExtract extends CometExpressionSerde[GetMapValue] {
     val mapExpr = exprToProtoInternal(expr.child, inputs, binding)
     val keyExpr = exprToProtoInternal(expr.key, inputs, binding)
     val mapExtractExpr = scalarFunctionExprToProto("map_extract", mapExpr, keyExpr)
-    optExprWithFallbackReason(mapExtractExpr, expr, expr.children: _*)
+    mapExtractExpr
   }
 }
 
