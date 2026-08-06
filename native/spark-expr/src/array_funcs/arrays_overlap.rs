@@ -734,7 +734,7 @@ mod tests {
     }
 
     #[test]
-    fn test_nested_float_total_order() -> Result<()> {
+    fn test_nested_float_spark_equality() -> Result<()> {
         // NaN matches itself, and signed zeros are equal, matching Spark.
         let left = make_nested_float_list(&[&[f64::NAN]]);
         let right = make_nested_float_list(&[&[f64::NAN]]);
@@ -751,7 +751,7 @@ mod tests {
     }
 
     #[test]
-    fn test_nested_float_signed_nan_total_order() -> Result<()> {
+    fn test_nested_float_signed_nan_spark_equality() -> Result<()> {
         // [[-NaN]] vs [[NaN]] => true
         let left = make_nested_float_list(&[&[-f64::NAN]]);
         let right = make_nested_float_list(&[&[f64::NAN]]);
