@@ -19,8 +19,11 @@
 
 package org.apache.spark.sql.benchmark
 
+import org.apache.spark.benchmark.Benchmark
 import org.apache.spark.sql.catalyst.util.DateTimeTestUtils.{withDefaultTimeZone, LA}
 import org.apache.spark.sql.internal.SQLConf
+
+import org.apache.comet.CometConf
 
 // spotless:off
 /**
@@ -131,6 +134,54 @@ object CometDatetimeExpressionBenchmark extends CometBenchmarkBase {
     }
   }
 
+  def makeIntervalBenchmark(values: Int): Unit = {
+    withTempPath { dir =>
+      withTempTable("parquetV1Table") {
+        prepareTable(
+          dir,
+          spark.sql(s"""SELECT
+               |  CAST(ABS(value) % 10 AS INT) AS y,
+               |  CAST(ABS(value) % 12 AS INT) AS mo,
+               |  CAST(ABS(value) % 4 AS INT) AS w,
+               |  CAST(ABS(value) % 28 AS INT) AS d,
+               |  CAST(ABS(value) % 24 AS INT) AS h,
+               |  CAST(ABS(value) % 60 AS INT) AS mi,
+               |  CAST(ABS(value) % 60 AS DECIMAL(18, 6)) AS s
+               |FROM $tbl""".stripMargin))
+
+        val query = "SELECT make_interval(y, mo, w, d, h, mi, s) FROM parquetV1Table"
+        def consumeIntervals(): Unit = {
+          spark.sql(query).queryExecution.toRdd.foreachPartition(_.foreach(_.getInterval(0)))
+        }
+        val benchmark = new Benchmark("MakeInterval", values, output = output)
+        val cometConfigs = Map(
+          CometConf.COMET_ENABLED.key -> "true",
+          CometConf.COMET_EXEC_ENABLED.key -> "true",
+          "spark.sql.optimizer.excludedRules" ->
+            "org.apache.spark.sql.catalyst.optimizer.ConstantFolding")
+
+        benchmark.addCase("Spark") { _ =>
+          withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+            consumeIntervals()
+          }
+        }
+        benchmark.addCase("Comet (codegen dispatch)") { _ =>
+          withSQLConf(cometConfigs.toSeq: _*) {
+            consumeIntervals()
+          }
+        }
+        benchmark.addCase("Comet (native)") { _ =>
+          val configs =
+            cometConfigs ++ Map(CometConf.getExprAllowIncompatConfigKey("MakeInterval") -> "true")
+          withSQLConf(configs.toSeq: _*) {
+            consumeIntervals()
+          }
+        }
+        benchmark.run()
+      }
+    }
+  }
+
   override def runCometBenchmark(mainArgs: Array[String]): Unit = {
     val values = 1024 * 1024;
 
@@ -166,6 +217,10 @@ object CometDatetimeExpressionBenchmark extends CometBenchmarkBase {
       runBenchmarkWithTable("MakeTime", values) { v =>
         makeTimeBenchmark(v)
       }
+    }
+
+    runBenchmarkWithTable("MakeInterval", values) { v =>
+      makeIntervalBenchmark(v)
     }
   }
 

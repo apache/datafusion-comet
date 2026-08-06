@@ -61,7 +61,8 @@ trait CometBenchmarkBase
         "spark.shuffle.manager",
         "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
 
-    val sparkSession = SparkSession.builder
+    val sparkSession = SparkSession
+      .builder()
       .config(conf)
       .withExtensions(new CometSparkSessionExtensions)
       .getOrCreate()
@@ -98,7 +99,7 @@ trait CometBenchmarkBase
       import spark.implicits._
       spark
         .range(values)
-        .map(_ => if (useDictionary) Random.nextLong % 5 else Random.nextLong)
+        .map(_ => if (useDictionary) Random.nextLong() % 5 else Random.nextLong())
         .createOrReplaceTempView(tbl)
       runBenchmark(benchmarkName)(f(values))
     }
