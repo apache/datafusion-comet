@@ -1,4 +1,4 @@
-CometNativeColumnarToRow
+CometColumnarToRow
 +- CometHashAggregate
    +- CometExchange
       +- CometHashAggregate
@@ -39,4 +39,4 @@ CometNativeColumnarToRow
                            +- CometFilter
                               +- CometNativeScan parquet spark_catalog.default.web_site
 
-Comet accelerated 39 out of 39 eligible operators (100%). Final plan contains 1 transitions between Spark and Comet.
+Comet accelerated 39 out of 39 eligible operators (100%). Final plan contains 1 transitions between Spark and Comet. Accelerated expressions: 12 native, 0 codegen dispatch.
