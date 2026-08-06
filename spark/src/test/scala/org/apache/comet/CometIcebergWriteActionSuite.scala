@@ -37,7 +37,7 @@ import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.types.{DoubleType, IntegerType, StringType, StructField, StructType}
 import org.apache.spark.sql.util.QueryExecutionListener
 
-import org.apache.comet.CometSparkSessionExtensions.isSpark41Plus
+import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark41Plus}
 
 private case class WriteSnapshot(snapshotDelta: Long, plans: Seq[SparkPlan])
 
@@ -592,6 +592,239 @@ class CometIcebergWriteActionSuite
         .sql("SELECT id, region, amount FROM cat.db.parity_spark ORDER BY id")
         .collect()
       assert(cometRows.toSeq == sparkRows.toSeq, s"$cometRows vs $sparkRows")
+    }
+  }
+
+  test("write custom metrics are registered on the committer only") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    withIcebergCatalog { warehouseDir =>
+      createTable(warehouseDir, "metrics_once", partitionSpec = "")
+      val snapshot = captureWrite("metrics_once") {
+        spark.sql(s"INSERT INTO $catalog.$ns.metrics_once VALUES (1, 'us-east', 10.5)")
+      }
+      assertExactlyOneCommit(snapshot)
+      val (commits, writes) = collectIcebergWriteOps(snapshot.plans)
+      writes.foreach { w =>
+        assert(
+          w.metrics.keySet == Set("numOutputRows"),
+          s"IcebergWriteExec must not re-register the write's custom metrics, got ${w.metrics.keySet}")
+      }
+      // Iceberg publishes write custom metrics from 1.9 on; older versions expose none.
+      commits.head.metrics.get("addedDataFiles").foreach { m =>
+        assert(m.value == 1L, s"expected addedDataFiles=1 on the committer, got ${m.value}")
+      }
+    }
+  }
+
+  test("AppendData round-trips all primitive types unchanged") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    withIcebergCatalog { _ =>
+      spark.sql(s"""
+        CREATE TABLE $catalog.$ns.prim_types (
+          b BOOLEAN, ti TINYINT, si SMALLINT, i INT, bi BIGINT,
+          f FLOAT, d DOUBLE, dec DECIMAL(18,4),
+          s STRING, bin BINARY, dt DATE, ts TIMESTAMP
+        ) USING iceberg""")
+      val literals =
+        "(true, CAST(1 AS TINYINT), CAST(2 AS SMALLINT), 3, CAST(4 AS BIGINT), " +
+          "CAST(1.5 AS FLOAT), 2.5D, CAST(12.3456 AS DECIMAL(18,4)), " +
+          "'hello', X'0102', DATE'2024-01-15', TIMESTAMP'2024-01-15 10:00:00'), " +
+          "(false, CAST(NULL AS TINYINT), CAST(NULL AS SMALLINT), CAST(NULL AS INT), " +
+          "CAST(NULL AS BIGINT), CAST(NULL AS FLOAT), CAST(NULL AS DOUBLE), " +
+          "CAST(NULL AS DECIMAL(18,4)), CAST(NULL AS STRING), CAST(NULL AS BINARY), " +
+          "CAST(NULL AS DATE), CAST(NULL AS TIMESTAMP))"
+      val snapshot = captureWrite("prim_types") {
+        spark.sql(s"INSERT INTO $catalog.$ns.prim_types VALUES $literals")
+      }
+      assertExactlyOneCommit(snapshot)
+      checkAnswer(
+        spark.sql(s"SELECT * FROM $catalog.$ns.prim_types"),
+        spark.sql(s"SELECT * FROM VALUES $literals"))
+    }
+  }
+
+  test("AppendData writes NULLs in every column") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    withIcebergCatalog { warehouseDir =>
+      createTable(warehouseDir, "nulls_all", partitionSpec = "")
+      val snapshot = captureWrite("nulls_all") {
+        spark.sql(s"""INSERT INTO $catalog.$ns.nulls_all VALUES
+          (CAST(NULL AS INT), CAST(NULL AS STRING), CAST(NULL AS DOUBLE)),
+          (1, NULL, 1.0),
+          (2, 'r', NULL)""")
+      }
+      assertExactlyOneCommit(snapshot)
+      checkAnswer(
+        spark.sql(s"SELECT id, region, amount FROM $catalog.$ns.nulls_all"),
+        Seq(Row(null, null, null), Row(1, null, 1.0), Row(2, "r", null)))
+    }
+  }
+
+  test("AppendData round-trips STRUCT, ARRAY, and MAP columns") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    withIcebergCatalog { _ =>
+      spark.sql(s"""
+        CREATE TABLE $catalog.$ns.nested_types (
+          id INT,
+          s STRUCT<a: INT, b: STRING>,
+          arr ARRAY<INT>,
+          m MAP<STRING, INT>
+        ) USING iceberg""")
+      val snapshot = captureWrite("nested_types") {
+        spark.sql(s"""INSERT INTO $catalog.$ns.nested_types VALUES
+          (1, named_struct('a', 10, 'b', 'x'), array(1, 2, 3), map('k1', 1, 'k2', 2)),
+          (2, named_struct('a', CAST(NULL AS INT), 'b', CAST(NULL AS STRING)),
+              CAST(NULL AS ARRAY<INT>), CAST(NULL AS MAP<STRING, INT>))""")
+      }
+      assertExactlyOneCommit(snapshot)
+      checkAnswer(
+        spark.sql(s"SELECT id, s.a, s.b, arr, m FROM $catalog.$ns.nested_types"),
+        Seq(
+          Row(1, 10, "x", Seq(1, 2, 3), Map("k1" -> 1, "k2" -> 2)),
+          Row(2, null, null, null, null)))
+    }
+  }
+
+  test("CoW MERGE with only a matched DELETE leg routes through two-op") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    withIcebergCatalog { warehouseDir =>
+      createTable(
+        warehouseDir,
+        "merge_del",
+        partitionSpec = "",
+        properties = Some("'write.merge.mode'='copy-on-write'"))
+      coalesceInsert("merge_del", Seq((1, "a", 1.0), (2, "b", 2.0), (3, "c", 3.0)))
+
+      val snapshot = captureWrite("merge_del") {
+        spark.sql(s"""
+          |MERGE INTO $catalog.$ns.merge_del t
+          |USING (SELECT 2 AS id UNION ALL SELECT 3 AS id) s
+          |ON t.id = s.id
+          |WHEN MATCHED THEN DELETE
+          |""".stripMargin)
+      }
+      assertExactlyOneCommit(snapshot)
+      assertRows("merge_del", expectedIds = Seq(1))
+    }
+  }
+
+  test("CoW MERGE with a NOT MATCHED BY SOURCE leg routes through two-op") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    // Iceberg 1.5.x (the Spark 3.4 pairing) rejects the clause in its extensions parser.
+    assume(isSpark35Plus, "NOT MATCHED BY SOURCE needs Iceberg 1.8+")
+    withIcebergCatalog { warehouseDir =>
+      createTable(
+        warehouseDir,
+        "merge_nmbs",
+        partitionSpec = "",
+        properties = Some("'write.merge.mode'='copy-on-write'"))
+      coalesceInsert("merge_nmbs", Seq((1, "a", 1.0), (2, "b", 2.0), (3, "c", 3.0)))
+
+      val snapshot = captureWrite("merge_nmbs") {
+        spark.sql(s"""
+          |MERGE INTO $catalog.$ns.merge_nmbs t
+          |USING (SELECT 2 AS id) s
+          |ON t.id = s.id
+          |WHEN MATCHED THEN UPDATE SET t.amount = t.amount + 100
+          |WHEN NOT MATCHED BY SOURCE THEN DELETE
+          |""".stripMargin)
+      }
+      assertExactlyOneCommit(snapshot)
+      assertRows("merge_nmbs", expectedIds = Seq(2))
+      checkAnswer(spark.sql(s"SELECT amount FROM $catalog.$ns.merge_nmbs"), Seq(Row(102.0)))
+    }
+  }
+
+  test("AppendData to a bucket- and truncate-partitioned table routes through two-op") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    withIcebergCatalog { _ =>
+      spark.sql(s"""
+        CREATE TABLE $catalog.$ns.bucketed (
+          id INT, region STRING, amount DOUBLE
+        ) USING iceberg PARTITIONED BY (bucket(4, id), truncate(2, region))""")
+      val snapshot = captureWrite("bucketed") {
+        spark.sql(
+          s"INSERT INTO $catalog.$ns.bucketed VALUES " +
+            "(1, 'aa', 1.0), (2, 'ab', 2.0), (3, 'bb', 3.0), (4, 'bc', 4.0), (5, 'cc', 5.0)")
+      }
+      assertExactlyOneCommit(snapshot)
+      assertRows("bucketed", expectedIds = Seq(1, 2, 3, 4, 5))
+    }
+  }
+
+  test("AppendData to a days()-partitioned table routes each day to its own partition") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    withIcebergCatalog { _ =>
+      spark.sql(s"""
+        CREATE TABLE $catalog.$ns.by_day (
+          id INT, ts TIMESTAMP, amount DOUBLE
+        ) USING iceberg PARTITIONED BY (days(ts))""")
+      val snapshot = captureWrite("by_day") {
+        spark.sql(
+          s"INSERT INTO $catalog.$ns.by_day VALUES " +
+            "(1, TIMESTAMP'2024-01-15 10:00:00', 1.0), " +
+            "(2, TIMESTAMP'2024-01-15 10:00:00', 2.0), " +
+            "(3, TIMESTAMP'2024-02-15 10:00:00', 3.0)")
+      }
+      assertExactlyOneCommit(snapshot)
+      val partitions = spark
+        .sql(s"SELECT count(*) FROM $catalog.$ns.by_day.partitions")
+        .collect()
+        .head
+        .getLong(0)
+      assert(partitions == 2, s"expected 2 day partitions, got $partitions")
+      val ids = spark
+        .sql(s"SELECT id FROM $catalog.$ns.by_day ORDER BY id")
+        .collect()
+        .map(_.getInt(0))
+        .toSeq
+      assert(ids == Seq(1, 2, 3), s"expected Seq(1, 2, 3), got $ids")
+    }
+  }
+
+  // On Spark 3.5+ the staged CTAS/RTAS operators run their inner append as its own
+  // `AppendData` QueryExecution, which IcebergWriteStrategy intercepts like any other append.
+  // Spark 3.4 writes inline inside the exec (no re-planning), so nothing is intercepted there.
+  test("CTAS and RTAS write through the split operators on Spark 3.5+") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    withIcebergCatalog { _ =>
+      val session = spark
+      import session.implicits._
+      (1 to 5)
+        .map(i => (i, s"r${i % 2}", i.toDouble))
+        .toDF("id", "region", "amount")
+        .createOrReplaceTempView("ctas_src")
+
+      def assertSplitUsage(plans: Seq[SparkPlan], statement: String): Unit = {
+        val (commits, writes) = collectIcebergWriteOps(plans)
+        if (isSpark35Plus) {
+          assert(
+            commits.nonEmpty && writes.nonEmpty,
+            s"expected the $statement inner append to plan through the split operators: $plans")
+        } else {
+          assert(
+            commits.isEmpty && writes.isEmpty,
+            s"expected the $statement write to stay inside Spark's staged exec: $plans")
+        }
+      }
+
+      val ctasPlans = capturePlans {
+        spark.sql(s"CREATE TABLE $catalog.$ns.ctas_tgt USING iceberg AS SELECT * FROM ctas_src")
+      }
+      assertSplitUsage(ctasPlans, "CTAS")
+      assert(countSnapshots("ctas_tgt") == 1L, "CTAS must land exactly one snapshot")
+      assertRows("ctas_tgt", expectedIds = Seq(1, 2, 3, 4, 5))
+
+      val rtasPlans = capturePlans {
+        (1 to 2)
+          .map(i => (i, s"r$i", i.toDouble))
+          .toDF("id", "region", "amount")
+          .writeTo(s"$catalog.$ns.ctas_tgt")
+          .using("iceberg")
+          .createOrReplace()
+      }
+      assertSplitUsage(rtasPlans, "RTAS")
+      assertRows("ctas_tgt", expectedIds = Seq(1, 2))
     }
   }
 
