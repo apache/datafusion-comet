@@ -19,13 +19,12 @@
 
 package org.apache.comet.serde
 
-import java.util.Locale
-
 import org.apache.spark.SparkEnv
 import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference, AttributeSeq, BindReferences, Expression, Literal, RuntimeReplaceable, ScalaUDF}
 import org.apache.spark.sql.types.BinaryType
 
 import org.apache.comet.CometConf
+import org.apache.comet.CometExplainInfo
 import org.apache.comet.CometSparkSessionExtensions.{withCodegenDispatchExpr, withFallbackReason}
 import org.apache.comet.codegen.CometBatchKernelCodegen
 import org.apache.comet.serde.ExprOuterClass.Expr
@@ -58,19 +57,6 @@ object CometScalaUDF extends CometExpressionSerde[ScalaUDF] {
     emitJvmCodegenDispatch(expr, inputs, binding)
 
   /**
-   * Canonical name for annotation. `BinaryMathExpression` (Hypot, Pow, ...) overrides
-   * `prettyName` to raw uppercase; `ScalaUDF.prettyName` collapses to `"scalaudf"` for every user
-   * UDF. Prefer `ScalaUDF.udfName` when set, then lowercase to normalize.
-   */
-  private def displayName(expr: Expression): String = {
-    val raw = expr match {
-      case s: ScalaUDF => s.udfName.getOrElse(s.prettyName)
-      case other => other.prettyName
-    }
-    raw.toLowerCase(Locale.ROOT)
-  }
-
-  /**
    * Bind `expr`, closure-serialize it, and emit a `JvmScalarUdf` proto routed through
    * [[CometScalaUDFCodegen]] so that native execution evaluates the expression inside the
    * Arrow-direct codegen dispatcher. The dispatcher will Janino-compile `expr.doGenCode` into a
@@ -85,7 +71,7 @@ object CometScalaUDF extends CometExpressionSerde[ScalaUDF] {
       expr: Expression,
       inputs: Seq[Attribute],
       binding: Boolean): Option[Expr] = {
-    val exprName = displayName(expr)
+    val exprName = CometExplainInfo.exprDisplayName(expr)
     if (!CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.get()) {
       withFallbackReason(
         expr,
@@ -155,12 +141,14 @@ object CometScalaUDF extends CometExpressionSerde[ScalaUDF] {
     udfBuilder
       .setReturnType(returnTypeProto)
       .setReturnNullable(expr.nullable)
-    // Opt-in dispatch annotation for extended explain. Rolled up per operator by
-    // `CometExecRule.rollUpInfoMessages` into a single `[COMET-INFO: JVM codegen dispatcher:
-    // ...]` line. Informational only - does not trigger fallback.
-    if (CometConf.COMET_EXPLAIN_CODEGEN_ENABLED.get()) {
-      withCodegenDispatchExpr(expr, exprName)
-    }
+    // Dispatch annotation for extended explain. Rolled up per operator by
+    // `CometExecRule.rollUpInfoMessages`, which feeds the expression coverage stats and, when
+    // `spark.comet.explain.codegen.enabled` is set, a single `[COMET-INFO: JVM codegen dispatcher:
+    // ...]` line. Informational only - does not trigger fallback. The marker records that this
+    // node itself was dispatched, which the name set alone cannot say once ancestors accumulate
+    // their descendants' names.
+    expr.setTagValue(CometExplainInfo.DISPATCHED_SELF, ())
+    withCodegenDispatchExpr(expr, exprName)
     Some(
       ExprOuterClass.Expr
         .newBuilder()
