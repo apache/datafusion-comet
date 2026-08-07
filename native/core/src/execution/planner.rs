@@ -1880,21 +1880,7 @@ impl PhysicalPlanner {
                     Ok::<(), ExecutionError>(())
                 })?;
 
-                assert!(
-                    !projections.is_empty(),
-                    "Expand should have at least one projection"
-                );
-
-                let datatypes = projections[0]
-                    .iter()
-                    .map(|expr| expr.data_type(&child.schema()))
-                    .collect::<Result<Vec<DataType>, _>>()?;
-                let fields: Vec<Field> = datatypes
-                    .iter()
-                    .enumerate()
-                    .map(|(idx, dt)| Field::new(format!("col_{idx}"), dt.clone(), true))
-                    .collect();
-                let schema = Arc::new(Schema::new(fields));
+                let schema = ExpandExec::build_schema(&projections, &child.schema())?;
 
                 // `Expand` operator keeps the input batch and expands it to multiple output
                 // batches. However, `ScanExec` will reuse input arrays for the next
