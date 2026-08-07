@@ -21,9 +21,9 @@ package org.apache.comet.serde
 
 import java.util.Locale
 
-import org.apache.spark.sql.catalyst.expressions.{AddMonths, Attribute, ConvertTimezone, DateAdd, DateDiff, DateFormatClass, DateFromUnixDate, DateSub, DayOfMonth, DayOfWeek, DayOfYear, Days, Expression, FromUTCTimestamp, GetDateField, GetTimestamp, Hour, Hours, LastDay, Literal, MakeDate, MakeDTInterval, MakeTimestamp, MakeYMInterval, MicrosToTimestamp, MillisToTimestamp, Minute, Month, MonthsBetween, MultiplyDTInterval, NextDay, PreciseTimestampConversion, Quarter, Second, SecondsToTimestamp, TimestampAdd, TimestampDiff, ToUnixTimestamp, ToUTCTimestamp, TruncDate, TruncTimestamp, UnixDate, UnixMicros, UnixMillis, UnixSeconds, UnixTimestamp, WeekDay, WeekOfYear, Year}
+import org.apache.spark.sql.catalyst.expressions.{AddMonths, Attribute, Cast, ConvertTimezone, DateAdd, DateDiff, DateFormatClass, DateFromUnixDate, DateSub, DayOfMonth, DayOfWeek, DayOfYear, Days, Expression, FromUTCTimestamp, GetDateField, GetTimestamp, Hour, Hours, LastDay, Literal, MakeDate, MakeDTInterval, MakeInterval, MakeTimestamp, MakeYMInterval, MicrosToTimestamp, MillisToTimestamp, Minute, Month, MonthsBetween, MultiplyDTInterval, NextDay, PreciseTimestampConversion, Quarter, Second, SecondsToTimestamp, TimestampAdd, TimestampDiff, ToUnixTimestamp, ToUTCTimestamp, TruncDate, TruncTimestamp, UnixDate, UnixMicros, UnixMillis, UnixSeconds, UnixTimestamp, WeekDay, WeekOfYear, Year}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{DataType, DateType, DoubleType, FloatType, IntegerType, LongType, StringType, TimestampNTZType, TimestampType}
+import org.apache.spark.sql.types.{CalendarIntervalType, DataType, DateType, DoubleType, FloatType, IntegerType, LongType, StringType, TimestampNTZType, TimestampType}
 import org.apache.spark.unsafe.types.UTF8String
 
 import org.apache.comet.CometConf
@@ -446,12 +446,6 @@ object CometNextDay extends CometExpressionSerde[NextDay] {
   override def getIncompatibleReasons(): Seq[String] =
     DatetimeCollation.incompatibleReasons("next_day")
 
-  override def getCompatibleNotes(): Seq[String] = Seq(
-    "Under ANSI mode, an invalid `dayOfWeek` surfaces as `CometNativeException` rather than" +
-      " Spark's `SparkIllegalArgumentException` with error class `ILLEGAL_DAY_OF_WEEK`. The" +
-      " throw/NULL decision is correct; only the exception class and error class differ" +
-      " ([#5073](https://github.com/apache/datafusion-comet/issues/5073)).")
-
   override def getSupportLevel(expr: NextDay): SupportLevel = {
     if (DatetimeCollation.hasNonDefaultCollation(expr)) {
       Incompatible(Some(collationReason))
@@ -479,11 +473,11 @@ object CometMakeDate extends CometExpressionSerde[MakeDate] {
    */
 
   override def getCompatibleNotes(): Seq[String] = Seq(
-    "Under ANSI mode, an out-of-range `(year, month, day)` triple surfaces as" +
-      " `CometNativeException` rather than Spark's `SparkDateTimeException` with error class" +
-      " `DATETIME_FIELD_OUT_OF_BOUNDS.WITH_SUGGESTION`. The throw/NULL decision is correct;" +
-      " only the exception class and error class differ" +
-      " ([#5073](https://github.com/apache/datafusion-comet/issues/5073)).")
+    "Native `make_date` is limited to chrono's year range `[-262143, 262142]`; Spark accepts" +
+      " wider years (for example, `300000`), so Comet returns `NULL` or throws under ANSI mode" +
+      " for dates Spark accepts, and may incorrectly report valid dates as invalid (for example," +
+      " `300000-02-29` is falsely reported as not a leap year)" +
+      " ([#5208](https://github.com/apache/datafusion-comet/issues/5208)).")
 
   override def convert(expr: MakeDate, inputs: Seq[Attribute], binding: Boolean): Option[Expr] = {
     val childExpr = expr.children.map(exprToProtoInternal(_, inputs, binding))
@@ -962,6 +956,39 @@ object CometGetTimestamp extends CometCodegenDispatch[GetTimestamp]
 object CometMakeYMInterval extends CometCodegenDispatch[MakeYMInterval]
 
 object CometMakeDTInterval extends CometCodegenDispatch[MakeDTInterval]
+
+object CometMakeInterval extends CometExpressionSerde[MakeInterval] with CodegenDispatchFallback {
+  private val incompatReason =
+    "The native implementation converts seconds to `Float64`, which can lose microsecond" +
+      " precision, and stores time in nanoseconds, which overflows for large time components" +
+      " (hours, minutes, seconds) that Spark can represent."
+
+  override def getCompatibleNotes(): Seq[String] = Seq(
+    "Both the default JVM codegen-dispatch path and the native path currently limit the" +
+      " elapsed-time component to about 292 years in either direction. This only affects" +
+      " extreme intervals and is tracked in" +
+      " [#5279](https://github.com/apache/datafusion-comet/issues/5279).")
+
+  override def getIncompatibleReasons(): Seq[String] = Seq(incompatReason)
+
+  override def getSupportLevel(expr: MakeInterval): SupportLevel =
+    Incompatible(Some(incompatReason))
+
+  override def convert(
+      expr: MakeInterval,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[Expr] = {
+    // The explicit return type skips DataFusion's registry coercion, but its kernel needs Float64.
+    val children = expr.children.updated(6, Cast(expr.secs, DoubleType))
+    val childExprs = children.map(exprToProtoInternal(_, inputs, binding))
+    val optExpr = scalarFunctionExprToProtoWithReturnType(
+      "make_interval",
+      CalendarIntervalType,
+      expr.failOnError,
+      childExprs: _*)
+    optExpr
+  }
+}
 
 object CometMultiplyDTInterval extends CometCodegenDispatch[MultiplyDTInterval]
 
