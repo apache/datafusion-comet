@@ -1,0 +1,56 @@
+<!---
+Licensed to the Apache Software Foundation (ASF) under one
+or more contributor license agreements.  See the NOTICE file
+distributed with this work for additional information
+regarding copyright ownership.  The ASF licenses this file
+to you under the Apache License, Version 2.0 (the
+"License"); you may not use this file except in compliance
+with the License.  You may obtain a copy of the License at
+
+http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing,
+software distributed under the License is distributed on an
+"AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+KIND, either express or implied.  See the License for the
+specific language governing permissions and limitations
+under the License.
+-->
+
+# Array Expressions
+
+<!--BEGIN:EXPR_COMPAT[array]-->
+
+## ArrayExcept
+
+By default, `ArrayExcept` is evaluated in the JVM using Spark's own code-generated implementation (run inside the Comet pipeline), which matches Spark exactly. Set `spark.comet.expression.ArrayExcept.allowIncompatible=true` to opt into Comet's native implementation instead, which has the following differences from Spark:
+
+- Null handling and ordering may differ from Spark
+
+## ArrayIntersect
+
+By default, `ArrayIntersect` is evaluated in the JVM using Spark's own code-generated implementation (run inside the Comet pipeline), which matches Spark exactly. Set `spark.comet.expression.ArrayIntersect.allowIncompatible=true` to opt into Comet's native implementation instead, which has the following differences from Spark:
+
+- Result array element order may differ from Spark when the right array is longer than the left (DataFusion probes the longer side).
+- array_intersect does not propagate non-UTF8_BINARY collations to the output array elements (https://github.com/apache/datafusion-comet/issues/2190)
+
+## ArrayJoin
+
+By default, `ArrayJoin` is evaluated in the JVM using Spark's own code-generated implementation (run inside the Comet pipeline), which matches Spark exactly. Set `spark.comet.expression.ArrayJoin.allowIncompatible=true` to opt into Comet's native implementation instead, which has the following differences from Spark:
+
+- Null handling may differ from Spark
+- array_join does not propagate non-UTF8_BINARY collations to the output string (https://github.com/apache/datafusion-comet/issues/2190)
+
+## ArraysZip
+
+The following cases are not supported by Comet and always fall back to Spark, regardless of any `allowIncompatible` setting:
+
+- Not all input data types are supported; falls back to Spark for unsupported types
+
+## SortArray
+
+By default, `SortArray` is evaluated in the JVM using Spark's own code-generated implementation (run inside the Comet pipeline), which matches Spark exactly. Set `spark.comet.expression.SortArray.allowIncompatible=true` to opt into Comet's native implementation instead, which has the following differences from Spark:
+
+- When `spark.comet.exec.strictFloatingPoint=true`, sorting on floating-point types is not 100% compatible with Spark
+
+<!--END:EXPR_COMPAT-->

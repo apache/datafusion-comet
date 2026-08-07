@@ -791,14 +791,24 @@ it to GitHub Container Registry at https://github.com/apache/datafusion-comet/pk
 <h3>Publishing Documentation<a class="headerlink" href="#publishing-documentation" title="Link to this heading">#</a></h3>
 <p>In <code class="docutils literal notranslate"><span class="pre">docs</span></code> directory:</p>
 <ul class="simple">
-<li><p>Update <code class="docutils literal notranslate"><span class="pre">docs/source/index.rst</span></code> and add a new navigation menu link for the new release in the section <code class="docutils literal notranslate"><span class="pre">_toc.user-guide-links-versioned</span></code></p></li>
-<li><p>Add a new line to <code class="docutils literal notranslate"><span class="pre">build.sh</span></code> to delete the locally cloned <code class="docutils literal notranslate"><span class="pre">comet-*</span></code> branch for the new release e.g. <code class="docutils literal notranslate"><span class="pre">comet-0.13</span></code></p></li>
-<li><p>Update the main method in <code class="docutils literal notranslate"><span class="pre">generate-versions.py</span></code>:</p></li>
+<li><p>Update the main method in <code class="docutils literal notranslate"><span class="pre">generate-versions.py</span></code> to promote the new release to the current one and move the
+previously current release into the list of older versions:</p></li>
 </ul>
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span>    <span class="n">latest_released_version</span> <span class="o">=</span> <span class="s2">&quot;0.13.0&quot;</span>
-    <span class="n">previous_versions</span> <span class="o">=</span> <span class="p">[</span><span class="s2">&quot;0.11.0&quot;</span><span class="p">,</span> <span class="s2">&quot;0.12.0&quot;</span><span class="p">]</span>
+    <span class="n">previous_versions</span> <span class="o">=</span> <span class="p">[</span><span class="s2">&quot;0.10.0&quot;</span><span class="p">,</span> <span class="s2">&quot;0.11.0&quot;</span><span class="p">,</span> <span class="s2">&quot;0.12.0&quot;</span><span class="p">]</span>
 </pre></div>
 </div>
+<ul class="simple">
+<li><p>Add a new line to <code class="docutils literal notranslate"><span class="pre">build.sh</span></code> to delete the locally cloned <code class="docutils literal notranslate"><span class="pre">comet-*</span></code> branch for the new release e.g. <code class="docutils literal notranslate"><span class="pre">comet-0.13</span></code>.
+Every version referenced in <code class="docutils literal notranslate"><span class="pre">generate-versions.py</span></code> needs a line here, otherwise a rebuild reuses the stale clone
+from the previous run.</p></li>
+<li><p>Update <code class="docutils literal notranslate"><span class="pre">docs/source/user-guide/index.md</span></code>: change the “current stable release” sentence and the versioned entry in
+the toctree (e.g. <code class="docutils literal notranslate"><span class="pre">0.13.x</span> <span class="pre">(current)</span> <span class="pre">&lt;0.13/index&gt;</span></code>).</p></li>
+<li><p>Update <code class="docutils literal notranslate"><span class="pre">docs/source/user-guide/older-versions.md</span></code>: point the “current stable release” link at the new release and
+add the previously current release to the toctree.</p></li>
+</ul>
+<p>Note that older user guides are kept rather than dropped, so the lists in <code class="docutils literal notranslate"><span class="pre">generate-versions.py</span></code>, <code class="docutils literal notranslate"><span class="pre">build.sh</span></code>, and
+<code class="docutils literal notranslate"><span class="pre">older-versions.md</span></code> grow with each release.</p>
 <p>Test the documentation build locally, following the instructions in <code class="docutils literal notranslate"><span class="pre">docs/README.md</span></code>.</p>
 <p>Once verified, create a PR against the main branch with these documentation changes. After merging, the docs will be
 deployed to https://datafusion.apache.org/comet/ by the documentation publishing workflow.</p>
