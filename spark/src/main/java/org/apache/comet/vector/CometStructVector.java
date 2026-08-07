@@ -27,7 +27,6 @@ import org.apache.arrow.vector.complex.StructVector;
 import org.apache.arrow.vector.dictionary.DictionaryProvider;
 import org.apache.arrow.vector.util.TransferPair;
 import org.apache.spark.sql.vectorized.ColumnVector;
-import org.apache.spark.unsafe.types.CalendarInterval;
 
 /**
  * A {@link CometDecodedVector} for Spark struct columns, wrapping an Arrow {@link StructVector} and
@@ -57,15 +56,6 @@ public class CometStructVector extends CometDecodedVector {
   @Override
   public ColumnVector getChild(int i) {
     return children.get(i);
-  }
-
-  @Override
-  public CalendarInterval getInterval(int rowId) {
-    if (isNullAt(rowId)) return null;
-    return new CalendarInterval(
-        children.get(0).getInt(rowId),
-        children.get(1).getInt(rowId),
-        children.get(2).getLong(rowId));
   }
 
   @Override
