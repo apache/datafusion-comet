@@ -61,10 +61,9 @@ object CometRustUdfRegistry {
    * JVM (a Connect server, a notebook, a test JVM running several suites) share one namespace,
    * and the last registration of a name wins for all of them. A name is also matched by name
    * alone, which is why an ordinary Scala UDF registered under a name a Rust UDF already claimed
-   * is currently answered out of the Rust library. Both are open review items:
-   * [[https://github.com/apache/datafusion-comet/pull/4459#discussion_r3730388880]] for the
-   * scoping and [[https://github.com/apache/datafusion-comet/pull/4459#discussion_r3730390223]]
-   * for the name collision.
+   * is currently answered out of the Rust library. Both are tracked:
+   * [[https://github.com/apache/datafusion-comet/issues/5294]] for the scoping and
+   * [[https://github.com/apache/datafusion-comet/issues/5295]] for the name collision.
    */
   lazy val instance: CometRustUdfRegistry = new CometRustUdfRegistry
 }

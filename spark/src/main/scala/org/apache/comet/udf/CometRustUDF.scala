@@ -126,7 +126,7 @@ object CometRustUDF {
    * expression with a native call. Note that the closure Spark keeps is not the one passed here,
    * because `functions.udf` wraps the `UDFn` it is handed, which is why the serde cannot
    * recognize this registration by identity and has to match on the name alone. See
-   * [[https://github.com/apache/datafusion-comet/pull/4459#discussion_r3730390223]].
+   * [[https://github.com/apache/datafusion-comet/issues/5295]].
    */
   private def installCatalogStub(
       spark: SparkSession,

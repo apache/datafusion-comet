@@ -63,7 +63,7 @@ object CometScalaUDF extends CometExpressionSerde[ScalaUDF] {
     // an ordinary Scala UDF sharing the name is currently answered out of the Rust library. The
     // registration would have to be identified some other way to fix that, since the closure Spark
     // holds for the catalog stub is one `functions.udf` wrapped rather than the one Comet passed
-    // in. See https://github.com/apache/datafusion-comet/pull/4459#discussion_r3730390223.
+    // in. See https://github.com/apache/datafusion-comet/issues/5295.
     expr.udfName.flatMap(CometRustUdfRegistry.instance.get) match {
       case Some(meta) =>
         emitRustUdfCall(expr, meta.libraryPath, meta.returnType, inputs, binding)

@@ -51,6 +51,9 @@ pub fn get_or_load(path: impl AsRef<Path>) -> Result<Arc<LoadedLibrary>, LoaderE
         }
     }
 
+    // The write lock is held across `load`, which runs the cdylib's static initializers, so a slow
+    // load of one library blocks lookups of every other path. See
+    // <https://github.com/apache/datafusion-comet/issues/5297>.
     let mut w = cache().write().unwrap();
     if let Some(lib) = w.get(&canonical).cloned() {
         if canonical != raw {

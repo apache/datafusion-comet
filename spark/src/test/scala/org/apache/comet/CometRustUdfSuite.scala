@@ -102,10 +102,10 @@ class CometRustUdfSuite extends CometTestBase {
       .exists(t => Option(t.getMessage).exists(_.contains(needle)))
   }
 
-  // Known limitation, see https://github.com/apache/datafusion-comet/pull/4459#discussion_r3730390223:
-  // the serde recognizes a Rust UDF by name alone, so the Rust library answers this call and the
-  // assertion below fails with `ArraySeq(0, 1, 2) did not equal List(0, 10, 20)`. Enable this test
-  // with the fix.
+  // Known limitation, tracked in https://github.com/apache/datafusion-comet/issues/5295: the serde
+  // recognizes a Rust UDF by name alone, so the Rust library answers this call and the assertion
+  // below fails with `ArraySeq(0, 1, 2) did not equal List(0, 10, 20)`. Enable this test with the
+  // fix.
   ignore("an ordinary Scala UDF is not answered by a Rust UDF of the same name") {
     CometRustUDF.register(spark, "echo_c", libPath, Seq(LongType), LongType)
     // Claim the same name with an ordinary Scala UDF.

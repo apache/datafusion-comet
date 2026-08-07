@@ -27,6 +27,10 @@
 //!    there is nothing to bind. See the field docs in `comet-udf-sdk`.
 //! 3. Call `execute` once with the batch.
 //! 4. Drop the impl (its `release` callback runs).
+//!
+//! Steps 1 and 2 repeat work `return_type` already did at planning time,
+//! since argument types do not change across batches. See
+//! <https://github.com/apache/datafusion-comet/issues/5296>.
 
 use std::ffi::CStr;
 use std::sync::Mutex;
