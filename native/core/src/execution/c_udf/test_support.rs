@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Test helpers shared across the rust_udf submodules.
+//! Test helpers shared across the c_udf submodules.
 
 /// `comet-test-udfs` is `crate-type = ["cdylib"]` and has no test targets, so a
 /// test build compiles it without emitting the shared library these tests

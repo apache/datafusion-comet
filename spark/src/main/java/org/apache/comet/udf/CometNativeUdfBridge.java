@@ -21,9 +21,9 @@ package org.apache.comet.udf;
 
 import org.apache.comet.NativeBase;
 
-/** JNI bridge for driver-side Rust UDF library validation. */
-public final class CometRustUdfBridge extends NativeBase {
-  private CometRustUdfBridge() {}
+/** JNI bridge for driver-side native UDF library validation. */
+public final class CometNativeUdfBridge extends NativeBase {
+  private CometNativeUdfBridge() {}
 
   /**
    * Validate that {@code libraryPath} loads and exposes a UDF named {@code expectedName}. Returns

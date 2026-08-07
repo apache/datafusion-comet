@@ -25,7 +25,7 @@ homepage = { workspace = true }
 repository = { workspace = true }
 authors = { workspace = true }
 publish = false
-description = "Test UDF cdylib used by Comet's Rust UDF host tests (arrow-ffi based)"
+description = "Test UDF cdylib used by Comet's native UDF host tests (arrow-ffi based)"
 
 [lib]
 crate-type = ["cdylib"]

@@ -16,6 +16,7 @@
 // under the License.
 
 //! PoC of vectorization execution through JNI to Rust.
+pub mod c_udf;
 pub mod columnar_to_row;
 pub mod expressions;
 pub mod jni_api;
@@ -23,7 +24,6 @@ pub(crate) mod merge_as_partial;
 pub(crate) mod metrics;
 pub mod operators;
 pub(crate) mod planner;
-pub mod rust_udf;
 pub mod serde;
 pub use datafusion_comet_shuffle as shuffle;
 pub(crate) mod sort;

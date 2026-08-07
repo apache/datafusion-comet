@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Test UDF cdylib for Comet's Rust UDF host tests.
+//! Test UDF cdylib for Comet's native UDF host tests.
 //!
 //! Exports, through the Comet UDF C ABI:
 //!

@@ -343,7 +343,7 @@ use arrow::datatypes::Field;
 /// reads a clock, draws from an RNG, or accumulates state across batches
 /// will produce results that depend on decisions the optimizer is free to
 /// change between releases. There is currently no way to declare such a
-/// kernel: `CometRustUDF.register` rejects `deterministic = false` rather
+/// kernel: `CometNativeUDF.register` rejects `deterministic = false` rather
 /// than registering a function whose volatility Comet would then ignore.
 pub trait CometCScalarUdf: Send + Sync {
     /// Stable function name. Returned via `function_name` over the FFI.

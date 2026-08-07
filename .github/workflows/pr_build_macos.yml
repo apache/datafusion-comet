@@ -82,7 +82,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: native-lib-macos
-          # libcomet_test_udfs is the cdylib CometRustUdfSuite loads; it is built by the same
+          # libcomet_test_udfs is the cdylib CometNativeUdfSuite loads; it is built by the same
           # cargo invocation and the suite finds it next to libcomet.
           path: |
             native/target/ci/libcomet.dylib
@@ -225,7 +225,7 @@ jobs:
               org.apache.comet.CometStringDecodeSuite
               org.apache.comet.CometWidthBucketSuite
               org.apache.comet.CometUuidExpressionSuite
-              org.apache.comet.CometRustUdfSuite
+              org.apache.comet.CometNativeUdfSuite
 
       fail-fast: false
     name: ${{ matrix.os }}/${{ matrix.profile.name }} [${{ matrix.suite.name }}]

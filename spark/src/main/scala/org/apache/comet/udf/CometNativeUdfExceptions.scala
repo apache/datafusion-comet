@@ -21,31 +21,31 @@ package org.apache.comet.udf
 
 import org.apache.comet.{CometNativeException, CometRuntimeException}
 
-/** Thrown when a Rust UDF dynamic library cannot be opened. */
-class CometRustUdfLoadException(msg: String, cause: Throwable = null)
+/** Thrown when a native UDF dynamic library cannot be opened. */
+class CometNativeUdfLoadException(msg: String, cause: Throwable = null)
     extends CometNativeException(msg) {
   if (cause != null) initCause(cause)
 }
 
 /**
- * Thrown when a Rust UDF library exposes the wrong ABI version or is missing required discovery
+ * Thrown when a native UDF library exposes the wrong ABI version or is missing required discovery
  * symbols.
  */
-class CometRustUdfAbiException(msg: String) extends CometNativeException(msg)
+class CometNativeUdfAbiException(msg: String) extends CometNativeException(msg)
 
 /**
  * Thrown when the declared signature does not match what the library reports via
  * `comet_*_udf_list_v1`.
  */
-class CometRustUdfSignatureException(msg: String) extends CometRuntimeException(msg)
+class CometNativeUdfSignatureException(msg: String) extends CometRuntimeException(msg)
 
 /**
- * Thrown by the catalog stub if a registered Rust UDF is invoked on the JVM (which means Comet's
- * plan rule did not replace it).
+ * Thrown by the catalog stub if a registered native UDF is invoked on the JVM (which means
+ * Comet's plan rule did not replace it).
  */
-class CometRustUdfNotEvaluatedException(name: String)
+class CometNativeUdfNotEvaluatedException(name: String)
     extends CometRuntimeException(
-      s"Rust UDF '$name' must run inside Comet native execution; the JVM " +
+      s"native UDF '$name' must run inside Comet native execution; the JVM " +
         "stub was invoked, which means Comet did not replace this expression " +
         "with a native call. Check that Comet is enabled for the operator " +
         "hosting this expression.")

@@ -15,14 +15,16 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Loader and adapters for user-supplied Rust UDF cdylibs registered
-//! through `CometRustUDF` on the JVM side.
+//! Loader and adapters for user-supplied native UDF cdylibs registered
+//! through `CometNativeUDF` on the JVM side.
 //!
 //! The ABI is built only on Arrow's stable FFI (the C Data Interface):
 //! `comet_c_udf_list_v1` returns sedona-style `CometCScalarKernel`
 //! factory structs. No DataFusion type appears in the FFI surface, so a
-//! user cdylib is not coupled to Comet's DataFusion version and the same
-//! ABI is implementable from C or C++.
+//! user library is not coupled to Comet's DataFusion version, and nothing
+//! here depends on the library having been written in Rust. Producing one
+//! from C or C++ is possible in principle but unsupported and untested:
+//! no header is shipped, and the SDK's panic guards have no equivalent.
 //!
 //! See `comet_udf_sdk` for the rationale behind not exposing
 //! `datafusion-ffi` here.

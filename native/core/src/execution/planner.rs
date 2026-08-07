@@ -890,17 +890,16 @@ impl PhysicalPlanner {
                     self.task_context.clone(),
                 )))
             }
-            ExprStruct::RustUdfCall(call) => {
+            ExprStruct::NativeScalarUdf(call) => {
                 let arg_exprs: Vec<Arc<dyn PhysicalExpr>> = call
                     .args
                     .iter()
                     .map(|e| self.create_expr(e, Arc::clone(&input_schema)))
                     .collect::<Result<Vec<_>, _>>()?;
 
-                let lib = crate::execution::rust_udf::cache::get_or_load(&call.library_path)
-                    .map_err(|e| {
-                        GeneralError(format!("Rust UDF load '{}': {e}", call.library_path))
-                    })?;
+                let lib = crate::execution::c_udf::cache::get_or_load(&call.library_path).map_err(
+                    |e| GeneralError(format!("native UDF load '{}': {e}", call.library_path)),
+                )?;
 
                 let loaded = lib
                     .udfs
@@ -908,7 +907,7 @@ impl PhysicalPlanner {
                     .find(|u| u.name == call.name)
                     .ok_or_else(|| {
                         GeneralError(format!(
-                            "Rust UDF '{}' not found in '{}'",
+                            "native UDF '{}' not found in '{}'",
                             call.name, call.library_path
                         ))
                     })?;
@@ -917,13 +916,12 @@ impl PhysicalPlanner {
                     &loaded.udf_impl,
                 )));
 
-                let return_type = to_arrow_datatype(
-                    call.return_type
-                        .as_ref()
-                        .ok_or_else(|| GeneralError("RustUdfCall missing return_type".into()))?,
-                );
+                let return_type =
+                    to_arrow_datatype(call.return_type.as_ref().ok_or_else(|| {
+                        GeneralError("NativeScalarUdf missing return_type".into())
+                    })?);
 
-                // The declared return type comes from the JVM-side `CometRustUDF.register` call
+                // The declared return type comes from the JVM-side `CometNativeUDF.register` call
                 // and is what Spark planned against; the kernel's own `return_field` is what will
                 // actually be produced. If they disagree, fail here with both types named rather
                 // than letting it surface later as a bare type assertion mid-execution.
@@ -932,14 +930,14 @@ impl PhysicalPlanner {
                     .map(|e| e.data_type(input_schema.as_ref()))
                     .collect::<Result<Vec<_>, _>>()?;
                 let kernel_return_type = loaded.udf_impl.return_type(&arg_types)?;
-                if !crate::execution::rust_udf::return_types_compatible(
+                if !crate::execution::c_udf::return_types_compatible(
                     &return_type,
                     &kernel_return_type,
                 ) {
                     return Err(GeneralError(format!(
-                        "Rust UDF '{}' was registered as returning {return_type} but its \
+                        "native UDF '{}' was registered as returning {return_type} but its \
                          return_field reports {kernel_return_type} for argument types {arg_types:?}. \
-                         Make the type passed to CometRustUDF.register match what the UDF returns.",
+                         Make the type passed to CometNativeUDF.register match what the UDF returns.",
                         call.name
                     )));
                 }

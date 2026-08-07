@@ -27,7 +27,7 @@ function stays on the JVM and Comet dispatches into it. Here the function is com
 operates directly on Arrow arrays.
 
 > **Experimental.** This feature and the ABI it depends on are experimental. Neither
-> `comet-udf-sdk` nor `CometRustUDF` is part of Comet's supported API: they fall under
+> `comet-udf-sdk` nor `CometNativeUDF` is part of Comet's supported API: they fall under
 > [everything else is internal](../../about/versioning_policy.md#everything-else-is-internal) in the
 > [versioning policy](../../about/versioning_policy.md), so they may change or be removed in any
 > release, including a patch release, with no deprecation cycle. Expect to rebuild your UDF library
@@ -109,18 +109,24 @@ cargo build --release
 
 Note that the library depends only on `arrow` and the SDK, not on DataFusion. The ABI is built
 purely on the [Arrow C Data Interface](https://arrow.apache.org/docs/format/CDataInterface.html),
-which keeps your library decoupled from the DataFusion version Comet happens to use. It also means
-the same ABI is implementable from C or C++.
+which keeps your library decoupled from the DataFusion version Comet happens to use.
+
+Nothing in that ABI is Rust-specific — it is C structs of function pointers carrying Arrow C Data
+Interface arrays — so a library written in C or C++ could implement it. That is not supported or
+tested today, though: no C header is published, the struct layouts are only defined in the Rust
+source and are not stable across Comet releases, and the SDK's panic guards, which keep a bug in
+your UDF from taking down the executor, have no automatic equivalent in another language. Treat the
+Rust SDK as the way to write a UDF for now.
 
 ## Registering and calling a UDF
 
 Register the function on the driver, giving its name, the library path, and its signature:
 
 ```scala
-import org.apache.comet.udf.CometRustUDF
+import org.apache.comet.udf.CometNativeUDF
 import org.apache.spark.sql.types.LongType
 
-CometRustUDF.register(
+CometNativeUDF.register(
   spark,
   name = "add_one",
   libraryPath = "/opt/udfs/libmy_comet_udfs.so",

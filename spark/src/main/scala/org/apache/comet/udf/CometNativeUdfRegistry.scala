@@ -23,30 +23,30 @@ import java.util.concurrent.ConcurrentHashMap
 
 import org.apache.spark.sql.types.DataType
 
-/** Metadata for a registered Rust UDF. */
-case class RustUdfMetadata(
+/** Metadata for a registered native UDF. */
+case class NativeUdfMetadata(
     libraryPath: String,
     inputTypes: Seq[DataType],
     returnType: DataType,
     deterministic: Boolean)
 
 /**
- * Driver-side registry of Rust UDFs. Looked up by `QueryPlanSerde` to recognize names that should
- * be emitted as `RustUdfCall` instead of attempted as JVM-evaluated `ScalaUDF`s.
+ * Driver-side registry of native UDFs. Looked up by `QueryPlanSerde` to recognize names that
+ * should be emitted as `NativeScalarUdf` instead of attempted as JVM-evaluated `ScalaUDF`s.
  */
-class CometRustUdfRegistry {
-  private val byName = new ConcurrentHashMap[String, RustUdfMetadata]()
+class CometNativeUdfRegistry {
+  private val byName = new ConcurrentHashMap[String, NativeUdfMetadata]()
 
   /** Register or replace metadata for a name. */
-  def register(name: String, meta: RustUdfMetadata): Unit =
+  def register(name: String, meta: NativeUdfMetadata): Unit =
     byName.put(name, meta)
 
   /** Return metadata for a name, if registered. */
-  def get(name: String): Option[RustUdfMetadata] =
+  def get(name: String): Option[NativeUdfMetadata] =
     Option(byName.get(name))
 }
 
-object CometRustUdfRegistry {
+object CometNativeUdfRegistry {
 
   /**
    * Process-wide singleton, which the contributor guide's "Global singletons" section asks be
@@ -60,10 +60,10 @@ object CometRustUdfRegistry {
    * map is keyed by bare function name with no session scoping, so two sessions sharing a driver
    * JVM (a Connect server, a notebook, a test JVM running several suites) share one namespace,
    * and the last registration of a name wins for all of them. A name is also matched by name
-   * alone, which is why an ordinary Scala UDF registered under a name a Rust UDF already claimed
-   * is currently answered out of the Rust library. Both are tracked:
+   * alone, which is why an ordinary Scala UDF registered under a name a native UDF already
+   * claimed is currently answered out of the Rust library. Both are tracked:
    * [[https://github.com/apache/datafusion-comet/issues/5294]] for the scoping and
    * [[https://github.com/apache/datafusion-comet/issues/5295]] for the name collision.
    */
-  lazy val instance: CometRustUdfRegistry = new CometRustUdfRegistry
+  lazy val instance: CometNativeUdfRegistry = new CometNativeUdfRegistry
 }

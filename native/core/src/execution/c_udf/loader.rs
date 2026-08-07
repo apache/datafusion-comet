@@ -153,7 +153,7 @@ pub fn load(path: impl AsRef<Path>) -> Result<LoadedLibrary, LoaderError> {
     let path = path.as_ref().to_path_buf();
     // SAFETY: `Library::new` runs the cdylib's static initializers. We
     // accept this risk because user UDF cdylibs are explicitly registered
-    // by an operator via `CometRustUDF.register`.
+    // by an operator via `CometNativeUDF.register`.
     let library = unsafe { Library::new(&path) }.map_err(|source| LoaderError::Open {
         path: path.clone(),
         source,
@@ -247,7 +247,7 @@ fn read_c_kernels(lib: &Library, path: &Path) -> Result<Option<Vec<LoadedUdf>>, 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::execution::rust_udf::test_support::{test_udfs_path, BUILD_HINT};
+    use crate::execution::c_udf::test_support::{test_udfs_path, BUILD_HINT};
 
     #[test]
     fn load_test_udfs_succeeds() {
