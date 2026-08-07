@@ -651,6 +651,8 @@ mod tests {
             start: 0,
             length: 0,
             record_count: None,
+            first_row_id: None,
+            data_sequence_number: None,
             data_file_path: "data.parquet".to_string(),
             data_file_format: DataFileFormat::Parquet,
             schema: Arc::new(Schema::builder().build().unwrap()),

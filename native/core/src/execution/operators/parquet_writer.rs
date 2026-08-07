@@ -92,7 +92,7 @@ enum ParquetWriter {
     /// The opendal::Writer is created lazily on first write
     #[cfg(feature = "hdfs-opendal")]
     Remote(
-        ArrowWriter<Cursor<Vec<u8>>>,
+        Box<ArrowWriter<Cursor<Vec<u8>>>>,
         Option<opendal::Writer>,
         Operator,
         String,
@@ -338,7 +338,7 @@ impl ParquetWriterExec {
                 // HDFS writer will be created lazily on first write
                 // Use the path from prepare_object_store_with_configs
                 Ok(ParquetWriter::Remote(
-                    arrow_parquet_buffer_writer,
+                    Box::new(arrow_parquet_buffer_writer),
                     None,
                     op,
                     object_store_path.to_string(),
@@ -656,11 +656,9 @@ mod tests {
 
         // Create OpenDAL HDFS operator
         let builder = Hdfs::default().name_node(namenode);
-        let op = Operator::new(builder)
-            .map_err(|e| {
-                DataFusionError::Execution(format!("Failed to create HDFS operator: {}", e))
-            })?
-            .finish();
+        let op = Operator::new(builder).map_err(|e| {
+            DataFusionError::Execution(format!("Failed to create HDFS operator: {}", e))
+        })?;
 
         let mut hdfs_writer = op.writer(output_path).await.map_err(|e| {
             DataFusionError::Execution(format!("Failed to create HDFS writer: {}", e))
@@ -707,11 +705,9 @@ mod tests {
 
         // Create OpenDAL HDFS operator
         let builder = Hdfs::default().name_node(namenode);
-        let op = Operator::new(builder)
-            .map_err(|e| {
-                DataFusionError::Execution(format!("Failed to create HDFS operator: {}", e))
-            })?
-            .finish();
+        let op = Operator::new(builder).map_err(|e| {
+            DataFusionError::Execution(format!("Failed to create HDFS operator: {}", e))
+        })?;
 
         // Create a single HDFS writer for the entire file
         let mut hdfs_writer = op.writer(output_path).await.map_err(|e| {
