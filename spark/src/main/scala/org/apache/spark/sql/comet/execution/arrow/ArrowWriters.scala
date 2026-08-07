@@ -146,7 +146,7 @@ class ArrowWriter(val root: VectorSchemaRoot, fields: Array[ArrowFieldWriter]) {
   def write(row: InternalRow): Unit = {
     var i = 0
     while (i < fields.length) {
-      fields(i).write(row, i)
+      fields(i).writeUnsafe(row, i)
       i += 1
     }
     count += 1
@@ -196,6 +196,10 @@ private[arrow] abstract class ArrowFieldWriter {
     count += 1
   }
 
+  def writeUnsafe(input: SpecializedGetters, ordinal: Int): Unit = {
+    write(input, ordinal)
+  }
+
   def writeCol(input: ColumnarArray): Unit = {
     val inputNumElements = input.numElements()
     valueVector.setInitialCapacity(inputNumElements)
@@ -240,6 +244,15 @@ private[arrow] abstract class FixedWidthArrowFieldWriter extends ArrowFieldWrite
 
   protected def setNullUnsafe(): Unit = {
     BitVectorHelper.unsetBit(valueVector.getValidityBuffer, count)
+  }
+
+  override def writeUnsafe(input: SpecializedGetters, ordinal: Int): Unit = {
+    if (input.isNullAt(ordinal)) {
+      setNullUnsafe()
+    } else {
+      setValueUnsafe(input, ordinal)
+    }
+    count += 1
   }
 
   override def writeCol(input: ColumnarArray): Unit = {

@@ -21,13 +21,14 @@ package org.apache.spark.sql.comet.execution.arrow
 
 import org.apache.arrow.memory.RootAllocator
 import org.apache.spark.benchmark.{Benchmark, BenchmarkBase}
+import org.apache.spark.sql.catalyst.expressions.{GenericInternalRow, UnsafeProjection}
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution.vectorized.OnHeapColumnVector
 import org.apache.spark.sql.types.{LongType, StructField, StructType}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
 /**
- * Benchmark Spark columnar-to-Arrow conversion for fixed-width vectors.
+ * Benchmark Spark row/columnar-to-Arrow conversion for fixed-width vectors.
  *
  * To run this benchmark:
  * {{{
@@ -74,6 +75,16 @@ object CometArrowWriterBenchmark extends BenchmarkBase {
       arrowSchema,
       Iterator.continually(nullableBatch),
       numRows)
+    val projection = UnsafeProjection.create(schema)
+    val row = projection(new GenericInternalRow(Array[Any](1L, -1L))).copy()
+    val nullRow = projection(new GenericInternalRow(Array[Any](null, null))).copy()
+    val noNullRowReader =
+      new RowArrowReader(allocator, arrowSchema, Iterator.continually(row), numRows)
+    val nullableRowReader = new RowArrowReader(
+      allocator,
+      arrowSchema,
+      Iterator.from(0).map(i => if ((i & 1) == 0) nullRow else row),
+      numRows)
 
     try {
       val benchmark = new Benchmark("Spark columnar to Arrow", numRows, output = output)
@@ -84,9 +95,20 @@ object CometArrowWriterBenchmark extends BenchmarkBase {
         nullableReader.loadNextBatch()
       }
       benchmark.run()
+
+      val rowBenchmark = new Benchmark("Spark rows to Arrow", numRows, output = output)
+      rowBenchmark.addCase("fixed-width, no nulls") { _ =>
+        noNullRowReader.loadNextBatch()
+      }
+      rowBenchmark.addCase("fixed-width, 50% nulls") { _ =>
+        nullableRowReader.loadNextBatch()
+      }
+      rowBenchmark.run()
     } finally {
       noNullReader.close()
       nullableReader.close()
+      noNullRowReader.close()
+      nullableRowReader.close()
       noNullBatch.close()
       nullableBatch.close()
       allocator.close()
