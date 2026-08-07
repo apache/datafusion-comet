@@ -295,28 +295,11 @@ case class CometExecRule(session: SparkSession)
       case op if shouldApplySparkToColumnar(conf, op) =>
         convertToComet(op, CometSparkToColumnarExec).getOrElse(op)
 
-      // AQE re-plans the write command's child, which re-inserts a WriteFilesExec above the node
-      // Comet already converted on a previous pass. Collapse it instead of wrapping a second
-      // native write around the first: nested writes would write the data twice, and the inner
-      // node's empty output would be mistaken for a zero-column schema.
-      case w: WriteFilesExec if w.child.isInstanceOf[CometWriteFilesExec] =>
-        w.child
-
       // Replace only the per-task write with Comet, leaving DataWritingCommandExec (and therefore
-      // Spark's commit protocol, stats trackers and SaveMode handling) in place. Gated to Spark
-      // 4.0+: `V1WritesUtils.getWriteFilesOpt` matches the `WriteFilesExecBase` trait there, which
-      // is what makes Spark route the write through this node. Spark 3.x matches the concrete
-      // `WriteFilesExec` case class instead, so a Comet node would be silently ignored and the
-      // write would fall into FileFormatWriter's non-planned, row-based branch.
-      case w: WriteFilesExec if isSpark40Plus =>
+      // Spark's commit protocol, stats trackers and SaveMode handling) in place. CometWriteFiles
+      // declines the write on Spark 3.x, where the node cannot be replaced at all.
+      case w: WriteFilesExec =>
         convertToComet(w, CometWriteFiles).getOrElse(w)
-
-      // On Spark 3.x the write node cannot be replaced at all, so explain why rather than leaving
-      // a user who opted into native writes with no fallback reason. Only reported when they asked
-      // for the feature; otherwise WriteFilesExec falls through to the never-replaced list below.
-      case w: WriteFilesExec if CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED.get(conf) =>
-        withFallbackReason(w, "Native Parquet writes require Spark 4.0 or later")
-        w
 
       // For AQE broadcast stage on a Comet broadcast exchange
       case s @ BroadcastQueryStageExec(_, _: CometBroadcastExchangeExec, _) =>
@@ -392,12 +375,14 @@ case class CometExecRule(session: SparkSession)
         op match {
           case _: CometPlan | _: AQEShuffleReadExec | _: BroadcastExchangeExec |
               _: BroadcastQueryStageExec | _: AdaptiveSparkPlanExec | _: ExecutedCommandExec |
-              _: V2CommandExec | _: WriteFilesExec =>
+              _: V2CommandExec | _: WriteFilesExec | _: DataWritingCommandExec =>
             // Some execs should never be replaced. We include
             // these cases specially here so we do not add a misleading 'info' message.
-            // A WriteFilesExec that reaches this point was already offered to CometWriteFiles by
-            // the case above (or skipped on Spark 3.x, where the node cannot be replaced at all),
-            // so it has a fallback reason already and must not be tagged again.
+            // DataWritingCommandExec is deliberately left in the plan even for a fully native
+            // write - Comet replaces only its WriteFilesExec child (see CometWriteFiles) - so
+            // tagging it would report an accelerated write as a fallback. WriteFilesExec that
+            // reaches this point was already offered to CometWriteFiles by the case above, so it
+            // has a fallback reason already and must not be tagged again.
             op
           case _ =>
             // The operator was not converted to a Comet plan and no serde handler claimed it, so

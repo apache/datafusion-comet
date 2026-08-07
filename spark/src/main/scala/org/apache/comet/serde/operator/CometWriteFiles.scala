@@ -29,7 +29,7 @@ import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
 import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.{CometConf, ConfigEntry}
-import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
+import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, withFallbackReason}
 import org.apache.comet.objectstore.NativeConfig
 import org.apache.comet.rules.CometExecRule
 import org.apache.comet.serde.{CometOperatorSerde, Incompatible, OperatorOuterClass, SupportLevel, Unsupported}
@@ -54,6 +54,14 @@ object CometWriteFiles extends CometOperatorSerde[WriteFilesExec] {
   override def requiresNativeChildren: Boolean = true
 
   override def getSupportLevel(op: WriteFilesExec): SupportLevel = {
+    // `V1WritesUtils.getWriteFilesOpt` matches the `WriteFilesExecBase` trait on Spark 4.0+, which
+    // is what makes Spark route the write through CometWriteFilesExec. Spark 3.x matches the
+    // concrete `WriteFilesExec` case class instead, so a Comet node would be silently ignored and
+    // the write would fall into FileFormatWriter's non-planned, row-based branch.
+    if (!isSpark40Plus) {
+      return Unsupported(Some("Native Parquet writes require Spark 4.0 or later"))
+    }
+
     if (!op.fileFormat.isInstanceOf[ParquetFileFormat]) {
       return Unsupported(Some("Only Parquet writes are supported"))
     }
@@ -62,7 +70,7 @@ object CometWriteFiles extends CometOperatorSerde[WriteFilesExec] {
     // InsertIntoHadoopFsRelationCommand. An absent tag means this write belongs to some other V1
     // write command (a Hive insert, for example) whose semantics Comet has not been verified
     // against, so decline it.
-    val outputPath = op.getTagValue(CometExecRule.WRITE_OUTPUT_PATH) match {
+    val outputPath = outputPathOf(op) match {
       case Some(path) => path
       case None =>
         return Unsupported(Some("Only InsertIntoHadoopFsRelationCommand writes are supported"))
@@ -130,11 +138,13 @@ object CometWriteFiles extends CometOperatorSerde[WriteFilesExec] {
       .newBuilder()
       .setCompression(codec)
 
-    val outputPath = op.getTagValue(CometExecRule.WRITE_OUTPUT_PATH).get
-    val hadoopConf = op.session.sessionState.newHadoopConfWithOptions(op.options)
-    NativeConfig
-      .extractObjectStoreOptions(hadoopConf, URI.create(outputPath))
-      .foreach { case (key, value) => writerOpBuilder.putObjectStoreOptions(key, value) }
+    // getSupportLevel already declined the write if the tag is absent, so this cannot be empty.
+    outputPathOf(op).foreach { outputPath =>
+      val hadoopConf = op.session.sessionState.newHadoopConfWithOptions(op.options)
+      NativeConfig
+        .extractObjectStoreOptions(hadoopConf, URI.create(outputPath))
+        .foreach { case (key, value) => writerOpBuilder.putObjectStoreOptions(key, value) }
+    }
 
     Some(
       Operator
@@ -146,7 +156,11 @@ object CometWriteFiles extends CometOperatorSerde[WriteFilesExec] {
   }
 
   override def createExec(nativeOp: Operator, op: WriteFilesExec): CometNativeExec =
-    CometWriteFilesExec(nativeOp, op.child)
+    CometWriteFilesExec(nativeOp, originalPlan = op, child = op.child)
+
+  /** The write's output path, recorded on the node by `CometExecRule`. */
+  private def outputPathOf(op: WriteFilesExec): Option[String] =
+    op.getTagValue(CometExecRule.WRITE_OUTPUT_PATH)
 
   private def parseCompressionCodec(op: WriteFilesExec): String = {
     // `compression`, `parquet.compression` (i.e., ParquetOutputFormat.COMPRESSION), and

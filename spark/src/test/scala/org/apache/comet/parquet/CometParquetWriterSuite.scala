@@ -34,11 +34,12 @@ import org.apache.parquet.hadoop.util.HadoopInputFile
 import org.apache.spark.sql.{AnalysisException, CometTestBase, DataFrame, Row, SaveMode}
 import org.apache.spark.sql.comet.{CometBatchScanExec, CometNativeScanExec, CometScanExec, CometWriteFilesExec}
 import org.apache.spark.sql.execution.{FileSourceScanExec, QueryExecution, SparkPlan}
+import org.apache.spark.sql.execution.command.DataWritingCommandExec
 import org.apache.spark.sql.execution.datasources.WriteFilesExec
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.StructType
 
-import org.apache.comet.CometConf
+import org.apache.comet.{CometConf, CometExplainInfo}
 import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus}
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator, SchemaGenOptions}
 
@@ -848,6 +849,18 @@ class CometParquetWriterSuite extends CometTestBase {
     assert(
       nativeWriteCount == 1,
       s"Expected exactly one CometWriteFilesExec in the plan, but found $nativeWriteCount:\n${plan.treeString}")
+
+    // The command is left in the plan on purpose for a fully native write, so it must not be
+    // reported as a fallback - otherwise extended explain tells users an accelerated write was
+    // not accelerated, and skews the "Comet accelerated N of M operators" count.
+    plan.foreach {
+      case d: DataWritingCommandExec =>
+        val reasons = d.getTagValue(CometExplainInfo.FALLBACK_REASONS).getOrElse(Set.empty)
+        assert(
+          reasons.isEmpty,
+          s"A fully native write must not tag ${d.nodeName} as a fallback, got: $reasons")
+      case _ =>
+    }
   }
 
   private def assertNoCometWriteFilesExec(plan: SparkPlan): Unit = {

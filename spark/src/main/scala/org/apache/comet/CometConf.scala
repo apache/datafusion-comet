@@ -876,7 +876,7 @@ object CometConf extends ShimCometConf {
     // already enabled the experimental writer.
     createOperatorIncompatConfig(
       "WriteFilesExec",
-      Seq(getOperatorAllowIncompatConfigKey("DataWritingCommandExec")))
+      Some(getOperatorAllowIncompatConfigKey("DataWritingCommandExec")))
 
   /** Create a config to enable a specific operator */
   private def createExecEnabledConfig(
@@ -903,18 +903,16 @@ object CometConf extends ShimCometConf {
 
   private def createOperatorIncompatConfig(
       name: String,
-      alternatives: Seq[String] = Seq.empty): ConfigEntry[Boolean] = {
+      alternative: Option[String] = None): ConfigEntry[Boolean] = {
     val configKey = getOperatorAllowIncompatConfigKey(name)
     val envVar = configKeyToEnvVar(configKey)
     val builder = conf(configKey)
       .category(CATEGORY_EXEC)
       .doc(s"Whether to allow incompatibility for operator: $name. " +
         s"False by default. Can be overridden with $envVar env variable")
-    val withAlts = alternatives match {
-      case Nil => builder
-      case alt +: more => builder.withAlternative(alt, more: _*)
-    }
-    withAlts.booleanConf.createWithEnvVarOrDefault(envVar, false)
+    // ConfigBuilder mutates in place, so the result of withAlternative is `builder` itself.
+    alternative.foreach(builder.withAlternative(_))
+    builder.booleanConf.createWithEnvVarOrDefault(envVar, false)
   }
 
   def isExprEnabled(name: String, conf: SQLConf = SQLConf.get): Boolean = {
