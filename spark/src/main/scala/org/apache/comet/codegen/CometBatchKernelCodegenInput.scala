@@ -110,12 +110,7 @@ private[codegen] object CometBatchKernelCodegenInput extends CometTypeShim {
       if (!spec.nullable) {
         s"      case $ord: return false;"
       } else {
-        // CometPlainVector exposes `isNullAt`; Arrow-typed fields expose `isNull`. Same semantics.
-        val method = spec.vectorClass match {
-          case cls if wrapsInCometPlainVector(cls) => "isNullAt"
-          case cls if cls == classOf[StructVector] => "isNullAt"
-          case _ => "isNull"
-        }
+        val method = nullCheckMethod(spec)
         s"      case $ord: return this.col$ord.$method(this.rowIdx);"
       }
     }
