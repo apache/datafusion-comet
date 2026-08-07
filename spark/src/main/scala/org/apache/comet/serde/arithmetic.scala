@@ -24,9 +24,8 @@ import scala.math.min
 import org.apache.spark.sql.catalyst.expressions.{Add, Attribute, Cast, Divide, EmptyRow, EqualTo, EvalMode, Expression, If, IntegralDivide, Literal, Multiply, Remainder, Round, Subtract, UnaryMinus}
 import org.apache.spark.sql.types.{ByteType, DataType, DecimalType, DoubleType, FloatType, IntegerType, LongType, ShortType}
 
-import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 import org.apache.comet.expressions.{CometCast, CometEvalMode}
-import org.apache.comet.serde.QueryPlanSerde.{evalModeToProto, exprToProtoInternal, flattenAssociative, optExprWithFallbackReason, scalarFunctionExprToProtoWithReturnType, serializeDataType}
+import org.apache.comet.serde.QueryPlanSerde.{evalModeToProto, exprToProtoInternal, flattenAssociative, scalarFunctionExprToProtoWithReturnType, serializeDataType}
 import org.apache.comet.shims.CometEvalModeUtil
 
 trait MathBase {
@@ -62,7 +61,6 @@ trait MathBase {
             .newBuilder(),
           inner).build())
     } else {
-      withFallbackReason(expr, left, right)
       None
     }
   }
@@ -127,7 +125,6 @@ trait MathBase {
       : Option[ExprOuterClass.Expr] = {
     val protos = operands.map(exprToProtoInternal(_, inputs, binding))
     if (protos.exists(_.isEmpty)) {
-      withFallbackReason(expr, operands: _*)
       None
     } else {
       val returnType = serializeDataType(dataType)
@@ -426,7 +423,7 @@ object CometRound extends CometExpressionSerde[Round] {
             r.ansiEnabled,
             childExpr,
             scaleExpr)
-        optExprWithFallbackReason(optExpr, r, r.child)
+        optExpr
     }
 
   }
@@ -451,7 +448,6 @@ object CometUnaryMinus extends CometExpressionSerde[UnaryMinus] with MathBase {
           .setUnaryMinus(builder)
           .build())
     } else {
-      withFallbackReason(expr, expr.child)
       None
     }
   }

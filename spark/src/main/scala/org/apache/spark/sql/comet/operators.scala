@@ -58,7 +58,7 @@ import org.apache.comet.{CometConf, CometExecIterator, CometRuntimeException, Co
 import org.apache.comet.CometSparkSessionExtensions.{isCometShuffleEnabled, withFallbackReason}
 import org.apache.comet.parquet.CometParquetUtils
 import org.apache.comet.rules.CometExecRule
-import org.apache.comet.serde.{CometOperatorSerde, Compatible, Incompatible, OperatorOuterClass, QueryContextInterner, SupportLevel, Unsupported}
+import org.apache.comet.serde.{CometOperatorSerde, Compatible, OperatorOuterClass, QueryContextInterner, SupportLevel, Unsupported}
 import org.apache.comet.serde.OperatorOuterClass.{AggregateMode => CometAggregateMode, Operator}
 import org.apache.comet.serde.QueryPlanSerde
 import org.apache.comet.serde.QueryPlanSerde.{aggExprToProto, exprToProto, isStringCollationType, supportedSortType}
@@ -1057,7 +1057,6 @@ object CometProjectExec extends CometOperatorSerde[ProjectExec] {
         .addAllProjectList(exprs.map(_.get).asJava)
       Some(builder.setProjection(projectBuilder).build())
     } else {
-      withFallbackReason(op, op.projectList: _*)
       None
     }
   }
@@ -1117,7 +1116,6 @@ object CometFilterExec extends CometOperatorSerde[FilterExec] {
         .setPredicate(cond.get)
       Some(builder.setFilter(filterBuilder).build())
     } else {
-      withFallbackReason(op, op.condition, op.child)
       None
     }
   }
@@ -1190,7 +1188,7 @@ object CometSortExec extends CometOperatorSerde[SortExec] {
         .addAllSortOrders(sortOrders.map(_.get).asJava)
       Some(builder.setSort(sortBuilder).build())
     } else {
-      withFallbackReason(op, "sort order not supported", op.sortOrder: _*)
+      withFallbackReason(op, "sort order not supported")
       None
     }
   }
@@ -1380,11 +1378,7 @@ object CometExpandExec extends CometOperatorSerde[ExpandExec] {
       op: ExpandExec,
       builder: Operator.Builder,
       childOp: OperatorOuterClass.Operator*): Option[OperatorOuterClass.Operator] = {
-    var allProjExprs: Seq[Expression] = Seq()
-    val projExprs = op.projections.flatMap(_.map(e => {
-      allProjExprs = allProjExprs :+ e
-      exprToProto(e, op.child.output)
-    }))
+    val projExprs = op.projections.flatMap(_.map(e => exprToProto(e, op.child.output)))
 
     if (projExprs.forall(_.isDefined) && childOp.nonEmpty) {
       val expandBuilder = OperatorOuterClass.Expand
@@ -1393,7 +1387,6 @@ object CometExpandExec extends CometOperatorSerde[ExpandExec] {
         .setNumExprPerProject(op.projections.head.size)
       Some(builder.setExpand(expandBuilder).build())
     } else {
-      withFallbackReason(op, allProjExprs: _*)
       None
     }
   }
@@ -1453,11 +1446,6 @@ object CometExplodeExec extends CometOperatorSerde[GenerateExec] {
     if (nodeName != "explode" && nodeName != "posexplode") {
       return Unsupported(Some(s"Unsupported generator: ${op.generator.nodeName}"))
     }
-    if (op.outer) {
-      // DataFusion UnnestExec has different semantics to Spark for this case
-      // https://github.com/apache/datafusion/issues/19053
-      return Incompatible(Some("Empty arrays are not preserved as null outputs when outer=true"))
-    }
     op.generator.children.head.dataType match {
       case _: ArrayType =>
         Compatible()
@@ -1478,7 +1466,6 @@ object CometExplodeExec extends CometOperatorSerde[GenerateExec] {
     val childExprProto = exprToProto(childExpr, op.child.output)
 
     if (childExprProto.isEmpty) {
-      withFallbackReason(op, childExpr)
       return None
     }
 
@@ -1490,7 +1477,6 @@ object CometExplodeExec extends CometOperatorSerde[GenerateExec] {
     }
 
     if (projectExprs.exists(_.isEmpty) || childOp.isEmpty) {
-      withFallbackReason(op, op.output: _*)
       return None
     }
 
@@ -1810,10 +1796,7 @@ trait CometBaseAggregate {
       }
 
       if (aggExprs.exists(_.isEmpty)) {
-        withFallbackReason(
-          aggregate,
-          "Unsupported aggregate expression(s)",
-          aggregateExpressions ++ aggregateExpressions.map(_.aggregateFunction): _*)
+        withFallbackReason(aggregate, "Unsupported aggregate expression(s)")
         return None
       }
 
@@ -1854,9 +1837,6 @@ trait CometBaseAggregate {
           Some(builder.setHashAgg(hashAggBuilder).build())
         }
       } else {
-        val allChildren: Seq[Expression] =
-          groupingExpressions ++ aggregateExpressions ++ aggregateAttributes
-        withFallbackReason(aggregate, allChildren: _*)
         None
       }
     }
@@ -1885,8 +1865,7 @@ trait CometBaseAggregate {
     if (resultExprs.exists(_.isEmpty)) {
       withFallbackReason(
         aggregate,
-        s"Unsupported result expressions found in: $resultExpressions",
-        resultExpressions: _*)
+        s"Unsupported result expressions found in: $resultExpressions")
       return None
     }
     val planId = builder.getPlanId
@@ -2169,7 +2148,6 @@ trait CometHashJoin {
     val condition = join.condition.map { cond =>
       val condProto = exprToProto(cond, join.left.output ++ join.right.output)
       if (condProto.isEmpty) {
-        withFallbackReason(join, cond)
         return None
       }
       condProto.get
@@ -2208,8 +2186,6 @@ trait CometHashJoin {
       condition.foreach(joinBuilder.setCondition)
       Some(builder.setHashJoin(joinBuilder).build())
     } else {
-      val allExprs: Seq[Expression] = joinKeys
-      withFallbackReason(join, allExprs: _*)
       None
     }
   }
@@ -2336,7 +2312,6 @@ object CometBroadcastNestedLoopJoinExec extends CometOperatorSerde[BroadcastNest
     val joinCondition = op.condition.map({ cond =>
       val condProto = exprToProto(cond, op.left.output ++ op.right.output)
       if (condProto.isEmpty) {
-        withFallbackReason(op, cond)
         return None
       }
       condProto.get
@@ -2654,15 +2629,13 @@ object CometSortMergeJoinExec extends CometOperatorSerde[SortMergeJoinExec] {
         .get(join.conf)) {
       withFallbackReason(
         join,
-        s"${CometConf.COMET_EXEC_SORT_MERGE_JOIN_WITH_JOIN_FILTER_ENABLED.key} is not enabled",
-        join.condition.get)
+        s"${CometConf.COMET_EXEC_SORT_MERGE_JOIN_WITH_JOIN_FILTER_ENABLED.key} is not enabled")
       return None
     }
 
     val condition = join.condition.map { cond =>
       val condProto = exprToProto(cond, join.left.output ++ join.right.output)
       if (condProto.isEmpty) {
-        withFallbackReason(join, cond)
         return None
       }
       condProto.get
@@ -2723,8 +2696,6 @@ object CometSortMergeJoinExec extends CometOperatorSerde[SortMergeJoinExec] {
       condition.map(joinBuilder.setCondition)
       Some(builder.setSortMergeJoin(joinBuilder).build())
     } else {
-      val allExprs: Seq[Expression] = joinKeys
-      withFallbackReason(join, allExprs: _*)
       None
     }
   }

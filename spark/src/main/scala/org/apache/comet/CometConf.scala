@@ -682,6 +682,20 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
+  val COMET_STRICT_FALLBACK_REASONS: ConfigEntry[Boolean] =
+    conf("spark.comet.explain.fallback.strict.enabled")
+      .category(CATEGORY_TESTING)
+      .doc(
+        "Test-only. When enabled, Comet throws if it declines to convert an operator that it " +
+          "could otherwise have converted (all children are already native) without recording a " +
+          "fallback reason on the operator or on any of its expressions. Without this check, a " +
+          "serde that returns `None` and forgets to state a reason silently produces a generic " +
+          "'<operator> is not supported' message instead of a visible failure. Enabled for all " +
+          "Comet test suites via `CometTestBase`.")
+      .internal()
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_ONHEAP_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.exec.onHeap.enabled")
       .category(CATEGORY_TESTING)
