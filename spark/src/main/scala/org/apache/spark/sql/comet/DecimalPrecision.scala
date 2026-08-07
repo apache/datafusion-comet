@@ -41,10 +41,6 @@ import org.apache.spark.sql.types.DecimalType
 object DecimalPrecision {
   def promote(expr: Expression): Expression = {
     expr.transformUp {
-      // This means the binary expression is already optimized with the rule in Spark. This can
-      // happen if the Spark version is < 3.4
-      case e: BinaryArithmetic if e.left.prettyName == "promote_precision" => e
-
       // Recursive exprToProto calls can re-promote every decimal binary operator below. Collapse
       // only equivalent wrappers so the shared promotion rule remains idempotent.
       case outer @ CheckOverflow(
