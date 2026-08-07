@@ -38,6 +38,14 @@ on:
       - main
   workflow_dispatch:
 
+# Least-privilege default for the whole pipeline: every job here builds and tests,
+# and nothing needs to write back to the repository. Jobs that call reusable
+# workflows inherit this, and a callee can only narrow it further -- so the one
+# job that does need to write (docs, which pushes the built site to asf-site)
+# raises it to `contents: write` on itself.
+permissions:
+  contents: read
+
 jobs:
   # ---------------------------------------------------------------------------
   # preflight: cheap checks that gate everything else. Failure short-circuits
@@ -58,6 +66,7 @@ jobs:
       github.event.label.name == 'run-spark-3.4-tests' ||
       github.event.label.name == 'run-spark-4.0-tests' ||
       github.event.label.name == 'run-spark-4.1-tests' ||
+      github.event.label.name == 'run-spark-4.2-tests' ||
       github.event.label.name == 'run-iceberg-tests'
     steps:
       - uses: actions/checkout@v7
@@ -114,6 +123,7 @@ jobs:
       spark_3_5:    ${{ steps.compute.outputs.spark_3_5 }}
       spark_4_0:    ${{ steps.compute.outputs.spark_4_0 }}
       spark_4_1:    ${{ steps.compute.outputs.spark_4_1 }}
+      spark_4_2:    ${{ steps.compute.outputs.spark_4_2 }}
       iceberg_1_8:  ${{ steps.compute.outputs.iceberg_1_8 }}
       iceberg_1_9:  ${{ steps.compute.outputs.iceberg_1_9 }}
       iceberg_1_10: ${{ steps.compute.outputs.iceberg_1_10 }}
@@ -199,6 +209,10 @@ jobs:
     if: |
       needs.changes.outputs.docs == 'true' &&
       (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    # docs.yaml commits and pushes the generated site to the asf-site branch, so
+    # this job needs write access on top of the read-only default above.
+    permissions:
+      contents: write
     uses: ./.github/workflows/docs.yaml
 
   spark_3_4:
@@ -261,6 +275,23 @@ jobs:
     with:
       spark-short: '4.1'
       spark-full: '4.1.3'
+      java: 17
+
+  spark_4_2:
+    name: Spark SQL Tests (Spark 4.2)
+    needs: changes
+    # Main-only by default; PRs need the `run-spark-4.2-tests` label. Spark 4.2
+    # support is still experimental, so keep it off the default PR path.
+    if: |
+      needs.changes.outputs.spark_4_2 == 'true' &&
+      (github.event_name == 'push' ||
+       github.event_name == 'workflow_dispatch' ||
+       (github.event_name == 'pull_request' &&
+        contains(github.event.pull_request.labels.*.name, 'run-spark-4.2-tests')))
+    uses: ./.github/workflows/spark_sql_test_reusable.yml
+    with:
+      spark-short: '4.2'
+      spark-full: '4.2.0'
       java: 17
 
   iceberg_1_8:

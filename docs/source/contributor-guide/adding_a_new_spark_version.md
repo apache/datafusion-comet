@@ -253,13 +253,19 @@ new-version bring-up are:
 
 ### CI for the Spark SQL Tests
 
-Spark SQL tests do not run from the main PR build workflows. They have
-their own dedicated workflow file:
+Spark SQL tests do not run from the main PR build workflows. They are driven
+by the umbrella workflow, which calls a reusable workflow once per Spark
+version:
 
-- `.github/workflows/spark_sql_test.yml`
+- `.github/workflows/ci.yml` holds one `spark_X_Y` job per version.
+- `.github/workflows/spark_sql_test_reusable.yml` holds the job logic.
 
-Add the new version to the matrix (`spark-short`, `spark-full`, `java`).
-Use the closest existing entry as a template.
+Add a `spark_X_Y` job to `ci.yml` passing `spark-short`, `spark-full`, and
+`java`, using the closest existing job as a template. A brand-new version
+should be gated behind a `run-spark-X.Y-tests` label so it runs on pushes to
+main but stays off the default PR path. Also add a matching `spark_X_Y`
+entry to `FILTERS` in `dev/ci/compute-changes.py` and expose it as an output
+of the `changes` job, otherwise the new job never fires.
 
 Before merging, run `make format`, run clippy
 (`cd native && cargo clippy --all-targets --workspace -- -D warnings`), and
