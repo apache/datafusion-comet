@@ -29,6 +29,8 @@ use arrow::error::ArrowError;
 use datafusion::common::DataFusionError;
 use datafusion::physical_plan::ColumnarValue;
 use std::sync::Arc;
+use common::ScalarValue;
+use datafusion::common;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MathOp {
@@ -41,64 +43,94 @@ enum MathOp {
 fn try_arithmetic_kernel<T>(
     left: &PrimitiveArray<T>,
     right: &PrimitiveArray<T>,
-    is_ansi_mode: bool,
     op: MathOp,
 ) -> Result<ArrayRef, DataFusionError>
 where
     T: ArrowPrimitiveType,
 {
     match op {
-        MathOp::Add => checked_binary(left, right, is_ansi_mode, |l, r| l.add_checked(r)),
-        MathOp::Sub => checked_binary(left, right, is_ansi_mode, |l, r| l.sub_checked(r)),
-        MathOp::Mul => checked_binary(left, right, is_ansi_mode, |l, r| l.mul_checked(r)),
-        MathOp::Div => checked_binary(left, right, is_ansi_mode, |l, r| l.div_checked(r)),
+        MathOp::Add => checked_binary(left, right, |l, r| l.add_checked(r)),
+        MathOp::Sub => checked_binary(left, right, |l, r| l.sub_checked(r)),
+        MathOp::Mul => checked_binary(left, right, |l, r| l.mul_checked(r)),
+        MathOp::Div => checked_binary(left, right, |l, r| l.div_checked(r)),
     }
 }
 
-fn ansi_arithmetic_kernel<T>(
-    left: &PrimitiveArray<T>,
-    right: &PrimitiveArray<T>,
+fn ansi_arithmetic_kernel(
+    left: &ColumnarValue,
+    right: &ColumnarValue,
     op: MathOp,
-) -> Result<ArrayRef, DataFusionError>
-where
-    T: ArrowPrimitiveType,
-{
-    let result_array = match op {
-        MathOp::Add => numeric::add(left, right),
-        MathOp::Sub => numeric::sub(left, right),
-        MathOp::Mul => numeric::mul(left, right),
-        MathOp::Div => numeric::div(left, right),
+) -> Result<ColumnarValue, DataFusionError> {
+    let to_array = |cv: &ColumnarValue| -> Result<(ArrayRef, bool), DataFusionError> {
+        match cv {
+            ColumnarValue::Array(arr) => Ok((Arc::clone(arr), false)),
+            ColumnarValue::Scalar(scalar) => Ok((scalar.to_array()?, true)),
+        }
     };
 
-    result_array.map_err(|e| match e {
+    let (left_arr, left_is_scalar) = to_array(left)?;
+    let (right_arr, right_is_scalar) = to_array(right)?;
+
+    let run_kernel = |l: &dyn arrow::array::Datum, r: &dyn arrow::array::Datum| {
+        match op {
+            MathOp::Add => numeric::add(l, r),
+            MathOp::Sub => numeric::sub(l, r),
+            MathOp::Mul => numeric::mul(l, r),
+            MathOp::Div => numeric::div(l, r),
+        }
+    };
+
+    let result_array = match (left_is_scalar, right_is_scalar) {
+        (false, false) => run_kernel(&left_arr, &right_arr),
+        (false, true) => run_kernel(&left_arr, &arrow::array::Scalar::new(right_arr)),
+        (true, false) => run_kernel(&arrow::array::Scalar::new(left_arr), &right_arr),
+        (true, true) => run_kernel(
+            &arrow::array::Scalar::new(left_arr),
+            &arrow::array::Scalar::new(right_arr),
+        ),
+    };
+
+    let array = result_array.map_err(|e| match e {
         ArrowError::DivideByZero => divide_by_zero_error().into(),
         _ => DataFusionError::from(SparkError::ArithmeticOverflow {
             from_type: String::from("integer"),
         }),
-    })
+    })?;
+
+    if left_is_scalar && right_is_scalar {
+        let scalar_val = ScalarValue::try_from_array(array.as_ref(), 0)?;
+        Ok(ColumnarValue::Scalar(scalar_val))
+    } else {
+        Ok(ColumnarValue::Array(array))
+    }
+}
+
+fn ansi_float_div<T>(
+    left: &PrimitiveArray<T>,
+    right: &PrimitiveArray<T>,
+) -> Result<ArrayRef, DataFusionError>
+where
+    T: ArrowPrimitiveType,
+{
+    arity::try_binary::<_, _, _, T>(left, right, |l, r| l.div_checked(r))
+        .map(|array| Arc::new(array) as ArrayRef)
+        .map_err(|e| match e {
+            ArrowError::DivideByZero => divide_by_zero_error().into(),
+            _ => DataFusionError::from(SparkError::ArithmeticOverflow {
+                from_type: String::from("integer"),
+            }),
+        })
 }
 
 fn checked_binary<T, F>(
     left: &PrimitiveArray<T>,
     right: &PrimitiveArray<T>,
-    is_ansi_mode: bool,
     op: F,
 ) -> Result<ArrayRef, DataFusionError>
 where
     T: ArrowPrimitiveType,
     F: Fn(T::Native, T::Native) -> Result<T::Native, ArrowError>,
 {
-    if is_ansi_mode {
-        return arity::try_binary::<_, _, _, T>(left, right, op)
-            .map(|array| Arc::new(array) as ArrayRef)
-            .map_err(|e| match e {
-                ArrowError::DivideByZero => divide_by_zero_error().into(),
-                _ => DataFusionError::from(SparkError::ArithmeticOverflow {
-                    from_type: String::from("integer"),
-                }),
-            });
-    }
-
     let len = left.len();
     let lhs = &left.values()[..len];
     let rhs = &right.values()[..len];
@@ -195,87 +227,95 @@ fn checked_arithmetic_internal(
         }
     };
 
-    let (left_arr, right_arr): (ArrayRef, ArrayRef) = match (left, right) {
-        (ColumnarValue::Array(l), ColumnarValue::Array(r)) => (Arc::clone(l), Arc::clone(r)),
-        (ColumnarValue::Scalar(l), ColumnarValue::Array(r)) => {
-            (l.to_array_of_size(r.len())?, Arc::clone(r))
-        }
-        (ColumnarValue::Array(l), ColumnarValue::Scalar(r)) => {
-            (Arc::clone(l), r.to_array_of_size(l.len())?)
-        }
-        (ColumnarValue::Scalar(l), ColumnarValue::Scalar(r)) => (l.to_array()?, r.to_array()?),
-    };
+    match data_type {
+        DataType::Int8 | DataType::Int16 | DataType::Int32 | DataType::Int64
+            if is_ansi_mode =>
+            {
+                ansi_arithmetic_kernel(left, right, op)
+            }
+        _ => {
+            let (left_arr, right_arr): (ArrayRef, ArrayRef) = match (left, right) {
+                (ColumnarValue::Array(l), ColumnarValue::Array(r)) => (Arc::clone(l), Arc::clone(r)),
+                (ColumnarValue::Scalar(l), ColumnarValue::Array(r)) => {
+                    (l.to_array_of_size(r.len())?, Arc::clone(r))
+                }
+                (ColumnarValue::Array(l), ColumnarValue::Scalar(r)) => {
+                    (Arc::clone(l), r.to_array_of_size(l.len())?)
+                }
+                (ColumnarValue::Scalar(l), ColumnarValue::Scalar(r)) => (l.to_array()?, r.to_array()?),
+            };
 
-    let result_array = match data_type {
-        DataType::Int8 if is_ansi_mode => ansi_arithmetic_kernel(
-            left_arr.as_primitive::<Int8Type>(),
-            right_arr.as_primitive::<Int8Type>(),
-            op,
-        ),
-        DataType::Int8 => try_arithmetic_kernel::<Int8Type>(
-            left_arr.as_primitive::<Int8Type>(),
-            right_arr.as_primitive::<Int8Type>(),
-            is_ansi_mode,
-            op,
-        ),
-        DataType::Int16 if is_ansi_mode => ansi_arithmetic_kernel(
-            left_arr.as_primitive::<Int16Type>(),
-            right_arr.as_primitive::<Int16Type>(),
-            op,
-        ),
-        DataType::Int16 => try_arithmetic_kernel::<Int16Type>(
-            left_arr.as_primitive::<Int16Type>(),
-            right_arr.as_primitive::<Int16Type>(),
-            is_ansi_mode,
-            op,
-        ),
-        DataType::Int32 if is_ansi_mode => ansi_arithmetic_kernel(
-            left_arr.as_primitive::<Int32Type>(),
-            right_arr.as_primitive::<Int32Type>(),
-            op,
-        ),
-        DataType::Int32 => try_arithmetic_kernel::<Int32Type>(
-            left_arr.as_primitive::<Int32Type>(),
-            right_arr.as_primitive::<Int32Type>(),
-            is_ansi_mode,
-            op,
-        ),
-        DataType::Int64 if is_ansi_mode => ansi_arithmetic_kernel(
-            left_arr.as_primitive::<Int64Type>(),
-            right_arr.as_primitive::<Int64Type>(),
-            op,
-        ),
-        DataType::Int64 => try_arithmetic_kernel::<Int64Type>(
-            left_arr.as_primitive::<Int64Type>(),
-            right_arr.as_primitive::<Int64Type>(),
-            is_ansi_mode,
-            op,
-        ),
-        DataType::Float16 if op == MathOp::Div => try_arithmetic_kernel::<Float16Type>(
-            left_arr.as_primitive::<Float16Type>(),
-            right_arr.as_primitive::<Float16Type>(),
-            is_ansi_mode,
-            op,
-        ),
-        DataType::Float32 if op == MathOp::Div => try_arithmetic_kernel::<Float32Type>(
-            left_arr.as_primitive::<Float32Type>(),
-            right_arr.as_primitive::<Float32Type>(),
-            is_ansi_mode,
-            op,
-        ),
-        DataType::Float64 if op == MathOp::Div => try_arithmetic_kernel::<Float64Type>(
-            left_arr.as_primitive::<Float64Type>(),
-            right_arr.as_primitive::<Float64Type>(),
-            is_ansi_mode,
-            op,
-        ),
-        _ => Err(DataFusionError::Internal(format!(
-            "Unsupported data type: {:?}",
-            data_type
-        ))),
-    };
-
-    Ok(ColumnarValue::Array(result_array?))
+            let result_array = match data_type {
+                DataType::Int8 => try_arithmetic_kernel(
+                    left_arr.as_primitive::<Int8Type>(),
+                    right_arr.as_primitive::<Int8Type>(),
+                    op,
+                ),
+                DataType::Int16 => try_arithmetic_kernel(
+                    left_arr.as_primitive::<Int16Type>(),
+                    right_arr.as_primitive::<Int16Type>(),
+                    op,
+                ),
+                DataType::Int32 => try_arithmetic_kernel(
+                    left_arr.as_primitive::<Int32Type>(),
+                    right_arr.as_primitive::<Int32Type>(),
+                    op,
+                ),
+                DataType::Int64 => try_arithmetic_kernel(
+                    left_arr.as_primitive::<Int64Type>(),
+                    right_arr.as_primitive::<Int64Type>(),
+                    op,
+                ),
+                DataType::Float16 if op == MathOp::Div => {
+                    if is_ansi_mode {
+                        ansi_float_div(
+                            left_arr.as_primitive::<Float16Type>(),
+                            right_arr.as_primitive::<Float16Type>(),
+                        )
+                    } else {
+                        try_arithmetic_kernel(
+                            left_arr.as_primitive::<Float16Type>(),
+                            right_arr.as_primitive::<Float16Type>(),
+                            op,
+                        )
+                    }
+                }
+                DataType::Float32 if op == MathOp::Div => {
+                    if is_ansi_mode {
+                        ansi_float_div(
+                            left_arr.as_primitive::<Float32Type>(),
+                            right_arr.as_primitive::<Float32Type>(),
+                        )
+                    } else {
+                        try_arithmetic_kernel(
+                            left_arr.as_primitive::<Float32Type>(),
+                            right_arr.as_primitive::<Float32Type>(),
+                            op,
+                        )
+                    }
+                }
+                DataType::Float64 if op == MathOp::Div => {
+                    if is_ansi_mode {
+                        ansi_float_div(
+                            left_arr.as_primitive::<Float64Type>(),
+                            right_arr.as_primitive::<Float64Type>(),
+                        )
+                    } else {
+                        try_arithmetic_kernel(
+                            left_arr.as_primitive::<Float64Type>(),
+                            right_arr.as_primitive::<Float64Type>(),
+                            op,
+                        )
+                    }
+                }
+                _ => Err(DataFusionError::Internal(format!(
+                    "Unsupported data type: {:?}",
+                    data_type
+                ))),
+            };
+            Ok(ColumnarValue::Array(result_array?))
+        }
+    }
 }
 
 #[cfg(test)]
@@ -366,5 +406,34 @@ mod tests {
         let result = as_int32(checked_add(&args, &DataType::Int32, EvalMode::Ansi).unwrap());
         assert_eq!(result, Int32Array::from(vec![None, Some(2)]));
         assert_eq!(result.values()[0], 0);
+    }
+
+    #[test]
+    fn test_ansi_integer_div_by_zero() {
+        let args = int32_args(vec![Some(10)], vec![Some(0)]);
+        let result = checked_div(&args, &DataType::Int32, EvalMode::Ansi);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_ansi_scalar_operand() {
+        let args = vec![
+            ColumnarValue::Array(Arc::new(Int32Array::from(vec![Some(10), Some(20)]))),
+            ColumnarValue::Scalar(ScalarValue::Int32(Some(5))),
+        ];
+        let result = as_int32(checked_add(&args, &DataType::Int32, EvalMode::Ansi).unwrap());
+        assert_eq!(result, Int32Array::from(vec![Some(15), Some(25)]));
+    }
+
+    #[test]
+    fn test_ansi_int64_overflow() {
+        let args = vec![
+            ColumnarValue::Array(Arc::new(arrow::array::Int64Array::from(vec![Some(
+                i64::MAX,
+            )]))),
+            ColumnarValue::Array(Arc::new(arrow::array::Int64Array::from(vec![Some(1)]))),
+        ];
+        let result = checked_add(&args, &DataType::Int64, EvalMode::Ansi);
+        assert!(result.is_err());
     }
 }
