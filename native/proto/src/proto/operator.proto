@@ -475,6 +475,8 @@ message ParquetWriter {
   // configuration value "spark.hadoop.fs.s3a.access.key" will be stored as "fs.s3a.access.key" in
   // the map.
   map<string, string> object_store_options = 8;
+  // Runtime Spark version written to Parquet metadata for Spark reader compatibility.
+  string spark_version = 9;
 }
 
 enum AggregateMode {
