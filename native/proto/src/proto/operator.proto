@@ -458,16 +458,17 @@ message ShuffleWriter {
 }
 
 message ParquetWriter {
+  // Fully-qualified path of the Parquet file that this task must write, set per task by
+  // CometWriteFilesExec from FileCommitProtocol.newTaskTempFile. Naming and staging are owned by
+  // Spark's commit protocol so that task-attempt isolation, speculative execution, and committers
+  // that track individual files (S3A magic, streaming manifest) all behave as they do for Spark's
+  // own writer. The native writer uses this path verbatim.
   string output_path = 1;
   CompressionCodec compression = 2;
   repeated string column_names = 4;
-  // Working directory for temporary files (used by FileCommitProtocol)
-  // If not set, files are written directly to output_path
-  optional string work_dir = 5;
-  // Job ID for tracking this write operation
-  optional string job_id = 6;
-  // Task attempt ID for this specific task
-  optional int32 task_attempt_id = 7;
+  // Was work_dir / job_id / task_attempt_id, used when the native writer derived its own file
+  // names from the task context. File naming now comes from the commit protocol instead.
+  reserved 5, 6, 7;
   // Options for configuring object stores such as AWS S3, GCS, etc. The key-value pairs are taken
   // from Hadoop configuration for compatibility with Hadoop FileSystem implementations of object
   // stores.

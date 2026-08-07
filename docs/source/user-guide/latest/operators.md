@@ -116,9 +116,9 @@ omitted from the tables below and may be reconsidered based on demand:
 
 ## Writes
 
-| Operator                 | Status | Notes                                                             |
-| ------------------------ | ------ | ----------------------------------------------------------------- |
-| `DataWritingCommandExec` | ⚠️     | Experimental native Parquet writes, disabled by default (opt-in). |
+| Operator         | Status | Notes                                                                                                                             |
+| ---------------- | ------ | --------------------------------------------------------------------------------------------------------------------------------- |
+| `WriteFilesExec` | ⚠️     | Experimental native Parquet writes, disabled by default (opt-in). Requires Spark 4.0+. Non-partitioned, non-bucketed writes only. |
 
 ## Python and UDF
 

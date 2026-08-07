@@ -22,7 +22,7 @@ package org.apache.comet.rules
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.util.sideBySide
-import org.apache.spark.sql.comet.{CometCollectLimitExec, CometColumnarToRowExec, CometMapInBatchExec, CometNativeColumnarToRowExec, CometNativeWriteExec, CometPlan, CometSparkToColumnarExec}
+import org.apache.spark.sql.comet.{CometCollectLimitExec, CometColumnarToRowExec, CometMapInBatchExec, CometNativeColumnarToRowExec, CometPlan, CometSparkToColumnarExec, CometWriteFilesExec}
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.comet.shims.{MapInBatchInfo, ShimCometMapInBatch}
 import org.apache.spark.sql.execution.{ColumnarToRowExec, RowToColumnarExec, SparkPlan}
@@ -87,9 +87,12 @@ case class EliminateRedundantTransitions(session: SparkSession)
           // and CometSparkToColumnarExec
           sparkToColumnar.child
         }
-      // Remove unnecessary transition for native writes
-      // Write should be final operation in the plan
-      case ColumnarToRowExec(nativeWrite: CometNativeWriteExec) =>
+      // Remove unnecessary transition for native writes. CometWriteFilesExec reports
+      // supportsColumnar (it is a CometExec) so that its child stays columnar, but Spark's
+      // transition rules then wrap it for the row-based DataWritingCommandExec above. That
+      // wrapper has to go: Spark drives the write through executeWrite on this exact node, and
+      // ColumnarToRowExec does not implement doExecuteWrite.
+      case ColumnarToRowExec(nativeWrite: CometWriteFilesExec) =>
         nativeWrite
       case c @ ColumnarToRowExec(child) if hasCometNativeChild(child) =>
         val op = createColumnarToRowExec(child)
