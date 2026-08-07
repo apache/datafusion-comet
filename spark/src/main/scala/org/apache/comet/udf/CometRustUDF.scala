@@ -19,15 +19,10 @@
 
 package org.apache.comet.udf
 
-import scala.util.Try
-
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.expressions.UserDefinedFunction
 import org.apache.spark.sql.functions.udf
 import org.apache.spark.sql.types.DataType
-
-import com.fasterxml.jackson.databind.ObjectMapper
-import com.fasterxml.jackson.databind.node.ObjectNode
 
 /**
  * Entry point for registering Rust scalar UDFs with Comet.
@@ -44,14 +39,13 @@ import com.fasterxml.jackson.databind.node.ObjectNode
  */
 object CometRustUDF {
 
-  private val mapper: ObjectMapper = new ObjectMapper()
-
   /**
    * Register a single Rust UDF with an explicit signature.
    *
    * Validates the library on the driver (loads it, confirms a UDF named `name` exists). On
-   * success a stub Spark catalog UDF is installed (so SQL/DataFrame name resolution succeeds) and
-   * the driver-side registry is updated.
+   * success the driver-side registry is updated and a stub Spark catalog UDF is installed, in
+   * that order, so SQL/DataFrame name resolution succeeds only once the plan can be serialized as
+   * a `RustUdfCall`.
    *
    * Executors do not consult the driver's registry: the library path travels with the plan in the
    * `RustUdfCall` proto, and each executor loads the library itself on first use. The path must
@@ -79,52 +73,68 @@ object CometRustUDF {
           "as immutable, so a nondeterministic function may be constant-folded or eliminated " +
           "as a common subexpression. See https://github.com/apache/datafusion-comet/issues/5249")
     }
-    val described = describeOne(libraryPath, name)
-    require(described.name == name, s"unexpected name from native: ${described.name}")
-    installCatalogStub(spark, name, inputTypes, returnType, deterministic)
+    validateLibrary(libraryPath, name)
     val meta = RustUdfMetadata(libraryPath, inputTypes, returnType, deterministic)
     CometRustUdfRegistry.instance.register(name, meta)
+    // Last, because this is the step that makes the name resolvable to Spark's analyzer. A query
+    // planned against a resolvable name that has no registry entry yet would route the call to the
+    // JVM codegen dispatcher and hit the stub's "not evaluated" exception, so the registry entry
+    // has to be in place first.
+    installCatalogStub(spark, name, inputTypes, returnType, deterministic)
   }
 
-  // -------- internals --------
-
-  private case class Described(name: String)
-
-  private def describeOne(libraryPath: String, name: String): Described = {
-    val json =
-      invokeBridge(() => CometRustUdfBridge.validateLibrary(libraryPath, name), libraryPath)
-    parseDescribed(json)
+  /**
+   * Load the library on the driver and confirm it exposes a UDF named `name`, translating the
+   * native failure into a typed exception.
+   */
+  private def validateLibrary(libraryPath: String, name: String): Unit = {
+    try {
+      CometRustUdfBridge.validateLibrary(libraryPath, name)
+    } catch {
+      case t: Throwable => throw classifyNativeError(libraryPath, t)
+    }
   }
 
-  private def invokeBridge(call: () => String, libraryPath: String): String = {
-    Try(call()).recover { case t: Throwable => throw classifyNativeError(libraryPath, t) }.get
-  }
-
-  private def parseDescribed(json: String): Described = {
-    val node = mapper.readTree(json).asInstanceOf[ObjectNode]
-    Described(name = node.get("name").asText())
-  }
-
+  /**
+   * Map a native loader failure onto a typed exception.
+   *
+   * The native side reports these as plain messages, so the mapping keys on the wording produced
+   * by `LoaderError`'s `Display` impl (`native/core/src/execution/rust_udf/loader.rs`) and by
+   * `comet_rust_udf_bridge.rs`. Each phrase below is matched in full rather than by a fragment
+   * like "ABI", because every one of those messages interpolates the library path: a library
+   * under a directory named `ABI` would otherwise have its "failed to open" reported as an ABI
+   * mismatch. `CometRustUdfSuite` pins each failure mode to the type it produces here, so a
+   * reworded message on the native side fails a test rather than silently changing the exception
+   * a caller sees.
+   */
   private def classifyNativeError(libraryPath: String, t: Throwable): RuntimeException = {
     val m = Option(t.getMessage).getOrElse("")
-    if (m.contains("ABI") || m.contains("missing required symbol") ||
-      m.contains("comet_udf_abi_version") || m.contains("does not export")) {
+    if (m.contains("missing required symbol") || m.contains("reports ABI v") ||
+      m.contains("does not export")) {
       new CometRustUdfAbiException(m)
-    } else if (m.contains("not found in")) {
+    } else if (m.contains("' not found in ")) {
       new java.util.NoSuchElementException(m)
     } else {
       new CometRustUdfLoadException(s"failed to load $libraryPath: $m", t)
     }
   }
 
+  /**
+   * Install a Spark catalog UDF under `name` so that SQL and DataFrame name resolution succeed.
+   *
+   * The stub only ever throws: a Rust UDF that reaches the JVM means Comet did not replace the
+   * expression with a native call. Note that the closure Spark keeps is not the one passed here,
+   * because `functions.udf` wraps the `UDFn` it is handed, which is why the serde cannot
+   * recognize this registration by identity and has to match on the name alone. See
+   * [[https://github.com/apache/datafusion-comet/pull/4459#discussion_r3730390223]].
+   */
   private def installCatalogStub(
       spark: SparkSession,
       name: String,
       inputTypes: Seq[DataType],
       returnType: DataType,
       deterministic: Boolean): Unit = {
-    val arity = inputTypes.size
-    val u: UserDefinedFunction = arity match {
+    val u: UserDefinedFunction = inputTypes.size match {
       case 0 =>
         udf(() => throw new CometRustUdfNotEvaluatedException(name), returnType)
       case 1 =>

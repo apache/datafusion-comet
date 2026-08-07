@@ -55,8 +55,15 @@ import org.apache.comet.udf.codegen.CometScalaUDFCodegen
 object CometScalaUDF extends CometExpressionSerde[ScalaUDF] {
 
   override def convert(expr: ScalaUDF, inputs: Seq[Attribute], binding: Boolean): Option[Expr] = {
-    // First check if this udfName is a registered Rust UDF -- those get emitted as RustUdfCall
-    // and dispatched to the loaded cdylib rather than the JVM codegen dispatcher.
+    // A registered Rust UDF is emitted as RustUdfCall and dispatched to the loaded cdylib rather
+    // than to the JVM codegen dispatcher.
+    //
+    // The match is on the name alone, which is not enough to identify one: Spark sets `udfName` for
+    // every `spark.udf.register` call, and the registry is process-wide and keyed by bare name, so
+    // an ordinary Scala UDF sharing the name is currently answered out of the Rust library. The
+    // registration would have to be identified some other way to fix that, since the closure Spark
+    // holds for the catalog stub is one `functions.udf` wrapped rather than the one Comet passed
+    // in. See https://github.com/apache/datafusion-comet/pull/4459#discussion_r3730390223.
     expr.udfName.flatMap(CometRustUdfRegistry.instance.get) match {
       case Some(meta) =>
         emitRustUdfCall(expr, meta.libraryPath, meta.returnType, inputs, binding)

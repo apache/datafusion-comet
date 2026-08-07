@@ -25,7 +25,7 @@ import java.util.Locale
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.types._
 
-import org.apache.comet.udf.CometRustUDF
+import org.apache.comet.udf.{CometRustUDF, CometRustUdfAbiException, CometRustUdfLoadException}
 
 /**
  * End-to-end integration suite: register a Rust UDF, run a Spark query, verify the result.
@@ -102,7 +102,90 @@ class CometRustUdfSuite extends CometTestBase {
       .exists(t => Option(t.getMessage).exists(_.contains(needle)))
   }
 
-  // ---------- type coverage ----------
+  // Known limitation, see https://github.com/apache/datafusion-comet/pull/4459#discussion_r3730390223:
+  // the serde recognizes a Rust UDF by name alone, so the Rust library answers this call and the
+  // assertion below fails with `ArraySeq(0, 1, 2) did not equal List(0, 10, 20)`. Enable this test
+  // with the fix.
+  ignore("an ordinary Scala UDF is not answered by a Rust UDF of the same name") {
+    CometRustUDF.register(spark, "echo_c", libPath, Seq(LongType), LongType)
+    // Claim the same name with an ordinary Scala UDF.
+    spark.udf.register("echo_c", (x: Long) => x * 10)
+    val viaScala =
+      spark.range(0, 3).selectExpr("echo_c(id) AS y").collect().map(_.getLong(0)).toSeq
+    assert(viaScala == Seq(0L, 10L, 20L), "the Scala UDF's call was answered by the Rust UDF")
+
+    // Re-registering takes the name back, and the Rust UDF still runs natively (the stub throws if
+    // Spark evaluates it, so a wrong answer here would be a failure rather than a silent fallback).
+    CometRustUDF.register(spark, "echo_c", libPath, Seq(LongType), LongType)
+    val viaRust =
+      spark.range(0, 3).selectExpr("echo_c(id) AS y").collect().map(_.getLong(0)).toSeq
+    assert(viaRust == Seq(0L, 1L, 2L))
+  }
+
+  test("concurrent registrations of different UDFs are all usable") {
+    val failures = new java.util.concurrent.ConcurrentLinkedQueue[Throwable]()
+    val cases: Seq[(String, DataType)] =
+      Seq(("add_one_c", LongType), ("echo_c", LongType), ("stringify_c", StringType))
+    val threads = cases.map { case (name, returnType) =>
+      new Thread(() => {
+        try {
+          CometRustUDF.register(spark, name, libPath, Seq(LongType), returnType)
+        } catch {
+          case t: Throwable => failures.add(t)
+        }
+      })
+    }
+    threads.foreach(_.start())
+    threads.foreach(_.join())
+    assert(failures.isEmpty, s"registration failed: ${failures.peek()}")
+
+    // All three registrations survived the race intact: each name resolves, plans as a native call,
+    // and produces its own library's answer rather than another's.
+    val row = spark
+      .range(0, 3)
+      .selectExpr("add_one_c(id) AS a", "echo_c(id) AS b", "stringify_c(id) AS c")
+      .collect()
+    assert(row.map(_.getLong(0)).toSeq == Seq(1L, 2L, 3L))
+    assert(row.map(_.getLong(1)).toSeq == Seq(0L, 1L, 2L))
+    assert(row.forall(r => Option(r.getString(2)).exists(_.nonEmpty)))
+  }
+
+  test("a missing library is reported as a load failure") {
+    val e = intercept[CometRustUdfLoadException] {
+      CometRustUDF.register(spark, "add_one_c", "/no/such/library.so", Seq(LongType), LongType)
+    }
+    assert(e.getMessage.contains("/no/such/library.so"))
+  }
+
+  test("a load failure under a path containing ABI is not reported as an ABI mismatch") {
+    // Every native loader message interpolates the library path, so classification has to key on
+    // the message's own wording rather than on a fragment a path can contain.
+    intercept[CometRustUdfLoadException] {
+      CometRustUDF.register(
+        spark,
+        "add_one_c",
+        "/no/such/ABI/library.so",
+        Seq(LongType),
+        LongType)
+    }
+  }
+
+  test("a library that is not a UDF library is reported as an ABI failure") {
+    val notAUdfLibrary = CometRustUdfSuite
+      .siblingCometLibrary(libPath)
+      .getOrElse(cancel(s"${CometRustUdfSuite.cometLibraryFileName} not found next to $libPath"))
+    val e = intercept[CometRustUdfAbiException] {
+      CometRustUDF.register(spark, "add_one_c", notAUdfLibrary, Seq(LongType), LongType)
+    }
+    assert(e.getMessage.contains("missing required symbol"), s"unexpected message: $e")
+  }
+
+  test("a name the library does not export is reported as a missing element") {
+    val e = intercept[java.util.NoSuchElementException] {
+      CometRustUDF.register(spark, "no_such_udf_c", libPath, Seq(LongType), LongType)
+    }
+    assert(e.getMessage.contains("no_such_udf_c"), s"unexpected message: $e")
+  }
 
   /**
    * One case per supported Spark type: the type itself, and a SQL expression producing a value of
@@ -283,13 +366,27 @@ class CometRustUdfSuite extends CometTestBase {
 
 object CometRustUdfSuite {
 
+  private val isMac: Boolean =
+    System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("mac")
+
   /** Platform file name of the test cdylib built by the `comet-test-udfs` crate. */
   val libraryFileName: String =
-    if (System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("mac")) {
-      "libcomet_test_udfs.dylib"
-    } else {
-      "libcomet_test_udfs.so"
-    }
+    if (isMac) "libcomet_test_udfs.dylib" else "libcomet_test_udfs.so"
+
+  /** Platform file name of Comet's own native library. */
+  val cometLibraryFileName: String = if (isMac) "libcomet.dylib" else "libcomet.so"
+
+  /**
+   * Comet's own native library, which sits in the same directory as the test cdylib in both a
+   * local build and a CI run. It opens like any other shared library but exports none of the UDF
+   * ABI symbols, which makes it a convenient stand-in for "a library that is not a Comet UDF
+   * library".
+   */
+  def siblingCometLibrary(testUdfLibrary: String): Option[String] =
+    Option(new File(testUdfLibrary).getAbsoluteFile.getParentFile)
+      .map(new File(_, cometLibraryFileName))
+      .filter(_.isFile)
+      .map(_.getAbsolutePath)
 
   /**
    * Locate the test cdylib under `native/target`.

@@ -15,37 +15,29 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! JNI entry points for driver-side validation of Rust UDF cdylibs.
+//! JNI entry point for driver-side validation of Rust UDF cdylibs.
 //! Used by `org.apache.comet.udf.CometRustUdfBridge` on the driver.
 
 use crate::errors::{try_unwrap_or_throw, CometError};
 use crate::execution::rust_udf::cache::get_or_load;
-use crate::execution::rust_udf::loader::LoadedUdf;
 use jni::objects::{JClass, JString};
-use jni::sys::jobject;
 use jni::EnvUnowned;
 
-/// Best-effort serialization of a single discovered UDF as JSON.
+/// Validate that `library_path` loads and exposes a UDF named
+/// `expected_name`.
 ///
-/// Reporting `args`/`return_type` would require calling the kernel's
-/// `init` to discover a return type; that is deferred, so this returns
-/// only what the Scala registry needs today (`name`).
-fn udf_to_json(udf: &LoadedUdf) -> serde_json::Value {
-    serde_json::json!({
-        "name": udf.name,
-    })
-}
-
-/// Validate that `library_path` loads, exposes a UDF named
-/// `expected_name`, and return a JSON description of that UDF. Throws
-/// on any error.
+/// Returns normally when it does and throws otherwise. The driver only
+/// needs that yes-or-no answer: everything else it knows about the UDF
+/// comes from the `CometRustUDF.register` call itself, and a return type
+/// cannot be reported from here anyway without argument types to resolve
+/// it against.
 #[no_mangle]
 pub extern "system" fn Java_org_apache_comet_udf_CometRustUdfBridge_validateLibrary(
     e: EnvUnowned,
     _class: JClass,
     library_path: JString,
     expected_name: JString,
-) -> jobject {
+) {
     try_unwrap_or_throw(&e, |env| {
         let path: String = library_path
             .try_to_string(env)
@@ -54,36 +46,13 @@ pub extern "system" fn Java_org_apache_comet_udf_CometRustUdfBridge_validateLibr
             .try_to_string(env)
             .map_err(|e| CometError::Internal(e.to_string()))?;
         let lib = get_or_load(&path).map_err(|e| CometError::Internal(e.to_string()))?;
-        let udf = lib
-            .udfs
-            .iter()
-            .find(|u| u.name == name)
-            .ok_or_else(|| CometError::Internal(format!("UDF '{name}' not found in {path}")))?;
-        let json = udf_to_json(udf).to_string();
-        let jstr = env
-            .new_string(json)
-            .map_err(|e| CometError::Internal(e.to_string()))?;
-        Ok(jstr.into_raw())
-    })
-}
-
-/// Return a JSON array describing every UDF exposed by `library_path`.
-#[no_mangle]
-pub extern "system" fn Java_org_apache_comet_udf_CometRustUdfBridge_listUdfs(
-    e: EnvUnowned,
-    _class: JClass,
-    library_path: JString,
-) -> jobject {
-    try_unwrap_or_throw(&e, |env| {
-        let path: String = library_path
-            .try_to_string(env)
-            .map_err(|e| CometError::Internal(e.to_string()))?;
-        let lib = get_or_load(&path).map_err(|e| CometError::Internal(e.to_string()))?;
-        let entries: Vec<serde_json::Value> = lib.udfs.iter().map(udf_to_json).collect();
-        let json = serde_json::Value::Array(entries).to_string();
-        let jstr = env
-            .new_string(json)
-            .map_err(|e| CometError::Internal(e.to_string()))?;
-        Ok(jstr.into_raw())
+        if !lib.udfs.iter().any(|u| u.name == name) {
+            // `CometRustUDF.classifyNativeError` keys on "' not found in " to turn this into a
+            // NoSuchElementException. Keep the two in step.
+            return Err(CometError::Internal(format!(
+                "UDF '{name}' not found in {path}"
+            )));
+        }
+        Ok(())
     })
 }

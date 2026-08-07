@@ -48,6 +48,23 @@ class CometRustUdfRegistry {
 
 object CometRustUdfRegistry {
 
-  /** Process-wide singleton. */
+  /**
+   * Process-wide singleton, which the contributor guide's "Global singletons" section asks be
+   * justified here.
+   *
+   * The state is bounded by the number of distinct UDF names an application registers, and each
+   * entry is small (a library path and a signature). It is not bounded by queries or files, and
+   * there are no credentials in it to go stale.
+   *
+   * The lifetime is not obviously right, though, and it is an open question on this feature: the
+   * map is keyed by bare function name with no session scoping, so two sessions sharing a driver
+   * JVM (a Connect server, a notebook, a test JVM running several suites) share one namespace,
+   * and the last registration of a name wins for all of them. A name is also matched by name
+   * alone, which is why an ordinary Scala UDF registered under a name a Rust UDF already claimed
+   * is currently answered out of the Rust library. Both are open review items:
+   * [[https://github.com/apache/datafusion-comet/pull/4459#discussion_r3730388880]] for the
+   * scoping and [[https://github.com/apache/datafusion-comet/pull/4459#discussion_r3730390223]]
+   * for the name collision.
+   */
   lazy val instance: CometRustUdfRegistry = new CometRustUdfRegistry
 }

@@ -202,8 +202,7 @@ impl Drop for CometCScalarKernel {
 /// one thread for one batch then dropped.
 #[repr(C)]
 pub struct CometCScalarKernelImpl {
-    /// Compute the return type from arg types and (optionally) bound
-    /// scalar arguments.
+    /// Compute the return type from arg types.
     ///
     /// On success, `out` is populated with the return type as an
     /// `FFI_ArrowSchema` and the function returns 0. On failure, returns
@@ -211,11 +210,20 @@ pub struct CometCScalarKernelImpl {
     /// the message.
     ///
     /// `arg_types` points to an array of `n_args` `*const FFI_ArrowSchema`.
-    /// `scalar_args` may be NULL (no scalars) or point to an array of
-    /// `n_args` `*mut FFI_ArrowArray`, each of length 1 (or NULL when
-    /// the corresponding argument is not a scalar). Implementations may
-    /// take ownership of scalar entries by replacing them with released
-    /// arrays.
+    ///
+    /// `scalar_args` is reserved and is always NULL in ABI v1: Comet
+    /// expands every literal argument to a full-length array before it
+    /// reaches a kernel, so nothing on the host side can populate it
+    /// today. The parameter is kept in the signature so that binding
+    /// literals can be added later without an ABI break. A kernel must
+    /// therefore treat it as absent; it may not rely on receiving
+    /// scalars here.
+    ///
+    /// When it is wired up, `scalar_args` will point to an array of
+    /// `n_args` `*mut FFI_ArrowArray`, each of length 1 (or NULL when the
+    /// corresponding argument is not a scalar), and implementations will
+    /// be able to take ownership of scalar entries by replacing them with
+    /// released arrays.
     pub init: Option<
         unsafe extern "C" fn(
             *mut CometCScalarKernelImpl,

@@ -26,16 +26,8 @@ public final class CometRustUdfBridge extends NativeBase {
   private CometRustUdfBridge() {}
 
   /**
-   * Validate that {@code libraryPath} loads, exposes a UDF named {@code expectedName}, and return a
-   * JSON description of that UDF. Throws RuntimeException on any error.
-   *
-   * <p>The returned JSON has the form: {@code {"name":"add_one_c","abi":"c-abi"}}
+   * Validate that {@code libraryPath} loads and exposes a UDF named {@code expectedName}. Returns
+   * normally when it does, and throws RuntimeException otherwise.
    */
-  public static native String validateLibrary(String libraryPath, String expectedName);
-
-  /**
-   * Return a JSON array describing every UDF exposed by {@code libraryPath}. Each element has the
-   * same shape as the return value of {@link #validateLibrary}.
-   */
-  public static native String listUdfs(String libraryPath);
+  public static native void validateLibrary(String libraryPath, String expectedName);
 }

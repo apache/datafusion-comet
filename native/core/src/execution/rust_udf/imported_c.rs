@@ -21,8 +21,10 @@
 //! Lifecycle inside `invoke_with_args`:
 //!
 //! 1. Build a fresh [`CometCScalarKernelImpl`] via the kernel's `new_impl`.
-//! 2. Call `init` with the input field types (and any scalar args) to get
-//!    the return type.
+//! 2. Call `init` with the input field types to get the return type.
+//!    `scalar_args` is always passed as NULL: any `ColumnarValue::Scalar`
+//!    is expanded to a full-length array before it reaches a kernel, so
+//!    there is nothing to bind. See the field docs in `comet-udf-sdk`.
 //! 3. Call `execute` once with the batch.
 //! 4. Drop the impl (its `release` callback runs).
 
@@ -42,12 +44,30 @@ use datafusion::logical_expr::{
 /// [`ScalarUDFImpl`].
 pub struct ImportedCScalarUdf {
     name: String,
-    /// Boxed so the kernel's address is stable; held inside a Mutex
-    /// because the FFI Drop is not Sync-safe under concurrent invocation.
-    /// The kernel itself is logically immutable post-load — the lock only
-    /// protects the FFI calls' aliasing rules. (DataFusion serializes
-    /// invocations of a given ScalarUDFImpl per-batch through
-    /// invoke_with_args anyway; the lock is defensive.)
+    /// Boxed so the kernel's address is stable, and behind a `Mutex` so
+    /// that only one thread is inside the cdylib's callbacks at a time.
+    ///
+    /// The lock is load-bearing, not defensive. One `ImportedCScalarUdf`
+    /// is shared by every caller in the process: the planner builds each
+    /// task's `ScalarFunctionExpr` from the process-wide library cache
+    /// (`ScalarUDF::new_from_shared_impl` over the cached `Arc`), and
+    /// concurrent Spark tasks in an executor run as separate threads, so
+    /// concurrent `invoke_with_args` calls on this instance are the normal
+    /// case rather than an unusual one.
+    ///
+    /// Rust's aliasing rules alone would not require the lock: the
+    /// callbacks reached from here (`function_name`, `new_impl`) take
+    /// `*const CometCScalarKernel`, and per-batch mutable state lives in
+    /// the `CometCScalarKernelImpl` each call builds for itself. What the
+    /// lock stands in for is an ABI guarantee that does not exist yet:
+    /// ABI v1 does not require a kernel's `new_impl` to be callable
+    /// concurrently, and the kernel is arbitrary user code.
+    ///
+    /// The cost is that all batches of a given UDF serialize through one
+    /// mutex per process. Removing it means requiring thread-safe
+    /// callbacks in the ABI, or holding a kernel per task instead of one
+    /// per process; see
+    /// <https://github.com/apache/datafusion-comet/issues/5252>.
     kernel: Mutex<Box<CometCScalarKernel>>,
     signature: Signature,
 }
