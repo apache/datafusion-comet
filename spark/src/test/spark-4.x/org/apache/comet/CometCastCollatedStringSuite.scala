@@ -28,14 +28,14 @@ import org.apache.comet.serde.{Compatible, Unsupported}
 /**
  * https://github.com/apache/datafusion-comet/issues/4489
  *
- * `CometCast.isSupported` matches string casts via `case (DataTypes.StringType, _)` and
- * `case (_, DataTypes.StringType)`, where `DataTypes.StringType` is the singleton
- * default-collation instance. Scala pattern equality means a non-default-collation `StringType`
- * (e.g. `STRING COLLATE UTF8_LCASE`) does not match either case and falls through to the
- * `unsupported(...)` catch-all (directly, or via `canCastFromString`/`canCastToString`'s own
- * catch-all when only one side is collated), so the cast already falls back to Spark correctly.
- * That was previously implicit and untested; this suite pins it down directly against
- * `isSupported` rather than relying on Scala's pattern-match semantics never changing.
+ * `CometCast.isSupported` matches string casts via `case (DataTypes.StringType, _)` and `case (_,
+ * DataTypes.StringType)`, where `DataTypes.StringType` is the singleton default-collation
+ * instance. Scala pattern equality means a non-default-collation `StringType` (e.g. `STRING
+ * COLLATE UTF8_LCASE`) does not match either case and falls through to the `unsupported(...)`
+ * catch-all (directly, or via `canCastFromString`/`canCastToString`'s own catch-all when only one
+ * side is collated), so the cast already falls back to Spark correctly. That was previously
+ * implicit and untested; this suite pins it down directly against `isSupported` rather than
+ * relying on Scala's pattern-match semantics never changing.
  *
  * This lives under `spark-4.x` (shared across every 4.x profile) rather than `spark-4.1+`,
  * because collation is a Spark 4.0+ feature (`StringType(collationName)` already resolves on
