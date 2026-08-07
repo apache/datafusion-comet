@@ -15,8 +15,6 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- With allowIncompatible unset, MakeInterval uses Spark's JVM codegen dispatcher.
-
 statement
 CREATE TABLE test_make_interval_dispatch(
   years int,
@@ -43,7 +41,7 @@ FROM test_make_interval_dispatch
 WHERE hours != 2562048
 ORDER BY years
 
-query ignore(https://github.com/apache/datafusion-comet/issues/5279)
+query
 SELECT make_interval(0, 0, 0, 0, hours)
 FROM test_make_interval_dispatch
 WHERE hours = 2562048

@@ -25,6 +25,7 @@ import org.apache.arrow.memory.BufferAllocator
 import org.apache.arrow.vector._
 import org.apache.arrow.vector.complex._
 import org.apache.spark.sql.catalyst.InternalRow
+import org.apache.spark.sql.catalyst.expressions.GenericInternalRow
 import org.apache.spark.sql.catalyst.expressions.SpecializedGetters
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.errors.QueryExecutionErrors
@@ -87,6 +88,11 @@ private[arrow] object ArrowWriter {
       case (_: DayTimeIntervalType, vector: DurationVector) => new DurationWriter(vector)
       case (CalendarIntervalType, vector: IntervalMonthDayNanoVector) =>
         new IntervalMonthDayNanoWriter(vector)
+      case (CalendarIntervalType, vector: StructVector) =>
+        val children = (0 until vector.size()).map { ordinal =>
+          createFieldWriter(vector.getChildByOrdinal(ordinal))
+        }
+        new CalendarIntervalStructWriter(vector, children.toArray)
       case (dt, _) =>
         throw QueryExecutionErrors.notSupportTypeError(dt)
     }
@@ -467,6 +473,23 @@ private[arrow] class StructWriter(
   override def reset(): Unit = {
     super.reset()
     children.foreach(_.reset())
+  }
+}
+
+private[arrow] class CalendarIntervalStructWriter(
+    valueVector: StructVector,
+    children: Array[ArrowFieldWriter])
+    extends StructWriter(valueVector, children) {
+
+  private val row = new GenericInternalRow(3)
+
+  override def setValue(input: SpecializedGetters, ordinal: Int): Unit = {
+    valueVector.setIndexDefined(count)
+    val interval = input.getInterval(ordinal)
+    row.update(0, interval.months)
+    row.update(1, interval.days)
+    row.update(2, interval.microseconds)
+    children.indices.foreach(i => children(i).write(row, i))
   }
 }
 

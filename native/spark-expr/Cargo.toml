@@ -30,7 +30,6 @@ edition = { workspace = true }
 arrow = { workspace = true }
 chrono = { workspace = true }
 datafusion = { workspace = true }
-datafusion-spark = { workspace = true }
 chrono-tz = { workspace = true }
 num = { workspace = true }
 regex = { workspace = true }

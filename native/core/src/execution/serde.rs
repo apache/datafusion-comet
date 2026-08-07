@@ -31,6 +31,7 @@ use datafusion_comet_proto::{
     spark_expression::DataType,
     spark_operator,
 };
+use datafusion_comet_spark_expr::calendar_interval_type;
 use prost::Message;
 use std::{io::Cursor, sync::Arc};
 
@@ -102,9 +103,7 @@ pub fn to_arrow_datatype(dt_value: &DataType) -> ArrowDataType {
         // Spark's DayTimeIntervalType stores microseconds in an int64, which matches Arrow
         // Duration(Microsecond) rather than the lossy Interval(DayTime) {days, millis} layout.
         DataTypeId::DayTimeInterval => ArrowDataType::Duration(TimeUnit::Microsecond),
-        // Spark's CalendarIntervalType stores months, days, and microseconds. Arrow stores the
-        // same components with nanosecond precision.
-        DataTypeId::CalendarInterval => ArrowDataType::Interval(IntervalUnit::MonthDayNano),
+        DataTypeId::CalendarInterval => calendar_interval_type(),
         DataTypeId::Null => ArrowDataType::Null,
         DataTypeId::List => match dt_value
             .type_info
