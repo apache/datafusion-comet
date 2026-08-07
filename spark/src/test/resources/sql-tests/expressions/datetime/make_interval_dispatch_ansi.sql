@@ -42,7 +42,7 @@ SELECT make_interval(0, 0, weeks)
 FROM test_make_interval_dispatch_ansi
 WHERE weeks = 2147483647
 
-query ignore(https://github.com/apache/datafusion-comet/issues/5279)
+query
 SELECT make_interval(0, 0, 0, 0, hours)
 FROM test_make_interval_dispatch_ansi
 WHERE hours = 2562048

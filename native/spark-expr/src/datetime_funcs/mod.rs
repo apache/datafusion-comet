@@ -39,7 +39,7 @@ pub use extract_date_part::SparkMinute;
 pub use extract_date_part::SparkSecond;
 pub use hours::SparkHoursTransform;
 pub use make_date::SparkMakeDate;
-pub use make_interval::SparkMakeInterval;
+pub use make_interval::{calendar_interval_type, SparkMakeInterval};
 pub use make_time::SparkMakeTime;
 pub use next_day::SparkNextDay;
 pub use seconds_to_timestamp::SparkSecondsToTimestamp;
