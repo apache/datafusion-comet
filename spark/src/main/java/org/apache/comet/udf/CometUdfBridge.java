@@ -31,6 +31,8 @@ import org.apache.spark.TaskContext;
 import org.apache.spark.comet.CometTaskContextShim;
 import org.apache.spark.util.TaskCompletionListener;
 
+import org.apache.comet.util.ClassLoaders;
+
 /**
  * JNI entry point for native execution to invoke a {@link CometUDF}. Matches the static-method
  * pattern used by CometScalarSubquery so the native side can dispatch via
@@ -91,6 +93,17 @@ public class CometUdfBridge {
    *     left on a worker by a previous task. Its task attempt ID also keys the UDF-instance cache,
    *     so a UDF holding per-task state in fields sees a consistent instance for every call within
    *     the task regardless of which Tokio worker is polling.
+   * @param classLoader context ClassLoader captured on the driving Spark task thread, or {@code
+   *     null} outside a Spark task. Installed as this thread's context ClassLoader for the duration
+   *     of the call, with the prior value restored in {@code finally}. Tokio workers attach through
+   *     JNI and an attached thread has no context ClassLoader, so without this every lookup falls
+   *     back to the ClassLoader that loaded Comet, which never holds user jars ({@code --jars} /
+   *     {@code spark.jars}). Both the {@code CometUDF} resolution below and the closure
+   *     deserialization in {@code CometScalaUDFCodegen} depend on it. Installed per call rather
+   *     than once when the worker attaches, because the Tokio runtime is process-global: one worker
+   *     interleaves work from task attempts of different jobs, and under Spark Connect from
+   *     sessions with different artifact ClassLoaders. The loader is a property of the plan, not of
+   *     the thread.
    */
   public static void evaluate(
       String udfClassName,
@@ -99,7 +112,8 @@ public class CometUdfBridge {
       long outArrayPtr,
       long outSchemaPtr,
       int numRows,
-      TaskContext taskContext) {
+      TaskContext taskContext,
+      ClassLoader classLoader) {
     assert udfClassName != null && !udfClassName.isEmpty() : "udfClassName must be non-empty";
     assert inputArrayPtrs != null && inputSchemaPtrs != null
         : "input pointer arrays must be non-null";
@@ -111,13 +125,20 @@ public class CometUdfBridge {
 
     // Save-and-restore rather than only-install-if-null: the propagated `taskContext` is the
     // ground truth for this call. Any value already on the thread is either (a) the same object
-    // on a Spark task thread, or (b) stale from a prior task on a reused Tokio worker.
+    // on a Spark task thread, or (b) stale from a prior task on a reused Tokio worker. The same
+    // reasoning applies to the propagated `classLoader`.
     TaskContext prior = TaskContext.get();
     if (taskContext != null) {
       CometTaskContextShim.set(taskContext);
       assert TaskContext.get() == taskContext
           : "TaskContext install did not take effect on this thread";
     }
+    Thread currentThread = Thread.currentThread();
+    ClassLoader priorLoader = currentThread.getContextClassLoader();
+    if (classLoader != null) {
+      currentThread.setContextClassLoader(classLoader);
+    }
+
     try {
       evaluateInternal(
           udfClassName,
@@ -128,6 +149,9 @@ public class CometUdfBridge {
           numRows,
           taskContext);
     } finally {
+      // Unconditional: a no-op when nothing was installed, and it also undoes any change the
+      // user function made to the ClassLoader of a worker that outlives this call.
+      currentThread.setContextClassLoader(priorLoader);
       if (taskContext != null) {
         if (prior != null) {
           CometTaskContextShim.set(prior);
@@ -175,14 +199,10 @@ public class CometUdfBridge {
             udfClassName,
             name -> {
               try {
-                // Resolve via the executor's context classloader so user-supplied UDF jars
-                // (added via spark.jars / --jars) are visible.
-                ClassLoader cl = Thread.currentThread().getContextClassLoader();
-                if (cl == null) {
-                  cl = CometUdfBridge.class.getClassLoader();
-                }
+                // Resolves through the context ClassLoader installed by `evaluate`, so a
+                // user-supplied CometUDF shipped in a user jar is visible.
                 return (CometUDF)
-                    Class.forName(name, true, cl).getDeclaredConstructor().newInstance();
+                    ClassLoaders.loadClass(name).getDeclaredConstructor().newInstance();
               } catch (ReflectiveOperationException e) {
                 throw new RuntimeException("Failed to instantiate CometUDF: " + name, e);
               }
