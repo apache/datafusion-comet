@@ -130,6 +130,7 @@ jobs:
               org.apache.comet.CometIcebergNativeSuite
               org.apache.comet.CometIcebergEncryptionSuite
               org.apache.comet.CometIcebergRewriteActionSuite
+              org.apache.comet.CometIcebergWriteActionSuite
               org.apache.comet.iceberg.IcebergReflectionSuite
               org.apache.comet.csv.CometCsvNativeReadSuite
               org.apache.comet.CometFuzzTestSuite
@@ -198,7 +199,7 @@ jobs:
               org.apache.comet.CometHashExpressionSuite
               org.apache.comet.CometTemporalExpressionSuite
               org.apache.comet.CometArrayExpressionSuite
-              org.apache.comet.CometCastSuite
+              org.apache.comet.CometNativeCastSuite
               org.apache.comet.CometDateTimeUtilsSuite
               org.apache.comet.CometMathExpressionSuite
               org.apache.comet.CometStringExpressionSuite

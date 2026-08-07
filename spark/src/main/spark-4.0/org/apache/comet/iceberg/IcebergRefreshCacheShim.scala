@@ -17,17 +17,17 @@
  * under the License.
  */
 
-package org.apache.comet.shims
+package org.apache.comet.iceberg
 
-import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
-import org.apache.spark.sql.execution.datasources.parquet.ParquetRowIndexUtil
-import org.apache.spark.sql.types.StructType
+import org.apache.spark.sql.classic.SparkSession
+import org.apache.spark.sql.execution.datasources.v2.DataSourceV2Relation
 
-object ShimFileFormat {
-  // A name for a temporary column that holds row indexes computed by the file format reader
-  // until they can be placed in the _metadata struct.
-  val ROW_INDEX_TEMPORARY_COLUMN_NAME = ParquetFileFormat.ROW_INDEX_TEMPORARY_COLUMN_NAME
-
-  def findRowIndexColumnIndexInSchema(sparkSchema: StructType): Int =
-    ParquetRowIndexUtil.findRowIndexColumnIndexInSchema(sparkSchema)
+/** Spark 4.x needs the classic `SparkSession`; the api-module one has no `sharedState`. */
+private[iceberg] object IcebergRefreshCacheShim {
+  def refreshCache(
+      session: org.apache.spark.sql.SparkSession,
+      rel: DataSourceV2Relation): Unit = {
+    val classic = session.asInstanceOf[SparkSession]
+    classic.sharedState.cacheManager.recacheByPlan(classic, rel)
+  }
 }
