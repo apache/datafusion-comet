@@ -576,6 +576,7 @@ under the License.
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Integrations</span></p>
 <ul>
 <li class="toctree-l2"><a class="reference internal" href="../iceberg.html">Iceberg Guide</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../iceberg-writes.html">Iceberg Writes</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../s3-credential-providers.html">S3 Credential Providers</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../kubernetes.html">Kubernetes Guide</a></li>
 </ul>
@@ -838,10 +839,6 @@ malformed message. The <code class="docutils literal notranslate"><span class="p
 raise raw Arrow errors that bypass <code class="docutils literal notranslate"><span class="pre">SparkErrorConverter</span></code> and surface as <code class="docutils literal notranslate"><span class="pre">CometNativeException</span></code>
 rather than <code class="docutils literal notranslate"><span class="pre">SparkArithmeticException</span></code> with the proper error class and query context
 (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5072">#5072</a>).</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">next_day</span></code> and <code class="docutils literal notranslate"><span class="pre">make_date</span></code> throw at the correct inputs but surface as <code class="docutils literal notranslate"><span class="pre">CometNativeException</span></code>
-instead of <code class="docutils literal notranslate"><span class="pre">SparkIllegalArgumentException</span> <span class="pre">[ILLEGAL_DAY_OF_WEEK]</span></code> /
-<code class="docutils literal notranslate"><span class="pre">SparkDateTimeException</span> <span class="pre">[DATETIME_FIELD_OUT_OF_BOUNDS.WITH_SUGGESTION]</span></code>
-(<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5073">#5073</a>).</p></li>
 <li><p>Spark 4.2 introduced additional ANSI arithmetic overflow behavior differences that Comet does
 not yet track (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4967">#4967</a>).</p></li>
 </ul>

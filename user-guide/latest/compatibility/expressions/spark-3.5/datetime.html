@@ -576,6 +576,7 @@ under the License.
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Integrations</span></p>
 <ul>
 <li class="toctree-l2"><a class="reference internal" href="../../../iceberg.html">Iceberg Guide</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../../../iceberg-writes.html">Iceberg Writes</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../../../s3-credential-providers.html">S3 Credential Providers</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../../../kubernetes.html">Kubernetes Guide</a></li>
 </ul>
@@ -826,7 +827,7 @@ with Spark. For dates beyond this range, functions that involve timezone-aware c
 <h2>MakeDate<a class="headerlink" href="#makedate" title="Link to this heading">#</a></h2>
 <p>The following differences from Spark are always present and do not require any additional configuration:</p>
 <ul class="simple">
-<li><p>Under ANSI mode, an out-of-range <code class="docutils literal notranslate"><span class="pre">(year,</span> <span class="pre">month,</span> <span class="pre">day)</span></code> triple surfaces as <code class="docutils literal notranslate"><span class="pre">CometNativeException</span></code> rather than Spark’s <code class="docutils literal notranslate"><span class="pre">SparkDateTimeException</span></code> with error class <code class="docutils literal notranslate"><span class="pre">DATETIME_FIELD_OUT_OF_BOUNDS.WITH_SUGGESTION</span></code>. The throw/NULL decision is correct; only the exception class and error class differ (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5073">#5073</a>).</p></li>
+<li><p>Native <code class="docutils literal notranslate"><span class="pre">make_date</span></code> is limited to chrono’s year range <code class="docutils literal notranslate"><span class="pre">[-262143,</span> <span class="pre">262142]</span></code>; Spark accepts wider years (for example, <code class="docutils literal notranslate"><span class="pre">300000</span></code>), so Comet returns <code class="docutils literal notranslate"><span class="pre">NULL</span></code> or throws under ANSI mode for dates Spark accepts, and may incorrectly report valid dates as invalid (for example, <code class="docutils literal notranslate"><span class="pre">300000-02-29</span></code> is falsely reported as not a leap year) (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5208">#5208</a>).</p></li>
 </ul>
 </section>
 <section id="makeinterval">
@@ -838,13 +839,6 @@ with Spark. For dates beyond this range, functions that involve timezone-aware c
 <p>By default, <code class="docutils literal notranslate"><span class="pre">MakeInterval</span></code> is evaluated in the JVM using Spark’s own code-generated implementation (run inside the Comet pipeline), which matches Spark exactly. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.MakeInterval.allowIncompatible=true</span></code> to opt into Comet’s native implementation instead, which has the following differences from Spark:</p>
 <ul class="simple">
 <li><p>The native implementation converts seconds to <code class="docutils literal notranslate"><span class="pre">Float64</span></code>, which can lose microsecond precision, and stores time in nanoseconds, which overflows for large time components (hours, minutes, seconds) that Spark can represent.</p></li>
-</ul>
-</section>
-<section id="nextday">
-<h2>NextDay<a class="headerlink" href="#nextday" title="Link to this heading">#</a></h2>
-<p>The following differences from Spark are always present and do not require any additional configuration:</p>
-<ul class="simple">
-<li><p>Under ANSI mode, an invalid <code class="docutils literal notranslate"><span class="pre">dayOfWeek</span></code> surfaces as <code class="docutils literal notranslate"><span class="pre">CometNativeException</span></code> rather than Spark’s <code class="docutils literal notranslate"><span class="pre">SparkIllegalArgumentException</span></code> with error class <code class="docutils literal notranslate"><span class="pre">ILLEGAL_DAY_OF_WEEK</span></code>. The throw/NULL decision is correct; only the exception class and error class differ (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5073">#5073</a>).</p></li>
 </ul>
 </section>
 <section id="precisetimestampconversion">
@@ -957,7 +951,6 @@ with Spark. For dates beyond this range, functions that involve timezone-aware c
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#hours">Hours</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#makedate">MakeDate</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#makeinterval">MakeInterval</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#nextday">NextDay</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#precisetimestampconversion">PreciseTimestampConversion</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#secondstotimestamp">SecondsToTimestamp</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#toutctimestamp">ToUTCTimestamp</a></li>

@@ -146,6 +146,7 @@ These settings can be used to determine which parts of the plan are accelerated 
 | `spark.comet.scan.enabled` | Whether to enable native scans. Intended for use in Comet's own test suites to selectively disable native scans; not intended for production use. | true |
 | `spark.comet.shuffle.jvm.memoryFactor` | Fraction of Comet memory to be allocated per executor process for JVM (columnar) shuffle when running in on-heap mode. For more information, refer to the [Comet Tuning Guide](https://datafusion.apache.org/comet/user-guide/latest/tuning.html). | 1.0 |
 | `spark.comet.testing.strict` | Experimental option to enable strict testing, which will fail tests that could be more comprehensive, such as checking for a specific fallback reason. It can be overridden by the environment variable `ENABLE_COMET_STRICT_TESTING`. | false |
+| `spark.comet.write.iceberg.splitOperator.enabled` | Whether to rewrite Iceberg V2 writes from Spark's combined V2 write/commit operator into Comet's two-operator shape: a file writer exec (inside AQE) and a committer (outside AQE). | false |
 <!-- prettier-ignore-end -->
 <!--END:CONFIG_TABLE-->
 

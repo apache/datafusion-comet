@@ -421,8 +421,7 @@ under the License.
 <ul class="nav bd-sidenav">
 <li class="toctree-l1"><a class="reference internal" href="debugging.html">Debugging Guide</a></li>
 <li class="toctree-l1 has-children"><a class="reference internal" href="benchmarking.html">Benchmarking Guide</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
-<li class="toctree-l2"><a class="reference internal" href="benchmark-results/tpc-h.html">Apache DataFusion Comet: Benchmarks Derived From TPC-H</a></li>
-<li class="toctree-l2"><a class="reference internal" href="benchmark-results/tpc-ds.html">Apache DataFusion Comet: Benchmarks Derived From TPC-DS</a></li>
+<li class="toctree-l2"><a class="reference internal" href="benchmark-results/tpc-ds.html">TPC-DS</a></li>
 <li class="toctree-l2"><a class="reference internal" href="benchmarking_macos.html">Comet Benchmarking on macOS</a></li>
 <li class="toctree-l2"><a class="reference internal" href="benchmarking_aws_ec2.html">Comet Benchmarking in EC2</a></li>
 <li class="toctree-l2"><a class="reference internal" href="benchmarking_spark_sql_perf.html">TPC-DS Benchmarking with spark-sql-perf</a></li>
@@ -593,8 +592,8 @@ scoping what that work would take.</p>
 </section>
 <section id="tpc-h-and-tpc-ds-performance">
 <h2>TPC-H and TPC-DS Performance<a class="headerlink" href="#tpc-h-and-tpc-ds-performance" title="Link to this heading">#</a></h2>
-<p>Comet already delivers substantial speedups over vanilla Spark on both benchmark suites; we publish per-query
-results for <a class="reference internal" href="benchmark-results/tpc-h.html"><span class="std std-doc">TPC-H</span></a> and <a class="reference internal" href="benchmark-results/tpc-ds.html"><span class="std std-doc">TPC-DS</span></a> with each release. An independent <a class="reference external" href="https://awslabs.github.io/data-on-eks/docs/benchmarks/spark-gluten-velox-comet-benchmark">AWS Labs benchmark</a> comparing Comet 0.16.0 with
+<p>Comet already delivers substantial speedups over vanilla Spark on TPC-H and TPC-DS; we publish per-query
+results for <a class="reference internal" href="benchmark-results/tpc-ds.html"><span class="std std-doc">TPC-DS</span></a> with each release. An independent <a class="reference external" href="https://awslabs.github.io/data-on-eks/docs/benchmarks/spark-gluten-velox-comet-benchmark">AWS Labs benchmark</a> comparing Comet 0.16.0 with
 Gluten 1.6.0 on a 3TB TPC-DS workload found that the two accelerators deliver similar overall performance. Increasing
 the speedup further and closing the remaining per-query gaps is an ongoing focus, tracked under <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/2004">#2004</a> (TPC-H) and
 <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/858">#858</a> (TPC-DS).</p>
