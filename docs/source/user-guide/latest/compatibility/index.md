@@ -121,10 +121,6 @@ divergence:
   raise raw Arrow errors that bypass `SparkErrorConverter` and surface as `CometNativeException`
   rather than `SparkArithmeticException` with the proper error class and query context
   ([#5072](https://github.com/apache/datafusion-comet/issues/5072)).
-- `next_day` and `make_date` throw at the correct inputs but surface as `CometNativeException`
-  instead of `SparkIllegalArgumentException [ILLEGAL_DAY_OF_WEEK]` /
-  `SparkDateTimeException [DATETIME_FIELD_OUT_OF_BOUNDS.WITH_SUGGESTION]`
-  ([#5073](https://github.com/apache/datafusion-comet/issues/5073)).
 - Spark 4.2 introduced additional ANSI arithmetic overflow behavior differences that Comet does
   not yet track ([#4967](https://github.com/apache/datafusion-comet/issues/4967)).
 
