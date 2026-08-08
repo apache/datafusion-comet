@@ -126,6 +126,32 @@ class CometCodegenSuite
     }
   }
 
+  test("spark.sql.function.concatBinaryAsString preserves types through dispatch") {
+    withTable("t") {
+      sql("CREATE TABLE t (id INT, c1 BINARY, c2 BINARY) USING parquet")
+      sql("""INSERT INTO t VALUES
+          |  (1, X'6162', X'6364'),
+          |  (2, X'FF', X'FE41'),
+          |  (3, X'', X'00'),
+          |  (4, NULL, X'01')""".stripMargin)
+
+      Seq(false -> BinaryType, true -> StringType).foreach { case (enabled, expectedType) =>
+        withSQLConf("spark.sql.function.concatBinaryAsString" -> enabled.toString) {
+          val concatenated = sql("SELECT concat(c1, c2) AS value FROM t ORDER BY id")
+          assert(concatenated.schema("value").dataType == expectedType)
+          checkSparkSchema(concatenated)
+
+          val result = sql("SELECT hex(concat(c1, c2)) AS value FROM t ORDER BY id")
+          // The operator check rejects a Spark plan fallback; the counter check proves that the
+          // Spark expression itself ran through the in-pipeline JVM codegen dispatcher.
+          assertCodegenRan {
+            checkSparkAnswerAndOperator(result)
+          }
+        }
+      }
+    }
+  }
+
   test("disabled mode bypasses the dispatcher") {
     // When the per-feature config is off, `CometScalaUDF.convert` returns None and the enclosing
     // operator falls back to Spark. The dispatcher's counters must not move.

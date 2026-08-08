@@ -34,6 +34,8 @@ The status column uses these values:
   Spark for others, or runs natively but with documented incompatibilities.
 - **Falls back** -- Comet does not run the affected expressions natively under this
   config and always defers to Spark.
+- **JVM dispatch** -- Comet runs Spark's generated expression code inside the Comet
+  pipeline, without falling the surrounding operator back to Spark.
 - **Unaudited** -- the config's interaction with Comet has not yet been verified.
 
 ## Audited Configurations
@@ -44,6 +46,12 @@ The status column uses these values:
   - Affected expression: `exists`
   - Spark versions checked: 3.4.3, 3.5.8, 4.0.2, 4.1.2
   - Date: 2026-07-22
+- `spark.sql.function.concatBinaryAsString`
+  - Default: `false`
+  - Status: JVM dispatch
+  - Affected expressions: `concat` with all-binary inputs
+  - Spark versions checked: 3.4.3, 3.5.8, 4.0.2, 4.1.2
+  - Date: 2026-07-23
 - `spark.sql.legacy.timeParserPolicy`
   - Default: `EXCEPTION`
   - Status: Partial (see notes)
@@ -75,6 +83,24 @@ no-match predicates with a null result, and predicates whose every result is nul
 wraps the divergent column-backed case in `assertCodegenRan` and
 `checkSparkAnswerAndOperator`, directly verifying dispatcher activity and preventing the test
 from passing through silent Spark fallback.
+
+### `spark.sql.function.concatBinaryAsString`
+
+Spark applies this configuration during type coercion. With the default `false`
+value, `concat` retains `BinaryType` when every input is binary. Comet does not have a
+native binary `concat`, so it runs Spark's generated `Concat` code through the
+Arrow-direct JVM codegen dispatcher while keeping the surrounding operator in the
+Comet pipeline. With `true`, Spark inserts `BinaryType`-to-`StringType` casts before
+`concat`. Spark preserves arbitrary bytes in those casts, but Arrow strings require
+valid UTF-8, so Comet also dispatches this expression tree to avoid normalizing
+malformed bytes in a native cast.
+
+The SQL config-matrix coverage checks byte-level results, nulls, empty values, and
+malformed UTF-8 inputs under both values. `CometCodegenSuite` checks the resolved
+result type and additionally asserts that both config values invoke the JVM codegen
+dispatcher, preventing a result-only test from passing through an unnoticed Spark
+fallback. If the JVM codegen dispatcher is disabled, all-binary `concat` falls back
+to Spark under either config value.
 
 ### `spark.sql.legacy.timeParserPolicy`
 

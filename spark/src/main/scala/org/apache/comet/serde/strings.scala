@@ -258,6 +258,8 @@ object CometConcat
     with CometTypeShim
     with CodegenDispatchFallback {
   private val unsupportedReason = "CONCAT supports only string input parameters"
+  private val binaryToStringCastReason =
+    "CONCAT over BinaryType-to-StringType casts requires Spark's byte-preserving semantics"
 
   // Spark 4.0 widens Concat to accept collated strings and preserves the collation in the merged
   // result type. The native concat UDF always produces UTF8 (UTF8_BINARY semantics), so a
@@ -266,16 +268,30 @@ object CometConcat
     "concat does not support non-UTF8_BINARY collations " +
       "(https://github.com/apache/datafusion-comet/issues/2190)"
 
-  override def getUnsupportedReasons(): Seq[String] = Seq(unsupportedReason)
+  override def getUnsupportedReasons(): Seq[String] =
+    Seq(unsupportedReason, binaryToStringCastReason)
 
   override def getIncompatibleReasons(): Seq[String] = Seq(collationReason)
 
   override def getSupportLevel(expr: Concat): SupportLevel = {
+    // spark.sql.function.concatBinaryAsString=true inserts BinaryType-to-StringType casts before
+    // Concat. Spark's cast preserves arbitrary bytes, whereas Arrow strings require valid UTF-8
+    // and Comet's native cast replaces malformed sequences. Dispatch the whole Spark expression
+    // so downstream byte-sensitive expressions (for example, hex) observe the original bytes.
+    val containsBinaryToStringCast = expr.children.exists {
+      case cast: Cast =>
+        cast.child.dataType.isInstanceOf[BinaryType] &&
+        cast.dataType.isInstanceOf[StringType]
+      case _ => false
+    }
+
     // Use isInstanceOf rather than `== DataTypes.StringType` so that collated strings (a
     // StringType with a non-default collationId, which is not == the default StringType) are still
     // recognised as string input and routed to the collation check below rather than reported as
     // an unsupported input type.
-    if (!expr.children.forall(_.dataType.isInstanceOf[StringType])) {
+    if (containsBinaryToStringCast) {
+      Unsupported(Some(binaryToStringCastReason))
+    } else if (!expr.children.forall(_.dataType.isInstanceOf[StringType])) {
       Unsupported(Some(unsupportedReason))
     } else if (hasNonDefaultStringCollation(expr.dataType) ||
       expr.children.exists(c => hasNonDefaultStringCollation(c.dataType))) {
