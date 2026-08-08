@@ -58,7 +58,7 @@ import org.apache.comet.{CometConf, CometExecIterator, CometRuntimeException, Co
 import org.apache.comet.CometSparkSessionExtensions.{isCometShuffleEnabled, withFallbackReason}
 import org.apache.comet.parquet.CometParquetUtils
 import org.apache.comet.rules.CometExecRule
-import org.apache.comet.serde.{CometOperatorSerde, Compatible, Incompatible, OperatorOuterClass, QueryContextInterner, SupportLevel, Unsupported}
+import org.apache.comet.serde.{CometOperatorSerde, Compatible, OperatorOuterClass, QueryContextInterner, SupportLevel, Unsupported}
 import org.apache.comet.serde.OperatorOuterClass.{AggregateMode => CometAggregateMode, Operator}
 import org.apache.comet.serde.QueryPlanSerde
 import org.apache.comet.serde.QueryPlanSerde.{aggExprToProto, exprToProto, isStringCollationType, supportedSortType}
@@ -83,7 +83,13 @@ private[comet] trait PlanDataInjector {
   /** Extract the key used to look up planning data for this operator. */
   def getKey(op: Operator): Option[String]
 
-  /** Inject common + partition data into the operator node. */
+  /**
+   * Inject common + partition data into the operator node.
+   *
+   * Implementations must return the node with its child list unchanged -- `injectPlanData` walks
+   * the returned node's children, and relies on child reference identity to decide which
+   * operators need rebuilding.
+   */
   def inject(op: Operator, commonBytes: Array[Byte], partitionBytes: Array[Byte]): Operator
 }
 
@@ -132,40 +138,51 @@ private[comet] object PlanDataInjector extends Logging {
    *
    * Supports joins over multiple tables by matching each operator with its corresponding data
    * based on a key (e.g., metadata_location for Iceberg).
+   *
+   * Operators are immutable protobuf messages, so any subtree needing no injection is returned by
+   * reference rather than rebuilt; only the root-to-scan paths are rebuilt.
    */
   def injectPlanData(
       op: Operator,
       commonByKey: Map[String, Array[Byte]],
       partitionByKey: Map[String, Array[Byte]]): Operator = {
-    val builder = op.toBuilder
 
     // O(1) by op kind, then a canInject confirm (which may inspect detail fields like `hasCommon`
     // / `!hasFilePartition`). Most operators in any tree are non-scan and skip the lookup body.
-    injectorsByKind.get(op.getOpStructCase) match {
+    val injectedOp = injectorsByKind.get(op.getOpStructCase) match {
       case Some(injector) if injector.canInject(op) =>
         injector.getKey(op) match {
           case Some(key) =>
             (commonByKey.get(key), partitionByKey.get(key)) match {
               case (Some(commonBytes), Some(partitionBytes)) =>
-                val injectedOp = injector.inject(op, commonBytes, partitionBytes)
-                // Copy the injected operator's fields to our builder
-                builder.clear()
-                builder.mergeFrom(injectedOp)
+                injector.inject(op, commonBytes, partitionBytes)
               case _ =>
                 throw new CometRuntimeException(s"Missing planning data for key: $key")
             }
-          case None =>
+          case None => op
         }
-      case _ =>
+      case _ => op
     }
 
-    // Recursively process children
-    builder.clearChildren()
-    op.getChildrenList.asScala.foreach { child =>
-      builder.addChildren(injectPlanData(child, commonByKey, partitionByKey))
+    // Recursively process children, rebuilding this node only if one of them actually changed.
+    // Injectors preserve children, so `injectedOp` has the same child list as `op` either way.
+    // The builder is created on the first changed child, so unchanged nodes allocate nothing.
+    val children = injectedOp.getChildrenList
+    val numChildren = children.size()
+    var builder: Operator.Builder = null
+    var i = 0
+    while (i < numChildren) {
+      val child = children.get(i)
+      val injectedChild = injectPlanData(child, commonByKey, partitionByKey)
+      if (injectedChild ne child) {
+        if (builder == null) {
+          builder = injectedOp.toBuilder
+        }
+        builder.setChildren(i, injectedChild)
+      }
+      i += 1
     }
-
-    builder.build()
+    if (builder == null) injectedOp else builder.build()
   }
 
   def serializeOperator(op: Operator): Array[Byte] = {
@@ -1039,7 +1056,6 @@ object CometProjectExec extends CometOperatorSerde[ProjectExec] {
         .addAllProjectList(exprs.map(_.get).asJava)
       Some(builder.setProjection(projectBuilder).build())
     } else {
-      withFallbackReason(op, op.projectList: _*)
       None
     }
   }
@@ -1099,7 +1115,6 @@ object CometFilterExec extends CometOperatorSerde[FilterExec] {
         .setPredicate(cond.get)
       Some(builder.setFilter(filterBuilder).build())
     } else {
-      withFallbackReason(op, op.condition, op.child)
       None
     }
   }
@@ -1172,7 +1187,7 @@ object CometSortExec extends CometOperatorSerde[SortExec] {
         .addAllSortOrders(sortOrders.map(_.get).asJava)
       Some(builder.setSort(sortBuilder).build())
     } else {
-      withFallbackReason(op, "sort order not supported", op.sortOrder: _*)
+      withFallbackReason(op, "sort order not supported")
       None
     }
   }
@@ -1362,11 +1377,7 @@ object CometExpandExec extends CometOperatorSerde[ExpandExec] {
       op: ExpandExec,
       builder: Operator.Builder,
       childOp: OperatorOuterClass.Operator*): Option[OperatorOuterClass.Operator] = {
-    var allProjExprs: Seq[Expression] = Seq()
-    val projExprs = op.projections.flatMap(_.map(e => {
-      allProjExprs = allProjExprs :+ e
-      exprToProto(e, op.child.output)
-    }))
+    val projExprs = op.projections.flatMap(_.map(e => exprToProto(e, op.child.output)))
 
     if (projExprs.forall(_.isDefined) && childOp.nonEmpty) {
       val expandBuilder = OperatorOuterClass.Expand
@@ -1375,7 +1386,6 @@ object CometExpandExec extends CometOperatorSerde[ExpandExec] {
         .setNumExprPerProject(op.projections.head.size)
       Some(builder.setExpand(expandBuilder).build())
     } else {
-      withFallbackReason(op, allProjExprs: _*)
       None
     }
   }
@@ -1435,11 +1445,6 @@ object CometExplodeExec extends CometOperatorSerde[GenerateExec] {
     if (nodeName != "explode" && nodeName != "posexplode") {
       return Unsupported(Some(s"Unsupported generator: ${op.generator.nodeName}"))
     }
-    if (op.outer) {
-      // DataFusion UnnestExec has different semantics to Spark for this case
-      // https://github.com/apache/datafusion/issues/19053
-      return Incompatible(Some("Empty arrays are not preserved as null outputs when outer=true"))
-    }
     op.generator.children.head.dataType match {
       case _: ArrayType =>
         Compatible()
@@ -1460,7 +1465,6 @@ object CometExplodeExec extends CometOperatorSerde[GenerateExec] {
     val childExprProto = exprToProto(childExpr, op.child.output)
 
     if (childExprProto.isEmpty) {
-      withFallbackReason(op, childExpr)
       return None
     }
 
@@ -1472,7 +1476,6 @@ object CometExplodeExec extends CometOperatorSerde[GenerateExec] {
     }
 
     if (projectExprs.exists(_.isEmpty) || childOp.isEmpty) {
-      withFallbackReason(op, op.output: _*)
       return None
     }
 
@@ -1792,10 +1795,7 @@ trait CometBaseAggregate {
       }
 
       if (aggExprs.exists(_.isEmpty)) {
-        withFallbackReason(
-          aggregate,
-          "Unsupported aggregate expression(s)",
-          aggregateExpressions ++ aggregateExpressions.map(_.aggregateFunction): _*)
+        withFallbackReason(aggregate, "Unsupported aggregate expression(s)")
         return None
       }
 
@@ -1836,9 +1836,6 @@ trait CometBaseAggregate {
           Some(builder.setHashAgg(hashAggBuilder).build())
         }
       } else {
-        val allChildren: Seq[Expression] =
-          groupingExpressions ++ aggregateExpressions ++ aggregateAttributes
-        withFallbackReason(aggregate, allChildren: _*)
         None
       }
     }
@@ -1867,8 +1864,7 @@ trait CometBaseAggregate {
     if (resultExprs.exists(_.isEmpty)) {
       withFallbackReason(
         aggregate,
-        s"Unsupported result expressions found in: $resultExpressions",
-        resultExpressions: _*)
+        s"Unsupported result expressions found in: $resultExpressions")
       return None
     }
     val planId = builder.getPlanId
@@ -2151,7 +2147,6 @@ trait CometHashJoin {
     val condition = join.condition.map { cond =>
       val condProto = exprToProto(cond, join.left.output ++ join.right.output)
       if (condProto.isEmpty) {
-        withFallbackReason(join, cond)
         return None
       }
       condProto.get
@@ -2190,8 +2185,6 @@ trait CometHashJoin {
       condition.foreach(joinBuilder.setCondition)
       Some(builder.setHashJoin(joinBuilder).build())
     } else {
-      val allExprs: Seq[Expression] = joinKeys
-      withFallbackReason(join, allExprs: _*)
       None
     }
   }
@@ -2318,7 +2311,6 @@ object CometBroadcastNestedLoopJoinExec extends CometOperatorSerde[BroadcastNest
     val joinCondition = op.condition.map({ cond =>
       val condProto = exprToProto(cond, op.left.output ++ op.right.output)
       if (condProto.isEmpty) {
-        withFallbackReason(op, cond)
         return None
       }
       condProto.get
@@ -2636,15 +2628,13 @@ object CometSortMergeJoinExec extends CometOperatorSerde[SortMergeJoinExec] {
         .get(join.conf)) {
       withFallbackReason(
         join,
-        s"${CometConf.COMET_EXEC_SORT_MERGE_JOIN_WITH_JOIN_FILTER_ENABLED.key} is not enabled",
-        join.condition.get)
+        s"${CometConf.COMET_EXEC_SORT_MERGE_JOIN_WITH_JOIN_FILTER_ENABLED.key} is not enabled")
       return None
     }
 
     val condition = join.condition.map { cond =>
       val condProto = exprToProto(cond, join.left.output ++ join.right.output)
       if (condProto.isEmpty) {
-        withFallbackReason(join, cond)
         return None
       }
       condProto.get
@@ -2705,8 +2695,6 @@ object CometSortMergeJoinExec extends CometOperatorSerde[SortMergeJoinExec] {
       condition.map(joinBuilder.setCondition)
       Some(builder.setSortMergeJoin(joinBuilder).build())
     } else {
-      val allExprs: Seq[Expression] = joinKeys
-      withFallbackReason(join, allExprs: _*)
       None
     }
   }
