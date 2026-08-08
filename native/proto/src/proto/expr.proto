@@ -94,6 +94,7 @@ message Expr {
     Shuffle shuffle = 72;
     RandStr rand_str = 73;
     Uuid uuid = 74;
+    NativeScalarUdf native_scalar_udf = 75;
   }
 
   reserved 20;
@@ -617,4 +618,30 @@ message JvmScalarUdf {
   DataType return_type = 3;
   // Whether the result column may contain nulls.
   bool return_nullable = 4;
+}
+
+// Call to a user-supplied native UDF loaded from a shared library.
+//
+// The native side resolves (library_path, name) against its loaded-library
+// cache, looks up the kernel by name, and invokes it through the Comet UDF
+// C ABI. That ABI is parameterized only by the Arrow C Data Interface, so
+// the message says nothing about the language the library was written in;
+// the Rust SDK is the only supported way to produce one today.
+message NativeScalarUdf {
+  // Function name as registered through CometNativeUDF.register on the JVM
+  // side; matched against names exposed by the cdylib.
+  string name = 1;
+  // Filesystem path of the cdylib.
+  string library_path = 2;
+  // Argument expressions, evaluated before invocation.
+  repeated Expr args = 3;
+  // Expected return type, declared at register time on the JVM side.
+  DataType return_type = 4;
+  // Whether the call is deterministic (mirrors Spark's deterministic flag).
+  //
+  // Always true today: registration rejects deterministic = false, because the
+  // native side plans every native UDF with Volatility::Immutable and has no way
+  // to express a volatile one. The field is carried so that honoring it later
+  // does not need a wire change.
+  bool deterministic = 5;
 }

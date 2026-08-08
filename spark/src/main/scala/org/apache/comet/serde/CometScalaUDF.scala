@@ -29,6 +29,7 @@ import org.apache.comet.CometSparkSessionExtensions.{withCodegenDispatchExpr, wi
 import org.apache.comet.codegen.CometBatchKernelCodegen
 import org.apache.comet.serde.ExprOuterClass.Expr
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, serializeDataType}
+import org.apache.comet.udf.CometNativeUdfRegistry
 import org.apache.comet.udf.codegen.CometScalaUDFCodegen
 
 /**
@@ -53,8 +54,52 @@ import org.apache.comet.udf.codegen.CometScalaUDFCodegen
  */
 object CometScalaUDF extends CometExpressionSerde[ScalaUDF] {
 
-  override def convert(expr: ScalaUDF, inputs: Seq[Attribute], binding: Boolean): Option[Expr] =
-    emitJvmCodegenDispatch(expr, inputs, binding)
+  override def convert(expr: ScalaUDF, inputs: Seq[Attribute], binding: Boolean): Option[Expr] = {
+    // A registered native UDF is emitted as NativeScalarUdf and dispatched to the loaded shared
+    // library rather than to the JVM codegen dispatcher.
+    //
+    // The match is on the name alone, which is not enough to identify one: Spark sets `udfName` for
+    // every `spark.udf.register` call, and the registry is process-wide and keyed by bare name, so
+    // an ordinary Scala UDF sharing the name is currently answered out of the native library. The
+    // registration would have to be identified some other way to fix that, since the closure Spark
+    // holds for the catalog stub is one `functions.udf` wrapped rather than the one Comet passed
+    // in. See https://github.com/apache/datafusion-comet/issues/5295.
+    expr.udfName.flatMap(CometNativeUdfRegistry.instance.get) match {
+      case Some(meta) =>
+        emitNativeScalarUdf(expr, meta.libraryPath, meta.returnType, inputs, binding)
+      case None =>
+        emitJvmCodegenDispatch(expr, inputs, binding)
+    }
+  }
+
+  private def emitNativeScalarUdf(
+      expr: ScalaUDF,
+      libraryPath: String,
+      returnType: org.apache.spark.sql.types.DataType,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[Expr] = {
+    val name = expr.udfName.get
+    val argProtos = expr.children.map(c => exprToProtoInternal(c, inputs, binding))
+    if (argProtos.exists(_.isEmpty)) {
+      withFallbackReason(
+        expr,
+        "one or more native UDF arguments are not supported",
+        expr.children: _*)
+      return None
+    }
+    val returnTypeProto = serializeDataType(returnType).getOrElse {
+      withFallbackReason(expr, s"return type $returnType not serializable", expr)
+      return None
+    }
+    val callBuilder = ExprOuterClass.NativeScalarUdf
+      .newBuilder()
+      .setName(name)
+      .setLibraryPath(libraryPath)
+      .setReturnType(returnTypeProto)
+      .setDeterministic(expr.deterministic)
+    argProtos.foreach(a => callBuilder.addArgs(a.get))
+    Some(ExprOuterClass.Expr.newBuilder().setNativeScalarUdf(callBuilder.build()).build())
+  }
 
   /**
    * Bind `expr`, closure-serialize it, and emit a `JvmScalarUdf` proto routed through

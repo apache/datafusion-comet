@@ -1,0 +1,280 @@
+// Licensed to the Apache Software Foundation (ASF) under one
+// or more contributor license agreements.  See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership.  The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
+// with the License.  You may obtain a copy of the License at
+//
+//   http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing,
+// software distributed under the License is distributed on an
+// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+// KIND, either express or implied.  See the License for the
+// specific language governing permissions and limitations
+// under the License.
+
+//! Loader: open a UDF cdylib via libloading, validate the ABI version,
+//! discover UDFs via the C-ABI entry point, and produce DataFusion
+//! `ScalarUDFImpl` impls for each.
+//!
+//! See `super::mod.rs` for an overview of the ABI.
+
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use comet_udf_sdk::c_abi::CometCScalarKernelList;
+use comet_udf_sdk::{ABI_VERSION_SYMBOL, COMET_UDF_ABI_VERSION, C_ABI_DISCOVERY_SYMBOL};
+use datafusion::logical_expr::ScalarUDFImpl;
+use libloading::{Library, Symbol};
+
+use super::imported_c::ImportedCScalarUdf;
+
+/// One loaded UDF: name plus a `ScalarUDFImpl` ready to plug into the
+/// planner.
+pub struct LoadedUdf {
+    /// UDF name as exposed by the cdylib.
+    pub name: String,
+    /// The `ScalarUDFImpl` adapter the planner will wrap.
+    pub udf_impl: Arc<dyn ScalarUDFImpl>,
+}
+
+impl std::fmt::Debug for LoadedUdf {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LoadedUdf")
+            .field("name", &self.name)
+            .finish()
+    }
+}
+
+/// Result of loading a UDF cdylib: the live `Library` plus per-UDF
+/// adapters.
+pub struct LoadedLibrary {
+    /// Canonicalized path the library was loaded from.
+    pub path: PathBuf,
+    /// One entry per UDF, with name and ScalarUDFImpl already built.
+    ///
+    /// Declared before `library` on purpose. Struct fields drop in
+    /// declaration order, and each UDF's drop calls a `release` callback
+    /// that lives in the library's text: unloading first would call
+    /// through a dangling pointer.
+    pub udfs: Vec<LoadedUdf>,
+    /// The loaded `Library`. Held inside an `Arc` so loaded UDFs can
+    /// outlive lookups. Library is never unloaded for the process lifetime.
+    pub library: Arc<Library>,
+}
+
+impl std::fmt::Debug for LoadedLibrary {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LoadedLibrary")
+            .field("path", &self.path)
+            .field("udfs", &self.udfs)
+            .finish()
+    }
+}
+
+/// Errors returned by the loader.
+#[derive(Debug)]
+pub enum LoaderError {
+    /// `libloading::Library::new` failed.
+    Open {
+        /// Path that was passed to `Library::new`.
+        path: PathBuf,
+        /// Underlying error.
+        source: libloading::Error,
+    },
+    /// `comet_udf_abi_version` is missing or returned an unexpected value.
+    AbiMismatch {
+        /// Path of the offending library.
+        path: PathBuf,
+        /// Version reported by the cdylib (or `None` if the symbol is missing).
+        found: Option<u32>,
+        /// Version this host expects.
+        expected: u32,
+    },
+    /// Library does not expose `comet_c_udf_list_v1`.
+    NoDiscovery {
+        /// Path of the offending library.
+        path: PathBuf,
+    },
+    /// The discovery function returned a non-zero rc, or a kernel entry
+    /// was malformed.
+    Discovery {
+        /// Path of the library.
+        path: PathBuf,
+        /// Human-readable reason.
+        reason: String,
+    },
+}
+
+impl std::fmt::Display for LoaderError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use LoaderError::*;
+        match self {
+            Open { path, source } => write!(f, "failed to open {}: {source}", path.display()),
+            AbiMismatch {
+                path,
+                found,
+                expected,
+            } => match found {
+                Some(v) => write!(
+                    f,
+                    "{} reports ABI v{v}, host expects v{expected}",
+                    path.display()
+                ),
+                None => write!(
+                    f,
+                    "{} missing required symbol {ABI_VERSION_SYMBOL}",
+                    path.display()
+                ),
+            },
+            NoDiscovery { path } => write!(
+                f,
+                "{} does not export {C_ABI_DISCOVERY_SYMBOL}",
+                path.display()
+            ),
+            Discovery { path, reason } => write!(f, "{}: {reason}", path.display()),
+        }
+    }
+}
+
+impl std::error::Error for LoaderError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            LoaderError::Open { source, .. } => Some(source),
+            _ => None,
+        }
+    }
+}
+
+/// Open and validate a UDF cdylib.
+pub fn load(path: impl AsRef<Path>) -> Result<LoadedLibrary, LoaderError> {
+    let path = path.as_ref().to_path_buf();
+    // SAFETY: `Library::new` runs the cdylib's static initializers. We
+    // accept this risk because user UDF cdylibs are explicitly registered
+    // by an operator via `CometNativeUDF.register`.
+    let library = unsafe { Library::new(&path) }.map_err(|source| LoaderError::Open {
+        path: path.clone(),
+        source,
+    })?;
+
+    // ABI version probe.
+    let v = read_abi_version(&library, &path)?;
+    if v != COMET_UDF_ABI_VERSION {
+        return Err(LoaderError::AbiMismatch {
+            path,
+            found: Some(v),
+            expected: COMET_UDF_ABI_VERSION,
+        });
+    }
+
+    let udfs = match read_c_kernels(&library, &path)? {
+        Some(udfs) => udfs,
+        None => return Err(LoaderError::NoDiscovery { path }),
+    };
+
+    Ok(LoadedLibrary {
+        path,
+        library: Arc::new(library),
+        udfs,
+    })
+}
+
+fn read_abi_version(lib: &Library, path: &Path) -> Result<u32, LoaderError> {
+    let sym: Symbol<unsafe extern "C" fn() -> u32> = unsafe {
+        lib.get(ABI_VERSION_SYMBOL.as_bytes())
+    }
+    .map_err(|_| LoaderError::AbiMismatch {
+        path: path.to_path_buf(),
+        found: None,
+        expected: COMET_UDF_ABI_VERSION,
+    })?;
+    // SAFETY: comet_udf_abi_version takes no arguments, returns u32, no side effects.
+    Ok(unsafe { sym() })
+}
+
+fn read_c_kernels(lib: &Library, path: &Path) -> Result<Option<Vec<LoadedUdf>>, LoaderError> {
+    let sym: Symbol<unsafe extern "C" fn(*mut CometCScalarKernelList) -> i32> =
+        match unsafe { lib.get(C_ABI_DISCOVERY_SYMBOL.as_bytes()) } {
+            Ok(s) => s,
+            Err(_) => return Ok(None),
+        };
+    let mut list = CometCScalarKernelList::default();
+    // SAFETY: list is caller-allocated; the cdylib writes into it via `out`.
+    let rc = unsafe { sym(&mut list) };
+    if rc != 0 {
+        return Err(LoaderError::Discovery {
+            path: path.to_path_buf(),
+            reason: format!("{C_ABI_DISCOVERY_SYMBOL} returned rc={rc}"),
+        });
+    }
+    let mut udfs = Vec::with_capacity(list.len.max(0) as usize);
+    if !list.kernels.is_null() && list.len > 0 {
+        // Move each kernel out of the array into a Box so it owns itself.
+        // We can't simply read each entry because they implement Drop;
+        // doing it via std::ptr::read transfers ownership cleanly.
+        let len = list.len as usize;
+        for i in 0..len {
+            // SAFETY: the kernel array was produced by the cdylib's
+            // `comet_c_udf_export!` and contains `len` valid entries.
+            // We move each entry out into a Box so its Drop runs when
+            // the host releases the loaded library.
+            let raw = unsafe { list.kernels.add(i) };
+            let kernel = unsafe { std::ptr::read(raw) };
+            // Replace the slot with a default kernel (no callbacks) so
+            // the array's release doesn't double-free.
+            unsafe {
+                std::ptr::write(raw, comet_udf_sdk::c_abi::CometCScalarKernel::default());
+            }
+            let imported = ImportedCScalarUdf::try_new(Box::new(kernel)).map_err(|e| {
+                LoaderError::Discovery {
+                    path: path.to_path_buf(),
+                    reason: format!("import C kernel idx={i}: {e}"),
+                }
+            })?;
+            udfs.push(LoadedUdf {
+                name: imported.name().to_string(),
+                udf_impl: Arc::new(imported),
+            });
+        }
+    }
+    // list's Drop releases the array storage.
+    drop(list);
+    Ok(Some(udfs))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::execution::c_udf::test_support::{test_udfs_path, BUILD_HINT};
+
+    #[test]
+    fn load_test_udfs_succeeds() {
+        let lib = load(test_udfs_path()).expect(BUILD_HINT);
+        let names: Vec<_> = lib.udfs.iter().map(|u| u.name.as_str()).collect();
+        assert!(names.contains(&"add_one_c"), "names: {names:?}");
+    }
+
+    #[test]
+    fn missing_path_errors_open() {
+        let err = load("/no/such/path.so").unwrap_err();
+        assert!(matches!(err, LoaderError::Open { .. }), "got: {err:?}");
+    }
+
+    /// A library exporting several kernels surfaces all of them.
+    #[test]
+    fn all_exported_kernels_are_discovered() {
+        let lib = load(test_udfs_path()).expect(BUILD_HINT);
+        let names: Vec<_> = lib.udfs.iter().map(|u| u.name.as_str()).collect();
+        for expected in [
+            "add_one_c",
+            "echo_c",
+            "stringify_c",
+            "panics_on_invoke",
+            "panics_on_return_field",
+        ] {
+            assert!(names.contains(&expected), "missing {expected} in {names:?}");
+        }
+    }
+}

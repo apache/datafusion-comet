@@ -15,30 +15,15 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! PoC of vectorization execution through JNI to Rust.
-pub mod c_udf;
-pub mod columnar_to_row;
-pub mod expressions;
-pub mod jni_api;
-pub(crate) mod merge_as_partial;
-pub(crate) mod metrics;
-pub mod operators;
-pub(crate) mod planner;
-pub mod serde;
-pub use datafusion_comet_shuffle as shuffle;
-pub(crate) mod sort;
-pub(crate) mod spark_plan;
-pub use datafusion_comet_spark_expr::timezone;
-mod memory_pools;
-pub(crate) mod spark_config;
-pub(crate) mod tracing;
-pub(crate) mod utils;
+//! Test helpers shared across the c_udf submodules.
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn it_works() {
-        let result = 2 + 2;
-        assert_eq!(result, 4);
-    }
+/// `comet-test-udfs` is `crate-type = ["cdylib"]` and has no test targets, so a
+/// test build compiles it without emitting the shared library these tests
+/// dlopen. Name the fix in the failure rather than leaving a bare dlopen error.
+pub(crate) const BUILD_HINT: &str = "run `cargo build -p comet-test-udfs` first";
+
+/// Path to the `comet-test-udfs` cdylib, baked in at build time by
+/// `core/build.rs`.
+pub(crate) fn test_udfs_path() -> std::path::PathBuf {
+    std::path::PathBuf::from(env!("COMET_TEST_UDFS_LIB"))
 }

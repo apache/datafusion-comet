@@ -51,6 +51,7 @@ to read more.
    Supported Operators <operators>
    Supported Expressions <expressions>
    ScalaUDF and Java UDF Support <scala_java_udfs>
+   Custom Rust UDFs <rust_udfs>
 
 .. toctree::
    :maxdepth: 1
