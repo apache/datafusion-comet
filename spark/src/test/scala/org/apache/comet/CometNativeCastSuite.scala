@@ -1669,7 +1669,7 @@ class CometNativeCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       spark.sparkContext.parallelize(rowData),
       StructType(Seq(StructField("a", DataTypes.createDecimalType(10, 4)))))
 
-    castTest(df, DecimalType(6, 2))
+    castTest(df, DecimalType(6, 2), expectAnsiFailure = true)
   }
 
   test("cast between decimals with higher precision than source") {
@@ -2496,25 +2496,19 @@ class CometNativeCastSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               val cometMessage =
                 if (cometException.getCause != null) cometException.getCause.getMessage
                 else cometException.getMessage
-              // this if branch should only check decimal to decimal cast and errors when output precision, scale causes overflow.
-              if (df.schema("a").dataType.typeName.contains("decimal") && toType.typeName
-                  .contains("decimal") && sparkMessage.contains("cannot be represented as")) {
-                assert(cometMessage.contains("too large to store"))
+              if (CometSparkSessionExtensions.isSpark40Plus) {
+                // for Spark 4 we expect to sparkException carries the message
+                assert(sparkMessage.contains("SQLSTATE"))
+                // we compare a subset of the error message. Comet grabs the query
+                // context eagerly so it displays the call site at the
+                // line of code where the cast method was called, whereas spark grabs the context
+                // lazily and displays the call site at the line of code where the error is checked.
+                assert(
+                  sparkMessage.startsWith(
+                    cometMessage.substring(0, math.min(40, cometMessage.length))))
               } else {
-                if (CometSparkSessionExtensions.isSpark40Plus) {
-                  // for Spark 4 we expect to sparkException carries the message
-                  assert(sparkMessage.contains("SQLSTATE"))
-                  // we compare a subset of the error message. Comet grabs the query
-                  // context eagerly so it displays the call site at the
-                  // line of code where the cast method was called, whereas spark grabs the context
-                  // lazily and displays the call site at the line of code where the error is checked.
-                  assert(
-                    sparkMessage.startsWith(
-                      cometMessage.substring(0, math.min(40, cometMessage.length))))
-                } else {
-                  // for Spark 3.4 we expect to reproduce the error message exactly
-                  assert(cometMessage == sparkMessage)
-                }
+                // for Spark 3.4 we expect to reproduce the error message exactly
+                assert(cometMessage == sparkMessage)
               }
           }
         }

@@ -45,15 +45,17 @@ use arrow::array::{
     new_null_array, BinaryBuilder, DictionaryArray, GenericByteArray, ListArray, MapArray,
     StringArray, StructArray,
 };
-use arrow::datatypes::{ArrowDictionaryKeyType, ArrowNativeType, DataType, Schema};
+use arrow::datatypes::{
+    format_decimal_str, ArrowDictionaryKeyType, ArrowNativeType, DataType, Schema,
+};
 use arrow::datatypes::{Field, Fields, GenericBinaryType};
 use arrow::error::ArrowError;
 use arrow::{
     array::{
-        cast::AsArray, types::Int32Type, Array, ArrayRef, Int16Array, Int32Array, Int64Array,
-        Int8Array, OffsetSizeTrait, PrimitiveArray,
+        cast::AsArray, types::Decimal128Type, types::Int32Type, Array, ArrayRef, Int16Array,
+        Int32Array, Int64Array, Int8Array, OffsetSizeTrait, PrimitiveArray,
     },
-    compute::{cast_with_options, take, CastOptions},
+    compute::{cast_with_options, rescale_decimal, take, CastOptions},
     record_batch::RecordBatch,
     util::display::FormatOptions,
 };
@@ -338,6 +340,38 @@ pub(crate) fn cast_array(
         }
         (Utf8 | LargeUtf8, Decimal256(precision, scale)) => {
             cast_string_to_decimal(&array, to_type, precision, scale, eval_mode)
+        }
+        (Decimal128(input_precision, input_scale), Decimal128(output_precision, output_scale))
+            if eval_mode == EvalMode::Ansi =>
+        {
+            cast_with_options(&array, to_type, &native_cast_options).map_err(|error| {
+                array
+                    .as_primitive::<Decimal128Type>()
+                    .iter()
+                    .flatten()
+                    .find(|value| {
+                        rescale_decimal::<Decimal128Type, Decimal128Type>(
+                            *value,
+                            *input_precision,
+                            *input_scale,
+                            *output_precision,
+                            *output_scale,
+                        )
+                        .is_none()
+                    })
+                    .map_or_else(
+                        || error.into(),
+                        |value| SparkError::NumericValueOutOfRange {
+                            value: format_decimal_str(
+                                &value.to_string(),
+                                *input_precision as usize,
+                                *input_scale,
+                            ),
+                            precision: *output_precision,
+                            scale: *output_scale,
+                        },
+                    )
+            })
         }
         (Int64, Int32)
         | (Int64, Int16)
@@ -752,8 +786,12 @@ impl PhysicalExpr for Cast {
     }
 
     fn evaluate(&self, batch: &RecordBatch) -> DataFusionResult<ColumnarValue> {
-        let arg = self.child.evaluate(batch)?;
-        let result = spark_cast(arg, &self.data_type, &self.cast_options);
+        // `CometIntegralDivide` builds its inner `CheckOverflow` without an expression id, so a
+        // bare child `SparkError` deliberately inherits the outer Cast's query context here.
+        let result = self
+            .child
+            .evaluate(batch)
+            .and_then(|arg| spark_cast(arg, &self.data_type, &self.cast_options));
 
         // If there's an error and we have query_context, wrap it
         match result {
@@ -908,10 +946,61 @@ fn cast_binary_to_string<O: OffsetSizeTrait>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::{BinaryArray, ListArray, NullArray, StringArray};
+    use arrow::array::{BinaryArray, Decimal128Array, ListArray, NullArray, StringArray};
     use arrow::buffer::OffsetBuffer;
     use arrow::datatypes::TimestampMicrosecondType;
     use arrow::datatypes::{Field, Fields};
+
+    #[test]
+    fn test_cast_decimal_to_decimal_ansi_overflow_returns_spark_error() {
+        let cases = [
+            (
+                vec![None, Some(1), Some(-123_456_789)],
+                DataType::Decimal128(10, 4),
+                DataType::Decimal128(6, 2),
+                "-12345.6789",
+                6,
+                2,
+            ),
+            (
+                vec![None, Some(1), Some(-999)],
+                DataType::Decimal128(3, 0),
+                DataType::Decimal128(3, 2),
+                "-999",
+                3,
+                2,
+            ),
+        ];
+
+        for (values, input_type, output_type, expected_value, expected_precision, expected_scale) in
+            cases
+        {
+            let input: ArrayRef =
+                Arc::new(Decimal128Array::from(values).with_data_type(input_type));
+            let error = cast_array(
+                input,
+                &output_type,
+                &SparkCastOptions::new_without_timezone(EvalMode::Ansi, false),
+            )
+            .unwrap_err();
+
+            match error {
+                DataFusionError::External(error) => match error.downcast_ref::<SparkError>() {
+                    Some(SparkError::NumericValueOutOfRange {
+                        value,
+                        precision,
+                        scale,
+                    }) => {
+                        assert_eq!(value, expected_value);
+                        assert_eq!(*precision, expected_precision);
+                        assert_eq!(*scale, expected_scale);
+                    }
+                    other => panic!("expected NumericValueOutOfRange, got {other:?}"),
+                },
+                other => panic!("expected external SparkError, got {other:?}"),
+            }
+        }
+    }
 
     #[test]
     fn test_cast_binary_to_string_replaces_invalid_utf8_jvm_compatibly() {
