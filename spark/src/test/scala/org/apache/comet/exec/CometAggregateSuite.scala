@@ -2344,7 +2344,6 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "false",
       CometConf.COMET_ENABLED.key -> "true",
       CometConf.COMET_EXEC_ENABLED.key -> "true",
-      CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
       CometConf.COMET_ONHEAP_MEMORY_POOL_TYPE.key -> "unbounded")
 
     withTempDir { dir =>
