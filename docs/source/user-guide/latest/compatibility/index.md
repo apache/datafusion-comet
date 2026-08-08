@@ -119,6 +119,10 @@ divergence:
   ([#5071](https://github.com/apache/datafusion-comet/issues/5071)).
 - Wide-decimal arithmetic overflow reports a different value in the error message than Spark
   ([#5211](https://github.com/apache/datafusion-comet/issues/5211)).
+- Wide-decimal arithmetic overflow, decimal divide-by-zero, and decimal-to-decimal cast overflow
+  raise raw Arrow errors that bypass `SparkErrorConverter` and surface as `CometNativeException`
+  rather than `SparkArithmeticException` with the proper error class and query context
+  ([#5072](https://github.com/apache/datafusion-comet/issues/5072)).
 - `next_day` and `make_date` throw at the correct inputs but surface as `CometNativeException`
   instead of `SparkIllegalArgumentException [ILLEGAL_DAY_OF_WEEK]` /
   `SparkDateTimeException [DATETIME_FIELD_OUT_OF_BOUNDS.WITH_SUGGESTION]`
