@@ -48,9 +48,8 @@ fn create_list_array(rows: usize, elems_per_row: usize, with_nulls: bool) -> Arr
 }
 
 /// Build a `LargeListArray` (i64 offsets) of `rows` lists with `elems_per_row`
-/// Int32 elements. Every 10th row is null. LargeList exercises the extra
-/// Int64->Int32 cast on top of the length kernel.
-fn create_large_list_array(rows: usize, elems_per_row: usize) -> ArrayRef {
+/// Int32 elements. When `with_nulls` is true every 10th row is null.
+fn create_large_list_array(rows: usize, elems_per_row: usize, with_nulls: bool) -> ArrayRef {
     let total = rows * elems_per_row;
     let values = Int32Array::from((0..total as i32).collect::<Vec<i32>>());
 
@@ -60,13 +59,14 @@ fn create_large_list_array(rows: usize, elems_per_row: usize) -> ArrayRef {
         offsets.push((i * elems_per_row) as i64);
     }
 
-    let nulls = NullBuffer::from((0..rows).map(|i| i % 10 != 0).collect::<Vec<bool>>());
+    let nulls =
+        with_nulls.then(|| NullBuffer::from((0..rows).map(|i| i % 10 != 0).collect::<Vec<bool>>()));
     let field = Arc::new(Field::new("item", DataType::Int32, true));
     Arc::new(LargeListArray::new(
         field,
         OffsetBuffer::new(offsets.into()),
         Arc::new(values),
-        Some(nulls),
+        nulls,
     ))
 }
 
@@ -99,11 +99,20 @@ fn criterion_benchmark(c: &mut Criterion) {
         &create_list_array(rows, 5, false),
     );
 
-    // LargeList: exposes the Int64 length -> Int32 cast (extra allocation) on top of
-    // the length kernel.
+    // LargeList: builds Int32 lengths from i64 offsets (see spark_size_large_list_from_offsets).
+    // Shapes mirror List coverage (short/long + 10% null, short + no nulls).
     bench(
         "spark_size: LargeList (10% null)",
-        &create_large_list_array(rows, 5),
+        &create_large_list_array(rows, 5, true),
+    );
+    bench(
+        "spark_size: LargeList of long arrays",
+        &create_large_list_array(rows, 64, true),
+    );
+    // No-null LargeList: production path after CometSize's isnotnull filter.
+    bench(
+        "spark_size: LargeList, no nulls",
+        &create_large_list_array(rows, 5, false),
     );
 }
 

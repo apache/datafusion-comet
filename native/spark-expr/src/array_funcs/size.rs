@@ -15,7 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow::array::{Array, ArrayRef, Int32Array};
+use arrow::array::{Array, ArrayRef, Int32Array, LargeListArray};
+use arrow::buffer::NullBuffer;
 use arrow::compute::kernels::length::length;
 use arrow::compute::{cast_with_options, CastOptions};
 use arrow::datatypes::{DataType, Field};
@@ -24,6 +25,21 @@ use datafusion::logical_expr::{
     ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility,
 };
 use std::sync::Arc;
+
+/// Shared by the LargeList array path and `ScalarValue::LargeList` overflow guard.
+const SIZE_OVERFLOW_MSG: &str = "size(): list length exceeds i32::MAX";
+
+/// Rewrite null slots to `-1` (Spark `size` of null). Shared by List and LargeList paths.
+fn ints_with_nulls_as_neg_one(mut values: Vec<i32>, nulls: Option<&NullBuffer>) -> Int32Array {
+    if let Some(nulls) = nulls {
+        if nulls.null_count() > 0 {
+            for i in (!nulls.inner()).set_indices() {
+                values[i] = -1;
+            }
+        }
+    }
+    Int32Array::from(values)
+}
 
 /// Spark size() function that returns the size of arrays or maps.
 /// Returns -1 for null inputs (Spark behavior differs from standard SQL).
@@ -93,10 +109,11 @@ impl ScalarUDFImpl for SparkSizeFunc {
 
 fn spark_size_array(array: &ArrayRef) -> Result<ArrayRef, DataFusionError> {
     match array.data_type() {
-        // List / LargeList / FixedSizeList: reuse Arrow's vectorized length kernel.
-        DataType::List(_) | DataType::LargeList(_) | DataType::FixedSizeList(..) => {
-            spark_size_list_like(array)
-        }
+        // LargeList: build Int32 lengths directly from i64 offsets (avoids
+        // length→Int64→cast→Int32).
+        DataType::LargeList(_) => spark_size_large_list_from_offsets(array),
+        // List / FixedSizeList: reuse Arrow's vectorized length kernel.
+        DataType::List(_) | DataType::FixedSizeList(..) => spark_size_list_like(array),
         // Map is not supported by the length kernel; keep the offset-based path.
         DataType::Map(_, _) => {
             let map_array = array
@@ -123,9 +140,9 @@ fn spark_size_array(array: &ArrayRef) -> Result<ArrayRef, DataFusionError> {
     }
 }
 
-/// Compute Spark `size()` for list-like arrays via Arrow's `length` kernel, then
-/// rewrite null inputs to `-1` (Spark's legacy/compatible size-of-null behavior
-/// for this UDF). LargeList lengths are Int64 and are cast to Int32.
+/// Compute Spark `size()` for List / FixedSizeList via Arrow's `length` kernel,
+/// then rewrite null inputs to `-1` (Spark's legacy/compatible size-of-null
+/// behavior for this UDF).
 ///
 /// Patches the values buffer in place rather than using `zip`; `zip` goes
 /// through `MutableArrayData` and roughly doubled runtime on the `array_size`
@@ -161,19 +178,75 @@ fn spark_size_list_like(array: &ArrayRef) -> Result<ArrayRef, DataFusionError> {
         .downcast_ref::<Int32Array>()
         .ok_or_else(|| DataFusionError::Internal("Expected Int32Array from length".to_string()))?;
 
-    // `set_indices()` on the inverted validity visits only null slots
-    // (O(null_count)). We still `to_vec()` the values buffer (O(n)) so we can
-    // write `-1` into those slots; `into_parts` avoids an extra values-buffer
-    // clone beyond that copy. Prefer this over scanning every validity bit.
+    // `into_parts` + shared null→-1 rewrite: O(n) values copy, then O(null_count)
+    // writes via inverted validity. Prefer this over scanning every validity bit.
     let (_, values, nulls) = int_lengths.clone().into_parts();
-    let Some(nulls) = nulls else {
-        return Ok(Arc::new(Int32Array::new(values, None)));
+    Ok(Arc::new(ints_with_nulls_as_neg_one(
+        values.to_vec(),
+        nulls.as_ref(),
+    )))
+}
+
+/// Compute Spark `size()` for LargeList by subtracting adjacent i64 offsets into
+/// Int32 lengths. Avoids Arrow's `length` kernel (which returns Int64 for
+/// LargeList) and the subsequent Int32 cast allocation.
+///
+/// When the full offset span fits in `i32`, every per-row length does too, so the
+/// hot path uses an unchecked `as i32` + `collect` (vectorization-friendly).
+/// Otherwise fall back to per-row `i32::try_from` with [`SIZE_OVERFLOW_MSG`].
+///
+/// Null inputs become `-1`, matching `spark_size_list_like`.
+fn spark_size_large_list_from_offsets(array: &ArrayRef) -> Result<ArrayRef, DataFusionError> {
+    let list = array
+        .as_any()
+        .downcast_ref::<LargeListArray>()
+        .ok_or_else(|| DataFusionError::Internal("Expected LargeListArray".to_string()))?;
+
+    let offsets = list.offsets();
+    // Offsets are monotonically non-decreasing, so no per-row length can exceed
+    // the full span. If the span fits in i32, every row length does too.
+    // `OffsetBuffer` always has at least one element.
+    let range = *offsets.last().unwrap() - *offsets.first().unwrap();
+    let values = if range > i32::MAX as i64 {
+        spark_size_large_list_lengths_checked(offsets, list.nulls())?
+    } else {
+        offsets.windows(2).map(|w| (w[1] - w[0]) as i32).collect()
     };
-    let mut values = values.to_vec();
-    for i in (!nulls.inner()).set_indices() {
-        values[i] = -1;
+
+    // Fast path for the production shape: `CometSize.convert` wraps size() in a
+    // `CASE WHEN isnotnull(child)` that filters null rows out before the THEN
+    // branch runs, so this function only ever sees a null-free array in a real
+    // Comet plan.
+    if list.null_count() == 0 {
+        return Ok(Arc::new(Int32Array::from(values)));
     }
-    Ok(Arc::new(Int32Array::from(values)))
+
+    // `null_count() > 0` implies a null buffer is present.
+    let nulls = list.nulls().unwrap();
+    Ok(Arc::new(ints_with_nulls_as_neg_one(values, Some(nulls))))
+}
+
+/// Per-row checked Int32 conversion used when the overall offset span exceeds
+/// `i32::MAX` (so an individual row might overflow even though most do not).
+///
+/// Null rows skip `try_from`: Arrow does not require a null row's offset delta to
+/// be zero, and the caller rewrites those slots to `-1` anyway (same as the
+/// unchecked fast path).
+fn spark_size_large_list_lengths_checked(
+    offsets: &arrow::buffer::OffsetBuffer<i64>,
+    nulls: Option<&NullBuffer>,
+) -> Result<Vec<i32>, DataFusionError> {
+    let mut values = Vec::with_capacity(offsets.len() - 1);
+    for (i, w) in offsets.windows(2).enumerate() {
+        if nulls.is_some_and(|n| n.is_null(i)) {
+            values.push(0); // overwritten to -1 by the caller
+            continue;
+        }
+        let len = i32::try_from(w[1] - w[0])
+            .map_err(|_| DataFusionError::Execution(SIZE_OVERFLOW_MSG.to_string()))?;
+        values.push(len);
+    }
+    Ok(values)
 }
 
 fn spark_size_scalar(scalar: &ScalarValue) -> Result<ScalarValue, DataFusionError> {
@@ -194,9 +267,8 @@ fn spark_size_scalar(scalar: &ScalarValue) -> Result<ScalarValue, DataFusionErro
             } else {
                 // Spark arrays are capped near Integer.MAX_VALUE; overflow shouldn't
                 // happen in practice but must error rather than silently wrap.
-                let len = i32::try_from(array.value_length(0)).map_err(|_| {
-                    DataFusionError::Execution("size(): list length exceeds i32::MAX".to_string())
-                })?;
+                let len = i32::try_from(array.value_length(0))
+                    .map_err(|_| DataFusionError::Execution(SIZE_OVERFLOW_MSG.to_string()))?;
                 Ok(ScalarValue::Int32(Some(len)))
             }
         }
@@ -230,6 +302,7 @@ fn spark_size_scalar(scalar: &ScalarValue) -> Result<ScalarValue, DataFusionErro
 mod tests {
     use super::*;
     use arrow::array::{Int32Array, ListArray, NullBufferBuilder};
+    use arrow::buffer::NullBuffer;
     use arrow::datatypes::{DataType, Field};
     use std::sync::Arc;
 
@@ -554,6 +627,72 @@ mod tests {
         assert_eq!(result.value(0), 3);
         assert_eq!(result.value(1), -1);
         assert_eq!(result.value(2), 1);
+    }
+
+    #[test]
+    fn test_spark_size_sliced_large_list_array() {
+        // Same sliced-offsets invariant as the List test, for the LargeList helper
+        // that reads `offsets().windows(2)` directly.
+        //
+        // Full array: [[1, 2], [3], [4, 5, 6], null, [7]]
+        use arrow::array::LargeListArray;
+
+        let value_data = Int32Array::from(vec![1, 2, 3, 4, 5, 6, 7]);
+        let value_offsets = arrow::buffer::OffsetBuffer::new(vec![0i64, 2, 3, 6, 6, 7].into());
+        let field = Arc::new(Field::new("item", DataType::Int32, true));
+
+        let mut null_buffer = NullBufferBuilder::new(5);
+        null_buffer.append(true);
+        null_buffer.append(true);
+        null_buffer.append(true);
+        null_buffer.append(false);
+        null_buffer.append(true);
+
+        let large_list_array = LargeListArray::try_new(
+            field,
+            value_offsets,
+            Arc::new(value_data),
+            null_buffer.finish(),
+        )
+        .unwrap();
+
+        // Skip the first two rows: sliced view is [[4, 5, 6], null, [7]].
+        let sliced: ArrayRef = Arc::new(large_list_array.slice(2, 3));
+        let result = spark_size_array(&sliced).unwrap();
+        let result = result.as_any().downcast_ref::<Int32Array>().unwrap();
+
+        assert_eq!(result.len(), 3);
+        assert_eq!(result.value(0), 3);
+        assert_eq!(result.value(1), -1);
+        assert_eq!(result.value(2), 1);
+    }
+
+    #[test]
+    fn test_spark_size_large_list_length_overflow() {
+        // A non-null row whose length is i32::MAX + 1 must error (same contract
+        // as the old safe: false Int64→Int32 cast / scalar try_from). Call the
+        // checked helper directly with a valid OffsetBuffer — no invalid ArrayData.
+        let offsets = arrow::buffer::OffsetBuffer::new(vec![0i64, (i32::MAX as i64) + 1].into());
+        let err = spark_size_large_list_lengths_checked(&offsets, None).unwrap_err();
+        assert!(
+            err.to_string().contains(SIZE_OVERFLOW_MSG),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_spark_size_large_list_checked_null_row_skips_overflow() {
+        // Null row offset delta may exceed i32::MAX; checked path must not error
+        // (matches the fast path, which rewrites null slots to -1 afterward).
+        let offsets = arrow::buffer::OffsetBuffer::new(
+            vec![0i64, (i32::MAX as i64) + 1, (i32::MAX as i64) + 1].into(),
+        );
+        let nulls = NullBuffer::from(vec![false, true]); // row 0 null, row 1 empty
+        let values = spark_size_large_list_lengths_checked(&offsets, Some(&nulls)).unwrap();
+        assert_eq!(values, vec![0, 0]);
+        let result = ints_with_nulls_as_neg_one(values, Some(&nulls));
+        assert_eq!(result.value(0), -1);
+        assert_eq!(result.value(1), 0);
     }
 
     #[test]
