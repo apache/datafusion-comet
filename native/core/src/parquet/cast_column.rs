@@ -188,8 +188,8 @@ impl CometCastColumnExpr {
         // `target_field` is the Spark logical field, while `physical_field` comes from the
         // Parquet or Iceberg file. Comet represents Spark's TimestampType and TimestampNTZType
         // as Arrow microseconds, and Spark maps both TIMESTAMP_MICROS and TIMESTAMP_MILLIS files
-        // to those logical types. A millisecond target is therefore invalid at this read-adapter
-        // boundary:
+        // to those logical types. For a top-level timestamp column, a millisecond target is
+        // therefore invalid at this read-adapter boundary:
         // https://github.com/apache/spark/blob/v4.2.0/sql/core/src/main/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetSchemaConverter.scala#L318-L324
         if matches!(
             (physical_type, target_type),
@@ -316,9 +316,12 @@ impl PhysicalExpr for CometCastColumnExpr {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::{Array, Int32Array, StringArray};
+    use arrow::array::{
+        Array, Int32Array, StringArray, TimestampMicrosecondArray, TimestampMillisecondArray,
+    };
     use arrow::datatypes::{Field, Fields};
     use datafusion::physical_expr::expressions::Column;
+    use datafusion_comet_spark_expr::EvalMode;
 
     #[test]
     fn test_rejects_millisecond_logical_timestamp() {
@@ -342,6 +345,55 @@ mod tests {
                 DataFusionError::Plan(message)
                     if message.contains("Spark read schemas represent logical timestamps in microseconds")
             ));
+        }
+    }
+
+    #[test]
+    fn test_parquet_millis_to_micros_uses_checked_multiply() {
+        // Spark's Parquet reader calls the checked `millisToMicros` conversion for both
+        // direct and dictionary values:
+        // https://github.com/apache/spark/blob/v4.2.0/sql/core/src/main/java/org/apache/spark/sql/execution/datasources/parquet/ParquetVectorUpdaterFactory.java#L817-L833
+        for eval_mode in [EvalMode::Legacy, EvalMode::Try, EvalMode::Ansi] {
+            for (source_tz, target_tz) in [
+                (None, None),
+                (Some(Arc::from("UTC")), Some(Arc::from("UTC"))),
+            ] {
+                let input_field = Arc::new(Field::new(
+                    "ts",
+                    DataType::Timestamp(TimeUnit::Millisecond, source_tz.clone()),
+                    true,
+                ));
+                let schema = Arc::new(Schema::new(vec![Arc::clone(&input_field)]));
+                let target_type = DataType::Timestamp(TimeUnit::Microsecond, target_tz.clone());
+                let target_field = Arc::new(Field::new("ts", target_type.clone(), true));
+                let expr: Arc<dyn PhysicalExpr> = Arc::new(Column::new("ts", 0));
+                let cast_expr = CometCastColumnExpr::try_new(expr, input_field, target_field, None)
+                    .unwrap()
+                    .with_parquet_options(SparkParquetOptions::new(eval_mode, "UTC", false));
+
+                let input = TimestampMillisecondArray::from(vec![Some(1_234), Some(-1_234), None])
+                    .with_timezone_opt(source_tz.clone());
+                let batch =
+                    RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(input)]).unwrap();
+                let ColumnarValue::Array(output) = cast_expr.evaluate(&batch).unwrap() else {
+                    panic!("Expected array result");
+                };
+                let output = output
+                    .as_any()
+                    .downcast_ref::<TimestampMicrosecondArray>()
+                    .expect("Expected TimestampMicrosecondArray");
+                assert_eq!(
+                    output.iter().collect::<Vec<_>>(),
+                    vec![Some(1_234_000), Some(-1_234_000), None]
+                );
+                assert_eq!(output.data_type(), &target_type);
+
+                let overflow =
+                    TimestampMillisecondArray::from(vec![i64::MAX]).with_timezone_opt(source_tz);
+                let batch =
+                    RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(overflow)]).unwrap();
+                assert!(cast_expr.evaluate(&batch).is_err());
+            }
         }
     }
 

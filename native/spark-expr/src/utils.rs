@@ -29,7 +29,6 @@ use std::sync::Arc;
 
 use crate::timezone::Tz;
 use arrow::array::types::TimestampMillisecondType;
-use arrow::compute::cast_with_options;
 use arrow::datatypes::{MAX_DECIMAL128_FOR_EACH_PRECISION, MIN_DECIMAL128_FOR_EACH_PRECISION};
 use arrow::error::ArrowError;
 use arrow::{
@@ -37,7 +36,6 @@ use arrow::{
     temporal_conversions::as_datetime,
 };
 use chrono::{DateTime, LocalResult, NaiveDateTime, Offset, TimeZone};
-use datafusion::common::format::DEFAULT_CAST_OPTIONS;
 
 /// Preprocesses input arrays to add timezone information from Spark to Arrow array datatype or
 /// to apply timezone offset.
@@ -81,15 +79,6 @@ pub fn array_with_timezone(
                     // Interpret NTZ as local time in session TZ; annotate output with target TZ
                     // so the result has the exact annotation the caller expects.
                     timestamp_ntz_to_timestamp(array, timezone.as_str(), Some(target_tz.as_ref()))
-                }
-                Some(to_type @ DataType::Timestamp(TimeUnit::Microsecond, None)) => {
-                    // This defensive conversion intentionally errors in every CAST eval mode:
-                    // Spark's vectorized Parquet reader calls `millisToMicros` for both direct
-                    // and dictionary values, independent of CAST evaluation.
-                    // https://github.com/apache/spark/blob/v4.2.0/sql/core/src/main/java/org/apache/spark/sql/execution/datasources/parquet/ParquetVectorUpdaterFactory.java#L817-L833
-                    // `millisToMicros` uses `Math.multiplyExact`:
-                    // https://github.com/apache/spark/blob/v4.2.0/sql/api/src/main/scala/org/apache/spark/sql/catalyst/util/SparkDateTimeUtils.scala#L103-L108
-                    cast_with_options(array.as_ref(), to_type, &DEFAULT_CAST_OPTIONS)
                 }
                 _ => {
                     // Not supported
@@ -379,7 +368,7 @@ pub fn unlikely(b: bool) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::{TimestampMicrosecondArray, TimestampMillisecondArray};
+    use arrow::array::TimestampMicrosecondArray;
 
     fn array_containing(local_datetime: &str) -> ArrayRef {
         let dt = NaiveDateTime::parse_from_str(local_datetime, "%Y-%m-%d %H:%M:%S").unwrap();
@@ -392,28 +381,6 @@ mod tests {
             .unwrap()
             .and_utc()
             .timestamp_micros()
-    }
-
-    #[test]
-    fn test_array_with_timezone_millis_to_micros() {
-        let input: ArrayRef = Arc::new(TimestampMillisecondArray::from(vec![
-            Some(1234),
-            Some(-1234),
-            None,
-        ]));
-        let target = DataType::Timestamp(TimeUnit::Microsecond, None);
-
-        let output = array_with_timezone(input, "UTC".to_string(), Some(&target)).unwrap();
-        let output = as_primitive_array::<TimestampMicrosecondType>(&output);
-
-        assert_eq!(
-            output.iter().collect::<Vec<_>>(),
-            vec![Some(1_234_000), Some(-1_234_000), None]
-        );
-        assert_eq!(output.timezone(), None);
-
-        let overflow: ArrayRef = Arc::new(TimestampMillisecondArray::from(vec![i64::MAX]));
-        assert!(array_with_timezone(overflow, "UTC".to_string(), Some(&target)).is_err());
     }
 
     #[test]

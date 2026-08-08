@@ -202,6 +202,56 @@ abstract class ParquetReadSuite extends CometTestBase {
     }
   }
 
+  test("TIMESTAMP_MILLIS overflow fails in native scan") {
+    // Spark routes both TimestampType and TimestampNTZType through LongAsMicrosUpdater:
+    // https://github.com/apache/spark/blob/v4.2.0/sql/core/src/main/java/org/apache/spark/sql/execution/datasources/parquet/ParquetVectorUpdaterFactory.java#L140-L164
+    // The updater calls checked millisToMicros for direct and dictionary values:
+    // https://github.com/apache/spark/blob/v4.2.0/sql/core/src/main/java/org/apache/spark/sql/execution/datasources/parquet/ParquetVectorUpdaterFactory.java#L800-L833
+    // Matches Spark's positive and negative overflow cases:
+    // https://github.com/apache/spark/blob/v4.2.0/sql/core/src/test/resources/sql-tests/inputs/timestamp.sql#L74-L83
+    def isOverflow(error: Throwable): Boolean =
+      Iterator
+        .iterate(error)(_.getCause)
+        .takeWhile(_ != null)
+        .exists(cause => Option(cause.getMessage).exists(_.toLowerCase.contains("overflow")))
+
+    Seq(false, true).foreach { dictionaryEnabled =>
+      Seq(92233720368547758L, -92233720368547758L).foreach { millis =>
+        withTempDir { dir =>
+          val path = new Path(dir.toURI.toString, "part-r-0.parquet")
+          val schema = MessageTypeParser.parseMessageType("""
+            |message root {
+            |  optional int64 ts(TIMESTAMP_MILLIS);
+            |  optional int64 ts_ntz(TIMESTAMP(MILLIS,false));
+            |}
+            |""".stripMargin)
+          val writer = createParquetWriter(schema, path, dictionaryEnabled)
+          val record = new SimpleGroup(schema)
+          record.add(0, millis)
+          record.add(1, millis)
+          writer.write(record)
+          writer.close()
+
+          Seq(false, true).foreach { ansiEnabled =>
+            withSQLConf(SQLConf.ANSI_ENABLED.key -> ansiEnabled.toString) {
+              readParquetFile(path.toString) { df =>
+                Seq("ts", "ts_ntz").foreach { column =>
+                  val selected = df.select(column)
+                  assert(collect(selected.queryExecution.executedPlan) {
+                    case _: CometNativeScanExec => true
+                  }.nonEmpty)
+
+                  val (sparkError, cometError) = checkSparkAnswerMaybeThrows(selected)
+                  assert(Seq(sparkError, cometError).forall(_.exists(isOverflow)))
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
   test("timestamp as int96") {
     import testImplicits._
 
