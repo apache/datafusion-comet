@@ -76,8 +76,9 @@ pub use comet_scalar_funcs::{
 pub use csv_funcs::*;
 pub use datetime_funcs::{
     spark_day_name, spark_month_name, spark_to_time, SparkDateDiff, SparkDateFromUnixDate,
-    SparkDateTrunc, SparkHour, SparkHoursTransform, SparkMakeDate, SparkMakeTime, SparkMinute,
-    SparkNextDay, SparkSecond, SparkSecondsToTimestamp, SparkUnixTimestamp, TimestampTruncExpr,
+    SparkDateTrunc, SparkHour, SparkHoursTransform, SparkMakeDate, SparkMakeInterval,
+    SparkMakeTime, SparkMinute, SparkNextDay, SparkSecond, SparkSecondsToTimestamp,
+    SparkUnixTimestamp, TimestampTruncExpr,
 };
 pub use error::{decimal_overflow_error, SparkError, SparkErrorWithContext, SparkResult};
 pub use hash_funcs::*;
