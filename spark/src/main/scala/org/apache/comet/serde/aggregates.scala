@@ -845,6 +845,15 @@ object CometCollectSet extends CometAggregateExpressionSerde[CollectSet] {
     }
   }
 
+  override def getUnsupportedReasons(): Seq[String] =
+    if (isSpark42Plus) {
+      Seq(
+        "`collect_set` with `RESPECT NULLS` falls back to Spark, since the native " +
+          "implementation always drops null inputs.")
+    } else {
+      Nil
+    }
+
   override def getSupportLevel(expr: CollectSet): SupportLevel = {
     // The native path always drops null inputs. Spark 4.2 added an `ignoreNulls` field to
     // CollectSet that `RESPECT NULLS` sets to false, preserving nulls in the result; Comet
@@ -873,6 +882,9 @@ object CometCollectSet extends CometAggregateExpressionSerde[CollectSet] {
       binding: Boolean,
       conf: SQLConf): Option[ExprOuterClass.AggExpr] = {
     val child = aggExpr.mode match {
+      // Spark 4.2 introduced this normalization. Keep older versions unchanged to avoid adding
+      // JVM codegen dispatch for nested arrays; their floating-point behavior is documented as
+      // incompatible.
       case Partial | Complete if isSpark42Plus =>
         CometExecUtils.normalizeFloatingNumbers(expr.children.head)
       case _ =>
