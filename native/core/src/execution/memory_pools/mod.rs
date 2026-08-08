@@ -18,6 +18,10 @@
 mod config;
 mod fair_pool;
 pub mod logging_pool;
+#[cfg(feature = "oom-guard")]
+pub mod oom_guard;
+#[cfg(feature = "oom-guard")]
+mod real_usage_pool;
 mod task_shared;
 mod unified_pool;
 
@@ -32,6 +36,8 @@ use std::sync::Arc;
 use unified_pool::CometUnifiedMemoryPool;
 
 pub(crate) use config::*;
+#[cfg(feature = "oom-guard")]
+pub(crate) use real_usage_pool::RealUsagePool;
 pub(crate) use task_shared::*;
 
 pub(crate) fn create_memory_pool(
@@ -45,6 +51,7 @@ pub(crate) fn create_memory_pool(
             let mut memory_pool_map = TASK_SHARED_MEMORY_POOLS.lock().unwrap();
             let per_task_memory_pool =
                 memory_pool_map.entry(task_attempt_id).or_insert_with(|| {
+                    record_task_started();
                     let pool: Arc<dyn MemoryPool> = Arc::new(TrackConsumersPool::new(
                         CometUnifiedMemoryPool::new(
                             Arc::clone(&comet_task_memory_manager),
@@ -61,6 +68,7 @@ pub(crate) fn create_memory_pool(
             let mut memory_pool_map = TASK_SHARED_MEMORY_POOLS.lock().unwrap();
             let per_task_memory_pool =
                 memory_pool_map.entry(task_attempt_id).or_insert_with(|| {
+                    record_task_started();
                     let pool: Arc<dyn MemoryPool> = Arc::new(TrackConsumersPool::new(
                         CometFairMemoryPool::new(
                             Arc::clone(&comet_task_memory_manager),
@@ -105,6 +113,7 @@ pub(crate) fn create_memory_pool(
             let mut memory_pool_map = TASK_SHARED_MEMORY_POOLS.lock().unwrap();
             let per_task_memory_pool =
                 memory_pool_map.entry(task_attempt_id).or_insert_with(|| {
+                    record_task_started();
                     let pool: Arc<dyn MemoryPool> =
                         if memory_pool_config.pool_type == MemoryPoolType::GreedyTaskShared {
                             Arc::new(TrackConsumersPool::new(
