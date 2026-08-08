@@ -254,15 +254,15 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `current_time` | 🔜 | — | Blocked on Spark 4.1 TIME type support ([#4288](https://github.com/apache/datafusion-comet/issues/4288)) |
 | `current_timestamp` | ✅ | — | Constant-folded to a literal before Comet sees the plan |
 | `current_timezone` | ✅ | — |  |
-| `date_add` | ✅ | Native |  |
-| `date_diff` | ✅ | Native |  |
+| `date_add` | ✅ | Native | The 2-argument form is native; the `date_add(UNIT, n, ts)` form (Spark 3.5+) parses to `timestampadd` and runs through codegen dispatch |
+| `date_diff` | ✅ | Native | The 2-argument form is native; the `date_diff(UNIT, start, end)` form (Spark 3.5+) parses to `timestampdiff` and runs through codegen dispatch |
 | `date_format` | ✅ | Hybrid |  |
 | `date_from_unix_date` | ✅ | Native |  |
 | `date_part` | ✅ | — |  |
 | `date_sub` | ✅ | Native |  |
 | `date_trunc` | ✅ | Hybrid |  |
-| `dateadd` | ✅ | Native |  |
-| `datediff` | ✅ | Native |  |
+| `dateadd` | ✅ | Native | The 2-argument form is native; the `dateadd(UNIT, n, ts)` form parses to `timestampadd` and runs through codegen dispatch |
+| `datediff` | ✅ | Native | The 2-argument form is native; the `datediff(UNIT, start, end)` form parses to `timestampdiff` and runs through codegen dispatch |
 | `datepart` | ✅ | — |  |
 | `day` | ✅ | Native |  |
 | `dayname` | ✅ | — | Abbreviated day name (Spark 4.0+) |
@@ -277,7 +277,7 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `localtimestamp` | ✅ | — |  |
 | `make_date` | ✅ | Native |  |
 | `make_dt_interval` | ✅ | Codegen dispatch |  |
-| `make_interval` | 🔜 | — | Produces legacy CalendarInterval; tracked by [#5061](https://github.com/apache/datafusion-comet/issues/5061) |
+| `make_interval` | ✅ | Hybrid | Routes through the JVM codegen dispatcher by default; intervals outside Arrow's nanosecond range are tracked by [#5279](https://github.com/apache/datafusion-comet/issues/5279); the native path is opt-in via allowIncompatible ([details](compatibility/expressions/datetime.md)) |
 | `make_time` | 🔜 | — | Spark 4.1 TIME type; tracked by [#4288](https://github.com/apache/datafusion-comet/issues/4288) |
 | `make_timestamp` | ✅ | Hybrid |  |
 | `make_timestamp_ltz` | ✅ | — | 2-arg TIME form falls back |
@@ -294,9 +294,12 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `session_window` | 🔜 | — | Batch session-window grouping falls back (`UpdatingSessionsExec` is not yet native); tracked by [#4785](https://github.com/apache/datafusion-comet/issues/4785) |
 | `time_diff` | 🔜 | — | Spark 4.1 TIME type; tracked by [#4288](https://github.com/apache/datafusion-comet/issues/4288) |
 | `time_trunc` | 🔜 | — | Spark 4.1 TIME type; tracked by [#4288](https://github.com/apache/datafusion-comet/issues/4288) |
+| `timediff` | ✅ | — | Spark 4.0+ grammar alias that parses to `timestampdiff`; runs through codegen dispatch |
 | `timestamp_micros` | ✅ | Codegen dispatch |  |
 | `timestamp_millis` | ✅ | Codegen dispatch |  |
 | `timestamp_seconds` | ✅ | Native |  |
+| `timestampadd` | ✅ | — | Reached through the grammar rather than the function registry; runs through codegen dispatch |
+| `timestampdiff` | ✅ | — | Reached through the grammar rather than the function registry; runs through codegen dispatch |
 | `to_date` | ✅ | — | Rewrites to `Cast` (or `Cast(GetTimestamp)` with a format) before Comet sees the plan |
 | `to_time` | 🔜 | — | Spark 4.1 TIME type; tracked by [#4288](https://github.com/apache/datafusion-comet/issues/4288) |
 | `to_timestamp` | ✅ | — | Rewrites to `Cast` (or `GetTimestamp` with a format) before Comet sees the plan |
@@ -305,7 +308,7 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `to_unix_timestamp` | ✅ | Hybrid |  |
 | `to_utc_timestamp` | ✅ | Hybrid | Routes through the JVM codegen dispatcher by default (handles all timezone forms); the native path is opt-in via allowIncompatible ([details](compatibility/expressions/datetime.md)) |
 | `trunc` | ✅ | Hybrid |  |
-| `try_make_interval` | 🔜 | — | Produces legacy CalendarInterval; tracked by [#5061](https://github.com/apache/datafusion-comet/issues/5061) |
+| `try_make_interval` | ✅ | — | Rewrites to `MakeInterval`; same support as `make_interval` (Spark 4.0+) |
 | `try_make_timestamp` | ✅ | — |  |
 | `try_to_date` | ✅ | — | Rewrites to `Cast`/`GetTimestamp` before Comet sees the plan; same support as `to_date` |
 | `try_to_time` | 🔜 | — | Spark 4.1 TIME type; tracked by [#4288](https://github.com/apache/datafusion-comet/issues/4288) |
@@ -325,18 +328,18 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 
 ## generator_funcs
 
-`explode` and `posexplode` are supported via `CometExplodeExec` (operator-level, not
-expression-level). The `outer` variants are wired but marked `Incompatible`; they require
-`spark.comet.exec.explode.enabled=true` and `allowIncompatible`.
+`explode`, `explode_outer`, `posexplode`, and `posexplode_outer` are supported via
+`CometExplodeExec` (operator-level, not expression-level). Enabled by default via
+`spark.comet.exec.explode.enabled`.
 
 | Function | Status | Implementation | Notes |
 | --- | --- | --- | --- |
 | `explode` | ✅ | — | via `CometExplodeExec` |
-| `explode_outer` | ✅ | — | outer=true falls back (Incompatible) ([audit](../../contributor-guide/expression-audits/generator_funcs.md#explode_outer)) |
+| `explode_outer` | ✅ | — | via `CometExplodeExec` ([audit](../../contributor-guide/expression-audits/generator_funcs.md#explode_outer)) |
 | `inline` | 🔜 | — | Operator-level generator (like `explode`) |
 | `inline_outer` | 🔜 | — | Operator-level generator (like `explode`) |
 | `posexplode` | ✅ | — | via `CometExplodeExec` |
-| `posexplode_outer` | ✅ | — | outer=true falls back (Incompatible) ([audit](../../contributor-guide/expression-audits/generator_funcs.md#posexplode_outer)) |
+| `posexplode_outer` | ✅ | — | via `CometExplodeExec` ([audit](../../contributor-guide/expression-audits/generator_funcs.md#posexplode_outer)) |
 | `stack` | 🔜 | — | Operator-level generator |
 
 ---
@@ -511,7 +514,7 @@ expression-level). The `outer` variants are wired but marked `Incompatible`; the
 | `try_variant_get` | 🔜 | — | Requires `VariantType` support |
 | `typeof` | ✅ | — | Foldable; resolved to a literal before Comet sees the plan |
 | `user` | ✅ | — | Resolved to a literal by the Spark analyzer before reaching Comet |
-| `uuid` | 🔜 | — | Nondeterministic random UUID |
+| `uuid` | ✅ | Native |  |
 | `variant_get` | 🔜 | — | Requires `VariantType` support |
 
 ---

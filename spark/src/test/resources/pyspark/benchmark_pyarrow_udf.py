@@ -23,7 +23,7 @@ Requires PySpark 4.0.1+ (Comet's columnar runner targets Spark 4.0+ only;
 3.5 and 3.4 are documented no-ops).
 
 Times `df.mapInArrow(passthrough, schema).count()` and the equivalent
-`mapInPandas` query with `spark.comet.exec.pyarrowUdf.enabled` set
+`mapInPandas` query with `spark.comet.exec.pyarrowUDF.enabled` set
 to false (vanilla Spark path) and true (Comet's optimized path). Both
 modes run the same Python worker, so the measured delta covers what the
 optimization actually changes for users:
@@ -49,7 +49,7 @@ Usage:
     # Build Comet (release for representative numbers):
     make release
 
-    pip install pyspark==3.5.8 pyarrow pandas
+    pip install pyspark==3.5.9 pyarrow pandas
 
     python3 spark/src/test/resources/pyspark/benchmark_pyarrow_udf.py
 
@@ -148,7 +148,7 @@ def _temp_parquet(spark: SparkSession, build_df, n: int):
 
 def _time_run(spark: SparkSession, parquet_path: str, accelerate: bool, api: str) -> float:
     spark.conf.set(
-        "spark.comet.exec.pyarrowUdf.enabled",
+        "spark.comet.exec.pyarrowUDF.enabled",
         "true" if accelerate else "false",
     )
     df = spark.read.parquet(parquet_path)

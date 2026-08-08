@@ -69,7 +69,7 @@ pub enum SparkError {
     #[error("[ARITHMETIC_OVERFLOW] {from_type} overflow. If necessary set \"spark.sql.ansi.enabled\" to \"false\" to bypass this error.")]
     ArithmeticOverflow { from_type: String },
 
-    #[error("[ARITHMETIC_OVERFLOW] Overflow in integral divide. Use `try_divide` to tolerate overflow and return NULL instead. If necessary set \"spark.sql.ansi.enabled\" to \"false\" to bypass this error.")]
+    #[error("[ARITHMETIC_OVERFLOW] Overflow in integral divide. Use 'try_divide' to tolerate overflow and return NULL instead. If necessary set \"spark.sql.ansi.enabled\" to \"false\" to bypass this error.")]
     IntegralDivideOverflow,
 
     #[error("[ARITHMETIC_OVERFLOW] Overflow in sum of decimals. Use `try_{function_name}` to tolerate overflow and return NULL instead. If necessary set \"spark.sql.ansi.enabled\" to \"false\" to bypass this error.")]
@@ -100,6 +100,12 @@ pub enum SparkError {
 
     #[error("[DATETIME_OVERFLOW] Datetime arithmetic overflow.")]
     DatetimeOverflow,
+
+    #[error("[ILLEGAL_DAY_OF_WEEK] Illegal input for day of week: {input}.")]
+    IllegalDayOfWeek { input: String },
+
+    #[error("[DATETIME_FIELD_OUT_OF_BOUNDS] {range_message}. If necessary set \"spark.sql.ansi.enabled\" to \"false\" to bypass this error.")]
+    DatetimeFieldOutOfBounds { range_message: String },
 
     #[error("[INVALID_ARRAY_INDEX] The index {index_value} is out of bounds. The array has {array_size} elements. Use the SQL function get() to tolerate accessing element at invalid index and return NULL instead. If necessary set \"spark.sql.ansi.enabled\" to \"false\" to bypass this error.")]
     InvalidArrayIndex { index_value: i32, array_size: i32 },
@@ -276,6 +282,8 @@ impl SparkError {
                 "IntervalArithmeticOverflowWithoutSuggestion"
             }
             SparkError::DatetimeOverflow => "DatetimeOverflow",
+            SparkError::IllegalDayOfWeek { .. } => "IllegalDayOfWeek",
+            SparkError::DatetimeFieldOutOfBounds { .. } => "DatetimeFieldOutOfBounds",
             SparkError::InvalidArrayIndex { .. } => "InvalidArrayIndex",
             SparkError::InvalidElementAtIndex { .. } => "InvalidElementAtIndex",
             SparkError::InvalidBitmapPosition { .. } => "InvalidBitmapPosition",
@@ -458,6 +466,16 @@ impl SparkError {
                     "suggestedFunc": suggested_func,
                 })
             }
+            SparkError::IllegalDayOfWeek { input } => {
+                serde_json::json!({
+                    "string": input,
+                })
+            }
+            SparkError::DatetimeFieldOutOfBounds { range_message } => {
+                serde_json::json!({
+                    "rangeMessage": range_message,
+                })
+            }
             SparkError::InvalidFractionOfSecond { value } => {
                 serde_json::json!({
                     "value": value,
@@ -605,11 +623,17 @@ impl SparkError {
             // DateTimeException
             SparkError::InvalidInputInCastToDatetime { .. }
             | SparkError::CannotParseTimestamp { .. }
-            | SparkError::InvalidFractionOfSecond { .. } => "org/apache/spark/SparkDateTimeException",
+            | SparkError::InvalidFractionOfSecond { .. }
+            | SparkError::DatetimeFieldOutOfBounds { .. } => {
+                "org/apache/spark/SparkDateTimeException"
+            }
 
             // IllegalArgumentException
             SparkError::DatatypeCannotOrder { .. }
-            | SparkError::InvalidUtf8String { .. } => "org/apache/spark/SparkIllegalArgumentException",
+            | SparkError::InvalidUtf8String { .. }
+            | SparkError::IllegalDayOfWeek { .. } => {
+                "org/apache/spark/SparkIllegalArgumentException"
+            }
 
             // FileNotFound - will be converted to SparkFileNotFoundException by the shim
             SparkError::FileNotFound { .. } => "org/apache/spark/SparkException",
@@ -693,6 +717,8 @@ impl SparkError {
             // DateTime errors
             SparkError::CannotParseTimestamp { .. } => Some("CANNOT_PARSE_TIMESTAMP"),
             SparkError::InvalidFractionOfSecond { .. } => Some("INVALID_FRACTION_OF_SECOND"),
+            SparkError::IllegalDayOfWeek { .. } => Some("ILLEGAL_DAY_OF_WEEK"),
+            SparkError::DatetimeFieldOutOfBounds { .. } => Some("DATETIME_FIELD_OUT_OF_BOUNDS"),
 
             // String/UTF8 errors
             SparkError::InvalidUtf8String { .. } => Some("INVALID_UTF8_STRING"),

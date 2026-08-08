@@ -19,6 +19,9 @@
 
 package org.apache.comet.iceberg
 
+import java.lang.reflect.Method
+import java.util.concurrent.ConcurrentHashMap
+
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.SparkSession
 
@@ -52,6 +55,12 @@ object IcebergReflection extends Logging {
     val SPARK_BATCH_QUERY_SCAN = "org.apache.iceberg.spark.source.SparkBatchQueryScan"
     val SPARK_STAGED_SCAN = "org.apache.iceberg.spark.source.SparkStagedScan"
     val SPARK_SCHEMA_UTIL = "org.apache.iceberg.spark.SparkSchemaUtil"
+    val TABLE = "org.apache.iceberg.Table"
+    val PARTITIONING = "org.apache.iceberg.Partitioning"
+    val SPARK_WRITE = "org.apache.iceberg.spark.source.SparkWrite"
+
+    // Iceberg 1.5.2 uses its own `ReplaceIcebergData` due to lack of `ReplaceData` in Spark 3.4.
+    val REPLACE_ICEBERG_DATA = "org.apache.spark.sql.catalyst.plans.logical.ReplaceIcebergData"
   }
 
   /**
@@ -65,6 +74,37 @@ object IcebergReflection extends Logging {
     Set(ClassNames.SPARK_BATCH_QUERY_SCAN, ClassNames.SPARK_STAGED_SCAN)
 
   def isIcebergScanClass(name: String): Boolean = ICEBERG_SCAN_CLASSES.contains(name)
+
+  // Iceberg FileIO implementations whose backing storage Comet's native reader can reach.
+  // Custom/test FileIO classes (e.g. CustomFileIO in TestSparkExecutorCache) are not compatible
+  // because Comet's native reader bypasses Java FileIO entirely.
+  val COMPATIBLE_FILE_IO_CLASSES: Set[String] = Set(
+    "org.apache.iceberg.hadoop.HadoopFileIO",
+    "org.apache.iceberg.aws.s3.S3FileIO",
+    "org.apache.iceberg.gcp.gcs.GCSFileIO",
+    "org.apache.iceberg.io.ResolvingFileIO",
+    "org.apache.iceberg.spark.SparkFileIO",
+    "org.apache.iceberg.azure.adlsv2.ADLSFileIO",
+    "org.apache.iceberg.CachingFileIO")
+
+  // Prefix of the EncryptingFileIO family. An encrypted table's io() is not the bare
+  // EncryptingFileIO but a nested variant chosen from the wrapped delegate's capabilities
+  // (e.g. EncryptingFileIO$WithSupportsPrefixOperations when the delegate is HadoopFileIO), so
+  // an exact class-name match misses it. Comet forwards each file's key_metadata to iceberg-rust
+  // and reads the ciphertext through iceberg-rust's own storage layer, so any EncryptingFileIO
+  // variant is compatible.
+  private val ENCRYPTING_FILE_IO_PREFIX = "org.apache.iceberg.encryption.EncryptingFileIO"
+
+  /**
+   * True if `fileIO` is a FileIO whose backing storage Comet's native reader can reach. Matches
+   * on `fileIO`'s own class hierarchy (via [[classNameInHierarchy]]) rather than its exact leaf
+   * class, so a subclass that only adds metrics/retry/credential-routing on top of a known-
+   * compatible FileIO (e.g. a custom S3FileIO subclass) still matches, instead of silently
+   * falling back to Spark.
+   */
+  def isCompatibleFileIO(fileIO: Any): Boolean =
+    classNameInHierarchy(fileIO.getClass, COMPATIBLE_FILE_IO_CLASSES) ||
+      fileIO.getClass.getName.startsWith(ENCRYPTING_FILE_IO_PREFIX)
 
   /**
    * Iceberg content types.
@@ -95,6 +135,45 @@ object IcebergReflection extends Logging {
     val UNKNOWN = "unknown"
   }
 
+  /** Loads a class, returning `None` when it's absent (e.g. Iceberg not on the classpath). */
+  private def tryLoadClass(name: String): Option[Class[_]] =
+    try Some(loadClass(name))
+    catch { case _: ClassNotFoundException => None }
+
+  private lazy val sparkWriteClassOpt: Option[Class[_]] = tryLoadClass(ClassNames.SPARK_WRITE)
+
+  /** Whether `write` is an Iceberg `SparkWrite` (false if Iceberg isn't on the classpath). */
+  def isIcebergSparkWrite(write: Any): Boolean =
+    sparkWriteClassOpt.exists(_.isInstance(write))
+
+  def isReplaceIcebergData(plan: Any): Boolean =
+    plan != null && plan.getClass.getName == ClassNames.REPLACE_ICEBERG_DATA
+
+  private def reflectField(plan: Any, fieldName: String): Option[AnyRef] =
+    try {
+      val field = plan.getClass.getDeclaredField(fieldName)
+      field.setAccessible(true)
+      Option(field.get(plan))
+    } catch {
+      case e: Exception =>
+        logError(
+          s"Iceberg reflection failure: $fieldName on ${plan.getClass.getName}: ${e.getMessage}")
+        None
+    }
+
+  def extractReplaceIcebergDataFields(plan: Any): Option[(AnyRef, AnyRef, AnyRef, AnyRef)] = {
+    if (!isReplaceIcebergData(plan)) return None
+    for {
+      table <- reflectField(plan, "table")
+      query <- reflectField(plan, "query")
+      originalTable <- reflectField(plan, "originalTable")
+      write <- reflectField(
+        plan,
+        "write"
+      ) // Option[Write]; field can be Some(null) so kept AnyRef
+    } yield (table, query, originalTable, write)
+  }
+
   /**
    * Loads a class using the thread context classloader first, then falls back to the system
    * classloader.
@@ -107,22 +186,117 @@ object IcebergReflection extends Logging {
   def loadClass(className: String): Class[_] = ClassLoaders.loadClass(className)
 
   /**
+   * Methods resolved by [[findMethod]], [[getDeclaredMethod]] and [[findMethodInHierarchy]],
+   * keyed by the class the lookup started from and then by the lookup itself.
+   *
+   * `Class.getMethod` linearly scans the class's public methods and returns a fresh defensive
+   * copy of the `Method` on every call. Comet resolves the same handful of Iceberg accessors once
+   * per file scan task, and again per partition field and per delete file, so planning a scan
+   * over a table with many files does O(files) reflective lookups that all resolve to the same
+   * few methods, repeated for every AQE stage.
+   *
+   * Misses are cached too, which matters most for [[extractFileLocation]]: it probes for
+   * `location()` on every file, and Iceberg versions that only have `path()` would otherwise
+   * construct a `NoSuchMethodException`, stack trace and all, per file.
+   *
+   * A `ClassValue` keys the cache on the class object itself, so entries are reclaimed with the
+   * class and a cached method never pins a classloader that Spark has discarded.
+   */
+  private val methodCache: ClassValue[ConcurrentHashMap[String, Option[Method]]] =
+    new ClassValue[ConcurrentHashMap[String, Option[Method]]] {
+      override protected def computeValue(
+          clazz: Class[_]): ConcurrentHashMap[String, Option[Method]] =
+        new ConcurrentHashMap[String, Option[Method]]()
+    }
+
+  private def cachedLookup(clazz: Class[_], key: String)(
+      resolve: => Option[Method]): Option[Method] = {
+    val perClass = methodCache.get(clazz)
+    // Read first: computeIfAbsent allocates the mapping function and can lock the bin even for a
+    // hit, and these lookups are almost always hits.
+    val cached = perClass.get(key)
+    if (cached != null) cached else perClass.computeIfAbsent(key, _ => resolve)
+  }
+
+  private def lookupKey(methodName: String, paramTypes: Seq[Class[_]]): String =
+    if (paramTypes.isEmpty) methodName
+    else paramTypes.map(_.getName).mkString(methodName + "(", ",", ")")
+
+  private def missing(clazz: Class[_], methodName: String, paramTypes: Seq[Class[_]]): Nothing =
+    throw new NoSuchMethodException(s"${clazz.getName}.${lookupKey(methodName, paramTypes)}")
+
+  /**
+   * Suppresses access checks so the method can be invoked when its declaring class is
+   * package-private, as Iceberg's concrete file/task/term implementations are. Runs once, when
+   * the method is first resolved. A JVM that refuses (a class in a module that is exported but
+   * not open) leaves the method usable for the public-class case, so the refusal is not fatal
+   * here.
+   */
+  private def makeAccessible(method: Method): Method = {
+    try method.setAccessible(true)
+    catch { case _: RuntimeException => }
+    method
+  }
+
+  private def declaredMethod(clazz: Class[_], methodName: String): Option[Method] =
+    try Some(makeAccessible(clazz.getDeclaredMethod(methodName)))
+    catch { case _: NoSuchMethodException => None }
+
+  /**
+   * Cached `Class.getMethod`, returning None instead of throwing when the method is absent. The
+   * resolved method has access checks suppressed (see [[makeAccessible]]).
+   */
+  def findMethod(clazz: Class[_], methodName: String, paramTypes: Class[_]*): Option[Method] =
+    cachedLookup(clazz, lookupKey(methodName, paramTypes)) {
+      try Some(makeAccessible(clazz.getMethod(methodName, paramTypes: _*)))
+      catch { case _: NoSuchMethodException => None }
+    }
+
+  /**
+   * Cached `Class.getMethod`, throwing `NoSuchMethodException` when the method is absent, like
+   * the JDK call it replaces.
+   */
+  def getMethod(clazz: Class[_], methodName: String, paramTypes: Class[_]*): Method =
+    findMethod(clazz, methodName, paramTypes: _*).getOrElse(
+      missing(clazz, methodName, paramTypes))
+
+  /**
+   * Cached `Class.getDeclaredMethod` with access checks suppressed, throwing
+   * `NoSuchMethodException` when the method is absent, like the JDK call it replaces.
+   */
+  def getDeclaredMethod(clazz: Class[_], methodName: String): Method =
+    cachedLookup(clazz, "declared:" + methodName)(declaredMethod(clazz, methodName))
+      .getOrElse(missing(clazz, methodName, Nil))
+
+  /**
    * Searches through class hierarchy to find a method (including protected methods).
    */
-  def findMethodInHierarchy(
-      clazz: Class[_],
-      methodName: String): Option[java.lang.reflect.Method] = {
+  def findMethodInHierarchy(clazz: Class[_], methodName: String): Option[Method] =
+    cachedLookup(clazz, "hierarchy:" + methodName) {
+      var current: Class[_] = clazz
+      var found: Option[Method] = None
+      while (found.isEmpty && current != null) {
+        found = declaredMethod(current, methodName)
+        if (found.isEmpty) current = current.getSuperclass
+      }
+      found
+    }
+
+  /**
+   * True if `clazz` or any of its superclasses has a name in `names`. Walks the already-loaded
+   * class object's own hierarchy, so unlike [[loadClass]] it never risks a
+   * `ClassNotFoundException` for a candidate name that isn't on this JVM's classpath (e.g.
+   * checking for a GCS/Azure FileIO class when only iceberg-aws is bundled).
+   */
+  def classNameInHierarchy(clazz: Class[_], names: Set[String]): Boolean = {
     var current: Class[_] = clazz
     while (current != null) {
-      try {
-        val method = current.getDeclaredMethod(methodName)
-        method.setAccessible(true)
-        return Some(method)
-      } catch {
-        case _: NoSuchMethodException => current = current.getSuperclass
+      if (names.contains(current.getName)) {
+        return true
       }
+      current = current.getSuperclass
     }
-    None
+    false
   }
 
   /**
@@ -134,16 +308,13 @@ object IcebergReflection extends Logging {
    */
   def extractFileLocation(contentFileClass: Class[_], file: Any): Option[String] = {
     try {
-      val locationMethod = contentFileClass.getMethod("location")
-      Some(locationMethod.invoke(file).asInstanceOf[String])
+      findMethod(contentFileClass, "location") match {
+        case Some(locationMethod) => Some(locationMethod.invoke(file).asInstanceOf[String])
+        case None =>
+          findMethod(contentFileClass, "path")
+            .map(_.invoke(file).asInstanceOf[CharSequence].toString)
+      }
     } catch {
-      case _: NoSuchMethodException =>
-        try {
-          val pathMethod = contentFileClass.getMethod("path")
-          Some(pathMethod.invoke(file).asInstanceOf[CharSequence].toString)
-        } catch {
-          case _: Exception => None
-        }
       case _: Exception => None
     }
   }
@@ -160,16 +331,16 @@ object IcebergReflection extends Logging {
     }
   }
 
-  /** The file format of a ContentFile (data or delete file), e.g. "PARQUET", "AVRO", "ORC". */
-  def getFileFormat(file: Any): Option[String] = {
+  /**
+   * The file format of a ContentFile (data or delete file), e.g. "PARQUET", "AVRO", "ORC".
+   *
+   * `contentFileClass` is the public ContentFile interface, which callers already hold: Iceberg's
+   * concrete file impls are package-private, so `format()` resolved on the concrete class throws
+   * IllegalAccessException when invoked.
+   */
+  def getFileFormat(contentFileClass: Class[_], file: Any): Option[String] = {
     try {
-      // Resolve format() on the public ContentFile interface. Iceberg's concrete file impls are
-      // package-private, so a method resolved on the concrete class throws IllegalAccessException
-      // when invoked.
-      // TODO callers in a loop (e.g. validateIcebergFileScanTasks) already hold a cached
-      // contentFileClass; add an overload that takes it to avoid reloading per file.
-      val contentFileClass = loadClass(ClassNames.CONTENT_FILE)
-      Some(contentFileClass.getMethod("format").invoke(file).toString)
+      findMethod(contentFileClass, "format").map(_.invoke(file).toString)
     } catch {
       case _: Exception => None
     }
@@ -229,7 +400,7 @@ object IcebergReflection extends Logging {
           } else {
             // All task groups in a stage share the same concrete class, so the per-group
             // `tasks()` lookup can be cached once instead of done N times.
-            val groupTasksMethod = groups.get(0).getClass.getMethod("tasks")
+            val groupTasksMethod = getMethod(groups.get(0).getClass, "tasks")
             val flat = new java.util.ArrayList[AnyRef]()
             groups.forEach { group =>
               val groupTasks =
@@ -285,19 +456,17 @@ object IcebergReflection extends Logging {
    */
   def getFormatVersion(table: Any): Option[Int] = {
     try {
-      val formatVersionMethod = table.getClass.getMethod("formatVersion")
+      val formatVersionMethod = getMethod(table.getClass, "formatVersion")
       Some(formatVersionMethod.invoke(table).asInstanceOf[Int])
     } catch {
       case _: NoSuchMethodException =>
         try {
           // If not directly available, access via operations/metadata
-          val opsMethod = table.getClass.getDeclaredMethod("operations")
-          opsMethod.setAccessible(true)
-          val ops = opsMethod.invoke(table)
+          val ops = getDeclaredMethod(table.getClass, "operations").invoke(table)
           findMethodInHierarchy(ops.getClass, "current")
             .flatMap { currentMethod =>
               val metadata = currentMethod.invoke(ops)
-              val formatVersionMethod = metadata.getClass.getMethod("formatVersion")
+              val formatVersionMethod = getMethod(metadata.getClass, "formatVersion")
               Some(formatVersionMethod.invoke(metadata).asInstanceOf[Int])
             }
             .orElse {
@@ -322,7 +491,7 @@ object IcebergReflection extends Logging {
    */
   def getFileIO(table: Any): Option[Any] = {
     try {
-      val ioMethod = table.getClass.getMethod("io")
+      val ioMethod = getMethod(table.getClass, "io")
       Some(ioMethod.invoke(table))
     } catch {
       case e: Exception =>
@@ -362,7 +531,7 @@ object IcebergReflection extends Logging {
    */
   def getSchema(table: Any): Option[Any] = {
     try {
-      val schemaMethod = table.getClass.getMethod("schema")
+      val schemaMethod = getMethod(table.getClass, "schema")
       Some(schemaMethod.invoke(table))
     } catch {
       case e: Exception =>
@@ -379,8 +548,7 @@ object IcebergReflection extends Logging {
   def getAllSchemas(table: Any): Seq[Any] = {
     import scala.jdk.CollectionConverters._
     try {
-      table.getClass
-        .getMethod("schemas")
+      getMethod(table.getClass, "schemas")
         .invoke(table)
         .asInstanceOf[java.util.Map[_, _]]
         .values()
@@ -396,7 +564,7 @@ object IcebergReflection extends Logging {
   /** Returns the `Types.NestedField` for `fieldId` in `schema`, or None. */
   def findFieldObject(schema: Any, fieldId: Int): Option[Any] = {
     try {
-      val findFieldMethod = schema.getClass.getMethod("findField", classOf[Int])
+      val findFieldMethod = getMethod(schema.getClass, "findField", classOf[Int])
       Option(findFieldMethod.invoke(schema, fieldId.asInstanceOf[AnyRef]))
     } catch {
       case _: Exception => None
@@ -433,8 +601,7 @@ object IcebergReflection extends Logging {
             s"Cannot resolve equality-delete field id $id in table schema history"))
       }
       val existing =
-        baseSchema.getClass
-          .getMethod("columns")
+        getMethod(baseSchema.getClass, "columns")
           .invoke(baseSchema)
           .asInstanceOf[java.util.List[_]]
       val newColumns = new java.util.ArrayList[Any](existing)
@@ -451,13 +618,46 @@ object IcebergReflection extends Logging {
    */
   def getPartitionSpec(table: Any): Option[Any] = {
     try {
-      val specMethod = table.getClass.getMethod("spec")
+      val specMethod = getMethod(table.getClass, "spec")
       Some(specMethod.invoke(table))
     } catch {
       case e: Exception =>
         logError(
           s"Iceberg reflection failure: Failed to get partition spec from table: ${e.getMessage}")
         None
+    }
+  }
+
+  /**
+   * Validates that the table's unified partition type can be computed -- the merge of every
+   * historical partition spec, which is what the `_partition` metadata column projects.
+   *
+   * Iceberg Java's `Partitioning.partitionType(table)` runs the same cross-spec compatibility
+   * check that iceberg-rust does natively: a V1 table does not guarantee partition field ids are
+   * unique across specs, so two specs can bind the same id to incompatible source/transform
+   * pairs, which cannot be merged into one struct field. iceberg-rust returns a DataInvalid error
+   * in that case, but only at scan time -- too late for Comet to fall back. Calling the Java
+   * check here, at plan time, lets `CometScanRule` fall back to Spark instead of failing inside
+   * the native reader.
+   *
+   * Returns None when the unified type is computable, or Some(reason) when it is not -- either
+   * the specs conflict or the reflection call itself failed. Both mean Comet cannot safely serve
+   * `_partition`, so both map to a fallback.
+   */
+  def validateUnifiedPartitionType(table: Any): Option[String] = {
+    try {
+      val tableClass = loadClass(ClassNames.TABLE)
+      val partitioningClass = loadClass(ClassNames.PARTITIONING)
+      getMethod(partitioningClass, "partitionType", tableClass)
+        .invoke(null, table.asInstanceOf[AnyRef])
+      None
+    } catch {
+      // A conflict surfaces as the ValidationException thrown by partitionType(), wrapped by
+      // reflection in InvocationTargetException; unwrap it for a meaningful reason.
+      case e: java.lang.reflect.InvocationTargetException =>
+        Some(Option(e.getCause).getOrElse(e).getMessage)
+      case e: Exception =>
+        Some(e.getMessage)
     }
   }
 
@@ -471,9 +671,7 @@ object IcebergReflection extends Logging {
    */
   def getTableMetadata(table: Any): Option[Any] = {
     try {
-      val operationsMethod = table.getClass.getDeclaredMethod("operations")
-      operationsMethod.setAccessible(true)
-      val operations = operationsMethod.invoke(table)
+      val operations = getDeclaredMethod(table.getClass, "operations").invoke(table)
 
       findMethodInHierarchy(operations.getClass, "current").map(_.invoke(operations)).orElse {
         logError(
@@ -505,7 +703,7 @@ object IcebergReflection extends Logging {
   def getMetadataLocation(table: Any): Option[String] = {
     getTableMetadata(table).flatMap { metadata =>
       try {
-        val metadataFileLocationMethod = metadata.getClass.getMethod("metadataFileLocation")
+        val metadataFileLocationMethod = getMethod(metadata.getClass, "metadataFileLocation")
         Some(metadataFileLocationMethod.invoke(metadata).asInstanceOf[String])
       } catch {
         case e: Exception =>
@@ -527,7 +725,7 @@ object IcebergReflection extends Logging {
   def getTableProperties(table: Any): Option[java.util.Map[String, String]] = {
     getTableMetadata(table).flatMap { metadata =>
       try {
-        val propertiesMethod = metadata.getClass.getMethod("properties")
+        val propertiesMethod = getMethod(metadata.getClass, "properties")
         Some(propertiesMethod.invoke(metadata).asInstanceOf[java.util.Map[String, String]])
       } catch {
         case e: Exception =>
@@ -550,7 +748,7 @@ object IcebergReflection extends Logging {
    *   if reflection fails (callers must handle appropriately based on context)
    */
   def getDeleteFilesFromTask(task: Any, fileScanTaskClass: Class[_]): java.util.List[_] = {
-    val deletesMethod = fileScanTaskClass.getMethod("deletes")
+    val deletesMethod = getMethod(fileScanTaskClass, "deletes")
     val deletes = deletesMethod.invoke(task).asInstanceOf[java.util.List[_]]
     if (deletes == null) new java.util.ArrayList[Any]() else deletes
   }
@@ -558,16 +756,19 @@ object IcebergReflection extends Logging {
   /**
    * Gets equality field IDs from a delete file.
    *
+   * @param deleteFileClass
+   *   The DeleteFile interface, which callers in a loop already hold
    * @param deleteFile
    *   An Iceberg DeleteFile object
    * @return
    *   List of field IDs used in equality deletes, or empty list for position deletes
    */
-  def getEqualityFieldIds(deleteFile: Any): java.util.List[_] = {
+  def getEqualityFieldIds(deleteFileClass: Class[_], deleteFile: Any): java.util.List[_] = {
     try {
-      val deleteFileClass = loadClass(ClassNames.DELETE_FILE)
-      val equalityFieldIdsMethod = deleteFileClass.getMethod("equalityFieldIds")
-      val ids = equalityFieldIdsMethod.invoke(deleteFile).asInstanceOf[java.util.List[_]]
+      val ids =
+        getMethod(deleteFileClass, "equalityFieldIds")
+          .invoke(deleteFile)
+          .asInstanceOf[java.util.List[_]]
       if (ids == null) new java.util.ArrayList[Any]() else ids
     } catch {
       case _: Exception =>
@@ -588,11 +789,11 @@ object IcebergReflection extends Logging {
    */
   def getFieldInfo(schema: Any, fieldId: Int): Option[(String, String)] = {
     try {
-      val findFieldMethod = schema.getClass.getMethod("findField", classOf[Int])
+      val findFieldMethod = getMethod(schema.getClass, "findField", classOf[Int])
       val field = findFieldMethod.invoke(schema, fieldId.asInstanceOf[AnyRef])
       if (field != null) {
-        val nameMethod = field.getClass.getMethod("name")
-        val typeMethod = field.getClass.getMethod("type")
+        val nameMethod = getMethod(field.getClass, "name")
+        val typeMethod = getMethod(field.getClass, "type")
         val fieldName = nameMethod.invoke(field).toString
         val fieldType = typeMethod.invoke(field).toString
         Some((fieldName, fieldType))
@@ -650,15 +851,15 @@ object IcebergReflection extends Logging {
   def buildFieldIdMapping(schema: Any): Map[String, Int] = {
     import scala.jdk.CollectionConverters._
     try {
-      val columnsMethod = schema.getClass.getMethod("columns")
+      val columnsMethod = getMethod(schema.getClass, "columns")
       val columns = columnsMethod.invoke(schema).asInstanceOf[java.util.List[_]]
 
       columns.asScala.flatMap { column =>
         try {
-          val nameMethod = column.getClass.getMethod("name")
+          val nameMethod = getMethod(column.getClass, "name")
           val name = nameMethod.invoke(column).asInstanceOf[String]
 
-          val fieldIdMethod = column.getClass.getMethod("fieldId")
+          val fieldIdMethod = getMethod(column.getClass, "fieldId")
           val fieldId = fieldIdMethod.invoke(column).asInstanceOf[Int]
 
           Some(name -> fieldId)
@@ -689,13 +890,12 @@ object IcebergReflection extends Logging {
   def pageIndexUnsupportedColumns(schema: Any): Set[String] = {
     import scala.jdk.CollectionConverters._
     try {
-      val columns = schema.getClass
-        .getMethod("columns")
+      val columns = getMethod(schema.getClass, "columns")
         .invoke(schema)
         .asInstanceOf[java.util.List[_]]
       columns.asScala.flatMap { column =>
-        val name = column.getClass.getMethod("name").invoke(column).asInstanceOf[String]
-        val typeStr = column.getClass.getMethod("type").invoke(column).toString
+        val name = getMethod(column.getClass, "name").invoke(column).asInstanceOf[String]
+        val typeStr = getMethod(column.getClass, "type").invoke(column).toString
         if (typeStr.startsWith("decimal(") || typeStr == "uuid" || typeStr.startsWith("fixed[") ||
           typeStr == "binary") {
           Some(name)
@@ -728,12 +928,12 @@ object IcebergReflection extends Logging {
   def validatePartitionTypes(partitionSpec: Any, schema: Any): List[(String, String, String)] = {
     import scala.jdk.CollectionConverters._
 
-    val fieldsMethod = partitionSpec.getClass.getMethod("fields")
+    val fieldsMethod = getMethod(partitionSpec.getClass, "fields")
     val fields = fieldsMethod.invoke(partitionSpec).asInstanceOf[java.util.List[_]]
 
     val partitionFieldClass = loadClass(ClassNames.PARTITION_FIELD)
-    val sourceIdMethod = partitionFieldClass.getMethod("sourceId")
-    val findFieldMethod = schema.getClass.getMethod("findField", classOf[Int])
+    val sourceIdMethod = getMethod(partitionFieldClass, "sourceId")
+    val findFieldMethod = getMethod(schema.getClass, "findField", classOf[Int])
 
     val unsupportedTypes = scala.collection.mutable.ListBuffer[(String, String, String)]()
 
@@ -742,10 +942,10 @@ object IcebergReflection extends Logging {
       val column = findFieldMethod.invoke(schema, sourceId.asInstanceOf[Object])
 
       if (column != null) {
-        val nameMethod = column.getClass.getMethod("name")
+        val nameMethod = getMethod(column.getClass, "name")
         val fieldName = nameMethod.invoke(column).asInstanceOf[String]
 
-        val typeMethod = column.getClass.getMethod("type")
+        val typeMethod = getMethod(column.getClass, "type")
         val icebergType = typeMethod.invoke(column)
         val typeStr = icebergType.toString
 
@@ -782,22 +982,21 @@ object IcebergReflection extends Logging {
   def columnsWithInitialDefault(schema: Any): List[String] = {
     import scala.jdk.CollectionConverters._
     val columns =
-      schema.getClass.getMethod("columns").invoke(schema).asInstanceOf[java.util.List[_]]
+      getMethod(schema.getClass, "columns").invoke(schema).asInstanceOf[java.util.List[_]]
     columns.asScala.flatMap(walkFieldForDefault).toList
   }
 
   private def walkFieldForDefault(field: Any): List[String] = {
     import scala.jdk.CollectionConverters._
-    val name = field.getClass.getMethod("name").invoke(field).asInstanceOf[String]
+    val name = getMethod(field.getClass, "name").invoke(field).asInstanceOf[String]
     val here =
-      if (field.getClass.getMethod("initialDefault").invoke(field) != null) List(name) else Nil
-    val fieldType = field.getClass.getMethod("type").invoke(field)
+      if (getMethod(field.getClass, "initialDefault").invoke(field) != null) List(name) else Nil
+    val fieldType = getMethod(field.getClass, "type").invoke(field)
     val nested =
-      if (fieldType.getClass.getMethod("isNestedType").invoke(fieldType).asInstanceOf[Boolean]) {
-        val nestedType = fieldType.getClass.getMethod("asNestedType").invoke(fieldType)
+      if (getMethod(fieldType.getClass, "isNestedType").invoke(fieldType).asInstanceOf[Boolean]) {
+        val nestedType = getMethod(fieldType.getClass, "asNestedType").invoke(fieldType)
         val fields =
-          nestedType.getClass
-            .getMethod("fields")
+          getMethod(nestedType.getClass, "fields")
             .invoke(nestedType)
             .asInstanceOf[java.util.List[_]]
         fields.asScala.flatMap(walkFieldForDefault).toList
@@ -817,7 +1016,7 @@ object IcebergReflection extends Logging {
   def toSparkSchema(schema: Any): org.apache.spark.sql.types.StructType = {
     val sparkSchemaUtil = loadClass(ClassNames.SPARK_SCHEMA_UTIL)
     val schemaClass = loadClass(ClassNames.SCHEMA)
-    val convert = sparkSchemaUtil.getMethod("convert", schemaClass)
+    val convert = getMethod(sparkSchemaUtil, "convert", schemaClass)
     convert
       .invoke(null, schema.asInstanceOf[AnyRef])
       .asInstanceOf[org.apache.spark.sql.types.StructType]
@@ -964,7 +1163,7 @@ object CometIcebergNativeScanMetadata extends Logging {
 
   private def invokeTableName(table: Any): Option[String] = {
     try {
-      table.getClass.getMethod("name").invoke(table) match {
+      IcebergReflection.getMethod(table.getClass, "name").invoke(table) match {
         case s: String => Some(s)
         case other if other != null => Some(other.toString)
         case null => None
