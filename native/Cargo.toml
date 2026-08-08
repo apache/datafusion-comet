@@ -78,3 +78,6 @@ codegen-units = 16   # Parallel codegen (faster compile, slightly larger binary)
 debug-assertions = true
 panic = "unwind"     # Allow panics to be caught and logged across FFI boundary
 # overflow-checks inherited as false from release
+
+[patch.crates-io]
+hdfs-sys = { git = "https://github.com/peterxcli/hdfs-sys", rev = "0615a3948307757c8a75f1ca6a318df7ddaa17fd" }
