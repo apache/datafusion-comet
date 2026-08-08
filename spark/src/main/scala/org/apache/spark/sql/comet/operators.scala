@@ -2161,6 +2161,8 @@ trait CometHashJoin {
         case FullOuter => JoinType.FullOuter
         case LeftSemi => JoinType.LeftSemi
         case LeftAnti => JoinType.LeftAnti
+        case ExistenceJoin(_) if CometConf.COMET_EXEC_EXISTENCE_JOIN_ENABLED.get(join.conf) =>
+          JoinType.Existence
         case _ =>
           // Spark doesn't support other join types
           withFallbackReason(join, s"Unsupported join type ${join.joinType}")
@@ -2429,6 +2431,11 @@ case class CometHashJoinExec(
   override def withNewChildrenInternal(newLeft: SparkPlan, newRight: SparkPlan): SparkPlan =
     this.copy(left = newLeft, right = newRight)
 
+  override def producedAttributes: AttributeSet = joinType match {
+    case ExistenceJoin(exists) => AttributeSet(exists)
+    case _ => AttributeSet.empty
+  }
+
   override def stringArgs: Iterator[Any] =
     Iterator(leftKeys, rightKeys, joinType, buildSide, condition, left, right)
 
@@ -2570,6 +2577,11 @@ case class CometBroadcastHashJoinExec(
   override def withNewChildrenInternal(newLeft: SparkPlan, newRight: SparkPlan): SparkPlan =
     this.copy(left = newLeft, right = newRight)
 
+  override def producedAttributes: AttributeSet = joinType match {
+    case ExistenceJoin(exists) => AttributeSet(exists)
+    case _ => AttributeSet.empty
+  }
+
   override def stringArgs: Iterator[Any] =
     Iterator(leftKeys, rightKeys, joinType, condition, buildSide, left, right)
 
@@ -2649,6 +2661,8 @@ object CometSortMergeJoinExec extends CometOperatorSerde[SortMergeJoinExec] {
         case FullOuter => JoinType.FullOuter
         case LeftSemi => JoinType.LeftSemi
         case LeftAnti => JoinType.LeftAnti
+        case ExistenceJoin(_) if CometConf.COMET_EXEC_EXISTENCE_JOIN_ENABLED.get(join.conf) =>
+          JoinType.Existence
         case _ =>
           // Spark doesn't support other join types
           withFallbackReason(join, s"Unsupported join type ${join.joinType}")
@@ -2755,6 +2769,11 @@ case class CometSortMergeJoinExec(
 
   override def withNewChildrenInternal(newLeft: SparkPlan, newRight: SparkPlan): SparkPlan =
     this.copy(left = newLeft, right = newRight)
+
+  override def producedAttributes: AttributeSet = joinType match {
+    case ExistenceJoin(exists) => AttributeSet(exists)
+    case _ => AttributeSet.empty
+  }
 
   override def stringArgs: Iterator[Any] =
     Iterator(leftKeys, rightKeys, joinType, condition, left, right)
