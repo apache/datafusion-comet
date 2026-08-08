@@ -40,6 +40,7 @@ import com.google.common.base.Objects
 import org.apache.comet.parquet.CometParquetUtils
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.QueryPlanSerde.exprToProto
+import org.apache.comet.shims.ShimFileFormat
 
 /**
  * Native scan operator for DataSource V1 Parquet files using DataFusion's ParquetExec.
@@ -218,7 +219,11 @@ case class CometNativeScanExec(
     // Serialize each partition's files
     import org.apache.comet.serde.operator.partition2Proto
     val perPartitionBytes = filePartitions.map { filePartition =>
-      val partitionProto = partition2Proto(filePartition, relation.partitionSchema)
+      val partitionProto = partition2Proto(
+        filePartition,
+        relation.partitionSchema,
+        originalPlan.fileConstantMetadataColumns,
+        ShimFileFormat.fileConstantMetadataExtractors(relation.fileFormat))
       val partitionNativeScan = org.apache.comet.serde.OperatorOuterClass.NativeScan
         .newBuilder()
         .setFilePartition(partitionProto)

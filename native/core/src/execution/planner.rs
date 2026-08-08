@@ -25,6 +25,7 @@ use crate::execution::operators::init_csv_datasource_exec;
 use crate::execution::operators::AlignedArrowStreamReader;
 use crate::execution::operators::IcebergScanExec;
 use crate::execution::{
+    expressions::list_empty_to_null::ListEmptyToNullExpr,
     expressions::list_positions::ListPositionsExpr,
     expressions::subquery::Subquery,
     operators::{
@@ -249,6 +250,10 @@ pub struct PhysicalPlanner {
     /// Captured at `createPlan` time on `ExecutionContext`; see that struct for the
     /// propagation rationale. `None` when no driving Spark task is available.
     task_context: Option<Arc<Global<JObject<'static>>>>,
+    /// Context `ClassLoader` of the driving Spark task thread, captured at `createPlan` time on
+    /// `ExecutionContext`; see that struct for the propagation rationale. `None` when no driving
+    /// Spark task is available.
+    class_loader: Option<Arc<Global<JObject<'static>>>>,
 }
 
 impl Default for PhysicalPlanner {
@@ -266,6 +271,7 @@ impl PhysicalPlanner {
             query_context_registry: datafusion_comet_spark_expr::create_query_context_map(),
             sql_text_pool: vec![],
             task_context: None,
+            class_loader: None,
         }
     }
 
@@ -352,6 +358,17 @@ impl PhysicalPlanner {
         task_context: Option<Arc<Global<JObject<'static>>>>,
     ) -> Self {
         self.task_context = task_context;
+        self
+    }
+
+    /// Attach the driving Spark task thread's context `ClassLoader` as a global reference. Mirrors
+    /// `with_task_context`: called by the JNI `executePlan` entry with whatever was captured at
+    /// `createPlan` time, and cloned into every `JvmScalarUdfExpr` the planner builds.
+    pub fn with_class_loader(
+        mut self,
+        class_loader: Option<Arc<Global<JObject<'static>>>>,
+    ) -> Self {
+        self.class_loader = class_loader;
         self
     }
 
@@ -875,12 +892,14 @@ impl PhysicalPlanner {
                     to_arrow_datatype(udf.return_type.as_ref().ok_or_else(|| {
                         GeneralError("JvmScalarUdf missing return_type".to_string())
                     })?);
-                // Invariant: task_context is propagated for every JvmScalarUdfExpr built during
-                // normal execution. The TEST_EXEC_CONTEXT_ID path is the only context in which
-                // task_context may legitimately be None (unit tests, direct native driver runs).
+                // Invariant: task_context and class_loader are propagated for every
+                // JvmScalarUdfExpr built during normal execution. The TEST_EXEC_CONTEXT_ID path is
+                // the only context in which they may legitimately be None (unit tests, direct
+                // native driver runs).
                 debug_assert!(
-                    self.task_context.is_some() || self.exec_context_id == TEST_EXEC_CONTEXT_ID,
-                    "task_context must be set for non-test execution"
+                    (self.task_context.is_some() && self.class_loader.is_some())
+                        || self.exec_context_id == TEST_EXEC_CONTEXT_ID,
+                    "task_context and class_loader must be set for non-test execution"
                 );
                 Ok(Arc::new(JvmScalarUdfExpr::new(
                     udf.class_name.clone(),
@@ -888,6 +907,7 @@ impl PhysicalPlanner {
                     return_type,
                     udf.return_nullable,
                     self.task_context.clone(),
+                    self.class_loader.clone(),
                 )))
             }
             expr => Err(GeneralError(format!("Not implemented: {expr:?}"))),
@@ -1526,12 +1546,30 @@ impl PhysicalPlanner {
                     ));
                 }
 
-                // Convert the Spark expressions to Physical expressions
-                let data_filters: Result<Vec<Arc<dyn PhysicalExpr>>, ExecutionError> = common
-                    .data_filters
-                    .iter()
-                    .map(|expr| self.create_expr(expr, Arc::clone(&required_schema)))
-                    .collect();
+                // data_filters may reference partition columns and constant metadata columns
+                // (e.g. `_metadata.file_size`), which the Parquet reader appends after
+                // required_schema's columns once partition_values are projected into the
+                // batch. Bind against the combined schema so `Bound` indices resolve
+                // correctly -- Scala's `exprToProto(filter, scan.output)`
+                // (CometNativeScan.scala) numbers columns against that same ordering.
+                let data_filters: Result<Vec<Arc<dyn PhysicalExpr>>, ExecutionError> =
+                    if common.data_filters.is_empty() {
+                        Ok(vec![])
+                    } else {
+                        let filter_schema: SchemaRef = Arc::new(Schema::new(
+                            required_schema
+                                .fields()
+                                .iter()
+                                .chain(partition_schema.fields().iter())
+                                .cloned()
+                                .collect::<Vec<FieldRef>>(),
+                        ));
+                        common
+                            .data_filters
+                            .iter()
+                            .map(|expr| self.create_expr(expr, Arc::clone(&filter_schema)))
+                            .collect()
+                    };
 
                 let default_values: Option<HashMap<Column, ScalarValue>> = if !common
                     .default_values
@@ -1861,21 +1899,7 @@ impl PhysicalPlanner {
                     Ok::<(), ExecutionError>(())
                 })?;
 
-                assert!(
-                    !projections.is_empty(),
-                    "Expand should have at least one projection"
-                );
-
-                let datatypes = projections[0]
-                    .iter()
-                    .map(|expr| expr.data_type(&child.schema()))
-                    .collect::<Result<Vec<DataType>, _>>()?;
-                let fields: Vec<Field> = datatypes
-                    .iter()
-                    .enumerate()
-                    .map(|(idx, dt)| Field::new(format!("col_{idx}"), dt.clone(), true))
-                    .collect();
-                let schema = Arc::new(Schema::new(fields));
+                let schema = ExpandExec::build_schema(&projections, &child.schema())?;
 
                 // `Expand` operator keeps the input batch and expands it to multiple output
                 // batches. However, `ScanExec` will reuse input arrays for the next
@@ -1897,13 +1921,76 @@ impl PhysicalPlanner {
                     self.create_plan(&children[0], inputs, partition_count)?;
 
                 // Create the expression for the array to explode
-                let child_expr = if let Some(child_expr) = &explode.child {
+                let raw_child_expr = if let Some(child_expr) = &explode.child {
                     self.create_expr(child_expr, child.schema())?
                 } else {
                     return Err(ExecutionError::GeneralError(
                         "Explode operator requires a child expression".to_string(),
                     ));
                 };
+
+                let child_schema = child.schema();
+                let child_field_name = raw_child_expr
+                    .return_field(&child_schema)
+                    .expect("Failed to get field from child expression")
+                    .name()
+                    .to_string();
+
+                // Bridge Spark's outer semantics: DataFusion's `UnnestExec` with
+                // `preserve_nulls = true` emits one null row for a NULL list but drops rows
+                // whose list is empty. Spark's `explode_outer`/`posexplode_outer` must emit
+                // exactly one null row in both cases, so we mark empty rows as null before
+                // unnesting. See https://github.com/apache/datafusion/issues/19053. Once
+                // Comet moves to a DataFusion release carrying
+                // https://github.com/apache/datafusion/pull/22100, `ListEmptyToNullExpr`
+                // and the pre-projection below can be removed in favor of
+                // `NullHandling::PreserveAndExpandEmpty`. See
+                // https://github.com/apache/datafusion-comet/issues/5210.
+                //
+                // For `posexplode_outer` the wrapped array is materialized in a
+                // pre-projection so `ListPositionsExpr` and the array passthrough share
+                // a single evaluation of `ListEmptyToNullExpr` instead of re-running it
+                // per branch. Plain `explode_outer` references the wrapped array exactly
+                // once, so no pre-projection is needed there.
+                let (child_expr, child_native_plan): (Arc<dyn PhysicalExpr>, _) =
+                    match (explode.outer, explode.position) {
+                        (true, true) => {
+                            let wrapped: Arc<dyn PhysicalExpr> =
+                                Arc::new(ListEmptyToNullExpr::new(raw_child_expr));
+                            let reserved_name =
+                                format!("__comet_explode_outer_{}", child_field_name);
+
+                            let mut pre_exprs: Vec<(Arc<dyn PhysicalExpr>, String)> = child_schema
+                                .fields()
+                                .iter()
+                                .enumerate()
+                                .map(|(i, f)| {
+                                    (
+                                        Arc::new(Column::new(f.name(), i)) as Arc<dyn PhysicalExpr>,
+                                        f.name().to_string(),
+                                    )
+                                })
+                                .collect();
+                            let wrapped_idx = pre_exprs.len();
+                            pre_exprs.push((wrapped, reserved_name.clone()));
+
+                            let pre_exec = Arc::new(ProjectionExec::try_new(
+                                pre_exprs,
+                                Arc::clone(&child.native_plan),
+                            )?);
+                            (
+                                Arc::new(Column::new(&reserved_name, wrapped_idx))
+                                    as Arc<dyn PhysicalExpr>,
+                                pre_exec as Arc<dyn ExecutionPlan>,
+                            )
+                        }
+                        (true, false) => (
+                            Arc::new(ListEmptyToNullExpr::new(raw_child_expr))
+                                as Arc<dyn PhysicalExpr>,
+                            Arc::clone(&child.native_plan),
+                        ),
+                        (false, _) => (raw_child_expr, Arc::clone(&child.native_plan)),
+                    };
 
                 // Create projection expressions for other columns
                 let projections: Vec<Arc<dyn PhysicalExpr>> = explode
@@ -1914,7 +2001,6 @@ impl PhysicalPlanner {
 
                 // For posexplode, a parallel List<Int32> positions column is added before the
                 // array column so UnnestExec can unnest both in parallel.
-                let child_schema = child.schema();
                 let mut project_exprs: Vec<(Arc<dyn PhysicalExpr>, String)> = projections
                     .iter()
                     .map(|expr| {
@@ -1926,22 +2012,15 @@ impl PhysicalPlanner {
                     })
                     .collect();
 
-                let array_field = child_expr
-                    .return_field(&child_schema)
-                    .expect("Failed to get field from array expression");
-                let array_col_name = array_field.name().to_string();
-
                 if explode.position {
                     let positions_expr: Arc<dyn PhysicalExpr> =
                         Arc::new(ListPositionsExpr::new(Arc::clone(&child_expr)));
                     project_exprs.push((positions_expr, "pos".to_string()));
                 }
-                project_exprs.push((Arc::clone(&child_expr), array_col_name.clone()));
+                project_exprs.push((Arc::clone(&child_expr), child_field_name.clone()));
 
-                let project_exec = Arc::new(ProjectionExec::try_new(
-                    project_exprs,
-                    Arc::clone(&child.native_plan),
-                )?);
+                let project_exec =
+                    Arc::new(ProjectionExec::try_new(project_exprs, child_native_plan)?);
 
                 let project_schema = project_exec.schema();
 
