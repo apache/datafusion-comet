@@ -171,7 +171,20 @@ impl TimeStampInfo {
 }
 
 pub(crate) fn is_df_cast_from_string_spark_compatible(to_type: &DataType) -> bool {
-    matches!(to_type, DataType::Binary)
+    // Utf8 -> Binary is a zero-copy reinterpret; Utf8 -> LargeUtf8 is a pure
+    // offset-width widening handled by arrow's cast_byte_container. Both are
+    // Spark-equivalent (Spark's StringType and BinaryType are indifferent to
+    // Arrow's offset width).
+    matches!(to_type, DataType::Binary | DataType::LargeUtf8)
+}
+
+pub(crate) fn is_df_cast_from_large_string_spark_compatible(to_type: &DataType) -> bool {
+    // Symmetric mirror of `is_df_cast_from_string_spark_compatible` for the
+    // LargeUtf8 source type. LargeUtf8 -> Utf8 is an i64 -> i32 offset narrowing
+    // that arrow's cast_byte_container performs with an overflow check per row;
+    // arrays whose values buffer exceeds `i32::MAX` bytes are pre-split by
+    // CometSchemaAlignExec before the cast reaches this code path.
+    matches!(to_type, DataType::LargeBinary | DataType::Utf8)
 }
 
 pub(crate) fn cast_string_to_float(
