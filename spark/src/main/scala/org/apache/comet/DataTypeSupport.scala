@@ -50,8 +50,8 @@ trait DataTypeSupport {
 
     dt match {
       case BooleanType | ByteType | ShortType | IntegerType | LongType | FloatType | DoubleType |
-          BinaryType | StringType | _: DecimalType | DateType | TimestampType |
-          TimestampNTZType =>
+          BinaryType | StringType | _: DecimalType | DateType | TimestampType | TimestampNTZType |
+          CalendarIntervalType =>
         true
       case StructType(fields) =>
         fields.nonEmpty && fields.forall(f =>

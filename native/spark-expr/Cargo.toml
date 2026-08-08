@@ -30,6 +30,7 @@ edition = { workspace = true }
 arrow = { workspace = true }
 chrono = { workspace = true }
 datafusion = { workspace = true }
+datafusion-spark = { workspace = true }
 chrono-tz = { workspace = true }
 num = { workspace = true }
 regex = { workspace = true }
@@ -42,8 +43,11 @@ jni = "0.22.4"
 futures = { workspace = true }
 twox-hash = "2.1.2"
 rand = { workspace = true }
-hex = "0.4.3"
-base64 = "0.22.1"
+base64 = "0.23.0"
+# shortest round-trip float formatting, used to match Spark's Double.toString-based
+# float/double to decimal conversion
+ryu = "1.0"
+uuid = "1.23.3"
 
 [dev-dependencies]
 arrow = {workspace = true}
@@ -58,6 +62,14 @@ path = "src/lib.rs"
 
 [[bench]]
 name = "cast_from_string"
+harness = false
+
+[[bench]]
+name = "cast_string_to_date"
+harness = false
+
+[[bench]]
+name = "cast_string_to_timestamp"
 harness = false
 
 [[bench]]
@@ -82,6 +94,10 @@ harness = false
 
 [[bench]]
 name = "padding"
+harness = false
+
+[[bench]]
+name = "base64"
 harness = false
 
 [[bench]]
@@ -141,6 +157,10 @@ name = "parse_url"
 harness = false
 
 [[bench]]
+name = "cast_binary_to_string"
+harness = false
+
+[[bench]]
 name = "get_json_object"
 harness = false
 
@@ -157,6 +177,26 @@ name = "to_json"
 harness = false
 
 [[bench]]
+name = "floor"
+harness = false
+
+[[bench]]
+name = "ceil"
+harness = false
+
+[[bench]]
+name = "cast_float_to_string"
+harness = false
+
+[[bench]]
+name = "date_trunc_array_fmt"
+harness = false
+
+[[bench]]
+name = "cast_decimal_to_string"
+harness = false
+
+[[bench]]
 name = "cast_float_to_decimal"
 harness = false
 
@@ -166,4 +206,20 @@ harness = false
 
 [[bench]]
 name = "check_overflow"
+harness = false
+
+[[bench]]
+name = "round"
+harness = false
+
+[[bench]]
+name = "unscaled_value"
+harness = false
+
+[[bench]]
+name = "make_decimal"
+harness = false
+
+[[bench]]
+name = "cast_int_to_decimal"
 harness = false

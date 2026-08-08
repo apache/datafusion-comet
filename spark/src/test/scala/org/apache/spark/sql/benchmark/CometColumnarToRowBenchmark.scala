@@ -49,12 +49,14 @@ object CometColumnarToRowBenchmark extends CometBenchmarkBase {
       .set("spark.memory.offHeap.enabled", "true")
       .set("spark.memory.offHeap.size", "2g")
 
-    val sparkSession = SparkSession.builder
+    val sparkSession = SparkSession
+      .builder()
       .config(conf)
       .withExtensions(new CometSparkSessionExtensions)
       .getOrCreate()
 
     // Set default configs
+    sparkSession.conf.set(SQLConf.ANSI_ENABLED.key, "false")
     sparkSession.conf.set(SQLConf.PARQUET_VECTORIZED_READER_ENABLED.key, "true")
     sparkSession.conf.set(SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key, "true")
     sparkSession.conf.set(CometConf.COMET_ENABLED.key, "false")
@@ -355,6 +357,70 @@ object CometColumnarToRowBenchmark extends CometBenchmarkBase {
     }
   }
 
+  /**
+   * Benchmark with dictionary-encoded parquet data (the session default disables dictionary
+   * encoding, but real-world parquet data is usually dictionary-encoded).
+   */
+  def dictionaryEncodedBenchmark(values: Int): Unit = {
+    val benchmark =
+      new Benchmark("Columnar to Row - Dictionary-encoded strings", values, output = output)
+
+    withTempPath { dir =>
+      withTempTable("parquetV1Table") {
+        val df = spark
+          .range(values)
+          .selectExpr(
+            "id",
+            "concat('val_', cast(id % 1000 as string)) as low_card_str",
+            "concat('city_', cast(id % 100 as string)) as city",
+            "concat('cat_', cast(id % 10 as string)) as category")
+
+        // Force dictionary encoding ON for this table only
+        df.write
+          .option("parquet.enable.dictionary", "true")
+          .option("compression", "snappy")
+          .parquet(dir.getCanonicalPath + "/parquetV1")
+        spark.read
+          .parquet(dir.getCanonicalPath + "/parquetV1")
+          .createOrReplaceTempView("parquetV1Table")
+
+        val query = "SELECT * FROM parquetV1Table"
+        addC2RBenchmarkCases(benchmark, query)
+        benchmark.run()
+      }
+    }
+  }
+
+  /**
+   * Benchmark where a JVM operator (Scala UDF projection + aggregate) consumes the rows. Unlike
+   * the noop() sink, this defeats escape analysis and exercises the WholeStageCodegen fusion
+   * asymmetry between the CodegenSupport JVM C2R and the iterator-based native C2R.
+   */
+  def jvmConsumerBenchmark(values: Int): Unit = {
+    val benchmark =
+      new Benchmark("Columnar to Row - JVM UDF consumer", values, output = output)
+
+    spark.udf.register("plus_one", (x: Long) => x + 1)
+
+    withTempPath { dir =>
+      withTempTable("parquetV1Table") {
+        val df = spark
+          .range(values)
+          .selectExpr(
+            "id as long_col",
+            "cast(id as int) as int_col",
+            "cast(id as double) as double_col",
+            "cast(id as string) as string_col")
+
+        prepareTable(dir, df)
+        val query =
+          "SELECT sum(plus_one(long_col)), min(string_col), sum(double_col) FROM parquetV1Table"
+        addC2RBenchmarkCases(benchmark, query)
+        benchmark.run()
+      }
+    }
+  }
+
   override def runCometBenchmark(mainArgs: Array[String]): Unit = {
     val numRows = 1024 * 1024 // 1M rows
 
@@ -388,6 +454,14 @@ object CometColumnarToRowBenchmark extends CometBenchmarkBase {
 
     runBenchmark("Columnar to Row Conversion - Wide Rows") {
       wideRowsBenchmark(numRows)
+    }
+
+    runBenchmark("Columnar to Row Conversion - Dictionary Encoded") {
+      dictionaryEncodedBenchmark(numRows)
+    }
+
+    runBenchmark("Columnar to Row Conversion - JVM UDF Consumer") {
+      jvmConsumerBenchmark(numRows)
     }
   }
 }

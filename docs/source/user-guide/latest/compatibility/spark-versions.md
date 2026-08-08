@@ -22,7 +22,9 @@ under the License.
 This page documents known issues and limitations specific to each supported Apache Spark version.
 
 For general compatibility information that applies across all Spark versions, see the other pages in this
-compatibility guide.
+compatibility guide. For the rule that governs how long each Spark minor is supported, see the
+[Apache Spark version support section](../../../about/versioning_policy.md#apache-spark-version-support)
+of the versioning policy.
 
 ## Spark 3.4
 
@@ -45,7 +47,7 @@ Spark 3.4 support is deprecated as of the 1.0.0 release and will be removed in t
 
 ## Spark 3.5
 
-Spark 3.5.8 is supported with Java 11/17 and Scala 2.12/2.13.
+Spark 3.5.9 is supported with Java 11/17 and Scala 2.12/2.13.
 
 ```{warning}
 JDK 11 support is deprecated as of the 1.0.0 release and will be removed in the 1.1.0 release.
@@ -65,7 +67,7 @@ We recommend moving to JDK 17 or later.
 
 ## Spark 4.0
 
-Spark 4.0.2 is supported with Java 17 and Scala 2.13.
+Spark 4.0.4 is supported with Java 17 and Scala 2.13.
 
 ### Known Limitations
 
@@ -74,7 +76,7 @@ Spark 4.0.2 is supported with Java 17 and Scala 2.13.
 
 ## Spark 4.1
 
-Spark 4.1.2 is supported with Java 17/21 and Scala 2.13.
+Spark 4.1.3 is supported with Java 17/21 and Scala 2.13.
 
 ### Known Limitations
 
