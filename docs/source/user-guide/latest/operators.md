@@ -119,6 +119,7 @@ omitted from the tables below and may be reconsidered based on demand:
 | Operator                 | Status | Notes                                                             |
 | ------------------------ | ------ | ----------------------------------------------------------------- |
 | `DataWritingCommandExec` | ⚠️     | Experimental native Parquet writes, disabled by default (opt-in). |
+| `MergeRowsExec`          | ⚠️     | Row-level `MERGE INTO` dispatch (Spark 3.5+). Disabled by default; opt in with `spark.comet.exec.mergeRows.enabled=true`. See [Operator Compatibility](compatibility/operators.md). |
 
 ## Python and UDF
 
