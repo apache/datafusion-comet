@@ -18,7 +18,7 @@
 use arrow::array::{
     builder::PrimitiveBuilder,
     cast::AsArray,
-    types::{Decimal128Type, Int64Type},
+    types::{Decimal128Type, DecimalType, Int64Type},
     Array, ArrayRef, Decimal128Array, Int64Array, PrimitiveArray,
 };
 use arrow::datatypes::{DataType, Field, FieldRef};
@@ -30,7 +30,7 @@ use datafusion::logical_expr::{
 use datafusion::physical_expr::expressions::format_state_name;
 use std::sync::Arc;
 
-use crate::utils::{build_bool_state, is_valid_decimal_precision, unlikely};
+use crate::utils::{build_bool_state, unlikely};
 use crate::{decimal_sum_overflow_error, EvalMode, SparkErrorWithContext};
 use arrow::array::ArrowNativeTypeOp;
 use arrow::datatypes::{
@@ -272,7 +272,7 @@ impl AvgDecimalAccumulator {
             None => (v, false),
         };
 
-        if is_overflow || !is_valid_decimal_precision(new_sum, self.sum_precision) {
+        if is_overflow || !Decimal128Type::is_valid_decimal_precision(new_sum, self.sum_precision) {
             // Overflow: set to null. Error will be thrown during evaluate in ANSI mode.
             // This matches Spark's DecimalAddNoOverflowCheck behavior.
             self.is_not_null = false;
@@ -347,7 +347,8 @@ impl Accumulator for AvgDecimalAccumulator {
             let v = self.sum.get_or_insert(0);
             let (result, overflowed) = v.overflowing_add(x);
 
-            if overflowed || !is_valid_decimal_precision(result, self.sum_precision) {
+            if overflowed || !Decimal128Type::is_valid_decimal_precision(result, self.sum_precision)
+            {
                 // Overflow during merge: set to null, error will be thrown during evaluate in ANSI mode
                 self.is_not_null = false;
                 self.sum = None;
@@ -485,7 +486,9 @@ impl AvgDecimalGroupsAccumulator {
         self.counts[group_index] += 1;
         self.sums[group_index] = new_sum;
 
-        if unlikely(is_overflow || !is_valid_decimal_precision(new_sum, self.sum_precision)) {
+        if unlikely(
+            is_overflow || !Decimal128Type::is_valid_decimal_precision(new_sum, self.sum_precision),
+        ) {
             // Overflow: set to null. Error will be thrown during evaluate in ANSI mode.
             // This matches Spark's DecimalAddNoOverflowCheck behavior.
             self.is_not_null.set_bit(group_index, false);
@@ -573,7 +576,9 @@ impl GroupsAccumulator for AvgDecimalGroupsAccumulator {
             let sum = self.sums[group_index];
             let (new_sum, is_overflow) = sum.overflowing_add(new_value);
 
-            if is_overflow || !is_valid_decimal_precision(new_sum, self.sum_precision) {
+            if is_overflow
+                || !Decimal128Type::is_valid_decimal_precision(new_sum, self.sum_precision)
+            {
                 if self.eval_mode == EvalMode::Ansi {
                     let error = decimal_sum_overflow_error("avg");
                     return Err(self.wrap_error_with_context(error));
