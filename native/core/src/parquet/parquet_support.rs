@@ -22,8 +22,9 @@ use arrow::compute::can_cast_types;
 use arrow::datatypes::{FieldRef, Fields};
 use arrow::{
     array::{
-        cast::AsArray, new_null_array, types::Int32Type, types::TimestampMicrosecondType, Array,
-        ArrayRef, DictionaryArray, StructArray,
+        cast::AsArray, new_null_array, types::Int32Type, types::TimestampMicrosecondType,
+        types::TimestampMillisecondType, Array, ArrayRef, ArrowNativeTypeOp, DictionaryArray,
+        StructArray,
     },
     compute::{cast_with_options, take, CastOptions},
     datatypes::{DataType, TimeUnit},
@@ -219,6 +220,21 @@ fn parquet_convert_array(
                 cast_field,
                 list_arr.nulls().cloned(),
             )))
+        }
+        (
+            Timestamp(TimeUnit::Millisecond, _),
+            Timestamp(TimeUnit::Microsecond, target_tz),
+        ) => {
+            // Spark's Parquet reader calls the checked `millisToMicros` conversion for both
+            // direct and dictionary values, independent of CAST evaluation mode:
+            // https://github.com/apache/spark/blob/v4.2.0/sql/core/src/main/java/org/apache/spark/sql/execution/datasources/parquet/ParquetVectorUpdaterFactory.java#L817-L833
+            // `millisToMicros` uses `Math.multiplyExact`:
+            // https://github.com/apache/spark/blob/v4.2.0/sql/api/src/main/scala/org/apache/spark/sql/catalyst/util/SparkDateTimeUtils.scala#L103-L108
+            let micros = array
+                .as_primitive::<TimestampMillisecondType>()
+                .try_unary::<_, TimestampMicrosecondType, _>(|value| value.mul_checked(1_000))?
+                .with_timezone_opt(target_tz.clone());
+            Ok(Arc::new(micros))
         }
         (Timestamp(TimeUnit::Microsecond, None), Timestamp(TimeUnit::Microsecond, Some(tz))) => {
             Ok(Arc::new(
