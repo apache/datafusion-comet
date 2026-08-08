@@ -234,7 +234,9 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               val actual = arithmeticError(cometException)
               assert(actual.getErrorClass == expected.getErrorClass)
               assert(actual.getSqlState == expected.getSqlState)
-              assert(actual.getQueryContext.exists(_.fragment().contains(expression)))
+              assert(
+                actual.getQueryContext.map(_.fragment()).toSeq ==
+                  expected.getQueryContext.map(_.fragment()).toSeq)
             case errors => fail(s"Expected Spark and Comet divide-by-zero errors, got $errors")
           }
         }
@@ -1450,7 +1452,9 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             // covers the structured error fields and query context.
             assert(actual.getErrorClass == expected.getErrorClass)
             assert(actual.getSqlState == expected.getSqlState)
-            assert(actual.getQueryContext.exists(_.fragment().contains("_1 * _1")))
+            assert(
+              actual.getQueryContext.map(_.fragment()).toSeq ==
+                expected.getQueryContext.map(_.fragment()).toSeq)
           case _ =>
             fail("Expected exception for decimal overflow in ANSI mode")
         }
