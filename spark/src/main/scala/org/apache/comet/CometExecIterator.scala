@@ -131,8 +131,10 @@ class CometExecIterator(
       taskCPUs,
       keyUnwrapper,
       // Propagated to Tokio workers running JVM UDFs so they see this Spark task's
-      // TaskContext. See CometUdfBridge.evaluate.
-      taskContext)
+      // TaskContext and context ClassLoader. This iterator is constructed on a Spark task thread;
+      // a JNI-attached Tokio worker has neither. See CometUdfBridge.evaluate.
+      taskContext,
+      Thread.currentThread().getContextClassLoader)
   }
 
   private var nextBatch: Option[ColumnarBatch] = None

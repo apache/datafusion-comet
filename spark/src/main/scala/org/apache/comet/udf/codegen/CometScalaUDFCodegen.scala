@@ -190,6 +190,11 @@ class CometScalaUDFCodegen extends CometUDF with Logging {
   /**
    * Build the compile-time spec for one input Arrow vector. Recurses on complex types.
    *
+   * The vector classes matched here must cover every Spark type
+   * `CometBatchKernelCodegen.isSupportedDataType` admits, because that predicate is what
+   * `canHandle` gates the plan on. A type accepted at plan time but unmatched here throws at
+   * execute time, when the operator can no longer fall back to Spark.
+   *
    * Top-level `nullable=true` is hardcoded: the cache key does not specialize on per-batch null
    * density. Schema-declared nullability still reaches the kernel via `BoundReference.nullable`
    * embedded in `bytesKey`, so `BoundReference.doGenCode` elides its own `isNullAt` probe on
@@ -224,8 +229,9 @@ class CometScalaUDFCodegen extends CometUDF with Logging {
       StructColumnSpec(nullable = true, fieldSpecs)
     case _: BitVector | _: TinyIntVector | _: SmallIntVector | _: IntVector | _: BigIntVector |
         _: Float4Vector | _: Float8Vector | _: DecimalVector | _: VarCharVector |
-        _: VarBinaryVector | _: DateDayVector | _: DurationVector | _: TimeStampMicroVector |
-        _: TimeStampMicroTZVector | _: IntervalYearVector | _: IntervalMonthDayNanoVector =>
+        _: VarBinaryVector | _: DateDayVector | _: DurationVector | _: TimeNanoVector |
+        _: TimeStampMicroVector | _: TimeStampMicroTZVector | _: IntervalYearVector |
+        _: IntervalMonthDayNanoVector =>
       ScalarColumnSpec(v.getClass.asInstanceOf[Class[_ <: ValueVector]], nullable = true)
     case other =>
       throw new UnsupportedOperationException(
