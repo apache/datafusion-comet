@@ -1572,7 +1572,7 @@ class CometCodegenSuite
       exprVec.setSafe(0, bytes)
       exprVec.setValueCount(1)
 
-      out = new CometScalaUDFCodegen().evaluate(Array(exprVec, timeVec), 2)
+      out = new CometScalaUDFCodegen().evaluate(CometArrowAllocator, Array(exprVec, timeVec), 2)
       val comet = CometVector.getVector(out.asInstanceOf[FieldVector], null)
       assert(comet.getLong(0) === 45296000000000L)
       assert(comet.isNullAt(1))
