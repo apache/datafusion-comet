@@ -880,8 +880,13 @@ object CometConf extends ShimCometConf {
     .booleanConf
     .createWithEnvVarOrDefault("ENABLE_COMET_STRICT_TESTING", false)
 
-  val COMET_OPERATOR_DATA_WRITING_COMMAND_ALLOW_INCOMPAT: ConfigEntry[Boolean] =
-    createOperatorIncompatConfig("DataWritingCommandExec")
+  val COMET_OPERATOR_WRITE_FILES_ALLOW_INCOMPAT: ConfigEntry[Boolean] =
+    // Native writes used to replace the whole DataWritingCommandExec; they now replace only
+    // WriteFilesExec, so the opt-in moved with it. Keep the old key working for anyone who had
+    // already enabled the experimental writer.
+    createOperatorIncompatConfig(
+      "WriteFilesExec",
+      Some(getOperatorAllowIncompatConfigKey("DataWritingCommandExec")))
 
   /** Create a config to enable a specific operator */
   private def createExecEnabledConfig(
@@ -906,15 +911,18 @@ object CometConf extends ShimCometConf {
   private def configKeyToEnvVar(configKey: String): String =
     configKey.toUpperCase(Locale.ROOT).replace('.', '_')
 
-  private def createOperatorIncompatConfig(name: String): ConfigEntry[Boolean] = {
+  private def createOperatorIncompatConfig(
+      name: String,
+      alternative: Option[String] = None): ConfigEntry[Boolean] = {
     val configKey = getOperatorAllowIncompatConfigKey(name)
     val envVar = configKeyToEnvVar(configKey)
-    conf(configKey)
+    val builder = conf(configKey)
       .category(CATEGORY_EXEC)
       .doc(s"Whether to allow incompatibility for operator: $name. " +
         s"False by default. Can be overridden with $envVar env variable")
-      .booleanConf
-      .createWithEnvVarOrDefault(envVar, false)
+    // ConfigBuilder mutates in place, so the result of withAlternative is `builder` itself.
+    alternative.foreach(builder.withAlternative(_))
+    builder.booleanConf.createWithEnvVarOrDefault(envVar, false)
   }
 
   def isExprEnabled(name: String, conf: SQLConf = SQLConf.get): Boolean = {

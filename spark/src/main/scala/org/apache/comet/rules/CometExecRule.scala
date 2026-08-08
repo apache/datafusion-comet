@@ -35,7 +35,7 @@ import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffleReadExec, BroadcastQueryStageExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, HashAggregateExec, ObjectHashAggregateExec}
 import org.apache.spark.sql.execution.command.{DataWritingCommandExec, ExecutedCommandExec}
-import org.apache.spark.sql.execution.datasources.WriteFilesExec
+import org.apache.spark.sql.execution.datasources.{InsertIntoHadoopFsRelationCommand, WriteFilesExec}
 import org.apache.spark.sql.execution.datasources.csv.CSVFileFormat
 import org.apache.spark.sql.execution.datasources.json.JsonFileFormat
 import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
@@ -100,6 +100,14 @@ object CometExecRule {
       classOf[UnionExec] -> CometUnionExec)
 
   val allExecs: Map[Class[_ <: SparkPlan], CometOperatorSerde[_]] = nativeExecs ++ sinks
+
+  /**
+   * Output path of the write that a `WriteFilesExec` belongs to, copied from the enclosing
+   * `InsertIntoHadoopFsRelationCommand`. `WriteFilesExec` itself has no output path, so this is
+   * how `CometWriteFiles` learns the target filesystem - and, by its absence, that a write comes
+   * from some other V1 write command.
+   */
+  val WRITE_OUTPUT_PATH: TreeNodeTag[String] = TreeNodeTag[String]("comet.writeOutputPath")
 
   /**
    * Tag set on a `ShuffleExchangeExec` that should be left as a plain Spark shuffle rather than
@@ -287,16 +295,11 @@ case class CometExecRule(session: SparkSession)
       case op if shouldApplySparkToColumnar(conf, op) =>
         convertToComet(op, CometSparkToColumnarExec).getOrElse(op)
 
-      // AQE reoptimization looks for `DataWritingCommandExec` or `WriteFilesExec`
-      // if there is none it would reinsert write nodes, and since Comet remap those nodes
-      // to Comet counterparties the write nodes are twice to the plan.
-      // Checking if AQE inserted another write Command on top of existing write command
-      case _ @DataWritingCommandExec(_, w: WriteFilesExec)
-          if w.child.isInstanceOf[CometNativeWriteExec] =>
-        w.child
-
-      case op: DataWritingCommandExec =>
-        convertToComet(op, CometDataWritingCommand).getOrElse(op)
+      // Replace only the per-task write with Comet, leaving DataWritingCommandExec (and therefore
+      // Spark's commit protocol, stats trackers and SaveMode handling) in place. CometWriteFiles
+      // declines the write on Spark 3.x, where the node cannot be replaced at all.
+      case w: WriteFilesExec =>
+        convertToComet(w, CometWriteFiles).getOrElse(w)
 
       // For AQE broadcast stage on a Comet broadcast exchange
       case s @ BroadcastQueryStageExec(_, _: CometBroadcastExchangeExec, _) =>
@@ -372,14 +375,14 @@ case class CometExecRule(session: SparkSession)
         op match {
           case _: CometPlan | _: AQEShuffleReadExec | _: BroadcastExchangeExec |
               _: BroadcastQueryStageExec | _: AdaptiveSparkPlanExec | _: ExecutedCommandExec |
-              _: V2CommandExec | _: WriteFilesExec =>
+              _: V2CommandExec | _: WriteFilesExec | _: DataWritingCommandExec =>
             // Some execs should never be replaced. We include
             // these cases specially here so we do not add a misleading 'info' message.
-            // WriteFilesExec is always wrapped by DataWritingCommandExec (via Spark's V1Writes
-            // rule); the parent case converts the whole write to CometNativeWriteExec and
-            // unwraps WriteFilesExec inside convertToComet. Tagging WriteFilesExec here would
-            // produce a spurious "WriteFilesExec is not supported" fallback reason (and a warning
-            // when COMET_EXPLAIN_FALLBACK_LOG_ENABLED=true) even when the write is fully native.
+            // DataWritingCommandExec is deliberately left in the plan even for a fully native
+            // write - Comet replaces only its WriteFilesExec child (see CometWriteFiles) - so
+            // tagging it would report an accelerated write as a fallback. WriteFilesExec that
+            // reaches this point was already offered to CometWriteFiles by the case above, so it
+            // has a fallback reason already and must not be tagged again.
             op
           case _ =>
             // The operator was not converted to a Comet plan and no serde handler claimed it, so
@@ -399,6 +402,17 @@ case class CometExecRule(session: SparkSession)
               op
             }
         }
+    }
+
+    // `WriteFilesExec` does not carry the write's output path, but CometWriteFiles needs it to
+    // decide whether the target filesystem is supported. Record it from the enclosing command
+    // before the bottom-up walk reaches the write node. The absence of the tag also tells
+    // CometWriteFiles that the write is not an InsertIntoHadoopFsRelationCommand and must be
+    // declined.
+    plan.foreach {
+      case DataWritingCommandExec(cmd: InsertIntoHadoopFsRelationCommand, w: WriteFilesExec) =>
+        w.setTagValue(CometExecRule.WRITE_OUTPUT_PATH, cmd.outputPath.toString)
+      case _ =>
     }
 
     plan.transformUp { case op =>
@@ -681,14 +695,14 @@ case class CometExecRule(session: SparkSession)
             firstNativeOp = true
           }
 
-          // CometNativeWriteExec is special: it has two separate plans:
+          // CometWriteFilesExec is special: it has two separate plans:
           // 1. A protobuf plan (nativeOp) describing the write operation
           // 2. A Spark plan (child) that produces the data to write
           // The serializedPlanOpt is a def that always returns Some(...) by serializing
           // nativeOp on-demand, so it doesn't need convertBlock(). However, its child
           // (e.g., CometNativeScanExec) may need its own serialization. Reset the flag
           // so children can start their own native execution blocks.
-          if (op.isInstanceOf[CometNativeWriteExec]) {
+          if (op.isInstanceOf[CometWriteFilesExec]) {
             firstNativeOp = true
           }
 
@@ -725,12 +739,7 @@ case class CometExecRule(session: SparkSession)
       // children are CometNativeExec. This prevents runtime failures when the native operator
       // expects Arrow arrays but receives non-Arrow data (e.g., OnHeapColumnVector).
       if (serde.requiresNativeChildren && op.children.nonEmpty) {
-        // Get the actual data-producing children (unwrap WriteFilesExec if present)
-        val dataProducingChildren = op.children.flatMap {
-          case writeFiles: WriteFilesExec => Seq(writeFiles.child)
-          case other => Seq(other)
-        }
-        if (!dataProducingChildren.forall(_.isInstanceOf[CometNativeExec])) {
+        if (!op.children.forall(_.isInstanceOf[CometNativeExec])) {
           withFallbackReason(
             op,
             "Cannot perform native operation because input is not in Arrow format")
