@@ -591,9 +591,9 @@ case class CometScanRule(session: SparkSession)
         val allSupportedFilesystems = if (taskValidation.unsupportedSchemes.isEmpty) {
           true
         } else {
-          fallbackReasons += "Iceberg scan contains files with unsupported filesystem " +
-            s"schemes: ${taskValidation.unsupportedSchemes.mkString(", ")}. " +
-            "Comet only supports: file, s3, s3a, gs, gcs, oss, abfss, abfs, wasbs, wasb"
+          fallbackReasons += "Iceberg scan contains files with filesystem schemes not " +
+            "recognized by Comet's native object_store: " +
+            s"${taskValidation.unsupportedSchemes.toSeq.sorted.mkString(", ")}"
           false
         }
 
@@ -976,6 +976,26 @@ object CometScanRule extends Logging {
     org.apache.spark.sql.catalyst.trees.TreeNodeTag[Unit]("comet.skipCometScan")
 
   /**
+   * Schemes readable by iceberg-rust's OpenDAL storage factory that `ObjectStoreScheme::parse`
+   * does NOT recognize, so `isNativelyReadableScheme` alone under-admits for iceberg scans.
+   * Mirror of the extra `match` arms in
+   * `native/core/src/execution/operators/iceberg_scan.rs::storage_factory_for` -- add here what
+   * you add there. Currently Aliyun OSS via `OpenDalStorageFactory::Oss`.
+   */
+  private val icebergExtraSchemes: Set[String] = Set("oss")
+
+  /**
+   * Scheme gate for the Iceberg scan path. Accepts anything the Parquet scan gate accepts, plus
+   * schemes iceberg-rust reads via OpenDAL that object_store's parser doesn't recognize.
+   */
+  private[rules] def isIcebergReadableScheme(uri: URI): Boolean = {
+    if (isNativelyReadableScheme(uri)) return true
+    Option(uri.getScheme)
+      .map(_.toLowerCase(Locale.ROOT))
+      .exists(icebergExtraSchemes.contains)
+  }
+
+  /**
    * Single-pass validation of Iceberg FileScanTasks.
    *
    * Consolidates file format, filesystem scheme, residual transform, and delete file checks into
@@ -999,9 +1019,6 @@ object CometScanRule extends Logging {
     val deletesMethod = IcebergReflection.getMethod(fileScanTaskClass, "deletes")
     val termMethod = IcebergReflection.getMethod(unboundPredicateClass, "term")
 
-    val supportedSchemes =
-      Set("file", "s3", "s3a", "gs", "gcs", "oss", "abfss", "abfs", "wasbs", "wasb")
-
     var allParquet = true
     val unsupportedSchemes = mutable.Set[String]()
     var nonIdentityTransform: Option[String] = None
@@ -1016,12 +1033,14 @@ object CometScanRule extends Logging {
         allParquet = false
       }
 
-      // Filesystem scheme check for data file
+      // Filesystem scheme check for data file. Delegated to the native gate
+      // (`isNativelyReadableScheme` -> `NativeBase.isObjectStoreSchemeSupported`) so the iceberg
+      // and Parquet-scan paths share a single source of truth.
       try {
         val filePath = pathMethod.invoke(dataFile).toString
         val uri = new URI(filePath)
         val scheme = uri.getScheme
-        if (scheme != null && !supportedSchemes.contains(scheme)) {
+        if (scheme != null && !isIcebergReadableScheme(uri)) {
           unsupportedSchemes += scheme
         }
       } catch {
@@ -1059,7 +1078,7 @@ object CometScanRule extends Logging {
                 try {
                   val deleteUri = new URI(deletePath)
                   val deleteScheme = deleteUri.getScheme
-                  if (deleteScheme != null && !supportedSchemes.contains(deleteScheme)) {
+                  if (deleteScheme != null && !isIcebergReadableScheme(deleteUri)) {
                     unsupportedSchemes += deleteScheme
                   }
                 } catch {

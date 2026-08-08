@@ -169,6 +169,9 @@ pub extern "system" fn Java_org_apache_comet_NativeBase_isFeatureEnabled(
 /// answering from `ObjectStoreScheme::parse` here, the planner can decline early without
 /// hardcoding -- and drifting from -- the object_store-supported scheme set. (hdfs / libhdfs
 /// schemes are handled separately on the JVM side via the user's libhdfs scheme config.)
+///
+/// `blob` is not recognized by `ObjectStoreScheme::parse`, but Comet treats it as a synonym
+/// for `s3` (rewritten in `prepare_object_store_with_configs`), so report it as supported.
 #[no_mangle]
 pub extern "system" fn Java_org_apache_comet_NativeBase_isObjectStoreSchemeSupported(
     env: EnvUnowned,
@@ -179,7 +182,7 @@ pub extern "system" fn Java_org_apache_comet_NativeBase_isObjectStoreSchemeSuppo
         let url_str: String = url.try_to_string(env)?;
         let supported = url::Url::parse(&url_str)
             .ok()
-            .map(|u| object_store::ObjectStoreScheme::parse(&u).is_ok())
+            .map(|u| u.scheme() == "blob" || object_store::ObjectStoreScheme::parse(&u).is_ok())
             .unwrap_or(false);
         Ok(supported)
     })

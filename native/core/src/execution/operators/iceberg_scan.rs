@@ -255,7 +255,7 @@ impl IcebergScanExec {
         };
         match scheme {
             "file" => Ok(Arc::new(OpenDalStorageFactory::Fs)),
-            "s3" | "s3a" => {
+            "s3" | "s3a" | "blob" => {
                 let customized_credential_load =
                     build_s3_credential_loader(path, catalog_properties, catalog_name);
                 Ok(Arc::new(OpenDalStorageFactory::S3 {
@@ -366,6 +366,22 @@ impl IcebergScanExec {
             if STORAGE_PROPERTY_PREFIXES.iter().any(|p| key.starts_with(p)) {
                 file_io_builder = file_io_builder.with_prop(key, value);
             }
+        }
+
+        // Object-store's AmazonS3Builder defaults the SigV4 region to `us-east-1` when unset;
+        // iceberg-storage-opendal's S3 factory instead errors with `region is missing. Please
+        // find it by S3::detect_region() or set them in env.` Non-AWS S3-compliant storage
+        // services accept any region in the credential, so default to `us-east-1` when the
+        // catalog didn't ship one. Both key spellings iceberg-rust reads (`client.region`
+        // wins over `s3.region`).
+        let region_forwarded = catalog_properties.contains_key("s3.region")
+            || catalog_properties.contains_key("client.region");
+        let is_s3_family = matches!(
+            metadata_location.split_once("://"),
+            Some(("s3" | "s3a" | "blob", _))
+        );
+        if !region_forwarded && is_s3_family {
+            file_io_builder = file_io_builder.with_prop("s3.region", "us-east-1");
         }
 
         Ok(file_io_builder.build())

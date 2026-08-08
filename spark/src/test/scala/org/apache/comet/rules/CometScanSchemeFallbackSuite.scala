@@ -20,6 +20,7 @@
 package org.apache.comet.rules
 
 import java.io.File
+import java.net.URI
 import java.nio.file.Files
 import java.util.UUID
 
@@ -98,6 +99,41 @@ class CometScanSchemeFallbackSuite extends CometTestBase {
         sparkScans.size == 1,
         s"expected the scan to remain a Spark FileSourceScanExec:\n$transformed")
     }
+  }
+
+  test("blob:// is a Comet-recognized synonym for s3://") {
+    // `blob` is not in object_store::ObjectStoreScheme, so the native JNI must special-case it
+    // (native/core/src/lib.rs) for `isNativelyReadableScheme` to return true. Without that
+    // disjunct, `CometScanRule.transformV1Scan` emits `Unsupported filesystem schemes: blob`
+    // and falls back to Spark -- the exact regression this suite guards against. Both the
+    // Parquet-scan and Iceberg-scan gates delegate to `isNativelyReadableScheme`, so this one
+    // assertion covers both.
+    assert(
+      CometScanRule.isNativelyReadableScheme(new URI("blob://bucket/key.parquet")),
+      "blob:// must be recognized natively; native JNI or the s3-alias rewrite has regressed")
+  }
+
+  test("iceberg gate: oss:// admitted (regression guard for #<future>)") {
+    // Aliyun OSS is readable by iceberg-rust via `OpenDalStorageFactory::Oss`
+    // (native/core/src/execution/operators/iceberg_scan.rs::storage_factory_for), but
+    // `object_store::ObjectStoreScheme::parse` does NOT recognize it. If the iceberg gate
+    // delegates to only `isNativelyReadableScheme`, `oss` would fall back to Spark even though
+    // native can read it. `isIcebergReadableScheme` supplements the JNI check with schemes
+    // iceberg-rust supports on top of object_store; keep the two in lockstep with the arms in
+    // `storage_factory_for`.
+    assert(
+      CometScanRule.isIcebergReadableScheme(new URI("oss://bucket/key.parquet")),
+      "oss:// must remain iceberg-readable; icebergExtraSchemes has regressed")
+  }
+
+  test("iceberg gate: wasbs:// rejected (correctness tightening)") {
+    // The pre-delegation hardcoded set falsely admitted wasbs/wasb/gcs, none of which
+    // `storage_factory_for` in native/core/src/execution/operators/iceberg_scan.rs actually
+    // handles at runtime. Delegating to the native gate closes that false positive so scans
+    // fall back to Spark up-front instead of failing later during native setup.
+    assert(
+      !CometScanRule.isIcebergReadableScheme(new URI("wasbs://container@acct/key.parquet")),
+      "wasbs:// must not be iceberg-readable; native storage_factory_for has no wasbs arm")
   }
 
   test("native scan claims hdfs:// when libhdfs.schemes is unset (native-default lockstep)") {

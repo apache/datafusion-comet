@@ -553,16 +553,12 @@ pub(crate) fn prepare_object_store_with_configs(
     url: String,
     object_store_configs: &HashMap<String, String>,
 ) -> Result<(ObjectStoreUrl, Path), ExecutionError> {
-    let mut url = Url::parse(url.as_str())
-        .map_err(|e| ExecutionError::GeneralError(format!("Error parsing URL {url}: {e}")))?;
+    let url = super::objectstore::blob_alias::normalize_object_store_url(
+        url.as_str(),
+        object_store_configs,
+    )?;
     let is_hdfs_scheme = is_hdfs_scheme(&url, object_store_configs);
-    let mut scheme = url.scheme();
-    if !is_hdfs_scheme && scheme == "s3a" {
-        scheme = "s3";
-        url.set_scheme("s3").map_err(|_| {
-            ExecutionError::GeneralError("Could not convert scheme from s3a to s3".to_string())
-        })?;
-    }
+    let scheme = url.scheme();
     let url_key = format!(
         "{}://{}",
         scheme,
@@ -682,5 +678,72 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[cfg(not(feature = "hdfs-opendal"))]
+    #[test]
+    #[cfg_attr(miri, ignore)] // AWS credential providers and object_store call foreign functions
+    fn test_prepare_object_store_rewrites_blob_to_s3() {
+        // `blob` is a Comet-recognized synonym for `s3` -- the alias must be rewritten inside
+        // `prepare_object_store_with_configs`, otherwise ObjectStoreScheme::parse rejects the
+        // URL and the native scan fails at execution time (the JVM gate having already claimed
+        // the scan via `NativeBase.isObjectStoreSchemeSupported`). Regressing the rewrite would
+        // resurface `Unsupported filesystem schemes: blob` at execution rather than planning.
+        use crate::parquet::parquet_support::prepare_object_store_with_configs;
+        let mut configs: HashMap<String, String> = HashMap::new();
+        configs.insert(
+            "fs.s3a.aws.credentials.provider".to_string(),
+            "org.apache.hadoop.fs.s3a.AnonymousAWSCredentialsProvider".to_string(),
+        );
+        configs.insert(
+            "fs.s3a.endpoint.region".to_string(),
+            "us-east-1".to_string(),
+        );
+        let (object_store_url, path) = prepare_object_store_with_configs(
+            Arc::new(RuntimeEnv::default()),
+            "blob://test_bucket/comet/spark-warehouse/part-00000.snappy.parquet".to_string(),
+            &configs,
+        )
+        .expect("blob:// URL should be rewritten to s3:// and accepted");
+        assert_eq!(
+            object_store_url,
+            ObjectStoreUrl::parse("s3://test_bucket").unwrap()
+        );
+        assert_eq!(
+            path,
+            Path::from("/comet/spark-warehouse/part-00000.snappy.parquet")
+        );
+    }
+
+    #[cfg(not(feature = "hdfs-opendal"))]
+    #[test]
+    #[cfg_attr(miri, ignore)] // AWS credential providers and object_store call foreign functions
+    fn test_prepare_object_store_promotes_first_path_segment_when_blob_url_has_empty_authority() {
+        // Some deployments emit `blob:///bucket/key` (three slashes, empty authority) rather than
+        // the canonical `blob://bucket/key`. `ObjectStoreScheme::parse` in object_store 0.13
+        // requires a Some(host), so a naive rewrite to `s3:///bucket/key` fails at execution
+        // with `Generic URL error: Unable to recognise URL`. `prepare_object_store_with_configs`
+        // must lift the first path segment into the host to match S3's canonical shape.
+        use crate::parquet::parquet_support::prepare_object_store_with_configs;
+        let mut configs: HashMap<String, String> = HashMap::new();
+        configs.insert(
+            "fs.s3a.aws.credentials.provider".to_string(),
+            "org.apache.hadoop.fs.s3a.AnonymousAWSCredentialsProvider".to_string(),
+        );
+        configs.insert(
+            "fs.s3a.endpoint.region".to_string(),
+            "us-east-1".to_string(),
+        );
+        let (object_store_url, path) = prepare_object_store_with_configs(
+            Arc::new(RuntimeEnv::default()),
+            "blob:///mybucket/warehouse/data/part-0.snappy.parquet".to_string(),
+            &configs,
+        )
+        .expect("blob:///bucket/... should be normalized to s3://bucket/...");
+        assert_eq!(
+            object_store_url,
+            ObjectStoreUrl::parse("s3://mybucket").unwrap()
+        );
+        assert_eq!(path, Path::from("warehouse/data/part-0.snappy.parquet"));
     }
 }
