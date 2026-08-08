@@ -210,6 +210,10 @@ impl PhysicalExpr for DecimalRescaleCheckOverflow {
                     })?;
 
                 let result = if overflowed.get() {
+                    // Every non-sentinel value is already within ±(10^p_out - 1), so the extra
+                    // null-masking pass can only null sentinels. Checking the overflow flag lets
+                    // the common no-overflow case skip this pass and its allocation entirely.
+                    // ANSI mode errors before setting the flag, so it also skips this pass.
                     result.null_if_overflow_precision(p_out)
                 } else {
                     result

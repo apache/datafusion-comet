@@ -345,6 +345,8 @@ fn check_overflow_and_convert(
         if eval_mode == EvalMode::Ansi {
             return Err(ArrowError::ComputeError("Arithmetic overflow".to_string()));
         }
+        // TODO: Write the null bit directly and remove the sentinel/masking pass.
+        // https://github.com/apache/datafusion-comet/issues/5309
         // Sentinel value — will be nullified by null_if_overflow_precision
         overflowed.set(true);
         Ok(i128::MAX)
