@@ -60,6 +60,13 @@
 - Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
 - Comet limitation: same as `rand` — the seed argument must be a literal.
 
+## randstr
+
+- Spark 3.4.3 (audited 2026-07-24): not present. `RandStr` was added in Spark 4.0, so `randstr` does not exist before then.
+- Spark 3.5.8 (audited 2026-07-24): not present.
+- Spark 4.0.1 (audited 2026-07-24): `RandStr(length, seedExpression, hideSeed) extends ExpressionWithRandomSeed with BinaryLike with Nondeterministic`. Both `length` (coerced to `IntegerType`) and `seed` (`IntegerType` or `LongType`) must be foldable; a non-foldable argument is rejected at analysis. Per partition it seeds `new XORShiftRandom(seed + partitionIndex)`; per row it calls `ExpressionImplUtils.randStr`, which fills `length` bytes with `abs(rng.nextInt() % 62)` mapped onto `0-9`/`a-z`/`A-Z`. A negative length raises `INVALID_PARAMETER_VALUE.LENGTH` at runtime. Comet emits a `RandStr` proto with the resolved length and seed and reproduces the `XORShiftRandom` and character mapping bit for bit; non-negative literal length and literal seed only (otherwise it falls back to Spark, which also raises the negative-length error).
+- Spark 4.1.1 (audited 2026-07-24): `ExpressionImplUtils.randStr` and the `XORShiftRandom(seed + partitionIndex)` seeding are byte-identical to 4.0.1; adds `withShiftedSeed`, no runtime change.
+
 ## session_user
 
 - Alias of `current_user`; resolved to a literal by the analyzer.
@@ -81,5 +88,12 @@
 - Spark 3.5.8 (audited 2026-05-27): identical to 3.4.3.
 - Spark 4.0.1 (audited 2026-05-27): identical to 3.4.3 except the resulting literal carries the default string collation.
 - Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
+
+## uuid
+
+- Spark 3.4.3 (audited 2026-07-24): `Uuid(randomSeed: Option[Long]) extends LeafExpression with Nondeterministic with ExpressionWithRandomSeed`. The analyzer's `ResolveRandomSeed` fills `randomSeed` with a random `Long`, so it is always defined before Comet sees the plan. Per partition it seeds `RandomUUIDGenerator(randomSeed + partitionIndex)`, a Commons Math3 `MersenneTwister`, and per row draws two `nextLong()`s, masks in the RFC 4122 version 4 and variant bits, and formats via `java.util.UUID.toString`. Only the no-argument `uuid()` form exists (no seed constructor). Comet emits a `Uuid` proto with the resolved seed and reproduces the generator bit for bit via `SparkMersenneTwister`.
+- Spark 3.5.8 (audited 2026-07-24): identical to 3.4.3.
+- Spark 4.0.1 (audited 2026-07-24): adds `def this(seed: Expression)`, exposing the `uuid(seed)` SQL form (the seed must be an integer or long literal, validated at analysis time). `RandomUUIDGenerator` and the per-row algorithm are unchanged, so results are identical to 3.4.3 for a given seed.
+- Spark 4.1.1 (audited 2026-07-24): identical to 4.0.1, plus `withShiftedSeed`. No runtime change.
 
 [Spark Expression Support]: ../../user-guide/latest/expressions.md
