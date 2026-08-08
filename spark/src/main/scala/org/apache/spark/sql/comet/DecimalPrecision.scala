@@ -41,9 +41,14 @@ import org.apache.spark.sql.types.DecimalType
 object DecimalPrecision {
   def promote(expr: Expression): Expression = {
     expr.transformUp {
-      // This means the binary expression is already optimized with the rule in Spark. This can
-      // happen if the Spark version is < 3.4
-      case e: BinaryArithmetic if e.left.prettyName == "promote_precision" => e
+      // Recursive exprToProto calls can re-promote every decimal binary operator below. Collapse
+      // only equivalent wrappers so the shared promotion rule remains idempotent.
+      case outer @ CheckOverflow(
+            inner @ CheckOverflow(child: BinaryArithmetic, _, _),
+            dataType,
+            nullOnOverflow)
+          if inner.dataType == dataType && inner.nullOnOverflow == nullOnOverflow =>
+        outer.copy(child = child)
 
       case add @ Add(DecimalExpression(_, _), DecimalExpression(_, _), _)
           if add.dataType.isInstanceOf[DecimalType] =>
@@ -57,6 +62,8 @@ object DecimalPrecision {
           if mul.dataType.isInstanceOf[DecimalType] =>
         CheckOverflow(mul, mul.dataType.asInstanceOf[DecimalType], mul.evalMode != EvalMode.ANSI)
 
+      // Native decimal division uses i128::MAX as an overflow sentinel, so this wrapper must
+      // convert it to null or an ANSI error according to the expression's eval mode.
       case div @ Divide(DecimalExpression(_, _), DecimalExpression(_, _), _)
           if div.dataType.isInstanceOf[DecimalType] =>
         CheckOverflow(div, div.dataType.asInstanceOf[DecimalType], div.evalMode != EvalMode.ANSI)

@@ -7,7 +7,7 @@ index eeabe54f5f..a76d7bdcbc 100644
  caffeine = "2.9.3"
  calcite = "1.40.0"
 -comet = "0.8.1"
-+comet = "1.0.0-SNAPSHOT"
++comet = "1.1.0-SNAPSHOT"
  datasketches = "6.2.0"
  delta-standalone = "3.3.2"
  delta-spark = "3.3.2"
@@ -3025,3 +3025,59 @@ index 9d2ce2b388..5e23368848 100644
      } else {
        assertThat(planAsString).as("Should be no post scan filter").doesNotContain("Filter (");
      }
+diff --git a/spark/v3.4/spark-extensions/src/test/java/org/apache/iceberg/spark/extensions/TestSystemFunctionPushDownInRowLevelOperations.java b/spark/v3.4/spark-extensions/src/test/java/org/apache/iceberg/spark/extensions/TestSystemFunctionPushDownInRowLevelOperations.java
+index 5a0a04edb..afe92a8b7 100644
+--- a/spark/v3.4/spark-extensions/src/test/java/org/apache/iceberg/spark/extensions/TestSystemFunctionPushDownInRowLevelOperations.java
++++ b/spark/v3.4/spark-extensions/src/test/java/org/apache/iceberg/spark/extensions/TestSystemFunctionPushDownInRowLevelOperations.java
+@@ -38,6 +38,7 @@ import org.apache.spark.sql.catalyst.expressions.ApplyFunctionExpression;
+ import org.apache.spark.sql.catalyst.expressions.Expression;
+ import org.apache.spark.sql.catalyst.expressions.objects.StaticInvoke;
+ import org.apache.spark.sql.execution.CommandResultExec;
++import org.apache.spark.sql.execution.SparkPlan;
+ import org.apache.spark.sql.execution.datasources.v2.V2TableWriteExec;
+ import org.junit.jupiter.api.AfterEach;
+ import org.junit.jupiter.api.BeforeEach;
+@@ -313,9 +314,13 @@ public class TestSystemFunctionPushDownInRowLevelOperations extends ExtensionsTe
+ 
+   private List<Expression> executeAndCollectFunctionCalls(String query, Object... args) {
+     CommandResultExec command = (CommandResultExec) executeAndKeepPlan(query, args);
+-    V2TableWriteExec write = (V2TableWriteExec) command.commandPhysicalPlan();
++    // Comet's split-operator Iceberg write plans the command as IcebergCommitExec, which is not
++    // a V2TableWriteExec; collect over the whole command plan in that case.
++    SparkPlan plan = command.commandPhysicalPlan();
++    SparkPlan queryPlan =
++        plan instanceof V2TableWriteExec ? ((V2TableWriteExec) plan).query() : plan;
+     return SparkPlanUtil.collectExprs(
+-        write.query(),
++        queryPlan,
+         expr -> expr instanceof StaticInvoke || expr instanceof ApplyFunctionExpression);
+   }
+ 
+diff --git a/spark/v3.5/spark-extensions/src/test/java/org/apache/iceberg/spark/extensions/TestSystemFunctionPushDownInRowLevelOperations.java b/spark/v3.5/spark-extensions/src/test/java/org/apache/iceberg/spark/extensions/TestSystemFunctionPushDownInRowLevelOperations.java
+index 8cb92224f..777b9bb1d 100644
+--- a/spark/v3.5/spark-extensions/src/test/java/org/apache/iceberg/spark/extensions/TestSystemFunctionPushDownInRowLevelOperations.java
++++ b/spark/v3.5/spark-extensions/src/test/java/org/apache/iceberg/spark/extensions/TestSystemFunctionPushDownInRowLevelOperations.java
+@@ -38,6 +38,7 @@ import org.apache.spark.sql.catalyst.expressions.ApplyFunctionExpression;
+ import org.apache.spark.sql.catalyst.expressions.Expression;
+ import org.apache.spark.sql.catalyst.expressions.objects.StaticInvoke;
+ import org.apache.spark.sql.execution.CommandResultExec;
++import org.apache.spark.sql.execution.SparkPlan;
+ import org.apache.spark.sql.execution.datasources.v2.V2TableWriteExec;
+ import org.junit.jupiter.api.AfterEach;
+ import org.junit.jupiter.api.BeforeEach;
+@@ -313,9 +314,13 @@ public class TestSystemFunctionPushDownInRowLevelOperations extends ExtensionsTe
+ 
+   private List<Expression> executeAndCollectFunctionCalls(String query, Object... args) {
+     CommandResultExec command = (CommandResultExec) executeAndKeepPlan(query, args);
+-    V2TableWriteExec write = (V2TableWriteExec) command.commandPhysicalPlan();
++    // Comet's split-operator Iceberg write plans the command as IcebergCommitExec, which is not
++    // a V2TableWriteExec; collect over the whole command plan in that case.
++    SparkPlan plan = command.commandPhysicalPlan();
++    SparkPlan queryPlan =
++        plan instanceof V2TableWriteExec ? ((V2TableWriteExec) plan).query() : plan;
+     return SparkPlanUtil.collectExprs(
+-        write.query(),
++        queryPlan,
+         expr -> expr instanceof StaticInvoke || expr instanceof ApplyFunctionExpression);
+   }
+ 

@@ -30,6 +30,7 @@ edition = { workspace = true }
 arrow = { workspace = true }
 chrono = { workspace = true }
 datafusion = { workspace = true }
+datafusion-spark = { workspace = true }
 chrono-tz = { workspace = true }
 num = { workspace = true }
 regex = { workspace = true }
@@ -93,6 +94,10 @@ harness = false
 
 [[bench]]
 name = "padding"
+harness = false
+
+[[bench]]
+name = "base64"
 harness = false
 
 [[bench]]
@@ -209,4 +214,12 @@ harness = false
 
 [[bench]]
 name = "unscaled_value"
+harness = false
+
+[[bench]]
+name = "make_decimal"
+harness = false
+
+[[bench]]
+name = "cast_int_to_decimal"
 harness = false
