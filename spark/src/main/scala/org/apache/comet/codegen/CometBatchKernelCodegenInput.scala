@@ -67,6 +67,7 @@ private[codegen] object CometBatchKernelCodegenInput extends CometTypeShim {
     classOf[TimeNanoVector],
     classOf[TimeStampMicroVector],
     classOf[TimeStampMicroTZVector],
+    classOf[IntervalYearVector],
     classOf[IntervalMonthDayNanoVector])
   private val cometPlainVectorName: String = classOf[CometPlainVector].getName
 
@@ -132,8 +133,7 @@ private[codegen] object CometBatchKernelCodegenInput extends CometTypeShim {
     }
     val intCases = withOrd.collect {
       case (ArrowColumnSpec(cls, _), ord)
-          if cls == classOf[IntVector] ||
-            cls == classOf[DateDayVector] ||
+          if cls == classOf[IntVector] || cls == classOf[DateDayVector] ||
             cls == classOf[IntervalYearVector] =>
         s"      case $ord: return this.col$ord.getInt(this.rowIdx);"
     }
@@ -928,10 +928,9 @@ private[codegen] object CometBatchKernelCodegenInput extends CometTypeShim {
       }
     val intCases = scalarOrd.collect {
       case (f, fi)
-          if f.sparkType == IntegerType ||
-            f.sparkType == DateType ||
+          if f.sparkType == IntegerType || f.sparkType == DateType ||
             f.sparkType.isInstanceOf[YearMonthIntervalType] =>
-        fieldReadScalar(fi, f.sparkType, f.nullable)
+        fieldReadScalar(fi, IntegerType, f.nullable)
     }
     val longCases = scalarOrd.collect {
       case (f, fi)

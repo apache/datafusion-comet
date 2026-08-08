@@ -19,14 +19,12 @@
 
 package org.apache.comet
 
-import java.time.{Duration, Period}
-
 import scala.util.Random
 
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.{Column, CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.catalyst.expressions.{Alias, Cast, FromUnixTime, Literal, StructsToJson, TruncDate, TruncTimestamp}
-import org.apache.spark.sql.catalyst.optimizer.SimplifyExtractValueOps
+import org.apache.spark.sql.catalyst.optimizer.{ConvertToLocalRelation, OptimizeIn, SimplifyExtractValueOps}
 import org.apache.spark.sql.comet.CometProjectExec
 import org.apache.spark.sql.execution.{ProjectExec, SparkPlan}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
@@ -145,8 +143,8 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         StructField("v", IntegerType, nullable = false)))
     val rows = (0 until 1000).map(i => Row(if (i % 2 == 0) Row(i.toLong) else null, i))
     withSQLConf(
-      CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "true",
-      CometConf.COMET_EXEC_SHUFFLE_WITH_HASH_PARTITIONING_ENABLED.key -> "true") {
+      CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_SHUFFLE_NATIVE_HASH_PARTITIONING_ENABLED.key -> "true") {
       val df = spark
         .createDataFrame(spark.sparkContext.parallelize(rows), schema)
         .repartition(4, col("v")) // materialize the typed struct through a Comet shuffle
@@ -1014,14 +1012,12 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       val query = sql(s"select cast(id as string) from $table")
       val (_, cometPlan) = checkSparkAnswerAndOperator(query)
       val project = stripAQEPlan(cometPlan).collectFirst { case p: CometProjectExec => p }.get
-      val id = project.expressions.head
-      CometSparkSessionExtensions.withFallbackReason(id, "reason 1")
-      CometSparkSessionExtensions.withFallbackReason(project, "reason 2")
-      CometSparkSessionExtensions.withFallbackReason(project, "reason 3", id)
-      CometSparkSessionExtensions.withFallbackReason(project, id)
-      CometSparkSessionExtensions.withFallbackReason(project, "reason 4")
-      CometSparkSessionExtensions.withFallbackReason(project, "reason 5", id)
-      CometSparkSessionExtensions.withFallbackReason(project, id)
+      // Reasons accumulate on the node they are recorded against, and are never overwritten.
+      // There is no roll-up here: a reason tagged on an expression is lifted onto the enclosing
+      // operator centrally by CometExecRule, not by withFallbackReason.
+      CometSparkSessionExtensions.withFallbackReason(project, "reason 1")
+      CometSparkSessionExtensions.withFallbackReason(project, "reason 2\nreason 3")
+      CometSparkSessionExtensions.withFallbackReasons(project, Set("reason 4", "reason 5"))
       CometSparkSessionExtensions.withFallbackReason(project, "reason 6")
       val explain = new ExtendedExplainInfo().generateExtendedInfo(project)
       for (i <- 1 until 7) {
@@ -1715,6 +1711,32 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("null IN empty list honours legacy null-in-empty behavior") {
+    // Spark returns NULL for a NULL operand against an empty IN list when the legacy behavior is
+    // in effect (SPARK-44550): always on Spark 3.4, on by default on Spark 3.5, and whenever ANSI
+    // mode is disabled on Spark 4.0+. Comet's native `in` kernel always returns false, so the
+    // legacy case must leave the native path. Empty IN lists are not expressible in SQL and
+    // `OptimizeIn` folds them away, so build the expression via the DataFrame API with that rule
+    // (and `ConvertToLocalRelation`) excluded.
+    withSQLConf(
+      SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
+        Seq(ConvertToLocalRelation.ruleName, OptimizeIn.ruleName).mkString(",")) {
+      val data: Seq[(Integer, Int)] = Seq((1, 1), (null, 2))
+      withParquetTable(data, "tbl") {
+        // An unset config exercises the version-dependent default, which follows ANSI mode on
+        // Spark 4.0+ and is always the legacy behavior on Spark 3.x.
+        for (legacy <- Seq(Some("true"), Some("false"), None); ansi <- Seq("true", "false")) {
+          val legacyConf = legacy.map("spark.sql.legacy.nullInEmptyListBehavior" -> _).toSeq
+          withSQLConf(Seq(SQLConf.ANSI_ENABLED.key -> ansi) ++ legacyConf: _*) {
+            val df = sql("SELECT _1 AS a FROM tbl")
+              .select(col("a"), col("a").isin(), !col("a").isin())
+            checkSparkAnswer(df)
+          }
+        }
+      }
+    }
+  }
+
   test("not") {
     Seq(false, true).foreach { dictionary =>
       withSQLConf("parquet.enable.dictionary" -> dictionary.toString) {
@@ -2026,7 +2048,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       SQLConf.COALESCE_PARTITIONS_ENABLED.key -> "true",
       CometConf.COMET_ENABLED.key -> "true",
       CometConf.COMET_EXEC_ENABLED.key -> "true",
-      CometConf.COMET_EXEC_SHUFFLE_ENABLED.key -> "false",
+      CometConf.COMET_SHUFFLE_ENABLED.key -> "false",
       EXTENDED_EXPLAIN_PROVIDERS_KEY -> "org.apache.comet.ExtendedExplainInfo") {
       val table = "test"
       withTable(table) {
@@ -2034,9 +2056,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         sql(s"insert into $table values(0, 1, 100.000001)")
 
         Seq(
-          (
-            s"SELECT cast(make_interval(c0, c1, c0, c1, c0, c0, c2) as string) as C from $table",
-            Set("Cast from CalendarIntervalType to StringType is not supported")),
           (
             "SELECT "
               + "date_part('YEAR', make_interval(c0, c1, c0, c1, c0, c0, c2))"
@@ -2048,15 +2067,13 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               "extractintervalmonths is not supported")),
           (
             s"SELECT sum(c0), sum(c2) from $table group by c1",
-            Set("Comet shuffle is not enabled: spark.comet.exec.shuffle.enabled is not enabled")),
+            Set("Comet shuffle is not enabled: spark.comet.shuffle.enabled is not enabled")),
           (
             "SELECT A.c1, A.sum_c0, A.sum_c2, B.casted from "
               + s"(SELECT c1, sum(c0) as sum_c0, sum(c2) as sum_c2 from $table group by c1) as A, "
               + s"(SELECT c1, cast(make_interval(c0, c1, c0, c1, c0, c0, c2) as string) as casted from $table) as B "
               + "where A.c1 = B.c1 ",
-            Set(
-              "Cast from CalendarIntervalType to StringType is not supported",
-              "Comet shuffle is not enabled: spark.comet.exec.shuffle.enabled is not enabled")),
+            Set("Comet shuffle is not enabled: spark.comet.shuffle.enabled is not enabled")),
           (s"select * from $table LIMIT 10 OFFSET 3", Set("Comet shuffle is not enabled")))
           .foreach(test => {
             val qry = test._1
@@ -2305,11 +2322,19 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         CometConf.COMET_EXEC_ENABLED.key -> "true")(f)
     }
 
-    def checkOverflow(query: String, dtype: String): Unit = {
+    // Spark 3.4/3.5 throw `_LEGACY_ERROR_TEMP_2043` ("- <sqlValue> caused overflow.") for byte and
+    // short. Spark 4.x routes them through `MathUtils.negateExact` and agrees with Comet, which
+    // always renders `SparkError::ArithmeticOverflow` with the Spark type name.
+    def sparkOverflowMsg(dtype: String): String =
+      if (isSpark40Plus) s"$dtype overflow" else "caused overflow"
+
+    // Spark and Comet can render different overflow messages for the same operation, so assert each
+    // side's expected substring separately.
+    def checkOverflow(query: String, sparkExpected: String, cometExpected: String): Unit = {
       checkSparkAnswerMaybeThrows(sql(query)) match {
         case (Some(sparkException), Some(cometException)) =>
-          assert(sparkException.getMessage.contains(dtype + " overflow"))
-          assert(cometException.getMessage.contains(dtype + " overflow"))
+          assert(sparkException.getMessage.contains(sparkExpected))
+          assert(cometException.getMessage.contains(cometExpected))
         case (None, None) => checkSparkAnswerAndOperator(sql(query))
         case (None, Some(ex)) =>
           fail("Comet threw an exception but Spark did not " + ex.getMessage)
@@ -2318,44 +2343,50 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       }
     }
 
-    def runArrayTest(query: String, dtype: String, path: String): Unit = {
+    def runArrayTest(
+        query: String,
+        sparkExpected: String,
+        cometExpected: String,
+        path: String): Unit = {
       withParquetTable(path, "t") {
         withAnsiMode(enabled = false) {
           checkSparkAnswerAndOperator(sql(query))
         }
         withAnsiMode(enabled = true) {
-          checkOverflow(query, dtype)
+          checkOverflow(query, sparkExpected, cometExpected)
         }
       }
     }
 
     withTempDir { dir =>
-      // Array values test
+      // Array values test. Tuple is (file, data, Spark-expected substring, Comet-expected substring).
       val dataTypes = Seq(
-        ("array_test.parquet", Seq(Int.MaxValue, Int.MinValue).toDF("a"), "integer"),
-        ("long_array_test.parquet", Seq(Long.MaxValue, Long.MinValue).toDF("a"), "long"),
-        ("short_array_test.parquet", Seq(Short.MaxValue, Short.MinValue).toDF("a"), ""),
-        ("byte_array_test.parquet", Seq(Byte.MaxValue, Byte.MinValue).toDF("a"), ""))
+        (
+          "array_test.parquet",
+          Seq(Int.MaxValue, Int.MinValue).toDF("a"),
+          "integer overflow",
+          "integer overflow"),
+        (
+          "long_array_test.parquet",
+          Seq(Long.MaxValue, Long.MinValue).toDF("a"),
+          "long overflow",
+          "long overflow"),
+        (
+          "short_array_test.parquet",
+          Seq(Short.MaxValue, Short.MinValue).toDF("a"),
+          sparkOverflowMsg("short"),
+          "short overflow"),
+        (
+          "byte_array_test.parquet",
+          Seq(Byte.MaxValue, Byte.MinValue).toDF("a"),
+          sparkOverflowMsg("byte"),
+          "byte overflow"))
 
-      dataTypes.foreach { case (fileName, df, dtype) =>
+      dataTypes.foreach { case (fileName, df, sparkExpected, cometExpected) =>
         val path = new Path(dir.toURI.toString, fileName).toString
         df.write.mode("overwrite").parquet(path)
         val query = "select a, -a from t"
-        runArrayTest(query, dtype, path)
-      }
-
-      withParquetTable((0 until 5).map(i => (i % 5, i % 3)), "tbl") {
-        withAnsiMode(enabled = true) {
-          // interval test without cast
-          val longDf = Seq(Long.MaxValue, Long.MaxValue, 2)
-          val yearMonthDf = Seq(Int.MaxValue, Int.MaxValue, 2)
-            .map(Period.ofMonths)
-          val dayTimeDf = Seq(106751991L, 106751991L, 2L)
-            .map(Duration.ofDays)
-          Seq(longDf, yearMonthDf, dayTimeDf).foreach { _ =>
-            checkOverflow("select -(_1) FROM tbl", "")
-          }
-        }
+        runArrayTest(query, sparkExpected, cometExpected, path)
       }
 
       // scalar tests
@@ -2366,19 +2397,32 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           CometConf.COMET_ENABLED.key -> "true",
           CometConf.COMET_EXEC_ENABLED.key -> "true") {
           for (n <- Seq("2147483647", "-2147483648")) {
-            checkOverflow(s"select -(cast(${n} as int)) FROM tbl", "integer")
+            checkOverflow(
+              s"select -(cast(${n} as int)) FROM tbl",
+              "integer overflow",
+              "integer overflow")
           }
           for (n <- Seq("32767", "-32768")) {
-            checkOverflow(s"select -(cast(${n} as short)) FROM tbl", "")
+            checkOverflow(
+              s"select -(cast(${n} as short)) FROM tbl",
+              sparkOverflowMsg("short"),
+              "short overflow")
           }
           for (n <- Seq("127", "-128")) {
-            checkOverflow(s"select -(cast(${n} as byte)) FROM tbl", "")
+            checkOverflow(
+              s"select -(cast(${n} as byte)) FROM tbl",
+              sparkOverflowMsg("byte"),
+              "byte overflow")
           }
           for (n <- Seq("9223372036854775807", "-9223372036854775808")) {
-            checkOverflow(s"select -(cast(${n} as long)) FROM tbl", "long")
+            checkOverflow(
+              s"select -(cast(${n} as long)) FROM tbl",
+              "long overflow",
+              "long overflow")
           }
+          // Float negation cannot overflow; confirm it stays native and returns the negated value.
           for (n <- Seq("3.4028235E38", "-3.4028235E38")) {
-            checkOverflow(s"select -(cast(${n} as float)) FROM tbl", "float")
+            checkSparkAnswerAndOperator(sql(s"select -(cast(${n} as float)) FROM tbl"))
           }
         }
       }
@@ -3033,7 +3077,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         Short.MaxValue)).foreach { value =>
       val data = Seq(value)
       withParquetTable(data, "tbl") {
-        Seq(-1000, -100, -10, -1, 0, 1, 10, 100, 1000).foreach { scale =>
+        Seq(-1000, -100, -20, -19, -10, -1, 0, 1, 10, 100, 1000).foreach { scale =>
           Seq(true, false).foreach { ansi =>
             withSQLConf(SQLConf.ANSI_ENABLED.key -> ansi.toString) {
               val res = spark.sql(s"SELECT round(_1, $scale) from tbl")
@@ -3048,6 +3092,46 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                   fail("Spark threw an exception but Comet did not. Spark exception: " +
                     sparkException.getMessage)
               }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  test("ANSI support for round function with negative scale overflow on long") {
+    // The test above only ever rounds `_1`, an int, so it never reaches the band
+    // where rounding a *long* overflows: 10^19 does not fit in a long, so scales
+    // in [-19, -18] can round a long to a value outside the long range. Spark
+    // throws ARITHMETIC_OVERFLOW under ANSI and wraps to the low-order 64 bits
+    // under legacy. Scales <= -20 round every long to 0 instead, and -39 is past
+    // the point where 10^(-scale) fits in an i128, so include those to pin the
+    // band boundaries. See https://github.com/apache/datafusion-comet/issues/5070.
+    val data = Seq(
+      Long.MaxValue,
+      Long.MinValue,
+      5000000000000000000L,
+      -5000000000000000000L,
+      4999999999999999999L,
+      0L).map(Tuple1.apply)
+    withParquetTable(data, "tbl") {
+      Seq(-39, -38, -20, -19, -18).foreach { scale =>
+        Seq(true, false).foreach { ansi =>
+          withSQLConf(SQLConf.ANSI_ENABLED.key -> ansi.toString) {
+            val res = spark.sql(s"SELECT round(_1, $scale) from tbl")
+            checkSparkAnswerMaybeThrows(res) match {
+              case (Some(sparkException), Some(cometException)) =>
+                assert(sparkException.getMessage.contains("ARITHMETIC_OVERFLOW"))
+                assert(cometException.getMessage.contains("ARITHMETIC_OVERFLOW"))
+              case (None, None) => checkSparkAnswerAndOperator(res)
+              case (None, Some(ex)) =>
+                fail(
+                  s"Comet threw an exception but Spark did not (scale=$scale, ansi=$ansi). " +
+                    "Comet exception: " + ex.getMessage)
+              case (Some(sparkException), None) =>
+                fail(
+                  s"Spark threw an exception but Comet did not (scale=$scale, ansi=$ansi). " +
+                    "Spark exception: " + sparkException.getMessage)
             }
           }
         }
@@ -3242,6 +3326,30 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         val df1 = df.withColumn("result", makeDecimalColumn)
 
         checkSparkAnswerAndOperator(df1)
+      }
+    }
+  }
+
+  test("make decimal using DataFrame API - overflow throws when nullOnOverflow=false") {
+    // https://github.com/apache/datafusion-comet/issues/5066
+    withTable("t1") {
+      sql("create table t1 using parquet as select cast(123456 as long) as c1 from range(1)")
+
+      withSQLConf(
+        SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+        SQLConf.ADAPTIVE_OPTIMIZER_EXCLUDED_RULES.key -> "org.apache.spark.sql.catalyst.optimizer.ConstantFolding") {
+
+        val df = sql("select * from t1")
+        val makeDecimalColumn =
+          createMakeDecimalColumn(df.col("c1").expr, 3, 0, nullOnOverflow = false)
+        val df1 = df.withColumn("result", makeDecimalColumn)
+
+        val (sparkErr, cometErr) = checkSparkAnswerMaybeThrows(df1)
+        assert(sparkErr.isDefined, "Spark should throw on overflow when nullOnOverflow=false")
+        assert(cometErr.isDefined, "Comet should throw on overflow when nullOnOverflow=false")
+        assert(sparkErr.get.getMessage.contains("cannot be represented as Decimal(3, 0)"))
+        assert(cometErr.get.getMessage.contains("cannot be represented as Decimal(3, 0)"))
       }
     }
   }

@@ -361,7 +361,14 @@ impl Accumulator for AvgDecimalAccumulator {
     fn evaluate(&mut self) -> Result<ScalarValue> {
         // Check for overflow during sum accumulation in ANSI mode.
         // This matches Spark's DecimalDivideWithOverflowCheck behavior.
-        if self.sum.is_none() && !self.is_empty && self.eval_mode == EvalMode::Ansi {
+        // `count` guards against reporting an overflow when there was nothing to sum: an
+        // empty or all-null input also leaves `sum` as None, and `is_empty` cannot
+        // distinguish those cases because the counts merged in `merge_batch` are never null.
+        if self.sum.is_none()
+            && !self.is_empty
+            && self.count > 0
+            && self.eval_mode == EvalMode::Ansi
+        {
             let error = decimal_sum_overflow_error("avg");
             return Err(self.wrap_error_with_context(error));
         }
