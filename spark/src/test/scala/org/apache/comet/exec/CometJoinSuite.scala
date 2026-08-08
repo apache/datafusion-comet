@@ -239,6 +239,79 @@ class CometJoinSuite extends CometTestBase {
     }
   }
 
+  test("HashJoin with dynamic filter enabled") {
+    // Runs the same join shapes as the plain hash join tests with the runtime dynamic
+    // filter enabled, covering eligible types (inner, left/semi/anti), an ineligible
+    // type (full outer, which must not be filtered), a selective build side, an empty
+    // build side, and NULL join keys. Results must be identical to Spark's.
+    withSQLConf(
+      CometConf.COMET_EXEC_JOIN_DYNAMIC_FILTER_ENABLED.key -> "true",
+      CometConf.COMET_BATCH_SIZE.key -> "100",
+      SQLConf.PREFER_SORTMERGEJOIN.key -> "false",
+      "spark.sql.join.forceApplyShuffledHashJoin" -> "true",
+      SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
+      withParquetTable((0 until 1000).map(i => (i, i % 5)), "probe") {
+        withParquetTable((0 until 10).map(i => (i * 100, i + 2)), "build") {
+          // Selective broadcast inner join: most probe rows should be pruned pre-probe.
+          val df1 =
+            sql("SELECT /*+ BROADCAST(build) */ * FROM probe JOIN build ON probe._1 = build._1")
+          checkSparkAnswerAndOperator(
+            df1,
+            Seq(classOf[CometBroadcastExchangeExec], classOf[CometBroadcastHashJoinExec]))
+
+          // Shuffled hash join, inner.
+          val df2 = sql(
+            "SELECT /*+ SHUFFLE_HASH(build) */ * FROM probe JOIN build ON probe._1 = build._1")
+          checkSparkAnswerAndOperator(df2)
+
+          // Left outer join (probe side preserved under ON clause: eligible). Spark
+          // cannot broadcast the preserved side of a LEFT JOIN, so this plans as a
+          // shuffled hash join with BuildLeft.
+          val df3 = sql(
+            "SELECT /*+ BROADCAST(build) */ * FROM build LEFT JOIN probe ON build._1 = probe._1")
+          checkSparkAnswerAndOperator(df3)
+
+          // Full outer join (ineligible: filter must not be attached).
+          val df4 = sql(
+            "SELECT /*+ SHUFFLE_HASH(build) */ * FROM probe FULL JOIN build ON probe._1 = build._1")
+          checkSparkAnswerAndOperator(df4)
+
+          // Left semi and left anti joins.
+          val df5 = sql(
+            "SELECT /*+ SHUFFLE_HASH(build) */ * FROM probe LEFT SEMI JOIN build " +
+              "ON probe._1 = build._1")
+          checkSparkAnswerAndOperator(df5)
+          val df6 = sql(
+            "SELECT /*+ SHUFFLE_HASH(build) */ * FROM probe LEFT ANTI JOIN build " +
+              "ON probe._1 = build._1")
+          checkSparkAnswerAndOperator(df6)
+
+          // Empty build side: the dynamic filter may become constant-false.
+          val df7 = sql(
+            "SELECT /*+ BROADCAST(build) */ * FROM probe JOIN build " +
+              "ON probe._1 = build._1 WHERE build._2 < 0")
+          checkSparkAnswer(df7)
+        }
+      }
+
+      // NULL join keys: a NULL key never matches, and the dynamic filter must not
+      // change that (NULL evaluates to not-kept, matching join semantics).
+      withParquetTable(
+        (0 until 100).map(i => (if (i % 3 == 0) None else Some(i), i.toString)),
+        "probe_nulls") {
+        withParquetTable((0 until 10).map(i => (Some(i * 9), i.toString)), "build_nulls") {
+          val df = sql(
+            "SELECT /*+ BROADCAST(build_nulls) */ * FROM probe_nulls JOIN build_nulls " +
+              "ON probe_nulls._1 = build_nulls._1")
+          checkSparkAnswerAndOperator(
+            df,
+            Seq(classOf[CometBroadcastExchangeExec], classOf[CometBroadcastHashJoinExec]))
+        }
+      }
+    }
+  }
+
   test("Broadcast HashJoin with join filter") {
     withSQLConf(
       CometConf.COMET_BATCH_SIZE.key -> "100",
