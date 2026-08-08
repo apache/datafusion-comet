@@ -28,10 +28,10 @@ import org.apache.spark.sql.catalyst.InternalRow
  * `ArrowReader` over an iterator of Spark `InternalRow`s, writing up to `maxRecordsPerBatch` rows
  * per call into the reader's stable VSR via `ArrowWriter`.
  *
- * `ArrowWriter.create(root)` calls `vector.allocateNew()`, which releases any prior buffers and
- * allocates fresh ones. This is required for FFI safety: previously-exported batches retain their
- * buffers via the C release callback, so reusing those buffers in place would corrupt native
- * consumers still holding the prior batch.
+ * `ArrowWriter.create` calls `vector.allocateNew`, which releases any prior buffers and allocates
+ * fresh ones. This is required for FFI safety: previously-exported batches retain their buffers
+ * via the C release callback, so reusing those buffers in place would corrupt native consumers
+ * still holding the prior batch.
  */
 private[comet] class RowArrowReader(
     allocator: BufferAllocator,
@@ -55,7 +55,7 @@ private[comet] class RowArrowReader(
     }
 
     val startNs = System.nanoTime()
-    val writer = ArrowWriter.create(getVectorSchemaRoot)
+    val writer = ArrowWriter.create(getVectorSchemaRoot, maxRecordsPerBatch.toInt)
     var rowCount = 0L
     while (rowIter.hasNext &&
       (maxRecordsPerBatch <= 0 || rowCount < maxRecordsPerBatch)) {
