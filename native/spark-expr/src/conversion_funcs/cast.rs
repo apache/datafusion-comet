@@ -45,8 +45,8 @@ use arrow::array::{
     new_null_array, BinaryBuilder, DictionaryArray, GenericByteArray, ListArray, MapArray,
     StringArray, StructArray,
 };
+use arrow::datatypes::GenericBinaryType;
 use arrow::datatypes::{ArrowDictionaryKeyType, ArrowNativeType, DataType, Schema};
-use arrow::datatypes::{Field, Fields, GenericBinaryType};
 use arrow::error::ArrowError;
 use arrow::{
     array::{
@@ -545,8 +545,17 @@ fn cast_struct_to_struct(
     }
 }
 
-/// Cast between map types, handling field name differences between Parquet ("key_value")
-/// and Spark ("entries") while preserving the map's structure.
+/// Cast between map types (e.g. Parquet "key_value" -> Spark "entries").
+///
+/// - Rename-only (unchanged key/value types and sort order): delegate to arrow's `cast`, which
+///   relabels to the target fields and preserves their metadata with no value transformation.
+/// - Otherwise: recurse with Comet's `cast_array` for a changed child and hand-build with the target
+///   sort flag. `try_new` is used so a malformed target returns `Err` rather than panicking, and the
+///   result `data_type()` equals `to_type`.
+/// - A `sorted = true` target is only honored when the source is already sorted and the key type is
+///   unchanged; otherwise it is rejected (casting the key type can reorder keys, and a cast cannot
+///   manufacture an ordering). `true -> false` and equal flags with unchanged keys (incl. value-only
+///   casts) are allowed. See the PR description for planner reachability.
 fn cast_map_to_map(
     array: &ArrayRef,
     from_type: &DataType,
@@ -561,75 +570,81 @@ fn cast_map_to_map(
     match (from_type, to_type) {
         (
             DataType::Map(from_entries_field, from_sorted),
-            DataType::Map(to_entries_field, _to_sorted),
+            DataType::Map(to_entries_field, to_sorted),
         ) => {
-            // Get the struct types for entries
-            let from_struct_type = from_entries_field.data_type();
-            let to_struct_type = to_entries_field.data_type();
-
-            match (from_struct_type, to_struct_type) {
-                (DataType::Struct(from_fields), DataType::Struct(to_fields)) => {
-                    // Get the key and value types
-                    let from_key_type = from_fields[0].data_type();
-                    let from_value_type = from_fields[1].data_type();
-                    let to_key_type = to_fields[0].data_type();
-                    let to_value_type = to_fields[1].data_type();
-
-                    // Cast keys if needed
-                    let keys = map_array.keys();
-                    let cast_keys = if from_key_type != to_key_type {
-                        cast_array(Arc::clone(keys), to_key_type, cast_options)?
-                    } else {
-                        Arc::clone(keys)
-                    };
-
-                    // Cast values if needed
-                    let values = map_array.values();
-                    let cast_values = if from_value_type != to_value_type {
-                        cast_array(Arc::clone(values), to_value_type, cast_options)?
-                    } else {
-                        Arc::clone(values)
-                    };
-
-                    // Build the new entries struct with the target field names
-                    let new_key_field = Arc::new(Field::new(
-                        to_fields[0].name(),
-                        to_key_type.clone(),
-                        to_fields[0].is_nullable(),
-                    ));
-                    let new_value_field = Arc::new(Field::new(
-                        to_fields[1].name(),
-                        to_value_type.clone(),
-                        to_fields[1].is_nullable(),
-                    ));
-
-                    let struct_fields = Fields::from(vec![new_key_field, new_value_field]);
-                    let entries_struct =
-                        StructArray::new(struct_fields, vec![cast_keys, cast_values], None);
-
-                    // Create the new map field with the target name
-                    let new_entries_field = Arc::new(Field::new(
-                        to_entries_field.name(),
-                        DataType::Struct(entries_struct.fields().clone()),
-                        to_entries_field.is_nullable(),
-                    ));
-
-                    // Build the new MapArray
-                    let new_map = MapArray::new(
-                        new_entries_field,
-                        map_array.offsets().clone(),
-                        entries_struct,
-                        map_array.nulls().cloned(),
-                        *from_sorted,
-                    );
-
-                    Ok(Arc::new(new_map))
-                }
-                _ => Err(DataFusionError::Internal(format!(
-                    "Map entries must be structs, got {:?} and {:?}",
-                    from_struct_type, to_struct_type
-                ))),
+            let (from_fields, to_fields) =
+                match (from_entries_field.data_type(), to_entries_field.data_type()) {
+                    (DataType::Struct(f), DataType::Struct(t)) => (f, t),
+                    (from_struct_type, to_struct_type) => {
+                        return Err(DataFusionError::Internal(format!(
+                            "Map entries must be structs, got {from_struct_type:?} and \
+                             {to_struct_type:?}"
+                        )))
+                    }
+                };
+            // A map entries struct is always exactly (key, value); guard before indexing [0]/[1] so
+            // a malformed target (0/1/3+ fields) returns Err instead of panicking.
+            if from_fields.len() != 2 || to_fields.len() != 2 {
+                return Err(DataFusionError::Internal(format!(
+                    "Map entries struct must have exactly 2 fields (key, value); got from={} to={}",
+                    from_fields.len(),
+                    to_fields.len()
+                )));
             }
+            let key_type_unchanged = from_fields[0].data_type() == to_fields[0].data_type();
+            let value_type_unchanged = from_fields[1].data_type() == to_fields[1].data_type();
+
+            // A target that claims `sorted = true` must actually preserve key ordering. That holds
+            // only when the source is already sorted AND the key type is unchanged: casting the key
+            // type can reorder keys (e.g. sorted Utf8 ["10","2"] -> Int32 [10,2] is no longer
+            // sorted), so returning Map(.., true) would be a false invariant. Reject that (this also
+            // covers the unreachable `false -> true`). `true -> false` and equal flags stay allowed.
+            if *to_sorted && (!*from_sorted || !key_type_unchanged) {
+                return Err(DataFusionError::Internal(format!(
+                    "Cannot produce a sorted map: sort order is not preserved \
+                     (from_sorted={from_sorted}, to_sorted={to_sorted}, \
+                     key_type_unchanged={key_type_unchanged})"
+                )));
+            }
+
+            // Rename-only fast path (the common Parquet "key_value" -> Spark "entries" case): the
+            // key and value types are unchanged and the sort order is unchanged, so only the field
+            // labels/metadata differ. Delegate to arrow's cast, whose map arm accepts `o1 == o2` and
+            // relabels to the target fields (preserving their metadata) with no value transformation.
+            if key_type_unchanged && value_type_unchanged && from_sorted == to_sorted {
+                return Ok(cast_with_options(array, to_type, &CAST_OPTIONS)?);
+            }
+
+            // Otherwise the child types change and/or the sort order downgrades (`true -> false`).
+            // Recurse with Comet's Spark-compatible casts for the changed children and hand-build the
+            // result with the target sort flag. `try_new` (not `new`) turns a would-be panic on a
+            // malformed target into a propagated `Err`; no behaviour change for valid inputs.
+            let keys = map_array.keys();
+            let cast_keys = if key_type_unchanged {
+                Arc::clone(keys)
+            } else {
+                cast_array(Arc::clone(keys), to_fields[0].data_type(), cast_options)?
+            };
+            let values = map_array.values();
+            let cast_values = if value_type_unchanged {
+                Arc::clone(values)
+            } else {
+                cast_array(Arc::clone(values), to_fields[1].data_type(), cast_options)?
+            };
+
+            let entries_struct = StructArray::try_new(
+                to_fields.clone(),
+                vec![cast_keys, cast_values],
+                map_array.entries().nulls().cloned(),
+            )?;
+            let new_map = MapArray::try_new(
+                Arc::clone(to_entries_field),
+                map_array.offsets().clone(),
+                entries_struct,
+                map_array.nulls().cloned(),
+                *to_sorted,
+            )?;
+            Ok(Arc::new(new_map))
         }
         _ => unreachable!("cast_map_to_map called with non-Map types"),
     }
@@ -1278,5 +1293,538 @@ mod tests {
         assert_eq!(3, values.len());
         assert_eq!(3, values.null_count());
         assert!(values.iter().all(|value| value.is_none()));
+    }
+
+    fn legacy_opts() -> SparkCastOptions {
+        SparkCastOptions::new(EvalMode::Legacy, "UTC", false)
+    }
+
+    /// Build a `Map<Utf8, Int32>` MapArray (Parquet-style "key_value" field names).
+    fn build_str_i32_map(
+        keys: Vec<&str>,
+        values: Vec<Option<i32>>,
+        offsets: Vec<i32>,
+        map_nulls: Option<arrow::buffer::NullBuffer>,
+        entries_nulls: Option<arrow::buffer::NullBuffer>,
+        sorted: bool,
+    ) -> MapArray {
+        use arrow::array::{Int32Array, StringArray};
+        let key_field = Arc::new(Field::new("key_value_key", DataType::Utf8, false));
+        let value_field = Arc::new(Field::new("key_value_value", DataType::Int32, true));
+        let entries_fields = Fields::from(vec![key_field, value_field]);
+        let ks = Arc::new(StringArray::from(keys)) as ArrayRef;
+        let vs = Arc::new(Int32Array::from(values)) as ArrayRef;
+        let entries_struct = StructArray::new(entries_fields, vec![ks, vs], entries_nulls);
+        let entries_field = Arc::new(Field::new(
+            "key_value",
+            DataType::Struct(entries_struct.fields().clone()),
+            false,
+        ));
+        MapArray::new(
+            entries_field,
+            OffsetBuffer::<i32>::new(offsets.into()),
+            entries_struct,
+            map_nulls,
+            sorted,
+        )
+    }
+
+    /// Build a target `Map<Utf8, val_type>` type ("entries"/"key"/"value" Spark-style names).
+    fn build_to_map_type(val_type: DataType, val_nullable: bool, sorted: bool) -> DataType {
+        let to_key = Arc::new(Field::new("key", DataType::Utf8, false));
+        let to_val = Arc::new(Field::new("value", val_type, val_nullable));
+        let entries = Arc::new(Field::new(
+            "entries",
+            DataType::Struct(Fields::from(vec![to_key, to_val])),
+            false,
+        ));
+        DataType::Map(entries, sorted)
+    }
+
+    fn sorted_src(from_sorted: bool) -> ArrayRef {
+        Arc::new(build_str_i32_map(
+            vec!["a", "b", "c"],
+            vec![Some(1), Some(2), Some(3)],
+            vec![0, 3],
+            None,
+            None,
+            from_sorted,
+        )) as ArrayRef
+    }
+
+    #[test]
+    fn test_cast_map_to_map_sorted_equal_flags_allowed() {
+        // false -> false and true -> true: the sort flag is unchanged and the result type matches.
+        for s in [false, true] {
+            let to_type = build_to_map_type(DataType::Int32, true, s);
+            let casted = cast_array(sorted_src(s), &to_type, &legacy_opts()).unwrap();
+            assert_eq!(casted.data_type(), &to_type, "sorted={s}");
+        }
+    }
+
+    #[test]
+    fn test_cast_map_to_map_sorted_true_to_false_allowed() {
+        // Downgrade a sorted map to unsorted: allowed, result carries the target (false) flag.
+        let to_type = build_to_map_type(DataType::Int32, true, false);
+        let casted = cast_array(sorted_src(true), &to_type, &legacy_opts()).unwrap();
+        assert_eq!(casted.data_type(), &to_type);
+        match casted.data_type() {
+            DataType::Map(_, is_sorted) => assert!(!*is_sorted),
+            _ => panic!("Expected Map DataType"),
+        }
+    }
+
+    #[test]
+    fn test_cast_map_to_map_sorted_false_to_true_rejected() {
+        // A cast cannot manufacture an ordering the source lacks: Err, not panic, not a wrong result.
+        let to_type = build_to_map_type(DataType::Int32, true, true);
+        assert!(
+            cast_array(sorted_src(false), &to_type, &legacy_opts()).is_err(),
+            "unsorted -> sorted must be rejected"
+        );
+    }
+
+    #[test]
+    fn test_cast_map_to_map_sorted_true_to_true_key_type_change_rejected() {
+        // Source is sorted by Utf8 key order ("10" < "2"); casting the key to Int32 reorders it
+        // (10 > 2), so returning Map(.., sorted=true) would be a false invariant. Even though both
+        // flags are true, the key-type change must be rejected.
+        let src = Arc::new(build_str_i32_map(
+            vec!["10", "2"],
+            vec![Some(1), Some(2)],
+            vec![0, 2],
+            None,
+            None,
+            true, // source sorted
+        )) as ArrayRef;
+        let to_key = Arc::new(Field::new("key", DataType::Int32, false));
+        let to_val = Arc::new(Field::new("value", DataType::Int32, true));
+        let to_entries = Arc::new(Field::new(
+            "entries",
+            DataType::Struct(Fields::from(vec![to_key, to_val])),
+            false,
+        ));
+        let to_type = DataType::Map(to_entries, true); // target sorted
+        assert!(
+            cast_array(src, &to_type, &legacy_opts()).is_err(),
+            "sorted true->true with a key-type change must be rejected"
+        );
+    }
+
+    #[test]
+    fn test_cast_map_to_map_sorted_value_only_cast_allowed() {
+        use arrow::array::{Int64Array, StringArray};
+        // Sorted source, key type unchanged, value Int32 -> Int64, target sorted=true. The key
+        // ordering is unaffected by a value cast, so this is allowed and stays sorted.
+        let src = Arc::new(build_str_i32_map(
+            vec!["a", "b", "c"],
+            vec![Some(10), Some(20), Some(30)],
+            vec![0, 3],
+            None,
+            None,
+            true, // source sorted
+        )) as ArrayRef;
+        let to_key = Arc::new(Field::new("key", DataType::Utf8, false));
+        let to_val = Arc::new(Field::new("value", DataType::Int64, true));
+        let to_entries = Arc::new(Field::new(
+            "entries",
+            DataType::Struct(Fields::from(vec![to_key, to_val])),
+            false,
+        ));
+        let to_type = DataType::Map(Arc::clone(&to_entries), true);
+
+        let casted = cast_array(src, &to_type, &legacy_opts()).unwrap();
+        // Exact target type, and the sort flag is preserved.
+        assert_eq!(casted.data_type(), &to_type);
+        let m = casted.as_any().downcast_ref::<MapArray>().unwrap();
+        match m.data_type() {
+            DataType::Map(_, is_sorted) => assert!(*is_sorted),
+            _ => panic!("Expected Map DataType"),
+        }
+        // Keys unchanged; values correctly cast to Int64.
+        let keys = m.keys().as_any().downcast_ref::<StringArray>().unwrap();
+        let vals = m.values().as_any().downcast_ref::<Int64Array>().unwrap();
+        assert_eq!(
+            (0..3).map(|i| keys.value(i)).collect::<Vec<_>>(),
+            vec!["a", "b", "c"]
+        );
+        assert_eq!(vals.values(), &[10i64, 20, 30]);
+    }
+
+    #[test]
+    fn test_cast_map_to_map_preserves_metadata_and_child_type_casts() {
+        use arrow::array::{Int32Array, Int64Array, StringArray};
+        use std::collections::HashMap;
+
+        let key_field = Arc::new(Field::new("key_value_key", DataType::Utf8, false));
+        let value_field = Arc::new(Field::new("key_value_value", DataType::Int32, true));
+        let entries_fields = Fields::from(vec![key_field, value_field]);
+
+        let keys = Arc::new(StringArray::from(vec!["k1", "k2"]));
+        let values = Arc::new(Int32Array::from(vec![10, 20]));
+        let entries_struct = StructArray::new(entries_fields, vec![keys, values], None);
+
+        let from_entries_field = Arc::new(Field::new(
+            "key_value",
+            DataType::Struct(entries_struct.fields().clone()),
+            false,
+        ));
+        let map_array = Arc::new(MapArray::new(
+            from_entries_field,
+            OffsetBuffer::<i32>::new(vec![0, 2].into()),
+            entries_struct,
+            None,
+            false,
+        )) as ArrayRef;
+
+        // Target key field with custom metadata
+        let mut key_meta = HashMap::new();
+        key_meta.insert("tag".to_string(), "map_key_meta".to_string());
+        let to_key_field =
+            Arc::new(Field::new("key", DataType::Utf8, false).with_metadata(key_meta));
+        let to_value_field = Arc::new(Field::new("value", DataType::Int64, true));
+        let to_entries_field = Arc::new(Field::new(
+            "entries",
+            DataType::Struct(Fields::from(vec![to_key_field, to_value_field])),
+            false,
+        ));
+        let to_type = DataType::Map(to_entries_field, false);
+
+        let casted = cast_array(
+            map_array,
+            &to_type,
+            &SparkCastOptions::new(EvalMode::Legacy, "UTC", false),
+        )
+        .unwrap();
+
+        let casted_map = casted.as_any().downcast_ref::<MapArray>().unwrap();
+        // Result type is exactly the requested target type (incl. field metadata).
+        assert_eq!(casted_map.data_type(), &to_type);
+        // Assert key field metadata is preserved
+        assert_eq!(
+            casted_map.entries().fields()[0].metadata().get("tag"),
+            Some(&"map_key_meta".to_string())
+        );
+
+        // Assert child values were cast from Int32 to Int64
+        let casted_values = casted_map
+            .values()
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        assert_eq!(casted_values.value(0), 10i64);
+        assert_eq!(casted_values.value(1), 20i64);
+    }
+
+    #[test]
+    fn test_cast_map_to_map_preserves_map_level_nulls_and_offsets() {
+        use arrow::array::{Int32Array, StringArray};
+        use arrow::buffer::NullBuffer;
+
+        let key_field = Arc::new(Field::new("key", DataType::Utf8, false));
+        let value_field = Arc::new(Field::new("value", DataType::Int32, true));
+        let entries_fields = Fields::from(vec![key_field, value_field]);
+
+        let keys = Arc::new(StringArray::from(vec!["a", "b"]));
+        let values = Arc::new(Int32Array::from(vec![1, 2]));
+        let entries_struct = StructArray::new(entries_fields, vec![keys, values], None);
+
+        let from_entries_field = Arc::new(Field::new(
+            "key_value",
+            DataType::Struct(entries_struct.fields().clone()),
+            false,
+        ));
+
+        let map_nulls = NullBuffer::from(vec![true, false]);
+        let src_map = MapArray::new(
+            from_entries_field,
+            OffsetBuffer::<i32>::new(vec![0, 2, 2].into()),
+            entries_struct,
+            Some(map_nulls.clone()),
+            false,
+        );
+        let map_array = Arc::new(src_map) as ArrayRef;
+
+        let to_key_field = Arc::new(Field::new("new_key", DataType::Utf8, false));
+        let to_value_field = Arc::new(Field::new("new_value", DataType::Int32, true));
+        let to_entries_field = Arc::new(Field::new(
+            "entries",
+            DataType::Struct(Fields::from(vec![to_key_field, to_value_field])),
+            false,
+        ));
+        let to_type = DataType::Map(to_entries_field, false);
+
+        let casted = cast_array(
+            map_array,
+            &to_type,
+            &SparkCastOptions::new(EvalMode::Legacy, "UTC", false),
+        )
+        .unwrap();
+
+        let casted_map = casted.as_any().downcast_ref::<MapArray>().unwrap();
+        assert_eq!(casted_map.data_type(), &to_type);
+        assert_eq!(casted_map.nulls(), Some(&map_nulls));
+        assert!(casted_map.is_null(1));
+        assert_eq!(casted_map.offsets().as_ref(), &[0, 2, 2]);
+    }
+
+    // NOTE on entries-struct null buffers: an entries struct carrying a non-None null buffer is not
+    // constructible through the inspected safe Arrow constructors — `StructArray::new`/`try_new` and
+    // `MapArray` all normalize an all-valid `NullBuffer` to `None`, and a struct with real nulls is
+    // not a valid map entries array. (ArrayData/FFI paths were not audited, so this is not a claim
+    // of global unobservability.) The production code still clones `entries().nulls()` to mirror
+    // arrow's `cast_map_values`, but entries-level null preservation is not asserted (it would be a
+    // vacuous `None == None`). Map-LEVEL null preservation is covered by
+    // `test_cast_map_to_map_preserves_map_level_nulls_and_offsets`.
+    #[test]
+    fn test_cast_map_to_map_rename_only_fast_path() {
+        use arrow::array::{Int32Array, StringArray};
+        use arrow::buffer::NullBuffer;
+        use std::collections::HashMap;
+
+        // Key/value types unchanged and sort order unchanged -> the rename-only fast path (arrow
+        // cast) is used. Three rows including a null row so offsets and map nulls are non-trivial.
+        let map_nulls = NullBuffer::from(vec![true, false, true]);
+        let src = build_str_i32_map(
+            vec!["a", "b", "c"],
+            vec![Some(1), Some(2), Some(3)],
+            vec![0, 2, 2, 3],
+            Some(map_nulls.clone()),
+            None,
+            false,
+        );
+        let src_offsets: Vec<i32> = src.offsets().as_ref().to_vec();
+        let map_array = Arc::new(src) as ArrayRef;
+
+        // Complete target schema: renamed entries/key/value fields, outer + key metadata, same
+        // (unchanged) child types, same sort flag.
+        let mut outer_meta = HashMap::new();
+        outer_meta.insert("outer".to_string(), "entries_meta".to_string());
+        let mut key_meta = HashMap::new();
+        key_meta.insert("k".to_string(), "kmeta".to_string());
+        let to_key = Arc::new(Field::new("key", DataType::Utf8, false).with_metadata(key_meta));
+        let to_val = Arc::new(Field::new("value", DataType::Int32, true));
+        let to_entries = Arc::new(
+            Field::new(
+                "entries",
+                DataType::Struct(Fields::from(vec![to_key, to_val])),
+                false,
+            )
+            .with_metadata(outer_meta),
+        );
+        let to_type = DataType::Map(Arc::clone(&to_entries), false);
+
+        let casted = cast_array(map_array, &to_type, &legacy_opts()).unwrap();
+        let casted_map = casted.as_any().downcast_ref::<MapArray>().unwrap();
+
+        // The complete target schema is reproduced exactly (field names, metadata, nullability, sort).
+        assert_eq!(casted_map.data_type(), &to_type);
+        // Map-level nulls and offsets are unchanged by the relabel.
+        assert_eq!(casted_map.nulls(), Some(&map_nulls));
+        assert!(casted_map.is_null(1));
+        assert_eq!(casted_map.offsets().as_ref(), src_offsets.as_slice());
+        // Keys and values are unchanged by the relabel.
+        let keys = casted_map
+            .keys()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        let vals = casted_map
+            .values()
+            .as_any()
+            .downcast_ref::<Int32Array>()
+            .unwrap();
+        assert_eq!(
+            (0..3).map(|i| keys.value(i)).collect::<Vec<_>>(),
+            vec!["a", "b", "c"]
+        );
+        assert_eq!(vals.values(), &[1, 2, 3]);
+    }
+
+    #[test]
+    fn test_cast_map_to_map_empty_map() {
+        let src = Arc::new(build_str_i32_map(
+            vec![],
+            vec![],
+            vec![0],
+            None,
+            None,
+            false,
+        )) as ArrayRef;
+        let to_type = build_to_map_type(DataType::Int64, true, false);
+        let casted = cast_array(src, &to_type, &legacy_opts()).unwrap();
+        assert_eq!(casted.data_type(), &to_type);
+        let m = casted.as_any().downcast_ref::<MapArray>().unwrap();
+        assert_eq!(m.len(), 0);
+    }
+
+    #[test]
+    fn test_cast_map_to_map_mixed_null_and_empty_rows() {
+        use arrow::buffer::NullBuffer;
+        // row0 = NULL, row1 = empty {}, row2 = {a:1, b:2}
+        let map_nulls = NullBuffer::from(vec![false, true, true]);
+        let src = Arc::new(build_str_i32_map(
+            vec!["a", "b"],
+            vec![Some(1), Some(2)],
+            vec![0, 0, 0, 2],
+            Some(map_nulls.clone()),
+            None,
+            false,
+        )) as ArrayRef;
+        let to_type = build_to_map_type(DataType::Int64, true, false);
+        let casted = cast_array(src, &to_type, &legacy_opts()).unwrap();
+        assert_eq!(casted.data_type(), &to_type);
+        let m = casted.as_any().downcast_ref::<MapArray>().unwrap();
+        assert_eq!(m.len(), 3);
+        assert_eq!(m.nulls(), Some(&map_nulls));
+        assert!(m.is_null(0));
+        assert!(!m.is_null(1)); // empty but valid
+        assert_eq!(m.offsets().as_ref(), &[0, 0, 0, 2]);
+    }
+
+    #[test]
+    fn test_cast_map_to_map_sliced() {
+        use arrow::array::{Int64Array, StringArray};
+        // 3 rows: {a:1}, {b:2, c:3}, {d:4}; slice to rows [1, 2].
+        let full = Arc::new(build_str_i32_map(
+            vec!["a", "b", "c", "d"],
+            vec![Some(1), Some(2), Some(3), Some(4)],
+            vec![0, 1, 3, 4],
+            None,
+            None,
+            false,
+        )) as ArrayRef;
+        let sliced = full.slice(1, 2);
+        let to_type = build_to_map_type(DataType::Int64, true, false);
+        let casted = cast_array(sliced, &to_type, &legacy_opts()).unwrap();
+        assert_eq!(casted.data_type(), &to_type);
+        let m = casted.as_any().downcast_ref::<MapArray>().unwrap();
+        assert_eq!(m.len(), 2);
+        let keys = m.keys().as_any().downcast_ref::<StringArray>().unwrap();
+        let vals = m.values().as_any().downcast_ref::<Int64Array>().unwrap();
+        let o = m.offsets();
+        let (start, end) = (o[0] as usize, o[2] as usize);
+        let got_keys: Vec<&str> = (start..end).map(|i| keys.value(i)).collect();
+        let got_vals: Vec<i64> = (start..end).map(|i| vals.value(i)).collect();
+        assert_eq!(got_keys, vec!["b", "c", "d"]);
+        assert_eq!(got_vals, vec![2i64, 3, 4]);
+    }
+
+    #[test]
+    fn test_cast_map_to_map_casts_key_and_value() {
+        use arrow::array::{Int32Array, Int64Array};
+        // Source Map<Int32, Int32> -> target Map<Int64, Int64>: both key and value are cast.
+        let key_field = Arc::new(Field::new("key_value_key", DataType::Int32, false));
+        let value_field = Arc::new(Field::new("key_value_value", DataType::Int32, true));
+        let entries_fields = Fields::from(vec![key_field, value_field]);
+        let ks = Arc::new(Int32Array::from(vec![1, 2])) as ArrayRef;
+        let vs = Arc::new(Int32Array::from(vec![10, 20])) as ArrayRef;
+        let entries_struct = StructArray::new(entries_fields, vec![ks, vs], None);
+        let entries_field = Arc::new(Field::new(
+            "key_value",
+            DataType::Struct(entries_struct.fields().clone()),
+            false,
+        ));
+        let src = Arc::new(MapArray::new(
+            entries_field,
+            OffsetBuffer::<i32>::new(vec![0, 2].into()),
+            entries_struct,
+            None,
+            false,
+        )) as ArrayRef;
+
+        let to_key = Arc::new(Field::new("key", DataType::Int64, false));
+        let to_val = Arc::new(Field::new("value", DataType::Int64, true));
+        let to_entries = Arc::new(Field::new(
+            "entries",
+            DataType::Struct(Fields::from(vec![to_key, to_val])),
+            false,
+        ));
+        let to_type = DataType::Map(Arc::clone(&to_entries), false);
+
+        let casted = cast_array(src, &to_type, &legacy_opts()).unwrap();
+        assert_eq!(casted.data_type(), &to_type);
+        let m = casted.as_any().downcast_ref::<MapArray>().unwrap();
+        let keys = m.keys().as_any().downcast_ref::<Int64Array>().unwrap();
+        let vals = m.values().as_any().downcast_ref::<Int64Array>().unwrap();
+        assert_eq!(keys.values(), &[1i64, 2]);
+        assert_eq!(vals.values(), &[10i64, 20]);
+    }
+
+    #[test]
+    fn test_cast_map_to_map_malformed_target_returns_err_without_panic() {
+        // Source value has a NULL; the target changes the value type (Int32 -> Int64) AND declares
+        // it NON-nullable. The type change routes through the hand-built child-cast path, and the
+        // resulting null in a non-nullable field makes `StructArray::try_new` return Err (no panic).
+        let src = Arc::new(build_str_i32_map(
+            vec!["a", "b"],
+            vec![Some(1), None],
+            vec![0, 2],
+            None,
+            None,
+            false,
+        )) as ArrayRef;
+        let to_type = build_to_map_type(DataType::Int64, false, false);
+        assert!(
+            cast_array(src, &to_type, &legacy_opts()).is_err(),
+            "non-nullable target value with null data must return Err via hand-built try_new"
+        );
+    }
+
+    fn one_row_src() -> ArrayRef {
+        Arc::new(build_str_i32_map(
+            vec!["a"],
+            vec![Some(1)],
+            vec![0, 1],
+            None,
+            None,
+            false,
+        )) as ArrayRef
+    }
+
+    fn map_target_with_entry_fields(fields: Vec<Arc<Field>>) -> DataType {
+        let entries = Arc::new(Field::new(
+            "entries",
+            DataType::Struct(Fields::from(fields)),
+            false,
+        ));
+        DataType::Map(entries, false)
+    }
+
+    fn entry_field(n: &str, t: DataType) -> Arc<Field> {
+        Arc::new(Field::new(n, t, false))
+    }
+
+    // A target whose entries struct does not have exactly (key, value) must return Err, never panic
+    // on index [0]/[1]. Split per field-count so a baseline panic in one case does not hide others.
+    #[test]
+    fn test_cast_map_to_map_zero_entry_fields_errs() {
+        let to_type = map_target_with_entry_fields(vec![]);
+        assert!(
+            cast_array(one_row_src(), &to_type, &legacy_opts()).is_err(),
+            "0 entry fields must return Err, not panic"
+        );
+    }
+
+    #[test]
+    fn test_cast_map_to_map_one_entry_field_errs() {
+        let to_type = map_target_with_entry_fields(vec![entry_field("key", DataType::Utf8)]);
+        assert!(
+            cast_array(one_row_src(), &to_type, &legacy_opts()).is_err(),
+            "1 entry field must return Err, not panic"
+        );
+    }
+
+    #[test]
+    fn test_cast_map_to_map_three_entry_fields_errs() {
+        let to_type = map_target_with_entry_fields(vec![
+            entry_field("key", DataType::Utf8),
+            entry_field("value", DataType::Int32),
+            entry_field("extra", DataType::Int32),
+        ]);
+        assert!(
+            cast_array(one_row_src(), &to_type, &legacy_opts()).is_err(),
+            "3 entry fields must return Err, not panic"
+        );
     }
 }
