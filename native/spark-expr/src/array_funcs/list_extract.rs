@@ -16,7 +16,7 @@
 // under the License.
 
 use arrow::array::{
-    Array, GenericListArray, Int32Array, MutableArrayData, OffsetSizeTrait, UInt64Array,
+    Array, GenericListArray, Int32Array, MutableArrayData, OffsetSizeTrait, UInt64Builder,
 };
 use arrow::compute::take;
 use arrow::datatypes::{DataType, FieldRef, Schema};
@@ -280,6 +280,38 @@ fn out_of_bounds_error(one_based: bool, index: i32, len: usize) -> SparkError {
     }
 }
 
+enum RowAction {
+    Gather(usize),
+    Null,
+    Default,
+}
+
+fn resolve_row<O: OffsetSizeTrait>(
+    list_is_null: bool,
+    offset_window: &[O],
+    index: Option<i32>,
+    fail_on_error: bool,
+    one_based: bool,
+    adjust_index: &impl Fn(i32, usize) -> DataFusionResult<Option<usize>>,
+    error_wrapper: &impl Fn(SparkError) -> DataFusionError,
+) -> DataFusionResult<RowAction> {
+    if list_is_null {
+        return Ok(RowAction::Null);
+    }
+
+    let Some(index) = index else {
+        return Ok(RowAction::Null);
+    };
+
+    let start = offset_window[0].as_usize();
+    let len = offset_window[1].as_usize() - start;
+    match adjust_index(index, len)? {
+        Some(index) => Ok(RowAction::Gather(start + index)),
+        None if fail_on_error => Err(error_wrapper(out_of_bounds_error(one_based, index, len))),
+        None => Ok(RowAction::Default),
+    }
+}
+
 fn list_extract<O: OffsetSizeTrait>(
     list_array: &GenericListArray<O>,
     index_array: &Int32Array,
@@ -289,7 +321,7 @@ fn list_extract<O: OffsetSizeTrait>(
     adjust_index: impl Fn(i32, usize) -> DataFusionResult<Option<usize>>,
     error_wrapper: &impl Fn(SparkError) -> DataFusionError,
 ) -> DataFusionResult<ColumnarValue> {
-    let Some(default_value) = default_value else {
+    let Some(default_value) = default_value.filter(|default| !default.is_null()) else {
         return list_extract_without_default(
             list_array,
             index_array,
@@ -307,21 +339,18 @@ fn list_extract<O: OffsetSizeTrait>(
     let mut mutable = MutableArrayData::new(vec![&data, &default_data], true, index_array.len());
 
     for (row, (offset_window, index)) in offsets.windows(2).zip(index_array.iter()).enumerate() {
-        let start = offset_window[0].as_usize();
-        let len = offset_window[1].as_usize() - start;
-
-        if list_array.is_null(row) {
-            mutable.extend_nulls(1);
-        } else if let Some(index) = index {
-            if let Some(i) = adjust_index(index, len)? {
-                mutable.extend(0, start + i, start + i + 1);
-            } else if fail_on_error {
-                return Err(error_wrapper(out_of_bounds_error(one_based, index, len)));
-            } else {
-                mutable.extend(1, 0, 1);
-            }
-        } else {
-            mutable.extend_nulls(1);
+        match resolve_row(
+            list_array.is_null(row),
+            offset_window,
+            index,
+            fail_on_error,
+            one_based,
+            &adjust_index,
+            error_wrapper,
+        )? {
+            RowAction::Gather(index) => mutable.extend(0, index, index + 1),
+            RowAction::Null => mutable.extend_nulls(1),
+            RowAction::Default => mutable.extend(1, 0, 1),
         }
     }
 
@@ -340,33 +369,25 @@ fn list_extract_without_default<O: OffsetSizeTrait>(
 ) -> DataFusionResult<ColumnarValue> {
     let values = list_array.values();
     let offsets = list_array.offsets();
-    let mut indices = Vec::with_capacity(index_array.len());
+    let mut indices = UInt64Builder::with_capacity(index_array.len());
 
     for (row, (offset_window, index)) in offsets.windows(2).zip(index_array.iter()).enumerate() {
-        let start = offset_window[0].as_usize();
-        let len = offset_window[1].as_usize() - start;
-
-        if list_array.is_null(row) {
-            indices.push(None);
-        } else if let Some(index) = index {
-            if let Some(i) = adjust_index(index, len)? {
-                indices.push(Some((start + i) as u64));
-            } else if fail_on_error {
-                return Err(error_wrapper(out_of_bounds_error(one_based, index, len)));
-            } else {
-                indices.push(None);
-            }
-        } else {
-            // index is NULL → result is NULL
-            indices.push(None);
+        match resolve_row(
+            list_array.is_null(row),
+            offset_window,
+            index,
+            fail_on_error,
+            one_based,
+            &adjust_index,
+            error_wrapper,
+        )? {
+            RowAction::Gather(index) => indices.append_value(index as u64),
+            RowAction::Null | RowAction::Default => indices.append_null(),
         }
     }
 
-    Ok(ColumnarValue::Array(take(
-        values.as_ref(),
-        &UInt64Array::from(indices),
-        None,
-    )?))
+    let indices = indices.finish();
+    Ok(ColumnarValue::Array(take(values.as_ref(), &indices, None)?))
 }
 
 impl Display for ListExtract {
@@ -429,23 +450,25 @@ mod test {
         // Simple error wrapper for tests - just converts SparkError to DataFusionError
         let error_wrapper = |error: SparkError| DataFusionError::from(error);
 
-        let ColumnarValue::Array(result) = list_extract(
-            &list,
-            &indices,
-            None,
-            false,
-            false,
-            |idx, len| zero_based_index(idx, len, &error_wrapper),
-            &error_wrapper,
-        )?
-        else {
-            unreachable!()
-        };
+        for default_value in [None, Some(ScalarValue::Int32(None))] {
+            let ColumnarValue::Array(result) = list_extract(
+                &list,
+                &indices,
+                default_value.as_ref(),
+                false,
+                false,
+                |idx, len| zero_based_index(idx, len, &error_wrapper),
+                &error_wrapper,
+            )?
+            else {
+                unreachable!()
+            };
 
-        assert_eq!(
-            &result.to_data(),
-            &Int32Array::from(vec![Some(1), None, None]).to_data()
-        );
+            assert_eq!(
+                &result.to_data(),
+                &Int32Array::from(vec![Some(1), None, None]).to_data()
+            );
+        }
 
         let zero_default = ScalarValue::Int32(Some(0));
 
@@ -509,5 +532,53 @@ mod test {
             );
         }
         Ok(())
+    }
+
+    #[test]
+    fn test_list_extract_without_default_ansi_errors() {
+        let list = ListArray::from_iter_primitive::<Int32Type, _, _>(vec![Some(vec![Some(1)])]);
+        let error_wrapper = |error: SparkError| DataFusionError::from(error);
+
+        for (one_based, index) in [(true, 2), (false, 1)] {
+            let indices = Int32Array::from(vec![index]);
+            let error = list_extract(
+                &list,
+                &indices,
+                None,
+                true,
+                one_based,
+                |idx, len| {
+                    if one_based {
+                        one_based_index(idx, len, &error_wrapper)
+                    } else {
+                        zero_based_index(idx, len, &error_wrapper)
+                    }
+                },
+                &error_wrapper,
+            )
+            .unwrap_err();
+            let DataFusionError::External(error) = error else {
+                panic!("expected external Spark error")
+            };
+            let error = error.downcast_ref::<SparkError>().unwrap();
+
+            if one_based {
+                assert!(matches!(
+                    error,
+                    SparkError::InvalidElementAtIndex {
+                        index_value: 2,
+                        array_size: 1
+                    }
+                ));
+            } else {
+                assert!(matches!(
+                    error,
+                    SparkError::InvalidArrayIndex {
+                        index_value: 1,
+                        array_size: 1
+                    }
+                ));
+            }
+        }
     }
 }
