@@ -29,6 +29,8 @@ use arrow::error::ArrowError;
 use datafusion::common::DataFusionError;
 use datafusion::physical_plan::ColumnarValue;
 use std::sync::Arc;
+use array::{Datum, Scalar};
+use arrow::array;
 use common::ScalarValue;
 use datafusion::common;
 
@@ -61,17 +63,7 @@ fn ansi_arithmetic_kernel(
     right: &ColumnarValue,
     op: MathOp,
 ) -> Result<ColumnarValue, DataFusionError> {
-    let to_array = |cv: &ColumnarValue| -> Result<(ArrayRef, bool), DataFusionError> {
-        match cv {
-            ColumnarValue::Array(arr) => Ok((Arc::clone(arr), false)),
-            ColumnarValue::Scalar(scalar) => Ok((scalar.to_array()?, true)),
-        }
-    };
-
-    let (left_arr, left_is_scalar) = to_array(left)?;
-    let (right_arr, right_is_scalar) = to_array(right)?;
-
-    let run_kernel = |l: &dyn arrow::array::Datum, r: &dyn arrow::array::Datum| {
+    let run_kernel = |l: &dyn Datum, r: &dyn Datum| {
         match op {
             MathOp::Add => numeric::add(l, r),
             MathOp::Sub => numeric::sub(l, r),
@@ -80,14 +72,29 @@ fn ansi_arithmetic_kernel(
         }
     };
 
-    let result_array = match (left_is_scalar, right_is_scalar) {
-        (false, false) => run_kernel(&left_arr, &right_arr),
-        (false, true) => run_kernel(&left_arr, &arrow::array::Scalar::new(right_arr)),
-        (true, false) => run_kernel(&arrow::array::Scalar::new(left_arr), &right_arr),
-        (true, true) => run_kernel(
-            &arrow::array::Scalar::new(left_arr),
-            &arrow::array::Scalar::new(right_arr),
-        ),
+    let result_array = match (left, right) {
+        (ColumnarValue::Array(l), ColumnarValue::Array(r)) => {
+            run_kernel(&l, &r)
+        }
+        (ColumnarValue::Scalar(l), ColumnarValue::Array(r)) => {
+            let l_arr = l.to_array()?;
+            let l_scalar = Scalar::new(l_arr);
+            run_kernel(&l_scalar, &r)
+        }
+        (ColumnarValue::Array(l), ColumnarValue::Scalar(r)) => {
+            let r_arr = r.to_array()?;
+            let r_scalar = Scalar::new(r_arr);
+            run_kernel(&l, &r_scalar)
+        }
+        (ColumnarValue::Scalar(l), ColumnarValue::Scalar(r)) => {
+            let l_arr = l.to_array()?;
+            let r_arr = r.to_array()?;
+            let l_scalar = Scalar::new(l_arr);
+            let r_scalar = Scalar::new(r_arr);
+            let res = run_kernel(&l_scalar, &r_scalar)?;
+            let scalar_val = ScalarValue::try_from_array(res.as_ref(), 0)?;
+            return Ok(ColumnarValue::Scalar(scalar_val));
+        }
     };
 
     let array = result_array.map_err(|e| match e {
@@ -97,12 +104,7 @@ fn ansi_arithmetic_kernel(
         }),
     })?;
 
-    if left_is_scalar && right_is_scalar {
-        let scalar_val = ScalarValue::try_from_array(array.as_ref(), 0)?;
-        Ok(ColumnarValue::Scalar(scalar_val))
-    } else {
-        Ok(ColumnarValue::Array(array))
-    }
+    Ok(ColumnarValue::Array(array))
 }
 
 fn ansi_float_div<T>(
@@ -428,10 +430,10 @@ mod tests {
     #[test]
     fn test_ansi_int64_overflow() {
         let args = vec![
-            ColumnarValue::Array(Arc::new(arrow::array::Int64Array::from(vec![Some(
+            ColumnarValue::Array(Arc::new(array::Int64Array::from(vec![Some(
                 i64::MAX,
             )]))),
-            ColumnarValue::Array(Arc::new(arrow::array::Int64Array::from(vec![Some(1)]))),
+            ColumnarValue::Array(Arc::new(array::Int64Array::from(vec![Some(1)]))),
         ];
         let result = checked_add(&args, &DataType::Int64, EvalMode::Ansi);
         assert!(result.is_err());
