@@ -204,7 +204,7 @@ class CometIcebergRewriteActionSuite extends CometTestBase with CometIcebergTest
               s"Expected >= 1 input file rewritten, got $rewrittenCount")
           }
 
-          val rewritePlans = plans.filter(_.hasNode("AppendData"))
+          val rewritePlans = plans.filter(isRewriteWrite)
           assert(rewritePlans.nonEmpty, "Expected at least one rewrite plan")
           assertReadsAreComet(rewritePlans)
 
@@ -266,11 +266,11 @@ class CometIcebergRewriteActionSuite extends CometTestBase with CometIcebergTest
           assertDataPreserved(rowsBefore, rowsAfterById, filesBefore, filesAfter)
           rc.verifyDataAfter(rowsAfterFileOrder)
 
-          val rewritePlans = plans.filter(_.hasNode("AppendData"))
+          val rewritePlans = plans.filter(isRewriteWrite)
           assert(
             rewritePlans.nonEmpty,
-            "Expected at least one captured plan with AppendData but got none.\n" +
-              dumpPlans(plans))
+            "Expected at least one captured plan with AppendData or IcebergCommit but got " +
+              "none.\n" + dumpPlans(plans))
           rc.verifyPlans(rewritePlans)
         } catch {
           case _: ClassNotFoundException =>
@@ -328,6 +328,11 @@ class CometIcebergRewriteActionSuite extends CometTestBase with CometIcebergTest
   }
 
   // -- Plan assertions -------------------------------------------------------
+
+  // The per-group rewrite write plans as Spark's AppendData, or as Comet's IcebergCommit when
+  // COMET_ICEBERG_WRITE_SPLIT_OPERATOR_ENABLED is on.
+  private def isRewriteWrite(plan: CapturedPlan): Boolean =
+    plan.hasNode("AppendData") || plan.hasNode("IcebergCommit")
 
   private def assertReadsAreComet(plans: Seq[CapturedPlan]): Unit = {
     assertOperator(plans, "CometIcebergNativeScan")
