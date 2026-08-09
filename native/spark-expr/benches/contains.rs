@@ -15,14 +15,15 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use criterion::{criterion_group, criterion_main, Criterion};
 use arrow::array::{ArrayRef, StringArray};
 use arrow::datatypes::{DataType, Field};
+use criterion::{criterion_group, criterion_main, Criterion};
 use datafusion::common::ScalarValue;
 use datafusion::config::ConfigOptions;
 use datafusion::logical_expr::{ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl};
-use std::sync::Arc;
 use datafusion_comet_spark_expr::SparkContains;
+
+use std::sync::Arc;
 
 fn generate_string_array(size: usize) -> ArrayRef {
     let data: Vec<Option<String>> = (0..size)
@@ -30,7 +31,10 @@ fn generate_string_array(size: usize) -> ArrayRef {
             if i % 10 == 0 {
                 None
             } else {
-                Some(format!("hello string data sample number {} with some text", i))
+                Some(format!(
+                    "hello string data sample number {} with some text",
+                    i
+                ))
             }
         })
         .collect();
@@ -56,64 +60,55 @@ fn bench_contains(c: &mut Criterion) {
     let config_options = Arc::new(ConfigOptions::new());
 
     // 1. Array haystack vs Scalar needle (optimized path)
-    group.bench_function(
-        &format!("array_vs_scalar_size_{}", rows),
-        |b| {
-            b.iter(|| {
-                let args = ScalarFunctionArgs {
-                    args: vec![
-                        ColumnarValue::Array(haystack_array.clone()),
-                        needle_scalar.clone(),
-                    ],
-                    arg_fields: arg_fields.clone(),
-                    number_rows: rows,
-                    return_field: return_field.clone(),
-                    config_options: config_options.clone(),
-                };
-                std::hint::black_box(udf.invoke_with_args(args).unwrap());
-            });
-        },
-    );
+    group.bench_function(&format!("array_vs_scalar_size_{}", rows), |b| {
+        b.iter(|| {
+            let args = ScalarFunctionArgs {
+                args: vec![
+                    ColumnarValue::Array(haystack_array.clone()),
+                    needle_scalar.clone(),
+                ],
+                arg_fields: arg_fields.clone(),
+                number_rows: rows,
+                return_field: return_field.clone(),
+                config_options: config_options.clone(),
+            };
+            std::hint::black_box(udf.invoke_with_args(args).unwrap());
+        });
+    });
 
     // 2. Array haystack vs Array needle
-    group.bench_function(
-        &format!("array_vs_array_size_{}", rows),
-        |b| {
-            b.iter(|| {
-                let args = ScalarFunctionArgs {
-                    args: vec![
-                        ColumnarValue::Array(haystack_array.clone()),
-                        ColumnarValue::Array(needle_array.clone()),
-                    ],
-                    arg_fields: arg_fields.clone(),
-                    number_rows: rows,
-                    return_field: return_field.clone(),
-                    config_options: config_options.clone(),
-                };
-                std::hint::black_box(udf.invoke_with_args(args).unwrap());
-            });
-        },
-    );
+    group.bench_function(&format!("array_vs_array_size_{}", rows), |b| {
+        b.iter(|| {
+            let args = ScalarFunctionArgs {
+                args: vec![
+                    ColumnarValue::Array(haystack_array.clone()),
+                    ColumnarValue::Array(needle_array.clone()),
+                ],
+                arg_fields: arg_fields.clone(),
+                number_rows: rows,
+                return_field: return_field.clone(),
+                config_options: config_options.clone(),
+            };
+            std::hint::black_box(udf.invoke_with_args(args).unwrap());
+        });
+    });
 
     let haystack_scalar_val = ColumnarValue::Scalar(ScalarValue::Utf8(Some("sample".to_string())));
-    group.bench_function(
-        &format!("scalar_vs_array_size_{}", rows),
-        |b| {
-            b.iter(|| {
-                let args = ScalarFunctionArgs {
-                    args: vec![
-                        haystack_scalar_val.clone(),
-                        ColumnarValue::Array(needle_array.clone()),
-                    ],
-                    arg_fields: arg_fields.clone(),
-                    number_rows: rows,
-                    return_field: return_field.clone(),
-                    config_options: config_options.clone(),
-                };
-                std::hint::black_box(udf.invoke_with_args(args).unwrap());
-            });
-        },
-    );
+    group.bench_function(&format!("scalar_vs_array_size_{}", rows), |b| {
+        b.iter(|| {
+            let args = ScalarFunctionArgs {
+                args: vec![
+                    haystack_scalar_val.clone(),
+                    ColumnarValue::Array(needle_array.clone()),
+                ],
+                arg_fields: arg_fields.clone(),
+                number_rows: rows,
+                return_field: return_field.clone(),
+                config_options: config_options.clone(),
+            };
+            std::hint::black_box(udf.invoke_with_args(args).unwrap());
+        });
+    });
 
     group.finish();
 }

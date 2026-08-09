@@ -256,11 +256,10 @@ mod tests {
     #[test]
     fn test_spark_contains_dispatcher_scalar_array() {
         let haystack = ColumnarValue::Scalar(ScalarValue::Utf8(Some("abc".to_string())));
-        let needle = ColumnarValue::Array(Arc::new(StringArray::from(vec![
-            Some("a"),
-            Some("bc"),
-            Some("d"),
-        ])) as ArrayRef);
+        let needle =
+            ColumnarValue::Array(
+                Arc::new(StringArray::from(vec![Some("a"), Some("bc"), Some("d")])) as ArrayRef,
+            );
 
         let result = spark_contains(&haystack, &needle).unwrap();
         let array = match result {
