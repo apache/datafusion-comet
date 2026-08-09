@@ -19,15 +19,13 @@
 
 package org.apache.comet.shims
 
-import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
-import org.apache.spark.sql.execution.datasources.parquet.ParquetRowIndexUtil
-import org.apache.spark.sql.types.StructType
+import org.apache.spark.sql.execution.SampleExec
 
-object ShimFileFormat {
-  // A name for a temporary column that holds row indexes computed by the file format reader
-  // until they can be placed in the _metadata struct.
-  val ROW_INDEX_TEMPORARY_COLUMN_NAME = ParquetFileFormat.ROW_INDEX_TEMPORARY_COLUMN_NAME
-
-  def findRowIndexColumnIndexInSchema(sparkSchema: StructType): Int =
-    ParquetRowIndexUtil.findRowIndexColumnIndexInSchema(sparkSchema)
+/**
+ * Shim for the seed that `SampleExec` samples with. Spark 4.2 made the seed an `Option[Long]` and
+ * resolves an absent one into `resolvedSeed`, which is what the operator itself samples with, so
+ * this shim reads that field rather than the option.
+ */
+object CometSampleShim {
+  def seed(op: SampleExec): Long = op.resolvedSeed
 }

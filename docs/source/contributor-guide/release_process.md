@@ -142,18 +142,35 @@ targeting the release branch.
 
 ### Update Maven Version
 
-Open a PR targeting the release branch that changes the Maven version from `0.13.0-SNAPSHOT` to `0.13.0` in
-the `pom.xml` files and in the diff files under `dev/diffs`.
+Open a PR targeting the release branch that changes the Maven version from `0.13.0-SNAPSHOT` to `0.13.0` in:
+
+- the `pom.xml` files: `pom.xml`, `common/pom.xml`, `spark/pom.xml`, and `spark-integration/pom.xml`
+- the `<comet.version>` property in the Spark test diffs under `dev/diffs`
+- the `comet` version in the Iceberg test diffs under `dev/diffs/iceberg`, which use a Gradle version
+  catalog entry (`comet = "0.13.0"`) rather than a Maven property
 
 There is no need to update the Rust crate versions because they will already be `0.13.0`.
+
+Once the version is bumped, verify that no references to the old version remain:
+
+```shell
+git grep -n '0.13.0-SNAPSHOT' -- . ':!docs/source/changelog'
+```
+
+Any hit outside the change log is a place that will break on the release branch. Note that dropping the
+`-SNAPSHOT` qualifier changes the built artifact file names, so anything that locates the jar by glob must
+match a bare version too. Prefer patterns such as `comet-spark-spark3.5_2.12-*.jar` over
+`comet-spark-spark3.5_2.12-*-SNAPSHOT.jar`, and prefer resolving the jar by glob over hardcoding a version.
+The release branch runs the same CI workflows as `main`, including the PyArrow UDF tests, so a
+`-SNAPSHOT`-only glob in a test harness or script fails only after the release branch is cut.
 
 ### Update Version in main
 
 Create a PR against the main branch to prepare for developing the next release:
 
 - Update the Rust crate version to `0.14.0`.
-- Update the Maven version to `0.14.0-SNAPSHOT` (both in the `pom.xml` files and also in the diff files
-  under `dev/diffs`).
+- Update the Maven version to `0.14.0-SNAPSHOT` in the same set of files listed above (the `pom.xml` files,
+  the Spark test diffs under `dev/diffs`, and the Iceberg test diffs under `dev/diffs/iceberg`).
 
 ### Generate the Change Log
 
@@ -268,14 +285,24 @@ it to GitHub Container Registry at https://github.com/apache/datafusion-comet/pk
 
 In `docs` directory:
 
-- Update `docs/source/index.rst` and add a new navigation menu link for the new release in the section `_toc.user-guide-links-versioned`
-- Add a new line to `build.sh` to delete the locally cloned `comet-*` branch for the new release e.g. `comet-0.13`
-- Update the main method in `generate-versions.py`:
+- Update the main method in `generate-versions.py` to promote the new release to the current one and move the
+  previously current release into the list of older versions:
 
 ```python
     latest_released_version = "0.13.0"
-    previous_versions = ["0.11.0", "0.12.0"]
+    previous_versions = ["0.10.0", "0.11.0", "0.12.0"]
 ```
+
+- Add a new line to `build.sh` to delete the locally cloned `comet-*` branch for the new release e.g. `comet-0.13`.
+  Every version referenced in `generate-versions.py` needs a line here, otherwise a rebuild reuses the stale clone
+  from the previous run.
+- Update `docs/source/user-guide/index.md`: change the "current stable release" sentence and the versioned entry in
+  the toctree (e.g. `0.13.x (current) <0.13/index>`).
+- Update `docs/source/user-guide/older-versions.md`: point the "current stable release" link at the new release and
+  add the previously current release to the toctree.
+
+Note that older user guides are kept rather than dropped, so the lists in `generate-versions.py`, `build.sh`, and
+`older-versions.md` grow with each release.
 
 Test the documentation build locally, following the instructions in `docs/README.md`.
 

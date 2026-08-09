@@ -29,6 +29,7 @@ import org.apache.spark.sql.comet.{CometNativeExec, CometNativeScanExec, CometSc
 import org.apache.spark.sql.execution.{FileSourceScanExec, InSubqueryExec, SubqueryAdaptiveBroadcastExec}
 import org.apache.spark.sql.execution.datasources.parquet.ParquetUtils
 import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.types.StructField
 
 import org.apache.comet.{CometConf, ConfigEntry}
 import org.apache.comet.CometConf.COMET_EXEC_ENABLED
@@ -44,6 +45,10 @@ import org.apache.comet.serde.QueryPlanSerde.{exprToProto, serializeDataType}
  * Validation and serde logic for Comet's native Parquet scan.
  */
 object CometNativeScan extends CometOperatorSerde[CometScanExec] with Logging {
+
+  // DataFusion's table_partition_cols literal substitution matches by name, so a bare name
+  // like "file_size" could collide with a real column of the same name. Prefix to avoid it.
+  private val constantMetadataFieldPrefix = "_comet_metadata_"
 
   /** Determine whether the scan is supported and tag the Spark plan with any fallback reasons */
   def isSupported(scanExec: FileSourceScanExec): Boolean = {
@@ -143,17 +148,18 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with Logging {
         // Our schema has default values. Serialize two lists, one with the default values
         // and another with the indexes in the schema so the native side can map missing
         // columns to these default values.
-        val (defaultValues, indexes) = possibleDefaultValues.zipWithIndex
+        val (defaultValues, indexes) = possibleDefaultValues.iterator.zipWithIndex
           .filter { case (expr, _) => expr != null }
           .map { case (expr, index) =>
             // ResolveDefaultColumnsUtil.getExistenceDefaultValues has evaluated these
             // expressions and they should now just be literals.
             (Literal(expr), index.toLong.asInstanceOf[java.lang.Long])
           }
+          .toList
           .unzip
         commonBuilder.addAllDefaultValues(
-          defaultValues.flatMap(exprToProto(_, scan.output)).toIterable.asJava)
-        commonBuilder.addAllDefaultValuesIndexes(indexes.toIterable.asJava)
+          defaultValues.flatMap(exprToProto(_, scan.output)).asJava)
+        commonBuilder.addAllDefaultValuesIndexes(indexes.asJava)
       }
 
       // Extract object store options from first file (S3 configs apply to all files in scan).
@@ -164,29 +170,39 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with Logging {
         .headOption
         .map(_.getPath.toUri)
 
-      val partitionSchema = schema2Proto(scan.relation.partitionSchema.fields)
-      val requiredSchema = schema2Proto(scan.requiredSchema.fields)
-      val dataSchema = schema2Proto(scan.relation.dataSchema.fields)
+      // Constant metadata columns (file_path, file_name, file_size, file_block_start,
+      // file_block_length, file_modification_time) are known before opening the file and
+      // constant for every row read from it, exactly like partition columns. Spark places
+      // them immediately after partition columns in `scan.output`
+      // (FileSourceStrategy.scala: readDataColumns ++ generatedMetadataColumns ++
+      // partitionColumns ++ constantMetadataColumns), so appending them after the real
+      // partition schema here keeps the two in lockstep.
+      val constantMetadataFields = scan.wrapped.fileConstantMetadataColumns.map(attr =>
+        StructField(s"$constantMetadataFieldPrefix${attr.name}", attr.dataType, attr.nullable))
+      val partitionSchemaFields = scan.relation.partitionSchema.fields.toSeq ++
+        constantMetadataFields
+      val partitionSchema = schema2Proto(partitionSchemaFields)
+      val requiredSchema = schema2Proto(scan.requiredSchema)
+      val dataSchema = schema2Proto(scan.relation.dataSchema)
 
-      val dataSchemaIndexes = scan.requiredSchema.fields.map(field => {
+      val dataSchemaIndexes = scan.requiredSchema.map(field => {
         scan.relation.dataSchema.fieldIndex(field.name)
       })
-      val partitionSchemaIndexes = Array
-        .range(
-          scan.relation.dataSchema.fields.length,
-          scan.relation.dataSchema.length + scan.relation.partitionSchema.fields.length)
+      val partitionSchemaIndexes = scan.relation.dataSchema.fields.length until
+        (scan.relation.dataSchema.length + partitionSchemaFields.length)
 
       val projectionVector = (dataSchemaIndexes ++ partitionSchemaIndexes).map(idx =>
         idx.toLong.asInstanceOf[java.lang.Long])
 
-      commonBuilder.addAllProjectionVector(projectionVector.toIterable.asJava)
+      commonBuilder.addAllProjectionVector(projectionVector.asJava)
 
-      // In `CometScanRule`, we ensure partitionSchema is supported.
-      assert(partitionSchema.length == scan.relation.partitionSchema.fields.length)
+      // In `CometScanRule`, we ensure partitionSchema (including constant metadata columns)
+      // is supported.
+      assert(partitionSchema.length == partitionSchemaFields.length)
 
-      commonBuilder.addAllDataSchema(dataSchema.toIterable.asJava)
-      commonBuilder.addAllRequiredSchema(requiredSchema.toIterable.asJava)
-      commonBuilder.addAllPartitionSchema(partitionSchema.toIterable.asJava)
+      commonBuilder.addAllDataSchema(dataSchema.asJava)
+      commonBuilder.addAllRequiredSchema(requiredSchema.asJava)
+      commonBuilder.addAllPartitionSchema(partitionSchema.asJava)
       commonBuilder.setSessionTimezone(scan.conf.getConfString("spark.sql.session.timeZone"))
       commonBuilder.setCaseSensitive(scan.conf.getConf[Boolean](SQLConf.CASE_SENSITIVE))
 
