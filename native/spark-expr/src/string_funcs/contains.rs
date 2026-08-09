@@ -89,9 +89,8 @@ fn spark_contains(haystack: &ColumnarValue, needle: &ColumnarValue) -> Result<Co
 
         // Scalar haystack, array needle - less common
         (ColumnarValue::Scalar(haystack_scalar), ColumnarValue::Array(needle_array)) => {
-            let haystack_array = haystack_scalar.to_array_of_size(needle_array.len())?;
-            let result = arrow_contains(&haystack_array, needle_array)?;
-            Ok(ColumnarValue::Array(Arc::new(result)))
+            let result = contains_scalar_with_arrow(haystack_scalar, needle_array)?;
+            Ok(ColumnarValue::Array(result))
         }
 
         // Both scalars - compute single result
@@ -99,6 +98,21 @@ fn spark_contains(haystack: &ColumnarValue, needle: &ColumnarValue) -> Result<Co
             let result = contains_scalar_scalar(haystack_scalar, needle_scalar)?;
             Ok(ColumnarValue::Scalar(result))
         }
+    }
+}
+
+/// Helper to safely extract string reference from ScalarValue
+#[inline]
+fn get_string<'a>(scalar: &'a ScalarValue, arg_name: &str) -> Result<&'a str> {
+    match scalar {
+        ScalarValue::Utf8(Some(s))
+        | ScalarValue::LargeUtf8(Some(s))
+        | ScalarValue::Utf8View(Some(s)) => Ok(s.as_str()),
+        _ => exec_err!(
+            "contains function requires string type for {}, got {:?}",
+            arg_name,
+            scalar.data_type()
+        ),
     }
 }
 
@@ -114,23 +128,28 @@ fn contains_with_arrow_scalar(
     }
 
     // Extract the needle string
-    let needle_str = match needle_scalar {
-        ScalarValue::Utf8(Some(s))
-        | ScalarValue::LargeUtf8(Some(s))
-        | ScalarValue::Utf8View(Some(s)) => s.clone(),
-        _ => {
-            return exec_err!(
-                "contains function requires string type for needle, got {:?}",
-                needle_scalar.data_type()
-            )
-        }
-    };
+    let needle_str = get_string(needle_scalar, "needle")?;
 
     // Create scalar array for needle - tells Arrow to use optimized paths
     let needle_scalar_array = StringArray::new_scalar(needle_str);
 
     // Use Arrow's contains which detects scalar case and uses optimized paths
     let result = arrow_contains(haystack_array, &needle_scalar_array)?;
+    Ok(Arc::new(result))
+}
+
+fn contains_scalar_with_arrow(
+    haystack_scalar: &ScalarValue,
+    needle_array: &ArrayRef,
+) -> Result<ArrayRef> {
+    if haystack_scalar.is_null() {
+        return Ok(Arc::new(BooleanArray::new_null(needle_array.len())));
+    }
+
+    let haystack_str = get_string(haystack_scalar, "haystack")?;
+    let haystack_scalar_array = StringArray::new_scalar(haystack_str.to_string());
+
+    let result = arrow_contains(&haystack_scalar_array, needle_array)?;
     Ok(Arc::new(result))
 }
 
@@ -144,29 +163,8 @@ fn contains_scalar_scalar(
         return Ok(ScalarValue::Boolean(None));
     }
 
-    let haystack_str = match haystack_scalar {
-        ScalarValue::Utf8(Some(s))
-        | ScalarValue::LargeUtf8(Some(s))
-        | ScalarValue::Utf8View(Some(s)) => s.as_str(),
-        _ => {
-            return exec_err!(
-                "contains function requires string type for haystack, got {:?}",
-                haystack_scalar.data_type()
-            )
-        }
-    };
-
-    let needle_str = match needle_scalar {
-        ScalarValue::Utf8(Some(s))
-        | ScalarValue::LargeUtf8(Some(s))
-        | ScalarValue::Utf8View(Some(s)) => s.as_str(),
-        _ => {
-            return exec_err!(
-                "contains function requires string type for needle, got {:?}",
-                needle_scalar.data_type()
-            )
-        }
-    };
+    let haystack_str = get_string(haystack_scalar, "haystack")?;
+    let needle_str = get_string(needle_scalar, "needle")?;
 
     Ok(ScalarValue::Boolean(Some(
         haystack_str.contains(needle_str),
