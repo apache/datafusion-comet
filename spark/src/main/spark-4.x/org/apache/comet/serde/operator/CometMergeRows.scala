@@ -23,7 +23,6 @@ import scala.jdk.CollectionConverters._
 
 import org.apache.spark.sql.catalyst.plans.logical.MergeRows
 import org.apache.spark.sql.comet.{CometMergeRowsExec, SerializedPlan}
-import org.apache.spark.sql.execution.SparkPlan
 import org.apache.spark.sql.execution.datasources.v2.MergeRowsExec
 import org.apache.spark.sql.types.LongType
 

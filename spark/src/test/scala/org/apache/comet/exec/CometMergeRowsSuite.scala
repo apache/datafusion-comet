@@ -17,7 +17,7 @@
  * under the License.
  */
 
-package org.apache.comet
+package org.apache.comet.exec
 
 import org.apache.spark.{CometListenerBusUtils, SparkConf, SparkThrowable}
 import org.apache.spark.sql.CometTestBase
@@ -26,6 +26,7 @@ import org.apache.spark.sql.execution.QueryExecution
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.util.QueryExecutionListener
 
+import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.isSpark35Plus
 
 /**
@@ -113,7 +114,7 @@ class CometMergeRowsSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           "table")
       assert(
         cometResult.toSeq == sparkResult.toSeq,
-        s"native MergeRows output diverged from Spark's for a non-Iceberg source.\n" +
+        "native MergeRows output diverged from Spark's for a non-Iceberg source.\n" +
           s"comet: ${cometResult.mkString(", ")}\nspark: ${sparkResult.mkString(", ")}")
     } finally {
       spark.listenerManager.unregister(listener)
