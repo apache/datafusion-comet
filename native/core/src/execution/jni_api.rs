@@ -1322,9 +1322,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_columnarToRowConvert(
                 .map_err(|e| CometError::Internal(format!("Failed to import array: {}", e)))?;
 
             let imported = arrow::array::make_array(array_data);
-            arrays.push(decode_string_arrays(&imported).map_err(|e| {
-                CometError::Internal(format!("Failed to decode imported string array: {}", e))
-            })?);
+            arrays.push(decode_string_arrays(&imported)?);
         }
 
         // Convert columnar to row

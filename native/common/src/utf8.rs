@@ -97,20 +97,23 @@ pub fn decode_string_arrays(array: &ArrayRef) -> Result<ArrayRef, ArrowError> {
                 .as_any()
                 .downcast_ref::<MapArray>()
                 .expect("data type checked by caller");
-            let entries: ArrayRef = Arc::new(map.entries().clone());
-            let decoded = decode_string_arrays(&entries)?;
-            if Arc::ptr_eq(&decoded, &entries) {
+            let entries = map.entries();
+            let mut changed = false;
+            let mut columns = Vec::with_capacity(entries.num_columns());
+            for col in entries.columns() {
+                let decoded = decode_string_arrays(col)?;
+                changed |= !Arc::ptr_eq(&decoded, col);
+                columns.push(decoded);
+            }
+            if !changed {
                 return Ok(Arc::clone(array));
             }
-            let decoded_struct = decoded
-                .as_any()
-                .downcast_ref::<StructArray>()
-                .expect("entries are a struct")
-                .clone();
+            let decoded_entries =
+                StructArray::new(entries.fields().clone(), columns, entries.nulls().cloned());
             Ok(Arc::new(MapArray::try_new(
                 Arc::clone(field),
                 map.offsets().clone(),
-                decoded_struct,
+                decoded_entries,
                 map.nulls().cloned(),
                 *ordered,
             )?))
@@ -246,11 +249,22 @@ mod walker_tests {
 
     #[test]
     fn nulls_are_preserved() {
-        let input: ArrayRef = Arc::new(StringArray::from(vec![Some("a"), None, Some("b")]));
+        let data = unsafe {
+            ArrayData::builder(DataType::Utf8)
+                .len(3)
+                .null_count(1)
+                .null_bit_buffer(Some(Buffer::from(vec![0b0000_0101_u8])))
+                .add_buffer(Buffer::from_slice_ref([0_i32, 1, 2, 3]))
+                .add_buffer(Buffer::from(vec![0xff, 0xfe, b'b']))
+                .build_unchecked()
+        };
+        let input = make_array(data);
         let out = decode_string_arrays(&input).unwrap();
         let s = out.as_any().downcast_ref::<StringArray>().unwrap();
+
+        assert_eq!(s.value(0), "\u{FFFD}");
         assert!(s.is_null(1));
-        assert_eq!(s.value(0), "a");
+        assert_eq!(s.value(2), "b");
     }
 
     #[test]
