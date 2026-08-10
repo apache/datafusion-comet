@@ -147,7 +147,7 @@ fn contains_scalar_array(
     }
 
     let haystack_str = get_string_scalar_value(haystack_scalar, "haystack")?;
-    let haystack_scalar_array = StringArray::new_scalar(haystack_str.to_string());
+    let haystack_scalar_array = StringArray::new_scalar(haystack_str);
 
     let result = arrow_contains(&haystack_scalar_array, needle_array)?;
     Ok(Arc::new(result))
