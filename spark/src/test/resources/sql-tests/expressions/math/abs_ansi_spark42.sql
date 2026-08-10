@@ -18,10 +18,11 @@
 -- ANSI mode abs function tests
 -- Tests that abs throws exceptions for overflow on minimum integer values
 
--- Spark 4.2 drops the type name from the abs overflow message and reports a bare
--- "[ARITHMETIC_OVERFLOW] overflow.", so the int and long patterns below cannot hold there.
--- abs_ansi_spark42.sql covers 4.2 and later with the loose pattern.
--- MaxSparkVersion: 4.1
+-- Spark 4.2 reports a bare "[ARITHMETIC_OVERFLOW] overflow." for abs, with no type name, so every
+-- pattern here is the loose "overflow". abs_ansi.sql covers 4.1 and earlier, where int and long
+-- carry the type name and are asserted exactly. Comet still emits the Spark type names on every
+-- version, which the Rust tests in abs.rs assert directly.
+-- MinSparkVersion: 4.2
 
 -- Config: spark.sql.ansi.enabled=true
 
@@ -58,11 +59,11 @@ INSERT INTO ansi_test_abs_byte VALUES (-128)
 -- ============================================================================
 
 -- abs(-2147483648) cannot be represented as int (since INT_MAX = 2147483647)
-query expect_error(integer overflow)
+query expect_error(overflow)
 SELECT abs(v) FROM ansi_test_abs_int
 
 -- literal
-query expect_error(integer overflow)
+query expect_error(overflow)
 SELECT abs(-2147483648)
 
 -- ============================================================================
@@ -70,21 +71,17 @@ SELECT abs(-2147483648)
 -- ============================================================================
 
 -- abs(-9223372036854775808) cannot be represented as long
-query expect_error(long overflow)
+query expect_error(overflow)
 SELECT abs(v) FROM ansi_test_abs_long
 
 -- literal
-query expect_error(long overflow)
+query expect_error(overflow)
 SELECT abs(-9223372036854775808L)
 
 -- ============================================================================
 -- abs(SHORT_MIN) overflow
 -- ============================================================================
 
--- Byte and short stay on the loose `overflow` pattern. Spark 4.x reports
--- "byte overflow" / "short overflow", but 3.4 and 3.5 raise
--- _LEGACY_ERROR_TEMP_2043 ("- <sqlValue> caused overflow.") instead, and
--- expect_error asserts the pattern against Spark's message as well as Comet's.
 -- abs(-32768) cannot be represented as short
 query expect_error(overflow)
 SELECT abs(v) FROM ansi_test_abs_short
