@@ -585,7 +585,8 @@ existing profile (for example <code class="docutils literal notranslate"><span c
 properties:</p>
 <ul class="simple">
 <li><p><code class="docutils literal notranslate"><span class="pre">spark.version</span></code>: the full upstream version, including any qualifier
-(for example <code class="docutils literal notranslate"><span class="pre">4.2.0-preview4</span></code>).</p></li>
+(for example <code class="docutils literal notranslate"><span class="pre">4.3.0</span></code> for a final release, or <code class="docutils literal notranslate"><span class="pre">4.3.0-preview1</span></code> while only a
+preview has been published).</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">spark.version.short</span></code>: the major.minor (for example <code class="docutils literal notranslate"><span class="pre">4.2</span></code>).</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">parquet.version</span></code>, <code class="docutils literal notranslate"><span class="pre">slf4j.version</span></code>, <code class="docutils literal notranslate"><span class="pre">scala.version</span></code>,
 <code class="docutils literal notranslate"><span class="pre">scala.binary.version</span></code>, <code class="docutils literal notranslate"><span class="pre">java.version</span></code>: align with what the new Spark
@@ -833,7 +834,7 @@ issue keeps the diff small and makes regressions easy to bisect.</p>
 <p>The user guide currently uses two tiers, “Supported” and “Experimental”.
 Comet uses “Experimental” to describe its confidence in its own
 integration with a Spark version, distinct from Spark’s “preview” tag
-(which refers to upstream release qualifiers like <code class="docutils literal notranslate"><span class="pre">4.2.0-preview4</span></code>). The
+(which refers to upstream release qualifiers like <code class="docutils literal notranslate"><span class="pre">4.3.0-preview1</span></code>). The
 term is already established in <code class="docutils literal notranslate"><span class="pre">installation.md</span></code>, <code class="docutils literal notranslate"><span class="pre">operators.md</span></code>, and
 <code class="docutils literal notranslate"><span class="pre">datasources.md</span></code>, so keep using it rather than introducing a new label.</p>
 <p>A version starts experimental in stage 4 and is promoted later. Promotion

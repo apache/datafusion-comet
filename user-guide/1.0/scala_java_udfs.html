@@ -824,6 +824,7 @@ under the License.
 <ul class="simple">
 <li><p>Non-deterministic expressions referenced from the argument tree (<code class="docutils literal notranslate"><span class="pre">rand</span></code>, <code class="docutils literal notranslate"><span class="pre">uuid</span></code>, <code class="docutils literal notranslate"><span class="pre">monotonically_increasing_id</span></code>) produce per-partition sequences consistent with Spark.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">TaskContext.get()</span></code> inside the user function returns the driving Spark task’s context.</p></li>
+<li><p>The Spark task thread’s context ClassLoader is propagated to the thread that runs the user function, so functions defined in jars supplied with <code class="docutils literal notranslate"><span class="pre">--jars</span></code> / <code class="docutils literal notranslate"><span class="pre">spark.jars</span></code> resolve the same way they do under Spark’s own execution.</p></li>
 <li><p>The user function must be closure-serializable; the same function that works with Spark’s executor execution works here.</p></li>
 </ul>
 </section>
