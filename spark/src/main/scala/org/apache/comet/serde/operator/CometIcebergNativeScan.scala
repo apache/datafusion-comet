@@ -44,7 +44,7 @@ import org.apache.comet.{CometConf, ConfigEntry}
 import org.apache.comet.iceberg.{CometIcebergNativeScanMetadata, IcebergReflection}
 import org.apache.comet.serde.{CometOperatorSerde, OperatorOuterClass}
 import org.apache.comet.serde.OperatorOuterClass.{Operator, SparkStructField}
-import org.apache.comet.serde.QueryPlanSerde.serializeDataType
+import org.apache.comet.serde.QueryPlanSerde.{exprToProto, serializeDataType}
 
 object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] with Logging {
 
@@ -862,6 +862,49 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
   }
 
   /**
+   * The part of an Iceberg-reported sort order that the native per-partition merge can honour, or
+   * Nil when the merge must stay off. Two callers use this one gate: the proto serialization
+   * (which turns on the native SortPreservingMergeExec) and
+   * CometIcebergNativeScanExec.outputOrdering (which tells Spark the scan is sorted). Sharing the
+   * gate means the two always agree.
+   *
+   * v1 accepts only identity sort fields on top-level columns that are in the projection. Each
+   * SortOrder child must be an AttributeReference in `output`, and must serialize to proto.
+   * Transform sort fields (bucket/truncate/...) are not AttributeReferences, so they fall through
+   * to Nil and we read unordered. Checking exprToProto here, not just in the proto path, keeps
+   * the two callers in step: outputOrdering never advertises an order the proto path would drop.
+   *
+   * We trust Iceberg on file-level sortedness. If it reports an ordering, SortOrderAnalyzer has
+   * already checked each file's sort_order_id matches the table order, so every file is sorted.
+   *
+   * We read scanExec.ordering (the raw reported order), not scanExec.outputOrdering. Spark blanks
+   * outputOrdering when a partition holds more than one file -- the case this merge handles.
+   */
+  def reportableOrdering(
+      ordering: Option[Seq[SortOrder]],
+      output: Seq[Attribute]): Seq[SortOrder] = {
+    if (!CometConf.COMET_ICEBERG_SORT_MERGE_ENABLED.get()) {
+      Nil
+    } else {
+      ordering match {
+        case Some(orders) if orders.nonEmpty && orders.forall(isReportable(_, output)) =>
+          orders
+        case _ =>
+          Nil
+      }
+    }
+  }
+
+  private def isReportable(order: SortOrder, output: Seq[Attribute]): Boolean =
+    isIdentityProjected(order, output) && exprToProto(order, output).isDefined
+
+  private def isIdentityProjected(order: SortOrder, output: Seq[Attribute]): Boolean =
+    order.child match {
+      case a: AttributeReference => output.exists(_.exprId == a.exprId)
+      case _ => false
+    }
+
+  /**
    * Serializes partitions from inputRDD at execution time.
    *
    * Called after doPrepare() has resolved DPP subqueries. Builds pools and per-partition data in
@@ -949,6 +992,20 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
         .setNullable(attr.nullable)
       serializeDataType(attr.dataType).foreach(field.setDataType)
       commonBuilder.addRequiredSchema(field.build())
+    }
+
+    // Report the table sort order so the native scan reads each file as its own sorted stream and
+    // wraps the scan in a SortPreservingMergeExec (see IcebergScanCommon.table_sort_orders).
+    // reportableOrdering uses the same gate as outputOrdering, and has already checked each order
+    // serializes via exprToProto. So the forall below always holds, and we never write an order to
+    // the proto that the scan does not also report to Spark. Bind against `output` so each
+    // SortOrder child becomes a BoundReference into required_schema.
+    val reportable = reportableOrdering(scanExec.ordering, output)
+    if (reportable.nonEmpty) {
+      val protoOrders = reportable.map(exprToProto(_, output))
+      if (protoOrders.forall(_.isDefined)) {
+        commonBuilder.addAllTableSortOrders(protoOrders.map(_.get).asJava)
+      }
     }
 
     // Load Iceberg classes once (avoid repeated class loading in loop)

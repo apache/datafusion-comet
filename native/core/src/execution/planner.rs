@@ -83,6 +83,7 @@ use datafusion::{
         limit::LocalLimitExec,
         projection::ProjectionExec,
         sorts::sort::SortExec,
+        sorts::sort_preserving_merge::SortPreservingMergeExec,
         ExecutionPlan,
     },
     prelude::SessionContext,
@@ -1841,24 +1842,51 @@ impl PhysicalPlanner {
                 let tasks = parse_file_scan_tasks_from_common(common, &scan.file_scan_tasks)?;
                 let data_file_concurrency_limit = common.data_file_concurrency_limit as usize;
 
-                let iceberg_scan = IcebergScanExec::new(
+                // Table sort order Iceberg reported. Empty unless sortMerge is on and the order
+                // passed the identity gate in CometIcebergNativeScan. The SortOrder children are
+                // bound references into required_schema, so build the LexOrdering against it.
+                let ordering: Option<LexOrdering> = if common.table_sort_orders.is_empty() {
+                    None
+                } else {
+                    let exprs = common
+                        .table_sort_orders
+                        .iter()
+                        .map(|expr| self.create_sort_expr(expr, Arc::clone(&required_schema)))
+                        .collect::<Result<Vec<PhysicalSortExpr>, ExecutionError>>()?;
+                    LexOrdering::new(exprs)
+                };
+
+                let iceberg_scan: Arc<dyn ExecutionPlan> = Arc::new(IcebergScanExec::new(
                     metadata_location,
                     required_schema,
                     catalog_properties,
                     catalog_name,
                     tasks,
                     data_file_concurrency_limit,
-                )?;
+                    ordering.clone(),
+                )?);
 
-                Ok((
-                    vec![],
-                    vec![],
-                    Arc::new(SparkPlan::new(
-                        spark_plan.plan_id,
-                        Arc::new(iceberg_scan),
-                        vec![],
-                    )),
-                ))
+                // With an ordering, the scan is multi-partition (one sorted stream per file). Wrap
+                // it in a SortPreservingMergeExec so each Spark partition comes out sorted. Keep the
+                // scan as an additional native plan so its metrics (num_splits, bytes_scanned) still
+                // roll up. Without an ordering, the scan stays a single-partition leaf, unchanged.
+                let result_plan = match ordering {
+                    Some(lex) => {
+                        let spm: Arc<dyn ExecutionPlan> = Arc::new(
+                            SortPreservingMergeExec::new(lex, Arc::clone(&iceberg_scan))
+                                .with_round_robin_repartition(false),
+                        );
+                        SparkPlan::new_with_additional(
+                            spark_plan.plan_id,
+                            spm,
+                            vec![],
+                            vec![iceberg_scan],
+                        )
+                    }
+                    None => SparkPlan::new(spark_plan.plan_id, iceberg_scan, vec![]),
+                };
+
+                Ok((vec![], vec![], Arc::new(result_plan)))
             }
             OpStruct::ContribScan(contrib) => {
                 // Extension point for optional, out-of-tree contrib scans (Delta, Lance, ...). The
