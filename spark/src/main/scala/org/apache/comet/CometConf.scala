@@ -121,6 +121,30 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(true)
 
+  val COMET_ICEBERG_SORT_MERGE_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.scan.icebergNative.sortMerge.enabled")
+      .category(CATEGORY_SCAN)
+      .doc("Whether the native Iceberg scan reports the table sort order and performs a " +
+        "per-partition streaming merge of already-sorted files. When enabled and Iceberg reports " +
+        "an ordering (requires Iceberg's spark.sql.iceberg.planning.preserve-data-ordering), " +
+        "each Spark partition reads its files as separate sorted streams merged into one sorted " +
+        "output, and the ordering is surfaced to Spark so redundant sorts are eliminated. When " +
+        "disabled, files are read unordered as before.")
+      .booleanConf
+      .createWithDefault(true)
+
+  val COMET_ICEBERG_REPORT_PARTITIONING_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.scan.icebergNative.reportPartitioning.enabled")
+      .category(CATEGORY_SCAN)
+      .doc("Whether the native Iceberg scan reports Iceberg's key-grouped partitioning (requires " +
+        "spark.sql.sources.v2.bucketing.enabled) so storage-partitioned joins avoid a shuffle, " +
+        "which is what lets a reported sort order eliminate a join's sort. Independent of " +
+        "sortMerge.enabled. Defaults to disabled: the AQE + push-down-partition-values path is " +
+        "not yet verified, so reporting is off until it is exercised. When disabled, " +
+        "partitioning is reported as unknown, as before.")
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_ICEBERG_WRITE_SPLIT_OPERATOR_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.write.iceberg.splitOperator.enabled")
       .category(CATEGORY_TESTING)
