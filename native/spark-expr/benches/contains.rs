@@ -60,7 +60,7 @@ fn bench_contains(c: &mut Criterion) {
     let config_options = Arc::new(ConfigOptions::new());
 
     // 1. Array haystack vs Scalar needle (optimized path)
-    group.bench_function(&format!("array_vs_scalar_size_{}", rows), |b| {
+    group.bench_function(format!("array_vs_scalar_size_{}", rows), |b| {
         b.iter(|| {
             let args = ScalarFunctionArgs {
                 args: vec![
@@ -77,7 +77,7 @@ fn bench_contains(c: &mut Criterion) {
     });
 
     // 2. Array haystack vs Array needle
-    group.bench_function(&format!("array_vs_array_size_{}", rows), |b| {
+    group.bench_function(format!("array_vs_array_size_{}", rows), |b| {
         b.iter(|| {
             let args = ScalarFunctionArgs {
                 args: vec![
@@ -94,7 +94,7 @@ fn bench_contains(c: &mut Criterion) {
     });
 
     let haystack_scalar_val = ColumnarValue::Scalar(ScalarValue::Utf8(Some("sample".to_string())));
-    group.bench_function(&format!("scalar_vs_array_size_{}", rows), |b| {
+    group.bench_function(format!("scalar_vs_array_size_{}", rows), |b| {
         b.iter(|| {
             let args = ScalarFunctionArgs {
                 args: vec![
