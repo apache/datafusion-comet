@@ -26,7 +26,7 @@ import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, SortOrder}
 import org.apache.spark.sql.catalyst.plans.QueryPlan
-import org.apache.spark.sql.catalyst.plans.physical.{Partitioning, UnknownPartitioning}
+import org.apache.spark.sql.catalyst.plans.physical.{KeyGroupedPartitioning, Partitioning, UnknownPartitioning}
 import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.vectorized.ColumnarBatch
@@ -34,6 +34,7 @@ import org.apache.spark.util.AccumulatorV2
 
 import com.google.common.base.Objects
 
+import org.apache.comet.CometConf
 import org.apache.comet.iceberg.CometIcebergNativeScanMetadata
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.operator.CometIcebergNativeScan
@@ -119,9 +120,45 @@ case class CometIcebergNativeScanExec(
   // Only accessed during execution, not planning
   def numPartitions: Int = perPartitionData.length
 
-  override lazy val outputPartitioning: Partitioning = UnknownPartitioning(numPartitions)
+  // Report Iceberg's KeyGroupedPartitioning (storage-partitioned join) instead of dropping it to
+  // UnknownPartitioning. This lets a sort-merge join over co-partitioned tables skip the shuffle.
+  // Without it the join shuffles, the shuffle re-orders the rows, and the sort we
+  // reported comes back. Delegating to originalPlan.outputPartitioning is safe because
+  // perPartitionData IS originalPlan.inputRDD.partitions (1:1, same order), so the partition count
+  // and values match Comet's execution partitions by Spark's own construction. Enable if
+  // COMET_ICEBERG_REPORT_PARTITIONING_ENABLED, and V2 bucketing is enabled. Otherwise, and on
+  // canonicalized keep UnknownPartitioning. The KeyGroupedPartitioning branch does not read
+  // numPartitions, so it avoids forcing DPP resolution and serialization; only the fallback does.
+  //
+  // NOTE: the flag defaults off because the AQE + pushPartValues path is partially verified. There,
+  // EnsureRequirements would need to push commonPartitionValues into the leaf, but
+  // populateCommonPartitionInfo matches only BatchScanExec. We need to verify that before enabling
+  // this.
+  override lazy val outputPartitioning: Partitioning = {
+    if (originalPlan != null &&
+      CometConf.COMET_ICEBERG_REPORT_PARTITIONING_ENABLED.get() &&
+      originalPlan.keyGroupedPartitioning.isDefined &&
+      conf.v2BucketingEnabled) {
+      originalPlan.outputPartitioning match {
+        case kgp: KeyGroupedPartitioning => kgp
+        case _ => UnknownPartitioning(numPartitions)
+      }
+    } else {
+      UnknownPartitioning(numPartitions)
+    }
+  }
 
-  override lazy val outputOrdering: Seq[SortOrder] = Nil
+  // Report the Iceberg-reported ordering (gated to what the native per-partition merge honours) so
+  // Spark elides redundant sorts above the scan. Uses the same reportableOrdering gate as the proto
+  // serialization, so the advertised ordering always matches what the native merge actually
+  // produces. Nil on canonicalized instances (originalPlan nulled) -- they are never executed and
+  // their ordering is irrelevant to equality.
+  override lazy val outputOrdering: Seq[SortOrder] =
+    if (originalPlan == null) {
+      Nil
+    } else {
+      CometIcebergNativeScan.reportableOrdering(originalPlan.ordering, output)
+    }
 
   /**
    * Maps Iceberg V2 custom metric types to standard Spark metric types for better UI formatting.
