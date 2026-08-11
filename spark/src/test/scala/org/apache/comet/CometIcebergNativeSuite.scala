@@ -3859,7 +3859,7 @@ class CometIcebergNativeSuite
           val scanNodes = nativeShuffles.flatMap { s =>
             assert(
               s.child.isInstanceOf[CometNativeExec],
-              s"Expected the shuffle's child to be a CometNativeExec so its subtree is " +
+              "Expected the shuffle's child to be a CometNativeExec so its subtree is " +
                 s"inlined into the writer plan, got ${s.child.getClass.getSimpleName}:\n$plan")
             collectIcebergNativeScans(s.child)
           }
