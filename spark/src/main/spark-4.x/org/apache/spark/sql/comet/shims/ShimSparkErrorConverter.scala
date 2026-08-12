@@ -23,8 +23,7 @@ import java.io.FileNotFoundException
 
 import scala.util.matching.Regex
 
-import org.apache.spark.QueryContext
-import org.apache.spark.SparkException
+import org.apache.spark.{QueryContext, SparkException, SparkIllegalArgumentException}
 import org.apache.spark.sql.errors.QueryExecutionErrors
 import org.apache.spark.sql.execution.datasources.SchemaColumnConvertNotSupportedException
 import org.apache.spark.sql.types._
@@ -200,6 +199,17 @@ trait ShimSparkErrorConverter {
           QueryExecutionErrors.ansiDateTimeParseError(
             new Exception(params("message").toString),
             params("suggestedFunc").toString))
+
+      case "IllegalDayOfWeek" =>
+        Some(
+          new SparkIllegalArgumentException(
+            errorClass = "ILLEGAL_DAY_OF_WEEK",
+            messageParameters = Map("string" -> params("string").toString)))
+
+      case "DatetimeFieldOutOfBounds" =>
+        Some(
+          QueryExecutionErrors.ansiDateTimeArgumentOutOfRange(
+            new java.time.DateTimeException(params("rangeMessage").toString)))
 
       case "InvalidFractionOfSecond" =>
         Some(QueryExecutionErrors.invalidFractionOfSecondError(params("value").toString.toDouble))

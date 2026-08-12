@@ -81,14 +81,11 @@ object CometScalaUDF extends CometExpressionSerde[ScalaUDF] {
     val name = expr.udfName.get
     val argProtos = expr.children.map(c => exprToProtoInternal(c, inputs, binding))
     if (argProtos.exists(_.isEmpty)) {
-      withFallbackReason(
-        expr,
-        "one or more native UDF arguments are not supported",
-        expr.children: _*)
+      withFallbackReason(expr, "one or more native UDF arguments are not supported")
       return None
     }
     val returnTypeProto = serializeDataType(returnType).getOrElse {
-      withFallbackReason(expr, s"return type $returnType not serializable", expr)
+      withFallbackReason(expr, s"return type $returnType not serializable")
       return None
     }
     val callBuilder = ExprOuterClass.NativeScalarUdf

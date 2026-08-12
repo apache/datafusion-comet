@@ -94,22 +94,7 @@ class CometDecimalArithmeticViewSuite extends CometTestBase {
           val ansiOverflow = proto.getCheckOverflow
           assert(ansiOverflow.getFailOnError, s"$name under session ANSI=$sessionAnsiEnabled")
 
-          // Decimal division already adds its own CheckOverflow inside the one added by
-          // DecimalPrecision, so peel that wrapper before inspecting the Divide proto.
-          val mathExprProto =
-            if (name == "divide") {
-              assert(
-                ansiOverflow.getChild.hasCheckOverflow,
-                s"$name under session ANSI=$sessionAnsiEnabled")
-              val divideOverflow = ansiOverflow.getChild.getCheckOverflow
-              assert(
-                divideOverflow.getFailOnError,
-                s"$name under session ANSI=$sessionAnsiEnabled")
-              divideOverflow.getChild
-            } else {
-              ansiOverflow.getChild
-            }
-
+          val mathExprProto = ansiOverflow.getChild
           val tryExprProto = getMathExpr(mathExprProto).getLeft
           assert(tryExprProto.hasCheckOverflow, s"$name under session ANSI=$sessionAnsiEnabled")
           assert(
