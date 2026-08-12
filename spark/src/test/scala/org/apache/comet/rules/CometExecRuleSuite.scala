@@ -797,4 +797,36 @@ class CometExecRuleSuite extends CometTestBase {
     }
   }
 
+  test("trial mode analyzes the plan but executes entirely on Spark") {
+    withParquetTable((0 until 100).map(i => (i, i % 5)), "tbl") {
+      val query = "SELECT _2, count(*) FROM tbl GROUP BY _2"
+      withSQLConf(
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_TRIAL_ENABLED.key -> "true") {
+        val df = sql(query)
+        // Results are identical to vanilla Spark.
+        checkSparkAnswer(df)
+        // Nothing is offloaded: the executed plan contains no Comet operators.
+        val cometNodes = stripAQEPlan(df.queryExecution.executedPlan).collect {
+          case p: CometPlan => p
+        }
+        assert(
+          cometNodes.isEmpty,
+          s"trial mode must not offload, but found Comet operators: $cometNodes")
+      }
+
+      // Sanity check: with trial mode off, the same query is accelerated by Comet.
+      withSQLConf(
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_TRIAL_ENABLED.key -> "false") {
+        val cometNodes = stripAQEPlan(sql(query).queryExecution.executedPlan).collect {
+          case p: CometPlan => p
+        }
+        assert(cometNodes.nonEmpty, "expected Comet operators when trial mode is disabled")
+      }
+    }
+  }
+
 }
