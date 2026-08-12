@@ -38,8 +38,8 @@ The following features are not supported and cause Comet to fall back to Spark:
 - Default values that are nested types (e.g., maps, arrays, structs). Literal default values are supported.
 - Spark's Datasource V2 API. When `spark.sql.sources.useV1SourceList` does not include `parquet`, Spark uses the
   V2 API for Parquet scans. Comet's Parquet scan only supports the V1 API.
-- Spark metadata columns (e.g., `_metadata.file_path`)
-- No support for row indexes
+- `_metadata.row_index`. Other `_metadata` columns (`file_path`, `file_name`, `file_size`, `file_block_start`,
+  `file_block_length`, `file_modification_time`) are supported.
 - No support for `input_file_name()`, `input_file_block_start()`, or `input_file_block_length()` SQL functions.
   Comet's Parquet scan does not use Spark's `FileScanRDD`, so these functions cannot populate their values.
 - No support for `ignoreMissingFiles` or `ignoreCorruptFiles` being set to `true`
@@ -51,10 +51,14 @@ The following features are not supported and cause Comet to fall back to Spark:
 
 The following limitation may produce incorrect results without falling back to Spark:
 
-- No support for datetime rebasing. When reading Parquet files containing dates or timestamps written before
-  Spark 3.0 (which used a hybrid Julian/Gregorian calendar), dates/timestamps will be read as if they were
-  written using the Proleptic Gregorian calendar. This may produce incorrect results for dates before
-  October 15, 1582.
+- No support for datetime rebasing. When reading Parquet files containing dates or timestamps
+  written with `spark.sql.parquet.datetimeRebaseModeInWrite=LEGACY` (which is Spark's default for
+  data written before Spark 3.0, using the hybrid Julian/Gregorian calendar), Comet reads them as
+  if they were written using the Proleptic Gregorian calendar. This produces silently-wrong
+  values for dates before October 15, 1582 in both projections and predicates. Comet also
+  ignores `spark.sql.parquet.datetimeRebaseModeInRead` and the file-level
+  `org.apache.spark.legacyDateTime` metadata that would tell it to rebase. Tracked by
+  [#5010](https://github.com/apache/datafusion-comet/issues/5010).
 
 The following limitations raise an error at scan time rather than falling back to Spark:
 
@@ -72,7 +76,7 @@ The following limitations raise an error at scan time rather than falling back t
   rejecting the read. This applies to all LTZ physical encodings (INT96, TIMESTAMP_MICROS,
   TIMESTAMP_MILLIS). On Spark 4.0+, this read is permitted
   ([SPARK-47447](https://issues.apache.org/jira/browse/SPARK-47447)) and Comet matches Spark's
-  behavior. See [#4219](https://github.com/apache/datafusion-comet/issues/4219).
+  behavior.
 
 ### Schema Mismatch Handling
 

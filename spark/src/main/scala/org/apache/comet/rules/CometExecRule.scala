@@ -86,6 +86,7 @@ object CometExecRule {
       classOf[SortMergeJoinExec] -> CometSortMergeJoinExec,
       classOf[SortExec] -> CometSortExec,
       classOf[LocalTableScanExec] -> CometLocalTableScanExec,
+      classOf[SampleExec] -> CometSampleExec,
       classOf[WindowExec] -> CometWindowExec)
 
   /**
@@ -371,12 +372,21 @@ case class CometExecRule(session: SparkSession)
         op match {
           case _: CometPlan | _: AQEShuffleReadExec | _: BroadcastExchangeExec |
               _: BroadcastQueryStageExec | _: AdaptiveSparkPlanExec | _: ExecutedCommandExec |
-              _: V2CommandExec =>
+              _: V2CommandExec | _: WriteFilesExec =>
             // Some execs should never be replaced. We include
-            // these cases specially here so we do not add a misleading 'info' message
+            // these cases specially here so we do not add a misleading 'info' message.
+            // WriteFilesExec is always wrapped by DataWritingCommandExec (via Spark's V1Writes
+            // rule); the parent case converts the whole write to CometNativeWriteExec and
+            // unwraps WriteFilesExec inside convertToComet. Tagging WriteFilesExec here would
+            // produce a spurious "WriteFilesExec is not supported" fallback reason (and a warning
+            // when COMET_EXPLAIN_FALLBACK_LOG_ENABLED=true) even when the write is fully native.
             op
           case _ =>
-            // The operator was not converted to a Comet plan. Possible reasons for this happening:
+            // The operator was not converted to a Comet plan and no serde handler claimed it, so
+            // Comet simply has no support for it. (Operators that do have a handler are reported
+            // by `reportUnexplainedFallback` inside `convertToComet`, which is also where the
+            // strict check lives - it would be wrong to demand a specific reason here, because
+            // nothing ever attempted this operator.) Possible reasons for reaching this point:
             // 1. Comet does not support this operator.
             // 2. The operator could not be supported based on query context and current
             //    configs. In this case, it should have already been tagged with fallback
@@ -435,10 +445,20 @@ case class CometExecRule(session: SparkSession)
       case sub: SubqueryBroadcastExec =>
         sub.child match {
           case b: BroadcastExchangeExec =>
-            // The BroadcastExchangeExec child is CometNativeColumnarToRowExec wrapping
+            // The BroadcastExchangeExec child is a Comet columnar-to-row transition wrapping
             // a Comet plan. Strip the row transition to get the columnar Comet plan.
+            // CometColumnarToRowExec is CodegenSupport, so by the time this rule sees the
+            // subquery plan it is compiled into WholeStageCodegenExec(CometColumnarToRowExec(
+            // InputAdapter(cometPlan))); CometNativeColumnarToRowExec is not CodegenSupport and
+            // sits directly under the exchange.
             val cometChild = b.child match {
               case c2r: CometNativeColumnarToRowExec => c2r.child
+              case c2r: CometColumnarToRowExec => c2r.child
+              case WholeStageCodegenExec(c2r: CometColumnarToRowExec) =>
+                c2r.child match {
+                  case InputAdapter(child) => child
+                  case other => other
+                }
               case other => other
             }
             if (cometChild.isInstanceOf[CometNativeExec]) {
@@ -568,7 +588,7 @@ case class CometExecRule(session: SparkSession)
     } else {
       val normalizedPlan = normalizePlan(plan)
 
-      val planWithJoinRewritten = if (CometConf.COMET_REPLACE_SMJ.get()) {
+      val planWithJoinRewritten = if (CometConf.COMET_FORCE_SHJ.get()) {
         normalizedPlan.transformUp { case p =>
           RewriteJoin.rewrite(p)
         }
@@ -606,7 +626,7 @@ case class CometExecRule(session: SparkSession)
       // Revert CometColumnarShuffle to Spark's ShuffleExchangeExec when both its parent and child
       // are non-Comet HashAggregate/ObjectHashAggregate operators that remained JVM after the main
       // transform pass. See https://github.com/apache/datafusion-comet/issues/4004.
-      if (CometConf.COMET_EXEC_SHUFFLE_REVERT_REDUNDANT_COLUMNAR_ENABLED.get()) {
+      if (CometConf.COMET_SHUFFLE_REVERT_REDUNDANT_COLUMNAR_ENABLED.get()) {
         newPlan = revertRedundantColumnarShuffle(newPlan)
       }
 
@@ -682,6 +702,23 @@ case class CometExecRule(session: SparkSession)
 
   /** Convert a Spark plan to a Comet plan using the specified serde handler */
   private def convertToComet(op: SparkPlan, handler: CometOperatorSerde[_]): Option[SparkPlan] = {
+    val converted = tryConvertToComet(op, handler)
+    if (converted.isEmpty) {
+      // Comet looked at this operator and declined it, so it stays in the Spark plan. Lift any
+      // reasons recorded on its expressions onto the operator itself - see
+      // `rollUpFallbackReasons` for why this is needed - and then make sure something was
+      // recorded. The order is required, not incidental: `reportUnexplainedFallback` inspects only
+      // the operator's own tag, so a reason still sitting on an expression would look like no
+      // reason at all and trip the strict check.
+      rollUpFallbackReasons(op)
+      reportUnexplainedFallback(op)
+    }
+    converted
+  }
+
+  private def tryConvertToComet(
+      op: SparkPlan,
+      handler: CometOperatorSerde[_]): Option[SparkPlan] = {
     val serde = handler.asInstanceOf[CometOperatorSerde[SparkPlan]]
     if (isOperatorEnabled(serde, op)) {
       // For operators that require native children (like writes), check if all data-producing
@@ -726,17 +763,95 @@ case class CometExecRule(session: SparkSession)
   }
 
   /**
+   * Lift fallback reasons recorded on `op`'s expression trees onto `op` itself.
+   *
+   * Extended explain output only walks plan nodes (`ExtendedExplainInfo.sortup` follows
+   * `children` / `innerChildren`, never `expressions`), so a reason tagged on an expression is
+   * invisible unless something lifts it onto the enclosing operator. This mirrors what
+   * [[rollUpInfoMessages]] already does for the informational tags, and replaces the roll-up that
+   * used to be hand-written at every serde call site (see
+   * https://github.com/apache/datafusion-comet/issues/5230).
+   *
+   * Only child *expressions* are collected, not child operators: reasons on a child operator are
+   * already reachable by the explain traversal via `children`.
+   *
+   * Called only when `op` was left in the Spark plan, which scopes the roll-up to the operator
+   * that actually failed conversion. That matters because some expression instances
+   * (`AttributeReference`s, DPP subquery expressions) are shared across operators, so an unscoped
+   * roll-up could surface one expression's reason under several unrelated operators.
+   *
+   * [[reportUnexplainedFallback]] relies on this having run first; the two must not be separated.
+   */
+  private def rollUpFallbackReasons(op: SparkPlan): Unit = {
+    val reasons = op.expressions
+      .flatMap(_.collect { case e: Expression => e })
+      .flatMap(_.getTagValue(CometExplainInfo.FALLBACK_REASONS))
+      .flatten
+      .toSet
+    if (reasons.nonEmpty) {
+      withFallbackReasons(op, reasons)
+    }
+  }
+
+  /**
+   * Handle an operator that Comet declined without stating why.
+   *
+   * When every child is already native, Comet had a real opportunity to convert `op`, so the
+   * absence of any reason - on `op` or anywhere in its expression trees - means a serde returned
+   * `None` and forgot to record one. Under `COMET_STRICT_FALLBACK_REASONS` (enabled for Comet's
+   * own test suites) that is a hard failure; otherwise fall back to a generic message so users
+   * still see something. The generic message is what used to mask this whole class of bug, which
+   * is why the strict check exists.
+   *
+   * Must run *after* [[rollUpFallbackReasons]] for the same operator. The check reads only `op`'s
+   * own tag, because `hasFallbackReason` deliberately does not traverse expressions (it is a
+   * planning control signal, not explain output), so an expression-level reason that has not been
+   * lifted yet would be mistaken for no reason at all. [[convertToComet]] is the only production
+   * caller and keeps the two calls together.
+   *
+   * Package-visible so `CometExecRuleSuite` can drive the strict failure directly: no serde in
+   * the tree reaches this state, which is exactly what the check enforces, so the only way to
+   * test it is to construct the shape by hand.
+   */
+  private[comet] def reportUnexplainedFallback(op: SparkPlan): Unit = {
+    if (op.children.forall(_.isInstanceOf[CometNativeExec]) && !hasFallbackReason(op)) {
+      if (CometConf.COMET_STRICT_FALLBACK_REASONS.get(op.conf)) {
+        throw new IllegalStateException(
+          s"Comet did not convert ${op.nodeName} but recorded no fallback reason on the " +
+            "operator or any of its expressions. Add a withFallbackReason call stating why " +
+            s"conversion failed. Operator:\n$op")
+      }
+      withFallbackReason(op, s"${op.nodeName} is not supported")
+    }
+  }
+
+  /**
    * Lift informational (non-fallback) messages tagged on an operator and its expressions onto the
    * converted Comet plan node so they appear in verbose extended explain output. Expression-level
    * hints would otherwise be invisible because explain only traverses plan nodes, not
-   * expressions.
+   * expressions. `NATIVE_EXPRS` and `CODEGEN_DISPATCH_EXPRS` names across the tree are lifted the
+   * same way so that extended explain can report expression coverage; the dispatched ones
+   * additionally become one combined info line when `spark.comet.explain.codegen.enabled` is set.
    */
   private def rollUpInfoMessages(op: SparkPlan, exec: SparkPlan): Unit = {
-    val fromOp = op.getTagValue(CometExplainInfo.EXTENSION_INFO).getOrElse(Set.empty[String])
-    val fromExprs = op.expressions
-      .flatMap(_.collect { case e: Expression => e })
-      .flatMap(_.getTagValue(CometExplainInfo.EXTENSION_INFO).getOrElse(Set.empty[String]))
-    (fromOp ++ fromExprs).foreach(msg => withInfo(exec, msg))
+    val allExprs = op.expressions.flatMap(_.collect { case e: Expression => e })
+
+    val infos =
+      op.getTagValue(CometExplainInfo.EXTENSION_INFO).getOrElse(Set.empty[String]) ++
+        CometExplainInfo.collectExprTagValues(allExprs, CometExplainInfo.EXTENSION_INFO)
+    infos.foreach(msg => withInfo(exec, msg))
+
+    appendTagValues(
+      exec,
+      CometExplainInfo.NATIVE_EXPRS,
+      CometExplainInfo.collectExprTagValues(allExprs, CometExplainInfo.NATIVE_EXPRS))
+
+    val routedNames =
+      CometExplainInfo.collectExprTagValues(allExprs, CometExplainInfo.CODEGEN_DISPATCH_EXPRS)
+    appendTagValues(exec, CometExplainInfo.CODEGEN_DISPATCH_EXPRS, routedNames)
+    if (routedNames.nonEmpty && CometConf.COMET_EXPLAIN_CODEGEN_ENABLED.get()) {
+      withInfo(exec, s"JVM codegen dispatcher: ${routedNames.toSeq.sorted.mkString(", ")}")
+    }
   }
 
   private def isOperatorEnabled(
@@ -857,6 +972,29 @@ case class CometExecRule(session: SparkSession)
                 CometExecRule.COMET_UNSAFE_PARTIAL,
                 "Partial aggregate disabled: corresponding final aggregate " +
                   "cannot be converted to Comet and intermediate buffer formats are incompatible")
+            }
+          }
+        }
+
+        // CollectList/CollectSet round-trip an ArrayType buffer that Spark declares as BinaryType.
+        // In a multi-stage aggregate with a PartialMerge stage (e.g. Spark's distinct-aggregate
+        // rewrite), Comet cannot represent that buffer consistently across the intermediate stages
+        // (issue #4724), so a fully-native pipeline crashes. Force the whole chain to fall back to
+        // Spark by tagging the feeding pure-Partial; the PartialMerge/Final stages then fall back
+        // via the buffer-source check in doConvert.
+        //
+        // This block is intentionally separate from the tagging block just above: that one only
+        // fires when the Final itself cannot be converted, but `canAggregateBeConverted` skips
+        // the child-native check, so an all-native distinct `collect_list` chain converts its
+        // Final and slips past the earlier tagging pass. This block catches that case.
+        if (agg.aggregateExpressions.exists(_.mode == PartialMerge) &&
+          QueryPlanSerde.hasNativeArrayBufferAgg(agg.aggregateExpressions)) {
+          findPartialAggInPlan(agg.child).foreach { partial =>
+            if (canAggregateBeConverted(partial, Partial)) {
+              partial.setTagValue(
+                CometExecRule.COMET_UNSAFE_PARTIAL,
+                "Partial aggregate disabled: part of a multi-stage CollectList/CollectSet " +
+                  "aggregate whose intermediate buffer cannot round-trip in Comet (issue #4724)")
             }
           }
         }

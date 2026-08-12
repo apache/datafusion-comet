@@ -70,3 +70,85 @@ This is distinct from expressions that have **no** codegen-dispatch path: there,
 incompatible cases fall back to Spark by default, and `allowIncompatible=true` runs the native
 (incompatible) path instead. `cast` is the main example; see the
 [expression reference](../expressions.md) for which expressions have incompatible cases.
+
+## Strings with non-UTF-8 bytes
+
+Spark's `StringType` can hold arbitrary bytes, including sequences that are not valid UTF-8 (for
+example `CAST(X'FF' AS STRING)`). Arrow's string type requires valid UTF-8, so Comet cannot store
+the raw bytes natively. When Comet produces a string from arbitrary bytes (such as
+`CAST(binary AS string)` or a columnar shuffle), it decodes them the same way the JVM does
+(`new String(bytes, UTF_8)`), replacing each ill-formed sequence with the Unicode replacement
+character `U+FFFD`. Spark itself applies the identical replacement whenever such a string is
+materialized (collected, printed, or passed to most string functions), so the rendered result
+matches Spark.
+
+Decoding is not byte-preserving, so results can differ from Spark for any operation that works on the
+underlying bytes rather than on the rendered text:
+
+- **Round-trips.** Spark keeps the original bytes, so `CAST(CAST(X'FF' AS STRING) AS BINARY)` returns
+  `X'FF'`, whereas Comet returns the UTF-8 encoding of `U+FFFD` (`X'EFBFBD'`). `octet_length` and
+  hashing of such a string differ for the same reason.
+- **Value identity.** Decoding maps every ill-formed sequence onto the same `U+FFFD`, so two Spark
+  strings that hold different bytes can become equal in Comet. For example, with `b = X'FF'`,
+  `CAST(b AS STRING) = CAST(X'EFBFBD' AS STRING)` is `false` in Spark (`UTF8String` compares the raw
+  bytes) but `true` in Comet. Equality, joins, grouping, ordering, and byte-based string functions
+  such as `contains` can therefore disagree with Spark when non-UTF-8 bytes are involved.
+
+Both differences require string data that is not valid UTF-8, which does not occur for text read from
+Parquet or produced by string expressions. Consistent handling of invalid UTF-8 across all native
+string paths is tracked by
+[#4764](https://github.com/apache/datafusion-comet/issues/4764).
+
+Separately, Comet's native Parquet scan currently rejects string columns whose stored bytes are not
+valid UTF-8 rather than reading them like Spark
+([#4121](https://github.com/apache/datafusion-comet/issues/4121)).
+
+## ANSI-mode error classes and messages
+
+Under `spark.sql.ansi.enabled=true`, several native error paths raise the error at the correct
+input but with a different exception type, error class, SQLSTATE, or message text than Spark.
+Code that catches `SparkException` and only asserts on message substrings is unaffected; code that
+inspects the exception class, `getCondition()`, or the parameterised error class will observe
+divergence:
+
+- Byte / Short `Add`, `Subtract`, and `Multiply` overflow raises `ARITHMETIC_OVERFLOW` where Spark
+  4.1 raises `BINARY_ARITHMETIC_OVERFLOW`, and Long overflow surfaces as `"integer overflow"`
+  rather than `"long overflow"`. `Abs` uses Rust type names (`Int8`, `Int64`, ...) in the message
+  instead of Spark's SQL type names, and the scalar path of `UnaryMinus` on Byte / Short emits a
+  malformed message. The `try_` suggestion is omitted from all of these
+  ([#5071](https://github.com/apache/datafusion-comet/issues/5071)).
+- Wide-decimal arithmetic overflow, decimal divide-by-zero, and decimal-to-decimal cast overflow
+  raise raw Arrow errors that bypass `SparkErrorConverter` and surface as `CometNativeException`
+  rather than `SparkArithmeticException` with the proper error class and query context
+  ([#5072](https://github.com/apache/datafusion-comet/issues/5072)).
+- Spark 4.2 introduced additional ANSI arithmetic overflow behavior differences that Comet does
+  not yet track ([#4967](https://github.com/apache/datafusion-comet/issues/4967)).
+
+## Known result-value divergences
+
+The following native paths silently return values that differ from Spark for edge-case inputs.
+Most also have entries in the per-category expression pages linked above; they are collected here
+so users hunting an unexpected value have a single place to check:
+
+- `CAST(boolean AS DECIMAL(p, s))` where `10^s` exceeds the target precision (e.g.
+  `DECIMAL(1, 1)`) throws `NUMERIC_VALUE_OUT_OF_RANGE` regardless of the eval mode. Spark returns
+  `NULL` under legacy and try mode, and only throws under ANSI
+  ([#5068](https://github.com/apache/datafusion-comet/issues/5068)).
+- `CAST(string AS timestamp)`, `CAST(string AS timestamp_ntz)`, `to_time` and `try_to_time` trim
+  Unicode whitespace. Spark trims only the bytes `0x00`-`0x20` and `0x7F`, so a value padded with
+  an ASCII control byte parses in Spark and returns `NULL` in Comet, while a value padded with
+  non-ASCII whitespace such as `U+3000` returns `NULL` in Spark and parses in Comet
+  ([#5149](https://github.com/apache/datafusion-comet/issues/5149)).
+- Native `RANGE` window frames with an explicit `PRECEDING` / `FOLLOWING` offset diverge from
+  Spark when the boundary arithmetic overflows for `DATE` or `DECIMAL` `ORDER BY` columns
+  ([#5022](https://github.com/apache/datafusion-comet/issues/5022)).
+
+## Object store cache
+
+When Comet's native scan reads Parquet files, it caches one object store instance per
+`(scheme + host + port, hadoop-config-hash)` key. For `abfss://container@account.dfs.core.windows.net/...`
+URLs, the container lives in the URL userinfo, not the host, so two containers in one storage
+account currently collide on the same cache entry. Within a single executor process, reading from
+a second container after a first can be served by the first container's store instance and return
+its data. S3, GCS, and HDFS are unaffected because their bucket / host lives in the URL host
+component. Tracked by [#4993](https://github.com/apache/datafusion-comet/issues/4993).

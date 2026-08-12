@@ -22,6 +22,7 @@ package org.apache.comet
 import java.io.File
 import java.nio.file.Files
 
+import org.apache.comet.CometSparkSessionExtensions.isSpark42Plus
 import org.apache.comet.iceberg.IcebergReflection
 
 /**
@@ -29,13 +30,18 @@ import org.apache.comet.iceberg.IcebergReflection
  */
 trait CometIcebergTestBase {
 
+  // No Iceberg spark-runtime is published for Spark 4.2 yet, so the build reuses the 4.0 runtime.
+  // That jar is binary-incompatible with Spark 4.2, whose `connector.catalog.View` is a class
+  // rather than an interface, so loading `SparkView` throws IncompatibleClassChangeError. Report
+  // Iceberg as unavailable on 4.2 so these suites skip until a compatible runtime exists.
   protected def icebergAvailable: Boolean =
-    try {
-      IcebergReflection.loadClass("org.apache.iceberg.catalog.Catalog")
-      true
-    } catch {
-      case _: ClassNotFoundException => false
-    }
+    !isSpark42Plus &&
+      (try {
+        IcebergReflection.loadClass("org.apache.iceberg.catalog.Catalog")
+        true
+      } catch {
+        case _: ClassNotFoundException => false
+      })
 
   /**
    * Whether the Iceberg library on the classpath is at least the given (major, minor) version.
@@ -66,7 +72,7 @@ trait CometIcebergTestBase {
     finally deleteRecursively(dir)
   }
 
-  private def deleteRecursively(file: File): Unit = {
+  protected def deleteRecursively(file: File): Unit = {
     if (file.isDirectory) file.listFiles().foreach(deleteRecursively)
     file.delete()
   }

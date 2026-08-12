@@ -44,6 +44,7 @@ use datafusion::{
 use datafusion_comet_proto::spark_operator::Operator;
 use datafusion_comet_spark_expr::url_funcs::{CometParseUrl, CometTryParseUrl};
 use datafusion_spark::function::array::array_contains::SparkArrayContains;
+use datafusion_spark::function::array::repeat::SparkArrayRepeat;
 use datafusion_spark::function::bitwise::bit_count::SparkBitCount;
 use datafusion_spark::function::bitwise::bit_get::SparkBitGet;
 use datafusion_spark::function::bitwise::bit_shift::SparkBitShift;
@@ -69,6 +70,7 @@ use datafusion_spark::function::string::char::CharFunc;
 use datafusion_spark::function::string::concat::SparkConcat;
 use datafusion_spark::function::string::luhn_check::SparkLuhnCheck;
 use datafusion_spark::function::string::space::SparkSpace;
+use datafusion_spark::function::string::substring::SparkSubstring;
 use datafusion_spark::function::url::try_url_decode::TryUrlDecode as SparkTryUrlDecode;
 use datafusion_spark::function::url::url_decode::UrlDecode as SparkUrlDecode;
 use datafusion_spark::function::url::url_encode::UrlEncode as SparkUrlEncode;
@@ -268,6 +270,7 @@ fn op_name(op: &OpStruct) -> &'static str {
         OpStruct::CsvScan(_) => "CsvScan",
         OpStruct::ShuffleScan(_) => "ShuffleScan",
         OpStruct::BroadcastNestedLoopJoin(_) => "BroadcastNestedLoopJoin",
+        OpStruct::Sample(_) => "Sample",
     }
 }
 
@@ -349,6 +352,11 @@ struct ExecutionContext {
     /// cheap to clone; the underlying `Global<JObject>` releases its JNI global ref on drop
     /// via `jni`'s `Drop` impl.
     pub task_context: Option<Arc<Global<JObject<'static>>>>,
+    /// Context `ClassLoader` of the driving Spark task thread, captured at `createPlan` time and
+    /// threaded into every JVM scalar UDF the planner builds; see `CometUdfBridge.evaluate` for why
+    /// it has to travel with the plan. `None` when no driving Spark task is present (unit tests,
+    /// direct native driver runs). Lifetime is as for `task_context` above.
+    pub class_loader: Option<Arc<Global<JObject<'static>>>>,
 }
 
 /// Accept serialized query plan and return the address of the native query plan.
@@ -376,6 +384,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
     task_cpus: jlong,
     key_unwrapper_obj: JObject,
     task_context_obj: JObject,
+    class_loader_obj: JObject,
 ) -> jlong {
     try_unwrap_or_throw(&e, |env| {
         // Deserialize Spark configs
@@ -497,11 +506,17 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
                 String::new()
             };
 
-            // Capture the driving Spark task's TaskContext as a JNI global reference when
-            // non-null. The `Arc<Global<JObject>>` releases its global ref on drop, so cleanup
-            // is automatic when the ExecutionContext drops.
+            // Capture the driving Spark task's TaskContext and context ClassLoader as JNI global
+            // references when non-null. The `Arc<Global<JObject>>` releases its global ref on
+            // drop, so cleanup is automatic when the ExecutionContext drops.
             let task_context = if !task_context_obj.is_null() {
                 Some(Arc::new(jni_new_global_ref!(env, task_context_obj)?))
+            } else {
+                None
+            };
+
+            let class_loader = if !class_loader_obj.is_null() {
+                Some(Arc::new(jni_new_global_ref!(env, class_loader_obj)?))
             } else {
                 None
             };
@@ -533,6 +548,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
                 ),
                 tracing_event_name,
                 task_context,
+                class_loader,
             });
 
             Ok(Box::into_raw(exec_context) as i64)
@@ -573,6 +589,20 @@ fn prepare_datafusion_session_context(
             &ScalarValue::Float64(Some(1.1)),
         );
 
+    // Translate the Comet-namespaced row-level pushdown flag into the equivalent
+    // DataFusion session options. `pushdown_filters` enables the parquet reader's
+    // RowFilter evaluation during decode (late materialization); `reorder_filters`
+    // is only meaningful when pushdown_filters is on, so they move together. Set
+    // before the `spark.comet.datafusion.*` testing escape hatch pass-through below,
+    // so an explicit override of either key wins instead of being silently forced
+    // back to `true`.
+    if spark_config.get_bool(COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED) {
+        session_config =
+            session_config.set_str("datafusion.execution.parquet.pushdown_filters", "true");
+        session_config =
+            session_config.set_str("datafusion.execution.parquet.reorder_filters", "true");
+    }
+
     // Pass through DataFusion configs from Spark.
     // e.g: spark-shell --conf spark.comet.datafusion.sql_parser.parse_float_as_decimal=true
     // becomes datafusion.sql_parser.parse_float_as_decimal=true
@@ -582,16 +612,6 @@ fn prepare_datafusion_session_context(
             let df_key = format!("datafusion.{df_key}");
             session_config = session_config.set_str(&df_key, value);
         }
-    }
-
-    // Translate the Comet-namespaced row-level pushdown flag into the equivalent
-    // DataFusion session options. `pushdown_filters` enables the parquet reader's
-    // RowFilter evaluation during decode (late materialization); `reorder_filters`
-    // is only meaningful when pushdown_filters is on, so they move together.
-    if spark_config.get_bool(COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED) {
-        session_config = session_config
-            .set_str("datafusion.execution.parquet.pushdown_filters", "true")
-            .set_str("datafusion.execution.parquet.reorder_filters", "true");
     }
 
     let runtime = rt_config.build()?;
@@ -608,11 +628,6 @@ fn prepare_datafusion_session_context(
 
 // register UDFs from datafusion-spark crate
 fn register_datafusion_spark_function(session_ctx: &SessionContext) {
-    // Don't register SparkArrayRepeat — it returns NULL when the element is NULL
-    // (e.g. array_repeat(null, 3) returns NULL instead of [null, null, null]).
-    // Comet's Scala serde wraps the call in a CaseWhen for null count handling,
-    // so DataFusion's built-in ArrayRepeat is sufficient.
-    // TODO: file upstream issue against datafusion-spark
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkExpm1::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkSha2::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(CharFunc::default()));
@@ -633,6 +648,7 @@ fn register_datafusion_spark_function(session_ctx: &SessionContext) {
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkSpace::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkBitCount::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkArrayContains::default()));
+    session_ctx.register_udf(ScalarUDF::new_from_impl(SparkArrayRepeat::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkBin::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkStrToMap::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkUrlDecode::default()));
@@ -646,6 +662,7 @@ fn register_datafusion_spark_function(session_ctx: &SessionContext) {
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkRint::default()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkBitShift::right_unsigned()));
     session_ctx.register_udf(ScalarUDF::new_from_impl(SparkSoundex::default()));
+    session_ctx.register_udf(ScalarUDF::new_from_impl(SparkSubstring::default()));
 }
 
 /// Prepares arrow arrays for output.
@@ -777,7 +794,9 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
                 let planner =
                     PhysicalPlanner::new(Arc::clone(&exec_context.session_ctx), partition)
                         .with_exec_id(exec_context_id)
-                        .with_task_context(exec_context.task_context.clone());
+                        .with_sql_text_pool(&exec_context.spark_plan)
+                        .with_task_context(exec_context.task_context.clone())
+                        .with_class_loader(exec_context.class_loader.clone());
                 let (scans, shuffle_scans, root_op) = planner.create_plan(
                     &exec_context.spark_plan,
                     &mut exec_context.input_sources.clone(),

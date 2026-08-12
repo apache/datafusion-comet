@@ -23,7 +23,7 @@ import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
-import org.apache.comet.serde.QueryPlanSerde.{createBinaryExpr, exprToProtoInternal, optExprWithFallbackReason, scalarFunctionExprToProto}
+import org.apache.comet.serde.QueryPlanSerde.{createBinaryExpr, exprToProtoInternal, scalarFunctionExprToProto}
 import org.apache.comet.shims.CometTypeShim
 
 object CometMapKeys extends CometExpressionSerde[MapKeys] {
@@ -34,7 +34,7 @@ object CometMapKeys extends CometExpressionSerde[MapKeys] {
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     val childExpr = exprToProtoInternal(expr.child, inputs, binding)
     val mapKeysScalarExpr = scalarFunctionExprToProto("map_keys", childExpr)
-    optExprWithFallbackReason(mapKeysScalarExpr, expr, expr.children: _*)
+    mapKeysScalarExpr
   }
 }
 
@@ -46,7 +46,7 @@ object CometMapEntries extends CometExpressionSerde[MapEntries] {
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     val childExpr = exprToProtoInternal(expr.child, inputs, binding)
     val mapEntriesScalarExpr = scalarFunctionExprToProto("map_entries", childExpr)
-    optExprWithFallbackReason(mapEntriesScalarExpr, expr, expr.children: _*)
+    mapEntriesScalarExpr
   }
 }
 
@@ -58,7 +58,7 @@ object CometMapValues extends CometExpressionSerde[MapValues] {
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     val childExpr = exprToProtoInternal(expr.child, inputs, binding)
     val mapValuesScalarExpr = scalarFunctionExprToProto("map_values", childExpr)
-    optExprWithFallbackReason(mapValuesScalarExpr, expr, expr.children: _*)
+    mapValuesScalarExpr
   }
 }
 
@@ -71,7 +71,7 @@ object CometMapExtract extends CometExpressionSerde[GetMapValue] {
     val mapExpr = exprToProtoInternal(expr.child, inputs, binding)
     val keyExpr = exprToProtoInternal(expr.key, inputs, binding)
     val mapExtractExpr = scalarFunctionExprToProto("map_extract", mapExpr, keyExpr)
-    optExprWithFallbackReason(mapExtractExpr, expr, expr.children: _*)
+    mapExtractExpr
   }
 }
 
@@ -80,6 +80,12 @@ private object MapKeyDedupPolicySupport {
     s"`${SQLConf.MAP_KEY_DEDUP_POLICY.key}` is set to " +
       s"`${SQLConf.MapKeyDedupPolicy.LAST_WIN}`; Comet's native map construction " +
       "does not implement LAST_WIN dedup semantics."
+
+  val nullKeyReason: String =
+    "Spark rejects a `NULL` element inside the keys array with a `RuntimeException`" +
+      " (`Cannot use null as map key`); Comet's native `map_from_arrays` / `map_from_entries`" +
+      " does not detect a per-element `NULL` key and produces a map with a `NULL` key instead" +
+      " ([#4680](https://github.com/apache/datafusion-comet/issues/4680))."
 
   def isLastWin: Boolean =
     SQLConf.get
@@ -92,6 +98,9 @@ object CometMapFromArrays extends CometExpressionSerde[MapFromArrays] {
 
   override def getIncompatibleReasons(): Seq[String] =
     Seq(MapKeyDedupPolicySupport.incompatibleReason)
+
+  override def getCompatibleNotes(): Seq[String] =
+    Seq(MapKeyDedupPolicySupport.nullKeyReason)
 
   override def getSupportLevel(expr: MapFromArrays): SupportLevel = {
     if (MapKeyDedupPolicySupport.isLastWin) {
@@ -153,6 +162,9 @@ object CometMapFromEntries
   override def getIncompatibleReasons(): Seq[String] =
     Seq(keyUnsupportedReason, valueUnsupportedReason, MapKeyDedupPolicySupport.incompatibleReason)
 
+  override def getCompatibleNotes(): Seq[String] =
+    Seq(MapKeyDedupPolicySupport.nullKeyReason)
+
   override def getSupportLevel(expr: MapFromEntries): SupportLevel = {
     if (SupportLevel.containsType(expr.dataType.keyType, classOf[BinaryType])) {
       Incompatible(Some(keyUnsupportedReason))
@@ -166,12 +178,17 @@ object CometMapFromEntries
   }
 }
 
-object CometStrToMap extends CometScalarFunction[StringToMap]("str_to_map") with CometTypeShim {
+object CometStrToMap
+    extends CometScalarFunction[StringToMap]("str_to_map")
+    with CometTypeShim
+    with CodegenDispatchFallback {
 
   // Spark 4.1.1+ honours spark.sql.legacy.truncateForEmptyRegexSplit by truncating trailing
   // empty entries from the split result. Comet's native str_to_map always behaves as if the flag
-  // were false, so it is incompatible when legacy truncation is enabled. Read by string key so it
-  // resolves on older Spark versions where the config is not registered.
+  // were false. When the flag is true, mark this Incompatible so the CodegenDispatchFallback
+  // trait routes the expression through the JVM codegen dispatcher (Spark's own doGenCode inside
+  // the Comet kernel) rather than falling the entire projection back to Spark. Read by string
+  // key so it resolves on older Spark versions where the config is not registered.
   private val legacyTruncateConfig = "spark.sql.legacy.truncateForEmptyRegexSplit"
 
   private val legacyTruncateReason =

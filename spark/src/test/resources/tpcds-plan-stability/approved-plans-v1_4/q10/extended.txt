@@ -10,7 +10,7 @@ TakeOrderedAndProject
                :     :  +- Filter
                :     :     +- BroadcastHashJoin
                :     :        :-  BroadcastHashJoin [COMET: Unsupported join type ExistenceJoin(exists#1)]
-               :     :        :  :- CometNativeColumnarToRow
+               :     :        :  :- CometColumnarToRow
                :     :        :  :  +- CometBroadcastHashJoin
                :     :        :  :     :- CometFilter
                :     :        :  :     :  +- CometNativeScan parquet spark_catalog.default.customer
@@ -28,7 +28,7 @@ TakeOrderedAndProject
                :     :        :  :                    +- CometFilter
                :     :        :  :                       +- CometNativeScan parquet spark_catalog.default.date_dim
                :     :        :  +- BroadcastExchange
-               :     :        :     +- CometNativeColumnarToRow
+               :     :        :     +- CometColumnarToRow
                :     :        :        +- CometProject
                :     :        :           +- CometBroadcastHashJoin
                :     :        :              :- CometNativeScan parquet spark_catalog.default.web_sales
@@ -38,7 +38,7 @@ TakeOrderedAndProject
                :     :        :                    +- CometFilter
                :     :        :                       +- CometNativeScan parquet spark_catalog.default.date_dim
                :     :        +- BroadcastExchange
-               :     :           +- CometNativeColumnarToRow
+               :     :           +- CometColumnarToRow
                :     :              +- CometProject
                :     :                 +- CometBroadcastHashJoin
                :     :                    :- CometNativeScan parquet spark_catalog.default.catalog_sales
@@ -48,14 +48,14 @@ TakeOrderedAndProject
                :     :                          +- CometFilter
                :     :                             +- CometNativeScan parquet spark_catalog.default.date_dim
                :     +- BroadcastExchange
-               :        +- CometNativeColumnarToRow
+               :        +- CometColumnarToRow
                :           +- CometProject
                :              +- CometFilter
                :                 +- CometNativeScan parquet spark_catalog.default.customer_address
                +- BroadcastExchange
-                  +- CometNativeColumnarToRow
+                  +- CometColumnarToRow
                      +- CometProject
                         +- CometFilter
                            +- CometNativeScan parquet spark_catalog.default.customer_demographics
 
-Comet accelerated 35 out of 54 eligible operators (64%). Final plan contains 5 transitions between Spark and Comet.
+Comet accelerated 36 out of 52 eligible operators (69%). Final plan contains 5 transitions between Spark and Comet. Accelerated expressions: 7 native, 0 codegen dispatch.
