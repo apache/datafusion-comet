@@ -23,6 +23,7 @@ import java.net.URI
 import java.util.Locale
 
 import org.apache.parquet.hadoop.ParquetOutputFormat
+import org.apache.spark.sql.catalyst.util.CaseInsensitiveMap
 import org.apache.spark.sql.comet.{CometNativeExec, CometWriteFilesExec}
 import org.apache.spark.sql.execution.datasources.WriteFilesExec
 import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
@@ -85,7 +86,15 @@ object CometWriteFiles extends CometOperatorSerde[WriteFilesExec] {
     }
 
     if (op.partitionColumns.nonEmpty || op.staticPartitions.nonEmpty) {
+      // This also declines dynamic partition overwrite. `InsertIntoHadoopFsRelationCommand` only
+      // sets `dynamicPartitionOverwrite` when `staticPartitions.size < partitionColumns.length`,
+      // which implies partition columns, so a dynamic overwrite always lands here.
       return Unsupported(Some("Partitioned writes are not supported"))
+    }
+
+    if (rollsFilesByRecordCount(op)) {
+      return Unsupported(
+        Some("Writes with spark.sql.files.maxRecordsPerFile set are not supported"))
     }
 
     val codec = parseCompressionCodec(op)
@@ -161,6 +170,25 @@ object CometWriteFiles extends CometOperatorSerde[WriteFilesExec] {
   /** The write's output path, recorded on the node by `CometExecRule`. */
   private def outputPathOf(op: WriteFilesExec): Option[String] =
     op.getTagValue(CometExecRule.WRITE_OUTPUT_PATH)
+
+  /**
+   * Whether Spark would roll to a new file every N rows within a task.
+   *
+   * `SingleDirectoryDataWriter.write` rolls a new file once `maxRecordsPerFile` rows have been
+   * written, incrementing the `-c$fileCounter%03d` suffix. Comet's writer asks the commit
+   * protocol for one file per task and always writes `-c000`, so a task that should have produced
+   * several files would produce one oversized file instead - a different layout than Spark's own
+   * writer with no error. Decline the write rather than silently ignore the setting.
+   */
+  private def rollsFilesByRecordCount(op: WriteFilesExec): Boolean = {
+    // Same precedence as FileFormatWriter.write: the `maxRecordsPerFile` write option wins over
+    // spark.sql.files.maxRecordsPerFile. Options are matched case-insensitively there.
+    val maxRecordsPerFile = CaseInsensitiveMap(op.options)
+      .get("maxRecordsPerFile")
+      .map(_.toLong)
+      .getOrElse(SQLConf.get.maxRecordsPerFile)
+    maxRecordsPerFile > 0
+  }
 
   private def parseCompressionCodec(op: WriteFilesExec): String = {
     // `compression`, `parquet.compression` (i.e., ParquetOutputFormat.COMPRESSION), and

@@ -111,6 +111,17 @@ case class CometWriteFilesExec(
 
     val childRDD = child.executeColumnar()
 
+    // SPARK-23271 (defensive): a zero-partition input would spawn no task and therefore write no
+    // file at all, so the output directory would carry no schema for readers. Spark's own
+    // WriteFilesExec swaps in a dummy single-partition RDD for exactly this case. In practice
+    // CometWriteFiles.requiresNativeChildren rules out the sources (LocalTableScan) that produce
+    // a zero-partition RDD, but the swap is kept to match Spark's semantics if that ever changes.
+    val writeRDD = if (childRDD.getNumPartitions == 0) {
+      sparkContext.parallelize(Seq.empty[ColumnarBatch], 1)
+    } else {
+      childRDD
+    }
+
     // Everything the write task needs is resolved here on the driver and captured by value. The
     // closure below must not touch `this`: a CometWriteFilesExec holds `nativeOp` plus the whole
     // converted child subtree, each node of which carries its own non-transient protobuf, so
@@ -124,7 +135,7 @@ case class CometWriteFilesExec(
       // them, while the file must carry the target table's column names.
       dataColumnNames = description.dataColumns.map(_.name),
       childSchema = CometUtils.fromAttributes(child.output),
-      numPartitions = childRDD.getNumPartitions,
+      numPartitions = writeRDD.getNumPartitions,
       nativeMetrics = CometMetricNode.fromCometPlan(this),
       nodeName = nodeName)
 
@@ -133,7 +144,7 @@ case class CometWriteFilesExec(
       s"Expected ${taskWrite.dataColumnNames.length} data columns to write but the child " +
         s"produces ${child.output.length}")
 
-    childRDD.mapPartitionsInternal { batches =>
+    writeRDD.mapPartitionsInternal { batches =>
       CometWriteFilesExec.executeTask(description, committer, jobTrackerID, taskWrite, batches)
     }
   }
