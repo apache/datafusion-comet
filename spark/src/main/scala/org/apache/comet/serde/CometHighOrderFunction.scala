@@ -122,7 +122,6 @@ case class CometHighOrderFunction[T <: HigherOrderFunction](name: String)
         .build()
       Some(ExprOuterClass.Expr.newBuilder().setHighOrderFunc(hof).build())
     } else {
-      withFallbackReason(expr, expr.children: _*)
       None
     }
   }
