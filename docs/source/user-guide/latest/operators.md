@@ -116,8 +116,8 @@ omitted from the tables below and may be reconsidered based on demand:
 
 ## Writes
 
-| Operator         | Status | Notes                                                                                                                                                                            |
-| ---------------- | ------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Operator         | Status | Notes                                                                                                                                                                                      |
+| ---------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `WriteFilesExec` | ⚠️     | Experimental native Parquet writes, disabled by default (opt-in). Requires Spark 4.0+. Non-partitioned, non-bucketed writes only, and not when `spark.sql.files.maxRecordsPerFile` is set. |
 
 ## Python and UDF
