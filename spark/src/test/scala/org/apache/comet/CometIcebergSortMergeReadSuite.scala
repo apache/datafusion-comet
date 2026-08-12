@@ -23,7 +23,6 @@ import java.util.concurrent.atomic.AtomicInteger
 
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.catalyst.expressions.{Add, Ascending, AttributeReference, Literal, SortOrder}
-import org.apache.spark.sql.catalyst.plans.physical.KeyGroupedPartitioning
 import org.apache.spark.sql.comet.{CometIcebergNativeScanExec, CometSortExec}
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution.{SortExec, SparkPlan}
@@ -224,7 +223,9 @@ class CometIcebergSortMergeReadSuite
   /** True once every native scan reports KeyGroupedPartitioning (storage-partitioned join). */
   private def partitioningReported(plan: SparkPlan): Boolean = {
     val scans = nativeScans(plan)
-    scans.nonEmpty && scans.forall(_.outputPartitioning.isInstanceOf[KeyGroupedPartitioning])
+    scans.nonEmpty && scans.forall { s =>
+      s.outputPartitioning.getClass.getSimpleName == "KeyGroupedPartitioning"
+    }
   }
 
   // NOTE ON CANCELED TESTS: the two helpers below CANCEL the test (ScalaTest `assume`, reported as
@@ -433,8 +434,11 @@ class CometIcebergSortMergeReadSuite
       val query = s"SELECT id, data FROM $cat.db.t ORDER BY id"
 
       val enabled = spark.sql(query).collect().toSeq
-      val disabled = withSQLConf(CometConf.COMET_ICEBERG_SORT_MERGE_ENABLED.key -> "false") {
-        spark.sql(query).collect().toSeq
+      // withSQLConf returns the block value on Spark 4.x but Unit on 3.4/3.5, so capture the rows
+      // in a var rather than relying on its return value.
+      var disabled: Seq[org.apache.spark.sql.Row] = Seq.empty
+      withSQLConf(CometConf.COMET_ICEBERG_SORT_MERGE_ENABLED.key -> "false") {
+        disabled = spark.sql(query).collect().toSeq
       }
       assert(enabled == disabled, "reporting the ordering must not change the result")
     }

@@ -26,7 +26,7 @@ import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, SortOrder}
 import org.apache.spark.sql.catalyst.plans.QueryPlan
-import org.apache.spark.sql.catalyst.plans.physical.{KeyGroupedPartitioning, Partitioning, UnknownPartitioning}
+import org.apache.spark.sql.catalyst.plans.physical.{Partitioning, UnknownPartitioning}
 import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.vectorized.ColumnarBatch
@@ -120,29 +120,26 @@ case class CometIcebergNativeScanExec(
   // Only accessed during execution, not planning
   def numPartitions: Int = perPartitionData.length
 
-  // Report Iceberg's KeyGroupedPartitioning (storage-partitioned join) instead of dropping it to
+  // Report Iceberg's key-grouped partitioning (storage-partitioned join) instead of dropping it to
   // UnknownPartitioning. This lets a sort-merge join over co-partitioned tables skip the shuffle.
-  // Without it the join shuffles, the shuffle re-orders the rows, and the sort we
-  // reported comes back. Delegating to originalPlan.outputPartitioning is safe because
-  // perPartitionData IS originalPlan.inputRDD.partitions (1:1, same order), so the partition count
-  // and values match Comet's execution partitions by Spark's own construction. Enable if
-  // COMET_ICEBERG_REPORT_PARTITIONING_ENABLED, and V2 bucketing is enabled. Otherwise, and on
-  // canonicalized keep UnknownPartitioning. The KeyGroupedPartitioning branch does not read
-  // numPartitions, so it avoids forcing DPP resolution and serialization; only the fallback does.
+  // Without it the join shuffles, the shuffle re-orders the rows, and the sort we reported comes
+  // back. Delegating to originalPlan.outputPartitioning is safe because perPartitionData IS
+  // originalPlan.inputRDD.partitions (1:1, same order), so the partition count and values match
+  // Comet's execution partitions by Spark's own construction. We delegate rather than name
+  // KeyGroupedPartitioning so this compiles across Spark versions. Enabled by
+  // COMET_ICEBERG_REPORT_PARTITIONING_ENABLED plus V2 bucketing; otherwise, and on canonicalized
+  // instances, keep UnknownPartitioning. The delegating branch does not read numPartitions, so it
+  // avoids forcing DPP resolution and serialization; only the fallback does.
   //
-  // NOTE: the flag defaults off because the AQE + pushPartValues path is partially verified. There,
-  // EnsureRequirements would need to push commonPartitionValues into the leaf, but
-  // populateCommonPartitionInfo matches only BatchScanExec. We need to verify that before enabling
-  // this.
+  // NOTE: the flag defaults off because the AQE + pushPartValues path is only partially verified.
+  // There, EnsureRequirements would need to push commonPartitionValues into the leaf, but
+  // populateCommonPartitionInfo matches only BatchScanExec. Verify that before enabling this.
   override lazy val outputPartitioning: Partitioning = {
     if (originalPlan != null &&
       CometConf.COMET_ICEBERG_REPORT_PARTITIONING_ENABLED.get() &&
       originalPlan.keyGroupedPartitioning.isDefined &&
       conf.v2BucketingEnabled) {
-      originalPlan.outputPartitioning match {
-        case kgp: KeyGroupedPartitioning => kgp
-        case _ => UnknownPartitioning(numPartitions)
-      }
+      originalPlan.outputPartitioning
     } else {
       UnknownPartitioning(numPartitions)
     }
