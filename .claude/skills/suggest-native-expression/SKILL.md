@@ -99,14 +99,43 @@ against it.
 
 ### Build the pool
 
+The **serde definitions are the source of truth**, not the docs table. Start there:
+
 ```bash
-grep -n "| Codegen dispatch |" docs/source/user-guide/latest/expressions.md
+# Sub-pool A: expressions whose only path is the dispatcher, plus those with a native opt-in.
+grep -rhoE "CometCodegenDispatch\[[A-Za-z0-9]+\]" spark/src/main/scala/org/apache/comet/serde/*.scala |
+  sed 's/.*\[//;s/\]//' | sort -u
+# Which of those also have a native path (rendered "Hybrid" in the docs)?
+grep -rn "NativeOptInAvailable\|CodegenDispatchFallback" spark/src/main/scala/org/apache/comet/serde/*.scala
 ```
 
-Rows marked `Hybrid` are **out of scope**: a native path already exists there and the work is to
-close its compatibility gap, which is `audit-comet-expression` territory. Rows marked `—` or
-`🔜 Planned` are out of scope too: there is nothing to compare against, so the question is
-"implement it at all", which is `implement-comet-expression`.
+Then cross-reference `docs/source/user-guide/latest/expressions.md` for each candidate's SQL name,
+category, and Implementation label. Do **not** build the pool from that table alone: its
+Implementation column is derived from a function-registry lookup, so a dispatcher-routed serde whose
+SQL name does not resolve is rendered `—` and disappears from a table-driven grep. `mask` is the
+worked example: `CometMask extends CometCodegenDispatch[Mask]`, but its row reads `—`. At the time of
+writing the counts are 67 classes extending `CometCodegenDispatch` against 58 rows labelled
+`Codegen dispatch`, so a table-driven pool silently loses candidates.
+
+Two sub-pools, both in scope, with different proposed approaches:
+
+- **A. Dispatch-only** (a plain `CometCodegenDispatch`, no native path). The proposal is a new native
+  kernel or an upstream wiring.
+- **B. Hybrid** (`NativeOptInAvailable` / `CodegenDispatchFallback`: a native path exists but is
+  `Incompatible`, so **the dispatcher is still what runs by default**). These are in scope because
+  the user-visible default is identical to sub-pool A, and so is the win from fixing it. The proposal
+  is different: close the compatibility gap, or add a runtime guard that routes only the genuinely
+  incompatible inputs back through the dispatcher, so the native path can become the default. The
+  mechanics belong to `audit-comet-expression`; this skill's job is to establish that the win is
+  worth someone's time. Roughly 42 expressions sit here, so skipping them would drop the largest
+  block of candidates on a technicality.
+
+Out of scope: rows marked `—` or `🔜 Planned` where Comet has **no** path at all and the whole
+operator falls back to Spark. Those are `implement-comet-expression` territory, because the question
+is "implement it at all" rather than "is native better than dispatch". Their upside is genuinely
+larger than anything in this pool, so if you are looking for the biggest win available, say so and
+point the user at that skill rather than silently ranking within this pool as if it were the whole
+space.
 
 ### Exclude
 
@@ -158,9 +187,12 @@ grep -rn "class\|object" spark/src/main/scala/org/apache/comet/serde/*.scala | g
 
 Record:
 
-- Which trait it uses. A plain `CometCodegenDispatch[T]` means dispatch is the only path.
-  `CodegenDispatchFallback` means a native path exists for some inputs and dispatch catches the
-  rest, which narrows the candidate to the uncovered inputs.
+- Which trait it uses, which decides the sub-pool and therefore the shape of the proposal. A plain
+  `CometCodegenDispatch[T]` means dispatch is the only path (sub-pool A). `NativeOptInAvailable` or
+  `CodegenDispatchFallback` means a native path already exists but is off by default (sub-pool B), so
+  the candidate is not "write a kernel" but "make the existing kernel the default": establish which
+  inputs actually diverge, and whether the divergence is detectable well enough to guard. Read the
+  existing `getIncompatibleReasons()` and treat each listed reason as a claim to verify, not a given.
 - Whether the dispatcher can actually compile it, per `CometBatchKernelCodegen.canHandle` and
   `isSupportedDataType`. If some input or output type is outside that surface, those cases fall
   back to **Spark**, not to the dispatcher. Whole-operator Spark fallback is a much larger cost
@@ -258,8 +290,11 @@ GenericArrayData`, `new StringBuilder`, boxing. Multiply by batch size (8192) to
 4. **Nested or complex input/output types.** Per-row reads of `ListVector` / `StructVector` /
    `MapVector` through the JVM wrappers allocate per row per level. Native code operates on the
    child arrays and offsets directly.
-5. **Cases that fall back to Spark entirely today** (found in Step 2). Removing a whole-operator
-   fallback dwarfs removing a JNI round trip.
+5. **Specific inputs of an in-pool expression that fall back to Spark entirely today** (found in
+   Step 2: an input or output type outside `isSupportedDataType`, so the dispatcher cannot compile
+   the kernel and the whole operator falls back). Recovering those inputs dwarfs removing a JNI
+   round trip. This is about inputs of an expression that is otherwise dispatched, not about
+   expressions Comet does not support at all, which are out of pool.
 6. **Presence in real workloads.** TPC-H / TPC-DS / common ETL shapes. A large relative win on
    an expression nobody runs is not worth a contributor's week.
 
@@ -276,8 +311,8 @@ Anti-signals, each of which pushes the rating down:
 ### Rate it
 
 - **High**: allocation per row that scales with batch size and a named vectorization or zero-copy
-  technique that removes it, on an expression that appears in mainstream workloads. Or removal
-  of a whole-operator Spark fallback.
+  technique that removes it, on an expression that appears in mainstream workloads. Or recovery of
+  inputs that fall back to Spark for the whole operator today.
 - **Medium**: real allocation or hoistable per-row work, but on an expression that is uncommon in
   practice, or where the achievable win is a modest constant factor.
 - **Low**: primitive arithmetic with no allocation, or the win is confined to the per-batch JNI
@@ -370,11 +405,12 @@ Body sections, in this order:
 3. **Compatibility assessment.** The Step 3 rating, the hazard checklist result (state which
    hazards apply and which were checked and cleared), cross-version differences that need shims,
    and whether an upstream `datafusion-spark` or `datafusion-functions` implementation exists.
-4. **Proposed approach.** Either "wire the upstream function" (point at
-   `wire-datafusion-function`) or "implement a native kernel" (point at
-   `implement-comet-expression`). For a `Medium` compatibility rating, state the compatible
-   subset, the runtime guard that detects the rest, and that the rest stays on
-   `CodegenDispatchFallback`.
+4. **Proposed approach.** One of three, depending on the sub-pool and what upstream offers: "wire the
+   upstream function" (point at `wire-datafusion-function`), "implement a native kernel" (point at
+   `implement-comet-expression`), or, for sub-pool B, "make the existing native path the default by
+   guarding the divergent inputs" (point at `audit-comet-expression`, and name the config key that
+   gates it today). For a `Medium` compatibility rating, state the compatible subset, the runtime
+   guard that detects the rest, and that the rest stays on `CodegenDispatchFallback`.
 5. **Non-goals.** Anything the issue deliberately leaves out, most often the incompatible subset
    and any collation work.
 6. **Acceptance criteria.** Bit-identical output for the covered subset including nulls and error
@@ -486,7 +522,8 @@ action, the log line is the durable record that the call was made.
 - `wire-datafusion-function` — the follow-through when upstream already has the function.
 - `implement-comet-expression` — the follow-through when a new native kernel is needed.
 - `optimize-comet-expression` — for an expression that is already native and merely slow.
-- `audit-comet-expression` — for a `Hybrid` expression whose native path has a compatibility gap.
+- `audit-comet-expression` — the mechanics of closing a compatibility gap on a sub-pool B (`Hybrid`)
+  expression, once this skill has established the win is worth it.
 
 ## Tone and style
 
