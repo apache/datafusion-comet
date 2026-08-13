@@ -15,6 +15,8 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
+-- Config: spark.comet.shuffle.mode=native
+
 statement
 CREATE TABLE test_make_interval(
   years int,
@@ -45,6 +47,7 @@ INSERT INTO test_make_interval VALUES
   (NULL, 1, 2, 3, 4, 5, 6.000000),
   (2, NULL, 2, 3, 4, 5, 6.000000),
   (3, 1, 2, 3, 4, 5, NULL),
+  (-178956970, -8, -306783378, -2, -2147483648, -2147483648, -999999999999.999999),
   (-2147483648, 0, 0, 0, 0, 0, 0.000000)
 
 query
@@ -75,6 +78,17 @@ SELECT make_interval(years),
        make_interval(years, months, weeks, days, hours, mins, secs)
 FROM test_make_interval
 WHERE years = 100
+
+query
+-- Build ARRAY<INTERVAL> from native make_interval below a native shuffle, then consume its
+-- interval child with native GetArrayItem above the shuffle. This pins the CalendarInterval
+-- metadata across both native expression and shuffle boundaries.
+SELECT intervals, intervals[0]
+FROM (
+  SELECT years, array(make_interval(years, months, weeks, days, hours, mins, secs)) AS intervals
+  FROM test_make_interval
+  DISTRIBUTE BY years
+)
 
 query
 SELECT make_interval(0, 1, 0, 1, 0, 0, 100.000001)

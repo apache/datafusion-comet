@@ -169,7 +169,9 @@ object Utils extends CometTypeShim with Logging {
       // Spark stores DayTimeIntervalType as microseconds in an int64, matching Arrow
       // Duration(Microsecond) rather than the lossy Interval(DayTime) {days, millis} layout.
       case _: DayTimeIntervalType => new ArrowType.Duration(TimeUnit.MICROSECOND)
-      case CalendarIntervalType => ArrowType.Struct.INSTANCE
+      case CalendarIntervalType =>
+        throw new UnsupportedOperationException(
+          "CalendarIntervalType requires toArrowField to preserve struct fields and metadata")
       case _ =>
         throw new UnsupportedOperationException(
           s"Unsupported data type: [${dt.getClass.getName}] ${dt.catalogString}")

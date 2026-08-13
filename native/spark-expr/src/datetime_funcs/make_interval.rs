@@ -19,7 +19,7 @@ use crate::arithmetic_overflow_error;
 use arrow::array::{Array, ArrayRef, Decimal128Array, Int32Array, Int64Array, StructArray};
 use arrow::buffer::NullBuffer;
 use arrow::datatypes::{DataType, Field, Fields};
-use datafusion::common::Result;
+use datafusion::common::{DataFusionError, Result};
 use datafusion::logical_expr::{
     ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility,
 };
@@ -76,14 +76,29 @@ fn make_interval(
     hours: i32,
     minutes: i32,
     seconds_micros: i128,
-) -> Option<(i32, i32, i64)> {
-    let months = years.checked_mul(12)?.checked_add(months)?;
-    let days = weeks.checked_mul(7)?.checked_add(days)?;
+) -> std::result::Result<(i32, i32, i64), &'static str> {
+    let months = years
+        .checked_mul(12)
+        .and_then(|years| years.checked_add(months))
+        .ok_or("integer")?;
+    let days = weeks
+        .checked_mul(7)
+        .and_then(|weeks| weeks.checked_add(days))
+        .ok_or("integer")?;
     let micros = i64::try_from(seconds_micros)
-        .ok()?
-        .checked_add(i64::from(hours).checked_mul(MICROS_PER_HOUR)?)?
-        .checked_add(i64::from(minutes).checked_mul(MICROS_PER_MINUTE)?)?;
-    Some((months, days, micros))
+        .ok()
+        .and_then(|seconds| {
+            i64::from(hours)
+                .checked_mul(MICROS_PER_HOUR)
+                .and_then(|hours| seconds.checked_add(hours))
+        })
+        .and_then(|micros| {
+            i64::from(minutes)
+                .checked_mul(MICROS_PER_MINUTE)
+                .and_then(|minutes| micros.checked_add(minutes))
+        })
+        .ok_or("long")?;
+    Ok((months, days, micros))
 }
 
 impl ScalarUDFImpl for SparkMakeInterval {
@@ -106,16 +121,48 @@ impl ScalarUDFImpl for SparkMakeInterval {
             .into_iter()
             .map(|arg| arg.into_array(number_rows))
             .collect::<Result<Vec<_>>>()?;
-        let years = arrays[0].as_any().downcast_ref::<Int32Array>().unwrap();
-        let months = arrays[1].as_any().downcast_ref::<Int32Array>().unwrap();
-        let weeks = arrays[2].as_any().downcast_ref::<Int32Array>().unwrap();
-        let days = arrays[3].as_any().downcast_ref::<Int32Array>().unwrap();
-        let hours = arrays[4].as_any().downcast_ref::<Int32Array>().unwrap();
-        let minutes = arrays[5].as_any().downcast_ref::<Int32Array>().unwrap();
+        let years = arrays[0]
+            .as_any()
+            .downcast_ref::<Int32Array>()
+            .ok_or_else(|| {
+                DataFusionError::Execution("make_interval: expected Int32 years".into())
+            })?;
+        let months = arrays[1]
+            .as_any()
+            .downcast_ref::<Int32Array>()
+            .ok_or_else(|| {
+                DataFusionError::Execution("make_interval: expected Int32 months".into())
+            })?;
+        let weeks = arrays[2]
+            .as_any()
+            .downcast_ref::<Int32Array>()
+            .ok_or_else(|| {
+                DataFusionError::Execution("make_interval: expected Int32 weeks".into())
+            })?;
+        let days = arrays[3]
+            .as_any()
+            .downcast_ref::<Int32Array>()
+            .ok_or_else(|| {
+                DataFusionError::Execution("make_interval: expected Int32 days".into())
+            })?;
+        let hours = arrays[4]
+            .as_any()
+            .downcast_ref::<Int32Array>()
+            .ok_or_else(|| {
+                DataFusionError::Execution("make_interval: expected Int32 hours".into())
+            })?;
+        let minutes = arrays[5]
+            .as_any()
+            .downcast_ref::<Int32Array>()
+            .ok_or_else(|| {
+                DataFusionError::Execution("make_interval: expected Int32 minutes".into())
+            })?;
         let seconds = arrays[6]
             .as_any()
             .downcast_ref::<Decimal128Array>()
-            .unwrap();
+            .ok_or_else(|| {
+                DataFusionError::Execution("make_interval: expected Decimal128 seconds".into())
+            })?;
 
         let mut result_months = Vec::with_capacity(years.len());
         let mut result_days = Vec::with_capacity(years.len());
@@ -140,16 +187,16 @@ impl ScalarUDFImpl for SparkMakeInterval {
                 minutes.value(i),
                 seconds.value(i),
             ) {
-                Some((months, days, micros)) => {
+                Ok((months, days, micros)) => {
                     result_months.push(months);
                     result_days.push(days);
                     result_micros.push(micros);
                     valid.push(true);
                 }
-                None if self.fail_on_error => {
-                    return Err(arithmetic_overflow_error("interval").into());
+                Err(from_type) if self.fail_on_error => {
+                    return Err(arithmetic_overflow_error(from_type).into());
                 }
-                None => {
+                Err(_) => {
                     result_months.push(0);
                     result_days.push(0);
                     result_micros.push(0);
@@ -182,9 +229,12 @@ mod tests {
     fn preserves_spark_microsecond_range_and_overflow() {
         assert_eq!(
             make_interval(1, 2, 3, 4, 2_562_048, 0, 123_456_789_012_123_456),
-            Some((14, 25, 132_680_161_812_123_456))
+            Ok((14, 25, 132_680_161_812_123_456))
         );
-        assert!(make_interval(i32::MAX, 0, 0, 0, 0, 0, 0).is_none());
-        assert!(make_interval(0, 0, 0, 0, i32::MAX, i32::MAX, i128::MAX).is_none());
+        assert_eq!(make_interval(i32::MAX, 0, 0, 0, 0, 0, 0), Err("integer"));
+        assert_eq!(
+            make_interval(0, 0, 0, 0, i32::MAX, i32::MAX, i128::MAX),
+            Err("long")
+        );
     }
 }

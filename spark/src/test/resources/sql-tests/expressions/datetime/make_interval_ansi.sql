@@ -54,6 +54,11 @@ FROM test_make_interval_ansi
 WHERE id BETWEEN 0 AND 9
 ORDER BY id
 
+-- Spark <= 4.1 expects the literal "integer overflow":
+-- https://github.com/apache/spark/blob/v4.1.3/sql/core/src/test/scala/org/apache/spark/sql/errors/QueryExecutionErrorsSuite.scala#L704-L713
+-- Spark 4.2 expects the literal "overflow":
+-- https://github.com/apache/spark/blob/v4.2.0/sql/core/src/test/scala/org/apache/spark/sql/errors/QueryExecutionErrorsSuite.scala#L703-L712
+-- Match the common text across versions.
 query expect_error(overflow. If necessary set)
 SELECT make_interval(years)
 FROM test_make_interval_ansi
