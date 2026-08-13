@@ -245,6 +245,10 @@
 - Spark 3.5.8 (audited 2026-05-27): registry alias of `Upper`. Same support as `upper`.
 - Spark 4.0.1 (audited 2026-05-27): unchanged alias of `Upper`.
 
+## unbase64
+
+- Native candidate (assessed 2026-08-13): Recommended ([#5347](https://github.com/apache/datafusion-comet/issues/5347)). Compatibility: High (semantics identical across 3.4.3, 3.5.8, 4.0.1, and 4.1.1; no collation, timezone, locale, or decimal dependence; the `java.util.Base64.getMimeDecoder()` skip rule and its four `IllegalArgumentException` conditions are fully enumerable from the JDK source, and Comet already ports the mirror-image MIME encoder in `spark_base64`). Upside: High (5 JVM heap allocations per non-null row, roughly 41k per 8192-row batch, plus a double scan from the MIME `decodedOutLength` pre-scan, all removable with the `spark_unhex` pattern of a 256-entry table plus a preallocated `BinaryBuilder`; counts derived from source, not measured, and workload presence is unmeasured). Upstream `datafusion-spark::SparkUnBase64` is not usable: it lowers to `decode(bin, 'base64pad')`, whose strict engine errors on the non-alphabet bytes Spark skips, so it cannot round-trip Comet's own CRLF-chunked `base64` output.
+
 ## upper
 
 - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
