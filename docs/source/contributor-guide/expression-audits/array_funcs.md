@@ -175,6 +175,10 @@
 - Spark 4.0.1 (audited 2026-05-27): semantics unchanged; ANSI default flips to `true`.
 - Spark 4.1.1 (audited 2026-05-27): `inputTypes` tightened to `Seq(ArrayType, IntegralType)` (analysis-time only); runtime unchanged.
 
+## sequence
+
+- Native candidate (assessed 2026-08-13): Recommended for integral element types only ([#5349](https://github.com/apache/datafusion-comet/issues/5349)). Compatibility: Medium (behaviour stable across 3.4.3, 3.5.8, 4.0.1, and 4.1.1, and the integral path is enumerable integer arithmetic with two error conditions, but `TemporalSequenceImpl` / `PeriodSequenceImpl` / `DurationSequenceImpl` carry a `zoneId` and step through `DateTimeUtils.timestampAddInterval`, so DST, month-length arithmetic, and the legacy calendar flags apply; the guard is `start.dataType`, knowable at plan time, with date and timestamp sequences staying on `CodegenDispatchFallback`). Upside: High, measured from the emitted kernel via `CometBatchKernelCodegen.generateSource` (3 heap allocations per non-null row: `new long[n]`, plus the internal `new long[...]` and `new UnsafeArrayData()` in `UnsafeArrayData.fromPrimitiveArray`, two of them scaling with sequence length, plus three passes over every element from the fill loop, the `copyMemory`, and the output-side `getLong`/`setSafe` loop; roughly 48 MB of transient `long[]` per 8192-row batch for a 365-element date spine). Janino compiles the kernel, so there is no hidden whole-operator Spark fallback. Upstream is unusable: no `sequence` in `datafusion-spark`, and `datafusion-functions-nested::range` has different messages and a scalar-argument shape.
+
 ## shuffle
 
 - Spark 3.4.3 (audited 2026-07-02): `Shuffle(child, randomSeed: Option[Long])`; `inputTypes = Seq(ArrayType)`, `dataType = child.dataType`, non-deterministic and stateful. Seeds a Commons Math3 `MersenneTwister` with `randomSeed + partitionIndex` and applies the "inside-out" Fisher-Yates from `RandomIndicesGenerator`. Only the one-argument `shuffle(array)` form exists in SQL. NULL input returns NULL without advancing the RNG.
