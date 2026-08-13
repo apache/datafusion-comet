@@ -61,6 +61,7 @@ fn ansi_arithmetic_kernel(
     left: &ColumnarValue,
     right: &ColumnarValue,
     op: MathOp,
+    data_type: &DataType,
 ) -> Result<ColumnarValue, DataFusionError> {
     let run_kernel = |l: &dyn Datum, r: &dyn Datum| match op {
         MathOp::Add => numeric::add(l, r),
@@ -68,6 +69,11 @@ fn ansi_arithmetic_kernel(
         MathOp::Mul => numeric::mul(l, r),
         MathOp::Div => numeric::div(l, r),
     };
+
+    let is_scalars = matches!(
+        (left, right),
+        (ColumnarValue::Scalar(_), ColumnarValue::Scalar(_))
+    );
 
     let result_array = match (left, right) {
         (ColumnarValue::Array(l), ColumnarValue::Array(r)) => run_kernel(&l, &r),
@@ -86,20 +92,34 @@ fn ansi_arithmetic_kernel(
             let r_arr = r.to_array()?;
             let l_scalar = Scalar::new(l_arr);
             let r_scalar = Scalar::new(r_arr);
-            let res = run_kernel(&l_scalar, &r_scalar)?;
-            let scalar_val = ScalarValue::try_from_array(res.as_ref(), 0)?;
-            return Ok(ColumnarValue::Scalar(scalar_val));
+            run_kernel(&l_scalar, &r_scalar)
         }
     };
+
+    let from_type = match data_type {
+        DataType::Int64 => Ok("long"),
+        DataType::Int32 => Ok("integer"),
+        DataType::Int16 => Ok("short"),
+        DataType::Int8 => Ok("byte"),
+        _ => Err(DataFusionError::Internal(format!(
+            "Unsupported integer data type for overflow error: {:?}",
+            data_type
+        ))),
+    }?;
 
     let array = result_array.map_err(|e| match e {
         ArrowError::DivideByZero => divide_by_zero_error().into(),
         _ => DataFusionError::from(SparkError::ArithmeticOverflow {
-            from_type: String::from("integer"),
+            from_type: String::from(from_type),
         }),
     })?;
 
-    Ok(ColumnarValue::Array(array))
+    if is_scalars {
+        let scalar_val = ScalarValue::try_from_array(array.as_ref(), 0)?;
+        Ok(ColumnarValue::Scalar(scalar_val))
+    } else {
+        Ok(ColumnarValue::Array(array))
+    }
 }
 
 fn ansi_float_div<T>(
@@ -234,7 +254,7 @@ fn checked_arithmetic_internal(
 
     // Early return for integer types in ANSI mode using the fast Datum/Scalar path
     if is_ansi_mode && is_integer_type(data_type) {
-        return ansi_arithmetic_kernel(left, right, op);
+        return ansi_arithmetic_kernel(left, right, op, data_type);
     }
 
     // Materialize operands for Try-mode and float division
@@ -360,7 +380,13 @@ mod tests {
     #[test]
     fn test_checked_add_overflow_errors_in_ansi_mode() {
         let args = int32_args(vec![Some(i32::MAX)], vec![Some(1)]);
-        assert!(checked_add(&args, &DataType::Int32, EvalMode::Ansi).is_err());
+        let result = checked_add(&args, &DataType::Int32, EvalMode::Ansi);
+        assert!(result.is_err());
+        assert!(result
+            .err()
+            .unwrap()
+            .message()
+            .contains("[ARITHMETIC_OVERFLOW] integer overflow"));
     }
 
     #[test]
@@ -436,6 +462,11 @@ mod tests {
         ];
         let result = checked_add(&args, &DataType::Int64, EvalMode::Ansi);
         assert!(result.is_err());
+        assert!(result
+            .err()
+            .unwrap()
+            .message()
+            .contains("[ARITHMETIC_OVERFLOW] long overflow"));
     }
 
     #[test]
