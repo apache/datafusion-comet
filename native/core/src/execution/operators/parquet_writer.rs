@@ -86,7 +86,7 @@ impl ParquetCompression {
 /// Enum representing different types of Arrow writers based on storage backend
 enum ParquetWriter {
     /// Writer for local file system
-    LocalFile(ArrowWriter<File>),
+    LocalFile(Box<ArrowWriter<File>>),
     /// Writer for HDFS or other remote storage (writes to in-memory buffer)
     /// Contains the arrow writer, HDFS operator, and destination path
     /// an Arrow writer writes to in-memory buffer the data converted to Parquet format
@@ -95,7 +95,7 @@ enum ParquetWriter {
     Remote(
         Box<ArrowWriter<Cursor<Vec<u8>>>>,
         Option<opendal::Writer>,
-        Operator,
+        Box<Operator>,
         String,
     ),
 }
@@ -341,7 +341,7 @@ impl ParquetWriterExec {
                 Ok(ParquetWriter::Remote(
                     Box::new(arrow_parquet_buffer_writer),
                     None,
-                    op,
+                    Box::new(op),
                     object_store_path.to_string(),
                 ))
             }
@@ -391,7 +391,7 @@ impl ParquetWriterExec {
                 let writer = ArrowWriter::try_new(file, schema, Some(props)).map_err(|e| {
                     DataFusionError::Execution(format!("Failed to create local file writer: {}", e))
                 })?;
-                Ok(ParquetWriter::LocalFile(writer))
+                Ok(ParquetWriter::LocalFile(Box::new(writer)))
             }
         } else {
             // Unsupported storage scheme

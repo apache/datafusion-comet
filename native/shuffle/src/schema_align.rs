@@ -22,21 +22,19 @@
 //! return-type drift from DataFusion / `datafusion-spark` is self-healing. When a native plan's
 //! output crosses back to the JVM and feeds another native plan, the consuming `ScanExec` casts
 //! every imported column to the catalyst-declared type, so a wrong Arrow type never survives the
-//! boundary. Shuffle is the lone exception, on two counts:
+//! boundary. Shuffle is the lone exception because the writer hash-partitions on these columns, and
+//! Spark's hash differs by type (e.g. `Int32` vs `Int64`), so a drifted type would route rows to
+//! the wrong partition. A read-side cast cannot undo a wrong partition assignment, so the type must
+//! be corrected before partitioning — which forces the alignment onto the writer input.
 //!
-//!   1. The writer hash-partitions on these columns, and Spark's hash differs by type (e.g. `Int32`
-//!      vs `Int64`), so a drifted type would route rows to the wrong partition. A read-side cast
-//!      cannot undo a wrong partition assignment, so the type must be corrected before partitioning.
-//!   2. The shuffle read path (`ShuffleScanExec`) does not cast; it stamps the catalyst schema onto
-//!      the decoded block and errors on any mismatch. The schema is serialized into the block on
-//!      write and trusted on read.
+//! The read path (`ShuffleScanExec`) casts too, so a drift that only affects the batch's Arrow type
+//! and not its partition assignment is absorbed there as well. See
+//! <https://github.com/apache/datafusion-comet/issues/5137>.
 //!
-//! Both force the alignment to happen on the writer input. See
-//! <https://github.com/apache/datafusion-comet/issues/4515> for the running list of mismatched
+//! See <https://github.com/apache/datafusion-comet/issues/4515> for the running list of mismatched
 //! functions.
 
-use arrow::array::{ArrayRef, RecordBatch, RecordBatchOptions};
-use arrow::compute::{cast_with_options, CastOptions};
+use arrow::array::RecordBatch;
 use arrow::datatypes::{Field, Schema, SchemaRef};
 use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::common::DataFusionError;
@@ -49,6 +47,7 @@ use datafusion::{
         RecordBatchStream, SendableRecordBatchStream,
     },
 };
+use datafusion_comet_common::cast_and_stamp_schema;
 use futures::{Stream, StreamExt};
 use std::{
     collections::HashSet,
@@ -73,17 +72,7 @@ fn warn_dedup() -> &'static Mutex<HashSet<String>> {
 pub struct SchemaAlignExec {
     child: Arc<dyn ExecutionPlan>,
     target_schema: SchemaRef,
-    column_actions: Arc<Vec<ColumnAction>>,
     cache: Arc<PlanProperties>,
-}
-
-#[derive(Debug, Clone)]
-enum ColumnAction {
-    /// Pass the input column through unchanged. Any nullability/metadata difference is
-    /// absorbed when the batch is re-stamped via `RecordBatch::try_new_with_options`.
-    Passthrough,
-    /// Cast the input column to the target data_type.
-    Cast,
 }
 
 impl SchemaAlignExec {
@@ -104,7 +93,6 @@ impl SchemaAlignExec {
             )));
         }
         let mut needs_alignment = false;
-        let mut actions = Vec::with_capacity(actual.fields().len());
         let mut target_fields = Vec::with_capacity(actual.fields().len());
         for (idx, (actual_field, expected_field)) in actual
             .fields()
@@ -112,8 +100,8 @@ impl SchemaAlignExec {
             .zip(expected.fields().iter())
             .enumerate()
         {
-            let action = if actual_field.data_type() == expected_field.data_type() {
-                ColumnAction::Passthrough
+            let needs_cast = if actual_field.data_type() == expected_field.data_type() {
+                false
             } else {
                 let signature = format!(
                     "{}|{:?}|{:?}",
@@ -131,10 +119,10 @@ impl SchemaAlignExec {
                         expected_field.data_type()
                     );
                 }
-                ColumnAction::Cast
+                true
             };
             let target_nullable = actual_field.is_nullable() || expected_field.is_nullable();
-            let field_changed = !matches!(action, ColumnAction::Passthrough)
+            let field_changed = needs_cast
                 || target_nullable != actual_field.is_nullable()
                 || expected_field.metadata() != actual_field.metadata()
                 || expected_field.name() != actual_field.name();
@@ -149,7 +137,6 @@ impl SchemaAlignExec {
                 )
                 .with_metadata(expected_field.metadata().clone()),
             );
-            actions.push(action);
         }
         if !needs_alignment {
             return Ok(child);
@@ -164,7 +151,6 @@ impl SchemaAlignExec {
         Ok(Arc::new(Self {
             child,
             target_schema,
-            column_actions: Arc::new(actions),
             cache,
         }))
     }
@@ -214,7 +200,6 @@ impl ExecutionPlan for SchemaAlignExec {
         Ok(Arc::new(Self {
             child: new_child,
             target_schema: Arc::clone(&self.target_schema),
-            column_actions: Arc::clone(&self.column_actions),
             cache,
         }))
     }
@@ -228,7 +213,6 @@ impl ExecutionPlan for SchemaAlignExec {
         Ok(Box::pin(SchemaAlignStream {
             child_stream,
             target_schema: Arc::clone(&self.target_schema),
-            column_actions: Arc::clone(&self.column_actions),
         }))
     }
 
@@ -244,27 +228,17 @@ impl ExecutionPlan for SchemaAlignExec {
 struct SchemaAlignStream {
     child_stream: SendableRecordBatchStream,
     target_schema: SchemaRef,
-    column_actions: Arc<Vec<ColumnAction>>,
 }
 
 impl SchemaAlignStream {
     fn align(&self, batch: RecordBatch) -> Result<RecordBatch, DataFusionError> {
-        let mut columns: Vec<ArrayRef> = Vec::with_capacity(batch.num_columns());
-        for (idx, action) in self.column_actions.iter().enumerate() {
-            let column = batch.column(idx);
-            let aligned = match action {
-                ColumnAction::Passthrough => Arc::clone(column),
-                ColumnAction::Cast => cast_with_options(
-                    column,
-                    self.target_schema.field(idx).data_type(),
-                    &CastOptions::default(),
-                )?,
-            };
-            columns.push(aligned);
-        }
-        let options = RecordBatchOptions::new().with_row_count(Some(batch.num_rows()));
-        RecordBatch::try_new_with_options(Arc::clone(&self.target_schema), columns, &options)
-            .map_err(DataFusionError::from)
+        let num_rows = batch.num_rows();
+        cast_and_stamp_schema(
+            "CometSchemaAlignExec",
+            &self.target_schema,
+            batch.columns().to_vec(),
+            num_rows,
+        )
     }
 }
 

@@ -25,7 +25,7 @@ use crate::{
 use arrow::array::ArrayRef;
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion::common::tree_node::TreeNodeRecursion;
-use datafusion::common::{arrow_datafusion_err, Result as DataFusionResult};
+use datafusion::common::Result as DataFusionResult;
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::metrics::{
     BaselineMetrics, ExecutionPlanMetricsSet, MetricBuilder, MetricsSet, Time,
@@ -35,6 +35,7 @@ use datafusion::{
     physical_expr::*,
     physical_plan::{ExecutionPlan, *},
 };
+use datafusion_comet_common::cast_and_stamp_schema;
 use futures::Stream;
 use jni::objects::{Global, JByteBuffer, JObject};
 use std::{
@@ -326,14 +327,16 @@ impl Stream for ShuffleScanStream {
             InputBatch::EOF => Poll::Ready(None),
             InputBatch::Batch(columns, num_rows) => {
                 self.baseline_metrics.record_output(*num_rows);
-                let options =
-                    arrow::array::RecordBatchOptions::new().with_row_count(Some(*num_rows));
-                let maybe_batch = arrow::array::RecordBatch::try_new_with_options(
-                    self.shuffle_scan.schema(),
+                // Reconcile the decoded block with the catalyst-declared schema rather than
+                // stamping it on, so that nested field nullability drift is absorbed here the way
+                // `ScanExec` absorbs it at the FFI boundary.
+                // See https://github.com/apache/datafusion-comet/issues/5137.
+                let maybe_batch = cast_and_stamp_schema(
+                    self.shuffle_scan.name(),
+                    &self.shuffle_scan.schema,
                     columns.clone(),
-                    &options,
-                )
-                .map_err(|e| arrow_datafusion_err!(e));
+                    *num_rows,
+                );
                 Poll::Ready(Some(maybe_batch))
             }
         };
@@ -505,6 +508,81 @@ mod tests {
             assert_eq!(col1.value(0), "hello");
             assert_eq!(col1.value(1), "world");
             assert_eq!(col1.value(2), "hello");
+        });
+    }
+
+    /// A decoded shuffle block whose nested field nullability is narrower than the catalyst-declared
+    /// type must be reconciled, not rejected. `ShuffleScanExec` used to stamp the declared schema
+    /// straight onto the block, which aborted the task on a single nested `nullable` flag even
+    /// though a non-null child is a strict subset of a nullable one.
+    /// See <https://github.com/apache/datafusion-comet/issues/5137>.
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn test_nested_nullability_drift_is_reconciled() {
+        use super::*;
+        use crate::execution::operators::nested_nullability_fixture::{
+            list_of_struct, list_of_struct_type,
+        };
+        use arrow::array::Array;
+        use datafusion::physical_plan::ExecutionPlan;
+        use futures::StreamExt;
+
+        // The block carries `List(Struct("id": Int64, "flag": non-null Boolean))` while catalyst
+        // declared the `flag` child nullable.
+        let block_column = list_of_struct(false);
+        let declared = list_of_struct_type(true);
+        let mut scan = ShuffleScanExec::new(
+            super::super::super::planner::TEST_EXEC_CONTEXT_ID,
+            None,
+            vec![declared.clone()],
+        )
+        .unwrap();
+        scan.set_input_batch(InputBatch::new(vec![block_column], Some(2)));
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let ctx = Arc::new(TaskContext::default());
+            let mut stream = scan.execute(0, ctx).unwrap();
+            let batch = stream.next().await.unwrap().unwrap();
+
+            assert_eq!(batch.schema().field(0).data_type(), &declared);
+            assert_eq!(batch.num_rows(), 2);
+            // The values must survive the reconciliation untouched. `ArrayData` equality is
+            // logical, so this holds regardless of whether the cast materialized an all-valid
+            // null buffer for the widened child.
+            assert_eq!(batch.column(0).to_data(), list_of_struct(true).to_data());
+        });
+    }
+
+    /// An unreconcilable column must name the operator and the column, since arrow's own message
+    /// reports only `at column index N`.
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn test_unreconcilable_column_error_names_operator() {
+        use super::*;
+        use arrow::datatypes::Fields;
+        use datafusion::physical_plan::ExecutionPlan;
+        use futures::StreamExt;
+
+        let declared =
+            DataType::Struct(Fields::from(vec![Field::new("id", DataType::Int64, true)]));
+        let mut scan = ShuffleScanExec::new(
+            super::super::super::planner::TEST_EXEC_CONTEXT_ID,
+            None,
+            vec![declared],
+        )
+        .unwrap();
+        let column: ArrayRef = Arc::new(StringArray::from(vec!["a", "b"]));
+        scan.set_input_batch(InputBatch::new(vec![column], Some(2)));
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let ctx = Arc::new(TaskContext::default());
+            let mut stream = scan.execute(0, ctx).unwrap();
+            let err = stream.next().await.unwrap().unwrap_err().to_string();
+            assert!(err.contains("ShuffleScanExec"), "{err}");
+            assert!(err.contains("col[0]"), "{err}");
+            assert!(err.contains("col_0: expected Struct"), "{err}");
         });
     }
 }
