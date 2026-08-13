@@ -17,8 +17,10 @@
 
 use arrow::array::{RecordBatch, RecordBatchOptions};
 use arrow::datatypes::SchemaRef;
+use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::common::DataFusionError;
 use datafusion::physical_expr::{EquivalenceProperties, PhysicalExpr};
+use datafusion::physical_plan::apply_expression_roots;
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::{
     execution::TaskContext,
@@ -96,6 +98,13 @@ impl ExecutionPlan for ExpandExec {
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
         vec![&self.child]
+    }
+
+    fn apply_expressions(
+        &self,
+        f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> datafusion::common::Result<TreeNodeRecursion>,
+    ) -> datafusion::common::Result<TreeNodeRecursion> {
+        apply_expression_roots(self.projections.iter().flatten(), f)
     }
 
     fn with_new_children(

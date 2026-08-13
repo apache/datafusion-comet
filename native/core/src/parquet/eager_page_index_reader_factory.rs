@@ -56,10 +56,11 @@ use datafusion::execution::cache::cache_manager::FileMetadataCache;
 use datafusion::physical_plan::metrics::ExecutionPlanMetricsSet;
 use datafusion_datasource::PartitionedFile;
 use futures::future::BoxFuture;
-use futures::FutureExt;
-use object_store::ObjectStore;
+use futures::{FutureExt, TryFutureExt};
+use object_store::{ObjectStore, ObjectStoreExt};
 use parquet::arrow::arrow_reader::ArrowReaderOptions;
-use parquet::arrow::async_reader::{AsyncFileReader, ParquetObjectReader};
+use parquet::arrow::async_reader::AsyncFileReader;
+use parquet::errors::ParquetError;
 use parquet::file::metadata::{PageIndexPolicy, ParquetMetaData};
 use std::fmt::Debug;
 use std::ops::Range;
@@ -93,19 +94,10 @@ impl ParquetFileReaderFactory for EagerPageIndexReaderFactory {
             partitioned_file.object_meta.location.as_ref(),
             metrics,
         );
-        let mut inner = ParquetObjectReader::new(
-            Arc::clone(&self.store),
-            partitioned_file.object_meta.location.clone(),
-        )
-        .with_file_size(partitioned_file.object_meta.size);
-        if let Some(hint) = metadata_size_hint {
-            inner = inner.with_footer_size_hint(hint);
-        }
 
         Ok(Box::new(EagerPageIndexReader {
             file_metrics,
             store: Arc::clone(&self.store),
-            inner,
             partitioned_file,
             metadata_cache: Arc::clone(&self.metadata_cache),
             metadata_size_hint,
@@ -113,10 +105,12 @@ impl ParquetFileReaderFactory for EagerPageIndexReaderFactory {
     }
 }
 
+/// Reads bytes straight off the `ObjectStore`, the same way DataFusion's own `ParquetFileReader`
+/// does, and overrides only the metadata fetch. `ParquetFileReader::new` is crate-private, so the
+/// byte-range plumbing is duplicated here rather than delegated.
 struct EagerPageIndexReader {
     file_metrics: ParquetFileMetrics,
     store: Arc<dyn ObjectStore>,
-    inner: ParquetObjectReader,
     partitioned_file: PartitionedFile,
     metadata_cache: Arc<FileMetadataCache>,
     metadata_size_hint: Option<usize>,
@@ -126,7 +120,10 @@ impl AsyncFileReader for EagerPageIndexReader {
     fn get_bytes(&mut self, range: Range<u64>) -> BoxFuture<'_, parquet::errors::Result<Bytes>> {
         let bytes_scanned = range.end - range.start;
         self.file_metrics.bytes_scanned.add(bytes_scanned as usize);
-        self.inner.get_bytes(range)
+        self.store
+            .get_range(&self.partitioned_file.object_meta.location, range)
+            .map_err(|e| ParquetError::External(Box::new(e)))
+            .boxed()
     }
 
     fn get_byte_ranges(
@@ -138,7 +135,13 @@ impl AsyncFileReader for EagerPageIndexReader {
     {
         let total: u64 = ranges.iter().map(|r| r.end - r.start).sum();
         self.file_metrics.bytes_scanned.add(total as usize);
-        self.inner.get_byte_ranges(ranges)
+        async move {
+            self.store
+                .get_ranges(&self.partitioned_file.object_meta.location, &ranges)
+                .await
+                .map_err(|e| ParquetError::External(Box::new(e)))
+        }
+        .boxed()
     }
 
     fn get_metadata<'a>(
