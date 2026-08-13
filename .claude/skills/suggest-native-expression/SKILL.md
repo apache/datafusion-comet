@@ -50,8 +50,8 @@ on them.
   section the filed issue should reference.
 - `docs/source/user-guide/latest/compatibility/index.md`, section "Native and codegen-dispatch
   implementations". Defines the two paths and which one is the default.
-- `docs/source/user-guide/latest/expressions.md`, the Implementation legend and tables. The
-  `Codegen dispatch` rows are the candidate pool.
+- `docs/source/user-guide/latest/expressions.md`, the Implementation legend and tables. Useful for a
+  candidate's SQL name, category, and status, but see Step 1: this table is not the pool.
 - `docs/source/contributor-guide/optimizing_expressions.md`, the "Proven techniques" table. If
   no technique in that table applies to the candidate, the native upside claim is weak.
 - `spark/src/main/scala/org/apache/comet/serde/CometExpressionSerde.scala` for the
@@ -209,10 +209,24 @@ dispatcher it would replace is exact.
 
 ### Read the Spark implementation across versions
 
-Reuse the clone recipe from `audit-comet-expression` (Spark 3.4.3, 3.5.8, 4.0.1, 4.1.1) and read
-`eval` / `nullSafeEval` / `doGenCode`, `inputTypes`, `dataType`, ANSI branches, and any
-config the expression reads. Note behavior that differs across versions: each divergence is a
-shim the native path would need.
+Derive the version list from the build rather than hardcoding it, so the assessment does not go stale
+as Comet drops and adds Spark support:
+
+```bash
+grep -oE "<spark.version>[0-9.]+</spark.version>" pom.xml | sed -E 's/<[^>]+>//g' | sort -u
+```
+
+Read `eval` / `nullSafeEval` / `doGenCode`, `inputTypes`, `dataType`, ANSI branches, and any config
+the expression reads, for each of those versions. The class body is usually short enough to fetch
+directly instead of cloning:
+
+```bash
+curl -sSfL "https://raw.githubusercontent.com/apache/spark/v<version>/sql/catalyst/src/main/scala/org/apache/spark/sql/catalyst/expressions/<file>.scala"
+```
+
+Diff the class body between adjacent versions rather than eyeballing it. Note behavior that differs:
+each divergence is a shim the native path would need, and "identical across all supported versions"
+is itself a finding worth stating, because it means no shim.
 
 ### Check upstream first
 
@@ -248,7 +262,7 @@ run rather than skimmed.
 | Lambda bodies or arbitrary child expression trees (`transform`, `aggregate`, `zip_with`)                                                                    | The native path would need to evaluate an arbitrary Catalyst tree, not a fixed kernel                                   |
 | Dependence on JVM session state beyond a scalar config (SQLConf lookups, user classes, reflection)                                                          | State that cannot be serialized into the plan cannot cross into native code                                             |
 | Nondeterminism or ordering-sensitivity (hash iteration order, unstable sorts)                                                                               | Output order must match Spark's, which is often an implementation detail rather than a spec                             |
-| Behavior that differs across 3.4.3 / 3.5.8 / 4.0.1 / 4.1.1                                                                                                  | Each divergence is a shim; several divergences means the native path carries version branches forever                   |
+| Behavior that differs across the Spark versions pinned in `pom.xml`                                                                                         | Each divergence is a shim; several divergences means the native path carries version branches forever                   |
 
 ### Rate it
 
