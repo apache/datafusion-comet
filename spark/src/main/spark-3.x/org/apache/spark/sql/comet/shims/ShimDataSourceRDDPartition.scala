@@ -23,7 +23,7 @@ import org.apache.spark.sql.connector.read.InputPartition
 import org.apache.spark.sql.execution.datasources.v2.DataSourceRDDPartition
 
 object ShimDataSourceRDDPartition {
-  // In Spark 3.4, 3.5, 4.0, and 4.1 a DataSourceRDDPartition holds a Seq[InputPartition]
+  // In Spark 3.5, 4.0, and 4.1 a DataSourceRDDPartition holds a Seq[InputPartition]
   // under `inputPartitions`. In 4.2 it was renamed to a single `inputPartition`.
   def inputPartitions(p: DataSourceRDDPartition): Seq[InputPartition] = p.inputPartitions
 }

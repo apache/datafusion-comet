@@ -30,14 +30,14 @@ Here is an overview of the changes that we need to make to Spark:
 - Modify TestHive to load Comet
 - Modify SQLTestUtilsBase to load Comet when `ENABLE_COMET` environment variable exists
 
-Here are the steps involved in running the Spark SQL tests with Comet, using Spark 3.4.3 for this example.
+Here are the steps involved in running the Spark SQL tests with Comet, using Spark 3.5.9 for this example.
 
 ## 1. Install Comet
 
 Run `make release` in Comet to install the Comet JAR into the local Maven repository, specifying the Spark version.
 
 ```shell
-PROFILES="-Pspark-3.4" make release
+PROFILES="-Pspark-3.5" make release
 ```
 
 ## 2. Clone Spark and Apply Diff
@@ -47,9 +47,9 @@ Clone Apache Spark locally and apply the diff file from Comet.
 Note: this is a shallow clone of a tagged Spark commit and is not suitable for general Spark development.
 
 ```shell
-git clone -b 'v3.4.3' --single-branch --depth 1 git@github.com:apache/spark.git apache-spark
+git clone -b 'v3.5.9' --single-branch --depth 1 git@github.com:apache/spark.git apache-spark
 cd apache-spark
-git apply ../datafusion-comet/dev/diffs/3.4.3.diff
+git apply ../datafusion-comet/dev/diffs/3.5.9.diff
 ```
 
 ## 3. Run Spark SQL Tests
@@ -96,7 +96,7 @@ ENABLE_COMET=true ENABLE_COMET_ONHEAP=true sbt -J-Xmx4096m -Dspark.test.includeS
 
 2. Set `ENABLE_COMET=true` in environment variables
    ![img.png](img.png)
-3. After the above tests are configured, spark tests can be run with debugging enabled on spark/comet code. Note that Comet is added as a dependency and the classes are readonly while debugging from Spark. Any new changes to Comet are to be built and deployed locally through the command (`PROFILES="-Pspark-3.4" make release`)
+3. After the above tests are configured, spark tests can be run with debugging enabled on spark/comet code. Note that Comet is added as a dependency and the classes are readonly while debugging from Spark. Any new changes to Comet are to be built and deployed locally through the command (`PROFILES="-Pspark-3.5" make release`)
 
 ## Creating a diff file for a new Spark version
 

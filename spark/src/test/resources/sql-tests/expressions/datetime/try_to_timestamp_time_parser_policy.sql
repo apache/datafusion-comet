@@ -16,7 +16,6 @@
 -- under the License.
 
 -- Convergent try_to_timestamp(string, format) behavior across all three policies.
--- MinSparkVersion: 3.4
 -- ConfigMatrix: spark.sql.legacy.timeParserPolicy=LEGACY,CORRECTED,EXCEPTION
 -- Config: spark.sql.session.timeZone=UTC
 

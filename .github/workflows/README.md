@@ -35,11 +35,11 @@ is a `workflow_call` reusable invoked from the umbrella.
         v                                   v                                   v
   every PR + push                     push to main only         PR with label, or push
   ---------------                     -----------------         ----------------------
-  pr_build_linux                      docs                      spark_3_4    run-spark-3.4-tests
-  pr_build_macos                                                spark_4_0    run-spark-4.0-tests
-  pr_benchmark_check                                            iceberg_1_8  run-iceberg-tests
-  spark_3_5                                                     iceberg_1_9  run-iceberg-tests
-  spark_4_1                                                     iceberg_1_10 run-iceberg-tests
+  pr_build_linux                      docs                      spark_4_0    run-spark-4.0-tests
+  pr_build_macos                                                iceberg_1_8  run-iceberg-tests
+  pr_benchmark_check                                            iceberg_1_9  run-iceberg-tests
+  spark_3_5                                                     iceberg_1_10 run-iceberg-tests
+  spark_4_1
   iceberg_1_11
 
   reusable workflows invoked via `uses:`:
@@ -61,7 +61,6 @@ is a `workflow_call` reusable invoked from the umbrella.
 | `docs`               | push to main, paths matched                         | `.asf.yaml`, `docs/**`, `docs.yaml` |
 | `spark_3_5`          | PR or push, paths matched                           | Spark 3.5 sources                   |
 | `spark_4_1`          | PR or push, paths matched                           | Spark 4.1 sources                   |
-| `spark_3_4`          | push, **or** PR with `run-spark-3.4-tests` label    | Spark 3.4 sources                   |
 | `spark_4_0`          | push, **or** PR with `run-spark-4.0-tests` label    | Spark 4.0 sources                   |
 | `iceberg_1_11`       | PR or push, paths matched                           | Iceberg sources                     |
 | `iceberg_1_8`        | push, **or** PR with `run-iceberg-tests` label      | Iceberg sources                     |
@@ -76,7 +75,7 @@ safe to make a required check.
 ### Label events
 
 `ci.yml` also fires on `pull_request.types: [labeled]`, so applying
-`run-spark-3.4-tests`, `run-spark-4.0-tests` or `run-iceberg-tests` starts the
+`run-spark-4.0-tests` or `run-iceberg-tests` starts the
 job that label gates without needing a new push. GitHub cannot filter a
 `pull_request` trigger by label name, so **every** label added to a PR starts a
 run, including labels that gate nothing.
@@ -119,7 +118,7 @@ umbrella doesn't watch, or operate independently of the rest of CI:
 | `pr_build_macos.yml`              | `pr_build_macos`                                             |
 | `pr_benchmark_check.yml`          | `pr_benchmark_check`                                         |
 | `docs.yaml`                       | `docs`                                                       |
-| `spark_sql_test_reusable.yml`     | `spark_3_4`, `spark_3_5`, `spark_4_0`, `spark_4_1`           |
+| `spark_sql_test_reusable.yml`     | `spark_3_5`, `spark_4_0`, `spark_4_1`                        |
 | `iceberg_spark_test_reusable.yml` | `iceberg_1_8`, `iceberg_1_9`, `iceberg_1_10`, `iceberg_1_11` |
 
 ## Modifying path filters

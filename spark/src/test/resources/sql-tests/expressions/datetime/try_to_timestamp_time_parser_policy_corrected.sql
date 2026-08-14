@@ -17,7 +17,6 @@
 
 -- try_to_timestamp() under CORRECTED timeParserPolicy.
 -- Strict java.time parsing returns null for inputs that legacy would accept.
--- MinSparkVersion: 3.4
 -- Config: spark.sql.legacy.timeParserPolicy=CORRECTED
 -- Config: spark.sql.session.timeZone=UTC
 

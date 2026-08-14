@@ -16,8 +16,7 @@
 -- under the License.
 
 -- AES-CBC round-trip for aes_encrypt / aes_decrypt. Comet routes the underlying StaticInvoke
--- through the JVM codegen dispatcher. AES-CBC was added to Spark in 3.5 (SPARK-43042) and
--- throws on 3.4, so this file is gated.
+-- through the JVM codegen dispatcher. AES-CBC was added to Spark in 3.5 (SPARK-43042).
 -- MinSparkVersion: 3.5
 
 statement

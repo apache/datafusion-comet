@@ -207,8 +207,6 @@ pushd $COMET_HOME_DIR
 GIT_HASH=$(git rev-parse --short HEAD)
 LOCAL_REPO=$(mktemp -d /tmp/comet-staging-repo-XXXXX)
 
-./mvnw  "-Dmaven.repo.local=${LOCAL_REPO}" -P spark-3.4 -P scala-2.12  -DskipTests install
-./mvnw  "-Dmaven.repo.local=${LOCAL_REPO}" -P spark-3.4 -P scala-2.13  -DskipTests install
 ./mvnw  "-Dmaven.repo.local=${LOCAL_REPO}" -P spark-3.5 -P scala-2.12  -DskipTests install
 ./mvnw  "-Dmaven.repo.local=${LOCAL_REPO}" -P spark-3.5 -P scala-2.13  -DskipTests install
 # The spark-4.x profiles pin their own Scala 2.13.x patch versions to match the

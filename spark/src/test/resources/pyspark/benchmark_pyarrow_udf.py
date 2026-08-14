@@ -20,7 +20,7 @@
 End-to-end wall-clock benchmark for Comet's PyArrow UDF acceleration.
 
 Requires PySpark 4.0.1+ (Comet's columnar runner targets Spark 4.0+ only;
-3.5 and 3.4 are documented no-ops).
+3.5 is a documented no-op).
 
 Times `df.mapInArrow(passthrough, schema).count()` and the equivalent
 `mapInPandas` query with `spark.comet.exec.pyarrowUDF.enabled` set

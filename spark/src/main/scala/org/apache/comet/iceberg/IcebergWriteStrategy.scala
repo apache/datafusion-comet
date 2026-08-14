@@ -52,17 +52,6 @@ case class IcebergWriteStrategy(session: SparkSession) extends SparkStrategy {
           rd.write,
           rd.query,
           replaceDataDispatch = IcebergReplaceDataShim.extractProjections(rd)).toList
-      case plan if IcebergReflection.isReplaceIcebergData(plan) =>
-        IcebergReflection
-          .extractReplaceIcebergDataFields(plan)
-          .flatMap { case (_, query, originalTable, write) =>
-            matchedSparkWrite(
-              originalTable.asInstanceOf[org.apache.spark.sql.catalyst.analysis.NamedRelation],
-              write.asInstanceOf[Option[Write]],
-              query.asInstanceOf[LogicalPlan],
-              replaceDataDispatch = None)
-          }
-          .toList
       // Hit by AQE.
       case l @ IcebergWriteLogical(child, batchWrite, replaceDataDispatch) =>
         Seq(IcebergWriteExec(batchWrite, l.output, planLater(child), replaceDataDispatch))

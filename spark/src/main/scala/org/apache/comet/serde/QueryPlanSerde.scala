@@ -55,7 +55,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
   private[comet] val arrayExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
     // ArrayAppend is a concrete expression only on Spark 3.x. Spark 4.0+ marks it
     // RuntimeReplaceable and rewrites it to ArrayInsert before serde, so this entry is
-    // unreachable there and is kept solely for Spark 3.4/3.5.
+    // unreachable there and is kept solely for Spark 3.5.
     classOf[ArrayAppend] -> CometArrayAppend,
     // ArrayCompact is RuntimeReplaceable in all supported Spark versions (rewritten to
     // ArrayFilter(arr, IsNotNull(...))), so it never reaches serde directly; dispatch flows
@@ -260,7 +260,6 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       classOf[Overlay] -> CometOverlay,
       classOf[SoundEx] -> CometSoundEx,
       classOf[StringLocate] -> CometStringLocate,
-      classOf[Base64] -> CometBase64,
       classOf[UnBase64] -> CometUnBase64,
       classOf[ToCharacter] -> CometToCharacter,
       classOf[ToNumber] -> CometToNumber,

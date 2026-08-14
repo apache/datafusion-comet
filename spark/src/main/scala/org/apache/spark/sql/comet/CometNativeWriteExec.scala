@@ -198,7 +198,7 @@ case class CometNativeWriteExec(
 
           // Get the work directory for temp files
           // Spark 4.1 made the (taskContext, dir, ext: String) overload throw by default;
-          // the FileNameSpec overload is the supported one and exists in 3.4+.
+          // the FileNameSpec overload is the supported one across supported versions.
           val workPath = committer.newTaskTempFile(taskContext, None, FileNameSpec("", ""))
           val workDir = new Path(workPath).getParent.toString
 

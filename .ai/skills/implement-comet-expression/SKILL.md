@@ -88,7 +88,7 @@ make
 
 ### 4. Run the audit skill
 
-Once the initial implementation passes its smoke test, run the `audit-comet-expression` skill on `$ARGUMENTS`. It compares the implementation and tests against Spark 3.4.3, 3.5.8, and 4.0.1 and produces a prioritized list of gaps.
+Once the initial implementation passes its smoke test, run the `audit-comet-expression` skill on `$ARGUMENTS`. It compares the implementation and tests against Spark 3.5.8, 4.0.1, and 4.1.1 and produces a prioritized list of gaps.
 
 ### 5. Implement audit-recommended tests and iterate
 

@@ -93,7 +93,7 @@ from passing through silent Spark fallback.
 **Affected expressions.** Determined by tracing `TimestampFormatterHelper`,
 `TimestampFormatter(...)`, and `DateFormatter(...)` usage in
 `sql/catalyst/src/main/scala/org/apache/spark/sql/catalyst/expressions/datetimeExpressions.scala`
-across Spark 3.4, 3.5, 4.0, and 4.1. Three expression classes mix in
+across Spark 3.5, 4.0, and 4.1. Three expression classes mix in
 `TimestampFormatterHelper`:
 
 - `DateFormatClass` -- `date_format`

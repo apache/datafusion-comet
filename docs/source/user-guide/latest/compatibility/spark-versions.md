@@ -26,25 +26,6 @@ compatibility guide. For the rule that governs how long each Spark minor is supp
 [Apache Spark version support section](../../../about/versioning_policy.md#apache-spark-version-support)
 of the versioning policy.
 
-## Spark 3.4
-
-Spark 3.4.3 is supported with Java 11/17 and Scala 2.12/2.13.
-
-```{warning}
-Spark 3.4 support is deprecated as of the 1.0.0 release and will be removed in the 1.1.0 release.
-```
-
-### Known Limitations
-
-- **Reading `TimestampLTZ` as `TimestampNTZ`**: Spark 3.4 raises an error for this operation
-  (SPARK-36182), but Comet's Parquet scan silently returns the raw UTC value instead.
-  See [Parquet Compatibility](scans.md#parquet-scan-limitations) for details.
-
-- **Unsupported Parquet type conversions**: Spark 3.4 raises schema incompatibility errors for
-  certain type mismatches (e.g., reading INT32 as BIGINT, decimal precision changes), but Comet's
-  Comet's Parquet scan may not detect these and could return unexpected values.
-  See [Parquet Compatibility](scans.md#parquet-scan-limitations) for details.
-
 ## Spark 3.5
 
 Spark 3.5.9 is supported with Java 11/17 and Scala 2.12/2.13.

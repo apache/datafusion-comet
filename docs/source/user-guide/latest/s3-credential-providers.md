@@ -73,7 +73,7 @@ Catalog configuration you set under `spark.sql.catalog.<catalog>.*` (which may i
 Spark's RPC channel is plaintext by default and offers two opt-in encryption mechanisms, both off by default:
 
 - [`spark.network.crypto.enabled`](https://spark.apache.org/docs/latest/security.html#authentication-and-encryption) for AES-based RPC encryption keyed off the auth shared secret.
-- [`spark.ssl.rpc.enabled`](https://spark.apache.org/docs/latest/security.html#ssl-configuration) for TLS on the same channel (Spark 3.4+).
+- [`spark.ssl.rpc.enabled`](https://spark.apache.org/docs/latest/security.html#ssl-configuration) for TLS on the same channel.
 
 The same defaults apply to Hadoop delegation tokens, `CloudCredentialsProvider` JWTs, and any other secrets Spark already ships driver-to-executor, so this is a deployment-wide call rather than something specific to this SPI. See Spark's [security guide](https://spark.apache.org/docs/latest/security.html) for the full set of knobs.
 

@@ -443,13 +443,13 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
    * giving it the wider row (e.g. 6 columns when the schema has 3) and
    * `decorate_batch_with_field_ids` rejects the batch.
    *
-   * For Spark 3.4 / 3.5 the strategy shim returns `None` for `replaceDataDispatch` and the
-   * upstream plan already projects to the data columns -- no extra projection needed. For 4.x we
-   * splice a `Projection` proto between our `IcebergWrite` op and the FFI `Scan`, selecting the
-   * upstream attributes whose names match the Iceberg schema's columns. The JVM-side child stays
-   * at the original wide output, so its `executeColumnar()` still emits the wide batches the FFI
-   * scan declares; the projection then strips them inside the native runtime before the writer
-   * sees the data.
+   * For Spark 3.5 the strategy shim returns `None` for `replaceDataDispatch` and the upstream
+   * plan already projects to the data columns -- no extra projection needed. For 4.x we splice a
+   * `Projection` proto between our `IcebergWrite` op and the FFI `Scan`, selecting the upstream
+   * attributes whose names match the Iceberg schema's columns. The JVM-side child stays at the
+   * original wide output, so its `executeColumnar()` still emits the wide batches the FFI scan
+   * declares; the projection then strips them inside the native runtime before the writer sees
+   * the data.
    */
   private def dropNonDataColumns(
       op: IcebergWriteExec,

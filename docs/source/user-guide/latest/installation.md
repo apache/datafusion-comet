@@ -46,13 +46,12 @@ We recommend only using Comet with Spark versions where we currently have both C
 Other versions may work well enough for development and evaluation purposes.
 
 ```{warning}
-JDK 11 and Spark 3.4 support are deprecated as of the 1.0.0 release and will be removed in the 1.1.0 release.
-We recommend moving to JDK 17 or later and Spark 3.5 or later.
+JDK 11 support is deprecated as of the 1.0.0 release and will be removed in the 1.1.0 release.
+We recommend moving to JDK 17 or later.
 ```
 
 | Spark Version | Java Version | Scala Version | Comet Tests in CI | Spark SQL Tests in CI |
 | ------------- | ------------ | ------------- | ----------------- | --------------------- |
-| 3.4.3         | 11/17        | 2.12/2.13     | Yes               | Yes                   |
 | 3.5.9         | 11/17        | 2.12/2.13     | Yes               | Yes                   |
 | 4.0.4         | 17/21        | 2.13          | Yes               | Yes                   |
 | 4.1.3         | 17/21        | 2.13          | Yes               | Yes                   |
@@ -91,8 +90,6 @@ repository describing your environment, and [build from source] for your target 
 
 Here are the direct links for downloading the Comet $COMET_VERSION jar file.
 
-- [Comet plugin for Spark 3.4 / Scala 2.12](https://repo1.maven.org/maven2/org/apache/datafusion/comet-spark-spark3.4_2.12/$COMET_VERSION/comet-spark-spark3.4_2.12-$COMET_VERSION.jar)
-- [Comet plugin for Spark 3.4 / Scala 2.13](https://repo1.maven.org/maven2/org/apache/datafusion/comet-spark-spark3.4_2.13/$COMET_VERSION/comet-spark-spark3.4_2.13-$COMET_VERSION.jar)
 - [Comet plugin for Spark 3.5 / Scala 2.12](https://repo1.maven.org/maven2/org/apache/datafusion/comet-spark-spark3.5_2.12/$COMET_VERSION/comet-spark-spark3.5_2.12-$COMET_VERSION.jar)
 - [Comet plugin for Spark 3.5 / Scala 2.13](https://repo1.maven.org/maven2/org/apache/datafusion/comet-spark-spark3.5_2.13/$COMET_VERSION/comet-spark-spark3.5_2.13-$COMET_VERSION.jar)
 - [Comet plugin for Spark 4.0 / Scala 2.13](https://repo1.maven.org/maven2/org/apache/datafusion/comet-spark-spark4.0_2.13/$COMET_VERSION/comet-spark-spark4.0_2.13-$COMET_VERSION.jar)

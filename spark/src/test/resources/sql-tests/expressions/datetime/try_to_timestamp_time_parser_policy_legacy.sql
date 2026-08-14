@@ -17,7 +17,6 @@
 
 -- try_to_timestamp() under LEGACY timeParserPolicy.
 -- Lenient SimpleDateFormat parsing accepts inputs that the new formatter rejects.
--- MinSparkVersion: 3.4
 -- Config: spark.sql.legacy.timeParserPolicy=LEGACY
 -- Config: spark.sql.session.timeZone=UTC
 
