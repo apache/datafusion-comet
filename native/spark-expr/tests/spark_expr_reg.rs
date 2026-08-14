@@ -91,4 +91,58 @@ mod tests {
 
         Ok(())
     }
+
+    /// Dedicated match arm must honor fail_on_error=true at execution time (#5074).
+    #[tokio::test]
+    async fn test_make_date_ansi_invalid_input_errors() -> Result<()> {
+        let ctx = SessionContext::new();
+        let udf = {
+            let session_state = ctx.state();
+            create_comet_physical_fun("make_date", DataType::Date32, &session_state, Some(true))?
+        };
+        ctx.register_udf(udf.as_ref().clone());
+
+        let df = ctx.sql("SELECT make_date(2023, 0, 15)").await?;
+        let result = df.collect().await;
+        assert!(
+            result.is_err(),
+            "make_date with fail_on_error=true must error on invalid date, got Ok"
+        );
+
+        Ok(())
+    }
+
+    /// Registry catch-all must fail closed when fail_on_error=true (#5074).
+    #[tokio::test]
+    async fn test_registry_udf_rejects_fail_on_error() -> Result<()> {
+        // SessionContext registers DataFusion built-ins (e.g. acos) used by the catch-all.
+        let ctx = SessionContext::new();
+        let session_state = ctx.state();
+        // "acos" is a DataFusion built-in resolved only via the registry catch-all.
+        let err = create_comet_physical_fun("acos", DataType::Float64, &session_state, Some(true));
+        assert!(
+            err.is_err(),
+            "registry UDF must reject fail_on_error=true, got Ok"
+        );
+        let msg = err.unwrap_err().to_string();
+        assert!(msg.contains("acos"), "unexpected error message: {msg}");
+        assert!(
+            msg.contains("fail_on_error=true"),
+            "unexpected error message: {msg}"
+        );
+
+        let udf_false =
+            create_comet_physical_fun("acos", DataType::Float64, &session_state, Some(false))?;
+        assert_eq!(udf_false.name(), "acos");
+
+        let udf_none = create_comet_physical_fun("acos", DataType::Float64, &session_state, None)?;
+        assert_eq!(udf_none.name(), "acos");
+
+        // Dedicated match arms that consume the flag still accept fail_on_error=true.
+        let make_date =
+            create_comet_physical_fun("make_date", DataType::Date32, &session_state, Some(true))?;
+        assert_eq!(make_date.name(), "make_date");
+
+        Ok(())
+    }
 }

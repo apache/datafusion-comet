@@ -260,6 +260,13 @@ pub fn create_comet_physical_fun_with_eval_mode(
             let func = Arc::new(crate::string_funcs::spark_levenshtein);
             make_comet_scalar_udf!("levenshtein", func, without data_type)
         }
+        // Registry UDFs (including datafusion-spark) cannot receive fail_on_error.
+        _ if fail_on_error => Err(DataFusionError::Execution(format!(
+            "Function '{fun_name}' is resolved from the UDF registry and cannot \
+             honor fail_on_error=true. Use a name-based ANSI/try variant \
+             (e.g. parse_url / try_parse_url) or a dedicated match arm that \
+             consumes the flag."
+        ))),
         _ => registry.udf(fun_name).map_err(|e| {
             DataFusionError::Execution(format!(
                 "Function {fun_name} not found in the registry: {e}",
