@@ -54,11 +54,12 @@ FROM test_make_interval_ansi
 WHERE id BETWEEN 0 AND 9
 ORDER BY id
 
--- Spark <= 4.1 expects the literal "integer overflow":
+-- Spark <= 4.1 preserves the JDK literal "integer overflow":
 -- https://github.com/apache/spark/blob/v4.1.3/sql/core/src/test/scala/org/apache/spark/sql/errors/QueryExecutionErrorsSuite.scala#L704-L713
--- Spark 4.2 expects the literal "overflow":
--- https://github.com/apache/spark/blob/v4.2.0/sql/core/src/test/scala/org/apache/spark/sql/errors/QueryExecutionErrorsSuite.scala#L703-L712
--- Match the common text across versions.
+-- SPARK-55714 canonicalizes simple "<type> overflow" messages to "overflow" in Spark 4.2:
+-- https://github.com/apache/spark/blob/v4.2.0/sql/api/src/main/scala/org/apache/spark/sql/errors/ExecutionErrors.scala#L118-L144
+-- The native unit test pins the "integer"/"long" overflow type; this assertion matches the
+-- common rendered suffix across supported Spark versions.
 query expect_error(overflow. If necessary set)
 SELECT make_interval(years)
 FROM test_make_interval_ansi
