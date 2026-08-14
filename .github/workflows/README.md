@@ -85,14 +85,14 @@ umbrella doesn't watch, or operate independently of the rest of CI:
 
 ## Reusable workflows (called by `ci.yml`)
 
-| File                              | Called from `ci.yml` job(s)                        |
-| --------------------------------- | -------------------------------------------------- |
-| `pr_build_linux.yml`              | `pr_build_linux`                                   |
-| `pr_build_macos.yml`              | `pr_build_macos`                                   |
-| `pr_benchmark_check.yml`          | `pr_benchmark_check`                               |
-| `docs.yaml`                       | `docs`                                             |
-| `spark_sql_test_reusable.yml`     | `spark_3_5`, `spark_4_0`, `spark_4_1`              |
-| `iceberg_spark_test_reusable.yml` | `iceberg_1_8`, `iceberg_1_9`, `iceberg_1_10`       |
+| File                              | Called from `ci.yml` job(s)                  |
+| --------------------------------- | -------------------------------------------- |
+| `pr_build_linux.yml`              | `pr_build_linux`                             |
+| `pr_build_macos.yml`              | `pr_build_macos`                             |
+| `pr_benchmark_check.yml`          | `pr_benchmark_check`                         |
+| `docs.yaml`                       | `docs`                                       |
+| `spark_sql_test_reusable.yml`     | `spark_3_5`, `spark_4_0`, `spark_4_1`        |
+| `iceberg_spark_test_reusable.yml` | `iceberg_1_8`, `iceberg_1_9`, `iceberg_1_10` |
 
 ## Modifying path filters
 
