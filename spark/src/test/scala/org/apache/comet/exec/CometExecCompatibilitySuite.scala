@@ -36,10 +36,8 @@ import org.apache.spark.util.sketch.BloomFilter
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.isSpark42Plus
 
-/**
- * This test suite contains tests for only Spark 3.4+.
- */
-class CometExec3_4PlusSuite extends CometTestBase {
+/** Tests for execution APIs that are available in every supported Spark version. */
+class CometExecCompatibilitySuite extends CometTestBase {
   import testImplicits._
 
   val func_might_contain = new FunctionIdentifier("might_contain")
@@ -83,7 +81,6 @@ class CometExec3_4PlusSuite extends CometTestBase {
     }
   }
 
-  // The syntax is only supported by Spark 3.4+.
   test("subquery limit: limit with offset should return correct results") {
     withSQLConf(CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
       withTable("t1", "t2") {
@@ -135,7 +132,6 @@ class CometExec3_4PlusSuite extends CometTestBase {
     }
   }
 
-  // Dataset.offset API is not available before Spark 3.4
   test("offset") {
     withSQLConf(CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
       checkSparkAnswer(testData.offset(90))

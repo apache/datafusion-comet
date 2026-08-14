@@ -83,9 +83,6 @@ jobs:
     strategy:
       matrix:
         profile:
-          - name: "Spark 3.4, JDK 11, Scala 2.12"
-            java_version: "11"
-            maven_opts: "-Pspark-3.4 -Pscala-2.12"
           - name: "Spark 3.5, JDK 17, Scala 2.12"
             java_version: "17"
             maven_opts: "-Pspark-3.5 -Pscala-2.12"
@@ -276,10 +273,6 @@ jobs:
         # the goal with these profiles is to get coverage of all Java, Scala, and Spark
         # versions without testing all possible combinations, which would be overkill
         profile:
-          - name: "Spark 3.4, JDK 11, Scala 2.12"
-            java_version: "11"
-            maven_opts: "-Pspark-3.4 -Pscala-2.12"
-
           - name: "Spark 3.5, JDK 17, Scala 2.13"
             java_version: "17"
             maven_opts: "-Pspark-3.5 -Pscala-2.13"
@@ -336,7 +329,7 @@ jobs:
           - name: "exec"
             value: |
               org.apache.comet.exec.CometAggregateSuite
-              org.apache.comet.exec.CometExec3_4PlusSuite
+              org.apache.comet.exec.CometExecCompatibilitySuite
               org.apache.comet.exec.CometExecSuite
               org.apache.comet.exec.CometGenerateExecSuite
               org.apache.comet.exec.CometWindowExecSuite

@@ -19,7 +19,6 @@
 -- try_to_timestamp swallows DateTimeException/ParseException, but SparkUpgradeException
 -- raised by checkParsedDiff propagates through the catch -- so the EXCEPTION case still
 -- throws on legacy/new divergent inputs.
--- MinSparkVersion: 3.4
 -- Config: spark.sql.legacy.timeParserPolicy=EXCEPTION
 -- Config: spark.sql.session.timeZone=UTC
 

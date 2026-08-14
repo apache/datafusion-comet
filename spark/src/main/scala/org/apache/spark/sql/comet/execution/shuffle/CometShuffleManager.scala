@@ -90,9 +90,8 @@ class CometShuffleManager(conf: SparkConf) extends ShuffleManager with Logging {
   }
 
   override val shuffleBlockResolver: IndexShuffleBlockResolver = {
-    // The patch versions of Spark 3.4 have different constructor signatures:
-    // See https://github.com/apache/spark/commit/5180694705be3508bd21dd9b863a59b8cb8ba193
-    // We look for proper constructor by reflection.
+    // Supported Spark versions have different constructor signatures, so select the matching
+    // constructor by reflection.
     classOf[IndexShuffleBlockResolver].getDeclaredConstructors
       .filter(c => List(2, 3).contains(c.getParameterCount()))
       .map { c =>

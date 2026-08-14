@@ -304,7 +304,7 @@ Spark project. Once upstream ends maintenance for a Spark minor, Comet removes i
    binaries for it.
 
 This gives users at least one Comet minor release of prior notice before a Spark minor is
-dropped. For example, Spark 3.4 was deprecated in Comet 1.0.0 and will be removed in Comet
+dropped. For example, Spark 3.4 was deprecated in Comet 1.0.0 and removed in Comet
 1.1.0.
 
 ### Patch Versions

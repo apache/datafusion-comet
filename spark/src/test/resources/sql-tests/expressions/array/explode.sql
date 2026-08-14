@@ -342,7 +342,7 @@ INSERT INTO test_explode_map VALUES
 query expect_fallback(Comet only supports explode/explode_outer for arrays, not maps)
 SELECT id, explode_outer(m) FROM test_explode_map
 
--- ===== TIMESTAMP_NTZ (Spark 3.4+): distinct Arrow layout (no tz) from LTZ =====
+-- ===== TIMESTAMP_NTZ: distinct Arrow layout (no tz) from LTZ =====
 
 statement
 CREATE TABLE test_explode_ts_ntz(id int, arr array<timestamp_ntz>) USING parquet

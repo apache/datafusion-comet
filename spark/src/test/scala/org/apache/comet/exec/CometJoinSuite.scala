@@ -294,12 +294,10 @@ class CometJoinSuite extends CometTestBase {
             sql("SELECT /*+ SHUFFLE_HASH(tbl_a) */ * FROM tbl_a FULL JOIN tbl_b ON tbl_a._2 = tbl_b._1")
           checkSparkAnswerAndOperator(df3)
 
-          // TODO: Spark 3.4 returns SortMergeJoin for this query even with SHUFFLE_HASH hint.
-          // Left join with build left and right join with build right in hash join is only supported
-          // in Spark 3.5 or above. See SPARK-36612.
-          //
           // Left join: build left
-          // sql("SELECT /*+ SHUFFLE_HASH(tbl_a) */ * FROM tbl_a LEFT JOIN tbl_b ON tbl_a._2 = tbl_b._1")
+          val dfLeftBuildLeft =
+            sql("SELECT /*+ SHUFFLE_HASH(tbl_a) */ * FROM tbl_a LEFT JOIN tbl_b ON tbl_a._2 = tbl_b._1")
+          checkSparkAnswerAndOperator(dfLeftBuildLeft)
 
           // Inner join: build right
           val df4 =

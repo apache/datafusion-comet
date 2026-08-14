@@ -165,7 +165,7 @@ case class CometBroadcastExchangeExec(
         val beforeBroadcast = System.nanoTime()
         longMetric("buildTime") += NANOSECONDS.toMillis(beforeBroadcast - beforeBuild)
 
-        // (3.4 only) SPARK-39983 - Broadcast the relation without caching the unserialized object.
+        // SPARK-39983 - Broadcast the relation without caching the unserialized object.
         val broadcasted = sparkContext
           .broadcastInternal(batches, true)
           .asInstanceOf[broadcast.Broadcast[Any]]

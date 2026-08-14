@@ -15,7 +15,6 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- MinSparkVersion: 3.4
 
 statement
 CREATE TABLE test_equal_null(a int, b int) USING parquet

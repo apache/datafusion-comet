@@ -408,7 +408,7 @@ SELECT sort_array(collect_list(a)), sort_array(collect_list(b)) FROM cl_src_1764
 -- FILTER (WHERE ...): only rows that pass the predicate are collected.
 -- The Spark analyzer routes this through `applyIgnoreNulls`, which the
 -- collect_list serde handler is expected to accept as long as ignoreNulls
--- remains at its default (true on 3.4-4.1; explicit on 4.2).
+-- remains at its default (true through 4.1; explicit on 4.2).
 -- ============================================================
 
 query
