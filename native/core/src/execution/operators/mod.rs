@@ -28,6 +28,8 @@ mod aligned_stream_reader;
 mod copy;
 mod expand;
 pub use expand::ExpandExec;
+mod explode;
+pub use explode::{ExplodeExec, ListUnnest};
 mod iceberg_scan;
 mod parquet_writer;
 pub use parquet_writer::{ParquetCompression, ParquetWriterExec};
