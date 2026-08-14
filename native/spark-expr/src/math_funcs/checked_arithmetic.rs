@@ -57,6 +57,30 @@ where
     }
 }
 
+fn integer_type_name(data_type: &DataType) -> Result<&'static str, DataFusionError> {
+    match data_type {
+        DataType::Int64 => Ok("long"),
+        DataType::Int32 => Ok("integer"),
+        DataType::Int16 => Ok("short"),
+        DataType::Int8 => Ok("byte"),
+        _ => Err(DataFusionError::Internal(format!(
+            "Unsupported integer data type: {:?}",
+            data_type
+        ))),
+    }
+}
+
+fn float_type_name(data_type: &DataType) -> Result<&'static str, DataFusionError> {
+    match data_type {
+        DataType::Float64 => Ok("double"),
+        DataType::Float32 | DataType::Float16 => Ok("float"),
+        _ => Err(DataFusionError::Internal(format!(
+            "Unsupported float data type: {:?}",
+            data_type
+        ))),
+    }
+}
+
 fn ansi_arithmetic_kernel(
     left: &ColumnarValue,
     right: &ColumnarValue,
@@ -96,16 +120,7 @@ fn ansi_arithmetic_kernel(
         }
     };
 
-    let from_type = match data_type {
-        DataType::Int64 => Ok("long"),
-        DataType::Int32 => Ok("integer"),
-        DataType::Int16 => Ok("short"),
-        DataType::Int8 => Ok("byte"),
-        _ => Err(DataFusionError::Internal(format!(
-            "Unsupported integer data type for overflow error: {:?}",
-            data_type
-        ))),
-    }?;
+    let from_type = integer_type_name(data_type)?;
 
     let array = result_array.map_err(|e| match e {
         ArrowError::DivideByZero => divide_by_zero_error().into(),
@@ -129,12 +144,13 @@ fn ansi_float_div<T>(
 where
     T: ArrowPrimitiveType,
 {
+    let from_type = float_type_name(left.data_type())?;
     arity::try_binary::<_, _, _, T>(left, right, |l, r| l.div_checked(r))
         .map(|array| Arc::new(array) as ArrayRef)
         .map_err(|e| match e {
             ArrowError::DivideByZero => divide_by_zero_error().into(),
             _ => DataFusionError::from(SparkError::ArithmeticOverflow {
-                from_type: String::from("integer"),
+                from_type: String::from(from_type),
             }),
         })
 }
