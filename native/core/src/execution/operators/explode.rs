@@ -33,19 +33,30 @@
 //!
 //! # Deleting this file
 //!
-//! Once Comet moves to a DataFusion release carrying that PR, delete this module and go
-//! back to `datafusion::physical_plan::unnest::UnnestExec` in the planner. Tracked in
-//! <https://github.com/apache/datafusion-comet/issues/5210> alongside the other
-//! unnest-related workarounds.
+//! Once Comet moves to a DataFusion release carrying apache/datafusion#24384, delete this
+//! module and go back to `datafusion::physical_plan::unnest::UnnestExec` in the planner.
+//!
+//! Note that <https://github.com/apache/datafusion-comet/issues/5210> is a *different*
+//! unnest cleanup — it tracks adopting upstream `unnest_outer`
+//! (apache/datafusion#22100) to retire `ListEmptyToNullExpr`. The two upstream PRs can
+//! land in different releases, so closing 5210 is not a signal to delete this fork.
 //!
 //! # What was forked
 //!
-//! The unnesting kernels below (`build_batch` and everything it calls) are copied verbatim
-//! from `datafusion/physical-plan/src/unnest.rs` at DataFusion 54.1.0, upstream revision
+//! The unnesting kernels below (`build_batch` and everything it calls) are copied from
+//! `datafusion/physical-plan/src/unnest.rs` at DataFusion 54.1.0, upstream revision
 //! `cc7565be1ee97ba8fa2f5d6da373c5e38d81bb13`. They are private to
 //! `datafusion-physical-plan`, so they cannot be called from here without copying them.
-//! Keep them byte-identical to upstream so the eventual deletion is mechanical; the
+//! Leave them semantically unmodified so the eventual deletion is mechanical; the
 //! Comet-specific behavior lives entirely in `ExplodeExec` and `ExplodeStream`.
+//!
+//! They are not byte-identical to upstream: Comet's rustfmt uses `max_width = 100` and
+//! edition 2021, DataFusion's uses `max_width = 90` and edition 2024, so `cargo fmt`
+//! reflows some signatures. To audit for real changes, reformat this region at
+//! `max_width = 90` and diff it against upstream `unnest.rs`; that reduces the difference
+//! to a single cosmetic line wrap in `flatten_struct_cols`. The only deliberate edits are
+//! the `lt` import path noted below and dropping upstream's `ListUnnest` declaration in
+//! favor of importing the public one.
 //!
 //! Note that 54.1.0 predates upstream's `NullHandling` enum and still uses
 //! `UnnestOptions::preserve_nulls`, which is why the planner wraps empty arrays with
@@ -70,8 +81,11 @@ use datafusion::execution::TaskContext;
 use datafusion::physical_expr::EquivalenceProperties;
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::metrics::{
-    BaselineMetrics, ExecutionPlanMetricsSet, MetricBuilder, MetricsSet, RecordOutput,
+    BaselineMetrics, Count, ExecutionPlanMetricsSet, MetricBuilder, MetricsSet, RecordOutput,
 };
+// `ListUnnest` is the one item the copied region below does NOT need to duplicate: unlike the
+// kernels, upstream exports it publicly.
+use datafusion::physical_plan::unnest::ListUnnest;
 use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties, RecordBatchStream,
     SendableRecordBatchStream,
@@ -84,8 +98,6 @@ use std::task::{ready, Context, Poll};
 
 /// Comet's explode operator: DataFusion's `UnnestExec` with the input consumed in chunks so
 /// that output batches respect `datafusion.execution.batch_size`.
-///
-/// Everything below this point is Comet code, not forked from upstream.
 #[derive(Debug)]
 pub struct ExplodeExec {
     child: Arc<dyn ExecutionPlan>,
@@ -253,8 +265,8 @@ struct ExplodeStream {
     struct_column_indices: HashSet<usize>,
     options: UnnestOptions,
     baseline_metrics: BaselineMetrics,
-    input_batches: datafusion::physical_plan::metrics::Count,
-    input_rows: datafusion::physical_plan::metrics::Count,
+    input_batches: Count,
+    input_rows: Count,
     /// Target number of rows per output batch, from `datafusion.execution.batch_size`.
     batch_size: usize,
     /// Rows of the current input batch that have not been unnested yet.
@@ -295,8 +307,7 @@ impl ExplodeStream {
                     continue;
                 }
 
-                let elapsed_compute = self.baseline_metrics.elapsed_compute().clone();
-                let timer = elapsed_compute.timer();
+                let timer = self.baseline_metrics.elapsed_compute().timer();
 
                 let rows = pending.next_chunk_rows(self.batch_size);
                 let chunk = pending.batch.slice(pending.row_offset, rows);
@@ -314,10 +325,7 @@ impl ExplodeStream {
                 // A chunk can legitimately produce no rows at all (for example rows whose
                 // arrays are all empty and `preserve_nulls` is false); move on to the next
                 // chunk rather than emitting an empty batch.
-                match result? {
-                    Some(batch) if batch.num_rows() > 0 => self.pending_output = Some(batch),
-                    _ => {}
-                }
+                self.pending_output = result?.filter(|batch| batch.num_rows() > 0);
                 continue;
             }
 
@@ -330,8 +338,7 @@ impl ExplodeStream {
                         continue;
                     }
 
-                    let elapsed_compute = self.baseline_metrics.elapsed_compute().clone();
-                    let timer = elapsed_compute.timer();
+                    let timer = self.baseline_metrics.elapsed_compute().timer();
                     let output_lens = self.predict_output_lens(&batch);
                     timer.done();
 
@@ -408,11 +415,9 @@ fn split_off_head(batch: RecordBatch, batch_size: usize) -> (RecordBatch, Option
 }
 
 // ---------------------------------------------------------------------------------------
-// Everything below is copied verbatim from DataFusion 54.1.0
-// `datafusion/physical-plan/src/unnest.rs` (upstream revision
-// cc7565be1ee97ba8fa2f5d6da373c5e38d81bb13). These helpers are private to
-// `datafusion-physical-plan`, so they cannot be called from Comet without copying them.
-// Keep them unmodified so the eventual deletion of this fork is mechanical.
+// Everything below is copied from DataFusion 54.1.0 `physical-plan/src/unnest.rs`
+// (revision cc7565be1ee97ba8fa2f5d6da373c5e38d81bb13). See the module docs for why, and
+// for how to audit it against upstream. Do not change it semantically.
 // ---------------------------------------------------------------------------------------
 
 /// Given a set of struct column indices to flatten
@@ -451,12 +456,6 @@ fn flatten_struct_cols(
         .flatten()
         .collect();
     Ok(RecordBatch::try_new(Arc::clone(schema), columns_expanded)?)
-}
-
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
-pub struct ListUnnest {
-    pub index_in_input_schema: usize,
-    pub depth: usize,
 }
 
 /// This function is used to execute the unnesting on multiple columns all at once, but
@@ -1059,7 +1058,6 @@ fn repeat_arrs_from_indices(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::Int32Array;
     use arrow::datatypes::{Field, Int32Type, Schema};
     use datafusion::datasource::memory::MemorySourceConfig;
     use datafusion::prelude::SessionConfig;
@@ -1124,29 +1122,35 @@ mod tests {
             .iter()
             .flat_map(|b| {
                 b.column(0)
-                    .as_any()
-                    .downcast_ref::<Int32Array>()
-                    .unwrap()
+                    .as_primitive::<Int32Type>()
                     .iter()
                     .collect::<Vec<_>>()
             })
             .collect()
     }
 
+    fn sizes(batches: &[RecordBatch]) -> Vec<usize> {
+        batches.iter().map(|b| b.num_rows()).collect()
+    }
+
+    fn seq(n: i32) -> Vec<Option<i32>> {
+        (0..n).map(Some).collect()
+    }
+
     #[tokio::test]
     async fn respects_batch_size() {
-        // 10 rows x 10 elements = 100 output rows from ONE input batch. Upstream
-        // `UnnestExec` returns this as a single 100-row batch.
-        let batches = explode(vec![list_batch(&[Some(10); 10])], 8, true)
+        // 10 rows x 3 elements = 30 output rows from ONE input batch, which upstream
+        // `UnnestExec` returns as a single 30-row batch.
+        //
+        // The array length is deliberately smaller than batch_size so that chunks pack
+        // *several* input rows (2 rows -> 6 rows out; a third would overshoot 8). Using
+        // arrays longer than batch_size would send every row down the oversized-build path
+        // instead, which `single_row_exceeding_batch_size_is_sliced` already covers.
+        let batches = explode(vec![list_batch(&[Some(3); 10])], 8, true)
             .await
             .unwrap();
-        let sizes: Vec<usize> = batches.iter().map(|b| b.num_rows()).collect();
-        assert!(
-            sizes.iter().all(|s| *s <= 8),
-            "every output batch must respect batch_size=8, got {sizes:?}"
-        );
-        assert_eq!(sizes.iter().sum::<usize>(), 100);
-        assert_eq!(values(&batches), (0..100).map(Some).collect::<Vec<_>>());
+        assert_eq!(sizes(&batches), vec![6, 6, 6, 6, 6]);
+        assert_eq!(values(&batches), seq(30));
     }
 
     #[tokio::test]
@@ -1157,13 +1161,12 @@ mod tests {
         let batches = explode(vec![list_batch(&[Some(3), Some(3), Some(3)])], 4, true)
             .await
             .unwrap();
-        let sizes: Vec<usize> = batches.iter().map(|b| b.num_rows()).collect();
         assert_eq!(
-            sizes,
+            sizes(&batches),
             vec![3, 3, 3],
             "input should be chunked per row, not built whole and sliced into [4, 4, 1]"
         );
-        assert_eq!(values(&batches), (0..9).map(Some).collect::<Vec<_>>());
+        assert_eq!(values(&batches), seq(9));
     }
 
     #[tokio::test]
@@ -1172,11 +1175,31 @@ mod tests {
         let batches = explode(vec![list_batch(&[Some(25)])], 10, true)
             .await
             .unwrap();
-        assert_eq!(
-            batches.iter().map(|b| b.num_rows()).collect::<Vec<_>>(),
-            vec![10, 10, 5]
+        assert_eq!(sizes(&batches), vec![10, 10, 5]);
+        assert_eq!(values(&batches), seq(25));
+    }
+
+    /// Chunked output must match unchunked output exactly, and hold the invariants that
+    /// apply regardless of null handling: bounded, non-empty, and totalling `expected_rows`.
+    async fn assert_chunking_matches_whole(
+        lens: &[Option<usize>],
+        preserve_nulls: bool,
+        expected_rows: usize,
+    ) {
+        let chunked = explode(vec![list_batch(lens)], 2, preserve_nulls)
+            .await
+            .unwrap();
+        let whole = explode(vec![list_batch(lens)], 1024, preserve_nulls)
+            .await
+            .unwrap();
+
+        let chunked_sizes = sizes(&chunked);
+        assert!(
+            chunked_sizes.iter().all(|s| *s <= 2 && *s > 0),
+            "chunked batches must be bounded and non-empty, got {chunked_sizes:?}"
         );
-        assert_eq!(values(&batches), (0..25).map(Some).collect::<Vec<_>>());
+        assert_eq!(chunked_sizes.iter().sum::<usize>(), expected_rows);
+        assert_eq!(values(&chunked), values(&whole));
     }
 
     #[tokio::test]
@@ -1184,26 +1207,14 @@ mod tests {
         // With preserve_nulls (Spark's explode_outer, after the planner has rewritten empty
         // arrays to NULL), a NULL array yields one NULL row. The per-row counts driving
         // chunking must agree, or boundaries drift out of step with the unnesting.
-        let lens = &[Some(3), None, Some(2), None];
-        let chunked = explode(vec![list_batch(lens)], 2, true).await.unwrap();
-        let whole = explode(vec![list_batch(lens)], 1024, true).await.unwrap();
-
-        assert!(chunked.iter().all(|b| b.num_rows() <= 2));
-        assert_eq!(chunked.iter().map(|b| b.num_rows()).sum::<usize>(), 7);
-        assert_eq!(values(&chunked), values(&whole));
+        assert_chunking_matches_whole(&[Some(3), None, Some(2), None], true, 7).await;
     }
 
     #[tokio::test]
     async fn chunking_preserves_non_outer_semantics() {
         // Without preserve_nulls (plain explode), NULL arrays produce nothing. Chunks made
         // up entirely of such rows must not stall the stream or emit an empty batch.
-        let lens = &[None, Some(4), None, Some(1)];
-        let chunked = explode(vec![list_batch(lens)], 2, false).await.unwrap();
-        let whole = explode(vec![list_batch(lens)], 1024, false).await.unwrap();
-
-        assert!(chunked.iter().all(|b| b.num_rows() > 0));
-        assert_eq!(chunked.iter().map(|b| b.num_rows()).sum::<usize>(), 5);
-        assert_eq!(values(&chunked), values(&whole));
+        assert_chunking_matches_whole(&[None, Some(4), None, Some(1)], false, 5).await;
     }
 
     #[tokio::test]
@@ -1216,7 +1227,7 @@ mod tests {
             list_batch(&[Some(7), Some(2)]),
         ];
         let batches = explode(input, 4, true).await.unwrap();
-        let sizes: Vec<usize> = batches.iter().map(|b| b.num_rows()).collect();
+        let sizes = sizes(&batches);
         assert!(
             sizes.iter().all(|s| *s <= 4),
             "every output batch must respect batch_size=4, got {sizes:?}"

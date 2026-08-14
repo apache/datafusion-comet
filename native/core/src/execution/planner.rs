@@ -29,8 +29,8 @@ use crate::execution::{
     expressions::list_positions::ListPositionsExpr,
     expressions::subquery::Subquery,
     operators::{
-        ExecutionError, ExpandExec, ExplodeExec, ListUnnest, ParquetCompression, ParquetWriterExec,
-        SampleExec, ScanExec, ShuffleScanExec,
+        ExecutionError, ExpandExec, ExplodeExec, ParquetCompression, ParquetWriterExec, SampleExec,
+        ScanExec, ShuffleScanExec,
     },
     planner::expression_registry::ExpressionRegistry,
     planner::operator_registry::OperatorRegistry,
@@ -115,6 +115,7 @@ use datafusion::common::UnnestOptions;
 use datafusion::physical_plan::filter::FilterExec;
 use datafusion::physical_plan::joins::NestedLoopJoinExec;
 use datafusion::physical_plan::limit::GlobalLimitExec;
+use datafusion::physical_plan::unnest::ListUnnest;
 use datafusion_comet_proto::spark_expression::ListLiteral;
 use datafusion_comet_proto::spark_operator::SparkFilePartition;
 use datafusion_comet_proto::{
@@ -2077,11 +2078,7 @@ impl PhysicalPlanner {
                     recursions: vec![],
                 };
 
-                // `ExplodeExec` is a temporary fork of DataFusion's `UnnestExec` that
-                // respects `batch_size`; upstream emits one output batch per input batch
-                // regardless of how many rows the unnesting produces. See the module docs on
-                // `operators::explode` and
-                // https://github.com/apache/datafusion/pull/24384.
+                // Comet's batch-size-respecting fork of `UnnestExec`; see `operators::explode`.
                 let unnest_exec = Arc::new(ExplodeExec::new(
                     project_exec,
                     list_unnests,
