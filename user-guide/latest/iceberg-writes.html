@@ -796,7 +796,8 @@ Iceberg commit (including commit-time validation), outside AQE, exactly once.</p
 <p>Data files are still written by iceberg-java; only the plan shape changes. The split makes the
 write’s input visible to AQE and to Comet’s columnar rules, and it is the groundwork for a
 planned follow-up in which Comet writes the data files natively via
-<a class="reference external" href="https://github.com/apache/iceberg-rust">iceberg-rust</a>.</p>
+<a class="reference external" href="https://github.com/apache/iceberg-rust">iceberg-rust</a>, tracked in
+<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5308">#5308</a>.</p>
 </section>
 <section id="configuration">
 <h2>Configuration<a class="headerlink" href="#configuration" title="Link to this heading">#</a></h2>
@@ -810,6 +811,9 @@ planned follow-up in which Comet writes the data files natively via
 
 <span class="c1"># Split-operator plan (experimental, off by default)</span>
 <span class="n">spark</span><span class="o">.</span><span class="n">comet</span><span class="o">.</span><span class="n">write</span><span class="o">.</span><span class="n">iceberg</span><span class="o">.</span><span class="n">splitOperator</span><span class="o">.</span><span class="n">enabled</span><span class="o">=</span><span class="n">true</span>
+
+<span class="c1"># Native-write eligibility detection (experimental, off by default; requires the split plan)</span>
+<span class="n">spark</span><span class="o">.</span><span class="n">comet</span><span class="o">.</span><span class="n">iceberg</span><span class="o">.</span><span class="n">write</span><span class="o">.</span><span class="n">enabled</span><span class="o">=</span><span class="n">true</span>
 </pre></div>
 </div>
 </section>
@@ -848,6 +852,137 @@ example an unrecognised write class or a <code class="docutils literal notransla
 </ul>
 <p>In every fallback case the write is planned as if Comet were absent; there is no correctness
 trade-off, only no plan change.</p>
+</section>
+<section id="native-parquet-write-eligibility">
+<h2>Native Parquet write eligibility<a class="headerlink" href="#native-parquet-write-eligibility" title="Link to this heading">#</a></h2>
+<p>A planned follow-up (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5308">#5308</a>) replaces
+the <code class="docutils literal notranslate"><span class="pre">IcebergWrite</span></code> operator’s per-task Parquet write with
+<a class="reference external" href="https://github.com/apache/iceberg-rust">iceberg-rust</a>. The native writer must produce the same
+outcome as iceberg-java — the same Parquet features, statistics, and manifest metadata — so a
+write is only eligible when every table property it depends on is one the native path reproduces
+exactly. <code class="docutils literal notranslate"><span class="pre">spark.comet.iceberg.write.enabled</span></code> enables this eligibility check;
+with the current release the native writer itself is not yet wired in, so every write still runs
+through iceberg-java and the check’s outcome is reported as a fall-back reason in Comet’s
+extended EXPLAIN output.</p>
+<p><strong>Most Iceberg write settings are not supported.</strong> Detection is an allowlist: a write is
+eligible only when its entire effective configuration matches the table below, and anything
+else — any other write-affecting property, any key added by a future Iceberg version, any
+value outside the supported set, any reflection failure while inspecting the write — falls
+back to iceberg-java with a reason reported in extended EXPLAIN. Checks run on the effective
+configuration: table properties overlaid with <code class="docutils literal notranslate"><span class="pre">SparkWrite.writeProperties</span></code>, which is where
+iceberg-java resolves per-write options and <code class="docutils literal notranslate"><span class="pre">spark.sql.iceberg.*</span></code> session overrides.</p>
+<p>A write is eligible only when ALL of the following hold:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Setting</p></th>
+<th class="head"><p>Supported values</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>resolved write format (<code class="docutils literal notranslate"><span class="pre">write-format</span></code> option overlaid on <code class="docutils literal notranslate"><span class="pre">write.format.default</span></code>)</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">parquet</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">format-version</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">1</span></code> or <code class="docutils literal notranslate"><span class="pre">2</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">write.parquet.compression-codec</span></code> / <code class="docutils literal notranslate"><span class="pre">compression-level</span></code> / <code class="docutils literal notranslate"><span class="pre">row-group-size-bytes</span></code> / <code class="docutils literal notranslate"><span class="pre">page-size-bytes</span></code> / <code class="docutils literal notranslate"><span class="pre">page-row-limit</span></code> / <code class="docutils literal notranslate"><span class="pre">dict-size-bytes</span></code></p></td>
+<td><p>any value (translated to the native writer)</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">write.parquet.row-group-check-min-record-count</span></code></p></td>
+<td><p>unset or <code class="docutils literal notranslate"><span class="pre">100</span></code> (the default)</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">write.parquet.row-group-check-max-record-count</span></code></p></td>
+<td><p>unset or <code class="docutils literal notranslate"><span class="pre">10000</span></code> (the default)</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">write.parquet.page-version</span></code></p></td>
+<td><p>unset or <code class="docutils literal notranslate"><span class="pre">v1</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">write.parquet.shred-variants</span></code></p></td>
+<td><p>unset or <code class="docutils literal notranslate"><span class="pre">false</span></code> (Spark 4.x / Iceberg 1.11 resolve this into every parquet write)</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">write.parquet.variant-inference-buffer-size</span></code></p></td>
+<td><p>any value (only meaningful when shredding, which is gated)</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">write.parquet.bloom-filter-enabled.column.&lt;col&gt;</span></code></p></td>
+<td><p>unset or <code class="docutils literal notranslate"><span class="pre">false</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">write.metadata.metrics.default</span></code></p></td>
+<td><p>unset, <code class="docutils literal notranslate"><span class="pre">truncate(N)</span></code>, or <code class="docutils literal notranslate"><span class="pre">full</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">write.metadata.metrics.column.&lt;col&gt;</span></code></p></td>
+<td><p>unset, <code class="docutils literal notranslate"><span class="pre">truncate(N)</span></code>, or <code class="docutils literal notranslate"><span class="pre">full</span></code></p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">write.spark.fanout.enabled</span></code></p></td>
+<td><p>any value (the native writer implements both clustered and fanout modes)</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">write.target-file-size-bytes</span></code></p></td>
+<td><p>any value (file rolling cadence differs; see accepted divergences)</p></td>
+</tr>
+<tr class="row-odd"><td><p>data location URI scheme</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">file</span></code>, <code class="docutils literal notranslate"><span class="pre">memory</span></code>, <code class="docutils literal notranslate"><span class="pre">s3</span></code>, <code class="docutils literal notranslate"><span class="pre">s3a</span></code>, <code class="docutils literal notranslate"><span class="pre">gs</span></code>, <code class="docutils literal notranslate"><span class="pre">oss</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p>partition spec</p></td>
+<td><p>any (but see partition paths under accepted divergences)</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>Within the namespaces that shape data-file bytes — <code class="docutils literal notranslate"><span class="pre">write.parquet.*</span></code> and <code class="docutils literal notranslate"><span class="pre">parquet.*</span></code> —
+everything not listed above must be absent: unvetted <code class="docutils literal notranslate"><span class="pre">write.parquet.*</span></code> keys (e.g.
+<code class="docutils literal notranslate"><span class="pre">bloom-filter-max-bytes</span></code>, <code class="docutils literal notranslate"><span class="pre">stats-enabled.column.*</span></code>, keys added by future Iceberg versions),
+metrics modes outside the supported set (<code class="docutils literal notranslate"><span class="pre">counts</span></code>, <code class="docutils literal notranslate"><span class="pre">none</span></code>, or unparseable values), any
+<code class="docutils literal notranslate"><span class="pre">parquet.*</span></code> table property (including <code class="docutils literal notranslate"><span class="pre">parquet.enable.dictionary</span></code>), and any <code class="docutils literal notranslate"><span class="pre">parquet.*</span></code> key in
+the session Hadoop configuration (with <code class="docutils literal notranslate"><span class="pre">HadoopFileIO</span></code>-backed output those reach iceberg-java’s
+writer but not the native one). Also gated explicitly: any <code class="docutils literal notranslate"><span class="pre">encryption.*</span></code> key,
+<code class="docutils literal notranslate"><span class="pre">write.object-storage.enabled=true</span></code>, <code class="docutils literal notranslate"><span class="pre">write.location-provider.impl</span></code>, and <code class="docutils literal notranslate"><span class="pre">io-impl</span></code>.</p>
+<p>Other <code class="docutils literal notranslate"><span class="pre">write.*</span></code> properties are intentionally not gated because they cannot make the native
+writer produce different data files: distribution and ordering settings shape the Spark plan
+identically on both paths, WAP / branch / snapshot properties act on the JVM committer,
+<code class="docutils literal notranslate"><span class="pre">write.avro.*</span></code> / <code class="docutils literal notranslate"><span class="pre">write.orc.*</span></code> apply only to formats already excluded, and merge-on-read
+settings route the write through <code class="docutils literal notranslate"><span class="pre">WriteDelta</span></code>, which the split plan never intercepts. Every
+rule is pinned by <code class="docutils literal notranslate"><span class="pre">CometIcebergWriteDetectionSuite</span></code>.</p>
+<p>Manifest <code class="docutils literal notranslate"><span class="pre">DataFile</span></code> metrics will be assembled on the JVM at commit time using Iceberg’s own
+<code class="docutils literal notranslate"><span class="pre">MetricsConfig</span></code> logic, so iceberg-java’s metadata decisions — metrics modes, the
+inferred-column cap (<code class="docutils literal notranslate"><span class="pre">write.metadata.metrics.max-inferred-column-defaults</span></code>), bound truncation,
+and list/map bounds suppression — are respected exactly regardless of what the native writer
+reports. The <code class="docutils literal notranslate"><span class="pre">counts</span></code>/<code class="docutils literal notranslate"><span class="pre">none</span></code> restrictions above remain only until that assembly lands.</p>
+</section>
+<section id="accepted-divergences-behind-the-toggle">
+<h2>Accepted divergences behind the toggle<a class="headerlink" href="#accepted-divergences-behind-the-toggle" title="Link to this heading">#</a></h2>
+<p>Some differences between parquet-mr and the pinned parquet-rs / iceberg-rust are unconditional —
+they apply to every native write and cannot be configured away. Enabling
+<code class="docutils literal notranslate"><span class="pre">spark.comet.iceberg.write.enabled</span></code> accepts them:</p>
+<ul class="simple">
+<li><p>Footer key-value metadata differs: native files carry an <code class="docutils literal notranslate"><span class="pre">ARROW:schema</span></code> entry and no
+<code class="docutils literal notranslate"><span class="pre">iceberg.schema</span></code> entry; iceberg-java files are the opposite.</p></li>
+<li><p>The Parquet root schema element is named <code class="docutils literal notranslate"><span class="pre">arrow_schema</span></code> (iceberg-java: <code class="docutils literal notranslate"><span class="pre">table</span></code>).</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">created_by</span></code> identifies parquet-rs, not parquet-mr.</p></li>
+<li><p>No page CRC checksums and no page-header statistics (parquet-mr writes both by default).</p></li>
+<li><p>Dictionary-encoded pages are labeled <code class="docutils literal notranslate"><span class="pre">RLE_DICTIONARY</span></code> (parquet-mr v1 files: <code class="docutils literal notranslate"><span class="pre">PLAIN_DICTIONARY</span></code>).</p></li>
+<li><p>Fixed-length binary columns (<code class="docutils literal notranslate"><span class="pre">uuid</span></code>, <code class="docutils literal notranslate"><span class="pre">fixed</span></code>, decimals with precision &gt; 18) are not
+dictionary-encoded (parquet-mr dictionary-encodes them).</p></li>
+<li><p>Row-group boundaries: parquet-mr flushes by byte size at a record-count check cadence,
+parquet-rs buffers by row count. File rolling and file naming follow the same cadence-style
+differences (iceberg-java checks the target file size every 1000 rows and names files
+<code class="docutils literal notranslate"><span class="pre">&lt;partition&gt;-&lt;task&gt;-&lt;operation&gt;-&lt;count&gt;</span></code>; iceberg-rust checks per batch and uses a
+process-local counter).</p></li>
+<li><p>Partition paths are not URL-escaped: iceberg-java percent-encodes partition directory names
+and values (<code class="docutils literal notranslate"><span class="pre">region=a%2Fb</span></code>), iceberg-rust writes them raw (<code class="docutils literal notranslate"><span class="pre">region=a/b</span></code>). Readers resolve
+files through manifest metadata, not paths, so query results are unaffected — but the
+directory layout differs from iceberg-java’s, and partition values containing characters
+that are invalid in a URI (<code class="docutils literal notranslate"><span class="pre">:</span></code>, <code class="docutils literal notranslate"><span class="pre">#</span></code>, newline) may produce paths that <code class="docutils literal notranslate"><span class="pre">HadoopFileIO</span></code>-based
+readers cannot open.</p></li>
+<li><p>Compressed page bytes are implementation-defined: the codec and any explicit level are
+translated, but parquet-rs and parquet-mr embed different encoder implementations and
+defaults (zstd default levels, LZ4 framing), so byte-identical output is not achievable even
+for a default <code class="docutils literal notranslate"><span class="pre">zstd</span></code> table. The decompressed data is identical. For the same reason,
+codec-level side channels (<code class="docutils literal notranslate"><span class="pre">zlib.compress.level</span></code>, <code class="docutils literal notranslate"><span class="pre">compression.brotli.quality</span></code>,
+<code class="docutils literal notranslate"><span class="pre">io.compression.codec.zstd.level</span></code> — the last is present in every Hadoop configuration by
+default) are not gated: they can only shift compressed bytes, which are already accepted as
+divergent.</p></li>
+</ul>
+<p>All content not listed above — the logical data, encodings for non-FLBA columns, statistics
+values, and manifest metadata — must match iceberg-java exactly, or the write falls back.</p>
 </section>
 </section>
 
@@ -902,6 +1037,8 @@ trade-off, only no plan change.</p>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#configuration">Configuration</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#supported-operations">Supported operations</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#when-comet-falls-back-to-spark-s-write-operator">When Comet falls back to Spark’s write operator</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#native-parquet-write-eligibility">Native Parquet write eligibility</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#accepted-divergences-behind-the-toggle">Accepted divergences behind the toggle</a></li>
 </ul>
   </nav></div>
 
