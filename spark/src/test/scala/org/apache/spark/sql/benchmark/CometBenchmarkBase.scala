@@ -29,7 +29,7 @@ import org.apache.parquet.crypto.keytools.mocks.InMemoryKMS
 import org.apache.spark.SparkConf
 import org.apache.spark.benchmark.Benchmark
 import org.apache.spark.sql.{DataFrame, DataFrameWriter, Row, SparkSession}
-import org.apache.spark.sql.catalyst.expressions.{Alias, AttributeReference, Literal}
+import org.apache.spark.sql.catalyst.expressions.{Alias, AttributeReference, Expression, Literal}
 import org.apache.spark.sql.catalyst.optimizer.ConstantFolding
 import org.apache.spark.sql.comet.CometPlanChecker
 import org.apache.spark.sql.comet.util.Utils
@@ -157,6 +157,16 @@ trait CometBenchmarkBase
             |likely removed by the optimizer.
             |Spark plan:""".stripMargin + "\n" + plan.treeString)
       }
+      val rowInvariant = rowInvariantProjections(plan)
+      if (rowInvariant.nonEmpty) {
+        warn(
+          benchmark,
+          s"""WARNING: these projections reference no input column, so their value is the same
+             |for every row: ${rowInvariant.mkString(", ")}
+             |An engine may evaluate them once per batch and broadcast the result rather than
+             |per row, so the two arms are not necessarily doing comparable work. Benchmark the
+             |expression over a column instead.""".stripMargin)
+      }
     }
 
     // Check that the plan is fully Comet native before running the benchmark. Unlike the check
@@ -207,16 +217,35 @@ trait CometBenchmarkBase
    * aggregates and filters are never reported as trivial even when they project bare attributes.
    */
   private def isTrivialPlan(plan: SparkPlan): Boolean = !plan.exists {
-    case p: ProjectExec =>
-      p.projectList.exists {
-        case _: AttributeReference | _: Literal => false
-        case Alias(_: AttributeReference | _: Literal, _) => false
-        case _ => true
-      }
+    case p: ProjectExec => p.projectList.exists(expr => !isTrivialExpr(expr))
     case _: ColumnarToRowExec | _: WholeStageCodegenExec | _: InputAdapter | _: LeafExecNode =>
       false
     case _ => true
   }
+
+  /** A projection that copies a column or emits a constant, doing no per-row work. */
+  private def isTrivialExpr(expr: Expression): Boolean = expr match {
+    case _: AttributeReference | _: Literal => true
+    case Alias(_: AttributeReference | _: Literal, _) => true
+    case _ => false
+  }
+
+  /**
+   * Projections whose value is the same for every row, because they reference no input column.
+   *
+   * An engine is free to evaluate these once per batch and broadcast the result, and engines
+   * differ on whether they do. Comet's native `space` takes a `ColumnarValue::Scalar` and builds
+   * one string per batch, while Spark's `StringSpace` calls `UTF8String.blankString` per row. The
+   * two plans look identical, so nothing else here can tell them apart.
+   *
+   * Nondeterministic expressions are excluded: `rand()` also references no column but genuinely
+   * evaluates per row.
+   */
+  private def rowInvariantProjections(plan: SparkPlan): Seq[Expression] =
+    plan
+      .collect { case p: ProjectExec => p }
+      .flatMap(_.projectList)
+      .filter(expr => expr.references.isEmpty && expr.deterministic && !isTrivialExpr(expr))
 
   /**
    * Writes a warning to the benchmark results file as well as the console. `Benchmark.out` tees
