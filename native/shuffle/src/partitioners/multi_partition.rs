@@ -457,15 +457,18 @@ impl<T: PartitionWriter> MultiPartitionShuffleRepartitioner<T> {
             mem_growth += after_size.saturating_sub(before_size);
         }
 
-        // `try_grow` is evaluated first so the reservation accounts for this batch either way.
+        // A rejected reservation does not include this batch's memory, even though the batch
+        // and its partition indices have already been buffered and must be counted as spilled.
+        let reservation_failed = self.reservation.try_grow(mem_growth).is_err();
         // Checking after buffering lets the writer overshoot the limit by at most one batch,
         // which is how the memory-pressure trigger already behaves.
-        if self.reservation.try_grow(mem_growth).is_err()
+        if reservation_failed
             || self
                 .max_buffer_bytes
                 .is_some_and(|limit| self.reservation.size() >= limit)
         {
-            self.spill()?;
+            let unreserved_bytes = if reservation_failed { mem_growth } else { 0 };
+            self.spill(unreserved_bytes)?;
         }
 
         Ok(())
@@ -501,7 +504,7 @@ impl<T: PartitionWriter> MultiPartitionShuffleRepartitioner<T> {
         PartitionedBatchesProducer::new(buffered_batches, indices, self.batch_size)
     }
 
-    pub(crate) fn spill(&mut self) -> datafusion::common::Result<()> {
+    pub(crate) fn spill(&mut self, unreserved_bytes: usize) -> datafusion::common::Result<()> {
         log::info!(
             "ShuffleRepartitioner spilling shuffle data of {} to disk while inserting ({} time(s) so far)",
             self.used(),
@@ -525,7 +528,8 @@ impl<T: PartitionWriter> MultiPartitionShuffleRepartitioner<T> {
                 )?;
             }
 
-            self.reservation.free();
+            let memory_spilled_bytes = self.reservation.free().saturating_add(unreserved_bytes);
+            self.metrics.memory_spilled_bytes.add(memory_spilled_bytes);
             self.pinned_buffers.clear();
             self.metrics.spill_count.add(1);
             Ok(())

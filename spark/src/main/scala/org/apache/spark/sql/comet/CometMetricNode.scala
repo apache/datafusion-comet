@@ -345,10 +345,12 @@ object CometMetricNode {
     Map(
       "elapsed_compute" -> SQLMetrics.createNanoTimingMetric(sc, "native shuffle writer time"),
       "repart_time" -> SQLMetrics.createNanoTimingMetric(sc, "repartition time"),
+      "interleave_time" -> SQLMetrics.createNanoTimingMetric(sc, "partition interleaving time"),
       "encode_time" -> SQLMetrics.createNanoTimingMetric(sc, "encoding and compression time"),
       "decode_time" -> SQLMetrics.createNanoTimingMetric(sc, "decoding and decompression time"),
       "spill_count" -> SQLMetrics.createMetric(sc, "number of spills"),
       "spilled_bytes" -> SQLMetrics.createSizeMetric(sc, "spilled bytes"),
+      "memory_spilled_bytes" -> SQLMetrics.createSizeMetric(sc, "memory spilled bytes"),
       "input_batches" -> SQLMetrics.createMetric(sc, "number of input batches"))
   }
 

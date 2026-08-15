@@ -109,9 +109,11 @@ class CometNativeShuffleWriter[K, V](
       "elapsed_compute",
       "encode_time",
       "repart_time",
+      "interleave_time",
       "input_batches",
       "spill_count",
-      "spilled_bytes")
+      "spilled_bytes",
+      "memory_spilled_bytes")
     val metricsOutputRows = new SQLMetric("outputRows")
     val metricsWriteTime = new SQLMetric("writeTime")
     val shuffleWriterSQLMetrics = Map(
@@ -181,12 +183,16 @@ class CometNativeShuffleWriter[K, V](
     metricsReporter.incRecordsWritten(metricsOutputRows.value)
     metricsReporter.incWriteTime(metricsWriteTime.value)
 
-    // Report spill metrics to Spark's task metrics so they appear in
-    // Spark UI task summaries (not just SQL metrics)
-    val spilledBytes = shuffleWriterSQLMetrics.get("spilled_bytes").map(_.value).getOrElse(0L)
-    if (spilledBytes > 0) {
-      context.taskMetrics().incMemoryBytesSpilled(spilledBytes)
-      context.taskMetrics().incDiskBytesSpilled(spilledBytes)
+    // Report the compressed spill-file size and the released in-memory size independently so
+    // Spark UI task summaries preserve Spark's distinct disk and memory spill semantics.
+    val diskBytesSpilled = shuffleWriterSQLMetrics.get("spilled_bytes").map(_.value).getOrElse(0L)
+    if (diskBytesSpilled > 0) {
+      context.taskMetrics().incDiskBytesSpilled(diskBytesSpilled)
+    }
+    val memoryBytesSpilled =
+      shuffleWriterSQLMetrics.get("memory_spilled_bytes").map(_.value).getOrElse(0L)
+    if (memoryBytesSpilled > 0) {
+      context.taskMetrics().incMemoryBytesSpilled(memoryBytesSpilled)
     }
 
     // commit

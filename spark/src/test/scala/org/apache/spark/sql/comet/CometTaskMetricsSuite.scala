@@ -106,6 +106,58 @@ class CometTaskMetricsSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("native shuffle write reports separate memory and disk spill metrics") {
+    val expectedRecords = 20000L
+    val compressibleValue = "native-shuffle-spill-metrics-" * 8
+    withParquetTable((0 until expectedRecords.toInt).map(i => (i, compressibleValue)), "tbl") {
+      withSQLConf(
+        CometConf.COMET_SHUFFLE_MODE.key -> "native",
+        CometConf.COMET_SHUFFLE_COMPRESSION_CODEC.key -> "zstd",
+        CometConf.COMET_SHUFFLE_NATIVE_MAX_BUFFER_BYTES.key -> "32k",
+        SQLConf.SHUFFLE_PARTITIONS.key -> "4") {
+        val shuffled = sql("SELECT * FROM tbl").repartition(4, $"_1")
+        val store = spark.sparkContext.statusStore
+        spark.sparkContext.listenerBus.waitUntilEmpty()
+        val stagesBefore = store.stageList(null).map(_.stageId).toSet
+
+        assert(shuffled.collect().length == expectedRecords)
+        spark.sparkContext.listenerBus.waitUntilEmpty()
+
+        val exchange = collectFirst(shuffled.queryExecution.executedPlan) {
+          case native: CometShuffleExchangeExec if native.shuffleType == CometNativeShuffle =>
+            native
+        }.getOrElse(fail("Expected a native shuffle exchange"))
+        val metrics = exchange.metrics
+        val sqlMemorySpilled = metrics("memory_spilled_bytes").value
+        val sqlDiskSpilled = metrics("spilled_bytes").value
+
+        assert(metrics("shuffleRecordsWritten").value == expectedRecords)
+        assert(metrics("shuffleBytesWritten").value > 0L)
+        assert(metrics("shuffleWriteTime").value > 0L)
+        assert(metrics("interleave_time").value > 0L)
+        assert(metrics("spill_count").value > 0L)
+        assert(sqlDiskSpilled > 0L, "Compressed native shuffle spill bytes were not reported")
+        assert(
+          sqlMemorySpilled > sqlDiskSpilled,
+          s"Expected in-memory spill bytes ($sqlMemorySpilled) to exceed compressed " +
+            s"disk spill bytes ($sqlDiskSpilled)")
+
+        val shuffleWriteStages = store
+          .stageList(null)
+          .filterNot(stage => stagesBefore.contains(stage.stageId))
+          .filter(_.shuffleWriteRecords > 0L)
+
+        assert(shuffleWriteStages.nonEmpty, "No native shuffle write stage was recorded")
+        assert(shuffleWriteStages.map(_.shuffleWriteRecords).sum == expectedRecords)
+        assert(
+          shuffleWriteStages.map(_.shuffleWriteBytes).sum == metrics("shuffleBytesWritten").value)
+        assert(shuffleWriteStages.map(_.shuffleWriteTime).sum > 0L)
+        assert(shuffleWriteStages.map(_.memoryBytesSpilled).sum == sqlMemorySpilled)
+        assert(shuffleWriteStages.map(_.diskBytesSpilled).sum == sqlDiskSpilled)
+      }
+    }
+  }
+
   test("native shuffle reports task input metrics for its scan child") {
     // A native shuffle whose child subtree includes a CometNativeScanExec runs that scan inside
     // the writer's single plan, so the usual CometExecRDD.compute() input-metric bridge never

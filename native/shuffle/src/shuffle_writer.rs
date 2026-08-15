@@ -428,7 +428,7 @@ mod test {
             assert!(!spill_writers[1].has_spill_file());
         }
 
-        repartitioner.spill().unwrap();
+        repartitioner.spill(0).unwrap();
 
         // after spill, there should be spill files
         {
@@ -504,21 +504,21 @@ mod test {
         );
     }
 
-    /// Buffer `num_batches` batches through a `MultiPartitionShuffleRepartitioner` configured
-    /// with `max_buffer_bytes`, against a memory pool large enough that `try_grow` never fails,
-    /// and return how many times it spilled.
-    async fn spill_count_with_max_buffer_bytes(
+    /// Buffer `num_batches` batches through a `MultiPartitionShuffleRepartitioner` and return its
+    /// spill count, uncompressed in-memory spill size, and compressed on-disk spill size.
+    async fn spill_metrics_with_max_buffer_bytes(
         max_buffer_bytes: Option<usize>,
         num_batches: usize,
-    ) -> usize {
+        memory_limit: usize,
+    ) -> (usize, usize, usize) {
         let batch = create_batch(1000);
         let num_partitions = 4;
-        // Far larger than anything these batches can reserve, so pool pressure never triggers
-        // a spill and any spill observed must come from the max_buffer_bytes limit.
-        let runtime_env = create_runtime(1024 * 1024 * 1024);
+        let runtime_env = create_runtime(memory_limit);
         let metrics_set = ExecutionPlanMetricsSet::new();
         let metrics = ShufflePartitionerMetrics::new(&metrics_set, 0);
         let spill_count = metrics.spill_count.clone();
+        let memory_spilled_bytes = metrics.memory_spilled_bytes.clone();
+        let spilled_bytes = metrics.spilled_bytes.clone();
         let dir = tempfile::tempdir().unwrap();
         let shuffle_block_writer =
             ShuffleBlockWriter::try_new(batch.schema().as_ref(), CompressionCodec::Lz4Frame)
@@ -550,7 +550,24 @@ mod test {
         }
         repartitioner.shuffle_write().unwrap();
 
-        spill_count.value()
+        let actual_spilled_bytes: usize = repartitioner
+            .partition_writer()
+            .get_spill_writers()
+            .iter()
+            .filter_map(|writer| writer.path())
+            .map(|path| usize::try_from(std::fs::metadata(path).unwrap().len()).unwrap())
+            .sum();
+        assert_eq!(
+            spilled_bytes.value(),
+            actual_spilled_bytes,
+            "reported disk spill bytes must match the complete compressed spill files"
+        );
+
+        (
+            spill_count.value(),
+            memory_spilled_bytes.value(),
+            spilled_bytes.value(),
+        )
     }
 
     #[tokio::test]
@@ -559,21 +576,51 @@ mod test {
         // A limit far below what 20 batches buffer must spill, even though the pool never
         // denies an allocation. The paired zero case pins that the spills come from the new
         // limit and not from the pre-existing memory-pressure trigger.
-        let spills = spill_count_with_max_buffer_bytes(Some(8 * 1024), 20).await;
+        let (spills, memory_spilled_bytes, spilled_bytes) =
+            spill_metrics_with_max_buffer_bytes(Some(8 * 1024), 20, 1024 * 1024 * 1024).await;
         assert!(
             spills > 0,
             "a max_buffer_bytes limit below the buffered size must trigger spilling, got {spills}"
+        );
+        assert!(
+            memory_spilled_bytes > spilled_bytes,
+            "in-memory spill bytes ({memory_spilled_bytes}) must exceed compressed disk spill bytes ({spilled_bytes})"
+        );
+        assert!(
+            spilled_bytes > 0,
+            "a forced spill must report the compressed bytes written to disk"
         );
     }
 
     #[tokio::test]
     #[cfg_attr(miri, ignore)] // miri can't call foreign function `ZSTD_createCCtx`
     async fn max_buffer_bytes_none_leaves_spilling_to_memory_pressure() {
-        let spills = spill_count_with_max_buffer_bytes(None, 20).await;
+        let (spills, memory_spilled_bytes, spilled_bytes) =
+            spill_metrics_with_max_buffer_bytes(None, 20, 1024 * 1024 * 1024).await;
         assert_eq!(
             spills, 0,
             "an unset max_buffer_bytes disables the limit, and this pool never denies an allocation"
         );
+        assert_eq!(
+            memory_spilled_bytes, 0,
+            "no memory should be reported spilled"
+        );
+        assert_eq!(spilled_bytes, 0, "no disk bytes should be reported spilled");
+    }
+
+    #[tokio::test]
+    #[cfg_attr(miri, ignore)] // miri can't call foreign function `ZSTD_createCCtx`
+    async fn memory_pressure_spill_accounts_for_rejected_reservation() {
+        // A one-byte pool rejects the first batch's reservation. The batch is already resident,
+        // so its memory must still be counted even though MemoryReservation::free() returns zero.
+        let (spills, memory_spilled_bytes, spilled_bytes) =
+            spill_metrics_with_max_buffer_bytes(None, 1, 1).await;
+        assert!(spills > 0, "memory pressure must trigger a spill");
+        assert!(
+            memory_spilled_bytes > spilled_bytes,
+            "a rejected reservation must still count the buffered memory ({memory_spilled_bytes} vs {spilled_bytes} compressed bytes)"
+        );
+        assert!(spilled_bytes > 0, "the spill must write compressed data");
     }
 
     /// Run a shuffle end-to-end through `ShuffleWriterExec` with the given `max_buffer_bytes`
