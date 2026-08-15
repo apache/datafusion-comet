@@ -23,6 +23,8 @@ import java.io.File
 import java.nio.charset.StandardCharsets
 import java.util.Base64
 
+import scala.collection.mutable
+
 import org.apache.parquet.crypto.DecryptionPropertiesFactory
 import org.apache.parquet.crypto.keytools.{KeyToolkit, PropertiesDrivenCryptoFactory}
 import org.apache.parquet.crypto.keytools.mocks.InMemoryKMS
@@ -31,6 +33,7 @@ import org.apache.spark.benchmark.Benchmark
 import org.apache.spark.sql.{DataFrame, DataFrameWriter, Row, SparkSession}
 import org.apache.spark.sql.catalyst.expressions.{Alias, AttributeReference, Expression, Literal}
 import org.apache.spark.sql.catalyst.optimizer.ConstantFolding
+import org.apache.spark.sql.catalyst.plans.logical.SubqueryAlias
 import org.apache.spark.sql.comet.CometPlanChecker
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution.{ColumnarToRowExec, InputAdapter, LeafExecNode, ProjectExec, SparkPlan, WholeStageCodegenExec}
@@ -144,11 +147,15 @@ trait CometBenchmarkBase
       CometConf.COMET_ENABLED.key -> "true",
       CometConf.COMET_EXEC_ENABLED.key -> "true") ++ extraCometConfigs
 
-    // Check that the benchmarked expression survives optimization into the Spark baseline plan.
-    // The query is not executed: before execution `stripAQEPlan` yields the initial physical
-    // plan, which already carries the projections this check inspects.
+    // Derive the scan-plus-row-conversion floor, and check that the benchmarked expression
+    // survives optimization into the Spark baseline plan. The query is not executed: before
+    // execution `stripAQEPlan` yields the initial physical plan, which already carries the
+    // projections this check inspects.
+    var baselineQuery: Option[String] = None
     withSQLConf(sparkConfigs: _*) {
-      val plan = stripAQEPlan(spark.sql(query).queryExecution.executedPlan)
+      val df = spark.sql(query)
+      baselineQuery = deriveBaselineQuery(df)
+      val plan = stripAQEPlan(df.queryExecution.executedPlan)
       if (isTrivialPlan(plan)) {
         warn(
           benchmark,
@@ -186,19 +193,66 @@ trait CometBenchmarkBase
       }
     }
 
-    benchmark.addCase("Spark") { _ =>
-      withSQLConf(sparkConfigs: _*) {
-        spark.sql(query).noop()
+    val rows = Seq("Spark" -> sparkConfigs, "Comet" -> cometConfigs).map { case (arm, configs) =>
+      val total = measure(benchmark, cardinality, configs)(spark.sql(query).noop())
+      val baseline = baselineQuery.map { baseline =>
+        baselineResults.getOrElseUpdate(
+          (baseline, configs),
+          measure(benchmark, cardinality, configs)(spark.sql(baseline).noop()))
       }
+      BenchmarkRow(arm, total, baseline)
     }
 
-    benchmark.addCase("Comet") { _ =>
-      withSQLConf(cometConfigs: _*) {
-        spark.sql(query).noop()
+    // `Benchmark.run` is deliberately not used: it renders from its own case list, so a cached
+    // baseline cannot appear as a row and there is nowhere to put a derived column.
+    benchmark.out.println(BenchmarkTable.render(name, cardinality, rows, baselineQuery))
+  }
+
+  /**
+   * The scan-plus-row-conversion floor is the same for every expression measured over the same
+   * columns of the same table, so it is measured once per (query, config) pair rather than once
+   * per benchmark. Without this, adding a baseline would roughly double total benchmark runtime.
+   */
+  private val baselineResults =
+    mutable.Map.empty[(String, Seq[(String, String)]), Benchmark.Result]
+
+  /**
+   * Runs `body` under `configs` and returns Spark's measurement of it, reusing `Benchmark`'s
+   * warmup, iteration and standard deviation logic.
+   */
+  private def measure(benchmark: Benchmark, cardinality: Long, configs: Seq[(String, String)])(
+      body: => Unit): Benchmark.Result = {
+    // `withSQLConf` returns Unit on Spark 3.5, so the result has to come back through a var.
+    var result: Benchmark.Result = null
+    withSQLConf(configs: _*) {
+      result = benchmark.measure(cardinality, 0) { timer =>
+        timer.startTiming()
+        body
+        timer.stopTiming()
       }
     }
+    result
+  }
 
-    benchmark.run()
+  /**
+   * The query measuring the floor for `df`: the same scan, projecting the columns it reads and
+   * doing no expression work. The optimized plan's leaf output is already column-pruned, so it is
+   * exactly what the real query scans.
+   *
+   * Defined only when the plan reads a single table. A join has two leaves and no single
+   * meaningful floor, so those benchmarks report totals instead.
+   */
+  private def deriveBaselineQuery(df: DataFrame): Option[String] = {
+    val leaves = df.queryExecution.optimizedPlan.collectLeaves
+    val aliases = df.queryExecution.analyzed.collect { case s: SubqueryAlias =>
+      s.identifier.name
+    }.distinct
+    val columns = leaves.headOption.map(_.output.map(name => s"`${name.name}`")).getOrElse(Nil)
+    if (leaves.size == 1 && aliases.size == 1 && columns.nonEmpty) {
+      Some(s"SELECT ${columns.mkString(", ")} FROM ${aliases.head}")
+    } else {
+      None
+    }
   }
 
   /**
