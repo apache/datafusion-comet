@@ -267,18 +267,28 @@ SELECT
   try_to_time(concat(pad, '12:30:45')),
   try_to_time(concat('12:30:45', pad)),
   try_to_time(concat(pad, '12:30:45', pad)),
-  try_to_time(concat('12:', pad, '30:45'))
+  try_to_time(concat('12:', pad, '30:45')),
+  try_to_time(concat(pad, '12:30')),
+  try_to_time(concat('12:30', pad)),
+  try_to_time(concat(pad, '12:30', pad)),
+  try_to_time(concat('12:', pad, '30'))
 FROM test_to_time_trim
 
 -- Leading trimAll padding invalidates a T prefix. Controls before AM/PM are valid, but only ASCII
--- spaces after AM/PM are trimmed before Spark checks the suffix.
+-- spaces after AM/PM are trimmed before Spark checks the suffix, including with a T prefix.
 query
 SELECT
   name,
   try_to_time(concat(pad, 'T12:30:45')),
   try_to_time(concat('T12:30:45', pad)),
   try_to_time(concat('1:00:00', pad, 'PM')),
-  try_to_time(concat('1:00:00 PM', pad))
+  try_to_time(concat('1:00:00 PM', pad)),
+  try_to_time(concat(pad, 'T12:30:45 PM')),
+  try_to_time(concat('T12:30:45', pad, 'PM')),
+  try_to_time(concat('T12:30:45 PM', pad)),
+  try_to_time(concat(pad, 'T12:30 PM')),
+  try_to_time(concat('T12:30', pad, 'PM')),
+  try_to_time(concat('T12:30 PM', pad))
 FROM test_to_time_trim
 
 -- The throwing variant must accept the same valid ASCII controls as try_to_time.

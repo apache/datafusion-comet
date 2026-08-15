@@ -86,13 +86,13 @@ fn string_to_time(s: &str) -> Option<i64> {
     // after AM/PM prevents the suffix from being recognized.
     let right_trimmed = s.trim_end_matches(' ');
     let bytes = right_trimmed.as_bytes();
-    let num_chars = bytes.len();
+    let num_bytes = bytes.len();
 
-    // Detect AM/PM suffix
-    let (is_am, is_pm, has_suffix) = if num_chars > 2 {
-        let last = bytes[num_chars - 1];
+    // ASCII AM/PM suffix bytes cannot be UTF-8 continuation bytes, so byte indexing is safe.
+    let (is_am, is_pm, has_suffix) = if num_bytes > 2 {
+        let last = bytes[num_bytes - 1];
         if last == b'M' || last == b'm' {
-            let second_last = bytes[num_chars - 2];
+            let second_last = bytes[num_bytes - 2];
             let am = second_last == b'A' || second_last == b'a';
             let pm = second_last == b'P' || second_last == b'p';
             (am, pm, am || pm)
@@ -107,7 +107,7 @@ fn string_to_time(s: &str) -> Option<i64> {
     // all ASCII control bytes and spaces, including DELETE, from both ends.
     // Unicode whitespace is intentionally preserved and fails to parse.
     let untrimmed_time = if has_suffix {
-        &right_trimmed[..num_chars - 2]
+        &right_trimmed[..num_bytes - 2]
     } else {
         right_trimmed
     };
@@ -485,28 +485,30 @@ mod tests {
 
     #[test]
     fn test_spark_trim_all_control_bytes() {
-        let expected = string_to_time("12:30:45");
+        for (time, after_hour) in [("12:30:45", "30:45"), ("12:30", "30")] {
+            let expected = string_to_time(time);
 
-        for byte in (0_u8..=0x20).chain(std::iter::once(0x7f)) {
-            let padding = char::from(byte);
-            for input in [
-                format!("{padding}12:30:45"),
-                format!("12:30:45{padding}"),
-                format!("{padding}12:30:45{padding}"),
-            ] {
+            for byte in (0_u8..=0x20).chain(std::iter::once(0x7f)) {
+                let padding = char::from(byte);
+                for input in [
+                    format!("{padding}{time}"),
+                    format!("{time}{padding}"),
+                    format!("{padding}{time}{padding}"),
+                ] {
+                    assert_eq!(
+                        string_to_time(&input),
+                        expected,
+                        "padding byte 0x{byte:02X} in {input:?}"
+                    );
+                }
+
+                let interior = format!("12:{padding}{after_hour}");
                 assert_eq!(
-                    string_to_time(&input),
-                    expected,
-                    "padding byte 0x{byte:02X} in {input:?}"
+                    string_to_time(&interior),
+                    None,
+                    "interior padding byte 0x{byte:02X} in {interior:?}"
                 );
             }
-
-            let interior = format!("12:{padding}30:45");
-            assert_eq!(
-                string_to_time(&interior),
-                None,
-                "interior padding byte 0x{byte:02X} in {interior:?}"
-            );
         }
     }
 
@@ -594,6 +596,47 @@ mod tests {
                 expected,
                 "trailing padding byte 0x{byte:02X} in {trailing:?}"
             );
+        }
+    }
+
+    #[test]
+    fn test_t_prefix_am_pm_control_byte_trimming() {
+        for (time, seconds) in [("T1:30", 0), ("T1:30:45", 45)] {
+            for (suffix, hour) in [("AM", 1), ("PM", 13), ("am", 1), ("pm", 13)] {
+                let expected =
+                    hour * NANOS_PER_HOUR + 30 * NANOS_PER_MINUTE + seconds * NANOS_PER_SECOND;
+
+                assert_eq!(string_to_time(&format!("{time} {suffix}")), Some(expected));
+
+                for byte in (0_u8..=0x20).chain(std::iter::once(0x7f)) {
+                    let padding = char::from(byte);
+
+                    for input in [
+                        format!("{padding}{time} {suffix}"),
+                        format!("{padding}{time}{padding}{suffix}"),
+                    ] {
+                        assert_eq!(
+                            string_to_time(&input),
+                            None,
+                            "leading padding byte 0x{byte:02X} in {input:?}"
+                        );
+                    }
+
+                    let before_suffix = format!("{time}{padding}{suffix}");
+                    assert_eq!(
+                        string_to_time(&before_suffix),
+                        Some(expected),
+                        "pre-suffix padding byte 0x{byte:02X} in {before_suffix:?}"
+                    );
+
+                    let after_suffix = format!("{time} {suffix}{padding}");
+                    assert_eq!(
+                        string_to_time(&after_suffix),
+                        (byte == b' ').then_some(expected),
+                        "post-suffix padding byte 0x{byte:02X} in {after_suffix:?}"
+                    );
+                }
+            }
         }
     }
 
