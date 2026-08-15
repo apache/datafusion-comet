@@ -50,8 +50,11 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
+import urllib.error
 import urllib.request
+import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -62,6 +65,9 @@ DEFAULT_RUNS_ROOT = Path.home() / "comet-bench-runs"
 DEFAULT_HEAP = "8g"
 DEFAULT_JDK = "17"
 DEFAULT_TIMEOUT_MINUTES = 60
+# Only used when the distribution has no protoc package. prost-build needs a
+# protoc on the PATH to compile the Comet protobuf definitions.
+PROTOC_VERSION = "25.5"
 RESULTS_SUBDIR = Path("benchmarks") / "results" / "micro"
 IMDS_BASE = "http://169.254.169.254/latest"
 
@@ -298,6 +304,46 @@ def install_packages(args):
         )
     else:
         log("no supported package manager found, skipping package installation")
+    install_protoc(args)
+
+
+def protoc_asset_name():
+    machine = platform.machine().lower()
+    if platform.system() == "Darwin":
+        return f"protoc-{PROTOC_VERSION}-osx-universal_binary.zip"
+    if machine in ("aarch64", "arm64"):
+        return f"protoc-{PROTOC_VERSION}-linux-aarch_64.zip"
+    return f"protoc-{PROTOC_VERSION}-linux-x86_64.zip"
+
+
+def install_protoc(args):
+    """Install protoc from the protobuf releases when the distribution has none.
+
+    Only the Rust build needs a protoc on the PATH. The JVM side downloads its
+    own through protoc-jar-maven-plugin.
+    """
+    if shutil.which("protoc"):
+        log(f"protoc already installed: {capture(['protoc', '--version'])}")
+        return
+    asset = protoc_asset_name()
+    url = f"https://github.com/protocolbuffers/protobuf/releases/download/v{PROTOC_VERSION}/{asset}"
+    if args.dry_run:
+        log(f"[dry-run] download {url} and install bin/protoc into /usr/local/bin")
+        return
+    log(f"protoc not found, installing {PROTOC_VERSION} from {url}")
+    with tempfile.TemporaryDirectory() as work_dir:
+        archive = Path(work_dir) / asset
+        try:
+            with urllib.request.urlopen(url, timeout=120) as response:
+                archive.write_bytes(response.read())
+            with zipfile.ZipFile(archive) as bundle:
+                bundle.extract("bin/protoc", work_dir)
+        except (OSError, urllib.error.URLError, zipfile.BadZipFile) as error:
+            fail(f"could not install protoc: {error}")
+        run_command(
+            sudo_prefix() + ["install", "-m", "755", f"{work_dir}/bin/protoc", "/usr/local/bin/"]
+        )
+    log(f"installed {capture(['/usr/local/bin/protoc', '--version'])}")
 
 
 def install_rust(args):
@@ -320,7 +366,8 @@ def install_rust(args):
 
 
 def clone_or_update(args, comet_home):
-    if not (comet_home / ".git").is_dir():
+    # .git is a directory in a normal clone and a file in a worktree
+    if not (comet_home / ".git").exists():
         comet_home.parent.mkdir(parents=True, exist_ok=True)
         run_command(
             ["git", "clone", args.repo, str(comet_home)],

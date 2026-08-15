@@ -113,6 +113,40 @@ What each is for:
   above, which is the default build profile
 - `python3` runs the benchmark script
 
+### Protobuf Compiler
+
+The native build compiles the Comet protobuf definitions with `prost-build`, which needs a `protoc`
+binary on the `PATH`. Without one, `make release` fails with:
+
+```
+Error: Custom { kind: NotFound, error: "Could not find `protoc`. ..." }
+```
+
+The JVM side is unaffected, since it downloads its own `protoc` through
+`protoc-jar-maven-plugin`.
+
+Install it from the distribution packages and check that it resolves:
+
+```shell
+sudo dnf install -y protobuf-compiler
+protoc --version
+```
+
+If the package is unavailable, install the binary from the protobuf releases instead. Use
+`linux-aarch_64` in place of `linux-x86_64` on Graviton instances:
+
+```shell
+sudo dnf install -y unzip
+PROTOC_VERSION=25.5
+curl -LO https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-x86_64.zip
+sudo unzip -o protoc-${PROTOC_VERSION}-linux-x86_64.zip -d /usr/local bin/protoc
+protoc --version
+```
+
+`run.py setup` does this automatically: it installs the distribution package, and if `protoc` is
+still missing afterwards it downloads the release archive and installs the binary into
+`/usr/local/bin`.
+
 ### Java
 
 Set `JAVA_HOME` so that the build and the benchmarks find the JDK:
@@ -292,8 +326,8 @@ compiler. Install one and rerun `make release`:
 sudo dnf install -y gcc gcc-c++ make
 ```
 
-**`protoc` not found during the native build.** Install `protobuf-compiler` and rerun `make
-release`.
+**`Could not find protoc` during the native build.** See
+[Protobuf Compiler](#protobuf-compiler) above, then rerun `make release`.
 
 **`JAVA_HOME could not be determined`.** Install a JDK and export `JAVA_HOME`, or pass a checkout
 that has one configured.
