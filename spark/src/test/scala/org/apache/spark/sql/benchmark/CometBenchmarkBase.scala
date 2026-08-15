@@ -23,7 +23,7 @@ import java.io.File
 import java.nio.charset.StandardCharsets
 import java.util.Base64
 
-import scala.util.Random
+import scala.collection.mutable
 
 import org.apache.parquet.crypto.DecryptionPropertiesFactory
 import org.apache.parquet.crypto.keytools.{KeyToolkit, PropertiesDrivenCryptoFactory}
@@ -31,7 +31,12 @@ import org.apache.parquet.crypto.keytools.mocks.InMemoryKMS
 import org.apache.spark.SparkConf
 import org.apache.spark.benchmark.Benchmark
 import org.apache.spark.sql.{DataFrame, DataFrameWriter, Row, SparkSession}
+import org.apache.spark.sql.catalyst.expressions.{Alias, AttributeReference, Expression, Literal}
+import org.apache.spark.sql.catalyst.optimizer.ConstantFolding
+import org.apache.spark.sql.catalyst.plans.logical.SubqueryAlias
 import org.apache.spark.sql.comet.CometPlanChecker
+import org.apache.spark.sql.comet.util.Utils
+import org.apache.spark.sql.execution.{ColumnarToRowExec, InputAdapter, LeafExecNode, ProjectExec, SparkPlan, WholeStageCodegenExec}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.execution.benchmark.SqlBasedBenchmark
 import org.apache.spark.sql.internal.SQLConf
@@ -97,9 +102,13 @@ trait CometBenchmarkBase
       useDictionary: Boolean = false)(f: Int => Any): Unit = {
     withTempTable(tbl) {
       import spark.implicits._
+      // Derive the values from the row id with a pure function rather than a random number
+      // generator, so that results are comparable across runs. Seeding a driver-side `Random`
+      // would not work here: the closure runs per row on the executor.
       spark
         .range(values)
-        .map(_ => if (useDictionary) Random.nextLong() % 5 else Random.nextLong())
+        .map(i =>
+          if (useDictionary) CometBenchmarkBase.mix64(i) % 5 else CometBenchmarkBase.mix64(i))
         .createOrReplaceTempView(tbl)
       runBenchmark(benchmarkName)(f(values))
     }
@@ -125,48 +134,181 @@ trait CometBenchmarkBase
       extraCometConfigs: Map[String, String] = Map.empty): Unit = {
     val benchmark = new Benchmark(name, cardinality, output = output)
 
-    benchmark.addCase("Spark") { _ =>
-      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-        spark.sql(query).noop()
+    // Constant folding is excluded so that expressions over literal arguments are still evaluated
+    // per row. It must be excluded for both arms: if only Comet excludes it, Spark folds the
+    // expression away and does no per-row work, and the comparison is meaningless.
+    val noConstantFolding =
+      SQLConf.OPTIMIZER_EXCLUDED_RULES.key -> excludedRulesWith(ConstantFolding.ruleName)
+
+    val sparkConfigs = Seq(noConstantFolding, CometConf.COMET_ENABLED.key -> "false")
+
+    val cometConfigs = Seq(
+      noConstantFolding,
+      CometConf.COMET_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_ENABLED.key -> "true") ++ extraCometConfigs
+
+    // Derive the scan-plus-row-conversion floor, and check that the benchmarked expression
+    // survives optimization into the Spark baseline plan. The query is not executed: before
+    // execution `stripAQEPlan` yields the initial physical plan, which already carries the
+    // projections this check inspects.
+    var baselineQuery: Option[String] = None
+    withSQLConf(sparkConfigs: _*) {
+      val df = spark.sql(query)
+      baselineQuery = deriveBaselineQuery(df)
+      val plan = stripAQEPlan(df.queryExecution.executedPlan)
+      if (isTrivialPlan(plan)) {
+        warn(
+          benchmark,
+          """WARNING: the Spark baseline plan does no work beyond scanning and projecting
+            |columns, so this case is not measuring an expression. The expression was most
+            |likely removed by the optimizer.
+            |Spark plan:""".stripMargin + "\n" + plan.treeString)
+      }
+      val rowInvariant = rowInvariantProjections(plan)
+      if (rowInvariant.nonEmpty) {
+        warn(
+          benchmark,
+          s"""WARNING: these projections reference no input column, so their value is the same
+             |for every row: ${rowInvariant.mkString(", ")}
+             |An engine may evaluate them once per batch and broadcast the result rather than
+             |per row, so the two arms are not necessarily doing comparable work. Benchmark the
+             |expression over a column instead.""".stripMargin)
       }
     }
 
-    val cometExecConfigs = Map(
-      CometConf.COMET_ENABLED.key -> "true",
-      CometConf.COMET_EXEC_ENABLED.key -> "true",
-      "spark.sql.optimizer.excludedRules" ->
-        "org.apache.spark.sql.catalyst.optimizer.ConstantFolding") ++ extraCometConfigs
-
-    // Check that the plan is fully Comet native before running the benchmark
-    withSQLConf(cometExecConfigs.toSeq: _*) {
+    // Check that the plan is fully Comet native before running the benchmark. Unlike the check
+    // above this one does execute the query, because AQE can re-plan a join after the first
+    // stage completes and the Comet operators are what we are checking for.
+    withSQLConf(cometConfigs: _*) {
       val df = spark.sql(query)
       df.noop()
       val plan = stripAQEPlan(df.queryExecution.executedPlan)
-      findFirstNonCometOperator(plan) match {
-        case Some(op) =>
-          // scalastyle:off println
-          println()
-          println("=" * 80)
-          println("WARNING: Benchmark plan is NOT fully Comet native!")
-          println(s"First non-Comet operator: ${op.nodeName}")
-          println("=" * 80)
-          println("Query plan:")
-          println(plan.treeString)
-          println("=" * 80)
-          println()
-        // scalastyle:on println
-        case None =>
-        // All operators are Comet native, no warning needed
+      findFirstNonCometOperator(plan).foreach { op =>
+        warn(
+          benchmark,
+          s"""WARNING: the Comet plan is NOT fully Comet native, so the Comet case below is
+             |partly or wholly measuring Spark.
+             |First non-Comet operator: ${op.nodeName}
+             |Comet plan:""".stripMargin + "\n" + plan.treeString)
       }
     }
 
-    benchmark.addCase("Comet") { _ =>
-      withSQLConf(cometExecConfigs.toSeq: _*) {
-        spark.sql(query).noop()
+    val rows = Seq("Spark" -> sparkConfigs, "Comet" -> cometConfigs).map { case (arm, configs) =>
+      val total = measure(benchmark, cardinality, configs)(spark.sql(query).noop())
+      val baseline = baselineQuery.map { baseline =>
+        baselineResults.getOrElseUpdate(
+          (baseline, configs),
+          measure(benchmark, cardinality, configs)(spark.sql(baseline).noop()))
       }
+      BenchmarkRow(arm, total, baseline)
     }
 
-    benchmark.run()
+    // `Benchmark.run` is deliberately not used: it renders from its own case list, so a cached
+    // baseline cannot appear as a row and there is nowhere to put a derived column.
+    benchmark.out.println(BenchmarkTable.render(name, cardinality, rows, baselineQuery))
+  }
+
+  /**
+   * The scan-plus-row-conversion floor is the same for every expression measured over the same
+   * columns of the same table, so it is measured once per (query, config) pair rather than once
+   * per benchmark. Without this, adding a baseline would roughly double total benchmark runtime.
+   */
+  private val baselineResults =
+    mutable.Map.empty[(String, Seq[(String, String)]), Benchmark.Result]
+
+  /**
+   * Runs `body` under `configs` and returns Spark's measurement of it, reusing `Benchmark`'s
+   * warmup, iteration and standard deviation logic.
+   */
+  private def measure(benchmark: Benchmark, cardinality: Long, configs: Seq[(String, String)])(
+      body: => Unit): Benchmark.Result = {
+    // `withSQLConf` returns Unit on Spark 3.5, so the result has to come back through a var.
+    var result: Benchmark.Result = null
+    withSQLConf(configs: _*) {
+      result = benchmark.measure(cardinality, 0) { timer =>
+        timer.startTiming()
+        body
+        timer.stopTiming()
+      }
+    }
+    result
+  }
+
+  /**
+   * The query measuring the floor for `df`: the same scan, projecting the columns it reads and
+   * doing no expression work. The optimized plan's leaf output is already column-pruned, so it is
+   * exactly what the real query scans.
+   *
+   * Defined only when the plan reads a single table. A join has two leaves and no single
+   * meaningful floor, so those benchmarks report totals instead.
+   */
+  private def deriveBaselineQuery(df: DataFrame): Option[String] = {
+    val leaves = df.queryExecution.optimizedPlan.collectLeaves
+    val aliases = df.queryExecution.analyzed.collect { case s: SubqueryAlias =>
+      s.identifier.name
+    }.distinct
+    val columns = leaves.headOption.map(_.output.map(name => s"`${name.name}`")).getOrElse(Nil)
+    if (leaves.size == 1 && aliases.size == 1 && columns.nonEmpty) {
+      Some(s"SELECT ${columns.mkString(", ")} FROM ${aliases.head}")
+    } else {
+      None
+    }
+  }
+
+  /**
+   * Returns the value of `spark.sql.optimizer.excludedRules` with `rule` appended, so that
+   * benchmark-specific exclusions do not clobber exclusions already configured by the caller.
+   */
+  private def excludedRulesWith(rule: String): String =
+    (Utils.stringToSeq(spark.conf.get(SQLConf.OPTIMIZER_EXCLUDED_RULES.key, "")) :+ rule).distinct
+      .mkString(",")
+
+  /**
+   * Returns true if the plan does nothing but scan and emit columns, which means the benchmarked
+   * expression was removed by the optimizer and the case measures nothing.
+   *
+   * Any node other than a scan, projection or row conversion counts as real work, so joins,
+   * aggregates and filters are never reported as trivial even when they project bare attributes.
+   */
+  private def isTrivialPlan(plan: SparkPlan): Boolean = !plan.exists {
+    case p: ProjectExec => p.projectList.exists(expr => !isTrivialExpr(expr))
+    case _: ColumnarToRowExec | _: WholeStageCodegenExec | _: InputAdapter | _: LeafExecNode =>
+      false
+    case _ => true
+  }
+
+  /** A projection that copies a column or emits a constant, doing no per-row work. */
+  private def isTrivialExpr(expr: Expression): Boolean = expr match {
+    case _: AttributeReference | _: Literal => true
+    case Alias(_: AttributeReference | _: Literal, _) => true
+    case _ => false
+  }
+
+  /**
+   * Projections whose value is the same for every row, because they reference no input column.
+   *
+   * An engine is free to evaluate these once per batch and broadcast the result, and engines
+   * differ on whether they do. Comet's native `space` takes a `ColumnarValue::Scalar` and builds
+   * one string per batch, while Spark's `StringSpace` calls `UTF8String.blankString` per row. The
+   * two plans look identical, so nothing else here can tell them apart.
+   *
+   * Nondeterministic expressions are excluded: `rand()` also references no column but genuinely
+   * evaluates per row.
+   */
+  private def rowInvariantProjections(plan: SparkPlan): Seq[Expression] =
+    plan
+      .collect { case p: ProjectExec => p }
+      .flatMap(_.projectList)
+      .filter(expr => expr.references.isEmpty && expr.deterministic && !isTrivialExpr(expr))
+
+  /**
+   * Writes a warning to the benchmark results file as well as the console. `Benchmark.out` tees
+   * the two, and writing through it keeps the warning ordered against the results table that
+   * `Benchmark.run` writes to the same stream.
+   */
+  private def warn(benchmark: Benchmark, message: String): Unit = {
+    val border = "=" * 80
+    benchmark.out.println(s"\n$border\n$message\n$border")
   }
 
   protected def addParquetScanCases(
@@ -289,5 +431,21 @@ trait CometBenchmarkBase
       .range(values)
       .map(_ % div)
       .select((($"value" - 500) / 100.0) cast decimal as Symbol("dec"))
+  }
+}
+
+object CometBenchmarkBase {
+
+  /**
+   * SplitMix64 finalizer, used to turn a row id into a well distributed pseudo-random value.
+   *
+   * This lives in the companion object rather than the trait because referencing a trait method
+   * from a Dataset closure captures `this`, which is not serializable.
+   */
+  def mix64(value: Long): Long = {
+    var z = value + 0x9e3779b97f4a7c15L
+    z = (z ^ (z >>> 30)) * 0xbf58476d1ce4e5b9L
+    z = (z ^ (z >>> 27)) * 0x94d049bb133111ebL
+    z ^ (z >>> 31)
   }
 }

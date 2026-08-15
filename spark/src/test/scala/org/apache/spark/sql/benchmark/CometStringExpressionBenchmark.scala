@@ -75,7 +75,11 @@ object CometStringExpressionBenchmark extends CometBenchmarkBase {
     StringExprConfig("rlike", "select c1 rlike '[0-9]+' from parquetV1Table"),
     StringExprConfig("rpad", "select rpad(c1, 150, 'x') from parquetV1Table"),
     StringExprConfig("rtrim", "select rtrim(c1) from parquetV1Table"),
-    StringExprConfig("space", "select space(2) from parquetV1Table"),
+    // `space` takes its length from a column rather than a literal. Given a literal, Comet's
+    // native `space` receives a `ColumnarValue::Scalar`, builds one string per batch and lets
+    // DataFusion broadcast it, while Spark's `StringSpace` calls `UTF8String.blankString` once
+    // per row. The plans look symmetric but the work is not.
+    StringExprConfig("space", "select space(c2) from parquetV1Table"),
     StringExprConfig("startswith", "select startswith(c1, '1') from parquetV1Table"),
     StringExprConfig("substring", "select substring(c1, 1, 100) from parquetV1Table"),
     StringExprConfig("translate", "select translate(c1, '123456', 'aBcDeF') from parquetV1Table"),
@@ -86,9 +90,14 @@ object CometStringExpressionBenchmark extends CometBenchmarkBase {
     runBenchmarkWithTable("String expressions", 1024) { v =>
       withTempPath { dir =>
         withTempTable("parquetV1Table") {
+          // c2 gives expressions that take a length or a count something to vary over per row.
+          // `pmod` keeps it non-negative, so `space(c2)` builds a string on every row rather
+          // than returning empty for the negative half of the input.
           prepareTable(
             dir,
-            spark.sql(s"SELECT REPEAT(CAST(value AS STRING), 10) AS c1 FROM $tbl"))
+            spark.sql(
+              s"SELECT REPEAT(CAST(value AS STRING), 10) AS c1," +
+                s" CAST(PMOD(value, 200) AS INT) AS c2 FROM $tbl"))
 
           val extraConfigs = Map(
             CometConf.getExprAllowIncompatConfigKey("Upper") -> "true",
