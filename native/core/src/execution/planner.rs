@@ -1866,6 +1866,8 @@ impl PhysicalPlanner {
                     codec,
                     self.partition,
                     writer.column_names.clone(),
+                    (!writer.output_schema.is_empty())
+                        .then(|| convert_spark_types_to_arrow_schema(&writer.output_schema)),
                     object_store_options,
                 )?);
 
