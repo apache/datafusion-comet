@@ -504,6 +504,105 @@ mod test {
         );
     }
 
+    /// Spill every slice of one shared Arrow allocation and verify that memory accounting
+    /// includes that backing allocation once per outer input batch, plus each slice's indices.
+    async fn shared_buffer_memory_spilled_bytes(
+        max_buffer_bytes: Option<usize>,
+        memory_limit: usize,
+        input_batches: usize,
+    ) -> usize {
+        let num_rows = 16_384usize;
+        let batch_size = 1024usize;
+        let num_partitions = 2;
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int64, false)]));
+        let backing = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![Arc::new(Int64Array::from_iter_values(0..num_rows as i64))],
+        )
+        .unwrap();
+        let buffer_bytes = backing.get_array_memory_size();
+
+        let runtime_env = create_runtime(memory_limit);
+        let metrics_set = ExecutionPlanMetricsSet::new();
+        let metrics = ShufflePartitionerMetrics::new(&metrics_set, 0);
+        let spill_count = metrics.spill_count.clone();
+        let memory_spilled_bytes = metrics.memory_spilled_bytes.clone();
+        let dir = tempfile::tempdir().unwrap();
+        let shuffle_block_writer =
+            ShuffleBlockWriter::try_new(schema.as_ref(), CompressionCodec::Lz4Frame).unwrap();
+        let local_partition_writer = LocalPartitionWriter::try_new(
+            dir.path().join("data.out").to_str().unwrap().to_string(),
+            dir.path().join("index.out").to_str().unwrap().to_string(),
+            shuffle_block_writer,
+            num_partitions,
+            batch_size,
+            1024 * 1024,
+            Arc::clone(&runtime_env),
+        )
+        .unwrap();
+        let mut repartitioner = MultiPartitionShuffleRepartitioner::try_new(
+            0,
+            local_partition_writer,
+            CometPartitioning::Hash(vec![Arc::new(Column::new("a", 0))], num_partitions),
+            metrics,
+            runtime_env,
+            batch_size,
+            false,
+            max_buffer_bytes,
+        )
+        .unwrap();
+
+        for _ in 0..input_batches {
+            repartitioner.insert_batch(backing.clone()).await.unwrap();
+        }
+        repartitioner.shuffle_write().unwrap();
+
+        let expected_spills = input_batches * num_rows / batch_size;
+        assert_eq!(
+            spill_count.value(),
+            expected_spills,
+            "each slice must spill to exercise shared-buffer accounting"
+        );
+
+        let spilled = memory_spilled_bytes.value();
+        let minimum_backing_bytes = input_batches * buffer_bytes;
+        assert!(
+            spilled > minimum_backing_bytes,
+            "partition-index allocations must remain in memory spill accounting: \
+             {spilled} bytes reported for {minimum_backing_bytes} backing bytes"
+        );
+        // Each row receives one (batch index, row index) entry. Allow twice the logical index
+        // size for Vec capacity rounding while still rejecting one full backing charge per slice.
+        let maximum_index_bytes = input_batches * num_rows * std::mem::size_of::<(u32, u32)>() * 2;
+        let maximum_spilled = minimum_backing_bytes + maximum_index_bytes;
+        assert!(
+            spilled <= maximum_spilled,
+            "shared backing buffers must be charged once per input batch: \
+             {spilled} bytes reported, expected at most {maximum_spilled}"
+        );
+
+        spilled
+    }
+
+    #[tokio::test]
+    #[cfg_attr(miri, ignore)] // miri can't call foreign function `ZSTD_createCCtx`
+    async fn max_buffer_spills_charge_shared_backing_once_per_input_batch() {
+        let one_batch = shared_buffer_memory_spilled_bytes(Some(8 * 1024), 512 * 1024, 1).await;
+        let two_batches = shared_buffer_memory_spilled_bytes(Some(8 * 1024), 512 * 1024, 2).await;
+        assert_eq!(
+            two_batches,
+            one_batch * 2,
+            "separate outer input batches must contribute cumulatively even when they clone \
+             the same Arrow backing allocation"
+        );
+    }
+
+    #[tokio::test]
+    #[cfg_attr(miri, ignore)] // miri can't call foreign function `ZSTD_createCCtx`
+    async fn rejected_reservations_charge_shared_backing_once_per_input_batch() {
+        shared_buffer_memory_spilled_bytes(None, 1, 1).await;
+    }
+
     /// Buffer `num_batches` batches through a `MultiPartitionShuffleRepartitioner` and return its
     /// spill count, uncompressed in-memory spill size, and compressed on-disk spill size.
     async fn spill_metrics_with_max_buffer_bytes(
