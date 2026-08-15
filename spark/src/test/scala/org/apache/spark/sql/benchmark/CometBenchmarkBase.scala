@@ -23,15 +23,15 @@ import java.io.File
 import java.nio.charset.StandardCharsets
 import java.util.Base64
 
-import scala.util.Random
-
 import org.apache.parquet.crypto.DecryptionPropertiesFactory
 import org.apache.parquet.crypto.keytools.{KeyToolkit, PropertiesDrivenCryptoFactory}
 import org.apache.parquet.crypto.keytools.mocks.InMemoryKMS
 import org.apache.spark.SparkConf
 import org.apache.spark.benchmark.Benchmark
 import org.apache.spark.sql.{DataFrame, DataFrameWriter, Row, SparkSession}
+import org.apache.spark.sql.catalyst.expressions.{Alias, AttributeReference, Expression, Literal}
 import org.apache.spark.sql.comet.CometPlanChecker
+import org.apache.spark.sql.execution.{ColumnarToRowExec, InputAdapter, LeafExecNode, ProjectExec, SparkPlan, WholeStageCodegenExec}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.execution.benchmark.SqlBasedBenchmark
 import org.apache.spark.sql.internal.SQLConf
@@ -97,9 +97,13 @@ trait CometBenchmarkBase
       useDictionary: Boolean = false)(f: Int => Any): Unit = {
     withTempTable(tbl) {
       import spark.implicits._
+      // Derive the values from the row id with a pure function rather than a random number
+      // generator, so that results are comparable across runs. Seeding a driver-side `Random`
+      // would not work here: the closure runs per row on the executor.
       spark
         .range(values)
-        .map(_ => if (useDictionary) Random.nextLong() % 5 else Random.nextLong())
+        .map(i =>
+          if (useDictionary) CometBenchmarkBase.mix64(i) % 5 else CometBenchmarkBase.mix64(i))
         .createOrReplaceTempView(tbl)
       runBenchmark(benchmarkName)(f(values))
     }
@@ -125,48 +129,119 @@ trait CometBenchmarkBase
       extraCometConfigs: Map[String, String] = Map.empty): Unit = {
     val benchmark = new Benchmark(name, cardinality, output = output)
 
+    // Constant folding is excluded so that expressions over literal arguments are still evaluated
+    // per row. It must be excluded for both arms: if only Comet excludes it, Spark folds the
+    // expression away and does no per-row work, and the comparison is meaningless.
+    val sharedConfigs = Map(
+      SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
+        excludedRulesWith("org.apache.spark.sql.catalyst.optimizer.ConstantFolding"))
+
+    val sparkConfigs = sharedConfigs ++ Map(CometConf.COMET_ENABLED.key -> "false")
+
+    val cometConfigs = sharedConfigs ++ Map(
+      CometConf.COMET_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_ENABLED.key -> "true") ++ extraCometConfigs
+
+    // Check that the benchmarked expression survives optimization into the Spark baseline plan.
+    withSQLConf(sparkConfigs.toSeq: _*) {
+      val df = spark.sql(query)
+      df.noop()
+      val plan = stripAQEPlan(df.queryExecution.executedPlan)
+      if (isTrivialPlan(plan)) {
+        emitWarning(
+          Seq(
+            "WARNING: the Spark baseline plan does no work beyond scanning and projecting",
+            "columns, so this case is not measuring an expression. The expression was most",
+            "likely removed by the optimizer.",
+            "Spark plan:",
+            plan.treeString))
+      }
+    }
+
+    // Check that the plan is fully Comet native before running the benchmark
+    withSQLConf(cometConfigs.toSeq: _*) {
+      val df = spark.sql(query)
+      df.noop()
+      val plan = stripAQEPlan(df.queryExecution.executedPlan)
+      findFirstNonCometOperator(plan).foreach { op =>
+        emitWarning(
+          Seq(
+            "WARNING: the Comet plan is NOT fully Comet native, so the Comet case below is",
+            "partly or wholly measuring Spark.",
+            s"First non-Comet operator: ${op.nodeName}",
+            "Comet plan:",
+            plan.treeString))
+      }
+    }
+
     benchmark.addCase("Spark") { _ =>
-      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+      withSQLConf(sparkConfigs.toSeq: _*) {
         spark.sql(query).noop()
       }
     }
 
-    val cometExecConfigs = Map(
-      CometConf.COMET_ENABLED.key -> "true",
-      CometConf.COMET_EXEC_ENABLED.key -> "true",
-      "spark.sql.optimizer.excludedRules" ->
-        "org.apache.spark.sql.catalyst.optimizer.ConstantFolding") ++ extraCometConfigs
-
-    // Check that the plan is fully Comet native before running the benchmark
-    withSQLConf(cometExecConfigs.toSeq: _*) {
-      val df = spark.sql(query)
-      df.noop()
-      val plan = stripAQEPlan(df.queryExecution.executedPlan)
-      findFirstNonCometOperator(plan) match {
-        case Some(op) =>
-          // scalastyle:off println
-          println()
-          println("=" * 80)
-          println("WARNING: Benchmark plan is NOT fully Comet native!")
-          println(s"First non-Comet operator: ${op.nodeName}")
-          println("=" * 80)
-          println("Query plan:")
-          println(plan.treeString)
-          println("=" * 80)
-          println()
-        // scalastyle:on println
-        case None =>
-        // All operators are Comet native, no warning needed
-      }
-    }
-
     benchmark.addCase("Comet") { _ =>
-      withSQLConf(cometExecConfigs.toSeq: _*) {
+      withSQLConf(cometConfigs.toSeq: _*) {
         spark.sql(query).noop()
       }
     }
 
     benchmark.run()
+  }
+
+  /**
+   * Returns the value of `spark.sql.optimizer.excludedRules` with `rules` appended, so that
+   * benchmark-specific exclusions do not clobber exclusions already configured by the caller.
+   */
+  private def excludedRulesWith(rules: String*): String =
+    (spark.conf
+      .get(SQLConf.OPTIMIZER_EXCLUDED_RULES.key, "")
+      .split(",")
+      .map(_.trim)
+      .filter(_.nonEmpty) ++ rules).distinct.mkString(",")
+
+  /**
+   * Returns true if the plan does nothing but scan and emit columns, which means the benchmarked
+   * expression was removed by the optimizer and the case measures nothing.
+   *
+   * Any node other than a scan, projection or row conversion counts as real work, so joins,
+   * aggregates and filters are never reported as trivial even when they project bare attributes.
+   */
+  private def isTrivialPlan(plan: SparkPlan): Boolean = {
+    val doesWork = plan.exists {
+      case _: ProjectExec | _: ColumnarToRowExec | _: WholeStageCodegenExec | _: InputAdapter =>
+        false
+      case _: LeafExecNode => false
+      case _ => true
+    }
+    if (doesWork) {
+      return false
+    }
+    plan.collect { case p: ProjectExec => p }.forall {
+      _.projectList.map(unwrapAlias).forall {
+        case _: AttributeReference | _: Literal => true
+        case _ => false
+      }
+    }
+  }
+
+  private def unwrapAlias(expr: Expression): Expression = expr match {
+    case a: Alias => a.child
+    case other => other
+  }
+
+  /**
+   * Writes a warning to the benchmark results file as well as the console. `println` alone
+   * reaches only the console, so a reader of a results file, or of a results table pasted into a
+   * PR, cannot tell that a case did not measure what its label claims.
+   */
+  private def emitWarning(lines: Seq[String]): Unit = {
+    val border = "=" * 80
+    val text = (Seq("", border) ++ lines ++ Seq(border, "")).mkString("\n")
+    output.foreach(_.write(text.getBytes(StandardCharsets.UTF_8)))
+    // scalastyle:off println
+    println(text)
+    // scalastyle:on println
   }
 
   protected def addParquetScanCases(
@@ -289,5 +364,21 @@ trait CometBenchmarkBase
       .range(values)
       .map(_ % div)
       .select((($"value" - 500) / 100.0) cast decimal as Symbol("dec"))
+  }
+}
+
+object CometBenchmarkBase {
+
+  /**
+   * SplitMix64 finalizer, used to turn a row id into a well distributed pseudo-random value.
+   *
+   * This lives in the companion object rather than the trait because referencing a trait method
+   * from a Dataset closure captures `this`, which is not serializable.
+   */
+  def mix64(value: Long): Long = {
+    var z = value + 0x9e3779b97f4a7c15L
+    z = (z ^ (z >>> 30)) * 0xbf58476d1ce4e5b9L
+    z = (z ^ (z >>> 27)) * 0x94d049bb133111ebL
+    z ^ (z >>> 31)
   }
 }
