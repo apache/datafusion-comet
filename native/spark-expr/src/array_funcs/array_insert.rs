@@ -15,9 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow::array::{
-    make_array, Array, ArrayRef, BooleanArray, GenericListArray, Int32Array, OffsetSizeTrait,
-};
+use arrow::array::{make_array, Array, ArrayRef, GenericListArray, Int32Array, OffsetSizeTrait};
+use arrow::compute::{and, is_not_null};
 use arrow::datatypes::{DataType, Schema};
 use arrow::{
     array::{as_primitive_array, Capacities, MutableArrayData},
@@ -123,11 +122,7 @@ impl PhysicalExpr for ArrayInsert {
             _ => unreachable!(),
         };
 
-        let evaluate_pos = BooleanArray::from(
-            (0..batch.num_rows())
-                .map(|row| src_value.is_valid(row))
-                .collect::<Vec<_>>(),
-        );
+        let evaluate_pos = is_not_null(&src_value)?;
 
         let pos_value = self
             .pos_expr
@@ -143,11 +138,7 @@ impl PhysicalExpr for ArrayInsert {
             )));
         }
 
-        let evaluate_item = BooleanArray::from(
-            (0..batch.num_rows())
-                .map(|row| src_value.is_valid(row) && pos_value.is_valid(row))
-                .collect::<Vec<_>>(),
-        );
+        let evaluate_item = and(&evaluate_pos, &is_not_null(&pos_value)?)?;
 
         // Check that inserted value has the same type as an array
         let item_value = self
@@ -501,6 +492,58 @@ mod test {
         let expected = ListArray::from_iter_primitive::<Int32Type, _, _>(vec![
             Some(vec![None, Some(0), None, Some(0)]),
             Some(vec![None, Some(1), None, Some(1)]),
+        ]);
+        assert_eq!(&result.to_data(), &expected.to_data());
+        Ok(())
+    }
+
+    // Pins the Spark evaluation-order contract: `pos` is evaluated only on rows where
+    // `src` is non-null, and `item` only on rows where both `src` and `pos` are non-null.
+    // Each of `src`, `pos`, and `item` is null in a different row, and the fourth row
+    // has all three non-null, so any regression that evaluates a column on a row where
+    // one of its guards is null produces a different output.
+    #[test]
+    fn test_array_insert_evaluate_cross_null_patterns() -> Result<()> {
+        use arrow::datatypes::{Field, Int32Type, Schema};
+        use datafusion::physical_expr::expressions::col;
+
+        let src = ListArray::from_iter_primitive::<Int32Type, _, _>(vec![
+            Some(vec![Some(1), Some(2), Some(3)]), // src ok, pos ok, item ok
+            Some(vec![Some(4), Some(5)]),          // src ok, pos NULL
+            None,                                  // src NULL, pos ok
+            Some(vec![Some(6), Some(7)]),          // src ok, pos ok, item NULL
+        ]);
+        let positions = Int32Array::from(vec![Some(2), None, Some(1), Some(1)]);
+        let items = Int32Array::from(vec![Some(99), Some(99), Some(99), None]);
+
+        let list_field = match src.data_type() {
+            DataType::List(f) => Arc::clone(f),
+            _ => unreachable!(),
+        };
+        let schema = Schema::new(vec![
+            Field::new("src", DataType::List(list_field), true),
+            Field::new("pos", DataType::Int32, true),
+            Field::new("item", DataType::Int32, true),
+        ]);
+        let schema_ref = Arc::new(schema);
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema_ref),
+            vec![Arc::new(src), Arc::new(positions), Arc::new(items)],
+        )?;
+
+        let expr = ArrayInsert::new(
+            col("src", &schema_ref)?,
+            col("pos", &schema_ref)?,
+            col("item", &schema_ref)?,
+            false,
+        );
+        let result = expr.evaluate(&batch)?.into_array(batch.num_rows())?;
+
+        let expected = ListArray::from_iter_primitive::<Int32Type, _, _>(vec![
+            Some(vec![Some(1), Some(99), Some(2), Some(3)]),
+            None,
+            None,
+            Some(vec![None, Some(6), Some(7)]),
         ]);
         assert_eq!(&result.to_data(), &expected.to_data());
         Ok(())

@@ -390,3 +390,11 @@ harness = false
 [[bench]]
 name = "iceberg_transforms"
 harness = false
+
+[[bench]]
+name = "spark_pow"
+harness = false
+
+[[bench]]
+name = "cast_decimal_to_boolean"
+harness = false
