@@ -1183,6 +1183,7 @@ under the License.
             <exclude>dev/release/*.jar</exclude>
             <exclude>native/proto/src/generated/**</exclude>
             <exclude>benchmarks/tpc/queries/**</exclude>
+            <exclude>benchmarks/results/**/*.txt</exclude>
             <exclude>.claude/**</exclude>
             <exclude>docs/superpowers/**</exclude>
           </excludes>

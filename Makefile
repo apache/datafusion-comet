@@ -24,6 +24,10 @@ endef
 # Build optional Comet native features (like hdfs-opendal e.g)
 FEATURES_ARG := $(shell ! [ -z $(COMET_FEATURES) ] && echo '--features=$(COMET_FEATURES)')
 
+# JVM max heap for the benchmark targets. Lower this when benchmarking on a
+# machine with less memory, for example BENCH_HEAP=8g on a 16 GiB instance.
+BENCH_HEAP ?= 20g
+
 all: core jvm
 
 core:
@@ -104,6 +108,6 @@ release-nogit:
 	cd native && RUSTFLAGS="-Ctarget-cpu=native" cargo build --release
 	./mvnw install -Prelease -DskipTests $(PROFILES) -Dmaven.gitcommitid.skip=true
 benchmark-%: release
-	cd spark && COMET_CONF_DIR=$(shell pwd)/conf MAVEN_OPTS='-Xmx20g ${call spark_jvm_17_extra_args}' ../mvnw exec:java -Dexec.mainClass="$*" -Dexec.classpathScope="test" -Dexec.cleanupDaemonThreads="false" -Dexec.args="$(filter-out $@,$(MAKECMDGOALS))" $(PROFILES)
+	cd spark && COMET_CONF_DIR=$(shell pwd)/conf MAVEN_OPTS='-Xmx$(BENCH_HEAP) ${call spark_jvm_17_extra_args}' ../mvnw exec:java -Dexec.mainClass="$*" -Dexec.classpathScope="test" -Dexec.cleanupDaemonThreads="false" -Dexec.args="$(filter-out $@,$(MAKECMDGOALS))" $(PROFILES)
 .DEFAULT:
 	@: # ignore arguments provided to benchmarks e.g. "make benchmark-foo -- --bar", we do not want to treat "--bar" as target
