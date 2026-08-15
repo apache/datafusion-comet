@@ -29,8 +29,10 @@ import org.apache.parquet.crypto.keytools.mocks.InMemoryKMS
 import org.apache.spark.SparkConf
 import org.apache.spark.benchmark.Benchmark
 import org.apache.spark.sql.{DataFrame, DataFrameWriter, Row, SparkSession}
-import org.apache.spark.sql.catalyst.expressions.{Alias, AttributeReference, Expression, Literal}
+import org.apache.spark.sql.catalyst.expressions.{Alias, AttributeReference, Literal}
+import org.apache.spark.sql.catalyst.optimizer.ConstantFolding
 import org.apache.spark.sql.comet.CometPlanChecker
+import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution.{ColumnarToRowExec, InputAdapter, LeafExecNode, ProjectExec, SparkPlan, WholeStageCodegenExec}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.execution.benchmark.SqlBasedBenchmark
@@ -132,56 +134,56 @@ trait CometBenchmarkBase
     // Constant folding is excluded so that expressions over literal arguments are still evaluated
     // per row. It must be excluded for both arms: if only Comet excludes it, Spark folds the
     // expression away and does no per-row work, and the comparison is meaningless.
-    val sharedConfigs = Map(
-      SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
-        excludedRulesWith("org.apache.spark.sql.catalyst.optimizer.ConstantFolding"))
+    val noConstantFolding =
+      SQLConf.OPTIMIZER_EXCLUDED_RULES.key -> excludedRulesWith(ConstantFolding.ruleName)
 
-    val sparkConfigs = sharedConfigs ++ Map(CometConf.COMET_ENABLED.key -> "false")
+    val sparkConfigs = Seq(noConstantFolding, CometConf.COMET_ENABLED.key -> "false")
 
-    val cometConfigs = sharedConfigs ++ Map(
+    val cometConfigs = Seq(
+      noConstantFolding,
       CometConf.COMET_ENABLED.key -> "true",
       CometConf.COMET_EXEC_ENABLED.key -> "true") ++ extraCometConfigs
 
     // Check that the benchmarked expression survives optimization into the Spark baseline plan.
-    withSQLConf(sparkConfigs.toSeq: _*) {
-      val df = spark.sql(query)
-      df.noop()
-      val plan = stripAQEPlan(df.queryExecution.executedPlan)
+    // The query is not executed: before execution `stripAQEPlan` yields the initial physical
+    // plan, which already carries the projections this check inspects.
+    withSQLConf(sparkConfigs: _*) {
+      val plan = stripAQEPlan(spark.sql(query).queryExecution.executedPlan)
       if (isTrivialPlan(plan)) {
-        emitWarning(
-          Seq(
-            "WARNING: the Spark baseline plan does no work beyond scanning and projecting",
-            "columns, so this case is not measuring an expression. The expression was most",
-            "likely removed by the optimizer.",
-            "Spark plan:",
-            plan.treeString))
+        warn(
+          benchmark,
+          """WARNING: the Spark baseline plan does no work beyond scanning and projecting
+            |columns, so this case is not measuring an expression. The expression was most
+            |likely removed by the optimizer.
+            |Spark plan:""".stripMargin + "\n" + plan.treeString)
       }
     }
 
-    // Check that the plan is fully Comet native before running the benchmark
-    withSQLConf(cometConfigs.toSeq: _*) {
+    // Check that the plan is fully Comet native before running the benchmark. Unlike the check
+    // above this one does execute the query, because AQE can re-plan a join after the first
+    // stage completes and the Comet operators are what we are checking for.
+    withSQLConf(cometConfigs: _*) {
       val df = spark.sql(query)
       df.noop()
       val plan = stripAQEPlan(df.queryExecution.executedPlan)
       findFirstNonCometOperator(plan).foreach { op =>
-        emitWarning(
-          Seq(
-            "WARNING: the Comet plan is NOT fully Comet native, so the Comet case below is",
-            "partly or wholly measuring Spark.",
-            s"First non-Comet operator: ${op.nodeName}",
-            "Comet plan:",
-            plan.treeString))
+        warn(
+          benchmark,
+          s"""WARNING: the Comet plan is NOT fully Comet native, so the Comet case below is
+             |partly or wholly measuring Spark.
+             |First non-Comet operator: ${op.nodeName}
+             |Comet plan:""".stripMargin + "\n" + plan.treeString)
       }
     }
 
     benchmark.addCase("Spark") { _ =>
-      withSQLConf(sparkConfigs.toSeq: _*) {
+      withSQLConf(sparkConfigs: _*) {
         spark.sql(query).noop()
       }
     }
 
     benchmark.addCase("Comet") { _ =>
-      withSQLConf(cometConfigs.toSeq: _*) {
+      withSQLConf(cometConfigs: _*) {
         spark.sql(query).noop()
       }
     }
@@ -190,15 +192,12 @@ trait CometBenchmarkBase
   }
 
   /**
-   * Returns the value of `spark.sql.optimizer.excludedRules` with `rules` appended, so that
+   * Returns the value of `spark.sql.optimizer.excludedRules` with `rule` appended, so that
    * benchmark-specific exclusions do not clobber exclusions already configured by the caller.
    */
-  private def excludedRulesWith(rules: String*): String =
-    (spark.conf
-      .get(SQLConf.OPTIMIZER_EXCLUDED_RULES.key, "")
-      .split(",")
-      .map(_.trim)
-      .filter(_.nonEmpty) ++ rules).distinct.mkString(",")
+  private def excludedRulesWith(rule: String): String =
+    (Utils.stringToSeq(spark.conf.get(SQLConf.OPTIMIZER_EXCLUDED_RULES.key, "")) :+ rule).distinct
+      .mkString(",")
 
   /**
    * Returns true if the plan does nothing but scan and emit columns, which means the benchmarked
@@ -207,41 +206,26 @@ trait CometBenchmarkBase
    * Any node other than a scan, projection or row conversion counts as real work, so joins,
    * aggregates and filters are never reported as trivial even when they project bare attributes.
    */
-  private def isTrivialPlan(plan: SparkPlan): Boolean = {
-    val doesWork = plan.exists {
-      case _: ProjectExec | _: ColumnarToRowExec | _: WholeStageCodegenExec | _: InputAdapter =>
-        false
-      case _: LeafExecNode => false
-      case _ => true
-    }
-    if (doesWork) {
-      return false
-    }
-    plan.collect { case p: ProjectExec => p }.forall {
-      _.projectList.map(unwrapAlias).forall {
-        case _: AttributeReference | _: Literal => true
-        case _ => false
+  private def isTrivialPlan(plan: SparkPlan): Boolean = !plan.exists {
+    case p: ProjectExec =>
+      p.projectList.exists {
+        case _: AttributeReference | _: Literal => false
+        case Alias(_: AttributeReference | _: Literal, _) => false
+        case _ => true
       }
-    }
-  }
-
-  private def unwrapAlias(expr: Expression): Expression = expr match {
-    case a: Alias => a.child
-    case other => other
+    case _: ColumnarToRowExec | _: WholeStageCodegenExec | _: InputAdapter | _: LeafExecNode =>
+      false
+    case _ => true
   }
 
   /**
-   * Writes a warning to the benchmark results file as well as the console. `println` alone
-   * reaches only the console, so a reader of a results file, or of a results table pasted into a
-   * PR, cannot tell that a case did not measure what its label claims.
+   * Writes a warning to the benchmark results file as well as the console. `Benchmark.out` tees
+   * the two, and writing through it keeps the warning ordered against the results table that
+   * `Benchmark.run` writes to the same stream.
    */
-  private def emitWarning(lines: Seq[String]): Unit = {
+  private def warn(benchmark: Benchmark, message: String): Unit = {
     val border = "=" * 80
-    val text = (Seq("", border) ++ lines ++ Seq(border, "")).mkString("\n")
-    output.foreach(_.write(text.getBytes(StandardCharsets.UTF_8)))
-    // scalastyle:off println
-    println(text)
-    // scalastyle:on println
+    benchmark.out.println(s"\n$border\n$message\n$border")
   }
 
   protected def addParquetScanCases(
