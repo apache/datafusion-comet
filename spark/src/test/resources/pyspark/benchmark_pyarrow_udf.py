@@ -47,7 +47,7 @@ savings and shrinks the speedup ratio relative to what you see here.
 
 Usage:
     # Build Comet (release for representative numbers):
-    make release
+    make release PROFILES='-Pspark-4.0 -Pscala-2.13'
 
     pip install pyspark==4.0.4 pyarrow pandas
 
