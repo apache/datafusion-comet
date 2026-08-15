@@ -560,6 +560,90 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
     }
   }
 
+  test("arrays_overlap - floating-point NaN payloads and signed zeros") {
+    val positiveFloatNaNBits = 0x7fc01234
+    val negativeFloatNaNBits = 0x7fc05678 | Int.MinValue
+    val positiveDoubleNaNBits = 0x7ff8000000001234L
+    val negativeDoubleNaNBits = 0x7ff8000000005678L | Long.MinValue
+
+    val positiveFloatNaN = java.lang.Float.intBitsToFloat(positiveFloatNaNBits)
+    val negativeFloatNaN = java.lang.Float.intBitsToFloat(negativeFloatNaNBits)
+    val positiveDoubleNaN = java.lang.Double.longBitsToDouble(positiveDoubleNaNBits)
+    val negativeDoubleNaN = java.lang.Double.longBitsToDouble(negativeDoubleNaNBits)
+
+    val data = Seq(
+      (0, positiveFloatNaN, negativeFloatNaN, positiveDoubleNaN, negativeDoubleNaN),
+      (1, negativeFloatNaN, positiveFloatNaN, negativeDoubleNaN, positiveDoubleNaN),
+      (2, Float.NaN, positiveFloatNaN, Double.NaN, positiveDoubleNaN),
+      (3, positiveFloatNaN, Float.NaN, positiveDoubleNaN, Double.NaN),
+      (4, 0.0f, -0.0f, 0.0d, -0.0d),
+      (5, -0.0f, 0.0f, -0.0d, 0.0d),
+      (6, 0.0f, 0.0f, 0.0d, 0.0d),
+      (7, -0.0f, -0.0f, -0.0d, -0.0d),
+      (8, 1.0f, 2.0f, 1.0d, 2.0d))
+
+    withParquetTable(data, "floating_point_overlap", withDictionary = false) {
+      // Parquet's floating-point writers canonicalize every NaN, including its sign and payload.
+      val firstRow = spark.table("floating_point_overlap").collect().find(_.getInt(0) == 0).get
+      val canonicalFloatNaNBits = java.lang.Float.floatToRawIntBits(Float.NaN)
+      val canonicalDoubleNaNBits = java.lang.Double.doubleToRawLongBits(Double.NaN)
+      assert(java.lang.Float.floatToRawIntBits(firstRow.getFloat(1)) == canonicalFloatNaNBits)
+      assert(java.lang.Float.floatToRawIntBits(firstRow.getFloat(2)) == canonicalFloatNaNBits)
+      assert(
+        java.lang.Double.doubleToRawLongBits(firstRow.getDouble(3)) == canonicalDoubleNaNBits)
+      assert(
+        java.lang.Double.doubleToRawLongBits(firstRow.getDouble(4)) == canonicalDoubleNaNBits)
+
+      // Runtime negation is therefore required to produce noncanonical NaNs after the scan.
+      val generatedNaNs = sql("SELECT -_3, -_5 FROM floating_point_overlap WHERE _1 = 0").head()
+      assert(
+        java.lang.Float.floatToRawIntBits(generatedNaNs.getFloat(0)) ==
+          (canonicalFloatNaNBits | Int.MinValue))
+      assert(
+        java.lang.Double.doubleToRawLongBits(generatedNaNs.getDouble(1)) ==
+          (canonicalDoubleNaNBits | Long.MinValue))
+
+      // Seventeen elements on each side exceed the native nested-scan budget of 256 comparisons.
+      def longArray(column: String): String = Seq.fill(17)(column).mkString("array(", ", ", ")")
+
+      val query = sql(s"""
+           |SELECT _1,
+           |  arrays_overlap(array(_2), array(-_3)) AS float_short,
+           |  arrays_overlap(array(_4), array(-_5)) AS double_short,
+           |  arrays_overlap(array(-_3), array(_2)) AS float_reversed,
+           |  arrays_overlap(array(-_5), array(_4)) AS double_reversed,
+           |  arrays_overlap(${longArray("_2")}, ${longArray("-_3")}) AS float_long,
+           |  arrays_overlap(${longArray("_4")}, ${longArray("-_5")}) AS double_long,
+           |  arrays_overlap(array(_2), array(_3)) AS float_direct,
+           |  arrays_overlap(array(_4), array(_5)) AS double_direct,
+           |  arrays_overlap(array(_2, CAST(NULL AS FLOAT)), array(-_3)) AS float_nullable,
+           |  arrays_overlap(array(_4, CAST(NULL AS DOUBLE)), array(-_5)) AS double_nullable
+           |FROM floating_point_overlap
+           |""".stripMargin)
+
+      checkSparkAnswerAndOperator(query)
+
+      val runtimeOverlappingRows = Set(0, 1, 2, 3, 4, 5)
+      val directOverlappingRows = Set(0, 1, 2, 3, 6, 7)
+      query.collect().foreach { row =>
+        val shouldOverlapAtRuntime = runtimeOverlappingRows.contains(row.getInt(0))
+        for (column <- 1 to 6) {
+          assert(row.getBoolean(column) == shouldOverlapAtRuntime)
+        }
+        for (column <- 7 to 8) {
+          assert(row.getBoolean(column) == directOverlappingRows.contains(row.getInt(0)))
+        }
+        for (column <- 9 to 10) {
+          if (shouldOverlapAtRuntime) {
+            assert(row.getBoolean(column))
+          } else {
+            assert(row.isNullAt(column))
+          }
+        }
+      }
+    }
+  }
+
   test("arrays_overlap - null handling behavior verification") {
     withSQLConf(
       "spark.sql.optimizer.excludedRules" -> "org.apache.spark.sql.catalyst.optimizer.ConstantFolding") {
