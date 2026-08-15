@@ -5188,8 +5188,9 @@ class CometIcebergNativeSuite
           // Iceberg 1.10's Spark reader dereferences a null requested type when it encounters an
           // unprojected, annotated Variant. Keep Variant projected for the Spark reference read,
           // then discard it from the expected rows before checking the native pruned projection.
-          val sparkAllRows = withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-            spark
+          var sparkAllRows = Seq.empty[Row]
+          withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+            sparkAllRows = spark
               .sql(s"SELECT id, label, data FROM $table ORDER BY id NULLS FIRST")
               .collect()
               .map(row => Row(row.get(0), row.get(1)))
@@ -5202,8 +5203,9 @@ class CometIcebergNativeSuite
           checkCometAnswer(allRows, sparkAllRows)
           assertSingleNativeScan(allRows.queryExecution.executedPlan)
 
-          val sparkFilteredRows = withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-            spark
+          var sparkFilteredRows = Seq.empty[Row]
+          withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+            sparkFilteredRows = spark
               .sql(s"SELECT id, data FROM $table " +
                 "WHERE label IS NOT NULL ORDER BY id NULLS FIRST")
               .collect()
@@ -5263,8 +5265,9 @@ class CometIcebergNativeSuite
               (3, NULL)
           """)
 
-          val sparkScalarRows = withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-            spark
+          var sparkScalarRows = Seq.empty[Row]
+          withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+            sparkScalarRows = spark
               .sql(s"SELECT id, nested FROM $table ORDER BY id")
               .collect()
               .map(row => Row(row.get(0)))
@@ -5278,6 +5281,20 @@ class CometIcebergNativeSuite
           assert(
             collectIcebergNativeScans(nestedProjection.queryExecution.executedPlan).isEmpty,
             "iceberg-rust rejects a projected parent containing a VARIANT field")
+
+          val snapshotId = spark
+            .sql(s"SELECT snapshot_id FROM $table.snapshots ORDER BY committed_at DESC LIMIT 1")
+            .collect()
+            .head
+            .getLong(0)
+          spark.sql(s"ALTER TABLE $table RENAME COLUMN nested TO renamed")
+
+          val historicalNestedProjection =
+            spark.sql(s"SELECT nested.label FROM $table VERSION AS OF $snapshotId ORDER BY id")
+          assert(
+            collectIcebergNativeScans(
+              historicalNestedProjection.queryExecution.executedPlan).isEmpty,
+            "A renamed parent containing a VARIANT field must fall back for historical snapshots")
         } finally {
           spark.sql(s"DROP TABLE IF EXISTS $table PURGE")
         }

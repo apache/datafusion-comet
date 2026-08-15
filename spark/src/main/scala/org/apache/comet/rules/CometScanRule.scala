@@ -541,8 +541,9 @@ case class CometScanRule(session: SparkSession)
           }
 
         // The whole Iceberg table schema is serialized to native, but iceberg-rust can represent
-        // Variant in that schema as long as no projected field contains one. Check projected
-        // roots strictly and allow Variant only under entirely unprojected roots. Other unsupported
+        // Variant in that schema as long as no projected field contains one. Match projected
+        // roots by field ID so historical snapshots still identify renamed columns, check them
+        // strictly, and allow Variant only under entirely unprojected roots. Other unsupported
         // types still fail closed everywhere. An empty data projection is also strict because
         // iceberg-rust currently interprets an empty field-id list as a request for every column.
         val schemaTypesSupported =
@@ -557,10 +558,19 @@ case class CometScanRule(session: SparkSession)
                 isVariantType(dt) || super.isTypeSupported(dt, name, reasons)
             }
             val resolver = session.sessionState.conf.resolver
+            val tableFieldIds = IcebergReflection.buildFieldIdMapping(metadata.tableSchema)
+            val projectedFieldIds = projectedDataColumns.map { attr =>
+              metadata.globalFieldIdMapping.collectFirst {
+                case (fieldName, fieldId) if resolver(fieldName, attr.name) => fieldId
+              }
+            }
+            val resolvedProjectedFieldIds = projectedFieldIds.flatten.toSet
+            val hasUnresolvedProjectedFieldIds = projectedFieldIds.exists(_.isEmpty)
 
             fullSchema.fields.forall { field =>
               val isProjected = projectedDataColumns.isEmpty ||
-                projectedDataColumns.exists(attr => resolver(attr.name, field.name))
+                hasUnresolvedProjectedFieldIds ||
+                tableFieldIds.get(field.name).forall(resolvedProjectedFieldIds.contains)
               val checker = if (isProjected) typeChecker else unprojectedTypeChecker
               checker.isTypeSupported(field.dataType, field.name, fallbackReasons)
             }
