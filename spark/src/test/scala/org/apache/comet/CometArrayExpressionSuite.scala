@@ -30,7 +30,7 @@ import org.apache.spark.sql.functions._
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.ArrayType
 
-import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus}
+import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus, isSpark42Plus}
 import org.apache.comet.DataTypeSupport.isComplexType
 import org.apache.comet.serde.{CometArrayExcept, CometArrayRemove, CometArrayReverse, CometFlatten}
 import org.apache.comet.testing.{DataGenOptions, ParquetGenerator, SchemaGenOptions}
@@ -623,8 +623,11 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
 
       checkSparkAnswerAndOperator(query)
 
-      val runtimeOverlappingRows = Set(0, 1, 2, 3, 4, 5)
-      val directOverlappingRows = Set(0, 1, 2, 3, 6, 7)
+      // Spark 4.2+ normalizes signed zeros in arrays_overlap operands (SPARK-54918).
+      val runtimeOverlappingRows =
+        if (isSpark42Plus) Set(0, 1, 2, 3, 4, 5, 6, 7) else Set(0, 1, 2, 3, 4, 5)
+      val directOverlappingRows =
+        if (isSpark42Plus) Set(0, 1, 2, 3, 4, 5, 6, 7) else Set(0, 1, 2, 3, 6, 7)
       query.collect().foreach { row =>
         val shouldOverlapAtRuntime = runtimeOverlappingRows.contains(row.getInt(0))
         for (column <- 1 to 6) {
