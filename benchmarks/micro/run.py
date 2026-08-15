@@ -244,8 +244,10 @@ def detect_java_home():
         match = re.search(r"(\d+)", path.name)
         return int(match.group(1)) if match else 0
 
-    # Newest first, so that an older JDK left on the machine is not picked up
-    for candidate in sorted(candidates, key=version_of, reverse=True):
+    # JDK 17 first, since the pom only auto-activates a profile for 11 or 17,
+    # then newest, so that an older JDK left on the machine is not picked up
+    ordered = sorted(candidates, key=lambda path: (version_of(path) == 17, version_of(path)), reverse=True)
+    for candidate in ordered:
         if (candidate / "bin" / "javac").is_file():
             return str(candidate)
     java = shutil.which("java")
@@ -271,8 +273,19 @@ def base_env(comet_home):
     return env
 
 
-def profile_args(args):
-    return [args.profile] if args.profile else []
+def profile_args(args, jdk_major=None):
+    """Maven profiles for the build and the benchmark runs.
+
+    The pom defaults java.version to 11 and only auto-activates a profile for
+    JDK 11 or JDK 17 exactly. On any other JDK, such as 21, the Spark 4.x
+    sources are compiled against the Java 11 API and fail with
+    "Class java.lang.Record not found". Ask for the jdk17 profile explicitly in
+    that case.
+    """
+    profiles = [args.profile] if args.profile else []
+    if jdk_major is not None and jdk_major != 17 and not any("jdk" in p for p in profiles):
+        profiles.append("-Pjdk17")
+    return profiles
 
 
 def java_major_version(env):
@@ -300,6 +313,12 @@ def require_supported_jdk(env):
             "'Class java.lang.Record not found'. Install a newer JDK, point JAVA_HOME at it, and "
             "run `./mvnw clean` to discard classes built against the old one."
         )
+    if major != 17:
+        log(
+            f"JDK {major} in use, adding -Pjdk17 so that the Spark 4.x sources are not "
+            "compiled against the Java 11 API"
+        )
+    return major
 
 
 # ---------------------------------------------------------------------------
@@ -429,9 +448,10 @@ def build_release(args, comet_home):
     env = base_env(comet_home)
     if env.get("JAVA_HOME") is None:
         fail("JAVA_HOME could not be determined, install a JDK or export JAVA_HOME")
-    require_supported_jdk(env)
-    if args.profile:
-        env["PROFILES"] = args.profile
+    jdk_major = require_supported_jdk(env)
+    profiles = profile_args(args, jdk_major)
+    if profiles:
+        env["PROFILES"] = " ".join(profiles)
     log("building Comet in release mode, this takes a while")
     run_command(["make", "release"], cwd=comet_home, env=env, dry_run=args.dry_run)
 
@@ -474,11 +494,11 @@ def load_suites(args):
     return suites
 
 
-def maven_extra_java_args(comet_home, env, args):
+def maven_extra_java_args(comet_home, env, args, jdk_major=None):
     """The value the Makefile passes to MAVEN_OPTS as spark_jvm_17_extra_args."""
     value = capture(
         ["./mvnw", "help:evaluate", "-q", "-DforceStdout", "-Dexpression=extraJavaTestArgs"]
-        + profile_args(args),
+        + profile_args(args, jdk_major),
         cwd=comet_home,
         env=env,
     )
@@ -488,7 +508,7 @@ def maven_extra_java_args(comet_home, env, args):
     return " ".join(value.split())
 
 
-def suite_command(suite, args):
+def suite_command(suite, args, jdk_major=None):
     """Mirrors the `benchmark-%` target in the Makefile."""
     return [
         "../mvnw",
@@ -496,7 +516,7 @@ def suite_command(suite, args):
         f"-Dexec.mainClass={BENCH_PACKAGE}.{suite}",
         "-Dexec.classpathScope=test",
         "-Dexec.cleanupDaemonThreads=false",
-    ] + profile_args(args)
+    ] + profile_args(args, jdk_major)
 
 
 def warn_unless_release_build(comet_home):
@@ -538,8 +558,8 @@ def cmd_run(args):
     env = base_env(comet_home)
     if env.get("JAVA_HOME") is None:
         fail("JAVA_HOME could not be determined, install a JDK or export JAVA_HOME")
-    require_supported_jdk(env)
-    extra_args = maven_extra_java_args(comet_home, env, args)
+    jdk_major = require_supported_jdk(env)
+    extra_args = maven_extra_java_args(comet_home, env, args, jdk_major)
     env["MAVEN_OPTS"] = f"-Xmx{args.heap} {extra_args}".strip()
     env["SPARK_GENERATE_BENCHMARK_FILES"] = "1"
 
@@ -557,7 +577,7 @@ def cmd_run(args):
         status = "ok"
         try:
             code = run_command(
-                suite_command(suite, args),
+                suite_command(suite, args, jdk_major),
                 cwd=spark_dir,
                 env=env,
                 log_path=log_path,
