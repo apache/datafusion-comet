@@ -465,17 +465,14 @@ message ParquetWriter {
   // own writer. The native writer uses this path verbatim.
   string output_path = 1;
   CompressionCodec compression = 2;
-  repeated string column_names = 4;
-  // Was work_dir / job_id / task_attempt_id, used when the native writer derived its own file
-  // names from the task context. File naming now comes from the commit protocol instead.
-  reserved 5, 6, 7;
+  repeated string column_names = 3;
   // Options for configuring object stores such as AWS S3, GCS, etc. The key-value pairs are taken
   // from Hadoop configuration for compatibility with Hadoop FileSystem implementations of object
   // stores.
   // The configuration values have hadoop. or spark.hadoop. prefix trimmed. For instance, the
   // configuration value "spark.hadoop.fs.s3a.access.key" will be stored as "fs.s3a.access.key" in
   // the map.
-  map<string, string> object_store_options = 8;
+  map<string, string> object_store_options = 4;
 }
 
 enum AggregateMode {
