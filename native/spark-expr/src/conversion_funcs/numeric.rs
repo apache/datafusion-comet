@@ -20,15 +20,16 @@ use crate::conversion_funcs::utils::cast_overflow;
 use crate::conversion_funcs::utils::MICROS_PER_SECOND;
 use crate::{EvalMode, SparkError, SparkResult};
 use arrow::array::{
-    Array, ArrayRef, AsArray, BooleanBuilder, Decimal128Array, Float32Array, Float64Array,
-    GenericStringBuilder, Int16Array, Int32Array, Int64Array, Int8Array, OffsetSizeTrait,
-    PrimitiveArray, StringBuilder, TimestampMicrosecondBuilder,
+    Array, ArrayRef, AsArray, Decimal128Array, Float32Array, Float64Array, GenericStringBuilder,
+    Int16Array, Int32Array, Int64Array, Int8Array, OffsetSizeTrait, PrimitiveArray, Scalar,
+    StringBuilder, TimestampMicrosecondBuilder,
 };
+use arrow::compute::kernels::cmp::neq;
 use arrow::datatypes::{
     i256, is_validate_decimal_precision, ArrowPrimitiveType, DataType, Decimal128Type, Float32Type,
     Float64Type, Int16Type, Int32Type, Int64Type, Int8Type,
 };
-use num::{cast::AsPrimitive, ToPrimitive, Zero};
+use num::{cast::AsPrimitive, ToPrimitive};
 use std::sync::Arc;
 
 /// Check if DataFusion cast from integer types is Spark compatible
@@ -80,8 +81,8 @@ pub(crate) fn is_df_cast_from_decimal_spark_compatible(to_type: &DataType) -> bo
             | DataType::Utf8
     )
     // Note: Boolean is intentionally absent. Decimal-to-boolean uses a dedicated
-    // spark_cast_decimal_to_boolean function (in cast.rs) that checks the raw i128
-    // value, bypassing the DataFusion cast kernel entirely.
+    // spark_cast_decimal_to_boolean function that compares against a zero decimal of
+    // the same precision/scale, bypassing the DataFusion cast kernel entirely.
 }
 
 macro_rules! cast_float_to_timestamp_impl {
@@ -852,15 +853,13 @@ pub(crate) fn spark_cast_int_to_int(
 
 pub(crate) fn spark_cast_decimal_to_boolean(array: &dyn Array) -> SparkResult<ArrayRef> {
     let decimal_array = array.as_primitive::<Decimal128Type>();
-    let mut result = BooleanBuilder::with_capacity(decimal_array.len());
-    for i in 0..decimal_array.len() {
-        if decimal_array.is_null(i) {
-            result.append_null()
-        } else {
-            result.append_value(!decimal_array.value(i).is_zero());
-        }
-    }
-    Ok(Arc::new(result.finish()))
+    // Arrow has no Decimal-to-Boolean cast. `neq` against a zero of the same
+    // precision/scale is exactly `!value.is_zero()`, including null handling.
+    let zero = Scalar::new(
+        Decimal128Array::from(vec![0i128])
+            .with_precision_and_scale(decimal_array.precision(), decimal_array.scale())?,
+    );
+    Ok(Arc::new(neq(decimal_array, &zero)?))
 }
 
 pub(crate) fn cast_float64_to_decimal128(
@@ -1295,6 +1294,17 @@ mod tests {
         assert!(bool_array.value(1)); // 100 -> true
         assert!(bool_array.value(2)); // -100 -> true
         assert!(bool_array.is_null(3)); // null -> null
+
+        // A different precision/scale must still compare against a matching zero scalar.
+        let array: ArrayRef = Arc::new(
+            Decimal128Array::from(vec![Some(0), Some(1)])
+                .with_precision_and_scale(38, 0)
+                .unwrap(),
+        );
+        let result = spark_cast_decimal_to_boolean(&array).unwrap();
+        let bool_array = result.as_boolean();
+        assert!(!bool_array.value(0));
+        assert!(bool_array.value(1));
     }
 
     #[test]
