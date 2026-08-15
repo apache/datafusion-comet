@@ -242,6 +242,73 @@ SELECT try_to_time(' 12:30:45')
 query
 SELECT try_to_time(' 1:00:00 PM')
 
+-- Spark's time parser trims ASCII control characters, spaces, and DELETE after detecting AM/PM,
+-- but never trims non-ASCII whitespace. Materialize the padding so every query remains native.
+statement
+CREATE TABLE test_to_time_trim(name STRING, pad STRING) USING parquet
+
+statement
+INSERT INTO test_to_time_trim VALUES
+  ('a_none', ''),
+  ('b_nul_0x00', chr(0)),
+  ('c_soh_0x01', chr(1)),
+  ('d_tab_0x09', chr(9)),
+  ('e_vtab_0x0b', chr(11)),
+  ('f_us_0x1f', chr(31)),
+  ('g_space_0x20', ' '),
+  ('h_del_0x7f', chr(127)),
+  ('i_nbsp_u00a0', cast(X'C2A0' as string)),
+  ('j_ideographic_u3000', cast(X'E38080' as string))
+
+-- Leading, trailing, both-sided, and interior padding must match Spark for every codepoint.
+query
+SELECT
+  name,
+  try_to_time(concat(pad, '12:30:45')),
+  try_to_time(concat('12:30:45', pad)),
+  try_to_time(concat(pad, '12:30:45', pad)),
+  try_to_time(concat('12:', pad, '30:45'))
+FROM test_to_time_trim
+
+-- Leading trimAll padding invalidates a T prefix. Controls before AM/PM are valid, but only ASCII
+-- spaces after AM/PM are trimmed before Spark checks the suffix.
+query
+SELECT
+  name,
+  try_to_time(concat(pad, 'T12:30:45')),
+  try_to_time(concat('T12:30:45', pad)),
+  try_to_time(concat('1:00:00', pad, 'PM')),
+  try_to_time(concat('1:00:00 PM', pad))
+FROM test_to_time_trim
+
+-- The throwing variant must accept the same valid ASCII controls as try_to_time.
+query
+SELECT
+  name,
+  to_time(concat(pad, '12:30:45', pad)),
+  to_time(concat('1:00:00', pad, 'PM'))
+FROM test_to_time_trim
+WHERE name IN (
+  'a_none', 'b_nul_0x00', 'c_soh_0x01', 'd_tab_0x09', 'e_vtab_0x0b',
+  'f_us_0x1f', 'g_space_0x20', 'h_del_0x7f')
+
+-- The throwing variant must reject Unicode whitespace instead of silently parsing it.
+query expect_error(cannot be parsed to a TIME value)
+SELECT to_time(concat(pad, '12:30:45'))
+FROM test_to_time_trim
+WHERE name = 'i_nbsp_u00a0'
+
+query expect_error(cannot be parsed to a TIME value)
+SELECT to_time(concat('12:30:45', pad))
+FROM test_to_time_trim
+WHERE name = 'j_ideographic_u3000'
+
+-- Only literal ASCII spaces are removed before AM/PM suffix detection.
+query expect_error(cannot be parsed to a TIME value)
+SELECT to_time(concat('1:00:00 PM', pad))
+FROM test_to_time_trim
+WHERE name = 'd_tab_0x09'
+
 -- to_time with format pattern falls back to Spark (not supported natively)
 query expect_fallback(invoke is not supported)
 SELECT to_time('12:30:45', 'HH:mm:ss')
