@@ -64,6 +64,8 @@ DEFAULT_COMET_HOME = Path.home() / "datafusion-comet"
 DEFAULT_RUNS_ROOT = Path.home() / "comet-bench-runs"
 DEFAULT_HEAP = "8g"
 DEFAULT_JDK = "17"
+# Spark 4.x, the default build profile, does not compile on anything older
+MINIMUM_JDK = 17
 DEFAULT_TIMEOUT_MINUTES = 60
 # Only used when the distribution has no protoc package. prost-build needs a
 # protoc on the PATH to compile the Comet protobuf definitions.
@@ -234,10 +236,16 @@ def require_comet_home(args):
 def detect_java_home():
     if os.environ.get("JAVA_HOME"):
         return os.environ["JAVA_HOME"]
-    candidates = sorted(Path("/usr/lib/jvm").glob("java-*-amazon-corretto*")) + sorted(
-        Path("/usr/lib/jvm").glob("java-*-openjdk*")
-    )
-    for candidate in candidates:
+    candidates = []
+    for pattern in ("java-*-amazon-corretto*", "java-*-openjdk*", "jdk-*"):
+        candidates.extend(Path("/usr/lib/jvm").glob(pattern))
+
+    def version_of(path):
+        match = re.search(r"(\d+)", path.name)
+        return int(match.group(1)) if match else 0
+
+    # Newest first, so that an older JDK left on the machine is not picked up
+    for candidate in sorted(candidates, key=version_of, reverse=True):
         if (candidate / "bin" / "javac").is_file():
             return str(candidate)
     java = shutil.which("java")
@@ -265,6 +273,33 @@ def base_env(comet_home):
 
 def profile_args(args):
     return [args.profile] if args.profile else []
+
+
+def java_major_version(env):
+    """Major version of the JDK the build will use, or None if unknown."""
+    javac = Path(env["JAVA_HOME"]) / "bin" / "javac" if env.get("JAVA_HOME") else "javac"
+    try:
+        completed = subprocess.run(
+            [str(javac), "-version"], capture_output=True, text=True, env=env, timeout=60
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    match = re.search(r"(\d+)", (completed.stdout or "") + (completed.stderr or ""))
+    return int(match.group(1)) if match else None
+
+
+def require_supported_jdk(env):
+    """Spark 4.x needs JDK 17, and javac silently stubs java.lang.Record below it."""
+    major = java_major_version(env)
+    if major is None:
+        fail(f"could not run javac from JAVA_HOME={env.get('JAVA_HOME')}, install a JDK")
+    if major < MINIMUM_JDK:
+        fail(
+            f"JDK {major} found at JAVA_HOME={env.get('JAVA_HOME')}, but the default Spark 4.x "
+            f"profile needs JDK {MINIMUM_JDK} or later. Compiling with an older JDK fails with "
+            "'Class java.lang.Record not found'. Install a newer JDK, point JAVA_HOME at it, and "
+            "run `./mvnw clean` to discard classes built against the old one."
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -394,6 +429,7 @@ def build_release(args, comet_home):
     env = base_env(comet_home)
     if env.get("JAVA_HOME") is None:
         fail("JAVA_HOME could not be determined, install a JDK or export JAVA_HOME")
+    require_supported_jdk(env)
     if args.profile:
         env["PROFILES"] = args.profile
     log("building Comet in release mode, this takes a while")
@@ -502,6 +538,7 @@ def cmd_run(args):
     env = base_env(comet_home)
     if env.get("JAVA_HOME") is None:
         fail("JAVA_HOME could not be determined, install a JDK or export JAVA_HOME")
+    require_supported_jdk(env)
     extra_args = maven_extra_java_args(comet_home, env, args)
     env["MAVEN_OPTS"] = f"-Xmx{args.heap} {extra_args}".strip()
     env["SPARK_GENERATE_BENCHMARK_FILES"] = "1"

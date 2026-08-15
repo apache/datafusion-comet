@@ -156,7 +156,16 @@ export JAVA_HOME=/usr/lib/jvm/java-17-amazon-corretto
 echo 'export JAVA_HOME=/usr/lib/jvm/java-17-amazon-corretto' >> ~/.bashrc
 ```
 
-`run.py` detects `JAVA_HOME` automatically when it is not set, by looking in `/usr/lib/jvm`.
+Check that the JDK on the `PATH` is the same one, since Maven and the Rust build both use it:
+
+```shell
+java -version
+javac -version
+```
+
+If an older JDK is also installed, make sure it is not the one being picked up. `run.py` detects
+`JAVA_HOME` automatically when it is not set, choosing the newest JDK under `/usr/lib/jvm`, and
+refuses to build or benchmark with anything older than JDK 17.
 
 ### Maven
 
@@ -331,6 +340,17 @@ sudo dnf install -y gcc gcc-c++ make
 
 **`JAVA_HOME could not be determined`.** Install a JDK and export `JAVA_HOME`, or pass a checkout
 that has one configured.
+
+**`Class java.lang.Record not found - continuing with a stub`.** The Scala compiler is running on a
+JDK older than 17, which the Spark 4.x sources need. Point `JAVA_HOME` at JDK 17, put its `bin` on
+the `PATH`, then discard the classes compiled against the old JDK before rebuilding:
+
+```shell
+export JAVA_HOME=/usr/lib/jvm/java-17-amazon-corretto
+export PATH=$JAVA_HOME/bin:$PATH
+./mvnw clean
+make release
+```
 
 **`cargo: command not found` after `setup`.** `rustup` installs into `~/.cargo/bin`. Run
 `source "$HOME/.cargo/env"`, or start a new shell.
