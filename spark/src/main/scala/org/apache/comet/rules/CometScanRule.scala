@@ -540,15 +540,30 @@ case class CometScanRule(session: SparkSession)
             }
           }
 
-        // Comet serializes the whole table/scan schema to native, not just projected columns, so a
-        // type the native reader does not support (e.g. variant) breaks the scan even when that
-        // column is not projected. The readSchema allow-list only covers projected columns, so run
-        // the same allow-list over the full schema Comet may serialize. Reflection failure also
-        // falls back.
+        // The whole Iceberg table schema is serialized to native, but iceberg-rust can represent
+        // Variant in that schema as long as no projected field contains one. Check projected
+        // roots strictly and allow Variant only under entirely unprojected roots. Other unsupported
+        // types still fail closed everywhere. An empty data projection is also strict because
+        // iceberg-rust currently interprets an empty field-id list as a request for every column.
         val schemaTypesSupported =
           try {
             val fullSchema = IcebergReflection.toSparkSchema(metadata.tableSchema)
-            typeChecker.isSchemaSupported(fullSchema, fallbackReasons)
+            val projectedDataColumns = scanExec.output.filterNot(_.isMetadataCol)
+            val unprojectedTypeChecker = new CometScanTypeChecker() {
+              override def isTypeSupported(
+                  dt: DataType,
+                  name: String,
+                  reasons: ListBuffer[String]): Boolean =
+                isVariantType(dt) || super.isTypeSupported(dt, name, reasons)
+            }
+            val resolver = session.sessionState.conf.resolver
+
+            fullSchema.fields.forall { field =>
+              val isProjected = projectedDataColumns.isEmpty ||
+                projectedDataColumns.exists(attr => resolver(attr.name, field.name))
+              val checker = if (isProjected) typeChecker else unprojectedTypeChecker
+              checker.isTypeSupported(field.dataType, field.name, fallbackReasons)
+            }
           } catch {
             case e: Exception =>
               fallbackReasons += "Iceberg reflection failure: could not verify column " +
@@ -715,7 +730,7 @@ case class CometScanRule(session: SparkSession)
             true
         }
 
-        // Check for unsupported struct types in delete files
+        // Check for unsupported struct and Variant types in delete files
         val deleteFileTypesSupported = {
           var hasUnsupportedDeletes = false
 
@@ -766,12 +781,13 @@ case class CometScanRule(session: SparkSession)
                     }
                     fieldInfo match {
                       case Some((fieldName, fieldType)) =>
-                        if (fieldType.contains("struct")) {
+                        if (fieldType.contains("struct") || fieldType.equalsIgnoreCase(
+                            "variant")) {
                           hasUnsupportedDeletes = true
                           fallbackReasons +=
                             s"Equality delete on unsupported column type '$fieldName' " +
                               s"($fieldType) is not yet supported by iceberg-rust. " +
-                              "Struct types in equality deletes " +
+                              "Struct and Variant types in equality deletes " +
                               "require datum conversion support that is not yet implemented."
                         }
                       case None =>

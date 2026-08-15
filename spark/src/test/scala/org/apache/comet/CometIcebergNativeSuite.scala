@@ -28,7 +28,7 @@ import scala.jdk.CollectionConverters._
 
 import org.apache.spark.CometListenerBusUtils
 import org.apache.spark.scheduler.{SparkListener, SparkListenerTaskEnd}
-import org.apache.spark.sql.{CometTestBase, DataFrame}
+import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.catalyst.expressions.DynamicPruningExpression
 import org.apache.spark.sql.comet._
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
@@ -5156,6 +5156,131 @@ class CometIcebergNativeSuite
           s"SELECT id FROM $table WHERE try_variant_get(data, '$$.num', 'int') > 30 ORDER BY id",
           "the native scan does not support the VARIANT type")
         spark.sql(s"DROP TABLE $table")
+      }
+    }
+  }
+
+  test("unprojected variant columns do not disable native Iceberg scans") {
+    assume(isSpark40Plus, "VARIANT type requires Spark 4.0+")
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    assume(icebergVersionAtLeast(1, 10), "VARIANT type requires Iceberg 1.10+")
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+        val table = "test_cat.db.variant_projection"
+        try {
+          spark.sql(
+            s"CREATE TABLE $table (id BIGINT, label STRING, data VARIANT) USING iceberg " +
+              "TBLPROPERTIES ('format-version' = '3')")
+          spark.sql(s"""
+            INSERT INTO $table VALUES
+              (1, 'object', parse_json('{"num": 25}')),
+              (2, NULL, parse_json('null')),
+              (NULL, 'sql-null', NULL),
+              (4, 'array', parse_json('[1, 2]'))
+          """)
+
+          // Iceberg 1.10's Spark reader dereferences a null requested type when it encounters an
+          // unprojected, annotated Variant. Keep Variant projected for the Spark reference read,
+          // then discard it from the expected rows before checking the native pruned projection.
+          val sparkAllRows = withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+            spark
+              .sql(s"SELECT id, label, data FROM $table ORDER BY id NULLS FIRST")
+              .collect()
+              .map(row => Row(row.get(0), row.get(1)))
+              .toSeq
+          }
+          assert(
+            sparkAllRows ==
+              Seq(Row(null, "sql-null"), Row(1L, "object"), Row(2L, null), Row(4L, "array")))
+          val allRows = spark.sql(s"SELECT id, label FROM $table ORDER BY id NULLS FIRST")
+          checkCometAnswer(allRows, sparkAllRows)
+          assertSingleNativeScan(allRows.queryExecution.executedPlan)
+
+          val sparkFilteredRows = withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+            spark
+              .sql(s"SELECT id, data FROM $table " +
+                "WHERE label IS NOT NULL ORDER BY id NULLS FIRST")
+              .collect()
+              .map(row => Row(row.get(0)))
+              .toSeq
+          }
+          val filteredRows =
+            spark.sql(s"SELECT id FROM $table WHERE label IS NOT NULL ORDER BY id NULLS FIRST")
+          checkCometAnswer(filteredRows, sparkFilteredRows)
+          assertSingleNativeScan(filteredRows.queryExecution.executedPlan)
+
+          checkIcebergNativeScanFallback(
+            s"SELECT id FROM $table WHERE " +
+              "try_variant_get(data, '$.num', 'int') > 20 ORDER BY id",
+            "projected VARIANT columns remain unsupported")
+
+          withSQLConf("spark.sql.iceberg.aggregate-push-down.enabled" -> "false") {
+            val emptyProjection = spark.sql(s"SELECT COUNT(*) FROM $table")
+            assert(
+              collectIcebergNativeScans(emptyProjection.queryExecution.executedPlan).isEmpty,
+              "An empty projection must not read every field from a VARIANT-bearing table")
+          }
+
+          val metadataOnly = spark.sql(s"SELECT _file FROM $table")
+          assert(
+            collectIcebergNativeScans(metadataOnly.queryExecution.executedPlan).isEmpty,
+            "A metadata-only projection must not read a VARIANT-bearing data schema")
+        } finally {
+          spark.sql(s"DROP TABLE IF EXISTS $table PURGE")
+        }
+      }
+    }
+  }
+
+  test("projecting a struct containing an unprojected variant still falls back") {
+    assume(isSpark40Plus, "VARIANT type requires Spark 4.0+")
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    assume(icebergVersionAtLeast(1, 10), "VARIANT type requires Iceberg 1.10+")
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+        val table = "test_cat.db.nested_variant_projection"
+        try {
+          spark.sql(
+            s"CREATE TABLE $table " +
+              "(id BIGINT, nested STRUCT<label: STRING, data: VARIANT>) USING iceberg " +
+              "TBLPROPERTIES ('format-version' = '3')")
+          spark.sql(s"""
+            INSERT INTO $table VALUES
+              (1, named_struct('label', 'first', 'data', parse_json('{"num": 1}'))),
+              (2, named_struct('label', NULL, 'data', NULL)),
+              (3, NULL)
+          """)
+
+          val sparkScalarRows = withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+            spark
+              .sql(s"SELECT id, nested FROM $table ORDER BY id")
+              .collect()
+              .map(row => Row(row.get(0)))
+              .toSeq
+          }
+          val scalarRows = spark.sql(s"SELECT id FROM $table ORDER BY id")
+          checkCometAnswer(scalarRows, sparkScalarRows)
+          assertSingleNativeScan(scalarRows.queryExecution.executedPlan)
+
+          val nestedProjection = spark.sql(s"SELECT nested.label FROM $table ORDER BY id")
+          assert(
+            collectIcebergNativeScans(nestedProjection.queryExecution.executedPlan).isEmpty,
+            "iceberg-rust rejects a projected parent containing a VARIANT field")
+        } finally {
+          spark.sql(s"DROP TABLE IF EXISTS $table PURGE")
+        }
       }
     }
   }
