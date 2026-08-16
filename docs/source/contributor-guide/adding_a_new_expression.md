@@ -101,9 +101,9 @@ from the function registry—including functions registered by
 Follow these rules when wiring scalar expressions:
 
 - **Do not** register a Spark expression class that exposes `failOnError`,
-  `evalMode`, or `nullOnOverflow` using plain `CometScalarFunction`.
-  `CometScalarFunction.convert` rejects such expressions by returning `None`,
-  allowing the planner to fall back to Spark.
+  `evalMode`, `nullOnOverflow`, `ansiEnabled`, or `evalContext` using plain
+  `CometScalarFunction`. `CometScalarFunction.convert` rejects such expressions
+  by returning `None`, allowing the planner to fall back to Spark.
 
 - **Prefer name-based ANSI and try variants** so that the error semantics are
   encoded in the function name while the proto `fail_on_error` flag remains
@@ -116,7 +116,7 @@ Follow these rules when wiring scalar expressions:
   must also have a dedicated match arm in
   `create_comet_physical_fun_with_eval_mode` that actually consumes the flag;
   it must not fall through to registry lookup. Existing native consumers
-  include `make_decimal`, `make_date`, and `next_day`.
+  include `make_decimal`, `make_date`, `make_time`, and `next_day`.
 
 #### When to set the return type explicitly
 

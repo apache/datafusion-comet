@@ -20,8 +20,8 @@
 package org.apache.comet.serde
 
 import org.apache.spark.sql.CometTestBase
-import org.apache.spark.sql.catalyst.expressions.{Abs, Cos, Expression, Literal, Unevaluable}
-import org.apache.spark.sql.types.{DataType, IntegerType}
+import org.apache.spark.sql.catalyst.expressions.{Abs, Cos, Expression, Literal, Round, Unevaluable}
+import org.apache.spark.sql.types.{DataType, DoubleType, IntegerType}
 
 import org.apache.comet.{CometExplainInfo, CometSparkSessionExtensions}
 
@@ -45,6 +45,36 @@ case class TestEvalModeExpression(child: Expression, evalMode: Boolean)
  * Spark's `MakeDecimal`.
  */
 case class TestNullOnOverflowExpression(child: Expression, nullOnOverflow: Boolean)
+    extends Expression
+    with Unevaluable {
+  override def children: Seq[Expression] = Seq(child)
+  override def nullable: Boolean = child.nullable
+  override def dataType: DataType = IntegerType
+  override protected def withNewChildrenInternal(
+      newChildren: IndexedSeq[Expression]): Expression =
+    copy(child = newChildren.head)
+}
+
+/**
+ * Synthetic expression whose constructor declares `ansiEnabled`, matching markers such as Spark's
+ * `Round` / `BRound` / `Conv`.
+ */
+case class TestAnsiEnabledExpression(child: Expression, ansiEnabled: Boolean)
+    extends Expression
+    with Unevaluable {
+  override def children: Seq[Expression] = Seq(child)
+  override def nullable: Boolean = child.nullable
+  override def dataType: DataType = IntegerType
+  override protected def withNewChildrenInternal(
+      newChildren: IndexedSeq[Expression]): Expression =
+    copy(child = newChildren.head)
+}
+
+/**
+ * Synthetic expression whose constructor declares `evalContext`, matching Spark 4.1+ arithmetic
+ * expressions that store `NumericEvalContext` as a field.
+ */
+case class TestEvalContextExpression(child: Expression, evalContext: Any)
     extends Expression
     with Unevaluable {
   override def children: Seq[Expression] = Seq(child)
@@ -107,6 +137,31 @@ class CometScalarFunctionSuite extends CometTestBase {
     assert(CometScalarFunction.isAnsiSensitive(classOf[TestNullOnOverflowExpression]))
   }
 
+  test("isAnsiSensitive detects ansiEnabled field") {
+    val enabled = TestAnsiEnabledExpression(Literal(1), ansiEnabled = true)
+    val disabled = TestAnsiEnabledExpression(Literal(1), ansiEnabled = false)
+    assert(CometScalarFunction.isAnsiSensitive(enabled))
+    assert(CometScalarFunction.isAnsiSensitive(disabled))
+    assert(CometScalarFunction.isAnsiSensitive(classOf[TestAnsiEnabledExpression]))
+  }
+
+  test("isAnsiSensitive detects evalContext field") {
+    val withContext = TestEvalContextExpression(Literal(1), evalContext = "legacy")
+    assert(CometScalarFunction.isAnsiSensitive(withContext))
+    assert(CometScalarFunction.isAnsiSensitive(classOf[TestEvalContextExpression]))
+  }
+
+  test("isAnsiSensitive detects Spark Round ansiEnabled") {
+    val round = Round(Literal(1.5, DoubleType), Literal(0))
+    assert(CometScalarFunction.isAnsiSensitive(round))
+    assert(CometScalarFunction.isAnsiSensitive(classOf[Round]))
+    assert(
+      CometScalarFunction[Round]("round")
+        .convert(round, Seq.empty, binding = true)
+        .isEmpty)
+    assertRejectReason(round, "CometScalarFunction", "ansiEnabled")
+  }
+
   test("rejects expressions with evalMode via plain CometScalarFunction (#5074)") {
     val ansi = TestEvalModeExpression(Literal(1), evalMode = true)
     val legacy = TestEvalModeExpression(Literal(1), evalMode = false)
@@ -135,6 +190,30 @@ class CometScalarFunctionSuite extends CometTestBase {
         .isEmpty)
     assertRejectReason(nullOnOverflow, "CometScalarFunction", "nullOnOverflow")
     assertRejectReason(failOnOverflow, "CometScalarFunction", "nullOnOverflow")
+  }
+
+  test("rejects expressions with ansiEnabled via plain CometScalarFunction") {
+    val enabled = TestAnsiEnabledExpression(Literal(1), ansiEnabled = true)
+    val disabled = TestAnsiEnabledExpression(Literal(1), ansiEnabled = false)
+    assert(
+      CometScalarFunction[TestAnsiEnabledExpression]("test")
+        .convert(enabled, Seq.empty, binding = true)
+        .isEmpty)
+    assert(
+      CometScalarFunction[TestAnsiEnabledExpression]("test")
+        .convert(disabled, Seq.empty, binding = true)
+        .isEmpty)
+    assertRejectReason(enabled, "CometScalarFunction", "ansiEnabled")
+    assertRejectReason(disabled, "CometScalarFunction", "ansiEnabled")
+  }
+
+  test("rejects expressions with evalContext via plain CometScalarFunction") {
+    val withContext = TestEvalContextExpression(Literal(1), evalContext = "ansi")
+    assert(
+      CometScalarFunction[TestEvalContextExpression]("test")
+        .convert(withContext, Seq.empty, binding = true)
+        .isEmpty)
+    assertRejectReason(withContext, "CometScalarFunction", "evalContext")
   }
 
   test("CometScalarFunction allows non-ANSI expressions") {

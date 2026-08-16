@@ -17,7 +17,7 @@
 
 #[cfg(test)]
 mod tests {
-    use arrow::datatypes::DataType;
+    use arrow::datatypes::{DataType, TimeUnit};
     use datafusion::error::Result;
     use datafusion::execution::session_state::SessionStateBuilder;
     use datafusion::execution::FunctionRegistry;
@@ -142,6 +142,16 @@ mod tests {
         let make_date =
             create_comet_physical_fun("make_date", DataType::Date32, &session_state, Some(true))?;
         assert_eq!(make_date.name(), "make_date");
+
+        // Spark 4.1+ make_time serde always passes fail_on_error=true; the dedicated arm
+        // must accept it even though SparkMakeTime does not take the flag as a constructor arg.
+        let make_time = create_comet_physical_fun(
+            "make_time",
+            DataType::Time64(TimeUnit::Nanosecond),
+            &session_state,
+            Some(true),
+        )?;
+        assert_eq!(make_time.name(), "make_time");
 
         Ok(())
     }

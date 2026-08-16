@@ -224,6 +224,7 @@ jobs:
               org.apache.comet.CometStringDecodeSuite
               org.apache.comet.CometWidthBucketSuite
               org.apache.comet.CometUuidExpressionSuite
+              org.apache.comet.serde.CometScalarFunctionSuite
 
       fail-fast: false
     name: ${{ matrix.os }}/${{ matrix.profile.name }} [${{ matrix.suite.name }}]

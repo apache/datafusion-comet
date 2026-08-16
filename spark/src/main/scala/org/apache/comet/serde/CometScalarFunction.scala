@@ -31,8 +31,8 @@ case class CometScalarFunction[T <: Expression](name: String) extends CometExpre
     if (CometScalarFunction.isAnsiSensitive(expr)) {
       withFallbackReason(
         expr,
-        s"${expr.nodeName} carries failOnError/evalMode/nullOnOverflow and cannot use " +
-          s"CometScalarFunction('$name'). Prefer name-based ANSI/try variants " +
+        s"${expr.nodeName} carries failOnError/evalMode/nullOnOverflow/ansiEnabled/evalContext " +
+          s"and cannot use CometScalarFunction('$name'). Prefer name-based ANSI/try variants " +
           "(e.g. parse_url / try_parse_url), or a custom serde with " +
           "scalarFunctionExprToProtoWithReturnType plus a native match arm that " +
           "consumes fail_on_error.")
@@ -46,21 +46,21 @@ case class CometScalarFunction[T <: Expression](name: String) extends CometExpre
 
 object CometScalarFunction {
 
-  /** Product field names that indicate ANSI / eval-mode sensitive Spark expressions. */
+  /**
+   * Product / Java field names that indicate ANSI / eval-mode sensitive Spark expressions.
+   *
+   * Detection uses Java reflection (not `Product.productElementNames`) so the check compiles on
+   * Scala 2.12 used by Spark 3.4 / 3.5.
+   */
   private val AnsiSensitiveFields: Set[String] =
-    Set("failOnError", "evalMode", "nullOnOverflow")
+    Set("failOnError", "evalMode", "nullOnOverflow", "ansiEnabled", "evalContext")
 
   /**
    * True when the Spark expression case class declares an ANSI-related constructor field. Used to
    * reject miswiring via plain [[CometScalarFunction]].
    */
   private[serde] def isAnsiSensitive(expr: Expression): Boolean = {
-    expr match {
-      case p: Product =>
-        p.productElementNames.exists(AnsiSensitiveFields.contains)
-      case _ =>
-        isAnsiSensitive(expr.getClass)
-    }
+    isAnsiSensitive(expr.getClass)
   }
 
   /**
@@ -68,6 +68,13 @@ object CometScalarFunction {
    * ANSI-related field regardless of any particular instance's flag value.
    */
   private[serde] def isAnsiSensitive(clazz: Class[_]): Boolean = {
-    clazz.getDeclaredFields.exists(f => AnsiSensitiveFields.contains(f.getName))
+    var current: Class[_] = clazz
+    while (current != null && current != classOf[Object]) {
+      if (current.getDeclaredFields.exists(f => AnsiSensitiveFields.contains(f.getName))) {
+        return true
+      }
+      current = current.getSuperclass
+    }
+    false
   }
 }

@@ -260,6 +260,10 @@ pub fn create_comet_physical_fun_with_eval_mode(
             let func = Arc::new(crate::string_funcs::spark_levenshtein);
             make_comet_scalar_udf!("levenshtein", func, without data_type)
         }
+        // Spark 4.1+ serde always sets fail_on_error=true (always-throw semantics).
+        // SparkMakeTime already throws on invalid input, so accept the flag here rather
+        // than falling through to the registry fail-closed path.
+        "make_time" => Ok(Arc::new(ScalarUDF::new_from_impl(SparkMakeTime::new()))),
         // Registry UDFs (including datafusion-spark) cannot receive fail_on_error.
         _ if fail_on_error => Err(DataFusionError::Execution(format!(
             "Function '{fun_name}' is resolved from the UDF registry and cannot \
