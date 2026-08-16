@@ -21,11 +21,6 @@ package org.apache.spark.sql.benchmark
 
 import java.io.File
 
-import org.apache.spark.SparkConf
-import org.apache.spark.sql.SparkSession
-
-import org.apache.comet.CometSparkSessionExtensions
-
 /**
  * Benchmark to measure performance of Comet's explode operator (`CometExplodeExec`) against
  * Spark's `GenerateExec`, across the dimensions that drive generator cost: fan-out, generator
@@ -35,31 +30,13 @@ import org.apache.comet.CometSparkSessionExtensions
  *   SPARK_GENERATE_BENCHMARK_FILES=1 make benchmark-org.apache.spark.sql.benchmark.CometExplodeBenchmark
  * }}}
  *
- * Reported times are whole-query totals, so they include the Parquet scan and the transfer of
- * results out of the engine. At fan-out 2 the scan is a large share of the total and the ratio
- * understates the difference between the two explode implementations; at fan-out 100 the
- * generator dominates and the ratio is close to the operator ratio.
+ * `runExpressionBenchmark` reports whole-query totals, so the times below also include the
+ * Parquet scan, the result transfer, and the per-iteration query planning. That fixed cost is a
+ * large share of the total at fan-out 2, where it compresses the ratio between the two engines,
+ * and a small one at fan-out 100. Issue #5363 tracks reporting operator cost against a scan
+ * baseline instead; when that lands, this paragraph should go.
  */
 object CometExplodeBenchmark extends CometBenchmarkBase {
-
-  override def getSparkSession: SparkSession = {
-    val conf = new SparkConf()
-      .setAppName("CometExplodeBenchmark")
-      .set("spark.master", "local[5]")
-      .setIfMissing("spark.driver.memory", "3g")
-      .setIfMissing("spark.executor.memory", "3g")
-      .set(
-        "spark.shuffle.manager",
-        "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
-
-    val sparkSession = SparkSession
-      .builder()
-      .config(conf)
-      .withExtensions(new CometSparkSessionExtensions)
-      .getOrCreate()
-    sparkSession.conf.set("spark.sql.shuffle.partitions", "2")
-    sparkSession
-  }
 
   private val numRows = 256 * 1024
 
@@ -84,38 +61,35 @@ object CometExplodeBenchmark extends CometBenchmarkBase {
   }
 
   /**
-   * Writes `selectExprs` over `numRows` rows to Parquet and registers it as a temp view.
+   * The temp views the benchmark reads, each with the expressions that build it.
    *
    * Each array column gets its own view rather than sharing one wide table, so that a case is
    * never charged for scanning an array column it does not read.
    */
-  private def createView(dir: File, name: String, selectExprs: String*): Unit = {
+  private val datasets: Seq[(String, Seq[String])] = Seq(
+    "arr_len2" -> Seq(arrayColumn("id + x", 2)),
+    "arr_len10" -> Seq(arrayColumn("id + x", 10)),
+    "arr_len100" -> Seq(arrayColumn("id + x", 100)),
+    "arr_str10" -> Seq(arrayColumn("concat('str_', CAST(id + x AS STRING))", 10)),
+    "arr_struct10" -> Seq(
+      arrayColumn("struct(id + x AS a, concat('s', CAST(x AS STRING)) AS b)", 10)),
+    "arr_carry" -> Seq(
+      arrayColumn("id + x", 10),
+      "id AS k",
+      "CAST(id AS STRING) AS s",
+      "id * 2 AS v"))
+
+  /** Writes `selectExprs` over `numRows` rows to Parquet and registers it as a temp view. */
+  private def createView(dir: File, name: String, selectExprs: Seq[String]): Unit = {
     val path = s"${dir.getAbsolutePath}/$name"
     spark.range(numRows).selectExpr(selectExprs: _*).write.parquet(path)
     spark.read.parquet(path).createOrReplaceTempView(name)
   }
 
   override def runCometBenchmark(mainArgs: Array[String]): Unit = {
-    val views =
-      Seq("arr_len2", "arr_len10", "arr_len100", "arr_str10", "arr_struct10", "arr_carry")
-
     withTempPath { dir =>
-      withTempTable(views: _*) {
-        createView(dir, "arr_len2", arrayColumn("id + x", 2))
-        createView(dir, "arr_len10", arrayColumn("id + x", 10))
-        createView(dir, "arr_len100", arrayColumn("id + x", 100))
-        createView(dir, "arr_str10", arrayColumn("concat('str_', CAST(id + x AS STRING))", 10))
-        createView(
-          dir,
-          "arr_struct10",
-          arrayColumn("struct(id + x AS a, concat('s', CAST(x AS STRING)) AS b)", 10))
-        createView(
-          dir,
-          "arr_carry",
-          arrayColumn("id + x", 10),
-          "id AS k",
-          "CAST(id AS STRING) AS s",
-          "id * 2 AS v")
+      withTempTable(datasets.map(_._1): _*) {
+        datasets.foreach { case (name, selectExprs) => createView(dir, name, selectExprs) }
 
         // Cardinality is input rows for every case, so the numbers are per scanned row rather
         // than per generated row. Fan-out is named in the case title: the 100-element case emits
@@ -125,21 +99,16 @@ object CometExplodeBenchmark extends CometBenchmarkBase {
             runExpressionBenchmark(
               s"explode array<bigint>[$len]",
               numRows,
-              s"SELECT explode(arr) AS e FROM arr_len$len")
+              s"SELECT explode(arr) FROM arr_len$len")
           }
         }
 
         runBenchmark("Explode - generator variants") {
-          // The pos- variants produce two output columns, so they need two aliases.
-          Seq(
-            "explode" -> "AS e",
-            "posexplode" -> "AS (p, e)",
-            "explode_outer" -> "AS e",
-            "posexplode_outer" -> "AS (p, e)").foreach { case (generator, alias) =>
+          Seq("explode", "posexplode", "explode_outer", "posexplode_outer").foreach { generator =>
             runExpressionBenchmark(
               s"$generator array<bigint>[10]",
               numRows,
-              s"SELECT $generator(arr) $alias FROM arr_len10")
+              s"SELECT $generator(arr) FROM arr_len10")
           }
         }
 
@@ -149,19 +118,16 @@ object CometExplodeBenchmark extends CometBenchmarkBase {
               runExpressionBenchmark(
                 s"explode array<$elementType>[10]",
                 numRows,
-                s"SELECT explode(arr) AS e FROM $view")
+                s"SELECT explode(arr) FROM $view")
             }
         }
 
         runBenchmark("Explode - carried columns") {
-          runExpressionBenchmark(
-            "explode alone",
-            numRows,
-            "SELECT explode(arr) AS e FROM arr_carry")
+          runExpressionBenchmark("explode alone", numRows, "SELECT explode(arr) FROM arr_carry")
           runExpressionBenchmark(
             "explode plus 3 carried columns",
             numRows,
-            "SELECT k, s, v, explode(arr) AS e FROM arr_carry")
+            "SELECT k, s, v, explode(arr) FROM arr_carry")
         }
       }
     }
