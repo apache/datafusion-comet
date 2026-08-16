@@ -214,8 +214,11 @@ Each suite runs in its own JVM, sequentially, with `SPARK_GENERATE_BENCHMARK_FIL
 Spark's benchmark framework writes result files to `spark/benchmarks`. Per-suite logs and a
 `summary.json` are written to `~/comet-bench-runs/<timestamp>/`.
 
-A suite that fails or times out does not stop the run. The last lines of its log are printed
-immediately and its status is recorded in the summary.
+A suite that fails or times out does not stop the run. The first exception in its log is printed
+immediately, and its status is recorded in the summary and in `RUN-INFO.md`.
+
+`--timeout` defaults to 60 minutes per suite. `CometShuffleBenchmark` runs far longer than the
+others and is given 180 minutes automatically.
 
 Useful options:
 

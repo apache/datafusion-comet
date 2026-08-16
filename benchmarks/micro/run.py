@@ -113,6 +113,12 @@ DEFAULT_SUITES = [
     "CometStringExpressionBenchmark",
 ]
 
+# Suites that legitimately take much longer than the default timeout allows.
+# Minutes, applied in place of --timeout for that suite only.
+SUITE_TIMEOUT_OVERRIDES = {
+    "CometShuffleBenchmark": 180,
+}
+
 # Suites deliberately left out of the default set, with the reason. They can
 # still be run by naming them in a --suites file.
 EXCLUDED_SUITES = {
@@ -200,6 +206,25 @@ def tail_file(path, lines=20):
     except OSError:
         return ""
     return "\n".join(content[-lines:])
+
+
+# The last lines of a failed run are Maven's epilogue, which says nothing about
+# the cause. Look for the exception that started it instead.
+EXCEPTION_PATTERN = re.compile(r"^\s*[\w.$]+(Exception|Error)(:|\b)")
+MAVEN_FAILURE_PATTERN = re.compile(r"^\[ERROR\] Failed to execute goal")
+
+
+def failure_excerpt(path, context=12, fallback_lines=20):
+    """The first exception in a log, falling back to Maven's message or the tail."""
+    try:
+        content = Path(path).read_text(errors="replace").splitlines()
+    except OSError:
+        return ""
+    for pattern in (EXCEPTION_PATTERN, MAVEN_FAILURE_PATTERN):
+        for index, line in enumerate(content):
+            if pattern.search(line):
+                return "\n".join(content[index : index + context])
+    return "\n".join(content[-fallback_lines:])
 
 
 # ---------------------------------------------------------------------------
@@ -568,11 +593,15 @@ def cmd_run(args):
     started_utc = utc_now()
     log(f"running {len(suites)} suite(s), logs in {log_dir}")
     results = []
-    timeout = args.timeout * 60 if args.timeout else None
 
     for index, suite in enumerate(suites, start=1):
         log_path = log_dir / f"{suite}.log"
-        log(f"[{index}/{len(suites)}] {suite}")
+        timeout_minutes = SUITE_TIMEOUT_OVERRIDES.get(suite, args.timeout)
+        timeout = timeout_minutes * 60 if timeout_minutes else None
+        if args.timeout and timeout_minutes != args.timeout:
+            log(f"[{index}/{len(suites)}] {suite} (timeout raised to {timeout_minutes}m)")
+        else:
+            log(f"[{index}/{len(suites)}] {suite}")
         suite_started = time.time()
         status = "ok"
         try:
@@ -601,8 +630,9 @@ def cmd_run(args):
         if status == "ok":
             log(f"    ok in {format_duration(duration)}")
         else:
-            log(f"    {status} after {format_duration(duration)}, last lines of {log_path}:")
-            print(tail_file(log_path), flush=True)
+            excerpt = tail_file(log_path) if status == "timeout" else failure_excerpt(log_path)
+            log(f"    {status} after {format_duration(duration)}, from {log_path}:")
+            print(excerpt, flush=True)
 
     summary = {
         "started_utc": started_utc.isoformat(),
