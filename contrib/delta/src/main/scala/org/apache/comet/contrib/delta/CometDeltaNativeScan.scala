@@ -324,7 +324,8 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometDeltaScanMarker] wit
   private[delta] def synthesizeReadSchemaJson(
       annotatedSource: Option[StructType],
       requiredSchema: StructType,
-      partitionSchema: StructType): String = {
+      partitionSchema: StructType,
+      rowTrackingActive: Boolean = false): String = {
     val byName =
       annotatedSource.map(_.fields.map(f => f.name.toLowerCase(Locale.ROOT) -> f).toMap)
         .getOrElse(Map.empty)
@@ -344,9 +345,17 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometDeltaScanMarker] wit
     def isRowIndex(n: String): Boolean =
       n.equalsIgnoreCase(DeltaReflection.RowIndexColumnName) ||
         n.equalsIgnoreCase(DeltaReflection.TmpMetadataRowIndexColumnName)
+    // Gated on row tracking for the same reason the strip list above is: with row tracking off,
+    // `row_id` is an ordinary user data column, and a table may legitimately have one. Shipping it
+    // to kernel as a RowId metadata column (`delta.metadataSpec`) makes kernel reject the whole
+    // scan -- `validate_metadata_columns` returns "Row ids are not enabled on this table" -- so the
+    // read declined to Spark instead of returning the user's column. The `_row-id-col-*`
+    // materialised names only exist when row tracking is on, so gating both is safe.
+    // Repro: CometDeltaRowIdColumnCollisionReproSuite.
     def isRowId(n: String): Boolean =
-      n.equalsIgnoreCase(DeltaReflection.RowIdColumnName) ||
-        n.toLowerCase(Locale.ROOT).startsWith("_row-id-col-")
+      rowTrackingActive &&
+        (n.equalsIgnoreCase(DeltaReflection.RowIdColumnName) ||
+          n.toLowerCase(Locale.ROOT).startsWith("_row-id-col-"))
     val kept: Array[StructField] = requiredSchema.fields.flatMap { f =>
       if (isStrippableSynthetic(f, workerOnly)) {
         None // worker-side constant; not read from kernel
@@ -634,11 +643,16 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometDeltaScanMarker] wit
     // useMetadataRowIndex=true path (a single row-index name) is unaffected.
     // Repro: CometDeltaDeleteWithDVReproSuite; regression: DeleteSQLWithDeletionVectorsSuite.
     if (rowIndexCanonicalPresent && rowIndexTmpMetadataPresent) {
-      logInfo(
-        "CometDeltaNativeScan: scan.requiredSchema requests both " +
+      // Recorded as a fallback reason, not just logged: core's `reportUnexplainedFallback` fails
+      // the query under `spark.comet.strictFallbackReasons` when an operator is left unconverted
+      // with nothing explaining why. Repro: CometDeltaDeleteWithDVReproSuite.
+      import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
+      withFallbackReason(
+        scan,
+        s"Native Delta scan does not support a read requesting both " +
           s"${DeltaReflection.RowIndexColumnName} and " +
-          s"${DeltaReflection.TmpMetadataRowIndexColumnName} (DV-maintenance read with " +
-          "useMetadataRowIndex=false); falling back to Spark's Delta reader for this scan.")
+          s"${DeltaReflection.TmpMetadataRowIndexColumnName} (deletion-vector maintenance read " +
+          "with useMetadataRowIndex=false); falling back to Spark's Delta reader.")
       return None
     }
     val emitRowIndex = rowIndexCanonicalPresent || rowIndexTmpMetadataPresent
@@ -768,7 +782,8 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometDeltaScanMarker] wit
                   val projJson = CometDeltaNativeScan.synthesizeReadSchemaJson(
                     annotated,
                     scan.requiredSchema,
-                    relation.partitionSchema)
+                    relation.partitionSchema,
+                    rowTrackingActive = rowTrackingEnabled)
                   // Empty predicate: the touched AddFile set is the authoritative selection; kernel
                   // stats pruning could drop a touched file and force a needless decline.
                   val kernelTaskList = DeltaScanTaskList.parseFrom(
@@ -864,7 +879,8 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometDeltaScanMarker] wit
               CometDeltaNativeScan.synthesizeReadSchemaJson(
                 annotated,
                 scan.requiredSchema,
-                relation.partitionSchema)
+                relation.partitionSchema,
+                rowTrackingActive = rowTrackingEnabled)
             } else {
               CometDeltaNativeScan.dataReadSchemaJson(
                 annotated,
@@ -884,6 +900,16 @@ object CometDeltaNativeScan extends CometOperatorSerde[CometDeltaScanMarker] wit
             logWarning(
               s"CometDeltaNativeScan: delta-kernel-rs log replay failed for $tableRoot",
               e)
+            // Record the reason, not just a log line: core's `reportUnexplainedFallback` treats an
+            // unconverted operator with no recorded reason as a bug and fails the query under
+            // `spark.comet.strictFallbackReasons`. A log-only decline also hid this path entirely
+            // from `EXPLAIN`, which is how the row-id collision above went unnoticed.
+            import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
+            withFallbackReason(
+              scan,
+              s"Native Delta scan could not plan $tableRoot via delta-kernel " +
+                s"(${e.getClass.getSimpleName}: ${e.getMessage}); falling back to Spark's " +
+                "Delta reader.")
             return None
         }
       }
