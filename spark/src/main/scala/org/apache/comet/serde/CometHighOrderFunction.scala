@@ -43,9 +43,14 @@ import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, serializeData
  */
 case class CometHighOrderFunction[T <: HigherOrderFunction](name: String)
     extends CometExpressionSerde[T] {
+  private val nativeHofEnabled = CometConf.COMET_EXEC_HIGHER_ORDER_FUNCTION_NATIVE_ENABLED.get()
+  private val codegenEnabled = CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.get()
 
   private val UNSUPPORTED_LAMBDA_TYPE = "lambda functions must be LambdaFunction"
   private val UNSUPPORTED_LAMBDA_PARAM_TYPE = "lambda arguments must be NamedLambdaVariables"
+  private val UNSUPPORTED_JVM_CODEGEN_IN_LAMBDA_REASON =
+    "Lambda body contains expressions requiring JVM codegen dispatch, " +
+      "which cannot bind NamedLambdaVariables"
 
   override def getUnsupportedReasons(): Seq[String] =
     Seq(UNSUPPORTED_LAMBDA_TYPE, UNSUPPORTED_LAMBDA_PARAM_TYPE)
@@ -54,19 +59,24 @@ case class CometHighOrderFunction[T <: HigherOrderFunction](name: String)
     if (!expr.functions.forall(_.isInstanceOf[SparkLambdaFunction])) {
       return Some(UNSUPPORTED_LAMBDA_TYPE)
     }
-    if (!expr.functions
-        .flatMap(_.asInstanceOf[SparkLambdaFunction].arguments)
+    val sparkLambdaFunctions = expr.functions.map(_.asInstanceOf[SparkLambdaFunction])
+    if (!sparkLambdaFunctions
+        .flatMap(_.arguments)
         .forall(_.isInstanceOf[SparkNamedLambdaVariable])) {
       return Some(UNSUPPORTED_LAMBDA_PARAM_TYPE)
+    }
+    val hasJvmScalarUdf = sparkLambdaFunctions
+      .exists(
+        _.exists(exprToProtoInternal(_, Seq.empty, binding = false).exists(_.hasJvmScalarUdf)))
+    if (hasJvmScalarUdf) {
+      return Some(UNSUPPORTED_JVM_CODEGEN_IN_LAMBDA_REASON)
     }
     None
   }
 
   override def getSupportLevel(expr: T): SupportLevel = {
     val unsupportedReason = nativeUnsupportedReason(expr)
-    val nativeAvailable =
-      unsupportedReason.isEmpty && CometConf.COMET_EXEC_HIGHER_ORDER_FUNCTION_NATIVE_ENABLED.get()
-    val codegenEnabled = CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.get()
+    val nativeAvailable = unsupportedReason.isEmpty && nativeHofEnabled
     if (nativeAvailable || codegenEnabled) {
       Compatible()
     } else {
@@ -75,9 +85,7 @@ case class CometHighOrderFunction[T <: HigherOrderFunction](name: String)
   }
 
   def convert(expr: T, inputs: Seq[Attribute], binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val nativeAvailable =
-      nativeUnsupportedReason(
-        expr).isEmpty && CometConf.COMET_EXEC_HIGHER_ORDER_FUNCTION_NATIVE_ENABLED.get()
+    val nativeAvailable = nativeUnsupportedReason(expr).isEmpty && nativeHofEnabled
     val hofProto = highOrderFunction2Proto(expr, inputs, binding)
     if (nativeAvailable && hofProto.isDefined) {
       hofProto

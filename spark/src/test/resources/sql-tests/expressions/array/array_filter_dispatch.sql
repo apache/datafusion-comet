@@ -19,3 +19,18 @@
 
 query
 SELECT filter(array(1, 2), (x, i) -> i < 3)
+
+statement
+CREATE TABLE test_dispatch(a array<int>, b array<int>, c array<string>) USING parquet;
+
+statement
+INSERT INTO test_dispatch VALUES (array(1,2,3), array(10,20,30), array('abc','xyz','a1'));
+
+query
+SELECT filter(c, x -> x rlike '^a') FROM test_dispatch;
+
+query
+SELECT filter(a, x -> exists(b, y -> y > x)) FROM test_dispatch;
+
+query
+SELECT filter(a, x -> array_max(transform(b, y -> y + x)) > 31) FROM test_dispatch;
