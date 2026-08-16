@@ -27,7 +27,7 @@ object CometArrayFilterBenchmark extends CometBenchmarkBase {
 
   def runExprBenchmark(config: ArrayFilterExprConfig, values: Int, arraySize: Int): Unit = {
     val benchmark =
-      new Benchmark(s"${config.name} (size $arraySize)", values, output = output)
+      new Benchmark(config.name, values, output = output)
     withTempPath { dir =>
       withTempTable("parquetV1Table") {
         prepareTable(
