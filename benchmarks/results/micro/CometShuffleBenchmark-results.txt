@@ -1,0 +1,317 @@
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+Shuffle with nested schema (maxDepth=2, partitionNum=5):  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+---------------------------------------------------------------------------------------------------------------------------------------
+Spark                                                              136            161          21          0.0      135594.7       1.0X
+Comet (Spark Shuffle)                                               88            109          16          0.0       88173.7       1.5X
+Comet (jvm Shuffle)                                                137            174          32          0.0      136742.8       1.0X
+Comet (native Shuffle)                                              78             86           5          0.0       78316.3       1.7X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+Shuffle with nested schema (maxDepth=2, partitionNum=201):  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+-----------------------------------------------------------------------------------------------------------------------------------------
+Spark                                                                161            175          18          0.0      160533.5       1.0X
+Comet (Spark Shuffle)                                                131            162          13          0.0      131221.5       1.2X
+Comet (jvm Shuffle)                                                 1362           1378          23          0.0     1361697.9       0.1X
+Comet (native Shuffle)                                               144            150           3          0.0      144039.0       1.1X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+Shuffle with nested schema (maxDepth=6, partitionNum=5):  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+---------------------------------------------------------------------------------------------------------------------------------------
+Spark                                                              839            878          57          0.0      839207.3       1.0X
+Comet (Spark Shuffle)                                              756            869         138          0.0      756339.9       1.1X
+Comet (jvm Shuffle)                                               1446           1545         140          0.0     1446092.3       0.6X
+Comet (native Shuffle)                                             611            696         104          0.0      610962.4       1.4X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+Shuffle with nested schema (maxDepth=6, partitionNum=201):  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+-----------------------------------------------------------------------------------------------------------------------------------------
+Spark                                                                735            794          55          0.0      734696.0       1.0X
+Comet (Spark Shuffle)                                                664            680          15          0.0      664253.8       1.1X
+Comet (jvm Shuffle)                                                11780          12011         326          0.0    11780050.7       0.1X
+Comet (native Shuffle)                                               651            674          31          0.0      650787.4       1.1X
+
+================================================================================================
+Shuffle on array
+================================================================================================
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+SQL BOOLEAN shuffle on array (5 Partition):  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+--------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark                                   260            267          11          4.0         248.1       1.0X
+SQL Parquet - Comet (Spark Shuffle)                   267            285          21          3.9         255.0       1.0X
+SQL Parquet - Comet (Comet JVM Shuffle)               227            242          13          4.6         216.5       1.1X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+SQL BOOLEAN shuffle on array (201 Partition):  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+----------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark                                     319            337          12          3.3         304.4       1.0X
+SQL Parquet - Comet (Spark Shuffle)                     302            309           9          3.5         288.0       1.1X
+SQL Parquet - Comet (Comet JVM Shuffle)                 221            229           4          4.7         210.8       1.4X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+SQL TINYINT shuffle on array (5 Partition):  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+--------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark                                   251            255           3          4.2         239.7       1.0X
+SQL Parquet - Comet (Spark Shuffle)                   260            268           9          4.0         248.3       1.0X
+SQL Parquet - Comet (Comet JVM Shuffle)               210            215           3          5.0         200.1       1.2X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+SQL TINYINT shuffle on array (201 Partition):  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+----------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark                                     310            325          12          3.4         296.0       1.0X
+SQL Parquet - Comet (Spark Shuffle)                     332            346          10          3.2         316.7       0.9X
+SQL Parquet - Comet (Comet JVM Shuffle)                 218            225           3          4.8         208.3       1.4X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+SQL SMALLINT shuffle on array (5 Partition):  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+---------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark                                    276            280           3          3.8         262.8       1.0X
+SQL Parquet - Comet (Spark Shuffle)                    263            270           8          4.0         250.5       1.0X
+SQL Parquet - Comet (Comet JVM Shuffle)                202            218           9          5.2         192.6       1.4X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+SQL SMALLINT shuffle on array (201 Partition):  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+-----------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark                                      298            303           3          3.5         284.6       1.0X
+SQL Parquet - Comet (Spark Shuffle)                      322            347          18          3.3         307.5       0.9X
+SQL Parquet - Comet (Comet JVM Shuffle)                  224            229           4          4.7         213.3       1.3X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+SQL INT shuffle on array (5 Partition):   Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark                                 271            274           3          3.9         258.5       1.0X
+SQL Parquet - Comet (Spark Shuffle)                 277            279           3          3.8         264.1       1.0X
+SQL Parquet - Comet (Comet JVM Shuffle)             211            218           5          5.0         201.7       1.3X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+SQL INT shuffle on array (201 Partition):  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark                                 311            325          15          3.4         296.6       1.0X
+SQL Parquet - Comet (Spark Shuffle)                 322            343          20          3.3         307.3       1.0X
+SQL Parquet - Comet (Comet JVM Shuffle)             225            232           4          4.7         214.3       1.4X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+SQL BIGINT shuffle on array (5 Partition):  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+-------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark                                  311            317           9          3.4         296.3       1.0X
+SQL Parquet - Comet (Spark Shuffle)                  319            321           1          3.3         304.7       1.0X
+SQL Parquet - Comet (Comet JVM Shuffle)              233            239           6          4.5         221.9       1.3X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+SQL BIGINT shuffle on array (201 Partition):  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+---------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark                                    350            367          17          3.0         334.0       1.0X
+SQL Parquet - Comet (Spark Shuffle)                    356            372          18          2.9         339.6       1.0X
+SQL Parquet - Comet (Comet JVM Shuffle)                248            255           4          4.2         236.4       1.4X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+SQL FLOAT shuffle on array (5 Partition):  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark                                 265            269           3          4.0         253.1       1.0X
+SQL Parquet - Comet (Spark Shuffle)                 273            278           5          3.8         260.7       1.0X
+SQL Parquet - Comet (Comet JVM Shuffle)             217            220           2          4.8         207.4       1.2X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+SQL FLOAT shuffle on array (201 Partition):  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+--------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark                                   326            333           3          3.2         310.9       1.0X
+SQL Parquet - Comet (Spark Shuffle)                   336            360          28          3.1         320.3       1.0X
+SQL Parquet - Comet (Comet JVM Shuffle)               233            255          20          4.5         222.5       1.4X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+SQL DOUBLE shuffle on array (5 Partition):  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+-------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark                                  323            335          17          3.2         307.9       1.0X
+SQL Parquet - Comet (Spark Shuffle)                  330            342          11          3.2         315.0       1.0X
+SQL Parquet - Comet (Comet JVM Shuffle)              231            247          18          4.5         220.1       1.4X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+SQL DOUBLE shuffle on array (201 Partition):  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+---------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark                                    369            395          29          2.8         352.2       1.0X
+SQL Parquet - Comet (Spark Shuffle)                    385            403          18          2.7         367.0       1.0X
+SQL Parquet - Comet (Comet JVM Shuffle)                251            256           3          4.2         239.0       1.5X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+SQL STRING shuffle on array (5 Partition):  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+-------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark                                  425            438          18          2.5         405.4       1.0X
+SQL Parquet - Comet (Spark Shuffle)                  461            473          12          2.3         439.6       0.9X
+SQL Parquet - Comet (Comet JVM Shuffle)              656            660           6          1.6         625.7       0.6X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+SQL STRING shuffle on array (201 Partition):  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+---------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark                                    515            530          14          2.0         491.5       1.0X
+SQL Parquet - Comet (Spark Shuffle)                    560            575          14          1.9         534.5       0.9X
+SQL Parquet - Comet (Comet JVM Shuffle)                653            668          13          1.6         623.2       0.8X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+SQL DECIMAL(10,0) shuffle on array (5 Partition):  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+--------------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark                                         340            347          10          3.1         324.2       1.0X
+SQL Parquet - Comet (Spark Shuffle)                         326            337          11          3.2         310.5       1.0X
+SQL Parquet - Comet (Comet JVM Shuffle)                     346            362          34          3.0         329.5       1.0X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+SQL DECIMAL(10,0) shuffle on array (201 Partition):  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+----------------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark                                           364            386          15          2.9         347.3       1.0X
+SQL Parquet - Comet (Spark Shuffle)                           372            378           9          2.8         354.9       1.0X
+SQL Parquet - Comet (Comet JVM Shuffle)                       361            368           8          2.9         344.1       1.0X
+
+
+================================================================================================
+Shuffle on struct
+================================================================================================
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+SQL BOOLEAN shuffle on struct (5 Partition):  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+---------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark                                  20150          20344         274          5.2         192.2       1.0X
+SQL Parquet - Comet (Spark Shuffle)                  21177          21256         113          5.0         202.0       1.0X
+SQL Parquet - Comet (Comet JVM Shuffle)              12088          12208         171          8.7         115.3       1.7X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+SQL BOOLEAN shuffle on struct (201 Partition):  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+-----------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark                                    23636          24004         521          4.4         225.4       1.0X
+SQL Parquet - Comet (Spark Shuffle)                    24957          25008          73          4.2         238.0       0.9X
+SQL Parquet - Comet (Comet JVM Shuffle)                12196          12378         256          8.6         116.3       1.9X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+SQL TINYINT shuffle on struct (5 Partition):  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+---------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark                                  20400          20436          51          5.1         194.6       1.0X
+SQL Parquet - Comet (Spark Shuffle)                  21143          21317         247          5.0         201.6       1.0X
+SQL Parquet - Comet (Comet JVM Shuffle)              11671          11965         416          9.0         111.3       1.7X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+SQL TINYINT shuffle on struct (201 Partition):  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+-----------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark                                    23671          23875         289          4.4         225.7       1.0X
+SQL Parquet - Comet (Spark Shuffle)                    24698          24883         261          4.2         235.5       1.0X
+SQL Parquet - Comet (Comet JVM Shuffle)                11920          12089         238          8.8         113.7       2.0X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+SQL SMALLINT shuffle on struct (5 Partition):  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+----------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark                                   20245          20355         155          5.2         193.1       1.0X
+SQL Parquet - Comet (Spark Shuffle)                   20279          20325          65          5.2         193.4       1.0X
+SQL Parquet - Comet (Comet JVM Shuffle)               10947          11077         184          9.6         104.4       1.8X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+SQL SMALLINT shuffle on struct (201 Partition):  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark                                     23909          24068         226          4.4         228.0       1.0X
+SQL Parquet - Comet (Spark Shuffle)                     23774          23870         136          4.4         226.7       1.0X
+SQL Parquet - Comet (Comet JVM Shuffle)                 12309          12618         438          8.5         117.4       1.9X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+SQL INT shuffle on struct (5 Partition):  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark                               20287          20319          46          5.2         193.5       1.0X
+SQL Parquet - Comet (Spark Shuffle)               21093          21131          53          5.0         201.2       1.0X
+SQL Parquet - Comet (Comet JVM Shuffle)           12306          12443         193          8.5         117.4       1.6X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+SQL INT shuffle on struct (201 Partition):  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+-------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark                                23899          23982         117          4.4         227.9       1.0X
+SQL Parquet - Comet (Spark Shuffle)                24740          24832         131          4.2         235.9       1.0X
+SQL Parquet - Comet (Comet JVM Shuffle)            12742          12831         126          8.2         121.5       1.9X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+SQL BIGINT shuffle on struct (5 Partition):  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+--------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark                                 20749          20821         102          5.1         197.9       1.0X
+SQL Parquet - Comet (Spark Shuffle)                 21373          21476         146          4.9         203.8       1.0X
+SQL Parquet - Comet (Comet JVM Shuffle)             12313          12612         423          8.5         117.4       1.7X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+SQL BIGINT shuffle on struct (201 Partition):  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+----------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark                                   23536          23832         419          4.5         224.5       1.0X
+SQL Parquet - Comet (Spark Shuffle)                   24340          24441         143          4.3         232.1       1.0X
+SQL Parquet - Comet (Comet JVM Shuffle)               13030          13045          20          8.0         124.3       1.8X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+SQL FLOAT shuffle on struct (5 Partition):  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+-------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark                                20476          20515          55          5.1         195.3       1.0X
+SQL Parquet - Comet (Spark Shuffle)                20842          21265         597          5.0         198.8       1.0X
+SQL Parquet - Comet (Comet JVM Shuffle)            11671          12009         478          9.0         111.3       1.8X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+SQL FLOAT shuffle on struct (201 Partition):  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+---------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark                                  23113          23268         220          4.5         220.4       1.0X
+SQL Parquet - Comet (Spark Shuffle)                  24649          24666          24          4.3         235.1       0.9X
+SQL Parquet - Comet (Comet JVM Shuffle)              12458          12669         298          8.4         118.8       1.9X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+SQL DOUBLE shuffle on struct (5 Partition):  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+--------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark                                 20400          20738         478          5.1         194.6       1.0X
+SQL Parquet - Comet (Spark Shuffle)                 21193          22038        1195          4.9         202.1       1.0X
+SQL Parquet - Comet (Comet JVM Shuffle)             12104          12332         323          8.7         115.4       1.7X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+SQL DOUBLE shuffle on struct (201 Partition):  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+----------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark                                   23431          23463          45          4.5         223.5       1.0X
+SQL Parquet - Comet (Spark Shuffle)                   24312          24383         100          4.3         231.9       1.0X
+SQL Parquet - Comet (Comet JVM Shuffle)               13197          13376         253          7.9         125.9       1.8X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+SQL STRING shuffle on struct (5 Partition):  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+--------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark                                 24477          24640         231          4.3         233.4       1.0X
+SQL Parquet - Comet (Spark Shuffle)                 25760          26302         766          4.1         245.7       1.0X
+SQL Parquet - Comet (Comet JVM Shuffle)             26483          26670         264          4.0         252.6       0.9X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+SQL STRING shuffle on struct (201 Partition):  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+----------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark                                   27142          27173          44          3.9         258.8       1.0X
+SQL Parquet - Comet (Spark Shuffle)                   28552          28979         605          3.7         272.3       1.0X
+SQL Parquet - Comet (Comet JVM Shuffle)               25814          26096         398          4.1         246.2       1.1X
+

@@ -1,0 +1,111 @@
+================================================================================================
+Parquet Reader
+================================================================================================
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+Parquet reader benchmark for BooleanType:  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+ParquetReader Spark                                  51             53           1        306.4           3.3       1.0X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+Parquet reader benchmark for ByteType:    Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+ParquetReader Spark                                  70             71           2        225.9           4.4       1.0X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+Parquet reader benchmark for ShortType:   Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+ParquetReader Spark                                 124            128           4        126.7           7.9       1.0X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+Parquet reader benchmark for IntegerType:  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+ParquetReader Spark                                 130            134           4        121.2           8.3       1.0X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+Parquet reader benchmark for LongType:    Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+ParquetReader Spark                                 181            184           3         86.7          11.5       1.0X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+Parquet reader benchmark for FloatType:   Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+ParquetReader Spark                                 125            131           6        126.0           7.9       1.0X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+Parquet reader benchmark for DoubleType:  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+ParquetReader Spark                                 168            172           2         93.6          10.7       1.0X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+Parquet reader benchmark for StringType:  Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+ParquetReader Spark                                1614           1633          26          9.7         102.6       1.0X
+
+
+================================================================================================
+SQL Single Numeric Column Scan
+================================================================================================
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+SQL Single BOOLEAN Column Scan:           Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark                                 228            303          60        588.5           1.7       1.0X
+SQL Parquet - Comet                                 782            784           2        171.7           5.8       0.3X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+SQL Single TINYINT Column Scan:           Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark                                 592            606          18        226.6           4.4       1.0X
+SQL Parquet - Comet                                 224            228           3        597.9           1.7       2.6X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+SQL Single SMALLINT Column Scan:          Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark                                 771            772           1        174.0           5.7       1.0X
+SQL Parquet - Comet                                 777            835          99        172.7           5.8       1.0X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+SQL Single INT Column Scan:               Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark                                 769            772           3        174.5           5.7       1.0X
+SQL Parquet - Comet                                 455            465           8        295.3           3.4       1.7X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+SQL Single BIGINT Column Scan:            Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark                                1191           1194           5        112.7           8.9       1.0X
+SQL Parquet - Comet                                 850            861          10        157.8           6.3       1.4X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+SQL Single FLOAT Column Scan:             Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark                                 829            863          57        161.9           6.2       1.0X
+SQL Parquet - Comet                                 492            501           7        272.6           3.7       1.7X
+
+OpenJDK 64-Bit Server VM 17.0.20+8-LTS on Linux 6.18.39-79.141.amzn2023.x86_64
+Intel(R) Xeon(R) Platinum 8488C
+SQL Single DOUBLE Column Scan:            Best Time(ms)   Avg Time(ms)   Stdev(ms)    Rate(M/s)   Per Row(ns)   Relative
+------------------------------------------------------------------------------------------------------------------------
+SQL Parquet - Spark                                1287           1288           1        104.3           9.6       1.0X
+SQL Parquet - Comet                                 845            846           2        158.8           6.3       1.5X
+
+
+================================================================================================
+SQL Single Numeric Encrypted Column Scan
+================================================================================================
+
