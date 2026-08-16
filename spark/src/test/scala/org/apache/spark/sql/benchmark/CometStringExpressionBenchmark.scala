@@ -96,7 +96,7 @@ object CometStringExpressionBenchmark extends CometBenchmarkBase {
           prepareTable(
             dir,
             spark.sql(
-              s"SELECT REPEAT(CAST(value AS STRING), 10) AS c1," +
+              "SELECT REPEAT(CAST(value AS STRING), 10) AS c1," +
                 s" CAST(PMOD(value, 200) AS INT) AS c2 FROM $tbl"))
 
           val extraConfigs = Map(
