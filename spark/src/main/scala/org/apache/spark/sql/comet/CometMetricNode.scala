@@ -106,7 +106,7 @@ case class CometMetricNode(metrics: Map[String, SQLMetric], children: Seq[CometM
 
   /**
    * Reports this node's native shuffle spill metrics to Spark's task metrics, preserving the
-   * distinction between compressed disk bytes and uncompressed in-memory bytes.
+   * distinction between on-disk bytes and uncompressed in-memory bytes.
    *
    * Must be registered on the task thread before [[org.apache.comet.CometExecIterator]] so its
    * completion listener publishes final SQL metrics before this listener runs, including when the
