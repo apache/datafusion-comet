@@ -133,23 +133,7 @@ class CometNativeShuffleWriter[K, V](
       Option(context).foreach(nativeMetrics.reportScanInputMetrics)
     }
 
-    // Register before CometExecIterator so its later completion listener closes the native plan
-    // and publishes final SQL metrics before this listener runs. This also preserves spill metrics
-    // for failed shuffle attempts, which never reach the successful write/commit path below.
-    Option(context).foreach { taskCtx =>
-      taskCtx.addTaskCompletionListener[Unit] { _ =>
-        val diskBytesSpilled =
-          shuffleWriterSQLMetrics.get("spilled_bytes").map(_.value).getOrElse(0L)
-        if (diskBytesSpilled > 0) {
-          taskCtx.taskMetrics().incDiskBytesSpilled(diskBytesSpilled)
-        }
-        val memoryBytesSpilled =
-          shuffleWriterSQLMetrics.get("memory_spilled_bytes").map(_.value).getOrElse(0L)
-        if (memoryBytesSpilled > 0) {
-          taskCtx.taskMetrics().incMemoryBytesSpilled(memoryBytesSpilled)
-        }
-      }
-    }
+    Option(context).foreach(nativeMetrics.reportSpillMetrics)
 
     val cometIter = new CometExecIterator(
       CometExec.newIterId,

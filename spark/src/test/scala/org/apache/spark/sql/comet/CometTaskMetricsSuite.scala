@@ -128,6 +128,8 @@ class CometTaskMetricsSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             native
         }.getOrElse(fail("Expected a native shuffle exchange"))
         val metrics = exchange.metrics
+        assert(metrics("spilled_bytes").name.contains("disk spilled bytes"))
+        assert(metrics("memory_spilled_bytes").name.contains("memory spilled bytes"))
         val sqlMemorySpilled = metrics("memory_spilled_bytes").value
         val sqlDiskSpilled = metrics("spilled_bytes").value
 
@@ -213,7 +215,6 @@ class CometTaskMetricsSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             CometConf.COMET_SHUFFLE_COMPRESSION_CODEC.key -> "zstd",
             CometConf.COMET_SHUFFLE_NATIVE_MAX_BUFFER_BYTES.key -> "32k",
             CometConf.COMET_BATCH_SIZE.key -> "1024",
-            CometConf.COMET_SHUFFLE_JVM_BATCH_SIZE.key -> "1024",
             SQLConf.ANSI_ENABLED.key -> "true",
             SQLConf.SHUFFLE_PARTITIONS.key -> "4") {
             val shuffled = sql("SELECT _1, _1 / _2 AS quotient, _3 FROM failed_shuffle_tbl")

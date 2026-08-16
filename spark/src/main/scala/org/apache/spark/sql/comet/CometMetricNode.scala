@@ -105,6 +105,31 @@ case class CometMetricNode(metrics: Map[String, SQLMetric], children: Seq[CometM
   }
 
   /**
+   * Reports this node's native shuffle spill metrics to Spark's task metrics, preserving the
+   * distinction between compressed disk bytes and uncompressed in-memory bytes.
+   *
+   * Must be registered on the task thread before [[org.apache.comet.CometExecIterator]] so its
+   * completion listener publishes final SQL metrics before this listener runs, including when the
+   * shuffle attempt fails.
+   */
+  def reportSpillMetrics(ctx: TaskContext): Unit = {
+    ctx.addTaskCompletionListener[Unit] { _ =>
+      metrics.get("spilled_bytes").foreach { metric =>
+        val spilledBytes = metric.value
+        if (spilledBytes > 0L) {
+          ctx.taskMetrics().incDiskBytesSpilled(spilledBytes)
+        }
+      }
+      metrics.get("memory_spilled_bytes").foreach { metric =>
+        val spilledBytes = metric.value
+        if (spilledBytes > 0L) {
+          ctx.taskMetrics().incMemoryBytesSpilled(spilledBytes)
+        }
+      }
+    }
+  }
+
+  /**
    * Gets a child node. Called from native.
    */
   def getChildNode(i: Int): CometMetricNode = {
@@ -349,7 +374,7 @@ object CometMetricNode {
       "encode_time" -> SQLMetrics.createNanoTimingMetric(sc, "encoding and compression time"),
       "decode_time" -> SQLMetrics.createNanoTimingMetric(sc, "decoding and decompression time"),
       "spill_count" -> SQLMetrics.createMetric(sc, "number of spills"),
-      "spilled_bytes" -> SQLMetrics.createSizeMetric(sc, "spilled bytes"),
+      "spilled_bytes" -> SQLMetrics.createSizeMetric(sc, "disk spilled bytes"),
       "memory_spilled_bytes" -> SQLMetrics.createSizeMetric(sc, "memory spilled bytes"),
       "input_batches" -> SQLMetrics.createMetric(sc, "number of input batches"))
   }
