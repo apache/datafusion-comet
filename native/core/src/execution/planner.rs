@@ -2085,7 +2085,7 @@ impl PhysicalPlanner {
                     vec![], // No struct columns to unnest
                     output_schema,
                     unnest_options,
-                ));
+                )?);
 
                 Ok((
                     scans,

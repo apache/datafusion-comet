@@ -54,17 +54,25 @@
 //! edition 2021, DataFusion's uses `max_width = 90` and edition 2024, so `cargo fmt`
 //! reflows some signatures. To audit for real changes, reformat this region at
 //! `max_width = 90` and diff it against upstream `unnest.rs`; that reduces the difference
-//! to a single cosmetic line wrap in `flatten_struct_cols`. The only deliberate edits are
-//! the `lt` import path noted below and dropping upstream's `ListUnnest` declaration in
-//! favor of importing the public one.
+//! to a single cosmetic line wrap in `flatten_struct_cols`. The deliberate edits are:
+//!
+//! * the `lt` import path noted below, since Comet does not depend on `arrow_ord` directly;
+//! * dropping upstream's `ListUnnest` declaration in favor of importing the public one;
+//! * the `precomputed_lengths` parameter on `build_batch` and `list_unnest_at_level`, which
+//!   is itself part of apache/datafusion#24384 and so disappears with the rest of the fork.
+//!
+//! Everything else this fork does — chunking, plan properties, EOF handling — mirrors that
+//! same upstream PR, so keep the two in step: a change made here that is not in #24384
+//! either belongs upstream or does not belong at all.
 //!
 //! Note that 54.1.0 predates upstream's `NullHandling` enum and still uses
 //! `UnnestOptions::preserve_nulls`, which is why the planner wraps empty arrays with
 //! `ListEmptyToNullExpr` to get Spark's `explode_outer` semantics.
 
 use arrow::array::{
-    new_null_array, Array, ArrayRef, AsArray, FixedSizeListArray, Int64Array, LargeListArray,
-    LargeListViewArray, ListArray, ListViewArray, PrimitiveArray, Scalar, StructArray,
+    new_null_array, Array, ArrayRef, AsArray, BooleanBufferBuilder, FixedSizeListArray, Int64Array,
+    LargeListArray, LargeListViewArray, ListArray, ListViewArray, PrimitiveArray, Scalar,
+    StructArray,
 };
 use arrow::compute::kernels::length::length;
 use arrow::compute::kernels::zip::zip;
@@ -75,20 +83,24 @@ use arrow::record_batch::RecordBatch;
 // which does not have `arrow_ord` as a direct dependency.
 use arrow::compute::kernels::cmp::lt;
 use datafusion::common::{
-    exec_datafusion_err, exec_err, internal_err, HashMap, HashSet, Result, UnnestOptions,
+    exec_datafusion_err, exec_err, internal_err, Constraints, HashMap, HashSet, Result,
+    UnnestOptions,
 };
 use datafusion::execution::TaskContext;
-use datafusion::physical_expr::EquivalenceProperties;
-use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
+use datafusion::physical_expr::equivalence::ProjectionMapping;
+use datafusion::physical_expr::expressions::Column;
+use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::metrics::{
     BaselineMetrics, Count, ExecutionPlanMetricsSet, MetricBuilder, MetricsSet, RecordOutput,
+    SplitMetrics,
 };
+use datafusion::physical_plan::stream::BatchSplitStream;
 // `ListUnnest` is the one item the copied region below does NOT need to duplicate: unlike the
 // kernels, upstream exports it publicly.
 use datafusion::physical_plan::unnest::ListUnnest;
 use datafusion::physical_plan::{
-    DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties, RecordBatchStream,
-    SendableRecordBatchStream,
+    DisplayAs, DisplayFormatType, EmptyRecordBatchStream, ExecutionPlan, ExecutionPlanProperties,
+    PlanProperties, RecordBatchStream, SendableRecordBatchStream,
 };
 use futures::{Stream, StreamExt};
 use std::cmp::{self, Ordering};
@@ -116,26 +128,94 @@ impl ExplodeExec {
         struct_column_indices: Vec<usize>,
         schema: SchemaRef,
         options: UnnestOptions,
-    ) -> Self {
-        // Unnesting invalidates the child's orderings and constraints for the unnested
-        // columns, and Comet plans explode on a single partition, so start from empty
-        // equivalences rather than trying to project the child's.
-        let cache = Arc::new(PlanProperties::new(
-            EquivalenceProperties::new(Arc::clone(&schema)),
-            Partitioning::UnknownPartitioning(1),
-            EmissionType::Incremental,
-            Boundedness::Bounded,
-        ));
+    ) -> Result<Self> {
+        let cache = Self::compute_properties(
+            &child,
+            &list_column_indices,
+            &struct_column_indices,
+            &schema,
+        )?;
 
-        Self {
+        Ok(Self {
             child,
             schema,
             list_column_indices,
             struct_column_indices,
             options,
             metrics: ExecutionPlanMetricsSet::new(),
-            cache,
+            cache: Arc::new(cache),
+        })
+    }
+
+    /// Compute the plan properties, keeping whatever the child guarantees about the columns
+    /// that unnesting passes through untouched.
+    ///
+    /// Copied from `UnnestExec::compute_properties`. Unnesting only rewrites the list and
+    /// struct columns, so the child's orderings and equivalences on the remaining columns
+    /// still hold and are projected across rather than discarded: a downstream aggregate over
+    /// a passthrough key that arrives sorted can still stream instead of buffering. Only the
+    /// constraints go, since unnesting duplicates rows and so invalidates any uniqueness or
+    /// primary-key guarantee.
+    fn compute_properties(
+        input: &Arc<dyn ExecutionPlan>,
+        list_column_indices: &[ListUnnest],
+        struct_column_indices: &[usize],
+        schema: &SchemaRef,
+    ) -> Result<PlanProperties> {
+        let input_schema = input.schema();
+        let mut unnested_indices = BooleanBufferBuilder::new(input_schema.fields().len());
+        unnested_indices.append_n(input_schema.fields().len(), false);
+        for list_unnest in list_column_indices {
+            unnested_indices.set_bit(list_unnest.index_in_input_schema, true);
         }
+        for struct_unnest in struct_column_indices {
+            unnested_indices.set_bit(*struct_unnest, true)
+        }
+        let unnested_indices = unnested_indices.finish();
+        let non_unnested_indices: Vec<usize> = (0..input_schema.fields().len())
+            .filter(|idx| !unnested_indices.value(*idx))
+            .collect();
+
+        // Map each non-unnested input column to wherever it landed in the output schema.
+        let projection_mapping: ProjectionMapping = non_unnested_indices
+            .iter()
+            .map(|&input_idx| {
+                let input_field = input_schema.field(input_idx);
+                let output_idx = schema
+                    .fields()
+                    .iter()
+                    .position(|output_field| output_field.name() == input_field.name())
+                    .ok_or_else(|| {
+                        exec_datafusion_err!(
+                            "Non-unnested column '{}' must exist in output schema",
+                            input_field.name()
+                        )
+                    })?;
+
+                let input_col =
+                    Arc::new(Column::new(input_field.name(), input_idx)) as Arc<dyn PhysicalExpr>;
+                let target_col =
+                    Arc::new(Column::new(input_field.name(), output_idx)) as Arc<dyn PhysicalExpr>;
+                let targets = vec![(target_col, output_idx)].into();
+                Ok((input_col, targets))
+            })
+            .collect::<Result<ProjectionMapping>>()?;
+
+        let eq_properties = input
+            .equivalence_properties()
+            .project(&projection_mapping, Arc::clone(schema))
+            .with_constraints(Constraints::default());
+
+        let output_partitioning = input
+            .output_partitioning()
+            .project(&projection_mapping, &eq_properties);
+
+        Ok(PlanProperties::new(
+            eq_properties,
+            output_partitioning,
+            input.pipeline_behavior(),
+            input.boundedness(),
+        ))
     }
 }
 
@@ -176,7 +256,7 @@ impl ExecutionPlan for ExplodeExec {
             self.struct_column_indices.clone(),
             Arc::clone(&self.schema),
             self.options.clone(),
-        )))
+        )?))
     }
 
     fn execute(
@@ -187,7 +267,7 @@ impl ExecutionPlan for ExplodeExec {
         let batch_size = context.session_config().batch_size();
         let input = self.child.execute(partition, context)?;
 
-        Ok(Box::pin(ExplodeStream {
+        let stream = Box::pin(ExplodeStream {
             input,
             schema: Arc::clone(&self.schema),
             list_type_columns: self.list_column_indices.clone(),
@@ -198,8 +278,17 @@ impl ExecutionPlan for ExplodeExec {
             input_rows: MetricBuilder::new(&self.metrics).counter("input_rows", partition),
             batch_size,
             pending_input: None,
-            pending_output: None,
-        }))
+        });
+
+        // Chunking the input bounds each build to roughly `batch_size` rows, but two cases can
+        // still produce an oversized batch (see `predict_output_lens`), so the output goes
+        // through DataFusion's splitter to make the bound unconditional. Note this only bounds
+        // the emitted row count; bounding peak memory is the job of the input chunking.
+        Ok(Box::pin(BatchSplitStream::new(
+            stream,
+            batch_size,
+            SplitMetrics::new(&self.metrics, partition),
+        )))
     }
 
     fn properties(&self) -> &Arc<PlanProperties> {
@@ -219,10 +308,10 @@ struct PendingInput {
     row_offset: usize,
     /// How many output rows each input row expands into, indexed by input row.
     ///
-    /// Empty when the expansion factor cannot be predicted from the input alone, in which
+    /// `None` when the expansion factor cannot be predicted from the input alone, in which
     /// case the whole remaining input is unnested in one call and only the output is split.
     /// See [`ExplodeStream::predict_output_lens`].
-    output_lens: Vec<usize>,
+    output_lens: Option<PrimitiveArray<Int64Type>>,
 }
 
 impl PendingInput {
@@ -235,25 +324,31 @@ impl PendingInput {
     ///
     /// Always returns at least 1 while rows remain, so the stream always makes progress: a
     /// single input row is never split across output batches, so one row whose array is
-    /// longer than `batch_size` still produces one oversized build, which is then sliced
-    /// down on the way out.
+    /// longer than `batch_size` still produces one oversized build, which `BatchSplitStream`
+    /// slices down on the way out.
     fn next_chunk_rows(&self, batch_size: usize) -> usize {
-        let remaining = self.remaining_rows();
-        if self.output_lens.is_empty() {
-            return remaining;
-        }
+        let Some(output_lens) = &self.output_lens else {
+            return self.remaining_rows();
+        };
 
-        let mut rows = 0;
-        let mut output_rows = 0usize;
-        while rows < remaining {
-            let len = self.output_lens[self.row_offset + rows];
-            if rows > 0 && output_rows.saturating_add(len) > batch_size {
-                break;
+        let lens = &output_lens.values()[self.row_offset..];
+        let batch_size = batch_size as i64;
+        let mut output_rows = 0i64;
+        for (rows, len) in lens.iter().enumerate() {
+            if rows > 0 && output_rows + len > batch_size {
+                return rows;
             }
             output_rows += len;
-            rows += 1;
         }
-        rows
+        lens.len()
+    }
+
+    /// The per-row output lengths covering the next `rows` input rows, so the unnesting does
+    /// not have to recompute what [`ExplodeStream::predict_output_lens`] already derived.
+    fn chunk_lengths(&self, rows: usize) -> Option<PrimitiveArray<Int64Type>> {
+        self.output_lens
+            .as_ref()
+            .map(|lens| lens.slice(self.row_offset, rows))
     }
 }
 
@@ -269,10 +364,15 @@ struct ExplodeStream {
     input_rows: Count,
     /// Target number of rows per output batch, from `datafusion.execution.batch_size`.
     batch_size: usize,
-    /// Rows of the current input batch that have not been unnested yet.
+    /// Rows of the current input batch that have not been unnested yet. Unnesting one input
+    /// batch can produce arbitrarily many output rows, so the input is consumed in chunks
+    /// small enough that each chunk's output stays near `batch_size`.
+    ///
+    /// Note the scope of the memory bound this buys: chunking removes the input batch size
+    /// from the peak, but not the length of an individual list. A single row whose list is
+    /// longer than `batch_size`, and recursive unnesting (where the expansion cannot be
+    /// predicted up front), both still materialize their full expansion in one build.
     pending_input: Option<PendingInput>,
-    /// Unnested rows that have been built but not emitted yet.
-    pending_output: Option<RecordBatch>,
 }
 
 impl RecordBatchStream for ExplodeStream {
@@ -292,78 +392,83 @@ impl Stream for ExplodeStream {
 impl ExplodeStream {
     fn poll_next_impl(&mut self, cx: &mut Context<'_>) -> Poll<Option<Result<RecordBatch>>> {
         loop {
-            // Emit already-unnested rows first, at most `batch_size` at a time.
-            if let Some(batch) = self.pending_output.take() {
-                let (emit, rest) = split_off_head(batch, self.batch_size);
-                self.pending_output = rest;
-                (&emit).record_output(&self.baseline_metrics);
-                return Poll::Ready(Some(Ok(emit)));
-            }
-
             // Unnest the next chunk of the input batch already in hand.
             if let Some(pending) = self.pending_input.as_mut() {
-                if pending.remaining_rows() == 0 {
-                    self.pending_input = None;
-                    continue;
-                }
-
-                let timer = self.baseline_metrics.elapsed_compute().timer();
+                // `PendingInput` is only built from a non-empty batch and `next_chunk_rows`
+                // always consumes at least one row, so it is dropped the moment it drains.
+                debug_assert!(pending.remaining_rows() > 0);
 
                 let rows = pending.next_chunk_rows(self.batch_size);
                 let chunk = pending.batch.slice(pending.row_offset, rows);
+                let chunk_lengths = pending.chunk_lengths(rows);
                 pending.row_offset += rows;
+                let drained = pending.remaining_rows() == 0;
 
+                let timer = self.baseline_metrics.elapsed_compute().timer();
                 let result = build_batch(
                     &chunk,
                     &self.schema,
                     &self.list_type_columns,
                     &self.struct_column_indices,
                     &self.options,
+                    chunk_lengths.as_ref(),
                 );
                 timer.done();
 
+                // Release the source batch and its predicted lengths before handing the last
+                // chunk downstream, rather than holding them for the whole of its processing.
+                if drained {
+                    self.pending_input = None;
+                }
+
                 // A chunk can legitimately produce no rows at all (for example rows whose
-                // arrays are all empty and `preserve_nulls` is false); move on to the next
-                // chunk rather than emitting an empty batch.
-                self.pending_output = result?.filter(|batch| batch.num_rows() > 0);
+                // arrays are all empty and `preserve_nulls` is false); `build_batch` signals
+                // that with `None` rather than an empty batch, so move on to the next chunk.
+                if let Some(batch) = result? {
+                    debug_assert!(batch.num_rows() > 0);
+                    (&batch).record_output(&self.baseline_metrics);
+                    return Poll::Ready(Some(Ok(batch)));
+                }
                 continue;
             }
 
             // Otherwise pull the next input batch.
-            return Poll::Ready(match ready!(self.input.poll_next_unpin(cx)) {
+            match ready!(self.input.poll_next_unpin(cx)) {
                 Some(Ok(batch)) => {
                     self.input_batches.add(1);
                     self.input_rows.add(batch.num_rows());
-                    if batch.num_rows() == 0 {
-                        continue;
-                    }
-
-                    let timer = self.baseline_metrics.elapsed_compute().timer();
-                    let output_lens = self.predict_output_lens(&batch);
-                    timer.done();
-
-                    match output_lens {
-                        Ok(output_lens) => {
-                            self.pending_input = Some(PendingInput {
-                                batch,
-                                row_offset: 0,
-                                output_lens,
-                            });
-                            continue;
-                        }
-                        Err(e) => Some(Err(e)),
+                    if batch.num_rows() > 0 {
+                        let timer = self.baseline_metrics.elapsed_compute().timer();
+                        let output_lens = self.predict_output_lens(&batch);
+                        timer.done();
+                        self.pending_input = Some(PendingInput {
+                            batch,
+                            row_offset: 0,
+                            output_lens: output_lens?,
+                        });
                     }
                 }
-                other => other,
-            });
+                other => {
+                    // In the non-error case, i.e. the input is simply depleted, release the
+                    // child pipeline's resources now instead of at drop: a downstream writer
+                    // or shuffle can still be holding this stream open long after the last
+                    // batch, and whatever the child reserved (a hash join's build side, for
+                    // instance) is memory that writer may need.
+                    if other.is_none() {
+                        let input_schema = self.input.schema();
+                        self.input = Box::pin(EmptyRecordBatchStream::new(input_schema));
+                    }
+                    return Poll::Ready(other);
+                }
+            }
         }
     }
 
     /// Compute how many output rows each input row of `batch` will expand into, so the input
     /// can be chunked to keep each build bounded.
     ///
-    /// Returns an empty vec when the count cannot be derived from the input alone, which is
-    /// the signal to unnest the whole batch in one call:
+    /// Returns `None` when the count cannot be derived from the input alone, which is the
+    /// signal to unnest the whole batch in one call:
     ///
     /// * With no list columns, unnesting only widens structs and leaves the row count alone,
     ///   so the output is already bounded by the input batch size.
@@ -371,14 +476,17 @@ impl ExplodeStream {
     ///   lists that only exist after the outer levels have been unnested, so it cannot be
     ///   predicted up front. Comet only plans depth-1 explode today, but the fallback keeps
     ///   this correct if that changes.
-    fn predict_output_lens(&self, batch: &RecordBatch) -> Result<Vec<usize>> {
+    fn predict_output_lens(
+        &self,
+        batch: &RecordBatch,
+    ) -> Result<Option<PrimitiveArray<Int64Type>>> {
         if self.list_type_columns.is_empty()
             || self
                 .list_type_columns
                 .iter()
                 .any(|unnest| unnest.depth != 1)
         {
-            return Ok(vec![]);
+            return Ok(None);
         }
 
         let list_arrays: Vec<ArrayRef> = self
@@ -387,31 +495,12 @@ impl ExplodeStream {
             .map(|unnest| Arc::clone(batch.column(unnest.index_in_input_schema)))
             .collect();
 
-        // The same per-row length that `list_unnest_at_level` derives when it actually
-        // unnests, so the chunk boundaries it produces are exact.
+        // This is exactly the per-row length that `list_unnest_at_level` derives when it
+        // actually unnests, so the chunk boundaries are exact rather than estimated, and each
+        // chunk's slice of it is handed back to `build_batch` instead of recomputed there.
         let longest_length = find_longest_length(&list_arrays, &self.options)?;
-        Ok(longest_length
-            .as_primitive::<Int64Type>()
-            .values()
-            .iter()
-            .map(|len| usize::try_from(*len).unwrap_or(0))
-            .collect())
+        Ok(Some(longest_length.as_primitive::<Int64Type>().clone()))
     }
-}
-
-/// Split at most `batch_size` rows off the front of `batch`, returning the remainder.
-///
-/// Both halves are zero-copy slices, so this bounds the row count of an emitted batch but
-/// not its memory footprint — the slices still reference the full underlying buffers.
-/// Keeping peak memory down is the job of chunking the *input*, which is what
-/// [`PendingInput::next_chunk_rows`] does.
-fn split_off_head(batch: RecordBatch, batch_size: usize) -> (RecordBatch, Option<RecordBatch>) {
-    if batch.num_rows() <= batch_size {
-        return (batch, None);
-    }
-    let head = batch.slice(0, batch_size);
-    let tail = batch.slice(batch_size, batch.num_rows() - batch_size);
-    (head, Some(tail))
 }
 
 // ---------------------------------------------------------------------------------------
@@ -502,6 +591,7 @@ fn list_unnest_at_level(
     temp_unnested_arrs: &mut HashMap<ListUnnest, ArrayRef>,
     level_to_unnest: usize,
     options: &UnnestOptions,
+    precomputed_lengths: Option<&PrimitiveArray<Int64Type>>,
 ) -> Result<Option<Vec<ArrayRef>>> {
     // Extract unnestable columns at this level
     let (arrs_to_unnest, list_unnest_specs): (Vec<Arc<dyn Array>>, Vec<_>) = list_type_unnests
@@ -527,8 +617,17 @@ fn list_unnest_at_level(
 
     // Filter out so that list_arrays only contain column with the highest depth
     // at the same time, during iteration remove this depth so next time we don't have to unnest them again
-    let longest_length = find_longest_length(&arrs_to_unnest, options)?;
-    let unnested_length = longest_length.as_primitive::<Int64Type>();
+    //
+    // The caller may already have computed these lengths to decide how many input rows to feed
+    // us; reusing them avoids running the kernel chain twice over the same rows. Cloning is an
+    // `Arc` bump on the underlying buffer, not a copy.
+    let longest_length = match precomputed_lengths {
+        Some(lengths) => lengths.clone(),
+        None => find_longest_length(&arrs_to_unnest, options)?
+            .as_primitive::<Int64Type>()
+            .clone(),
+    };
+    let unnested_length = &longest_length;
     let total_length = if unnested_length.is_empty() {
         0
     } else {
@@ -645,6 +744,7 @@ fn build_batch(
     list_type_columns: &[ListUnnest],
     struct_column_indices: &HashSet<usize>,
     options: &UnnestOptions,
+    precomputed_lengths: Option<&PrimitiveArray<Int64Type>>,
 ) -> Result<Option<RecordBatch>> {
     let transformed = match list_type_columns.len() {
         0 => flatten_struct_cols(batch.columns(), schema, struct_column_indices),
@@ -666,12 +766,21 @@ fn build_batch(
                     true => batch.columns(),
                     false => &flatten_arrs,
                 };
+                // Only sound for a single non-recursive level: with recursion the deeper
+                // levels' lengths depend on arrays that do not exist yet, which is also why
+                // the caller does not predict lengths in that case.
+                let level_lengths = if max_recursion == 1 {
+                    precomputed_lengths
+                } else {
+                    None
+                };
                 let Some(temp_result) = list_unnest_at_level(
                     input,
                     list_type_columns,
                     &mut temp_unnested_result,
                     depth,
                     options,
+                    level_lengths,
                 )?
                 else {
                     return Ok(None);
@@ -1058,9 +1167,14 @@ fn repeat_arrs_from_indices(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use arrow::array::Int32Array;
     use arrow::datatypes::{Field, Int32Type, Schema};
     use datafusion::datasource::memory::MemorySourceConfig;
+    use datafusion::datasource::source::DataSourceExec;
+    use datafusion::physical_expr::{LexOrdering, PhysicalSortExpr};
     use datafusion::prelude::SessionConfig;
+    use std::collections::VecDeque;
+    use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 
     /// Build a single-column `List<Int32>` batch where row `i` holds `lens[i]` elements,
     /// numbered consecutively across the whole batch. `None` is a NULL list.
@@ -1095,10 +1209,19 @@ mod tests {
         preserve_nulls: bool,
     ) -> Result<Vec<RecordBatch>> {
         let input_schema = input[0].schema();
-        let output_schema = Arc::new(Schema::new(vec![Field::new("l", DataType::Int32, true)]));
         let source = MemorySourceConfig::try_new_exec(&[input], input_schema, None)?;
+        explode_child(source, batch_size, preserve_nulls).await
+    }
+
+    /// As [`explode`], but over an arbitrary child plan.
+    async fn explode_child(
+        child: Arc<dyn ExecutionPlan>,
+        batch_size: usize,
+        preserve_nulls: bool,
+    ) -> Result<Vec<RecordBatch>> {
+        let output_schema = Arc::new(Schema::new(vec![Field::new("l", DataType::Int32, true)]));
         let explode = ExplodeExec::new(
-            source,
+            child,
             vec![ListUnnest {
                 index_in_input_schema: 0,
                 depth: 1,
@@ -1109,7 +1232,7 @@ mod tests {
                 preserve_nulls,
                 recursions: vec![],
             },
-        );
+        )?;
         let task_ctx = Arc::new(
             TaskContext::default()
                 .with_session_config(SessionConfig::new().with_batch_size(batch_size)),
@@ -1233,5 +1356,136 @@ mod tests {
             "every output batch must respect batch_size=4, got {sizes:?}"
         );
         assert_eq!(sizes.iter().sum::<usize>(), 20);
+    }
+
+    /// A child stream that flips a flag when it is dropped, so a test can observe *when* the
+    /// operator lets go of it rather than only that it eventually does.
+    struct DropTrackingStream {
+        schema: SchemaRef,
+        batches: VecDeque<RecordBatch>,
+        dropped: Arc<AtomicBool>,
+    }
+
+    impl Drop for DropTrackingStream {
+        fn drop(&mut self) {
+            self.dropped.store(true, AtomicOrdering::SeqCst);
+        }
+    }
+
+    impl Stream for DropTrackingStream {
+        type Item = Result<RecordBatch>;
+
+        fn poll_next(mut self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+            Poll::Ready(self.batches.pop_front().map(Ok))
+        }
+    }
+
+    impl RecordBatchStream for DropTrackingStream {
+        fn schema(&self) -> SchemaRef {
+            Arc::clone(&self.schema)
+        }
+    }
+
+    #[tokio::test]
+    async fn releases_exhausted_child_at_eof() {
+        // A downstream writer or shuffle can hold this stream open long after the last batch,
+        // so the child's resources — a hash join build side, a memory reservation — must be
+        // released on the poll that reports EOF, not deferred until this stream is dropped.
+        let dropped = Arc::new(AtomicBool::new(false));
+        let batch = list_batch(&[Some(2), Some(2)]);
+        let input = Box::pin(DropTrackingStream {
+            schema: batch.schema(),
+            batches: VecDeque::from(vec![batch]),
+            dropped: Arc::clone(&dropped),
+        });
+
+        let metrics = ExecutionPlanMetricsSet::new();
+        let mut stream = ExplodeStream {
+            input,
+            schema: Arc::new(Schema::new(vec![Field::new("l", DataType::Int32, true)])),
+            list_type_columns: vec![ListUnnest {
+                index_in_input_schema: 0,
+                depth: 1,
+            }],
+            struct_column_indices: HashSet::new(),
+            options: UnnestOptions {
+                preserve_nulls: true,
+                recursions: vec![],
+            },
+            baseline_metrics: BaselineMetrics::new(&metrics, 0),
+            input_batches: MetricBuilder::new(&metrics).counter("input_batches", 0),
+            input_rows: MetricBuilder::new(&metrics).counter("input_rows", 0),
+            batch_size: 4,
+            pending_input: None,
+        };
+
+        let mut rows = 0;
+        while let Some(batch) = stream.next().await {
+            rows += batch.unwrap().num_rows();
+            assert!(
+                !dropped.load(AtomicOrdering::SeqCst),
+                "child must stay live while it can still produce batches"
+            );
+        }
+        assert_eq!(rows, 4);
+        assert!(
+            dropped.load(AtomicOrdering::SeqCst),
+            "child must be released by the poll that returns EOF, not at stream drop"
+        );
+    }
+
+    #[tokio::test]
+    async fn preserves_passthrough_orderings() {
+        // Unnesting rewrites only the list column, so an ordering the child guarantees on a
+        // passthrough column still holds afterwards. Dropping it makes a downstream aggregate
+        // on that key buffer or spill where it could have streamed, so pin that it survives.
+        let list = ListArray::from_iter_primitive::<Int32Type, _, _>(vec![Some(vec![Some(1)])]);
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("k", DataType::Int32, true),
+            Field::new("l", list.data_type().clone(), true),
+        ]));
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![Arc::new(Int32Array::from(vec![1])), Arc::new(list)],
+        )
+        .unwrap();
+
+        let key = Arc::new(Column::new("k", 0)) as Arc<dyn PhysicalExpr>;
+        let source = MemorySourceConfig::try_new(&[vec![batch]], Arc::clone(&schema), None)
+            .unwrap()
+            .try_with_sort_information(vec![LexOrdering::new(vec![PhysicalSortExpr::new_default(
+                Arc::clone(&key),
+            )])
+            .unwrap()])
+            .unwrap();
+        let source = DataSourceExec::from_data_source(source);
+        assert!(source.properties().output_ordering().is_some());
+
+        // Output schema: the passthrough key, then the unnested element column.
+        let output_schema = Arc::new(Schema::new(vec![
+            Field::new("k", DataType::Int32, true),
+            Field::new("l", DataType::Int32, true),
+        ]));
+        let explode = ExplodeExec::new(
+            source,
+            vec![ListUnnest {
+                index_in_input_schema: 1,
+                depth: 1,
+            }],
+            vec![],
+            output_schema,
+            UnnestOptions {
+                preserve_nulls: true,
+                recursions: vec![],
+            },
+        )
+        .unwrap();
+
+        let ordering = explode
+            .properties()
+            .output_ordering()
+            .expect("ordering on the passthrough key must survive unnesting");
+        assert_eq!(ordering.len(), 1);
+        assert_eq!(ordering[0].expr.as_ref(), key.as_ref());
     }
 }
