@@ -38,8 +38,8 @@ The following features are not supported and cause Comet to fall back to Spark:
 - Default values that are nested types (e.g., maps, arrays, structs). Literal default values are supported.
 - Spark's Datasource V2 API. When `spark.sql.sources.useV1SourceList` does not include `parquet`, Spark uses the
   V2 API for Parquet scans. Comet's Parquet scan only supports the V1 API.
-- Spark metadata columns (e.g., `_metadata.file_path`)
-- No support for row indexes
+- `_metadata.row_index`. Other `_metadata` columns (`file_path`, `file_name`, `file_size`, `file_block_start`,
+  `file_block_length`, `file_modification_time`) are supported.
 - No support for `input_file_name()`, `input_file_block_start()`, or `input_file_block_length()` SQL functions.
   Comet's Parquet scan does not use Spark's `FileScanRDD`, so these functions cannot populate their values.
 - No support for `ignoreMissingFiles` or `ignoreCorruptFiles` being set to `true`
@@ -57,9 +57,7 @@ The following limitation may produce incorrect results without falling back to S
   if they were written using the Proleptic Gregorian calendar. This produces silently-wrong
   values for dates before October 15, 1582 in both projections and predicates. Comet also
   ignores `spark.sql.parquet.datetimeRebaseModeInRead` and the file-level
-  `org.apache.spark.legacyDateTime` metadata that would tell it to rebase. The
-  `spark.comet.exceptionOnDatetimeRebase` config is currently dead code and does not raise on
-  legacy-calendar data. Tracked by
+  `org.apache.spark.legacyDateTime` metadata that would tell it to rebase. Tracked by
   [#5010](https://github.com/apache/datafusion-comet/issues/5010).
 
 The following limitations raise an error at scan time rather than falling back to Spark:

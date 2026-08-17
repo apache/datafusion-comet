@@ -20,4 +20,5 @@ pub mod cast;
 mod numeric;
 mod string;
 mod temporal;
+pub(crate) mod trim;
 mod utils;
