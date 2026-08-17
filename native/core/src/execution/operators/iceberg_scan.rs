@@ -209,7 +209,7 @@ impl ExecutionPlan for IcebergScanExec {
         } else {
             self.tasks.clone()
         };
-        self.execute_with_tasks(tasks, context)
+        self.execute_with_tasks(tasks, partition, context)
     }
 
     fn metrics(&self) -> Option<MetricsSet> {
@@ -223,13 +223,14 @@ impl IcebergScanExec {
     fn execute_with_tasks(
         &self,
         tasks: Vec<FileScanTask>,
+        partition: usize,
         context: Arc<TaskContext>,
     ) -> DFResult<SendableRecordBatchStream> {
         let output_schema = Arc::clone(&self.output_schema);
         let file_io = self.file_io.clone();
         let batch_size = context.session_config().batch_size();
 
-        let metrics = IcebergScanMetrics::new(&self.metrics);
+        let metrics = IcebergScanMetrics::new(&self.metrics, partition);
         metrics.num_splits.add(tasks.len());
 
         // Fill delete-file sizes as the first step of the task stream so the stats run on the
@@ -385,11 +386,11 @@ struct IcebergScanMetrics {
 }
 
 impl IcebergScanMetrics {
-    fn new(metrics: &ExecutionPlanMetricsSet) -> Self {
+    fn new(metrics: &ExecutionPlanMetricsSet, partition: usize) -> Self {
         Self {
-            baseline: BaselineMetrics::new(metrics, 0),
-            num_splits: MetricBuilder::new(metrics).counter("num_splits", 0),
-            bytes_scanned: MetricBuilder::new(metrics).counter("bytes_scanned", 0),
+            baseline: BaselineMetrics::new(metrics, partition),
+            num_splits: MetricBuilder::new(metrics).counter("num_splits", partition),
+            bytes_scanned: MetricBuilder::new(metrics).counter("bytes_scanned", partition),
         }
     }
 }
@@ -753,6 +754,88 @@ mod tests {
     fn no_ordering_keeps_single_partition() {
         let exec = exec_with_ordering(None);
         assert_eq!(exec.properties().partitioning.partition_count(), 1);
+    }
+
+    // The ordered scan reads each file as its own sorted partition and relies on
+    // SortPreservingMergeExec to k-way merge them into one globally sorted stream. This feeds known
+    // sorted partitions (with duplicate keys across partitions, and both asc and desc) into that
+    // merge with the same kind of LexOrdering the planner builds, and checks the output is globally
+    // sorted and complete. It is deterministic coverage of the merge that does not depend on an
+    // ordering-reporting Iceberg build (which is why the end-to-end suite's merge assertions cancel
+    // on the published Iceberg used in CI).
+    async fn merge_ints(input: Vec<Vec<i32>>, descending: bool) -> Vec<i32> {
+        use arrow::array::Int32Array;
+        use arrow::array::RecordBatch;
+        use arrow::compute::SortOptions;
+        use arrow::datatypes::{DataType, Field, Schema};
+        use datafusion::datasource::memory::MemorySourceConfig;
+        use datafusion::physical_expr::expressions::Column;
+        use datafusion::physical_expr::{LexOrdering, PhysicalSortExpr};
+        use datafusion::physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
+        use datafusion::prelude::SessionContext;
+        use futures::StreamExt;
+
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        let partitions: Vec<Vec<RecordBatch>> = input
+            .into_iter()
+            .map(|vals| {
+                vec![RecordBatch::try_new(
+                    Arc::clone(&schema),
+                    vec![Arc::new(Int32Array::from(vals))],
+                )
+                .unwrap()]
+            })
+            .collect();
+        let source =
+            MemorySourceConfig::try_new_exec(&partitions, Arc::clone(&schema), None).unwrap();
+
+        let ordering = LexOrdering::new(vec![PhysicalSortExpr {
+            expr: Arc::new(Column::new("id", 0)),
+            options: SortOptions {
+                descending,
+                nulls_first: false,
+            },
+        }])
+        .unwrap();
+        let spm = SortPreservingMergeExec::new(ordering, source);
+        assert_eq!(spm.properties().partitioning.partition_count(), 1);
+
+        let ctx = SessionContext::new();
+        let mut stream = spm.execute(0, ctx.task_ctx()).unwrap();
+        let mut got = Vec::new();
+        while let Some(batch) = stream.next().await {
+            let batch = batch.unwrap();
+            let col = batch
+                .column(0)
+                .as_any()
+                .downcast_ref::<Int32Array>()
+                .unwrap();
+            (0..col.len()).for_each(|i| got.push(col.value(i)));
+        }
+        got
+    }
+
+    #[tokio::test]
+    async fn spm_merges_ascending_sorted_partitions() {
+        // Two individually-sorted partitions with duplicate keys across them.
+        let got = merge_ints(vec![vec![1, 3, 3, 5, 8], vec![2, 3, 6, 7]], false).await;
+        let mut expected = vec![1, 3, 3, 5, 8, 2, 3, 6, 7];
+        expected.sort_unstable();
+        assert_eq!(
+            got, expected,
+            "ascending merge must be globally sorted and complete"
+        );
+    }
+
+    #[tokio::test]
+    async fn spm_merges_descending_sorted_partitions() {
+        let got = merge_ints(vec![vec![8, 5, 3, 3, 1], vec![7, 6, 3, 2]], true).await;
+        let mut expected = vec![8, 5, 3, 3, 1, 7, 6, 3, 2];
+        expected.sort_unstable_by(|a, b| b.cmp(a));
+        assert_eq!(
+            got, expected,
+            "descending merge must be globally sorted and complete"
+        );
     }
 
     fn from_hex(s: &str) -> Vec<u8> {

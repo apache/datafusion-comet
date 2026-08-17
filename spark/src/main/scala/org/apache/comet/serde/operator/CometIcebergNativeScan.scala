@@ -879,15 +879,24 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
    *
    * We read scanExec.ordering (the raw reported order), not scanExec.outputOrdering. Spark blanks
    * outputOrdering when a partition holds more than one file -- the case this merge handles.
+   *
+   * `unsafeColumns` are top-level columns whose Iceberg sort order can differ from Spark's
+   * comparison of the mapped Spark type (today: UUID, which Iceberg maps to StringType but sorts
+   * by its own comparator -- see IcebergReflection.orderingUnsafeColumns). A sort key on such a
+   * column is refused, because the files are sorted by an order the native string merge would not
+   * reproduce. This cannot be detected from the Spark type alone (UUID looks like a plain
+   * string), so the caller passes the names in.
    */
   def reportableOrdering(
       ordering: Option[Seq[SortOrder]],
-      output: Seq[Attribute]): Seq[SortOrder] = {
+      output: Seq[Attribute],
+      unsafeColumns: Set[String] = Set.empty): Seq[SortOrder] = {
     if (!CometConf.COMET_ICEBERG_SORT_MERGE_ENABLED.get()) {
       Nil
     } else {
       ordering match {
-        case Some(orders) if orders.nonEmpty && orders.forall(isReportable(_, output)) =>
+        case Some(orders)
+            if orders.nonEmpty && orders.forall(isReportable(_, output, unsafeColumns)) =>
           orders
         case _ =>
           Nil
@@ -895,8 +904,18 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
     }
   }
 
-  private def isReportable(order: SortOrder, output: Seq[Attribute]): Boolean =
-    isIdentityProjected(order, output) && exprToProto(order, output).isDefined
+  private def isReportable(
+      order: SortOrder,
+      output: Seq[Attribute],
+      unsafeColumns: Set[String]): Boolean =
+    isIdentityProjected(order, output) && !isUnsafeColumn(order, unsafeColumns) &&
+      exprToProto(order, output).isDefined
+
+  private def isUnsafeColumn(order: SortOrder, unsafeColumns: Set[String]): Boolean =
+    order.child match {
+      case a: AttributeReference => unsafeColumns.contains(a.name)
+      case _ => false
+    }
 
   private def isIdentityProjected(order: SortOrder, output: Seq[Attribute]): Boolean =
     order.child match {
@@ -935,6 +954,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
   def serializePartitions(
       scanExec: BatchScanExec,
       output: Seq[Attribute],
+      reportedOrdering: Seq[SortOrder],
       metadata: CometIcebergNativeScanMetadata): (Array[Byte], Array[Array[Byte]]) = {
 
     val commonBuilder = OperatorOuterClass.IcebergScanCommon.newBuilder()
@@ -994,18 +1014,18 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
       commonBuilder.addRequiredSchema(field.build())
     }
 
-    // Report the table sort order so the native scan reads each file as its own sorted stream and
-    // wraps the scan in a SortPreservingMergeExec (see IcebergScanCommon.table_sort_orders).
-    // reportableOrdering uses the same gate as outputOrdering, and has already checked each order
-    // serializes via exprToProto. So the forall below always holds, and we never write an order to
-    // the proto that the scan does not also report to Spark. Bind against `output` so each
-    // SortOrder child becomes a BoundReference into required_schema.
-    val reportable = reportableOrdering(scanExec.ordering, output)
-    if (reportable.nonEmpty) {
-      val protoOrders = reportable.map(exprToProto(_, output))
-      if (protoOrders.forall(_.isDefined)) {
-        commonBuilder.addAllTableSortOrders(protoOrders.map(_.get).asJava)
-      }
+    // Serialize the ordering the exec already decided to report (reportedOrdering), so the gate is
+    // evaluated exactly once. Reporting an order to Spark but not merging natively would drop a
+    // Sort and return wrong results, so if any reported order fails to serialize we throw rather
+    // than silently write a partial/empty list. Bind against `output` so each SortOrder child
+    // becomes a BoundReference into required_schema.
+    if (reportedOrdering.nonEmpty) {
+      val protoOrders = reportedOrdering.map(exprToProto(_, output))
+      require(
+        protoOrders.forall(_.isDefined),
+        s"reported ordering $reportedOrdering could not be serialized to proto; refusing to " +
+          "report an ordering the native scan will not honour")
+      commonBuilder.addAllTableSortOrders(protoOrders.map(_.get).asJava)
     }
 
     // Load Iceberg classes once (avoid repeated class loading in loop)
