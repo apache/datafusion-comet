@@ -15,14 +15,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use std::{
-    fmt::{Debug, Display, Formatter, Result as FmtResult},
-    sync::Arc,
-};
+use std::fmt::{Debug, Display, Formatter, Result as FmtResult};
 
-use jni::objects::{Global, JObject};
-
-use crate::{errors::CometResult, jvm_bridge::JVMClasses};
+use crate::execution::memory_pools::spark_client::SparkMemoryClient;
 use datafusion::common::resources_err;
 use datafusion::execution::memory_pool::MemoryConsumer;
 use datafusion::{
@@ -34,7 +29,7 @@ use parking_lot::Mutex;
 /// A DataFusion fair `MemoryPool` implementation for Comet. Internally this is
 /// implemented via delegating calls to [`crate::jvm_bridge::CometTaskMemoryManager`].
 pub struct CometFairMemoryPool {
-    task_memory_manager_handle: Arc<Global<JObject<'static>>>,
+    client: SparkMemoryClient,
     pool_size: usize,
     state: Mutex<CometFairPoolState>,
 }
@@ -56,30 +51,18 @@ impl Debug for CometFairMemoryPool {
 }
 
 impl CometFairMemoryPool {
-    pub fn new(
-        task_memory_manager_handle: Arc<Global<JObject<'static>>>,
-        pool_size: usize,
-    ) -> CometFairMemoryPool {
+    pub fn new(client: SparkMemoryClient, pool_size: usize) -> CometFairMemoryPool {
         Self {
-            task_memory_manager_handle,
+            client,
             pool_size,
             state: Mutex::new(CometFairPoolState { used: 0, num: 0 }),
         }
     }
+}
 
-    fn acquire(&self, additional: usize) -> CometResult<i64> {
-        let handle = self.task_memory_manager_handle.as_obj();
-        JVMClasses::with_env(|env| unsafe {
-            jni_call!(env,
-              comet_task_memory_manager(handle).acquire_memory(additional as i64) -> i64)
-        })
-    }
-
-    fn release(&self, size: usize) -> CometResult<()> {
-        let handle = self.task_memory_manager_handle.as_obj();
-        JVMClasses::with_env(|env| unsafe {
-            jni_call!(env, comet_task_memory_manager(handle).release_memory(size as i64) -> ())
-        })
+impl Drop for CometFairMemoryPool {
+    fn drop(&mut self) {
+        self.client.log_stats(self.name());
     }
 }
 
@@ -93,9 +76,6 @@ impl Display for CometFairMemoryPool {
         )
     }
 }
-
-unsafe impl Send for CometFairMemoryPool {}
-unsafe impl Sync for CometFairMemoryPool {}
 
 impl MemoryPool for CometFairMemoryPool {
     fn name(&self) -> &str {
@@ -134,7 +114,8 @@ impl MemoryPool for CometFairMemoryPool {
                     state.used
                 )
             }
-            self.release(subtractive)
+            self.client
+                .release(subtractive)
                 .unwrap_or_else(|_| panic!("Failed to release {subtractive} bytes"));
             state.used = state.used.checked_sub(subtractive).unwrap();
         }
@@ -162,12 +143,12 @@ impl MemoryPool for CometFairMemoryPool {
                 );
             }
 
-            let acquired = self.acquire(additional)?;
+            let acquired = self.client.acquire(additional)?;
             // If the number of bytes we acquired is less than the requested, return an error,
             // and hopefully will trigger spilling from the caller side.
             if acquired < additional as i64 {
                 // Release the acquired bytes before throwing error
-                self.release(acquired as usize)?;
+                self.client.release(acquired as usize)?;
 
                 return resources_err!(
                     "Failed to acquire {} bytes, only got {} bytes. Reserved: {} bytes",
