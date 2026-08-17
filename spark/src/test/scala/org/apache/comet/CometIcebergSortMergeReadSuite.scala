@@ -115,6 +115,16 @@ class CometIcebergSortMergeReadSuite
     assert(CometIcebergNativeScan.reportableOrdering(Some(Seq.empty), Seq(gateA)).isEmpty)
   }
 
+  test("gate: a sort key on an ordering-unsafe column (e.g. UUID) falls back") {
+    // "a" stands in for a UUID column: Iceberg maps it to StringType but sorts by its own order,
+    // so it is unsafe to honour even though it looks like a plain string at the Spark level.
+    val ordering = Seq(SortOrder(gateA, Ascending))
+    assert(
+      CometIcebergNativeScan
+        .reportableOrdering(Some(ordering), Seq(gateA, gateB), Set("a"))
+        .isEmpty)
+  }
+
   // ---------------------------------------------------------------------------------------------
   // End-to-end fixtures.
   // ---------------------------------------------------------------------------------------------
@@ -128,9 +138,10 @@ class CometIcebergSortMergeReadSuite
     "spark.sql.adaptive.enabled" -> "false")
 
   // Storage-partitioned join config. preserve-data-grouping + v2 bucketing let Iceberg report
-  // KeyGroupedPartitioning; reportPartitioning surfaces it from the Comet leaf (default off, so it
-  // must be set here); the join knobs force a sort-merge join over co-partitioned inputs so the
-  // Exchange can be eliminated. This is the non-AQE path (adaptive off), the verified one.
+  // KeyGroupedPartitioning on the BatchScanExec, and the join knobs force a sort-merge join over
+  // co-partitioned inputs so the Exchange can be eliminated. Comet does not report partitioning
+  // itself; Spark's EnsureRequirements eliminates the shuffle on the BatchScanExec before Comet
+  // converts the scan. Adaptive off keeps the executed plan stable for the counts below.
   private val spjConf: Seq[(String, String)] = Seq(
     "spark.sql.iceberg.planning.preserve-data-ordering" -> "true",
     "spark.sql.iceberg.planning.preserve-data-grouping" -> "true",
@@ -139,8 +150,7 @@ class CometIcebergSortMergeReadSuite
     "spark.sql.requireAllClusterKeysForCoPartition" -> "false",
     "spark.sql.autoBroadcastJoinThreshold" -> "-1",
     "spark.sql.join.preferSortMergeJoin" -> "true",
-    "spark.sql.adaptive.enabled" -> "false",
-    CometConf.COMET_ICEBERG_REPORT_PARTITIONING_ENABLED.key -> "true")
+    "spark.sql.adaptive.enabled" -> "false")
 
   /**
    * Runs `f` against a fresh, uniquely-named Hadoop catalog backed by a fresh temp warehouse,
@@ -220,15 +230,7 @@ class CometIcebergSortMergeReadSuite
     scans.nonEmpty && scans.forall(_.outputOrdering.nonEmpty)
   }
 
-  /** True once every native scan reports KeyGroupedPartitioning (storage-partitioned join). */
-  private def partitioningReported(plan: SparkPlan): Boolean = {
-    val scans = nativeScans(plan)
-    scans.nonEmpty && scans.forall { s =>
-      s.outputPartitioning.getClass.getSimpleName == "KeyGroupedPartitioning"
-    }
-  }
-
-  // NOTE ON CANCELED TESTS: the two helpers below CANCEL the test (ScalaTest `assume`, reported as
+  // NOTE ON CANCELED TESTS: the helper below CANCELS the test (ScalaTest `assume`, reported as
   // "!!! CANCELED !!!", not a failure) when the Iceberg build on the classpath does not implement
   // the DSv2 `SupportsReportOrdering` API. Published/upstream Iceberg (the runtime used in CI and
   // the default mvn profiles) does not report a sort order, so `outputOrdering` comes back empty
@@ -243,15 +245,6 @@ class CometIcebergSortMergeReadSuite
       orderingReported(plan),
       "current Iceberg build does not implement SupportsReportOrdering (no ordering reported); " +
         "sort-elimination assertion skipped")
-
-  /**
-   * Cancels the test (see note above) unless the scan reported both ordering and partitioning.
-   */
-  private def assumeOrderingAndPartitioningReported(plan: SparkPlan): Unit =
-    assume(
-      orderingReported(plan) && partitioningReported(plan),
-      "current Iceberg build does not report ordering (SupportsReportOrdering) and/or " +
-        "KeyGroupedPartitioning; sort/shuffle-elimination assertion skipped")
 
   // The reporting mechanism: SupportsReportOrdering -> CometIcebergNativeScanExec.outputOrdering
 
@@ -316,6 +309,22 @@ class CometIcebergSortMergeReadSuite
       insertBatches(cat, "t", "(1,'a'),(2,'b')", "(1,'c'),(2,'d')", "(1,'e'),(3,'f')")
 
       checkSparkAnswer(s"SELECT id, data FROM $cat.db.t ORDER BY id, data")
+    }
+  }
+
+  test("merge applies merge-on-read deletes across a multi-file sorted partition") {
+    withSortedTables(orderedReadConf)("t") { cat =>
+      spark.sql(
+        s"CREATE TABLE $cat.db.t (id INT, data STRING) USING iceberg " +
+          "TBLPROPERTIES ('format-version'='2', 'write.delete.mode'='merge-on-read')")
+      replaceSortOrder(cat, "db", "t", "id" -> true)
+      // Several files so a merge is required; then delete rows from some of them. On a v2
+      // merge-on-read table DELETE writes delete files rather than rewriting the data files, so
+      // the scan must apply the deletes while merging the still-sorted files.
+      insertBatches(cat, "t", "(1,'a'),(4,'d')", "(2,'b'),(5,'e')", "(3,'c'),(6,'f')")
+      spark.sql(s"DELETE FROM $cat.db.t WHERE id IN (2, 5)")
+
+      checkSparkAnswer(s"SELECT id, data FROM $cat.db.t ORDER BY id")
     }
   }
 
@@ -465,8 +474,10 @@ class CometIcebergSortMergeReadSuite
         s"SELECT t1.c1, t1.c2, t2.c2 FROM $cat.db.a t1 JOIN $cat.db.b t2 ON t1.c1 = t2.c1"
       val (_, plan) = checkSparkAnswer(query)
 
-      assumeOrderingAndPartitioningReported(plan)
+      // Shuffle elimination needs only the grouping (upstream Iceberg), so assert it always.
       assert(countShuffles(plan) == 0, s"storage-partitioned join must not shuffle:\n$plan")
+      // Sort elimination needs the reported ordering (fork Iceberg today), so gate that one.
+      assumeOrderingReported(plan)
       assert(countSorts(plan) == 0, s"reported ordering must eliminate the join sort:\n$plan")
     }
   }
@@ -490,31 +501,26 @@ class CometIcebergSortMergeReadSuite
         s"SELECT t1.c1, t1.c2, t2.c2 FROM $cat.db.a t1 JOIN $cat.db.b t2 ON t1.c1 = t2.c1"
       val (_, plan) = checkSparkAnswer(query)
 
-      assume(
-        partitioningReported(plan),
-        "native scan does not report KeyGroupedPartitioning; skipping plan assertion")
+      // Comet no longer reports partitioning; EnsureRequirements eliminates the shuffle on the
+      // BatchScanExec before Comet converts the scan, so this holds on any Iceberg with grouping.
       assert(countShuffles(plan) == 0, s"storage-partitioned join must not shuffle:\n$plan")
     }
   }
 
-  // AQE runtime partition-value pushdown -- the one join case we are not yet sure about, gated
-  // HARD so it stays red until the path is verified. Under AQE Spark computes the exact common set
-  // of partition values once both sides materialize and pushes it into the scan
-  // (EnsureRequirements.populateCommonPartitionInfo, which matches only `case scan: BatchScanExec`,
-  // not Comet's native leaf). Both sides sort their partitions by value and Spark pads each with
-  // the merged set, so the same list index means the same key on both sides; if the native leaf is
-  // not padded, its index i points at a different key than Spark's spec expects and the SMJ zips
-  // mismatched groups -> mis-paired / dropped / wrongly null-padded rows.
-  //
-  // No sort order is set: the risk is purely about KeyGroupedPartitioning value alignment (grouping
-  // is upstream Iceberg, unlike ordering), so this does not need an ordering-reporting build. The
-  // two tables carry offset partition-value sets (a: c1 in 1..4, b: 3..6) so the merged/padded set
-  // differs from each side's own list -- exactly the case where a skipped pad shifts the indices.
+  // AQE runtime partition-value pushdown. Under AQE Spark computes the exact common set of
+  // partition values once both sides materialize and pushes it into the scan
+  // (EnsureRequirements.populateCommonPartitionInfo, which matches only `case scan: BatchScanExec`).
+  // Because Comet converts the scan AFTER EnsureRequirements, that push-down lands on the vanilla
+  // BatchScanExec, and Comet's execution partitions come from originalPlan.inputRDD -- already
+  // padded to the merged set. So the native leaf stays aligned with Spark's spec without Comet
+  // reporting any partitioning itself. Offset partition-value sets (a: c1 in 1..4, b: 3..6) make
+  // the merged/padded set differ from each side's own list, exactly where a misalignment would
+  // surface.
   //
   // The asserts are hard, not `assume`d: correctness (Comet vs vanilla Spark) must hold, both sides
-  // must stay native (a fallback to Spark's BatchScanExec, which handles the pushdown itself, would
-  // let correctness pass vacuously), and the join must not shuffle (a shuffle re-partitions
-  // correctly and would mask the pushdown entirely). Only Iceberg is a precondition.
+  // must stay native (a fallback to Spark's BatchScanExec would let correctness pass vacuously),
+  // and the join must not shuffle (a shuffle would re-partition correctly and mask the pushdown).
+  // Only Iceberg is a precondition (grouping is upstream, unlike ordering).
 
   /** a: c1 in 1..4, b: c1 in 3..6, both bucketed the same way -- offset partition-value sets. */
   private def createAqePartitionedPair(cat: String): Unit = {
@@ -535,9 +541,6 @@ class CometIcebergSortMergeReadSuite
     assert(
       nativeScans(plan).length == 2,
       s"both join sides must stay on the native Iceberg scan (no fallback):\n$plan")
-    assert(
-      partitioningReported(plan),
-      s"native scan must report KeyGroupedPartitioning under AQE pushdown:\n$plan")
     assert(countShuffles(plan) == 0, s"storage-partitioned join must not shuffle:\n$plan")
   }
 
@@ -583,8 +586,8 @@ class CometIcebergSortMergeReadSuite
       val query = s"SELECT c1, COUNT(*) FROM $cat.db.t GROUP BY c1"
       val (_, plan) = checkSparkAnswer(query)
 
-      assumeOrderingAndPartitioningReported(plan)
       assert(countShuffles(plan) == 0, s"grouped aggregate must not shuffle:\n$plan")
+      assumeOrderingReported(plan)
       assert(countSorts(plan) == 0, s"grouped aggregate over sorted input must not sort:\n$plan")
     }
   }
@@ -615,8 +618,8 @@ class CometIcebergSortMergeReadSuite
         s"SELECT c1, c2, ROW_NUMBER() OVER (PARTITION BY c1 ORDER BY c2) AS rn FROM $cat.db.t"
       val (_, plan) = checkSparkAnswer(query)
 
-      assumeOrderingAndPartitioningReported(plan)
       assert(countShuffles(plan) == 0, s"window over clustered input must not shuffle:\n$plan")
+      assumeOrderingReported(plan)
       assert(countSorts(plan) == 0, s"window over sorted input must not sort:\n$plan")
     }
   }

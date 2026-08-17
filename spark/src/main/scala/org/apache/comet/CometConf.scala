@@ -133,18 +133,6 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(true)
 
-  val COMET_ICEBERG_REPORT_PARTITIONING_ENABLED: ConfigEntry[Boolean] =
-    conf("spark.comet.scan.icebergNative.reportPartitioning.enabled")
-      .category(CATEGORY_SCAN)
-      .doc("Whether the native Iceberg scan reports Iceberg's key-grouped partitioning (requires " +
-        "spark.sql.sources.v2.bucketing.enabled) so storage-partitioned joins avoid a shuffle, " +
-        "which is what lets a reported sort order eliminate a join's sort. Independent of " +
-        "sortMerge.enabled. Defaults to disabled: the AQE + push-down-partition-values path is " +
-        "not yet verified, so reporting is off until it is exercised. When disabled, " +
-        "partitioning is reported as unknown, as before.")
-      .booleanConf
-      .createWithDefault(false)
-
   val COMET_ICEBERG_WRITE_SPLIT_OPERATOR_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.write.iceberg.splitOperator.enabled")
       .category(CATEGORY_TESTING)

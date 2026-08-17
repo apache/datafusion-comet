@@ -34,8 +34,7 @@ import org.apache.spark.util.AccumulatorV2
 
 import com.google.common.base.Objects
 
-import org.apache.comet.CometConf
-import org.apache.comet.iceberg.CometIcebergNativeScanMetadata
+import org.apache.comet.iceberg.{CometIcebergNativeScanMetadata, IcebergReflection}
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.operator.CometIcebergNativeScan
 
@@ -109,6 +108,9 @@ case class CometIcebergNativeScanExec(
     CometIcebergNativeScan.serializePartitions(
       effectiveOriginalPlan,
       output,
+      // Pass the ordering the exec reports to Spark (outputOrdering) so the proto and the reported
+      // ordering come from a single evaluation of the gate, not two dynamic conf reads.
+      outputOrdering,
       nativeIcebergScanMetadata)
   }
 
@@ -120,30 +122,13 @@ case class CometIcebergNativeScanExec(
   // Only accessed during execution, not planning
   def numPartitions: Int = perPartitionData.length
 
-  // Report Iceberg's key-grouped partitioning (storage-partitioned join) instead of dropping it to
-  // UnknownPartitioning. This lets a sort-merge join over co-partitioned tables skip the shuffle.
-  // Without it the join shuffles, the shuffle re-orders the rows, and the sort we reported comes
-  // back. Delegating to originalPlan.outputPartitioning is safe because perPartitionData IS
-  // originalPlan.inputRDD.partitions (1:1, same order), so the partition count and values match
-  // Comet's execution partitions by Spark's own construction. We delegate rather than name
-  // KeyGroupedPartitioning so this compiles across Spark versions. Enabled by
-  // COMET_ICEBERG_REPORT_PARTITIONING_ENABLED plus V2 bucketing; otherwise, and on canonicalized
-  // instances, keep UnknownPartitioning. The delegating branch does not read numPartitions, so it
-  // avoids forcing DPP resolution and serialization; only the fallback does.
-  //
-  // NOTE: the flag defaults off because the AQE + pushPartValues path is only partially verified.
-  // There, EnsureRequirements would need to push commonPartitionValues into the leaf, but
-  // populateCommonPartitionInfo matches only BatchScanExec. Verify that before enabling this.
-  override lazy val outputPartitioning: Partitioning = {
-    if (originalPlan != null &&
-      CometConf.COMET_ICEBERG_REPORT_PARTITIONING_ENABLED.get() &&
-      originalPlan.keyGroupedPartitioning.isDefined &&
-      conf.v2BucketingEnabled) {
-      originalPlan.outputPartitioning
-    } else {
-      UnknownPartitioning(numPartitions)
-    }
-  }
+  // Spark's EnsureRequirements runs before Comet converts this scan, so it already eliminates a
+  // redundant shuffle based on the vanilla BatchScanExec's KeyGroupedPartitioning (storage-
+  // partitioned join) while the leaf is still a BatchScanExec. This node therefore does not need
+  // to re-report partitioning: UnknownPartitioning is enough, and it keeps the whole SPJ
+  // negotiation (including commonPartitionValues push-down under AQE) on BatchScanExec, which is
+  // the only node Spark can push into.
+  override lazy val outputPartitioning: Partitioning = UnknownPartitioning(numPartitions)
 
   // Report the Iceberg-reported ordering (gated to what the native per-partition merge honours) so
   // Spark elides redundant sorts above the scan. Uses the same reportableOrdering gate as the proto
@@ -154,7 +139,16 @@ case class CometIcebergNativeScanExec(
     if (originalPlan == null) {
       Nil
     } else {
-      CometIcebergNativeScan.reportableOrdering(originalPlan.ordering, output)
+      // Exclude sort keys whose Iceberg type orders differently from Spark's comparison of the
+      // mapped type (UUID maps to StringType but sorts by its own comparator). This is invisible
+      // at the Spark type level, so pass the column names down from the Iceberg schema.
+      val unsafeColumns =
+        if (nativeIcebergScanMetadata != null) {
+          IcebergReflection.orderingUnsafeColumns(nativeIcebergScanMetadata.tableSchema)
+        } else {
+          Set.empty[String]
+        }
+      CometIcebergNativeScan.reportableOrdering(originalPlan.ordering, output, unsafeColumns)
     }
 
   /**
