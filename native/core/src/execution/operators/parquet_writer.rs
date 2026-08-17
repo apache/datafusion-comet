@@ -543,8 +543,9 @@ impl ExecutionPlan for ParquetWriterExec {
                 // Rename columns in the batch to match output schema
                 let renamed_batch = if !column_names.is_empty() {
                     // Collection field IDs exist on the target schema, not on arrays produced by
-                    // the placeholder Scan. Ignore nested field names/metadata during validation
-                    // while still checking data types and nested/top-level nullability.
+                    // the placeholder Scan. Both schemas use the same Catalyst data types, and
+                    // disabling field-name matching still recursively validates nested nullability;
+                    // only nested field names and metadata are ignored.
                     RecordBatch::try_new_with_options(
                         Arc::clone(&schema_for_write),
                         batch.columns().to_vec(),
@@ -710,6 +711,68 @@ mod tests {
         let element = list.get_fields()[0].get_fields()[0].get_basic_info();
         assert_eq!(element.repetition(), Repetition::OPTIONAL);
         assert_eq!(element.id(), 23);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_parquet_writer_rejects_mismatched_nested_nullability() -> Result<()> {
+        let values = ListArray::from_iter_primitive::<Int32Type, _, _>([
+            Some(vec![Some(1)]),
+            Some(vec![Some(2)]),
+        ]);
+        let DataType::List(input_element) = values.data_type() else {
+            panic!("expected list input");
+        };
+        assert!(input_element.is_nullable());
+
+        let input_schema = Arc::new(Schema::new(vec![Field::new(
+            "col_0",
+            values.data_type().clone(),
+            true,
+        )]));
+        let batch = RecordBatch::try_new(Arc::clone(&input_schema), vec![Arc::new(values)])?;
+
+        let target_element = Field::new("element", DataType::Int32, false).with_metadata(
+            HashMap::from([(PARQUET_FIELD_ID_META_KEY.to_string(), "23".to_string())]),
+        );
+        let output_schema = Arc::new(Schema::new(vec![Field::new(
+            "values",
+            DataType::List(Arc::new(target_element)),
+            true,
+        )]));
+
+        let memory_source = MemorySourceConfig::try_new(&[vec![batch]], input_schema, None)?;
+        let input = Arc::new(DataSourceExec::new(Arc::new(memory_source)));
+        let temp_dir = tempfile::tempdir()?;
+        let work_dir = format!("file://{}", temp_dir.path().display());
+        let writer = ParquetWriterExec::try_new(
+            input,
+            work_dir.clone(),
+            work_dir,
+            None,
+            None,
+            ParquetCompression::None,
+            0,
+            vec!["values".to_string()],
+            Some(output_schema),
+            HashMap::new(),
+        )?;
+
+        let mut stream = writer.execute(0, SessionContext::new().task_ctx())?;
+        let error = stream
+            .try_next()
+            .await
+            .expect_err("mismatched nested nullability must be rejected");
+        let message = error.to_string();
+        assert!(
+            message.contains("Failed to rename batch columns"),
+            "unexpected error: {message}"
+        );
+        assert!(
+            message.contains("column types must match schema types"),
+            "unexpected error: {message}"
+        );
 
         Ok(())
     }

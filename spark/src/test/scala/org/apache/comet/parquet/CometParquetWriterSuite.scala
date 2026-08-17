@@ -35,7 +35,7 @@ import org.apache.spark.sql.execution.{FileSourceScanExec, QueryExecution, Spark
 import org.apache.spark.sql.execution.command.DataWritingCommandExec
 import org.apache.spark.sql.functions.{array, map, struct, when}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{LongType, Metadata, MetadataBuilder, StringType, StructField, StructType}
+import org.apache.spark.sql.types.{ArrayType, LongType, MapType, Metadata, MetadataBuilder, StringType, StructField, StructType}
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.isSpark35Plus
@@ -274,16 +274,28 @@ class CometParquetWriterSuite extends CometTestBase {
     }
   }
 
-  test("Spark reads native parquet output by field ID after columns are renamed and reordered") {
+  test("Spark reads native parquet output by field ID after nested columns are renamed") {
     withTempPath { dir =>
       val outputPath = new File(dir, "output.parquet").getAbsolutePath
       val numberMetadata = parquetFieldMetadata(11)
       val textMetadata = parquetFieldMetadata(22)
+      val structMetadata = parquetFieldMetadata(100)
+      val structChildMetadata = parquetFieldMetadata(101)
+      val itemsMetadata = parquetFieldMetadata(200, "original_items.element" -> 201L)
+      val itemChildMetadata = parquetFieldMetadata(202)
+      val lookupMetadata =
+        parquetFieldMetadata(300, "original_lookup.key" -> 301L, "original_lookup.value" -> 302L)
       val data = spark
         .range(1, 3)
         .select(
           $"id".as("original_number", numberMetadata),
-          $"id".cast(StringType).as("original_text", textMetadata))
+          $"id".cast(StringType).as("original_text", textMetadata),
+          struct($"id".as("original_child", structChildMetadata))
+            .as("original_struct", structMetadata),
+          array(struct($"id".as("original_item_child", itemChildMetadata)))
+            .as("original_items", itemsMetadata),
+          map($"id".cast(StringType), $"id")
+            .as("original_lookup", lookupMetadata))
 
       withNativeWriter {
         withSQLConf(SQLConf.PARQUET_FIELD_ID_WRITE_ENABLED.key -> "true") {
@@ -294,15 +306,51 @@ class CometParquetWriterSuite extends CometTestBase {
 
       val renamedSchema = StructType(
         Seq(
+          StructField(
+            "renamed_lookup",
+            MapType(StringType, LongType, valueContainsNull = true),
+            nullable = true,
+            metadata = parquetFieldMetadata(
+              300,
+              "renamed_lookup.key" -> 301L,
+              "renamed_lookup.value" -> 302L)),
+          StructField(
+            "renamed_items",
+            ArrayType(
+              StructType(
+                Seq(
+                  StructField(
+                    "renamed_item_child",
+                    LongType,
+                    nullable = true,
+                    metadata = itemChildMetadata))),
+              containsNull = true),
+            nullable = true,
+            metadata = parquetFieldMetadata(200, "renamed_items.element" -> 201L)),
+          StructField(
+            "renamed_struct",
+            StructType(
+              Seq(
+                StructField(
+                  "renamed_child",
+                  LongType,
+                  nullable = true,
+                  metadata = structChildMetadata))),
+            nullable = true,
+            metadata = structMetadata),
           StructField("renamed_text", StringType, nullable = true, metadata = textMetadata),
           StructField("renamed_number", LongType, nullable = true, metadata = numberMetadata)))
 
+      // Array element and map key/value names are structural in Spark, so rename the
+      // collection fields and the struct field inside the array element instead.
       withSQLConf(
         CometConf.COMET_ENABLED.key -> "false",
         SQLConf.PARQUET_FIELD_ID_READ_ENABLED.key -> "true") {
         checkAnswer(
           spark.read.schema(renamedSchema).parquet(outputPath),
-          Seq(Row("1", 1L), Row("2", 2L)))
+          Seq(
+            Row(Map("1" -> 1L), Seq(Row(1L)), Row(1L), "1", 1L),
+            Row(Map("2" -> 2L), Seq(Row(2L)), Row(2L), "2", 2L)))
       }
     }
   }
