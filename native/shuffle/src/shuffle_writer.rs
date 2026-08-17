@@ -277,6 +277,7 @@ mod test {
     use datafusion::datasource::memory::MemorySourceConfig;
     use datafusion::datasource::source::DataSourceExec;
     use datafusion::execution::config::SessionConfig;
+    use datafusion::execution::memory_pool::{GreedyMemoryPool, MemoryPool, MemoryReservation};
     use datafusion::execution::runtime_env::{RuntimeEnv, RuntimeEnvBuilder};
     use datafusion::physical_expr::expressions::{col, Column};
     use datafusion::physical_expr::{LexOrdering, PhysicalSortExpr};
@@ -285,6 +286,7 @@ mod test {
     use datafusion::prelude::SessionContext;
     use itertools::Itertools;
     use std::io::Cursor;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use tokio::runtime::Runtime;
 
     #[test]
@@ -501,6 +503,122 @@ mod test {
             spill_count.value(),
             0,
             "one buffer under the memory limit must not spill once per chunk"
+        );
+    }
+
+    /// A `MemoryPool` that counts the `try_grow` calls reaching it, standing in for Comet's
+    /// unified pool where each call is a JNI round-trip into Spark's memory manager.
+    #[derive(Debug)]
+    struct CountingMemoryPool {
+        inner: GreedyMemoryPool,
+        grow_calls: Arc<AtomicUsize>,
+    }
+
+    impl std::fmt::Display for CountingMemoryPool {
+        fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+            write!(f, "CountingMemoryPool({})", self.inner)
+        }
+    }
+
+    impl MemoryPool for CountingMemoryPool {
+        fn name(&self) -> &str {
+            "CountingMemoryPool"
+        }
+
+        fn grow(&self, reservation: &MemoryReservation, additional: usize) {
+            self.grow_calls.fetch_add(1, Ordering::Relaxed);
+            self.inner.grow(reservation, additional)
+        }
+
+        fn shrink(&self, reservation: &MemoryReservation, shrink: usize) {
+            self.inner.shrink(reservation, shrink)
+        }
+
+        fn try_grow(
+            &self,
+            reservation: &MemoryReservation,
+            additional: usize,
+        ) -> datafusion::common::Result<()> {
+            self.grow_calls.fetch_add(1, Ordering::Relaxed);
+            self.inner.try_grow(reservation, additional)
+        }
+
+        fn reserved(&self) -> usize {
+            self.inner.reserved()
+        }
+    }
+
+    /// Buffer `num_batches` distinct batches of `batch_rows` rows each through a
+    /// `MultiPartitionShuffleRepartitioner` and return how many `try_grow` calls reached the pool.
+    ///
+    /// The batches are built separately rather than cloned so that each one pins its own buffers;
+    /// `count_new_buffers` dedups by address, so re-inserting one batch would charge nothing after
+    /// the first insert and would not exercise the per-batch growth this is measuring.
+    async fn grow_calls_for_batches(batch_rows: usize, num_batches: usize) -> usize {
+        let grow_calls = Arc::new(AtomicUsize::new(0));
+        // Far larger than anything these batches can reserve, so no request is ever denied.
+        let pool = CountingMemoryPool {
+            inner: GreedyMemoryPool::new(1024 * 1024 * 1024),
+            grow_calls: Arc::clone(&grow_calls),
+        };
+        let runtime_env = Arc::new(
+            RuntimeEnvBuilder::new()
+                .with_memory_pool(Arc::new(pool))
+                .build()
+                .unwrap(),
+        );
+
+        let batches: Vec<RecordBatch> =
+            (0..num_batches).map(|_| create_batch(batch_rows)).collect();
+        let num_partitions = 4;
+        let metrics_set = ExecutionPlanMetricsSet::new();
+        let metrics = ShufflePartitionerMetrics::new(&metrics_set, 0);
+        let dir = tempfile::tempdir().unwrap();
+        let shuffle_block_writer =
+            ShuffleBlockWriter::try_new(batches[0].schema().as_ref(), CompressionCodec::Lz4Frame)
+                .unwrap();
+        let local_partition_writer = LocalPartitionWriter::try_new(
+            dir.path().join("data.out").to_str().unwrap().to_string(),
+            dir.path().join("index.out").to_str().unwrap().to_string(),
+            shuffle_block_writer,
+            num_partitions,
+            1024,
+            1024 * 1024,
+            Arc::clone(&runtime_env),
+        )
+        .unwrap();
+        let mut repartitioner = MultiPartitionShuffleRepartitioner::try_new(
+            0,
+            local_partition_writer,
+            CometPartitioning::Hash(vec![Arc::new(Column::new("a", 0))], num_partitions),
+            metrics,
+            runtime_env,
+            1024,
+            false,
+            None,
+        )
+        .unwrap();
+
+        // The partition writer reserves as well, so count only what the repartitioner adds.
+        let before = grow_calls.load(Ordering::Relaxed);
+        for batch in batches {
+            repartitioner.insert_batch(batch).await.unwrap();
+        }
+        let calls = grow_calls.load(Ordering::Relaxed) - before;
+        repartitioner.shuffle_write().unwrap();
+        calls
+    }
+
+    #[tokio::test]
+    #[cfg_attr(miri, ignore)] // miri can't call foreign function `ZSTD_createCCtx`
+    async fn small_batches_share_one_reservation_step() {
+        // 40 batches of 100 rows buffer far less than one 1 MB step between them, so the writer
+        // must reach the pool a handful of times rather than once per batch. Growing by the exact
+        // amount each time costs 40+ acquisitions here.
+        let calls = grow_calls_for_batches(100, 40).await;
+        assert!(
+            calls <= 4,
+            "40 small batches must not need one acquisition each, got {calls}"
         );
     }
 
