@@ -936,6 +936,32 @@ object IcebergReflection extends Logging {
   }
 
   /**
+   * Names of top-level columns whose Iceberg sort order can differ from Spark's comparison of the
+   * Spark type they map to, so a native k-way merge keyed on the Spark value could mis-order
+   * rows. Today that is UUID: Iceberg maps UUID to Spark StringType (see TypeToSparkType) but
+   * sorts by its own UUID comparator, not by the canonical string, so the file order and a string
+   * comparison can disagree. reportableOrdering refuses a sort key in this set. v1 only reports
+   * identity, top-level sort keys, so top-level columns are enough.
+   */
+  def orderingUnsafeColumns(schema: Any): Set[String] = {
+    import scala.jdk.CollectionConverters._
+    try {
+      val columns = getMethod(schema.getClass, "columns")
+        .invoke(schema)
+        .asInstanceOf[java.util.List[_]]
+      columns.asScala.flatMap { column =>
+        val name = getMethod(column.getClass, "name").invoke(column).asInstanceOf[String]
+        val typeStr = getMethod(column.getClass, "type").invoke(column).toString
+        if (typeStr == "uuid") Some(name) else None
+      }.toSet
+    } catch {
+      case e: Exception =>
+        logWarning(s"Failed to inspect schema for ordering-unsafe columns: ${e.getMessage}")
+        Set.empty[String]
+    }
+  }
+
+  /**
    * Validates partition column types for compatibility with iceberg-rust.
    *
    * iceberg-rust's Literal::try_from_json() has incomplete type support: - Binary/fixed types:
