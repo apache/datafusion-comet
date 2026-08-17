@@ -18,6 +18,7 @@
 use crate::metrics::ShufflePartitionerMetrics;
 use crate::partitioners::partitioned_batch_iterator::PartitionedBatchesProducer;
 use crate::partitioners::ShufflePartitioner;
+use crate::shuffle_writer::ShuffleWriterMemoryConfig;
 use crate::writers::PartitionWriter;
 use crate::{comet_partitioning, CometPartitioning};
 use arrow::array::{Array, ArrayData, ArrayRef, RecordBatch};
@@ -98,16 +99,6 @@ impl ScratchSpace {
     }
 }
 
-/// Granularity for growing [`MultiPartitionShuffleRepartitioner::reservation`].
-///
-/// The writer's per-batch growth is small — one Arrow buffer per column, 32 KB for an 8192-row
-/// `i32` column — and against Comet's unified memory pool every `try_grow` is a JNI round-trip
-/// into Spark's memory manager. On a 201-partition shuffle of 10M rows that was 256 acquisitions
-/// per task, 96% of them for 32 KB, at ~1.3 µs each (see
-/// <https://github.com/apache/datafusion-comet/issues/5383>). Growing in coarse steps took that
-/// to 13 acquisitions per task, trading up to one step of over-reservation per active writer.
-const RESERVATION_STEP_BYTES: usize = 1024 * 1024;
-
 /// A partitioner that uses a hash function to partition data into multiple partitions
 pub(crate) struct MultiPartitionShuffleRepartitioner<T: PartitionWriter> {
     buffered_batches: Vec<RecordBatch>,
@@ -126,10 +117,8 @@ pub(crate) struct MultiPartitionShuffleRepartitioner<T: PartitionWriter> {
     /// limit and the `used()` figure are measured against. `reservation` is grown in coarse steps,
     /// so `reservation.size()` is this value plus up to one `reservation_step()`.
     buffered_bytes: usize,
-    /// Spill once the reservation reaches this many bytes, independently of whether the memory
-    /// pool still has capacity. `None` disables the limit, leaving pool pressure as the only
-    /// spill trigger.
-    max_buffer_bytes: Option<usize>,
+    /// Spill limit and reservation granularity for this writer
+    memory_config: ShuffleWriterMemoryConfig,
     tracing_enabled: bool,
     /// Start addresses (as `usize`, since raw pointers are not `Send`) of the backing buffers
     /// currently pinned by `buffered_batches`, so the spill reservation charges each distinct
@@ -192,7 +181,7 @@ impl<T: PartitionWriter> MultiPartitionShuffleRepartitioner<T> {
         runtime: Arc<RuntimeEnv>,
         batch_size: usize,
         tracing_enabled: bool,
-        max_buffer_bytes: Option<usize>,
+        memory_config: ShuffleWriterMemoryConfig,
     ) -> datafusion::common::Result<Self> {
         let num_output_partitions = partitioning.partition_count();
         assert_ne!(
@@ -231,7 +220,7 @@ impl<T: PartitionWriter> MultiPartitionShuffleRepartitioner<T> {
             batch_size,
             reservation,
             buffered_bytes: 0,
-            max_buffer_bytes,
+            memory_config,
             tracing_enabled,
             pinned_buffers: HashSet::new(),
         })
@@ -480,6 +469,7 @@ impl<T: PartitionWriter> MultiPartitionShuffleRepartitioner<T> {
         // step boundary and would otherwise trip the limit early.
         if self.grow_reservation()
             || self
+                .memory_config
                 .max_buffer_bytes
                 .is_some_and(|limit| self.buffered_bytes >= limit)
         {
@@ -489,12 +479,15 @@ impl<T: PartitionWriter> MultiPartitionShuffleRepartitioner<T> {
         Ok(())
     }
 
-    /// Bytes to grow [`Self::reservation`] by at a time. Capped well below `max_buffer_bytes` so
-    /// that a writer with a small limit does not reserve a multiple of its own budget.
+    /// Bytes to grow [`Self::reservation`] by at a time, from
+    /// `spark.comet.shuffle.native.reservationStepBytes`. Capped well below `max_buffer_bytes` so
+    /// that a writer with a small limit does not reserve a multiple of its own budget. Zero — from
+    /// either the config or the cap — means grow by exactly what the batch needs.
     fn reservation_step(&self) -> usize {
-        match self.max_buffer_bytes {
-            Some(limit) => RESERVATION_STEP_BYTES.min(limit / 8).max(1),
-            None => RESERVATION_STEP_BYTES,
+        let step = self.memory_config.reservation_step_bytes;
+        match self.memory_config.max_buffer_bytes {
+            Some(limit) => step.min(limit / 8),
+            None => step,
         }
     }
 
