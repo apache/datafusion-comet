@@ -625,8 +625,8 @@ tar<span class="w"> </span>xzf<span class="w"> </span>async-profiler-3.0-linux-x
 <h3>Passing profiler flags via spark-submit<a class="headerlink" href="#passing-profiler-flags-via-spark-submit" title="Link to this heading">#</a></h3>
 <p>You can also attach async-profiler as a Java agent at JVM startup:</p>
 <div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>spark-submit<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--conf<span class="w"> </span><span class="s2">&quot;spark.driver.extraJavaOptions=-agentpath:</span><span class="nv">$ASYNC_PROFILER_HOME</span><span class="s2">/lib/libasyncProfiler.so=start,event=cpu,file=driver.html,tree&quot;</span><span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--conf<span class="w"> </span><span class="s2">&quot;spark.executor.extraJavaOptions=-agentpath:</span><span class="nv">$ASYNC_PROFILER_HOME</span><span class="s2">/lib/libasyncProfiler.so=start,event=cpu,file=executor.html,tree&quot;</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--conf<span class="w"> </span><span class="s2">"spark.driver.extraJavaOptions=-agentpath:</span><span class="nv">$ASYNC_PROFILER_HOME</span><span class="s2">/lib/libasyncProfiler.so=start,event=cpu,file=driver.html,tree"</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--conf<span class="w"> </span><span class="s2">"spark.executor.extraJavaOptions=-agentpath:</span><span class="nv">$ASYNC_PROFILER_HOME</span><span class="s2">/lib/libasyncProfiler.so=start,event=cpu,file=executor.html,tree"</span><span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>...
 </pre></div>
 </div>
@@ -714,13 +714,13 @@ I/O latency, and JVM-level allocation patterns.</p>
 <section id="adding-jfr-flags-to-spark-submit">
 <h3>Adding JFR flags to spark-submit<a class="headerlink" href="#adding-jfr-flags-to-spark-submit" title="Link to this heading">#</a></h3>
 <div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>spark-submit<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--conf<span class="w"> </span><span class="s2">&quot;spark.driver.extraJavaOptions=-XX:StartFlightRecording=duration=120s,filename=driver.jfr&quot;</span><span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--conf<span class="w"> </span><span class="s2">&quot;spark.executor.extraJavaOptions=-XX:StartFlightRecording=duration=120s,filename=executor.jfr&quot;</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--conf<span class="w"> </span><span class="s2">"spark.driver.extraJavaOptions=-XX:StartFlightRecording=duration=120s,filename=driver.jfr"</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--conf<span class="w"> </span><span class="s2">"spark.executor.extraJavaOptions=-XX:StartFlightRecording=duration=120s,filename=executor.jfr"</span><span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>...
 </pre></div>
 </div>
 <p>For continuous recording without a fixed duration:</p>
-<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>--conf<span class="w"> </span><span class="s2">&quot;spark.driver.extraJavaOptions=-XX:StartFlightRecording=disk=true,maxsize=500m,filename=driver.jfr&quot;</span>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>--conf<span class="w"> </span><span class="s2">"spark.driver.extraJavaOptions=-XX:StartFlightRecording=disk=true,maxsize=500m,filename=driver.jfr"</span>
 </pre></div>
 </div>
 <p>You can also start and stop recording dynamically using <code class="docutils literal notranslate"><span class="pre">jcmd</span></code>:</p>
@@ -784,7 +784,7 @@ runs. See <a class="reference external" href="https://github.com/apache/datafusi
 <p>It is often easiest to copy an existing benchmark and modify it for the new operator or expression. It is also
 necessary to add a new section to the <code class="docutils literal notranslate"><span class="pre">Cargo.toml</span></code> file, such as:</p>
 <div class="highlight-toml notranslate"><div class="highlight"><pre><span></span><span class="k">[[bench]]</span>
-<span class="n">name</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;shuffle_writer&quot;</span>
+<span class="n">name</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"shuffle_writer"</span>
 <span class="n">harness</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">false</span>
 </pre></div>
 </div>
@@ -820,13 +820,13 @@ running flamegraph.</p>
 <p>This will produce output similar to the following.</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">dtrace</span><span class="p">:</span> <span class="n">system</span> <span class="n">integrity</span> <span class="n">protection</span> <span class="ow">is</span> <span class="n">on</span><span class="p">,</span> <span class="n">some</span> <span class="n">features</span> <span class="n">will</span> <span class="ow">not</span> <span class="n">be</span> <span class="n">available</span>
 
-<span class="n">dtrace</span><span class="p">:</span> <span class="n">description</span> <span class="s1">&#39;profile-997 &#39;</span> <span class="n">matched</span> <span class="mi">1</span> <span class="n">probe</span>
+<span class="n">dtrace</span><span class="p">:</span> <span class="n">description</span> <span class="s1">'profile-997 '</span> <span class="n">matched</span> <span class="mi">1</span> <span class="n">probe</span>
 <span class="n">Gnuplot</span> <span class="ow">not</span> <span class="n">found</span><span class="p">,</span> <span class="n">using</span> <span class="n">plotters</span> <span class="n">backend</span>
 <span class="n">Testing</span> <span class="n">shuffle_writer</span><span class="o">/</span><span class="n">shuffle_writer</span>
 <span class="n">Success</span>
 
 <span class="n">dtrace</span><span class="p">:</span> <span class="n">pid</span> <span class="mi">66402</span> <span class="n">has</span> <span class="n">exited</span>
-<span class="n">writing</span> <span class="n">flamegraph</span> <span class="n">to</span> <span class="s2">&quot;flamegraph.svg&quot;</span>
+<span class="n">writing</span> <span class="n">flamegraph</span> <span class="n">to</span> <span class="s2">"flamegraph.svg"</span>
 </pre></div>
 </div>
 <p>The generated flamegraph can now be opened in a browser that supports svg format.</p>

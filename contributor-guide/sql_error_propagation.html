@@ -618,7 +618,7 @@ expression and encodes it alongside the expression in the Protobuf payload.</p>
 <span class="w">    </span><span class="n">ctx</span><span class="w"> </span><span class="k">match</span><span class="w"> </span><span class="p">{</span>
 <span class="w">      </span><span class="k">case</span><span class="w"> </span><span class="n">sqlCtx</span><span class="p">:</span><span class="w"> </span><span class="nc">SQLQueryContext</span><span class="w"> </span><span class="o">=&gt;</span>
 <span class="w">        </span><span class="kd">val</span><span class="w"> </span><span class="n">builder</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nc">ExprOuterClass</span><span class="p">.</span><span class="nc">QueryContext</span><span class="p">.</span><span class="n">newBuilder</span><span class="p">()</span>
-<span class="w">          </span><span class="p">.</span><span class="n">setSqlText</span><span class="p">(</span><span class="n">sqlCtx</span><span class="p">.</span><span class="n">sqlText</span><span class="p">.</span><span class="n">getOrElse</span><span class="p">(</span><span class="s">&quot;&quot;</span><span class="p">))</span><span class="w">         </span><span class="c1">// full SQL text</span>
+<span class="w">          </span><span class="p">.</span><span class="n">setSqlText</span><span class="p">(</span><span class="n">sqlCtx</span><span class="p">.</span><span class="n">sqlText</span><span class="p">.</span><span class="n">getOrElse</span><span class="p">(</span><span class="s">""</span><span class="p">))</span><span class="w">         </span><span class="c1">// full SQL text</span>
 <span class="w">          </span><span class="p">.</span><span class="n">setStartIndex</span><span class="p">(</span><span class="n">sqlCtx</span><span class="p">.</span><span class="n">originStartIndex</span><span class="p">.</span><span class="n">getOrElse</span><span class="p">(...))</span><span class="w"> </span><span class="c1">// char offset of expression start</span>
 <span class="w">          </span><span class="p">.</span><span class="n">setStopIndex</span><span class="p">(</span><span class="n">sqlCtx</span><span class="p">.</span><span class="n">originStopIndex</span><span class="p">.</span><span class="n">getOrElse</span><span class="p">(...))</span><span class="w">   </span><span class="c1">// char offset of expression end</span>
 <span class="w">          </span><span class="p">.</span><span class="n">setLine</span><span class="p">(</span><span class="n">sqlCtx</span><span class="p">.</span><span class="n">line</span><span class="p">.</span><span class="n">getOrElse</span><span class="p">(</span><span class="mi">0</span><span class="p">))</span>
@@ -654,13 +654,13 @@ context are attached:</p>
 <span class="p">}</span>
 
 <span class="kd">message</span><span class="w"> </span><span class="nc">QueryContext</span><span class="w"> </span><span class="p">{</span>
-<span class="w">  </span><span class="kt">string</span><span class="w"> </span><span class="na">sql_text</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">1</span><span class="p">;</span><span class="w">      </span><span class="c1">// &quot;SELECT a/b FROM t&quot;</span>
-<span class="w">  </span><span class="kt">int32</span><span class="w"> </span><span class="na">start_index</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">2</span><span class="p">;</span><span class="w">    </span><span class="c1">// 7  (0-based character index of &#39;a&#39;)</span>
-<span class="w">  </span><span class="kt">int32</span><span class="w"> </span><span class="na">stop_index</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">3</span><span class="p">;</span><span class="w">     </span><span class="c1">// 9  (0-based character index of &#39;b&#39;, inclusive)</span>
+<span class="w">  </span><span class="kt">string</span><span class="w"> </span><span class="na">sql_text</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">1</span><span class="p">;</span><span class="w">      </span><span class="c1">// "SELECT a/b FROM t"</span>
+<span class="w">  </span><span class="kt">int32</span><span class="w"> </span><span class="na">start_index</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">2</span><span class="p">;</span><span class="w">    </span><span class="c1">// 7  (0-based character index of 'a')</span>
+<span class="w">  </span><span class="kt">int32</span><span class="w"> </span><span class="na">stop_index</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">3</span><span class="p">;</span><span class="w">     </span><span class="c1">// 9  (0-based character index of 'b', inclusive)</span>
 <span class="w">  </span><span class="kt">int32</span><span class="w"> </span><span class="na">line</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">4</span><span class="p">;</span><span class="w">           </span><span class="c1">// 1  (1-based line number)</span>
 <span class="w">  </span><span class="kt">int32</span><span class="w"> </span><span class="na">start_position</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">5</span><span class="p">;</span><span class="w"> </span><span class="c1">// 7  (0-based column position)</span>
-<span class="w">  </span><span class="k">optional</span><span class="w"> </span><span class="kt">string</span><span class="w"> </span><span class="na">object_type</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">6</span><span class="p">;</span><span class="w"> </span><span class="c1">// e.g. &quot;VIEW&quot;</span>
-<span class="w">  </span><span class="k">optional</span><span class="w"> </span><span class="kt">string</span><span class="w"> </span><span class="na">object_name</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">7</span><span class="p">;</span><span class="w"> </span><span class="c1">// e.g. &quot;v1&quot;</span>
+<span class="w">  </span><span class="k">optional</span><span class="w"> </span><span class="kt">string</span><span class="w"> </span><span class="na">object_type</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">6</span><span class="p">;</span><span class="w"> </span><span class="c1">// e.g. "VIEW"</span>
+<span class="w">  </span><span class="k">optional</span><span class="w"> </span><span class="kt">string</span><span class="w"> </span><span class="na">object_name</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">7</span><span class="p">;</span><span class="w"> </span><span class="c1">// e.g. "v1"</span>
 <span class="p">}</span>
 </pre></div>
 </div>
@@ -730,16 +730,16 @@ context.</p>
 <p>This enum contains one variant for every kind of error Spark can produce, with exactly the
 same error message format as Spark:</p>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">pub</span><span class="w"> </span><span class="k">enum</span><span class="w"> </span><span class="nc">SparkError</span><span class="w"> </span><span class="p">{</span>
-<span class="w">    </span><span class="cp">#[error(</span><span class="s">&quot;[DIVIDE_BY_ZERO] Division by zero. Use `try_divide` to tolerate divisor \</span>
+<span class="w">    </span><span class="cp">#[error(</span><span class="s">"[DIVIDE_BY_ZERO] Division by zero. Use `try_divide` to tolerate divisor \</span>
 <span class="s">        being 0 and return NULL instead. If necessary set \</span>
-<span class="s">        </span><span class="se">\&quot;</span><span class="s">spark.sql.ansi.enabled</span><span class="se">\&quot;</span><span class="s"> to </span><span class="se">\&quot;</span><span class="s">false</span><span class="se">\&quot;</span><span class="s"> to bypass this error.&quot;</span><span class="cp">)]</span>
+<span class="s">        </span><span class="se">\"</span><span class="s">spark.sql.ansi.enabled</span><span class="se">\"</span><span class="s"> to </span><span class="se">\"</span><span class="s">false</span><span class="se">\"</span><span class="s"> to bypass this error."</span><span class="cp">)]</span>
 <span class="w">    </span><span class="n">DivideByZero</span><span class="p">,</span>
 
-<span class="w">    </span><span class="cp">#[error(</span><span class="s">&quot;[CAST_INVALID_INPUT] The value &#39;{value}&#39; of the type </span><span class="se">\&quot;</span><span class="s">{from_type}</span><span class="se">\&quot;</span><span class="s"> \</span>
-<span class="s">        cannot be cast to </span><span class="se">\&quot;</span><span class="s">{to_type}</span><span class="se">\&quot;</span><span class="s"> because it is malformed. ...&quot;</span><span class="cp">)]</span>
+<span class="w">    </span><span class="cp">#[error(</span><span class="s">"[CAST_INVALID_INPUT] The value '{value}' of the type </span><span class="se">\"</span><span class="s">{from_type}</span><span class="se">\"</span><span class="s"> \</span>
+<span class="s">        cannot be cast to </span><span class="se">\"</span><span class="s">{to_type}</span><span class="se">\"</span><span class="s"> because it is malformed. ..."</span><span class="cp">)]</span>
 <span class="w">    </span><span class="n">CastInvalidValue</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">value</span><span class="p">:</span><span class="w"> </span><span class="nb">String</span><span class="p">,</span><span class="w"> </span><span class="n">from_type</span><span class="p">:</span><span class="w"> </span><span class="nb">String</span><span class="p">,</span><span class="w"> </span><span class="n">to_type</span><span class="p">:</span><span class="w"> </span><span class="nb">String</span><span class="w"> </span><span class="p">},</span>
 
-<span class="w">    </span><span class="c1">// ... 30+ more variants matching Spark&#39;s error codes ...</span>
+<span class="w">    </span><span class="c1">// ... 30+ more variants matching Spark's error codes ...</span>
 <span class="p">}</span>
 </pre></div>
 </div>
@@ -803,7 +803,7 @@ reaches the JNI boundary, <code class="docutils literal notranslate"><span class
 <span class="w">            </span><span class="k">if</span><span class="w"> </span><span class="kd">let</span><span class="w"> </span><span class="nb">Some</span><span class="p">(</span><span class="n">spark_err_ctx</span><span class="p">)</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">e</span><span class="p">.</span><span class="n">downcast_ref</span><span class="p">::</span><span class="o">&lt;</span><span class="n">SparkErrorWithContext</span><span class="o">&gt;</span><span class="p">()</span><span class="w"> </span><span class="p">{</span>
 <span class="w">                </span><span class="c1">// Has SQL context → throw with JSON payload</span>
 <span class="w">                </span><span class="kd">let</span><span class="w"> </span><span class="n">json</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">spark_err_ctx</span><span class="p">.</span><span class="n">to_json</span><span class="p">();</span>
-<span class="w">                </span><span class="n">env</span><span class="p">.</span><span class="n">throw_new</span><span class="p">(</span><span class="s">&quot;org/apache/comet/exceptions/CometQueryExecutionException&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">json</span><span class="p">)</span>
+<span class="w">                </span><span class="n">env</span><span class="p">.</span><span class="n">throw_new</span><span class="p">(</span><span class="s">"org/apache/comet/exceptions/CometQueryExecutionException"</span><span class="p">,</span><span class="w"> </span><span class="n">json</span><span class="p">)</span>
 <span class="w">            </span><span class="p">}</span><span class="w"> </span><span class="k">else</span><span class="w"> </span><span class="k">if</span><span class="w"> </span><span class="kd">let</span><span class="w"> </span><span class="nb">Some</span><span class="p">(</span><span class="n">spark_err</span><span class="p">)</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">e</span><span class="p">.</span><span class="n">downcast_ref</span><span class="p">::</span><span class="o">&lt;</span><span class="n">SparkError</span><span class="o">&gt;</span><span class="p">()</span><span class="w"> </span><span class="p">{</span>
 <span class="w">                </span><span class="c1">// No SQL context → throw with JSON payload (no context field)</span>
 <span class="w">                </span><span class="n">throw_spark_error_as_json</span><span class="p">(</span><span class="n">env</span><span class="p">,</span><span class="w"> </span><span class="n">spark_err</span><span class="p">)</span>
@@ -816,19 +816,19 @@ reaches the JNI boundary, <code class="docutils literal notranslate"><span class
 </div>
 <p>The JSON looks like this for a divide-by-zero in <code class="docutils literal notranslate"><span class="pre">SELECT</span> <span class="pre">a/b</span> <span class="pre">FROM</span> <span class="pre">t</span></code>:</p>
 <div class="highlight-json notranslate"><div class="highlight"><pre><span></span><span class="p">{</span>
-<span class="w">  </span><span class="nt">&quot;errorType&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;DivideByZero&quot;</span><span class="p">,</span>
-<span class="w">  </span><span class="nt">&quot;errorClass&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;DIVIDE_BY_ZERO&quot;</span><span class="p">,</span>
-<span class="w">  </span><span class="nt">&quot;params&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{},</span>
-<span class="w">  </span><span class="nt">&quot;context&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
-<span class="w">    </span><span class="nt">&quot;sqlText&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;SELECT a/b FROM t&quot;</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;startIndex&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">7</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;stopIndex&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">9</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;line&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">1</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;startPosition&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">7</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;objectType&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">null</span><span class="p">,</span>
-<span class="w">    </span><span class="nt">&quot;objectName&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">null</span>
+<span class="w">  </span><span class="nt">"errorType"</span><span class="p">:</span><span class="w"> </span><span class="s2">"DivideByZero"</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">"errorClass"</span><span class="p">:</span><span class="w"> </span><span class="s2">"DIVIDE_BY_ZERO"</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">"params"</span><span class="p">:</span><span class="w"> </span><span class="p">{},</span>
+<span class="w">  </span><span class="nt">"context"</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nt">"sqlText"</span><span class="p">:</span><span class="w"> </span><span class="s2">"SELECT a/b FROM t"</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"startIndex"</span><span class="p">:</span><span class="w"> </span><span class="mi">7</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"stopIndex"</span><span class="p">:</span><span class="w"> </span><span class="mi">9</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"line"</span><span class="p">:</span><span class="w"> </span><span class="mi">1</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"startPosition"</span><span class="p">:</span><span class="w"> </span><span class="mi">7</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"objectType"</span><span class="p">:</span><span class="w"> </span><span class="kc">null</span><span class="p">,</span>
+<span class="w">    </span><span class="nt">"objectName"</span><span class="p">:</span><span class="w"> </span><span class="kc">null</span>
 <span class="w">  </span><span class="p">},</span>
-<span class="w">  </span><span class="nt">&quot;summary&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;== SQL (line 1, position 8) ==\nSELECT a/b FROM t\n       ^^^&quot;</span>
+<span class="w">  </span><span class="nt">"summary"</span><span class="p">:</span><span class="w"> </span><span class="s2">"== SQL (line 1, position 8) ==\nSELECT a/b FROM t\n       ^^^"</span>
 <span class="p">}</span>
 </pre></div>
 </div>
@@ -846,7 +846,7 @@ reaches the JNI boundary, <code class="docutils literal notranslate"><span class
 
 <span class="w">  </span><span class="kd">public</span><span class="w"> </span><span class="kt">boolean</span><span class="w"> </span><span class="nf">isJsonMessage</span><span class="p">()</span><span class="w"> </span><span class="p">{</span>
 <span class="w">    </span><span class="n">String</span><span class="w"> </span><span class="n">msg</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">getMessage</span><span class="p">();</span>
-<span class="w">    </span><span class="k">return</span><span class="w"> </span><span class="n">msg</span><span class="w"> </span><span class="o">!=</span><span class="w"> </span><span class="kc">null</span><span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="n">msg</span><span class="p">.</span><span class="na">trim</span><span class="p">().</span><span class="na">startsWith</span><span class="p">(</span><span class="s">&quot;{&quot;</span><span class="p">)</span><span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="n">msg</span><span class="p">.</span><span class="na">trim</span><span class="p">().</span><span class="na">endsWith</span><span class="p">(</span><span class="s">&quot;}&quot;</span><span class="p">);</span>
+<span class="w">    </span><span class="k">return</span><span class="w"> </span><span class="n">msg</span><span class="w"> </span><span class="o">!=</span><span class="w"> </span><span class="kc">null</span><span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="n">msg</span><span class="p">.</span><span class="na">trim</span><span class="p">().</span><span class="na">startsWith</span><span class="p">(</span><span class="s">"{"</span><span class="p">)</span><span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span><span class="n">msg</span><span class="p">.</span><span class="na">trim</span><span class="p">().</span><span class="na">endsWith</span><span class="p">(</span><span class="s">"}"</span><span class="p">);</span>
 <span class="w">  </span><span class="p">}</span>
 <span class="p">}</span>
 </pre></div>
@@ -864,7 +864,7 @@ calls into the native engine for the next batch of data, it catches
 <span class="w">  </span><span class="n">nativeUtil</span><span class="p">.</span><span class="n">getNextBatch</span><span class="p">(...)</span>
 <span class="p">}</span><span class="w"> </span><span class="k">catch</span><span class="w"> </span><span class="p">{</span>
 <span class="w">  </span><span class="k">case</span><span class="w"> </span><span class="n">e</span><span class="p">:</span><span class="w"> </span><span class="nc">CometQueryExecutionException</span><span class="w"> </span><span class="o">=&gt;</span>
-<span class="w">    </span><span class="n">logError</span><span class="p">(</span><span class="s">s&quot;Native execution for task </span><span class="si">$</span><span class="n">taskAttemptId</span><span class="s"> failed&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">e</span><span class="p">)</span>
+<span class="w">    </span><span class="n">logError</span><span class="p">(</span><span class="s">s"Native execution for task </span><span class="si">$</span><span class="n">taskAttemptId</span><span class="s"> failed"</span><span class="p">,</span><span class="w"> </span><span class="n">e</span><span class="p">)</span>
 <span class="w">    </span><span class="k">throw</span><span class="w"> </span><span class="nc">SparkErrorConverter</span><span class="p">.</span><span class="n">convertToSparkException</span><span class="p">(</span><span class="n">e</span><span class="p">)</span><span class="w">   </span><span class="c1">// converts JSON to real exception</span>
 <span class="p">}</span>
 </pre></div>
@@ -877,7 +877,7 @@ calls into the native engine for the next batch of data, it catches
 <span class="w">  </span><span class="kd">val</span><span class="w"> </span><span class="n">json</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">parse</span><span class="p">(</span><span class="n">e</span><span class="p">.</span><span class="n">getMessage</span><span class="p">)</span>
 <span class="w">  </span><span class="kd">val</span><span class="w"> </span><span class="n">errorJson</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">json</span><span class="p">.</span><span class="n">extract</span><span class="p">[</span><span class="nc">ErrorJson</span><span class="p">]</span>
 
-<span class="w">  </span><span class="c1">// Reconstruct Spark&#39;s SQLQueryContext from the embedded context</span>
+<span class="w">  </span><span class="c1">// Reconstruct Spark's SQLQueryContext from the embedded context</span>
 <span class="w">  </span><span class="kd">val</span><span class="w"> </span><span class="n">sparkContext</span><span class="p">:</span><span class="w"> </span><span class="nc">Array</span><span class="p">[</span><span class="nc">QueryContext</span><span class="p">]</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">errorJson</span><span class="p">.</span><span class="n">context</span><span class="w"> </span><span class="k">match</span><span class="w"> </span><span class="p">{</span>
 <span class="w">    </span><span class="k">case</span><span class="w"> </span><span class="nc">Some</span><span class="p">(</span><span class="n">ctx</span><span class="p">)</span><span class="w"> </span><span class="o">=&gt;</span>
 <span class="w">      </span><span class="nc">Array</span><span class="p">(</span><span class="nc">SQLQueryContext</span><span class="p">(</span>
@@ -909,13 +909,13 @@ shared by Spark 4.0, 4.1, and 4.2).</p>
 <span class="w">    </span><span class="n">params</span><span class="p">:</span><span class="w"> </span><span class="nc">Map</span><span class="p">[</span><span class="nc">String</span><span class="p">,</span><span class="w"> </span><span class="nc">Any</span><span class="p">],</span><span class="w"> </span><span class="n">context</span><span class="p">:</span><span class="w"> </span><span class="nc">Array</span><span class="p">[</span><span class="nc">QueryContext</span><span class="p">],</span><span class="w"> </span><span class="n">summary</span><span class="p">:</span><span class="w"> </span><span class="nc">String</span><span class="p">):</span><span class="w"> </span><span class="nc">Option</span><span class="p">[</span><span class="nc">Throwable</span><span class="p">]</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span>
 
 <span class="w">  </span><span class="n">errorType</span><span class="w"> </span><span class="k">match</span><span class="w"> </span><span class="p">{</span>
-<span class="w">    </span><span class="k">case</span><span class="w"> </span><span class="s">&quot;DivideByZero&quot;</span><span class="w"> </span><span class="o">=&gt;</span>
+<span class="w">    </span><span class="k">case</span><span class="w"> </span><span class="s">"DivideByZero"</span><span class="w"> </span><span class="o">=&gt;</span>
 <span class="w">      </span><span class="nc">Some</span><span class="p">(</span><span class="nc">QueryExecutionErrors</span><span class="p">.</span><span class="n">divideByZeroError</span><span class="p">(</span><span class="n">sqlCtx</span><span class="p">(</span><span class="n">context</span><span class="p">)))</span>
 <span class="w">      </span><span class="c1">// This is the REAL Spark method that creates the ArithmeticException</span>
 <span class="w">      </span><span class="c1">// with the SQL context pointer. The error message will include</span>
-<span class="w">      </span><span class="c1">// &quot;== SQL (line 1, position 8) ==&quot; etc.</span>
+<span class="w">      </span><span class="c1">// "== SQL (line 1, position 8) ==" etc.</span>
 
-<span class="w">    </span><span class="k">case</span><span class="w"> </span><span class="s">&quot;CastInvalidValue&quot;</span><span class="w"> </span><span class="o">=&gt;</span>
+<span class="w">    </span><span class="k">case</span><span class="w"> </span><span class="s">"CastInvalidValue"</span><span class="w"> </span><span class="o">=&gt;</span>
 <span class="w">      </span><span class="nc">Some</span><span class="p">(</span><span class="nc">QueryExecutionErrors</span><span class="p">.</span><span class="n">castingCauseOverflowError</span><span class="p">(...))</span>
 
 <span class="w">    </span><span class="c1">// ... all other error types ...</span>
@@ -927,19 +927,19 @@ shared by Spark 4.0, 4.1, and 4.2).</p>
 </div>
 <p>The Spark 3.5 shim vs the Spark 4.0 shim differ in subtle API ways:</p>
 <div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="c1">// 3.5: binaryArithmeticCauseOverflowError does NOT take functionName</span>
-<span class="k">case</span><span class="w"> </span><span class="s">&quot;BinaryArithmeticOverflow&quot;</span><span class="w"> </span><span class="o">=&gt;</span>
+<span class="k">case</span><span class="w"> </span><span class="s">"BinaryArithmeticOverflow"</span><span class="w"> </span><span class="o">=&gt;</span>
 <span class="w">  </span><span class="nc">Some</span><span class="p">(</span><span class="nc">QueryExecutionErrors</span><span class="p">.</span><span class="n">binaryArithmeticCauseOverflowError</span><span class="p">(</span>
-<span class="w">    </span><span class="n">params</span><span class="p">(</span><span class="s">&quot;value1&quot;</span><span class="p">).</span><span class="n">toString</span><span class="p">.</span><span class="n">toShort</span><span class="p">,</span>
-<span class="w">    </span><span class="n">params</span><span class="p">(</span><span class="s">&quot;symbol&quot;</span><span class="p">).</span><span class="n">toString</span><span class="p">,</span>
-<span class="w">    </span><span class="n">params</span><span class="p">(</span><span class="s">&quot;value2&quot;</span><span class="p">).</span><span class="n">toString</span><span class="p">.</span><span class="n">toShort</span><span class="p">))</span>
+<span class="w">    </span><span class="n">params</span><span class="p">(</span><span class="s">"value1"</span><span class="p">).</span><span class="n">toString</span><span class="p">.</span><span class="n">toShort</span><span class="p">,</span>
+<span class="w">    </span><span class="n">params</span><span class="p">(</span><span class="s">"symbol"</span><span class="p">).</span><span class="n">toString</span><span class="p">,</span>
+<span class="w">    </span><span class="n">params</span><span class="p">(</span><span class="s">"value2"</span><span class="p">).</span><span class="n">toString</span><span class="p">.</span><span class="n">toShort</span><span class="p">))</span>
 
 <span class="c1">// 4.0: overloadedMethod takes functionName parameter</span>
-<span class="k">case</span><span class="w"> </span><span class="s">&quot;BinaryArithmeticOverflow&quot;</span><span class="w"> </span><span class="o">=&gt;</span>
+<span class="k">case</span><span class="w"> </span><span class="s">"BinaryArithmeticOverflow"</span><span class="w"> </span><span class="o">=&gt;</span>
 <span class="w">  </span><span class="nc">Some</span><span class="p">(</span><span class="nc">QueryExecutionErrors</span><span class="p">.</span><span class="n">binaryArithmeticCauseOverflowError</span><span class="p">(</span>
-<span class="w">    </span><span class="n">params</span><span class="p">(</span><span class="s">&quot;value1&quot;</span><span class="p">).</span><span class="n">toString</span><span class="p">.</span><span class="n">toShort</span><span class="p">,</span>
-<span class="w">    </span><span class="n">params</span><span class="p">(</span><span class="s">&quot;symbol&quot;</span><span class="p">).</span><span class="n">toString</span><span class="p">,</span>
-<span class="w">    </span><span class="n">params</span><span class="p">(</span><span class="s">&quot;value2&quot;</span><span class="p">).</span><span class="n">toString</span><span class="p">.</span><span class="n">toShort</span><span class="p">,</span>
-<span class="w">    </span><span class="n">params</span><span class="p">(</span><span class="s">&quot;functionName&quot;</span><span class="p">).</span><span class="n">toString</span><span class="p">))</span><span class="w">   </span><span class="c1">// extra param in 4.0</span>
+<span class="w">    </span><span class="n">params</span><span class="p">(</span><span class="s">"value1"</span><span class="p">).</span><span class="n">toString</span><span class="p">.</span><span class="n">toShort</span><span class="p">,</span>
+<span class="w">    </span><span class="n">params</span><span class="p">(</span><span class="s">"symbol"</span><span class="p">).</span><span class="n">toString</span><span class="p">,</span>
+<span class="w">    </span><span class="n">params</span><span class="p">(</span><span class="s">"value2"</span><span class="p">).</span><span class="n">toString</span><span class="p">.</span><span class="n">toShort</span><span class="p">,</span>
+<span class="w">    </span><span class="n">params</span><span class="p">(</span><span class="s">"functionName"</span><span class="p">).</span><span class="n">toString</span><span class="p">))</span><span class="w">   </span><span class="c1">// extra param in 4.0</span>
 </pre></div>
 </div>
 </section>
@@ -951,7 +951,7 @@ shared by Spark 4.0, 4.1, and 4.2).</p>
 produce for the same error, including the ANSI error code and the SQL pointer:</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span>org.apache.spark.SparkArithmeticException: [DIVIDE_BY_ZERO] Division by zero.
 Use `try_divide` to tolerate divisor being 0 and return NULL instead.
-If necessary set &quot;spark.sql.ansi.enabled&quot; to &quot;false&quot; to bypass this error.
+If necessary set "spark.sql.ansi.enabled" to "false" to bypass this error.
 
 == SQL (line 1, position 8) ==
 SELECT a/b FROM t

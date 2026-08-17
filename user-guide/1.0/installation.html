@@ -928,7 +928,7 @@ source releases, or from the latest code in the GitHub repository.</p>
 <section id="verify-comet-enabled-for-spark-sql-query">
 <h3>Verify Comet enabled for Spark SQL query<a class="headerlink" href="#verify-comet-enabled-for-spark-sql-query" title="Link to this heading">#</a></h3>
 <p>Create a test Parquet source</p>
-<div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="n">scala</span><span class="o">&gt;</span><span class="w"> </span><span class="p">(</span><span class="mi">0</span><span class="w"> </span><span class="n">until</span><span class="w"> </span><span class="mi">10</span><span class="p">).</span><span class="n">toDF</span><span class="p">(</span><span class="s">&quot;a&quot;</span><span class="p">).</span><span class="n">write</span><span class="p">.</span><span class="n">mode</span><span class="p">(</span><span class="s">&quot;overwrite&quot;</span><span class="p">).</span><span class="n">parquet</span><span class="p">(</span><span class="s">&quot;/tmp/test&quot;</span><span class="p">)</span>
+<div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="n">scala</span><span class="o">&gt;</span><span class="w"> </span><span class="p">(</span><span class="mi">0</span><span class="w"> </span><span class="n">until</span><span class="w"> </span><span class="mi">10</span><span class="p">).</span><span class="n">toDF</span><span class="p">(</span><span class="s">"a"</span><span class="p">).</span><span class="n">write</span><span class="p">.</span><span class="n">mode</span><span class="p">(</span><span class="s">"overwrite"</span><span class="p">).</span><span class="n">parquet</span><span class="p">(</span><span class="s">"/tmp/test"</span><span class="p">)</span>
 </pre></div>
 </div>
 <p>Comet will log output similar to:</p>
@@ -944,8 +944,8 @@ WARN<span class="w"> </span>CometExecRule:<span class="w"> </span>Comet<span cla
 <li><p>INFO message shows the native Comet library has been initialized.</p></li>
 <li><p>The query plan reflects Comet operators being used for this query instead of Spark ones</p></li>
 </ul>
-<div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="n">scala</span><span class="o">&gt;</span><span class="w"> </span><span class="n">spark</span><span class="p">.</span><span class="n">read</span><span class="p">.</span><span class="n">parquet</span><span class="p">(</span><span class="s">&quot;/tmp/test&quot;</span><span class="p">).</span><span class="n">createOrReplaceTempView</span><span class="p">(</span><span class="s">&quot;t1&quot;</span><span class="p">)</span>
-<span class="n">scala</span><span class="o">&gt;</span><span class="w"> </span><span class="n">spark</span><span class="p">.</span><span class="n">sql</span><span class="p">(</span><span class="s">&quot;select * from t1 where a &gt; 5&quot;</span><span class="p">).</span><span class="n">explain</span>
+<div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="n">scala</span><span class="o">&gt;</span><span class="w"> </span><span class="n">spark</span><span class="p">.</span><span class="n">read</span><span class="p">.</span><span class="n">parquet</span><span class="p">(</span><span class="s">"/tmp/test"</span><span class="p">).</span><span class="n">createOrReplaceTempView</span><span class="p">(</span><span class="s">"t1"</span><span class="p">)</span>
+<span class="n">scala</span><span class="o">&gt;</span><span class="w"> </span><span class="n">spark</span><span class="p">.</span><span class="n">sql</span><span class="p">(</span><span class="s">"select * from t1 where a &gt; 5"</span><span class="p">).</span><span class="n">explain</span>
 </pre></div>
 </div>
 <p>Comet will log output similar to:</p>
@@ -961,7 +961,7 @@ CometColumnarToRow
 <h2>Checking the Comet Version<a class="headerlink" href="#checking-the-comet-version" title="Link to this heading">#</a></h2>
 <p>When the Comet plugin is loaded, it exposes its build version as the Spark config
 <code class="docutils literal notranslate"><span class="pre">spark.comet.version</span></code>. This can be queried at runtime from any supported language, for example:</p>
-<div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="n">scala</span><span class="o">&gt;</span><span class="w"> </span><span class="n">spark</span><span class="p">.</span><span class="n">conf</span><span class="p">.</span><span class="n">get</span><span class="p">(</span><span class="s">&quot;spark.comet.version&quot;</span><span class="p">)</span>
+<div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="n">scala</span><span class="o">&gt;</span><span class="w"> </span><span class="n">spark</span><span class="p">.</span><span class="n">conf</span><span class="p">.</span><span class="n">get</span><span class="p">(</span><span class="s">"spark.comet.version"</span><span class="p">)</span>
 </pre></div>
 </div>
 <div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="k">SET</span><span class="w"> </span><span class="n">spark</span><span class="p">.</span><span class="n">comet</span><span class="p">.</span><span class="k">version</span><span class="p">;</span>

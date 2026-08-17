@@ -618,10 +618,10 @@ must not silently break those deployments.</p>
 <p>Use the <code class="docutils literal notranslate"><span class="pre">withAlternative</span></code> builder on <code class="docutils literal notranslate"><span class="pre">ConfigBuilder</span></code> to keep the old key working as a
 deprecated alias:</p>
 <div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="kd">val</span><span class="w"> </span><span class="nc">COMET_FORCE_SHJ</span><span class="p">:</span><span class="w"> </span><span class="nc">ConfigEntry</span><span class="p">[</span><span class="nc">Boolean</span><span class="p">]</span><span class="w"> </span><span class="o">=</span>
-<span class="w">  </span><span class="n">conf</span><span class="p">(</span><span class="s">s&quot;</span><span class="si">$</span><span class="n">COMET_EXEC_CONFIG_PREFIX</span><span class="s">.forceShuffledHashJoin&quot;</span><span class="p">)</span>
-<span class="w">    </span><span class="p">.</span><span class="n">withAlternative</span><span class="p">(</span><span class="s">s&quot;</span><span class="si">$</span><span class="n">COMET_EXEC_CONFIG_PREFIX</span><span class="s">.replaceSortMergeJoin&quot;</span><span class="p">)</span>
+<span class="w">  </span><span class="n">conf</span><span class="p">(</span><span class="s">s"</span><span class="si">$</span><span class="n">COMET_EXEC_CONFIG_PREFIX</span><span class="s">.forceShuffledHashJoin"</span><span class="p">)</span>
+<span class="w">    </span><span class="p">.</span><span class="n">withAlternative</span><span class="p">(</span><span class="s">s"</span><span class="si">$</span><span class="n">COMET_EXEC_CONFIG_PREFIX</span><span class="s">.replaceSortMergeJoin"</span><span class="p">)</span>
 <span class="w">    </span><span class="p">.</span><span class="n">category</span><span class="p">(</span><span class="nc">CATEGORY_EXEC</span><span class="p">)</span>
-<span class="w">    </span><span class="p">.</span><span class="n">doc</span><span class="p">(</span><span class="s">&quot;...&quot;</span><span class="p">)</span>
+<span class="w">    </span><span class="p">.</span><span class="n">doc</span><span class="p">(</span><span class="s">"..."</span><span class="p">)</span>
 <span class="w">    </span><span class="p">.</span><span class="n">booleanConf</span>
 <span class="w">    </span><span class="p">.</span><span class="n">createWithDefault</span><span class="p">(</span><span class="kc">false</span><span class="p">)</span>
 </pre></div>
@@ -657,10 +657,10 @@ minor release, but only when users have a documented way to opt back out. That e
 boolean config under <code class="docutils literal notranslate"><span class="pre">spark.comet.legacy.*</span></code>, defaulting to <code class="docutils literal notranslate"><span class="pre">false</span></code>, whose only job is to restore
 the previous behavior:</p>
 <div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="kd">val</span><span class="w"> </span><span class="nc">COMET_LEGACY_FOO_BEHAVIOR</span><span class="p">:</span><span class="w"> </span><span class="nc">ConfigEntry</span><span class="p">[</span><span class="nc">Boolean</span><span class="p">]</span><span class="w"> </span><span class="o">=</span>
-<span class="w">  </span><span class="n">conf</span><span class="p">(</span><span class="s">&quot;spark.comet.legacy.fooBehavior&quot;</span><span class="p">)</span>
+<span class="w">  </span><span class="n">conf</span><span class="p">(</span><span class="s">"spark.comet.legacy.fooBehavior"</span><span class="p">)</span>
 <span class="w">    </span><span class="p">.</span><span class="n">category</span><span class="p">(</span><span class="nc">CATEGORY_LEGACY</span><span class="p">)</span>
-<span class="w">    </span><span class="p">.</span><span class="n">doc</span><span class="p">(</span><span class="s">&quot;When true, restores the pre-1.1.0 behavior of &lt;config&gt;, which &lt;describe old &quot;</span><span class="w"> </span><span class="o">+</span>
-<span class="w">      </span><span class="s">&quot;behavior&gt;. This config is deprecated and will be removed in a future major release.&quot;</span><span class="p">)</span>
+<span class="w">    </span><span class="p">.</span><span class="n">doc</span><span class="p">(</span><span class="s">"When true, restores the pre-1.1.0 behavior of &lt;config&gt;, which &lt;describe old "</span><span class="w"> </span><span class="o">+</span>
+<span class="w">      </span><span class="s">"behavior&gt;. This config is deprecated and will be removed in a future major release."</span><span class="p">)</span>
 <span class="w">    </span><span class="p">.</span><span class="n">booleanConf</span>
 <span class="w">    </span><span class="p">.</span><span class="n">createWithDefault</span><span class="p">(</span><span class="kc">false</span><span class="p">)</span>
 </pre></div>

@@ -737,7 +737,7 @@ until then.</p>
 </div>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="c1">// Native side (simplified)</span>
 <span class="cp">#[no_mangle]</span>
-<span class="k">pub</span><span class="w"> </span><span class="k">extern</span><span class="w"> </span><span class="s">&quot;system&quot;</span><span class="w"> </span><span class="k">fn</span><span class="w"> </span><span class="nf">Java_</span><span class="o">..</span><span class="p">.</span><span class="n">_getNextBatch</span><span class="p">(</span>
+<span class="k">pub</span><span class="w"> </span><span class="k">extern</span><span class="w"> </span><span class="s">"system"</span><span class="w"> </span><span class="k">fn</span><span class="w"> </span><span class="nf">Java_</span><span class="o">..</span><span class="p">.</span><span class="n">_getNextBatch</span><span class="p">(</span>
 <span class="w">    </span><span class="n">env</span><span class="p">:</span><span class="w"> </span><span class="nc">JNIEnv</span><span class="p">,</span>
 <span class="w">    </span><span class="n">handle</span><span class="p">:</span><span class="w"> </span><span class="nc">jlong</span><span class="p">,</span>
 <span class="p">)</span><span class="w"> </span><span class="p">-&gt;</span><span class="w"> </span><span class="nc">jlong</span><span class="w"> </span><span class="p">{</span>
@@ -750,7 +750,7 @@ until then.</p>
 <span class="p">}</span>
 
 <span class="cp">#[no_mangle]</span>
-<span class="k">pub</span><span class="w"> </span><span class="k">extern</span><span class="w"> </span><span class="s">&quot;system&quot;</span><span class="w"> </span><span class="k">fn</span><span class="w"> </span><span class="nf">Java_</span><span class="o">..</span><span class="p">.</span><span class="n">_exportVector</span><span class="p">(</span>
+<span class="k">pub</span><span class="w"> </span><span class="k">extern</span><span class="w"> </span><span class="s">"system"</span><span class="w"> </span><span class="k">fn</span><span class="w"> </span><span class="nf">Java_</span><span class="o">..</span><span class="p">.</span><span class="n">_exportVector</span><span class="p">(</span>
 <span class="w">    </span><span class="n">env</span><span class="p">:</span><span class="w"> </span><span class="nc">JNIEnv</span><span class="p">,</span>
 <span class="w">    </span><span class="n">batch_handle</span><span class="p">:</span><span class="w"> </span><span class="nc">jlong</span><span class="p">,</span>
 <span class="w">    </span><span class="n">col_idx</span><span class="p">:</span><span class="w"> </span><span class="nc">jint</span><span class="p">,</span>
@@ -804,7 +804,7 @@ t4      Batch handle released      ArrowBuf freed        Data freed
 <h3>Release Callbacks<a class="headerlink" href="#release-callbacks" title="Link to this heading">#</a></h3>
 <p>Critical for proper cleanup:</p>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="c1">// Native release callback (simplified)</span>
-<span class="k">extern</span><span class="w"> </span><span class="s">&quot;C&quot;</span><span class="w"> </span><span class="k">fn</span><span class="w"> </span><span class="nf">release_batch</span><span class="p">(</span><span class="n">array</span><span class="p">:</span><span class="w"> </span><span class="o">*</span><span class="k">mut</span><span class="w"> </span><span class="n">FFI_ArrowArray</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="k">extern</span><span class="w"> </span><span class="s">"C"</span><span class="w"> </span><span class="k">fn</span><span class="w"> </span><span class="nf">release_batch</span><span class="p">(</span><span class="n">array</span><span class="p">:</span><span class="w"> </span><span class="o">*</span><span class="k">mut</span><span class="w"> </span><span class="n">FFI_ArrowArray</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
 <span class="w">    </span><span class="k">if</span><span class="w"> </span><span class="o">!</span><span class="n">array</span><span class="p">.</span><span class="n">is_null</span><span class="p">()</span><span class="w"> </span><span class="p">{</span>
 <span class="w">        </span><span class="k">unsafe</span><span class="w"> </span><span class="p">{</span>
 <span class="w">            </span><span class="c1">// Free the data buffers</span>

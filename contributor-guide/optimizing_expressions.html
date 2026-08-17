@@ -585,7 +585,7 @@ shape <strong>and no meaningful regression on any shape</strong>.</p></li>
 <p>Each optimized expression should have a criterion benchmark under <code class="docutils literal notranslate"><span class="pre">native/spark-expr/benches/</span></code>
 registered in <code class="docutils literal notranslate"><span class="pre">native/spark-expr/Cargo.toml</span></code>:</p>
 <div class="highlight-toml notranslate"><div class="highlight"><pre><span></span><span class="k">[[bench]]</span>
-<span class="n">name</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;unhex&quot;</span>
+<span class="n">name</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"unhex"</span>
 <span class="n">harness</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">false</span>
 </pre></div>
 </div>
@@ -601,11 +601,11 @@ wraps the call in <code class="docutils literal notranslate"><span class="pre">b
 <span class="w">            </span><span class="n">b</span><span class="p">.</span><span class="n">iter</span><span class="p">(</span><span class="o">||</span><span class="w"> </span><span class="n">black_box</span><span class="p">(</span><span class="n">spark_unhex</span><span class="p">(</span><span class="n">black_box</span><span class="p">(</span><span class="o">&amp;</span><span class="n">args</span><span class="p">)).</span><span class="n">unwrap</span><span class="p">()))</span>
 <span class="w">        </span><span class="p">});</span>
 <span class="w">    </span><span class="p">};</span>
-<span class="w">    </span><span class="n">bench</span><span class="p">(</span><span class="s">&quot;spark_unhex: all valid&quot;</span><span class="p">,</span><span class="w"> </span><span class="o">&amp;</span><span class="n">all_valid</span><span class="p">);</span>
-<span class="w">    </span><span class="n">bench</span><span class="p">(</span><span class="s">&quot;spark_unhex: with nulls&quot;</span><span class="p">,</span><span class="w"> </span><span class="o">&amp;</span><span class="n">with_nulls</span><span class="p">);</span>
-<span class="w">    </span><span class="n">bench</span><span class="p">(</span><span class="s">&quot;spark_unhex: long strings&quot;</span><span class="p">,</span><span class="w"> </span><span class="o">&amp;</span><span class="n">long_valid</span><span class="p">);</span>
-<span class="w">    </span><span class="n">bench</span><span class="p">(</span><span class="s">&quot;spark_unhex: invalid inputs&quot;</span><span class="p">,</span><span class="w"> </span><span class="o">&amp;</span><span class="n">invalid</span><span class="p">);</span>
-<span class="w">    </span><span class="n">bench</span><span class="p">(</span><span class="s">&quot;spark_unhex: mixed hex column&quot;</span><span class="p">,</span><span class="w"> </span><span class="o">&amp;</span><span class="n">mixed</span><span class="p">);</span>
+<span class="w">    </span><span class="n">bench</span><span class="p">(</span><span class="s">"spark_unhex: all valid"</span><span class="p">,</span><span class="w"> </span><span class="o">&amp;</span><span class="n">all_valid</span><span class="p">);</span>
+<span class="w">    </span><span class="n">bench</span><span class="p">(</span><span class="s">"spark_unhex: with nulls"</span><span class="p">,</span><span class="w"> </span><span class="o">&amp;</span><span class="n">with_nulls</span><span class="p">);</span>
+<span class="w">    </span><span class="n">bench</span><span class="p">(</span><span class="s">"spark_unhex: long strings"</span><span class="p">,</span><span class="w"> </span><span class="o">&amp;</span><span class="n">long_valid</span><span class="p">);</span>
+<span class="w">    </span><span class="n">bench</span><span class="p">(</span><span class="s">"spark_unhex: invalid inputs"</span><span class="p">,</span><span class="w"> </span><span class="o">&amp;</span><span class="n">invalid</span><span class="p">);</span>
+<span class="w">    </span><span class="n">bench</span><span class="p">(</span><span class="s">"spark_unhex: mixed hex column"</span><span class="p">,</span><span class="w"> </span><span class="o">&amp;</span><span class="n">mixed</span><span class="p">);</span>
 <span class="p">}</span>
 </pre></div>
 </div>

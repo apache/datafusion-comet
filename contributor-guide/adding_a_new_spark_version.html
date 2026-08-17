@@ -691,7 +691,7 @@ a linked issue (see the next section) and fix in a follow-up.</p></li>
 <h3>Skip Failing Tests with Linked Issues<a class="headerlink" href="#skip-failing-tests-with-linked-issues" title="Link to this heading">#</a></h3>
 <p>For tests that cannot be fixed in this PR, use ScalaTest’s <code class="docutils literal notranslate"><span class="pre">assume()</span></code> with a
 GitHub issue link as the message:</p>
-<div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="n">assume</span><span class="p">(</span><span class="o">!</span><span class="n">isSpark42Plus</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;https://github.com/apache/datafusion-comet/issues/NNNN&quot;</span><span class="p">)</span>
+<div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="n">assume</span><span class="p">(</span><span class="o">!</span><span class="n">isSpark42Plus</span><span class="p">,</span><span class="w"> </span><span class="s">"https://github.com/apache/datafusion-comet/issues/NNNN"</span><span class="p">)</span>
 </pre></div>
 </div>
 <p>Open one issue per test or per cluster of related tests, and reference the
@@ -731,11 +731,11 @@ The suite (<code class="docutils literal notranslate"><span class="pre">CometPla
 when no version-specific approved plan exists, so most queries do not need
 their own copy. Wire the new version into the fallback chain:</p>
 <div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="k">private</span><span class="w"> </span><span class="kd">val</span><span class="w"> </span><span class="n">planName</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="n">isSpark42Plus</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
-<span class="w">  </span><span class="s">&quot;approved-plans-v1_4-spark4_2&quot;</span>
+<span class="w">  </span><span class="s">"approved-plans-v1_4-spark4_2"</span>
 <span class="p">}</span><span class="w"> </span><span class="k">else</span><span class="w"> </span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="n">isSpark41Plus</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
-<span class="w">  </span><span class="s">&quot;approved-plans-v1_4-spark4_1&quot;</span>
+<span class="w">  </span><span class="s">"approved-plans-v1_4-spark4_1"</span>
 <span class="p">}</span><span class="w"> </span><span class="k">else</span><span class="w"> </span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="n">isSpark40Plus</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
-<span class="w">  </span><span class="s">&quot;approved-plans-v1_4-spark4_0&quot;</span>
+<span class="w">  </span><span class="s">"approved-plans-v1_4-spark4_0"</span>
 <span class="p">}</span><span class="w"> </span><span class="k">else</span><span class="w"> </span><span class="p">{</span>
 <span class="w">  </span><span class="p">...</span>
 <span class="p">}</span>

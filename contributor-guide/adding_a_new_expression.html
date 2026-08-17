@@ -584,7 +584,7 @@ under the License.
 
 <span class="w">    </span><span class="kd">val</span><span class="w"> </span><span class="n">optExpr</span><span class="w"> </span><span class="o">=</span>
 <span class="w">      </span><span class="n">scalarFunctionExprToProtoWithReturnType</span><span class="p">(</span>
-<span class="w">        </span><span class="s">&quot;unhex&quot;</span><span class="p">,</span>
+<span class="w">        </span><span class="s">"unhex"</span><span class="p">,</span>
 <span class="w">        </span><span class="n">expr</span><span class="p">.</span><span class="n">dataType</span><span class="p">,</span>
 <span class="w">        </span><span class="kc">false</span><span class="p">,</span>
 <span class="w">        </span><span class="n">childExpr</span><span class="p">,</span>
@@ -603,7 +603,7 @@ under the License.
 <li><p><code class="docutils literal notranslate"><span class="pre">getExprConfigName(expr:</span> <span class="pre">T):</span> <span class="pre">String</span></code> - Optional. Returns a short name for configuration keys. Defaults to the Spark class name.</p></li>
 </ul>
 <p>For simple scalar functions that map directly to a DataFusion function, you can use the built-in <code class="docutils literal notranslate"><span class="pre">CometScalarFunction</span></code> implementation:</p>
-<div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="k">classOf</span><span class="p">[</span><span class="nc">Cos</span><span class="p">]</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="nc">CometScalarFunction</span><span class="p">(</span><span class="s">&quot;cos&quot;</span><span class="p">)</span>
+<div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="k">classOf</span><span class="p">[</span><span class="nc">Cos</span><span class="p">]</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="nc">CometScalarFunction</span><span class="p">(</span><span class="s">"cos"</span><span class="p">)</span>
 </pre></div>
 </div>
 </section>
@@ -612,7 +612,7 @@ under the License.
 <p><code class="docutils literal notranslate"><span class="pre">CometScalarFunction(name)</span></code> and the lower-level <code class="docutils literal notranslate"><span class="pre">scalarFunctionExprToProto(name,</span> <span class="pre">args)</span></code> helper both produce a protobuf <code class="docutils literal notranslate"><span class="pre">ScalarFunc</span></code> message <strong>without</strong> a <code class="docutils literal notranslate"><span class="pre">return_type</span></code> field. That is fine when the function name does not collide with a DataFusion built-in, or when it does collide and the Spark and DataFusion versions take the same arity and types. In that case the native planner consults DataFusion’s UDF registry only to resolve the return type, then swaps in Comet’s UDF for execution.</p>
 <p>It is <strong>not</strong> fine when the Spark function and the DataFusion built-in differ in arity or input types. The native planner calls <code class="docutils literal notranslate"><span class="pre">coerce_types</span></code> and <code class="docutils literal notranslate"><span class="pre">return_field_from_args</span></code> on DataFusion’s UDF before Comet’s UDF is selected, and a signature mismatch fails the query at execution time with an error like:</p>
 <div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">org</span><span class="o">.</span><span class="n">apache</span><span class="o">.</span><span class="n">comet</span><span class="o">.</span><span class="n">CometNativeException</span><span class="p">:</span> <span class="n">Error</span> <span class="kn">from</span><span class="w"> </span><span class="nn">DataFusion</span><span class="p">:</span>
-<span class="n">Function</span> <span class="s1">&#39;levenshtein&#39;</span> <span class="n">expects</span> <span class="mi">2</span> <span class="n">arguments</span> <span class="n">but</span> <span class="n">received</span> <span class="mf">3.</span>
+<span class="n">Function</span> <span class="s1">'levenshtein'</span> <span class="n">expects</span> <span class="mi">2</span> <span class="n">arguments</span> <span class="n">but</span> <span class="n">received</span> <span class="mf">3.</span>
 </pre></div>
 </div>
 <p>The classic case is <code class="docutils literal notranslate"><span class="pre">levenshtein</span></code>. Spark accepts an optional 3rd <code class="docutils literal notranslate"><span class="pre">threshold</span></code> argument, DataFusion’s built-in is 2-arg only, so the 3-arg form fails native execution unless the serde sets the return type explicitly. Other names that exist in both engines with potentially different signatures include <code class="docutils literal notranslate"><span class="pre">concat</span></code>, <code class="docutils literal notranslate"><span class="pre">coalesce</span></code>, <code class="docutils literal notranslate"><span class="pre">sha2</span></code>, and <code class="docutils literal notranslate"><span class="pre">regexp_replace</span></code>. If you are adding a function whose name is shared with <code class="docutils literal notranslate"><span class="pre">datafusion-functions</span></code>, check the upstream signature before deciding how to serialize.</p>
@@ -624,7 +624,7 @@ under the License.
 <span class="w">      </span><span class="n">binding</span><span class="p">:</span><span class="w"> </span><span class="nc">Boolean</span><span class="p">):</span><span class="w"> </span><span class="nc">Option</span><span class="p">[</span><span class="nc">ExprOuterClass</span><span class="p">.</span><span class="nc">Expr</span><span class="p">]</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span>
 <span class="w">    </span><span class="kd">val</span><span class="w"> </span><span class="n">childExprs</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">expr</span><span class="p">.</span><span class="n">children</span><span class="p">.</span><span class="n">map</span><span class="p">(</span><span class="n">exprToProtoInternal</span><span class="p">(</span><span class="n">_</span><span class="p">,</span><span class="w"> </span><span class="n">inputs</span><span class="p">,</span><span class="w"> </span><span class="n">binding</span><span class="p">))</span>
 <span class="w">    </span><span class="kd">val</span><span class="w"> </span><span class="n">optExpr</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">scalarFunctionExprToProtoWithReturnType</span><span class="p">(</span>
-<span class="w">      </span><span class="s">&quot;levenshtein&quot;</span><span class="p">,</span>
+<span class="w">      </span><span class="s">"levenshtein"</span><span class="p">,</span>
 <span class="w">      </span><span class="n">expr</span><span class="p">.</span><span class="n">dataType</span><span class="p">,</span>
 <span class="w">      </span><span class="kc">false</span><span class="p">,</span>
 <span class="w">      </span><span class="n">childExprs</span><span class="p">:</span><span class="w"> </span><span class="n">_*</span><span class="p">)</span>
@@ -681,7 +681,7 @@ under the License.
 <span class="w">        </span><span class="nc">Compatible</span><span class="p">()</span>
 <span class="w">      </span><span class="k">case</span><span class="w"> </span><span class="n">_</span><span class="w"> </span><span class="o">=&gt;</span>
 <span class="w">        </span><span class="c1">// Spark supports NumericType, DayTimeIntervalType, and YearMonthIntervalType</span>
-<span class="w">        </span><span class="nc">Unsupported</span><span class="p">(</span><span class="nc">Some</span><span class="p">(</span><span class="s">&quot;Only integral, floating-point, and decimal types are supported&quot;</span><span class="p">))</span>
+<span class="w">        </span><span class="nc">Unsupported</span><span class="p">(</span><span class="nc">Some</span><span class="p">(</span><span class="s">"Only integral, floating-point, and decimal types are supported"</span><span class="p">))</span>
 <span class="w">    </span><span class="p">}</span>
 <span class="w">  </span><span class="p">}</span>
 
@@ -698,7 +698,7 @@ under the License.
 <p>The <code class="docutils literal notranslate"><span class="pre">TruncDate</span></code> expression only supports specific format strings:</p>
 <div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="k">object</span><span class="w"> </span><span class="nc">CometTruncDate</span><span class="w"> </span><span class="k">extends</span><span class="w"> </span><span class="nc">CometExpressionSerde</span><span class="p">[</span><span class="nc">TruncDate</span><span class="p">]</span><span class="w"> </span><span class="p">{</span>
 <span class="w">  </span><span class="kd">val</span><span class="w"> </span><span class="n">supportedFormats</span><span class="p">:</span><span class="w"> </span><span class="nc">Seq</span><span class="p">[</span><span class="nc">String</span><span class="p">]</span><span class="w"> </span><span class="o">=</span>
-<span class="w">    </span><span class="nc">Seq</span><span class="p">(</span><span class="s">&quot;year&quot;</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;yyyy&quot;</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;yy&quot;</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;quarter&quot;</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;mon&quot;</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;month&quot;</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;mm&quot;</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;week&quot;</span><span class="p">)</span>
+<span class="w">    </span><span class="nc">Seq</span><span class="p">(</span><span class="s">"year"</span><span class="p">,</span><span class="w"> </span><span class="s">"yyyy"</span><span class="p">,</span><span class="w"> </span><span class="s">"yy"</span><span class="p">,</span><span class="w"> </span><span class="s">"quarter"</span><span class="p">,</span><span class="w"> </span><span class="s">"mon"</span><span class="p">,</span><span class="w"> </span><span class="s">"month"</span><span class="p">,</span><span class="w"> </span><span class="s">"mm"</span><span class="p">,</span><span class="w"> </span><span class="s">"week"</span><span class="p">)</span>
 
 <span class="w">  </span><span class="k">override</span><span class="w"> </span><span class="k">def</span><span class="w"> </span><span class="nf">getSupportLevel</span><span class="p">(</span><span class="n">expr</span><span class="p">:</span><span class="w"> </span><span class="nc">TruncDate</span><span class="p">):</span><span class="w"> </span><span class="nc">SupportLevel</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span>
 <span class="w">    </span><span class="n">expr</span><span class="p">.</span><span class="n">format</span><span class="w"> </span><span class="k">match</span><span class="w"> </span><span class="p">{</span>
@@ -706,11 +706,11 @@ under the License.
 <span class="w">        </span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="n">supportedFormats</span><span class="p">.</span><span class="n">contains</span><span class="p">(</span><span class="n">fmt</span><span class="p">.</span><span class="n">toString</span><span class="p">.</span><span class="n">toLowerCase</span><span class="p">(</span><span class="nc">Locale</span><span class="p">.</span><span class="nc">ROOT</span><span class="p">)))</span><span class="w"> </span><span class="p">{</span>
 <span class="w">          </span><span class="nc">Compatible</span><span class="p">()</span>
 <span class="w">        </span><span class="p">}</span><span class="w"> </span><span class="k">else</span><span class="w"> </span><span class="p">{</span>
-<span class="w">          </span><span class="nc">Unsupported</span><span class="p">(</span><span class="nc">Some</span><span class="p">(</span><span class="s">s&quot;Format </span><span class="si">$</span><span class="n">fmt</span><span class="s"> is not supported&quot;</span><span class="p">))</span>
+<span class="w">          </span><span class="nc">Unsupported</span><span class="p">(</span><span class="nc">Some</span><span class="p">(</span><span class="s">s"Format </span><span class="si">$</span><span class="n">fmt</span><span class="s"> is not supported"</span><span class="p">))</span>
 <span class="w">        </span><span class="p">}</span>
 <span class="w">      </span><span class="k">case</span><span class="w"> </span><span class="n">_</span><span class="w"> </span><span class="o">=&gt;</span>
 <span class="w">        </span><span class="nc">Incompatible</span><span class="p">(</span>
-<span class="w">          </span><span class="nc">Some</span><span class="p">(</span><span class="s">&quot;Invalid format strings will throw an exception instead of returning NULL&quot;</span><span class="p">))</span>
+<span class="w">          </span><span class="nc">Some</span><span class="p">(</span><span class="s">"Invalid format strings will throw an exception instead of returning NULL"</span><span class="p">))</span>
 <span class="w">    </span><span class="p">}</span>
 <span class="w">  </span><span class="p">}</span>
 
@@ -776,14 +776,14 @@ under the License.
 <div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="k">object</span><span class="w"> </span><span class="nc">CometStructsToJson</span><span class="w"> </span><span class="k">extends</span><span class="w"> </span><span class="nc">CometExpressionSerde</span><span class="p">[</span><span class="nc">StructsToJson</span><span class="p">]</span><span class="w"> </span><span class="p">{</span>
 
 <span class="w">  </span><span class="k">override</span><span class="w"> </span><span class="k">def</span><span class="w"> </span><span class="nf">getIncompatibleReasons</span><span class="p">():</span><span class="w"> </span><span class="nc">Seq</span><span class="p">[</span><span class="nc">String</span><span class="p">]</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nc">Seq</span><span class="p">(</span>
-<span class="w">    </span><span class="s">&quot;Does not support `+Infinity` and `-Infinity` for numeric types (float, double).&quot;</span><span class="w"> </span><span class="o">+</span>
-<span class="w">      </span><span class="s">&quot; (https://github.com/apache/datafusion-comet/issues/3016)&quot;</span><span class="p">)</span>
+<span class="w">    </span><span class="s">"Does not support `+Infinity` and `-Infinity` for numeric types (float, double)."</span><span class="w"> </span><span class="o">+</span>
+<span class="w">      </span><span class="s">" (https://github.com/apache/datafusion-comet/issues/3016)"</span><span class="p">)</span>
 
 <span class="w">  </span><span class="k">override</span><span class="w"> </span><span class="k">def</span><span class="w"> </span><span class="nf">getSupportLevel</span><span class="p">(</span><span class="n">expr</span><span class="p">:</span><span class="w"> </span><span class="nc">StructsToJson</span><span class="p">):</span><span class="w"> </span><span class="nc">SupportLevel</span><span class="w"> </span><span class="o">=</span>
 <span class="w">    </span><span class="nc">Incompatible</span><span class="p">(</span>
 <span class="w">      </span><span class="nc">Some</span><span class="p">(</span>
-<span class="w">        </span><span class="s">&quot;Does not support Infinity/-Infinity for numeric types&quot;</span><span class="w"> </span><span class="o">+</span>
-<span class="w">          </span><span class="s">&quot; (https://github.com/apache/datafusion-comet/issues/3016)&quot;</span><span class="p">))</span>
+<span class="w">        </span><span class="s">"Does not support Infinity/-Infinity for numeric types"</span><span class="w"> </span><span class="o">+</span>
+<span class="w">          </span><span class="s">" (https://github.com/apache/datafusion-comet/issues/3016)"</span><span class="p">))</span>
 
 <span class="w">  </span><span class="c1">// ... convert ...</span>
 <span class="p">}</span>
@@ -795,8 +795,8 @@ under the License.
 <div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="k">object</span><span class="w"> </span><span class="nc">CometSortArray</span><span class="w"> </span><span class="k">extends</span><span class="w"> </span><span class="nc">CometExpressionSerde</span><span class="p">[</span><span class="nc">SortArray</span><span class="p">]</span><span class="w"> </span><span class="p">{</span>
 
 <span class="w">  </span><span class="k">override</span><span class="w"> </span><span class="k">def</span><span class="w"> </span><span class="nf">getUnsupportedReasons</span><span class="p">():</span><span class="w"> </span><span class="nc">Seq</span><span class="p">[</span><span class="nc">String</span><span class="p">]</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nc">Seq</span><span class="p">(</span>
-<span class="w">    </span><span class="s">&quot;Nested arrays with `Struct` or `Null` child values are not supported natively and will&quot;</span><span class="w"> </span><span class="o">+</span>
-<span class="w">      </span><span class="s">&quot; fall back to Spark.&quot;</span><span class="p">)</span>
+<span class="w">    </span><span class="s">"Nested arrays with `Struct` or `Null` child values are not supported natively and will"</span><span class="w"> </span><span class="o">+</span>
+<span class="w">      </span><span class="s">" fall back to Spark."</span><span class="p">)</span>
 
 <span class="w">  </span><span class="c1">// ... convert ...</span>
 <span class="p">}</span>
@@ -807,10 +807,10 @@ under the License.
 <h5>Example: Enumerating supported values<a class="headerlink" href="#example-enumerating-supported-values" title="Link to this heading">#</a></h5>
 <p>When the expression only supports a known set of argument values, build the reason from that set so the documentation stays in sync with the code:</p>
 <div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="k">override</span><span class="w"> </span><span class="k">def</span><span class="w"> </span><span class="nf">getUnsupportedReasons</span><span class="p">():</span><span class="w"> </span><span class="nc">Seq</span><span class="p">[</span><span class="nc">String</span><span class="p">]</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nc">Seq</span><span class="p">(</span>
-<span class="w">  </span><span class="s">&quot;Only the following formats are supported:&quot;</span><span class="w"> </span><span class="o">+</span>
+<span class="w">  </span><span class="s">"Only the following formats are supported:"</span><span class="w"> </span><span class="o">+</span>
 <span class="w">    </span><span class="n">supportedFormats</span><span class="p">.</span><span class="n">keys</span><span class="p">.</span><span class="n">toSeq</span><span class="p">.</span><span class="n">sorted</span>
-<span class="w">      </span><span class="p">.</span><span class="n">map</span><span class="p">(</span><span class="n">k</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="s">s&quot;`</span><span class="si">$</span><span class="n">k</span><span class="s">`&quot;</span><span class="p">)</span>
-<span class="w">      </span><span class="p">.</span><span class="n">mkString</span><span class="p">(</span><span class="s">&quot;\n  - &quot;</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;\n  - &quot;</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;&quot;</span><span class="p">))</span>
+<span class="w">      </span><span class="p">.</span><span class="n">map</span><span class="p">(</span><span class="n">k</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="s">s"`</span><span class="si">$</span><span class="n">k</span><span class="s">`"</span><span class="p">)</span>
+<span class="w">      </span><span class="p">.</span><span class="n">mkString</span><span class="p">(</span><span class="s">"\n  - "</span><span class="p">,</span><span class="w"> </span><span class="s">"\n  - "</span><span class="p">,</span><span class="w"> </span><span class="s">""</span><span class="p">))</span>
 </pre></div>
 </div>
 </section>
@@ -824,7 +824,7 @@ under the License.
 </div>
 <p>To regenerate the Implementation column locally, run the <code class="docutils literal notranslate"><span class="pre">generate-docs</span></code> profile against any supported Spark version:</p>
 <div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>./mvnw<span class="w"> </span>-q<span class="w"> </span>-pl<span class="w"> </span>spark<span class="w"> </span>-am<span class="w"> </span>-Pspark-3.5<span class="w"> </span>-Pgenerate-docs<span class="w"> </span>-DskipTests<span class="w"> </span>package<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>-Dexec.arguments<span class="o">=</span><span class="s2">&quot;</span><span class="k">$(</span><span class="nb">pwd</span><span class="k">)</span><span class="s2">/docs/source/user-guide/latest/,spark-3.5&quot;</span>
+<span class="w">  </span>-Dexec.arguments<span class="o">=</span><span class="s2">"</span><span class="k">$(</span><span class="nb">pwd</span><span class="k">)</span><span class="s2">/docs/source/user-guide/latest/,spark-3.5"</span>
 </pre></div>
 </div>
 <p>That run rewrites every Implementation cell in place, mapping SQL function names to Catalyst classes via Spark’s <code class="docutils literal notranslate"><span class="pre">FunctionRegistry</span></code> and looking each class up in <code class="docutils literal notranslate"><span class="pre">QueryPlanSerde</span></code>. Commit the updated <code class="docutils literal notranslate"><span class="pre">expressions.md</span></code> alongside your serde change. If you forget, a reviewer or a subsequent doc regeneration will fill it in — an <code class="docutils literal notranslate"><span class="pre">—</span></code> in the column for a supported expression usually means the row is aliased or rewritten before Comet sees it (for example <code class="docutils literal notranslate"><span class="pre">to_date</span></code> → <code class="docutils literal notranslate"><span class="pre">Cast</span></code>), not that the row is broken.</p>
@@ -840,15 +840,15 @@ under the License.
 
 <span class="k">statement</span>
 <span class="k">INSERT</span><span class="w"> </span><span class="k">INTO</span><span class="w"> </span><span class="n">test_unhex</span><span class="w"> </span><span class="k">VALUES</span>
-<span class="w">  </span><span class="p">(</span><span class="s1">&#39;537061726B2053514C&#39;</span><span class="p">),</span>
-<span class="w">  </span><span class="p">(</span><span class="s1">&#39;737472696E67&#39;</span><span class="p">),</span>
-<span class="w">  </span><span class="p">(</span><span class="s1">&#39;\0&#39;</span><span class="p">),</span>
-<span class="w">  </span><span class="p">(</span><span class="s1">&#39;&#39;</span><span class="p">),</span>
-<span class="w">  </span><span class="p">(</span><span class="s1">&#39;###&#39;</span><span class="p">),</span>
-<span class="w">  </span><span class="p">(</span><span class="s1">&#39;G123&#39;</span><span class="p">),</span>
-<span class="w">  </span><span class="p">(</span><span class="s1">&#39;hello&#39;</span><span class="p">),</span>
-<span class="w">  </span><span class="p">(</span><span class="s1">&#39;A1B&#39;</span><span class="p">),</span>
-<span class="w">  </span><span class="p">(</span><span class="s1">&#39;0A1B&#39;</span><span class="p">),</span>
+<span class="w">  </span><span class="p">(</span><span class="s1">'537061726B2053514C'</span><span class="p">),</span>
+<span class="w">  </span><span class="p">(</span><span class="s1">'737472696E67'</span><span class="p">),</span>
+<span class="w">  </span><span class="p">(</span><span class="s1">'\0'</span><span class="p">),</span>
+<span class="w">  </span><span class="p">(</span><span class="s1">''</span><span class="p">),</span>
+<span class="w">  </span><span class="p">(</span><span class="s1">'###'</span><span class="p">),</span>
+<span class="w">  </span><span class="p">(</span><span class="s1">'G123'</span><span class="p">),</span>
+<span class="w">  </span><span class="p">(</span><span class="s1">'hello'</span><span class="p">),</span>
+<span class="w">  </span><span class="p">(</span><span class="s1">'A1B'</span><span class="p">),</span>
+<span class="w">  </span><span class="p">(</span><span class="s1">'0A1B'</span><span class="p">),</span>
 <span class="w">  </span><span class="p">(</span><span class="k">NULL</span><span class="p">)</span>
 
 <span class="c1">-- column argument</span>
@@ -857,12 +857,12 @@ under the License.
 
 <span class="c1">-- literal arguments</span>
 <span class="n">query</span>
-<span class="k">SELECT</span><span class="w"> </span><span class="n">unhex</span><span class="p">(</span><span class="s1">&#39;48656C6C6F&#39;</span><span class="p">),</span><span class="w"> </span><span class="n">unhex</span><span class="p">(</span><span class="s1">&#39;&#39;</span><span class="p">),</span><span class="w"> </span><span class="n">unhex</span><span class="p">(</span><span class="k">NULL</span><span class="p">)</span>
+<span class="k">SELECT</span><span class="w"> </span><span class="n">unhex</span><span class="p">(</span><span class="s1">'48656C6C6F'</span><span class="p">),</span><span class="w"> </span><span class="n">unhex</span><span class="p">(</span><span class="s1">''</span><span class="p">),</span><span class="w"> </span><span class="n">unhex</span><span class="p">(</span><span class="k">NULL</span><span class="p">)</span>
 </pre></div>
 </div>
 <p>Each <code class="docutils literal notranslate"><span class="pre">query</span></code> block automatically runs the SQL through both Spark and Comet and compares results, and also verifies that Comet executes the expression natively (not falling back to Spark).</p>
 <p>Run the test with:</p>
-<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>./mvnw<span class="w"> </span><span class="nb">test</span><span class="w"> </span>-Dsuites<span class="o">=</span><span class="s2">&quot;org.apache.comet.CometSqlFileTestSuite unhex&quot;</span><span class="w"> </span>-Dtest<span class="o">=</span>none
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>./mvnw<span class="w"> </span><span class="nb">test</span><span class="w"> </span>-Dsuites<span class="o">=</span><span class="s2">"org.apache.comet.CometSqlFileTestSuite unhex"</span><span class="w"> </span>-Dtest<span class="o">=</span>none
 </pre></div>
 </div>
 <p>For full documentation on the test file format, including directives like <code class="docutils literal notranslate"><span class="pre">ConfigMatrix</span></code>, query modes like <code class="docutils literal notranslate"><span class="pre">spark_answer_only</span></code> and <code class="docutils literal notranslate"><span class="pre">tolerance</span></code>, handling known bugs with <code class="docutils literal notranslate"><span class="pre">ignore(...)</span></code>, and tips for writing thorough tests, see the <a class="reference internal" href="sql-file-tests.html"><span class="std std-doc">Comet SQL Tests</span></a> guide.</p>
@@ -878,32 +878,32 @@ under the License.
 <section id="comet-scala-tests-alternative">
 <h5>Comet Scala Tests (alternative)<a class="headerlink" href="#comet-scala-tests-alternative" title="Link to this heading">#</a></h5>
 <p>For cases that require programmatic setup or custom assertions beyond what SQL files support, you can also add Comet Scala Tests in <code class="docutils literal notranslate"><span class="pre">CometExpressionSuite</span></code> using the <code class="docutils literal notranslate"><span class="pre">checkSparkAnswerAndOperator</span></code> method:</p>
-<div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="n">test</span><span class="p">(</span><span class="s">&quot;unhex&quot;</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
-<span class="w">  </span><span class="kd">val</span><span class="w"> </span><span class="n">table</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">&quot;unhex_table&quot;</span>
+<div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="n">test</span><span class="p">(</span><span class="s">"unhex"</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="kd">val</span><span class="w"> </span><span class="n">table</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s">"unhex_table"</span>
 <span class="w">  </span><span class="n">withTable</span><span class="p">(</span><span class="n">table</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
-<span class="w">    </span><span class="n">sql</span><span class="p">(</span><span class="s">s&quot;create table </span><span class="si">$</span><span class="n">table</span><span class="s">(col string) using parquet&quot;</span><span class="p">)</span>
+<span class="w">    </span><span class="n">sql</span><span class="p">(</span><span class="s">s"create table </span><span class="si">$</span><span class="n">table</span><span class="s">(col string) using parquet"</span><span class="p">)</span>
 
-<span class="w">    </span><span class="n">sql</span><span class="p">(</span><span class="s">s&quot;&quot;&quot;INSERT INTO </span><span class="si">$</span><span class="n">table</span><span class="s"> VALUES</span>
-<span class="s">      |(&#39;537061726B2053514C&#39;),</span>
-<span class="s">      |(&#39;737472696E67&#39;),</span>
-<span class="s">      |(&#39;\\0&#39;),</span>
-<span class="s">      |(&#39;&#39;),</span>
-<span class="s">      |(&#39;###&#39;),</span>
-<span class="s">      |(&#39;G123&#39;),</span>
-<span class="s">      |(&#39;hello&#39;),</span>
-<span class="s">      |(&#39;A1B&#39;),</span>
-<span class="s">      |(&#39;0A1B&#39;)&quot;&quot;&quot;</span><span class="p">.</span><span class="n">stripMargin</span><span class="p">)</span>
+<span class="w">    </span><span class="n">sql</span><span class="p">(</span><span class="s">s"""INSERT INTO </span><span class="si">$</span><span class="n">table</span><span class="s"> VALUES</span>
+<span class="s">      |('537061726B2053514C'),</span>
+<span class="s">      |('737472696E67'),</span>
+<span class="s">      |('\\0'),</span>
+<span class="s">      |(''),</span>
+<span class="s">      |('###'),</span>
+<span class="s">      |('G123'),</span>
+<span class="s">      |('hello'),</span>
+<span class="s">      |('A1B'),</span>
+<span class="s">      |('0A1B')"""</span><span class="p">.</span><span class="n">stripMargin</span><span class="p">)</span>
 
-<span class="w">    </span><span class="n">checkSparkAnswerAndOperator</span><span class="p">(</span><span class="s">s&quot;SELECT unhex(col) FROM </span><span class="si">$</span><span class="n">table</span><span class="s">&quot;</span><span class="p">)</span>
+<span class="w">    </span><span class="n">checkSparkAnswerAndOperator</span><span class="p">(</span><span class="s">s"SELECT unhex(col) FROM </span><span class="si">$</span><span class="n">table</span><span class="s">"</span><span class="p">)</span>
 <span class="w">  </span><span class="p">}</span>
 <span class="p">}</span>
 </pre></div>
 </div>
 <p>When writing Comet Scala Tests with literal values (e.g., <code class="docutils literal notranslate"><span class="pre">SELECT</span> <span class="pre">my_func('literal')</span></code>), Spark’s constant folding optimizer may evaluate the expression at planning time, bypassing Comet. To prevent this, disable constant folding:</p>
-<div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="n">test</span><span class="p">(</span><span class="s">&quot;my_func with literals&quot;</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="n">test</span><span class="p">(</span><span class="s">"my_func with literals"</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
 <span class="w">  </span><span class="n">withSQLConf</span><span class="p">(</span><span class="nc">SQLConf</span><span class="p">.</span><span class="nc">OPTIMIZER_EXCLUDED_RULES</span><span class="p">.</span><span class="n">key</span><span class="w"> </span><span class="o">-&gt;</span>
-<span class="w">      </span><span class="s">&quot;org.apache.spark.sql.catalyst.optimizer.ConstantFolding&quot;</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
-<span class="w">    </span><span class="n">checkSparkAnswerAndOperator</span><span class="p">(</span><span class="s">&quot;SELECT my_func(&#39;literal_value&#39;)&quot;</span><span class="p">)</span>
+<span class="w">      </span><span class="s">"org.apache.spark.sql.catalyst.optimizer.ConstantFolding"</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="n">checkSparkAnswerAndOperator</span><span class="p">(</span><span class="s">"SELECT my_func('literal_value')"</span><span class="p">)</span>
 <span class="w">  </span><span class="p">}</span>
 <span class="p">}</span>
 </pre></div>
@@ -950,9 +950,9 @@ create a native expression</p></li>
 <p>For a new scalar function, you can reuse a lot of code by updating the <code class="docutils literal notranslate"><span class="pre">create_comet_physical_fun</span></code> method in <code class="docutils literal notranslate"><span class="pre">native/spark-expr/src/comet_scalar_funcs.rs</span></code>. Add a match case for your function name:</p>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="k">match</span><span class="w"> </span><span class="n">fun_name</span><span class="w"> </span><span class="p">{</span>
 <span class="w">    </span><span class="c1">// ... other functions ...</span>
-<span class="w">    </span><span class="s">&quot;unhex&quot;</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="s">"unhex"</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="p">{</span>
 <span class="w">        </span><span class="kd">let</span><span class="w"> </span><span class="n">func</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">Arc</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="n">spark_unhex</span><span class="p">);</span>
-<span class="w">        </span><span class="n">make_comet_scalar_udf</span><span class="o">!</span><span class="p">(</span><span class="s">&quot;unhex&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">func</span><span class="p">,</span><span class="w"> </span><span class="n">without</span><span class="w"> </span><span class="n">data_type</span><span class="p">)</span>
+<span class="w">        </span><span class="n">make_comet_scalar_udf</span><span class="o">!</span><span class="p">(</span><span class="s">"unhex"</span><span class="p">,</span><span class="w"> </span><span class="n">func</span><span class="p">,</span><span class="w"> </span><span class="n">without</span><span class="w"> </span><span class="n">data_type</span><span class="p">)</span>
 <span class="w">    </span><span class="p">}</span>
 <span class="w">    </span><span class="c1">// ... more functions ...</span>
 <span class="p">}</span>

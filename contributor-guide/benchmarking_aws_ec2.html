@@ -563,15 +563,15 @@ the dataset to be generated (200 GB for scale factor 100, 2 TB for scale factor 
 <h2>Install Prerequisites<a class="headerlink" href="#install-prerequisites" title="Link to this heading">#</a></h2>
 <div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>sudo<span class="w"> </span>yum<span class="w"> </span>update<span class="w"> </span>-y
 sudo<span class="w"> </span>yum<span class="w"> </span>install<span class="w"> </span>-y<span class="w"> </span>git<span class="w"> </span>protobuf-compiler<span class="w"> </span>java-17-amazon-corretto-headless<span class="w"> </span>java-17-amazon-corretto-devel
-sudo<span class="w"> </span>yum<span class="w"> </span>groupinstall<span class="w"> </span>-y<span class="w"> </span><span class="s2">&quot;Development Tools&quot;</span>
+sudo<span class="w"> </span>yum<span class="w"> </span>groupinstall<span class="w"> </span>-y<span class="w"> </span><span class="s2">"Development Tools"</span>
 <span class="nb">export</span><span class="w"> </span><span class="nv">JAVA_HOME</span><span class="o">=</span>/usr/lib/jvm/java-17-amazon-corretto
 </pre></div>
 </div>
 </section>
 <section id="generate-benchmark-data">
 <h2>Generate Benchmark Data<a class="headerlink" href="#generate-benchmark-data" title="Link to this heading">#</a></h2>
-<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>curl<span class="w"> </span>--proto<span class="w"> </span><span class="s1">&#39;=https&#39;</span><span class="w"> </span>--tlsv1.2<span class="w"> </span>-sSf<span class="w"> </span>https://sh.rustup.rs<span class="w"> </span><span class="p">|</span><span class="w"> </span>sh
-<span class="nv">RUSTFLAGS</span><span class="o">=</span><span class="s1">&#39;-C target-cpu=native&#39;</span><span class="w"> </span>cargo<span class="w"> </span>install<span class="w"> </span>tpchgen-cli
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>curl<span class="w"> </span>--proto<span class="w"> </span><span class="s1">'=https'</span><span class="w"> </span>--tlsv1.2<span class="w"> </span>-sSf<span class="w"> </span>https://sh.rustup.rs<span class="w"> </span><span class="p">|</span><span class="w"> </span>sh
+<span class="nv">RUSTFLAGS</span><span class="o">=</span><span class="s1">'-C target-cpu=native'</span><span class="w"> </span>cargo<span class="w"> </span>install<span class="w"> </span>tpchgen-cli
 tpchgen-cli<span class="w"> </span>-s<span class="w"> </span><span class="m">100</span><span class="w"> </span>--format<span class="w"> </span>parquet<span class="w"> </span>--parts<span class="w"> </span><span class="m">32</span><span class="w"> </span>--output-dir<span class="w"> </span>data
 </pre></div>
 </div>

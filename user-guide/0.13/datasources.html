@@ -831,20 +831,20 @@ converted into Arrow format, allowing native execution to happen after that.</p>
 <p>Example:
 Build a Comet for <code class="docutils literal notranslate"><span class="pre">spark-3.5</span></code> provide a JDK path in <code class="docutils literal notranslate"><span class="pre">JAVA_HOME</span></code>
 Provide the JRE linker path in <code class="docutils literal notranslate"><span class="pre">RUSTFLAGS</span></code>, the path can vary depending on the system. Typically JRE linker is a part of installed JDK</p>
-<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="nb">export</span><span class="w"> </span><span class="nv">JAVA_HOME</span><span class="o">=</span><span class="s2">&quot;/opt/homebrew/opt/openjdk@11&quot;</span>
-make<span class="w"> </span>release<span class="w"> </span><span class="nv">PROFILES</span><span class="o">=</span><span class="s2">&quot;-Pspark-3.5&quot;</span><span class="w"> </span><span class="nv">COMET_FEATURES</span><span class="o">=</span>hdfs<span class="w"> </span><span class="nv">RUSTFLAGS</span><span class="o">=</span><span class="s2">&quot;-L </span><span class="nv">$JAVA_HOME</span><span class="s2">/libexec/openjdk.jdk/Contents/Home/lib/server&quot;</span>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="nb">export</span><span class="w"> </span><span class="nv">JAVA_HOME</span><span class="o">=</span><span class="s2">"/opt/homebrew/opt/openjdk@11"</span>
+make<span class="w"> </span>release<span class="w"> </span><span class="nv">PROFILES</span><span class="o">=</span><span class="s2">"-Pspark-3.5"</span><span class="w"> </span><span class="nv">COMET_FEATURES</span><span class="o">=</span>hdfs<span class="w"> </span><span class="nv">RUSTFLAGS</span><span class="o">=</span><span class="s2">"-L </span><span class="nv">$JAVA_HOME</span><span class="s2">/libexec/openjdk.jdk/Contents/Home/lib/server"</span>
 </pre></div>
 </div>
 <p>Start Comet with experimental reader and HDFS support as <a class="reference internal" href="installation.html#run-spark-shell-with-comet-enabled"><span class="std std-ref">described</span></a>
 and add additional parameters</p>
 <div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>--conf<span class="w"> </span>spark.comet.scan.impl<span class="o">=</span>native_datafusion<span class="w"> </span><span class="se">\</span>
---conf<span class="w"> </span>spark.hadoop.fs.defaultFS<span class="o">=</span><span class="s2">&quot;hdfs://namenode:9000&quot;</span><span class="w"> </span><span class="se">\</span>
+--conf<span class="w"> </span>spark.hadoop.fs.defaultFS<span class="o">=</span><span class="s2">"hdfs://namenode:9000"</span><span class="w"> </span><span class="se">\</span>
 --conf<span class="w"> </span>spark.hadoop.dfs.client.use.datanode.hostname<span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nb">true</span><span class="w"> </span><span class="se">\</span>
 --conf<span class="w"> </span>dfs.client.use.datanode.hostname<span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nb">true</span>
 </pre></div>
 </div>
 <p>Query a struct type from Remote HDFS</p>
-<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>spark.read.parquet<span class="o">(</span><span class="s2">&quot;hdfs://namenode:9000/user/data&quot;</span><span class="o">)</span>.show<span class="o">(</span><span class="nb">false</span><span class="o">)</span>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>spark.read.parquet<span class="o">(</span><span class="s2">"hdfs://namenode:9000/user/data"</span><span class="o">)</span>.show<span class="o">(</span><span class="nb">false</span><span class="o">)</span>
 
 root
 <span class="w"> </span><span class="p">|</span>--<span class="w"> </span>id:<span class="w"> </span>integer<span class="w"> </span><span class="o">(</span><span class="nv">nullable</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nb">true</span><span class="o">)</span>
@@ -899,22 +899,22 @@ Input<span class="w"> </span><span class="o">[</span><span class="m">3</span><sp
 <li><p>Check the local namenode is up and running on <code class="docutils literal notranslate"><span class="pre">http://localhost:9870/dfshealth.html#tab-overview</span></code></p></li>
 <li><p>Build a project with HDFS support</p></li>
 </ul>
-<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="nv">JAVA_HOME</span><span class="o">=</span><span class="s2">&quot;/opt/homebrew/opt/openjdk@11&quot;</span><span class="w"> </span>make<span class="w"> </span>release<span class="w"> </span><span class="nv">PROFILES</span><span class="o">=</span><span class="s2">&quot;-Pspark-3.5&quot;</span><span class="w"> </span><span class="nv">COMET_FEATURES</span><span class="o">=</span>hdfs<span class="w"> </span><span class="nv">RUSTFLAGS</span><span class="o">=</span><span class="s2">&quot;-L /opt/homebrew/opt/openjdk@11/libexec/openjdk.jdk/Contents/Home/lib/server&quot;</span>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="nv">JAVA_HOME</span><span class="o">=</span><span class="s2">"/opt/homebrew/opt/openjdk@11"</span><span class="w"> </span>make<span class="w"> </span>release<span class="w"> </span><span class="nv">PROFILES</span><span class="o">=</span><span class="s2">"-Pspark-3.5"</span><span class="w"> </span><span class="nv">COMET_FEATURES</span><span class="o">=</span>hdfs<span class="w"> </span><span class="nv">RUSTFLAGS</span><span class="o">=</span><span class="s2">"-L /opt/homebrew/opt/openjdk@11/libexec/openjdk.jdk/Contents/Home/lib/server"</span>
 </pre></div>
 </div>
 <ul class="simple">
 <li><p>Run local test</p></li>
 </ul>
 <div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="w">    </span><span class="n">withSQLConf</span><span class="p">(</span>
-<span class="w">      </span><span class="nc">CometConf</span><span class="p">.</span><span class="nc">COMET_ENABLED</span><span class="p">.</span><span class="n">key</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="s">&quot;true&quot;</span><span class="p">,</span>
-<span class="w">      </span><span class="nc">CometConf</span><span class="p">.</span><span class="nc">COMET_EXEC_ENABLED</span><span class="p">.</span><span class="n">key</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="s">&quot;true&quot;</span><span class="p">,</span>
+<span class="w">      </span><span class="nc">CometConf</span><span class="p">.</span><span class="nc">COMET_ENABLED</span><span class="p">.</span><span class="n">key</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="s">"true"</span><span class="p">,</span>
+<span class="w">      </span><span class="nc">CometConf</span><span class="p">.</span><span class="nc">COMET_EXEC_ENABLED</span><span class="p">.</span><span class="n">key</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="s">"true"</span><span class="p">,</span>
 <span class="w">      </span><span class="nc">CometConf</span><span class="p">.</span><span class="nc">COMET_NATIVE_SCAN_IMPL</span><span class="p">.</span><span class="n">key</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="nc">CometConf</span><span class="p">.</span><span class="nc">SCAN_NATIVE_DATAFUSION</span><span class="p">,</span>
-<span class="w">      </span><span class="nc">SQLConf</span><span class="p">.</span><span class="nc">USE_V1_SOURCE_LIST</span><span class="p">.</span><span class="n">key</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="s">&quot;parquet&quot;</span><span class="p">,</span>
-<span class="w">      </span><span class="s">&quot;fs.defaultFS&quot;</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="s">&quot;hdfs://namenode:9000&quot;</span><span class="p">,</span>
-<span class="w">      </span><span class="s">&quot;dfs.client.use.datanode.hostname&quot;</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="s">&quot;true&quot;</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
-<span class="w">      </span><span class="kd">val</span><span class="w"> </span><span class="n">df</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">spark</span><span class="p">.</span><span class="n">read</span><span class="p">.</span><span class="n">parquet</span><span class="p">(</span><span class="s">&quot;/tmp/2&quot;</span><span class="p">)</span>
+<span class="w">      </span><span class="nc">SQLConf</span><span class="p">.</span><span class="nc">USE_V1_SOURCE_LIST</span><span class="p">.</span><span class="n">key</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="s">"parquet"</span><span class="p">,</span>
+<span class="w">      </span><span class="s">"fs.defaultFS"</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="s">"hdfs://namenode:9000"</span><span class="p">,</span>
+<span class="w">      </span><span class="s">"dfs.client.use.datanode.hostname"</span><span class="w"> </span><span class="o">-&gt;</span><span class="w"> </span><span class="s">"true"</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">      </span><span class="kd">val</span><span class="w"> </span><span class="n">df</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">spark</span><span class="p">.</span><span class="n">read</span><span class="p">.</span><span class="n">parquet</span><span class="p">(</span><span class="s">"/tmp/2"</span><span class="p">)</span>
 <span class="w">      </span><span class="n">df</span><span class="p">.</span><span class="n">show</span><span class="p">(</span><span class="kc">false</span><span class="p">)</span>
-<span class="w">      </span><span class="n">df</span><span class="p">.</span><span class="n">explain</span><span class="p">(</span><span class="s">&quot;extended&quot;</span><span class="p">)</span>
+<span class="w">      </span><span class="n">df</span><span class="p">.</span><span class="n">explain</span><span class="p">(</span><span class="s">"extended"</span><span class="p">)</span>
 <span class="w">    </span><span class="p">}</span>
 <span class="w">  </span><span class="p">}</span>
 </pre></div>

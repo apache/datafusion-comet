@@ -884,10 +884,10 @@ configure Spark to use a REST catalog with Comet’s native Iceberg scan:</p>
 </pre></div>
 </div>
 <p>Note that REST catalogs require explicit namespace creation before creating tables:</p>
-<div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="n">scala</span><span class="o">&gt;</span><span class="w"> </span><span class="n">spark</span><span class="p">.</span><span class="n">sql</span><span class="p">(</span><span class="s">&quot;CREATE NAMESPACE rest_cat.db&quot;</span><span class="p">)</span>
-<span class="n">scala</span><span class="o">&gt;</span><span class="w"> </span><span class="n">spark</span><span class="p">.</span><span class="n">sql</span><span class="p">(</span><span class="s">&quot;CREATE TABLE rest_cat.db.test_table (id INT, name STRING) USING iceberg&quot;</span><span class="p">)</span>
-<span class="n">scala</span><span class="o">&gt;</span><span class="w"> </span><span class="n">spark</span><span class="p">.</span><span class="n">sql</span><span class="p">(</span><span class="s">&quot;INSERT INTO rest_cat.db.test_table VALUES (1, &#39;Alice&#39;), (2, &#39;Bob&#39;)&quot;</span><span class="p">)</span>
-<span class="n">scala</span><span class="o">&gt;</span><span class="w"> </span><span class="n">spark</span><span class="p">.</span><span class="n">sql</span><span class="p">(</span><span class="s">&quot;SELECT * FROM rest_cat.db.test_table&quot;</span><span class="p">).</span><span class="n">show</span><span class="p">()</span>
+<div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="n">scala</span><span class="o">&gt;</span><span class="w"> </span><span class="n">spark</span><span class="p">.</span><span class="n">sql</span><span class="p">(</span><span class="s">"CREATE NAMESPACE rest_cat.db"</span><span class="p">)</span>
+<span class="n">scala</span><span class="o">&gt;</span><span class="w"> </span><span class="n">spark</span><span class="p">.</span><span class="n">sql</span><span class="p">(</span><span class="s">"CREATE TABLE rest_cat.db.test_table (id INT, name STRING) USING iceberg"</span><span class="p">)</span>
+<span class="n">scala</span><span class="o">&gt;</span><span class="w"> </span><span class="n">spark</span><span class="p">.</span><span class="n">sql</span><span class="p">(</span><span class="s">"INSERT INTO rest_cat.db.test_table VALUES (1, 'Alice'), (2, 'Bob')"</span><span class="p">)</span>
+<span class="n">scala</span><span class="o">&gt;</span><span class="w"> </span><span class="n">spark</span><span class="p">.</span><span class="n">sql</span><span class="p">(</span><span class="s">"SELECT * FROM rest_cat.db.test_table"</span><span class="p">).</span><span class="n">show</span><span class="p">()</span>
 </pre></div>
 </div>
 </section>

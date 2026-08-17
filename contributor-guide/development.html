@@ -762,7 +762,7 @@ fail because they cannot find the native library. Always run <code class="docuti
 before running Maven tests.</p>
 <div class="highlight-sh notranslate"><div class="highlight"><pre><span></span><span class="c1"># Correct order</span>
 make<span class="w"> </span>core<span class="w">                    </span><span class="c1"># Build native code first</span>
-./mvnw<span class="w"> </span><span class="nb">test</span><span class="w"> </span>-Dsuites<span class="o">=</span><span class="s2">&quot;...&quot;</span><span class="w">   </span><span class="c1"># Then run JVM tests</span>
+./mvnw<span class="w"> </span><span class="nb">test</span><span class="w"> </span>-Dsuites<span class="o">=</span><span class="s2">"..."</span><span class="w">   </span><span class="c1"># Then run JVM tests</span>
 </pre></div>
 </div>
 </section>
@@ -808,10 +808,10 @@ different branches non-deterministically.</p></li>
 <p>Always run Maven from the repo root without <code class="docutils literal notranslate"><span class="pre">-pl</span></code>. Maven’s reactor will compile only what is
 needed:</p>
 <div class="highlight-sh notranslate"><div class="highlight"><pre><span></span><span class="c1"># Wrong: resolves sibling modules from ~/.m2, breaks under concurrent worktrees</span>
-./mvnw<span class="w"> </span><span class="nb">test</span><span class="w"> </span>-pl<span class="w"> </span>spark<span class="w"> </span>-Dsuites<span class="o">=</span><span class="s2">&quot;...&quot;</span>
+./mvnw<span class="w"> </span><span class="nb">test</span><span class="w"> </span>-pl<span class="w"> </span>spark<span class="w"> </span>-Dsuites<span class="o">=</span><span class="s2">"..."</span>
 
 <span class="c1"># Right: reactor build, always uses current source</span>
-./mvnw<span class="w"> </span><span class="nb">test</span><span class="w"> </span>-Dsuites<span class="o">=</span><span class="s2">&quot;...&quot;</span>
+./mvnw<span class="w"> </span><span class="nb">test</span><span class="w"> </span>-Dsuites<span class="o">=</span><span class="s2">"..."</span>
 </pre></div>
 </div>
 </section>
@@ -820,13 +820,13 @@ needed:</p>
 <p>To run a single suite (and only that suite), use <code class="docutils literal notranslate"><span class="pre">-Dsuites=</span></code> with the <strong>fully qualified class name</strong>
 and <code class="docutils literal notranslate"><span class="pre">-Dtest=none</span></code>:</p>
 <div class="highlight-sh notranslate"><div class="highlight"><pre><span></span><span class="c1"># Run exactly one suite</span>
-./mvnw<span class="w"> </span><span class="nb">test</span><span class="w"> </span>-Dtest<span class="o">=</span>none<span class="w"> </span>-Dsuites<span class="o">=</span><span class="s2">&quot;org.apache.comet.CometArrayExpressionSuite&quot;</span>
+./mvnw<span class="w"> </span><span class="nb">test</span><span class="w"> </span>-Dtest<span class="o">=</span>none<span class="w"> </span>-Dsuites<span class="o">=</span><span class="s2">"org.apache.comet.CometArrayExpressionSuite"</span>
 
 <span class="c1"># Run multiple suites (comma-separated, fully qualified)</span>
-./mvnw<span class="w"> </span><span class="nb">test</span><span class="w"> </span>-Dtest<span class="o">=</span>none<span class="w"> </span>-Dsuites<span class="o">=</span><span class="s2">&quot;org.apache.comet.CometNativeCastSuite,org.apache.comet.CometArrayExpressionSuite&quot;</span>
+./mvnw<span class="w"> </span><span class="nb">test</span><span class="w"> </span>-Dtest<span class="o">=</span>none<span class="w"> </span>-Dsuites<span class="o">=</span><span class="s2">"org.apache.comet.CometNativeCastSuite,org.apache.comet.CometArrayExpressionSuite"</span>
 
-<span class="c1"># Run only tests whose name contains &quot;valid&quot; inside one suite</span>
-./mvnw<span class="w"> </span><span class="nb">test</span><span class="w"> </span>-Dtest<span class="o">=</span>none<span class="w"> </span>-Dsuites<span class="o">=</span><span class="s2">&quot;org.apache.comet.CometNativeCastSuite valid&quot;</span>
+<span class="c1"># Run only tests whose name contains "valid" inside one suite</span>
+./mvnw<span class="w"> </span><span class="nb">test</span><span class="w"> </span>-Dtest<span class="o">=</span>none<span class="w"> </span>-Dsuites<span class="o">=</span><span class="s2">"org.apache.comet.CometNativeCastSuite valid"</span>
 </pre></div>
 </div>
 <p><code class="docutils literal notranslate"><span class="pre">-Dtest=none</span></code> tells the Surefire (JUnit) plugin to skip its tests; without it, Surefire still
@@ -835,15 +835,15 @@ runs the JUnit <code class="docutils literal notranslate"><span class="pre">*Tes
 <h4>Pitfall: <code class="docutils literal notranslate"><span class="pre">-DwildcardSuites=&quot;&quot;</span></code> runs everything<a class="headerlink" href="#pitfall-dwildcardsuites-runs-everything" title="Link to this heading">#</a></h4>
 <p>A common mistake is to combine <code class="docutils literal notranslate"><span class="pre">-Dsuites=...</span></code> with <code class="docutils literal notranslate"><span class="pre">-DwildcardSuites=&quot;&quot;</span></code>:</p>
 <div class="highlight-sh notranslate"><div class="highlight"><pre><span></span><span class="c1"># WRONG: runs every suite in the project, takes ~1 hour</span>
-./mvnw<span class="w"> </span><span class="nb">test</span><span class="w"> </span>-Dtest<span class="o">=</span>none<span class="w"> </span>-Dsuites<span class="o">=</span><span class="s2">&quot;org.apache.comet.CometArrayExpressionSuite&quot;</span><span class="w"> </span>-DwildcardSuites<span class="o">=</span><span class="s2">&quot;&quot;</span>
+./mvnw<span class="w"> </span><span class="nb">test</span><span class="w"> </span>-Dtest<span class="o">=</span>none<span class="w"> </span>-Dsuites<span class="o">=</span><span class="s2">"org.apache.comet.CometArrayExpressionSuite"</span><span class="w"> </span>-DwildcardSuites<span class="o">=</span><span class="s2">""</span>
 </pre></div>
 </div>
 <p><code class="docutils literal notranslate"><span class="pre">wildcardSuites</span></code> does substring matching, and the empty string is a substring of every suite
 name, so it expands to “run all suites” and overrides the narrower <code class="docutils literal notranslate"><span class="pre">-Dsuites=</span></code> selection. If you
 want to run a single suite, omit <code class="docutils literal notranslate"><span class="pre">-DwildcardSuites</span></code> entirely. If you want substring matching,
 pass a non-empty pattern:</p>
-<div class="highlight-sh notranslate"><div class="highlight"><pre><span></span><span class="c1"># Run every suite whose fully qualified name contains &quot;CometCast&quot;</span>
-./mvnw<span class="w"> </span><span class="nb">test</span><span class="w"> </span>-Dtest<span class="o">=</span>none<span class="w"> </span>-DwildcardSuites<span class="o">=</span><span class="s2">&quot;CometCast&quot;</span>
+<div class="highlight-sh notranslate"><div class="highlight"><pre><span></span><span class="c1"># Run every suite whose fully qualified name contains "CometCast"</span>
+./mvnw<span class="w"> </span><span class="nb">test</span><span class="w"> </span>-Dtest<span class="o">=</span>none<span class="w"> </span>-DwildcardSuites<span class="o">=</span><span class="s2">"CometCast"</span>
 </pre></div>
 </div>
 </section>
@@ -854,7 +854,7 @@ backslash, the shell only runs the first line and treats the rest as separate (f
 commands:</p>
 <div class="highlight-sh notranslate"><div class="highlight"><pre><span></span><span class="c1"># WRONG: shell runs only the first line, which omits -Dsuites and runs every suite</span>
 ./mvnw<span class="w"> </span><span class="nb">test</span><span class="w"> </span>-Dtest<span class="o">=</span>none
-<span class="w">  </span>-Dsuites<span class="o">=</span><span class="s2">&quot;org.apache.comet.CometArrayExpressionSuite&quot;</span><span class="w"> </span>-DfailIfNoTests<span class="o">=</span><span class="nb">false</span>
+<span class="w">  </span>-Dsuites<span class="o">=</span><span class="s2">"org.apache.comet.CometArrayExpressionSuite"</span><span class="w"> </span>-DfailIfNoTests<span class="o">=</span><span class="nb">false</span>
 </pre></div>
 </div>
 <p>The first line <code class="docutils literal notranslate"><span class="pre">./mvnw</span> <span class="pre">test</span> <span class="pre">-Dtest=none</span></code> runs every ScalaTest suite in the module (about 1800
@@ -863,7 +863,7 @@ the test run is already in progress. Symptom: you asked for one suite and ScalaT
 “Expected test count is: 1797” starting at an alphabetically earlier suite.</p>
 <p>Either keep the command on one line, or use a trailing backslash on every continued line:</p>
 <div class="highlight-sh notranslate"><div class="highlight"><pre><span></span>./mvnw<span class="w"> </span><span class="nb">test</span><span class="w"> </span>-Dtest<span class="o">=</span>none<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>-Dsuites<span class="o">=</span><span class="s2">&quot;org.apache.comet.CometArrayExpressionSuite&quot;</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-Dsuites<span class="o">=</span><span class="s2">"org.apache.comet.CometArrayExpressionSuite"</span><span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>-DfailIfNoTests<span class="o">=</span><span class="nb">false</span>
 </pre></div>
 </div>
@@ -894,7 +894,7 @@ filter problem, not a successful run.</p>
 <h3>Skip Scalastyle When Iterating<a class="headerlink" href="#skip-scalastyle-when-iterating" title="Link to this heading">#</a></h3>
 <p>The <code class="docutils literal notranslate"><span class="pre">scalastyle:check</span></code> goal runs in every Maven test invocation and re-scans every Scala source
 file even when nothing relevant changed. When iterating on a single test, skip it:</p>
-<div class="highlight-sh notranslate"><div class="highlight"><pre><span></span>./mvnw<span class="w"> </span><span class="nb">test</span><span class="w"> </span>-Dtest<span class="o">=</span>none<span class="w"> </span>-Dsuites<span class="o">=</span><span class="s2">&quot;org.apache.comet.CometArrayExpressionSuite&quot;</span><span class="w"> </span>-Dscalastyle.skip<span class="o">=</span><span class="nb">true</span>
+<div class="highlight-sh notranslate"><div class="highlight"><pre><span></span>./mvnw<span class="w"> </span><span class="nb">test</span><span class="w"> </span>-Dtest<span class="o">=</span>none<span class="w"> </span>-Dsuites<span class="o">=</span><span class="s2">"org.apache.comet.CometArrayExpressionSuite"</span><span class="w"> </span>-Dscalastyle.skip<span class="o">=</span><span class="nb">true</span>
 </pre></div>
 </div>
 <p>CI still enforces scalastyle, so this is purely a local iteration shortcut.</p>
@@ -927,7 +927,7 @@ from a clean IntelliJ configuration:</p>
 install <code class="docutils literal notranslate"><span class="pre">protobuf-compiler</span></code> or the equivalent package for your distribution.</p></li>
 <li><p>Make sure <code class="docutils literal notranslate"><span class="pre">JAVA_HOME</span></code> points to JDK 17. On macOS, you can select it with:</p>
 <div class="highlight-sh notranslate"><div class="highlight"><pre><span></span><span class="nb">export</span><span class="w"> </span><span class="nv">JAVA_HOME</span><span class="o">=</span><span class="k">$(</span>/usr/libexec/java_home<span class="w"> </span>-v<span class="w"> </span><span class="m">17</span><span class="k">)</span>
-<span class="nb">export</span><span class="w"> </span><span class="nv">PATH</span><span class="o">=</span><span class="s2">&quot;</span><span class="nv">$JAVA_HOME</span><span class="s2">/bin:</span><span class="nv">$PATH</span><span class="s2">&quot;</span>
+<span class="nb">export</span><span class="w"> </span><span class="nv">PATH</span><span class="o">=</span><span class="s2">"</span><span class="nv">$JAVA_HOME</span><span class="s2">/bin:</span><span class="nv">$PATH</span><span class="s2">"</span>
 </pre></div>
 </div>
 <p>On Apple Silicon, the selected JDK architecture must match the native Rust target. Verify that
@@ -935,7 +935,7 @@ install <code class="docutils literal notranslate"><span class="pre">protobuf-co
 </li>
 <li><p>Build the profile once from the command line so generated sources and native artifacts are in
 place:</p>
-<div class="highlight-sh notranslate"><div class="highlight"><pre><span></span><span class="nv">PROFILES</span><span class="o">=</span><span class="s2">&quot;-Pspark-4.0&quot;</span><span class="w"> </span>make<span class="w"> </span>release
+<div class="highlight-sh notranslate"><div class="highlight"><pre><span></span><span class="nv">PROFILES</span><span class="o">=</span><span class="s2">"-Pspark-4.0"</span><span class="w"> </span>make<span class="w"> </span>release
 </pre></div>
 </div>
 <p>The <code class="docutils literal notranslate"><span class="pre">spark-4.0</span></code> profile sets Scala 2.13 and Java 17 properties. If you need to be explicit, use
@@ -1003,7 +1003,7 @@ However if the tests is related to the native side. Please make sure to run <cod
 <p>Specify which ScalaTest suites to run with the <code class="docutils literal notranslate"><span class="pre">suites</span></code> argument and disable Surefire’s JUnit
 discovery with <code class="docutils literal notranslate"><span class="pre">-Dtest=none</span></code>. For example, to run only the test cases containing <em>valid</em> in
 their name from <code class="docutils literal notranslate"><span class="pre">org.apache.comet.CometNativeCastSuite</span></code>:</p>
-<div class="highlight-sh notranslate"><div class="highlight"><pre><span></span>./mvnw<span class="w"> </span><span class="nb">test</span><span class="w"> </span>-Dtest<span class="o">=</span>none<span class="w"> </span>-Dsuites<span class="o">=</span><span class="s2">&quot;org.apache.comet.CometNativeCastSuite valid&quot;</span>
+<div class="highlight-sh notranslate"><div class="highlight"><pre><span></span>./mvnw<span class="w"> </span><span class="nb">test</span><span class="w"> </span>-Dtest<span class="o">=</span>none<span class="w"> </span>-Dsuites<span class="o">=</span><span class="s2">"org.apache.comet.CometNativeCastSuite valid"</span>
 </pre></div>
 </div>
 <p>See <a class="reference internal" href="#running-a-specific-scalatest-suite">Running a Specific ScalaTest Suite</a> above for the full
@@ -1035,31 +1035,31 @@ Spark version, and runs the plan stability tests with <code class="docutils lite
 <p>Note that the output files get written to <code class="docutils literal notranslate"><span class="pre">$SPARK_HOME</span></code>.</p>
 <p>The tests can be run with:</p>
 <div class="highlight-sh notranslate"><div class="highlight"><pre><span></span><span class="nb">export</span><span class="w"> </span><span class="nv">SPARK_HOME</span><span class="o">=</span><span class="sb">`</span><span class="nb">pwd</span><span class="sb">`</span>
-./mvnw<span class="w"> </span>-Dsuites<span class="o">=</span><span class="s2">&quot;org.apache.spark.sql.comet.CometTPCDSV1_4_PlanStabilitySuite&quot;</span><span class="w"> </span>-Pspark-3.4<span class="w"> </span>-nsu<span class="w"> </span><span class="nb">test</span>
-./mvnw<span class="w"> </span>-Dsuites<span class="o">=</span><span class="s2">&quot;org.apache.spark.sql.comet.CometTPCDSV1_4_PlanStabilitySuite&quot;</span><span class="w"> </span>-Pspark-3.5<span class="w"> </span>-nsu<span class="w"> </span><span class="nb">test</span>
-./mvnw<span class="w"> </span>-Dsuites<span class="o">=</span><span class="s2">&quot;org.apache.spark.sql.comet.CometTPCDSV1_4_PlanStabilitySuite&quot;</span><span class="w"> </span>-Pspark-4.0<span class="w"> </span>-nsu<span class="w"> </span><span class="nb">test</span>
+./mvnw<span class="w"> </span>-Dsuites<span class="o">=</span><span class="s2">"org.apache.spark.sql.comet.CometTPCDSV1_4_PlanStabilitySuite"</span><span class="w"> </span>-Pspark-3.4<span class="w"> </span>-nsu<span class="w"> </span><span class="nb">test</span>
+./mvnw<span class="w"> </span>-Dsuites<span class="o">=</span><span class="s2">"org.apache.spark.sql.comet.CometTPCDSV1_4_PlanStabilitySuite"</span><span class="w"> </span>-Pspark-3.5<span class="w"> </span>-nsu<span class="w"> </span><span class="nb">test</span>
+./mvnw<span class="w"> </span>-Dsuites<span class="o">=</span><span class="s2">"org.apache.spark.sql.comet.CometTPCDSV1_4_PlanStabilitySuite"</span><span class="w"> </span>-Pspark-4.0<span class="w"> </span>-nsu<span class="w"> </span><span class="nb">test</span>
 </pre></div>
 </div>
 <p>and</p>
 <div class="highlight-sh notranslate"><div class="highlight"><pre><span></span><span class="nb">export</span><span class="w"> </span><span class="nv">SPARK_HOME</span><span class="o">=</span><span class="sb">`</span><span class="nb">pwd</span><span class="sb">`</span>
-./mvnw<span class="w"> </span>-Dsuites<span class="o">=</span><span class="s2">&quot;org.apache.spark.sql.comet.CometTPCDSV2_7_PlanStabilitySuite&quot;</span><span class="w"> </span>-Pspark-3.4<span class="w"> </span>-nsu<span class="w"> </span><span class="nb">test</span>
-./mvnw<span class="w"> </span>-Dsuites<span class="o">=</span><span class="s2">&quot;org.apache.spark.sql.comet.CometTPCDSV2_7_PlanStabilitySuite&quot;</span><span class="w"> </span>-Pspark-3.5<span class="w"> </span>-nsu<span class="w"> </span><span class="nb">test</span>
-./mvnw<span class="w"> </span>-Dsuites<span class="o">=</span><span class="s2">&quot;org.apache.spark.sql.comet.CometTPCDSV2_7_PlanStabilitySuite&quot;</span><span class="w"> </span>-Pspark-4.0<span class="w"> </span>-nsu<span class="w"> </span><span class="nb">test</span>
+./mvnw<span class="w"> </span>-Dsuites<span class="o">=</span><span class="s2">"org.apache.spark.sql.comet.CometTPCDSV2_7_PlanStabilitySuite"</span><span class="w"> </span>-Pspark-3.4<span class="w"> </span>-nsu<span class="w"> </span><span class="nb">test</span>
+./mvnw<span class="w"> </span>-Dsuites<span class="o">=</span><span class="s2">"org.apache.spark.sql.comet.CometTPCDSV2_7_PlanStabilitySuite"</span><span class="w"> </span>-Pspark-3.5<span class="w"> </span>-nsu<span class="w"> </span><span class="nb">test</span>
+./mvnw<span class="w"> </span>-Dsuites<span class="o">=</span><span class="s2">"org.apache.spark.sql.comet.CometTPCDSV2_7_PlanStabilitySuite"</span><span class="w"> </span>-Pspark-4.0<span class="w"> </span>-nsu<span class="w"> </span><span class="nb">test</span>
 </pre></div>
 </div>
 <p>If your pull request changes the query plans generated by Comet, you should regenerate the golden files.
 To regenerate the golden files, you can run the following commands.</p>
 <div class="highlight-sh notranslate"><div class="highlight"><pre><span></span><span class="nb">export</span><span class="w"> </span><span class="nv">SPARK_HOME</span><span class="o">=</span><span class="sb">`</span><span class="nb">pwd</span><span class="sb">`</span>
-<span class="nv">SPARK_GENERATE_GOLDEN_FILES</span><span class="o">=</span><span class="m">1</span><span class="w"> </span>./mvnw<span class="w"> </span>-Dsuites<span class="o">=</span><span class="s2">&quot;org.apache.spark.sql.comet.CometTPCDSV1_4_PlanStabilitySuite&quot;</span><span class="w"> </span>-Pspark-3.4<span class="w"> </span>-nsu<span class="w"> </span><span class="nb">test</span>
-<span class="nv">SPARK_GENERATE_GOLDEN_FILES</span><span class="o">=</span><span class="m">1</span><span class="w"> </span>./mvnw<span class="w"> </span>-Dsuites<span class="o">=</span><span class="s2">&quot;org.apache.spark.sql.comet.CometTPCDSV1_4_PlanStabilitySuite&quot;</span><span class="w"> </span>-Pspark-3.5<span class="w"> </span>-nsu<span class="w"> </span><span class="nb">test</span>
-<span class="nv">SPARK_GENERATE_GOLDEN_FILES</span><span class="o">=</span><span class="m">1</span><span class="w"> </span>./mvnw<span class="w"> </span>-Dsuites<span class="o">=</span><span class="s2">&quot;org.apache.spark.sql.comet.CometTPCDSV1_4_PlanStabilitySuite&quot;</span><span class="w"> </span>-Pspark-4.0<span class="w"> </span>-nsu<span class="w"> </span><span class="nb">test</span>
+<span class="nv">SPARK_GENERATE_GOLDEN_FILES</span><span class="o">=</span><span class="m">1</span><span class="w"> </span>./mvnw<span class="w"> </span>-Dsuites<span class="o">=</span><span class="s2">"org.apache.spark.sql.comet.CometTPCDSV1_4_PlanStabilitySuite"</span><span class="w"> </span>-Pspark-3.4<span class="w"> </span>-nsu<span class="w"> </span><span class="nb">test</span>
+<span class="nv">SPARK_GENERATE_GOLDEN_FILES</span><span class="o">=</span><span class="m">1</span><span class="w"> </span>./mvnw<span class="w"> </span>-Dsuites<span class="o">=</span><span class="s2">"org.apache.spark.sql.comet.CometTPCDSV1_4_PlanStabilitySuite"</span><span class="w"> </span>-Pspark-3.5<span class="w"> </span>-nsu<span class="w"> </span><span class="nb">test</span>
+<span class="nv">SPARK_GENERATE_GOLDEN_FILES</span><span class="o">=</span><span class="m">1</span><span class="w"> </span>./mvnw<span class="w"> </span>-Dsuites<span class="o">=</span><span class="s2">"org.apache.spark.sql.comet.CometTPCDSV1_4_PlanStabilitySuite"</span><span class="w"> </span>-Pspark-4.0<span class="w"> </span>-nsu<span class="w"> </span><span class="nb">test</span>
 </pre></div>
 </div>
 <p>and</p>
 <div class="highlight-sh notranslate"><div class="highlight"><pre><span></span><span class="nb">export</span><span class="w"> </span><span class="nv">SPARK_HOME</span><span class="o">=</span><span class="sb">`</span><span class="nb">pwd</span><span class="sb">`</span>
-<span class="nv">SPARK_GENERATE_GOLDEN_FILES</span><span class="o">=</span><span class="m">1</span><span class="w"> </span>./mvnw<span class="w"> </span>-Dsuites<span class="o">=</span><span class="s2">&quot;org.apache.spark.sql.comet.CometTPCDSV2_7_PlanStabilitySuite&quot;</span><span class="w"> </span>-Pspark-3.4<span class="w"> </span>-nsu<span class="w"> </span><span class="nb">test</span>
-<span class="nv">SPARK_GENERATE_GOLDEN_FILES</span><span class="o">=</span><span class="m">1</span><span class="w"> </span>./mvnw<span class="w"> </span>-Dsuites<span class="o">=</span><span class="s2">&quot;org.apache.spark.sql.comet.CometTPCDSV2_7_PlanStabilitySuite&quot;</span><span class="w"> </span>-Pspark-3.5<span class="w"> </span>-nsu<span class="w"> </span><span class="nb">test</span>
-<span class="nv">SPARK_GENERATE_GOLDEN_FILES</span><span class="o">=</span><span class="m">1</span><span class="w"> </span>./mvnw<span class="w"> </span>-Dsuites<span class="o">=</span><span class="s2">&quot;org.apache.spark.sql.comet.CometTPCDSV2_7_PlanStabilitySuite&quot;</span><span class="w"> </span>-Pspark-4.0<span class="w"> </span>-nsu<span class="w"> </span><span class="nb">test</span>
+<span class="nv">SPARK_GENERATE_GOLDEN_FILES</span><span class="o">=</span><span class="m">1</span><span class="w"> </span>./mvnw<span class="w"> </span>-Dsuites<span class="o">=</span><span class="s2">"org.apache.spark.sql.comet.CometTPCDSV2_7_PlanStabilitySuite"</span><span class="w"> </span>-Pspark-3.4<span class="w"> </span>-nsu<span class="w"> </span><span class="nb">test</span>
+<span class="nv">SPARK_GENERATE_GOLDEN_FILES</span><span class="o">=</span><span class="m">1</span><span class="w"> </span>./mvnw<span class="w"> </span>-Dsuites<span class="o">=</span><span class="s2">"org.apache.spark.sql.comet.CometTPCDSV2_7_PlanStabilitySuite"</span><span class="w"> </span>-Pspark-3.5<span class="w"> </span>-nsu<span class="w"> </span><span class="nb">test</span>
+<span class="nv">SPARK_GENERATE_GOLDEN_FILES</span><span class="o">=</span><span class="m">1</span><span class="w"> </span>./mvnw<span class="w"> </span>-Dsuites<span class="o">=</span><span class="s2">"org.apache.spark.sql.comet.CometTPCDSV2_7_PlanStabilitySuite"</span><span class="w"> </span>-Pspark-4.0<span class="w"> </span>-nsu<span class="w"> </span><span class="nb">test</span>
 </pre></div>
 </div>
 </section>
@@ -1136,7 +1136,7 @@ jobs. This reduces overall CI time.</p>
 <code class="docutils literal notranslate"><span class="pre">exec</span></code>, <code class="docutils literal notranslate"><span class="pre">expressions</span></code>, and <code class="docutils literal notranslate"><span class="pre">sql</span></code>. Add your new suite’s fully qualified class name to the
 appropriate group. For example, if you add a new expression test suite, add it to the
 <code class="docutils literal notranslate"><span class="pre">expressions</span></code> group:</p>
-<div class="highlight-yaml notranslate"><div class="highlight"><pre><span></span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;expressions&quot;</span>
+<div class="highlight-yaml notranslate"><div class="highlight"><pre><span></span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="s">"expressions"</span>
 <span class="w">  </span><span class="nt">value</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">|</span>
 <span class="w">    </span><span class="no">org.apache.comet.CometExpressionSuite</span>
 <span class="w">    </span><span class="no"># ... existing suites ...</span>
@@ -1198,7 +1198,7 @@ make<span class="w"> </span><span class="nb">test</span><span class="w">     </s
 </pre></div>
 </div>
 <p>After you’ve confirmed your prettier version, you can format all the <code class="docutils literal notranslate"><span class="pre">.md</span></code> files:</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>npx<span class="w"> </span>prettier<span class="w"> </span><span class="s2">&quot;**/*.md&quot;</span><span class="w"> </span>--write
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>npx<span class="w"> </span>prettier<span class="w"> </span><span class="s2">"**/*.md"</span><span class="w"> </span>--write
 </pre></div>
 </div>
 </section>

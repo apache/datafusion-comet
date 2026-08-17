@@ -551,11 +551,11 @@ way to add expression and operator test coverage without writing Comet Scala Tes
 <section id="running-the-tests">
 <h2>Running the tests<a class="headerlink" href="#running-the-tests" title="Link to this heading">#</a></h2>
 <p>Run all Comet SQL Tests:</p>
-<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>./mvnw<span class="w"> </span><span class="nb">test</span><span class="w"> </span>-Dsuites<span class="o">=</span><span class="s2">&quot;org.apache.comet.CometSqlFileTestSuite&quot;</span><span class="w"> </span>-Dtest<span class="o">=</span>none
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>./mvnw<span class="w"> </span><span class="nb">test</span><span class="w"> </span>-Dsuites<span class="o">=</span><span class="s2">"org.apache.comet.CometSqlFileTestSuite"</span><span class="w"> </span>-Dtest<span class="o">=</span>none
 </pre></div>
 </div>
 <p>Run a single test file by adding the file name (without <code class="docutils literal notranslate"><span class="pre">.sql</span></code> extension) after the suite name:</p>
-<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>./mvnw<span class="w"> </span><span class="nb">test</span><span class="w"> </span>-Dsuites<span class="o">=</span><span class="s2">&quot;org.apache.comet.CometSqlFileTestSuite create_named_struct&quot;</span><span class="w"> </span>-Dtest<span class="o">=</span>none
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>./mvnw<span class="w"> </span><span class="nb">test</span><span class="w"> </span>-Dsuites<span class="o">=</span><span class="s2">"org.apache.comet.CometSqlFileTestSuite create_named_struct"</span><span class="w"> </span>-Dtest<span class="o">=</span>none
 </pre></div>
 </div>
 <p>This uses ScalaTest’s substring matching, so the argument must match part of the test name.
@@ -735,7 +735,7 @@ directives speculatively.</p></li>
 when you expect Comet to run the expression natively. Use <code class="docutils literal notranslate"><span class="pre">query</span> <span class="pre">spark_answer_only</span></code> when
 native execution is not yet expected.</p></li>
 <li><p>Run the tests to verify:</p>
-<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>./mvnw<span class="w"> </span><span class="nb">test</span><span class="w"> </span>-Dsuites<span class="o">=</span><span class="s2">&quot;org.apache.comet.CometSqlFileTestSuite&quot;</span><span class="w"> </span>-Dtest<span class="o">=</span>none
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>./mvnw<span class="w"> </span><span class="nb">test</span><span class="w"> </span>-Dsuites<span class="o">=</span><span class="s2">"org.apache.comet.CometSqlFileTestSuite"</span><span class="w"> </span>-Dtest<span class="o">=</span>none
 </pre></div>
 </div>
 </li>
@@ -753,7 +753,7 @@ should exercise both. For a function with multiple arguments, test every useful 
 
 <span class="c1">-- literal arguments</span>
 <span class="n">query</span>
-<span class="k">SELECT</span><span class="w"> </span><span class="n">ascii</span><span class="p">(</span><span class="s1">&#39;A&#39;</span><span class="p">),</span><span class="w"> </span><span class="n">ascii</span><span class="p">(</span><span class="s1">&#39;&#39;</span><span class="p">),</span><span class="w"> </span><span class="n">ascii</span><span class="p">(</span><span class="k">NULL</span><span class="p">)</span>
+<span class="k">SELECT</span><span class="w"> </span><span class="n">ascii</span><span class="p">(</span><span class="s1">'A'</span><span class="p">),</span><span class="w"> </span><span class="n">ascii</span><span class="p">(</span><span class="s1">''</span><span class="p">),</span><span class="w"> </span><span class="n">ascii</span><span class="p">(</span><span class="k">NULL</span><span class="p">)</span>
 </pre></div>
 </div>
 <p>For a multi-argument function like <code class="docutils literal notranslate"><span class="pre">concat_ws(sep,</span> <span class="pre">str1,</span> <span class="pre">str2,</span> <span class="pre">...)</span></code>, test with the separator
@@ -764,11 +764,11 @@ as a column versus a literal, and similarly for the other arguments:</p>
 
 <span class="c1">-- literal separator, column values</span>
 <span class="n">query</span>
-<span class="k">SELECT</span><span class="w"> </span><span class="n">concat_ws</span><span class="p">(</span><span class="s1">&#39;,&#39;</span><span class="p">,</span><span class="w"> </span><span class="n">a</span><span class="p">,</span><span class="w"> </span><span class="n">b</span><span class="p">)</span><span class="w"> </span><span class="k">FROM</span><span class="w"> </span><span class="n">test_table</span>
+<span class="k">SELECT</span><span class="w"> </span><span class="n">concat_ws</span><span class="p">(</span><span class="s1">','</span><span class="p">,</span><span class="w"> </span><span class="n">a</span><span class="p">,</span><span class="w"> </span><span class="n">b</span><span class="p">)</span><span class="w"> </span><span class="k">FROM</span><span class="w"> </span><span class="n">test_table</span>
 
 <span class="c1">-- all literals</span>
 <span class="n">query</span>
-<span class="k">SELECT</span><span class="w"> </span><span class="n">concat_ws</span><span class="p">(</span><span class="s1">&#39;,&#39;</span><span class="p">,</span><span class="w"> </span><span class="s1">&#39;hello&#39;</span><span class="p">,</span><span class="w"> </span><span class="s1">&#39;world&#39;</span><span class="p">)</span>
+<span class="k">SELECT</span><span class="w"> </span><span class="n">concat_ws</span><span class="p">(</span><span class="s1">','</span><span class="p">,</span><span class="w"> </span><span class="s1">'hello'</span><span class="p">,</span><span class="w"> </span><span class="s1">'world'</span><span class="p">)</span>
 </pre></div>
 </div>
 <p><strong>Note on constant folding:</strong> Normally Spark constant-folds all-literal expressions during
@@ -805,11 +805,11 @@ expressions. This makes failures easy to locate and keeps files readable.</p>
 tested. This helps reviewers and future maintainers understand the intent:</p>
 <div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="c1">-- literal separator with NULL values</span>
 <span class="n">query</span>
-<span class="k">SELECT</span><span class="w"> </span><span class="n">concat_ws</span><span class="p">(</span><span class="s1">&#39;,&#39;</span><span class="p">,</span><span class="w"> </span><span class="k">NULL</span><span class="p">,</span><span class="w"> </span><span class="s1">&#39;b&#39;</span><span class="p">,</span><span class="w"> </span><span class="s1">&#39;c&#39;</span><span class="p">)</span>
+<span class="k">SELECT</span><span class="w"> </span><span class="n">concat_ws</span><span class="p">(</span><span class="s1">','</span><span class="p">,</span><span class="w"> </span><span class="k">NULL</span><span class="p">,</span><span class="w"> </span><span class="s1">'b'</span><span class="p">,</span><span class="w"> </span><span class="s1">'c'</span><span class="p">)</span>
 
 <span class="c1">-- empty separator</span>
 <span class="n">query</span>
-<span class="k">SELECT</span><span class="w"> </span><span class="n">concat_ws</span><span class="p">(</span><span class="s1">&#39;&#39;</span><span class="p">,</span><span class="w"> </span><span class="n">a</span><span class="p">,</span><span class="w"> </span><span class="n">b</span><span class="p">,</span><span class="w"> </span><span class="k">c</span><span class="p">)</span><span class="w"> </span><span class="k">FROM</span><span class="w"> </span><span class="n">test_table</span>
+<span class="k">SELECT</span><span class="w"> </span><span class="n">concat_ws</span><span class="p">(</span><span class="s1">''</span><span class="p">,</span><span class="w"> </span><span class="n">a</span><span class="p">,</span><span class="w"> </span><span class="n">b</span><span class="p">,</span><span class="w"> </span><span class="k">c</span><span class="p">)</span><span class="w"> </span><span class="k">FROM</span><span class="w"> </span><span class="n">test_table</span>
 </pre></div>
 </div>
 </section>

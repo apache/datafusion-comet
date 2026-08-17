@@ -654,7 +654,7 @@ generate the config reference, refresh the Implementation column of the Spark Ex
 produce the per-Spark-version compatibility pages, freezing them onto the branch:</p>
 <div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>./dev/generate-release-docs.sh
 git<span class="w"> </span>add<span class="w"> </span>docs/source/user-guide/latest/
-git<span class="w"> </span>commit<span class="w"> </span>-m<span class="w"> </span><span class="s2">&quot;Generate docs for 0.13.0 release&quot;</span>
+git<span class="w"> </span>commit<span class="w"> </span>-m<span class="w"> </span><span class="s2">"Generate docs for 0.13.0 release"</span>
 </pre></div>
 </div>
 <p>The script runs one Maven build per supported Spark version, so it takes a while. Open a PR with this commit
@@ -671,7 +671,7 @@ catalog entry (<code class="docutils literal notranslate"><span class="pre">come
 </ul>
 <p>There is no need to update the Rust crate versions because they will already be <code class="docutils literal notranslate"><span class="pre">0.13.0</span></code>.</p>
 <p>Once the version is bumped, verify that no references to the old version remain:</p>
-<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>git<span class="w"> </span>grep<span class="w"> </span>-n<span class="w"> </span><span class="s1">&#39;0.13.0-SNAPSHOT&#39;</span><span class="w"> </span>--<span class="w"> </span>.<span class="w"> </span><span class="s1">&#39;:!docs/source/changelog&#39;</span>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>git<span class="w"> </span>grep<span class="w"> </span>-n<span class="w"> </span><span class="s1">'0.13.0-SNAPSHOT'</span><span class="w"> </span>--<span class="w"> </span>.<span class="w"> </span><span class="s1">':!docs/source/changelog'</span>
 </pre></div>
 </div>
 <p>Any hit outside the change log is a place that will break on the release branch. Note that dropping the
@@ -752,13 +752,13 @@ the local git repo is not used in the building of the binaries, but it is used t
 <div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>Usage:<span class="w"> </span>build-release-comet.sh<span class="w"> </span><span class="o">[</span>options<span class="o">]</span>
 
 This<span class="w"> </span>script<span class="w"> </span>builds<span class="w"> </span>comet<span class="w"> </span>native<span class="w"> </span>binaries<span class="w"> </span>inside<span class="w"> </span>a<span class="w"> </span>docker<span class="w"> </span>image.<span class="w"> </span>The<span class="w"> </span>image<span class="w"> </span>is<span class="w"> </span>named
-<span class="s2">&quot;comet-rm&quot;</span><span class="w"> </span>and<span class="w"> </span>will<span class="w"> </span>be<span class="w"> </span>generated<span class="w"> </span>by<span class="w"> </span>this<span class="w"> </span>script
+<span class="s2">"comet-rm"</span><span class="w"> </span>and<span class="w"> </span>will<span class="w"> </span>be<span class="w"> </span>generated<span class="w"> </span>by<span class="w"> </span>this<span class="w"> </span>script
 
 Options<span class="w"> </span>are:
 
 -r<span class="w"> </span><span class="o">[</span>repo<span class="o">]</span><span class="w">   </span>:<span class="w"> </span>git<span class="w"> </span>repo<span class="w"> </span><span class="o">(</span>default:<span class="w"> </span>https://github.com/apache/datafusion-comet.git<span class="o">)</span>
 -b<span class="w"> </span><span class="o">[</span>branch<span class="o">]</span><span class="w"> </span>:<span class="w"> </span>git<span class="w"> </span>branch<span class="w"> </span><span class="o">(</span>default:<span class="w"> </span>release<span class="o">)</span>
--t<span class="w"> </span><span class="o">[</span>tag<span class="o">]</span><span class="w">    </span>:<span class="w"> </span>tag<span class="w"> </span><span class="k">for</span><span class="w"> </span>the<span class="w"> </span>spark-rm<span class="w"> </span>docker<span class="w"> </span>image<span class="w"> </span>to<span class="w"> </span>use<span class="w"> </span><span class="k">for</span><span class="w"> </span>building<span class="w"> </span><span class="o">(</span>default:<span class="w"> </span><span class="s2">&quot;latest&quot;</span><span class="o">)</span>.
+-t<span class="w"> </span><span class="o">[</span>tag<span class="o">]</span><span class="w">    </span>:<span class="w"> </span>tag<span class="w"> </span><span class="k">for</span><span class="w"> </span>the<span class="w"> </span>spark-rm<span class="w"> </span>docker<span class="w"> </span>image<span class="w"> </span>to<span class="w"> </span>use<span class="w"> </span><span class="k">for</span><span class="w"> </span>building<span class="w"> </span><span class="o">(</span>default:<span class="w"> </span><span class="s2">"latest"</span><span class="o">)</span>.
 </pre></div>
 </div>
 <p>Example:</p>
@@ -794,8 +794,8 @@ it to GitHub Container Registry at https://github.com/apache/datafusion-comet/pk
 <li><p>Update the main method in <code class="docutils literal notranslate"><span class="pre">generate-versions.py</span></code> to promote the new release to the current one and move the
 previously current release into the list of older versions:</p></li>
 </ul>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span>    <span class="n">latest_released_version</span> <span class="o">=</span> <span class="s2">&quot;0.13.0&quot;</span>
-    <span class="n">previous_versions</span> <span class="o">=</span> <span class="p">[</span><span class="s2">&quot;0.10.0&quot;</span><span class="p">,</span> <span class="s2">&quot;0.11.0&quot;</span><span class="p">,</span> <span class="s2">&quot;0.12.0&quot;</span><span class="p">]</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span>    <span class="n">latest_released_version</span> <span class="o">=</span> <span class="s2">"0.13.0"</span>
+    <span class="n">previous_versions</span> <span class="o">=</span> <span class="p">[</span><span class="s2">"0.10.0"</span><span class="p">,</span> <span class="s2">"0.11.0"</span><span class="p">,</span> <span class="s2">"0.12.0"</span><span class="p">]</span>
 </pre></div>
 </div>
 <ul class="simple">
@@ -846,7 +846,7 @@ Publish<span class="w"> </span>signed<span class="w"> </span>artifacts<span clas
 
 Options
 -u<span class="w"> </span>ASF_USERNAME<span class="w"> </span>-<span class="w"> </span>Username<span class="w"> </span>of<span class="w"> </span>ASF<span class="w"> </span>committer<span class="w"> </span>account
--r<span class="w"> </span>LOCAL_REPO<span class="w"> </span>-<span class="w"> </span>path<span class="w"> </span>to<span class="w"> </span>temporary<span class="w"> </span><span class="nb">local</span><span class="w"> </span>maven<span class="w"> </span>repo<span class="w"> </span><span class="o">(</span>created<span class="w"> </span>and<span class="w"> </span>written<span class="w"> </span>to<span class="w"> </span>by<span class="w"> </span><span class="s1">&#39;build-release-comet.sh&#39;</span><span class="o">)</span>
+-r<span class="w"> </span>LOCAL_REPO<span class="w"> </span>-<span class="w"> </span>path<span class="w"> </span>to<span class="w"> </span>temporary<span class="w"> </span><span class="nb">local</span><span class="w"> </span>maven<span class="w"> </span>repo<span class="w"> </span><span class="o">(</span>created<span class="w"> </span>and<span class="w"> </span>written<span class="w"> </span>to<span class="w"> </span>by<span class="w"> </span><span class="s1">'build-release-comet.sh'</span><span class="o">)</span>
 
 The<span class="w"> </span>following<span class="w"> </span>will<span class="w"> </span>be<span class="w"> </span>prompted<span class="w"> </span><span class="k">for</span><span class="w"> </span>-
 ASF_PASSWORD<span class="w"> </span>-<span class="w"> </span>Password<span class="w"> </span>of<span class="w"> </span>ASF<span class="w"> </span>committer<span class="w"> </span>account
@@ -977,7 +977,7 @@ for more information.</p>
 </pre></div>
 </div>
 <p>Delete a release candidate:</p>
-<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>svn<span class="w"> </span>delete<span class="w"> </span>-m<span class="w"> </span><span class="s2">&quot;delete old DataFusion Comet RC&quot;</span><span class="w"> </span>https://dist.apache.org/repos/dist/dev/datafusion/apache-datafusion-comet-0.13.0-rc1/
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>svn<span class="w"> </span>delete<span class="w"> </span>-m<span class="w"> </span><span class="s2">"delete old DataFusion Comet RC"</span><span class="w"> </span>https://dist.apache.org/repos/dist/dev/datafusion/apache-datafusion-comet-0.13.0-rc1/
 </pre></div>
 </div>
 </section>
@@ -989,7 +989,7 @@ for more information.</p>
 </pre></div>
 </div>
 <p>Delete a release:</p>
-<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>svn<span class="w"> </span>delete<span class="w"> </span>-m<span class="w"> </span><span class="s2">&quot;delete old DataFusion Comet release&quot;</span><span class="w"> </span>https://dist.apache.org/repos/dist/release/datafusion/datafusion-comet-0.12.0
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>svn<span class="w"> </span>delete<span class="w"> </span>-m<span class="w"> </span><span class="s2">"delete old DataFusion Comet release"</span><span class="w"> </span>https://dist.apache.org/repos/dist/release/datafusion/datafusion-comet-0.12.0
 </pre></div>
 </div>
 </section>

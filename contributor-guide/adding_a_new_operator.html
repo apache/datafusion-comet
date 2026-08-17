@@ -769,12 +769,12 @@ manages the boundary between JVM and native execution.</p>
 <div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="k">override</span><span class="w"> </span><span class="k">def</span><span class="w"> </span><span class="nf">getSupportLevel</span><span class="p">(</span><span class="n">operator</span><span class="p">:</span><span class="w"> </span><span class="nc">YourOperatorExec</span><span class="p">):</span><span class="w"> </span><span class="nc">SupportLevel</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span>
 <span class="w">  </span><span class="c1">// Check for unsupported features</span>
 <span class="w">  </span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="n">operator</span><span class="p">.</span><span class="n">hasUnsupportedFeature</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
-<span class="w">    </span><span class="k">return</span><span class="w"> </span><span class="nc">Unsupported</span><span class="p">(</span><span class="nc">Some</span><span class="p">(</span><span class="s">&quot;Feature X is not supported&quot;</span><span class="p">))</span>
+<span class="w">    </span><span class="k">return</span><span class="w"> </span><span class="nc">Unsupported</span><span class="p">(</span><span class="nc">Some</span><span class="p">(</span><span class="s">"Feature X is not supported"</span><span class="p">))</span>
 <span class="w">  </span><span class="p">}</span>
 
 <span class="w">  </span><span class="c1">// Check for incompatible behavior</span>
 <span class="w">  </span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="n">operator</span><span class="p">.</span><span class="n">hasKnownDifferences</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
-<span class="w">    </span><span class="k">return</span><span class="w"> </span><span class="nc">Incompatible</span><span class="p">(</span><span class="nc">Some</span><span class="p">(</span><span class="s">&quot;Known differences in edge case Y&quot;</span><span class="p">))</span>
+<span class="w">    </span><span class="k">return</span><span class="w"> </span><span class="nc">Incompatible</span><span class="p">(</span><span class="nc">Some</span><span class="p">(</span><span class="s">"Known differences in edge case Y"</span><span class="p">))</span>
 <span class="w">  </span><span class="p">}</span>
 
 <span class="w">  </span><span class="nc">Compatible</span><span class="p">()</span>
@@ -825,8 +825,8 @@ manages the boundary between JVM and native execution.</p>
 <h3>Step 4: Add Configuration Entry<a class="headerlink" href="#step-4-add-configuration-entry" title="Link to this heading">#</a></h3>
 <p>Add a configuration entry in <code class="docutils literal notranslate"><span class="pre">common/src/main/scala/org/apache/comet/CometConf.scala</span></code>:</p>
 <div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="kd">val</span><span class="w"> </span><span class="nc">COMET_EXEC_YOUR_OPERATOR_ENABLED</span><span class="p">:</span><span class="w"> </span><span class="nc">ConfigEntry</span><span class="p">[</span><span class="nc">Boolean</span><span class="p">]</span><span class="w"> </span><span class="o">=</span>
-<span class="w">  </span><span class="n">conf</span><span class="p">(</span><span class="s">&quot;spark.comet.exec.yourOperator.enabled&quot;</span><span class="p">)</span>
-<span class="w">    </span><span class="p">.</span><span class="n">doc</span><span class="p">(</span><span class="s">&quot;Whether to enable your operator in Comet&quot;</span><span class="p">)</span>
+<span class="w">  </span><span class="n">conf</span><span class="p">(</span><span class="s">"spark.comet.exec.yourOperator.enabled"</span><span class="p">)</span>
+<span class="w">    </span><span class="p">.</span><span class="n">doc</span><span class="p">(</span><span class="s">"Whether to enable your operator in Comet"</span><span class="p">)</span>
 <span class="w">    </span><span class="p">.</span><span class="n">booleanConf</span>
 <span class="w">    </span><span class="p">.</span><span class="n">createWithDefault</span><span class="p">(</span><span class="kc">true</span><span class="p">)</span>
 </pre></div>
@@ -883,14 +883,14 @@ manages the boundary between JVM and native execution.</p>
 <section id="scala-integration-tests">
 <h4>Scala Integration Tests<a class="headerlink" href="#scala-integration-tests" title="Link to this heading">#</a></h4>
 <p>Add tests in <code class="docutils literal notranslate"><span class="pre">spark/src/test/scala/org/apache/comet/exec/CometExecSuite.scala</span></code> or a related test suite:</p>
-<div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="n">test</span><span class="p">(</span><span class="s">&quot;your operator&quot;</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
-<span class="w">  </span><span class="n">withTable</span><span class="p">(</span><span class="s">&quot;test_table&quot;</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
-<span class="w">    </span><span class="n">sql</span><span class="p">(</span><span class="s">&quot;CREATE TABLE test_table(col1 INT, col2 STRING) USING parquet&quot;</span><span class="p">)</span>
-<span class="w">    </span><span class="n">sql</span><span class="p">(</span><span class="s">&quot;INSERT INTO test_table VALUES (1, &#39;a&#39;), (2, &#39;b&#39;)&quot;</span><span class="p">)</span>
+<div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="n">test</span><span class="p">(</span><span class="s">"your operator"</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="n">withTable</span><span class="p">(</span><span class="s">"test_table"</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="n">sql</span><span class="p">(</span><span class="s">"CREATE TABLE test_table(col1 INT, col2 STRING) USING parquet"</span><span class="p">)</span>
+<span class="w">    </span><span class="n">sql</span><span class="p">(</span><span class="s">"INSERT INTO test_table VALUES (1, 'a'), (2, 'b')"</span><span class="p">)</span>
 
 <span class="w">    </span><span class="c1">// Test query that uses your operator</span>
 <span class="w">    </span><span class="n">checkSparkAnswerAndOperator</span><span class="p">(</span>
-<span class="w">      </span><span class="s">&quot;SELECT * FROM test_table WHERE col1 &gt; 1&quot;</span>
+<span class="w">      </span><span class="s">"SELECT * FROM test_table WHERE col1 &gt; 1"</span>
 <span class="w">    </span><span class="p">)</span>
 <span class="w">  </span><span class="p">}</span>
 <span class="p">}</span>
@@ -970,7 +970,7 @@ manages the boundary between JVM and native execution.</p>
 <span class="w">  </span><span class="k">override</span><span class="w"> </span><span class="k">protected</span><span class="w"> </span><span class="k">def</span><span class="w"> </span><span class="nf">doExecuteColumnar</span><span class="p">():</span><span class="w"> </span><span class="nc">RDD</span><span class="p">[</span><span class="nc">ColumnarBatch</span><span class="p">]</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span>
 <span class="w">    </span><span class="c1">// Implement columnar execution logic</span>
 <span class="w">    </span><span class="kd">val</span><span class="w"> </span><span class="n">rdd</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">child</span><span class="p">.</span><span class="n">executeColumnar</span><span class="p">()</span>
-<span class="w">    </span><span class="c1">// Apply your sink operator&#39;s logic</span>
+<span class="w">    </span><span class="c1">// Apply your sink operator's logic</span>
 <span class="w">    </span><span class="n">rdd</span>
 <span class="w">  </span><span class="p">}</span>
 
@@ -1013,8 +1013,8 @@ manages the boundary between JVM and native execution.</p>
 <h3>Step 3: Add Configuration<a class="headerlink" href="#step-3-add-configuration" title="Link to this heading">#</a></h3>
 <p>Add a configuration entry in <code class="docutils literal notranslate"><span class="pre">CometConf.scala</span></code>:</p>
 <div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="kd">val</span><span class="w"> </span><span class="nc">COMET_EXEC_YOUR_SINK_ENABLED</span><span class="p">:</span><span class="w"> </span><span class="nc">ConfigEntry</span><span class="p">[</span><span class="nc">Boolean</span><span class="p">]</span><span class="w"> </span><span class="o">=</span>
-<span class="w">  </span><span class="n">conf</span><span class="p">(</span><span class="s">&quot;spark.comet.exec.yourSink.enabled&quot;</span><span class="p">)</span>
-<span class="w">    </span><span class="p">.</span><span class="n">doc</span><span class="p">(</span><span class="s">&quot;Whether to enable your sink operator in Comet&quot;</span><span class="p">)</span>
+<span class="w">  </span><span class="n">conf</span><span class="p">(</span><span class="s">"spark.comet.exec.yourSink.enabled"</span><span class="p">)</span>
+<span class="w">    </span><span class="p">.</span><span class="n">doc</span><span class="p">(</span><span class="s">"Whether to enable your sink operator in Comet"</span><span class="p">)</span>
 <span class="w">    </span><span class="p">.</span><span class="n">booleanConf</span>
 <span class="w">    </span><span class="p">.</span><span class="n">createWithDefault</span><span class="p">(</span><span class="kc">true</span><span class="p">)</span>
 </pre></div>
@@ -1023,14 +1023,14 @@ manages the boundary between JVM and native execution.</p>
 <section id="step-4-add-tests">
 <h3>Step 4: Add Tests<a class="headerlink" href="#step-4-add-tests" title="Link to this heading">#</a></h3>
 <p>Test that your sink operator correctly feeds data into native execution:</p>
-<div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="n">test</span><span class="p">(</span><span class="s">&quot;your sink operator&quot;</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
-<span class="w">  </span><span class="n">withTable</span><span class="p">(</span><span class="s">&quot;test_table&quot;</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
-<span class="w">    </span><span class="n">sql</span><span class="p">(</span><span class="s">&quot;CREATE TABLE test_table(col1 INT, col2 STRING) USING parquet&quot;</span><span class="p">)</span>
-<span class="w">    </span><span class="n">sql</span><span class="p">(</span><span class="s">&quot;INSERT INTO test_table VALUES (1, &#39;a&#39;), (2, &#39;b&#39;)&quot;</span><span class="p">)</span>
+<div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="n">test</span><span class="p">(</span><span class="s">"your sink operator"</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="n">withTable</span><span class="p">(</span><span class="s">"test_table"</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="n">sql</span><span class="p">(</span><span class="s">"CREATE TABLE test_table(col1 INT, col2 STRING) USING parquet"</span><span class="p">)</span>
+<span class="w">    </span><span class="n">sql</span><span class="p">(</span><span class="s">"INSERT INTO test_table VALUES (1, 'a'), (2, 'b')"</span><span class="p">)</span>
 
 <span class="w">    </span><span class="c1">// Test query that uses your sink operator followed by native operators</span>
 <span class="w">    </span><span class="n">checkSparkAnswerAndOperator</span><span class="p">(</span>
-<span class="w">      </span><span class="s">&quot;SELECT col1 + 1 FROM (/* query that produces YourSinkExec */)&quot;</span>
+<span class="w">      </span><span class="s">"SELECT col1 + 1 FROM (/* query that produces YourSinkExec */)"</span>
 <span class="w">    </span><span class="p">)</span>
 <span class="w">  </span><span class="p">}</span>
 <span class="p">}</span>
@@ -1081,7 +1081,7 @@ manages the boundary between JVM and native execution.</p>
 <h3>Handling Fallback<a class="headerlink" href="#handling-fallback" title="Link to this heading">#</a></h3>
 <p>Use <code class="docutils literal notranslate"><span class="pre">withInfo</span></code> to tag operators with fallback reasons:</p>
 <div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="o">!</span><span class="n">canConvert</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
-<span class="w">  </span><span class="n">withInfo</span><span class="p">(</span><span class="n">op</span><span class="p">,</span><span class="w"> </span><span class="s">&quot;Reason for fallback&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">childNodes</span><span class="p">:</span><span class="w"> </span><span class="n">_*</span><span class="p">)</span>
+<span class="w">  </span><span class="n">withInfo</span><span class="p">(</span><span class="n">op</span><span class="p">,</span><span class="w"> </span><span class="s">"Reason for fallback"</span><span class="p">,</span><span class="w"> </span><span class="n">childNodes</span><span class="p">:</span><span class="w"> </span><span class="n">_*</span><span class="p">)</span>
 <span class="w">  </span><span class="k">return</span><span class="w"> </span><span class="nc">None</span>
 <span class="p">}</span>
 </pre></div>

@@ -844,16 +844,16 @@ git<span class="w"> </span>apply<span class="w"> </span>../datafusion-comet/dev/
 </pre></div>
 </div>
 <p>Create an Iceberg table. Note that Comet will not accelerate this part.</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">scala</span><span class="o">&gt;</span> <span class="n">spark</span><span class="o">.</span><span class="n">sql</span><span class="p">(</span><span class="n">s</span><span class="s2">&quot;CREATE TABLE IF NOT EXISTS t1 (c0 INT, c1 STRING) USING iceberg&quot;</span><span class="p">)</span>
-<span class="n">scala</span><span class="o">&gt;</span> <span class="n">spark</span><span class="o">.</span><span class="n">sql</span><span class="p">(</span><span class="n">s</span><span class="s2">&quot;INSERT INTO t1 VALUES ${(0 until 10000).map(i =&gt; (i, i)).mkString(&quot;</span><span class="p">,</span><span class="s2">&quot;)}&quot;</span><span class="p">)</span>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">scala</span><span class="o">&gt;</span> <span class="n">spark</span><span class="o">.</span><span class="n">sql</span><span class="p">(</span><span class="n">s</span><span class="s2">"CREATE TABLE IF NOT EXISTS t1 (c0 INT, c1 STRING) USING iceberg"</span><span class="p">)</span>
+<span class="n">scala</span><span class="o">&gt;</span> <span class="n">spark</span><span class="o">.</span><span class="n">sql</span><span class="p">(</span><span class="n">s</span><span class="s2">"INSERT INTO t1 VALUES ${(0 until 10000).map(i =&gt; (i, i)).mkString("</span><span class="p">,</span><span class="s2">")}"</span><span class="p">)</span>
 </pre></div>
 </div>
 <p>Comet should now be able to accelerate reading the table:</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">scala</span><span class="o">&gt;</span> <span class="n">spark</span><span class="o">.</span><span class="n">sql</span><span class="p">(</span><span class="n">s</span><span class="s2">&quot;SELECT * from t1&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">show</span><span class="p">()</span>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">scala</span><span class="o">&gt;</span> <span class="n">spark</span><span class="o">.</span><span class="n">sql</span><span class="p">(</span><span class="n">s</span><span class="s2">"SELECT * from t1"</span><span class="p">)</span><span class="o">.</span><span class="n">show</span><span class="p">()</span>
 </pre></div>
 </div>
 <p>This should produce the following output:</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">scala</span><span class="o">&gt;</span> <span class="n">spark</span><span class="o">.</span><span class="n">sql</span><span class="p">(</span><span class="n">s</span><span class="s2">&quot;SELECT * from t1&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">show</span><span class="p">()</span>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">scala</span><span class="o">&gt;</span> <span class="n">spark</span><span class="o">.</span><span class="n">sql</span><span class="p">(</span><span class="n">s</span><span class="s2">"SELECT * from t1"</span><span class="p">)</span><span class="o">.</span><span class="n">show</span><span class="p">()</span>
 <span class="o">+---+---+</span>
 <span class="o">|</span> <span class="n">c0</span><span class="o">|</span> <span class="n">c1</span><span class="o">|</span>
 <span class="o">+---+---+</span>
@@ -882,7 +882,7 @@ git<span class="w"> </span>apply<span class="w"> </span>../datafusion-comet/dev/
 </pre></div>
 </div>
 <p>Confirm that the query was accelerated by Comet:</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">scala</span><span class="o">&gt;</span> <span class="n">spark</span><span class="o">.</span><span class="n">sql</span><span class="p">(</span><span class="n">s</span><span class="s2">&quot;SELECT * from t1&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">explain</span><span class="p">()</span>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">scala</span><span class="o">&gt;</span> <span class="n">spark</span><span class="o">.</span><span class="n">sql</span><span class="p">(</span><span class="n">s</span><span class="s2">"SELECT * from t1"</span><span class="p">)</span><span class="o">.</span><span class="n">explain</span><span class="p">()</span>
 <span class="o">==</span> <span class="n">Physical</span> <span class="n">Plan</span> <span class="o">==</span>
 <span class="o">*</span><span class="p">(</span><span class="mi">1</span><span class="p">)</span> <span class="n">CometColumnarToRow</span>
 <span class="o">+-</span> <span class="n">CometBatchScan</span> <span class="n">spark_catalog</span><span class="o">.</span><span class="n">default</span><span class="o">.</span><span class="n">t1</span><span class="p">[</span><span class="n">c0</span><span class="c1">#26, c1#27] spark_catalog.default.t1 (branch=null) [filters=, groupedBy=] RuntimeFilters: []</span>
@@ -998,10 +998,10 @@ configure Spark to use a REST catalog with Comet’s native Iceberg scan:</p>
 </pre></div>
 </div>
 <p>Note that REST catalogs require explicit namespace creation before creating tables:</p>
-<div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="n">scala</span><span class="o">&gt;</span><span class="w"> </span><span class="n">spark</span><span class="p">.</span><span class="n">sql</span><span class="p">(</span><span class="s">&quot;CREATE NAMESPACE rest_cat.db&quot;</span><span class="p">)</span>
-<span class="n">scala</span><span class="o">&gt;</span><span class="w"> </span><span class="n">spark</span><span class="p">.</span><span class="n">sql</span><span class="p">(</span><span class="s">&quot;CREATE TABLE rest_cat.db.test_table (id INT, name STRING) USING iceberg&quot;</span><span class="p">)</span>
-<span class="n">scala</span><span class="o">&gt;</span><span class="w"> </span><span class="n">spark</span><span class="p">.</span><span class="n">sql</span><span class="p">(</span><span class="s">&quot;INSERT INTO rest_cat.db.test_table VALUES (1, &#39;Alice&#39;), (2, &#39;Bob&#39;)&quot;</span><span class="p">)</span>
-<span class="n">scala</span><span class="o">&gt;</span><span class="w"> </span><span class="n">spark</span><span class="p">.</span><span class="n">sql</span><span class="p">(</span><span class="s">&quot;SELECT * FROM rest_cat.db.test_table&quot;</span><span class="p">).</span><span class="n">show</span><span class="p">()</span>
+<div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="n">scala</span><span class="o">&gt;</span><span class="w"> </span><span class="n">spark</span><span class="p">.</span><span class="n">sql</span><span class="p">(</span><span class="s">"CREATE NAMESPACE rest_cat.db"</span><span class="p">)</span>
+<span class="n">scala</span><span class="o">&gt;</span><span class="w"> </span><span class="n">spark</span><span class="p">.</span><span class="n">sql</span><span class="p">(</span><span class="s">"CREATE TABLE rest_cat.db.test_table (id INT, name STRING) USING iceberg"</span><span class="p">)</span>
+<span class="n">scala</span><span class="o">&gt;</span><span class="w"> </span><span class="n">spark</span><span class="p">.</span><span class="n">sql</span><span class="p">(</span><span class="s">"INSERT INTO rest_cat.db.test_table VALUES (1, 'Alice'), (2, 'Bob')"</span><span class="p">)</span>
+<span class="n">scala</span><span class="o">&gt;</span><span class="w"> </span><span class="n">spark</span><span class="p">.</span><span class="n">sql</span><span class="p">(</span><span class="s">"SELECT * FROM rest_cat.db.test_table"</span><span class="p">).</span><span class="n">show</span><span class="p">()</span>
 </pre></div>
 </div>
 </section>

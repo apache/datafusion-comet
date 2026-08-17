@@ -877,25 +877,25 @@ worker. Both confs can be set independently.</p>
 <span class="kn">from</span><span class="w"> </span><span class="nn">pyspark.sql</span><span class="w"> </span><span class="kn">import</span> <span class="n">SparkSession</span><span class="p">,</span> <span class="n">types</span> <span class="k">as</span> <span class="n">T</span>
 
 <span class="n">spark</span> <span class="o">=</span> <span class="n">SparkSession</span><span class="o">.</span><span class="n">builder</span> \
-    <span class="o">.</span><span class="n">config</span><span class="p">(</span><span class="s2">&quot;spark.plugins&quot;</span><span class="p">,</span> <span class="s2">&quot;org.apache.spark.CometPlugin&quot;</span><span class="p">)</span> \
-    <span class="o">.</span><span class="n">config</span><span class="p">(</span><span class="s2">&quot;spark.comet.enabled&quot;</span><span class="p">,</span> <span class="s2">&quot;true&quot;</span><span class="p">)</span> \
-    <span class="o">.</span><span class="n">config</span><span class="p">(</span><span class="s2">&quot;spark.comet.exec.enabled&quot;</span><span class="p">,</span> <span class="s2">&quot;true&quot;</span><span class="p">)</span> \
-    <span class="o">.</span><span class="n">config</span><span class="p">(</span><span class="s2">&quot;spark.comet.exec.pyarrowUDF.enabled&quot;</span><span class="p">,</span> <span class="s2">&quot;true&quot;</span><span class="p">)</span> \
-    <span class="o">.</span><span class="n">config</span><span class="p">(</span><span class="s2">&quot;spark.memory.offHeap.enabled&quot;</span><span class="p">,</span> <span class="s2">&quot;true&quot;</span><span class="p">)</span> \
-    <span class="o">.</span><span class="n">config</span><span class="p">(</span><span class="s2">&quot;spark.memory.offHeap.size&quot;</span><span class="p">,</span> <span class="s2">&quot;2g&quot;</span><span class="p">)</span> \
+    <span class="o">.</span><span class="n">config</span><span class="p">(</span><span class="s2">"spark.plugins"</span><span class="p">,</span> <span class="s2">"org.apache.spark.CometPlugin"</span><span class="p">)</span> \
+    <span class="o">.</span><span class="n">config</span><span class="p">(</span><span class="s2">"spark.comet.enabled"</span><span class="p">,</span> <span class="s2">"true"</span><span class="p">)</span> \
+    <span class="o">.</span><span class="n">config</span><span class="p">(</span><span class="s2">"spark.comet.exec.enabled"</span><span class="p">,</span> <span class="s2">"true"</span><span class="p">)</span> \
+    <span class="o">.</span><span class="n">config</span><span class="p">(</span><span class="s2">"spark.comet.exec.pyarrowUDF.enabled"</span><span class="p">,</span> <span class="s2">"true"</span><span class="p">)</span> \
+    <span class="o">.</span><span class="n">config</span><span class="p">(</span><span class="s2">"spark.memory.offHeap.enabled"</span><span class="p">,</span> <span class="s2">"true"</span><span class="p">)</span> \
+    <span class="o">.</span><span class="n">config</span><span class="p">(</span><span class="s2">"spark.memory.offHeap.size"</span><span class="p">,</span> <span class="s2">"2g"</span><span class="p">)</span> \
     <span class="o">.</span><span class="n">getOrCreate</span><span class="p">()</span>
 
-<span class="n">df</span> <span class="o">=</span> <span class="n">spark</span><span class="o">.</span><span class="n">read</span><span class="o">.</span><span class="n">parquet</span><span class="p">(</span><span class="s2">&quot;data.parquet&quot;</span><span class="p">)</span>
+<span class="n">df</span> <span class="o">=</span> <span class="n">spark</span><span class="o">.</span><span class="n">read</span><span class="o">.</span><span class="n">parquet</span><span class="p">(</span><span class="s2">"data.parquet"</span><span class="p">)</span>
 
 <span class="k">def</span><span class="w"> </span><span class="nf">transform</span><span class="p">(</span><span class="n">batch</span><span class="p">:</span> <span class="n">pa</span><span class="o">.</span><span class="n">RecordBatch</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">pa</span><span class="o">.</span><span class="n">RecordBatch</span><span class="p">:</span>
     <span class="c1"># Your transformation logic here</span>
     <span class="n">table</span> <span class="o">=</span> <span class="n">batch</span><span class="o">.</span><span class="n">to_pandas</span><span class="p">()</span>
-    <span class="n">table</span><span class="p">[</span><span class="s2">&quot;new_col&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="n">table</span><span class="p">[</span><span class="s2">&quot;value&quot;</span><span class="p">]</span> <span class="o">*</span> <span class="mi">2</span>
+    <span class="n">table</span><span class="p">[</span><span class="s2">"new_col"</span><span class="p">]</span> <span class="o">=</span> <span class="n">table</span><span class="p">[</span><span class="s2">"value"</span><span class="p">]</span> <span class="o">*</span> <span class="mi">2</span>
     <span class="k">return</span> <span class="n">pa</span><span class="o">.</span><span class="n">RecordBatch</span><span class="o">.</span><span class="n">from_pandas</span><span class="p">(</span><span class="n">table</span><span class="p">)</span>
 
 <span class="n">output_schema</span> <span class="o">=</span> <span class="n">T</span><span class="o">.</span><span class="n">StructType</span><span class="p">([</span>
-    <span class="n">T</span><span class="o">.</span><span class="n">StructField</span><span class="p">(</span><span class="s2">&quot;value&quot;</span><span class="p">,</span> <span class="n">T</span><span class="o">.</span><span class="n">DoubleType</span><span class="p">()),</span>
-    <span class="n">T</span><span class="o">.</span><span class="n">StructField</span><span class="p">(</span><span class="s2">&quot;new_col&quot;</span><span class="p">,</span> <span class="n">T</span><span class="o">.</span><span class="n">DoubleType</span><span class="p">()),</span>
+    <span class="n">T</span><span class="o">.</span><span class="n">StructField</span><span class="p">(</span><span class="s2">"value"</span><span class="p">,</span> <span class="n">T</span><span class="o">.</span><span class="n">DoubleType</span><span class="p">()),</span>
+    <span class="n">T</span><span class="o">.</span><span class="n">StructField</span><span class="p">(</span><span class="s2">"new_col"</span><span class="p">,</span> <span class="n">T</span><span class="o">.</span><span class="n">DoubleType</span><span class="p">()),</span>
 <span class="p">])</span>
 
 <span class="n">result</span> <span class="o">=</span> <span class="n">df</span><span class="o">.</span><span class="n">mapInArrow</span><span class="p">(</span><span class="n">transform</span><span class="p">,</span> <span class="n">output_schema</span><span class="p">)</span>
@@ -905,7 +905,7 @@ worker. Both confs can be set independently.</p>
 <section id="verifying-the-optimization">
 <h2>Verifying the Optimization<a class="headerlink" href="#verifying-the-optimization" title="Link to this heading">#</a></h2>
 <p>Use <code class="docutils literal notranslate"><span class="pre">explain()</span></code> to verify that <code class="docutils literal notranslate"><span class="pre">CometMapInBatch</span></code> appears in your plan:</p>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">result</span><span class="o">.</span><span class="n">explain</span><span class="p">(</span><span class="n">mode</span><span class="o">=</span><span class="s2">&quot;extended&quot;</span><span class="p">)</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="n">result</span><span class="o">.</span><span class="n">explain</span><span class="p">(</span><span class="n">mode</span><span class="o">=</span><span class="s2">"extended"</span><span class="p">)</span>
 </pre></div>
 </div>
 <p>You should see:</p>

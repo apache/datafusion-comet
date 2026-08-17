@@ -559,7 +559,7 @@ Comet is enabled when we run the tests.</p>
 <section id="install-comet">
 <h2>1. Install Comet<a class="headerlink" href="#install-comet" title="Link to this heading">#</a></h2>
 <p>Run <code class="docutils literal notranslate"><span class="pre">make</span> <span class="pre">release</span></code> in Comet to install the Comet JAR into the local Maven repository, specifying the Spark version.</p>
-<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="nv">PROFILES</span><span class="o">=</span><span class="s2">&quot;-Pspark-3.4&quot;</span><span class="w"> </span>make<span class="w"> </span>release
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="nv">PROFILES</span><span class="o">=</span><span class="s2">"-Pspark-3.4"</span><span class="w"> </span>make<span class="w"> </span>release
 </pre></div>
 </div>
 </section>
@@ -567,7 +567,7 @@ Comet is enabled when we run the tests.</p>
 <h2>2. Clone Spark and Apply Diff<a class="headerlink" href="#clone-spark-and-apply-diff" title="Link to this heading">#</a></h2>
 <p>Clone Apache Spark locally and apply the diff file from Comet.</p>
 <p>Note: this is a shallow clone of a tagged Spark commit and is not suitable for general Spark development.</p>
-<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>git<span class="w"> </span>clone<span class="w"> </span>-b<span class="w"> </span><span class="s1">&#39;v3.4.3&#39;</span><span class="w"> </span>--single-branch<span class="w"> </span>--depth<span class="w"> </span><span class="m">1</span><span class="w"> </span>git@github.com:apache/spark.git<span class="w"> </span>apache-spark
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>git<span class="w"> </span>clone<span class="w"> </span>-b<span class="w"> </span><span class="s1">'v3.4.3'</span><span class="w"> </span>--single-branch<span class="w"> </span>--depth<span class="w"> </span><span class="m">1</span><span class="w"> </span>git@github.com:apache/spark.git<span class="w"> </span>apache-spark
 <span class="nb">cd</span><span class="w"> </span>apache-spark
 git<span class="w"> </span>apply<span class="w"> </span>../datafusion-comet/dev/diffs/3.4.3.diff
 </pre></div>
@@ -582,12 +582,12 @@ git<span class="w"> </span>apply<span class="w"> </span>../datafusion-comet/dev/
 </pre></div>
 </div>
 <div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="nv">ENABLE_COMET</span><span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="nv">ENABLE_COMET_ONHEAP</span><span class="o">=</span><span class="nb">true</span><span class="w"> </span>build/sbt<span class="w"> </span>catalyst/test
-<span class="nv">ENABLE_COMET</span><span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="nv">ENABLE_COMET_ONHEAP</span><span class="o">=</span><span class="nb">true</span><span class="w"> </span>build/sbt<span class="w"> </span><span class="s2">&quot;sql/testOnly * -- -l org.apache.spark.tags.ExtendedSQLTest -l org.apache.spark.tags.SlowSQLTest&quot;</span>
-<span class="nv">ENABLE_COMET</span><span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="nv">ENABLE_COMET_ONHEAP</span><span class="o">=</span><span class="nb">true</span><span class="w"> </span>build/sbt<span class="w"> </span><span class="s2">&quot;sql/testOnly * -- -n org.apache.spark.tags.ExtendedSQLTest&quot;</span>
-<span class="nv">ENABLE_COMET</span><span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="nv">ENABLE_COMET_ONHEAP</span><span class="o">=</span><span class="nb">true</span><span class="w"> </span>build/sbt<span class="w"> </span><span class="s2">&quot;sql/testOnly * -- -n org.apache.spark.tags.SlowSQLTest&quot;</span>
-<span class="nv">ENABLE_COMET</span><span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="nv">ENABLE_COMET_ONHEAP</span><span class="o">=</span><span class="nb">true</span><span class="w"> </span>build/sbt<span class="w"> </span><span class="s2">&quot;hive/testOnly * -- -l org.apache.spark.tags.ExtendedHiveTest -l org.apache.spark.tags.SlowHiveTest&quot;</span>
-<span class="nv">ENABLE_COMET</span><span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="nv">ENABLE_COMET_ONHEAP</span><span class="o">=</span><span class="nb">true</span><span class="w"> </span>build/sbt<span class="w"> </span><span class="s2">&quot;hive/testOnly * -- -n org.apache.spark.tags.ExtendedHiveTest&quot;</span>
-<span class="nv">ENABLE_COMET</span><span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="nv">ENABLE_COMET_ONHEAP</span><span class="o">=</span><span class="nb">true</span><span class="w"> </span>build/sbt<span class="w"> </span><span class="s2">&quot;hive/testOnly * -- -n org.apache.spark.tags.SlowHiveTest&quot;</span>
+<span class="nv">ENABLE_COMET</span><span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="nv">ENABLE_COMET_ONHEAP</span><span class="o">=</span><span class="nb">true</span><span class="w"> </span>build/sbt<span class="w"> </span><span class="s2">"sql/testOnly * -- -l org.apache.spark.tags.ExtendedSQLTest -l org.apache.spark.tags.SlowSQLTest"</span>
+<span class="nv">ENABLE_COMET</span><span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="nv">ENABLE_COMET_ONHEAP</span><span class="o">=</span><span class="nb">true</span><span class="w"> </span>build/sbt<span class="w"> </span><span class="s2">"sql/testOnly * -- -n org.apache.spark.tags.ExtendedSQLTest"</span>
+<span class="nv">ENABLE_COMET</span><span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="nv">ENABLE_COMET_ONHEAP</span><span class="o">=</span><span class="nb">true</span><span class="w"> </span>build/sbt<span class="w"> </span><span class="s2">"sql/testOnly * -- -n org.apache.spark.tags.SlowSQLTest"</span>
+<span class="nv">ENABLE_COMET</span><span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="nv">ENABLE_COMET_ONHEAP</span><span class="o">=</span><span class="nb">true</span><span class="w"> </span>build/sbt<span class="w"> </span><span class="s2">"hive/testOnly * -- -l org.apache.spark.tags.ExtendedHiveTest -l org.apache.spark.tags.SlowHiveTest"</span>
+<span class="nv">ENABLE_COMET</span><span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="nv">ENABLE_COMET_ONHEAP</span><span class="o">=</span><span class="nb">true</span><span class="w"> </span>build/sbt<span class="w"> </span><span class="s2">"hive/testOnly * -- -n org.apache.spark.tags.ExtendedHiveTest"</span>
+<span class="nv">ENABLE_COMET</span><span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="nv">ENABLE_COMET_ONHEAP</span><span class="o">=</span><span class="nb">true</span><span class="w"> </span>build/sbt<span class="w"> </span><span class="s2">"hive/testOnly * -- -n org.apache.spark.tags.SlowHiveTest"</span>
 </pre></div>
 </div>
 </section>
@@ -602,7 +602,7 @@ git<span class="w"> </span>apply<span class="w"> </span>../datafusion-comet/dev/
 <ol class="arabic simple" start="2">
 <li><p>Run individual tests (Below code runs test named <code class="docutils literal notranslate"><span class="pre">SPARK-35568</span></code> in the <code class="docutils literal notranslate"><span class="pre">spark-sql</span></code> module)</p></li>
 </ol>
-<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="w"> </span>sql/testOnly<span class="w">  </span>org.apache.spark.sql.DynamicPartitionPruningV1SuiteAEOn<span class="w"> </span>--<span class="w"> </span>-z<span class="w"> </span><span class="s2">&quot;SPARK-35568&quot;</span>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="w"> </span>sql/testOnly<span class="w">  </span>org.apache.spark.sql.DynamicPartitionPruningV1SuiteAEOn<span class="w"> </span>--<span class="w"> </span>-z<span class="w"> </span><span class="s2">"SPARK-35568"</span>
 </pre></div>
 </div>
 </section>
@@ -638,7 +638,7 @@ git<span class="w"> </span>apply<span class="w"> </span>--reject<span class="w">
 </div>
 <p>Any changes that cannot be cleanly applied will instead be written out to reject files. For example, the above
 command generated the following files.</p>
-<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>find<span class="w"> </span>.<span class="w"> </span>-name<span class="w"> </span><span class="s2">&quot;*.rej&quot;</span>
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>find<span class="w"> </span>.<span class="w"> </span>-name<span class="w"> </span><span class="s2">"*.rej"</span>
 ./pom.xml.rej
 ./sql/core/src/test/scala/org/apache/spark/sql/FileBasedDataSourceSuite.scala.rej
 ./sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala.rej
@@ -737,7 +737,7 @@ Central. The fast workaround is to point sbt at a fresh location:</p>
 <span class="w">  </span>-Dmaven.repo.local<span class="o">=</span>/tmp/spark-m2-repo
 <span class="nb">cd</span><span class="w"> </span>../apache-spark
 <span class="nv">NOLINT_ON_COMPILE</span><span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="nv">ENABLE_COMET</span><span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="nv">ENABLE_COMET_ONHEAP</span><span class="o">=</span><span class="nb">true</span><span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>build/sbt<span class="w"> </span>-Dmaven.repo.local<span class="o">=</span>/tmp/spark-m2-repo<span class="w"> </span><span class="s2">&quot;sql/testOnly org.apache.spark.sql.MathFunctionsSuite&quot;</span>
+<span class="w">  </span>build/sbt<span class="w"> </span>-Dmaven.repo.local<span class="o">=</span>/tmp/spark-m2-repo<span class="w"> </span><span class="s2">"sql/testOnly org.apache.spark.sql.MathFunctionsSuite"</span>
 </pre></div>
 </div>
 <p>Make sure to install Comet into the same alternate repo so sbt can resolve it.</p>
