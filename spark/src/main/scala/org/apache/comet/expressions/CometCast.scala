@@ -356,10 +356,14 @@ object CometCast
   private def canCastFromBoolean(toType: DataType, evalMode: CometEvalMode.Value): SupportLevel =
     toType match {
       case DataTypes.ByteType | DataTypes.ShortType | DataTypes.IntegerType | DataTypes.LongType |
-          DataTypes.FloatType | DataTypes.DoubleType | _: DecimalType =>
+          DataTypes.FloatType | DataTypes.DoubleType =>
         Compatible()
       case _: TimestampType if evalMode == CometEvalMode.LEGACY =>
         Compatible()
+      // Boolean -> Decimal has no native path. It is a rare cast and getting the
+      // precision/scale/overflow behavior right in native code is not worth the complexity, so
+      // the `CodegenDispatchFallback` mixin routes it through Spark's own generated code inside
+      // the Comet pipeline instead.
       case _ => unsupported(DataTypes.BooleanType, toType)
     }
 
