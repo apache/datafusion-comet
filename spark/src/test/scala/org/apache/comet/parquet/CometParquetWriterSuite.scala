@@ -19,29 +19,47 @@
 
 package org.apache.comet.parquet
 
-import java.io.File
+import java.io.{File, IOException}
 
 import scala.jdk.CollectionConverters._
 import scala.util.{Random, Using}
 
+import org.scalactic.source.Position
+import org.scalatest.Tag
+
 import org.apache.hadoop.fs.{FileSystem, Path}
+import org.apache.hadoop.mapreduce.TaskAttemptContext
 import org.apache.parquet.hadoop.ParquetFileReader
 import org.apache.parquet.hadoop.metadata.CompressionCodecName
 import org.apache.parquet.hadoop.util.HadoopInputFile
+import org.apache.spark.internal.io.FileCommitProtocol
 import org.apache.spark.sql.{AnalysisException, CometTestBase, DataFrame, Row, SaveMode}
-import org.apache.spark.sql.comet.{CometBatchScanExec, CometNativeScanExec, CometNativeWriteExec, CometScanExec}
+import org.apache.spark.sql.comet.{CometBatchScanExec, CometNativeScanExec, CometScanExec, CometWriteFilesExec}
 import org.apache.spark.sql.execution.{FileSourceScanExec, QueryExecution, SparkPlan}
 import org.apache.spark.sql.execution.command.DataWritingCommandExec
+import org.apache.spark.sql.execution.datasources.{SQLHadoopMapReduceCommitProtocol, WriteFilesExec}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.StructType
 
-import org.apache.comet.CometConf
-import org.apache.comet.CometSparkSessionExtensions.isSpark35Plus
+import org.apache.comet.{CometConf, CometExplainInfo}
+import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus}
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator, SchemaGenOptions}
 
 class CometParquetWriterSuite extends CometTestBase {
 
   import testImplicits._
+
+  /**
+   * Native Parquet writes hook into Spark's write path through `WriteFilesExecBase`, which only
+   * exists in Spark 4.0+. See `CometWriteFilesExec` and the gate in `CometExecRule`.
+   */
+  override protected def test(testName: String, testTags: Tag*)(testFun: => Any)(implicit
+      pos: Position): Unit = {
+    super.test(testName, testTags: _*) {
+      assume(isSpark40Plus, "Comet native Parquet writes require Spark 4.0+")
+      testFun
+    }
+  }
 
   test("partitioned write with empty string partition value") {
     withTempPath { path =>
@@ -75,10 +93,10 @@ class CometParquetWriterSuite extends CometTestBase {
         withSQLConf(
           CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED.key -> "true",
           SQLConf.SESSION_LOCAL_TIMEZONE.key -> "America/Halifax",
-          CometConf.COMET_OPERATOR_DATA_WRITING_COMMAND_ALLOW_INCOMPAT.key -> "true",
+          CometConf.COMET_OPERATOR_WRITE_FILES_ALLOW_INCOMPAT.key -> "true",
           CometConf.COMET_EXEC_ENABLED.key -> "true") {
 
-          writeWithCometNativeWriteExec(inputPath, outputPath)
+          writeWithCometWriteFilesExec(inputPath, outputPath)
 
           verifyWrittenFile(outputPath)
         }
@@ -97,10 +115,10 @@ class CometParquetWriterSuite extends CometTestBase {
         withSQLConf(
           CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED.key -> "true",
           SQLConf.SESSION_LOCAL_TIMEZONE.key -> "America/Halifax",
-          CometConf.COMET_OPERATOR_DATA_WRITING_COMMAND_ALLOW_INCOMPAT.key -> "true",
+          CometConf.COMET_OPERATOR_WRITE_FILES_ALLOW_INCOMPAT.key -> "true",
           CometConf.COMET_EXEC_ENABLED.key -> "true") {
 
-          val capturedPlan = writeWithCometNativeWriteExec(inputPath, outputPath)
+          val capturedPlan = writeWithCometWriteFilesExec(inputPath, outputPath)
           capturedPlan.foreach { plan =>
             val hasNativeScan = plan.exists {
               case _: CometNativeScanExec => true
@@ -131,11 +149,10 @@ class CometParquetWriterSuite extends CometTestBase {
             CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED.key -> "true",
             "spark.sql.adaptive.enabled" -> adaptive.toString,
             SQLConf.SESSION_LOCAL_TIMEZONE.key -> "America/Halifax",
-            CometConf.getOperatorAllowIncompatConfigKey(
-              classOf[DataWritingCommandExec]) -> "true",
+            CometConf.getOperatorAllowIncompatConfigKey(classOf[WriteFilesExec]) -> "true",
             CometConf.COMET_EXEC_ENABLED.key -> "true") {
 
-            writeWithCometNativeWriteExec(inputPath, outputPath, Some(10))
+            writeWithCometWriteFilesExec(inputPath, outputPath, Some(10))
             verifyWrittenFile(outputPath)
           }
         })
@@ -151,12 +168,12 @@ class CometParquetWriterSuite extends CometTestBase {
 
         withSQLConf(
           CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED.key -> "true",
-          CometConf.getOperatorAllowIncompatConfigKey(classOf[DataWritingCommandExec]) -> "true",
+          CometConf.getOperatorAllowIncompatConfigKey(classOf[WriteFilesExec]) -> "true",
           CometConf.COMET_EXEC_ENABLED.key -> "true",
           SQLConf.PARQUET_COMPRESSION.key -> codec) {
 
           val plan = captureWritePlan(path => df.write.parquet(path), outputPath)
-          assertHasCometNativeWriteExec(plan)
+          assertHasCometWriteFilesExec(plan)
         }
 
         checkAnswer(spark.read.parquet(outputPath), df.collect())
@@ -172,14 +189,14 @@ class CometParquetWriterSuite extends CometTestBase {
 
       withSQLConf(
         CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED.key -> "true",
-        CometConf.getOperatorAllowIncompatConfigKey(classOf[DataWritingCommandExec]) -> "true",
+        CometConf.getOperatorAllowIncompatConfigKey(classOf[WriteFilesExec]) -> "true",
         CometConf.COMET_EXEC_ENABLED.key -> "true",
         SQLConf.PARQUET_COMPRESSION.key -> "snappy") {
 
         val plan = captureWritePlan(
           path => df.write.option("parquet.compression", "gzip").parquet(path),
           outputPath)
-        assertHasCometNativeWriteExec(plan)
+        assertHasCometWriteFilesExec(plan)
       }
 
       checkAnswer(spark.read.parquet(outputPath), df.collect())
@@ -197,7 +214,7 @@ class CometParquetWriterSuite extends CometTestBase {
 
       withSQLConf(
         CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED.key -> "true",
-        CometConf.getOperatorAllowIncompatConfigKey(classOf[DataWritingCommandExec]) -> "true",
+        CometConf.getOperatorAllowIncompatConfigKey(classOf[WriteFilesExec]) -> "true",
         CometConf.COMET_EXEC_ENABLED.key -> "true",
         SQLConf.PARQUET_COMPRESSION.key -> "zstd") {
 
@@ -208,7 +225,7 @@ class CometParquetWriterSuite extends CometTestBase {
               .option("parquet.compression", "snappy")
               .parquet(path),
           outputPath)
-        assertHasCometNativeWriteExec(plan)
+        assertHasCometWriteFilesExec(plan)
       }
 
       checkAnswer(spark.read.parquet(outputPath), df.collect())
@@ -224,12 +241,12 @@ class CometParquetWriterSuite extends CometTestBase {
 
       withSQLConf(
         CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED.key -> "true",
-        CometConf.getOperatorAllowIncompatConfigKey(classOf[DataWritingCommandExec]) -> "true",
+        CometConf.getOperatorAllowIncompatConfigKey(classOf[WriteFilesExec]) -> "true",
         CometConf.COMET_EXEC_ENABLED.key -> "true",
         SQLConf.PARQUET_COMPRESSION.key -> "lz4_raw") {
 
         val plan = captureWritePlan(path => df.write.parquet(path), outputPath)
-        assertNoCometNativeWriteExec(plan)
+        assertNoCometWriteFilesExec(plan)
       }
 
       checkAnswer(spark.read.parquet(outputPath), df.collect())
@@ -457,7 +474,7 @@ class CometParquetWriterSuite extends CometTestBase {
           sourcePath)
         val plan =
           captureWritePlan(p => df.write.mode(SaveMode.ErrorIfExists).parquet(p), outputPath)
-        assertHasCometNativeWriteExec(plan)
+        assertHasCometWriteFilesExec(plan)
         checkAnswer(spark.read.parquet(outputPath), df)
       }
     }
@@ -497,7 +514,7 @@ class CometParquetWriterSuite extends CometTestBase {
           (1 to 100).map(i => (i, s"str_$i")).toDF("id", "name"),
           sourcePath)
         val plan = captureWritePlan(p => df.write.mode(SaveMode.Overwrite).parquet(p), outputPath)
-        assertHasCometNativeWriteExec(plan)
+        assertHasCometWriteFilesExec(plan)
         checkAnswer(spark.read.parquet(outputPath), df)
       }
     }
@@ -518,7 +535,7 @@ class CometParquetWriterSuite extends CometTestBase {
           sourcePath)
         val plan =
           captureWritePlan(p => replacement.write.mode(SaveMode.Overwrite).parquet(p), outputPath)
-        assertHasCometNativeWriteExec(plan)
+        assertHasCometWriteFilesExec(plan)
         checkAnswer(spark.read.parquet(outputPath), replacement)
       }
     }
@@ -553,7 +570,7 @@ class CometParquetWriterSuite extends CometTestBase {
           (1 to 100).map(i => (i, s"str_$i")).toDF("id", "name"),
           sourcePath)
         val plan = captureWritePlan(p => df.write.mode(SaveMode.Append).parquet(p), outputPath)
-        assertHasCometNativeWriteExec(plan)
+        assertHasCometWriteFilesExec(plan)
         checkAnswer(spark.read.parquet(outputPath), df)
       }
     }
@@ -576,7 +593,7 @@ class CometParquetWriterSuite extends CometTestBase {
           sourcePath)
         val plan =
           captureWritePlan(p => second.write.mode(SaveMode.Append).parquet(p), outputPath)
-        assertHasCometNativeWriteExec(plan)
+        assertHasCometWriteFilesExec(plan)
 
         val filesAfter = listPartFileNames(outputPath)
         assert(
@@ -623,7 +640,7 @@ class CometParquetWriterSuite extends CometTestBase {
           (1 to 100).map(i => (i, s"str_$i")).toDF("id", "name"),
           sourcePath)
         val plan = captureWritePlan(p => df.write.mode(SaveMode.Ignore).parquet(p), outputPath)
-        assertHasCometNativeWriteExec(plan)
+        assertHasCometWriteFilesExec(plan)
         checkAnswer(spark.read.parquet(outputPath), df)
       }
     }
@@ -651,6 +668,211 @@ class CometParquetWriterSuite extends CometTestBase {
     }
   }
 
+  test("write creates a _SUCCESS marker") {
+    // https://github.com/apache/datafusion-comet/issues/2985 - the marker comes from
+    // HadoopMapReduceCommitProtocol.commitJob, which only runs because Comet leaves
+    // InsertIntoHadoopFsRelationCommand in the plan.
+    withTempPath { dir =>
+      val outputPath = new File(dir, "output.parquet").getAbsolutePath
+      withTempPath { srcDir =>
+        val df = materializeAsCometSource(
+          (1 to 100).map(i => (i, s"n_$i")).toDF("id", "name"),
+          new File(srcDir, "src.parquet").getAbsolutePath)
+        withNativeWriter {
+          val plan = captureWritePlan(p => df.write.parquet(p), outputPath)
+          assertHasCometWriteFilesExec(plan)
+        }
+      }
+      assert(
+        new File(outputPath, "_SUCCESS").exists(),
+        s"Expected a _SUCCESS marker in $outputPath, found: " +
+          new File(outputPath).list().mkString(", "))
+    }
+  }
+
+  test("written file names follow Spark's naming convention") {
+    // The file name comes from FileCommitProtocol.newTaskTempFile and must be used verbatim:
+    // part-<partition>-<uuid>-c<counter>.<codec>.parquet. Committers that track individual files
+    // and tools that parse these names depend on it.
+    withTempPath { dir =>
+      val outputPath = new File(dir, "output.parquet").getAbsolutePath
+      withTempPath { srcDir =>
+        val df = materializeAsCometSource(
+          (1 to 100).map(i => (i, s"n_$i")).toDF("id", "name"),
+          new File(srcDir, "src.parquet").getAbsolutePath)
+        withNativeWriter {
+          withSQLConf(SQLConf.PARQUET_COMPRESSION.key -> "snappy") {
+            val plan = captureWritePlan(p => df.write.parquet(p), outputPath)
+            assertHasCometWriteFilesExec(plan)
+          }
+        }
+      }
+
+      val partFiles = listPartFileNames(outputPath)
+      assert(partFiles.nonEmpty, s"No part files written to $outputPath")
+      val namePattern =
+        """part-\d{5}-[0-9a-f\-]{36}-c\d{3}\.snappy\.parquet""".r
+      partFiles.foreach { name =>
+        assert(
+          namePattern.pattern.matcher(name).matches(),
+          s"File name '$name' does not match Spark's part-file naming convention")
+      }
+    }
+  }
+
+  test("INSERT INTO ... SELECT is visible to subsequent reads") {
+    // https://github.com/apache/datafusion-comet/issues/3521 - reads returned no rows because the
+    // bespoke write path never refreshed the catalog cache. Spark's command does that itself.
+    withTable("comet_write_target", "comet_write_source") {
+      withNativeWriter {
+        sql("CREATE TABLE comet_write_source(id bigint, name string) USING parquet")
+        sql("CREATE TABLE comet_write_target(id bigint, name string) USING parquet")
+      }
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        sql("INSERT INTO comet_write_source VALUES (1, 'a'), (2, 'b')")
+      }
+      withNativeWriter {
+        sql("INSERT INTO comet_write_target SELECT id, name FROM comet_write_source")
+      }
+      checkAnswer(spark.table("comet_write_target"), Row(1L, "a") :: Row(2L, "b") :: Nil)
+    }
+  }
+
+  test("dynamic partition overwrite falls back to Spark") {
+    // A dynamic overwrite is a partitioned write, which CometWriteFiles declines - but the
+    // consequence of getting it wrong is silent data loss across untouched partitions, so assert
+    // the fallback and the semantics explicitly rather than relying on the partitioning check.
+    withTempPath { dir =>
+      val outputPath = new File(dir, "output.parquet").getAbsolutePath
+      val original = Seq((1, "a"), (2, "b")).toDF("id", "part")
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        original.write.partitionBy("part").parquet(outputPath)
+      }
+
+      withNativeWriter {
+        withSQLConf(SQLConf.PARTITION_OVERWRITE_MODE.key -> "DYNAMIC") {
+          val replacement = Seq((3, "b")).toDF("id", "part")
+          val plan = captureWritePlan(
+            p => replacement.write.mode(SaveMode.Overwrite).partitionBy("part").parquet(p),
+            outputPath)
+          assertNoCometWriteFilesExec(plan)
+        }
+      }
+
+      // part=a is untouched, part=b is replaced: the defining property of a dynamic overwrite.
+      checkAnswer(spark.read.parquet(outputPath), Row(1, "a") :: Row(3, "b") :: Nil)
+    }
+  }
+
+  test("write with maxRecordsPerFile falls back to Spark") {
+    // Spark's SingleDirectoryDataWriter rolls a new file every maxRecordsPerFile rows, bumping the
+    // -c<counter> suffix. Comet asks the commit protocol for one file per task, so it must decline
+    // rather than quietly produce a different file layout.
+    Seq(
+      "spark.sql.files.maxRecordsPerFile" -> ((df: DataFrame, p: String) => df.write.parquet(p)),
+      // The write option takes precedence over the conf in FileFormatWriter, so it must be
+      // honored here too - with the conf left at its default of 0.
+      "maxRecordsPerFile-option" -> ((df: DataFrame, p: String) =>
+        df.write.option("maxRecordsPerFile", "10").parquet(p))).foreach { case (label, write) =>
+      withTempPath { dir =>
+        val outputPath = new File(dir, "output.parquet").getAbsolutePath
+        val sourcePath = new File(dir, "source.parquet").getAbsolutePath
+        withNativeWriter {
+          val df = materializeAsCometSource(
+            (1 to 100).map(i => (i, s"str_$i")).toDF("id", "name").repartition(1),
+            sourcePath)
+          val confs =
+            if (label == "spark.sql.files.maxRecordsPerFile") Seq(label -> "10") else Seq.empty
+          withSQLConf(confs: _*) {
+            val plan = captureWritePlan(p => write(df, p), outputPath)
+            assertNoCometWriteFilesExec(plan)
+          }
+          checkAnswer(spark.read.parquet(outputPath), df)
+        }
+        // Spark's writer rolled the 100 rows of the single partition into 10 files of 10 rows.
+        assert(
+          listPartFileNames(outputPath).size == 10,
+          s"$label: expected 10 rolled part files, got ${listPartFileNames(outputPath)}")
+      }
+    }
+  }
+
+  test("empty input still writes a schema-only file (SPARK-23271)") {
+    // An empty input must still leave a schema behind for downstream readers: `spark.read.parquet`
+    // of the output must see the write's schema, not fail. Comet reaches this in two ways - if the
+    // native child has one partition producing no batches, the partition-0 branch of executeTask
+    // writes a metadata-only file; if it produces zero partitions, doExecuteWrite swaps in a dummy
+    // single-partition RDD to get to the same branch. This test exercises the reachable path
+    // (filtered Comet scan yielding an empty batch iterator); the zero-partition swap is defensive
+    // because CometWriteFiles.requiresNativeChildren rules out the sources (LocalTableScan) that
+    // would otherwise produce a zero-partition RDD.
+    withTempPath { dir =>
+      val outputPath = new File(dir, "output.parquet").getAbsolutePath
+      val sourcePath = new File(dir, "source.parquet").getAbsolutePath
+      withNativeWriter {
+        val empty = materializeAsCometSource(
+          (1 to 100).map(i => (i, s"str_$i")).toDF("id", "name"),
+          sourcePath).where("id < 0")
+        val plan = captureWritePlan(p => empty.write.parquet(p), outputPath)
+        assertHasCometWriteFilesExec(plan)
+
+        val partFiles = listPartFileNames(outputPath)
+        assert(partFiles.size == 1, s"Expected exactly one schema-only part file, got $partFiles")
+        // Reading without an explicit schema is the point: the file must carry it.
+        val readBack = spark.read.parquet(outputPath)
+        assert(readBack.count() == 0L)
+        assert(readBack.schema.map(_.name) == Seq("id", "name"))
+      }
+    }
+  }
+
+  test("a failing task aborts, cleans up its staging file, and the retry succeeds") {
+    // CometWriteFilesExec.executeTask must call committer.abortTask and rethrow. Injecting the
+    // failure through the commit protocol rather than the data lets the write get as far as
+    // creating a staging file, so the cleanup is actually observable.
+    withTempPath { dir =>
+      val outputPath = new File(dir, "output.parquet").getAbsolutePath
+      val sourcePath = new File(dir, "source.parquet").getAbsolutePath
+      withNativeWriter {
+        val df = materializeAsCometSource(
+          (1 to 100).map(i => (i, s"str_$i")).toDF("id", "name").repartition(1),
+          sourcePath)
+
+        FailingCommitProtocol.reset()
+        try {
+          withSQLConf(
+            SQLConf.FILE_COMMIT_PROTOCOL_CLASS.key -> classOf[FailingCommitProtocol].getName) {
+            FailingCommitProtocol.failOnCommitTask = true
+            val e = intercept[Exception] {
+              df.write.parquet(outputPath)
+            }
+            assert(
+              causeChain(e).exists(_.getMessage == FailingCommitProtocol.message),
+              s"Expected the injected failure to propagate, got: $e")
+            assert(
+              FailingCommitProtocol.abortTaskCalled,
+              "CometWriteFilesExec must call committer.abortTask when the task fails")
+          }
+        } finally {
+          FailingCommitProtocol.reset()
+        }
+
+        // The failed job leaves no data behind: no committed part files and no staging tree.
+        assert(
+          listPartFileNames(outputPath).isEmpty,
+          s"A failed write must not leave part files: ${listPartFileNames(outputPath)}")
+        assert(
+          !new File(outputPath, "_temporary").exists(),
+          "A failed write must not leave a _temporary staging directory behind")
+
+        // The same write, without the injected failure, still produces correct output.
+        val plan = captureWritePlan(p => df.write.mode(SaveMode.Overwrite).parquet(p), outputPath)
+        assertHasCometWriteFilesExec(plan)
+        checkAnswer(spark.read.parquet(outputPath), df)
+      }
+    }
+  }
+
   private def createTestData(inputDir: File): String = {
     val inputPath = new File(inputDir, "input.parquet").getAbsolutePath
     val schema = FuzzDataGenerator.generateSchema(
@@ -672,7 +894,7 @@ class CometParquetWriterSuite extends CometTestBase {
   private def withNativeWriter(f: => Unit): Unit = {
     withSQLConf(
       CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED.key -> "true",
-      CometConf.COMET_OPERATOR_DATA_WRITING_COMMAND_ALLOW_INCOMPAT.key -> "true",
+      CometConf.COMET_OPERATOR_WRITE_FILES_ALLOW_INCOMPAT.key -> "true",
       CometConf.COMET_EXEC_ENABLED.key -> "true",
       SQLConf.SESSION_LOCAL_TIMEZONE.key -> "America/Halifax")(f)
   }
@@ -685,6 +907,10 @@ class CometParquetWriterSuite extends CometTestBase {
     }
     spark.read.parquet(sourcePath)
   }
+
+  /** `t` and everything it wraps: a task failure reaches the driver inside a SparkException. */
+  private def causeChain(t: Throwable): Seq[Throwable] =
+    Iterator.iterate(t)(_.getCause).takeWhile(_ != null).toSeq
 
   private def listPartFileNames(dir: String): Set[String] = {
     val outputDir = new File(dir)
@@ -751,42 +977,45 @@ class CometParquetWriterSuite extends CometTestBase {
     }
   }
 
-  private def assertHasCometNativeWriteExec(plan: SparkPlan): Unit = {
+  // CometWriteFilesExec replaces only WriteFilesExec, so it appears in the plan beneath Spark's
+  // DataWritingCommandExec. A single `plan.foreach` over the whole tree therefore sees it exactly
+  // once; there is no separate command node to inspect.
+  private def assertHasCometWriteFilesExec(plan: SparkPlan): Unit = {
     var nativeWriteCount = 0
     plan.foreach {
-      case _: CometNativeWriteExec =>
-        nativeWriteCount += 1
-      case d: DataWritingCommandExec =>
-        d.child.foreach {
-          case _: CometNativeWriteExec =>
-            nativeWriteCount += 1
-          case _ =>
-        }
+      case _: CometWriteFilesExec => nativeWriteCount += 1
       case _ =>
     }
 
     assert(
       nativeWriteCount == 1,
-      s"Expected exactly one CometNativeWriteExec in the plan, but found $nativeWriteCount:\n${plan.treeString}")
+      s"Expected exactly one CometWriteFilesExec in the plan, but found $nativeWriteCount:\n${plan.treeString}")
+
+    // The command is left in the plan on purpose for a fully native write, so it must not be
+    // reported as a fallback - otherwise extended explain tells users an accelerated write was
+    // not accelerated, and skews the "Comet accelerated N of M operators" count.
+    plan.foreach {
+      case d: DataWritingCommandExec =>
+        val reasons = d.getTagValue(CometExplainInfo.FALLBACK_REASONS).getOrElse(Set.empty)
+        assert(
+          reasons.isEmpty,
+          s"A fully native write must not tag ${d.nodeName} as a fallback, got: $reasons")
+      case _ =>
+    }
   }
 
-  private def assertNoCometNativeWriteExec(plan: SparkPlan): Unit = {
+  private def assertNoCometWriteFilesExec(plan: SparkPlan): Unit = {
     val hasNativeWrite = plan.exists {
-      case _: CometNativeWriteExec => true
-      case d: DataWritingCommandExec =>
-        d.child.exists {
-          case _: CometNativeWriteExec => true
-          case _ => false
-        }
+      case _: CometWriteFilesExec => true
       case _ => false
     }
 
     assert(
       !hasNativeWrite,
-      s"Expected no CometNativeWriteExec in the plan, but found one:\n${plan.treeString}")
+      s"Expected no CometWriteFilesExec in the plan, but found one:\n${plan.treeString}")
   }
 
-  private def writeWithCometNativeWriteExec(
+  private def writeWithCometWriteFilesExec(
       inputPath: String,
       outputPath: String,
       num_partitions: Option[Int] = None): Option[SparkPlan] = {
@@ -796,7 +1025,7 @@ class CometParquetWriterSuite extends CometTestBase {
       path => num_partitions.fold(df)(n => df.repartition(n)).write.parquet(path),
       outputPath)
 
-    assertHasCometNativeWriteExec(plan)
+    assertHasCometWriteFilesExec(plan)
 
     Some(plan)
   }
@@ -871,7 +1100,7 @@ class CometParquetWriterSuite extends CometTestBase {
       withSQLConf(
         CometConf.COMET_EXEC_ENABLED.key -> "true",
         // enable experimental native writes
-        CometConf.COMET_OPERATOR_DATA_WRITING_COMMAND_ALLOW_INCOMPAT.key -> "true",
+        CometConf.COMET_OPERATOR_WRITE_FILES_ALLOW_INCOMPAT.key -> "true",
         CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED.key -> "true",
         // Disable unsigned small int safety check for ShortType columns
         CometConf.COMET_PARQUET_UNSIGNED_SMALL_INT_CHECK.key -> "false",
@@ -880,9 +1109,9 @@ class CometParquetWriterSuite extends CometTestBase {
 
         val parquetDf = spark.read.parquet(inputPath)
 
-        // Capture plan and verify CometNativeWriteExec is used
+        // Capture plan and verify CometWriteFilesExec is used
         val plan = captureWritePlan(path => parquetDf.write.parquet(path), outputPath)
-        assertHasCometNativeWriteExec(plan)
+        assertHasCometWriteFilesExec(plan)
       }
 
       // Verify round-trip: read with Spark and Comet, compare results
@@ -947,4 +1176,42 @@ class CometParquetWriterSuite extends CometTestBase {
     rows
   }
 
+}
+
+/**
+ * A commit protocol that fails `commitTask` on demand, to exercise the abort branch of
+ * `CometWriteFilesExec.executeTask`.
+ *
+ * Failing at commit rather than mid-write means the task has already asked for a staging file and
+ * written it, so `abortTask` has something real to clean up. Spark instantiates this reflectively
+ * per job via `spark.sql.sources.commitProtocolClass`, hence the companion object for the flags -
+ * the tests run in `local[*]`, so executors share the driver's JVM and see them.
+ */
+class FailingCommitProtocol(jobId: String, path: String, dynamicPartitionOverwrite: Boolean)
+    extends SQLHadoopMapReduceCommitProtocol(jobId, path, dynamicPartitionOverwrite) {
+
+  override def commitTask(
+      taskContext: TaskAttemptContext): FileCommitProtocol.TaskCommitMessage = {
+    if (FailingCommitProtocol.failOnCommitTask) {
+      throw new IOException(FailingCommitProtocol.message)
+    }
+    super.commitTask(taskContext)
+  }
+
+  override def abortTask(taskContext: TaskAttemptContext): Unit = {
+    FailingCommitProtocol.abortTaskCalled = true
+    super.abortTask(taskContext)
+  }
+}
+
+object FailingCommitProtocol {
+  val message = "injected commitTask failure"
+
+  @volatile var failOnCommitTask: Boolean = false
+  @volatile var abortTaskCalled: Boolean = false
+
+  def reset(): Unit = {
+    failOnCommitTask = false
+    abortTaskCalled = false
+  }
 }

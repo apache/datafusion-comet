@@ -218,18 +218,11 @@ impl ParquetWriter {
 pub struct ParquetWriterExec {
     /// Input execution plan
     input: Arc<dyn ExecutionPlan>,
-    /// Output file path (final destination)
+    /// Path of the file to write. Chosen by the JVM commit protocol (see CometWriteFilesExec) and
+    /// used verbatim - this operator never derives file names of its own.
     output_path: String,
-    /// Working directory for temporary files (used by FileCommitProtocol)
-    work_dir: String,
-    /// Job ID for tracking this write operation
-    job_id: Option<String>,
-    /// Task attempt ID for this specific task
-    task_attempt_id: Option<i32>,
     /// Compression codec
     compression: ParquetCompression,
-    /// Partition ID (from Spark TaskContext)
-    partition_id: i32,
     /// Column names to use in the output Parquet file
     column_names: Vec<String>,
     /// Object store configuration options
@@ -242,15 +235,10 @@ pub struct ParquetWriterExec {
 
 impl ParquetWriterExec {
     /// Create a new ParquetWriterExec
-    #[allow(clippy::too_many_arguments)]
     pub fn try_new(
         input: Arc<dyn ExecutionPlan>,
         output_path: String,
-        work_dir: String,
-        job_id: Option<String>,
-        task_attempt_id: Option<i32>,
         compression: ParquetCompression,
-        partition_id: i32,
         column_names: Vec<String>,
         object_store_options: HashMap<String, String>,
     ) -> Result<Self> {
@@ -267,11 +255,7 @@ impl ParquetWriterExec {
         Ok(ParquetWriterExec {
             input,
             output_path,
-            work_dir,
-            job_id,
-            task_attempt_id,
             compression,
-            partition_id,
             column_names,
             object_store_options,
             metrics: ExecutionPlanMetricsSet::new(),
@@ -447,11 +431,7 @@ impl ExecutionPlan for ParquetWriterExec {
             1 => Ok(Arc::new(ParquetWriterExec::try_new(
                 Arc::clone(&children[0]),
                 self.output_path.clone(),
-                self.work_dir.clone(),
-                self.job_id.clone(),
-                self.task_attempt_id,
                 self.compression.clone(),
-                self.partition_id,
                 self.column_names.clone(),
                 self.object_store_options.clone(),
             )?)),
@@ -476,8 +456,6 @@ impl ExecutionPlan for ParquetWriterExec {
         let runtime_env = context.runtime_env();
         let input = self.input.execute(partition, context)?;
         let input_schema = self.input.schema();
-        let work_dir = self.work_dir.clone();
-        let task_attempt_id = self.task_attempt_id;
         let compression = self.compression.to_parquet()?;
         let column_names = self.column_names.clone();
 
@@ -492,16 +470,8 @@ impl ExecutionPlan for ParquetWriterExec {
             .collect();
         let output_schema = Arc::new(arrow::datatypes::Schema::new(fields));
 
-        // Generate part file name for this partition
-        // If using FileCommitProtocol (work_dir is set), include task_attempt_id in the filename
-        let part_file = if let Some(attempt_id) = task_attempt_id {
-            format!(
-                "{}/part-{:05}-{:05}.parquet",
-                work_dir, self.partition_id, attempt_id
-            )
-        } else {
-            format!("{}/part-{:05}.parquet", work_dir, self.partition_id)
-        };
+        // The JVM commit protocol already decided where this task writes.
+        let part_file = self.output_path.clone();
 
         // Configure writer properties
         let props = WriterProperties::builder()
@@ -847,18 +817,14 @@ mod tests {
         let memory_exec = Arc::new(DataSourceExec::new(Arc::new(memory_source_config)));
 
         // Create ParquetWriterExec with DataSourceExec as input
-        let output_path = "unused".to_string();
-        let work_dir = "hdfs://namenode:9000/user/test_parquet_writer_exec".to_string();
+        let output_path =
+            "hdfs://namenode:9000/user/test_parquet_writer_exec/part-00000.parquet".to_string();
         let column_names = vec!["id".to_string(), "name".to_string()];
 
         let parquet_writer = ParquetWriterExec::try_new(
             memory_exec,
             output_path,
-            work_dir,
-            None,      // job_id
-            Some(123), // task_attempt_id
             ParquetCompression::None,
-            0, // partition_id
             column_names,
             HashMap::new(), // object_store_options
         )?;

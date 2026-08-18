@@ -34,7 +34,7 @@ import org.apache.spark.sql.comet.execution.shuffle.CometNativeShuffle
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution.SparkPlan
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
-import org.apache.spark.sql.execution.command.DataWritingCommandExec
+import org.apache.spark.sql.execution.datasources.WriteFilesExec
 import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.CometConf
@@ -202,8 +202,7 @@ class CometTaskMetricsSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           withSQLConf(
             CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED.key -> "true",
             CometConf.COMET_EXEC_ENABLED.key -> "true",
-            CometConf.getOperatorAllowIncompatConfigKey(
-              classOf[DataWritingCommandExec]) -> "true",
+            CometConf.getOperatorAllowIncompatConfigKey(classOf[WriteFilesExec]) -> "true",
             SQLConf.SESSION_LOCAL_TIMEZONE.key -> "America/Halifax") {
             spark.sparkContext.setJobGroup(jobGroupId, "native parquet write output metrics")
             try {
