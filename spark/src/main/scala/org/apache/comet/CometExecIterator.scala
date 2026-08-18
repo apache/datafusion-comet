@@ -80,7 +80,7 @@ class CometExecIterator(
   private val memoryMXBean = ManagementFactory.getMemoryMXBean
   private val nativeLib = new Native()
   private val nativeUtil = new NativeUtil()
-  private val taskAttemptId = TaskContext.get().taskAttemptId
+  private val taskAttemptId = TaskContext.get().taskAttemptId()
   private val taskCPUs = TaskContext.get().cpus()
   private val cometTaskMemoryManager = new CometTaskMemoryManager(id, taskAttemptId)
 
@@ -125,8 +125,11 @@ class CometExecIterator(
       taskCPUs,
       keyUnwrapper,
       // Propagated to Tokio workers running JVM UDFs so they see this Spark task's
-      // TaskContext. See CometUdfBridge.evaluate.
-      TaskContext.get())
+      // TaskContext and context ClassLoader. Read here because this class is only ever
+      // constructed on a Spark task thread (see `taskAttemptId` above); a JNI-attached Tokio
+      // worker has neither. See CometUdfBridge.evaluate.
+      TaskContext.get(),
+      Thread.currentThread().getContextClassLoader)
   }
 
   private var nextBatch: Option[ColumnarBatch] = None
@@ -293,7 +296,7 @@ object CometExecIterator extends Logging {
       val memoryLimit = (offHeapSize * memoryFraction).toLong
       val memoryLimitPerTask = (memoryLimit.toDouble * coresPerTask / numCores).toLong
       val memoryPoolType = COMET_OFFHEAP_MEMORY_POOL_TYPE.get()
-      logInfo(
+      logDebug(
         s"memoryPoolType=$memoryPoolType, " +
           s"offHeapSize=${toMB(offHeapSize)}, " +
           s"memoryFraction=$memoryFraction, " +
@@ -308,7 +311,7 @@ object CometExecIterator extends Logging {
       // in memory_limit_per_task = 16 GB * 4 / 16 = 16 GB / 4 = 4GB
       val memoryLimitPerTask = (memoryLimit.toDouble * coresPerTask / numCores).toLong
       val memoryPoolType = COMET_ONHEAP_MEMORY_POOL_TYPE.get()
-      logInfo(
+      logDebug(
         s"memoryPoolType=$memoryPoolType, " +
           s"memoryLimit=${toMB(memoryLimit)}, " +
           s"memoryLimitPerTask=${toMB(memoryLimitPerTask)}")

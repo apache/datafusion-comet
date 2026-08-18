@@ -26,7 +26,7 @@ under the License.
   <parent>
     <groupId>org.apache.datafusion</groupId>
     <artifactId>comet-parent-spark${spark.version.short}_${scala.binary.version}</artifactId>
-    <version>1.0.0-SNAPSHOT</version>
+    <version>1.1.0-SNAPSHOT</version>
     <relativePath>../pom.xml</relativePath>
   </parent>
 
@@ -297,7 +297,7 @@ under the License.
           <version>1.11.0</version>
           <scope>test</scope>
         </dependency>
-        <!-- Jetty 11.x for Spark 4.1 (jakarta.servlet); matches Spark 4.1.2's jetty.version -->
+        <!-- Jetty 11.x for Spark 4.1 (jakarta.servlet); matches Spark 4.1.3's jetty.version -->
         <dependency>
           <groupId>org.eclipse.jetty</groupId>
           <artifactId>jetty-server</artifactId>
@@ -536,6 +536,7 @@ under the License.
             <configuration>
               <sources>
                 <source>src/test/${shims.majorVerSrc}</source>
+                <source>src/test/${shims.minorPlusVerSrc}</source>
                 <source>src/test/${shims.minorVerSrc}</source>
               </sources>
             </configuration>

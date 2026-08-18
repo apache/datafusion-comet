@@ -190,7 +190,7 @@ case class EliminateRedundantTransitions(session: SparkSession)
 
   /**
    * Matches the plans that could run natively as `CometMapInBatchExec`, independent of whether
-   * the `spark.comet.exec.pyarrowUdf.enabled` feature flag is set. The `transformUp` arm reads
+   * the `spark.comet.exec.pyarrowUDF.enabled` feature flag is set. The `transformUp` arm reads
    * that flag to decide between rewriting the operator and merely annotating it with an opt-in
    * hint. Single extractor so the matchers run once per visited plan. Returns `(info,
    * columnarChild)` where `columnarChild` is the Comet columnar producer that
