@@ -420,12 +420,10 @@ pub(crate) fn create_hdfs_operator(url: &Url) -> Result<opendal::Operator, objec
     let name_node = get_name_node_uri(url)?;
     let builder = opendal::services::Hdfs::default().name_node(&name_node);
 
-    opendal::Operator::new(builder)
-        .map_err(|error| object_store::Error::Generic {
-            store: "hdfs-opendal",
-            source: error.into(),
-        })
-        .map(|op| op.finish())
+    opendal::Operator::new(builder).map_err(|error| object_store::Error::Generic {
+        store: "hdfs-opendal",
+        source: error.into(),
+    })
 }
 
 // Creates an HDFS object store from a URL using OpenDAL

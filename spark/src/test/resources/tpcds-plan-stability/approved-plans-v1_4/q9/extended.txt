@@ -1,4 +1,4 @@
- Project [COMET: ]
+ Project [COMET: Unsupported data type: StructType(StructField(count(1),LongType,false),StructField(avg(ss_ext_discount_amt),DecimalType(11,6),true),StructField(avg(ss_net_paid),DecimalType(11,6),true))]
 :  :- Subquery
 :  :  +- CometColumnarToRow
 :  :     +- CometProject

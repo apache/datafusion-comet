@@ -27,7 +27,6 @@ Data generation scripts are available in the [DataFusion Benchmarks](https://git
 
 ## Current Benchmark Results
 
-- [Benchmarks derived from TPC-H](benchmark-results/tpc-h)
 - [Benchmarks derived from TPC-DS](benchmark-results/tpc-ds)
 
 ## Benchmarking Guides
@@ -43,7 +42,6 @@ We also have many micro benchmarks that can be run from an IDE located [here](ht
 ```{toctree}
 :hidden:
 
-benchmark-results/tpc-h
 benchmark-results/tpc-ds
 benchmarking_macos
 benchmarking_aws_ec2

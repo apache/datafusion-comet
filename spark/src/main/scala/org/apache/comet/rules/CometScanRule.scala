@@ -143,11 +143,18 @@ case class CometScanRule(session: SparkSession)
   }
 
   private def transformV1Scan(plan: SparkPlan, scanExec: FileSourceScanExec): SparkPlan = {
-    val metadataColNames = metadataCols(scanExec)
-    if (metadataColNames.nonEmpty) {
+    // fileConstantMetadataColumns (file_path, file_name, file_size, file_block_start,
+    // file_block_length, file_modification_time) are known before opening the file and
+    // supported below via the same projection mechanism as partition columns. Any other
+    // metadata column (currently only `_metadata.row_index`, generated per row by the reader)
+    // is not.
+    val constantMetadataColNames = scanExec.fileConstantMetadataColumns.map(_.name).toSet
+    val unsupportedMetadataColNames =
+      metadataCols(scanExec).filterNot(constantMetadataColNames.contains)
+    if (unsupportedMetadataColNames.nonEmpty) {
       return withFallbackReason(
         scanExec,
-        s"Metadata column(s) ${metadataColNames.mkString(", ")} is not supported")
+        s"Metadata column(s) ${unsupportedMetadataColNames.mkString(", ")} is not supported")
     }
 
     // On Spark 3.4, injectQueryStageOptimizerRule is unavailable, so
@@ -265,10 +272,6 @@ case class CometScanRule(session: SparkSession)
       withFallbackReason(scanExec, "Native Parquet scan does not support encryption")
       return None
     }
-    if (scanExec.fileConstantMetadataColumns.nonEmpty) {
-      withFallbackReason(scanExec, "Native DataFusion scan does not support metadata columns")
-      return None
-    }
     // input_file_name, input_file_block_start, and input_file_block_length read from
     // InputFileBlockHolder, a thread-local set by Spark's FileScanRDD. The native DataFusion
     // scan does not use FileScanRDD, so these expressions would return empty/default values.
@@ -279,12 +282,12 @@ case class CometScanRule(session: SparkSession)
         }))) {
       withFallbackReason(
         scanExec,
-        "Native DataFusion scan is not compatible with input_file_name, " +
+        "Native Parquet scan is not compatible with input_file_name, " +
           "input_file_block_start, or input_file_block_length")
       return None
     }
     if (ShimFileFormat.findRowIndexColumnIndexInSchema(scanExec.requiredSchema) >= 0) {
-      withFallbackReason(scanExec, "Native DataFusion scan does not support row index generation")
+      withFallbackReason(scanExec, "Native Parquet scan does not support row index generation")
       return None
     }
     if (!isSchemaSupported(scanExec, r)) {
@@ -419,7 +422,7 @@ case class CometScanRule(session: SparkSession)
                 tableOpt
                   .flatMap { table =>
                     try {
-                      val locationMethod = table.getClass.getMethod("location")
+                      val locationMethod = IcebergReflection.getMethod(table.getClass, "location")
                       val tableLocation = locationMethod.invoke(table).asInstanceOf[String]
                       Some(tableLocation)
                     } catch {
@@ -719,10 +722,14 @@ case class CometScanRule(session: SparkSession)
           try {
             if (!taskValidation.deleteFiles.isEmpty) {
               val historicSchemas = IcebergReflection.getAllSchemas(metadata.table)
+              val contentFileClass =
+                IcebergReflection.loadClass(IcebergReflection.ClassNames.CONTENT_FILE)
+              val deleteFileClass =
+                IcebergReflection.loadClass(IcebergReflection.ClassNames.DELETE_FILE)
               taskValidation.deleteFiles.asScala.foreach { deleteFile =>
                 // iceberg-rust only reads Parquet delete files. Avro/ORC positional or
                 // equality deletes must be applied by Spark.
-                IcebergReflection.getFileFormat(deleteFile) match {
+                IcebergReflection.getFileFormat(contentFileClass, deleteFile) match {
                   case Some(fmt) if fmt.equalsIgnoreCase(IcebergReflection.FileFormats.PARQUET) =>
                   case Some(fmt) =>
                     hasUnsupportedDeletes = true
@@ -736,7 +743,8 @@ case class CometScanRule(session: SparkSession)
                     fallbackReasons += "Could not determine Iceberg delete file format"
                 }
 
-                val equalityFieldIds = IcebergReflection.getEqualityFieldIds(deleteFile)
+                val equalityFieldIds =
+                  IcebergReflection.getEqualityFieldIds(deleteFileClass, deleteFile)
 
                 if (!equalityFieldIds.isEmpty) {
                   equalityFieldIds.asScala.foreach { fieldId =>
@@ -983,13 +991,13 @@ object CometScanRule extends Logging {
     val unboundPredicateClass =
       IcebergReflection.loadClass(IcebergReflection.ClassNames.UNBOUND_PREDICATE)
 
-    // Cache all method lookups outside the loop
-    val fileMethod = contentScanTaskClass.getMethod("file")
-    val formatMethod = contentFileClass.getMethod("format")
-    val pathMethod = contentFileClass.getMethod("path")
-    val residualMethod = contentScanTaskClass.getMethod("residual")
-    val deletesMethod = fileScanTaskClass.getMethod("deletes")
-    val termMethod = unboundPredicateClass.getMethod("term")
+    // Resolve all method lookups outside the loop
+    val fileMethod = IcebergReflection.getMethod(contentScanTaskClass, "file")
+    val formatMethod = IcebergReflection.getMethod(contentFileClass, "format")
+    val pathMethod = IcebergReflection.getMethod(contentFileClass, "path")
+    val residualMethod = IcebergReflection.getMethod(contentScanTaskClass, "residual")
+    val deletesMethod = IcebergReflection.getMethod(fileScanTaskClass, "deletes")
+    val termMethod = IcebergReflection.getMethod(unboundPredicateClass, "term")
 
     val supportedSchemes =
       Set("file", "s3", "s3a", "gs", "gcs", "oss", "abfss", "abfs", "wasbs", "wasb")
@@ -1026,16 +1034,12 @@ object CometScanRule extends Logging {
           val residual = residualMethod.invoke(task)
           if (unboundPredicateClass.isInstance(residual)) {
             val term = termMethod.invoke(residual)
-            try {
-              val transformMethod = term.getClass.getMethod("transform")
-              transformMethod.setAccessible(true)
-              val transform = transformMethod.invoke(term)
-              val transformStr = transform.toString
+            // A term with no transform() is a simple reference, which is fine.
+            IcebergReflection.findMethod(term.getClass, "transform").foreach { transformMethod =>
+              val transformStr = transformMethod.invoke(term).toString
               if (transformStr != IcebergReflection.Transforms.IDENTITY) {
                 nonIdentityTransform = Some(transformStr)
               }
-            } catch {
-              case _: NoSuchMethodException => // No transform = simple reference, OK
             }
           }
         } catch {

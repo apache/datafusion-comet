@@ -784,3 +784,31 @@ index 8cdcf22e58..820f9fc03b 100644
              .enableHiveSupport()
              .getOrCreate();
  
+diff --git a/spark/v4.1/spark-extensions/src/test/java/org/apache/iceberg/spark/extensions/TestSystemFunctionPushDownInRowLevelOperations.java b/spark/v4.1/spark-extensions/src/test/java/org/apache/iceberg/spark/extensions/TestSystemFunctionPushDownInRowLevelOperations.java
+index 934220e5d..92132d4b8 100644
+--- a/spark/v4.1/spark-extensions/src/test/java/org/apache/iceberg/spark/extensions/TestSystemFunctionPushDownInRowLevelOperations.java
++++ b/spark/v4.1/spark-extensions/src/test/java/org/apache/iceberg/spark/extensions/TestSystemFunctionPushDownInRowLevelOperations.java
+@@ -40,6 +40,7 @@ import org.apache.spark.sql.catalyst.expressions.ApplyFunctionExpression;
+ import org.apache.spark.sql.catalyst.expressions.Expression;
+ import org.apache.spark.sql.catalyst.expressions.objects.StaticInvoke;
+ import org.apache.spark.sql.execution.CommandResultExec;
++import org.apache.spark.sql.execution.SparkPlan;
+ import org.apache.spark.sql.execution.datasources.v2.V2TableWriteExec;
+ import org.junit.jupiter.api.AfterEach;
+ import org.junit.jupiter.api.BeforeEach;
+@@ -330,9 +331,13 @@ public class TestSystemFunctionPushDownInRowLevelOperations extends ExtensionsTe
+ 
+   private List<Expression> executeAndCollectFunctionCalls(String query, Object... args) {
+     CommandResultExec command = (CommandResultExec) executeAndKeepPlan(query, args);
+-    V2TableWriteExec write = (V2TableWriteExec) command.commandPhysicalPlan();
++    // Comet's split-operator Iceberg write plans the command as IcebergCommitExec, which is not
++    // a V2TableWriteExec; collect over the whole command plan in that case.
++    SparkPlan plan = command.commandPhysicalPlan();
++    SparkPlan queryPlan =
++        plan instanceof V2TableWriteExec ? ((V2TableWriteExec) plan).query() : plan;
+     return SparkPlanUtil.collectExprs(
+-        write.query(),
++        queryPlan,
+         expr -> expr instanceof StaticInvoke || expr instanceof ApplyFunctionExpression);
+   }
+ 

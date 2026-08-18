@@ -51,18 +51,18 @@ format:
 
 # build native libs for amd64 architecture Linux/MacOS on a Linux/amd64 machine/container
 core-amd64-libs:
-	cd native && RUSTFLAGS="-Ctarget-cpu=x86-64-v3" cargo build -j 2 --release $(FEATURES_ARG)
+	cd native && RUSTFLAGS="-Ctarget-cpu=x86-64-v3" cargo build --release $(FEATURES_ARG)
 ifdef HAS_OSXCROSS
 	rustup target add x86_64-apple-darwin
-	cd native && cargo build -j 2 --target x86_64-apple-darwin --release $(FEATURES_ARG)
+	cd native && cargo build --target x86_64-apple-darwin --release $(FEATURES_ARG)
 endif
 
 # build native libs for arm64 architecture Linux/MacOS on a Linux/arm64 machine/container
 core-arm64-libs:
-	cd native && RUSTFLAGS="-Ctarget-cpu=neoverse-n1" cargo build -j 2 --release $(FEATURES_ARG)
+	cd native && RUSTFLAGS="-Ctarget-cpu=neoverse-n1" cargo build --release $(FEATURES_ARG)
 ifdef HAS_OSXCROSS
 	rustup target add aarch64-apple-darwin
-	cd native && cargo build -j 2 --target aarch64-apple-darwin --release $(FEATURES_ARG)
+	cd native && cargo build --target aarch64-apple-darwin --release $(FEATURES_ARG)
 endif
 
 core-amd64:
