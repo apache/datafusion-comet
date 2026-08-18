@@ -97,10 +97,14 @@ class CometNativeShuffleWriter[K, V](
     val unifiedPlan = buildUnifiedPlan(tempDataFilename, tempIndexFilename)
     val ctx = spec.execContext
     val finalNativePlan = if (ctx.commonByKey.nonEmpty) {
-      val partitionDataByKey = ctx.perPartitionByKey.map { case (k, arr) =>
-        k -> arr(partitionIdx)
-      }
-      PlanDataInjector.injectPlanData(unifiedPlan, ctx.commonByKey, partitionDataByKey)
+      // This partition's plan-data slice rides on the input iterator's Partition object (populated
+      // in CometNativeShuffleInputRDD.getPartitions on the driver), not on the spec. The spec's
+      // execContext.perPartitionByKey is emptied in prepareNativeShuffleDependency so the full
+      // O(numPartitions) map stays out of the broadcast task binary.
+      PlanDataInjector.injectPlanData(
+        unifiedPlan,
+        ctx.commonByKey,
+        shuffleInputIter.planDataByKey)
     } else {
       unifiedPlan
     }
