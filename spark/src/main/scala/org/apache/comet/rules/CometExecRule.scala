@@ -298,6 +298,9 @@ case class CometExecRule(session: SparkSession)
       case op: DataWritingCommandExec =>
         convertToComet(op, CometDataWritingCommand).getOrElse(op)
 
+      case op: IcebergWriteExec if CometConf.COMET_ICEBERG_NATIVE_WRITE_ENABLED.get(op.conf) =>
+        convertToComet(op, CometIcebergNativeWrite).getOrElse(op)
+
       // For AQE broadcast stage on a Comet broadcast exchange
       case s @ BroadcastQueryStageExec(_, _: CometBroadcastExchangeExec, _) =>
         convertToComet(s, CometExchangeSink).getOrElse(s)
