@@ -178,6 +178,16 @@ trait ShimSparkErrorConverter {
         Some(
           QueryExecutionErrors.ansiDateTimeParseError(new Exception(params("message").toString)))
 
+      case "IllegalDayOfWeek" =>
+        Some(
+          QueryExecutionErrors
+            .ansiIllegalArgumentError(s"Illegal input for day of week: ${params("string")}"))
+
+      case "DatetimeFieldOutOfBounds" =>
+        Some(
+          QueryExecutionErrors.ansiDateTimeError(
+            new java.time.DateTimeException(params("rangeMessage").toString)))
+
       case "InvalidFractionOfSecond" =>
         Some(QueryExecutionErrors.invalidFractionOfSecondError())
 
