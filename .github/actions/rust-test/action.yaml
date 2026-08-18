@@ -62,6 +62,15 @@ runs:
       run: |
         cargo install cargo-nextest --locked
 
+    - name: Build test UDF library (pre-requisite for native UDF tests)
+      shell: bash
+      run: |
+        cd native
+        # comet-test-udfs is `crate-type = ["cdylib"]` and has no test targets, so a
+        # test build compiles it without emitting the shared library the c_udf loader
+        # tests dlopen. Build it explicitly.
+        cargo build -p comet-test-udfs
+
     - name: Run Cargo test
       shell: bash
       run: |

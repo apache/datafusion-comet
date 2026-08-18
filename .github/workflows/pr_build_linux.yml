@@ -215,7 +215,11 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: native-lib-linux
-          path: native/target/ci/libcomet.so
+          # libcomet_test_udfs is the cdylib CometNativeUdfSuite loads; it is built by the same
+          # cargo invocation and the suite finds it next to libcomet.
+          path: |
+            native/target/ci/libcomet.so
+            native/target/ci/libcomet_test_udfs.so
           retention-days: 1
 
       - name: Save Cargo cache
@@ -409,6 +413,7 @@ jobs:
               org.apache.comet.CometStringDecodeSuite
               org.apache.comet.CometWidthBucketSuite
               org.apache.comet.CometUuidExpressionSuite
+              org.apache.comet.CometNativeUdfSuite
       fail-fast: false
     name: ${{ matrix.profile.name }} [${{ matrix.suite.name }}]
     runs-on: ubuntu-24.04
