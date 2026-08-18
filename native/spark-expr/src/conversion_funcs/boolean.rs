@@ -15,46 +15,19 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::{SparkError, SparkResult};
-use arrow::array::{Array, ArrayRef, AsArray, Decimal128Array, TimestampMicrosecondBuilder};
+use crate::SparkResult;
+use arrow::array::{Array, ArrayRef, AsArray, TimestampMicrosecondBuilder};
 use arrow::datatypes::DataType;
 use std::sync::Arc;
 
+/// Boolean -> Decimal is intentionally absent: it has no native path and is routed through the
+/// JVM codegen dispatcher on the Scala side (see `CometCast.canCastFromBoolean`).
 pub fn is_df_cast_from_bool_spark_compatible(to_type: &DataType) -> bool {
     use DataType::*;
     matches!(
         to_type,
         Int8 | Int16 | Int32 | Int64 | Float32 | Float64 | Utf8
     )
-}
-
-pub fn cast_boolean_to_decimal(
-    array: &ArrayRef,
-    precision: u8,
-    scale: i8,
-) -> SparkResult<ArrayRef> {
-    let bool_array = array.as_boolean();
-    let scaled_val = 10_i128.pow(scale as u32);
-    let result: Decimal128Array = bool_array
-        .iter()
-        .map(|v| v.map(|b| if b { scaled_val } else { 0 }))
-        .collect();
-
-    // Convert Arrow decimal overflow errors to SparkError
-    let decimal_array = result
-        .with_precision_and_scale(precision, scale)
-        .map_err(|e| {
-            if matches!(e, arrow::error::ArrowError::InvalidArgumentError(_))
-                && e.to_string().contains("too large to store in a Decimal128")
-            {
-                // Use the scaled value as it's the only non-zero value that could overflow
-                crate::error::decimal_overflow_error(scaled_val, precision, scale)
-            } else {
-                SparkError::Arrow(Arc::new(e))
-            }
-        })?;
-
-    Ok(Arc::new(decimal_array))
 }
 
 pub(crate) fn cast_boolean_to_timestamp(
@@ -212,20 +185,20 @@ mod tests {
     }
 
     #[test]
-    fn test_bool_to_decimal_cast() {
-        let result = cast_array(
+    fn test_bool_to_decimal_cast_is_not_supported() {
+        // Boolean -> Decimal has no native path; the Scala planner routes it through the JVM
+        // codegen dispatcher, so reaching the native cast at all is a bug.
+        let err = cast_array(
             test_input_bool_array(),
             &Decimal128(10, 4),
             &test_input_spark_opts(),
         )
-        .unwrap();
-        let expected_arr = Decimal128Array::from(vec![10000_i128, 0_i128])
-            .with_precision_and_scale(10, 4)
-            .unwrap();
-        let arr = result.as_any().downcast_ref::<Decimal128Array>().unwrap();
-        assert_eq!(arr.value(0), expected_arr.value(0));
-        assert_eq!(arr.value(1), expected_arr.value(1));
-        assert!(arr.is_null(2));
+        .expect_err("expected boolean -> decimal to be unsupported");
+        assert!(
+            err.to_string()
+                .contains("Native cast invoked for unsupported cast"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
