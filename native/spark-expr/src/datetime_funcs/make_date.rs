@@ -25,6 +25,8 @@ use datafusion::logical_expr::{
 };
 use std::sync::Arc;
 
+use crate::SparkError;
+
 /// Spark-compatible make_date function.
 /// Creates a date from year, month, and day columns.
 /// For an invalid `(year, month, day)` triple Spark returns NULL when `spark.sql.ansi.enabled` is
@@ -53,8 +55,8 @@ impl Default for SparkMakeDate {
 
 /// Build the error message Spark surfaces for an invalid date under ANSI mode. Spark wraps the
 /// `java.time.DateTimeException` raised by `LocalDate.of` (via `ansiDateTimeArgumentOutOfRange` /
-/// `ansiDateTimeError`), so we reproduce `java.time`'s messages and validation order: month range,
-/// then day range, then the day-vs-month check.
+/// `ansiDateTimeError`), so we reproduce `java.time`'s messages and validation order: year range,
+/// month range, day range, then the day-vs-month check.
 fn invalid_date_message(year: i32, month: i32, day: i32) -> String {
     const MONTH_NAMES: [&str; 12] = [
         "JANUARY",
@@ -70,6 +72,9 @@ fn invalid_date_message(year: i32, month: i32, day: i32) -> String {
         "NOVEMBER",
         "DECEMBER",
     ];
+    if !(-999_999_999..=999_999_999).contains(&year) {
+        return format!("Invalid value for Year (valid values -999999999 - 999999999): {year}");
+    }
     if !(1..=12).contains(&month) {
         return format!("Invalid value for MonthOfYear (valid values 1 - 12): {month}");
     }
@@ -178,7 +183,10 @@ impl ScalarUDFImpl for SparkMakeDate {
                     Some(days) => builder.append_value(days),
                     None => {
                         if self.fail_on_error {
-                            return Err(DataFusionError::Execution(invalid_date_message(y, m, d)));
+                            return Err(SparkError::DatetimeFieldOutOfBounds {
+                                range_message: invalid_date_message(y, m, d),
+                            }
+                            .into());
                         }
                         builder.append_null();
                     }
