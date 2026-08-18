@@ -149,3 +149,45 @@ query
 SELECT cast(arr_struct as string), id
 FROM test_cast_complex
 ORDER BY id
+
+-- map value type cast, covering null maps, empty maps and null values
+statement
+CREATE TABLE test_cast_map(id int, m map<string,int>) USING parquet
+
+statement
+INSERT INTO test_cast_map VALUES
+  (1, map('a', 1, 'b', 2)),
+  (2, map('a', cast(NULL as int))),
+  (3, map()),
+  (4, cast(NULL as map<string,int>))
+
+query
+SELECT cast(m as map<string,bigint>), id
+FROM test_cast_map
+ORDER BY id
+
+query
+SELECT cast(m as map<string,string>), id
+FROM test_cast_map
+ORDER BY id
+
+-- a key cast that could introduce nulls is rejected, since a null map key is not representable
+query expect_error(DATATYPE_MISMATCH)
+SELECT cast(m as map<int,int>)
+FROM test_cast_map
+
+-- map key cast, only legal when the key cast cannot produce null
+statement
+CREATE TABLE test_cast_map_int_key(id int, m map<int,int>) USING parquet
+
+statement
+INSERT INTO test_cast_map_int_key VALUES
+  (1, map(1, 10, 2, 20)),
+  (2, map(1, cast(NULL as int))),
+  (3, map()),
+  (4, cast(NULL as map<int,int>))
+
+query
+SELECT cast(m as map<bigint,bigint>), id
+FROM test_cast_map_int_key
+ORDER BY id
