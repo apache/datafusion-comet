@@ -50,9 +50,9 @@ lower cloud bills, reduced on-prem capacity, and lower energy usage, with no cha
 DataFrame, or PySpark code. Comet runs on commodity hardware: no GPUs, FPGAs, or other specialized accelerators are
 required, so the savings come from better utilization of the infrastructure you already run on.
 
-![](docs/source/_static/images/benchmark-results/0.16.0/tpcds_allqueries.png)
+![](docs/source/_static/images/benchmark-results/1.0.0/tpcds_allqueries.png)
 
-![](docs/source/_static/images/benchmark-results/0.16.0/tpcds_queries_speedup_rel.png)
+![](docs/source/_static/images/benchmark-results/1.0.0/tpcds_queries_speedup_rel.png)
 
 See the [Comet Benchmarking Guide](https://datafusion.apache.org/comet/contributor-guide/benchmarking.html) for more details.
 
