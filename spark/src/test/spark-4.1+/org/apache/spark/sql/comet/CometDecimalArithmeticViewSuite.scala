@@ -24,7 +24,7 @@ import org.apache.spark.sql.catalyst.expressions.{Add, AttributeReference, Binar
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.DecimalType
 
-import org.apache.comet.serde.{ExprOuterClass, QueryPlanSerde}
+import org.apache.comet.serde.{CometScalarFunction, ExprOuterClass, QueryPlanSerde}
 
 class CometDecimalArithmeticViewSuite extends CometTestBase {
 
@@ -103,5 +103,16 @@ class CometDecimalArithmeticViewSuite extends CometTestBase {
         }
       }
     }
+  }
+
+  test("plain CometScalarFunction rejects Spark 4.1+ Add with evalContext") {
+    val left = AttributeReference("a", DecimalType(10, 0))()
+    val right = AttributeReference("b", DecimalType(10, 0))()
+    val add =
+      Add(left, right, NumericEvalContext(EvalMode.LEGACY, allowDecimalPrecisionLoss = true))
+    assert(
+      CometScalarFunction[Add]("add")
+        .convert(add, Seq(left, right), binding = true)
+        .isEmpty)
   }
 }
