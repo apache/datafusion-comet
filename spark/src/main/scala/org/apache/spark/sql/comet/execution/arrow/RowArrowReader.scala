@@ -37,9 +37,11 @@ private[comet] class RowArrowReader(
     allocator: BufferAllocator,
     arrowSchema: Schema,
     rowIter: Iterator[InternalRow],
-    maxRecordsPerBatch: Long,
+    maxRecordsPerBatch: Int,
     onConversionNs: Long => Unit = _ => ())
     extends ArrowReader(allocator) {
+
+  require(maxRecordsPerBatch > 0, "Maximum records per batch must be positive")
 
   override protected def readSchema(): Schema = arrowSchema
 
@@ -55,10 +57,9 @@ private[comet] class RowArrowReader(
     }
 
     val startNs = System.nanoTime()
-    val writer = ArrowWriter.create(getVectorSchemaRoot, maxRecordsPerBatch.toInt)
-    var rowCount = 0L
-    while (rowIter.hasNext &&
-      (maxRecordsPerBatch <= 0 || rowCount < maxRecordsPerBatch)) {
+    val writer = ArrowWriter.create(getVectorSchemaRoot, maxRecordsPerBatch)
+    var rowCount = 0
+    while (rowIter.hasNext && rowCount < maxRecordsPerBatch) {
       writer.write(rowIter.next())
       rowCount += 1
     }
