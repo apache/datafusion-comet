@@ -604,7 +604,7 @@ object CometConf extends ShimCometConf {
           "pool is a JNI call into Spark's memory manager, so memory is reserved in multiples " +
           "of this value and a run of small batches costs one request instead of one each. The " +
           "cost is up to this much reservation held beyond what the writer is using, per " +
-          s"concurrent task. Zero grows the reservation by exactly what each batch needs. When " +
+          "concurrent task. Zero grows the reservation by exactly what each batch needs. When " +
           s"${COMET_SHUFFLE_NATIVE_MAX_BUFFER_BYTES.key} is set, the step is capped at one " +
           "eighth of that limit.")
       .bytesConf(ByteUnit.BYTE)
