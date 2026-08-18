@@ -38,11 +38,27 @@ writes into two operators:
 2. **`IcebergCommit`** — collects the commit messages on the driver and performs the normal
    Iceberg commit (including commit-time validation), outside AQE, exactly once.
 
-Data files are still written by iceberg-java; only the plan shape changes. The split makes the
-write's input visible to AQE and to Comet's columnar rules, and it is the groundwork for a
-planned follow-up in which Comet writes the data files natively via
-[iceberg-rust](https://github.com/apache/iceberg-rust), tracked in
-[#5308](https://github.com/apache/datafusion-comet/issues/5308).
+With only the split plan enabled, data files are still written by iceberg-java; only the plan
+shape changes. The split makes the write's input visible to AQE and to Comet's columnar rules,
+and it is the foundation for the second toggle: when
+`spark.comet.iceberg.write.enabled=true` and the write passes the eligibility check below, the
+`IcebergWrite` operator's per-task Parquet write is delegated to
+[iceberg-rust](https://github.com/apache/iceberg-rust) via Comet's native execution pipeline
+([#5308](https://github.com/apache/datafusion-comet/issues/5308)).
+
+## How the native write works
+
+The JVM-side planner marshals everything iceberg-rust needs — the write schema and partition
+spec as JSON, the data location, the resolved parquet writer settings, the writer mode
+(unpartitioned / fanout / clustered, mirroring `SparkWrite`'s own choice), and per-task IDs —
+into the serialized native plan. On each task, iceberg-rust writes the Parquet files and
+returns its `DataFile` metadata packed as a single in-memory Iceberg V2 data manifest; the JVM
+decodes those bytes with Iceberg's own `ManifestFiles.read`, re-derives each file's manifest
+metrics from the written Parquet footer with Iceberg's `MetricsConfig` logic (so metrics modes,
+truncation, and bounds decisions are iceberg-java's by construction), and wraps the result in
+the same `TaskCommit` message the JVM writer would have produced. Everything iceberg-java does
+post-write — snapshot assignment, manifest-list aggregation, commit validation and retries —
+is untouched: `IcebergCommit` performs the normal `BatchWrite.commit`.
 
 ## Configuration
 
@@ -102,15 +118,14 @@ trade-off, only no plan change.
 
 ## Native Parquet write eligibility
 
-A planned follow-up ([#5308](https://github.com/apache/datafusion-comet/issues/5308)) replaces
-the `IcebergWrite` operator's per-task Parquet write with
-[iceberg-rust](https://github.com/apache/iceberg-rust). The native writer must produce the same
-outcome as iceberg-java — the same Parquet features, statistics, and manifest metadata — so a
-write is only eligible when every table property it depends on is one the native path reproduces
-exactly. `spark.comet.iceberg.write.enabled` enables this eligibility check;
-with the current release the native writer itself is not yet wired in, so every write still runs
-through iceberg-java and the check's outcome is reported as a fall-back reason in Comet's
-extended EXPLAIN output.
+When `spark.comet.iceberg.write.enabled=true`
+([#5308](https://github.com/apache/datafusion-comet/issues/5308)), the `IcebergWrite` operator's
+per-task Parquet write is delegated to [iceberg-rust](https://github.com/apache/iceberg-rust).
+The native writer must produce the same outcome as iceberg-java — the same Parquet features,
+statistics, and manifest metadata — so a write is only eligible when every table property it
+depends on is one the native path reproduces exactly, and additionally only when the plan
+feeding the write is fully Comet-native. Ineligible writes run through iceberg-java unchanged,
+with the reason reported as a fall-back reason in Comet's extended EXPLAIN output.
 
 **Most Iceberg write settings are not supported.** Detection is an allowlist: a write is
 eligible only when its entire effective configuration matches the table below, and anything
@@ -122,31 +137,30 @@ iceberg-java resolves per-write options and `spark.sql.iceberg.*` session overri
 
 A write is eligible only when ALL of the following hold:
 
-| Setting                                                                                                                                     | Supported values                                                                  |
-| ------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
-| resolved write format (`write-format` option overlaid on `write.format.default`)                                                            | `parquet`                                                                         |
-| `format-version`                                                                                                                            | `1` or `2`                                                                        |
-| `write.parquet.compression-codec` / `compression-level` / `row-group-size-bytes` / `page-size-bytes` / `page-row-limit` / `dict-size-bytes` | any value (translated to the native writer)                                       |
-| `write.parquet.row-group-check-min-record-count`                                                                                            | unset or `100` (the default)                                                      |
-| `write.parquet.row-group-check-max-record-count`                                                                                            | unset or `10000` (the default)                                                    |
-| `write.parquet.page-version`                                                                                                                | unset or `v1`                                                                     |
-| `write.parquet.shred-variants`                                                                                                              | unset or `false` (Spark 4.x / Iceberg 1.11 resolve this into every parquet write) |
-| `write.parquet.variant-inference-buffer-size`                                                                                               | any value (only meaningful when shredding, which is gated)                        |
-| `write.parquet.bloom-filter-enabled.column.<col>`                                                                                           | unset or `false`                                                                  |
-| `write.metadata.metrics.default`                                                                                                            | unset, `truncate(N)`, or `full`                                                   |
-| `write.metadata.metrics.column.<col>`                                                                                                       | unset, `truncate(N)`, or `full`                                                   |
-| `write.spark.fanout.enabled`                                                                                                                | any value (the native writer implements both clustered and fanout modes)          |
-| `write.target-file-size-bytes`                                                                                                              | any value (file rolling cadence differs; see accepted divergences)                |
-| data location URI scheme                                                                                                                    | `file`, `memory`, `s3`, `s3a`, `gs`, `oss`                                        |
-| partition spec                                                                                                                              | any (but see partition paths under accepted divergences)                          |
+| Setting                                                                                                                                     | Supported values                                                                    |
+| ------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| resolved write format (`write-format` option overlaid on `write.format.default`)                                                            | `parquet`                                                                           |
+| `format-version`                                                                                                                            | `1` or `2`                                                                          |
+| `write.parquet.compression-codec` / `compression-level` / `row-group-size-bytes` / `page-size-bytes` / `page-row-limit` / `dict-size-bytes` | any value (translated to the native writer; `compression-level` must be an integer) |
+| `write.parquet.row-group-check-min-record-count`                                                                                            | unset or `100` (the default)                                                        |
+| `write.parquet.row-group-check-max-record-count`                                                                                            | unset or `10000` (the default)                                                      |
+| `write.parquet.page-version`                                                                                                                | unset or `v1`                                                                       |
+| `write.parquet.shred-variants`                                                                                                              | unset or `false` (Spark 4.x / Iceberg 1.11 resolve this into every parquet write)   |
+| `write.parquet.variant-inference-buffer-size`                                                                                               | any value (only meaningful when shredding, which is gated)                          |
+| `write.parquet.bloom-filter-enabled.column.<col>`                                                                                           | unset or `false`                                                                    |
+| `write.metadata.metrics.*`                                                                                                                  | any value (manifest metrics are re-derived on the JVM with Iceberg's own logic)     |
+| `write.spark.fanout.enabled`                                                                                                                | any value (the native writer implements both clustered and fanout modes)            |
+| `write.target-file-size-bytes`                                                                                                              | any value (file rolling cadence differs; see accepted divergences)                  |
+| data location URI scheme                                                                                                                    | `file`, `memory`, `s3`, `s3a`, `gs`, `oss`                                          |
+| partition spec                                                                                                                              | any (but see partition paths under accepted divergences)                            |
+| column types                                                                                                                                | any except `uuid` (Spark plans it as a string; no Arrow cast reaches `fixed(16)`)   |
 
 Within the namespaces that shape data-file bytes — `write.parquet.*` and `parquet.*` —
 everything not listed above must be absent: unvetted `write.parquet.*` keys (e.g.
 `bloom-filter-max-bytes`, `stats-enabled.column.*`, keys added by future Iceberg versions),
-metrics modes outside the supported set (`counts`, `none`, or unparseable values), any
-`parquet.*` table property (including `parquet.enable.dictionary`), and any `parquet.*` key in
-the session Hadoop configuration (with `HadoopFileIO`-backed output those reach iceberg-java's
-writer but not the native one). Also gated explicitly: any `encryption.*` key,
+any `parquet.*` table property (including `parquet.enable.dictionary`), and any `parquet.*`
+key in the session Hadoop configuration (with `HadoopFileIO`-backed output those reach
+iceberg-java's writer but not the native one). Also gated explicitly: any `encryption.*` key,
 `write.object-storage.enabled=true`, `write.location-provider.impl`, and `io-impl`.
 
 Other `write.*` properties are intentionally not gated because they cannot make the native
@@ -156,11 +170,14 @@ identically on both paths, WAP / branch / snapshot properties act on the JVM com
 settings route the write through `WriteDelta`, which the split plan never intercepts. Every
 rule is pinned by `CometIcebergWriteDetectionSuite`.
 
-Manifest `DataFile` metrics will be assembled on the JVM at commit time using Iceberg's own
-`MetricsConfig` logic, so iceberg-java's metadata decisions — metrics modes, the
-inferred-column cap (`write.metadata.metrics.max-inferred-column-defaults`), bound truncation,
-and list/map bounds suppression — are respected exactly regardless of what the native writer
-reports. The `counts`/`none` restrictions above remain only until that assembly lands.
+Manifest `DataFile` metrics are assembled on the JVM before commit: each written file's
+metrics are re-derived from its parquet footer through the version-matched
+`ParquetUtil.footerMetrics` and `MetricsConfig.forTable`, with float/double NaN counts and
+bounds carried over from the native writer's tracked state. iceberg-java's metadata decisions
+— metrics modes, the inferred-column cap
+(`write.metadata.metrics.max-inferred-column-defaults`), bound truncation, and list/map bounds
+suppression — are therefore applied by iceberg-java's own code regardless of what the native
+writer reports. This costs one footer-sized ranged read per written file at write time.
 
 ## Accepted divergences behind the toggle
 
@@ -187,6 +204,15 @@ they apply to every native write and cannot be configured away. Enabling
   directory layout differs from iceberg-java's, and partition values containing characters
   that are invalid in a URI (`:`, `#`, newline) may produce paths that `HadoopFileIO`-based
   readers cannot open.
+- Float/double bounds involving zero may differ in sign: parquet-rs normalises footer
+  statistics to min `-0.0` / max `+0.0` (the parquet-format recommendation), while
+  iceberg-java's writer-tracked bounds preserve the exact sign it saw. The native path's
+  manifest bounds inherit the normalised values — a strictly conservative widening that cannot
+  change pruning decisions.
+- On Iceberg 1.10+, manifest `value_counts` / `null_value_counts` for float/double columns
+  nested under a nullable struct count rows whose parent struct is null (they come from the
+  parquet footer), while iceberg-java's writer-tracked counts do not. Both inflate equally, so
+  null-based pruning is unaffected.
 - Compressed page bytes are implementation-defined: the codec and any explicit level are
   translated, but parquet-rs and parquet-mr embed different encoder implementations and
   defaults (zstd default levels, LZ4 framing), so byte-identical output is not achievable even
