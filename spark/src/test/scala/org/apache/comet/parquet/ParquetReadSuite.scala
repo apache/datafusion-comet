@@ -35,7 +35,7 @@ import org.apache.parquet.schema.MessageTypeParser
 import org.apache.spark.SparkException
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.catalyst.util.DateTimeUtils
-import org.apache.spark.sql.comet.{CometNativeScanExec, CometScanExec}
+import org.apache.spark.sql.comet.{CometNativeScanExec, CometScanExec, CometScanUtils}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.execution.datasources.parquet.ParquetUtils
 import org.apache.spark.sql.internal.SQLConf
@@ -1901,25 +1901,108 @@ class ParquetReadV1Suite extends ParquetReadSuite with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("reading ancient dates before 1582") {
-    // Verify that legacy dates (before 1582-10-15) are read without error.
-    // Comet does not support datetime rebasing, so these dates are read as if they were
-    // written using the Proleptic Gregorian calendar (no rebase, no exception).
-    val file =
-      getResourceParquetFilePath("test-data/before_1582_date_v3_2_0.snappy.parquet")
+  test("fallback for ancient datetime fixtures") {
+    val encodings = Seq(
+      "date",
+      "timestamp_micros",
+      "timestamp_millis",
+      "timestamp_int96_plain",
+      "timestamp_int96_dict")
+    val versions = Seq("v2_4_5", "v2_4_6", "v3_2_0")
 
-    val df = spark.read.parquet(file)
+    withSQLConf(
+      "spark.sql.parquet.datetimeRebaseModeInRead" -> "LEGACY",
+      "spark.sql.parquet.int96RebaseModeInRead" -> "LEGACY") {
+      for (encoding <- encodings; version <- versions) {
+        val name = s"before_1582_${encoding}_$version.snappy.parquet"
+        withClue(s"$name: ") {
+          val (_, cometPlan) =
+            checkSparkAnswer(spark.read.parquet(getResourceParquetFilePath(s"test-data/$name")))
+          assert(collect(cometPlan) { case _: CometNativeScanExec => true }.isEmpty)
+        }
+      }
+    }
+  }
 
-    // Verify Comet scan is in the plan
-    val plan = df.queryExecution.executedPlan
-    checkCometOperators(plan)
+  test("fallback for Parquet datetime rebasing") {
+    withTempPath { path =>
+      val correctedPath = new File(path, "corrected")
+      val legacyPath = new File(path, "legacy")
+      withSQLConf(
+        SQLConf.PARQUET_REBASE_MODE_IN_WRITE.key -> "CORRECTED",
+        SQLConf.PARQUET_INT96_REBASE_MODE_IN_WRITE.key -> "CORRECTED") {
+        sql("""
+            |SELECT cast(s AS date) AS d, cast(s AS timestamp) AS ts
+            |FROM VALUES ('2000-01-01') AS v(s)
+            |""".stripMargin).coalesce(1).write.parquet(correctedPath.toString)
+      }
+      withSQLConf(
+        SQLConf.PARQUET_REBASE_MODE_IN_WRITE.key -> "LEGACY",
+        SQLConf.PARQUET_INT96_REBASE_MODE_IN_WRITE.key -> "LEGACY") {
+        sql("""
+            |SELECT cast(s AS date) AS d, cast(s AS timestamp) AS ts
+            |FROM VALUES ('1000-01-01'), ('1990-01-01') AS v(s)
+            |""".stripMargin).coalesce(1).write.parquet(legacyPath.toString)
+      }
 
-    // Verify all 8 rows are read and contain dates before 1582
-    val rows = df.collect()
-    assert(rows.length == 8, s"Expected 8 rows, got ${rows.length}")
-    rows.foreach { row =>
-      val date = row.getDate(0)
-      assert(date.toLocalDate.getYear < 1582, s"Expected date before 1582, got $date")
+      val hadoopConf = spark.sessionState.newHadoopConf()
+      def parquetFile(dir: File): Path = {
+        val dirPath = new Path(dir.toString)
+        dirPath
+          .getFileSystem(hadoopConf)
+          .listStatus(dirPath)
+          .iterator
+          .map(_.getPath)
+          .find(_.getName.endsWith(".parquet"))
+          .get
+      }
+      def requiresRebase(paths: Seq[Path]): Boolean =
+        CometScanUtils.requiresDatetimeRebase(
+          paths,
+          hadoopConf,
+          "CORRECTED",
+          "CORRECTED",
+          hasDate = true,
+          hasTimestamp = true)
+
+      val correctedFile = parquetFile(correctedPath)
+      val legacyFile = parquetFile(legacyPath)
+      assert(requiresRebase(Seq(correctedFile, legacyFile)))
+      assert(
+        requiresRebase(
+          Seq.fill(8)(legacyFile) :+ new Path(path.toString, "must-not-be-read.parquet")))
+
+      val df = spark.read.parquet(correctedPath.toString, legacyPath.toString)
+      val plan = df.queryExecution.executedPlan
+      assert(collect(plan) { case _: CometNativeScanExec => true }.isEmpty)
+      checkAnswer(
+        df.selectExpr("count(*)", "min(d)", "max(d)"),
+        Row(3L, java.sql.Date.valueOf("1000-01-01"), java.sql.Date.valueOf("2000-01-01")))
+      checkAnswer(
+        df.where("d = date'1000-01-01'").selectExpr("count(*)", "min(ts)", "max(ts)"),
+        Row(
+          1L,
+          java.sql.Timestamp.valueOf("1000-01-01 00:00:00"),
+          java.sql.Timestamp.valueOf("1000-01-01 00:00:00")))
+    }
+  }
+
+  test("timestamp_ntz falls back for legacy datetime metadata on Spark 4+") {
+    withTempPath { path =>
+      withSQLConf(SQLConf.PARQUET_REBASE_MODE_IN_WRITE.key -> "LEGACY") {
+        sql("""
+            |SELECT cast('1000-01-01 00:00:00' AS timestamp_ntz) AS ts_ntz,
+            |       cast('1000-01-01' AS date) AS legacy_date
+            |""".stripMargin).coalesce(1).write.parquet(path.toString)
+      }
+
+      val (_, cometPlan) = checkSparkAnswer(spark.read.parquet(path.toString).select("ts_ntz"))
+      val nativeScans = collect(cometPlan) { case _: CometNativeScanExec => true }
+      if (CometConf.COMET_SCHEMA_EVOLUTION_ENABLED) {
+        assert(nativeScans.isEmpty)
+      } else {
+        assert(nativeScans.nonEmpty)
+      }
     }
   }
 
