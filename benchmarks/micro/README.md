@@ -46,3 +46,9 @@ Subcommands:
 | `all`     | `setup` + `run` + `collect`                                    |
 
 Run `python3 run.py <command> --help` for the options of each command.
+
+The suites are discovered from the sources in
+`spark/src/test/scala/org/apache/spark/sql/benchmark`, so a new benchmark runs without any change
+here. `EXCLUDED_SUITES` lists the few that need something the runner cannot provide, with the
+reason, and `run --list` prints them. `dev/ci/check-benchmark-runner.py` checks in CI that those
+names still match the sources, and exercises the helpers in this script.

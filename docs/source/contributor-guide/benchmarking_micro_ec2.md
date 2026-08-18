@@ -163,10 +163,10 @@ java -version
 javac -version
 ```
 
-JDK 17 is the version to use. The pom only auto-activates a JDK profile for 11 or 17 exactly, so a
-newer JDK such as 21 silently compiles against the Java 11 API and fails on the Spark 4.x sources.
-`run.py` detects `JAVA_HOME` when it is not set, preferring a JDK 17 under `/usr/lib/jvm`, refuses
-to run with anything older than 17, and passes `-Pjdk17` when the JDK in use is newer.
+JDK 17 or later is required. Comet targets Java 17 bytecode whenever the JDK in use is 17 or
+newer, through the `jdk17` profile in the pom, so no profile needs to be passed by hand. `run.py`
+detects `JAVA_HOME` when it is not set, preferring the newest JDK under `/usr/lib/jvm`, and refuses
+to run with anything older than 17.
 
 ### Maven
 
@@ -235,7 +235,9 @@ Useful options:
 
 ### Suites That Are Not Run by Default
 
-Three suites need an external TPC dataset and one writes no result file, so they are excluded:
+The suites are discovered from the sources in
+`spark/src/test/scala/org/apache/spark/sql/benchmark`, so a newly added benchmark is picked up
+without any change to `run.py`. A few need something the runner cannot provide, and are skipped:
 
 | Suite                      | Reason                                       |
 | -------------------------- | -------------------------------------------- |
@@ -243,6 +245,10 @@ Three suites need an external TPC dataset and one writes no result file, so they
 | `CometTPCDSQueryBenchmark` | Needs TPC-DS data via `--data-location`      |
 | `CometTPCDSMicroBenchmark` | Needs TPC-DS data via `--data-location`      |
 | `CometC2RIsolatedBench`    | Prints to stdout only, writes no result file |
+| `CometReadHdfsBenchmark`   | Starts a local HDFS mini cluster             |
+
+They can still be run by naming them in a `--suites` file. `run --list` prints both the selected
+suites and the skipped ones with their reasons.
 
 For TPC-H and TPC-DS benchmarking see [Comet Benchmarking in EC2](benchmarking_aws_ec2.md).
 
@@ -257,7 +263,8 @@ BENCH_HEAP=8g SPARK_GENERATE_BENCHMARK_FILES=1 \
 
 `BENCH_HEAP` defaults to `20g`, which is more than an `m7i.xlarge` has. Set it to `8g` there, or
 leave it alone on a larger instance. Note that this target rebuilds Comet first, which is why
-`run.py` builds once and then invokes the benchmarks directly.
+`run.py` builds once and then invokes the benchmarks directly. It reads the invocation from the
+`Makefile` through `make print-benchmark-args`, so the two stay in step.
 
 ## Collecting Results
 
@@ -347,10 +354,8 @@ that has one configured.
 
 **`Class java.lang.Record not found - continuing with a stub`.** The Scala compiler is targeting the
 Java 11 API, which has no `Record`, while the Spark 4.x sources need Java 17. This happens on a JDK
-older than 17, and also on a **newer** one such as 21: the pom defaults `java.version` to 11 and
-only auto-activates a profile for JDK 11 or JDK 17 exactly, so on JDK 21 nothing raises it to 17.
-
-Either use JDK 17:
+older than 17, where the `jdk17` profile does not activate and `java.version` stays at its default
+of 11. Use JDK 17 or later:
 
 ```shell
 export JAVA_HOME=/usr/lib/jvm/java-17-amazon-corretto
@@ -359,15 +364,8 @@ export PATH=$JAVA_HOME/bin:$PATH
 make release
 ```
 
-or keep the newer JDK and ask for the profile explicitly:
-
-```shell
-./mvnw clean
-PROFILES="-Pjdk17" make release
-```
-
-Either way, run `./mvnw clean` first: classes compiled against the wrong API stay in `target/` and
-break the next build. `run.py` adds `-Pjdk17` automatically whenever the JDK in use is not 17.
+Run `./mvnw clean` first: classes compiled against the wrong API stay in `target/` and break the
+next build.
 
 **`cargo: command not found` after `setup`.** `rustup` installs into `~/.cargo/bin`. Run
 `source "$HOME/.cargo/env"`, or start a new shell.

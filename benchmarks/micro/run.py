@@ -59,6 +59,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 BENCH_PACKAGE = "org.apache.spark.sql.benchmark"
+BENCH_SOURCE_DIR = Path("spark/src/test/scala/org/apache/spark/sql/benchmark")
 DEFAULT_REPO = "https://github.com/apache/datafusion-comet.git"
 DEFAULT_COMET_HOME = Path.home() / "datafusion-comet"
 DEFAULT_RUNS_ROOT = Path.home() / "comet-bench-runs"
@@ -73,46 +74,6 @@ PROTOC_VERSION = "25.5"
 RESULTS_SUBDIR = Path("benchmarks") / "results" / "micro"
 IMDS_BASE = "http://169.254.169.254/latest"
 
-# Suites that generate their own data and write a results file. Keep this list
-# sorted; it is the default set that `run` executes.
-DEFAULT_SUITES = [
-    "CometAggregateExpressionBenchmark",
-    "CometArithmeticBenchmark",
-    "CometArrayExpressionBenchmark",
-    "CometBroadcastHashJoinBenchmark",
-    "CometBroadcastNestedLoopJoinBenchmark",
-    "CometCastBooleanBenchmark",
-    "CometCastNumericToNumericBenchmark",
-    "CometCastNumericToStringBenchmark",
-    "CometCastNumericToTemporalBenchmark",
-    "CometCastStringToNumericBenchmark",
-    "CometCastStringToTemporalBenchmark",
-    "CometCastTemporalToNumericBenchmark",
-    "CometCastTemporalToStringBenchmark",
-    "CometCastTemporalToTemporalBenchmark",
-    "CometColumnarToRowBenchmark",
-    "CometComparisonExpressionBenchmark",
-    "CometConditionalExpressionBenchmark",
-    "CometCsvExpressionBenchmark",
-    "CometDatetimeExpressionBenchmark",
-    "CometExecBenchmark",
-    "CometGetJsonObjectBenchmark",
-    "CometHashExpressionBenchmark",
-    "CometHashJoinBenchmark",
-    "CometIcebergReadBenchmark",
-    "CometJsonExpressionBenchmark",
-    "CometLengthOfJsonArrayBenchmark",
-    "CometOperatorSerdeBenchmark",
-    "CometPartitionColumnBenchmark",
-    "CometPredicateExpressionBenchmark",
-    "CometReadBenchmark",
-    "CometRegExpBenchmark",
-    "CometRegExpExtractBenchmark",
-    "CometShuffleBenchmark",
-    "CometSortMergeJoinBenchmark",
-    "CometStringExpressionBenchmark",
-]
-
 # Suites that legitimately take much longer than the default timeout allows.
 # Minutes, applied in place of --timeout for that suite only.
 SUITE_TIMEOUT_OVERRIDES = {
@@ -120,12 +81,14 @@ SUITE_TIMEOUT_OVERRIDES = {
 }
 
 # Suites deliberately left out of the default set, with the reason. They can
-# still be run by naming them in a --suites file.
+# still be run by naming them in a --suites file. Everything else found in
+# BENCH_SOURCE_DIR is run, so a new benchmark needs no change here.
 EXCLUDED_SUITES = {
     "CometTPCHQueryBenchmark": "needs TPC-H data, pass --data-location",
     "CometTPCDSQueryBenchmark": "needs TPC-DS data, pass --data-location",
     "CometTPCDSMicroBenchmark": "needs TPC-DS data, pass --data-location",
     "CometC2RIsolatedBench": "prints to stdout only, writes no results file",
+    "CometReadHdfsBenchmark": "starts a local HDFS mini cluster",
 }
 
 
@@ -208,6 +171,17 @@ def tail_file(path, lines=20):
     return "\n".join(content[-lines:])
 
 
+def read_proc_field(path, prefix):
+    """The value after the colon of the first line in `path` starting with `prefix`."""
+    try:
+        for line in Path(path).read_text().splitlines():
+            if line.startswith(prefix):
+                return line.split(":", 1)[1].strip()
+    except (OSError, IndexError):
+        pass
+    return None
+
+
 # The last lines of a failed run are Maven's epilogue, which says nothing about
 # the cause. Look for the exception that started it instead.
 EXCEPTION_PATTERN = re.compile(r"^\s*[\w.$]+(Exception|Error)(:|\b)")
@@ -269,9 +243,8 @@ def detect_java_home():
         match = re.search(r"(\d+)", path.name)
         return int(match.group(1)) if match else 0
 
-    # JDK 17 first, since the pom only auto-activates a profile for 11 or 17,
-    # then newest, so that an older JDK left on the machine is not picked up
-    ordered = sorted(candidates, key=lambda path: (version_of(path) == 17, version_of(path)), reverse=True)
+    # Newest first, so that an older JDK left on the machine is not picked up
+    ordered = sorted(candidates, key=version_of, reverse=True)
     for candidate in ordered:
         if (candidate / "bin" / "javac").is_file():
             return str(candidate)
@@ -296,21 +269,6 @@ def base_env(comet_home):
             env["PATH"] = f"{java_bin}{os.pathsep}{env.get('PATH', '')}"
     env["COMET_CONF_DIR"] = str(comet_home / "conf")
     return env
-
-
-def profile_args(args, jdk_major=None):
-    """Maven profiles for the build and the benchmark runs.
-
-    The pom defaults java.version to 11 and only auto-activates a profile for
-    JDK 11 or JDK 17 exactly. On any other JDK, such as 21, the Spark 4.x
-    sources are compiled against the Java 11 API and fail with
-    "Class java.lang.Record not found". Ask for the jdk17 profile explicitly in
-    that case.
-    """
-    profiles = [args.profile] if args.profile else []
-    if jdk_major is not None and jdk_major != 17 and not any("jdk" in p for p in profiles):
-        profiles.append("-Pjdk17")
-    return profiles
 
 
 def java_major_version(env):
@@ -338,12 +296,6 @@ def require_supported_jdk(env):
             "'Class java.lang.Record not found'. Install a newer JDK, point JAVA_HOME at it, and "
             "run `./mvnw clean` to discard classes built against the old one."
         )
-    if major != 17:
-        log(
-            f"JDK {major} in use, adding -Pjdk17 so that the Spark 4.x sources are not "
-            "compiled against the Java 11 API"
-        )
-    return major
 
 
 # ---------------------------------------------------------------------------
@@ -473,10 +425,9 @@ def build_release(args, comet_home):
     env = base_env(comet_home)
     if env.get("JAVA_HOME") is None:
         fail("JAVA_HOME could not be determined, install a JDK or export JAVA_HOME")
-    jdk_major = require_supported_jdk(env)
-    profiles = profile_args(args, jdk_major)
-    if profiles:
-        env["PROFILES"] = " ".join(profiles)
+    require_supported_jdk(env)
+    if args.profile:
+        env["PROFILES"] = args.profile
     log("building Comet in release mode, this takes a while")
     run_command(["make", "release"], cwd=comet_home, env=env, dry_run=args.dry_run)
 
@@ -498,7 +449,53 @@ def cmd_setup(args):
 # ---------------------------------------------------------------------------
 
 
-def load_suites(args):
+# Top-level `object Name`, with whatever it extends up to the start of its body
+OBJECT_PATTERN = re.compile(r"^object\s+(\w+)\s*(extends[^{]*)?\{", re.MULTILINE)
+
+
+def discover_suites(comet_home):
+    """The benchmark entry points, read from the sources rather than listed here.
+
+    An entry point is a top-level `object` in the benchmark package that either
+    mixes in a `*Benchmark*` base, which supplies `main`, or declares its own.
+    Helpers such as `TPCDSSchemaHelper` do neither and are skipped. Discovering
+    them this way means a newly added benchmark runs without anyone having to
+    remember to also add it to this file.
+    """
+    source_dir = comet_home / BENCH_SOURCE_DIR
+    if not source_dir.is_dir():
+        fail(f"no benchmark sources at {source_dir}, is {comet_home} a Comet checkout?")
+    suites = set()
+    for path in sorted(source_dir.glob("*.scala")):
+        text = path.read_text(errors="replace")
+        declares_main = "def main(" in text
+        for name, bases in OBJECT_PATTERN.findall(text):
+            if "Benchmark" in bases or declares_main:
+                suites.add(name)
+    if not suites:
+        fail(f"no benchmark objects found in {source_dir}")
+    return sorted(suites)
+
+
+def stale_suite_entries(comet_home):
+    """Names in this file that no longer match the benchmark sources.
+
+    EXCLUDED_SUITES and SUITE_TIMEOUT_OVERRIDES are keyed by suite name, so a
+    rename upstream silently turns an exclusion into a suite that runs, or a
+    timeout override into one that does not apply. Report them instead.
+    """
+    discovered = set(discover_suites(comet_home))
+    return [
+        f"{suite} is listed in {label} but is not a benchmark in {BENCH_SOURCE_DIR}"
+        for label, names in (
+            ("EXCLUDED_SUITES", EXCLUDED_SUITES),
+            ("SUITE_TIMEOUT_OVERRIDES", SUITE_TIMEOUT_OVERRIDES),
+        )
+        for suite in sorted(set(names) - discovered)
+    ]
+
+
+def load_suites(args, comet_home):
     if args.suites:
         path = Path(args.suites).expanduser()
         if not path.is_file():
@@ -509,7 +506,7 @@ def load_suites(args):
             if line:
                 suites.append(line.rsplit(".", 1)[-1])
     else:
-        suites = list(DEFAULT_SUITES)
+        suites = [s for s in discover_suites(comet_home) if s not in EXCLUDED_SUITES]
     if args.only:
         suites = [s for s in suites if any(re.search(pattern, s) for pattern in args.only)]
     if args.skip:
@@ -519,29 +516,36 @@ def load_suites(args):
     return suites
 
 
-def maven_extra_java_args(comet_home, env, args, jdk_major=None):
-    """The value the Makefile passes to MAVEN_OPTS as spark_jvm_17_extra_args."""
-    value = capture(
-        ["./mvnw", "help:evaluate", "-q", "-DforceStdout", "-Dexpression=extraJavaTestArgs"]
-        + profile_args(args, jdk_major),
-        cwd=comet_home,
-        env=env,
-    )
-    if not value:
-        log("could not evaluate extraJavaTestArgs, continuing without it")
-        return ""
-    return " ".join(value.split())
+def benchmark_args(comet_home, env, profile, heap):
+    """The benchmark invocation, read from the Makefile's `print-benchmark-args`.
+
+    The Makefile is the one definition of how a suite is invoked. The
+    `benchmark-%` target itself cannot be used here because its `release`
+    prerequisite would rebuild Comet before every suite.
+    """
+    command = ["make", "print-benchmark-args", f"BENCH_HEAP={heap}"]
+    if profile:
+        command.append(f"PROFILES={profile}")
+    output = capture(command, cwd=comet_home, env=env)
+    if output is None:
+        fail(f"`{' '.join(command)}` failed in {comet_home}, is make installed?")
+    values = {}
+    for line in output.splitlines():
+        key, separator, value = line.partition("=")
+        if separator:
+            values[key.strip()] = value.strip()
+    missing = [key for key in ("MAVEN_OPTS", "MVN_ARGS") if not values.get(key)]
+    if missing:
+        fail(f"print-benchmark-args did not report {', '.join(missing)}")
+    return values
 
 
-def suite_command(suite, args, jdk_major=None):
-    """Mirrors the `benchmark-%` target in the Makefile."""
-    return [
-        "../mvnw",
-        "exec:java",
-        f"-Dexec.mainClass={BENCH_PACKAGE}.{suite}",
-        "-Dexec.classpathScope=test",
-        "-Dexec.cleanupDaemonThreads=false",
-    ] + profile_args(args, jdk_major)
+def suite_command(suite, mvn_args, profile):
+    """The `mvnw` invocation for one suite, run from the `spark` directory."""
+    command = ["../mvnw"] + mvn_args.split() + [f"-Dexec.mainClass={BENCH_PACKAGE}.{suite}"]
+    if profile:
+        command.append(profile)
+    return command
 
 
 def warn_unless_release_build(comet_home):
@@ -564,9 +568,11 @@ def git_info(comet_home):
     }
 
 
-def cmd_run(args):
-    comet_home = require_comet_home(args)
-    suites = load_suites(args)
+def cmd_run(args, comet_home=None):
+    comet_home = comet_home or require_comet_home(args)
+    suites = load_suites(args, comet_home)
+    for problem in stale_suite_entries(comet_home):
+        log(f"warning: {problem}")
     if args.list:
         for suite in suites:
             print(f"{BENCH_PACKAGE}.{suite}")
@@ -583,9 +589,9 @@ def cmd_run(args):
     env = base_env(comet_home)
     if env.get("JAVA_HOME") is None:
         fail("JAVA_HOME could not be determined, install a JDK or export JAVA_HOME")
-    jdk_major = require_supported_jdk(env)
-    extra_args = maven_extra_java_args(comet_home, env, args, jdk_major)
-    env["MAVEN_OPTS"] = f"-Xmx{args.heap} {extra_args}".strip()
+    require_supported_jdk(env)
+    bench = benchmark_args(comet_home, env, args.profile, args.heap)
+    env["MAVEN_OPTS"] = bench["MAVEN_OPTS"]
     env["SPARK_GENERATE_BENCHMARK_FILES"] = "1"
 
     spark_dir = comet_home / "spark"
@@ -606,7 +612,7 @@ def cmd_run(args):
         status = "ok"
         try:
             code = run_command(
-                suite_command(suite, args, jdk_major),
+                suite_command(suite, bench["MVN_ARGS"], args.profile),
                 cwd=spark_dir,
                 env=env,
                 log_path=log_path,
@@ -694,21 +700,13 @@ def machine_info(env):
         "java": "unknown",
         "rustc": capture(["rustc", "--version"], env=env) or "unknown",
     }
-    try:
-        for line in Path("/proc/cpuinfo").read_text().splitlines():
-            if line.startswith("model name"):
-                info["cpu_model"] = line.split(":", 1)[1].strip()
-                break
-    except OSError:
-        pass
-    try:
-        for line in Path("/proc/meminfo").read_text().splitlines():
-            if line.startswith("MemTotal"):
-                kilobytes = int(line.split()[1])
-                info["memory"] = f"{kilobytes / 1024 / 1024:.1f} GiB"
-                break
-    except OSError:
-        pass
+    cpu_model = read_proc_field("/proc/cpuinfo", "model name")
+    if cpu_model:
+        info["cpu_model"] = cpu_model
+    mem_total = read_proc_field("/proc/meminfo", "MemTotal")
+    if mem_total:
+        # "16311236 kB"
+        info["memory"] = f"{int(mem_total.split()[0]) / 1024 / 1024:.1f} GiB"
     if info["cpu_model"] == "unknown" and platform.system() == "Darwin":
         # /proc does not exist on macOS, which is where a local collect runs
         info["cpu_model"] = capture(["sysctl", "-n", "machdep.cpu.brand_string"]) or "unknown"
@@ -798,9 +796,12 @@ def write_run_info(destination, summary, info, copied):
     (destination / "RUN-INFO.md").write_text("\n".join(lines))
 
 
-def cmd_collect(args):
-    comet_home = require_comet_home(args)
-    run_dir = Path(args.run_dir).expanduser() if args.run_dir else latest_run_dir(args.runs_root)
+def cmd_collect(args, comet_home=None, run_dir=None):
+    comet_home = comet_home or require_comet_home(args)
+    if run_dir is None:
+        run_dir = (
+            Path(args.run_dir).expanduser() if args.run_dir else latest_run_dir(args.runs_root)
+        )
     if run_dir is None or not (run_dir / "summary.json").is_file():
         fail("no benchmark run found, pass --run-dir or run `run` first")
     summary = json.loads((run_dir / "summary.json").read_text())
@@ -828,7 +829,7 @@ def cmd_collect(args):
     log(f"wrote {destination / 'RUN-INFO.md'}")
     log(f"results are in {destination}")
     if args.publish:
-        cmd_publish(args)
+        cmd_publish(args, comet_home=comet_home)
     return destination
 
 
@@ -858,8 +859,8 @@ suites. See `benchmarks/results/micro/RUN-INFO.md` for the environment details.
 """
 
 
-def cmd_publish(args):
-    comet_home = require_comet_home(args)
+def cmd_publish(args, comet_home=None):
+    comet_home = comet_home or require_comet_home(args)
     destination = comet_home / RESULTS_SUBDIR
     if not destination.is_dir():
         fail(f"no collected results at {destination}, run `collect` first")
@@ -932,12 +933,10 @@ def cmd_publish(args):
 
 def cmd_all(args):
     comet_home = cmd_setup(args)
-    args.comet_home = str(comet_home)
-    run_dir = cmd_run(args)
+    run_dir = cmd_run(args, comet_home=comet_home)
     if run_dir is None:
         return
-    args.run_dir = str(run_dir)
-    cmd_collect(args)
+    cmd_collect(args, comet_home=comet_home, run_dir=run_dir)
 
 
 # ---------------------------------------------------------------------------
