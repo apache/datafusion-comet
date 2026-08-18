@@ -16,7 +16,7 @@
 // under the License.
 
 use crate::conversion_funcs::boolean::{
-    cast_boolean_to_decimal, cast_boolean_to_timestamp, is_df_cast_from_bool_spark_compatible,
+    cast_boolean_to_timestamp, is_df_cast_from_bool_spark_compatible,
 };
 use crate::conversion_funcs::numeric::{
     cast_decimal128_to_utf8, cast_decimal_to_timestamp, cast_float32_to_decimal128,
@@ -437,9 +437,6 @@ pub(crate) fn cast_array(
         }
         (Int64, Binary) if (eval_mode == Legacy) => {
             cast_whole_num_to_binary!(&array, Int64Array, 8)
-        }
-        (Boolean, Decimal128(precision, scale)) => {
-            cast_boolean_to_decimal(&array, *precision, *scale)
         }
         (Int8 | Int16 | Int32 | Int64, Timestamp(_, tz)) => cast_int_to_timestamp(&array, tz),
         (Float32 | Float64, Timestamp(_, tz)) => cast_float_to_timestamp(&array, tz, eval_mode),

@@ -62,6 +62,7 @@ message DataType {
     TIME = 17;
     YEAR_MONTH_INTERVAL = 18;
     DAY_TIME_INTERVAL = 19;
+    CALENDAR_INTERVAL = 20;
   }
   DataTypeId type_id = 1;
 

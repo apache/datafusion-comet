@@ -1,4 +1,4 @@
-CometNativeColumnarToRow
+CometColumnarToRow
 +- CometTakeOrderedAndProject
    +- CometProject
       +- CometWindowExec
@@ -13,7 +13,7 @@ CometNativeColumnarToRow
                            :     +- HashAggregate
                            :        +- Project
                            :           +- BroadcastHashJoin
-                           :              :- CometNativeColumnarToRow
+                           :              :- CometColumnarToRow
                            :              :  +- CometProject
                            :              :     +- CometBroadcastHashJoin
                            :              :        :- CometFilter
@@ -30,7 +30,7 @@ CometNativeColumnarToRow
                            :              +- BroadcastExchange
                            :                 +- Project
                            :                    +- BroadcastHashJoin
-                           :                       :- CometNativeColumnarToRow
+                           :                       :- CometColumnarToRow
                            :                       :  +- CometFilter
                            :                       :     +- CometNativeScan parquet spark_catalog.default.store
                            :                       +- BroadcastExchange
@@ -38,7 +38,7 @@ CometNativeColumnarToRow
                            :                             +- Filter
                            :                                +- Window
                            :                                   +-  WindowGroupLimit [COMET: WindowGroupLimit is not supported]
-                           :                                      +- CometNativeColumnarToRow
+                           :                                      +- CometColumnarToRow
                            :                                         +- CometSort
                            :                                            +- CometHashAggregate
                            :                                               +- CometExchange
@@ -66,7 +66,7 @@ CometNativeColumnarToRow
                            :              +- HashAggregate
                            :                 +- Project
                            :                    +- BroadcastHashJoin
-                           :                       :- CometNativeColumnarToRow
+                           :                       :- CometColumnarToRow
                            :                       :  +- CometProject
                            :                       :     +- CometBroadcastHashJoin
                            :                       :        :- CometFilter
@@ -83,7 +83,7 @@ CometNativeColumnarToRow
                            :                       +- BroadcastExchange
                            :                          +- Project
                            :                             +- BroadcastHashJoin
-                           :                                :- CometNativeColumnarToRow
+                           :                                :- CometColumnarToRow
                            :                                :  +- CometFilter
                            :                                :     +- CometNativeScan parquet spark_catalog.default.store
                            :                                +- BroadcastExchange
@@ -91,7 +91,7 @@ CometNativeColumnarToRow
                            :                                      +- Filter
                            :                                         +- Window
                            :                                            +-  WindowGroupLimit [COMET: WindowGroupLimit is not supported]
-                           :                                               +- CometNativeColumnarToRow
+                           :                                               +- CometColumnarToRow
                            :                                                  +- CometSort
                            :                                                     +- CometHashAggregate
                            :                                                        +- CometExchange
@@ -119,7 +119,7 @@ CometNativeColumnarToRow
                                           +- HashAggregate
                                              +- Project
                                                 +- BroadcastHashJoin
-                                                   :- CometNativeColumnarToRow
+                                                   :- CometColumnarToRow
                                                    :  +- CometProject
                                                    :     +- CometBroadcastHashJoin
                                                    :        :- CometFilter
@@ -136,7 +136,7 @@ CometNativeColumnarToRow
                                                    +- BroadcastExchange
                                                       +- Project
                                                          +- BroadcastHashJoin
-                                                            :- CometNativeColumnarToRow
+                                                            :- CometColumnarToRow
                                                             :  +- CometFilter
                                                             :     +- CometNativeScan parquet spark_catalog.default.store
                                                             +- BroadcastExchange
@@ -144,7 +144,7 @@ CometNativeColumnarToRow
                                                                   +- Filter
                                                                      +- Window
                                                                         +-  WindowGroupLimit [COMET: WindowGroupLimit is not supported]
-                                                                           +- CometNativeColumnarToRow
+                                                                           +- CometColumnarToRow
                                                                               +- CometSort
                                                                                  +- CometHashAggregate
                                                                                     +- CometExchange
@@ -165,4 +165,4 @@ CometNativeColumnarToRow
                                                                                                       +- CometFilter
                                                                                                          +- CometNativeScan parquet spark_catalog.default.date_dim
 
-Comet accelerated 117 out of 156 eligible operators (75%). Final plan contains 10 transitions between Spark and Comet.
+Comet accelerated 120 out of 153 eligible operators (78%). Final plan contains 10 transitions between Spark and Comet. Accelerated expressions: 12 native, 0 codegen dispatch.
