@@ -224,6 +224,46 @@ if [[ -n "$SERVICE_LEAKS" ]]; then
 fi
 green "OK: default build registers no contrib services (empty ServiceLoader registries at runtime)"
 
+# ---- contrib build compiles ----------------------------------------------
+
+# The checks above all prove a NEGATIVE: that a default build excludes the contrib. None of them
+# proves the POSITIVE -- that the contrib still compiles when it IS enabled. Every `-Pcontrib-delta`
+# assertion in this script so far is `help:effective-pom`, which merges POM models and never
+# invokes the compiler.
+#
+# That leaves a real gap in the split series: the Delta Scala is only compiled by CI from the part
+# that adds the contrib test battery onward, so between that part and this one a change to core's
+# contrib-facing surface (`CometScanContrib`, `CometContribScanMarker`, `CometConfigProvider`,
+# `PlanDataInjector`) can break the contrib with nothing to catch it. That is not hypothetical: a
+# rename of the Delta scan's `type_url` once left the JVM producer and the native consumer
+# disagreeing, and no job in between would have failed.
+#
+# Compiling here closes it for every part at once, because this compiles whatever contrib sources
+# exist at the commit under test -- coverage grows on its own as later parts add code, with no
+# further edits to this script. One Spark version is enough for a compile check; the full
+# 3.5/4.0/4.1 matrix is exercised by the contrib test workflow once the suites exist.
+hdr "Contrib build: -Pcontrib-delta still compiles"
+if "$MVNW" -Pspark-4.1,contrib-delta -Djava.version=17 -Dmaven.compiler.source=17 \
+    -Dmaven.compiler.target=17 -Dmaven.gitcommitid.skip -pl spark -am clean test-compile \
+    -q -DskipTests=true >/tmp/contrib-delta-compile.log 2>&1; then
+  green "OK: -Pcontrib-delta compiles (main + test sources)"
+else
+  red "FAIL: -Pcontrib-delta build does not compile. Last 40 lines:"
+  tail -40 /tmp/contrib-delta-compile.log
+  exit 1
+fi
+
+# Anti-vacuous: a compile that silently produced nothing would pass the check above. Assert the
+# contrib classes this build is supposed to produce actually landed, so a profile that stops
+# applying (the failure mode this whole gate guards against, in the opposite direction) surfaces
+# here rather than as a green build that compiled no Delta code at all.
+CONTRIB_CLASSES="$(find spark/target/classes -path '*comet/contrib/delta*' -name '*.class' 2>/dev/null || true)"
+if [[ -z "$CONTRIB_CLASSES" ]]; then
+  red "FAIL: -Pcontrib-delta build compiled no contrib classes (profile not applied?)"
+  exit 1
+fi
+green "OK: contrib build produced $(echo "$CONTRIB_CLASSES" | wc -l | tr -d ' ') contrib class file(s)"
+
 # ---- libcomet symbol/size gate -------------------------------------------
 
 hdr "libcomet: default build is smaller and has no Delta symbols"
