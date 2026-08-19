@@ -115,6 +115,47 @@ object CometExecRule {
    */
   val SKIP_COMET_BROADCAST_TAG: org.apache.spark.sql.catalyst.trees.TreeNodeTag[Unit] =
     org.apache.spark.sql.catalyst.trees.TreeNodeTag[Unit]("comet.skipCometBroadcast")
+
+  /**
+   * Bounded set of SQL execution IDs for which plan-only mode has already logged its report. Used
+   * to dedupe the WARN under AQE, where `CometExecRule` fires once against the full initial plan
+   * and again per stage.
+   */
+  private val PLAN_ONLY_REPORTED_LIMIT = 1024
+  private val planOnlyReportedIds: java.util.LinkedHashSet[String] =
+    new java.util.LinkedHashSet[String]()
+
+  /**
+   * Thread-local re-entry guard: set to true while `reportPlanOnlyCoverage` is running the rule
+   * recursively to build the preview plan. Prevents the outer plan-only branch in `_apply` from
+   * firing on the nested call, so the recursive invocation executes the normal transform.
+   */
+  private[rules] val planOnlyPreviewInProgress: ThreadLocal[Boolean] =
+    new ThreadLocal[Boolean] {
+      override def initialValue(): Boolean = false
+    }
+
+  private[comet] def markPlanOnlyReported(executionId: Option[String]): Boolean = {
+    executionId match {
+      case None => true
+      case Some(id) =>
+        planOnlyReportedIds.synchronized {
+          val added = planOnlyReportedIds.add(id)
+          if (planOnlyReportedIds.size > PLAN_ONLY_REPORTED_LIMIT) {
+            val it = planOnlyReportedIds.iterator()
+            it.next()
+            it.remove()
+          }
+          added
+        }
+    }
+  }
+
+  private[comet] def clearPlanOnlyReported(): Unit = {
+    planOnlyReportedIds.synchronized {
+      planOnlyReportedIds.clear()
+    }
+  }
 }
 
 /**
@@ -573,6 +614,26 @@ case class CometExecRule(session: SparkSession)
     newPlan
   }
 
+  /**
+   * Build the Comet plan we would have executed and log it. Called from `_apply` in plan-only
+   * mode; the built plan is discarded. `CometScanRule` and this rule both skip work when
+   * `spark.comet.explain.planOnly.enabled` is set, so we use their bypass flags to force normal
+   * behavior while we compute the preview.
+   */
+  private def reportPlanOnlyCoverage(plan: SparkPlan): Unit = {
+    val preview = CometScanRule.withForceApply {
+      CometExecRule.planOnlyPreviewInProgress.set(true)
+      try {
+        _apply(CometScanRule(session).apply(plan))
+      } finally {
+        CometExecRule.planOnlyPreviewInProgress.set(false)
+      }
+    }
+    logWarning(
+      s"[Comet plan-only]\n" +
+        new ExtendedExplainInfo().generateExtendedInfo(preview))
+  }
+
   private def _apply(plan: SparkPlan): SparkPlan = {
     // We shouldn't transform Spark query plan if Comet is not loaded.
     if (!isCometLoaded(conf)) return plan
@@ -604,6 +665,19 @@ case class CometExecRule(session: SparkSession)
       // formats are incompatible. This runs before transform() so the tags are checked
       // during the bottom-up conversion. Tags persist through AQE stage creation.
       tagUnsafePartialAggregates(planWithJoinRewritten)
+
+      // Plan-only mode: `CometScanRule` skipped work, so `plan` here is still pure Spark. Build
+      // a preview by rerunning both rules against a scan-wrapped copy and log the coverage
+      // report, then return `plan` unchanged so nothing is offloaded to native.
+      if (CometConf.COMET_EXPLAIN_PLAN_ONLY_ENABLED.get() &&
+        !CometExecRule.planOnlyPreviewInProgress.get()) {
+        val executionId = Option(
+          session.sparkContext.getLocalProperty(SQLExecution.EXECUTION_ID_KEY))
+        if (CometExecRule.markPlanOnlyReported(executionId)) {
+          reportPlanOnlyCoverage(plan)
+        }
+        return plan
+      }
 
       var newPlan = transform(planWithJoinRewritten)
 

@@ -64,6 +64,12 @@ case class CometScanRule(session: SparkSession)
   private lazy val showTransformations = CometConf.COMET_EXPLAIN_TRANSFORMATIONS.get()
 
   override def apply(plan: SparkPlan): SparkPlan = {
+    // Plan-only mode: leave the plan untouched. CometExecRule invokes this rule with
+    // `CometScanRule.withForceApply` when it needs a preview plan to compute the coverage
+    // report; the thread-local flag bypasses this skip for that call only.
+    if (CometConf.COMET_EXPLAIN_PLAN_ONLY_ENABLED.get() && !CometScanRule.forceApply.get()) {
+      return plan
+    }
     val newPlan = _apply(plan)
     if (showTransformations && !newPlan.fastEquals(plan)) {
       logInfo(s"""
@@ -938,6 +944,22 @@ case class CometScanTypeChecker() extends DataTypeSupport with CometTypeShim {
 }
 
 object CometScanRule extends Logging {
+
+  /**
+   * Thread-local flag telling `CometScanRule.apply` to run its normal wrapping logic even when
+   * `spark.comet.explain.planOnly.enabled` is set. Used by `CometExecRule` when it builds a
+   * preview plan to report on; see `CometExecRule.reportPlanOnlyCoverage`.
+   */
+  private[rules] val forceApply: ThreadLocal[Boolean] = new ThreadLocal[Boolean] {
+    override def initialValue(): Boolean = false
+  }
+
+  private[rules] def withForceApply[T](f: => T): T = {
+    val prev = forceApply.get()
+    forceApply.set(true)
+    try f
+    finally forceApply.set(prev)
+  }
 
   // Per-scheme memo of `NativeBase.isObjectStoreSchemeSupported`. The answer depends only on the
   // URL scheme, so we cache by scheme and never re-cross the JNI boundary for a repeated scheme.

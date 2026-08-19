@@ -208,6 +208,27 @@ operators were arranged after Comet's serialization). See the
 [Metrics Guide](metrics.md) for details on the DataFusion metrics that appear
 in this output.
 
+### `spark.comet.explain.planOnly.enabled`
+
+When enabled, Comet runs its full conversion pass on every query and logs the
+resulting Comet plan and coverage summary to the driver log, then reverts to
+executing the plan on Spark instead of offloading anything to native. Use this
+to evaluate how much of a workload Comet would accelerate without changing the
+execution.
+
+The log line is prefixed with `[Comet plan-only]` and includes the same
+annotated plan and summary as `spark.comet.explain.format=verbose` produces
+against a normal Comet plan. Under AQE the report is emitted once per SQL
+execution.
+
+The estimate reflects Scala-side conversion only. The native plan is never
+handed to DataFusion, so anything that would have failed in DataFusion's
+`create_plan` still counts as accelerated. Treat the percentage as an upper
+bound.
+
+The config requires `spark.comet.exec.enabled=true`. With Comet exec disabled
+the rule that emits the report does not run.
+
 ## Programmatic Access to Fallback Reasons
 
 The configs above route fallback reasons to logs or the SQL UI. If you want

@@ -31,6 +31,7 @@ import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.QueryStageExec
 import org.apache.spark.sql.execution.aggregate.{HashAggregateExec, ObjectHashAggregateExec}
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ShuffleExchangeExec}
+import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DataTypes, StructField, StructType}
 
 import org.apache.comet.{CometConf, CometExplainInfo}
@@ -793,6 +794,81 @@ class CometExecRuleSuite extends CometTestBase {
 
         assert(countOperators(transformedPlan, classOf[ShuffleExchangeExec]) == 0)
         assert(countOperators(transformedPlan, classOf[CometShuffleExchangeExec]) == 1)
+      }
+    }
+  }
+
+  private def runPlanOnlyQuery(sql: String): SparkPlan = {
+    CometExecRule.clearPlanOnlyReported()
+    val df = spark.sql(sql)
+    val rows = df.collect()
+    // Sanity: results identical to plain Spark run with the config off.
+    withSQLConf(CometConf.COMET_EXPLAIN_PLAN_ONLY_ENABLED.key -> "false") {
+      checkAnswer(df, spark.sql(sql).collect().toSeq)
+    }
+    assert(rows.nonEmpty)
+    df.queryExecution.executedPlan
+  }
+
+  private def assertNoComet(plan: SparkPlan): Unit = {
+    val cometNodes = stripAQEPlan(plan).collect { case p: CometPlan => p }
+    assert(
+      cometNodes.isEmpty,
+      s"plan-only mode must not offload; found Comet operators: $cometNodes")
+  }
+
+  for (aqeEnabled <- Seq(true, false)) {
+    test(s"plan-only mode: V1 scan, AQE=$aqeEnabled") {
+      withSQLConf(
+        SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqeEnabled.toString,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_EXPLAIN_PLAN_ONLY_ENABLED.key -> "true") {
+        withParquetTable((0 until 100).map(i => (i, i % 5)), "tbl") {
+          assertNoComet(runPlanOnlyQuery("SELECT _2, count(*) FROM tbl GROUP BY _2"))
+        }
+      }
+    }
+
+    test(s"plan-only mode: V2 scan, AQE=$aqeEnabled") {
+      withSQLConf(
+        SQLConf.USE_V1_SOURCE_LIST.key -> "",
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqeEnabled.toString,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_EXPLAIN_PLAN_ONLY_ENABLED.key -> "true") {
+        withParquetTable((0 until 100).map(i => (i, i % 5)), "tbl") {
+          assertNoComet(runPlanOnlyQuery("SELECT _2, count(*) FROM tbl GROUP BY _2"))
+        }
+      }
+    }
+  }
+
+  test("plan-only mode: scalar subquery is also reverted") {
+    withSQLConf(
+      SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+      CometConf.COMET_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_ENABLED.key -> "true",
+      CometConf.COMET_EXPLAIN_PLAN_ONLY_ENABLED.key -> "true") {
+      withParquetTable((0 until 100).map(i => (i, i % 5)), "tbl") {
+        val plan = runPlanOnlyQuery("SELECT _1 FROM tbl WHERE _1 > (SELECT max(_2) FROM tbl)")
+        assertNoComet(plan)
+      }
+    }
+  }
+
+  test("plan-only mode: same query with the config off runs on Comet") {
+    withSQLConf(
+      SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+      CometConf.COMET_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_ENABLED.key -> "true",
+      CometConf.COMET_EXPLAIN_PLAN_ONLY_ENABLED.key -> "false") {
+      withParquetTable((0 until 100).map(i => (i, i % 5)), "tbl") {
+        val plan =
+          spark.sql("SELECT _2, count(*) FROM tbl GROUP BY _2").queryExecution.executedPlan
+        val cometNodes = stripAQEPlan(plan).collect { case p: CometPlan => p }
+        assert(cometNodes.nonEmpty, "expected Comet operators when plan-only mode is disabled")
       }
     }
   }
