@@ -131,21 +131,6 @@ object CometExecRule {
           size() > PLAN_ONLY_REPORTED_LIMIT
       })
 
-  /**
-   * Thread-local re-entry guard: set while `reportPlanOnlyCoverage` is building the preview so
-   * both `CometScanRule` and `CometExecRule` run their normal transforms on the nested pass
-   * instead of short-circuiting.
-   */
-  private[rules] val planOnlyPreviewInProgress: ThreadLocal[Boolean] =
-    ThreadLocal.withInitial(() => java.lang.Boolean.FALSE)
-
-  private[rules] def withPreview[T](f: => T): T = {
-    val prev = planOnlyPreviewInProgress.get()
-    planOnlyPreviewInProgress.set(true)
-    try f
-    finally planOnlyPreviewInProgress.set(prev)
-  }
-
   private[comet] def markPlanOnlyReported(executionId: Option[String]): Boolean = {
     executionId match {
       case None => true
@@ -600,7 +585,7 @@ case class CometExecRule(session: SparkSession)
   }
 
   override def apply(plan: SparkPlan): SparkPlan = {
-    val newPlan = _apply(plan)
+    val newPlan = _apply(plan, forPreview = false)
     if (showTransformations && !newPlan.fastEquals(plan)) {
       logInfo(s"""
            |=== Applying Rule $ruleName ===
@@ -612,17 +597,15 @@ case class CometExecRule(session: SparkSession)
 
   /**
    * Build the Comet plan we would have executed and log it. Called from `_apply` in plan-only
-   * mode; the built plan is discarded. Both rules short-circuit under plan-only mode, so we set
-   * `planOnlyPreviewInProgress` to force the nested calls to run their normal transforms.
+   * mode; the built plan is discarded. Passes `forPreview = true` through the nested calls so
+   * both rules run their normal transforms instead of short-circuiting.
    */
   private def reportPlanOnlyCoverage(plan: SparkPlan): Unit = {
-    val preview = CometExecRule.withPreview {
-      _apply(CometScanRule(session).apply(plan))
-    }
+    val preview = _apply(CometScanRule(session)._apply(plan), forPreview = true)
     logWarning(s"[Comet plan-only]\n${new ExtendedExplainInfo().generateExtendedInfo(preview)}")
   }
 
-  private def _apply(plan: SparkPlan): SparkPlan = {
+  private def _apply(plan: SparkPlan, forPreview: Boolean): SparkPlan = {
     // We shouldn't transform Spark query plan if Comet is not loaded.
     if (!isCometLoaded(conf)) return plan
 
@@ -643,8 +626,7 @@ case class CometExecRule(session: SparkSession)
       // `plan` is still pure Spark; `reportPlanOnlyCoverage` rebuilds a scan-wrapped copy for
       // the preview. Placed before `normalizePlan`/`RewriteJoin`/`tagUnsafePartialAggregates`
       // so their work is not wasted on the discarded outer pass.
-      if (CometConf.COMET_EXPLAIN_PLAN_ONLY_ENABLED.get() &&
-        !CometExecRule.planOnlyPreviewInProgress.get()) {
+      if (!forPreview && CometConf.COMET_EXPLAIN_PLAN_ONLY_ENABLED.get()) {
         val executionId = Option(
           session.sparkContext.getLocalProperty(SQLExecution.EXECUTION_ID_KEY))
         if (CometExecRule.markPlanOnlyReported(executionId)) {
