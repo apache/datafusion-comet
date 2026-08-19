@@ -1429,6 +1429,55 @@ case class CometExpandExec(
   override lazy val metrics: Map[String, SQLMetric] = Map.empty
 }
 
+case class CometMergeRowsExec(
+    override val nativeOp: Operator,
+    override val originalPlan: SparkPlan,
+    override val output: Seq[Attribute],
+    child: SparkPlan,
+    override val serializedPlanOpt: SerializedPlan)
+    extends CometUnaryExec {
+  // Matches Spark's `MergeRowsExec`, which does not override `outputPartitioning` and so inherits
+  // `SparkPlan`'s `UnknownPartitioning(0)`. Reporting the child's partitioning instead would be
+  // *stronger* than Spark's contract and could let `EnsureRequirements` skip a shuffle the JVM
+  // plan takes, so this must stay in step with Spark rather than be "improved".
+  override def outputPartitioning: Partitioning = UnknownPartitioning(0)
+
+  override def producedAttributes: AttributeSet = outputSet
+
+  override protected def withNewChildInternal(newChild: SparkPlan): SparkPlan =
+    this.copy(child = newChild)
+
+  override def stringArgs: Iterator[Any] = Iterator(output, child)
+
+  override def equals(obj: Any): Boolean = {
+    obj match {
+      case other: CometMergeRowsExec =>
+        this.output == other.output &&
+        this.child == other.child &&
+        this.serializedPlanOpt == other.serializedPlanOpt
+      case _ =>
+        false
+    }
+  }
+
+  override def hashCode(): Int = Objects.hashCode(output, child)
+
+  // `output_rows / output_batches` is this operator's average output batch size -- the shape
+  // whatever native write follows is fed, whose per-batch cost scales with column count rather
+  // than row count.
+  //
+  // Does not expose Spark 4.x real `MergeRowsExec`'s 8 per-clause row counters
+  // (numTargetRowsCopied/Inserted/Updated/Deleted/MatchedUpdated/MatchedDeleted/
+  // NotMatchedBySourceUpdated/NotMatchedBySourceDeleted). Spark 3.5.x's `MergeRowsExec` has none
+  // of these either -- `MergeRows.Keep`'s `Context` field (Copy/Update/Insert/Delete), which
+  // Spark 4.x uses to attribute them, doesn't exist on 3.5. Wiring them correctly needs a
+  // version-gated native context tag threaded through the proto/native/JVM serde, not just a
+  // stub -- a metric reading 0 after rows were inserted is worse than the key being absent.
+  override lazy val metrics: Map[String, SQLMetric] =
+    CometMetricNode.baselineMetrics(sparkContext) ++ Map(
+      "output_batches" -> SQLMetrics.createMetric(sparkContext, "number of output batches"))
+}
+
 object CometExplodeExec extends CometOperatorSerde[GenerateExec] {
 
   override def enabledConfig: Option[ConfigEntry[Boolean]] = Some(

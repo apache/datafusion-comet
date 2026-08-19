@@ -184,6 +184,12 @@ pub enum SparkError {
     #[error("[SCALAR_SUBQUERY_TOO_MANY_ROWS] Scalar subquery returned more than one row.")]
     ScalarSubqueryTooManyRows,
 
+    /// Mirrors Spark's `QueryExecutionErrors.mergeCardinalityViolationError()`, raised by
+    /// `MergeRowsExec.BitmapCardinalityValidator` when a MERGE's ON condition matches a single
+    /// target row against more than one source row.
+    #[error("[MERGE_CARDINALITY_VIOLATION] The ON search condition of the MERGE statement matched a single row from the target table with multiple rows of the source table. This could result in the target row being operated on more than once with an update or delete operation and is not allowed.")]
+    MergeCardinalityViolation,
+
     #[error("{message}")]
     FileNotFound { message: String },
 
@@ -303,6 +309,7 @@ impl SparkError {
             SparkError::InvalidRegexGroupIndex { .. } => "InvalidRegexGroupIndex",
             SparkError::DatatypeCannotOrder { .. } => "DatatypeCannotOrder",
             SparkError::ScalarSubqueryTooManyRows => "ScalarSubqueryTooManyRows",
+            SparkError::MergeCardinalityViolation => "MergeCardinalityViolation",
             SparkError::FileNotFound { .. } => "FileNotFound",
             SparkError::DuplicateFieldCaseInsensitive { .. } => "DuplicateFieldCaseInsensitive",
             SparkError::DuplicateFieldByFieldId { .. } => "DuplicateFieldByFieldId",
@@ -618,7 +625,8 @@ impl SparkError {
             | SparkError::UnexpectedPositiveValue { .. }
             | SparkError::UnexpectedNegativeValue { .. }
             | SparkError::InvalidRegexGroupIndex { .. }
-            | SparkError::ScalarSubqueryTooManyRows => "org/apache/spark/SparkRuntimeException",
+            | SparkError::ScalarSubqueryTooManyRows
+            | SparkError::MergeCardinalityViolation => "org/apache/spark/SparkRuntimeException",
 
             // DateTimeException
             SparkError::InvalidInputInCastToDatetime { .. }
@@ -735,6 +743,9 @@ impl SparkError {
 
             // Subquery errors
             SparkError::ScalarSubqueryTooManyRows => Some("SCALAR_SUBQUERY_TOO_MANY_ROWS"),
+
+            // MERGE INTO errors
+            SparkError::MergeCardinalityViolation => Some("MERGE_CARDINALITY_VIOLATION"),
 
             // File not found
             SparkError::FileNotFound { .. } => Some("_LEGACY_ERROR_TEMP_2055"),

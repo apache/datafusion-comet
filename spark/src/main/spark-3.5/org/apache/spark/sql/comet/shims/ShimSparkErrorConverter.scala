@@ -275,6 +275,9 @@ trait ShimSparkErrorConverter {
         // multipleRowScalarSubqueryError was renamed to multipleRowSubqueryError in Spark 3.x
         Some(QueryExecutionErrors.multipleRowSubqueryError(sqlCtx(context)))
 
+      case "MergeCardinalityViolation" =>
+        Some(QueryExecutionErrors.mergeCardinalityViolationError())
+
       case "IntervalArithmeticOverflowWithSuggestion" =>
         // Spark 3.x uses a single intervalArithmeticOverflowError method
         Some(
