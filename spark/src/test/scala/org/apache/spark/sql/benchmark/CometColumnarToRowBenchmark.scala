@@ -49,7 +49,8 @@ object CometColumnarToRowBenchmark extends CometBenchmarkBase {
       .set("spark.memory.offHeap.enabled", "true")
       .set("spark.memory.offHeap.size", "2g")
 
-    val sparkSession = SparkSession.builder
+    val sparkSession = SparkSession
+      .builder()
       .config(conf)
       .withExtensions(new CometSparkSessionExtensions)
       .getOrCreate()
