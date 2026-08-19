@@ -31,25 +31,25 @@ import org.scalatest.matchers.should.Matchers
 import org.apache.arrow.memory.{BufferAllocator, RootAllocator}
 import org.apache.arrow.vector.{FieldVector, IntVector, NullVector, VarCharVector, VectorSchemaRoot}
 import org.apache.arrow.vector.complex.{ListVector, MapVector, StructVector}
-import org.apache.arrow.vector.ipc.ArrowStreamReader
+import org.apache.arrow.vector.ipc.{ArrowStreamReader, ArrowStreamWriter, WriteChannel}
 import org.apache.arrow.vector.types.pojo.{ArrowType, Field, FieldType, Schema}
-import org.apache.spark.sql.execution.python.CometArrowPythonRunnerBase.{writeDirectBatch, DirectArrowStreamWriter}
+import org.apache.spark.sql.execution.python.CometArrowPythonRunnerBase.serializeBatch
 
 class CometArrowPythonRunnerSuite extends AnyFunSuite with Matchers {
 
   private def withWriter(
       childFields: Seq[Field],
       allocator: BufferAllocator,
-      channel: WritableByteChannel)(f: DirectArrowStreamWriter => Unit): Unit = {
+      channel: WritableByteChannel)(f: WritableByteChannel => Unit): Unit = {
     val structField = new Field(
       "struct",
       new FieldType(false, ArrowType.Struct.INSTANCE, null),
       childFields.asJava)
     val root = VectorSchemaRoot.create(new Schema(Seq(structField).asJava), allocator)
-    val writer = new DirectArrowStreamWriter(root, channel)
+    val writer = new ArrowStreamWriter(root, null, channel)
     try {
       writer.start()
-      f(writer)
+      f(channel)
       writer.end()
     } finally {
       writer.close()
@@ -85,9 +85,9 @@ class CometArrowPythonRunnerSuite extends AnyFunSuite with Matchers {
       val originalReferenceCounts = buffers.map(_.refCnt())
       val originalLastSet = vector.getLastSet
 
-      withWriter(Seq(field), writerAllocator, Channels.newChannel(output)) { writer =>
+      withWriter(Seq(field), writerAllocator, Channels.newChannel(output)) { channel =>
         val originalWriterAllocation = writerAllocator.getAllocatedMemory
-        writeDirectBatch(writer, Seq(vector), 2, writerAllocator)
+        serializeBatch(new WriteChannel(channel), Seq(vector), 2, writerAllocator)
 
         writerAllocator.getAllocatedMemory shouldBe originalWriterAllocation
         buffers.map(_.refCnt()) shouldBe originalReferenceCounts
@@ -170,8 +170,8 @@ class CometArrowPythonRunnerSuite extends AnyFunSuite with Matchers {
 
       val vectors = Seq[FieldVector](list, struct, map, nulls)
       withWriter(vectors.map(_.getField), writerAllocator, Channels.newChannel(output)) {
-        writer =>
-          writeDirectBatch(writer, vectors, 3, writerAllocator)
+        channel =>
+          serializeBatch(new WriteChannel(channel), vectors, 3, writerAllocator)
       }
 
       withReader(output.toByteArray) { reader =>
@@ -229,10 +229,10 @@ class CometArrowPythonRunnerSuite extends AnyFunSuite with Matchers {
       last.setSafe(0, 43)
       last.setValueCount(1)
 
-      withWriter(Seq(first.getField), writerAllocator, Channels.newChannel(output)) { writer =>
-        writeDirectBatch(writer, Seq(first), 2, writerAllocator)
-        writeDirectBatch(writer, Seq(empty), 0, writerAllocator)
-        writeDirectBatch(writer, Seq(last), 1, writerAllocator)
+      withWriter(Seq(first.getField), writerAllocator, Channels.newChannel(output)) { channel =>
+        serializeBatch(new WriteChannel(channel), Seq(first), 2, writerAllocator)
+        serializeBatch(new WriteChannel(channel), Seq(empty), 0, writerAllocator)
+        serializeBatch(new WriteChannel(channel), Seq(last), 1, writerAllocator)
       }
 
       withReader(output.toByteArray) { reader =>
@@ -259,8 +259,8 @@ class CometArrowPythonRunnerSuite extends AnyFunSuite with Matchers {
     val allocator = new RootAllocator(Long.MaxValue)
     val output = new ByteArrayOutputStream()
     try {
-      withWriter(Seq.empty, allocator, Channels.newChannel(output)) { writer =>
-        writeDirectBatch(writer, Seq.empty, 3, allocator)
+      withWriter(Seq.empty, allocator, Channels.newChannel(output)) { channel =>
+        serializeBatch(new WriteChannel(channel), Seq.empty, 3, allocator)
       }
 
       withReader(output.toByteArray) { reader =>
@@ -304,13 +304,13 @@ class CometArrowPythonRunnerSuite extends AnyFunSuite with Matchers {
       source.setSafe(0, 51)
       source.setValueCount(1)
 
-      withWriter(Seq(source.getField), writerAllocator, channel) { writer =>
+      withWriter(Seq(source.getField), writerAllocator, channel) { channel =>
         val originalReferenceCounts = source.getFieldBuffers.asScala.map(_.refCnt()).toSeq
         val originalWriterAllocation = writerAllocator.getAllocatedMemory
         failWrites = true
         try {
           val error = intercept[IOException] {
-            writeDirectBatch(writer, Seq(source), 1, writerAllocator)
+            serializeBatch(new WriteChannel(channel), Seq(source), 1, writerAllocator)
           }
           error.getMessage shouldBe "injected Arrow IPC write failure"
         } finally {

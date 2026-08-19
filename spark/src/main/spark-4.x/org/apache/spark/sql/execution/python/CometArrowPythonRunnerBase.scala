@@ -20,7 +20,7 @@
 package org.apache.spark.sql.execution.python
 
 import java.io.{DataInputStream, DataOutputStream}
-import java.nio.channels.{Channels, WritableByteChannel}
+import java.nio.channels.Channels
 import java.util.ArrayList
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -29,8 +29,8 @@ import scala.jdk.CollectionConverters._
 import org.apache.arrow.memory.{ArrowBuf, BufferAllocator}
 import org.apache.arrow.vector.{FieldVector, VectorSchemaRoot, VectorUnloader}
 import org.apache.arrow.vector.complex.StructVector
-import org.apache.arrow.vector.ipc.{ArrowStreamReader, ArrowStreamWriter}
-import org.apache.arrow.vector.ipc.message.{ArrowFieldNode, ArrowRecordBatch}
+import org.apache.arrow.vector.ipc.{ArrowStreamReader, ArrowStreamWriter, WriteChannel}
+import org.apache.arrow.vector.ipc.message.{ArrowFieldNode, ArrowRecordBatch, MessageSerializer}
 import org.apache.arrow.vector.types.pojo.{ArrowType, Field, FieldType}
 import org.apache.spark.{SparkEnv, TaskContext}
 import org.apache.spark.api.python.{BasePythonRunner, PythonRDD, PythonWorker, SpecialLengths}
@@ -109,7 +109,7 @@ private[python] trait CometArrowPythonRunnerBase
       private val allocator =
         CometArrowAllocator.newChildAllocator(s"stdout writer for $pythonExec", 0, Long.MaxValue)
       private var currentGroup: Iterator[ColumnarBatch] = _
-      private var arrowWriter: CometArrowPythonRunnerBase.DirectArrowStreamWriter = _
+      private var arrowWriter: ArrowStreamWriter = _
       private var writeRoot: VectorSchemaRoot = _
 
       // The runner's input schema is a single struct column ("struct") whose children are the
@@ -142,9 +142,7 @@ private[python] trait CometArrowPythonRunnerBase
             childFields.asJava)
         val structVec = structField.createVector(allocator).asInstanceOf[StructVector]
         writeRoot = new VectorSchemaRoot(Seq[FieldVector](structVec).asJava)
-        arrowWriter = new CometArrowPythonRunnerBase.DirectArrowStreamWriter(
-          writeRoot,
-          Channels.newChannel(dataOut))
+        arrowWriter = new ArrowStreamWriter(writeRoot, null, Channels.newChannel(dataOut))
         arrowWriter.start()
       }
 
@@ -196,8 +194,8 @@ private[python] trait CometArrowPythonRunnerBase
           startWriter(childFields, dataOut)
         }
 
-        CometArrowPythonRunnerBase.writeDirectBatch(
-          arrowWriter,
+        CometArrowPythonRunnerBase.serializeBatch(
+          new WriteChannel(Channels.newChannel(dataOut)),
           sourceVectors,
           cometBatch.numRows(),
           allocator)
@@ -320,20 +318,7 @@ private[python] trait CometArrowPythonRunnerBase
 private[python] object CometArrowPythonRunnerBase {
 
   /**
-   * Expose ArrowWriter's existing record-batch serialization without unloading its schema root.
-   */
-  private[python] final class DirectArrowStreamWriter(
-      root: VectorSchemaRoot,
-      channel: WritableByteChannel)
-      extends ArrowStreamWriter(root, null, channel) {
-
-    def writeDirect(batch: ArrowRecordBatch): Unit = {
-      writeRecordBatch(batch)
-    }
-  }
-
-  /**
-   * Write source vectors directly beneath the non-null struct advertised by `writer`.
+   * Serialize source vectors directly beneath the non-null struct advertised in the IPC stream.
    *
    * VectorUnloader recursively retains the source buffers without moving them between allocators.
    * The wrapping record batch takes its own references, so closing both temporary batches
@@ -341,8 +326,8 @@ private[python] object CometArrowPythonRunnerBase {
    * VectorSchemaRoot must never be closed because its vectors are owned by the input
    * ColumnarBatch.
    */
-  private[python] def writeDirectBatch(
-      writer: DirectArrowStreamWriter,
+  private[python] def serializeBatch(
+      writeChannel: WriteChannel,
       sourceVectors: Seq[FieldVector],
       numRows: Int,
       allocator: BufferAllocator): Unit = {
@@ -374,7 +359,7 @@ private[python] object CometArrowPythonRunnerBase {
           sourceBatch.getVariadicBufferCounts,
           true)
         try {
-          writer.writeDirect(wrappedBatch)
+          MessageSerializer.serialize(writeChannel, wrappedBatch)
         } finally {
           wrappedBatch.close()
         }
