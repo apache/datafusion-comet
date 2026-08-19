@@ -235,6 +235,8 @@ class CometNativeShuffleWriter[K, V](
     shuffleWriterBuilder.setWriteBufferSize(
       CometConf.COMET_SHUFFLE_NATIVE_WRITE_BUFFER_SIZE.get().min(Int.MaxValue).toInt)
     shuffleWriterBuilder.setMaxBufferBytes(CometConf.COMET_SHUFFLE_NATIVE_MAX_BUFFER_BYTES.get())
+    shuffleWriterBuilder.setReservationStepBytes(
+      CometConf.COMET_SHUFFLE_NATIVE_RESERVATION_STEP_BYTES.get())
 
     outputPartitioning match {
       case p if isSinglePartitioning(p) =>

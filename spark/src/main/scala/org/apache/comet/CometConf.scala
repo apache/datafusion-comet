@@ -605,6 +605,22 @@ object CometConf extends ShimCometConf {
       .checkValue(v => v >= 0, "Must not be negative")
       .createWithDefault(0)
 
+  val COMET_SHUFFLE_NATIVE_RESERVATION_STEP_BYTES: ConfigEntry[Long] =
+    conf("spark.comet.shuffle.native.reservationStepBytes")
+      .category(CATEGORY_SHUFFLE)
+      .doc(
+        "Granularity with which the native shuffle writer grows its memory reservation. The " +
+          "writer's per-batch growth is small, and in off-heap mode each request to the memory " +
+          "pool is a JNI call into Spark's memory manager, so memory is reserved in multiples " +
+          "of this value and a run of small batches costs one request instead of one each. The " +
+          "cost is up to this much reservation held beyond what the writer is using, per " +
+          "concurrent task. Zero grows the reservation by exactly what each batch needs. When " +
+          s"${COMET_SHUFFLE_NATIVE_MAX_BUFFER_BYTES.key} is set, the step is capped at one " +
+          "eighth of that limit.")
+      .bytesConf(ByteUnit.BYTE)
+      .checkValue(v => v >= 0, "Must not be negative")
+      .createWithDefault(1024 * 1024)
+
   val COMET_DEBUG_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.debug.enabled")
       .category(CATEGORY_EXEC)

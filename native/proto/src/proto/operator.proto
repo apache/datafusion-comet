@@ -455,6 +455,10 @@ message ShuffleWriter {
   // Maximum number of bytes that the writer buffers in memory before spilling to disk.
   // Zero means no limit, in which case spilling is driven only by memory pool pressure.
   uint64 max_buffer_bytes = 10;
+  // Granularity for growing the writer's memory reservation. The writer requests memory from the
+  // pool in multiples of this, so a run of small batches costs one request instead of one each.
+  // Zero grows the reservation by exactly what each batch needs.
+  uint64 reservation_step_bytes = 11;
 }
 
 message ParquetWriter {

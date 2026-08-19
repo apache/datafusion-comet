@@ -18,6 +18,7 @@
 use crate::metrics::ShufflePartitionerMetrics;
 use crate::partitioners::partitioned_batch_iterator::PartitionedBatchesProducer;
 use crate::partitioners::ShufflePartitioner;
+use crate::shuffle_writer::ShuffleWriterMemoryConfig;
 use crate::writers::PartitionWriter;
 use crate::{comet_partitioning, CometPartitioning};
 use arrow::array::{Array, ArrayData, ArrayRef, RecordBatch};
@@ -112,10 +113,12 @@ pub(crate) struct MultiPartitionShuffleRepartitioner<T: PartitionWriter> {
     batch_size: usize,
     /// Reservation for repartitioning
     reservation: MemoryReservation,
-    /// Spill once the reservation reaches this many bytes, independently of whether the memory
-    /// pool still has capacity. `None` disables the limit, leaving pool pressure as the only
-    /// spill trigger.
-    max_buffer_bytes: Option<usize>,
+    /// Exact bytes this writer currently holds resident, which is what the `max_buffer_bytes`
+    /// limit and the `used()` figure are measured against. `reservation` is grown in coarse steps,
+    /// so `reservation.size()` is this value plus up to one `reservation_step()`.
+    buffered_bytes: usize,
+    /// Spill limit and reservation granularity for this writer
+    memory_config: ShuffleWriterMemoryConfig,
     tracing_enabled: bool,
     /// Start addresses (as `usize`, since raw pointers are not `Send`) of the backing buffers
     /// currently pinned by `buffered_batches`, so the spill reservation charges each distinct
@@ -178,7 +181,7 @@ impl<T: PartitionWriter> MultiPartitionShuffleRepartitioner<T> {
         runtime: Arc<RuntimeEnv>,
         batch_size: usize,
         tracing_enabled: bool,
-        max_buffer_bytes: Option<usize>,
+        memory_config: ShuffleWriterMemoryConfig,
     ) -> datafusion::common::Result<Self> {
         let num_output_partitions = partitioning.partition_count();
         assert_ne!(
@@ -216,7 +219,8 @@ impl<T: PartitionWriter> MultiPartitionShuffleRepartitioner<T> {
             scratch,
             batch_size,
             reservation,
-            max_buffer_bytes,
+            buffered_bytes: 0,
+            memory_config,
             tracing_enabled,
             pinned_buffers: HashSet::new(),
         })
@@ -457,13 +461,17 @@ impl<T: PartitionWriter> MultiPartitionShuffleRepartitioner<T> {
             mem_growth += after_size.saturating_sub(before_size);
         }
 
-        // `try_grow` is evaluated first so the reservation accounts for this batch either way.
-        // Checking after buffering lets the writer overshoot the limit by at most one batch,
-        // which is how the memory-pressure trigger already behaves.
-        if self.reservation.try_grow(mem_growth).is_err()
+        self.buffered_bytes += mem_growth;
+
+        // Growing after buffering lets the writer overshoot its limit by at most one batch, which
+        // is how the memory-pressure trigger already behaves. The limit is checked against
+        // `buffered_bytes` rather than `reservation.size()` because the latter is rounded up to a
+        // step boundary and would otherwise trip the limit early.
+        if self.grow_reservation()
             || self
+                .memory_config
                 .max_buffer_bytes
-                .is_some_and(|limit| self.reservation.size() >= limit)
+                .is_some_and(|limit| self.buffered_bytes >= limit)
         {
             self.spill()?;
         }
@@ -471,8 +479,43 @@ impl<T: PartitionWriter> MultiPartitionShuffleRepartitioner<T> {
         Ok(())
     }
 
+    /// Bytes to grow [`Self::reservation`] by at a time, from
+    /// `spark.comet.shuffle.native.reservationStepBytes`. Capped well below `max_buffer_bytes` so
+    /// that a writer with a small limit does not reserve a multiple of its own budget. Zero — from
+    /// either the config or the cap — means grow by exactly what the batch needs.
+    fn reservation_step(&self) -> usize {
+        let step = self.memory_config.reservation_step_bytes;
+        match self.memory_config.max_buffer_bytes {
+            Some(limit) => step.min(limit / 8),
+            None => step,
+        }
+    }
+
+    /// Top the reservation back up if `buffered_bytes` has outgrown it, rounding the request up to
+    /// [`Self::reservation_step`] so that a run of small batches costs one acquisition rather than
+    /// one per batch.
+    ///
+    /// Returns whether the pool denied the memory, in which case the caller must spill.
+    fn grow_reservation(&mut self) -> bool {
+        let deficit = self.buffered_bytes.saturating_sub(self.reservation.size());
+        if deficit == 0 {
+            return false;
+        }
+        if self
+            .reservation
+            .try_grow(deficit.max(self.reservation_step()))
+            .is_ok()
+        {
+            return false;
+        }
+        // A rounded-up request can be denied where the exact deficit would still fit, so retry at
+        // the exact size before spilling. This keeps the spill trigger where it was when every
+        // batch reserved exactly what it needed.
+        self.reservation.try_grow(deficit).is_err()
+    }
+
     fn used(&self) -> usize {
-        self.reservation.size()
+        self.buffered_bytes
     }
 
     fn spilled_bytes(&self) -> usize {
@@ -526,6 +569,7 @@ impl<T: PartitionWriter> MultiPartitionShuffleRepartitioner<T> {
             }
 
             self.reservation.free();
+            self.buffered_bytes = 0;
             self.pinned_buffers.clear();
             self.metrics.spill_count.add(1);
             Ok(())

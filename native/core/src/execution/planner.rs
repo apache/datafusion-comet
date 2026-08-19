@@ -35,7 +35,7 @@ use crate::execution::{
     planner::expression_registry::ExpressionRegistry,
     planner::operator_registry::OperatorRegistry,
     serde::to_arrow_datatype,
-    shuffle::{SchemaAlignExec, ShuffleWriterExec},
+    shuffle::{SchemaAlignExec, ShuffleWriterExec, ShuffleWriterMemoryConfig},
 };
 use crate::jvm_bridge::{jni_call, JVMClasses};
 use arrow::compute::CastOptions;
@@ -1809,6 +1809,12 @@ impl PhysicalPlanner {
                 // only ever sees a real limit or none at all.
                 let max_buffer_bytes =
                     (writer.max_buffer_bytes > 0).then_some(writer.max_buffer_bytes as usize);
+                let memory_config = ShuffleWriterMemoryConfig {
+                    max_buffer_bytes,
+                    // Zero on the wire means grow the reservation by exactly what each batch
+                    // needs, which is how the writer behaved before it grew in steps.
+                    reservation_step_bytes: writer.reservation_step_bytes as usize,
+                };
                 let shuffle_writer = Arc::new(ShuffleWriterExec::try_new(
                     writer_input,
                     partitioning,
@@ -1817,7 +1823,7 @@ impl PhysicalPlanner {
                     writer.output_index_file.clone(),
                     writer.tracing_enabled,
                     write_buffer_size,
-                    max_buffer_bytes,
+                    memory_config,
                 )?);
 
                 Ok((

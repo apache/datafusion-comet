@@ -46,6 +46,35 @@ use std::{
     sync::Arc,
 };
 
+/// Default for [`ShuffleWriterMemoryConfig::reservation_step_bytes`], used when the writer is
+/// constructed outside the planner (benchmarks and tests). Production values come from
+/// `spark.comet.shuffle.native.reservationStepBytes`.
+pub const DEFAULT_RESERVATION_STEP_BYTES: usize = 1024 * 1024;
+
+/// How the shuffle writer manages the memory it buffers batches in.
+#[derive(Debug, Clone, Copy)]
+pub struct ShuffleWriterMemoryConfig {
+    /// Spill once the writer buffers this many bytes, independently of whether the memory pool
+    /// still has capacity. `None` disables the limit, leaving pool pressure as the only trigger.
+    pub max_buffer_bytes: Option<usize>,
+    /// Granularity for growing the writer's memory reservation. The writer's per-batch growth is
+    /// small, and against Comet's unified memory pool each request is a JNI round-trip into
+    /// Spark's memory manager, so memory is reserved in multiples of this and a run of small
+    /// batches costs one request instead of one each. Zero reserves exactly what each batch needs.
+    /// Capped at one eighth of `max_buffer_bytes` when that limit is set, so a writer with a small
+    /// limit does not reserve a multiple of its own budget.
+    pub reservation_step_bytes: usize,
+}
+
+impl Default for ShuffleWriterMemoryConfig {
+    fn default() -> Self {
+        Self {
+            max_buffer_bytes: None,
+            reservation_step_bytes: DEFAULT_RESERVATION_STEP_BYTES,
+        }
+    }
+}
+
 /// The shuffle writer operator maps each input partition to M output partitions based on a
 /// partitioning scheme. No guarantees are made about the order of the resulting partitions.
 #[derive(Debug)]
@@ -67,8 +96,8 @@ pub struct ShuffleWriterExec {
     tracing_enabled: bool,
     /// Size of the write buffer in bytes
     write_buffer_size: usize,
-    /// Maximum bytes buffered in memory before spilling; `None` disables the limit
-    max_buffer_bytes: Option<usize>,
+    /// How the writer manages the memory it buffers batches in
+    memory_config: ShuffleWriterMemoryConfig,
 }
 
 impl ShuffleWriterExec {
@@ -82,7 +111,7 @@ impl ShuffleWriterExec {
         output_index_file: String,
         tracing_enabled: bool,
         write_buffer_size: usize,
-        max_buffer_bytes: Option<usize>,
+        memory_config: ShuffleWriterMemoryConfig,
     ) -> Result<Self> {
         let cache = Arc::new(PlanProperties::new(
             EquivalenceProperties::new(Arc::clone(&input.schema())),
@@ -101,7 +130,7 @@ impl ShuffleWriterExec {
             codec,
             tracing_enabled,
             write_buffer_size,
-            max_buffer_bytes,
+            memory_config,
         })
     }
 }
@@ -157,7 +186,7 @@ impl ExecutionPlan for ShuffleWriterExec {
                 self.output_index_file.clone(),
                 self.tracing_enabled,
                 self.write_buffer_size,
-                self.max_buffer_bytes,
+                self.memory_config,
             )?)),
             _ => panic!("ShuffleWriterExec wrong number of children"),
         }
@@ -187,7 +216,7 @@ impl ExecutionPlan for ShuffleWriterExec {
                 self.codec.clone(),
                 self.tracing_enabled,
                 self.write_buffer_size,
-                self.max_buffer_bytes,
+                self.memory_config,
             ))
             .try_flatten(),
         )))
@@ -206,7 +235,7 @@ async fn external_shuffle(
     codec: CompressionCodec,
     tracing_enabled: bool,
     write_buffer_size: usize,
-    max_buffer_bytes: Option<usize>,
+    memory_config: ShuffleWriterMemoryConfig,
 ) -> Result<SendableRecordBatchStream> {
     let schema = input.schema();
 
@@ -243,7 +272,7 @@ async fn external_shuffle(
             context.runtime_env(),
             context.session_config().batch_size(),
             tracing_enabled,
-            max_buffer_bytes,
+            memory_config,
         )?),
     };
 
@@ -277,6 +306,7 @@ mod test {
     use datafusion::datasource::memory::MemorySourceConfig;
     use datafusion::datasource::source::DataSourceExec;
     use datafusion::execution::config::SessionConfig;
+    use datafusion::execution::memory_pool::{GreedyMemoryPool, MemoryPool, MemoryReservation};
     use datafusion::execution::runtime_env::{RuntimeEnv, RuntimeEnvBuilder};
     use datafusion::physical_expr::expressions::{col, Column};
     use datafusion::physical_expr::{LexOrdering, PhysicalSortExpr};
@@ -285,6 +315,7 @@ mod test {
     use datafusion::prelude::SessionContext;
     use itertools::Itertools;
     use std::io::Cursor;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use tokio::runtime::Runtime;
 
     #[test]
@@ -414,7 +445,7 @@ mod test {
             runtime_env,
             1024,
             false,
-            None,
+            ShuffleWriterMemoryConfig::default(),
         )
         .unwrap();
 
@@ -486,7 +517,7 @@ mod test {
             runtime_env,
             batch_size,
             false,
-            None,
+            ShuffleWriterMemoryConfig::default(),
         )
         .unwrap();
 
@@ -501,6 +532,146 @@ mod test {
             spill_count.value(),
             0,
             "one buffer under the memory limit must not spill once per chunk"
+        );
+    }
+
+    /// A `MemoryPool` that counts the `try_grow` calls reaching it, standing in for Comet's
+    /// unified pool where each call is a JNI round-trip into Spark's memory manager.
+    #[derive(Debug)]
+    struct CountingMemoryPool {
+        inner: GreedyMemoryPool,
+        grow_calls: Arc<AtomicUsize>,
+    }
+
+    impl std::fmt::Display for CountingMemoryPool {
+        fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+            write!(f, "CountingMemoryPool({})", self.inner)
+        }
+    }
+
+    impl MemoryPool for CountingMemoryPool {
+        fn name(&self) -> &str {
+            "CountingMemoryPool"
+        }
+
+        fn grow(&self, reservation: &MemoryReservation, additional: usize) {
+            self.grow_calls.fetch_add(1, Ordering::Relaxed);
+            self.inner.grow(reservation, additional)
+        }
+
+        fn shrink(&self, reservation: &MemoryReservation, shrink: usize) {
+            self.inner.shrink(reservation, shrink)
+        }
+
+        fn try_grow(
+            &self,
+            reservation: &MemoryReservation,
+            additional: usize,
+        ) -> datafusion::common::Result<()> {
+            self.grow_calls.fetch_add(1, Ordering::Relaxed);
+            self.inner.try_grow(reservation, additional)
+        }
+
+        fn reserved(&self) -> usize {
+            self.inner.reserved()
+        }
+    }
+
+    /// Buffer `num_batches` distinct batches of `batch_rows` rows each through a
+    /// `MultiPartitionShuffleRepartitioner` and return how many `try_grow` calls reached the pool.
+    ///
+    /// The batches are built separately rather than cloned so that each one pins its own buffers;
+    /// `count_new_buffers` dedups by address, so re-inserting one batch would charge nothing after
+    /// the first insert and would not exercise the per-batch growth this is measuring.
+    async fn grow_calls_for_batches(
+        batch_rows: usize,
+        num_batches: usize,
+        memory_config: ShuffleWriterMemoryConfig,
+    ) -> usize {
+        let grow_calls = Arc::new(AtomicUsize::new(0));
+        // Far larger than anything these batches can reserve, so no request is ever denied.
+        let pool = CountingMemoryPool {
+            inner: GreedyMemoryPool::new(1024 * 1024 * 1024),
+            grow_calls: Arc::clone(&grow_calls),
+        };
+        let runtime_env = Arc::new(
+            RuntimeEnvBuilder::new()
+                .with_memory_pool(Arc::new(pool))
+                .build()
+                .unwrap(),
+        );
+
+        let batches: Vec<RecordBatch> =
+            (0..num_batches).map(|_| create_batch(batch_rows)).collect();
+        let num_partitions = 4;
+        let metrics_set = ExecutionPlanMetricsSet::new();
+        let metrics = ShufflePartitionerMetrics::new(&metrics_set, 0);
+        let dir = tempfile::tempdir().unwrap();
+        let shuffle_block_writer =
+            ShuffleBlockWriter::try_new(batches[0].schema().as_ref(), CompressionCodec::Lz4Frame)
+                .unwrap();
+        let local_partition_writer = LocalPartitionWriter::try_new(
+            dir.path().join("data.out").to_str().unwrap().to_string(),
+            dir.path().join("index.out").to_str().unwrap().to_string(),
+            shuffle_block_writer,
+            num_partitions,
+            1024,
+            1024 * 1024,
+            Arc::clone(&runtime_env),
+        )
+        .unwrap();
+        let mut repartitioner = MultiPartitionShuffleRepartitioner::try_new(
+            0,
+            local_partition_writer,
+            CometPartitioning::Hash(vec![Arc::new(Column::new("a", 0))], num_partitions),
+            metrics,
+            runtime_env,
+            1024,
+            false,
+            memory_config,
+        )
+        .unwrap();
+
+        // The partition writer reserves as well, so count only what the repartitioner adds.
+        let before = grow_calls.load(Ordering::Relaxed);
+        for batch in batches {
+            repartitioner.insert_batch(batch).await.unwrap();
+        }
+        let calls = grow_calls.load(Ordering::Relaxed) - before;
+        repartitioner.shuffle_write().unwrap();
+        calls
+    }
+
+    #[tokio::test]
+    #[cfg_attr(miri, ignore)] // miri can't call foreign function `ZSTD_createCCtx`
+    async fn small_batches_share_one_reservation_step() {
+        // 40 batches of 100 rows buffer far less than one 1 MB step between them, so the writer
+        // must reach the pool a handful of times rather than once per batch.
+        let calls = grow_calls_for_batches(100, 40, ShuffleWriterMemoryConfig::default()).await;
+        assert!(
+            calls <= 4,
+            "40 small batches must not need one acquisition each, got {calls}"
+        );
+    }
+
+    #[tokio::test]
+    #[cfg_attr(miri, ignore)] // miri can't call foreign function `ZSTD_createCCtx`
+    async fn zero_reservation_step_reserves_per_batch() {
+        // A zero step disables the rounding, which is the behaviour the writer had before it grew
+        // in steps: one acquisition per batch. Paired with the test above, this pins that the
+        // reduction comes from the step and not from something else in the insert path.
+        let calls = grow_calls_for_batches(
+            100,
+            40,
+            ShuffleWriterMemoryConfig {
+                reservation_step_bytes: 0,
+                ..Default::default()
+            },
+        )
+        .await;
+        assert_eq!(
+            calls, 40,
+            "a zero step must reserve exactly what each batch needs"
         );
     }
 
@@ -541,7 +712,10 @@ mod test {
             runtime_env,
             1024,
             false,
-            max_buffer_bytes,
+            ShuffleWriterMemoryConfig {
+                max_buffer_bytes,
+                ..Default::default()
+            },
         )
         .unwrap();
 
@@ -599,7 +773,10 @@ mod test {
             index_file.to_str().unwrap().to_string(),
             false,
             1024 * 1024,
-            max_buffer_bytes,
+            ShuffleWriterMemoryConfig {
+                max_buffer_bytes,
+                ..Default::default()
+            },
         )
         .unwrap();
 
@@ -724,7 +901,7 @@ mod test {
                 "/tmp/index.out".to_string(),
                 false,
                 1024 * 1024, // write_buffer_size: 1MB default
-                None,
+                ShuffleWriterMemoryConfig::default(),
             )
             .unwrap();
 
@@ -784,7 +961,7 @@ mod test {
                 index_file.clone(),
                 false,
                 1024 * 1024,
-                None,
+                ShuffleWriterMemoryConfig::default(),
             )
             .unwrap();
 
@@ -1159,7 +1336,7 @@ mod test {
             index_file.to_str().unwrap().to_string(),
             false,
             1024 * 1024,
-            None,
+            ShuffleWriterMemoryConfig::default(),
         )
         .unwrap();
 
@@ -1248,7 +1425,7 @@ mod test {
             index_file.to_str().unwrap().to_string(),
             false,
             1024 * 1024,
-            None,
+            ShuffleWriterMemoryConfig::default(),
         )
         .unwrap();
 
