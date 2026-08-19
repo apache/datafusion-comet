@@ -105,8 +105,14 @@ fn create_map_array(rows: usize, entries_per_row: usize, with_nulls: bool) -> Ar
     let nulls =
         with_nulls.then(|| NullBuffer::from((0..rows).map(|i| i % 10 != 0).collect::<Vec<bool>>()));
     Arc::new(
-        MapArray::try_new(map_field, OffsetBuffer::new(offsets.into()), entries, nulls, false)
-            .unwrap(),
+        MapArray::try_new(
+            map_field,
+            OffsetBuffer::new(offsets.into()),
+            entries,
+            nulls,
+            false,
+        )
+        .unwrap(),
     )
 }
 
