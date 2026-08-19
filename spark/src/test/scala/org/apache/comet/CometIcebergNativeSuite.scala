@@ -5240,6 +5240,65 @@ class CometIcebergNativeSuite
     }
   }
 
+  test("variant equality deletes fall back to Spark") {
+    assume(isSpark40Plus, "VARIANT type requires Spark 4.0+")
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    assume(icebergVersionAtLeast(1, 10), "VARIANT type requires Iceberg 1.10+")
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+        val tableName = "variant_equality_delete"
+        val table = s"test_cat.db.$tableName"
+        try {
+          spark.sql(
+            s"CREATE TABLE $table (id BIGINT, data VARIANT) USING iceberg " +
+              "TBLPROPERTIES ('format-version' = '3')")
+          spark.sql(
+            s"INSERT INTO $table VALUES " +
+              "(1, parse_json('1')), (2, parse_json('2'))")
+
+          val nativePlan = spark.sql(s"SELECT id FROM $table ORDER BY id")
+          assertSingleNativeScan(nativePlan.queryExecution.executedPlan)
+
+          // Variant classes do not exist in the Iceberg versions used by older Spark profiles.
+          val variantsClass = Class.forName("org.apache.iceberg.variants.Variants")
+          val metadata = variantsClass.getMethod("emptyMetadata").invoke(null)
+          val value = variantsClass
+            .getMethod("of", java.lang.Integer.TYPE)
+            .invoke(null, Integer.valueOf(2))
+          val variant = Class
+            .forName("org.apache.iceberg.variants.Variant")
+            .getMethod(
+              "of",
+              Class.forName("org.apache.iceberg.variants.VariantMetadata"),
+              Class.forName("org.apache.iceberg.variants.VariantValue"))
+            .invoke(null, metadata, value)
+
+          commitEqualityDelete("test_cat", "db", tableName, "data", variant, warehouseDir)
+
+          // Spark also lacks a Variant equality comparator, so verify the fallback plan only.
+          val fallbackPlan =
+            spark.sql(s"SELECT id FROM $table ORDER BY id").queryExecution.executedPlan
+          assert(
+            collectIcebergNativeScans(fallbackPlan).isEmpty,
+            "A VARIANT equality-delete key must prevent the native Iceberg scan")
+          val fallbackReasons = new ExtendedExplainInfo().getFallbackReasons(fallbackPlan)
+          assert(
+            fallbackReasons.exists(
+              _.contains("Equality delete on unsupported column type 'data' (variant)")),
+            s"Expected VARIANT equality-delete fallback, found: ${fallbackReasons.mkString(", ")}")
+        } finally {
+          spark.sql(s"DROP TABLE IF EXISTS $table PURGE")
+        }
+      }
+    }
+  }
+
   test("projecting nested variant structs, arrays, and maps still falls back") {
     assume(isSpark40Plus, "VARIANT type requires Spark 4.0+")
     assume(icebergAvailable, "Iceberg not available in classpath")
@@ -5274,7 +5333,7 @@ class CometIcebergNativeSuite
           // reading their sizes still projects every Variant-bearing root for Spark parity.
           withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
             sparkScalarRows = spark
-              .sql(s"SELECT id, nested, size(variants), size(variants_by_key) " +
+              .sql("SELECT id, nested, size(variants), size(variants_by_key) " +
                 s"FROM $table ORDER BY id")
               .collect()
               .map(row => Row(row.get(0)))
