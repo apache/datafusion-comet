@@ -5240,7 +5240,7 @@ class CometIcebergNativeSuite
     }
   }
 
-  test("projecting a struct containing an unprojected variant still falls back") {
+  test("projecting nested variant structs, arrays, and maps still falls back") {
     assume(isSpark40Plus, "VARIANT type requires Spark 4.0+")
     assume(icebergAvailable, "Iceberg not available in classpath")
     assume(icebergVersionAtLeast(1, 10), "VARIANT type requires Iceberg 1.10+")
@@ -5256,19 +5256,26 @@ class CometIcebergNativeSuite
         try {
           spark.sql(
             s"CREATE TABLE $table " +
-              "(id BIGINT, nested STRUCT<label: STRING, data: VARIANT>) USING iceberg " +
+              "(id BIGINT, nested STRUCT<label: STRING, data: VARIANT>, " +
+              "variants ARRAY<VARIANT>, variants_by_key MAP<STRING, VARIANT>) USING iceberg " +
               "TBLPROPERTIES ('format-version' = '3')")
           spark.sql(s"""
             INSERT INTO $table VALUES
-              (1, named_struct('label', 'first', 'data', parse_json('{"num": 1}'))),
-              (2, named_struct('label', NULL, 'data', NULL)),
-              (3, NULL)
+              (1, named_struct('label', 'first', 'data', parse_json('{"num": 1}')),
+               array(parse_json('{"num": 2}'), parse_json('null')),
+               map('first', parse_json('{"num": 3}'))),
+              (2, named_struct('label', NULL, 'data', NULL),
+               array(CAST(NULL AS VARIANT)), map('sql-null', CAST(NULL AS VARIANT))),
+              (3, NULL, NULL, NULL)
           """)
 
           var sparkScalarRows = Seq.empty[Row]
+          // Iceberg 1.10 cannot materialize nested Variant values in arrays or maps, but
+          // reading their sizes still projects every Variant-bearing root for Spark parity.
           withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
             sparkScalarRows = spark
-              .sql(s"SELECT id, nested FROM $table ORDER BY id")
+              .sql(s"SELECT id, nested, size(variants), size(variants_by_key) " +
+                s"FROM $table ORDER BY id")
               .collect()
               .map(row => Row(row.get(0)))
               .toSeq
@@ -5281,6 +5288,16 @@ class CometIcebergNativeSuite
           assert(
             collectIcebergNativeScans(nestedProjection.queryExecution.executedPlan).isEmpty,
             "iceberg-rust rejects a projected parent containing a VARIANT field")
+
+          val arrayProjection = spark.sql(s"SELECT variants FROM $table ORDER BY id")
+          assert(
+            collectIcebergNativeScans(arrayProjection.queryExecution.executedPlan).isEmpty,
+            "iceberg-rust rejects a projected array containing VARIANT values")
+
+          val mapProjection = spark.sql(s"SELECT variants_by_key FROM $table ORDER BY id")
+          assert(
+            collectIcebergNativeScans(mapProjection.queryExecution.executedPlan).isEmpty,
+            "iceberg-rust rejects a projected map containing VARIANT values")
 
           val snapshotId = spark
             .sql(s"SELECT snapshot_id FROM $table.snapshots ORDER BY committed_at DESC LIMIT 1")

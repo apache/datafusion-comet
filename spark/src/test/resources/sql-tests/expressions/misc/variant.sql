@@ -79,6 +79,37 @@ query expect_fallback(type VariantType)
 SELECT id, s FROM test_variant_struct ORDER BY id
 
 statement
+CREATE TABLE test_variant_collections(
+  id INT,
+  variants ARRAY<VARIANT>,
+  variants_by_key MAP<STRING, VARIANT>,
+  tail STRING)
+USING parquet
+
+statement
+INSERT INTO test_variant_collections VALUES
+  (1,
+   array(parse_json('{"x": 1}'), parse_json('null')),
+   map('first', parse_json('{"x": 2}')),
+   'first'),
+  (2,
+   array(CAST(NULL AS VARIANT)),
+   map('sql-null', CAST(NULL AS VARIANT)),
+   NULL),
+  (3, NULL, NULL, 'null-collections')
+
+-- Variant-bearing arrays and maps can be pruned as entire top-level fields.
+query
+SELECT id, tail FROM test_variant_collections ORDER BY id
+
+-- Exposing either collection still requires Spark to decode its nested Variant values.
+query expect_fallback(type VariantType)
+SELECT id, variants FROM test_variant_collections ORDER BY id
+
+query expect_fallback(type VariantType)
+SELECT id, variants_by_key FROM test_variant_collections ORDER BY id
+
+statement
 CREATE TABLE test_variant_partitioned(id INT, v VARIANT, tail STRING, p INT)
 USING parquet PARTITIONED BY (p)
 

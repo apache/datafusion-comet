@@ -550,6 +550,9 @@ case class CometScanRule(session: SparkSession)
           try {
             val fullSchema = IcebergReflection.toSparkSchema(metadata.tableSchema)
             val projectedDataColumns = scanExec.output.filterNot(_.isMetadataCol)
+            // DataTypeSupport recursively dispatches back to this override for struct fields,
+            // array elements, and map entries, so Variant is allowed at any nesting depth only
+            // when its entire top-level Iceberg field is unprojected.
             val unprojectedTypeChecker = new CometScanTypeChecker() {
               override def isTypeSupported(
                   dt: DataType,
