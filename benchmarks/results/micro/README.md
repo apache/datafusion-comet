@@ -30,6 +30,7 @@ Only suites that ran to completion are published. A suite that failed or hit its
 truncated results file, which would present a partial measurement set as a baseline, so those files
 are left out. `RUN-INFO.md` still lists such suites with their `failed` or `timeout` status and
 `not published` in place of a results file, so the gap is visible and can be filled by a later run.
+A suite whose results are dropped for any other reason is recorded the same way.
 
 Results are produced and collected with `benchmarks/micro/run.py`. See
 [Micro Benchmarking on AWS EC2](../../../docs/source/contributor-guide/benchmarking_micro_ec2.md)
