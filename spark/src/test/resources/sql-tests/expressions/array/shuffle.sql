@@ -19,8 +19,11 @@
 -- Comet runs use different seeds and their raw output cannot be compared directly. These queries
 -- therefore either assert only that shuffle runs natively while preserving array size (size is
 -- deterministic), or compare seed independent projections (sort_array over the shuffled result).
--- Exact permutation equality with a fixed seed lives in shuffle_with_seed.sql (Spark 4.0+, where
--- the two argument shuffle(array, seed) form exists).
+-- Spark's nullable-array comparator treats +0.0 and -0.0 as equal, so a plain sort_array is not a
+-- unique projection when both signs are present: a stable sort keeps the shuffled order, while the
+-- SQL test comparator distinguishes the bits. Float/double rows therefore sort the string forms
+-- instead. Exact permutation equality with a fixed seed lives in shuffle_with_seed.sql (Spark 4.0+,
+-- where the two argument shuffle(array, seed) form exists).
 
 -- ===== INT arrays =====
 
@@ -129,8 +132,10 @@ INSERT INTO test_shuffle_double VALUES
 query
 SELECT size(shuffle(arr)) FROM test_shuffle_double
 
+-- Spark treats +0.0 and -0.0 as equal, so sort_array(shuffle(arr)) is not unique across seeds.
+-- Casting to string keeps both signs and yields one canonical multiset order.
 query spark_answer_only
-SELECT sort_array(shuffle(arr)) FROM test_shuffle_double
+SELECT sort_array(transform(shuffle(arr), x -> cast(x AS string))) FROM test_shuffle_double
 
 -- ===== DECIMAL arrays =====
 
