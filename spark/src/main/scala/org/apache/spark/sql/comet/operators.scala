@@ -20,12 +20,10 @@
 package org.apache.spark.sql.comet
 
 import java.util.Locale
-import java.util.ServiceLoader
 
 import scala.collection.mutable
 import scala.collection.mutable.ArrayBuffer
 import scala.jdk.CollectionConverters._
-import scala.util.control.NonFatal
 
 import org.apache.spark.{Partition, TaskContext}
 import org.apache.spark.broadcast.Broadcast
@@ -54,7 +52,7 @@ import org.apache.spark.util.io.ChunkedByteBuffer
 import com.google.common.base.Objects
 import com.google.protobuf.CodedOutputStream
 
-import org.apache.comet.{CometConf, CometExecIterator, CometRuntimeException, ConfigEntry}
+import org.apache.comet.{CometConf, CometExecIterator, CometRuntimeException, ConfigEntry, ContribServices}
 import org.apache.comet.CometSparkSessionExtensions.{isCometShuffleEnabled, withFallbackReason}
 import org.apache.comet.parquet.CometParquetUtils
 import org.apache.comet.rules.CometExecRule
@@ -108,20 +106,10 @@ private[comet] object PlanDataInjector extends Logging {
   private[comet] val injectors: Seq[PlanDataInjector] = {
     val builtin: Seq[PlanDataInjector] = Seq(IcebergPlanDataInjector, NativeScanPlanDataInjector)
     val discovered: Seq[PlanDataInjector] =
-      try {
-        ServiceLoader.load(classOf[PlanDataInjector], getClass.getClassLoader).asScala.toSeq
-      } catch {
-        // A misbuilt contrib jar -- a malformed service file, or a listed provider that can't be
-        // instantiated -- surfaces as ServiceConfigurationError while the iterator is forced.
-        // Warn so it's diagnosable, then continue with the built-ins so the planner stays alive.
-        // NonFatal covers ServiceConfigurationError (it is not a LinkageError).
-        case NonFatal(e) =>
-          logWarning(
-            "Failed to load contrib PlanDataInjector services; " +
-              "continuing with built-in injectors only",
-            e)
-          Seq.empty
-      }
+      // Defensive per-provider discovery: one misbuilt contrib jar must not take the others
+      // (or the built-ins) with it. See ContribServices for why neither `toSeq` nor a single
+      // try-around-the-whole-traversal is correct here.
+      ContribServices.load(classOf[PlanDataInjector], getClass.getClassLoader)
     builtin ++ discovered
   }
 
@@ -129,8 +117,13 @@ private[comet] object PlanDataInjector extends Logging {
   // `for (injector <- injectors if injector.canInject(op))` walk was paying N*M canInject calls
   // (N operators, M injectors) just to find no match. Keying by OpStructCase lets us skip the
   // iteration entirely for non-scan operators.
-  private val injectorsByKind: Map[Operator.OpStructCase, PlanDataInjector] =
-    injectors.map(i => i.opStructCase -> i).toMap
+  //
+  // Several injectors may share one kind: every out-of-tree contrib scan arrives as the SAME
+  // generic `CONTRIB_SCAN` envelope (distinguished by its `type_url`), so Delta and Lance both
+  // key here. Hence a Seq per kind rather than a single injector -- a `Map[kind, injector]` would
+  // silently drop all but the last contrib. Within a kind, `canInject` disambiguates.
+  private val injectorsByKind: Map[Operator.OpStructCase, Seq[PlanDataInjector]] =
+    injectors.groupBy(_.opStructCase)
 
   /**
    * Injects planning data into an Operator tree by finding nodes that need injection and applying
@@ -149,20 +142,21 @@ private[comet] object PlanDataInjector extends Logging {
 
     // O(1) by op kind, then a canInject confirm (which may inspect detail fields like `hasCommon`
     // / `!hasFilePartition`). Most operators in any tree are non-scan and skip the lookup body.
-    val injectedOp = injectorsByKind.get(op.getOpStructCase) match {
-      case Some(injector) if injector.canInject(op) =>
-        injector.getKey(op) match {
-          case Some(key) =>
-            (commonByKey.get(key), partitionByKey.get(key)) match {
-              case (Some(commonBytes), Some(partitionBytes)) =>
-                injector.inject(op, commonBytes, partitionBytes)
-              case _ =>
-                throw new CometRuntimeException(s"Missing planning data for key: $key")
-            }
-          case None => op
-        }
-      case _ => op
-    }
+    val injectedOp =
+      injectorsByKind.get(op.getOpStructCase).flatMap(_.find(_.canInject(op))) match {
+        case Some(injector) =>
+          injector.getKey(op) match {
+            case Some(key) =>
+              (commonByKey.get(key), partitionByKey.get(key)) match {
+                case (Some(commonBytes), Some(partitionBytes)) =>
+                  injector.inject(op, commonBytes, partitionBytes)
+                case _ =>
+                  throw new CometRuntimeException(s"Missing planning data for key: $key")
+              }
+            case None => op
+          }
+        case _ => op
+      }
 
     // Recursively process children, rebuilding this node only if one of them actually changed.
     // Injectors preserve children, so `injectedOp` has the same child list as `op` either way.
@@ -547,7 +541,12 @@ private[comet] case class NativeExecContext(
     commonByKey: Map[String, Array[Byte]],
     perPartitionByKey: Map[String, Array[Array[Byte]]],
     shuffleScanIndices: Set[Int],
-    hasScanInput: Boolean) {
+    hasScanInput: Boolean,
+    // Per-partition file paths from any scan exposing file-level provenance via the
+    // `CometScanWithPlanData` trait (`CometNativeScanExec` + contrib leaves like
+    // `CometDeltaNativeScanExec`), so `CometExecIterator` can report a per-file read failure as
+    // `FAILED_READ_FILE.NO_HINT` with the offending path. Empty when no such scan is present.
+    perPartitionFilePaths: Array[Seq[String]] = Array.empty) {
   // Catch shape divergence (e.g. broadcast scans with different partition counts after DPP
   // filtering) at construction so consumers don't trip ArrayIndexOutOfBoundsException at
   // partition idx access time.
@@ -621,7 +620,8 @@ abstract class CometNativeExec extends CometExec {
       ctx.subqueries,
       ctx.broadcastedHadoopConfForEncryption,
       ctx.encryptedFilePaths,
-      ctx.shuffleScanIndices) {
+      ctx.shuffleScanIndices,
+      perPartitionFilePaths = ctx.perPartitionFilePaths) {
       override def compute(split: Partition, context: TaskContext): Iterator[ColumnarBatch] = {
         val res = super.compute(split, context)
         if (ctx.hasScanInput) {
@@ -813,6 +813,24 @@ abstract class CometNativeExec extends CometExec {
       throw new CometRuntimeException(s"No input for CometNativeExec:\n $this")
     }
 
+    // Collect per-partition file paths from any scan that exposes file-level provenance via the
+    // `CometScanWithPlanData` trait (covers `CometNativeScanExec` and contrib leaves like
+    // `CometDeltaNativeScanExec`) so `CometExecIterator` can report a per-file read failure as
+    // `FAILED_READ_FILE.NO_HINT` with the offending path. Done here (not in the leaf's own
+    // `inputRDD`) so it also fires when the scan is embedded inside a larger parent native tree.
+    // Multiple scans (joins) get concatenated per partition.
+    val perPartitionFilePaths: Array[Seq[String]] = {
+      val scans = sparkPlans.collect { case s: CometScanWithPlanData => s }
+      if (scans.isEmpty) Array.empty[Seq[String]]
+      else {
+        val perScan = scans.map(_.perPartitionFilePaths)
+        val n = firstNonBroadcastPlanNumPartitions
+        (0 until n).map { idx =>
+          perScan.flatMap { arr => if (arr.length > idx) arr(idx) else Seq.empty }.toSeq
+        }.toArray
+      }
+    }
+
     NativeExecContext(
       inputs = inputs.toSeq,
       numPartitions = firstNonBroadcastPlanNumPartitions,
@@ -822,7 +840,8 @@ abstract class CometNativeExec extends CometExec {
       commonByKey = commonByKey,
       perPartitionByKey = perPartitionByKey,
       shuffleScanIndices = shuffleScanIndices,
-      hasScanInput = sparkPlans.exists(_.isInstanceOf[CometNativeScanExec]))
+      hasScanInput = sparkPlans.exists(_.isInstanceOf[CometNativeScanExec]),
+      perPartitionFilePaths = perPartitionFilePaths)
   }
 
   /**
@@ -1000,6 +1019,11 @@ trait CometScanWithPlanData { self: CometLeafExec =>
   def sourceKey: String
   def commonData: Array[Byte]
   def perPartitionData: Array[Array[Byte]]
+  // Per-partition list of file paths produced by this scan. Used by `CometExecRDD` to
+  // report a per-file read failure as `FAILED_READ_FILE.NO_HINT` with the offending path
+  // (see `SparkErrorConverter.convertToSparkException`). Empty when the scan doesn't track
+  // file-level provenance.
+  def perPartitionFilePaths: Array[Seq[String]] = Array.empty
 
   // DPP / partition filters that may carry AQE SubqueryAdaptiveBroadcast
   // subqueries needing rewrite by CometPlanAdaptiveDynamicPruningFilters.

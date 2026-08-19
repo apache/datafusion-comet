@@ -57,6 +57,24 @@ import org.apache.comet.serde._
 import org.apache.comet.serde.operator._
 import org.apache.comet.shims.{ShimCometStreaming, ShimSubqueryBroadcast}
 
+/**
+ * Matches a `RowDataSourceScanExec` that a registered scan contrib claims, extracting the plan it
+ * produced. Does NOT match when no contrib claims the scan -- including every default build,
+ * where the registry is empty -- so an unclaimed row scan falls through to the remaining
+ * `CometExecRule` arms untouched.
+ *
+ * This is why it is an extractor and not a type pattern: `RowDataSourceScanExec` is a
+ * `LeafExecNode`, so an unclaimed one is still a candidate for `shouldApplySparkToColumnar`. The
+ * contrib hook runs exactly once per node here (the result is carried out through the pattern
+ * bind), so claiming costs no duplicate planning work.
+ */
+private object ContribClaimedRowScan {
+  def unapply(op: SparkPlan): Option[SparkPlan] = op match {
+    case scan: RowDataSourceScanExec => CometScanContrib.tryTransformRowScan(scan)
+    case _ => None
+  }
+}
+
 object CometExecRule {
 
   /**
@@ -266,6 +284,30 @@ case class CometExecRule(session: SparkSession)
   // spotless:on
   private def transform(plan: SparkPlan): SparkPlan = {
     def convertNode(op: SparkPlan): SparkPlan = op match {
+      // Scan marker produced by an optional, out-of-tree scan contrib (e.g. contrib/delta).
+      // Matched by trait (no compile-time dependency on the contrib) and present only when that
+      // contrib is on the classpath. The marker carries its own serde handler and typically wraps
+      // the original, link-bearing scan, so the produced exec's originalPlan keeps its logicalLink
+      // with no workaround. If conversion declines, the marker itself falls back to the vanilla
+      // Spark scan, so leaving it in the plan is safe.
+      case marker: CometContribScanMarker =>
+        convertToComet(marker, marker.scanHandler).getOrElse(marker)
+
+      // Row-based V1 scan (`RowDataSourceScanExec`) claimed by an optional, out-of-tree contrib
+      // -- a data source exposing a `BaseRelation` rather than a file index. Comet has no
+      // built-in handling for these, but a contrib may (e.g. contrib/delta reads a
+      // `readChangeFeed` relation natively via delta-kernel's `TableChanges`). Core inspects
+      // neither the relation nor the contrib.
+      //
+      // Deliberately an extractor rather than `case scan: RowDataSourceScanExec => ...
+      // getOrElse(scan)`: a `RowDataSourceScanExec` is a `LeafExecNode`, so an UNCLAIMED one must
+      // still reach the `shouldApplySparkToColumnar` arm below (which converts leaf nodes to
+      // Arrow when `spark.comet.sparkToColumnar.enabled` is on). Matching on the type alone would
+      // shadow that arm and silently change default-build behaviour. Matching on the *claim*
+      // means an unclaimed node -- always, on a default build -- falls through untouched.
+      case ContribClaimedRowScan(handled) =>
+        handled
+
       // Fully native scan for V1. CometScanExec must always convert to a native scan; the JVM
       // fallback path has been removed. If conversion fails, fall back to the original Spark scan.
       case scan: CometScanExec =>
