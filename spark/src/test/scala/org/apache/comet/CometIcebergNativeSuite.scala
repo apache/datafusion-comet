@@ -26,6 +26,9 @@ import java.nio.charset.StandardCharsets.UTF_8
 import scala.collection.mutable
 import scala.jdk.CollectionConverters._
 
+import org.apache.iceberg.data.IcebergGenerics
+import org.apache.iceberg.expressions.Expressions
+import org.apache.iceberg.spark.Spark3Util
 import org.apache.spark.CometListenerBusUtils
 import org.apache.spark.scheduler.{SparkListener, SparkListenerTaskEnd}
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
@@ -5265,19 +5268,20 @@ class CometIcebergNativeSuite
           val nativePlan = spark.sql(s"SELECT id FROM $table ORDER BY id")
           assertSingleNativeScan(nativePlan.queryExecution.executedPlan)
 
-          // Variant classes do not exist in the Iceberg versions used by older Spark profiles.
-          val variantsClass = Class.forName("org.apache.iceberg.variants.Variants")
-          val metadata = variantsClass.getMethod("emptyMetadata").invoke(null)
-          val value = variantsClass
-            .getMethod("of", java.lang.Integer.TYPE)
-            .invoke(null, Integer.valueOf(2))
-          val variant = Class
-            .forName("org.apache.iceberg.variants.Variant")
-            .getMethod(
-              "of",
-              Class.forName("org.apache.iceberg.variants.VariantMetadata"),
-              Class.forName("org.apache.iceberg.variants.VariantValue"))
-            .invoke(null, metadata, value)
+          // Reuse the table's existing Variant without referencing newer Iceberg Variant APIs.
+          val records = IcebergGenerics
+            .read(Spark3Util.loadIcebergTable(spark, table))
+            .where(Expressions.equal("id", 2L))
+            .select("data")
+            .build()
+          val variant =
+            try {
+              val rows = records.iterator()
+              assert(rows.hasNext, "Expected an Iceberg row containing the delete key")
+              rows.next().getField("data")
+            } finally {
+              records.close()
+            }
 
           commitEqualityDelete("test_cat", "db", tableName, "data", variant, warehouseDir)
 
