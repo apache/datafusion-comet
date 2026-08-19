@@ -37,9 +37,10 @@ use arrow::datatypes::{Schema, SchemaRef};
 use arrow::record_batch::{RecordBatch, RecordBatchOptions};
 use async_trait::async_trait;
 use datafusion::{
+    common::tree_node::TreeNodeRecursion,
     error::{DataFusionError, Result},
     execution::context::TaskContext,
-    physical_expr::EquivalenceProperties,
+    physical_expr::{EquivalenceProperties, PhysicalExpr},
     physical_plan::{
         execution_plan::{Boundedness, EmissionType},
         metrics::{ExecutionPlanMetricsSet, MetricsSet},
@@ -85,14 +86,14 @@ impl ParquetCompression {
 /// Enum representing different types of Arrow writers based on storage backend
 enum ParquetWriter {
     /// Writer for local file system
-    LocalFile(ArrowWriter<File>),
+    LocalFile(Box<ArrowWriter<File>>),
     /// Writer for HDFS or other remote storage (writes to in-memory buffer)
     /// Contains the arrow writer, HDFS operator, and destination path
     /// an Arrow writer writes to in-memory buffer the data converted to Parquet format
     /// The opendal::Writer is created lazily on first write
     #[cfg(feature = "hdfs-opendal")]
     Remote(
-        ArrowWriter<Cursor<Vec<u8>>>,
+        Box<ArrowWriter<Cursor<Vec<u8>>>>,
         Option<opendal::Writer>,
         Box<Operator>,
         String,
@@ -342,7 +343,7 @@ impl ParquetWriterExec {
                 // HDFS writer will be created lazily on first write
                 // Use the path from prepare_object_store_with_configs
                 Ok(ParquetWriter::Remote(
-                    arrow_parquet_buffer_writer,
+                    Box::new(arrow_parquet_buffer_writer),
                     None,
                     Box::new(op),
                     object_store_path.to_string(),
@@ -394,7 +395,7 @@ impl ParquetWriterExec {
                 let writer = ArrowWriter::try_new(file, schema, Some(props)).map_err(|e| {
                     DataFusionError::Execution(format!("Failed to create local file writer: {}", e))
                 })?;
-                Ok(ParquetWriter::LocalFile(writer))
+                Ok(ParquetWriter::LocalFile(Box::new(writer)))
             }
         } else {
             // Unsupported storage scheme
@@ -441,6 +442,13 @@ impl ExecutionPlan for ParquetWriterExec {
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
         vec![&self.input]
+    }
+
+    fn apply_expressions(
+        &self,
+        _f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
+    ) -> Result<TreeNodeRecursion> {
+        Ok(TreeNodeRecursion::Continue)
     }
 
     fn with_new_children(

@@ -18,7 +18,7 @@
 use arrow::array::RecordBatch;
 use arrow::datatypes::{DataType, Schema, SchemaRef};
 use arrow::ipc::writer::{
-    write_message, CompressionContext, DictionaryTracker, IpcDataGenerator, IpcWriteOptions,
+    write_message, DictionaryTracker, IpcDataGenerator, IpcWriteContext, IpcWriteOptions,
     StreamWriter,
 };
 use arrow::ipc::MetadataVersion;
@@ -159,7 +159,7 @@ impl ShuffleBlockWriter {
         // Fast path: reuse the pre-encoded schema message and write the record batch manually.
         let data_gen = IpcDataGenerator::default();
         let mut dictionary_tracker = DictionaryTracker::new(true);
-        let mut compression_context = CompressionContext::default();
+        let mut compression_context = IpcWriteContext::default();
         let (encoded_dictionaries, encoded_batch) = data_gen.encode(
             batch,
             &mut dictionary_tracker,

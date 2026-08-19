@@ -19,21 +19,21 @@ use crate::metrics::ShufflePartitionerMetrics;
 use crate::writers::BufBatchWriter;
 use crate::ShuffleBlockWriter;
 use arrow::record_batch::RecordBatch;
-use datafusion::common::DataFusionError;
-use datafusion::execution::disk_manager::RefCountedTempFile;
 use datafusion::execution::runtime_env::RuntimeEnv;
-use std::fs::{File, OpenOptions};
+use datafusion::execution::SpillFile as DfSpillFile;
+use datafusion::execution::SpillWriter as DfSpillWriter;
+use std::sync::Arc;
 
-struct SpillFile {
-    temp_file: RefCountedTempFile,
-    file: File,
+struct ActiveSpillFile {
+    temp_file: Arc<dyn DfSpillFile>,
+    writer: Box<dyn DfSpillWriter>,
 }
 
 pub(crate) struct SpillWriter {
     shuffle_block_writer: ShuffleBlockWriter,
     write_buffer_size: usize,
     batch_size: usize,
-    spill_file: Option<SpillFile>,
+    spill_file: Option<ActiveSpillFile>,
 }
 
 impl SpillWriter {
@@ -62,7 +62,7 @@ impl SpillWriter {
             let total_bytes_written = {
                 let mut buf_batch_writer = BufBatchWriter::new(
                     &mut self.shuffle_block_writer,
-                    &mut self.spill_file.as_mut().unwrap().file,
+                    &mut self.spill_file.as_mut().unwrap().writer,
                     self.write_buffer_size,
                     self.batch_size,
                 );
@@ -90,21 +90,11 @@ impl SpillWriter {
     ) -> datafusion::common::Result<()> {
         if self.spill_file.is_none() {
             // Spill file is not yet created, create it
-            let spill_file = runtime
+            let temp_file = runtime
                 .disk_manager
                 .create_tmp_file("shuffle writer spill")?;
-            let spill_data = OpenOptions::new()
-                .write(true)
-                .create(true)
-                .truncate(true)
-                .open(spill_file.path())
-                .map_err(|e| {
-                    DataFusionError::Execution(format!("Error occurred while spilling {e}"))
-                })?;
-            self.spill_file = Some(SpillFile {
-                temp_file: spill_file,
-                file: spill_data,
-            });
+            let writer = temp_file.open_writer()?;
+            self.spill_file = Some(ActiveSpillFile { temp_file, writer });
         }
         Ok(())
     }
@@ -112,7 +102,7 @@ impl SpillWriter {
     pub(crate) fn path(&self) -> Option<&std::path::Path> {
         self.spill_file
             .as_ref()
-            .map(|spill_file| spill_file.temp_file.path())
+            .and_then(|spill_file| spill_file.temp_file.path())
     }
 
     #[cfg(test)]

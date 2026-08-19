@@ -26,9 +26,10 @@ use crate::writers::LocalPartitionWriter;
 use crate::{CometPartitioning, CompressionCodec, ShuffleBlockWriter};
 use async_trait::async_trait;
 use datafusion::common::exec_datafusion_err;
-use datafusion::physical_expr::{EquivalenceProperties, Partitioning};
+use datafusion::common::tree_node::TreeNodeRecursion;
+use datafusion::physical_expr::{EquivalenceProperties, Partitioning, PhysicalExpr};
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
-use datafusion::physical_plan::EmptyRecordBatchStream;
+use datafusion::physical_plan::{apply_expression_roots, EmptyRecordBatchStream};
 use datafusion::{
     arrow::datatypes::SchemaRef,
     error::Result,
@@ -142,6 +143,21 @@ impl ExecutionPlan for ShuffleWriterExec {
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
         vec![&self.input]
+    }
+
+    fn apply_expressions(
+        &self,
+        f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
+    ) -> Result<TreeNodeRecursion> {
+        match &self.partitioning {
+            CometPartitioning::Hash(exprs, _) => apply_expression_roots(exprs, f),
+            CometPartitioning::RangePartitioning(ordering, _, _, _) => {
+                apply_expression_roots(ordering.iter().map(|sort_expr| &sort_expr.expr), f)
+            }
+            CometPartitioning::SinglePartition | CometPartitioning::RoundRobin(_, _) => {
+                Ok(TreeNodeRecursion::Continue)
+            }
+        }
     }
 
     fn with_new_children(

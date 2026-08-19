@@ -111,7 +111,7 @@ use arrow::array::{
 use arrow::buffer::{BooleanBuffer, NullBuffer, OffsetBuffer};
 use arrow::row::{OwnedRow, RowConverter, SortField};
 use datafusion::common::utils::SingleRowListArrayBuilder;
-use datafusion::common::UnnestOptions;
+use datafusion::common::{NullHandling, UnnestOptions};
 use datafusion::physical_plan::filter::FilterExec;
 use datafusion::physical_plan::joins::NestedLoopJoinExec;
 use datafusion::physical_plan::limit::GlobalLimitExec;
@@ -2076,7 +2076,11 @@ impl PhysicalPlanner {
                 });
 
                 let unnest_options = UnnestOptions {
-                    preserve_nulls: explode.outer,
+                    null_handling: if explode.outer {
+                        NullHandling::Preserve
+                    } else {
+                        NullHandling::Drop
+                    },
                     recursions: vec![],
                 };
 
@@ -4146,6 +4150,8 @@ fn parse_file_scan_tasks_from_common(
                 start: proto_task.start,
                 length: proto_task.length,
                 record_count: proto_task.record_count,
+                first_row_id: None,
+                data_sequence_number: None,
                 data_file_format,
                 schema: schema_ref,
                 project_field_ids,
