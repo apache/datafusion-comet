@@ -117,43 +117,39 @@ object CometExecRule {
     org.apache.spark.sql.catalyst.trees.TreeNodeTag[Unit]("comet.skipCometBroadcast")
 
   /**
-   * Bounded set of SQL execution IDs for which plan-only mode has already logged its report. Used
-   * to dedupe the WARN under AQE, where `CometExecRule` fires once against the full initial plan
-   * and again per stage.
+   * SQL execution IDs for which plan-only mode has already logged its report, as a bounded LRU.
+   * Dedupes the WARN under AQE, where `CometExecRule` fires once against the full initial plan
+   * and again per stage. Same synchronized-`LinkedHashMap` LRU pattern used by
+   * `IcebergPlanDataInjector.commonCache`.
    */
   private val PLAN_ONLY_REPORTED_LIMIT = 1024
-  private val planOnlyReportedIds: java.util.LinkedHashSet[String] =
-    new java.util.LinkedHashSet[String]()
+  private val planOnlyReportedIds: java.util.Map[String, java.lang.Boolean] =
+    java.util.Collections.synchronizedMap(
+      new java.util.LinkedHashMap[String, java.lang.Boolean](16, 0.75f, false) {
+        override def removeEldestEntry(
+            eldest: java.util.Map.Entry[String, java.lang.Boolean]): Boolean =
+          size() > PLAN_ONLY_REPORTED_LIMIT
+      })
 
   /**
-   * Thread-local re-entry guard: set to true while `reportPlanOnlyCoverage` is running the rule
-   * recursively to build the preview plan. Prevents the outer plan-only branch in `_apply` from
-   * firing on the nested call, so the recursive invocation executes the normal transform.
+   * Thread-local re-entry guard: set while `reportPlanOnlyCoverage` is building the preview so
+   * both `CometScanRule` and `CometExecRule` run their normal transforms on the nested pass
+   * instead of short-circuiting.
    */
   private[rules] val planOnlyPreviewInProgress: ThreadLocal[Boolean] =
-    new ThreadLocal[Boolean] {
-      override def initialValue(): Boolean = false
-    }
+    ThreadLocal.withInitial(() => java.lang.Boolean.FALSE)
+
+  private[rules] def withPreview[T](f: => T): T = {
+    val prev = planOnlyPreviewInProgress.get()
+    planOnlyPreviewInProgress.set(true)
+    try f
+    finally planOnlyPreviewInProgress.set(prev)
+  }
 
   private[comet] def markPlanOnlyReported(executionId: Option[String]): Boolean = {
     executionId match {
       case None => true
-      case Some(id) =>
-        planOnlyReportedIds.synchronized {
-          val added = planOnlyReportedIds.add(id)
-          if (planOnlyReportedIds.size > PLAN_ONLY_REPORTED_LIMIT) {
-            val it = planOnlyReportedIds.iterator()
-            it.next()
-            it.remove()
-          }
-          added
-        }
-    }
-  }
-
-  private[comet] def clearPlanOnlyReported(): Unit = {
-    planOnlyReportedIds.synchronized {
-      planOnlyReportedIds.clear()
+      case Some(id) => planOnlyReportedIds.put(id, java.lang.Boolean.TRUE) == null
     }
   }
 }
@@ -616,22 +612,14 @@ case class CometExecRule(session: SparkSession)
 
   /**
    * Build the Comet plan we would have executed and log it. Called from `_apply` in plan-only
-   * mode; the built plan is discarded. `CometScanRule` and this rule both skip work when
-   * `spark.comet.explain.planOnly.enabled` is set, so we use their bypass flags to force normal
-   * behavior while we compute the preview.
+   * mode; the built plan is discarded. Both rules short-circuit under plan-only mode, so we set
+   * `planOnlyPreviewInProgress` to force the nested calls to run their normal transforms.
    */
   private def reportPlanOnlyCoverage(plan: SparkPlan): Unit = {
-    val preview = CometScanRule.withForceApply {
-      CometExecRule.planOnlyPreviewInProgress.set(true)
-      try {
-        _apply(CometScanRule(session).apply(plan))
-      } finally {
-        CometExecRule.planOnlyPreviewInProgress.set(false)
-      }
+    val preview = CometExecRule.withPreview {
+      _apply(CometScanRule(session).apply(plan))
     }
-    logWarning(
-      s"[Comet plan-only]\n" +
-        new ExtendedExplainInfo().generateExtendedInfo(preview))
+    logWarning(s"[Comet plan-only]\n${new ExtendedExplainInfo().generateExtendedInfo(preview)}")
   }
 
   private def _apply(plan: SparkPlan): SparkPlan = {
@@ -650,6 +638,21 @@ case class CometExecRule(session: SparkSession)
         plan
       }
     } else {
+      // Plan-only mode: build the Comet plan Comet would have executed, log it, and return
+      // the original plan unchanged. `CometScanRule` also short-circuits in this mode, so
+      // `plan` is still pure Spark; `reportPlanOnlyCoverage` rebuilds a scan-wrapped copy for
+      // the preview. Placed before `normalizePlan`/`RewriteJoin`/`tagUnsafePartialAggregates`
+      // so their work is not wasted on the discarded outer pass.
+      if (CometConf.COMET_EXPLAIN_PLAN_ONLY_ENABLED.get() &&
+        !CometExecRule.planOnlyPreviewInProgress.get()) {
+        val executionId = Option(
+          session.sparkContext.getLocalProperty(SQLExecution.EXECUTION_ID_KEY))
+        if (CometExecRule.markPlanOnlyReported(executionId)) {
+          reportPlanOnlyCoverage(plan)
+        }
+        return plan
+      }
+
       val normalizedPlan = normalizePlan(plan)
 
       val planWithJoinRewritten = if (CometConf.COMET_FORCE_SHJ.get()) {
@@ -665,19 +668,6 @@ case class CometExecRule(session: SparkSession)
       // formats are incompatible. This runs before transform() so the tags are checked
       // during the bottom-up conversion. Tags persist through AQE stage creation.
       tagUnsafePartialAggregates(planWithJoinRewritten)
-
-      // Plan-only mode: `CometScanRule` skipped work, so `plan` here is still pure Spark. Build
-      // a preview by rerunning both rules against a scan-wrapped copy and log the coverage
-      // report, then return `plan` unchanged so nothing is offloaded to native.
-      if (CometConf.COMET_EXPLAIN_PLAN_ONLY_ENABLED.get() &&
-        !CometExecRule.planOnlyPreviewInProgress.get()) {
-        val executionId = Option(
-          session.sparkContext.getLocalProperty(SQLExecution.EXECUTION_ID_KEY))
-        if (CometExecRule.markPlanOnlyReported(executionId)) {
-          reportPlanOnlyCoverage(plan)
-        }
-        return plan
-      }
 
       var newPlan = transform(planWithJoinRewritten)
 
