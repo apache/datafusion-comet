@@ -785,7 +785,11 @@ under the License.
     <profile>
       <id>jdk17</id>
       <activation>
-        <jdk>17</jdk>
+        <!-- A range, not an exact match. `<jdk>17</jdk>` is a prefix match, so it
+             activates for 17.x but not for 21 or later, leaving java.version at the
+             default of 11 and compiling the Spark 4.x sources against the Java 11 API
+             ("Class java.lang.Record not found"). -->
+        <jdk>[17,)</jdk>
       </activation>
       <properties>
         <java.version>17</java.version>
@@ -1183,6 +1187,7 @@ under the License.
             <exclude>dev/release/*.jar</exclude>
             <exclude>native/proto/src/generated/**</exclude>
             <exclude>benchmarks/tpc/queries/**</exclude>
+            <exclude>benchmarks/results/**/*.txt</exclude>
             <exclude>.claude/**</exclude>
             <exclude>docs/superpowers/**</exclude>
           </excludes>
