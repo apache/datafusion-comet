@@ -97,7 +97,9 @@ class CometSparkSessionExtensions
     // No-op on Spark 3.5+; see CometSpark34AqeDppFallbackRule's class docstring.
     injectPreSpark35QueryStagePrepRuleShim(extensions, CometSpark34AqeDppFallbackRule)
     extensions.injectQueryStagePrepRule { session => CometScanRule(session) }
-    extensions.injectQueryStagePrepRule { session => CometExecRule(session) }
+    extensions.injectQueryStagePrepRule { session =>
+      CometExecRule(session, queryStagePrep = true)
+    }
     injectQueryStageOptimizerRuleShim(extensions, CometPlanAdaptiveDynamicPruningFilters)
     injectQueryStageOptimizerRuleShim(extensions, CometReuseSubquery)
     extensions.injectPlannerStrategy { session => IcebergWriteStrategy(session) }
@@ -111,6 +113,8 @@ class CometSparkSessionExtensions
     override def preColumnarTransitions: Rule[SparkPlan] = CometExecRule(session)
 
     override def postColumnarTransitions: Rule[SparkPlan] = {
+      // Keep in sync with `CometExecRule.reportPlanOnlyCoverage`, which replays these rules over
+      // the plan it previews so that plan-only reports describe the plan that would have run.
       val rules =
         Seq(RevertNativeForTransitionHeavyStages(session), EliminateRedundantTransitions(session))
       plan => rules.foldLeft(plan) { case (p, rule) => rule(p) }
